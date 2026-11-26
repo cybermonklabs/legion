@@ -1,15 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -26,154 +21,33 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/fixtureenv"
 )
 
-// TestMain runs the package's tests, or, run by seedInChild with seedChildEnv set, is that test's
-// seed: one run of seed over the database seedChildDatabaseEnv names. Only TestMain makes a seed
-// of a copy a test starts: in a build of these tests without it, such a copy runs the tests, each
-// of which starts copies that run them again. seedInChild refuses to start a copy in such a
-// process (seedCopyRefusal), and TestACopyStartedAsASeedRunsAsTheSeed fails in such a build by
-// name.
-func TestMain(m *testing.M) {
-	if report := os.Getenv(seedChildEnv); report != "" {
-		os.Exit(seedAsChild(os.Getenv(seedChildDatabaseEnv), report))
-	}
-	os.Exit(storetest.Main(m))
-}
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
-// seedChildEnv and seedChildDatabaseEnv make this test binary a seed rather than a test run: the
-// file to write the run's subjects to, and the database to fill (seedInChild).
-const (
-	seedChildEnv         = "DISPATCH_SEED_TEST_CHILD_REPORT"
-	seedChildDatabaseEnv = "DISPATCH_SEED_TEST_CHILD_DATABASE_URL"
-)
-
-// seedCopyRefusal is why this process may start no copy of this test binary, nil when it may. A
-// process that has seedChildEnv set was started as a seed, and TestMain runs such a process as a
-// seed, so one that runs the tests runs in a build without TestMain, and a copy started there would
-// run the tests again. seedInChild answers it as its own error rather than failing a test, because
-// it runs on a goroutine of its own.
-func seedCopyRefusal() error {
-	if report := os.Getenv(seedChildEnv); report != "" {
-		return fmt.Errorf("this process has %s=%s, so a test started it as a seed, but it runs the tests: this build of the tests has no TestMain that runs a seed, and a copy started here would run the tests again", seedChildEnv, report)
-	}
-	return nil
-}
-
-// seedCopyRefusal, which seedInChild asks before any copy starts, refuses a process that has
-// seedChildEnv set and no other. While TestMain is in the build no copy reaches it, so this test is
-// what holds the refusal.
-func TestAProcessStartedAsASeedStartsNoCopy(t *testing.T) {
-	fixtureenv.Unset(t, seedChildEnv)
-	if err := seedCopyRefusal(); err != nil {
-		t.Fatalf("with %s unset: %v, want no refusal", seedChildEnv, err)
-	}
-	t.Setenv(seedChildEnv, "/run/subjects.json")
-	if err := seedCopyRefusal(); err == nil || !strings.Contains(err.Error(), seedChildEnv+"=/run/subjects.json") {
-		t.Fatalf("with %s set: %v, want a refusal that names it", seedChildEnv, err)
-	}
-}
-
-// A copy started with seedChildEnv set runs as a seed: it opens the database seedChildDatabaseEnv
-// names, and refuses one it cannot read, exit 1. The seed does not read -h. In a build without
-// TestMain, the testing package reads -h before any test runs, prints its own flag usage and exits
-// 0, so this test fails there by name and its copy starts no copy of its own.
-func TestACopyStartedAsASeedRunsAsTheSeed(t *testing.T) {
-	t.Parallel()
-	if err := seedCopyRefusal(); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(os.Args[0], "-h")
-	cmd.Env = append(os.Environ(), seedChildEnv+"="+filepath.Join(t.TempDir(), "subjects.json"), seedChildDatabaseEnv+"=postgres://%zz")
-	out, err := cmd.CombinedOutput()
-	var exit *exec.ExitError
-	if want := "open the test database: "; !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.HasPrefix(string(out), want) {
-		t.Fatalf("a copy started as a seed with -h and a database URL it cannot read: %v, want exit 1 and a refusal that starts %q\n%s", err, want, out)
-	}
-}
-
-// seedAsChild fills the database at databaseURL as seed does in a test, and writes the run's
-// subjects to report as JSON. It writes the seed's progress and report on stdout and a failure
-// on stderr, which seedInChild prints when the run fails.
-func seedAsChild(databaseURL, report string) int {
-	ctx := context.Background()
-	database, err := store.Open(ctx, databaseURL)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "open the test database: %v\n", err)
-		return 1
-	}
-	defer database.Pool.Close()
-	run, err := seed(ctx, database, testScale, os.Stdout)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "seed at scale %v: %v\n", testScale, err)
-		return 1
-	}
-	encoded, err := json.Marshal(run.subject)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "encode the run's subjects: %v\n", err)
-		return 1
-	}
-	if err := os.WriteFile(report, encoded, 0o600); err != nil {
-		fmt.Fprintf(os.Stderr, "write the run's subjects: %v\n", err)
-		return 1
-	}
-	return 0
-}
-
-// seedInChildren seeds each of databases in a process of its own, all at once, this test binary
-// run as a seed (seedAsChild), and answers each run as the tests read it: its subjects, and the
-// plan every run at testScale writes. A seed sets the block id generator for its whole process
-// (pmdoc.SetBlockIDGenerator, seedRun.do), so two seeds in one process would draw each other's
-// ids; in processes of their own, they run at once, and so do the seeds of the package's parallel
-// tests.
-func seedInChildren(t *testing.T, databases ...*store.Store) []*seedRun {
+// seedAtOnce seeds each of databases at once, a goroutine each, and answers each run. Each
+// database is its test's own (storetest.Open) and each render its own block ids (renderVersion),
+// so the seeds of a test, and those of the package's parallel tests, run at once in one process.
+func seedAtOnce(t *testing.T, databases ...*store.Store) []*seedRun {
 	t.Helper()
 	runs := make([]*seedRun, len(databases))
 	failures := make([]error, len(databases))
 	var seeds sync.WaitGroup
 	for index, database := range databases {
-		report := filepath.Join(t.TempDir(), "subjects.json")
 		seeds.Go(func() {
-			runs[index], failures[index] = seedInChild(t, database, report)
+			started := time.Now()
+			runs[index], failures[index] = seed(context.Background(), database, testScale, io.Discard)
+			t.Logf("seed %d of %d at scale %v in %s", index+1, len(databases), testScale,
+				time.Since(started).Round(time.Millisecond))
 		})
 	}
 	seeds.Wait()
 	for index, failure := range failures {
 		if failure != nil {
-			t.Fatalf("seed %d of %d: %v", index+1, len(databases), failure)
+			t.Fatalf("seed %d of %d at scale %v: %v", index+1, len(databases), testScale, failure)
 		}
 	}
 	return runs
-}
-
-// seedInChild runs one seed of database in a process of its own and reads back the subjects it
-// wrote to report. It answers an error rather than failing t, because seedInChildren calls it
-// from a goroutine of its own.
-func seedInChild(t *testing.T, database *store.Store, report string) (*seedRun, error) {
-	if err := seedCopyRefusal(); err != nil {
-		return nil, err
-	}
-	command := exec.CommandContext(t.Context(), os.Args[0])
-	command.Env = append(os.Environ(),
-		seedChildEnv+"="+report, seedChildDatabaseEnv+"="+database.Pool.Config().ConnString())
-	var output bytes.Buffer
-	command.Stdout = &output
-	command.Stderr = &output
-	started := time.Now()
-	if err := command.Run(); err != nil {
-		return nil, fmt.Errorf("seed at scale %v in a child process: %w\n%s", testScale, err, output.String())
-	}
-	t.Logf("seeded at scale %v in %s", testScale, time.Since(started).Round(time.Millisecond))
-	encoded, err := os.ReadFile(report)
-	if err != nil {
-		return nil, fmt.Errorf("read the subjects the seed wrote: %w\n%s", err, output.String())
-	}
-	run := &seedRun{plan: newPlan(newSizes(testScale))}
-	if err := json.Unmarshal(encoded, &run.subject); err != nil {
-		return nil, fmt.Errorf("decode the subjects the seed wrote: %w", err)
-	}
-	return run, nil
 }
 
 // testScale is the scale the suite seeds at: about 200 issues, which is small enough that two
@@ -184,11 +58,11 @@ const testScale = 0.01
 // TestSeedAtASmallScale seeds two fresh databases and holds the pair, and then one of them, to
 // everything the seed promises. Both runs are in one test because each one takes most of a
 // minute: a test of its own for each check would seed six databases to read one data set. The two
-// seeds run at once, each in a process of its own (seedInChildren).
+// seeds run at once, in this process (seedAtOnce).
 func TestSeedAtASmallScale(t *testing.T) {
 	t.Parallel()
 	first, second := storetest.Open(t), storetest.Open(t)
-	firstRun := seedInChildren(t, first, second)[0]
+	firstRun := seedAtOnce(t, first, second)[0]
 
 	t.Run("two runs at one scale write the same rows", func(t *testing.T) {
 		assertSameRowCounts(t, first, second)
@@ -255,7 +129,7 @@ func TestSeedBuildsTermStatisticsOnMainsSchema(t *testing.T) {
 		`alter table search_term_totals drop column snapshot, drop column snapshot_at`); err != nil {
 		t.Fatalf("drop the snapshot columns 20261101182515 added: %v", err)
 	}
-	run := seedInChildren(t, database)[0]
+	run := seedAtOnce(t, database)[0]
 
 	var built int
 	if err := database.Pool.QueryRow(ctx, `select count(*) from search_term_totals`).Scan(&built); err != nil {
@@ -291,7 +165,7 @@ func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
 	if _, err := database.Pool.Exec(context.Background(), string(rollback)); err != nil {
 		t.Fatalf("restore the schema before comment answers: %v", err)
 	}
-	seedInChildren(t, database)
+	seedAtOnce(t, database)
 	var replies int
 	if err := database.Pool.QueryRow(context.Background(), `select count(*) from comments where reply_to is not null`).Scan(&replies); err != nil {
 		t.Fatal(err)
@@ -302,6 +176,7 @@ func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
 }
 
 func TestSeedReplyPlansInheritTheirOwnersAndAskThreads(t *testing.T) {
+	t.Parallel()
 	plan := newPlan(newSizes(testScale))
 	for index, comment := range plan.comments {
 		parent := comment.ReplyTo
@@ -337,6 +212,7 @@ func TestSeedReplyPlansInheritTheirOwnersAndAskThreads(t *testing.T) {
 // migrate-first run creates schema_migrations before it applies anything (store.prepareVersionTable),
 // so it shows there whichever migration it then fails on.
 func TestSeedRefusesAFilledDatabaseWithoutMigratingIt(t *testing.T) {
+	t.Parallel()
 	t.Run("a database that is not Dispatch's", func(t *testing.T) {
 		ctx := context.Background()
 		database := storetest.Open(t)
@@ -848,15 +724,15 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 }
 
 // graphArmCount guards that the census reads every arm. It is the arm list of
-// 20261121120000_graph_edges_identity_and_tuple_arm_filter, the last migration to restate
+// 20261126045005_graph_edges_identity_and_tuple_arm_filter, the last migration to restate
 // graph_edges: the 27 arms 20261105014808 restated it with, the comment answers arm among them,
 // the one arm over the store's current tuples 20261109215947 adds, the arm over a message's reply
-// to a message's block that 20261116114517 adds, the two arms over a comment's reply to a comment's
-// block and to an ask's part that 20261116124448 adds, the one arm over every item's blocks, a
-// comment's, a message's and an ask's, that 20261116140008 adds, and the identity arm over a
-// mention of a person, a session or a role that 20261120090001 adds. 20261116094101 adds none, and
-// 20261121120000 adds none either: it keeps 20261120090001's list and carries 20261120122700's
-// filter of the tuple arm, as 20261121034242 carries it over 20261116094101's. Each of the fifteen
+// to a message's block that 20261126045001 adds, the two arms over a comment's reply to a comment's
+// block and to an ask's part that 20261126045002 adds, the one arm over every item's blocks, a
+// comment's, a message's and an ask's, that 20261126045003 adds, and the identity arm over a
+// mention of a person, a session or a role that 20261126045004 adds. 20261125163553 adds none, and
+// 20261126045005 adds none either: it keeps 20261126045004's list and carries 20261120122700's
+// filter of the tuple arm, as 20261125163554 carries it over 20261125163553's. Each of the fifteen
 // arms over a kind the store now writes answers only the rows of its table that name no node, each
 // of the five over what a comment answers only the rows whose pointers are no tuples, and the refs
 // arm only the rows that hold no tuples_stored; the seed names the node of every row it writes but
@@ -891,7 +767,7 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 	}
 	arms := strings.Split(definition, "UNION ALL")
 	if len(arms) != graphArmCount {
-		t.Fatalf("graph_edges has %d arms, not the %d migration 20261121120000 restates it with; read the view and update the test",
+		t.Fatalf("graph_edges has %d arms, not the %d migration 20261126045005 restates it with; read the view and update the test",
 			len(arms), graphArmCount)
 	}
 	pairs := map[[2]string]bool{}

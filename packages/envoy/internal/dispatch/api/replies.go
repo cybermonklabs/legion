@@ -826,13 +826,13 @@ var myReplyAnswersStatement = `select a.id::text, a.state, a.answer, ` + asks.No
 // by somebody else is its ask's answer, from that answer as the ask's node holds it
 // (answerReply), as every read of an answer reads it (R3): kind answer, the answerer as its
 // author, and the answer's options and then its text, joined by " - ", as its first line, cut as
-// refs.FirstLine cuts a row's line (serverURL is the deployment whose dashboard URLs are
-// references). A row whose ask holds no answer as its node holds it keeps the reply the page's
-// statement read for it, a reply with no author and no line. It is a statement of its own, over
-// the asks of those rows alone, rather than a lateral of the page's: the node's facts are read
-// through one text (asks.NodeFacts), whose relations and values no one index orders, and the page's
-// plan is held to sorting nothing (TestMyRepliesQueriesReadTheirStatesIndex). It runs in the
-// page's transaction, so it reads the snapshot the page read. GET /api/v1/me/inbox reads the same
+// the page cuts every other first line (refs.FirstLine), so no reference is cut in half. A row
+// whose ask holds no answer as its node holds it keeps the reply the page's statement read for it,
+// a reply with no author and no line. It is a statement of its own, over the asks of those rows
+// alone, rather than a lateral of the page's: the node's facts are read through one text
+// (asks.NodeAnswerTuples), whose relations and values no one index orders, and the page's plan is
+// held to sorting nothing (TestMyRepliesQueriesReadTheirStatesIndex). It runs in the page's
+// transaction, so it reads the snapshot the page read. GET /api/v1/me/inbox reads the same
 // statement inside its own one statement, over its page's Reply rows (meInboxPageReads).
 func answerReplyRows(ctx context.Context, tx pgx.Tx, read []model.MyReplyRow, answered []int, serverURL string) error {
 	if len(answered) == 0 {

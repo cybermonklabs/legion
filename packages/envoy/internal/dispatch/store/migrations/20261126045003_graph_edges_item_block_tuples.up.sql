@@ -1,4 +1,4 @@
--- 20261116140008_graph_edges_item_block_tuples.up.sql
+-- 20261126045003_graph_edges_item_block_tuples.up.sql
 --
 -- The body blocks of a comment, a message and an ask are block nodes now, with their links and the
 -- item's own citations as tuples, and the view reads them from the store. Seven arms move.
@@ -22,8 +22,8 @@
 -- names the node in the insert or update that writes each row (refs.IndexItem, refs.PlanAskParts
 -- and the item writer of refs rows, refs.PlanItemReplace): a block's node, kind `block`
 -- (graphstore.KindBlock), at the address its row's node_id already holds,
--- `<item kind>/<item uuid>#<block id>`, the address a reply to a block names since 20261116114517
--- and 20261116124448; its part_of to the item; each link it holds, under that link's own kind and
+-- `<item kind>/<item uuid>#<block id>`, the address a reply to a block names since 20261126045001
+-- and 20261126045002; its part_of to the item; each link it holds, under that link's own kind and
 -- to that link's own far end, as a document block's links are (refs.PlanBlocks); and the
 -- item's citations, under `mentions`, to each far end its refs rows name, each row holding
 -- tuples_stored from its own insert. An item the store holds no node of has no block node and no
@@ -42,7 +42,7 @@
 -- hides no index column: the arm's `distinct on` is the tuple arm's over the four columns its
 -- predicate leaves free, so a read keyed on the far end binds (to_kind, to_id) and walks the block
 -- tuples into that node once, and a read keyed on the near end binds from_id beside the arm's own
--- from_kind of `block` in graph_tuples_current; the rule of 20261116114517 against a case is the
+-- from_kind of `block` in graph_tuples_current; the rule of 20261126045001 against a case is the
 -- tuple arm's, whose kind columns no predicate fixes. The arm states `kind <> 'delivered_to'`, which
 -- leaves out no tuple, since no block states a delivery, so a plan of a read keyed on the near end
 -- proves graph_tuples_current's partial predicate where that index leaves that kind out, as no
@@ -74,7 +74,7 @@
 --
 -- Measured on this pod's PostgreSQL 18.6 over the seed at scale 0.01 (130,240 tuples across 14
 -- far-end kinds, 60,644 of them out of an item's block), on an earlier set of read indexes that
--- also held graph_tuples_inbound, beside 20261116124448's view over the same rows, in shared
+-- also held graph_tuples_inbound, beside 20261126045002's view over the same rows, in shared
 -- buffers read by the whole view, this one's against that one's (under the four read indexes, over
 -- 700,000 synthetic tuples out of nodes the store does not hold, so that no arm answers a row, the
 -- whole view reads 30 against 24 out of one comment block, 43 against 40 into one comment, 43
@@ -115,11 +115,11 @@
 -- item block's placement; `mentions` is there since 20261109215947.
 --
 -- Re-stating the view holds `graph_edges` ACCESS EXCLUSIVE for the migration's short transaction,
--- so a reference read waits behind it. The arm list re-stated is 20261116124448's, with the
+-- so a reference read waits behind it. The arm list re-stated is 20261126045002's, with the
 -- `not tuples_stored` test of the refs arm, the six `node_kind is null` tests over an item's blocks
 -- and their links, the citation case and the item block addresses left out of the tuple arm, and
 -- the item block arm added; the three reply arms keep their constant kind, `replies_to`, so a read
--- of any other kind drops them from its plan (20261116114517). It is the arm list a later
+-- of any other kind drops them from its plan (20261126045001). It is the arm list a later
 -- migration re-states from. Nothing here refuses or rewrites a row.
 
 create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, created_at, source_seq) as

@@ -95,7 +95,7 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 		if err != nil {
 			return nil, false, err
 		}
-		unresumable, err := Unresumable(ctx, e.store, tx, root)
+		unresumable, err := Unresumable(ctx, e.store, tx, project, root)
 		if err != nil {
 			return nil, false, err
 		}

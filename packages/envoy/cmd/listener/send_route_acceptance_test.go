@@ -82,6 +82,16 @@ func assertRecordFields(t *testing.T, record map[string]any, want map[string]any
 	}
 }
 
+// assertRecordErrorCarries fails unless the error field of one record line carries want: a line's
+// error wraps the cause a test planted in what the reader that met it adds.
+func assertRecordErrorCarries(t *testing.T, record map[string]any, want string) {
+	t.Helper()
+	if message, _ := record["error"].(string); !strings.Contains(message, want) {
+		line, _ := json.Marshal(record)
+		t.Fatalf("the record's error %q does not carry %q: %s", message, want, line)
+	}
+}
+
 // A send reads the target from the session bucket itself when this listener's cache has not seen
 // it: the cache follows the bucket through a watcher and so trails it, and a sender told its
 // destination is gone routes around the pane. This drives the send route with a session another

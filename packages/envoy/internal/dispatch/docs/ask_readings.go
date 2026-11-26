@@ -147,7 +147,7 @@ func askAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]askAns
 			return nil, fmt.Errorf("scan the answer of an ask a reading stands in: %w", err)
 		}
 		var node asks.NodeAnswer
-		if _, err := node.Read(graphstore.TupleAnswerState, state); err != nil {
+		if err := node.Read(graphstore.TupleAnswerState, state); err != nil {
 			return nil, fmt.Errorf("read the answer state of ask %s: %w", id, err)
 		}
 		ref := text.Ref{ID: id, Document: slug}
@@ -164,10 +164,10 @@ func askAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]askAns
 	return answers, nil
 }
 
-// blockAsks reads the asks of artifactID's ask blocks under blockIDs, by block id, as
+// asksOfBlocks reads the asks of artifactID's ask blocks under blockIDs, by block id, as
 // loadAskBlocks reads a document's asks but without its lock: a write reads them to decide
 // whether to refuse it, and writes none of them.
-func blockAsks(ctx context.Context, tx pgx.Tx, artifactID string, blockIDs []string) (map[string]model.Ask, error) {
+func asksOfBlocks(ctx context.Context, tx pgx.Tx, artifactID string, blockIDs []string) (map[string]model.Ask, error) {
 	rows, err := tx.Query(ctx, `
 		select `+AskColumns+`
 		from asks a where a.block_artifact_id = $1 and a.block_id = any($2::text[])
@@ -271,7 +271,7 @@ func refuseReadingsWithoutAnswers(ctx context.Context, tx pgx.Tx, artifactID str
 // indexes, the ask of another document of its owner it was copied from (readCopiedAskSources). The
 // read takes no copy lock (lockProjectCopies): it opens no ask.
 func shownAskAnswers(ctx context.Context, tx pgx.Tx, artifactID string, blockIDs []string, blocks []askBlock) (map[string]askAnswer, error) {
-	rows, err := blockAsks(ctx, tx, artifactID, blockIDs)
+	rows, err := asksOfBlocks(ctx, tx, artifactID, blockIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -288,11 +288,11 @@ func shownAskAnswers(ctx context.Context, tx pgx.Tx, artifactID string, blockIDs
 	return readingAnswers(ctx, tx, blockIDs, rows, sources)
 }
 
-// shownAsks is shownAskAnswers for the ask blocks of tree under ids, which close with a reading,
-// as the typed-node pass reads them (refs.TypedSources.Shown): the ask each one shows, whether that
-// ask's row names its node, and whether that node holds an answer. A block that shows no ask is
-// absent.
-func shownAsks(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node, ids []string) (map[string]refs.ShownAsk, error) {
+// readingShownAsks is shownAskAnswers for the ask blocks of tree under ids, which close with a
+// reading, as the typed-node pass reads them (refs.TypedSources.Shown): the ask each one shows,
+// whether that ask's row names its node, and whether that node holds an answer. A block that shows
+// no ask is absent.
+func readingShownAsks(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node, ids []string) (map[string]refs.ShownAsk, error) {
 	wanted := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
 		wanted[id] = struct{}{}

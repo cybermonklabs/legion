@@ -1,5 +1,5 @@
 import type { ArtifactBlock, AskWithTrees, EditOp, TextAsk } from "@legion/contracts";
-import { askOpenerLines, askOpeners } from "@legion/contracts";
+import { askOpenerAttributes, askOpenerLines, askOpeners } from "@legion/contracts";
 import { commandName } from "../dispatch-command";
 import type { DispatchClient } from "../dispatch-http";
 import {
@@ -112,10 +112,6 @@ export async function refuseOpenDecisionBlocks(
       served: text.asks !== undefined && text.asks !== null,
       asks: liveTextAsks(text),
     })));
-  // The state a version's opening line records for its block, which decides a block only against
-  // a Dispatch of the release before, whose live text sends no `asks`.
-  // kept for one release: release-before-text
-  const stateOf = (line: string): string | undefined => /\bstate="(\w+)"/.exec(line)?.[1];
   // A version of the release before shows open a block whose ask is answered or closed until the
   // version its settlement writes the answer into; a waived one (resolved) gets the decision
   // written in.
@@ -157,7 +153,10 @@ export async function refuseOpenDecisionBlocks(
         ? `block ${block.id}`
         : `${JSON.stringify(ask.question)} (block ${block.id}, ask ${ask.id})`;
     const openers = askOpeners(openerLines, block.id);
-    const states = openers.map(stateOf);
+    // The state each of the block's opening lines records (askOpenerAttributes), which decides a
+    // block only against a Dispatch of the release before, whose live text sends no `asks`.
+    // kept for one release: release-before-text
+    const states = openers.map((line) => askOpenerAttributes(line)?.state);
     if (states.length === 0) return `${named}, which version ${latest} does not hold yet`;
     // kept for one release: release-before-text
     const recordsOpen = states.includes("open");

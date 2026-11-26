@@ -1,4 +1,4 @@
--- 20261116094058_asks_node.up.sql
+-- 20261125163550_asks_node.up.sql
 --
 -- asks and ask_followers learn the address of the node they project, as document_blocks,
 -- block_refs and comments did in 20261109022248. An ask is a node of the store (kind `ask`, its
@@ -14,7 +14,7 @@
 -- A row whose node columns are null is a row no writer of this release stated in the store: a row
 -- written before this release, or by a process of the release before it during a roll or after
 -- a rollback. graph_edges' old arms over the two tables answer such a row, and the store's own arm
--- answers a row that names its node (20261116094101), so the two columns are the marker the view
+-- answers a row that names its node (20261125163553), so the two columns are the marker the view
 -- decides each row by. The boot step's backfill (graphcensus' asks and ask_followers batches)
 -- fills them for the rows written before.
 --

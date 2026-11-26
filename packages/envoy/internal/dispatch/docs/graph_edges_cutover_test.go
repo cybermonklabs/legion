@@ -175,7 +175,7 @@ const previousGraphEdges = "previous_graph_edges"
 // children moved any arm: every arm it states reads its own table, the three over an ask's
 // relations, the two over messages, the five over what a comment answers and the seven over an
 // item's blocks and citations among them, which askArmsMovedBy and inboxArmsMovedBy moved since
-// (migrations 20261116094101, 20261116114517, 20261116124448 and 20261116140008), so the whole
+// (migrations 20261125163553, 20261126045001, 20261126045002 and 20261126045003), so the whole
 // view is held to it over every row the store and the tables hold between them.
 const previousGraphEdgesMigration = "../store/migrations/20261105014808_comments_answers.up.sql"
 

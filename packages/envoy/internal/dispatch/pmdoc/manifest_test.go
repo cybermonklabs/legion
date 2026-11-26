@@ -153,6 +153,8 @@ func TestAnElementThisBuildReadsButCannotCreateIsReadAndNeverCreated(t *testing.
 	if got, want := SchemaVersion(), shipped+1; got != want {
 		t.Fatalf("SchemaVersion() = %d, want %d", got, want)
 	}
+	// This build creates every element it reads, so the staged future, read from the next version
+	// and not creatable there, leaves R where the shipped manifest has it.
 	if got := SchemaCreatable(); got != shippedCreatable {
 		t.Fatalf("SchemaCreatable() where future is not creatable = %d, want the shipped manifest's %d", got, shippedCreatable)
 	}

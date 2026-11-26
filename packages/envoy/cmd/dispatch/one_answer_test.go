@@ -46,7 +46,7 @@ var storedAskAttributes = []string{"state", "answered_by", "answered_at", "selec
 var answerAttributes = []string{"answered_by", "answered_at", "selected", "answer"}
 
 // answerWordAttributes are the two of those that hold the answer itself, the selection and the
-// words, which no version written on a fleet of one build holds (R10).
+// words, which no version written on a fleet of one build holds (R5).
 var answerWordAttributes = []string{"selected", "answer"}
 
 // oneAnswerSettleDelay is how long the processes here wait after an edit before they settle it:
@@ -431,14 +431,14 @@ func requireCarried(t *testing.T, what string, p *dispatchProcess, artifactID st
 // answer route. The answer is on the ask's node, each fact under the ask.answered that caused it,
 // and on the asks row. The version the answer wrote is the one after the version before, and
 // differs from it only in the block's state, answered_by and answered_at, each as the node holds
-// it (requireKeptForm), which R10 keeps for one release. The block holds no answer and no
+// it (requireKeptForm), which R5 keeps for one release. The block holds no answer and no
 // selection, in that version and in the live tree. The approval is carried to that version, and
 // the answer reports no superseded approval.
 //
 // releaseBeforeOpen names the other open ask blocks of a document the base release wrote, whose
 // opener holds the state="open" that release wrote and no write of this build has taken off yet.
 // The answer's version is then the document's first accepted write on this build, which takes
-// that state off each of them as R10 has it, so each must hold state="open" before and no state
+// that state off each of them as R5 has it, so each must hold state="open" before and no state
 // after, and that is the one other difference the comparison allows.
 func requireAnswerHeldOnce(t *testing.T, ctx context.Context, p *dispatchProcess, database *pgx.Conn, artifactID, askID, blockID, what string, releaseBeforeOpen ...string) {
 	t.Helper()
@@ -498,7 +498,7 @@ func requireAnswerHeldOnce(t *testing.T, ctx context.Context, p *dispatchProcess
 			t.Errorf("%s: before the answer the block %s opens %q, want the state=\"open\" the base release wrote", what, open, opener)
 		}
 		if state, held := storedAskBlock(t, after, open).Attrs["state"]; held {
-			t.Errorf("%s: the version %d the answer wrote holds state=%s on the open ask block %s, want none (R10's first write on this build)",
+			t.Errorf("%s: the version %d the answer wrote holds state=%s on the open ask block %s, want none (R5's first write on this build)",
 				what, afterNumber, mustJSON(t, state), open)
 		}
 		compared = withoutBlockAttributes(compared, open, "state")
@@ -517,7 +517,7 @@ func requireAnswerHeldOnce(t *testing.T, ctx context.Context, p *dispatchProcess
 // A person's answer is held once, on the ask's node (c-one-answer). The test registers no other
 // build, so processes.Live shows the whole fleet on this build: the answer route appends the
 // answer to the ask's node, the asks row is its projection, and the version the answer writes
-// changes only the block's state, answered_by and answered_at, which R10 keeps for one release,
+// changes only the block's state, answered_by and answered_at, which R5 keeps for one release,
 // and carries an approval. While a process of the base release is registered, the roll window
 // keeps the eight attributes of the block in step with the asks row; once it is gone the helper
 // writes nothing. A block the browser's room writes, which fails the strict read and claims an
@@ -639,8 +639,9 @@ func requireOneAnswerCase(t *testing.T, ctx context.Context, current *dispatchPr
 	// the spec on this build: the decisions step's third phase writes no version of it, since that
 	// phase works only on an issue with an answered ask whose block left its spec or with a
 	// decisions document (graphcensus.ReadRestoreWork, DecisionStep.RestoreAndConvert), and this
-	// issue has neither. So the answer's version also takes the state="open" the base release wrote
-	// off the source ask's block, which is still open (R10).
+	// issue has neither; its backfill and its catch-up state what the release before wrote on the
+	// asks' nodes alone. So the answer's version also takes the state="open" the base release wrote
+	// off the source ask's block, which is still open (R5).
 	var releaseBeforeOpen []string
 	if c.baseWritten {
 		releaseBeforeOpen = []string{c.sourceBlock}
@@ -834,9 +835,10 @@ func requireOneAnswerCase(t *testing.T, ctx context.Context, current *dispatchPr
 	if documentTuples != 0 || documentNodes != 0 {
 		t.Errorf("%s: %d tuples and %d nodes hold a copied_from_document attribute, want none on any node", c.what, documentTuples, documentNodes)
 	}
-	// The copy's block in the stored version keeps copied_from and copied_from_document, as R10
+	// The copy's block in the stored version keeps copied_from and copied_from_document, as R5
 	// keeps them until the kept-for-one-release item stored-ask-state removes them, and the text
-	// route serves the block without them.
+	// route, read with `Dispatch-Asks: 1` as this build's CLI reads it, serves the block without
+	// them.
 	sourceAddress := "dispatch://" + c.issue + "/spec"
 	copied := keptBlock{block: c.sourceBlock, ask: c.source, copied: sourceAddress}
 	copyNumber, copyMarkdown := latestMarkdown(t, current, copyDocument)
@@ -845,7 +847,7 @@ func requireOneAnswerCase(t *testing.T, ctx context.Context, current *dispatchPr
 		t.Helper()
 		text := servedTextOf(t, current, "/api/v1/artifacts/"+copyDocument+"/text")
 		if opener := blockOpener(text.Markdown, c.sourceBlock); opener == "" || askServerAttribute.MatchString(opener) {
-			t.Errorf("%s: %s, GET /api/v1/artifacts/{id}/text opens the copy's block %q, want it holding none of the server-owned attributes:\n%s",
+			t.Errorf("%s: %s, GET /api/v1/artifacts/{id}/text read with Dispatch-Asks: 1 opens the copy's block %q, want it holding none of the server-owned attributes:\n%s",
 				c.what, when, opener, text.Markdown)
 		}
 		return text
@@ -864,7 +866,7 @@ func requireOneAnswerCase(t *testing.T, ctx context.Context, current *dispatchPr
 	}
 
 	// The source is answered: the copy's document owes a settlement, and once it has settled again
-	// its stored block holds the source's answer in the form R10 keeps, and the copy's entry in the
+	// its stored block holds the source's answer in the form R5 keeps, and the copy's entry in the
 	// asks member of the text an agent reads holds that answer, naming the source and its
 	// document, while the copy's opening line in that text holds none of the server-owned
 	// attributes.
@@ -1024,9 +1026,8 @@ func mustJSON(t *testing.T, value any) string {
 
 // scanForTheDeletedWriters parses the source of the docs and pmdoc packages and fails where either
 // declares setAskServerAttributes or IsAnswerAttribute. It allows rollWindowAskAttributes, the
-// roll-window helper, where the one write that chooses by the fleet (askStateWrite) hands that
-// helper's write out only while another build serves and the form a version keeps otherwise, and
-// prints that finding and the one of restoresApprovedText, which stays.
+// roll-window helper, where its fleet guard returns nothing on a fleet of one build, and prints
+// that finding and the one of restoresApprovedText, which stays.
 func scanForTheDeletedWriters(t *testing.T) {
 	t.Helper()
 	declared := map[string]string{}
@@ -1045,7 +1046,7 @@ func scanForTheDeletedWriters(t *testing.T) {
 						continue
 					}
 					declared[function.Name.Name] = filepath.Base(name) + ":" + strconv.Itoa(files.Position(function.Pos()).Line)
-					if function.Name.Name == "askStateWrite" {
+					if function.Name.Name == "rollWindowAskAttributes" {
 						guard = fleetGuard(function)
 					}
 				}
@@ -1059,9 +1060,9 @@ func scanForTheDeletedWriters(t *testing.T) {
 	}
 	at, found := declared["rollWindowAskAttributes"]
 	if !found || guard == "" {
-		t.Errorf("the scan finds rollWindowAskAttributes at %q with the fleet guard of askStateWrite %q, want the roll-window helper's write handed out only while another build serves", at, guard)
+		t.Errorf("the scan finds rollWindowAskAttributes at %q with fleet guard %q, want the roll-window helper returning nothing on a fleet of one build", at, guard)
 	}
-	t.Logf("scan: allowed rollWindowAskAttributes at %s, which keeps the copy in step with the asks row while two builds serve: askStateWrite %s", at, guard)
+	t.Logf("scan: allowed rollWindowAskAttributes at %s, which keeps the copy in step with the asks row while two builds serve and %s", at, guard)
 	if at, found := declared["restoresApprovedText"]; found {
 		t.Logf("scan: restoresApprovedText stays, at %s", at)
 	} else {
@@ -1069,34 +1070,30 @@ func scanForTheDeletedWriters(t *testing.T) {
 	}
 }
 
-// fleetGuard describes the fleet guard askStateWrite opens with - `if twoBuilds { return
-// rollWindowAskAttributes(…) }`, then `return keptAskState(…)` - or is "" for any other body,
-// so a write that handed the roll window's attributes out on a fleet of one build fails.
+// fleetGuard describes the fleet guard function opens with - `if !twoBuilds { return nil }` - or is
+// "" where it opens with none.
 func fleetGuard(function *ast.FuncDecl) string {
-	if function.Body == nil || len(function.Body.List) != 2 {
+	if function.Body == nil || len(function.Body.List) == 0 {
 		return ""
 	}
 	guard, ok := function.Body.List[0].(*ast.IfStmt)
-	if !ok || guard.Else != nil || len(guard.Body.List) != 1 {
+	if !ok || len(guard.Body.List) != 1 {
 		return ""
 	}
-	fleet, ok := guard.Cond.(*ast.Ident)
-	if !ok || !returnsCallOf(guard.Body.List[0], "rollWindowAskAttributes") || !returnsCallOf(function.Body.List[1], "keptAskState") {
+	not, ok := guard.Cond.(*ast.UnaryExpr)
+	if !ok || not.Op != token.NOT {
 		return ""
 	}
-	return "returns rollWindowAskAttributes's write only while " + fleet.Name + ", and keptAskState's otherwise"
-}
-
-// returnsCallOf is whether statement is `return name(…)`.
-func returnsCallOf(statement ast.Stmt, name string) bool {
-	returned, ok := statement.(*ast.ReturnStmt)
-	if !ok || len(returned.Results) != 1 {
-		return false
-	}
-	call, ok := returned.Results[0].(*ast.CallExpr)
+	fleet, ok := not.X.(*ast.Ident)
 	if !ok {
-		return false
+		return ""
 	}
-	called, ok := call.Fun.(*ast.Ident)
-	return ok && called.Name == name
+	returned, ok := guard.Body.List[0].(*ast.ReturnStmt)
+	if !ok || len(returned.Results) != 1 {
+		return ""
+	}
+	if nothing, ok := returned.Results[0].(*ast.Ident); !ok || nothing.Name != "nil" {
+		return ""
+	}
+	return "returns nil while !" + fleet.Name
 }

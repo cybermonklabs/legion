@@ -11,10 +11,12 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// beforeRefsDecisionsForms is the schema the seed's test stores its text at: the last migration
-// before 20261126040000_refs_decisions_forms_owed, which the queue's table, its relay, its four
-// insert triggers and its seed follow. lastRefsDecisionsFormsTrigger is the last of the triggers
-// (20261126040500) that the seed runs after.
+// beforeRefsDecisionsForms is the schema the seed's test stores its text at: a migration below
+// 20261126040000_refs_decisions_forms_owed, though not the last one below it. The migrations
+// numbered between the two (20261125052902 to 20261125163555) apply in the same run as the
+// queue's table, its relay, its four insert triggers and its seed, which end at
+// lastRefsDecisionsFormsTrigger (20261126040500), the last of the triggers that the seed runs
+// after.
 const (
 	beforeRefsDecisionsForms      = 20261125005337
 	lastRefsDecisionsFormsTrigger = 20261126040500

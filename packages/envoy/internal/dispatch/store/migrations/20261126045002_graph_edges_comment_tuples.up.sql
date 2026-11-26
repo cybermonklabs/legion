@@ -1,4 +1,4 @@
--- 20261116124448_graph_edges_comment_tuples.up.sql
+-- 20261126045002_graph_edges_comment_tuples.up.sql
 --
 -- A comment's pointers are tuples now, and the view reads a reply's edges from them. The five arms
 -- over what a comment answers - its `replies_to` the comment reply_to names, its `answers` the
@@ -6,7 +6,7 @@
 -- block or the ask part replies_to_block names - each answer only the rows of comments whose
 -- `tuples_stored` is false, and the store answers those relations only while the comments row of
 -- the comment that states them names its node and holds `tuples_stored` true. That is the split
--- 20261116114517 gave a message's replies over the messages row, made over the comments row with a
+-- 20261126045001 gave a message's replies over the messages row, made over the comments row with a
 -- marker of the comment's own (migration 20261116124447).
 --
 -- The marker is no node column. The node store names the node on every comment its writers and its
@@ -21,7 +21,7 @@
 -- of them and keeps tuples_stored false (graphstore.CommentPointerFacts), so its old arms answer
 -- it for good.
 --
--- What a reply to a block points at is the node the store holds of that block, as 20261116114517
+-- What a reply to a block points at is the node the store holds of that block, as 20261126045001
 -- gave a message's: kind `block` (graphstore.KindBlock), at the address the reply's
 -- replies_to_block holds, `comment/<comment uuid>#<block id>` for a comment's block and
 -- `ask/<ask uuid>#<part id>` for an ask's part, which is the node id comment_blocks.node_id and
@@ -40,7 +40,7 @@
 -- graph_tuples_current's, whose partial predicate the arm's literal kind proves. Each arm, the
 -- message block form's among them, renders its kind as the constant `replies_to` outside its
 -- `distinct on`, so a read of any other kind compares two constants against it and PostgreSQL
--- drops it from the plan (20261116114517). The tuple arm
+-- drops it from the plan (20261126045001). The tuple arm
 -- renders a comment's `replies_to` to a comment or an ask and its `answers` to a comment under
 -- their own kinds, which are the tuple's columns, and leaves out the `replies_to` whose far end is
 -- a block (its `projects` case names `comment` and `ask` far ends alone).
@@ -68,13 +68,13 @@
 -- of graph_tuples_current's `kind <> 'delivered_to'`, in 5 buffers, as the earlier set's
 -- graph_tuples_current read the same comment, and (comment, the id, replies_to, block) of
 -- graph_tuples_current in each block arm, in 3. Computing the block form inside the tuple arm
--- instead costs every keyed read that leading column, which 20261116114517 measured at 88 buffers
+-- instead costs every keyed read that leading column, which 20261126045001 measured at 88 buffers
 -- in 23 index searches against 5 in one.
 --
 -- The arms render `replies_to` and `answers` and nothing else of a comment's pointers. A comment's
 -- `part_of`, its placement under what it answers, is no arm of this view, as a message's `part_of`
 -- is not: no old arm answered it. refs.TupleKinds, the list the store's arms render and the
--- announcer writes, gains `answers`; `replies_to` is there since 20261116114517.
+-- announcer writes, gains `answers`; `replies_to` is there since 20261126045001.
 --
 -- Each new `exists` ends in `offset 0`, as the ones before it do, for the reason 20261109215947
 -- gives: PostgreSQL would otherwise be free to plan the correlated probe as a read of the whole of
@@ -82,7 +82,7 @@
 -- for each edge its arm would answer, and reads tuples_stored off the row it finds.
 --
 -- Re-stating the view holds `graph_edges` ACCESS EXCLUSIVE for the migration's short
--- transaction, so a reference read waits behind it. The arm list re-stated is 20261116114517's,
+-- transaction, so a reference read waits behind it. The arm list re-stated is 20261126045001's,
 -- with the five `not tuples_stored` tests over comments, the comment pointer case of the tuple arm
 -- and the two comment block arms added, and it is the arm list a later migration re-states from.
 -- Nothing here refuses or rewrites a row.

@@ -1,65 +1,53 @@
--- 20261120090001_graph_edges_identity_mentions.up.sql
+-- 20261126045005_graph_edges_identity_and_tuple_arm_filter.up.sql
 --
--- A mention of a person, an agent's session or a role is a tuple (R5), and the view answers it. Its
--- `mentions` tuple runs from the comment, the issue message or the document block that holds it to
--- the identity's node: the comment and message index (refs.PlanItemIndex) and the document's block
--- index (refs.PlanBlocks) append one to each identity a body names, and a comment's writer one to
--- each target it names as a delivery route and a second to the session a role resolved to (api's
--- commentMentionFacts). None of them has a row of its own: the refs and block_refs rows hold no
--- party (refs.TargetOf), so no old arm answers one, and a build of the release before this one,
--- which reconciles those rows by deleting every row of the source, deletes none of these.
+-- `graph_edges` restated once more, last, with every arm and every test of the two restatements a
+-- database could otherwise end on. A database runs each version once, in version order, and each
+-- `create or replace view` replaces the whole view, so the view it ends with is the last
+-- restatement's alone. Two restatements were each written from an arm list without the other's
+-- changes, so whichever of them ran last would leave the view without the other's:
 --
--- Such a tuple is answered by an arm of its own, the identity arm, which renders its kind as the
--- literal `mentions` and reads graph_tuples under `kind = 'mentions' and to_kind in ('person',
--- 'session', 'role')`, so a read of an identity's list binds (to_kind, to_id, kind) of
--- graph_tuples_as_of_in and walks that node's mentions alone, never the far more numerous tuples a
--- person is the far end of and no arm answers (every delivered_to of their mail, every authored_by of
--- their writes). A read of any other kind drops the arm from its plan, as it drops the reply arms
--- (20261116114517), its kind being a constant. The arm answers a tuple while its source carries the
--- marker this release's writer of that source sets:
---   a comment         its row naming the node and holding tuples_stored (20261116124447);
---   a message         its row naming the node (20261116114515);
---   a document block  its document_blocks row naming the node (20261109022248).
--- An ask states no mention of an identity (its parts name none), and the arm answers none out of
--- one. An item's block holds none either: the item states its identities out of its own node, so the
--- item block arm, which reads every tuple out of an item's block, meets none.
+--   20261126045004_graph_edges_identity_mentions: 20261125163553's arms, with the marker test of
+--   every arm over a kind this release moved into the store (a message's replies, a comment's
+--   pointers, every item's blocks and links, and the refs arm's tuples_stored), the tuple arm's
+--   four further `when` arms of 20261126045001, 20261126045002 and 20261126045003, its ranges that
+--   leave out every far end that is a person, a session or a role but a decided_by's or a
+--   followed_by's, its leaving out the tuples out of an item's block, the identity arm of the
+--   mentions of a person, a session or a role, the three reply arms with their far end's kind a
+--   literal of their own select list, and the item block arm with the ranges. That migration gives
+--   the reason for each.
 --
--- The tuple arm leaves out what the identity arm answers, and every other tuple into a person, a
--- session or a role but the two relations into one it renders: a decision block's decided_by, whose
--- far end is the person or the session who decided, and an ask's followed_by, whose far end is the
--- session that follows it. It stays one scan of graph_tuples, so a read out of a node keyed on a
--- tie's kind - the census's (graphcensus' graphEdgesOut) among them - reads it once beside the item
--- block arm, as before: an arm whose kind is a column cannot be dropped from a read's plan by the
--- read's kind, and a union member that tests a column against a constant with `<>` is not either,
--- since PostgreSQL folds only an equality of two constants and pulls no member carrying a WHERE
--- into the appendrel whose restrictions constraint_exclusion's `partition` tests. So the filter is
--- written as what an index search can bind: the far end before `person`, between `person` and
--- `role`, between `role` and `session` or after `session` - every kind but those three, which the
--- column's collation sorts as the alphabet does - or a tie of one of the two kinds. Under a read of
--- a person's list PostgreSQL then reads graph_tuples_as_of_in once for each of those five, each
--- search bound by (to_kind, to_id) and the range or the kinds, and combines them (BitmapOr): the
--- four ranges cannot hold the person's address, so their searches end at once, and the fifth reads
--- that person's decided_by tuples alone, never a delivered_to of their mail or an authored_by of
--- their writes. A read out of a node is keyed as before and tests the filter on what it reads, as
--- it tests the arm's other predicates. The arm's rendering and its probes are as they were.
+--   20261125163554_graph_edges_asks_and_tuple_arm_filter: 20261125163553's arms, with
+--   20261120122700's filter of the tuple arm: its sub-select keeps only the kinds the arm renders
+--   before its `distinct on` sorts the tuples, the test that `projects` is not null spelled over
+--   the six `when` arms that arm list has, and the outer test of it is gone.
 --
--- Older arms read a person's list the same way, and are re-stated so they read none of it. The
--- three reply arms (20261116114517, 20261116124448) read their tuples into a block and render the
--- far end's kind as their own literal (message_block, comment_block, ask_block), but from inside
--- their `distinct on`, where a read's kind cannot reach it, so a read of any other kind ran them,
--- keyed by that read's address alone; each now renders it in its own select list, as it renders its
--- kind, and every read of another kind drops it. The item block arm (20261116140008) reads every
--- tuple out of an item's block, whose far end is a column; no such block states a tuple into a
--- person, a session or a role (refs.TargetOf names no party), so it takes the tuple arm's four
--- ranges, and a read of one's list searches graph_tuples_as_of_in through ranges that end at once
--- rather than reading every block's tuples by `from_kind = 'block'`.
+-- Here the view is 20261126045004's, and the tuple arm's sub-select carries 20261120122700's filter
+-- spelled over all ten `when` arms of its `projects` case, in the case's order: the three of
+-- 20261109215947, the two of a comment's pointers (20261126045002), the three of an ask
+-- (20261125163553), the message's reply (20261126045001) and the citation of an item
+-- (20261126045003). The outer `edge.projects is not null` is gone. The kind filter and the ranges
+-- are both tests of the
+-- sub-select, and each does what the other cannot. The kind filter leaves out, as a read keyed
+-- out of a node reads them, the kinds the arm never renders - a comment's authored_by, a block's
+-- part_of its parent - but it binds nothing an index search into a person can take, so alone it
+-- would leave a read of a person's list reading every delivered_to of their mail and refusing it.
+-- The ranges bound that search and leave a read out of a node as it was. Every column either reads
+-- - from_kind, from_id, kind and to_kind - is a column of the `distinct on` key, so each keeps or
+-- drops whole groups of one edge's tuples and never changes which tuple of a group is the newest:
+-- neither changes a row the view answers.
+--
+-- The three arms over asks and ask_followers, and the tuple arm's three joins to those rows, stay
+-- for one release, as 20261125163553 keeps them: the root's own pull request deletes them.
+-- kept for one release: asks-arms
 --
 -- Every probe ends in `offset 0`, as the ones before it do, for the reason 20261109215947 gives.
+-- This is a new migration rather than an edit of either restatement, because a database that ran
+-- one of them keeps the definition it wrote until a later version restates it; it must stay the
+-- last migration that restates the view, which docs'
+-- TestGraphEdgesAnswersEveryRowEachRestatementOfItAnswered holds.
 --
 -- Re-stating the view holds `graph_edges` ACCESS EXCLUSIVE for the migration's short transaction,
--- so a reference read waits behind it. The arm list re-stated is 20261116140008's, with the tuple
--- arm's filter, the identity arm after it, the reply arms' literal and the item block arm's ranges.
--- It is the arm list a later migration re-states from. Nothing here refuses or rewrites a row.
+-- so a reference read waits behind it. Nothing here reads, refuses or rewrites a row.
 
 create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, created_at, source_seq) as
   select r.from_kind, r.from_id, r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq
@@ -187,6 +175,19 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
            end as projects
     from graph_tuples tuple
     where tuple.to_kind <> 'value'
+      -- The kinds the arm renders: each `when` of the `projects` case above, in its order.
+      and ((tuple.from_kind = 'block' and tuple.kind = 'in_document')
+           or (tuple.from_kind = 'block' and tuple.kind <> 'part_of')
+           or (tuple.from_kind = 'comment' and tuple.kind in ('anchored_to', 'owned_by'))
+           or (tuple.from_kind = 'comment' and tuple.kind = 'replies_to' and tuple.to_kind in ('comment', 'ask'))
+           or (tuple.from_kind = 'comment' and tuple.kind = 'answers' and tuple.to_kind = 'comment')
+           or (tuple.from_kind = 'ask' and tuple.kind in ('anchored_to', 'owned_by'))
+           or (tuple.from_kind = 'ask' and tuple.kind = 'followed_by')
+           or (tuple.from_kind = 'ask' and tuple.kind = 'shaped')
+           or (tuple.from_kind = 'message' and tuple.kind = 'replies_to' and tuple.to_kind = 'message')
+           or (tuple.from_kind in ('comment', 'message', 'ask') and tuple.kind = 'mentions'))
+      -- No far end the identity arm answers, nor any other person, session or role but a
+      -- decided_by's or a followed_by's: ranges a search into one binds.
       and (tuple.to_kind < 'person' or (tuple.to_kind > 'person' and tuple.to_kind < 'role')
            or (tuple.to_kind > 'role' and tuple.to_kind < 'session') or tuple.to_kind > 'session'
            or tuple.kind in ('decided_by', 'followed_by'))
@@ -195,7 +196,7 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
     order by tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id, tuple.seq desc
   ) edge
   join graph_nodes node on node.kind = edge.from_kind and node.id = edge.from_id
-  where edge.asserted and node.state <> 'gone' and edge.projects is not null
+  where edge.asserted and node.state <> 'gone'
     and (edge.projects <> 'block_ref' or edge.stated = 'mentions'
          or block_ref_listed(block_pointer_targets(edge.from_id, edge.stated), edge.to_id))
     and case edge.projects

@@ -134,6 +134,46 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 // backfillAt is Backfill as a build of the marking rule rule runs it: its marks and its horizon
 // are that rule's. A test runs a backfill of another rule through it.
 func backfillAt(ctx context.Context, database *store.Store, out io.Writer, rule int) (BackfillReport, error) {
+	report, moved := backfillBeforeAskNodesAt(ctx, database, out, rule)
+	if moved != nil && !onlyProjectMoved(moved) {
+		return report, moved
+	}
+	// The asks and their followers run after the object pass has written the ask nodes.
+	// A row that pass left in another project does not hold back these passes.
+	for _, write := range askPasses {
+		done, err := write(ctx, database)
+		report.Kinds = append(report.Kinds, done)
+		writeKindBackfill(out, done)
+		if err != nil {
+			return report, errors.Join(moved, err)
+		}
+	}
+	// Every kind the one inbox moves but the identity mentions of a text, after every pass above
+	// has written the nodes and the authors its facts hang from (backfillInbox): the messages, the
+	// comment pointers, the delivery routes a comment names, the body blocks of a comment, a message
+	// and an ask with their links and the item's citations, the delivery attempts, what an ask an
+	// older build created or answered and a decline owes, and the six read-state tables. A row the
+	// object pass left in another project holds them back no more than it holds back the asks, and
+	// the run answers it after them.
+	done, err := backfillInbox(ctx, database)
+	report.Kinds = append(report.Kinds, done...)
+	for _, kind := range done {
+		writeKindBackfill(out, kind)
+	}
+	if err != nil {
+		return report, errors.Join(moved, err)
+	}
+	return report, moved
+}
+
+// BackfillBeforeAskNodes runs the passes of backfill-graph-store that precede the ask node
+// migration. The migration census uses it to reproduce a store already filled by the earlier
+// release, before it judges the migrations still pending on that store.
+func BackfillBeforeAskNodes(ctx context.Context, database *store.Store, out io.Writer) (BackfillReport, error) {
+	return backfillBeforeAskNodesAt(ctx, database, out, refs.BlockIndexMarkingRule)
+}
+
+func backfillBeforeAskNodesAt(ctx context.Context, database *store.Store, out io.Writer, rule int) (BackfillReport, error) {
 	report := BackfillReport{}
 	if err := requireBackfillIndexes(ctx, database); err != nil {
 		return report, err
@@ -194,33 +234,6 @@ func backfillAt(ctx context.Context, database *store.Store, out io.Writer, rule 
 		case err != nil:
 			return report, errors.Join(moved, err)
 		}
-	}
-	// The asks and their followers, after the object pass above wrote the node of every ask: the
-	// rest of the boot step's first phase (BackfillAsks), so a database the command fills reads
-	// as one the boot fills. A row the object pass left in another project holds them back no
-	// more than it holds back the fill, and the run answers it after them.
-	for _, write := range askPasses {
-		done, err := write(ctx, database)
-		report.Kinds = append(report.Kinds, done)
-		writeKindBackfill(out, done)
-		if err != nil {
-			return report, errors.Join(moved, err)
-		}
-	}
-	// Every kind the one inbox moves but the identity mentions of a text, after every pass above
-	// has written the nodes and the authors its facts hang from (backfillInbox): the messages, the
-	// comment pointers, the delivery routes a comment names, the body blocks of a comment, a message
-	// and an ask with their links and the item's citations, the delivery attempts, what an ask an
-	// older build created or answered and a decline owes, and the six read-state tables. A row the
-	// object pass left in another project holds them back no more than it holds back the asks, and
-	// the run answers it after them.
-	done, err := backfillInbox(ctx, database)
-	report.Kinds = append(report.Kinds, done...)
-	for _, kind := range done {
-		writeKindBackfill(out, kind)
-	}
-	if err != nil {
-		return report, errors.Join(moved, err)
 	}
 	return report, moved
 }

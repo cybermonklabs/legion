@@ -54,6 +54,7 @@ const (
 // the tuple append, then the row. What the batch wrote is then read back, so the run followed is
 // the one that committed.
 func TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	f := newSeedLockFixture(t)
 
 	t.Run("the issue batch writes its issues' nodes before their rows", func(t *testing.T) {

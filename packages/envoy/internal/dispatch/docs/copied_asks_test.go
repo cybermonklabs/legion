@@ -178,11 +178,10 @@ func TestADocumentCopiedOnItsIssueShowsItsSourcesAsksAndOpensNone(t *testing.T) 
 }
 
 // A copy names its source's document as the source ask's node holds it - the far end of the ask's
-// part_of, the record of where the ask is - and not as the source's row names it: once the node is
-// part of another document of the issue, as the restore states a move of an ask
-// (graphstore.AskClaims), a copy settled after that names the other document. A source whose row
-// names no node yet, which the boot step's backfill marks, has no part_of to read, and its copy
-// names the document its row does.
+// part_of, the record of where the ask is - and not as the source's row names it: once a claim of
+// the node's part_of states it part of another document of the issue, a copy settled after that
+// names the other document. A source whose row names no node yet, which the boot step's backfill
+// marks, has no part_of to read, and its copy names the document its row does.
 func TestACopysSourceDocumentIsTheSourceAsksPartOf(t *testing.T) {
 	service, original := newTestService(t)
 	service.settle = time.Hour
@@ -193,9 +192,11 @@ func TestACopysSourceDocumentIsTheSourceAsksPartOf(t *testing.T) {
 	if err := service.store.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, elsewhere).Scan(&elsewhereKey); err != nil {
 		t.Fatalf("read the other document's address: %v", err)
 	}
-	arms, params, err := graphstore.WriteArms(1, nil, nil, graphstore.AskClaims(source,
-		graphstore.AskPlaces{Anchor: elsewhereKey, Document: elsewhereKey},
-		model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(), graphstore.NoEvent))
+	arms, params, err := graphstore.WriteArms(1, nil, nil, []graphstore.Claim{{
+		FromKind: graphstore.KindAsk, FromID: source, Kind: graphstore.TuplePartOf,
+		ToKind: graphstore.KindArtifact, ToID: elsewhereKey,
+		At: time.Now().UTC(), Who: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent,
+	}})
 	if err != nil {
 		t.Fatalf("build the move of the source ask's node: %v", err)
 	}

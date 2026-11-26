@@ -7,7 +7,7 @@
 -- The pair is also the row's marker. A row that names its node is one whose writer stated its
 -- pointers in the store - replies_to, part_of, addressed_to and broadcast_id - and who wrote it
 -- (graphstore.MessageFacts, graphstore.AuthorFacts), so graph_edges answers its replies_to edges
--- from the tuples (migration 20261116114517). A row an older build inserts during a roll names
+-- from the tuples (migration 20261126045001). A row an older build inserts during a roll names
 -- none, and its old arms answer it until the backfill takes it once.
 --
 -- And messages learns whether this release recorded the message in its thread:

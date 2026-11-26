@@ -6,7 +6,7 @@
 --
 -- The same index serves two reads of this release. graph_edges' arm over an ask's parts, and
 -- refs.BacklinkCounts beside it, answer a part's link only while the ask_block_refs row of that
--- link names the part's node (migration 20261116140008), one probe of this index per edge, which
+-- link names the part's node (migration 20261126045003), one probe of this index per edge, which
 -- the link's kind and far end narrow to its one row. And a btree holds the rows whose columns are
 -- null, so the walk over the rows that name no node, the rows the old arm still answers, reads
 -- them through it rather than through every row of ask_block_refs.

@@ -636,7 +636,7 @@ func (a edgesBlockArm) String() string {
 	return a.arm.String() + ": " + strings.Join(strings.Fields(a.from), " ")
 }
 
-// edgesBlockArms is the arms that can end at a block as migration 20261121120000 defines the view
+// edgesBlockArms is the arms that can end at a block as migration 20261126045005 defines the view
 // graph_edges: the arms of graph_edges whose to_kind
 // is a column or one of blockNodeKinds. Over the projection tables they are refs; block_refs,
 // whose typed pointer is listed only where block_ref_listed allows its target; comment_block_refs,
@@ -1734,7 +1734,7 @@ func (w *edgesFixtureWriter) storeTuple(fromKind, fromID, kind string, to Target
 }
 
 // tupleLink writes a mention from block blockID of document as this build's block index writes
-// one, which graph_edges answers from its tuple arm (migration 20261121034242): the block's node,
+// one, which graph_edges answers from its tuple arm (migration 20261125163554): the block's node,
 // in state; the block_refs row of the link, naming that node; and the link's tuple, followed by a
 // retraction of it where retracted. It answers the block's node id and the time of the tuple the
 // view answers the edge at.
@@ -1751,7 +1751,7 @@ func (w *edgesFixtureWriter) tupleLink(document edgesDocument, blockID string, t
 }
 
 // shapedTie writes an answered ask's shaped tie to block to, as the store states it (migration
-// 20261116094101): the ask's node, its tuple, and the block_refs row of the ask's block blockID of
+// 20261125163553): the ask's node, its tuple, and the block_refs row of the ask's block blockID of
 // document that names the ask's node. It answers the ask's id and the tie's time.
 func (w *edgesFixtureWriter) shapedTie(document edgesDocument, blockID string, to Target) (string, time.Time) {
 	ask := w.uuid()

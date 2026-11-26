@@ -9,7 +9,7 @@
 --                   whose item or far end the store cannot key, which states no tuple.
 --
 -- It is the row's marker for that one relation, and graph_edges reads it (migration
--- 20261116140008): the refs arm answers a row that holds false and the store's citation arm the
+-- 20261126045003): the refs arm answers a row that holds false and the store's citation arm the
 -- tuple of a row that holds true. The marker is the row's and not its source's. A test on the
 -- comment's, message's or ask's own marker would split the arm by source, and a build of the
 -- release before this one, editing or re-indexing an item this release wrote during a roll or

@@ -194,19 +194,19 @@ func (steps decisionStepCases) any() bool {
 // carryInput is what carryVerdict decides on: A's tree and the markdown it is stored with, whether
 // another renderer version stored that markdown or none stamped it (approvedOtherRenderer,
 // pmdoc.OtherRenderer; false for a version this renderer version stored), and N's tree, each as its
-// own read gives it, whether every ask block of N agrees with its node
-// (asksAgreeWithTheirNodes), which of N's ask blocks show an ask the approver answered after the
+// own read gives it, which of N's ask blocks show an ask the approver answered after the
 // approval (approverAnswered, approverAnswers), which show an ask that holds an answer among those
 // closing with readings (answeredAskBlocks) and among them all (decided), the answered ask blocks
 // of N's `## Decisions` part the restore's write added that restoreCase takes out of both
 // versions (restoredAskBlocks), and the decisions step's phases whose own write N is, with what
 // that write added (steps), the only writes those two cases reach.
+// Every ask block of N agrees with its node (asksAgreeWithTheirNodes), which each caller holds
+// before it builds one.
 type carryInput struct {
 	approved              *pmdoc.Node
 	approvedText          string
 	approvedOtherRenderer bool
 	version               *pmdoc.Node
-	agrees                bool
 	approverAnswered      map[string]bool
 	answered              map[string]bool
 	// kept for one release: decisions-step
@@ -257,13 +257,18 @@ func (input carryInput) pointerLinesTaken(approved bool) func(*pmdoc.Node) bool 
 
 // withoutAskServerAttributes is attributeRemovalCase's neutral, and the tree the text routes
 // render (TextWithAsks): a copy of tree with every ask block's server-owned attributes
-// (askServerAttributeNames) taken off, and whether any block held one. Each container on the way
-// and each such block is a fresh node; every other node is the tree's own, which nothing here
-// changes (withAskBlocksChanged).
+// (askServerAttributeNames) taken off, and whether any block held one (withoutAskAttributes).
 func withoutAskServerAttributes(tree *pmdoc.Node) (*pmdoc.Node, bool) {
+	return withoutAskAttributes(tree, askServerAttributeNames[:])
+}
+
+// withoutAskAttributes is a copy of tree with each attribute names names taken off every ask
+// block, and whether any block held one. Each container on the way and each such block is a fresh
+// node; every other node is the tree's own, which nothing here changes (withAskBlocksChanged).
+func withoutAskAttributes(tree *pmdoc.Node, names []string) (*pmdoc.Node, bool) {
 	return withAskBlocksChanged(tree, func(node *pmdoc.Node) (*pmdoc.Node, bool) {
 		var stripped pmdoc.Attrs
-		for _, name := range askServerAttributeNames {
+		for _, name := range names {
 			if _, held := node.Attrs[name]; held {
 				if stripped == nil {
 					stripped = maps.Clone(node.Attrs)
@@ -352,8 +357,9 @@ func withoutBlocks(tree *pmdoc.Node, drop func(*pmdoc.Node) bool) (*pmdoc.Node, 
 	return &copied, true
 }
 
-// carryVerdict is the rule over the two versions: N, input.version, carries the approval of A,
-// input.approved, when every ask block of N agrees with its node (input.agrees); A's stored text,
+// carryVerdict is the rule over the two versions, every ask block of N agreeing with its node
+// (asksAgreeWithTheirNodes, which its callers hold first): N, input.version, carries the approval
+// of A, input.approved, when A's stored text,
 // input.approvedText, is what this build renders A's tree to, so that what is compared is the
 // bytes the person approved, or a text another renderer version stored or none stamped
 // (input.approvedOtherRenderer), which A's tree holds as this build renders it, as the restore
@@ -378,9 +384,6 @@ func carryVerdict(input carryInput) (string, bool, error) {
 // read and rendered again by this build (readsAs) is the rendering of that tree, which no second
 // parse needs to say.
 func carryVerdictOver(input carryInput, cases []carryCase) (string, bool, error) {
-	if !input.agrees {
-		return "", false, nil
-	}
 	approvedText, err := pmdoc.Render(input.approved)
 	if err != nil || approvedText != input.approvedText && !input.approvedOtherRenderer {
 		return "", false, err
@@ -469,7 +472,7 @@ func changesAskAttributesAlone(ctx context.Context, tx pgx.Tx, artifactID string
 	if err != nil || !readable {
 		return false, err
 	}
-	_, alone, err := carryVerdictOver(carryInput{approved: approved, approvedText: approvedText, approvedOtherRenderer: otherRenderer, version: tree, agrees: agrees}, turnCases)
+	_, alone, err := carryVerdictOver(carryInput{approved: approved, approvedText: approvedText, approvedOtherRenderer: otherRenderer, version: tree}, turnCases)
 	if err != nil {
 		return false, skipUnreadableVersion(artifactID, number, err)
 	}

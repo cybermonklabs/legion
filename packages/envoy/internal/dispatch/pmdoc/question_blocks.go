@@ -1,23 +1,31 @@
-package refs
+package pmdoc
 
 import (
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/yuin/goldmark/util"
-
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
-// questionBlocks is every question block markdown declares, in document order, the first of each
-// id: each typed block named ask that holds an id, where pmdoc's parser opens one. A fenced
-// example of a directive is code to pmdoc, and a line of front matter is no markdown to it, so a
-// `copied_from` either carries names no question of this document.
+// QuestionBlock is one question block a document's text declares: its id and, for a copy, the
+// uuid of the ask settlement wrote into it as copied_from, which the copy's block node's
+// copied_from tuple holds too and refs' question map reads first (refs.QuestionMap).
+type QuestionBlock struct {
+	ID, CopiedFrom string
+}
+
+// QuestionBlocks is every question block markdown declares, in document order, the first of each
+// id: each typed block named ask that holds an id, where this package's parser opens one. A fenced
+// example of a directive is code to the parser, and a line of front matter is no markdown to it,
+// so a `copied_from` either carries names no question of this document. refs' question map reads
+// a document's question blocks with it (refs.QuestionMap).
 //
 // It reads the document's blocks line by line as goldmark (github.com/yuin/goldmark v1.8.6) and
-// pmdoc's own block parsers read them, and builds no tree: pmdoc.ParseRendering of an 848 kB
-// document took 224 ms, and this read of it 5 ms, measured on one machine. The CLI and the web
-// read ask openers with a TypeScript twin of this reader (readAskBlocks, packages/contracts'
+// this package's own block parsers read them, and builds no tree: ParseRendering of an 848 kB
+// document took 224 ms, and this read of it 5 ms, measured on one machine. It stands beside the
+// parsers whose rules it copies by name (emptyItemGuard, frontmatterAttempt,
+// interruptsOpenBlock), so a change to one of them is made here too. The CLI and the web read ask
+// openers with a TypeScript twin of this reader (readAskBlocks, packages/contracts'
 // dispatch-block-reader.ts). The rules:
 //
 //   - A line first goes past the containers it continues: a quote's `>` and one column after it, a
@@ -32,20 +40,20 @@ import (
 //   - An empty list item, or one numbered other than 1, opens no list where it would interrupt a
 //     paragraph, or a block that the browser editor's parser holds open (interruptsOpenBlock).
 //   - A list stays open at a line that reaches its empty last item's content column, with no blank
-//     line before it (pmdoc's emptyItemGuard).
+//     line before it (emptyItemGuard).
 //   - A fence is three or more backticks or tildes, and a backtick fence's info string holds no
 //     backtick. A run of the same character at least as long closes it, within three columns of its
 //     containers and with only spaces and tabs after it. A container that ends ends the fence in it.
-//   - A typed block's opening line is read by pmdoc.ParseTypedDirectiveOpen. The block closes at a
+//   - A typed block's opening line is read by ParseTypedDirectiveOpen. The block closes at a
 //     line of as many colons or more, whatever block inside it the line would otherwise continue.
 //   - A line that a container does not continue, and that opens no block, continues the paragraph
 //     in that container (a lazy line), and the container stays open.
 //   - No line of the front matter the document opens with opens a block (frontMatterEnd). After a
 //     front-matter opener that no later line closes, no quote, list, footnote definition or typed
-//     block opens at the document's level (pmdoc's frontmatterAttempt).
+//     block opens at the document's level (frontmatterAttempt).
 //
 // HTML blocks, which the server refuses in a write, are not read.
-func questionBlocks(markdown string) []questionBlock {
+func QuestionBlocks(markdown string) []QuestionBlock {
 	lines := strings.Split(markdown, "\n")
 	for index, line := range lines {
 		lines[index] = strings.TrimSuffix(line, "\r")
@@ -54,7 +62,7 @@ func questionBlocks(markdown string) []questionBlock {
 	scan := blockScan{
 		lines:               lines[start:],
 		unclosedFrontMatter: unclosed,
-		blocks:              []questionBlock{},
+		blocks:              []QuestionBlock{},
 		seen:                map[string]struct{}{},
 	}
 	document := &scanBlock{kind: scanDocument}
@@ -68,11 +76,11 @@ func questionBlocks(markdown string) []questionBlock {
 }
 
 // frontMatterEnd is the index of the first of lines past the front matter they open with, as
-// pmdoc reads it (parseFrontmatterBlock): a first line that is `---` and any spaces or tabs opens
-// it, and the first later line that is the same closes it. pmdoc keeps it as one node, word for
-// word, so no line of it opens a block. It is 0 where the lines open with none, or with an opener
-// no line closes, which the renderer never writes: a rule opening a document is written `***`.
-// unclosed reports such an opener (questionBlocks says what it changes).
+// the parser reads it (parseFrontmatterBlock): a first line that is `---` and any spaces or tabs
+// opens it, and the first later line that is the same closes it. The parser keeps it as one node,
+// word for word, so no line of it opens a block. It is 0 where the lines open with none, or with
+// an opener no line closes, which the renderer never writes: a rule opening a document is written
+// `***`. unclosed reports such an opener (QuestionBlocks says what it changes).
 func frontMatterEnd(lines []string) (end int, unclosed bool) {
 	if !frontMatterFence(lines[0]) {
 		return 0, false
@@ -90,7 +98,7 @@ func frontMatterFence(line string) bool {
 	return strings.TrimRight(line, " \t") == "---"
 }
 
-// blockScan is what questionBlocks carries from line to line, as goldmark's parser context
+// blockScan is what QuestionBlocks carries from line to line, as goldmark's parser context
 // carries it.
 type blockScan struct {
 	// lines is the markdown's lines past its front matter, and index the one being read.
@@ -106,7 +114,7 @@ type blockScan struct {
 	// closes (frontMatterEnd).
 	unclosedFrontMatter bool
 	// blocks is each question block found so far, and seen holds their ids.
-	blocks []questionBlock
+	blocks []QuestionBlock
 	seen   map[string]struct{}
 }
 
@@ -327,7 +335,7 @@ func (scan *blockScan) openBlocks(parent *scanBlock, line *scanLine) scanOpened 
 		into = block
 	}
 	if result == openedNone && continuable && !line.blank() {
-		if tableDelimiterRow(line.text[line.pos:]) {
+		if isTableDelimiterRow(line.text[line.pos:]) {
 			last.table = true
 		}
 		last.lastLine = scan.index
@@ -376,7 +384,7 @@ func (scan *blockScan) openBlock(parent *scanBlock, line *scanLine, width, at in
 	last := scan.lastOpened()
 	switch char := text[0]; char {
 	case '-', '=', '*', '_', '+', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
-		if (char == '-' || char == '=') && last != nil && last.kind == scanParagraph && last.parent == parent && setextUnderline(text) {
+		if (char == '-' || char == '=') && last != nil && last.kind == scanParagraph && last.parent == parent && isSetextUnderline(text) {
 			return scan.leaf(parent, line), false
 		}
 		if (char == '-' || char == '*' || char == '_') && thematicBreak(text) {
@@ -419,9 +427,9 @@ func (scan *blockScan) openBlock(parent *scanBlock, line *scanLine, width, at in
 			break
 		}
 		// Every space and tab after the label's `]:` belongs to the definition's prefix, so a block
-		// written on the same line starts at column zero inside it: pmdoc's
-		// footnoteDefinitionParser.Open skips them, where goldmark leaves them to that block. A line
-		// holding nothing but whitespace after the label keeps it.
+		// written on the same line starts at column zero inside it: footnoteDefinitionParser.Open
+		// skips them, where goldmark leaves them to that block. A line holding nothing but
+		// whitespace after the label keeps it.
 		if content := line.afterSpaces(label); content < len(line.text) {
 			label = content
 		}
@@ -439,14 +447,14 @@ func (scan *blockScan) openBlock(parent *scanBlock, line *scanLine, width, at in
 
 // openList is the list line opens inside parent, nil where it opens none: goldmark's list parser,
 // held off an empty item, or one numbered other than a lone `1`, that would interrupt a paragraph
-// or an indented code block (pmdoc's emptyItemGuard, stricter than goldmark, which lets `01.`
+// or an indented code block (emptyItemGuard, stricter than goldmark, which lets `01.`
 // interrupt a paragraph and anything interrupt code). last is the block opened last.
 func (scan *blockScan) openList(parent *scanBlock, line *scanLine, last *scanBlock) *scanBlock {
 	if last != nil && last.kind == scanList || scan.skipList {
 		scan.skipList = false
 		return nil
 	}
-	marker, ok := listMarker(line)
+	marker, ok := line.listMarker()
 	if !ok || scan.frontMatterHolds(parent) {
 		return nil
 	}
@@ -463,7 +471,7 @@ func (scan *blockScan) openList(parent *scanBlock, line *scanLine, last *scanBlo
 
 // openItem is the list item line opens inside parent, a list, and whether it holds the blocks the
 // rest of the line opens: goldmark's list item parser, the spaces and tabs after the marker
-// measured from the column they stand at (pmdoc's listItemColumns).
+// measured from the column they stand at (listItemColumns).
 func (scan *blockScan) openItem(parent *scanBlock, line *scanLine) (*scanBlock, bool) {
 	if parent.kind != scanList {
 		return nil, false
@@ -472,7 +480,7 @@ func (scan *blockScan) openItem(parent *scanBlock, line *scanLine) (*scanBlock, 
 	if parent.last != nil && parent.last.kind == scanItem {
 		previous = parent.last.offset
 	}
-	marker, ok := listMarker(line)
+	marker, ok := line.listMarker()
 	if !ok || marker.indent-previous > 3 {
 		return nil, false
 	}
@@ -493,16 +501,16 @@ func (scan *blockScan) openItem(parent *scanBlock, line *scanLine) (*scanBlock, 
 }
 
 // openDirective is the block a line of directive syntax, text, opens inside parent, width columns
-// past it, and ok is false where it opens none. A line that pmdoc refuses
+// past it, and ok is false where it opens none. A line that the parser refuses
 // (unsupportedDirectiveReason) opens a leaf; a stored document holds none. A typed block's opening
-// line is read by the one parser of that line (pmdoc.ParseTypedDirectiveOpen), so an id written
-// either way (`#id` and `id="…"`, pmdoc.TypedBlockIDAttribute) is read as the document's own parse
+// line is read by the one parser of that line (ParseTypedDirectiveOpen), so an id written
+// either way (`#id` and `id="…"`, TypedBlockIDAttribute) is read as the document's own parse
 // reads it. An ask block's id and copied_from are recorded (record).
 func (scan *blockScan) openDirective(parent *scanBlock, line *scanLine, width int, text string) (*scanBlock, bool) {
 	if !strings.HasPrefix(text, ":::") {
 		// A leaf directive (`::name`), and a text directive (`:name{…}`) opening the line.
-		if strings.HasPrefix(text, "::") && len(text) > 2 && pmdoc.DirectiveNameByte(text[2]) ||
-			len(text) > 1 && pmdoc.DirectiveNameByte(text[1]) && strings.Contains(text, "{") {
+		if strings.HasPrefix(text, "::") && len(text) > 2 && directiveNameByte(text[2]) ||
+			len(text) > 1 && directiveNameByte(text[1]) && strings.Contains(text, "{") {
 			return scan.leaf(parent, line), true
 		}
 		return nil, false
@@ -510,7 +518,7 @@ func (scan *blockScan) openDirective(parent *scanBlock, line *scanLine, width in
 	if text == ":::" {
 		return nil, false
 	}
-	name, attrs, ok := pmdoc.ParseTypedDirectiveOpen(text)
+	name, attrs, ok := ParseTypedDirectiveOpen(text)
 	if !ok {
 		return scan.leaf(parent, line), true
 	}
@@ -529,8 +537,8 @@ func (scan *blockScan) openDirective(parent *scanBlock, line *scanLine, width in
 // record adds the question block an ask block's opening line names by attrs, the first of each
 // id: the block's id and, where the line carries one, the uuid of the ask its `copied_from`
 // names. An ask block with no id names no question.
-func (scan *blockScan) record(attrs pmdoc.Attrs) {
-	id, _ := attrs[pmdoc.BlockIDAttr].(string)
+func (scan *blockScan) record(attrs Attrs) {
+	id, _ := attrs[BlockIDAttr].(string)
 	if id == "" {
 		return
 	}
@@ -538,23 +546,24 @@ func (scan *blockScan) record(attrs pmdoc.Attrs) {
 		return
 	}
 	scan.seen[id] = struct{}{}
-	block := questionBlock{id: id}
+	block := QuestionBlock{ID: id}
 	// Only the one attribute carries an ask: every other value on the line - the state, the
 	// asker, the question's own wording - is left unread.
 	if copied, ok := attrs["copied_from"].(string); ok {
 		if parsed, err := uuid.Parse(copied); err == nil {
-			block.copiedFrom = parsed.String()
+			block.CopiedFrom = parsed.String()
 		}
 	}
 	scan.blocks = append(scan.blocks, block)
 }
 
-// interruptsOpenBlock is pmdoc's interruptsOpenBlock: whether a list opening in parent interrupts
-// a block the browser editor's parser holds open there, other than a paragraph parent holds: a
-// paragraph that ends on the line before, reached across the containers the line opens first and
-// forming no table, or an indented code block with only blank lines after it, unless that code
-// stands right after a list, or right after a quote with no blank line between them. Where the
-// code is parent's own last block, a line of quote markers after it leaves it open too.
+// interruptsOpenBlock is the package's interruptsOpenBlock for the scan: whether a list opening in
+// parent interrupts a block the browser editor's parser holds open there, other than a paragraph
+// parent holds: a paragraph that ends on the line before, reached across the containers the line
+// opens first and forming no table, or an indented code block with only blank lines after it,
+// unless that code stands right after a list, or right after a quote with no blank line between
+// them. Where the code is parent's own last block, a line of quote markers after it leaves it open
+// too.
 func (scan *blockScan) interruptsOpenBlock(parent *scanBlock) bool {
 	previous := parent.last
 	opensContainers := previous == nil
@@ -605,8 +614,8 @@ func (scan *blockScan) continueBlock(block *scanBlock, line *scanLine) scanConti
 	case scanTyped:
 		width, at := line.indent()
 		// A line of at least the fence's colons closes the block, whatever block inside it the line
-		// would otherwise continue (pmdoc's typedDirectiveParser.Continue).
-		if width < 4 && at < len(line.text) && pmdoc.FenceColons(line.text[at:]) >= block.run {
+		// would otherwise continue (typedDirectiveParser.Continue).
+		if width < 4 && at < len(line.text) && fenceColons(line.text[at:]) >= block.run {
 			line.takeAll()
 			return scanClose
 		}
@@ -637,7 +646,7 @@ func (scan *blockScan) continueBlock(block *scanBlock, line *scanLine) scanConti
 	return scanClose
 }
 
-// continueList is goldmark's listParser.Continue, which pmdoc's emptyItemGuard keeps from closing
+// continueList is goldmark's listParser.Continue, which emptyItemGuard keeps from closing
 // the list at a line that holds its empty last item's content: a line that reaches the item's
 // content column, a list marker there included, with no blank line before it.
 func (scan *blockScan) continueList(list *scanBlock, line *scanLine) scanContinuation {
@@ -667,14 +676,14 @@ func (scan *blockScan) continueListAt(list *scanBlock, line *scanLine, width, at
 		offset = last.offset
 	}
 	if width < offset || lastIsEmpty {
-		if marker, ok := listMarker(line); ok && width < 4 && marker.indent-offset < 4 {
+		if marker, ok := line.listMarker(); ok && width < 4 && marker.indent-offset < 4 {
 			if marker.char != list.char {
 				return scanClose
 			}
 			// A thematic break outranks a list item, unless it underlines a paragraph as a heading.
 			text := line.text[at:]
 			opened := scan.lastOpened()
-			heading := opened != nil && opened.kind == scanParagraph && setextUnderline(text)
+			heading := opened != nil && opened.kind == scanParagraph && isSetextUnderline(text)
 			if thematicBreak(text) && !heading {
 				return scanClose
 			}
@@ -695,7 +704,7 @@ func (scan *blockScan) continueListAt(list *scanBlock, line *scanLine, width, at
 }
 
 // continueItem is goldmark's listItemParser.Continue, a blank line taking no more than the item's
-// columns (pmdoc's listItemColumns).
+// columns (listItemColumns).
 func (scan *blockScan) continueItem(item *scanBlock, line *scanLine) scanContinuation {
 	width, _ := line.indent()
 	if line.blank() {
@@ -704,7 +713,7 @@ func (scan *blockScan) continueItem(item *scanBlock, line *scanLine) scanContinu
 	}
 	isEmpty := item.children == 0 && scan.emptyItemWithBlankLines
 	if (isEmpty || width < item.offset) && width < 4 {
-		if _, ok := listMarker(line); ok {
+		if _, ok := line.listMarker(); ok {
 			scan.skipList = true
 			return scanClose
 		}
@@ -729,9 +738,9 @@ type scanListMarker struct {
 }
 
 // listMarker is the list item's marker that opens what is left of line, ok false where none does:
-// goldmark's parseListItem, its indentation measured in the columns its tabs span (pmdoc's
-// tabIndented).
-func listMarker(line *scanLine) (marker scanListMarker, ok bool) {
+// goldmark's parseListItem, its indentation measured in the columns its tabs span
+// (tabIndented).
+func (line *scanLine) listMarker() (marker scanListMarker, ok bool) {
 	width, at := line.indent()
 	if width > 3 || at == len(line.text) {
 		return scanListMarker{}, false
@@ -773,12 +782,12 @@ func quoteMarker(line *scanLine) bool {
 }
 
 // footnoteLabelEnd is the index after the `]:` of the footnote label at index at of text, as
-// goldmark's footnote parser reads one (extension/footnote.go, through util.FindClosure) and pmdoc
-// keeps it: `[^`, the label, `]`, then `:` at once. A backslash before an ASCII punctuation
+// goldmark's footnote parser reads one (extension/footnote.go, through util.FindClosure) and this
+// package keeps it: `[^`, the label, `]`, then `:` at once. A backslash before an ASCII punctuation
 // character (util.IsPunct) escapes that character, so `\]` and `\[` are part of the label, as the
-// renderer writes a label that holds a bracket (pmdoc's escapeFootnoteLabel). An unescaped `[`
-// makes the line no label, and so does a blank label (util.IsBlank). ok is false where no label
-// stands at at.
+// renderer writes a label that holds a bracket (escapeFootnoteLabel). An unescaped `[` makes the
+// line no label, and so does a blank label (util.IsBlank). ok is false where no label stands at
+// at.
 func footnoteLabelEnd(text string, at int) (end int, ok bool) {
 	if !strings.HasPrefix(text[at:], "[^") {
 		return 0, false
@@ -818,17 +827,17 @@ func thematicBreak(text string) bool {
 	return count >= 3
 }
 
-// setextUnderline is goldmark's matchesSetextHeadingBar: a run of `=` or of `-`, then spaces and
+// isSetextUnderline is goldmark's matchesSetextHeadingBar: a run of `=` or of `-`, then spaces and
 // tabs alone.
-func setextUnderline(text string) bool {
+func isSetextUnderline(text string) bool {
 	run := runOf(text, text[0])
 	return (text[0] == '=' || text[0] == '-') && blankText(text[run:])
 }
 
-// tableDelimiterRow reports whether text is a table's delimiter row (GFM's tables), which makes
+// isTableDelimiterRow reports whether text is a table's delimiter row (GFM's tables), which makes
 // the paragraph above it a table: cells of one or more `-`, each with an optional `:` on either
 // side, between `|`, with at least one `|` and an optional one at either end.
-func tableDelimiterRow(text string) bool {
+func isTableDelimiterRow(text string) bool {
 	text = strings.Trim(text, " \t")
 	if !strings.Contains(text, "|") {
 		return false

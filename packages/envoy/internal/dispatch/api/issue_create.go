@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -119,22 +120,37 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	// The one write whose project its address does not name, so withinProjectScope leaves it
 	// here by its class (scopeProjectInBody). It runs once the body's project is read, and so
-	// before the external ref is resolved to an issue already imported: a scoped caller naming
-	// one imported into another project is refused rather than answered that project's issue,
-	// which respondWithExistingExternalIssue would also record a related-check outcome on.
-	// Nothing is written before this point.
-	// callerProject is empty for a credential that names none, which is every caller that
-	// exists today; the dependency lock step, the parent's read and writeBlockedBy below read it
-	// again, since neither a blocked_by target's project nor the parent's is part of this address.
+	// before the external ref is resolved to an issue already imported. Nothing is written before
+	// this point. A credential that names one project creates an issue in every project that
+	// access.CredentialCovers covers. The one exception is a private project it does not name,
+	// whose visibility one statement reads here (projectVisibility). Such a caller gets here the
+	// 404 NOT_FOUND of a project that does not exist (pgx.ErrNoRows) for that project and for a
+	// project that no row holds. The checks before this one read no project, so the two get one
+	// answer whatever else the body holds, and the caller cannot tell them apart. It is refused
+	// here, so it is never answered with that project's issue, which
+	// respondWithExistingExternalIssue would also record a related-check outcome on. A key that is
+	// empty or not a project key is left to its 400 below. callerProject is empty for a credential
+	// that names none, which is answered as before. The dependency lock step, the parent's read
+	// and writeBlockedBy below read it again, because neither a blocked_by target's project nor
+	// the parent's is part of this address.
 	callerProject, scoped := s.callerProject(r)
-	if scoped && callerProject != input.Project {
-		refuseWriteOutsideProjectScope(w, callerProject, input.Project)
-		return
+	if scoped && projectKeyPattern.MatchString(input.Project) {
+		private, found, err := projectVisibility(r.Context(), s.deps.Store.Pool, input.Project)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if !found || !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, input.Project, private) {
+			s.writeHandlerError(w, pgx.ErrNoRows)
+			return
+		}
 	}
-	// A scoped caller is refused a parent or a blocked_by target outside its project here too,
-	// with no lock held, before the near-copy gate and every other write before the transaction,
-	// so a create it may not make records no near-copy check and gets no 409 in place of its 403.
-	// The lock step and the reads under the locks refuse it again, the authoritative refusal.
+	// A scoped caller is asked here too about a parent or a blocked_by target
+	// (foreignDependencyTargets), with no lock held, before the near-copy gate and every other
+	// write before the transaction, so a create it may not make records no near-copy check. A
+	// parent or a target that no issue holds, or of a private project that the credential does
+	// not name, gets here the 400 of a parent or a target that does not exist. The lock step and
+	// the reads under the locks ask again, the final check.
 	if scoped && (parentKey != "" || len(blockers) > 0) {
 		if _, err := foreignDependencyTargets(r.Context(), s.deps.Store.Pool, input.Project, callerProject, blockers, parentKey); err != nil {
 			s.writeHandlerError(w, err)
@@ -309,20 +325,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	var parentAssignee *string
 	if parentKey != "" {
 		var parentProject string
-		err := tx.QueryRow(r.Context(), `select project_key, assignee from issues where key = $1`, parentKey).Scan(&parentProject, &parentAssignee)
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, "PARENT_INPUT", http.StatusBadRequest, fmt.Sprintf("parent issue %s not found", parentKey))
-			return
-		}
+		parentProject, parentAssignee, err = readCreateParent(r.Context(), tx, callerProject, parentKey)
 		if err != nil {
 			s.writeHandlerError(w, err)
-			return
-		}
-		// A parent may be an issue of any project, but not for a credential that may write one
-		// project alone: the authoritative refusal, under the locks, of what the lock step
-		// refused before them.
-		if callerProject != "" && parentProject != callerProject {
-			s.writeHandlerError(w, refuseParentOutsideCallerProject(callerProject, parentKey, parentProject))
 			return
 		}
 		// A parent of another project passes on no assignee, as it passes on no repository,
@@ -662,6 +667,35 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	suggestions.LikelyDuplicate = outcome.LikelyDuplicate
 	suggestions.NearCopyCheck = outcome.NearCopyCheck
 	WriteJSON(w, http.StatusCreated, withSuggestions(issue, advice, suggestions))
+}
+
+// readCreateParent reads, under a create's locks, the parent that the create names: the project
+// of that issue and its assignee. A parent may be an issue of any project. caller is the one
+// project the request's credential names, empty for a credential that names none. A parent that
+// no issue holds answers parentNotFound. A credential that names one project is asked about the
+// parent again here, under the locks, as the lock step asked before them
+// (lockIssueDependencyWrite), and this read is the final check. A parent of a private project
+// that the credential does not name answers parentNotFound too, as a parent that does not exist.
+func readCreateParent(ctx context.Context, tx pgx.Tx, caller, parent string) (string, *string, error) {
+	var project string
+	var assignee *string
+	var private bool
+	err := tx.QueryRow(ctx, `
+		select i.project_key, i.assignee, p.visibility = 'private'
+		from issues i
+		join projects p on p.key = i.project_key
+		where i.key = $1
+	`, parent).Scan(&project, &assignee, &private)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil, parentNotFound(parent)
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	if caller != "" && !access.CredentialCovers(access.Credential{Listed: []string{caller}}, project, private) {
+		return "", nil, parentNotFound(parent)
+	}
+	return project, assignee, nil
 }
 
 // duplicateGateTimeout bounds the near-copy gate's whole read, on the context and as the read

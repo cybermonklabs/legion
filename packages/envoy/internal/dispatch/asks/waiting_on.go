@@ -23,6 +23,13 @@ package asks
 // are stored.
 const AskedOfPersonExpression = `coalesce(a.asked_of, i.assignee, p.default_assignee)`
 
+// OwnerProjectJoin attaches the projects row as p for a row already joined to its issue as i and
+// its document as ar: the project of whichever of the two owns the row. AskedOfPersonJoins appends
+// it, and so does api's projectOfComment through ownerProjectJoin (api/ask_rows.go), so the join
+// has one spelling across the module (api's TestOneExpressionDecidesWhoWaitsInOneSpelling).
+const OwnerProjectJoin = `
+	left join projects p on p.key = coalesce(i.project_key, ar.project_key)`
+
 // AskedOfPersonJoins are the three tables AskedOfPersonExpression reads beside the ask aliased a:
 // its issue as i, its own document as ar, and the project of whichever of the two owns it as p.
 // Each is an outer join: a question owned by an issue has no document row and one owned by a
@@ -31,5 +38,4 @@ const AskedOfPersonExpression = `coalesce(a.asked_of, i.assignee, p.default_assi
 // block a caller appends to its own `from asks a`, whatever that caller indents its statement by.
 const AskedOfPersonJoins = `
 	left join issues i on i.key = a.issue_key
-	left join artifacts ar on ar.id = a.artifact_id
-	left join projects p on p.key = coalesce(i.project_key, ar.project_key)`
+	left join artifacts ar on ar.id = a.artifact_id` + OwnerProjectJoin

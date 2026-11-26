@@ -275,7 +275,7 @@ func rowNamesNoNode(column string) string { return column + ` is null` }
 // pointersNotStored is the arm's own test that the comments row at alias is one whose pointers the
 // store does not hold, which the table's arm answers, and pointersStored what the store's reading
 // adds to its probe of that row (projectionCarries), so a tuple counts only while the row holds
-// tuples_stored. graph_edges carries both tests the same way (migration 20261116124448).
+// tuples_stored. graph_edges carries both tests the same way (migration 20261126045002).
 func pointersNotStored(alias string) string { return `not ` + alias + `.tuples_stored` }
 
 const pointersStored = `projected.tuples_stored`
@@ -289,7 +289,7 @@ const pointersStored = `projected.tuples_stored`
 // the release before this one deletes a row and appends no retraction, so the tuple outlives the
 // row, and only the row can say the edge still stands; that build may also write the row again
 // with no node, which its table's arm then answers alone. graph_edges' tuple arm makes the same
-// join (migrations 20261109215947 and 20261116094101).
+// join (migrations 20261109215947 and 20261125163553).
 //
 // The probe ends in `offset 0`, as each of graph_edges' does, which keeps it one probe of that
 // index per tuple the arm counts: without it PostgreSQL may pull it up into a semi-join it hashes
@@ -311,7 +311,7 @@ func projectionCarries(table, fromKind, alias, carried string) string {
 // blockRefCarries is projectionCarries for a link, whose projection row is the block_refs row of
 // the pair: the same node, kind and far end as the tuple at alias. The node is fromKind's: a
 // block's own link, or an answered ask's shaped, whose block_refs row names the ask's node
-// (migration 20261116094101).
+// (migration 20261125163553).
 func blockRefCarries(fromKind, alias string) string {
 	return `exists (select 1 from block_refs projected
 		where projected.node_kind = '` + fromKind + `' and projected.node_address = ` + alias + `.from_id
@@ -326,8 +326,8 @@ func blockRefCarries(fromKind, alias string) string {
 // followed_by, a decision block's from_ask and decided_by, which the arm renders through the
 // block_refs row of the pair as it renders a block's every other link, a message's and a
 // comment's replies_to, a comment's answers, and an item block's part_of. It is the list the
-// view's tuple arms render (migrations 20261109215947, 20261116094101, 20261116114517,
-// 20261116124448 and 20261116140008) and the list the announcer writes into
+// view's tuple arms render (migrations 20261109215947, 20261125163554, 20261126045001,
+// 20261126045002 and 20261126045003) and the list the announcer writes into
 // server_build_announcements.tuple_kinds (startup.Deps), which is how the release that deletes an
 // old arm of the view reads whether the release a rollback would reach writes that arm's kinds as
 // tuples too. A child that moves another relation into the store adds its kinds here, so the arm
@@ -417,10 +417,10 @@ type backlinkArm struct {
 	// its document, stated as in_document and rendered as part_of. tupleToKind is the kind the
 	// store names the far end by where it is not the target's own: a reply to a block of a
 	// message, a comment or an ask points at that block's node, of kind block, which the view
-	// renders as the item's block address form (migrations 20261116114517 and 20261116124448).
+	// renders as the item's block address form (migrations 20261126045001 and 20261126045002).
 	// tupleFromKind is the kind the store names the near end by where it is not the view's: an
 	// item's block is a `block` node, which the view renders as the item's block address form
-	// (migration 20261116140008), so the store's reading keys and probes the tuple under `block`
+	// (migration 20261126045003), so the store's reading keys and probes the tuple under `block`
 	// and tests the node's state there, while the registry's predicate it binds is the address
 	// form's, the one the list of those edges binds (blockNodeVisibleAs).
 	// projectedIn is the table that row is in, which the store's reading joins
@@ -569,14 +569,14 @@ var backlinkArms = map[string][]backlinkArm{
 	},
 	"ask": {
 		// comments_ask_id_text; the store states the same fact as the reply's replies_to the ask,
-		// answered while the reply's row holds tuples_stored (migration 20261116124448).
+		// answered while the reply's row holds tuples_stored (migration 20261126045002).
 		{kind: "replies_to", from: `comments c`, where: `c.ask_id is not null`, toID: `c.ask_id::text`,
 			fromKind: "comment", fromID: `c.id::text`,
 			projected: pointersNotStored("c"), tupleKind: graphstore.TupleRepliesTo, projectedIn: "comments", carried: pointersStored},
 		// ask_blocks_ask_id_text. The view's arm counts a current part only, so this one carries
 		// its position filter; the store states a part's place as its block node's part_of the
 		// ask, answered while the part's row names that node and stands (migration
-		// 20261116140008).
+		// 20261126045003).
 		{kind: "part_of", from: `ask_blocks b`, where: `b.position is not null`, toID: `b.ask_id::text`,
 			fromKind: "ask_block", fromID: `b.node_id`,
 			projected: rowNamesNoNode(`b.node_kind`), tupleKind: graphstore.TuplePartOf, tupleFromKind: BlockNodeKind,
@@ -601,7 +601,7 @@ var backlinkArms = map[string][]backlinkArm{
 	},
 	"message": {
 		// messages_in_reply_to_text; the store states the same fact as the reply's replies_to,
-		// answered while the reply's row names its node (migration 20261116114517).
+		// answered while the reply's row names its node (migration 20261126045001).
 		{kind: "replies_to", from: `messages m`, where: `m.in_reply_to is not null`, toID: `m.in_reply_to::text`,
 			fromKind: "message", fromID: `m.id::text`,
 			projected: rowNamesNoNode(`m.node_kind`), tupleKind: graphstore.TupleRepliesTo, projectedIn: "messages"},
@@ -657,7 +657,7 @@ var backlinkArms = map[string][]backlinkArm{
 	// null, and neither carries a position filter, as the view's arms do not. The store states
 	// the reply's replies_to to the block's own node, of kind block, which the view renders as
 	// these two address forms by the same prefix while the reply's row holds tuples_stored
-	// (migration 20261116124448).
+	// (migration 20261126045002).
 	"comment_block": {
 		{kind: "replies_to", from: `comments c`, where: `c.replies_to_block is not null`, addressIs: ` not like 'ask/%'`, toID: `c.replies_to_block`,
 			fromKind: "comment", fromID: `c.id::text`,
@@ -682,7 +682,7 @@ var backlinkArms = map[string][]backlinkArm{
 // role (R5): a `mentions` tuple out of a comment, an issue message or a document block, which the
 // store alone holds - no refs or block_refs row names a party (TargetOf), so no table's arm answers
 // one - and the view's identity arm answers while the row of its source carries this release's marker
-// (migration 20261120090001): a comment's row naming its node and holding tuples_stored, a
+// (migration 20261126045004): a comment's row naming its node and holding tuples_stored, a
 // message's or a document block's row naming its node. The count reads each as its tupleSQL alone
 // (mentionBacklinkArms), through graph_tuples_as_of_in keyed by the far end and the kind, and counts
 // a tuple while it is current, the row of its source carries it, and that source is live and
@@ -771,7 +771,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 			and `+blockRefCarries(BlockNodeKind, "r"),
 			liveVisibleNode("block", `r.from_id`)),
 		// The links of every item's blocks in the store, in one arm as the view's item block arm
-		// reads them (migration 20261116140008): the current tuples out of a `block` node whose
+		// reads them (migration 20261126045003): the current tuples out of a `block` node whose
 		// address an item kind's prefix names, read through graph_tuples_as_of_in, which leads
 		// with the far end and the kind, once whichever item the block is of, each counted only
 		// while its link row in that item kind's table names the block's node and that block
@@ -784,7 +784,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 	}
 	// An answered ask's shaped, its tie to a block of its issue, which the store states from the
 	// ask's node and the view's tuple arm answers while the block_refs row of the pair, marked with
-	// that node, stands (migration 20261116094101). An ask's shaped declares no targets, so it
+	// that node, stands (migration 20261125163553). An ask's shaped declares no targets, so it
 	// carries no types test.
 	if target.kind == BlockNodeKind {
 		arms = append(arms, arm(`graph_tuples r`, ` and r.from_kind = '`+graphstore.KindAsk+`' and r.kind = '`+TupleShaped+`'
@@ -792,7 +792,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 			liveVisibleNode(graphstore.KindAsk, `r.from_id`)))
 	}
 	// A mention of a person, a session or a role: the view's identity arm answers it by the marker
-	// of its source (migration 20261120090001), its far end a column, so the count reads it among
+	// of its source (migration 20261126045004), its far end a column, so the count reads it among
 	// these arms, once for each source kind (identityMentionArms).
 	if slices.Contains(IdentityKinds, target.kind) && !slices.Contains(excludeKinds, graphstore.TupleMentions) {
 		for _, identity := range identityMentionArms() {
@@ -808,7 +808,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		// item is the view's state rule and the item kind's predicate out of one read of its node
 		// row (liveVisibleNode). A mention of a person, a session or a role is no citation: the
 		// view's identity arm answers it by its source's marker instead, whatever refs row names it
-		// (migration 20261120090001), and the count reads it there too (identityMentionArms).
+		// (migration 20261126045004), and the count reads it there too (identityMentionArms).
 		if !slices.Contains(IdentityKinds, target.kind) {
 			arms = append(arms, arm(`graph_tuples r`, ` and r.from_kind = '`+string(item)+`' and r.kind = '`+graphstore.TupleMentions+`' and `+currentTuple("r")+`
 				and `+citationCarries("r")+` and not `+heldByABlock("r"),

@@ -83,7 +83,7 @@ func Follow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.A
 	if !result.marked {
 		return followed, nil
 	}
-	relation := followedBy(askID, sessionID, true, who, result.since, event)
+	relation := FollowedBy(askID, sessionID, true, who, result.since, event)
 	if event == graphstore.NoEvent {
 		followed.Uncaused.Tuples = append(followed.Uncaused.Tuples, graphstore.UncausedTuple{Tuple: relation})
 		return followed, nil
@@ -118,7 +118,7 @@ type followResult struct {
 // which says the ask node's followed_by to the session is the record of this row: on a new row,
 // and on a row a process of the release before wrote with none, which this follow makes the
 // store's. graph_edges' tuple arm answers a marked row from that relation, and its old arm answers
-// an unmarked one (20261116094101). A row is marked only where the ask's node is there to name -
+// an unmarked one (20261125163553). A row is marked only where the ask's node is there to name -
 // an ask a process of the release before created has none until the boot step's backfill writes it
 // - and the session is a node the store can key. A follow that marks the row states followed_by,
 // dated by the row's own `since`, as the old arm dates the edge; one that finds the row marked
@@ -182,8 +182,10 @@ func queueFollow(b *store.WriteBatch, askID, sessionID string, who model.Actor, 
 	return held, nil
 }
 
-// followedBy is the ask node's followed_by to a session, asserted or retracted.
-func followedBy(askID, sessionID string, asserted bool, who model.Actor, at time.Time, event int64) graphstore.Tuple {
+// FollowedBy is the ask node's followed_by to a session, asserted or retracted, made by who at at
+// under event: the one build of that tuple, which every follow, unfollow and catch-up of a follow
+// states, and the boot step's backfill of a follower row written before this release (R3).
+func FollowedBy(askID, sessionID string, asserted bool, who model.Actor, at time.Time, event int64) graphstore.Tuple {
 	return graphstore.Tuple{
 		FromKind: graphstore.KindAsk, FromID: askID, Kind: graphstore.TupleFollowedBy,
 		ToKind: graphstore.KindSession, ToID: sessionID,
@@ -299,7 +301,7 @@ func (p PlannedFollow) Queue(b *store.WriteBatch, event int64) (graphstore.Uncau
 	if err != nil || !p.marks {
 		return held, err
 	}
-	relation := followedBy(p.askID, p.sessionID, true, p.who, p.since, event)
+	relation := FollowedBy(p.askID, p.sessionID, true, p.who, p.since, event)
 	if event == graphstore.NoEvent {
 		held.Tuples = append(held.Tuples, graphstore.UncausedTuple{Tuple: relation})
 		return held, nil
@@ -335,7 +337,7 @@ func Unfollow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model
 	}
 	unfollowed := Unfollowed{Removed: true}
 	if marked {
-		unfollowed.Uncaused.Tuples = []graphstore.UncausedTuple{{Tuple: followedBy(askID, sessionID, false, who, at, graphstore.NoEvent)}}
+		unfollowed.Uncaused.Tuples = []graphstore.UncausedTuple{{Tuple: FollowedBy(askID, sessionID, false, who, at, graphstore.NoEvent)}}
 	}
 	return unfollowed, nil
 }
@@ -369,7 +371,7 @@ func CatchUpFollower(ctx context.Context, tx pgx.Tx, askID, sessionID string, ad
 			return false, fmt.Errorf("mark the follow of ask %q by %q: %w", askID, sessionID, err)
 		}
 		nodes := []graphstore.Node{graphstore.SessionNode(sessionID, who, since, event)}
-		if err := graphstore.Write(ctx, tx, nodes, []graphstore.Tuple{followedBy(askID, sessionID, true, who, since, event)}); err != nil {
+		if err := graphstore.Write(ctx, tx, nodes, []graphstore.Tuple{FollowedBy(askID, sessionID, true, who, since, event)}); err != nil {
 			return false, fmt.Errorf("state that %q follows ask %q: %w", sessionID, askID, err)
 		}
 		return true, nil
@@ -387,7 +389,7 @@ func CatchUpFollower(ctx context.Context, tx pgx.Tx, askID, sessionID string, ad
 	if !gone || !asserted {
 		return false, nil
 	}
-	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{followedBy(askID, sessionID, false, who, at, event)}); err != nil {
+	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{FollowedBy(askID, sessionID, false, who, at, event)}); err != nil {
 		return false, fmt.Errorf("state that %q no longer follows ask %q: %w", sessionID, askID, err)
 	}
 	return true, nil

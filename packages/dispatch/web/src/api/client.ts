@@ -1,6 +1,7 @@
 import {
   AUTH_NO_IDENTITY,
   answerNotKept,
+  DISPATCH_ASKS_HEADER,
   DISPATCH_LOGIN_HEADER,
   everyBuildReadsSearch,
   ID_AMBIGUOUS,
@@ -214,6 +215,12 @@ export type ReferenceSourceKind = NonNullable<
  *  policy, as a dropped connection is. A body that keeps moving, either way, goes on however long
  *  it takes: the deadline is on the silence, not the transfer. */
 export const REQUEST_DEADLINE_MS = 30_000;
+
+/** What a read of the text routes sends beside the page's own headers: `Dispatch-Asks: 1`
+ *  (`DISPATCH_ASKS_HEADER`), which says the page reads each ask's state and answer from the
+ *  answer's `asks` member, so Dispatch serves markdown with none of an ask block's server-owned
+ *  attributes rather than the form it keeps for one release for the readers of the release before. */
+const readsAsks: RequestInit = { headers: [[DISPATCH_ASKS_HEADER, "1"]] };
 
 /** How many references one `getReferenceTargets` may name: `REFERENCE_TARGETS_MAX`, the literal in
  *  `@legion/contracts` that is generated into Go and that the server reads as its own cap
@@ -1883,20 +1890,33 @@ export class DispatchApiClient {
     return this.read("/api/v1/agents/{session_id}/artifacts", { session_id: sessionId });
   }
 
+  /** `GET /api/v1/artifacts/{id}/text`: the document's live markdown, token, version and asks.
+   *  The page reads each ask's state and answer from `asks`, so it sends `Dispatch-Asks: 1`
+   *  (`readsAsks`) and is served markdown with none of an ask block's server-owned attributes. */
   getArtifactText(id: string) {
-    return this.read("/api/v1/artifacts/{id}/text", { id });
+    return this.read("/api/v1/artifacts/{id}/text", { id }, undefined, readsAsks);
   }
 
   /** `GET …/artifacts/{slug}/text`: the markdown, version and whole-document token of the
-   *  document `owner` holds under `slug`, which may be its slug or its filename. `404
-   *  ARTIFACT_NOT_FOUND` when the owner holds no such document, which is what the first upload
-   *  of a name reads. A conversation holds files and pictures and no document at all, and
-   *  serves no such route, which is why its owner is not one this takes. */
+   *  document `owner` holds under `slug`, which may be its slug or its filename, read as
+   *  `getArtifactText` reads it. `404 ARTIFACT_NOT_FOUND` when the owner holds no such document,
+   *  which is what the first upload of a name reads. A conversation holds files and pictures and
+   *  no document at all, and serves no such route, which is why its owner is not one this takes. */
   ownerArtifactText(owner: { issue: string } | { project: string }, slug: string) {
     if ("issue" in owner) {
-      return this.read("/api/v1/issues/{key}/artifacts/{slug}/text", { key: owner.issue, slug });
+      return this.read(
+        "/api/v1/issues/{key}/artifacts/{slug}/text",
+        { key: owner.issue, slug },
+        undefined,
+        readsAsks
+      );
     }
-    return this.read("/api/v1/projects/{key}/artifacts/{slug}/text", { key: owner.project, slug });
+    return this.read(
+      "/api/v1/projects/{key}/artifacts/{slug}/text",
+      { key: owner.project, slug },
+      undefined,
+      readsAsks
+    );
   }
 
   rebuildArtifact(id: string, markdown: string | undefined, bounds: WriteBounds) {

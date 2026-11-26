@@ -29,10 +29,12 @@ const (
 // the store and keeps only the kinds the tuple arm renders before it sorts them, and the one that
 // moved the messages, the comments' pointers and every item's blocks into the store and added the
 // identity arm. The last restatement states both, and the view it leaves answers exactly what the
-// two answered between them. A later merge of two such lines names its own two heads here.
+// two answered between them. A later merge of two such lines names its own two heads here. The
+// second line's migrations are numbered after the first's (20261126045001 to 20261126045005 after
+// 20261125163554), so the union is the last migration of the two.
 var graphEdgesHeads = []string{
-	"20261121034242_graph_edges_asks_and_tuple_arm_filter.up.sql",
-	"20261120090001_graph_edges_identity_mentions.up.sql",
+	"20261125163554_graph_edges_asks_and_tuple_arm_filter.up.sql",
+	"20261126045004_graph_edges_identity_mentions.up.sql",
 }
 
 // restatedViewName is the view a restatement's own statement is created as beside graph_edges.

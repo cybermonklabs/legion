@@ -1,4 +1,9 @@
-import { AGENT_STREAM_LIMITS, type DispatchEvent, type paths } from "@legion/contracts";
+import {
+  AGENT_STREAM_LIMITS,
+  DISPATCH_ASKS_HEADER,
+  type DispatchEvent,
+  type paths,
+} from "@legion/contracts";
 import type { Cookie } from "@playwright/test";
 import {
   type Body,
@@ -52,6 +57,9 @@ interface ApiOptions {
   /** In two-process mode, the process the round-robin proxy sends the call to; absent, whichever
    *  takes its turn (e2e/round-robin-proxy.ts). */
   process?: DispatchProcess;
+  /** Headers the call sends beside the harness's own: a text read's `Dispatch-Asks`
+   *  (`asTheDashboardReadsIt`). */
+  headers?: Readonly<Record<string, string>>;
 }
 
 /** The name of the session cookie the server issues at sign-in, dev or GitHub. */
@@ -260,6 +268,7 @@ async function request<T>(
     headers["Idempotency-Key"] = options.idempotencyKey;
   }
   if (options.process !== undefined) Object.assign(headers, pinnedTo(options.process));
+  if (options.headers !== undefined) Object.assign(headers, options.headers);
 
   const response = await fetch(new URL(path, options.baseUrl ?? baseUrl), {
     body: payload === undefined ? undefined : JSON.stringify(payload),
@@ -930,9 +939,19 @@ export function followAsk(id: string, sessionID: string, actor: Actor) {
   );
 }
 
-/** The document's current canonical markdown, as the server's live room holds it. */
+/** `options` with `Dispatch-Asks: 1` (`DISPATCH_ASKS_HEADER`), which every reader of this build
+ *  that reads a text route's `asks` sends, the dashboard and `dispatch doc-read` among them: the
+ *  route then serves markdown with none of an ask block's server-owned attributes, and each
+ *  ask's state and answer in `asks`. A request without it is served the form kept for one release
+ *  for the readers of the release before. */
+function asTheDashboardReadsIt(options: ApiOptions): ApiOptions {
+  return { ...options, headers: { ...options.headers, [DISPATCH_ASKS_HEADER]: "1" } };
+}
+
+/** The document's current canonical markdown, as the server's live room holds it, read as the
+ *  dashboard reads it (`asTheDashboardReadsIt`). */
 export function getArtifactText(id: string, options: ApiOptions = {}) {
-  return get("/api/v1/artifacts/{id}/text", { params: { id } }, options);
+  return get("/api/v1/artifacts/{id}/text", { params: { id } }, asTheDashboardReadsIt(options));
 }
 
 /** The base an upload replacing the document names: the token its live read answers, in the shape
@@ -980,12 +999,18 @@ export function getIssueArtifactText(issue: string, slug: string, options: ApiOp
   return get(
     "/api/v1/issues/{key}/artifacts/{slug}/text",
     { params: { key: issue, slug } },
-    options
+    asTheDashboardReadsIt(options)
   );
 }
 
 export function getArtifact(id: string, options: ApiOptions = {}) {
   return get("/api/v1/artifacts/{id}", { params: { id } }, options);
+}
+
+/** The number of the newest version of the document `id`, or `-Infinity` where it holds none. */
+export async function latestVersion(id: string): Promise<number> {
+  const artifact = await getArtifact(id);
+  return Math.max(...(artifact.versions ?? []).map((version) => version.number));
 }
 
 /**

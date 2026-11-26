@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 7,
   "nodes": [
     { "name": "doc" },
     { "name": "paragraph" },
@@ -105,7 +105,7 @@
         "shaped": {
           "kind": "block[]",
           "since": 6,
-          "creatable_since": 6
+          "creatable_since": 7
         }
       }
     },
@@ -182,53 +182,53 @@
           "kind": "enum",
           "choices": ["low", "medium", "high"],
           "since": 6,
-          "creatable_since": 6
+          "creatable_since": 7
         },
         "uncertainty_reason": {
           "kind": "string",
           "since": 6,
-          "creatable_since": 6
+          "creatable_since": 7
         },
         "shaped": {
           "kind": "block[]",
           "since": 6,
-          "creatable_since": 6
+          "creatable_since": 7
         },
         "from_ask": {
           "kind": "ask",
           "since": 6,
-          "creatable_since": 6
+          "creatable_since": 7
         },
         "replaced": {
           "kind": "bool",
           "default": false,
           "since": 6,
-          "creatable_since": 6
+          "creatable_since": 7
         },
         "decided_by": {
           "kind": "actor",
           "server": true,
           "markdown": false,
           "since": 6,
-          "creatable_since": 6
+          "creatable_since": 7
         },
         "kept_by": {
           "kind": "actor",
           "server": true,
           "markdown": false,
           "since": 6,
-          "creatable_since": 6
+          "creatable_since": 7
         },
         "kept_text_sum": {
           "kind": "string",
           "server": true,
           "markdown": false,
           "since": 6,
-          "creatable_since": 6
+          "creatable_since": 7
         }
       },
       "since": 6,
-      "creatable_since": 6
+      "creatable_since": 7
     },
     {
       "name": "reading",
@@ -237,7 +237,7 @@
       "attributes": {},
       "parents": ["decision", "ask"],
       "since": 6,
-      "creatable_since": 6
+      "creatable_since": 7
     }
   ]
 }

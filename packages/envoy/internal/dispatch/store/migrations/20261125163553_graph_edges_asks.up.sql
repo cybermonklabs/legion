@@ -1,82 +1,48 @@
--- 20261116114517_graph_edges_message_tuples.up.sql
+-- 20261125163553_graph_edges_asks.up.sql
 --
--- A message's pointers are tuples now, and the view reads its replies from them. The two arms over
--- messages - a reply's `replies_to` the message it answers (in_reply_to) and its `replies_to` the
--- block of that message it names (replies_to_block) - each answer only the rows of messages whose
--- `node_kind` is null, and the store answers a message's `replies_to` only while the messages row
--- of that message names its node. That is the split 20261109215947 gave a comment's `anchored_to`
--- and `owned_by` over the comments row, made over the messages row.
+-- The store answers an ask's relations. An ask is a node of the store (kind `ask`, its id the
+-- ask's own), and the writers of this release state on that node the artifact it is anchored to
+-- and the artifact it belongs to (anchored_to, owned_by) and each session that follows it
+-- (followed_by), and name the node on the asks or ask_followers row in the same transaction
+-- (20261125163550's node_kind and node_address). So the three arms of graph_edges over those two
+-- tables move into the store's arm exactly as 20261109215947 moved a comment's two, and the
+-- view answers each of those rows once, from the arm the row itself decides:
 --
--- The messages row's node pair is the marker (migration 20261116114515). Every writer of this
--- release names the message's node in the insert that writes the row, and states the message's
--- pointers in the same transaction, under the event that stored it (api's planMessageNode,
--- graphstore.MessageFacts, and the seed). So a row this release writes goes to the store's arms, a
--- row the release before it wrote - during a roll, or after a rollback - goes to its old arm, and a
--- row either release deleted goes to neither: a build of the release before deletes a row and
--- retracts nothing, and the joins below answer no tuple whose row is gone. The split is per row
--- and not per kind for the reasons 20261109215947 gives, and one more of this kind's own: a
--- message whose replies_to end is past the store's address bound states none of its pointers and
--- names no node (graphstore.MessageFacts), so its old arms answer it for good.
+--   the asks arm of anchored_to, the asks arm of owned_by and the ask_followers arm of
+--   followed_by each answer only the rows whose `node_kind` is null, which is a row no writer of
+--   this release marked: one written before it, and one a process of the release before writes
+--   during a roll or after a rollback;
 --
--- What a message points at is the node the store holds of it, so the tuple of a reply to a block
--- names the block's own node: kind `block` (graphstore.KindBlock), at the address the reply's
--- replies_to_block holds, `message/<message uuid>#<block id>`, which is the node id
--- message_blocks.node_id holds for that block. That is the address the writer of an item's block
--- nodes gives a message's block, and that writer keeps it: a message block's node is
--- (block, message/<message uuid>#<block id>), never a node of a kind of its own, since the closed
--- supertag list holds no message_block. The view renders that one relation - a message's
--- `replies_to` whose far end is a `block` - under the address form the old arm answered,
--- `message_block`, so every reader keyed on that form (refs.Edges' arm over an item's blocks,
--- refs.BacklinkCounts) reads one relation whichever arm answers it, and graph_edges never answers
--- an item's block under `block`.
+--   the tuple arm answers an ask's anchored_to and owned_by only while the asks row that names
+--   the ask's node carries it, and an ask's followed_by only while the ask_followers row of that
+--   ask and that session carries it, through the join it makes for a comment. A row a build of
+--   the release before deletes, retracting nothing, is then answered by neither arm, and one it
+--   writes again with no node is answered by its old arm alone.
 --
--- That relation has an arm of its own, the last, and the tuple arm leaves it out (its `projects`
--- case for a message is a reply to a message alone). Each of the two then renders its far end's
--- kind as a column of the tuple or as a constant, never as an expression over the tuple's kind,
--- so a read keyed on the far end binds the leading columns of graph_tuples_as_of_in, the store's
--- one read index led by the far end (20261109013400), in both: the tuple arm binds (to_kind,
--- to_id) as before, and the reply arm binds the fixed (block, the far end's id, replies_to),
--- filters the reply's kind, message, out of the rows that range holds, and answers its rows under
--- `message_block`. Its `distinct on` keys the two columns its predicate leaves free, the far end's
--- id and the reply's, which that index holds by time and not by the reply, so the arm sorts the
--- replies it read of the one far end: four replies to a block are a quicksort of 25 kB. The arm
--- renders its kind as the constant `replies_to`, outside the `distinct on`: a read of any other
--- kind then compares two constants against this arm and PostgreSQL drops the arm from its plan,
--- where a kind the arm read out of the tuple would be a column of the `distinct on` subquery that
--- the read's kind is never pushed into, and the arm would probe graph_tuples for every such read.
+-- The tuple arm also renders an ask's `shaped` (an answered ask's tie to the spec blocks its
+-- answer shaped) through the block_refs row of the pair, which the writer of an ask block's links
+-- marks with the ask's node, ('ask', <ask id>), rather than the block's: the answer is the ask's,
+-- so the tie hangs on the ask node. It takes the join a block's own link takes, so the block_refs
+-- row of the pair is what says the tie still stands, and the old block_refs arm, which answers
+-- only rows whose node_kind is null, never answers a row so marked. `shaped` on an ask declares no
+-- targets, so block_pointer_targets finds no attribute of a document block under the ask's id and
+-- the types test lists the tie.
 --
--- Measured on this pod's PostgreSQL 18.6 over 640,000 tuples across 11 far-end kinds, 20,000 of
--- them replies to a block, on an earlier set of read indexes that also held graph_tuples_inbound
--- (to_kind, to_id, kind, from_kind, from_id, seq desc), under which the reply arm bound the reply's
--- kind as well and sorted nothing: a read of the edges into one issue reads graph_tuples in 5
--- buffers and one index search in the tuple arm, as the view before this one does, and in 3
--- buffers and one search in the reply arm, which answers nothing; a read of the edges into one
--- message block reads 3 buffers and one search in the tuple arm, which answers nothing, and 7
--- buffers and one search in the reply arm for its four replies. Under the four read indexes, over
--- 700,000 synthetic tuples across 15 far-end kinds with the same 20,000 replies, the reply arm
--- reads those four replies in the same 7 buffers and one search, and sorts them. Computing the
--- kind inside the tuple arm instead cost every keyed read that leading column: 88 buffers in 23
--- index searches against 5 in one, a skip scan over every far-end kind, measured on that earlier
--- set; graph_tuples_as_of_in is led by the same two columns.
+-- The three arms over asks and ask_followers, and the tuple arm's three joins to those rows, stay
+-- for one release: the root's own pull request deletes them.
+-- kept for one release: asks-arms
 --
--- The two arms render `replies_to` and nothing else of a message. A message's `part_of`, its
--- `addressed_to`, its `broadcast_id` (a value, which no arm reads) and its `authored_by` are no
--- arm of this view, as a page's `part_of` and a comment's `authored_by` are not: none was an edge
--- of the view before, and refs.TupleKinds, the list the store's arms render and the announcer
--- writes, gains `replies_to` alone.
+-- Each `exists` the tuple arm makes under its `case` ends in `offset 0`, the fence 20261109215947
+-- gives its three: PostgreSQL plans a correlated `exists` of equalities either as a probe per edge
+-- or as a hashed `= any` that reads the whole table once a statement, by its cost estimate alone,
+-- and the offset keeps the one plan that is the probe. The two new probes read asks_node_address
+-- and ask_followers_node_address (20261125163551 and 20261125163552).
 --
--- Each new `exists` ends in `offset 0`, as the ones before them do, for the reason
--- 20261109215947 gives: PostgreSQL would otherwise be free to plan the correlated probe as a read
--- of the whole of messages. Each probes messages' (node_kind, node_address) index (migration
--- 20261116114516) once for each edge its arm would answer.
---
--- Re-stating the view holds `graph_edges` ACCESS EXCLUSIVE for the migration's short
--- transaction, so a reference read waits behind it. The arm list re-stated is 20261116094101's,
--- which moved an ask's anchored_to, owned_by and followed_by into the store, with the two
--- `node_kind is null` tests over messages, the messages case of the tuple arm and the reply arm
--- added, and it is the arm list a later migration re-states from. Nothing here refuses or
--- rewrites a row.
-
+-- The arm list re-stated is 20261109215947's, with the three `node_kind is null` tests and the
+-- tuple arm's three new cases added, and it is the list a later migration re-states from. The
+-- root's own pull request deletes the three old arms and the tuple arm's
+-- joins to asks and ask_followers. Re-stating the view holds graph_edges ACCESS EXCLUSIVE for this
+-- migration's short transaction. Nothing here refuses or rewrites a row.
 create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, created_at, source_seq) as
   select from_kind, from_id, kind, to_kind, to_id, created_at, source_seq from refs
   union all
@@ -115,7 +81,7 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
   from comments where ask_id is not null
   union all
   select 'message', id::text, 'replies_to', 'message', in_reply_to::text, created_at, null
-  from messages where in_reply_to is not null and node_kind is null
+  from messages where in_reply_to is not null
   union all
   select 'ask', ask_id::text, 'followed_by', 'session', session_id, since, null
   from ask_followers
@@ -173,7 +139,7 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
   from comments c where c.replies_to_block is not null and c.replies_to_block like 'ask/%'
   union all
   select 'message', m.id::text, 'replies_to', 'message_block', m.replies_to_block, m.created_at, null
-  from messages m where m.replies_to_block is not null and m.node_kind is null
+  from messages m where m.replies_to_block is not null
   union all
   select edge.from_kind, edge.from_id, edge.kind, edge.to_kind, edge.to_id, edge.created_at, edge.source_seq
   from (
@@ -194,7 +160,6 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
              when tuple.from_kind = 'ask' and tuple.kind in ('anchored_to', 'owned_by') then 'ask'
              when tuple.from_kind = 'ask' and tuple.kind = 'followed_by' then 'ask_follower'
              when tuple.from_kind = 'ask' and tuple.kind = 'shaped' then 'block_ref'
-             when tuple.from_kind = 'message' and tuple.kind = 'replies_to' and tuple.to_kind = 'message' then 'message'
            end as projects
     from graph_tuples tuple
     where tuple.to_kind <> 'value'
@@ -228,29 +193,4 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
             where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
               and projected.session_id = edge.to_id
             offset 0)
-          when 'message' then exists (
-            select 1 from messages projected
-            where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
-            offset 0)
-        end
-  union all
-  select edge.from_kind, edge.from_id, 'replies_to'::text, edge.to_kind, edge.to_id, edge.created_at, edge.source_seq
-  from (
-    select distinct on (tuple.to_id, tuple.from_id)
-           tuple.from_kind,
-           tuple.from_id,
-           'message_block'::text as to_kind,
-           tuple.to_id,
-           tuple.at as created_at,
-           tuple.legacy_source_seq as source_seq,
-           tuple.asserted
-    from graph_tuples tuple
-    where tuple.to_kind = 'block' and tuple.kind = 'replies_to' and tuple.from_kind = 'message'
-    order by tuple.to_id, tuple.from_id, tuple.seq desc
-  ) edge
-  join graph_nodes node on node.kind = edge.from_kind and node.id = edge.from_id
-  where edge.asserted and node.state <> 'gone'
-    and exists (
-      select 1 from messages projected
-      where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
-      offset 0);
+        end;

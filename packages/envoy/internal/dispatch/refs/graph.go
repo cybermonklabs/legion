@@ -259,7 +259,8 @@ func storeNodeStands(kind, id string) string {
 					where live.kind = ` + kind + ` and live.id = ` + id + ` and live.state <> '` + graphstore.StateGone + `')`
 }
 
-// keyedTupleArm is graph_edges' tuple arm (migration 20261121034242) for the edges that end at
+// keyedTupleArm is graph_edges' tuple arm (migration 20261125163554, restated by 20261126045005)
+// for the edges that end at
 // the block k.node_id, of storage kind blockKind: the links of the block_refs rows that name their
 // node, read by the row's target through block_refs_to_source as the arm beside it reads the rows
 // that name none. Such a row is the projection of the tuple of the node it names (node_kind and
@@ -278,7 +279,7 @@ func keyedTupleArm(blockKind string) string {
 				and ` + storeNodeStands(`b.node_kind`, `b.node_address`)
 }
 
-// keyedCitationArm is the store's own arm of graph_edges (its citation, migration 20261121120000)
+// keyedCitationArm is the store's own arm of graph_edges (its citation, migration 20261126045005)
 // for an item's mention that ends at the block k.node_id: the refs rows of an ask, a comment or a
 // message that hold tuples_stored, read by target through refs_to as the refs arm beside it reads
 // the rows that hold it false. Such a row is the projection of the mention its item's node states
@@ -300,7 +301,7 @@ func keyedCitationArm(blockKind string) string {
 }
 
 // keyedItemBlockTupleArm is the view's store arm of every item's blocks (migration
-// 20261116140008, restated by 20261121120000) for the links a block of an item of kind holds
+// 20261126045003, restated by 20261126045005) for the links a block of an item of kind holds
 // that end at the block k.node_id: the rows of the kind's link table that name their block's
 // node, read by target as the arm over the rows that name none reads them, while the block
 // holding the link stands at a position (itemBlockLinks, itemBlockCurrent). Such a row is the
@@ -331,7 +332,7 @@ func blockRepliesArm(owner ItemKind) string {
 }
 
 // keyedReplyTupleArm is the view's store arm of the replies to a block of an item of kind owner
-// (migrations 20261116114517 and 20261116124448, restated by 20261121120000): the replies whose
+// (migrations 20261126045001 and 20261126045002, restated by 20261126045005): the replies whose
 // pointers the store holds (repliesStored), read by the block they name through the replies'
 // partial index on replies_to_block as blockRepliesArm reads the rest. Such a row is the
 // projection of the replies_to tuple its node states to the block's node, of kind block, which

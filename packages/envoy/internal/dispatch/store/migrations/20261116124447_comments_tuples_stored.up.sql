@@ -8,7 +8,7 @@
 --                   (graphstore.CommentPointerFacts, api's commentStoreWrite, the seed).
 --
 -- It is the row's marker for those relations, and graph_edges reads it (migration
--- 20261116124448): the store's arms answer the pointers of a row that holds true, and the five old
+-- 20261126045002): the store's arms answer the pointers of a row that holds true, and the five old
 -- arms over comments the pointers of a row that holds false. comments.node_kind cannot be that
 -- marker. The node store's build names the node on rows whose pointers are no tuples - every comment
 -- that build and its backfill write - so a test on node_kind would answer an older reply from

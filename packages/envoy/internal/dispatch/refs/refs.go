@@ -88,7 +88,7 @@ type Replacement struct {
 // holds, each row the insert writes is the item's citation, a `mentions` tuple out of the item's
 // node - the kind every refs row holds - to the row's own far end, and the row holds tuples_stored
 // from its own insert (migration 20261116135959), which is what graph_edges reads to answer it from
-// that tuple rather than from its refs arm (migration 20261116140008). A row it deletes that held
+// that tuple rather than from its refs arm (migration 20261126045003). A row it deletes that held
 // tuples_stored is retracted; a row that held none had no tuple to retract. A surviving row keeps
 // its marker and earns nothing: a row an older build wrote for the item keeps false, and the refs
 // arm keeps answering it. An item the store holds no node of and a far end past the store's
