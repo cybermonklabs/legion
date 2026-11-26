@@ -84,6 +84,9 @@ func (e *Engine) fixStopped(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if said == "" {
 		return nil
 	}
+	if err := e.queueBesideDelete(ctx, tx, issue, fix.Task); err != nil {
+		return err
+	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "task-stopped", Role: claim.RoleImplementer, Phase: phase.Implementing,
 		Reason: fmt.Sprintf("Fix %d of task %s ended with the stop.", fix.Fix, fix.Task) + besideWorkSentence(issue.Key, issue.Generation, fix.Task, fix.Fix)})
 }
