@@ -22,6 +22,7 @@ import {
   getArtifact,
   getIssueCoverage,
   getIssueResults,
+  listIssues,
   recordCheckResult,
   retractCheckResult,
 } from "./api";
@@ -596,11 +597,13 @@ test("the Verification filter says an issue holds no checks, in its own column",
 // colour, underlined in the bullets' grey, and a `dispatch://` reference as the chip that names
 // its target, never as its address. A result an agent recorded names it by its role's word. A
 // check that serves two statements is drawn under each, names the other by its first words, and
-// is counted once. A statement that only a child's check serves is covered, carries no gap, and
-// says so in one line. A statement of 200 words is drawn whole with no "more" control, Tab from
-// the chips reaches the check's link, and with A drawn whole, and again with the check's facts
-// open, every element stays inside its card and no two texts overlap, this issue's cards being
-// the only ones that hold what the view adds to a card.
+// is counted once. A statement that only a child's check serves is covered and carries no gap:
+// that check is drawn under it, named by the child's key as a link to the child, and counted
+// once beside the issue's own, and no line says a check elsewhere serves it. A statement of 200
+// words is drawn whole with no "more" control, Tab from the chips reaches the check's link, and
+// with A drawn whole, and again with the check's facts open, every element stays inside its card
+// and no two texts overlap, this issue's cards being the only ones that hold what the view adds
+// to a card.
 // SLOW(>=2s): an issue, its child and their two documents seeded and waited for in the coverage
 // read, then the view loaded and read at two widths, with a walk by Tab at the first.
 test("the Verification view draws a check's links, its agent's role and a child's checks @phone", async ({
@@ -609,6 +612,19 @@ test("the Verification view draws a check's links, its agent's role and a child'
   test.setTimeout(180_000);
   await phase(browser, seedLinkedChecks, async (page, seeded) => {
     const { a, b, c, check } = seeded.nodes;
+    // The issue under this one, and the one check its Verification document holds, which serves
+    // C: the view names that issue by its key and draws a check of another issue under its block
+    // id alone (`tree-read/tree-nodes.ts`' `treeIdOfNode`).
+    const child = (await listIssues(PROJECT)).find((issue) => issue.parent === seeded.key);
+    if (child === undefined) throw new Error(`no issue stands under ${seeded.key}`);
+    const childChecks = async () =>
+      ((await getIssueResults(child.key)).checks ?? []).map((one) => one.block_id);
+    await expect
+      .poll(childChecks, {
+        message: `${child.key}'s Verification document does not hold its one check`,
+      })
+      .toHaveLength(1);
+    const [childCheck = ""] = await childChecks();
     for (const width of [1440, 390]) {
       await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
       await openPreset(page, seeded.key, "verification");
@@ -620,19 +636,24 @@ test("the Verification view draws a check's links, its agent's role and a child'
       ).toHaveCount(1);
       await expectIssuePageDrawn(page);
 
-      // The check is drawn on the cards of A and B, and on no other, and the legend counts it
-      // once, in its state.
+      // The issue's own check is drawn on the cards of A and B, the child's on C's, and neither
+      // on any other; the legend counts the two, each once in its state.
       const cards = await verificationCards(page);
       expect(
         Object.fromEntries(cards.map((card) => [card.id, card.checks.map((one) => one.id)])),
-        `the check is not drawn under each statement it serves and under no other at ${width} px`
-      ).toEqual({ [a]: [check], [b]: [check], [c]: [] });
+        `the checks are not drawn under each statement they serve and under no other at ${width} px`
+      ).toEqual({ [a]: [check], [b]: [check], [c]: [childCheck] });
       const legend = await checkLegendCounts(page);
-      const state = cards.find((card) => card.id === a)?.checks[0]?.state ?? "";
+      const states = [a, c].map(
+        (card) => cards.find((one) => one.id === card)?.checks[0]?.state ?? ""
+      );
       expect(
-        [Object.values(legend).reduce((sum, count) => sum + count, 0), legend[state]],
-        `the legend does not count the check it draws twice once, in its state, at ${width} px`
-      ).toEqual([1, 1]);
+        [
+          Object.values(legend).reduce((sum, count) => sum + count, 0),
+          ...states.map((state) => legend[state]),
+        ],
+        `the legend does not count the issue's check and the child's once each, in its state, at ${width} px`
+      ).toEqual([2, ...states.map((state) => states.filter((held) => held === state).length)]);
 
       // A is drawn whole with no "more" control, every element staying inside its card and no two
       // texts overlapping, and at 1440 px Tab from the chip All reaches the link in the check's
@@ -653,7 +674,7 @@ test("the Verification view draws a check's links, its agent's role and a child'
         `statement A hides a word instead of drawing whole at ${width} px`
       ).toBeLessThanOrEqual(1);
       // With A drawn whole, its words, the check's link and chip, its "Also under" line and the
-      // line of checks elsewhere on C stay inside their cards and draw no text over another.
+      // child's check on C with its key stay inside their cards and draw no text over another.
       expect(
         await boxesPastTheirCard(page),
         `an element reaches past its card with statement A drawn whole at ${width} px`
@@ -733,16 +754,28 @@ test("the Verification view draws a check's links, its agent's role and a child'
         `"Also under" names B by other than its first words at ${width} px: "${named}"`
       ).toBe(true);
 
-      // C is covered by the child's check alone: it carries no gap, says so in one line, and the
-      // summary counts it covered.
+      // C is covered by the child's check alone: it carries no gap, draws that check with the
+      // child's key as a link to the child, says nowhere that a check elsewhere serves it, and
+      // the summary counts it covered.
       expect(
         cards.find((card) => card.id === c)?.gapKinds,
         `statement C carries a gap at ${width} px`
       ).toEqual([]);
+      const childKeyLink = verificationCard(page, c).locator(
+        `[data-verification-check][data-node-id="${childCheck}"] [data-node-issue]`
+      );
+      await expect(
+        childKeyLink,
+        `the child's check under C is not named by the child's key at ${width} px`
+      ).toHaveText(child.key);
+      await expect(
+        childKeyLink,
+        `the child's key on its check under C does not link to the child at ${width} px`
+      ).toHaveAttribute("href", `/issues/${child.key}`);
       await expect(
         verificationCard(page, c).locator("[data-verification-elsewhere]"),
-        `statement C does not say a check of the issue under this one serves it at ${width} px`
-      ).toHaveText(`1 ${VERIFICATION_WORDS.elsewhere_one}`);
+        `statement C says a check elsewhere serves it, where it draws that check, at ${width} px`
+      ).toHaveCount(0);
       await expect(
         page.locator("[data-verification-covered]"),
         `statement C is not counted covered at ${width} px`

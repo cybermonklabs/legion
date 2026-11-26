@@ -6,7 +6,8 @@ import {
   criterionMarkdown,
 } from "../web/src/features/issue-page/model-rows/criterion-write";
 import type { NodeType } from "../web/src/features/issue-page/page-words";
-import { treeIdOfNode } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { mergeTreePages, treeIdOfNode } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { wordsOf } from "../web/src/features/refs/tree-fragment";
 import {
   answerAsk,
   baseUrl,
@@ -23,9 +24,17 @@ import {
   recordCheckResult,
   requestApproval,
   reviewArtifact,
+  userHeaders,
 } from "./api";
 import { seedWholeIssue, type WholeIssueSeed } from "./issue-layout-seed";
-import { asPlanner, HEAD_SHA, PROJECT, pause, readTree } from "./issue-layout-seed-support";
+import {
+  asPlanner,
+  HEAD_SHA,
+  PROJECT,
+  pause,
+  readTree,
+  treePath,
+} from "./issue-layout-seed-support";
 import {
   checkBlockId,
   checkText,
@@ -48,8 +57,10 @@ import { composer } from "./issue-page-l";
  * - **The tree read** `GET /api/v1/issues/{key}/tree` is read through `readTree`
  *   (`e2e/issue-layout-seed-support.ts`), every page merged, and narrowed by `treeAnswerOf` to
  *   `converted`, `tree`, `view_of`, and each node's `id`, `block_id`, `document`, `issue`,
- *   `supertag`, `parent` and `text`. `artifactRoomOf` reads the artifact read's `room` through
- *   `getArtifact`, typed by hand, since the generated artifact holds no such member yet.
+ *   `supertag`, `parent` and `text`. `treeWordsOf` reads the same read as the page's client asks
+ *   for it, with each stored text's display tree, for each node's words as the page reads them.
+ *   `artifactRoomOf` reads the artifact read's `room` through `getArtifact`, typed by hand, since
+ *   the generated artifact holds no such member yet.
  * - **The rows** are the outline's `[data-node-row]`, each carrying `data-node-type`
  *   (`NodeRow.tsx`): a criterion's row is `criterion` and a reading's `reading`. A node of
  *   another issue carries a link `[data-node-issue]` to that issue before its kind tag, which
@@ -148,6 +159,48 @@ export async function treeAnswerOf(key: string): Promise<TreeReadAnswer> {
     tree: read.tree,
     view_of: read.view_of,
   };
+}
+
+/**
+ * The words of each node of issue `key`'s tree read, by its read id, as the page reads them: the
+ * display tree the read answers for each stored text (`text_tree`) to a caller that sends
+ * `Dispatch-Trees: 1`, as the page's client does (`api/client.ts`), read by
+ * `refs/tree-fragment.ts`' `wordsOf`. A typed block's stored `text` is its whole directive, so it
+ * opens with the block's fence (`:::requirement{#r1}`) and never with its words. Every page the
+ * cursor names is read and the pages merged as `readTree` reads them; a node the read sends no
+ * display tree for has no words.
+ */
+export async function treeWordsOf(key: string): Promise<ReadonlyMap<string, string>> {
+  const headers = { ...(await userHeaders(READER)), "Dispatch-Trees": "1" };
+  const pages: IssueTreeRead[] = [];
+  const cursors = new Set<string>();
+  let cursor: string | null = null;
+  do {
+    const url = new URL(treePath(key), baseUrl);
+    if (cursor !== null) url.searchParams.set("cursor", cursor);
+    const response = await fetch(url, { headers });
+    if (!response.ok) {
+      throw new Error(
+        `GET ${url.pathname}${url.search} failed: ${response.status} ${await response.text()}`
+      );
+    }
+    const answered = (await response.json()) as IssueTreeRead;
+    pages.push(answered);
+    cursor = answered.cursor;
+    if (cursor !== null && cursors.has(cursor)) {
+      throw new Error(`${url.pathname} names the cursor ${cursor} twice`);
+    }
+    if (cursor !== null) cursors.add(cursor);
+  } while (cursor !== null);
+  const [first, ...rest] = pages;
+  if (first === undefined) throw new Error(`${treePath(key)} answered no page`);
+  const words = new Map<string, string>();
+  for (const node of mergeTreePages([first, ...rest]).nodes ?? []) {
+    if (node.text_tree !== undefined && !words.has(node.id)) {
+      words.set(node.id, wordsOf(node.text_tree));
+    }
+  }
+  return words;
 }
 
 /** The room the artifact read of `id` answers, the issue's tree artifact on a converted issue,
@@ -314,8 +367,6 @@ export interface ModelChild {
 
 /** What `seedModelRows` wrote over `seedWholeIssue`, and the nodes of it the rows read. */
 export interface ModelRowsSeed extends WholeIssueSeed {
-  /** The spec's version alice approved, its current version when the seed returns. */
-  readonly approvedVersion: number;
   /** Check c1 of the issue's `verification.md`. */
   readonly checkOne: ModelNode;
   readonly child: ModelChild;
@@ -633,7 +684,6 @@ export async function seedModelRows(): Promise<ModelRowsSeed> {
   });
   return {
     ...seeded,
-    approvedVersion: reviewed.version,
     checkOne: {
       address: blockAddress(key, verificationSlug, checkBlockId(1)),
       id: id(NAMES.checkOne),

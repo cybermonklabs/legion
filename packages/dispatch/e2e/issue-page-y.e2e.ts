@@ -24,7 +24,13 @@ import {
   parseDispatchReference,
   shortForm,
 } from "../web/src/features/refs/routes";
-import { editArtifact, getArtifact, getArtifactText, getIssueCoverage } from "./api";
+import {
+  editArtifact,
+  getArtifact,
+  getArtifactText,
+  getIssueCoverage,
+  quiesceDocuments,
+} from "./api";
 import {
   applySupertagMigration,
   builtSchemaVersion,
@@ -96,6 +102,7 @@ import {
   TREE_READ_OWED,
   treeAnswerOf,
   treeReadServed,
+  treeWordsOf,
   type WrittenCriterion,
   writeCriterionApi,
 } from "./issue-page-y";
@@ -163,8 +170,12 @@ async function openOutline(page: Page, key: string): Promise<void> {
   await unfoldEveryBranch(page);
 }
 
-/** The first load of issue `key`, by route, read once the page has gone quiet. */
+/** The first load of issue `key`, by route, read once the page has gone quiet. The server first
+ *  settles every document the seed wrote (`quiesceDocuments`), while no page holds one open, so
+ *  no settlement of the seed's lands during the load or after it: one that lands later can write
+ *  a version of the spec, and move alice's approval with it. */
 async function firstLoad(page: Page, key: string): Promise<readonly RouteCount[]> {
+  await quiesceDocuments();
   const traffic = watchApiRequests(page);
   await gotoIssue(page, `/issues/${key}`);
   await expectLoadSettled(traffic);
@@ -293,6 +304,31 @@ async function expectStatementSevenChecked(page: Page, row: string, where: strin
     nodeRow(page, row).first(),
     `statement 7 says "No check" ${where}`
   ).not.toContainText(GAP_WORDS.no_check);
+}
+
+/** Fails unless the row of `row`, a node of the child `child`, is marked with the child's key as
+ *  a link to the child, read `where`. */
+async function expectChildMark(
+  page: Page,
+  row: string,
+  child: string,
+  what: string,
+  where: string
+): Promise<void> {
+  const mark = nodeRow(page, row).first().locator("[data-node-issue]");
+  await expect(mark, `the child's ${what} is not marked with the child's key ${where}`).toHaveText(
+    child
+  );
+  await expect(mark, `the child's ${what} does not link to the child ${where}`).toHaveAttribute(
+    "href",
+    `/issues/${child}`
+  );
+}
+
+/** The first word of node `id`'s words in `words` (`treeWordsOf`), or null where it has none: the
+ *  word typed where Enter puts the caret, at the start of the node's words. */
+function firstWord(words: ReadonlyMap<string, string>, id: string): string | null {
+  return words.get(id)?.split(/\s+/, 1)[0] ?? null;
 }
 
 /**
@@ -439,15 +475,17 @@ async function scrollInAsReader(page: Page, row: Locator): Promise<void> {
 
 // c-write. On the seed's first comment thread, `f` reaches Write a criterion and Enter aims the
 // box at the comment; what alice types and sends is a criterion under that comment, as typed,
-// drawn as hers; it stays after a reload, Spec counts it, and the header's chip reads the approved
-// version against the later one the criterion made. Escape before a send writes nothing; the
-// child, a view of the seed, and a check's row offer no Write a criterion; a refused send keeps
-// its text and says why; and the send costs one write and one or two tree reads, on a first load
-// that sends by route no more than a bare `seedWholeIssue` issue's. At 1440 px, and on `iphone` at
-// 390 px, where the box's placeholder takes its phone form.
+// drawn as hers; it stays after a reload, Spec counts it, and the header's chip reads the version
+// alice's approval stood at just before the send, as the API read it then, against the later one
+// the criterion made. Escape before a send writes nothing; the child, a view of the seed, and a
+// check's row offer no Write a criterion; a refused send keeps its text and says why; and the
+// send costs one write and one or two tree reads, on a first load that sends by route no more
+// than a bare `seedWholeIssue` issue's. At 1440 px, and on `iphone` at 390 px, where the box's
+// placeholder takes its phone form.
 //
 // Before (1) it loads a bare `seedWholeIssue` issue, a second seed of the row, and counts its first
-// load by route, then counts the seeded issue's the same way: (8) compares the two, so the first
+// load by route, then counts the seeded issue's the same way, each load once the server has
+// settled every document its seed wrote (`firstLoad`): (8) compares the two, so the first
 // assertion that fails on a page without the criterion line is (1)'s.
 // SLOW(>=2s): two whole issues seeded and each loaded cold until its reads settle, the second with
 // a decision, two readings, an approval and a child written over it and waited on in the tree
@@ -511,10 +549,18 @@ test("a person writes a criterion under the words they are reading @phone", asyn
     );
 
     // (2) Two lines with a reference, sent: a row under the comment, as typed, alice's, focused
-    // and on screen.
+    // and on screen. Just before the send the spec's approval, read through the API and not by
+    // the page, stands at the spec's version then current: (4) reads it against the criterion's.
     const reference = `dispatch://${seeded.parentKey}`;
     const typed = `${WRITTEN.first}: a reader finds every statement this issue asks for.\nIt starts from ${reference} and its spec.`;
     await composerField(page).fill(typed);
+    const standing = (await getArtifact(seeded.specArtifactId)).approval;
+    expect(
+      { state: standing?.state, version: standing?.version },
+      "just before the send the spec's approval does not stand at its current version"
+    ).toEqual({ state: "approved", version: expect.any(Number) });
+    const approvedVersion = standing?.version ?? 0;
+    const versionBeforeSend = standing?.latest_version ?? 0;
     await composerField(page).press("Enter");
     const written = criterionRows(page).filter({ hasText: WRITTEN.first });
     await expect(written, "the sent criterion is no row of the outline").toHaveCount(1);
@@ -553,16 +599,17 @@ test("a person writes a criterion under the words they are reading @phone", asyn
     await pickPreset(page, PRESET_NAMES.conversation);
     await expectIssuePageDrawn(page);
 
-    // (4) The header's chip reads the version alice approved against the later one.
+    // (4) The header's chip reads the version alice's approval stood at just before the send
+    // against the later one the criterion made.
     const latest = (await getArtifact(seeded.specArtifactId)).approval?.latest_version ?? 0;
     expect(latest, "the criterion made no later version of the spec").toBeGreaterThan(
-      seeded.approvedVersion
+      versionBeforeSend
     );
     await expect(
       issuePage(page).locator(`[data-approval-artifact="${seeded.specArtifactId}"]`).first(),
       "the header's chip does not read the approved version against a later one"
     ).toHaveText(
-      `${APPROVAL_STATE_WORDS.approved} v${seeded.approvedVersion} · ${CONTROL_LABELS.approval_latest} v${latest}`
+      `${APPROVAL_STATE_WORDS.approved} v${approvedVersion} · ${CONTROL_LABELS.approval_latest} v${latest}`
     );
 
     // (5) Escape before a send ends the aim and writes nothing.
@@ -668,23 +715,28 @@ test("a person writes a criterion under the words they are reading @phone", asyn
 });
 
 // c-readings. An agent's reading is a row under the decision or the answered question it reads,
-// tagged "reading", in the agents' grey and named by its agent's role; the child's check, with its
-// result, and its plan task are rows under the statement they serve, each marked with the child's
-// key as a link, and none under the child's own row; that statement draws no "No check" on the
-// outline or under Verification. Under Decisions the decision's reading is a row under it and the
-// question's is not drawn; and no element but a kind tag reads a model's word whole, nor any text
-// a uuid. At 1440 px. How the child's check stands, which its result gives, is the next row's.
+// tagged "reading", in the agents' grey and named by its agent's role. The child's check is a row
+// under the statement it serves, marked with the child's key as a link, in Conversation and in
+// Graph; Conversation's read names no result and no plan task (`CONVERSATION_KINDS`), so there
+// the check draws neither, while Graph, which reads the whole tree, draws the check's result under
+// it and the child's plan task under the statement, and none of them under the child's own row.
+// That statement draws no "No check" in either, and under Verification it is covered: the child's
+// check is a row under it with its result. Under Decisions the decision's reading is a row under
+// it and the question's is not drawn; and no element but a kind tag reads a model's word whole,
+// nor any text a uuid. At 1440 px. How the child's check stands, which its result gives, is the
+// next row's.
 //
 // The steps are asserted in the order (1), (3), (2), (4). On a page without the reading rows, no
 // step drafts a reading, so the row fails there on (1)'s first assertion.
 // SLOW(>=2s): the whole issue seeded with a decision, two readings, an approval and a child written
-// over it and waited on in the tree read, then loaded and unfolded, and three views turned on.
+// over it and waited on in the tree read, then loaded and unfolded, and four views turned on.
 test("a reading stands under what it reads and a child's check under the statement it serves", async ({
   browser,
 }) => {
   test.skip(!(await treeReadServed()), TREE_READ_OWED);
   test.setTimeout(240_000);
   await phase(browser, seedModelRows, async (page, seeded) => {
+    const traffic = watchApiRequests(page);
     await openOutline(page, seeded.key);
     expect((await treeAnswerOf(seeded.key)).converted, NOT_CONVERTED).toBe(true);
     const { child, decision, decisionReading, question, questionReading, statementSeven } = seeded;
@@ -708,13 +760,15 @@ test("a reading stands under what it reads and a child's check under the stateme
       rowOf(rows, decisionReading.row)?.authorShape,
       "the decision's reading is not drawn as an agent's"
     ).toBe(GLYPH_TOKENS.authors.agent);
-    const layouts = await rowLayouts(page, seeded.specSlug);
-    const readingLayout = layouts.find((layout) => layout.id === decisionReading.row);
-    const agentTurn = layouts.find((layout) => layout.id === seeded.messages.root);
+    // The agents' grey is the colour `rowLayouts` resolves from the theme's own token for a row of
+    // an agent's words that no kind colours (`--color-page-bullet`), not any other row's.
+    const readingLayout = (await rowLayouts(page, seeded.specSlug)).find(
+      (layout) => layout.id === decisionReading.row
+    );
     expect(
       readingLayout?.bullet.fill ?? "no row of the reading",
-      "the decision's reading is not drawn in the agents' grey, as the planner's message is"
-    ).toBe(agentTurn?.bullet.fill ?? "no row of the planner's message");
+      "the decision's reading is not drawn in the agents' grey"
+    ).toBe(readingLayout?.bullet.kindFill);
     expect(
       readingLayout?.author?.color ?? "no author",
       "the decision's reading does not name its agent in grey"
@@ -725,51 +779,71 @@ test("a reading stands under what it reads and a child's check under the stateme
       })
       .toBe(question.row);
 
-    // (3) The child's check, its result and its plan task under statement 7, marked with the
-    // child's key, and none of them under the child's own row.
+    // (3) In Conversation the child's check under statement 7, marked with the child's key, and no
+    // row of its result or of the child's plan task, which Conversation's read does not name.
     await expect
       .poll(() => parentOfRow(page, child.check.row), {
         message: "the child's check stands under statement 7",
       })
       .toBe(statementSeven.row);
+    await expectChildMark(page, child.check.row, child.key, "check", "in Conversation");
+    await expect(
+      nodeRow(page, child.result),
+      "Conversation draws a row of the child's result, a kind its read does not name"
+    ).toHaveCount(0);
+    await expect(
+      nodeRow(page, child.task.row),
+      "Conversation draws a row of the child's plan task, a kind its read does not name"
+    ).toHaveCount(0);
+    await expectStatementSevenChecked(page, statementSeven.row, "in Conversation");
+
+    // (3) In Graph the child's check with its result, and its plan task, under statement 7, each
+    // marked with the child's key, and none of them under the child's own row.
+    await pickSettled(page, traffic, PRESET_NAMES.graph);
+    await unfoldEveryBranch(page);
+    await expect
+      .poll(() => parentOfRow(page, child.check.row), {
+        message: "in Graph the child's check does not stand under statement 7",
+      })
+      .toBe(statementSeven.row);
     await expect
       .poll(() => parentOfRow(page, child.result), {
-        message: "the child's check draws its result under it",
+        message: "in Graph the child's check does not draw its result under it",
       })
       .toBe(child.check.row);
     await expect
       .poll(() => parentOfRow(page, child.task.row), {
-        message: "the child's plan task does not stand under statement 7",
+        message: "in Graph the child's plan task does not stand under statement 7",
       })
       .toBe(statementSeven.row);
-    for (const [node, what] of [
-      [child.check, "check"],
-      [child.task, "plan task"],
-    ] as const) {
-      const mark = nodeRow(page, node.row).first().locator("[data-node-issue]");
-      await expect(mark, `the child's ${what} is not marked with the child's key`).toHaveText(
-        child.key
-      );
-      await expect(mark, `the child's ${what} does not link to the child`).toHaveAttribute(
-        "href",
-        `/issues/${child.key}`
-      );
-    }
+    await expectChildMark(page, child.check.row, child.key, "check", "in Graph");
+    await expectChildMark(page, child.task.row, child.key, "plan task", "in Graph");
     const unfolded = await drawnRows(page);
-    expect(rowOf(unfolded, child.key), "the child issue draws no row of its own").toBeDefined();
+    expect(
+      rowOf(unfolded, child.key),
+      "in Graph the child issue draws no row of its own"
+    ).toBeDefined();
     expect(
       idsUnder(unfolded, child.key).filter((id) =>
         [child.check.row, child.task.row, child.result].includes(id)
       ),
-      "a row of the child's check, result or plan task stands under the child's own row"
+      "in Graph a row of the child's check, result or plan task stands under the child's own row"
     ).toEqual([]);
-    await expectStatementSevenChecked(page, statementSeven.row, "on the outline");
+    await expectStatementSevenChecked(page, statementSeven.row, "in Graph");
+
+    // (3) Under Verification statement 7 is covered: the child's check is a row under it, with
+    // its result, and it draws no "No check".
     await pickPreset(page, PRESET_NAMES.verification);
     await expect
       .poll(() => parentOfRow(page, child.check.row), {
         message: "under Verification the child's check is not a row under statement 7",
       })
       .toBe(statementSeven.row);
+    const verifiedCheck = checkUnder(page, statementSeven.row, child.check.row);
+    await expect(
+      verifiedCheck.locator(`[data-verification-result][data-node-id="${child.result}"]`),
+      "under Verification the child's check under statement 7 draws no row of its result"
+    ).toHaveCount(1);
     await expectStatementSevenChecked(page, statementSeven.row, "under Verification");
 
     // (2) Under Decisions the decision's reading under it, and the question's nowhere.
@@ -804,9 +878,12 @@ test("a reading stands under what it reads and a child's check under the stateme
 // passing result gives it, "passed". The page reads that standing from the tree read alone: the
 // check node's `check.text_sha256` and its result node's `result` (`verdict`, `retracted`,
 // `check_sha256`), read by F's one reading of a check (`model-rows/model-drafts.ts`'
-// `borrowedStanding`). c-readings' `-g` selects it with row 2.
+// `borrowedStanding`). It is read in Graph, whose read is the whole tree and so holds the result
+// under the check: Conversation's read names no result (`CONVERSATION_KINDS`). The row first reads
+// that Graph's own read holds the one pass over the check's words as they stand, so the standing
+// drawn is the one that read gives. c-readings' `-g` selects it with row 2.
 // SLOW(>=2s): the whole issue seeded with a decision, two readings, an approval and a child written
-// over it and waited on in the tree read, then loaded and unfolded.
+// over it and waited on in the tree read, then loaded in Graph and unfolded.
 test("a reading stands under what it reads, and a child's check draws the standing its results give", async ({
   browser,
 }) => {
@@ -815,7 +892,32 @@ test("a reading stands under what it reads, and a child's check draws the standi
   await phase(browser, seedModelRows, async (page, seeded) => {
     expect((await treeAnswerOf(seeded.key)).converted, NOT_CONVERTED).toBe(true);
     const { child } = seeded;
-    await openOutline(page, seeded.key);
+    const traffic = watchApiRequests(page);
+    const graph = outlineAnswerOf(page, "graph");
+    await openPreset(page, seeded.key, "graph");
+    await expectActivePreset(page, PRESET_NAMES.graph);
+    await expectLoadSettled(traffic);
+    // The seed waited until the tree read held the result under the check, so the Graph read that
+    // holds the check holds its result too.
+    const answer = await heldTreeAnswer(graph, "Graph's load", (held) =>
+      (held.nodes ?? []).some((node) => node.id === child.check.id)
+    );
+    const nodes = answer.nodes ?? [];
+    const words = nodes.find((node) => node.id === child.check.id)?.check?.text_sha256;
+    expect(words, "Graph's read answers no sum of the child's check's words").toBeDefined();
+    const results = nodes.filter(
+      (node) => node.supertag === "result" && node.parent?.id === child.check.id
+    );
+    expect(
+      results.map(({ result }) => ({
+        retracted: result?.retracted ?? null,
+        verdict: result?.verdict,
+        words: result?.check_sha256,
+      })),
+      "Graph's read does not hold one pass nobody withdrew over the child's check's words as they stand"
+    ).toEqual([{ retracted: null, verdict: "pass", words }]);
+    await expectIssuePageDrawn(page);
+    await unfoldEveryBranch(page);
     await expect(
       nodeRow(page, child.check.row).first(),
       "the child's check does not stand as its passing result says"
@@ -908,19 +1010,17 @@ test("a node is edited where it lives and an open editor survives a schema chang
     await page.reload();
     await issueRead(page);
     await expectIssuePageDrawn(page);
+    // After a reload each node's words, as the page reads them (`treeWordsOf`), start with the
+    // word typed after Enter, which puts the caret at their start. A typed block's stored `text`
+    // opens with its directive's fence, so its words are read from its display tree.
     await expect
       .poll(
         async () => {
-          const { nodes } = await treeAnswerOf(seeded.key);
-          const startsWith = (id: string, word: string) =>
-            nodes
-              .find((node) => node.id === id)
-              ?.text.trimStart()
-              .startsWith(word) ?? false;
+          const words = await treeWordsOf(seeded.key);
           return {
-            check: startsWith(seeded.checkOne.id, TYPED.check),
-            criterion: startsWith(criterion.id, TYPED.criterion),
-            statement: startsWith(seeded.statementOne.id, TYPED.statement),
+            check: firstWord(words, seeded.checkOne.id),
+            criterion: firstWord(words, criterion.id),
+            statement: firstWord(words, seeded.statementOne.id),
           };
         },
         {
@@ -929,7 +1029,7 @@ test("a node is edited where it lives and an open editor survives a schema chang
           timeout: 20_000,
         }
       )
-      .toEqual({ check: true, criterion: true, statement: true });
+      .toEqual({ check: TYPED.check, criterion: TYPED.criterion, statement: TYPED.statement });
 
     // (3) A comment and the answered question take no caret; the child's check says it is edited
     // on its own issue.
@@ -1131,18 +1231,18 @@ test("a node is edited in place in each filter", async ({ browser }) => {
 
     await page.reload();
     await issueRead(page);
-    // The words typed in Spec and in Verification, each where its caret went: at the start of
-    // each node Enter put the caret in, and in the criterion where the press put it.
+    // The words typed in Spec and in Verification, as the page reads them (`treeWordsOf`), each
+    // where its caret went: at the start of the words of each node Enter put the caret in,
+    // statement 7 in Spec and statement 1 in Verification, and wherever the press put it in the
+    // words of the criterion in Spec and of check c1 in Verification.
     await expect
       .poll(
         async () => {
-          const { nodes } = await treeAnswerOf(seeded.key);
-          const text = (id: string) => nodes.find((node) => node.id === id)?.text.trimStart() ?? "";
+          const words = await treeWordsOf(seeded.key);
           return {
-            criterion: text(criterion.id).includes(TYPED.criterion),
-            starts: [statementOne.id, checkOne.id, statementSeven.id].map(
-              (id) => text(id).split(/\s+/, 1)[0]
-            ),
+            check: words.get(checkOne.id)?.includes(TYPED.check) ?? false,
+            criterion: words.get(criterion.id)?.includes(TYPED.criterion) ?? false,
+            starts: [statementOne.id, statementSeven.id].map((id) => firstWord(words, id)),
           };
         },
         {
@@ -1151,10 +1251,7 @@ test("a node is edited in place in each filter", async ({ browser }) => {
           timeout: 20_000,
         }
       )
-      .toEqual({
-        criterion: true,
-        starts: [TYPED.statement, TYPED.check, TYPED.statement],
-      });
+      .toEqual({ check: true, criterion: true, starts: [TYPED.statement, TYPED.statement] });
     for (const artifact of [seeded.specArtifactId, seeded.verificationArtifactId]) {
       expect(await artifactRoomOf(artifact), "the document is not edited in the issue's room").toBe(
         seeded.tree
@@ -1179,14 +1276,26 @@ test("a node is edited in place in each filter", async ({ browser }) => {
     const { decision, decisionReading, question } = seeded;
     const answered = nodeRow(page, question.row).first();
     await expect(answered).toBeVisible();
-    // The planner's decision shapes no statement, so the view draws it in its foot, which stays
-    // folded until it is pressed.
-    await decisionsFoot(page).click();
-    await expect(decisionsFoot(page), "Decisions does not unfold its foot").toHaveAttribute(
+    // The planner's decision shapes no statement, so the view draws it, its reading right after
+    // it, in its foot. The foot is drawn unfolded as the view opens (part U's R2), and a press of
+    // its control folds an unfolded foot, so the control is pressed only where the foot stands
+    // folded.
+    const foot = decisionsFoot(page);
+    if ((await foot.getAttribute("aria-expanded")) !== "true") await foot.click();
+    await expect(foot, "Decisions does not unfold its foot").toHaveAttribute(
       "aria-expanded",
       "true"
     );
+    const decisionRow = nodeRow(page, decision.row).first();
     const reading = nodeRow(page, decisionReading.row).first();
+    await expect(
+      decisionRow,
+      "the foot of Decisions does not draw the agent decision"
+    ).toBeVisible();
+    await expect(
+      reading,
+      "the foot of Decisions does not draw the decision's reading"
+    ).toBeVisible();
     await focusFilterRow(reading);
     await caretInto(page, {
       artifact: seeded.specArtifactId,
@@ -1195,7 +1304,6 @@ test("a node is edited in place in each filter", async ({ browser }) => {
       what: "the decision's reading",
     });
     await escapeToRow(page, reading, "the decision's reading");
-    const decisionRow = nodeRow(page, decision.row).first();
     await caretBy(
       page,
       {
