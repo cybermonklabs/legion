@@ -457,7 +457,14 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "settings",
     path: () => "/settings",
     pattern: "/settings",
-    ready: (page) => [page.getByRole("heading", { level: 1, name: "Settings" })],
+    // The mint form's Set P0 box, which Settings draws only once `GET /api/v1/whoami` has
+    // answered that the person holds `p0` (`web/src/features/settings/AgentTokensSection.tsx`).
+    // The page's heading is drawn while that read is still out, so without this a run can shoot
+    // the page before the box and another after it, against the same baseline.
+    ready: (page) => [
+      page.getByRole("heading", { level: 1, name: "Settings" }),
+      page.getByRole("checkbox", { name: "Set P0 (new token)" }),
+    ],
   },
   {
     kind: "reviewed",

@@ -1195,10 +1195,14 @@ person, as the Go client does:
   that is no list fails the call naming the variable. The machine's own trade names no project.
 
 Dispatch gives the token that names a person the `person` scope, so the session writes as that
-person. It never gives a broker token `approve`: a review, an answer to an approval request, a
-machine login's decision and a personal token's mint need the person's browser, or a personal
-token (`DISPATCH_TOKEN`) the person gave `approve`. A read trade's token
-(`DISPATCH_TOKEN_BROKER_READ`, below) holds `person` too, and writes nothing.
+person. Dispatch gives `approve` to one broker-issued token only: the approve-only token that the
+secrets broker spends through Cipher's proxy and never releases to the box, which this client
+sends only a review with (`dispatch review`, below). Dispatch gives `p0` to no broker-issued
+token. So an answer to an approval request, a machine login's decision and a personal token's
+mint need the person's browser, or a personal token (`DISPATCH_TOKEN`) the person gave `approve`,
+and a write that makes an issue's own priority `0` (P0) needs the person's browser, or a personal
+token the person gave `p0`. A read trade's token (`DISPATCH_TOKEN_BROKER_READ`, below) holds
+`person` too, and writes nothing.
 
 The client reads the sign-ins as the Go client reads them (`signins.ts`). The directory is
 `AGENT_SECRETS_SIGNIN_DIR`, else `$XDG_STATE_HOME/agent-secrets/signins`, else
@@ -1933,7 +1937,8 @@ holds the proxy's parser and help, and `dispatch-login-command.ts` holds the log
 session actor: `status` (a Legion lifecycle status), `title`, `labels` (`--label`, replacing the
 set), `labels_add` (`--labels-add`, repeated, adding to the labels the issue holds inside
 Dispatch's write and keeping the others; never beside `labels`, which is refused before any
-request), `priority` (`0` for P0 down to `3` for P3, or `null` to clear it), `route`,
+request), `priority` (`0` for P0 down to `3` for P3, or `null` to clear it; a write that makes the
+issue's own priority `0` needs the `p0` scope, as `dispatch issue --priority 0` does), `route`,
 and `external_links`: a non-empty list merges into the issue's existing links by URL rather than
 replacing them, and an explicit empty list (`--clear-external-links`) clears every link instead;
 `before` and `after` (`--before <KEY>` / `--after <KEY>`) move the issue on its project's board —

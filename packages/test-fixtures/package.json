@@ -49,6 +49,10 @@
       "types": "./src/process-end.ts",
       "bun": "./src/process-end.ts"
     },
+    "./refused-port": {
+      "types": "./src/refused-port.ts",
+      "bun": "./src/refused-port.ts"
+    },
     "./row-deadline": {
       "types": "./src/row-deadline.ts",
       "bun": "./src/row-deadline.ts"

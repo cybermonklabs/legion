@@ -705,9 +705,8 @@ export async function prepareStandIn(
   scratch: Scratch,
   standIns: StandIns
 ): Promise<PreparedStandIn> {
-  // The ports the broker and the listener are named at: refused, from a range the kernel hands no
-  // `port: 0` listener, each held by a UDP bind of this process so no other `closedPort` call gets
-  // it. A program that binds the number over TCP is not stopped; none of this suite does.
+  // The ports the broker and the listener are named at: refused, each held bound and never
+  // listening by this process (`closedPort`), so no other program can bind the number and answer.
   const brokerPort = await closedPort();
   const listenerPort = await closedPort();
   const state = scratch("state");
