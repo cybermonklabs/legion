@@ -356,6 +356,58 @@ func TestALaneWaiterHoldsNoReadUnitWhileItWaits(t *testing.T) {
 	}
 }
 
+// A heavy read's lane serves newest first while the read class's queue has stood non-empty for a
+// whole read wait, and first in, first out until then (laneGate): with the read class's one unit
+// held and a read queued for it, and the lane's one place held with three heavy reads lined up
+// behind it, the place that comes back while the read class's queue has been non-empty for less
+// than its wait goes to the heavy read that has waited longest; once that queue has stood a whole
+// wait, by the clock its decision reads, each place that comes back goes to the heavy read that
+// joined the lane last, and the lane counts those two grants newest first (LaneStats.NewestFirst).
+// First in, first out there handed each place to the heavy read that had waited longest, which
+// reached the read class with its wait spent, was admitted all the same and crowded out the cheap
+// reads: about 22,000 fewer of them answered 2xx a 3-minute window on the two-processor bed at a
+// standing ten times the load (INFRA-592, a bisection of d416a857).
+func TestALaneServesTheNewestFirstWhileTheReadClassStands(t *testing.T) {
+	t.Parallel()
+	clock := newTestClock()
+	l := newWithClock(Limits{Read: 1, Write: 1, HeavyReadLane: 1, ReadWait: patient}, clock)
+	ctx := testwait.Context(t)
+	reader := admit(t, l, Read, 1)
+	queuedRead := admitInBackground(t, l, ctx, Read, 1)
+	lane := orderedQueue{
+		places: 1,
+		take:   func(ctx context.Context) (func(), error) { return enterLane(ctx, l, Search) },
+		queued: func() int { return laneStatsOf(t, l, Search).Queued },
+	}
+	held := holdEveryPlace(t, ctx, lane)
+	answers := lineUp(t, ctx, lane, 3)
+
+	clock.advance(patient - time.Nanosecond)
+	held[0]()
+	oldest := grantedNext(t, answers, 0, "a lane serves first in, first out while the read class's queue absorbs a burst")
+	if newestFirst := laneStatsOf(t, l, Search).NewestFirst; newestFirst != 0 {
+		t.Fatalf("%d granted newest first while the read class's queue absorbed a burst, want none", newestFirst)
+	}
+
+	clock.advance(time.Nanosecond)
+	const why = "a lane serves the newest first while the read class's queue has stood a whole read wait"
+	oldest.give()
+	newest := grantedNext(t, answers, 2, why)
+	newest.give()
+	last := grantedNext(t, answers, 1, why)
+	if stats := laneStatsOf(t, l, Search); stats.NewestFirst != 2 || stats.Queued != 0 || stats.QueueFull+stats.WaitExceeded != 0 {
+		t.Fatalf("the search lane's stats %+v, want the two grants since the read class stood counted newest first, and nothing queued or refused", stats)
+	}
+	last.give()
+
+	reader.Release()
+	read := testwait.Receive(t, "the queued read's answer", queuedRead)
+	if read.err != nil {
+		t.Fatalf("the read queued in its class once the unit came back: %v, want it admitted", read.err)
+	}
+	read.ticket.Release()
+}
+
 // enterLane takes lane for a request arriving now, in the order api.admitted takes them: the
 // arrival that stamps the request's place first, then the lane, which counts its wait against it.
 func enterLane(ctx context.Context, limiter *Limiter, lane Lane) (func(), error) {

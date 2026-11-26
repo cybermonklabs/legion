@@ -119,33 +119,36 @@ const MaxHeavyReadLane = MaxReadLimit / int(laneCount-1)
 
 // fifoGate is a limit of places and the queue that waits for one, one place a holder: the gate a
 // heavy read's lane (laneGate) and the request pool's work outside admission (Outside) are both
-// built on. Its queue is served first in, first out, always: a place that comes back goes to the
-// waiter that has waited longest, however long the queue has stood non-empty, where a class's
-// queue turns to its newest waiter once it stands (gate.next). Its places are one each and held
-// for short work - a heavy read's statement, a decision's or a check's few reads - so they turn
-// over many times within a waiter's wait, and a queue that arrivals keep non-empty while it drains
-// within that wait serves every waiter in time in the order they came. Newest first there handed
-// each place to the waiter that had just come and left the oldest to be refused at their wait
-// while the places turned over beside them: on the cluster copy at ten times the load every
-// refusal of the run - 26 searches, answered 429 at about 1,001 ms - was the search lane's at its
-// wait, while the lane held its 7 with 4 or 5 queued and the read class had room, and the
-// refusals followed the lane's newest-first grants: 119 of them gave 23 refusals, 71 gave 3, and 15
-// or fewer none (INFRA-592, c-scale at 72e98685; the architect, 2026-11-26 08:09Z). Its waiters
-// join in the order they ask, so the newest is the last, and every one of them may be refused: a
-// lane's wait and a place's are always bounded, and no take-back that must not be refused holds a
-// place (Away.TakeBackNeverRefused). It has a mutex of its own, since neither holds any of the
-// Limiter's while it waits. A waiter waits for what is left of its wait and is refused only when
-// that wait runs out, or at once where the queue already holds ReadBurstFactor times the limit: a
-// bound on the memory the waiters take, a goroutine and a request each, as a class's burst cap
-// is, and never a refusal of a waiter whose wait still has room (ReadBurstFactor says why). That
-// is 22 times a lane's limit, 154 at a lane of 7 (MaxHeavyReadLane), and 22 times the outside
-// places' 8, 176 (OutsideQueueLimit). How a waiter counts its wait, and what a refusal is and is
-// counted against, are the caller's (enter).
+// built on. A place that comes back goes to the waiter that has waited longest, first in, first
+// out, unless servesNewest, asked at that moment, answers that it goes to the waiter that joined
+// last: a lane's asks whether the read class's queue stands (laneGate), and the outside places
+// have none, so they serve first in, first out however long their queue has stood (Outside). Its
+// places are one each and held for short work - a heavy read's statement, a decision's or a
+// check's few reads - so they turn over many times within a waiter's wait, and a queue that
+// arrivals keep non-empty while it drains within that wait serves every waiter in time in the
+// order they came. Its waiters join in the order they ask, so the newest is the last, and every
+// one of them may be refused: a lane's wait and a place's are always bounded, and no take-back
+// that must not be refused holds a place (Away.TakeBackNeverRefused). It has a mutex of its own,
+// since neither holds any of the Limiter's while it waits. A waiter waits for what is left of its
+// wait and is refused only when that wait runs out, or at once where the queue already holds
+// ReadBurstFactor times the limit: a bound on the memory the waiters take, a goroutine and a
+// request each, as a class's burst cap is, and never a refusal of a waiter whose wait still has
+// room (ReadBurstFactor says why). That is 22 times a lane's limit, 154 at a lane of 7
+// (MaxHeavyReadLane), and 22 times the outside places' 8, 176 (OutsideQueueLimit). How a waiter
+// counts its wait, and what a refusal is and is counted against, are the caller's (enter).
 type fifoGate struct {
 	limit int
 	// wait is how long a waiter waits for a place, which its caller counts (enter). New sets it
 	// once.
 	wait time.Duration
+	// servesNewest, where set, answers at each place leave hands on whether it goes to the waiter
+	// that joined last rather than the one that has waited longest. leave asks it under mu, so it
+	// takes no lock of the Limiter's: a lane's reads the read class's queue through an atomic
+	// (Limiter.readsStand). Nil is first in, first out at all times, the outside places'. New sets
+	// it once.
+	servesNewest func() bool
+	// newestFirst counts the places leave handed to the waiter that joined last.
+	newestFirst atomic.Uint64
 
 	// mu guards the places held, the queue and its longest length.
 	mu        sync.Mutex
@@ -159,7 +162,7 @@ type fifoGate struct {
 var errGateFull = errors.New("the queue for a place is full")
 
 // enter takes a place and answers nil once it holds one: at once where a place is free and nothing
-// waits, else after waiting for one in the queue, first in, first out. wait does the waiting:
+// waits, else after waiting for one in the queue (leave says in what order). wait does the waiting:
 // it waits on ready, which leave closes to hand the caller a place, and answers whether the place
 // came and, where not, why - the caller's own refusal where its wait ran out, ctx's error where
 // ctx ended. A caller refused or gone holds no place and has left the queue: enter answers
@@ -202,22 +205,28 @@ func (g *fifoGate) enter(ctx context.Context, wait func(ready <-chan struct{}) (
 	default:
 	}
 	// A waiter that leaves frees no place, so it held back nobody behind it: while any waits,
-	// every place is held, since leave hands a place to the oldest waiter rather than freeing it.
+	// every place is held, since leave hands a place to a waiter rather than freeing it.
 	g.waiters.Remove(element)
 	g.mu.Unlock()
 	return true, failure
 }
 
-// leave gives one place back, handing it to the waiter that has waited longest where any waits.
+// leave gives one place back, handing it to a waiter where any waits: the one that has waited
+// longest, or the one that joined last where servesNewest answers so now.
 func (g *fifoGate) leave() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if oldest := g.waiters.Front(); oldest != nil {
-		g.waiters.Remove(oldest)
-		close(oldest.Value.(chan struct{}))
+	next := g.waiters.Front()
+	if next == nil {
+		g.used--
 		return
 	}
-	g.used--
+	if g.servesNewest != nil && g.servesNewest() {
+		next = g.waiters.Back()
+		g.newestFirst.Add(1)
+	}
+	g.waiters.Remove(next)
+	close(next.Value.(chan struct{}))
 }
 
 // counts reads the places held, the waiters queued now and the most that have queued at once.
@@ -230,9 +239,26 @@ func (g *fifoGate) counts() (used, queued, maxQueued int) {
 // laneGate is one lane's limit and its queue: a fifoGate, since a lane is taken before the
 // classes and holds none of their units while it waits. A request takes its lane before anything
 // else it waits for, right after the arrival that stamps its place (Limiter.Arrive), so the order
-// it reaches the queue is the order it arrived in, and the order the lane serves it in (fifoGate).
-// Its wait is the read class's, which EnterLane counts against the wait the request has already
-// spent.
+// it reaches the queue is the order it arrived in. Its wait is the read class's, which EnterLane
+// counts against the wait the request has already spent.
+//
+// What it serves first is the read class's state, not its own (the architect, INFRA-592,
+// 2026-11-26): first in, first out while the read class's queue is empty or absorbing a burst, and
+// newest first while that queue has stood non-empty for a whole read wait (Limiter.readsStand),
+// the moment the class's queue turns to its own newest waiter (gate.next). A lane full while the
+// read class has room is no overload but its places turning over, and newest first there, decided
+// by the lane's own queue standing, handed each place to the waiter that had just come and left
+// the oldest to be refused at their wait while the places turned over beside them: on the cluster
+// copy at ten times the load every refusal of the run - 26 searches, answered 429 at about 1,001
+// ms - was the search lane's at its wait, while the lane held its 7 with 4 or 5 queued and the read
+// class had room, and the refusals followed the lane's newest-first grants: 119 of them gave 23
+// refusals, 71 gave 3, and 15 or fewer none (INFRA-592, c-scale at 72e98685; the architect,
+// 2026-11-26 08:09Z). A read class that stands is the overload, and first in, first out there
+// handed each place to the waiter that had waited longest, which reached the read class with its
+// wait spent, was admitted all the same, and crowded the cheap reads out with its heavy statement:
+// on the two-processor bed at a standing ten times the load about 22,000 fewer other reads were
+// answered 2xx a 3-minute window, and the share of 2xx fell about 17 points (INFRA-592, a
+// bisection of d416a857).
 type laneGate struct {
 	fifoGate
 	lane Lane
@@ -249,6 +275,9 @@ type LaneStats struct {
 	// QueueFull and WaitExceeded count the requests the lane refused for each reason since the
 	// Limiter was made.
 	QueueFull, WaitExceeded uint64
+	// NewestFirst counts the requests the lane gave a place newest first, the read class's queue
+	// standing (laneGate), since the Limiter was made.
+	NewestFirst uint64
 }
 
 // LaneStats reads every lane's counts.
@@ -258,19 +287,20 @@ func (l *Limiter) LaneStats() []LaneStats {
 		g := l.lanes[lane]
 		used, queued, _ := g.counts()
 		stats = append(stats, LaneStats{Lane: lane, Limit: g.limit, InFlight: used, Queued: queued,
-			QueueFull: g.queueFull.Load(), WaitExceeded: g.waitExceeded.Load()})
+			QueueFull: g.queueFull.Load(), WaitExceeded: g.waitExceeded.Load(), NewestFirst: g.newestFirst.Load()})
 	}
 	return stats
 }
 
 // EnterLane takes a place in lane for a request that has arrived (Limiter.Arrive) and is about to
 // ask for its class's units, and returns the release that gives the place back. A request that
-// finds the lane full waits in its queue, first in, first out (fifoGate), holding no admission
-// unit while it waits, which is the point of taking the lane before the units: a heavy read
-// waiting for its lane costs the other routes nothing. One whose wait runs out is refused then,
-// and one that finds the queue already at its cap, ReadBurstFactor times the lane's limit, the
-// bound on its memory (fifoGate), is refused at once: either way a *Refusal naming the lane, which
-// its caller answers 429 OVERLOADED with Retry-After, as it answers a class's refusal.
+// finds the lane full waits in its queue - first in, first out, or newest first while the read
+// class's queue stands (laneGate) - holding no admission unit while it waits, which is the point
+// of taking the lane before the units: a heavy read waiting for its lane costs the other routes
+// nothing. One whose wait runs out is refused then, and one that finds the queue already at its
+// cap, ReadBurstFactor times the lane's limit, the bound on its memory (fifoGate), is refused at
+// once: either way a *Refusal naming the lane, which its caller answers 429 OVERLOADED with
+// Retry-After, as it answers a class's refusal.
 //
 // The wait is what is left of arrival's one wait (the read wait, Limits.ReadWait, for the class
 // the lanes belong to), and the time spent here is added to it as a class queue's is: the lane

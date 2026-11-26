@@ -237,7 +237,8 @@ func (t *testTimer) Reset(d time.Duration) bool {
 // requests it holds at once, take asks for one for a request arriving now and answers once the
 // request holds it, with the give-back, or why not, reason is the Reason a refusal of its refuses
 // for, queued reads how many wait in it now, and newestFirst how many it has granted newest first,
-// nil for a queue of places, which serves first in, first out at all times (fifoGate).
+// nil for the places outside admission, which serve first in, first out at all times and count no
+// such grants (fifoGate).
 type orderedQueue struct {
 	places      int
 	take        func(ctx context.Context) (give func(), err error)
@@ -256,16 +257,18 @@ type queueKind struct {
 // classQueues are each class's queue with one unit, which serves adaptive LIFO (gate.next).
 var classQueues = []queueKind{{"the read class", classQueue(Read)}, {"the write class", classQueue(Write)}}
 
-// placeQueues are the queues of places, which serve first in, first out at all times (fifoGate): a
-// heavy read's lane with one place, and the places outside admission (OutsideLimit).
+// placeQueues are the queues of places (fifoGate): a heavy read's lane with one place, its read
+// class idle, so it serves first in, first out however long its own queue stands (laneGate), and
+// the places outside admission (OutsideLimit), which serve first in, first out at all times.
 var placeQueues = []queueKind{
 	{"a lane", func(t *testing.T, clock *testClock, wait time.Duration) orderedQueue {
 		l := newWithClock(Limits{Read: 8, Write: 1, HeavyReadLane: 1, ReadWait: wait}, clock)
 		return orderedQueue{
-			places: 1,
-			take:   func(ctx context.Context) (func(), error) { return enterLane(ctx, l, Search) },
-			reason: refusalReason,
-			queued: func() int { return laneStatsOf(t, l, Search).Queued },
+			places:      1,
+			take:        func(ctx context.Context) (func(), error) { return enterLane(ctx, l, Search) },
+			reason:      refusalReason,
+			queued:      func() int { return laneStatsOf(t, l, Search).Queued },
+			newestFirst: func() uint64 { return laneStatsOf(t, l, Search).NewestFirst },
 		}
 	}},
 	{"the outside places", func(t *testing.T, clock *testClock, wait time.Duration) orderedQueue {
@@ -369,8 +372,8 @@ func grantedNext(t *testing.T, answers <-chan served, want int, why string) serv
 // write queue's whole cap at a limit of one (WriteBurstFactor) - line up behind every place held,
 // the queue has been non-empty for less than its wait when the places start coming back, and each
 // place goes to the request that asked first of those left - on each class's queue, a heavy read's
-// lane and the places outside admission alike - and no class's queue grants one newest first. A
-// queue that emptied within its last wait is absorbing a burst (gate.next).
+// lane and the places outside admission alike - and no class's queue or lane grants one newest
+// first. A queue that emptied within its last wait is absorbing a burst (gate.next).
 func TestABurstThatDrainsWithinAWaitIsServedInArrivalOrder(t *testing.T) {
 	t.Parallel()
 	const burst = WriteBurstFactor
@@ -482,15 +485,16 @@ func TestAQueueThatEmptiesServesFirstComeFirstServedAgain(t *testing.T) {
 	}
 }
 
-// A queue of places serves first in, first out however long it has stood, a heavy read's lane and
-// the places outside admission alike (fifoGate): three requests line up behind every place held
-// and the queue stands a wait by the clock a class's queue decides by; then three times a newer
-// request joins and a place comes back, and each place goes to the request that has waited
-// longest, the three first and the newcomers after them, every one of them granted and none
-// refused. Newest first there handed each place to the newcomer and left the oldest to be refused
-// at their wait while the places turned over: on the cluster copy at ten times the load every
-// refusal of the run was the search lane's at its wait, with 4 or 5 queued and the read class's
-// room unused (INFRA-592, c-scale at 72e98685).
+// A queue of places serves first in, first out however long it has stood, a heavy read's lane
+// while its read class has room and the places outside admission at all times (fifoGate,
+// laneGate): three requests line up behind every place held and the queue stands a wait by the
+// clock a class's queue decides by; then three times a newer request joins and a place comes back,
+// and each place goes to the request that has waited longest, the three first and the newcomers
+// after them, every one of them granted and none refused or granted newest first. Newest first
+// there, decided by the lane's own queue standing, handed each place to the newcomer and left the
+// oldest to be refused at their wait while the places turned over: on the cluster copy at ten
+// times the load every refusal of the run was the search lane's at its wait, with 4 or 5 queued
+// and the read class's room unused (INFRA-592, c-scale at 72e98685).
 func TestAQueueOfPlacesServesTheOldestFirstHoweverLongItStands(t *testing.T) {
 	t.Parallel()
 	const lined, newcomers = 3, 3
@@ -520,6 +524,11 @@ func TestAQueueOfPlacesServesTheOldestFirstHoweverLongItStands(t *testing.T) {
 			give()
 			if queued := q.queued(); queued != 0 {
 				t.Fatalf("%d queued once every request was granted, want none", queued)
+			}
+			if q.newestFirst != nil {
+				if newestFirst := q.newestFirst(); newestFirst != 0 {
+					t.Fatalf("%d granted newest first, want none: %s", newestFirst, why)
+				}
 			}
 			for _, give := range held[1:] {
 				give()

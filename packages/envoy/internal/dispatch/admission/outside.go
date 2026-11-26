@@ -61,8 +61,9 @@ import (
 // hooks never run in production.
 //
 // Work that finds every place held - all of it but a stream's poll, which never waits (TryTake) -
-// waits for one as a heavy read waits in its lane's queue - first in, first out, however long the
-// queue has stood non-empty (fifoGate) - in a queue of at most
+// waits for one in a queue of fifoGate's, first in, first out however long the queue has stood
+// non-empty (a heavy read's lane, which shares that queue, serves newest first while the read
+// class stands; outside work has no class to read that from), in a queue of at most
 // OutsideQueueLimit, for at most a second counted from when it asked (Limits.OutsideWait). It was
 // refused at once before, and on INFRA-592's stress step (ten times the load, 1,000 editors, a
 // restart) that refused 47,962 of the 48,580 refused document sockets, skipped 4,136 heartbeat

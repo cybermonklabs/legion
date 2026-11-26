@@ -142,6 +142,7 @@ func TestTheMetricsEndpointListsEverySeriesForEveryOpenPool(t *testing.T) {
 		`dispatch_http_lane_refused_total{lane="search",reason="wait_exceeded"} 0`,
 		`dispatch_http_refused_total{class="read",reason="queue_full"} 0`, `dispatch_http_refused_total{class="write",reason="wait_exceeded"} 0`,
 		`dispatch_http_newest_first_total{class="read"} 0`, `dispatch_http_newest_first_total{class="write"} 0`,
+		`dispatch_http_lane_newest_first_total{lane="search"} 0`, `dispatch_http_lane_newest_first_total{lane="issue_list"} 0`,
 		"dispatch_http_admitted_units 0\n",
 		"dispatch_http_admitted_units_limit " + strconv.Itoa(admission.MaxAdmittedUnits) + "\n",
 		"dispatch_http_admitted_reserved_read_units " + strconv.Itoa(admission.ReservedReadUnits) + "\n",
