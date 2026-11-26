@@ -418,6 +418,33 @@ func TestALateResultAfterNotRunOpensOneLookAndCloses(t *testing.T) {
 	closedOnChecks(t, rig, waitRoot)
 }
 
+// A late result's look that closes not_run again is not opened a second time by the same event
+// redelivered (relook_seq): only a later result opens the look after it.
+func TestARedeliveredLateResultOpensNoSecondLook(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, claim.RoleTester)
+	mergedRoot(t, rig)
+	rig.read(waitRoot, answerOf(waitRoot, nil, noResult("c-after", waitRootMerge)))
+	rig.lastLook(waitRoot)
+	rig.report(waitRoot, 2, "pending", "the check is due after the bound", nil)
+	late := intake.DispatchResultChanged{Key: waitRoot, Seq: 50, ResultID: "result-late", Check: "c-after", Verdict: "fail"}
+	rig.fact(late)
+	rig.report(waitRoot, 3, "pending", "the requirement is still unobserved", nil)
+	if check := rig.check(waitRoot); check.Open() || check.Outcome != record.CheckNotRun {
+		t.Fatalf("the check after the late look's pending = %+v, want it closed not_run again", check)
+	}
+	rig.fact(late)
+	if check := rig.check(waitRoot); check.Open() || check.Looks != 3 {
+		t.Fatalf("the check after the same event redelivered = %+v, want it closed at look 3", check)
+	}
+	later := late
+	later.Seq, later.ResultID = 51, "result-later"
+	rig.fact(later)
+	if check := rig.check(waitRoot); !check.Open() || check.Looks != 4 || check.RelookSeq != 51 {
+		t.Fatalf("the check after a later result = %+v, want look 4 open, opened by seq 51", check)
+	}
+}
+
 // No timer opens a look after not_run: a day passes and the controller ticks, and no look opens.
 func TestNoTimerOpensALookAfterNotRun(t *testing.T) {
 	t.Parallel()
