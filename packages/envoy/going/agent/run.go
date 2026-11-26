@@ -112,12 +112,12 @@ type toolFrame struct {
 // agent's pacer held it, the tokens of its prompt, those of the provider's cache included, of its
 // reply, its reasoning among them, and of that reasoning, the tokens the pacer reserved for it
 // before it was made, and the tokens the pacer charged it in the end; a reply held back as long
-// and shown whole once its rewrite drew no reply, or one that linked what it does not (showHeld),
-// says none, since no call wrote it again. A reply in prose that the guard checked before it
-// could end the turn (checkProse), held back or not, also says what the check took: its
-// milliseconds and its tokens; one it did not check because Jev read the turn's words as Ask says
-// so; each says what Jev read them as; and one that would end the turn done says how many words
-// the bar draws of it.
+// and shown whole once its rewrite drew no reply the person may read (showHeld), or by the
+// server's stop of a run during its rewrite (stopGoingRunIn), says none, since no call wrote it
+// again. A reply in prose that the guard checked before it could end the turn (checkProse), held
+// back or not, also says what the check took: its milliseconds and its tokens; one it did not
+// check because Jev read the turn's words as Ask says so; each says what Jev read them as; and one
+// that would end the turn done says how many words the bar draws of it.
 type replyFrame struct {
 	Step           int      `json:"step"`
 	Text           string   `json:"text"`
@@ -166,10 +166,12 @@ type replyFrame struct {
 	// no check's time to its turn. It is left out on every other reply.
 	CheckSkipped string `json:"check_skipped,omitempty"`
 	// DrawnWords is how many words the bar draws of the reply's prose as the run's answer, as the
-	// server counted them (holdLong): each link as its item's chip, an issue's with its key, its
-	// status and its title. endProse sets it, 0 included, on a reply in prose it would end the
-	// turn done with, held back as long or not, and showHeld on a reply held back as long that it
-	// shows whole; every other reply leaves it out, as does one whose count failed. HeldLong marks
+	// server counted them (holdLong): the first link to each issue as the issue's chip, with its
+	// key, its status and its title, and a later link to that issue, or a link to another item
+	// with words of its own, as those words. endProse sets it, 0 included, on a reply in prose it
+	// would end the turn done with, held back as long or not, and showHeld on a reply held back as
+	// long that it shows whole, as the server's stop of a run during its rewrite does
+	// (ShowHeld); every other reply leaves it out, as does one whose count failed. HeldLong marks
 	// a reply held back as long (saveLong), which carries no prose.
 	DrawnWords *int `json:"drawn_words,omitempty"`
 	HeldLong   bool `json:"held_long,omitempty"`
@@ -474,11 +476,16 @@ type stepOutcome struct {
 // (heldLast, length.go): its call is given rewritePrompt, the person's words, the held reply and
 // longTold alone, not the run's conversation, is offered no tool, at rewriteEffort, within
 // rewriteCallTime, and the pacer reserves the tokens of that short prompt and
-// rewriteReasoningTokens for it (rewrite). A reply of the rewrite that links what the held reply
-// does not ends the turn done with the held reply shown whole, and any other reply of it ends the
-// turn as endProse ends it (endRewrite); a rewrite that draws no reply - its bound ended it, or
-// its call failed, was refused or was held back for the quota - ends the turn done with the held
-// reply shown whole too (missedRewrite).
+// rewriteReasoningTokens for it (rewrite). A reply of the rewrite that writes no words, or that
+// links what the held reply does not, ends the turn done with the held reply shown whole, and any
+// other reply of it ends the turn as endProse ends it, or, where the run's grant ended as the
+// reply was counted, with the held reply shown whole before the run stops (endRewrite); a rewrite
+// that draws no reply - its bound ended it, its call failed, was refused or was held back for the
+// quota, or its reply was cut at its output tokens, which OnStep saves nothing of
+// (errRewriteCut) - ends the turn done with the held reply shown whole too (missedRewrite). A
+// rewrite the person stops while its call works saves nothing: the stop freed the run's lease, and
+// the server's stop saves the held reply shown whole as the stopped run's answer (ShowHeld,
+// internal/dispatch/api's stopGoingRunIn).
 func (w *worker) step() stepOutcome {
 	base := w.next
 	var finish string
@@ -509,6 +516,9 @@ func (w *worker) step() stepOutcome {
 		}
 		if step.Finish == finishContentFilter {
 			return errReplyFiltered
+		}
+		if rewrite && step.Finish == finishLength {
+			return errRewriteCut
 		}
 		finish = step.Finish
 		ends, prose = w.saveReply(base, step, w.inFlight.Load())
@@ -800,23 +810,35 @@ func (w *worker) saveReply(base int, step agentloop.Step, call *modelCall) (bool
 	return ends, nil
 }
 
-// saveModel saves body, a model step, with reply, its frame, which carries body's text. A reply
-// that ends the run's turn or proposes a plan (told), where the run withheld tool results from the
-// model, saves the notice of them (withheldTold) after its text, which the model reads in its
-// later history; its frame carries the text alone and how many results were withheld, which the
-// bar says in its own words. The step's note is its text, with the tools it called.
+// saveModel saves body, a model step, with reply, its frame (modelStep), on the run's context: a
+// reply that ends the run's turn or proposes a plan (told) tells of the tool results the run
+// withheld from the model.
 func (w *worker) saveModel(body modelBody, reply replyFrame, tools []string, told bool) {
+	var withheld map[int]string
+	if told {
+		withheld = w.withheld
+	}
+	w.save(modelStep(body, reply, tools, withheld))
+}
+
+// modelStep is the step that saves body, a model step, with reply, its frame, which carries
+// body's text, and the body it saves. A reply that tells of withheld, the tool steps the run
+// withheld from the model by number with their tools, saves the notice of them (withheldTold)
+// after its text, which the model reads in its later history; its frame carries the text alone
+// and how many results were withheld, which the bar says in its own words. The step's note is
+// its text, with the tools it called.
+func modelStep(body modelBody, reply replyFrame, tools []string, withheld map[int]string) (agentwire.StepRequest, modelBody) {
 	reply.Text = body.Text
-	if len(w.withheld) > 0 && told {
-		body.Text = strings.TrimSpace(body.Text + withheldTold(w.withheld))
-		reply.Withheld = len(w.withheld)
+	if len(withheld) > 0 {
+		body.Text = strings.TrimSpace(body.Text + withheldTold(withheld))
+		reply.Withheld = len(withheld)
 	}
 	line := note(body.Text)
 	if len(tools) > 0 {
 		line = note(fmt.Sprintf("%s [calls %s]", body.Text, strings.Join(tools, ", ")))
 	}
 	frame, _ := json.Marshal(reply)
-	w.save(agentwire.StepRequest{Step: reply.Step, Kind: agentwire.StepModel, Note: line, Frames: []agentwire.Frame{{Name: frameReply, Data: frame}}}, body)
+	return agentwire.StepRequest{Step: reply.Step, Kind: agentwire.StepModel, Note: line, Frames: []agentwire.Frame{{Name: frameReply, Data: frame}}}, body
 }
 
 // withheldTold is what a reply that ends the run's turn - an answer, or a plan proposed - adds for
@@ -1018,23 +1040,29 @@ func (c *modelCall) pacing() (held time.Duration, reserved, drawn int) {
 	return c.held, c.reserved, c.drawn
 }
 
-// save saves one step of the run with body, and keeps it for the history of the next step. A
-// step the server refuses as no longer held loses the run; any other failure fails the step's
-// call to the server, which the run's next step makes again.
+// save saves one step of the run with body on the run's context (saveIn).
 func (w *worker) save(request agentwire.StepRequest, body any) {
+	w.saveIn(w.ctx, request, body)
+}
+
+// saveIn saves one step of the run with body on ctx, the run's context or its last word's
+// (lastWord), and keeps it for the history of the next step. A step the server refuses as no
+// longer held loses the run; any other failure fails the step's call to the server, which the
+// run's next step makes again, and is logged unless ctx ended.
+func (w *worker) saveIn(ctx context.Context, request agentwire.StepRequest, body any) {
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		slog.Error("agent: encode a step", "run", w.run.ID, "step", request.Step, "error", err)
 		return
 	}
 	request.Run, request.LeaseToken, request.Body = w.run.ID, w.run.LeaseToken, encoded
-	if _, err := w.agent.client.Step(w.ctx, request); err != nil {
+	if _, err := w.agent.client.Step(ctx, request); err != nil {
 		var refused *agentwire.Error
 		if errors.As(err, &refused) && refused.Code == agentwire.CodeStaleLease {
 			w.lose()
 			return
 		}
-		if w.ctx.Err() == nil {
+		if ctx.Err() == nil {
 			slog.Warn("agent: save a step", "run", w.run.ID, "step", request.Step, "error", err)
 		}
 		return
@@ -1049,15 +1077,24 @@ func (w *worker) save(request agentwire.StepRequest, body any) {
 	}
 }
 
-// end ends the run's turn in state, with reason and offers, adding what the turn spent. A run
-// that is no longer held, or that was stopped, is ended by nobody: its new owner, or the stop,
-// ended it.
+// lastWordTime bounds the run's last word to the server (lastWord).
+const lastWordTime = 10 * time.Second
+
+// lastWord is the context of the run's last word to the server, made even as the run's context
+// ends - the agent stops, or the run's grant ended - within lastWordTime: the run's end, and the
+// reply held back as long that a grant's end shows whole first (endRewrite).
+func (w *worker) lastWord() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(w.ctx), lastWordTime)
+}
+
+// end ends the run's turn in state, with reason and offers, adding what the turn spent, on the
+// run's last word (lastWord). A run that is no longer held, or that was stopped, is ended by
+// nobody: its new owner, or the stop, ended it.
 func (w *worker) end(state, reason string, offers []string) {
 	if w.lost.Load() {
 		return
 	}
-	// The end is the run's last word, made even as the agent stops, within its own bound.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(w.ctx), 10*time.Second)
+	ctx, cancel := w.lastWord()
 	defer cancel()
 	request := agentwire.EndRequest{Run: w.run.ID, LeaseToken: w.run.LeaseToken, State: state, Reason: reason, Used: w.turn, Offers: offers}
 	if err := w.agent.client.End(ctx, request); err != nil {

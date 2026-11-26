@@ -28,13 +28,17 @@ const noteLimit = 500
 // for, the output tokens the call wrote, whether the reply is one in prose that the guard held
 // back (saveNoPlan): the turn went on past it, and conversation tells the model after it that
 // nothing changed (noPlanTold); and, for a reply held back as long (saveLong), how many words the
-// bar draws of it, which conversation tells the model after it (longTold), 0 for every other.
+// bar draws of it, which conversation tells the model after it (longTold), 0 for every other, and
+// the tool steps the run had withheld from the model by then (withhold), by number with their
+// tools, none for every other: what the reply shown whole tells its person of them (shownHeld),
+// whichever worker shows it, or the server's stop (ShowHeld).
 type modelBody struct {
-	Text      string     `json:"text"`
-	Calls     []toolCall `json:"calls"`
-	Output    int        `json:"output_tokens"`
-	NoPlan    bool       `json:"no_plan,omitempty"`
-	LongWords int        `json:"long_words,omitempty"`
+	Text      string         `json:"text"`
+	Calls     []toolCall     `json:"calls"`
+	Output    int            `json:"output_tokens"`
+	NoPlan    bool           `json:"no_plan,omitempty"`
+	LongWords int            `json:"long_words,omitempty"`
+	Withheld  map[int]string `json:"withheld,omitempty"`
 }
 
 // toolCall is one tool call a model step asked for: the provider's id for it, the tool and its

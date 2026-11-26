@@ -8,10 +8,11 @@ package agent
 // how many words the bar draws of it (drawnWords), and a reply of 120 or more is held back once
 // in a turn of the run: it is saved, so the model reads what it wrote, and the next step is its
 // rewrite, whose model is told how many words the person sees and asked for the same facts in at
-// most retryWords words as the person sees them, without the key, status and title each link
-// already shows, or for the same answer again where the person's words ask for more than a short
-// answer (longTold). No other model call decides whether the words ask for more: the rewrite does,
-// as the architect ruled (dispatch://INFRA-1588/comment/77ddfc7a-b65c-4d36-b78c-c00e703c7d31).
+// most retryWords words as the person sees them, without the key, status and title each issue's
+// chip already shows, or for the same answer again where the person's words ask for more than a
+// short answer (longTold). No other model call decides whether the words ask for more: the
+// rewrite does, as the architect ruled
+// (dispatch://INFRA-1588/comment/77ddfc7a-b65c-4d36-b78c-c00e703c7d31).
 // The rewrite is no new run, as the architect ruled once a rewrite at the run's level wrote 5,526
 // to 17,565 reasoning tokens and made the person wait 1.4 to 4.4 minutes for the answer
 // (dispatch://INFRA-1588/comment/7c38ba3b-bde1-4bb4-bcc7-f966b0968b8c): it is one model call,
@@ -24,9 +25,17 @@ package agent
 // reply and longTold alone: no read and no earlier step of the run. It shortens the held reply and
 // adds nothing to it: a reply of it that links what the held reply does not (addedLink), an issue
 // key written bare counted as the link the server may make of it, ends the turn done with the
-// held reply shown whole (showHeld), and any other reply of it ends the turn whole, whatever its
-// count: the bar never cuts an answer. A rewrite that draws no reply - its bound ended it, or it
-// failed - ends the turn done with the held reply shown whole too (missedRewrite).
+// held reply shown whole (showHeld), and any other reply of it that writes words ends the turn
+// whole, whatever its count: the bar never cuts an answer. A rewrite that draws no reply the
+// person may read ends the turn done with the held reply shown whole too, so the bar never shows
+// nothing: one its bound ended, whose call failed, or whose reply was cut at its output tokens
+// (missedRewrite, errRewriteCut); one whose reply writes no words, none or white space alone
+// (endRewrite); and one the person stopped while its call worked, which frees the run's lease
+// before the agent hears of the stop, so the agent saves nothing and the server's stop saves the
+// held reply shown whole as the stopped run's answer (ShowHeld, stopGoingRunIn in
+// internal/dispatch/api/going_agent.go). A grant that ends as the rewrite's reply is counted stops
+// the run with the grant's reason, the run's lease still held, so the held reply is shown whole
+// first (endRewrite).
 
 import (
 	"context"
@@ -63,6 +72,12 @@ const retryWords = 90
 // about 1,240 reasoning tokens each. A variable, so a test shortens it.
 var rewriteCallTime = 20 * time.Second
 
+// errRewriteCut ends agentloop.Run once the rewrite's one model call finished with a reply cut at
+// its output tokens, which is not saved: a cut reply is no answer the person may read, and the bar
+// never cuts one, so the held reply ends the turn whole in its place (missedRewrite), saved as the
+// rewrite's step.
+var errRewriteCut = errors.New("the rewrite's reply was cut at its output tokens")
+
 // The rewrite's effort and its reserve are the guard's check's (noPlanEffort,
 // noPlanReasoningTokens): the lowest reasoning effort the chat model's calls ask for, Fast's too
 // (Levels), and the reasoning tokens the pacer reserves for a call at that effort beside its output
@@ -80,14 +95,16 @@ const (
 const longSaid = "The person did not see this reply, which the bar drew in too many words:"
 
 // longTold is what the model is told after a reply held back as long, which the bar draws in
-// words words: that count and how the bar counts them; that it gives the same answer again where
-// the person's words ask for more than a short answer, as the architect ruled; and otherwise the
-// same facts in at most retryWords words as the person sees them, the prose repeating nothing that
-// a link already shows.
+// words words: that count and how the bar counts them, the first link to each issue as the
+// issue's chip and a later link to that issue, or a link to another item with words of its own,
+// as those words; that it gives the same answer again where the person's words ask for more than
+// a short answer, as the architect ruled; and otherwise the same facts in at most retryWords words
+// as the person sees them, the prose repeating nothing that an issue's chip already shows.
 func longTold(words int) string {
-	return fmt.Sprintf("The person did not see your reply above: the bar draws it in %d words, each link as its item's chip, an issue's with its key, status and title, "+
-		"and an answer has fewer than %d. If the person's words ask for more than a short answer, give the same answer again. "+
-		"Otherwise give the same facts in at most %d words as the person sees them: each link already shows its item's key, status and title, so do not repeat them in the prose.",
+	return fmt.Sprintf("The person did not see your reply above: the bar draws it in %d words, the first link to each issue as the issue's chip with its key, status and title, "+
+		"and a later link to that issue, or a link to another item with words of its own, as those words; an answer has fewer than %d. "+
+		"If the person's words ask for more than a short answer, give the same answer again. "+
+		"Otherwise give the same facts in at most %d words as the person sees them: each issue's chip already shows its key, status and title, so do not repeat them in the prose.",
 		words, wordsBound, retryWords)
 }
 
@@ -141,10 +158,13 @@ func (w *worker) drawnWords(text string) (int, error) {
 
 // saveLong saves prose as a reply held back as long, which the bar draws in words words: its body
 // marked with that count (modelBody.LongWords), so the run's history tells the model longTold
-// after it and settled reads no end of the turn in it, a restarted worker's too; its note says
-// the person did not see it (longSaid); and its frame marked HeldLong (saveHeld).
+// after it and settled reads no end of the turn in it, a restarted worker's too, and with the tool
+// steps the run withheld from the model so far (modelBody.Withheld), which the reply shown whole
+// tells of (shownHeld), whoever shows it; its note says the person did not see it (longSaid); and
+// its frame marked HeldLong (saveHeld), which tells of no withheld step: the person reads none of
+// it.
 func (w *worker) saveLong(prose *proseReply, words int) {
-	prose.body.LongWords, prose.frame.HeldLong = words, true
+	prose.body.LongWords, prose.body.Withheld, prose.frame.HeldLong = words, w.withheld, true
 	w.saveHeld(prose, longSaid)
 }
 
@@ -188,16 +208,33 @@ func (w *worker) rewrite(request *agentloop.Request, held modelBody) int {
 }
 
 // endRewrite ends the run's turn with prose, the reply of the rewrite of held, the reply held
-// back as long, as endProse ends a reply in prose, where each link of it is a link of held. A
-// reply that links what held does not (addedLink) added to held, which the rewrite may not do,
-// so the turn ends done with held shown whole in its place (showHeld), as at the rewrite's bound,
-// and the agent logs the link.
+// back as long, as endProse ends a reply in prose, where it writes words and each link of it is a
+// link of held. A reply that writes no words - none, or white space alone - gives the person
+// nothing to read, and one that links what held does not (addedLink) added to held, which the
+// rewrite may not do: either ends the turn done with held shown whole in its place (showHeld), as
+// at the rewrite's bound, and the agent logs why. A grant that ended as endProse counted the reply
+// (holdLong) stops the run with the grant's reason and saves nothing of the reply; the run's
+// lease is still held, so held is shown whole first, on the run's last word (lastWord), since the
+// grant's end cancelled the run's context, and the agent logs why.
 func (w *worker) endRewrite(held modelBody, prose *proseReply) stepOutcome {
+	if strings.TrimSpace(prose.body.Text) == "" {
+		slog.Warn("agent: the rewrite of a reply held back as long wrote no words, so the held reply ends the turn whole", "run", w.run.ID)
+		return w.showHeld(w.ctx, prose.frame.Step, held)
+	}
 	if link, added := addedLink(held.Text, prose.body.Text); added {
 		slog.Warn("agent: the rewrite of a reply held back as long links what the held reply does not, so the held reply ends the turn whole", "run", w.run.ID, "link", link)
-		return w.showHeld(prose.frame.Step, held)
+		return w.showHeld(w.ctx, prose.frame.Step, held)
 	}
-	return w.endProse(prose)
+	outcome := w.endProse(prose)
+	if reason := w.grantEnded.Load(); reason != nil && !w.lost.Load() {
+		if _, still := w.heldLast(); still {
+			slog.Warn("agent: the grant of a run ended as the rewrite of its reply held back as long was counted, so the held reply ends the turn whole", "run", w.run.ID, "reason", *reason)
+			ctx, cancel := w.lastWord()
+			defer cancel()
+			w.showHeld(ctx, prose.frame.Step, held)
+		}
+	}
+	return outcome
 }
 
 // addedLink is the first link of rewritten, a rewrite's reply, that is no link of held, the reply
@@ -250,29 +287,64 @@ func linkName(href string) string {
 }
 
 // missedRewrite ends the run's turn done with held, the body of the reply held back as long,
-// shown whole (showHeld), where its rewrite, the step numbered base, drew no reply: its bound
-// ended it, or its call failed, was refused or was held back for the quota, as its result and
-// err say, which the agent logs.
+// shown whole (showHeld), where its rewrite, the step numbered base, drew no reply the person may
+// read: its bound ended it, its call failed, was refused or was held back for the quota, or its
+// reply was cut at its output tokens, which saves nothing (errRewriteCut), as its result and err
+// say, which the agent logs.
 func (w *worker) missedRewrite(base int, held modelBody, result agentloop.Result, err error) stepOutcome {
 	why := modelFailure(result)
 	if err != nil {
 		why = err.Error()
 	}
 	slog.Warn("agent: the rewrite of a reply held back as long drew no reply, so the held reply ends the turn whole", "run", w.run.ID, "error", why)
-	return w.showHeld(base, held)
+	return w.showHeld(w.ctx, base, held)
 }
 
 // showHeld ends the run's turn done with held, the body of the reply held back as long, whose
-// rewrite, the step numbered base, drew no reply the person may read: no reply came
-// (missedRewrite), or it linked what held does not (endRewrite). The reply is saved again whole
-// as that step, its count of long words cleared, so the run's history ends the turn with it
-// (settled) and a later turn reads it as the answer the person saw; its frame carries its prose
-// and the count the bar drew of it (DrawnWords), not HeldLong, so the bar draws it as the answer,
-// and nothing is cut. The frame says no model call's time: no call wrote the reply again.
-func (w *worker) showHeld(base int, held modelBody) stepOutcome {
-	words := held.LongWords
-	held.LongWords, held.Output = 0, 0
-	w.saveModel(held, replyFrame{Step: base, Tools: []string{}, Labels: []string{}, DrawnWords: &words}, nil, true)
+// rewrite, the step numbered base, drew no reply the person may read: no reply came, or it was cut
+// at its output tokens (missedRewrite), or it wrote no words or linked what held does not, or the
+// run's grant ended as its reply was counted (endRewrite). The reply is saved again whole as that
+// step on ctx, the run's context or its last word's (shownHeld), so the run's history ends the
+// turn with it (settled) and a later turn reads it as the answer the person saw; its frame
+// carries its prose and the count the bar drew of it (DrawnWords), not HeldLong, so the bar draws
+// it as the answer, and nothing is cut. A rewrite the person stopped saves nothing here: the stop
+// freed the run's lease, and the server's stop saves the held reply shown whole in its place
+// (ShowHeld).
+func (w *worker) showHeld(ctx context.Context, base int, held modelBody) stepOutcome {
+	request, body := shownHeld(base, held)
+	w.saveIn(ctx, request, body)
 	w.merge()
 	return stepOutcome{state: agentwire.StateDone}
+}
+
+// shownHeld is the step that saves held, the body of a reply held back as long, shown whole as
+// the step numbered base, and the body it saves (modelStep): the body with its count of long
+// words, its output tokens and its record of withheld steps cleared, and a frame with no call and
+// the count the bar drew of it. The reply tells of the tool steps held records the run had
+// withheld from the model when it was held back (saveLong): its body says the notice of them after
+// its text and its frame their count, as a reply that ends the turn does (saveModel), whichever
+// worker shows it, a restarted one too, or the server's stop (ShowHeld). The frame says no model
+// call's time: no call wrote the reply again.
+func shownHeld(base int, held modelBody) (agentwire.StepRequest, modelBody) {
+	words, withheld := held.LongWords, held.Withheld
+	held.LongWords, held.Output, held.Withheld = 0, 0, nil
+	return modelStep(held, replyFrame{Step: base, Tools: []string{}, Labels: []string{}, DrawnWords: &words}, nil, withheld)
+}
+
+// ShowHeld is the step the server saves where it stops a run whose last step is held, the saved
+// body of a reply held back as long, before the reply's rewrite ended the turn
+// (internal/dispatch/api's stopGoingRunIn): the stop frees the run's lease, so the run's agent can
+// save nothing after it. It is held shown whole as the step numbered base, as showHeld saves it
+// (shownHeld), the notice of the tool steps the run had withheld from the model included: the
+// step's body, its note and the data of its reply frame, which carries the reply's prose and how
+// many results were withheld. It answers false where held is no body of a reply held back as long.
+func ShowHeld(base int, held json.RawMessage) (body json.RawMessage, line string, frame json.RawMessage, ok bool) {
+	var read modelBody
+	if json.Unmarshal(held, &read) != nil || read.LongWords <= 0 {
+		return nil, "", nil, false
+	}
+	request, shown := shownHeld(base, read)
+	// A model step's body always encodes: save encodes it so too.
+	body, _ = json.Marshal(shown)
+	return body, request.Note, request.Frames[0].Data, true
 }

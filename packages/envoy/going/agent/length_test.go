@@ -129,10 +129,11 @@ func TestAnAnswerOfJustTheBoundIsHeldBack(t *testing.T) {
 // wordsBound words or more, whose words ask for no more, is held back: saved with its
 // count, so the model reads what it wrote, its note saying the person did not see it, and its
 // frame marked and with no prose, so the bar adds nothing of it. The next step's model is told,
-// after it, how many words the person sees and to give the same facts in at most 90 words as the
-// person sees them, with no repeat of what each link already shows, and its shorter reply ends the
-// turn done as the answer. A turn whose words Jev reads as Ask, which makes no check, is held to
-// the bound too.
+// after it, how many words the person sees, the first link to each issue drawn as its chip and a
+// later link to it, or a link to another item with words of its own, as those words, and to give
+// the same facts in at most 90 words as the person sees them, with no repeat of what each issue's
+// chip already shows, and its shorter reply ends the turn done as the answer. A turn whose words
+// Jev reads as Ask, which makes no check, is held to the bound too.
 func TestALongAnswerIsHeldBackAndToldHowManyWordsThePersonSees(t *testing.T) {
 	const words = "what is the state of ACME-7's open children"
 	long, short := plainWords("long", 130), plainWords("short", 30)
@@ -158,12 +159,15 @@ func TestALongAnswerIsHeldBackAndToldHowManyWordsThePersonSees(t *testing.T) {
 			if len(steps) != 2 || !toldAfter(steps[1], long, longTold(130)) {
 				t.Fatalf("the run made %d steps' calls, want the second given the long reply and, after it, the note of its 130 words", len(steps))
 			}
-			// What the second step's model reads: the count the bar drew, the target of the retry, which
-			// stands below the bound of 120, and the links' key, status and title the prose leaves out.
+			// What the second step's model reads: the count the bar drew, how it draws each link,
+			// the target of the retry, which stands below the bound of 120, and the chips' key,
+			// status and title the prose leaves out.
 			for _, want := range []string{
 				"the bar draws it in 130 words",
+				"the first link to each issue as the issue's chip with its key, status and title",
+				"a later link to that issue, or a link to another item with words of its own, as those words",
 				"give the same facts in at most 90 words as the person sees them",
-				"each link already shows its item's key, status and title, so do not repeat them",
+				"each issue's chip already shows its key, status and title, so do not repeat them",
 			} {
 				if !toldAfter(steps[1], long, want) {
 					t.Errorf("the second step's model is told %v after the long reply, want %q", steps[1].Messages(), want)
@@ -354,6 +358,112 @@ func TestARewriteThatFailsShowsTheHeldReplyWhole(t *testing.T) {
 	warned := log.Lines("the rewrite of a reply held back as long drew no reply")
 	if !strings.Contains(warned, "level=WARN") || !strings.Contains(warned, "run=run-1") || !strings.Contains(warned, "answered 400") {
 		t.Errorf("the log holds %q, want a warning naming run-1 and the status the chat model answered", warned)
+	}
+}
+
+// TestARewriteCutAtItsOutputTokensShowsTheHeldReplyWhole: a rewrite whose call ran out of output
+// tokens wrote no reply the person may read, and the bar never cuts an answer. It ends the turn
+// done with the held reply shown whole, as one past its bound does, not the run stopped as cut
+// with Continue offered: its cut reply is not saved, checked or counted, and the log says it was
+// cut.
+func TestARewriteCutAtItsOutputTokensShowsTheHeldReplyWhole(t *testing.T) {
+	var log logtest.Buffer
+	logtest.SetDefault(t, slog.NewTextHandler(&log, nil))
+	long := plainWords("long", 140)
+	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+		switch {
+		case isCheck(request):
+			return verdict(noPlanPasses)
+		case strings.Contains(request.Text(), toldLong):
+			return agenttest.Reply{Text: plainWords("cut", 40), Finish: finishLength}
+		}
+		return agenttest.Reply{Text: long}
+	})
+	server, client := newFakeServer(t, keptPlan)
+	workClaimed(t, fake.Model(), client, standardRun("what did the southern team write about the comet"))
+	requireHeldShown(t, server, fake, long, 140)
+	if calls := server.madeWordsCalls(); len(calls) != 1 || calls[0].Text != long {
+		t.Errorf("the run made %d words calls, want the held reply's alone", len(calls))
+	}
+	warned := log.Lines("the rewrite of a reply held back as long drew no reply")
+	if !strings.Contains(warned, "level=WARN") || !strings.Contains(warned, "run=run-1") || !strings.Contains(warned, errRewriteCut.Error()) {
+		t.Errorf("the log holds %q, want a warning naming run-1 and that the rewrite's reply was cut", warned)
+	}
+}
+
+// TestARewriteThatWritesNoWordsShowsTheHeldReplyWhole: a rewrite whose reply writes no words -
+// none, or white space alone - gives the person nothing to read, and the bar never shows nothing.
+// It ends the turn done with the held reply shown whole, as one past its bound does, its own reply
+// neither checked nor counted, and the log says it wrote no words.
+func TestARewriteThatWritesNoWordsShowsTheHeldReplyWhole(t *testing.T) {
+	long := plainWords("long", 140)
+	for name, rewritten := range map[string]string{
+		"no text":           "",
+		"white space alone": " \n\t \n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			var log logtest.Buffer
+			logtest.SetDefault(t, slog.NewTextHandler(&log, nil))
+			fake := agenttest.New(t, lengthScript(long, rewritten))
+			server, client := newFakeServer(t, keptPlan)
+			workClaimed(t, fake.Model(), client, standardRun("what did the southern team write about the comet"))
+			requireHeldShown(t, server, fake, long, 140)
+			if calls := server.madeWordsCalls(); len(calls) != 1 || calls[0].Text != long {
+				t.Errorf("the run made %d words calls, want the held reply's alone", len(calls))
+			}
+			warned := log.Lines("the rewrite of a reply held back as long wrote no words")
+			if !strings.Contains(warned, "level=WARN") || !strings.Contains(warned, "run=run-1") {
+				t.Errorf("the log holds %q, want a warning naming run-1", warned)
+			}
+		})
+	}
+}
+
+// TestAGrantThatEndsAsTheRewriteIsCountedShowsTheHeldReplyWhole: a grant that ends as the
+// rewrite's reply is counted - its words call refused GRANT_ENDED - stops the run with the
+// grant's reason, as any call's refusal does, and saves nothing of the rewrite's reply. The run's
+// lease is still held then, and the bar never shows nothing: the turn first ends with the held
+// reply shown whole, its frame carrying its prose and its count, and the log says why.
+func TestAGrantThatEndsAsTheRewriteIsCountedShowsTheHeldReplyWhole(t *testing.T) {
+	var log logtest.Buffer
+	logtest.SetDefault(t, slog.NewTextHandler(&log, nil))
+	const ended = "the person signed out"
+	long, short := plainWords("long", 140), plainWords("short", 30)
+	server, client := newFakeServer(t, keptPlan)
+	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+		switch {
+		case isCheck(request):
+			return verdict(noPlanPasses)
+		case strings.Contains(request.Text(), toldLong):
+			// The grant ends as the rewrite writes: the words call of its reply is refused.
+			server.mu.Lock()
+			server.refuseWords = &agentwire.Error{Code: agentwire.CodeGrantEnded, Message: ended}
+			server.mu.Unlock()
+			return agenttest.Reply{Text: short}
+		}
+		return agenttest.Reply{Text: long}
+	})
+	workClaimed(t, fake.Model(), client, standardRun("what did the southern team write about the comet"))
+	end, bodies := server.end(t)
+	if end.State != agentwire.StateStopped || end.Reason != ended || len(bodies) != 2 || bodies[0].Text != long || bodies[0].LongWords != 140 ||
+		bodies[1].Text != long || bodies[1].LongWords != 0 {
+		t.Fatalf("the run ended %s with %q, saving %d model steps; want stopped with the grant's reason, the reply held back with its 140 words and then shown whole",
+			end.State, end.Reason, len(bodies))
+	}
+	replies := server.replyFrames(t)
+	if len(replies) != 2 || !replies[0].HeldLong || replies[0].Text != "" {
+		t.Fatalf("the reply frames are %+v, want the held reply's first, marked and with no prose", replies)
+	}
+	if shown := replies[1]; shown.Text != long || shown.HeldLong || drawn(shown) != 140 || len(shown.Tools) != 0 || shown.WaitsForPerson {
+		t.Errorf("the answer's frame carries %d bytes (held long %t) and %d drawn words, with the calls %q; want the held reply whole, its 140 words and no call",
+			len(shown.Text), shown.HeldLong, drawn(shown), shown.Tools)
+	}
+	if calls := server.madeWordsCalls(); len(calls) != 2 || calls[0].Text != long || calls[1].Text != short {
+		t.Errorf("the run made %d words calls, want the held reply's and the rewrite's, which the grant's end refused", len(calls))
+	}
+	warned := log.Lines("the grant of a run ended as the rewrite of its reply held back as long was counted")
+	if !strings.Contains(warned, "level=WARN") || !strings.Contains(warned, "run=run-1") || !strings.Contains(warned, ended) {
+		t.Errorf("the log holds %q, want a warning naming run-1 and the grant's reason", warned)
 	}
 }
 
@@ -632,6 +742,52 @@ func TestARunRestartedAfterALongReplyGoesOn(t *testing.T) {
 				t.Errorf("the restarted run's step is given %v, want the held reply and the note of its 140 words after it", steps[0].Messages())
 			}
 		})
+	}
+}
+
+// TestARestartedWorkerShowsTheHeldReplyWithTheResultsItWithheld: the tool results a run withheld
+// from the model before a reply was held back as long are recorded on the held step's body, never
+// on its frame, so a worker that starts again from the saved steps, which holds no withheld result
+// of its own, shows the held reply whole where its rewrite fails as the worker that held it back
+// would: its body with the notice of them after its text, which a later turn reads, and its frame
+// with its text alone and how many were withheld, which the bar says under the answer.
+func TestARestartedWorkerShowsTheHeldReplyWithTheResultsItWithheld(t *testing.T) {
+	held := plainWords("held", 140)
+	withheld := map[int]string{1: toolSearch}
+	search, err := json.Marshal(toolBody{Call: toolCall{ID: "call-1", Tool: toolSearch, Arguments: json.RawMessage(`{"query":"comet"}`)},
+		Result: storedDataNote + "\nthe southern team's comet survey"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(modelBody{Text: held, Calls: []toolCall{}, LongWords: 140, Withheld: withheld})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+		if isCheck(request) {
+			return verdict(noPlanPasses)
+		}
+		return agenttest.Reply{Status: http.StatusBadRequest}
+	})
+	server, client := newFakeServer(t, keptPlan)
+	run := standardRun("what did the southern team write about the comet")
+	run.BudgetUsed = agentwire.Budget{Calls: 1}
+	run.History = []agentwire.SavedStep{
+		{Step: 1, Kind: agentwire.StepTool, Body: search, Note: note(`search {"query":"comet"}: ` + storedDataNote)},
+		{Step: 2, Kind: agentwire.StepModel, Body: body, Note: note(longSaid + " " + held)},
+	}
+	workClaimed(t, fake.Model(), client, run)
+	end, bodies := server.end(t)
+	want := strings.TrimSpace(held + withheldTold(withheld))
+	if end.State != agentwire.StateDone || len(bodies) != 1 || bodies[0].Text != want || bodies[0].LongWords != 0 || len(bodies[0].Withheld) != 0 {
+		t.Fatalf("the restarted run ended %s with %q, saving %+v; want done with the held reply whole and the notice of the search withheld after it", end.State, end.Reason, bodies)
+	}
+	if frame := server.lastReply(t); frame.Text != held || frame.Withheld != 1 || frame.HeldLong || drawn(frame) != 140 {
+		t.Errorf("the answer's frame carries %d bytes (held long %t), %d withheld results and %d drawn words; want the held reply alone, 1 and its 140 words",
+			len(frame.Text), frame.HeldLong, frame.Withheld, drawn(frame))
+	}
+	if steps := stepRequests(fake); len(steps) != 1 || !toldAfter(steps[0], held, longTold(140)) {
+		t.Errorf("the restarted run made %d steps' calls, want its rewrite alone", len(steps))
 	}
 }
 
