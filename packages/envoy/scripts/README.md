@@ -1621,8 +1621,8 @@ they compare `main`'s statements at 497581c7 (`search_oracle_test.go`) with the 
 split into the keyword arms' ranking, the keyword arms' reads of their matches, each meaning arm,
 the page and `CTE q`. The ranking is the keyword arms' reads less those of the same statement with
 a constant rank in place of `ts_rank_cd`. Unlike the measurements above, this one also runs against
-production: psql runs every statement, so the production run needs only a psql session on the read
-login. The tests skip unless their variable is set, so CI runs neither.
+production: psql runs every statement, so the production run needs only the read login's command
+(below). The tests skip unless their variable is set, so CI runs neither.
 
 The pipeline has five steps. `$OUT` is an empty directory under `$TMPDIR`, and `$URL` is the
 database measured.
@@ -1651,24 +1651,132 @@ server picks for the form, from whether the embeddings `project_key` fill is don
 says otherwise, alternating `main`'s side and the head's, and each run is followed by its run with
 the constant rank. The 240 plans of 5 runs at `--scale 0.01` took one minute in the pod.
 
-On production, run steps 2 and 4 through the read login's command (dispatch://INFRA-4863), and
-leave `DISPATCH_BENCH_DATABASE_URL` out of step 3. Set `DISPATCH_SEARCH_SPLIT_RUNS=3` for step 3.
 A word that this public repository may not name (a person, a customer, a company, a repository
 or a host) is passed over for the next word by the same rule: give step 2
 `-v pass_over='{word,...}'`. split.sql writes each plan to the absolute path of `$OUT` where step 3
-ran, so run psql where that path is writable. On production every statement runs under the read
-login's 30 s bound, which refuses a `SET` of `statement_timeout`. When step 4 stops at a statement
-with psql's `canceling statement due to statement timeout`, run step 4 again at once, so the
-second run reads warm caches. A statement that stops again has no result, and the run reports it
-rather than measure it another way, since an `explain` without `analyze` reads no buffers.
+ran, so run psql where that path is writable.
 
 The report prints each run's parts with their shared hit and read blocks, and their sum beside
 the run's total. Then it prints each part's median and spread (the largest run less the smallest)
 on each side. The meaning document arm passes when the head's median is below `main`'s; every
 other part but `CTE q` passes when the head's median is within `main`'s spread of `main`'s
 median. It also prints the matches of each of the head's keyword arms, and fails when the common
-word matches 1,000 or fewer items of every kind. The plans the parser was written from are in
+word matches 1,000 or fewer items of every kind. Last, apart from the split and judged by no rule,
+it prints the joined statement's plans: each plan file with its top node and total cost, and for a
+custom plan its execution time and shared buffers, and then for each side and word one line that
+names the custom plan with its median time and buffers, the same plan explained without
+`ANALYZE`, and the side's generic plan with its top node and total cost. A run cut twice reads as
+cut, with its refusal; a plan file that is not there reads as not run, which is every plan beside
+the split after `split.sql`. The plans the parser was written from are in
 `internal/dispatch/api/testdata/search_split`, and its `README.md` says how they were captured.
+
+#### The production form
+
+On production the reads go through the read login of dispatch://INFRA-4863. The rules of its
+section in theorem-labs/agent-infra `legion/references/reads.md` ("Dispatch's database") allow one
+run of its one command for each read: `psql -X -q -w -v ON_ERROR_STOP=1 --single-transaction -c
+'SET TRANSACTION READ ONLY' -f - <conninfo>`, with the query on its input and a token of the login
+as the password. psql opens the read-only transaction itself, so a read sends no `BEGIN`,
+`ROLLBACK`, `SET TRANSACTION`, `PREPARE`, `EXECUTE`, session `SET` or psql backslash command, and a
+read written by hand writes `public.` before each name of the database. `subjects.sql` and
+`split.sql` break those rules, so steps 1 and 3 also write a production form beside them, in the
+same `$OUT`:
+
+- `subjects-read.sql`, written at step 1: the read of `subjects.sql`, each name written with its
+  schema (`public.issues`), and the words to pass over written in. `DISPATCH_SEARCH_SPLIT_PASS_OVER`
+  lists them, comma-separated, for step 1; unset or empty, it passes over none. It prints the same
+  JSON as `subjects.sql`.
+- `split-read/NNN-<name>.sql`, written at step 3: one file for each explain, numbered in the order
+  `split.sql` runs them. A file holds `set local search_path = public`, the run's settings and one
+  `explain (analyze, buffers, verbose, format json)` of the server's statement text byte for byte,
+  with each parameter written in as its value cast to its type, such as `(20::bigint)`. Postgres
+  plans that text as it plans the prepared statement for the same values under
+  `plan_cache_mode = force_custom_plan`. Under that `search_path` it looks up each bare name of the
+  text in `pg_catalog` and then in `public` alone, which is what writing `public.` before each name
+  asks for (dispatch://INFRA-4864/comment/8774d07b-40dc-46fd-a26c-9ec17a5a559f). Each plan goes to
+  the file `split.sql` writes for the same run, so step 5 reads either form alike.
+- After the split's runs, the plans of the joined meaning statement in the one-project form, on
+  both sides, which the report prints apart from the split and judges by no rule. A search runs
+  that statement for a request that names a filter, and for a project while the fill is not done,
+  and its plan can change to the generic plan after a connection's fifth run of it. Where the fill
+  is done, so that the one-project form runs the scoped statement, these are runs of the joined
+  statement, as many a side as the split's, alternating the sides; where it is not done, the
+  split's own runs of it serve. Then, for each word and side, the same custom plan explained
+  without `ANALYZE`, which runs nothing, and for each side `explain (generic_plan, verbose, format
+  json)` of the text with its parameters. Their plan files are under `joined/`, and `split.sql`
+  runs none of them.
+- `split-read/list.tsv`: one line for each file, in their order, tab-separated: the file, the plan
+  file it writes, and its part. The part is `split` for a run of the split, which the rule judges,
+  and `joined-custom`, `joined-plain` or `joined-generic` for the joined statement's plans beside
+  it. The paths are relative to `$OUT`.
+
+psql prints a plan as clean JSON only with `-A` (unaligned) and `-t` (tuples only). Without `-A`
+it pads the text and ends each line with `+`; without `-t` it adds a header and a row count. Both
+are output options and send nothing, so the production run adds them to the command, and writes
+each answer to its file with shell redirection. The files hold UTF-8, the headline options' two
+private-use characters among them, which psql sends as they are: the pod's client encoding is
+UTF8.
+
+Each file runs in a session of its own, where `split.sql` runs every plan in one session, so a plan
+of the production form also counts the catalog pages a new session reads as it runs the
+statement. On the seeded database at `--scale 0.01`, the 240 plans of the production form had the
+nodes, indexes and estimated costs of `split.sql`'s 240 plans of the same runs, and read 0 to 211
+shared buffers a plan more; `main`'s run and the head's read the same more in 117 of the 120 pairs.
+The 248 files took 3 minutes in the pod.
+
+The production run, outside the agents' peak hours. `read_file` is the read login's command with
+the `PGPASSWORD` line of `reads.md`, its query read from the file `$1` and its answer written to
+`$2`. Step 3 takes 3 runs a side, and has no `DISPATCH_BENCH_DATABASE_URL`:
+
+```bash
+cd packages/envoy
+read_file() {
+  PGPASSWORD="$(<the token command of reads.md>)" \
+    psql -X -q -w -v ON_ERROR_STOP=1 -A -t --single-transaction -c 'SET TRANSACTION READ ONLY' -f - "<the conninfo of reads.md>" \
+    < "$1" > "$2" 2> "$2.err"
+}
+# 1. Write subjects.sql and subjects-read.sql.
+DISPATCH_SEARCH_SPLIT_PASS_OVER='<word>,...' DISPATCH_SEARCH_SPLIT_OUT=$OUT \
+  go test -count=1 -run '^TestSearchReadSplitScript$' ./internal/dispatch/api
+# 2. Read the subjects: one run of the command.
+(cd "$OUT" && read_file subjects-read.sql subjects.json) || cat "$OUT/subjects.json.err"
+# 3. Write split.sql, split.json and split-read/.
+DISPATCH_SEARCH_SPLIT_OUT=$OUT DISPATCH_SEARCH_SPLIT_RUNS=3 DISPATCH_TEST_DATABASE_URL="$LEGION_TEST_PG_DSN" \
+  go test -count=1 -run '^TestSearchReadSplitScript$' -v ./internal/dispatch/api
+# 4. One run of the command for each file, in turn, in list.tsv's order.
+(cd "$OUT" && while IFS=$'\t' read -r file output part <&3; do
+  [ -s "$output" ] && continue    # written by an earlier pass of this loop
+  cut=0
+  until read_file "$file" "$output"; do
+    if grep -q 'too many connections for role' "$output.err"; then sleep 30; continue; fi
+    if ! grep -q 'canceling statement due to statement timeout' "$output.err"; then
+      echo "stopped at $file ($part):" >&2; cat "$output.err" >&2; exit 1
+    fi
+    if [ $((cut += 1)) -eq 1 ]; then echo "$output" >> warm-second.txt; continue; fi    # cut once: run again at once, warm
+    if [ "$part" != joined-custom ]; then
+      echo "stopped at $file ($part), cut twice:" >&2; cat "$output.err" >&2; exit 1
+    fi
+    mv "$output.err" "$output.refused"; break    # a joined run cut twice is recorded as cut, and the run goes on
+  done
+  rm -f "$output.err"
+done 3< split-read/list.tsv)
+# 5. Print each part's medians, spreads and match counts, apply the rule, and print the joined plans.
+DISPATCH_SEARCH_SPLIT_IN=$OUT go test -count=1 -run '^TestSearchReadSplitReport$' -v ./internal/dispatch/api
+```
+
+Step 4 keeps the read login's rules. Runs take turns: it runs one file at a time, one `psql` for
+each, which exits when its explain ends, and never two at once, since the login's connection limit
+of 2 is for every pod together. On `too many connections for role` it waits 30 s and runs the file
+again. The 30 s rule: the login holds every statement to its `statement_timeout` of 30 s, which no
+file sets, since the login refuses a `SET` of it. A file that stops with `canceling statement due
+to statement timeout` runs again at once, so the second run reads warm caches, and
+`warm-second.txt` lists its plan file. A run of the split that stops again stops step 4: it has no
+result, and the run reports it with its plan file (`split.json` names its word, form, statement and
+side) and the refusal text, rather than measure it another way, since an `explain` without
+`analyze` reads no buffers. A joined custom run that stops again is recorded as cut: its refusal
+goes to `<plan file>.refused`, and step 4 goes on. Any other refusal stops step 4 with the file and
+psql's error, and `reads.md` says what each refusal means. Step 4 passes over a plan file already
+written, so the same loop, run again, goes on from the file that stopped it.
 
 ## coverage-scale.sh
 
