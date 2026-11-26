@@ -1654,6 +1654,123 @@ func TestPacksServesOnlyTheNarrowedClone(t *testing.T) {
 	requireIndexedOnMain(t, r.c.dir, indexes, "the listed index")
 }
 
+// A /packs answer that passed its last check is written before a narrowing can drop its set: the
+// answer holds packsGate from that check through its write, and the narrowing's unready and drop
+// take the gate. Here an answer pauses between its last check and its write (packsChecked) while a
+// refresh fetches a force-pushed default branch: the refresh's narrowing stops at the gate
+// (packsGateBlocked), and its repack does not start, the cache still ready with the set the answer
+// checked. Released, the answer is that set, 200 and whole, and only then does the narrowing go on;
+// the next answer lists the narrowed clone and none of the objects listed before. Before the gate,
+// the refresh ran to its repack while the answer waited, and the answer then wrote the set the
+// narrowing had dropped, whose objects stay in the bucket for the 30-minute retirement.
+func TestAPacksAnswerIsWrittenBeforeANarrowingDropsItsSet(t *testing.T) {
+	r := newPacksRig(t)
+	advance(t, r.remote, "old")
+	r.refresh(t)
+	before := listingOf(t, r.requirePacks(t))
+	checkedSet := r.c.listed.Load()
+	forcePushMain(t, r.remote)
+
+	checked, release := make(chan struct{}), make(chan struct{})
+	var answerOnce sync.Once
+	r.c.packsChecked = func() {
+		answerOnce.Do(func() {
+			close(checked)
+			<-release
+		})
+	}
+	blocked := make(chan struct{})
+	var blockedOnce sync.Once
+	r.c.packsGateBlocked = func() { blockedOnce.Do(func() { close(blocked) }) }
+	repacking, releaseRepack := holdRepack(t, r.run)
+	defer releaseRepack()
+
+	type answered struct {
+		status int
+		body   []byte
+		err    error
+	}
+	ctx := testwait.Context(t)
+	answers := make(chan answered, 1)
+	go func() {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, r.url+"/packs", nil)
+		if err != nil {
+			answers <- answered{err: err}
+			return
+		}
+		request.Header.Set("Authorization", "Bearer "+testCacheToken)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			answers <- answered{err: err}
+			return
+		}
+		defer response.Body.Close()
+		body, err := io.ReadAll(response.Body)
+		answers <- answered{response.StatusCode, body, err}
+	}()
+	testwait.Receive(t, "the /packs answer to pass its last check", checked)
+	done := make(chan error, 1)
+	go func() { done <- r.c.refresh(ctx) }()
+	select {
+	case <-blocked:
+		if !r.c.narrowedAndReady() || r.c.listed.Load() != checkedSet {
+			t.Errorf("with the narrowing stopped at the gate, the cache answers ready %t with the checked set listed %t, want both", r.c.narrowedAndReady(), r.c.listed.Load() == checkedSet)
+		}
+	case <-repacking:
+		t.Errorf("the narrowing's repack started while a /packs answer was between its last check and its write")
+	case err := <-done:
+		t.Fatalf("the refresh of the force-pushed default branch ended (%v) while a /packs answer was between its last check and its write", err)
+	case <-ctx.Done():
+		t.Fatal("the narrowing neither stopped at the gate nor reached its repack")
+	}
+	close(release)
+	got := testwait.Receive(t, "the paused /packs answer", answers)
+	if got.err != nil {
+		t.Fatalf("the paused /packs answer: %v", got.err)
+	}
+	if got.status != http.StatusOK {
+		t.Fatalf("the paused /packs answer is %d, not 200: %s", got.status, got.body)
+	}
+	var manifest workspace.PackManifest
+	if err := json.Unmarshal(got.body, &manifest); err != nil {
+		t.Fatalf("the paused /packs answer is no manifest: %v", err)
+	}
+	requireListing(t, listingOf(t, manifest), before, "the answer that passed its check before the narrowing:")
+	testwait.Receive(t, "the narrowing's repack once the answer was written", repacking)
+	releaseRepack()
+	if err := testwait.Receive(t, "the refresh of the force-pushed default branch", done); err != nil {
+		t.Fatalf("the refresh of the force-pushed default branch: %v; log %q", err, r.log.all())
+	}
+	after := listingOf(t, r.requirePacks(t))
+	requireListing(t, after, cloneListing(t, r.c.dir), "after the narrowing,")
+	for name := range after.objects {
+		if _, listed := before.objects[name]; listed {
+			t.Errorf("/packs after the narrowing lists %s, which the set before it listed", name)
+		}
+	}
+}
+
+// A /packs answer whose cache goes unready while it signs is 503, with no manifest, though its set
+// is still listed: the answer checks readiness again, under packsGate, after it signed. Here the
+// first signature makes the cache unready as a fetch does whose narrowing failed (fetch's markUnready),
+// which leaves the set listed. Before that second check, the answer was 200 with the set's manifest
+// from a cache that answered /healthz unready.
+func TestAPacksAnswerWhoseCacheWentUnreadyWhileItSignedIsRefused(t *testing.T) {
+	r := newPacksRig(t)
+	r.refresh(t)
+	listed := r.c.listed.Load()
+	var once sync.Once
+	r.c.store.signer = hookSigner{inner: r.c.store.signer, hook: func() { once.Do(r.c.markUnready) }}
+	status, _, body := r.get(t, "/packs", testCacheToken)
+	if r.c.narrowedAndReady() || r.c.listed.Load() != listed {
+		t.Fatalf("after the signing, the cache answers ready %t with its set listed %t, want unready with it listed: the row holds nothing", r.c.narrowedAndReady(), r.c.listed.Load() == listed)
+	}
+	if status != http.StatusServiceUnavailable {
+		t.Errorf("/packs whose cache went unready while it signed answered %d, not 503", status)
+	}
+	requireNoManifest(t, body, "/packs whose cache went unready while it signed:")
+}
+
 // requireNoPacks fails the test unless /packs answers 503 with no manifest, naming what held then.
 func (r *packsRig) requireNoPacks(t *testing.T, what string) {
 	t.Helper()

@@ -86,8 +86,8 @@ func (c *cache) narrow(ctx context.Context, freshClone, rewritten bool) (err err
 	// the cache answers unready now; a pod waits for it as it waits for a cache not yet narrowed. The
 	// set /packs lists was made before this narrowing, so it goes too: /packs answers none until the
 	// sync after the narrowing lists the narrowed packs (syncPacks).
-	c.health.Store(&Health{Repo: c.opts.Repo.String()})
-	c.listed.Store(nil)
+	c.markUnready()
+	c.setListed(nil)
 	before, err := c.objectBytes()
 	if err != nil {
 		return err
