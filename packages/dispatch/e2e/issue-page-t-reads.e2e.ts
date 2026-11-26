@@ -114,7 +114,7 @@ test("the first load reads the tree once and a filter its view once", async ({ b
     // A person wrote versions of the seed's documents, and the server sends each document's edit
     // notice about 30 s after that person's last version, a notice the page reads the issue's
     // detail again for. The Plan re-press below holds to no read at all, so the presses are
-    // counted only once every notice is sent.
+    // counted only once every notice is sent, or held by the server (`editNoticesSent`).
     await editNoticesSent(seeded.key, traffic);
 
     for (const filter of VIEW_FILTERS) {
