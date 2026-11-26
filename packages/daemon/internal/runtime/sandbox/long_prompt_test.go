@@ -20,6 +20,7 @@ import (
 // no trailing newline and no other part, so the composed prompt is the file's text exactly. No
 // argv string of either start command is longer than 4096 bytes, so the bound is nowhere near.
 func TestAPromptOver131072BytesLaunchesInAPodAsAPath(t *testing.T) {
+	t.Parallel()
 	r, err := configure(testOptions())
 	if err != nil {
 		t.Fatal(err)
