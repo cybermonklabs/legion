@@ -308,7 +308,8 @@ func (s *server) v2MiscRows() []routeRow {
 			Shape: routeShape{Status: http.StatusCreated, Response: goingRequest{}},
 			Scope: scopeProjectInBody,
 			Refusals: []apicode.Refusal{undeclaredKeyRefusal, goingAskerNamesNobodyRefusal, goingWordsBlankRefusal,
-				valuePastBoundRefusal, bodyProjectMalformedRefusal},
+				valuePastBoundRefusal, bodyProjectMalformedRefusal,
+				apicode.Refusal{Condition: apicode.GoingProjectOutOfReach, Code: apicode.ProjectNotFound}},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/going-requests/{id}/stream", Auth: authAny, Versions: onlyV2,

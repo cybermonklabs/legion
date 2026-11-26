@@ -213,7 +213,10 @@ func (s *server) v2AskRows() []routeRow {
 				"Dispatch writes for the asking agent, and an approval request is 409 ASK_NOT_DECLINABLE. A block ask's block " +
 				"records the state too. A body equal to the ask's present state and fields, from the caller who set them, " +
 				"answers 200 and writes nothing; any other first answer to an answered ask, and a resolve or a decline of one, " +
-				"is 409 ASK_ANSWERED, and a resolved ask 409 ASK_RESOLVED. Answers the ask as GET /api/v2/asks/{id} reads it; " +
+				"is 409 ASK_ANSWERED, and a resolved ask 409 ASK_RESOLVED. An approve-only token (the secrets broker's " +
+				"proxy for a person's approvals) may send state answered of an approval request and no other state: its " +
+				"answer of any other ask, and every other state it sends, is 403 APPROVE_ONLY_TOKEN. " +
+				"Answers the ask as GET /api/v2/asks/{id} reads it; " +
 				"400 STATE_INVALID for any other state, 400 INVALID_ANSWER, INVALID_RESOLUTION or CAP_EXCEEDED for a body its " +
 				"state refuses, 409 ISSUE_CLOSED on a closed issue, 404 ASK_NOT_FOUND. " +
 				specWriterDocumentText("a retraction or a resolution of a block ask whose block, or a copy of it, is in its "+
@@ -1042,7 +1045,12 @@ func (s *server) putAskStateV2(w http.ResponseWriter, r *http.Request) {
 		}
 		if ask.State == "answered" && ask.Answer != nil {
 			// Before the compare, as recordAnswer holds every answer to it: an answer actor may not
-			// make is refused, never answered as it stands.
+			// make is refused, never answered as it stands, and an approve-only token's answer of an
+			// ask that is no approval request is 403 APPROVE_ONLY_TOKEN.
+			if err := approveOnlyAnswerRefusal(approveOnlyRequest(r), ask); err != nil {
+				s.writeHandlerError(w, r, err)
+				return
+			}
 			if err := approvalAnswerRefusal(ask, actor); err != nil {
 				s.writeHandlerError(w, r, err)
 				return

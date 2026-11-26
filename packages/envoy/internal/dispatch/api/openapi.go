@@ -1012,7 +1012,9 @@ func openAPIOperationCodes(route apiRoute) map[string]any {
 	for _, refusal := range route.Refusals {
 		codes = append(codes, refusal.Code)
 	}
-	if !route.ApproveOnly {
+	// A route the approve list names whole never answers it; one it names by state answers it for
+	// every other state (apiRoute.ApproveStates).
+	if !route.ApproveOnly || len(route.ApproveStates) > 0 {
 		codes = append(codes, apicode.ApproveOnlyToken)
 	}
 	if route.Read.Writes != readWritesNothing {

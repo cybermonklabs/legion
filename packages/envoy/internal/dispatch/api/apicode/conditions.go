@@ -384,7 +384,17 @@ var (
 	ExternalOfAnotherProject   = Condition{"external reference linked to another project"}
 	TitleNearCopy              = Condition{"title a near copy of another issue's"}
 	ParentOutsideCallerProject = Condition{"parent outside the credential's project"}
-	ExternalLinkHeld           = Condition{"external link held by another issue"}
+	// IssueProjectOutOfReach is the project a create names (POST /api/v2/issues) when the
+	// request's credential names one project and the named project is another: one that does not
+	// exist, or a private one the credential does not name, which is refused as a project that does
+	// not exist, 404 NOT_FOUND, as POST /api/v1/issues answers it (issue_create.go, projectVisibility).
+	IssueProjectOutOfReach = Condition{"project of a new issue that the credential does not reach"}
+	// GoingProjectOutOfReach is the project a going request asks its question of (POST
+	// /api/v2/going-requests) when the request's credential names one project and the named project
+	// does not exist, or is a private one the credential does not name: 404 PROJECT_NOT_FOUND, and
+	// the run is recorded nowhere.
+	GoingProjectOutOfReach = Condition{"project of a going request that the credential does not reach"}
+	ExternalLinkHeld       = Condition{"external link held by another issue"}
 	// IssueStatusInvalid is an issue status a patch or a search names that is none of the
 	// statuses.
 	IssueStatusInvalid         = Condition{"issue status invalid"}
@@ -538,7 +548,9 @@ var (
 	BrokerAccountTokenInvalid      = Condition{"ACCOUNT_TOKEN_INVALID relayed from the secrets broker"}
 	BrokerAccountTokenTooLongLived = Condition{"ACCOUNT_TOKEN_TOO_LONG_LIVED relayed from the secrets broker"}
 	BrokerAccountTokensOff         = Condition{"ACCOUNT_TOKENS_OFF relayed from the secrets broker"}
+	BrokerApproverAccountInput     = Condition{"APPROVER_ACCOUNT_INPUT relayed from the secrets broker"}
 	BrokerApproverIsGroup          = Condition{"APPROVER_IS_GROUP relayed from the secrets broker"}
+	BrokerApproverReplaced         = Condition{"APPROVER_REPLACED relayed from the secrets broker"}
 	BrokerApproverRequired         = Condition{"APPROVER_REQUIRED relayed from the secrets broker"}
 	BrokerCodeMismatch             = Condition{"CODE_MISMATCH relayed from the secrets broker"}
 	BrokerCodeRequired             = Condition{"CODE_REQUIRED relayed from the secrets broker"}

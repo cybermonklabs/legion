@@ -51,7 +51,9 @@ var (
 // The refusals the secrets broker answers on the routes the credential handlers call, each the
 // broker's code relayed from it, answered under that code at the broker's own status.
 var (
+	brokerApproverAccountInputRefusal     = apicode.Refusal{Condition: apicode.BrokerApproverAccountInput, Code: apicode.ApproverAccountInput}
 	brokerApproverIsGroupRefusal          = apicode.Refusal{Condition: apicode.BrokerApproverIsGroup, Code: apicode.ApproverIsGroup}
+	brokerApproverReplacedRefusal         = apicode.Refusal{Condition: apicode.BrokerApproverReplaced, Code: apicode.ApproverReplaced}
 	brokerApproverRequiredRefusal         = apicode.Refusal{Condition: apicode.BrokerApproverRequired, Code: apicode.ApproverRequired}
 	brokerCodeMismatchRefusal             = apicode.Refusal{Condition: apicode.BrokerCodeMismatch, Code: apicode.CodeMismatch}
 	brokerCodeRequiredRefusal             = apicode.Refusal{Condition: apicode.BrokerCodeRequired, Code: apicode.CodeRequired}
@@ -180,7 +182,8 @@ var (
 	brokerDecisionCall = brokerCall{
 		Routes: []string{"POST /v1/credential-requests/{record}/approve", "POST /v1/credential-requests/{record}/deny"},
 		Refusals: []apicode.Refusal{
-			brokerApproverIsGroupRefusal, brokerApproverRequiredRefusal, brokerCodeMismatchRefusal, brokerCodeRequiredRefusal,
+			brokerApproverAccountInputRefusal, brokerApproverIsGroupRefusal, brokerApproverReplacedRefusal, brokerApproverRequiredRefusal,
+			brokerCodeMismatchRefusal, brokerCodeRequiredRefusal,
 			brokerDecideOnBrokerPageRefusal, brokerInternalRefusal, brokerInvalidDecisionRefusal, brokerJudgeDecidesRefusal,
 			brokerKeyBindsReadTokenRefusal, brokerKeyHoldsLiveCredentialRefusal, brokerMemberKindUncheckableRefusal,
 			brokerNotApproverRefusal, brokerProjectAccessUnavailableRefusal, brokerRecordIDInputRefusal,
@@ -404,7 +407,8 @@ func (s *server) v2CredentialRows() []routeRow {
 				"of a private project the caller may not see is 404 CREDENTIAL_REQUEST_NOT_FOUND, as is an id the broker " +
 				"holds no request of, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. Deciding " +
 				"needs the person and approve scopes, dismissing the person scope; a credential scoped to one project is " +
-				"refused. " + brokerRelayText + ".",
+				"refused. An approve-only token (the secrets broker's proxy for a person's approvals) may decide, and " +
+				"may dismiss nothing: state dismissed is 403 APPROVE_ONLY_TOKEN. " + brokerRelayText + ".",
 			Handler:  s.putCredentialRequestStateV2,
 			Resource: "state", Kind: kindState,
 			Body: requestBody{Kind: bodyStateUnion, Arms: map[string]any{

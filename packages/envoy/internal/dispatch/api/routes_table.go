@@ -589,12 +589,14 @@ var routeScopes = map[string]routeScopeSet{
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep": {model.ScopePerson, model.ScopeApprove},
 }
 
-// approveScopeRoutes is every route an approve-only token may call, by "<method> <pattern>": the
-// token the secrets broker mints for a person's approve grant, binds to its own pod's key and spends
-// through its proxy, never released (model.Credential.ApproveOnly). It acts as its person with both
-// of the person's scopes, and every other row of the table, and GET /ws/live beside it, answers it
-// 403 APPROVE_ONLY_TOKEN before anything else the route does (refuseApproveOnlyToken), so a route
-// added later stays closed to it until it is listed here.
+// approveScopeRoutes is every /api/v1 route an approve-only token may call, by "<method>
+// <pattern>": the token the secrets broker mints for a person's approve grant, binds to its own
+// pod's key and spends through its proxy, never released (model.Credential.ApproveOnly). It acts
+// as its person with both of the person's scopes, and every other row of the table, and GET
+// /ws/live beside it, answers it 403 APPROVE_ONLY_TOKEN before anything else the route does
+// (refuseApproveOnlyToken), so a route added later stays closed to it until it is listed here.
+// The token may call, on /api/v2, the route each of these has as its Successor and no other
+// (approveV2Routes), so the list is written once and the two versions cannot drift.
 //
 // The list is the rows routeScopes gives approve, the routes that settle what a person settles,
 // less two: the mint and the change of a personal token, since a token they made or widened would
@@ -602,8 +604,9 @@ var routeScopes = map[string]routeScopeSet{
 // to keep off it. The revoke of a personal token stays. Beside them is the answer of an ask, which
 // checks approve in its handler for an approval request and refuses an approve-only token the
 // answer of every other ask, 403 APPROVE_ONLY_TOKEN, once the ask's kind is read
-// (ask_transitions.go). register refuses to mount a table whose list names a row it does not mount
-// (routesNotMounted).
+// (approveOnlyAnswerRefusal), on both versions. register refuses to mount a table whose list names
+// a row it does not mount (routesNotMounted) or whose successors do not give the token a route to
+// call (approveV2Routes).
 var approveScopeRoutes = []string{
 	"POST /api/v1/artifacts/{id}/reviews",
 	"POST /api/v1/artifacts/{id}/versions/{number}/reviews",
@@ -616,6 +619,71 @@ var approveScopeRoutes = []string{
 	"POST /api/v1/signins/{id}/revoke",
 	"DELETE /api/v1/me/agent-tokens/{id}",
 	"POST /api/v1/asks/{id}/answer",
+}
+
+// approveStates is the value of the body's `state` each approve-list route is sent under at its
+// /api/v2 successor, for the successors that take several operations by it: PUT
+// /api/v2/credential-requests/{id}/state approves, denies and dismisses, PUT /api/v2/asks/{id}/state
+// answers, resolves and declines, and PUT /api/v2/issues/{key}/decisions/{block_id}/state keeps. The
+// token may send such a route the states listed here and no other, so the dismissal of a credential
+// request and the resolve or decline of an ask, which no list route does, stay closed to it as they
+// are on /api/v1. A list route named here must have a successor that decodes by `state`, and one
+// not named here is its successor's whole route (approveV2Routes).
+var approveStates = map[string]string{
+	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep": "kept",
+	"POST /api/v1/credential-requests/{id}/approve":      "approved",
+	"POST /api/v1/credential-requests/{id}/deny":         "denied",
+	"POST /api/v1/asks/{id}/answer":                      "answered",
+}
+
+// approveV2Routes is the /api/v2 side of the approve list, read from table: each route of the list
+// that table mounts gives the route its Successor names, keyed "<method> <pattern>", with the
+// states approveStates sends the list's routes to it under (a nil slice for a route the token may
+// call whole). It is derived from the table's own map of the two versions, never listed, so a route
+// that moves or merges in /api/v2 takes the list with it. faults names every list route that
+// maps to no /api/v2 route the table mounts, one that a successor row deletes in favour of a filter,
+// and a /api/v2 route the list reaches both whole and by state, which register refuses to mount:
+// an approve list that opens nothing, or more than it names, reads as though it did not.
+func approveV2Routes(table []apiRoute) (admitted map[string][]string, faults []string) {
+	mounted := make(map[string]apiRoute, len(table))
+	for _, route := range table {
+		mounted[route.Method+" "+route.Pattern] = route
+	}
+	whole := map[string]bool{}
+	byState := map[string][]string{}
+	for _, name := range approveScopeRoutes {
+		v1, ok := mounted[name]
+		if !ok {
+			// routesNotMounted names it.
+			continue
+		}
+		successor := v1.Successor
+		target := successor.Method + " " + versionPrefix(apiV2) + successor.Pattern
+		if successor.Method == "" || successor.Deleted || mounted[target].Pattern == "" {
+			faults = append(faults, name+" has no /api/v2 route of its own for the token to call ("+target+")")
+			continue
+		}
+		if state, ok := approveStates[name]; ok {
+			byState[target] = append(byState[target], state)
+		} else {
+			whole[target] = true
+		}
+	}
+	admitted = map[string][]string{}
+	for target := range whole {
+		if byState[target] != nil {
+			faults = append(faults, target+" is admitted whole by one list route and by state by another")
+		}
+		admitted[target] = nil
+	}
+	for target, states := range byState {
+		if !whole[target] {
+			slices.Sort(states)
+			admitted[target] = slices.Compact(states)
+		}
+	}
+	sort.Strings(faults)
+	return admitted, faults
 }
 
 // routesNotMounted names every route of names that is no row of the table, sorted. The walk is
@@ -727,12 +795,18 @@ func (s *server) routes() []apiRoute {
 			routes = append(routes, testHookRoutes(hook)...)
 		}
 	}
+	admitted, _ := approveV2Routes(routes)
 	for index, route := range routes {
 		name := route.Method + " " + route.Pattern
 		if route.Method == http.MethodGet {
 			routes[index].Read = readClasses[name]
 		}
-		routes[index].ApproveOnly = slices.Contains(approveScopeRoutes, name)
+		if route.Version == apiV2 {
+			states, listed := admitted[name]
+			routes[index].ApproveOnly, routes[index].ApproveStates = listed, states
+		} else {
+			routes[index].ApproveOnly = slices.Contains(approveScopeRoutes, name)
+		}
 	}
 	return routes
 }

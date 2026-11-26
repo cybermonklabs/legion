@@ -286,17 +286,17 @@ func (s *server) recordAnswer(w http.ResponseWriter, r *http.Request, actor mode
 	// writer of an ask takes first and which the transaction holds until Commit writes the queued
 	// answer, so the kind checked is the kind answered.
 	//
-	// An approve-only token (model.Credential.ApproveOnly) reaches this route because the approve
-	// list names it for the answer of an approval request, and for nothing else: an answer of any
-	// other ask, a question's free text among them, is no approval, so it is refused here, under
-	// the same lock and for the same reason, with the approve-only gate's own code. No /api/v2
-	// route is on the list, so the gate refuses the token on PUT /api/v2/asks/{id}/state first.
+	// An approve-only token (model.Credential.ApproveOnly) reaches this answer because the approve
+	// list names it on both versions (POST /api/v1/asks/{id}/answer, and PUT /api/v2/asks/{id}/state
+	// for the state answered alone: approveStates) for the answer of an approval request, and for
+	// nothing else: an answer of any other ask, a question's free text among them, is no approval,
+	// so it is refused here (approveOnlyAnswerRefusal), under the same lock and for the same
+	// reason, with the approve-only gate's own code.
 	approveOnly := approveOnlyRequest(r)
 	applyAnswer := transition.Apply
 	transition.Apply = func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask) (model.Ask, error) {
-		if ask.Kind != "approval" && approveOnly {
-			return model.Ask{}, errorf(apicode.ApproveOnlyToken,
-				"this request's credential is an approve-only token, which answers an approval request and no other ask, and this ask is a %s: nothing was recorded", ask.Kind)
+		if err := approveOnlyAnswerRefusal(approveOnly, ask); err != nil {
+			return model.Ask{}, err
 		}
 		if err := approvalAnswerRefusal(ask, actor); err != nil {
 			return model.Ask{}, err
@@ -346,6 +346,20 @@ func approvalAnswerRefusal(ask model.Ask, actor model.Actor) error {
 	if ask.Kind == "approval" && !actor.Act.Holds(model.ScopeApprove) {
 		return missingScopeError(model.ScopeApprove,
 			"this request's credential does not hold the approve scope, which answering an approval request requires")
+	}
+	return nil
+}
+
+// approveOnlyAnswerRefusal is the refusal of an answer to ask sent under an approve-only token
+// (approveOnly, from approveOnlyRequest), and nil for any other credential and for an approval
+// request: the token answers an approval request and no other ask, 403 APPROVE_ONLY_TOKEN under
+// the approve-only gate's own code. recordAnswer holds every answer to it, and PUT
+// /api/v2/asks/{id}/state holds the answer it would answer as it stands (putAskStateV2), so the
+// no-op tells the token nothing about an ask it may not answer.
+func approveOnlyAnswerRefusal(approveOnly bool, ask model.Ask) error {
+	if approveOnly && ask.Kind != "approval" {
+		return errorf(apicode.ApproveOnlyToken,
+			"this request's credential is an approve-only token, which answers an approval request and no other ask, and this ask is a %s: nothing was recorded", ask.Kind)
 	}
 	return nil
 }

@@ -1816,8 +1816,9 @@ the token it holds into every later allowed request while the grant lives; it ne
 token. The broker logs each such token's SHA-256 and the thumbprint of the key it is bound to
 (`broker: minted a grant's token`), one line per token it mints, never the token.
 Dispatch holds that token to its approve
-routes, and to the answer of an approval request among the asks, and answers every other route
-`403 APPROVE_ONLY_TOKEN` before it runs, the mint and the change of a personal token among them.
+routes, on `/api/v1` and on `/api/v2`, and to the answer of an approval request among the asks, and
+answers every other route `403 APPROVE_ONLY_TOKEN` before it runs, the mint and the change of a
+personal token among them.
 The block's `allow` list narrows what reaches Dispatch by method and path prefix alone (`POST
 /api/v1/artifacts/`, `POST /api/v1/asks/` and the like), so a request under one of those prefixes
 that is no approve route, a document's comment or an ask's decline among them, reaches Dispatch,

@@ -229,7 +229,9 @@ func (s *server) v2IssueRows() []routeRow {
 				"native issue in project, or one imported from a GitHub owner/repo#n named in external into project. Every "+
 				"create names its project, an import included: external with no project, or an empty one, is 400 "+
 				"INVALID_ISSUE, and an external ref already linked to an issue of another project is 400 "+
-				"EXTERNAL_PROJECT_MISMATCH. assignee defaults to the creating person, the personal token's owner, "+
+				"EXTERNAL_PROJECT_MISMATCH. A credential that names one project creates in another project as a "+
+				"credential that names none may, but a project that does not exist and a private project the "+
+				"credential does not name are alike 404 NOT_FOUND, with nothing created. assignee defaults to the creating person, the personal token's owner, "+
 				"the parent's assignee when the parent is of the issue's own project, or the project's default "+
 				"assignee. A title over %d "+
 				"characters is 400 CAP_EXCEEDED. An unforced create whose title is a near copy of another issue's is 409 "+
@@ -271,6 +273,7 @@ func (s *server) v2IssueRows() []routeRow {
 				apicode.Refusal{Condition: apicode.ExternalOfAnotherProject, Code: apicode.ExternalProjectMismatch},
 				apicode.Refusal{Condition: apicode.TitleNearCopy, Code: apicode.PossibleDuplicate},
 				apicode.Refusal{Condition: apicode.ParentOutsideCallerProject, Code: apicode.ProjectScope},
+				apicode.Refusal{Condition: apicode.IssueProjectOutOfReach, Code: apicode.NotFound},
 				specWriterNotArchitectRefusal,
 			)...),
 		},
@@ -367,7 +370,12 @@ func (s *server) v2IssueRows() []routeRow {
 				"exception is the owning architect's status write: a broker-issued token whose session the Legion "+
 				"daemon's own token published as the architect of an issue above, of the issue's own project, before the "+
 				"call and after it, writes done, backlog, icebox or triage, with neither unlink_children nor "+
-				"include_parent and not done with include_children. 404 ISSUE_NOT_FOUND.", contracts.IssueTitleMax),
+				"include_parent and not done with include_children. When the request's credential names one project, "+
+				"the status-change form leaves out each issue of a private project that the credential does not name, "+
+				"and each issue that it reaches only through such an issue (a descendant below it, or an ancestor above "+
+				"it): it does not move or unlink those issues, and neither its answer nor its dry run names them, and "+
+				"the issues of a 409 PARENT_STATUS_CONFLICT leave out such an issue, so they can be empty. "+
+				"404 ISSUE_NOT_FOUND.", contracts.IssueTitleMax),
 			Handler:  s.patchIssueV2,
 			Resource: "issues", Kind: kindItem, Key: "{key}",
 			Body: requestBody{Kind: bodyJSON, Type: patchIssueV2Input{}},

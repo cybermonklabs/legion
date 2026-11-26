@@ -1,0 +1,28 @@
+kind: Changed
+custom:
+  Issue: pr4274
+body: |-
+  An approve-only token, which the secrets broker mints for a person's approve grant and spends
+  through its proxy, may call on `/api/v2` the route each route of Dispatch's approve list has as
+  its successor, and no other `/api/v2` route: `POST /api/v2/artifacts/{id}/reviews`,
+  `POST /api/v2/machine-login-lookups`, `DELETE /api/v2/credential-grants/{id}`,
+  `DELETE /api/v2/machine-logins/{id}`, `DELETE /api/v2/me/signins/{id}` and
+  `DELETE /api/v2/me/agent-tokens/{id}`, and by state `PUT /api/v2/credential-requests/{id}/state`
+  for `approved` and `denied`, `PUT /api/v2/asks/{id}/state` for `answered`, and
+  `PUT /api/v2/issues/{key}/decisions/{block_id}/state` for `kept`. Any other state of those routes,
+  a credential request's dismissal and an ask's resolve, retraction and decline among them, and every
+  other `/api/v2` route, is `403 APPROVE_ONLY_TOKEN`, which the `/api/v2` document lists on every
+  operation the token may not call whole. The token's answer of an ask that is no approval request
+  is refused the same way on both versions, a repeat of the person's own answer included, and the
+  refusal's message names both versions' routes. The list is written once, for `/api/v1`; the
+  `/api/v2` routes are the successors the route table gives it, so the two cannot drift.
+
+  `PUT /api/v2/credential-requests/{id}/state` declares the two codes the secrets broker answers on
+  a credential request's approve and deny since its recorded approver accounts, `400
+  APPROVER_ACCOUNT_INPUT` and `403 APPROVER_REPLACED`, which `/api/v2` used to answer `502
+  AGENT_SECRETS_REFUSAL_UNDECLARED`. `POST /api/v2/issues` and `POST /api/v2/going-requests` declare
+  the `404` a credential that names one project gets for a private project it does not name, or a
+  project that does not exist: `NOT_FOUND` and `PROJECT_NOT_FOUND`. The description of
+  `PATCH /api/v2/issues/{key}` states that such a credential leaves each issue of a private project
+  it does not name out of a status change, its dry run and `PARENT_STATUS_CONFLICT`'s issues, as
+  `/api/v1` says.

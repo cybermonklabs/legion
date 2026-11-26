@@ -536,11 +536,17 @@ type apiRoute struct {
 	Successor successor
 	// Read is the read class of a mounted GET row, or the zero entry on other methods.
 	Read readEntry
-	// ApproveOnly is true on the routes the approve list names (approveScopeRoutes), each an
-	// /api/v1 route, and on no other: only the approve-only gate reads it (refuseApproveOnlyToken),
-	// so an approve-only token is refused on every /api/v2 route, and on every other route of
-	// /api/v1, before the route does anything.
+	// ApproveOnly is true on the /api/v1 routes the approve list names (approveScopeRoutes) and on
+	// the /api/v2 route each of them has as its Successor (approveV2Routes), and on no other: the
+	// approve-only gate reads it (refuseApproveOnlyToken), so an approve-only token is refused on
+	// every other route of both versions before the route does anything.
 	ApproveOnly bool
+	// ApproveStates is, on an /api/v2 route that takes several operations by the body's `state`,
+	// the states an approve-only token may send it, and nil on every other route: the token gets
+	// past refuseApproveOnlyToken on such a route and is held to these states once the decoder has
+	// read the body (gateV2Authorities), since the list names /api/v1 routes that this route's
+	// other states have no counterpart in (approveStates).
+	ApproveStates []string
 	// columns marks the mount of a routeRow, whose facts are its own columns. A route of the v1
 	// table - and a route a test builds by hand - carries false, and the mount guards read its
 	// facts where the side maps hold them (sideMapName), so a side-map entry stays held to the

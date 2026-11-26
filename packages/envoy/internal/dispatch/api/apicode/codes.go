@@ -591,7 +591,9 @@ var (
 	// INTERNAL, REQUEST_TOO_LARGE and INVALID_DECISION are answered as InternalError,
 	// RequestTooLarge and InvalidDecision, which carry that name and status already, and its 404
 	// NOT_FOUND as the not-found code of the object the route's path names.
+	ApproverAccountInput     = v2Only("APPROVER_ACCOUNT_INPUT", http.StatusBadRequest)
 	ApproverIsGroup          = v2Only("APPROVER_IS_GROUP", http.StatusBadRequest)
+	ApproverReplaced         = v2Only("APPROVER_REPLACED", http.StatusForbidden)
 	ApproverRequired         = v2Only("APPROVER_REQUIRED", http.StatusBadRequest)
 	CodeMismatch             = v2Only("CODE_MISMATCH", http.StatusForbidden)
 	CodeRequired             = v2Only("CODE_REQUIRED", http.StatusBadRequest)
