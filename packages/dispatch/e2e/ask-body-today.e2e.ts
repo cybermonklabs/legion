@@ -9,6 +9,7 @@
 // The decision card sits in its existing section or margin placement; its time is a <time>.
 
 import { readFile, writeFile } from "node:fs/promises";
+import { DECISION_KIND_WORDS } from "../web/src/features/decision-card/decision-card-words";
 import {
   createAsk,
   createIssue,
@@ -1188,6 +1189,16 @@ function compareInventory(before: Inventory, after: Inventory): void {
       continue;
     }
     const isDecisionTab = part.startsWith("Decisions/");
+    // Main's margin preview held a decision's heading and its text as one string; today's card
+    // draws its kind words between the two. That one marker, at that one boundary, is allowed.
+    const heading = part.startsWith("margin/decision/")
+      ? old.controls.find(({ role }) => role === "heading")?.name
+      : undefined;
+    const kind = Object.values(DECISION_KIND_WORDS).find((word) => old.words.includes(word));
+    const withKind = (words: string) =>
+      heading !== undefined && kind !== undefined && words.startsWith(`${heading} `)
+        ? `${heading} ${kind}${words.slice(heading.length)}`
+        : words;
     const sharedAskBody =
       now.sharedAskBody ||
       (part === "Conversation/byOption/decline" &&
@@ -1219,7 +1230,11 @@ function compareInventory(before: Inventory, after: Inventory): void {
               .replace(/^Text changed\.$/, "Text changed")
               .replace(/^(Approved at version .*)\.$/, "$1")
         : words;
-      if (revised !== words ? !now.words.includes(revised) : !text.includes(words)) {
+      if (
+        revised !== words
+          ? !now.words.includes(revised)
+          : !text.includes(words) && !text.includes(withKind(words))
+      ) {
         losses.push(`${part}: ${JSON.stringify(revised)}`);
       }
     }
