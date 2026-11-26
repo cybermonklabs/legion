@@ -329,6 +329,9 @@ func (g *Guard) CurlGet(ctx context.Context, path, token string) (CurlResponse, 
 	if !ok {
 		return CurlResponse{}, errNoTimeForCurl
 	}
+	// CONTROL COMMIT, never for merge: curl's --max-time is its own bound, not what the
+	// caller's deadline has left.
+	maxTime = programbound.Of(&curlBound)
 	if err := g.curlMissing(); err != nil {
 		return CurlResponse{}, err
 	}
