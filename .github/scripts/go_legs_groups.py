@@ -33,38 +33,50 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".github/scripts"))
 import go_legs  # noqa: E402
 
-# A verbose line a test binary prints for a top-level test, and the pause t.Parallel prints.
+# A verbose line a test binary prints for a test or a subtest, and the pause t.Parallel prints.
 RESULT_LINE = re.compile(r"^\s*--- (?:PASS|FAIL|SKIP): (\S+) \(([\d.]+)s\)")
 PAUSE_LINE = re.compile(r"^=== PAUSE (\S+)")
 
 
 def timings(paths: list) -> tuple:
-    """Each top-level test's most Elapsed over the runs, and the set that paused for t.Parallel.
+    """Each top-level test's time, the most over the runs, and the set that paused for t.Parallel.
+
+    A test's time is its own `Elapsed`, or its longest subtest's where that is longer. Go stops a
+    test's clock when its function returns, before the parallel subtests it started run, so a test
+    whose work is in parallel subtests reads close to 0 s by its own Elapsed while it holds its leg
+    for as long as those subtests take (a test running its rows on eight worlds read 0.0 s at
+    #5634's first head). The longest subtest is a floor on that hold, not the sum: the subtests run
+    beside each other.
 
     A run is read as a `go test -json` stream, or, where a file holds no JSON event of a test, as
     the verbose lines of that stream: a wrapper that reads the stream itself and writes its Output
     fields back out (.github/scripts/race_memory.py, which the document service's lane runs) leaves
-    exactly those lines, and they carry each test's own seconds and its pause."""
+    exactly those lines, and they carry each test's and subtest's own seconds and the pause."""
     seconds, parallel = {}, set()
+
+    def took(name: str, elapsed: float) -> None:
+        top = name.split("/", 1)[0]
+        seconds[top] = max(seconds.get(top, 0.0), elapsed)
+
     for path in paths:
         text = Path(path).read_text().splitlines()
         events = [json.loads(line) for line in text if line.startswith("{")]
         if any("Test" in event for event in events):
             for event in events:
                 name = event.get("Test")
-                if not name or "/" in name:
+                if not name:
                     continue
-                if event.get("Action") == "pause":
+                if event.get("Action") == "pause" and "/" not in name:
                     parallel.add(name)
                 elif event.get("Action") in ("pass", "fail", "skip"):
-                    seconds[name] = max(seconds.get(name, 0.0), float(event.get("Elapsed", 0.0)))
+                    took(name, float(event.get("Elapsed", 0.0)))
             continue
         for line in text:
             result = RESULT_LINE.match(line)
-            if result and "/" not in result.group(1):
-                seconds[result.group(1)] = max(seconds.get(result.group(1), 0.0), float(result.group(2)))
+            if result:
+                took(result.group(1), float(result.group(2)))
             paused = PAUSE_LINE.match(line)
-            if paused:
+            if paused and "/" not in paused.group(1):
                 parallel.add(paused.group(1))
         # A file of neither shape has timed nothing, and a balance from no time is no balance.
         if not seconds:

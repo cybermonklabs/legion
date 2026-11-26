@@ -658,4 +658,26 @@ printf 'nothing of the kind\n' > "$work/empty.txt"
 (cd "$root" && python3 .github/scripts/go_legs_groups.py mod many 2 4 "$work/listing.txt" "a fixture run" "$work/empty.txt" >/dev/null 2>&1) || status=$?
 check "a run that times nothing is refused rather than balanced from nothing" "$(is "$status" 1)"
 
+echo "case: a test whose work is in parallel subtests is timed by its longest subtest"
+# Go stops a test's clock when its function returns, before the parallel subtests it started run,
+# so such a test's own Elapsed reads close to 0 s while it holds its leg for as long as they take.
+# Read by its own Elapsed, the rebalancer would deal it as free.
+python3 - "$work/subtests.json" <<'PY'
+import json, sys
+events = [{"Action": "run", "Package": "p", "Test": name} for name in
+          ("TestOne", "TestOneMore", "TestTwo", "TestThree", "ExampleThing")]
+events += [{"Action": "pass", "Package": "p", "Test": "TestTwo/world-1", "Elapsed": 30.0},
+           {"Action": "pass", "Package": "p", "Test": "TestTwo/world-2", "Elapsed": 40.0},
+           {"Action": "pass", "Package": "p", "Test": "TestTwo", "Elapsed": 0.0},
+           {"Action": "pass", "Package": "p", "Test": "TestOne", "Elapsed": 5.0},
+           {"Action": "pass", "Package": "p", "Test": "TestOneMore", "Elapsed": 4.0},
+           {"Action": "pass", "Package": "p", "Test": "TestThree", "Elapsed": 3.0},
+           {"Action": "pass", "Package": "p", "Test": "ExampleThing", "Elapsed": 1.0}]
+open(sys.argv[1], "w").write("\n".join(json.dumps(event) for event in events) + "\n")
+PY
+out=$(cd "$root" && python3 .github/scripts/go_legs_groups.py mod many 2 4 "$work/listing.txt" "a fixture run" "$work/subtests.json" 2>&1)
+check "TestTwo weighs its longest subtest, 40 s, a group of its own" "$(contains "$out" '1: 40 s (1 tests)')"
+check "and the file records that time, not its own 0.0 s" \
+  "$(contains "$(cat "$root/.github/go-legs/mod/many.yaml")" '^  - TestTwo  # 40.0 s$')"
+
 summary "go_legs.py runs each package of its module in exactly one place, and each test of a package it splits in exactly one group"

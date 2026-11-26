@@ -160,7 +160,11 @@ tests its leg runs, and the rules they keep are the legs' rules above, with two 
 Rebalance with `.github/scripts/go_legs_groups.py <module> <package> <groups> <parallel> <list>
 <source> <run>...`: it weighs each test by its measured time, or its time over the package's own
 `-parallel` where it runs beside others, and deals the tests longest first into the groups. It
-reads a `go test -json` stream, or the verbose lines of one where a wrapper printed them.
+reads a `go test -json` stream, or the verbose lines of one where a wrapper printed them. A test's
+measured time is its own `Elapsed`, or its longest subtest's where that is longer: Go stops a
+test's clock when its function returns, before the parallel subtests it started run, so a test
+whose work is in parallel subtests reads close to 0 s by its own clock while it holds its leg for
+as long as they take.
 
 No leg's own run can feed it: this step runs `go test` without `-json`, and prints a package's
 one `ok` line, not each test's time. A rebalance therefore needs a run made for it — a throwaway
