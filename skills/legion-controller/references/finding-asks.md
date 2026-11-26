@@ -12,8 +12,8 @@ Every issue you file carries one line in its spec, which triage reads to tell yo
 ## File a clear defect
 
 A role writes a clear defect to you: a comment that mentions your role, on the report issue or on its own issue, first line `Clear defect from <role>`. For a clear defect you find yourself, post its evidence on the report issue with `controller` as the role.
-File it only when it is clear, in a repository both role GitHub Apps are installed on, no open issue tracks it (an open issue that no live tree owns gets the evidence as a comment, and the reply `Filed dispatch://<KEY>`), and no live tree's open pull request changes the files the fix touches. Otherwise file nothing and reply under its evidence, mentioning the finder: `Not filed:` with the role the finder writes to itself, or the reason the finder opens its ask.
-A defect that stops its sender's work, in a repository the sender's token reaches, is the sender's to fix, unless an issue that tracks it is claimed, `in_progress` and its holder said on Envoy that it works on it now: reply `Not filed: it stops your work, so it is yours to fix`.
+A defect that stops its sender's work, in a repository the sender's token reaches, is the sender's to fix, unless an issue that tracks it is claimed, `in_progress` and its holder said on Envoy that it works on it now: reply `Not filed: it stops your work, so it is yours to fix`, and take none of the steps.
+File any other only when it is clear, in a repository both role GitHub Apps are installed on, no open issue tracks it (an open issue that no live tree owns gets the evidence as a comment, and the reply `Filed dispatch://<KEY>`), and no live tree's open pull request changes the files the fix touches. Otherwise file nothing and reply under its evidence, mentioning the finder: `Not filed:` with the role the finder writes to itself, or the reason the finder opens its ask.
 The reply's form and the five steps are in `skill://legion-controller/references/finding-asks-steps.md#file-a-clear-defect`: read them before every such defect.
 
 ## Follow it

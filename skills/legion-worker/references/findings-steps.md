@@ -11,7 +11,7 @@ Read this when `skill://legion-worker/references/findings.md` sends you here for
    ```bash
    dispatch comment --issue '<KEY>' --mention 'role:legion-<project>-<root key, lower case>-architect' --body-file - <<'EOF'
    Clear defect from <your role token>
-   <what went wrong, where and to whom, with the numbers; dispatch://<KEY> it came from; the repository and component; the fix; why you do not make it yourself>
+   <what went wrong, where and to whom, with the numbers; dispatch://<KEY> it came from; the repository and component; the fix>
    EOF
    ```
 

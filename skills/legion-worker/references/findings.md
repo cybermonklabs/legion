@@ -12,7 +12,7 @@ A finding outside your issue never becomes a `dispatch issue` you file. Take the
 
 A human-only to-do, such as a deploy that only a person may make, is a `dispatch ask` too.
 
-A fix you are not sure of is not step 1: take step 2 when it holds, else step 3. A problem inside your issue is fixed in your change. A phase worker's problem inside its tree but outside its issue goes to the architect its `Legion addressing` line names. A fault of Legion's own machinery that holds your phase is a finding too, never a request to another session to act on your agent or your session; tell the owning architect too where a stop rule says so.
+A problem inside your issue is fixed in your change. A phase worker's problem inside its tree but outside its issue goes to the architect its `Legion addressing` line names. A fault of Legion's own machinery that holds your phase is a finding too, never a request to another session to act on your agent or your session; tell the owning architect too where a stop rule says so.
 
 Search first (`skill://dispatch-first`). An open issue that tracks the problem gets your evidence, or what you fixed, as a comment. It is no reason to wait: wait only when it is claimed, it is `in_progress`, and its holder said on Envoy that it works on it now. Then tell that holder what you need and by when, and fix it yourself once that time has passed. An open ask about it (`dispatch open-asks --project <PROJECT>`) gets your evidence as a reply (`dispatch comment --issue <the ask's issue> --reply-to-ask '<ask id>' --body-file -`); open no second one.
 
