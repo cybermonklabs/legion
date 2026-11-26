@@ -1339,7 +1339,7 @@ func TestALaunchReturnsOnlyOnceTheSandboxStoreHoldsItsRunningPatch(t *testing.T)
 func TestALaunchThatFailsAfterRunningLeavesItsSandboxSuspended(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil, withOptions(func(o *Options) { o.BootTimeout = 300 * time.Millisecond }))
-	g.hold.Store(true)
+	g.setHold(true)
 	if _, err := g.r.Spawn(g.ctx, workerSpec(t)); err == nil || !strings.Contains(err.Error(), "wait for its new pod") {
 		t.Fatalf("Spawn: %v, want the new pod's timeout", err)
 	}
@@ -1366,7 +1366,7 @@ func TestALaunchThatWaitsOutItsPodSaysWhatTheSandboxReports(t *testing.T) {
 	fc := clocktest.New(rigNow)
 	g := newRig(t, nil, withOptions(func(o *Options) { o.BootTimeout = 300 * time.Millisecond }))
 	g.r.clock = fc
-	g.hold.Store(true)
+	g.setHold(true)
 	// The controller reports on the generation it observed, and a condition of an earlier one is
 	// not read as this launch's, so the rig writes it as the controller would: after the Running
 	// patch, against the generation that patch produced.
@@ -2319,7 +2319,7 @@ func (s *supervisedSandboxStore) PutClaimStep(_ context.Context, token claim.Tok
 func TestALaunchWhoseRunningPatchTimesOutAfterApplyingLeavesItsSandboxSuspended(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil)
-	g.hold.Store(true)
+	g.setHold(true)
 	applyThenTimeOut := k8stesting.ObjectReaction(g.dyn.Tracker())
 	g.dyn.PrependReactor("patch", "sandboxes", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {
 		patch := a.(k8stesting.PatchAction)

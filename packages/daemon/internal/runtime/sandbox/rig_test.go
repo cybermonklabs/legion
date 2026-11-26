@@ -505,10 +505,13 @@ type rig struct {
 	feeds *breakableFeeds
 	uids  atomic.Int64
 
-	// hold stops the controller creating pods; autoStart makes a pod it creates scheduled on a
-	// node, past workspace-init, and Running at once.
-	hold      atomic.Bool
-	autoStart atomic.Bool
+	// hold stops the controller creating pods, set through setHold; autoStart makes a pod it
+	// creates scheduled on a node, past workspace-init, and Running at once. started counts the
+	// controller's passes begun and passed the last one ended: a pass reads hold once, before it
+	// lists the Sandboxes (control).
+	hold            atomic.Bool
+	autoStart       atomic.Bool
+	started, passed atomic.Int64
 	// suspendDelay is how long a pod the controller deletes stays terminating first, in
 	// nanoseconds. It is atomic because a test may shorten it while control() is running, to ask
 	// for a pod it has been holding terminating to end now: g.suspendDelay.Store(0) in
@@ -985,7 +988,8 @@ func (g *rig) clearActions() {
 // and the headless Service of a Sandbox that asks for one, which it makes as the controller does
 // (cacheService) when no Service of the name exists and removes once its Sandbox is gone, as the
 // garbage collector would. Its own requests go through the tracker directly, so they never appear
-// among the runtime's.
+// among the runtime's. Each pass reads hold once, before it lists the Sandboxes, and decides on
+// that reading (setHold).
 func (g *rig) control() {
 	tick := time.NewTicker(5 * time.Millisecond)
 	defer tick.Stop()
@@ -997,61 +1001,96 @@ func (g *rig) control() {
 			return
 		case <-tick.C:
 		}
-		list, err := g.dyn.Tracker().List(sandboxGVR, sandboxGVR.GroupVersion().WithKind("Sandbox"), testNamespace)
-		if err != nil {
+		pass := g.started.Add(1)
+		g.reconcile(g.hold.Load(), terminating, services)
+		g.passed.Store(pass)
+	}
+}
+
+// reconcile is one pass of the controller stand-in (control), creating no pod when hold is set. It
+// makes or ends a pod only while the Sandbox the pass listed is still in the mode its list read
+// (stillMode).
+func (g *rig) reconcile(hold bool, terminating map[types.UID]time.Time, services map[string]types.UID) {
+	list, err := g.dyn.Tracker().List(sandboxGVR, sandboxGVR.GroupVersion().WithKind("Sandbox"), testNamespace)
+	if err != nil {
+		return
+	}
+	items, _ := list.(*unstructured.UnstructuredList)
+	if items == nil {
+		return
+	}
+	live := map[types.UID]bool{}
+	for i := range items.Items {
+		s, err := decodeSandbox(&items.Items[i])
+		if err != nil || s.DeletionTimestamp != nil {
 			continue
 		}
-		items, _ := list.(*unstructured.UnstructuredList)
-		if items == nil {
-			continue
-		}
-		live := map[types.UID]bool{}
-		for i := range items.Items {
-			s, err := decodeSandbox(&items.Items[i])
-			if err != nil || s.DeletionTimestamp != nil {
-				continue
-			}
-			live[s.UID] = true
-			if s.Spec.Service != nil && *s.Spec.Service {
-				if _, err := g.kube.Tracker().Get(servicesGVR, testNamespace, s.Name); err != nil {
-					if g.kube.Tracker().Add(cacheService(s.Name, s.UID)) == nil {
-						services[s.Name] = s.UID
-					}
+		live[s.UID] = true
+		if s.Spec.Service != nil && *s.Spec.Service {
+			if _, err := g.kube.Tracker().Get(servicesGVR, testNamespace, s.Name); err != nil {
+				if g.kube.Tracker().Add(cacheService(s.Name, s.UID)) == nil {
+					services[s.Name] = s.UID
 				}
-			}
-			pod := g.pod(s.Name)
-			owned := ownedBy(pod, s.UID)
-			switch {
-			case owned && pod.DeletionTimestamp != nil:
-				// A pod the cluster is terminating goes once its grace has passed, whatever its
-				// Sandbox says by then. Only the suspended branch below used to remove one, so a
-				// pod still terminating when its Sandbox came back to Running was in a state this
-				// controller could not leave: it neither removed that pod nor made a replacement,
-				// since a replacement needs none to be there. A launch whose own wait for the pod
-				// to go accepts a terminating one - which production's does, because in a cluster
-				// such a pod is on its way out - then waited for a pod this controller was never
-				// going to create. That is what red this package's pod-drift row about 4 times in
-				// 100 under load, at every bound it was given, with the controller reading
-				// `generation 3, Running, pod uid-pod-13 terminating` for ever (INFRA-985).
-				if started, ok := terminating[pod.UID]; ok && time.Since(started) >= time.Duration(g.suspendDelay.Load()) {
-					_ = g.kube.Tracker().Delete(podsGVR, testNamespace, pod.Name)
-				}
-			case s.mode() == modeSuspended && owned:
-				if _, ok := terminating[pod.UID]; !ok {
-					terminating[pod.UID] = time.Now()
-					g.update(pod, func(p *corev1.Pod) { now := metav1.Now(); p.DeletionTimestamp = &now })
-				}
-			case s.mode() == modeRunning && pod == nil && !g.hold.Load():
-				g.createPod(s)
 			}
 		}
-		for name, uid := range services {
-			if !live[uid] {
-				_ = g.kube.Tracker().Delete(servicesGVR, testNamespace, name)
-				delete(services, name)
+		pod := g.pod(s.Name)
+		owned := ownedBy(pod, s.UID)
+		switch {
+		case owned && pod.DeletionTimestamp != nil:
+			// A pod the cluster is terminating goes once its grace has passed, whatever its
+			// Sandbox says by then. Only the suspended branch below used to remove one, so a
+			// pod still terminating when its Sandbox came back to Running was in a state this
+			// controller could not leave: it neither removed that pod nor made a replacement,
+			// since a replacement needs none to be there. A launch whose own wait for the pod
+			// to go accepts a terminating one - which production's does, because in a cluster
+			// such a pod is on its way out - then waited for a pod this controller was never
+			// going to create. That is what red this package's pod-drift row about 4 times in
+			// 100 under load, at every bound it was given, with the controller reading
+			// `generation 3, Running, pod uid-pod-13 terminating` for ever (INFRA-985).
+			if started, ok := terminating[pod.UID]; ok && time.Since(started) >= time.Duration(g.suspendDelay.Load()) {
+				_ = g.kube.Tracker().Delete(podsGVR, testNamespace, pod.Name)
 			}
+		case s.mode() == modeSuspended && owned:
+			if _, ok := terminating[pod.UID]; !ok && g.stillMode(s, modeSuspended) {
+				terminating[pod.UID] = time.Now()
+				g.update(pod, func(p *corev1.Pod) { now := metav1.Now(); p.DeletionTimestamp = &now })
+			}
+		case s.mode() == modeRunning && pod == nil && !hold && g.stillMode(s, modeRunning):
+			g.createPod(s)
 		}
 	}
+	for name, uid := range services {
+		if !live[uid] {
+			_ = g.kube.Tracker().Delete(servicesGVR, testNamespace, name)
+			delete(services, name)
+		}
+	}
+}
+
+// stillMode is whether the Sandbox the pass listed as s is, as the API holds it now, still that
+// Sandbox in mode: the pass decides to make or to end a pod on the Sandbox as it stands, not as its
+// list found it a pass earlier, which a launch may since have suspended or set Running.
+func (g *rig) stillMode(s *sandbox, mode string) bool {
+	current := g.sandbox(s.Name)
+	return current != nil && current.UID == s.UID && current.DeletionTimestamp == nil && current.mode() == mode
+}
+
+// setHold has the controller stand-in create no pod while on is set, and returns once a pass of
+// it that began after the change has ended, so no pass that read the setting before is still in
+// flight when the test acts on the new one. A pass that listed a Sandbox Running and read hold
+// only after the test had released it created a pod for a Sandbox the runtime had suspended in the
+// meantime, and then ended that pod under the launch that had taken it
+// (TestAKeptVolumeOutlivesItsPodsAndItsRelease, `uid-pod-17, want uid-pod-16`).
+func (g *rig) setHold(on bool) {
+	g.t.Helper()
+	g.hold.Store(on)
+	if g.noController {
+		return
+	}
+	after := g.started.Load() + 1
+	g.eventually("a pass of the controller stand-in that began after its hold changed", func() bool {
+		return g.passed.Load() >= after
+	})
 }
 
 var servicesGVR = corev1.SchemeGroupVersion.WithResource("services")
