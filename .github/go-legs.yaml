@@ -203,6 +203,7 @@ packages/envoy:
       - internal/cipher/store                   # 62 s
       - internal/cipherclient                   # 49 s
       - internal/cipherclient/repeatprobe
+      - internal/cipher/hold
       - internal/cipher/approval                # 33 s
       - internal/cipher/judge                   # 30 s
       - internal/cipher/proxy                   # 18 s
@@ -274,6 +275,7 @@ packages/envoy:
       - internal/dispatch/itemblocks
       - internal/dispatch/auth
       - internal/dispatch/specgraph/specgraphtest
+      - dispatchblocks
     # Dispatch's heavier packages.
     4:
       - internal/dispatch/outbox                # 320 s
