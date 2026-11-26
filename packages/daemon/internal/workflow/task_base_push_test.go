@@ -59,6 +59,12 @@ func assertPushRecorded(t *testing.T, pool *pgxpool.Pool, key, task, after strin
 // push on a pull request's branch is. A push on c's branch, on which no pull request is based,
 // marks no base and asks for no read. No task moves and nothing is queued.
 //
+// A base push asks its reads as one batch of the base it moved (basePush,
+// Config.ReadBaseMergeStates), and a fact of one pull request asks its read apiece
+// (Config.ReadMergeState), so the test hears both: a read of either is a read asked, and the
+// batch must be of b's branch, the base that moved. A test that hears ReadMergeState alone hears
+// none of a base push's reads.
+//
 // The fault it catches is a pull request whose base moved and whose merge state the daemon still
 // reads as clean: a push on a task's branch decodes as the push of that branch's own pull request
 // (intake's decodePush: the branch is an issue's), never as a base push. Its control: the push's
@@ -66,8 +72,12 @@ func assertPushRecorded(t *testing.T, pool *pgxpool.Pool, key, task, after strin
 func TestAPushOnTheBranchOfANeedMovesTheBaseOfItsDependent(t *testing.T) {
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
-	var asked []string
+	var asked, bases []string
 	engine.cfg.ReadMergeState = func(issue string) { asked = append(asked, issue) }
+	engine.cfg.ReadBaseMergeStates = func(repo, base string, issues []string) {
+		asked = append(asked, issues...)
+		bases = append(bases, repo+" "+base)
+	}
 	root := stepRoot(t, pool, phase.Testing)
 	seedTasks(t, pool, root.Key, root.Generation,
 		planTask{id: "b", steps: []string{"implementer"}, agents: []claim.Agent{"implementer"}, state: record.TaskDone, place: atStep(1)},
@@ -93,6 +103,9 @@ func TestAPushOnTheBranchOfANeedMovesTheBaseOfItsDependent(t *testing.T) {
 	if want := []string{root.Key}; !slices.Equal(asked, want) {
 		t.Fatalf("the merge state reads asked = %v after the push on b's branch, want %v", asked, want)
 	}
+	if want := []string{"sjawhar/legion legion/LEGION-208.b"}; !slices.Equal(bases, want) {
+		t.Fatalf("the bases read by batch = %v after the push on b's branch, want %v", bases, want)
+	}
 
 	mustSpend(t, "the push on c's branch", apply("push-c", intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208.c",
 		Before: "head-c", After: "c-moved", Pusher: "a-writer", Sender: "a-writer"}))
@@ -100,6 +113,9 @@ func TestAPushOnTheBranchOfANeedMovesTheBaseOfItsDependent(t *testing.T) {
 	assertPushRecorded(t, pool, root.Key, "c", "c-moved")
 	if want := []string{root.Key}; !slices.Equal(asked, want) {
 		t.Fatalf("the merge state reads asked = %v after the push on c's branch, want %v", asked, want)
+	}
+	if want := []string{"sjawhar/legion legion/LEGION-208.b"}; !slices.Equal(bases, want) {
+		t.Fatalf("the bases read by batch = %v after the push on c's branch, want %v: no pull request is based on c's branch", bases, want)
 	}
 
 	tasks := tasksOf(t, pool, engine, root.Key)
