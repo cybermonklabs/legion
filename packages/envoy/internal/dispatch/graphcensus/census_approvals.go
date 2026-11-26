@@ -123,10 +123,11 @@ var owedApproves = `
 
 // owedApprovesRowsStatement is backfillApproves's selection: at most $2 of the approval asks whose
 // node owes a move of its approves tuples (owedApproves), past the ask $1, in id order, each with
-// its issue or its document. Each batch reads asks_pkey from the id on, so a run reads each ask
-// once however many batches it takes.
+// no session and its issue or its document, the columns of every ask pass's batch (askBatchRow).
+// Each batch reads asks_pkey from the id on, so a run reads each ask once however many batches it
+// takes.
 var owedApprovesRowsStatement = `
-	select k.id::text, coalesce(k.issue_key, ''), coalesce(k.artifact_id::text, '') ` + owedApproves + `
+	select k.id::text, '', coalesce(k.issue_key, ''), coalesce(k.artifact_id::text, '') ` + owedApproves + `
 	  and k.id > $1::uuid
 	order by k.id
 	limit $2`
@@ -144,33 +145,17 @@ var owedApprovesRowsStatement = `
 // fact it states carries the sentinel and is written by the run (backfillActor).
 func backfillApproves(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: TupleApproves}
-	after := zeroUUID
-	for {
-		rows, err := database.Pool.Query(ctx, owedApprovesRowsStatement, after, backfillBatch)
-		if err != nil {
-			return done, fmt.Errorf("read the approval requests whose node does not state their documents: %w", err)
-		}
-		batch, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (askBatchRow, error) {
-			var ask askBatchRow
-			err := row.Scan(&ask.askID, &ask.issue, &ask.document)
-			return ask, err
-		})
-		if err != nil {
-			return done, fmt.Errorf("read the approval requests whose node does not state their documents: %w", err)
-		}
-		if len(batch) == 0 {
-			break
-		}
-		after = batch[len(batch)-1].askID
-		levelled, tuples, err := writeApprovesBatch(ctx, database, batch)
-		if err != nil {
-			return done, err
-		}
-		done.Rows += levelled
-		done.Tuples += tuples
-		if len(batch) < backfillBatch {
-			break
-		}
+	if err := walkBatches(ctx, database, owedApprovesRowsStatement, "the approval requests whose node does not state their documents", zeroUUID,
+		scanAskBatchRow, askBatchKey, func(batch []askBatchRow) error {
+			levelled, tuples, err := writeApprovesBatch(ctx, database, batch)
+			if err != nil {
+				return err
+			}
+			done.Rows += levelled
+			done.Tuples += tuples
+			return nil
+		}); err != nil {
+		return done, err
 	}
 	if err := database.Pool.QueryRow(ctx, `select count(*) `+owedApproves).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the approval requests whose node does not state their documents: %w", err)

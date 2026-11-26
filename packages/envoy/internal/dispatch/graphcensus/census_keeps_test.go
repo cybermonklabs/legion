@@ -141,29 +141,6 @@ func keepAsTheReleaseBefore(t *testing.T, database *store.Store, artifactID stri
 	})
 }
 
-// seedKeepIssue writes issue LOCK-1 of project LOCK and its spec, as this build writes them,
-// before any decision of it, and answers the spec's id, its ref_key and the address of its block
-// r1.
-func seedKeepIssue(t *testing.T, database *store.Store) (document, refKey, pointer string) {
-	t.Helper()
-	seedLockProject(t, database)
-	drivenTx(t, database, "write issue LOCK-1 and its spec", func(tx pgx.Tx) error {
-		if _, err := tx.Exec(context.Background(), `
-			insert into issues (key, project_key, number, title, created_by, rank)
-			values ('LOCK-1', 'LOCK', 1, 'Kept', '{"kind":"user","id":"alice"}', 'U')
-		`); err != nil {
-			return err
-		}
-		return tx.QueryRow(context.Background(), `
-			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-			values ('LOCK-1', 'LOCK', 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}')
-			returning id::text, ref_key
-		`).Scan(&document, &refKey)
-	})
-	issue := "LOCK-1"
-	return document, refKey, refs.BlockRef(refs.ArtifactRef(&issue, "LOCK", nil, "spec", "doc", true), "r1")
-}
-
 // storedKeep is what decision's Keep stores now: its decision_keeps row's sum and its node's
 // current kept_text_sum, "" where it holds none.
 func storedKeep(t *testing.T, database *store.Store, artifactID string, decision keptDecision) (row, value string) {
@@ -205,7 +182,7 @@ func requireKeepSumCensus(t *testing.T, database *store.Store, when string, rows
 func TestTheKeepPassRewritesTheKeepsThatMatchedOverTheWordsWithShaped(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	document, _, pointer := seedKeepIssue(t, database)
+	document, _, pointer := seedLockSpec(t, database)
 	decisions := seedShapedDecisions(t, database, document, pointer, "We keep the node store.", "We shard the log.")
 	d1, d2 := decisions[0], decisions[1]
 	if d1.sum == d1.shaped {
@@ -264,7 +241,7 @@ func TestTheKeepPassRewritesTheKeepsThatMatchedOverTheWordsWithShaped(t *testing
 // sum of d1's words without shaped, and the backfill reports it rewritten.
 func TestTheKeepSumBatchTakesTheStoreLockOrder(t *testing.T) {
 	database := storetest.Open(t)
-	document, _, pointer := seedKeepIssue(t, database)
+	document, _, pointer := seedLockSpec(t, database)
 	d1 := seedShapedDecisions(t, database, document, pointer, "We keep the node store.")[0]
 	keepAsTheReleaseBefore(t, database, document, d1, d1.shaped)
 

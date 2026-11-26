@@ -522,15 +522,21 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		},
 	}, {
 		// A session's ask on the issue: the ask's node, in the issue's project, who asked it, and
-		// the asker's follow, planned in the create's read phase (asks.PlanFollowNewAsk).
+		// the asker's follow, planned in the create's read phase (asks.PlanFollowNewAsk). The issue
+		// is born converted and the ask is a question, which the decisions query takes, so the
+		// create's write phase marks the issue's queries owed and the drain the route runs once it
+		// has committed appends a version of the decisions query (drainMark): the version's node, a
+		// query version with its definition_version.
 		Name: "api/asks.go#createAskFor", Database: r.database,
-		Sites: []string{"api/asks.go#createAskFor", "asks/followers.go#Queue", "asks/followers.go#queueFollow"},
+		Sites: []string{"api/asks.go#createAskFor", "asks/followers.go#Queue", "asks/followers.go#queueFollow",
+			"docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Drive: func(t *testing.T) {
 			r.ask = decoded[model.Ask](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/asks", map[string]any{
 				"question": "Which store do the writers take?", "actor": sessionActor("ses_asker"),
 			}, "", http.StatusCreated)).ID
 		},
-		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk), askAuthorCounted, followCounted),
+		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk), askAuthorCounted, followCounted,
+			versionCounted, queryVersionCounted),
 	}, {
 		// The removal of an untouched document of the issue, made just before by typing a title,
 		// with alice's trade-off lens on it: its node stated gone, which the term artifact_removed
@@ -561,14 +567,17 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		},
 	}, {
 		// The follower route's follow of that ask (asks.Follow), whose node it moves onto the
-		// event it appends after it.
+		// event it appends after it. The decisions query's record holds the question's followed_by,
+		// so the follow's batch marks the issue's queries owed and the drain the route runs once it
+		// has committed appends a version of the decisions query (drainMark).
 		Name: "api/server.go#appendCausingEvent", Database: r.database,
-		Sites: []string{"api/server.go#appendCausingEvent", "asks/followers.go#Follow", "asks/followers.go#queueFollow"},
+		Sites: []string{"api/server.go#appendCausingEvent", "asks/followers.go#Follow", "asks/followers.go#queueFollow",
+			"docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPut, "/api/v1/asks/"+r.ask+"/followers/ses_follower",
 				map[string]any{"actor": sessionActor("ses_follower")}, "", http.StatusNoContent)
 		},
-		Counts: merged(sessionNodeCounted, followCounted),
+		Counts: merged(sessionNodeCounted, followCounted, versionCounted, queryVersionCounted),
 	}, {
 		// The spec's approval request, which a session opens: the request's node, in the spec's
 		// project, and the requester's follow.
@@ -742,9 +751,11 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	}, {
 		// An ask alice opens on the issue, its question reworded for a run she asked: the ask's node
 		// named changed by it. The ask is one of its own, so the ask ses_asker opened keeps the
-		// question alice's answer of it confirms (askDrives).
+		// question alice's answer of it confirms (askDrives). The decisions query prints the
+		// question's words, so the reword marks the issue's queries owed and the drain the route runs
+		// once it has committed appends a version of the decisions query (drainMark).
 		Name: "api/asks.go#editAsk, made for a run", Database: r.database,
-		Sites: []string{"api/asks.go#editAsk"},
+		Sites: []string{"api/asks.go#editAsk", "docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Ready: func(t *testing.T) {
 			reworded = decoded[model.Ask](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/asks",
 				map[string]any{"question": "Which store does a run reword?"}, "alice", http.StatusCreated)).ID
@@ -754,7 +765,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			r.requestForRun(t, run, http.MethodPatch, "/api/v1/asks/"+reworded,
 				map[string]any{"question": "Which store does a run reword, run by run?"}, "alice", http.StatusOK)
 		},
-		Counts: changedByRunCounted(graphstore.KindAsk),
+		Counts: merged(changedByRunCounted(graphstore.KindAsk), versionCounted, queryVersionCounted),
 	}, {
 		// A comment of alice's reworded for a run she asked: the comment's node named changed by it.
 		Name: "api/comment_actions.go#editComment, made for a run", Database: r.database,

@@ -1235,8 +1235,9 @@ func (o OpenedAskTies) Queue(batch *store.WriteBatch) error {
 	return nil
 }
 
-// valueTuple is one value of a decision's node: asserted where the decision holds it, and a
-// retraction of the value the node held where the decision holds none.
+// valueTuple is the value tuple of attribute kind out of the block node at address, dated at at
+// and signed by writer: an assertion of value, or where asserted is false the retraction of the
+// value the node held.
 func valueTuple(address, kind, value string, at time.Time, writer model.Actor, asserted bool) graphstore.Tuple {
 	return graphstore.Tuple{
 		FromKind: BlockNodeKind, FromID: address, Kind: kind,

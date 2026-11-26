@@ -73,7 +73,7 @@ func TestTheBackfillGivesEveryRoleTheCensusNamesItsNodeAndItsPage(t *testing.T) 
 	for role, cause := range causes {
 		requireBackfilledRole(t, writes.database, role, cause)
 	}
-	done := backfilledRoles(t, report)
+	done := reportedKind(t, report, graphstore.KindRole)
 	if done.Rows != int64(len(causes)) || done.Nodes != 2*int64(len(causes)) || done.Remaining != 0 || !done.Complete {
 		t.Fatalf("the backfill reports roles %+v, want %d roles given %d nodes and none remaining",
 			done, len(causes), 2*len(causes))
@@ -84,25 +84,13 @@ func TestTheBackfillGivesEveryRoleTheCensusNamesItsNodeAndItsPage(t *testing.T) 
 	if err != nil {
 		t.Fatalf("backfill the store again: %v", err)
 	}
-	if done := backfilledRoles(t, again); done.Rows != 0 || done.Nodes != 0 {
+	if done := reportedKind(t, again, graphstore.KindRole); done.Rows != 0 || done.Nodes != 0 {
 		t.Fatalf("a second backfill reports roles %+v, want nothing written", done)
 	}
 	if againNodes, againTuples := storeSize(t, writes.database); againNodes != nodes || againTuples != tuples {
 		t.Fatalf("a second backfill took the store from %d nodes and %d tuples to %d and %d, want no change",
 			nodes, tuples, againNodes, againTuples)
 	}
-}
-
-// backfilledRoles is the role kind's line of a backfill report.
-func backfilledRoles(t *testing.T, report BackfillReport) KindBackfill {
-	t.Helper()
-	for _, done := range report.Kinds {
-		if done.Kind == graphstore.KindRole {
-			return done
-		}
-	}
-	t.Fatalf("the backfill reports no %s kind: %#v", graphstore.KindRole, report)
-	return KindBackfill{}
 }
 
 // requireBackfilledRole fails unless role's node, its page and the page's one part_of the role

@@ -300,7 +300,7 @@ func AsksOfDocumentSQL(alias, document string) string {
 // which a document that is its own room, and every result recorded before the issue room, holds;
 // or a row keyed by the room that document is edited in (DocumentRoomSQL), the tree artifact of an
 // issue room, whose block that document holds or last held (RoomBlockDocumentSQL). A result's row
-// is keyed by the artifact its check's document_blocks row is keyed by (T11 of this branch's plan),
+// is keyed by the artifact its check's document_blocks row is keyed by (T11 of the issue-tree plan),
 // so every read of a document's results by the document's id reads them so, never by the row's key
 // alone.
 func CheckResultsOfDocumentSQL(alias, document string) string {
@@ -328,7 +328,7 @@ func DocumentRoomSQL(document string) string {
 }
 
 // DecisionsQuerySQL is true of the artifacts row aliased alias while it is its issue's decisions
-// query node (api's createDecisionsQuery, D6 of this branch's plan): a document whose node is a
+// query node (api's createDecisionsQuery, D6 of the issue-tree plan): a document whose node is a
 // query node of query `decisions` (graphstore.QueryNode) and which no document_rooms row joins to
 // an issue room, whose versions render that query. No fragment of any room holds it, so no socket
 // opens on it (docs.Service.ServeHTTP), no upload or edit writes it (api's decisionsQueryRefusal),
@@ -348,7 +348,7 @@ func DecisionsQuerySQL(alias string) string {
 // ResolvedBlockSQL is the node a block far end of a reference resolves to, as SQL text answering a
 // node id, null where it resolves to none; address is the far end, a text SQL expression holding
 // a node id (text.TargetID). The one resolution is block_moved_to's (migration
-// 20261118165901_issue_tree_block_moved_to_room, T17 of this branch's plan): the address's current
+// 20261118165901_issue_tree_block_moved_to_room, T17 of the issue-tree plan): the address's current
 // moved_to tuple first, followed hop by hop, then the room its document's document_rooms row
 // names, then the address itself. A probe in front of it answers an address a document_blocks row
 // holds where no moved_to tuple runs from it and its document has no room, which is what the
@@ -1576,7 +1576,7 @@ func placeAuthored(ctx context.Context, q Queryer, artifactID string, indexed Bl
 		if pointers == nil {
 			pointers = make(map[string]blockFarEnd)
 			for _, link := range indexed.links {
-				if _, first := pointers[link.blockID]; link.kind == pmdoc.ParentAttribute && !first {
+				if _, again := pointers[link.blockID]; link.kind == pmdoc.ParentAttribute && !again {
 					pointers[link.blockID] = blockFarEnd{kind: link.target.Kind, id: link.target.ID}
 				}
 			}
@@ -2737,7 +2737,7 @@ func blockBands(document IndexedVersion, nodes []model.ArtifactBlock, fragments 
 }
 
 // planRoomBlocks plans issue_room_blocks, the projection of each in_document of an issue room's
-// blocks (D16 of this branch's plan) and the one record of the document whose fragment holds each
+// blocks (D16 of the issue-tree plan) and the one record of the document whose fragment holds each
 // block of the room, level with the version the pass indexes under the issue's tree artifact, the
 // indexing's own artifact; queueRoomBlocks writes it in the pass's write phase. The pass reads the
 // room whole, so the row of every block it does not hold goes: one the version dropped, whose

@@ -380,7 +380,7 @@ func TestABackfillKilledAfterOneBatchLeavesThatBatchsDocumentsOwed(t *testing.T)
 	if err != nil {
 		t.Fatalf("run the backfill again: %v", err)
 	}
-	if blocks := blockKind(t, report); blocks.Rows != 2 || blocks.Owed != 1 || !blocks.Complete {
+	if blocks := reportedKind(t, report, refs.BlockNodeKind); blocks.Rows != 2 || blocks.Owed != 1 || !blocks.Complete {
 		t.Errorf("the second run reports %#v for blocks, want CORE-2's two rows, its one document owed and the cutover complete", blocks)
 	}
 	for _, issue := range []string{"CORE-1", "CORE-2"} {

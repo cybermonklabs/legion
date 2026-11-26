@@ -144,6 +144,17 @@ func readBlockStands(ctx context.Context, q Queryer, documents []string) (map[st
 	return stands, rows.Err()
 }
 
+// numbered is the documents v covers in id order, each with the number of the version v holds of
+// it, as a statement binds them in two arrays of one order.
+func (v Versions) numbered() ([]string, []int32) {
+	documents := slices.Sorted(maps.Keys(v))
+	numbers := make([]int32, len(documents))
+	for position, document := range documents {
+		numbers[position] = int32(v[document].Number)
+	}
+	return documents, numbers
+}
+
 // queueStand queues the revision fence: it settles the mark migration 0122's trigger left on the
 // document when this version's row was inserted, and records the version the document's blocks
 // now stand at. The mark only ever moves forward: two passes can be indexing one document, and
@@ -260,17 +271,6 @@ func (b BlockIndexing) queueStand(batch *store.WriteBatch) {
 			windows_owed_at = coalesce(document_block_versions.windows_owed_at, excluded.windows_owed_at)
 		where document_block_versions.version is null or document_block_versions.version <= excluded.version
 	`, documents, numbers, b.rule)
-}
-
-// numbered is the documents v covers in id order, each with the number of the version v holds of
-// it, as a statement binds them in two arrays of one order.
-func (v Versions) numbered() ([]string, []int32) {
-	documents := slices.Sorted(maps.Keys(v))
-	numbers := make([]int32, len(documents))
-	for position, document := range documents {
-		numbers[position] = int32(v[document].Number)
-	}
-	return documents, numbers
 }
 
 // RevisionFenceStatement is the revision fence's statement of a pass over one document

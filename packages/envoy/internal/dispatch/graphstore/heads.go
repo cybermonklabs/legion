@@ -168,6 +168,13 @@ const HeadColumns = `parent_kind, parent_address, rank, text, supertag, state, v
 // graph_nodes row of: its head row is its comment_blocks row's.
 const KindCommentBlock = "comment_block"
 
+// ItemOfBlockNodeSQL is the item uuid the node id of an item's block, the SQL text id, names
+// (`<item kind>/<item uuid>#<block id>`, refs.ParseItemBlockNode): the part between the item
+// kind's `/` and the block's `#`.
+func ItemOfBlockNodeSQL(id string) string {
+	return `split_part(split_part(` + id + `, '#', 1), '/', 2)`
+}
+
 // headAnchorVersionSQL is the version a comment's anchor names, where it spells one, as the comment
 // loader reads it (refs' anchorVersion), over the comment c.
 const headAnchorVersionSQL = `case when c.anchor->>'version' ~ '^[1-9][0-9]{0,8}$' then (c.anchor->>'version')::int end`
@@ -194,7 +201,7 @@ func headFixedSQL(kind, id string) string {
 // a node whose address names its issue (headFixedSQL) that issue where it stands, an ask, a comment
 // and a message its row's issue, and a block of one (`<kind>/<uuid>#<block id>`) its item's.
 func headOwnIssueSQL(kind, id string) string {
-	item := `split_part(split_part(` + id + `, '#', 1), '/', 2)`
+	item := ItemOfBlockNodeSQL(id)
 	itemIssue := func(table, uuid string) string {
 		return `(select own_item.issue_key from ` + table + ` own_item where own_item.id = ` + store.CanonicalUUID(uuid) + `)`
 	}

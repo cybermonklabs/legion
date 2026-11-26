@@ -237,7 +237,7 @@ var neighbourTargetJoins = `
 			            then split_part(shared.to_id, '/', 1) end as kind,
 			       case when shared.to_kind in ('ask', 'comment', 'message') then shared.to_id
 			            when shared.to_kind in ('ask_block', 'comment_block', 'message_block')
-			            then ` + itemOfBlockNodeSQL(`shared.to_id`) + ` end as id
+			            then ` + graphstore.ItemOfBlockNodeSQL(`shared.to_id`) + ` end as id
 		) item on true
 		left join asks k on item.kind = 'ask' and k.id = ` + store.CastableUUID(`item.id`) + `
 		left join comments c on item.kind = 'comment' and c.id = ` + store.CastableUUID(`item.id`) + `

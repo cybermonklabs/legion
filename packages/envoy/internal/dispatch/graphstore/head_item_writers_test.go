@@ -163,12 +163,12 @@ func readCommentWriteFile(t *testing.T, relative string, source []byte) commentW
 	return commentWriteReading{found: found, unkept: unkept, heads: headWriteSitesIn(relative, files, file)}
 }
 
-// readCommentWriteScan reads every Go file of the module but the tests, by its path from the
-// module.
+// readCommentWriteScan reads every Go file of the module but the tests that names a comment, by its
+// path from the module.
 func readCommentWriteScan(t *testing.T) map[string]commentWriteReading {
 	t.Helper()
 	readings := map[string]commentWriteReading{}
-	walkModuleSources(t, "comment", func(relative string, source []byte) {
+	walkModuleSources(t, func(source []byte) bool { return bytes.Contains(source, []byte("comment")) }, func(relative string, source []byte) {
 		readings[relative] = readCommentWriteFile(t, relative, source)
 	})
 	return readings

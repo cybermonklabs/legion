@@ -96,14 +96,26 @@ var askRowsRead = `
 	  and k.id = any($1::uuid[])
 	order by k.id`
 
-// askBatchRow is one row of a batch the asks or the follower pass read without a lock
-// (askBatchRead, askFollowerBatchRead): the ask, the session that follows it for a follower row,
-// and the ask's owner - its issue, or the document an ask on no issue belongs to - which is the
-// owner a follower row stands under too.
+// askBatchRow is one row of a batch an ask pass reads without a lock (scanAskBatchRow): the asks
+// pass's (askBatchRead), the asked_on pass's (owedAskBlocksStatement), the approvals pass's
+// (owedApprovesRowsStatement) or the follower pass's (askFollowerBatchRead). It holds the ask, the
+// session that follows it for a follower row and none for any other, and the ask's owner - its
+// issue, or the document an ask on no issue belongs to - which is the owner a follower row stands
+// under too.
 type askBatchRow struct {
 	askID, session  string
 	issue, document string
 }
+
+// scanAskBatchRow reads one askBatchRow, its four columns in the order of the type's fields.
+func scanAskBatchRow(row pgx.CollectableRow) (askBatchRow, error) {
+	var batched askBatchRow
+	err := row.Scan(&batched.askID, &batched.session, &batched.issue, &batched.document)
+	return batched, err
+}
+
+// askBatchKey is the key a walk of the asks (walkBatches) starts its next batch past: the ask.
+func askBatchKey(row askBatchRow) string { return row.askID }
 
 // readAskBatch runs read, a pass's read of one batch that locks nothing, on the pool with args.
 func readAskBatch(ctx context.Context, database *store.Store, read string, args ...any) ([]askBatchRow, error) {
@@ -111,11 +123,7 @@ func readAskBatch(ctx context.Context, database *store.Store, read string, args 
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (askBatchRow, error) {
-		var batched askBatchRow
-		err := row.Scan(&batched.askID, &batched.session, &batched.issue, &batched.document)
-		return batched, err
-	})
+	return pgx.CollectRows(rows, scanAskBatchRow)
 }
 
 // lockAskOwners takes the owner row of every ask of batch, each once, in ascending owner key
@@ -140,26 +148,17 @@ func lockAskOwners(ctx context.Context, tx pgx.Tx, batch []askBatchRow) error {
 // it (backfillObjectNodes), which runs before this.
 func backfillAsks(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: "asks"}
-	after := zeroUUID
-	for {
-		batch, err := readAskBatch(ctx, database, askBatchRead, after, backfillBatch)
-		if err != nil {
-			return done, fmt.Errorf("read the asks naming no node: %w", err)
-		}
-		if len(batch) == 0 {
-			break
-		}
-		after = batch[len(batch)-1].askID
+	if err := walkBatches(ctx, database, askBatchRead, "the asks naming no node", zeroUUID, scanAskBatchRow, askBatchKey, func(batch []askBatchRow) error {
 		rows, nodes, tuples, err := writeAskBatch(ctx, database, batch)
 		if err != nil {
-			return done, err
+			return err
 		}
 		done.Rows += rows
 		done.Nodes += nodes
 		done.Tuples += tuples
-		if len(batch) < backfillBatch {
-			break
-		}
+		return nil
+	}); err != nil {
+		return done, err
 	}
 	if err := database.Pool.QueryRow(ctx, `select count(*) `+askRowsOwed).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the asks still naming no node: %w", err)

@@ -124,10 +124,14 @@ type IssueTreeDocuments struct {
 // /api/v1/issues/{key}/nodes/{id}); a server of the release before sends none. Author is the
 // node's authors as the store records them, `[]` for none. State and Visibility are its node state
 // and visibility.
-// MadeAt is when the node was made, null where the store records no time. Attributes are its
-// values as they stand at the read's cut, but its rank and its text, which members of their own
-// carry. Text is its words, and TextTree their display tree, the one the read of its kind answers,
-// present only for a caller that sent `Dispatch-Trees: 1`.
+// MadeAt is when the node was made, null where the store records no time. EditedAt, DeletedAt and
+// DeletedBy are a comment's or a message's marks, and a block's of one, as the read of the post
+// carries them (GraphNode): when its author last edited it, and when and by whom it was deleted,
+// its text then empty; each absent on a post that holds none and on every other node, and a server
+// of the release before sends none. Attributes are its values as they stand at the read's cut, but
+// its rank and its text, which members of their own carry. Text is its words, and TextTree their
+// display tree, the one the read of its kind answers, present only for a caller that sent
+// `Dispatch-Trees: 1`.
 //
 // NoConversation marks a node of the issue that no conversation node stands above. Document names,
 // for a typed block of a role document, its document and its position in that document as the
@@ -157,6 +161,9 @@ type IssueTreeNode struct {
 	State          string             `json:"state" enum:"live,gone,proposed,settled,overtaken"`
 	Visibility     string             `json:"visibility" enum:"project,author"`
 	MadeAt         *time.Time         `json:"made_at"`
+	EditedAt       *time.Time         `json:"edited_at,omitempty"`
+	DeletedAt      *time.Time         `json:"deleted_at,omitempty"`
+	DeletedBy      *Actor             `json:"deleted_by,omitempty"`
 	Attributes     map[string]string  `json:"attributes"`
 	Text           string             `json:"text"`
 	TextTree       DisplayTree        `json:"text_tree,omitempty"`

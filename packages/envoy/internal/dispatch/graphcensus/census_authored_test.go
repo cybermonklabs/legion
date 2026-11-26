@@ -286,9 +286,7 @@ func renderVersion(t *testing.T, tree *pmdoc.Node) renderedVersion {
 	for _, offset := range offsets {
 		version.blocks = append(version.blocks, model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To})
 	}
-	for _, pointer := range pmdoc.BlockPointers(tree) {
-		version.pointers = append(version.pointers, refs.Pointer{Block: pointer.Block, BlockType: pointer.BlockType, Kind: pointer.Attribute, Target: pointer.Target, Targets: pointer.Targets})
-	}
+	version.pointers = refs.PointersOf(tree)
 	return version
 }
 

@@ -180,7 +180,7 @@ func (f *orderFixture) plan(key string, blocks ...orderBlock) {
 	for index, offset := range offsets {
 		written[index] = model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To, Attributes: offset.Attributes}
 	}
-	pointers := pointersOf(tree)
+	pointers := PointersOf(tree)
 	versions := Versions{}
 	if document.fragment == "" {
 		at := writeAuthoredVersion(f.t, f.tx, document.artifact, document.versions, markdown, orderAuthor)

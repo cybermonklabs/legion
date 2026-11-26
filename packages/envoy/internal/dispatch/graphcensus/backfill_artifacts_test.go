@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
@@ -488,6 +489,29 @@ func seedMarkedLockIssue(t *testing.T, database *store.Store) {
 		`)
 		return err
 	})
+}
+
+// seedLockSpec writes project LOCK, its issue LOCK-1 and the issue's spec as a build before the
+// store writes them, rows that name no node, before any decision of the spec, and answers the
+// spec's id, its ref_key and the address of its block r1.
+func seedLockSpec(t *testing.T, database *store.Store) (document, refKey, pointer string) {
+	t.Helper()
+	seedLockProject(t, database)
+	drivenTx(t, database, "write issue LOCK-1 and its spec", func(tx pgx.Tx) error {
+		if _, err := tx.Exec(context.Background(), `
+			insert into issues (key, project_key, number, title, created_by, rank)
+			values ('LOCK-1', 'LOCK', 1, 'Kept', '{"kind":"user","id":"alice"}', 'U')
+		`); err != nil {
+			return err
+		}
+		return tx.QueryRow(context.Background(), `
+			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+			values ('LOCK-1', 'LOCK', 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}')
+			returning id::text, ref_key
+		`).Scan(&document, &refKey)
+	})
+	issue := "LOCK-1"
+	return document, refKey, refs.BlockRef(refs.ArtifactRef(&issue, "LOCK", nil, "spec", "doc", true), "r1")
 }
 
 // holdLockOwner holds issue LOCK-1's owner lock, the owner lock every batch here takes first

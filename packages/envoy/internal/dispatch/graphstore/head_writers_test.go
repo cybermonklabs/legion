@@ -188,9 +188,9 @@ func readHeadFile(t *testing.T, relative string, source []byte) headFileReading 
 	return headFileReading{found: storeWriteSitesIn(relative, files, file), heads: headWriteSitesIn(relative, files, file)}
 }
 
-// walkModuleSources hands read every Go file of the module but the tests whose source holds word,
-// by its path from the module, and fails the test where the walk fails.
-func walkModuleSources(t *testing.T, word string, read func(relative string, source []byte)) {
+// walkModuleSources hands read every Go file of the module but the tests whose source holds is
+// true of, by its path from the module, and fails the test where the walk fails.
+func walkModuleSources(t *testing.T, holds func(source []byte) bool, read func(relative string, source []byte)) {
 	t.Helper()
 	err := filepath.WalkDir(moduleRoot, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -209,7 +209,7 @@ func walkModuleSources(t *testing.T, word string, read func(relative string, sou
 		if err != nil {
 			return err
 		}
-		if !bytes.Contains(source, []byte(word)) {
+		if !holds(source) {
 			return nil
 		}
 		relative, err := filepath.Rel(moduleRoot, path)
@@ -228,7 +228,7 @@ func walkModuleSources(t *testing.T, word string, read func(relative string, sou
 func readHeadScan(t *testing.T) headScan {
 	t.Helper()
 	scan := headScan{files: map[string]headFileReading{}}
-	walkModuleSources(t, "graphstore", func(relative string, source []byte) {
+	walkModuleSources(t, func(source []byte) bool { return bytes.Contains(source, []byte("graphstore")) }, func(relative string, source []byte) {
 		scan.files[relative] = readHeadFile(t, relative, source)
 	})
 	return scan.with("", headFileReading{})

@@ -15,7 +15,7 @@ import (
 // The migrations that restate graph_edges after 20261109215947: the one that adds the tuple arm's
 // class `store` and the arm answering a finding's relations as `lens_block`, the sibling branch's
 // that restates the view from its own arms with every change of the restatements before it, and
-// this branch's restatements after it, ending on the view this head ships (store.GraphEdgesView).
+// the issue tree's restatements after it, ending on the view this head ships (store.GraphEdgesView).
 const (
 	storeClassRestatement     = "20261117020856_graph_edges_asks_and_store_class"
 	storeClassLastRestatement = "20261121104002_graph_edges_store_class_last"
@@ -134,9 +134,9 @@ func TestTheLastGraphEdgesRestatementAnswersWhatTheStoreClassRestatementAnswered
 }
 
 // graph_edges ends on one definition whatever order a database ran its restatements in. The
-// first database runs the set without 20261117020856 and this branch's later restatements, as a
+// first database runs the set without 20261117020856 and the issue tree's later restatements, as a
 // database that ran 20261120122700, 20261121034242 and 20261121104002 before 20261117020856 did,
-// and then the whole set, so 20261117020856 runs after 20261121034242 and this branch's
+// and then the whole set, so 20261117020856 runs after 20261121034242 and the issue tree's
 // restatements run last. The second runs the whole set from empty, so 20261121034242 runs after
 // 20261117020856. Both views have one definition, the last restatement's.
 func TestGraphEdgesEndsOnOneDefinitionWhateverOrderItsRestatementsRan(t *testing.T) {

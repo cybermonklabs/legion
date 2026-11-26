@@ -506,10 +506,11 @@ const edgesWholeDocumentRead = "whole document"
 // and so are the kinds of a lens and what stands under it (graphstore.KindInteraction and the
 // kinds beside it), which no read of blocks covers.
 var edgesProbeCarryingReads = []string{
-	"artifact", "ask", "ask_block", "block", "comment", "comment_block", "component",
-	graphstore.KindConstraint, graphstore.KindInteraction, "issue", graphstore.KindLens, graphstore.KindLensBlock,
-	graphstore.KindLensKind, "message", "message_block", "page", "person", graphstore.KindRisk, "role", "session",
-	edgesWholeDocumentRead,
+	graphstore.KindArtifact, graphstore.KindAsk, ItemAsk.BlockKind(), BlockNodeKind, graphstore.KindComment,
+	graphstore.KindCommentBlock, graphstore.KindComponent, graphstore.KindConstraint, graphstore.KindInteraction,
+	graphstore.KindIssue, graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindLensKind, graphstore.KindMessage,
+	ItemMessage.BlockKind(), graphstore.KindPage, graphstore.KindPerson, graphstore.KindRisk, graphstore.KindRole,
+	graphstore.KindSession, edgesWholeDocumentRead,
 }
 
 // edgesPlanSettings are the two settings each plan is read under: sequential scans off, which

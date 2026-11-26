@@ -160,12 +160,6 @@ func ParseItemBlockNode(nodeID string) (kind ItemKind, itemID, blockID string, o
 	return kind, itemID, blockID, true
 }
 
-// itemOfBlockNodeSQL is the item uuid an item block's node id, the SQL text id, names
-// (ParseItemBlockNode): the part between the item kind's `/` and the block's `#`.
-func itemOfBlockNodeSQL(id string) string {
-	return `split_part(split_part(` + id + `, '#', 1), '/', 2)`
-}
-
 // CarriedEdit is the block ids an edit of a comment carries (PATCH /api/v1/comments/{id}'s
 // `blocks` and `base_revision`): the comment's revision the editor read its blocks at, and each
 // carried block's id with its From in UTF-16 code units into the body the edit writes, in body

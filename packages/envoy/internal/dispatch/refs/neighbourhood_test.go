@@ -106,11 +106,11 @@ func TestTheNeighbourhoodReadRanksSharedTargetsAndLeavesOutLinkedIssues(t *testi
 		graphstore.IssueNeeds(a, blocker, true, actor, at),
 		graphstore.IssueNeeds(d, blocker, true, actor, at),
 		graphstore.Tuple{FromKind: graphstore.KindIssue, FromID: d, Kind: graphstore.TupleDuplicateOf, ToKind: graphstore.KindIssue, ToID: duplicate, At: at, Who: actor, Asserted: true},
-		graphstore.ArtifactMentions(dSpec, "issue", mentioned, true, actor, at),
-		graphstore.ArtifactMentions(eSpec, "ask", ask, true, actor, at),
+		graphstore.ArtifactMentions(dSpec, graphstore.KindIssue, mentioned, true, actor, at),
+		graphstore.ArtifactMentions(eSpec, graphstore.KindAsk, ask, true, actor, at),
 		graphstore.Tuple{FromKind: BlockNodeKind, FromID: cBlock, Kind: graphstore.TupleMentions, ToKind: graphstore.KindAsk, ToID: ask, At: at, Who: actor, Asserted: true},
 		// A block and its document may both cite the same target. The count and the list keep it once.
-		graphstore.ArtifactMentions(cSpec, "ask", ask, true, actor, at),
+		graphstore.ArtifactMentions(cSpec, graphstore.KindAsk, ask, true, actor, at),
 	)
 	if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
 		t.Fatalf("state the neighbourhood's relations: %v", err)

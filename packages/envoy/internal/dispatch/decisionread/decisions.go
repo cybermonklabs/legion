@@ -485,8 +485,11 @@ func readFacts(ctx context.Context, q graphstore.Queryer, kinds, ids []string) (
 // (refs.BlockDocumentSQL). Its document is the one whose fragment holds the row's block, else the
 // one named, and the link answers that document, its ref and the far end's own address, so a
 // decision of a converted issue links its spec's blocks as one of an issue of one-document rooms
-// does.
+// does. Each far end answers the state and the visibility the store holds of its node, read in the
+// same statement (refs.StoredNodeJoin), live and project where the store holds no row of it
+// (refs.StoredStateAndVisibility), as every loader of a node answers them.
 func readLinks(ctx context.Context, q graphstore.Queryer, who model.Actor, kinds, ids []string) (map[int][]model.DecisionLink, error) {
+	storedJoin, storedColumns := refs.StoredNodeJoin(`'`+refs.StoredKindOf(refs.BlockNodeKind)+`'`, "s.to_id")
 	rows, err := q.Query(ctx, `
 		select w.n, s.to_id, s.at, s.source_event,
 		       coalesce(target.block_id, ''), coalesce(target.excerpt, ''), target.changed_version, target_version.created_at,
@@ -496,7 +499,8 @@ func readLinks(ctx context.Context, q graphstore.Queryer, who model.Actor, kinds
 		       coalesce((select r.created_version from block_refs r
 		                 where r.node_kind = w.kind and r.node_address = w.id and r.kind = '`+refs.TupleShaped+`'
 		                   and r.to_kind = '`+refs.BlockNodeKind+`' and r.to_id = s.to_id
-		                 order by r.created_version limit 1), 0)
+		                 order by r.created_version limit 1), 0),
+		       `+storedColumns+`
 		from unnest($1::text[], $2::text[]) with ordinality as w (kind, id, n)
 		cross join lateral (`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id`,
 		`t.to_kind, t.to_id, t.at, t.source_event, t.asserted`,
@@ -514,6 +518,7 @@ func readLinks(ctx context.Context, q graphstore.Queryer, who model.Actor, kinds
 		left join artifacts doc on doc.id = coalesce(`+refs.BlockDocumentSQL("target")+`, pointed.id)
 		left join artifact_versions target_version on target_version.artifact_id = doc.id
 			and target_version.number = target.changed_version
+		`+storedJoin+`
 		where s.asserted and s.to_kind = '`+refs.BlockNodeKind+`' and `+refs.VisibleKind(refs.BlockNodeKind, "s.to_id", "$3")+`
 		order by w.n, s.to_id
 	`, kinds, ids, refs.VisibilityArg(who))
@@ -533,13 +538,15 @@ func readLinks(ctx context.Context, q graphstore.Queryer, who model.Actor, kinds
 		var refKey, slug, artifactKind string
 		var issueKey, project, session *string
 		var primary bool
+		var stored refs.StoredNode
 		if err := rows.Scan(&n, &address, &link.CreatedAt, &event,
 			&link.To.BlockID, &link.To.Text, &changedVersion, &link.TextChangedAt, &changedEvent,
 			&document, &refKey, &slug, &artifactKind, &issueKey, &project, &session, &primary,
-			&link.CreatedVersion); err != nil {
+			&link.CreatedVersion, &stored.State, &stored.Visibility); err != nil {
 			return nil, fmt.Errorf("read a decision node's shaped link: %w", err)
 		}
 		link.To.Kind, link.To.ID = refs.BlockNodeKind, address
+		link.To.State, link.To.Visibility = refs.StoredStateAndVisibility(stored)
 		if link.To.BlockID == "" && document {
 			link.To.BlockID = strings.TrimPrefix(address, refKey+"#")
 		}

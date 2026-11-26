@@ -457,17 +457,18 @@ func TreeNodeType(kind, id, supertag, opening string) string {
 // opensOwnTypedBlock is the typed block the opening line of the text of the block node at address
 // opens, where that block is the node's own: the line, after the markers a nested block is written
 // after (trimContainerMarkers), is a typed block's opening line of a type the schema declares
-// (pmdoc.ParseTypedDirectiveOpen), and the id it writes is the one the node's address ends on, as
-// the block index keys it (storedBlockID). The text of a quote, a list or a list item whose first
-// block is a typed block opens with that block's line, which names that block's id and not the
-// container's, so it opens no typed block of its own.
+// (pmdoc.ParseTypedDirectiveOpen), and the id it writes is the node's own, the part of its address
+// after the first '#', since neither a ref_key nor an item's address holds one, as the block index
+// keys it (storedBlockID). The text of a quote, a list or a list item whose first block is a typed
+// block opens with that block's line, which names that block's id and not the container's, so it
+// opens no typed block of its own, even where the container's id ends in '#' and that id.
 func opensOwnTypedBlock(address, opening string) (string, bool) {
 	name, attrs, ok := pmdoc.ParseTypedDirectiveOpen(strings.TrimRight(trimContainerMarkers(opening), "\r"))
 	if !ok || !pmdoc.IsTypedBlock(name) {
 		return "", false
 	}
 	written, _ := attrs[pmdoc.BlockIDAttr].(string)
-	if written == "" || !strings.HasSuffix(address, "#"+storedBlockID(written)) {
+	if _, own, _ := strings.Cut(address, "#"); written == "" || own != storedBlockID(written) {
 		return "", false
 	}
 	return name, true
@@ -560,7 +561,7 @@ var treePlacedAboveStatement = `
 // one of the issues the SQL text array issues names, read off the item's row by its key.
 func itemOfIssuesSQL(kind ItemKind, table, issues string) string {
 	id := `case when placed.to_kind = '` + string(kind) + `' then placed.to_id
-		else ` + itemOfBlockNodeSQL(`placed.to_id`) + ` end`
+		else ` + graphstore.ItemOfBlockNodeSQL(`placed.to_id`) + ` end`
 	return `placed.to_kind in ('` + string(kind) + `', '` + kind.BlockKind() + `') and exists (
 		select 1 from ` + table + ` item where item.id = ` + store.CastableUUID(id) + ` and item.issue_key = any(` + issues + `::text[]))`
 }

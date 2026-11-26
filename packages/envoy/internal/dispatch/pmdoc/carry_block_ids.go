@@ -18,7 +18,7 @@ import (
 //
 // Each parent's children in next are aligned with that parent's children in live (carryChildren):
 // an unchanged child takes live's id wherever it stands among them, so a version that moves one
-// block keeps the id of that block and of every block the move passes (this issue's spec R13),
+// block keeps the id of that block and of every block the move passes (R13 of the issue-tree spec),
 // and a pointer or an anchor into any of them still resolves. live is compared with its anchor
 // marks stripped, which the markdown never holds, with every untyped block's id masked, and with a
 // typed block's id masked too where next names none for it, along with the whole of that block's

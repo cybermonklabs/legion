@@ -289,7 +289,7 @@ func (f *QuoteFinder) blockRange(blockID string) (Range, bool) {
 				return true
 			}
 			if id, ok := node.Attrs[BlockIDAttr].(string); ok {
-				if _, first := f.blocks[id]; !first {
+				if _, again := f.blocks[id]; !again {
 					f.blocks[id] = Range{From: pos, To: end}
 				}
 			}

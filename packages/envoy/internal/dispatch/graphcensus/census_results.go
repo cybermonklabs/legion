@@ -232,34 +232,15 @@ var (
 	owedRetractionKeysStatement = resultKeysStatement(owedRetractions, "x.result_id")
 )
 
-// eachResultBatch walks statement, a walk of resultKeysStatement, from the first id on, backfillBatch
-// ids at a time, and hands each batch that holds a row to write, until a batch comes back short.
-// what names the rows in the error of a read that fails.
+// eachResultBatch walks statement, a walk of resultKeysStatement, from the first id on
+// (walkBatches), and hands each batch that holds a row to write. what names the rows in the error
+// of a read that fails.
 func eachResultBatch(ctx context.Context, database *store.Store, statement, what string, write func([]resultKey) error) error {
-	for after := zeroUUID; ; {
-		rows, err := database.Pool.Query(ctx, statement, after, backfillBatch)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", what, err)
-		}
-		batch, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (resultKey, error) {
-			var key resultKey
-			err := row.Scan(&key.id, &key.issue)
-			return key, err
-		})
-		if err != nil {
-			return fmt.Errorf("read %s: %w", what, err)
-		}
-		if len(batch) == 0 {
-			return nil
-		}
-		after = batch[len(batch)-1].id
-		if err := write(batch); err != nil {
-			return err
-		}
-		if len(batch) < backfillBatch {
-			return nil
-		}
-	}
+	return walkBatches(ctx, database, statement, what, zeroUUID, func(row pgx.CollectableRow) (resultKey, error) {
+		var key resultKey
+		err := row.Scan(&key.id, &key.issue)
+		return key, err
+	}, func(key resultKey) string { return key.id }, write)
 }
 
 // lockResultOwners takes, in tx, the owner row of each issue a batch's results record a check of,

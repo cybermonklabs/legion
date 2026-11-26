@@ -10,7 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// StoreBackfill is one backfill pass of this branch the sizing counts the rows of: the rows its
+// StoreBackfill is one backfill pass the sizing counts the rows of: the rows its
 // next run writes once, which the database's history holds now and no steady rate counts. Owed is
 // how many projection rows still lack what the pass writes, and Nodes and Tuples what it writes
 // for each.

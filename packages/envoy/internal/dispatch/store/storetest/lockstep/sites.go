@@ -115,7 +115,7 @@ var storeWriteCallSites = map[string]string{
 	// node states with its changed_by_run under that event (QueueCaused). api's
 	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds it to those steps, through the PATCH.
 	"api/issue_patch.go#writeIssue": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	// An issue's relations (R9 and R10 of this branch's spec), which its create and its PATCH state:
+	// An issue's relations (R9 and R10 of the issue-tree spec), which its create and its PATCH state:
 	// after the issue's owner row, its row and its issue_links rows, the node of the item its
 	// filed_from names where the store held none, through Write, with a comment's row named after
 	// it (stateFiledFromNode), then the issue's own node through its node write held for its cause
@@ -135,7 +135,7 @@ var storeWriteCallSites = map[string]string{
 	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds each to those steps.
 	"api/asks.go#editAsk":                "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/comment_actions.go#editComment": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	// A comment's anchor block (T17b of this branch's plan), the anchored_in that
+	// A comment's anchor block (T17b of the issue-tree plan), the anchored_in that
 	// comments.anchor's block_id projects, kept by each write that moves the anchor's block or its
 	// orphan flag beside the comment's create (queueCommentCreated, above): an accept or a
 	// reject that finds a suggestion's mark gone orphans the anchor and retracts its anchored_in,
@@ -233,13 +233,13 @@ var storeWriteCallSites = map[string]string{
 	// (kind, id) with their state tuples at the sentinel. Its driver removes a document no lens
 	// stands on, and a document a lens with a finding stands on too, holding each step that run
 	// takes in turn, the lens's and the finding's node rows and their state tuples among them.
-	// createIssueTree is an issue's tree artifact (R5 of this branch's spec): its node and its
+	// createIssueTree is an issue's tree artifact (R5 of the issue-tree spec): its node and its
 	// part_of to the issue through QueueNodes before the artifacts row that names the node and
 	// the issue_trees row, queued at the head of its caller's write phase, whose transaction holds
 	// the issue's owner lock and causes what the write stated under the event it appends - the
 	// order of the write it shares with createIssue's spec (the node, then the row), which
 	// TestEveryStoreWriteTakesOneLockOrder proves of the node write. createDecisionsQuery is the
-	// decisions query node of an issue born converted (T12b of this branch's plan): in the same
+	// decisions query node of an issue born converted (T12b of the issue-tree plan): in the same
 	// queued step, after the tree's issue_trees row and the spec's document_rooms row, its node and
 	// its part_of through QueueNodes before the artifacts row naming the node, then its empty
 	// version 1 and that version's node, and createIssue causes what both stated under
@@ -254,7 +254,7 @@ var storeWriteCallSites = map[string]string{
 	"api/messages.go#createStoredMessage":          "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	"api/reviews.go#openApprovalAsk":               "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	"docs/ask_blocks.go#createAskBlock":            "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
-	// The node of every version a write inserts, in the row's transaction (this branch's spec):
+	// The node of every version a write inserts, in the row's transaction (the issue-tree spec):
 	// the one writer every insert of a version calls (docs.WriteVersionNode) - a version write
 	// (writeVersionTx), an upload (api's writeDocumentVersion and storeArtifact) and an issue's spec
 	// (api's createIssue) - after the owner row its caller holds and the block nodes of the
@@ -324,7 +324,7 @@ var storeWriteCallSites = map[string]string{
 	// node's row, then the state tuple, under the removal's own event.
 	"graphcensus/orphans.go#StateOrphanedGone": "graphcensus#TestTheOrphanSweepTakesTheStoreLockOrder",
 	// The backfill's pass over the versions an older build stored with no node
-	// (this branch's spec): the owner rows of the batch's documents first, then the version
+	// (the issue-tree spec): the owner rows of the batch's documents first, then the version
 	// rows read again under them, then the version nodes and their facts, in one graphstore.Write
 	// per batch (graphcensus' TestTheVersionBatchTakesTheStoreLockOrder).
 	"graphcensus/census_versions.go#writeVersionBatch": "graphcensus#TestTheVersionBatchTakesTheStoreLockOrder",
@@ -340,18 +340,18 @@ var storeWriteCallSites = map[string]string{
 	// same read and the same write as the batch above.
 	"graphcensus/census_versions.go#Queue": "graphcensus#TestTheVersionBatchTakesTheStoreLockOrder",
 	// The backfill's pass over the waits a process of the release before wrote with no node
-	// (this branch's spec): the issue rows the batch's links stand under first, then the links
+	// (the issue-tree spec): the issue rows the batch's links stand under first, then the links
 	// read again under them, then their needs tuples through Write, then the rows naming the issue's
 	// node (graphcensus' TestTheIssueLinkBatchTakesTheStoreLockOrder).
 	"graphcensus/census_issues.go#writeIssueLinkBatch": "graphcensus#TestTheIssueLinkBatchTakesTheStoreLockOrder",
-	// The backfill's pass over the comments' anchor blocks (T17b of this branch's plan):
+	// The backfill's pass over the comments' anchor blocks (T17b of the issue-tree plan):
 	// the owner rows the batch's comments stand under first, then the comments' rows and their
 	// nodes' anchored_in read again under them, then the tuples that level the two through Write
 	// at the sentinel (graphcensus' TestTheAnchorBatchTakesTheStoreLockOrder).
 	"graphcensus/census_anchors.go#writeAnchorBatch": "graphcensus#TestTheAnchorBatchTakesTheStoreLockOrder",
 	// The ask block pointer backfill locks the ask's owner before it reads or writes asked_on.
 	"graphcensus/census_citations_asks.go#writeAskedOnBatch": "graphcensus#TestTheAskedOnBatchTakesTheStoreLockOrder",
-	// The backfill's pass over the approval requests' documents (R14 of this branch's spec): the
+	// The backfill's pass over the approval requests' documents (R14 of the issue-tree spec): the
 	// owner rows the batch's requests stand under first, then the requests' rows and their nodes'
 	// approves tuples read again under them, then the tuples that level the two through QueueWrite
 	// at the sentinel (graphcensus' TestTheApprovesBatchTakesTheStoreLockOrder).
@@ -362,7 +362,7 @@ var storeWriteCallSites = map[string]string{
 	// document whose request is open writes it (docs' settledCarry, the first of the steps after
 	// the move's event).
 	"docs/approval_ask.go#rewriteApprovalAsk": "docs#TestEverySettlementWriterTakesTheStoreLockOrder",
-	// The backfill's Keep pass (R32 of this branch's spec): the owner rows the batch's Keeps stand
+	// The backfill's Keep pass (R32 of the issue-tree spec): the owner rows the batch's Keeps stand
 	// under first, then the Keeps and their decisions' words read again under them, then the
 	// decision_keeps rows whose sum is still the one over the words with shaped, the kept_text_sum
 	// values through Write at the sentinel, and the head rows (graphcensus'
@@ -373,7 +373,7 @@ var storeWriteCallSites = map[string]string{
 	// again under them, then the mentions tuples each row owes through Write at the sentinel
 	// (graphcensus' TestTheReferenceBatchTakesTheStoreLockOrder).
 	"graphcensus/census_refs.go#writeReferenceBatch": "graphcensus#TestTheReferenceBatchTakesTheStoreLockOrder",
-	// A recorded result (T11 of this branch's plan, R12): the record route's transaction takes the
+	// A recorded result (T11 of the issue-tree plan, R12): the record route's transaction takes the
 	// owner locks of the recording issue and of the check's issue (lockIssueOwners), appends
 	// result.recorded, and then writes, in one batch, the check_results row and the result's node,
 	// the recorder's nodes and every tuple caused by that event (writeRecordedResult); a
@@ -420,7 +420,7 @@ var storeWriteCallSites = map[string]string{
 	"docs/issue_conversion.go#movePointers":        "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	"docs/issue_conversion.go#finish":              "refs#TestCausedTakesTheStoreLockOrder",
 	// The backfill's passes over the components a process of the release before wrote with no
-	// node (R9 of this branch's spec): the architecture source rows of the batch's projects first,
+	// node (R9 of the issue-tree spec): the architecture source rows of the batch's projects first,
 	// in ascending (project, id), then the rows read again under them, then the component nodes and
 	// their part_of, or the depends_on of a component whose node stands, in one Write at the
 	// sentinel, then the rows naming the node; and over the issues' components, the issue rows
@@ -430,7 +430,7 @@ var storeWriteCallSites = map[string]string{
 	"graphcensus/census_components.go#writeComponentDependsBatch":     "graphcensus#TestTheComponentBatchesTakeTheStoreLockOrder",
 	"graphcensus/census_components.go#writeIssueComponentMemberBatch": "graphcensus#TestTheComponentBatchesTakeTheStoreLockOrder",
 	// A component's node and its relations as an import and a source's removal state them
-	// (R9 of this branch's spec): the import's one Write of every component node of the source,
+	// (R9 of the issue-tree spec): the import's one Write of every component node of the source,
 	// each component it drops stated gone, and the part_of and depends_on that moved, at the
 	// sentinel, after the row locks of every source of the project and before the components and
 	// component_depends rows it replaces (architecture's TestTheImportTakesTheStoreLockOrder); and

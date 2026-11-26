@@ -263,24 +263,32 @@ func storeKinds() []StoreKind {
 		count: `(select coalesce(sum(authors), 0) from sized_texts where written and earlier is null and role)`,
 	}, {
 		Name: graphstore.KindVersion, MovedBy: movedWithBlocks, Nodes: 1, Tuples: 6,
-		Driver: "artifact_versions.created_at: a version's node, its visibility, its state and its document's project or" +
-			" parties, its part_of its document, and its number and created_at values",
-		count: `(select count(*) from artifact_versions where created_at > ` + sizingWindow + `)`,
+		Driver: "artifact_versions.created_at, but the first versions of the tree and the decisions query of an issue" +
+			" created in the window, which issue_room counts: a version's node, its visibility, its state and its" +
+			" document's project or parties, its part_of its document, and its number and created_at values",
+		count: `(select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id
+			where v.created_at > ` + sizingWindow + ` and not (v.number = 1 and ` + issueRoomOwn("a") + `))`,
 	}, {
 		Name: "query_version", MovedBy: movedWithBlocks, Tuples: 1,
-		Driver: "artifact_versions.created_at of a version of an issue's spec, Verification document or plan: the" +
+		Driver: "artifact_versions.created_at of a version of an issue's spec, Verification document or plan, and of" +
+			" a version of an issue's decisions query, each a query's drain writes after a write that moves its" +
+			" record, but the first of an issue created in the window, which issue_room counts: the" +
 			" definition_version a version written while its document is a query node holds, so a version of a" +
-			" document of an issue that has not converted is over-stated",
+			" document of an issue that has not converted, and one of a document a person named " +
+			decisionsQueryName + ", is over-stated",
 		count: `(select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id
-			where v.created_at > ` + sizingWindow + ` and ` + roleDocument("a") + `)`,
+			where v.created_at > ` + sizingWindow + ` and (` + roleDocument("a") + `
+			   or ` + decisionsQueryDocument("a") + ` and not (v.number = 1 and ` + issueRoomOwn("a") + `)))`,
 	}, {
 		Name: "version_bytes", MovedBy: movedWithBlocks, Tuples: 3,
 		Driver: "artifact_versions.created_at of an image's or a file's version: its document's mime, size and sha256 values",
 		count:  `(select count(*) from artifact_versions where created_at > ` + sizingWindow + ` and mime is not null)`,
 	}, {
 		Name: "document_part_of", MovedBy: movedWithBlocks, Tuples: 1,
-		Driver: "artifacts.created_at of an issue's document: its part_of its issue",
-		count:  `(select count(*) from artifacts where created_at > ` + sizingWindow + ` and issue_key is not null)`,
+		Driver: "artifacts.created_at of an issue's document, but the tree and the decisions query of an issue created" +
+			" in the window, which issue_room counts: its part_of its issue",
+		count: `(select count(*) from artifacts where created_at > ` + sizingWindow + ` and issue_key is not null
+			and not ` + issueRoomOwn("artifacts") + `)`,
 	}, {
 		Name: "version_removed", MovedBy: movedWithBlocks, Tuples: 1,
 		Driver: "artifact.removed events in the window: the node of the one version an untouched document holds, stated" +
@@ -428,7 +436,8 @@ func storeKinds() []StoreKind {
 		Driver: "issues.created_at, each issue born converted: its tree artifact's node and its decisions query's, each" +
 			" with its visibility, state and project and its part_of the issue, and the two documents' empty first" +
 			" versions, each a node with its visibility, state, project, part_of, number and created_at, the decisions" +
-			" query's with its definition_version",
+			" query's with its definition_version; the terms artifact, document_part_of, version and query_version" +
+			" leave those rows of an issue created in the window to it",
 		count: `(select count(*) from issues where created_at > ` + sizingWindow + `)`,
 	}, {
 		Name: "query_node", MovedBy: movedWithBlocks, Tuples: 4,
@@ -438,8 +447,9 @@ func storeKinds() []StoreKind {
 			+ (select count(*) from issues where created_at > ` + sizingWindow + `))`,
 	}, {
 		Name: "artifact", MovedBy: movedHere, Nodes: 1, Tuples: 3,
-		Driver: "artifacts.created_at: the artifact's node and its visibility, state and project or parties",
-		count:  `(select count(*) from artifacts where created_at > ` + sizingWindow + `)`,
+		Driver: "artifacts.created_at, but the tree and the decisions query of an issue created in the window, which" +
+			" issue_room counts: the artifact's node and its visibility, state and project or parties",
+		count: `(select count(*) from artifacts where created_at > ` + sizingWindow + ` and not ` + issueRoomOwn("artifacts") + `)`,
 	}, {
 		Name: "artifact_removed", MovedBy: movedHere, Tuples: 1,
 		Driver: "artifact.removed and " + model.DocumentRetiredEventType + " events in the window: the removed or retired" +
@@ -859,7 +869,7 @@ func readStoreKinds(ctx context.Context, tx pgx.Tx) ([]StoreKind, error) {
 		counts = append(counts, kinds[index].count)
 		targets = append(targets, &kinds[index].Writes)
 	}
-	// The sizing reads a database before this branch's migrations as well, which holds no issue
+	// The sizing reads a database before the issue-tree migrations as well, which holds no issue
 	// room's table (documentTexts).
 	var rooms bool
 	if err := tx.QueryRow(ctx, `select to_regclass('issue_room_blocks') is not null`).Scan(&rooms); err != nil {
@@ -895,4 +905,36 @@ func readStoreKinds(ctx context.Context, tx pgx.Tx) ([]StoreKind, error) {
 func roleDocument(artifact string) string {
 	return `(` + artifact + `.issue_key is not null and (` + artifact + `.is_primary or ` + artifact + `.slug in ('spec', '` +
 		model.ArtifactSlugVerification + `', '` + model.ArtifactSlugPlan + `')))`
+}
+
+// decisionsQueryName is the name api's issue create gives an issue's decisions query document
+// (api's issueDecisionsName, docs' decisionsQueryName), whatever slug the document takes.
+const decisionsQueryName = "decisions"
+
+// decisionsQueryDocument is true of the artifacts row aliased artifact while it is taken to be an
+// issue's decisions query document. The rule is refs.DecisionsQuerySQL's - a document whose node is
+// a query node of query decisions and which no document_rooms row joins to a room - but that rule
+// reads graph_nodes and document_rooms, and the sizing reads neither: R4 takes its readings before
+// the branch's first migration, on a database that holds no store and no table this branch
+// creates (TestTheSizingRunsOnADatabaseWithNoStore). So it reads the document's name, which its
+// create gives it and no write moves, and a document of an issue a person named so is counted too.
+func decisionsQueryDocument(artifact string) string {
+	return `(` + artifact + `.issue_key is not null and ` + artifact + `.kind = 'doc' and ` + artifact + `.name = '` +
+		decisionsQueryName + `')`
+}
+
+// issueRoomOwn is true of the artifacts row aliased artifact while it is one of the two documents
+// an issue's create makes for the issue's room - its tree, the one artifact of kind tree, or its
+// decisions query (decisionsQueryDocument) - of an issue created inside the window. The term
+// issue_room counts each such issue's tree and decisions query by the issue's own created_at: the
+// two nodes with their visibility, state, project and part_of the issue, and their first versions.
+// So the terms artifact, document_part_of, version and query_version leave those rows to it, and
+// each of their tuples is counted by one term. A room an issue created before the window converts
+// into inside it is no issue created in the window, so issue_room counts none of it, and those
+// terms count it. It reads the artifact's kind and not issue_trees, which the sizing cannot read,
+// as decisionsQueryDocument says.
+func issueRoomOwn(artifact string) string {
+	return `((` + artifact + `.kind = 'tree' or ` + decisionsQueryDocument(artifact) + `)
+		and exists (select 1 from issues room_issue where room_issue.key = ` + artifact + `.issue_key
+		            and room_issue.created_at > ` + sizingWindow + `))`
 }

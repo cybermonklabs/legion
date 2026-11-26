@@ -200,7 +200,7 @@ func seedAnchoredComment(t *testing.T, database *store.Store, project, issue, do
 // those two tuples.
 func TestTheAnchorBatchTakesTheStoreLockOrder(t *testing.T) {
 	database := storetest.Open(t)
-	document, refKey, _ := seedKeepIssue(t, database)
+	document, refKey, _ := seedLockSpec(t, database)
 	const comment = "11111111-1111-4111-8111-111111111111"
 	createdAt := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond)
 	seedAnchoredComment(t, database, "LOCK", "LOCK-1", document, refKey, comment, createdAt)

@@ -62,20 +62,25 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	const decided = "DECIDE"
 	return []graphcensus.StoreDrive{{
 		// alice answers the ask ses_asker opened (closeAskTx), through the one writer of an ask's
-		// answer state (asks.Settled.Queue).
+		// answer state (asks.Settled.Queue). The issue is born converted, so the answer moves the
+		// decisions query's record: its write phase marks the issue's queries owed, and the drain the
+		// route runs once it has committed appends a version of the decisions query (drainMark): the
+		// version's node, a query version with its definition_version.
 		Name: "api/ask_transitions.go#closeAskTx, answering", Database: r.database,
-		Sites: []string{"api/ask_transitions.go#closeAskTx", "asks/settle.go#Queue"},
+		Sites: []string{"api/ask_transitions.go#closeAskTx", "asks/settle.go#Queue", "docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/asks/"+r.ask+"/answer",
 				map[string]any{"text": "The node store.", "expected_edited_at": nil}, "alice", http.StatusOK)
 		},
 		// The answer's text, selection, time, answerer as answered_by and as decided_by, and the
 		// ask's answer_state. alice's node stands from her first comment.
-		Counts: answerCounted,
+		Counts: merged(answerCounted, versionCounted, queryVersionCounted),
 	}, {
-		// The close of an issue of its own holding an open ask, which withdraws the ask.
+		// The close of an issue of its own holding an open ask, which withdraws the ask, and the
+		// version of that issue's decisions query its drain appends once the close has committed
+		// (drainMark), since the withdrawal moves the query's record.
 		Name: "api/issue_ask_lifecycle.go#recordWithdrawnAsksTx", Database: r.database,
-		Sites: []string{"api/issue_ask_lifecycle.go#recordWithdrawnAsksTx", "asks/settle.go#Queue"},
+		Sites: []string{"api/issue_ask_lifecycle.go#recordWithdrawnAsksTx", "asks/settle.go#Queue", "docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Ready: func(t *testing.T) {
 			closing = decoded[model.Issue](t, r.request(t, http.MethodPost, "/api/v1/issues", map[string]any{
 				"project": "SIZE", "title": "What a close withdraws", "force": true,
@@ -91,25 +96,28 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPatch, "/api/v1/issues/"+closing, map[string]any{"status": "done"}, "alice", http.StatusOK)
 		},
-		Counts: resolutionCounted,
+		Counts: merged(resolutionCounted, versionCounted, queryVersionCounted),
 	}, {
-		// The reopen of that issue, which restores the ask its close withdrew.
+		// The reopen of that issue, which restores the ask its close withdrew, and the version of
+		// the decisions query its drain appends (drainMark), as the close's does.
 		Name: "api/issue_ask_lifecycle.go#recordRestoredAsksTx", Database: r.database,
-		Sites: []string{"api/issue_ask_lifecycle.go#recordRestoredAsksTx", "asks/settle.go#Queue"},
+		Sites: []string{"api/issue_ask_lifecycle.go#recordRestoredAsksTx", "asks/settle.go#Queue", "docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPatch, "/api/v1/issues/"+closing, map[string]any{"status": "todo"}, "alice", http.StatusOK)
 		},
 		// The restore appends the ask's ask.opened, under which its answer_state is open again, and
 		// the retraction of the resolution its close stated.
-		Counts: map[graphcensus.StoredKind][]string{
+		Counts: merged(map[graphcensus.StoredKind][]string{
 			{graphstore.KindAsk, graphstore.TupleAnswerState}: {"ask_opened"},
 			{graphstore.KindAsk, graphstore.TupleResolution}:  {"ask_resolved"},
-		},
+		}, versionCounted, queryVersionCounted),
 	}, {
 		// alice's Keep of a decision a session uploaded (keepDecisionNode), at the text_sha256 the
-		// issue's decisions read serves.
+		// issue's decisions read serves. The decisions query takes the decision, and its record
+		// holds the kept_by and the kept_text_sum the Keep states, so the drain the route runs once
+		// the Keep has committed appends a version of the decisions query (drainMark).
 		Name: "api/decisions.go#keepDecisionNode", Database: r.database,
-		Sites: []string{"api/decisions.go#keepDecisionNode"},
+		Sites: []string{"api/decisions.go#keepDecisionNode", "docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Ready: func(t *testing.T) {
 			choices = decoded[struct {
 				Artifact model.Artifact `json:"artifact"`
@@ -139,10 +147,10 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			r.request(t, http.MethodPost, "/api/v1/artifacts/"+choices+"/blocks/"+choiceBlock+"/keep",
 				map[string]any{"text_sha256": choiceSum}, "alice", http.StatusOK)
 		},
-		Counts: map[graphcensus.StoredKind][]string{
+		Counts: merged(map[graphcensus.StoredKind][]string{
 			{refs.BlockNodeKind, refs.TupleKeptBy}:      {"keep"},
 			{refs.BlockNodeKind, refs.ValueKeptTextSum}: {"keep"},
-		},
+		}, versionCounted, queryVersionCounted),
 	}, {
 		// A session's upload of a decision at the end of a document of more blocks than a write
 		// indexes in its own request: the write leaves the blocks to the block-index tick and

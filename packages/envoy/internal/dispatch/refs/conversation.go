@@ -684,7 +684,7 @@ var daemonThreadParentsStatement = `
 	placed as (
 		select held.node, standing.to_kind, standing.to_id, standing.seq,
 		       ` + store.CastableUUID(`(case when standing.to_kind = '`+string(ItemMessage)+`' then standing.to_id
-		            else `+itemOfBlockNodeSQL(`standing.to_id`)+` end)`) + ` as message
+		            else `+graphstore.ItemOfBlockNodeSQL(`standing.to_id`)+` end)`) + ` as message
 		from held
 		cross join lateral (` + BlockPlacementSQL(`held.node`) + `) standing
 		where standing.to_kind in ('` + string(ItemMessage) + `', '` + ItemMessage.BlockKind() + `')

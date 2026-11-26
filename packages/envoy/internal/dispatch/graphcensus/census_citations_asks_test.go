@@ -44,7 +44,7 @@ func seedAskWithoutBlockTuple(t *testing.T, database *store.Store, project, issu
 func TestTheAskedOnBatchTakesTheStoreLockOrder(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := t.Context()
-	document, refKey, _ := seedKeepIssue(t, database)
+	document, refKey, _ := seedLockSpec(t, database)
 	id, createdAt := seedAskWithoutBlockTuple(t, database, "LOCK", "LOCK-1", document, refKey)
 	check := func(rows, tuples, missing, extra int64) {
 		t.Helper()

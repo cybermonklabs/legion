@@ -31,6 +31,17 @@ type Pointer struct {
 	Targets                []string
 }
 
+// PointersOf is each `block[]` value the typed blocks of tree hold (pmdoc.BlockPointers), as the
+// block index takes them.
+func PointersOf(tree *pmdoc.Node) []Pointer {
+	found := pmdoc.BlockPointers(tree)
+	pointers := make([]Pointer, len(found))
+	for index, pointer := range found {
+		pointers[index] = Pointer{Block: pointer.Block, BlockType: pointer.BlockType, Kind: pointer.Attribute, Target: pointer.Target, Targets: pointer.Targets}
+	}
+	return pointers
+}
+
 // BlockNodeKind is what the node and tuple store calls one block of a document, and
 // BlockSupertag the supertag the node of a block of no typed kind carries: a paragraph, a heading,
 // a list, a code block, and a reading in an ask nobody has answered. The node of a typed block

@@ -138,10 +138,10 @@ func versionNodeCounted(term string) map[StoredKind][]string {
 	return counted
 }
 
-// resultKindsCounted is what a record of a result appends of the result's node
+// resultNodeCounted is what a record of a result appends of the result's node
 // (graphstore.ResultFacts): its base attributes, its values, its part_of and its result_of its
 // check, and its authored_by, each counted by the term result.
-func resultKindsCounted() map[StoredKind][]string {
+func resultNodeCounted() map[StoredKind][]string {
 	counted := map[StoredKind][]string{}
 	for _, kind := range []string{graphstore.AttributeVisibility, graphstore.AttributeState, graphstore.AttributeProject,
 		graphstore.AttributeVerdict, graphstore.AttributeSurface, graphstore.AttributeRun, graphstore.AttributeObserved,
@@ -153,11 +153,21 @@ func resultKindsCounted() map[StoredKind][]string {
 	return counted
 }
 
-// VersionNodeCounted and ResultKindsCounted are versionNodeCounted and resultKindsCounted for this
-// package's external test (imported_drives_test.go, sizing_drives_external_test.go).
+// anchorBlockCounted is a comment's anchored_in its anchor's block and, since it answers nothing,
+// its part_of to that same block (graphstore.AnchorTuples), stated or retracted, which the term
+// anchor_block counts.
+var anchorBlockCounted = map[StoredKind][]string{
+	{graphstore.KindComment, graphstore.TupleAnchoredIn}: {"anchor_block"},
+	{graphstore.KindComment, graphstore.TuplePartOf}:     {"anchor_block"},
+}
+
+// VersionNodeCounted, ResultNodeCounted and AnchorBlockCounted are versionNodeCounted,
+// resultNodeCounted and anchorBlockCounted for this package's external test
+// (imported_drives_test.go, sizing_drives_external_test.go).
 var (
 	VersionNodeCounted = versionNodeCounted
-	ResultKindsCounted = resultKindsCounted
+	ResultNodeCounted  = resultNodeCounted
+	AnchorBlockCounted = anchorBlockCounted
 )
 
 // passDrives are the drives of the backfill's passes this package holds, each over the rows a
@@ -279,11 +289,8 @@ func passDrives(t *testing.T) []StoreDrive {
 			seedAnchoredComment(t, database, drivenProject, drivenIssue, document, refKey,
 				"d0d0d0d0-0000-4000-8000-000000000001", time.Now().UTC().Add(-48*time.Hour))
 		},
-		Drive: drivenPass(database, backfillAnchoredIn),
-		Counts: map[StoredKind][]string{
-			{graphstore.KindComment, graphstore.TupleAnchoredIn}: {"anchor_block"},
-			{graphstore.KindComment, graphstore.TuplePartOf}:     {"anchor_block"},
-		},
+		Drive:  drivenPass(database, backfillAnchoredIn),
+		Counts: anchorBlockCounted,
 	}, {
 		Name: askedOnBatchDrive, Database: database,
 		Sites: []string{askedOnBatchDrive},
@@ -313,7 +320,7 @@ func passDrives(t *testing.T) []StoreDrive {
 			}
 		},
 		Drive:  drivenPass(database, backfillResults),
-		Counts: resultKindsCounted(),
+		Counts: resultNodeCounted(),
 	}, {
 		// The retraction pass (backfillResultRetractions) over alice's retraction of that result,
 		// which a release before this one wrote: the result's retracted value, which the term

@@ -443,7 +443,7 @@ type AnchorInput struct {
 	Artifact string `json:"artifact,omitempty"`
 	// Node, in place of Artifact, is the node of a comment's issue whose text the anchor quotes -
 	// a lens, a finding, a risk, a constraint or a result - by its store address, as
-	// /nodes/{id} takes it, or its dispatch:// address (this issue's spec R31). Quote is then
+	// /nodes/{id} takes it, or its dispatch:// address (R31 of the issue-tree spec). Quote is then
 	// required, and Occurrence counts the quote's matches in the node's text. A mark_id or a
 	// block_id beside it, a node of another kind, one the caller may not see under the issue, one
 	// reserved for its author, a gone one, and a quote the node's text does not hold at that
@@ -3655,7 +3655,7 @@ type Comment struct {
 	// names no block; ReplyBlock is read from it, and only for a comment that names one.
 	RepliesToBlock *string `json:"-"`
 	// NodeAnchor is the anchor comments.node_anchor stores for a comment on the text of a node
-	// (this issue's spec R31), nil for every other comment; Anchor is nil on such a comment. No
+	// (R31 of the issue-tree spec), nil for every other comment; Anchor is nil on such a comment. No
 	// read of a comment answers it under this name and no event carries it: a deployed client
 	// parses a comment with the strict CommentSchema, so only a read asked with
 	// ?node_anchor=true answers the member node_anchor (CommentNodeAnchor).
@@ -3663,7 +3663,7 @@ type Comment struct {
 }
 
 // NodeAnchor is a comment's anchor on the text of a node that is no block of a document - a lens,
-// a finding, a risk, a constraint or a result (this issue's spec R31) - as comments.node_anchor
+// a finding, a risk, a constraint or a result (R31 of the issue-tree spec) - as comments.node_anchor
 // stores it: the node as graph_nodes keys it (a finding is kind block, id lens/<uuid>#<block id>),
 // the words it quotes, the zero-based match of those words in the node's text it names, as a
 // quote beside block_id counts its matches in one block, and whether a write of the node's text

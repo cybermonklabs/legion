@@ -625,8 +625,7 @@ func readStoreOnly(ctx context.Context, tx pgx.Tx) ([]StoreOnlyReport, error) {
 }
 
 // censusOfKinds reads every kind of projections in order, then the kinds Go reads (Keeps, review
-// carries, the head projection), running afterKind after each. A kind's names, and the stored
-// authors they read, are read once for the run (readNames, readStoredAuthors) and kept in read.
+// carries, the head projection), running afterKind after each.
 func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Context, kind string) error) ([]KindReport, error) {
 	var kinds []KindReport
 	// A kind's names are read before the first kind that binds them and kept for every kind after

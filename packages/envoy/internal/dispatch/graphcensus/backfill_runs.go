@@ -42,30 +42,37 @@ var runRowless = `
 		from graph_nodes n
 		where ` + graphstore.RowlessRunSQL
 
-// owedBatches reads, by read, the keys a pass owes past after, in batches of backfillBatch, and
-// hands each batch that holds a key to write, until a batch comes back short. read is one text
-// column in the order the keys compare in, past $1 and at most $2 of them, so the last key of a
-// batch is where the next one starts. what names the keys in the error of a read that fails.
-func owedBatches(ctx context.Context, database *store.Store, read, what, after string, write func(owed []string) error) error {
+// walkBatches reads, by read, the rows a pass owes past after, in batches of backfillBatch, each
+// row by scan, and hands each batch that holds a row to write, until a batch comes back short. read
+// selects the rows in the order their keys compare in, past $1 and at most $2 of them, so the key
+// of a batch's last row (key) is where the next one starts. what names the rows in the error of a
+// read that fails.
+func walkBatches[R any](ctx context.Context, database *store.Store, read, what, after string, scan pgx.RowToFunc[R], key func(R) string, write func(batch []R) error) error {
 	for {
 		rows, err := database.Pool.Query(ctx, read, after, backfillBatch)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", what, err)
 		}
-		owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		batch, err := pgx.CollectRows(rows, scan)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", what, err)
 		}
-		if len(owed) > 0 {
-			if err := write(owed); err != nil {
-				return err
-			}
-		}
-		if len(owed) < backfillBatch {
+		if len(batch) == 0 {
 			return nil
 		}
-		after = owed[len(owed)-1]
+		after = key(batch[len(batch)-1])
+		if err := write(batch); err != nil {
+			return err
+		}
+		if len(batch) < backfillBatch {
+			return nil
+		}
 	}
+}
+
+// owedBatches is walkBatches over a read of one text column, the keys themselves.
+func owedBatches(ctx context.Context, database *store.Store, read, what, after string, write func(owed []string) error) error {
+	return walkBatches(ctx, database, read, what, after, pgx.RowTo[string], func(key string) string { return key }, write)
 }
 
 // backfillRuns gives every run going_requests holds and the store holds no interaction node of its

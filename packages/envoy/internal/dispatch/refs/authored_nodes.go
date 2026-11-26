@@ -30,7 +30,7 @@ func writtenAtAcceptance(typ string) bool {
 // blocks to the block-index reconciliation writes of each requirement, check and plan task of the
 // version (writtenAtAcceptance), so the coverage read and the tree read answer each one at once
 // with no read changed: its block node where the store holds none live,
-// under the supertag its writer gives (TypedFacts.supertag); its document_blocks row, with its
+// under the supertag its type gives (TypeSupertag); its document_blocks row, with its
 // type, its text_sha256 and its changed_version and the other columns as the block index writes
 // them (BlockIndexing.queueRows), its text recorded in document_block_texts at that version, its
 // text value, from whose first line a read takes the node's type (TreeNodeType), and, for a row

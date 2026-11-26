@@ -87,9 +87,11 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		Counts: changedByRunCounted(graphstore.KindIssue),
 	}, {
 		// An edit of the words of an ask alice asked, made for her run (editAsk), which restates the
-		// ask's node marked changed by the run: its changed_by_run.
+		// ask's node marked changed by the run: its changed_by_run. The decisions query prints the
+		// question's words, so the edit marks the issue's queries owed and the drain the route runs
+		// once it has committed appends a version of the decisions query (drainMark).
 		Name: "api/asks.go#editAsk, under a run", Database: r.database,
-		Sites: []string{"api/asks.go#editAsk"},
+		Sites: []string{"api/asks.go#editAsk", "docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Ready: func(t *testing.T) {
 			ask = decoded[model.Ask](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/asks",
 				map[string]any{"question": "Which words does the run change?"}, "alice", http.StatusCreated)).ID
@@ -99,7 +101,7 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			r.requestForRun(t, run, http.MethodPatch, "/api/v1/asks/"+ask,
 				map[string]any{"question": "Which words did the run change?"}, "alice", http.StatusOK)
 		},
-		Counts: changedByRunCounted(graphstore.KindAsk),
+		Counts: merged(changedByRunCounted(graphstore.KindAsk), versionCounted, queryVersionCounted),
 	}, {
 		// An edit of the words of a comment alice wrote, made for her run (editComment), which
 		// restates the comment's node marked changed by the run: its changed_by_run.
@@ -229,7 +231,7 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				"negative_control": "Broke what the check proves and the run failed.", "failed": 1,
 			}, "alice", http.StatusCreated)).Result.ID
 		},
-		Counts: merged(graphcensus.ResultKindsCounted(), versionCounted, queryVersionCounted),
+		Counts: merged(graphcensus.ResultNodeCounted(), versionCounted, queryVersionCounted),
 	}, {
 		// alice's retraction of that result (writeCheckResultRetraction): its retracted value,
 		// which the term result_retraction counts, and the version of the Verification document
@@ -545,13 +547,10 @@ const sizedDaemonSession = "legion-daemon:SIZE"
 // conversion moves into the issue's room.
 const convertedAsk = "converted-ask"
 
-// anchorBlockCounted is a comment's anchored_in its anchor's block and, since it answers nothing,
-// its part_of to that same block (graphstore.AnchorTuples), stated or retracted, which the term
-// anchor_block counts.
-var anchorBlockCounted = map[graphcensus.StoredKind][]string{
-	{graphstore.KindComment, graphstore.TupleAnchoredIn}: {"anchor_block"},
-	{graphstore.KindComment, graphstore.TuplePartOf}:     {"anchor_block"},
-}
+// anchorBlockCounted is a comment's anchored_in its anchor's block and its part_of to that block,
+// which the term anchor_block counts, as the internal anchor pass drive counts them
+// (graphcensus.AnchorBlockCounted).
+var anchorBlockCounted = graphcensus.AnchorBlockCounted
 
 // changedByRunCounted is what a write made for a run appends out of the node of kind it changed:
 // its changed_by_run into the run, which the term interaction counts (store.WithRun).

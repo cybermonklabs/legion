@@ -1185,7 +1185,7 @@ func indexTheArchive(t *testing.T, database *store.Store) {
 // typedVersion is a version of a typed document as a version write renders it
 // (pmdoc.RenderWithBlockOffsets): its markdown; its blocks with their offsets and the attributes
 // each one's opening line writes, which a plan node's values are read off (refs' planBlockValues);
-// the mentions located in it; and the pointers its typed blocks write (pmdoc.BlockPointers).
+// the mentions located in it; and the pointers its typed blocks write (refs.PointersOf).
 type typedVersion struct {
 	markdown string
 	blocks   []model.ArtifactBlock
@@ -1207,15 +1207,10 @@ func typedRender(t *testing.T, markdown string) typedVersion {
 	if err != nil {
 		t.Fatalf("render %q: %v", markdown, err)
 	}
-	version := typedVersion{markdown: rendered, located: text.ExtractAt(rendered, sizedServerURL)}
+	version := typedVersion{markdown: rendered, located: text.ExtractAt(rendered, sizedServerURL), pointers: refs.PointersOf(tree)}
 	for _, offset := range offsets {
 		version.blocks = append(version.blocks, model.ArtifactBlock{
 			ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To, Attributes: offset.Attributes,
-		})
-	}
-	for _, pointer := range pmdoc.BlockPointers(tree) {
-		version.pointers = append(version.pointers, refs.Pointer{
-			Block: pointer.Block, BlockType: pointer.BlockType, Kind: pointer.Attribute, Target: pointer.Target, Targets: pointer.Targets,
 		})
 	}
 	return version
@@ -1586,6 +1581,75 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 	} {
 		if !strings.Contains(printed, line) {
 			t.Errorf("the sizing prints no line %q:\n%s", line, printed)
+		}
+	}
+}
+
+// The term query_version counts the definition_version of each version of an issue's decisions
+// query that a drain writes after a write that moves the query's record (R7, R14), as it counts
+// a version of the spec's. The issue's decisions query - a document of its own its create names
+// decisions - holds the create's first version, which the term issue_room counts, and two versions
+// past it, one for each drain; another document of the issue holds three versions too, past its
+// first as well, and none holds a definition_version. The term counts the decisions query's two.
+func TestTheQueryVersionTermCountsTheDecisionsQuerysDrainedVersions(t *testing.T) {
+	database := storetest.Open(t)
+	censusIssue(t, database)
+	decisions, _ := censusDocument(t, database, "decisions", "doc", false)
+	notes, _ := censusDocument(t, database, "notes", "doc", false)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	for number := 1; number <= 3; number++ {
+		censusVersion(t, database, decisions, number, fmt.Sprintf("The decisions, version %d.\n", number), alice)
+		censusVersion(t, database, notes, number, fmt.Sprintf("The notes, version %d.\n", number), alice)
+	}
+	printed := sizingCensus(t, database)
+	if term, held := sizedTerms(t, printed)["query_version"]; !held || term.writes != 2 {
+		t.Errorf("the sizing counts %d write(s) of query_version (printed %t), want the decisions query's two versions past its first:\n%s",
+			term.writes, held, printed)
+	}
+}
+
+// Each row of an issue's room its create writes is counted by one term: issue_room, by the issue's
+// own created_at. CORE-1, created in the window, holds its tree and its decisions query with their
+// first versions, as its create writes them, and its spec with one version; CORE-2, created before
+// the window, converts inside it, so its tree, its decisions query and their first versions are
+// written in the window and issue_room counts none of them. The terms artifact, document_part_of
+// and version count the spec and CORE-2's room and leave CORE-1's room to issue_room;
+// query_version counts the spec's version and CORE-2's first decisions version, and not CORE-1's;
+// issue_room counts CORE-1 alone.
+func TestEachRowOfAnIssuesRoomIsCountedByOneTerm(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	censusIssue(t, database)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into issues (key, project_key, number, title, created_by, rank, created_at) values
+			('CORE-2', 'CORE', 2, 'Two', '{"kind":"user","id":"alice"}', 'U', now() - interval '60 days')
+	`); err != nil {
+		t.Fatalf("seed issue CORE-2 before the window: %v", err)
+	}
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	for _, issue := range []string{"CORE-1", "CORE-2"} {
+		for _, made := range []struct{ slug, kind string }{{"tree", "tree"}, {"decisions", "doc"}} {
+			var id string
+			if err := database.Pool.QueryRow(ctx, `
+				insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+				values ($1, 'CORE', $2, $2, $3, false, '{"kind":"user","id":"alice"}')
+				returning id::text
+			`, issue, made.slug, made.kind).Scan(&id); err != nil {
+				t.Fatalf("create the %s of %s: %v", made.slug, issue, err)
+			}
+			censusVersion(t, database, id, 1, "", alice)
+		}
+	}
+	spec, _ := censusDocument(t, database, "spec", "doc", true)
+	censusVersion(t, database, spec, 1, "The spec.\n", alice)
+	printed := sizingCensus(t, database)
+	terms := sizedTerms(t, printed)
+	for _, term := range []struct {
+		name   string
+		writes int64
+	}{{"issue_room", 1}, {"artifact", 3}, {"document_part_of", 3}, {graphstore.KindVersion, 3}, {"query_version", 2}} {
+		if got := terms[term.name].writes; got != term.writes {
+			t.Errorf("the sizing counts %d write(s) of %s, want %d:\n%s", got, term.name, term.writes, printed)
 		}
 	}
 }

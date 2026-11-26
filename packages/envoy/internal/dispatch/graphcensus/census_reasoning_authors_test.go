@@ -107,7 +107,7 @@ func TestTheCensusHoldsEachReasoningNodesAuthorToANode(t *testing.T) {
 	for _, kind := range report.Kinds {
 		t.Logf("kind=%s rows=%d nodes=%d row differences=%d node differences=%d",
 			kind.Kind, kind.Rows, kind.Nodes, kind.RowDifferences, kind.NodeDifferences)
-		for _, difference := range append(append([]Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
+		for _, difference := range differencesOf(kind) {
 			t.Errorf("the census reads a difference of kind %s at %s: %s", kind.Kind, difference.At, difference.Cause)
 		}
 	}

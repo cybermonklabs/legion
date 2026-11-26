@@ -21,7 +21,7 @@ import (
 // carried reviews that exist. It reads artifact_reviews in batches of backfillBatch, ordered by
 // artifact_id and model.ReviewOrder. The census kind review_carried_from
 // (reviewCarriedFromKind) holds the table to the reviews: a carried review - one whose reason
-// docs.CarriedFromVersion reads as carried - with no row, a row naming another version than the
+// model.CarriedFromVersion reads as carried - with no row, a row naming another version than the
 // reason, and a row whose review is gone are each one difference, and the pass brings the three
 // to zero.
 
@@ -32,20 +32,20 @@ const carriedFromReview = "f0000000-0000-4000-8000-000000000001"
 
 // carriedFromReason is the reason docs' reading case records when it carries the approval of
 // version from (docs' carriedReasonPrefix, readingCase, carriedReasonEnd), the sentence
-// docs.CarriedFromVersion reads from out of. This package cannot import docs, which imports it, so
+// model.CarriedFromVersion reads from out of. This package cannot import docs, which imports it, so
 // it spells the sentence, as api's readingCarrySentence does.
 func carriedFromReason(from int) string {
 	return fmt.Sprintf("Carried forward from the approval of version %d: the readings of its decisions and of its answered asks, which change no decision, were the whole change since it.", from)
 }
 
-// seedCarriedFromReviews writes issue LOCK-1 of project LOCK and its spec (seedKeepIssue), then the
+// seedCarriedFromReviews writes issue LOCK-1 of project LOCK and its spec (seedLockSpec), then the
 // spec's reviews as the release before this one writes them, with no artifact_review_carries row:
 // backfillBatch sequenced approvals of version 4 that alice gave herself, each with a reason of her
 // own; and the unsequenced review carriedFromReview, alice's approval of version 5,
 // whose reason says it was carried from the approval of version 4.
 func seedCarriedFromReviews(t *testing.T, database *store.Store) {
 	t.Helper()
-	document, _, _ := seedKeepIssue(t, database)
+	document, _, _ := seedLockSpec(t, database)
 	ctx := context.Background()
 	drivenTx(t, database, "write the reviews of LOCK-1's spec", func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `

@@ -27,13 +27,13 @@ import (
 // approvalRequest is the id of the approval ask the census test seeds.
 const approvalRequest = "a0000000-0000-4000-8000-000000000001"
 
-// seedApprovalRequest writes issue LOCK-1 and its spec (seedKeepIssue), then an approval request of
+// seedApprovalRequest writes issue LOCK-1 and its spec (seedLockSpec), then an approval request of
 // the spec's version 1 as the release before this one writes it: the four top-level fields of the
 // approval and no documents array, which asks_normalize_approval_documents writes, and no node. It
 // answers the spec's id and its ref_key.
 func seedApprovalRequest(t *testing.T, database *store.Store) (document, refKey string) {
 	t.Helper()
-	document, refKey, _ = seedKeepIssue(t, database)
+	document, refKey, _ = seedLockSpec(t, database)
 	ctx := context.Background()
 	drivenTx(t, database, "write the approval request as the release before writes it", func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
@@ -194,7 +194,7 @@ func seedApprovalAsk(t *testing.T, database *store.Store, project, issue, docume
 func TestTheApprovesBatchTakesTheStoreLockOrder(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	document, refKey, _ := seedKeepIssue(t, database)
+	document, refKey, _ := seedLockSpec(t, database)
 	createdAt := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond)
 	seedApprovalAsk(t, database, "LOCK", "LOCK-1", document, "spec.md", approvalRequest, createdAt)
 

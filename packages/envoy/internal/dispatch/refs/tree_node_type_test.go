@@ -4,11 +4,12 @@ import "testing"
 
 // TestABlockIsTypedOnlyByTheTypedBlockItsTextOpensAsItsOwn holds TreeNodeType to the rule that a
 // block is the typed block its text opens only where that block is its own, the id the opening
-// writes being the one the block's address ends on. A quote, a list and a list item whose first
-// block is a typed block open with that block's line, written after their markers, and are taken by
-// their supertag; the typed block itself is taken by its type, whether its own text opens with its
-// line alone or with the markers it is written after. An opening naming no id, or a type the schema
-// does not declare, types nothing either.
+// writes being the block's own id, the part of its address after the first '#'. A quote, a list and
+// a list item whose first block is a typed block open with that block's line, written after their
+// markers, and are taken by their supertag, a quote whose id ends in '#' and that block's id too;
+// the typed block itself is taken by its type, whether its own text opens with its line alone or
+// with the markers it is written after, and whatever its id holds. An opening naming no id, or a
+// type the schema does not declare, types nothing either.
 func TestABlockIsTypedOnlyByTheTypedBlockItsTextOpensAsItsOwn(t *testing.T) {
 	for _, test := range []struct {
 		name, address, opening, want string
@@ -27,6 +28,8 @@ func TestABlockIsTypedOnlyByTheTypedBlockItsTextOpensAsItsOwn(t *testing.T) {
 		{"a requirement first in a footnote definition", "CORE-1/tree#r5", "[^1]: :::requirement{#r5}", "requirement"},
 		{"a requirement whose id is written id=\"…\"", "CORE-1/tree#r7", `:::requirement{id="r7"}`, "requirement"},
 		{"a block whose id only ends the same", "CORE-1/tree#ar1", ":::requirement{#r1}", BlockSupertag},
+		{"a quote whose id ends in '#' and its first block's id", "CORE-1/tree#q3#r3", "> :::requirement{#r3}", BlockSupertag},
+		{"a requirement whose id holds a '#'", "CORE-1/tree#q3#r3", `:::requirement{id="q3#r3"}`, "requirement"},
 		{"an opening that names no id", "CORE-1/tree#r8", ":::requirement{}", BlockSupertag},
 		{"a line that opens no directive", "CORE-1/tree#r8", ":::requirement", BlockSupertag},
 		{"a type the schema does not declare", "CORE-1/tree#x1", ":::nonesuch{#x1}", BlockSupertag},
