@@ -22,9 +22,9 @@ const (
 // A wait with a failure text of its own, whose bound is Bounded's clamp to the test binary's
 // deadline less a spare, or the deadline of a context from Context, shows a reader where it
 // waited: after the test fails with the wait's own text, the test's output carries the goroutine
-// stacks read just before that bound ended, the waiting goroutine's first, naming the function
-// that waited, then the goroutine the test started that holds the fact back. A test that passes
-// prints none, though its bound's end came while it still ran. Each child runs under what is left
+// stacks read as that bound ended, the waiting goroutine's first, naming the function that waited,
+// then the goroutine the test started that holds the fact back. A test that passes prints none,
+// though its bound's end came while it still ran. Each child runs under what is left
 // of this binary's deadline (Remaining); the Bounded wait asks for all but two seconds of it as
 // spare, and the context's deadline is planted two seconds off (plantedDeadline), so each bound
 // ends two seconds after the child began its tests, whenever the machine runs it. This row's file
@@ -45,15 +45,18 @@ func TestAWaitOfItsOwnBoundedByTestwaitPrintsTheStacks(t *testing.T) {
 		return stdout.String(), err
 	}
 
-	for _, row := range []struct{ name, forcing, text, bound, function string }{
+	for _, row := range []struct {
+		name, forcing, text, bound, function string
+		dump                                  bool
+	}{
 		{"fails", "the wait's bound ends two seconds after the child began", ": the fact never came within the bound Bounded gave the wait",
-			"testwait.Bounded gave at bound_dump_test.go:", ".awaitWithItsOwnText("},
+			"testwait.Bounded gave at bound_dump_test.go:", ".awaitWithItsOwnText(", true},
 		{"context", "the wait's bound ends two seconds after the child began", ": the call under testwait.Context ended: context deadline exceeded",
-			"testwait.Context gave at bound_dump_test.go:", ".awaitUnderTheContext("},
+			"testwait.Context gave at bound_dump_test.go:", ".awaitUnderTheContext(", true},
 		{"span", "the wait's own span of 10s ends before the deadline", ": the fact never came within the wait's own 10s",
-			"the bound of 10s testwait.Bounded gave at bound_dump_test.go:", ".awaitWithItsOwnSpan("},
+			"the bound of 10s testwait.Bounded gave at bound_dump_test.go:", ".awaitWithItsOwnSpan(", true},
 		{"two", "two spans of 200ms end in a test that has already failed", ": the fact never came within the second span",
-			"the bound of 200ms testwait.Bounded gave at bound_dump_test.go:", ".awaitTheSecondSpan("},
+			"", "", false},
 	} {
 		out, err := run(row.name)
 		var exit *exec.ExitError
@@ -63,6 +66,12 @@ func TestAWaitOfItsOwnBoundedByTestwaitPrintsTheStacks(t *testing.T) {
 		}
 		if !strings.Contains(out, "forcing fired: "+row.forcing+", and the fact never comes") {
 			t.Errorf("the %s child logged no line that its forcing fired", row.name)
+		}
+		if !row.dump {
+			if strings.Contains(out, "the goroutine stacks") {
+				t.Errorf("the %s child printed stacks under spans that began after its earlier t.Error:\n%s", row.name, out)
+			}
+			continue
 		}
 		if n := strings.Count(out, "the goroutine stacks read at "); n != 1 {
 			t.Errorf("the %s child printed %d dumps of the goroutine stacks, want one, its latest reading", row.name, n)

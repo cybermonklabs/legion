@@ -16,9 +16,9 @@ const boundRowEnv = "TESTWAIT_BOUND_ROW"
 
 // A wait with a failure text of its own, whose bound comes from Bounded, shows a reader where it
 // waited: after the test fails with the wait's own text, the test's output carries the goroutine
-// stacks read just before that bound ended, the waiting goroutine's first, naming the function that
-// waited, then the goroutine the test started that holds the fact back, under a line that names
-// the bound by the line that took it, and then a line with when the test ended. That holds for a
+// stacks read as that bound ended, the waiting goroutine's first, naming the function that waited,
+// then the goroutine the test started that holds the fact back, under a line that names the bound
+// by the line that took it, and then a line with when the test ended. That holds for a
 // bound that is Bounded's clamp to the test binary's deadline less a spare, and for a span of the
 // wait's own, 10 s, that ends first. A test that passes prints none, though its bound's end came
 // while it still ran. Each child runs under the -timeout this test's deadline leaves
@@ -43,13 +43,16 @@ func TestAWaitOfItsOwnBoundedByTestwaitPrintsTheStacks(t *testing.T) {
 		return stdout.String(), err
 	}
 
-	for _, row := range []struct{ name, forcing, text, bound, function string }{
+	for _, row := range []struct {
+		name, forcing, text, bound, function string
+		dump                                  bool
+	}{
 		{"fails", "the wait's bound ends two seconds after the child began", ": the fact never came within the bound Bounded gave the wait",
-			"testwait.Bounded gave at bound_dump_test.go:", ".awaitWithItsOwnText("},
+			"testwait.Bounded gave at bound_dump_test.go:", ".awaitWithItsOwnText(", true},
 		{"span", "the wait's own span of 10s ends before the deadline", ": the fact never came within the wait's own 10s",
-			"the bound of 10s testwait.Bounded gave at bound_dump_test.go:", ".awaitWithItsOwnSpan("},
+			"the bound of 10s testwait.Bounded gave at bound_dump_test.go:", ".awaitWithItsOwnSpan(", true},
 		{"two", "two spans of 200ms end in a test that has already failed", ": the fact never came within the second span",
-			"the bound of 200ms testwait.Bounded gave at bound_dump_test.go:", ".awaitTheSecondSpan("},
+			"", "", false},
 	} {
 		out, err := run(row.name)
 		var exit *exec.ExitError
@@ -60,7 +63,11 @@ func TestAWaitOfItsOwnBoundedByTestwaitPrintsTheStacks(t *testing.T) {
 		if !strings.Contains(out, "forcing fired: "+row.forcing+", and the fact never comes") {
 			t.Errorf("the %s child logged no line that its forcing fired", row.name)
 		}
-		requireStacksAfter(t, row.name, out, row.text, row.bound, row.function)
+		if row.dump {
+			requireStacksAfter(t, row.name, out, row.text, row.bound, row.function)
+		} else if strings.Contains(out, "the goroutine stacks") {
+			t.Errorf("the %s child printed stacks under spans that began after its earlier t.Error:\n%s", row.name, out)
+		}
 	}
 
 	out, err := run("passes")

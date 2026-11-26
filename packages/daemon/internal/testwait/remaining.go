@@ -1,6 +1,7 @@
 package testwait
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -37,18 +38,19 @@ var deadlineOf = (*testing.T).Deadline
 // the goroutine running the test.
 func Remaining(t *testing.T) time.Duration {
 	t.Helper()
+	started := time.Now()
 	deadline, ok := deadlineOf(t)
 	if !ok {
 		return unboundedRemaining
 	}
 	left := time.Until(deadline)
+	end := deadline.Add(-giveUpMargin)
 	if left <= giveUpMargin {
-		stacks := stacksFor(t, "the span testwait.Remaining gives", true)
-		t.Errorf("testwait.Remaining: the test binary's deadline %s is %s away, less than the %s margin a wait leaves its test to fail in and run its cleanups",
+		text := fmt.Sprintf("testwait.Remaining: the test binary's deadline %s is %s away, less than the %s margin a wait leaves its test to fail in and run its cleanups",
 			deadline.Format(time.RFC3339Nano), left.Round(time.Millisecond), giveUpMargin)
-		printStacks(t, stacks)
-		t.FailNow()
+		stacks := diagnostics(t, "the span testwait.Remaining gives", started, end, true, "the test binary's deadline less "+giveUpMargin.String())
+		fail(t, text, stacks)
 	}
-	watchBound(t, "Remaining", deadline.Add(-giveUpMargin), false)
+	watchBound(t, "Remaining", end, false, "the test binary's deadline less "+giveUpMargin.String(), callerSite())
 	return left - giveUpMargin
 }

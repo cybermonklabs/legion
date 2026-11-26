@@ -69,17 +69,18 @@ func TestAGiveUpPrintsTheStacksAndWhatItsReadingHolds(t *testing.T) {
 			t.Errorf("%s: no frame %s in:\n%s", frame.why, frame.function, frame.in)
 		}
 	}
-	collateral := "testwait: " + name + "receive: this give-up is collateral: the wait began after the margin before the test binary's deadline had passed, so it did not wait; " +
-		"the wait that used the deadline up gave up earlier: " + name + "until, waiting for the fact that never comes, whose goroutine stacks are printed with that test's failure"
-	if !strings.Contains(stdout.String(), collateral+"\n") {
-		t.Errorf("the child's wait begun past the margin did not say it is collateral and name the give-up that used the deadline up:\n%s", collateral)
+	collateral := "testwait: " + name + "receive: this give-up is collateral: "
+	if !strings.Contains(stdout.String(), collateral) ||
+		!strings.Contains(stdout.String(), "longest completed testwait give-up recorded so far waited") ||
+		!strings.Contains(stdout.String(), name+"until, waiting for the fact that never comes") {
+		t.Error("the child's wait begun past its end did not say it is collateral and name the longest completed give-up")
 	}
 }
 
-// heardReading is what the child's wait reads: a time it heard and one it never did, each a
-// pointer, as the delivery hub's freshness reading holds them (deliveryFreshnessHeard).
+// heardReading is the snapshot the child's wait hands describe: a time it heard and one it never
+// did, as values rather than pointers into a live object.
 type heardReading struct {
-	heard, missing *time.Time
+	heard, missing string
 }
 
 // TestAGiveUpDumpChild is the child of TestAGiveUpPrintsTheStacksAndWhatItsReadingHolds. Its first
@@ -119,7 +120,7 @@ func awaitTheFactThatNeverComes(t *testing.T, stepped *stepClock, end time.Time)
 			stepped.now = end
 			t.Log("forcing fired: the clock is at the margin, and the fact has not come")
 		}
-		return heardReading{heard: &heard}, false
+		return heardReading{heard: heard.String(), missing: "<nil>"}, false
 	})
 }
 

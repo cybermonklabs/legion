@@ -402,12 +402,34 @@ func (r *hubRig) requireNothingSent(t *testing.T, conn *fakeLiveConn, after stri
 // is queued on the open conns.
 func (r *hubRig) waitFreshnessHeard(t *testing.T, what string, matches func(deliveryFreshnessHeard) bool) {
 	t.Helper()
-	testwait.Until(t, what, func() (deliveryFreshnessHeard, bool) {
+	testwait.Until(t, what, func() (deliveryFreshnessSnapshot, bool) {
 		r.hub.mu.Lock()
 		defer r.hub.mu.Unlock()
 		heard := r.hub.generation.fresh
-		return heard, matches(heard)
+		return snapshotFreshness(heard), matches(heard)
 	})
+}
+
+// deliveryFreshnessSnapshot is the freshness value the wait hands testwait by value. The hub owns
+// the pointers in deliveryFreshnessHeard, so it copies the values while it holds its lock rather
+// than asking testwait's diagnostic renderer to follow live pointers after the lock is gone.
+type deliveryFreshnessSnapshot struct {
+	lastEventAt, lastReconcileAt, lastError string
+	unfetchable                              int
+}
+
+func snapshotFreshness(heard deliveryFreshnessHeard) deliveryFreshnessSnapshot {
+	snapshot := deliveryFreshnessSnapshot{lastEventAt: "<nil>", lastReconcileAt: "<nil>", lastError: "<nil>", unfetchable: heard.unfetchable}
+	if heard.lastEventAt != nil {
+		snapshot.lastEventAt = heard.lastEventAt.String()
+	}
+	if heard.lastReconcileAt != nil {
+		snapshot.lastReconcileAt = heard.lastReconcileAt.String()
+	}
+	if heard.lastError != nil {
+		snapshot.lastError = *heard.lastError
+	}
+	return snapshot
 }
 
 // reconciledAt matches the freshness of a reconcile pass recorded at or after at. Postgres keeps
