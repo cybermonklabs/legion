@@ -4293,7 +4293,8 @@ test("Save view checks the name, saves the view as a tab, replaces it on asking,
   expect(await screen.findByRole("tab", { name: "Mine, 2 issues" })).toBeDefined();
 
   const remove = screen.getByRole("button", { name: "Delete saved view Mine" });
-  expect(remove).toHaveAttribute("title", "Delete this saved view");
+  // R9: the button keeps its accessible name and draws no native title.
+  expect(remove).not.toHaveAttribute("title");
   await user.click(remove);
   await waitFor(() => expect(screen.queryByRole("tab", { name: /^Mine/ })).toBeNull());
   expect(savedViews()).toEqual([]);

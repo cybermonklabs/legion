@@ -63,7 +63,6 @@ export function IssueStatusBar({
             data-bar-segment={status}
             key={status}
             style={{ width: `${(count / listed) * 100}%` }}
-            title={`${statusLabel(status)}: ${count}`}
           />
         ))}
       </span>

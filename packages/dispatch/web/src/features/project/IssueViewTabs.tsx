@@ -155,9 +155,8 @@ export function IssueViewTabs({
           openSaved === undefined ? null : (
             <button
               aria-label={`Delete saved view ${openSaved.name}`}
-              className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded text-xs md:min-h-8 md:min-w-8 ${textMutedOnCanvas} ${surfaceMutedHoverBg} ${focusVisibleRing}`}
+              className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded text-xs md:min-h-8 md:min-w-6 md:justify-start md:pl-1 ${textMutedOnCanvas} ${surfaceMutedHoverBg} ${focusVisibleRing}`}
               onClick={() => onDelete(openSaved.name)}
-              title="Delete this saved view"
               type="button"
             >
               <span aria-hidden>✕</span>

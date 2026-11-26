@@ -18,7 +18,7 @@ const LISTED = countStatuses([
 const segments = () =>
   [...document.querySelectorAll<HTMLElement>("[data-bar-segment]")].map((segment) => ({
     status: segment.dataset.barSegment,
-    title: segment.title,
+    title: segment.getAttribute("title"),
     width: Number.parseFloat(segment.style.width),
   }));
 
@@ -39,7 +39,8 @@ test("each segment is as wide as its share of the listed rows, and together they
   render(<IssueStatusBar counts={LISTED} narrowTo={() => {}} picked={[]} />);
   const drawn = segments();
   expect(drawn.map(({ status }) => status)).toEqual(["triage", "todo", "in_progress"]);
-  expect(drawn.map(({ title }) => title)).toEqual(["Triage: 1", "Todo: 2", "In progress: 3"]);
+  // R9: a segment carries no native title; the legend under the bar names each status and count.
+  expect(drawn.map(({ title }) => title)).toEqual([null, null, null]);
   expect(drawn[0]?.width).toBeCloseTo(100 / 6);
   expect(drawn[1]?.width).toBeCloseTo(200 / 6);
   expect(drawn[2]?.width).toBeCloseTo(50);
