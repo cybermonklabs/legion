@@ -2332,6 +2332,9 @@ def browser_gate(filter, job):
          "resolves each visual row's read to the route the table serves it by"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at `packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts#pmdocFixtures` and `packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts#TABLE_PATH`, from the new URL TABLE_PATH holds, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
         ("scripts/e2e/lib/held-port.py", "`packages/dispatch/e2e/run-server.sh#held_port` holds each stack's server port through it"),
+        ("packages/test-fixtures/src/go-command.ts",
+         "`packages/dispatch/e2e/harness-postgres.ts#goOutput` imports it, which `packages/dispatch/e2e/global-setup.ts#startStacks` "
+         "loads through e2e/harness-pool.ts, and `packages/dispatch/e2e/harness-up.ts#startStacks` too"),
         (f"{ENVOY}/scripts/lib/pg-url.sh", "`packages/dispatch/e2e/run-broker.sh#$e2e_dir/../../envoy/scripts/lib/pg-url.sh` sources it, and `packages/dispatch/e2e/harness-listeners.ts#realBrokerListeners` "
                                            f"starts that script in a one-process run on the fake broker: {at_browser(BROWSER_SHARD_SPECS)} and "
                                            f"{at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}"),
