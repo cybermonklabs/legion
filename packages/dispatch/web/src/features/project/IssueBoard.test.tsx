@@ -1617,3 +1617,38 @@ test("Shift+H of a card with an open child, its question's Move them with it lan
     statusChanges.mockRestore();
   }
 });
+
+// When neither the clipboard nor the legacy fallback can copy a focused card's reference or key,
+// the board announces that the copy failed rather than saying it copied.
+test("y and Shift+Y announce copy failure rather than Copied when copying fails", async () => {
+  const user = userEvent.setup();
+  const originalClipboard = navigator.clipboard;
+  const originalExecCommand = document.execCommand;
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: async () => Promise.reject(new Error("denied")) },
+  });
+  Object.defineProperty(document, "execCommand", { configurable: true, value: () => false });
+  const { cleanup } = renderBoard({}, undefined, keyboardIssues);
+  try {
+    const board = await screen.findByRole("region", { name: "Project board" });
+    const status = within(board).getByRole("status", { name: "Board announcements" });
+    const alpha = within(board).getByRole("article", { name: "CORE-1 Alpha" });
+    act(() => alpha.focus());
+
+    await user.keyboard("y");
+    await waitFor(() => expect(status.textContent).toBe("Copy failed - dispatch://CORE-1"));
+    expect(status.textContent).not.toContain("Copied");
+
+    await user.keyboard("{Shift>}Y{/Shift}");
+    await waitFor(() => expect(status.textContent).toBe("Copy failed - CORE-1"));
+    expect(status.textContent).not.toContain("Copied");
+  } finally {
+    cleanup();
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: originalExecCommand,
+    });
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
+  }
+});

@@ -146,6 +146,52 @@ test("Settings copies a new token through the legacy clipboard fallback", async 
   }
 });
 
+test("Settings reports copy failure rather than Copied when copying a new token fails", async () => {
+  const user = userEvent.setup();
+  const plaintext = "dsp_abcdefghijklmnopqrstuvwxyz0123456789-ABCDEFG";
+  const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
+  const createAgentToken = spyOn(api, "createAgentToken").mockResolvedValue({
+    ...token,
+    id: "22222222-2222-2222-2222-222222222222",
+    name: "reviewer",
+    token: plaintext,
+  });
+  const originalClipboard = navigator.clipboard;
+  const originalExecCommand = document.execCommand;
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: async () => Promise.reject(new Error("denied")) },
+  });
+  Object.defineProperty(document, "execCommand", { configurable: true, value: () => false });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AgentTokensSection />
+      </QueryClientProvider>
+    );
+    await user.click(screen.getByLabelText("Token label"));
+    await user.paste("reviewer");
+    await user.click(screen.getByRole("button", { name: "New token" }));
+    await screen.findByText(plaintext);
+
+    await user.click(screen.getByRole("button", { name: "Copy token" }));
+    expect(await screen.findByText("Copy failed - select the text", { exact: true })).toBeDefined();
+    expect(screen.queryByText("Copied", { exact: true })).toBeNull();
+  } finally {
+    cleanup();
+    queryClient.clear();
+    listAgentTokens.mockRestore();
+    createAgentToken.mockRestore();
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: originalExecCommand,
+    });
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
+  }
+});
+
 /** The box labelled `label` for `subject`, as a checkbox the test can read and click. */
 function box(label: string, subject: string): HTMLInputElement {
   return screen.getByRole("checkbox", { name: `${label} (${subject})` }) as HTMLInputElement;

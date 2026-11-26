@@ -291,3 +291,38 @@ test("keys typed after a pick and before the next frame stay in the order they w
     restore();
   }
 });
+
+// A reader who picks a mention in the middle of a sentence and does not act before the next frame
+// gets the caret right after the pick, not at the end of the field where updating the textarea's
+// value leaves it.
+test("without a reader act before the next frame, a pick places the caret right after the mention", async () => {
+  const user = userEvent.setup();
+  const { restore } = renderField();
+  const held: FrameRequestCallback[] = [];
+  const frames = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    held.push(callback);
+    return held.length;
+  });
+  const afterPick = "ask [@Planner](dispatch://agent/planner-session)".length;
+
+  try {
+    const field = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await user.click(field);
+    await user.paste(" please");
+    field.setSelectionRange(0, 0);
+    await user.paste("ask @");
+    await screen.findByRole("option", PLANNER_ROW);
+    await user.keyboard("{ArrowDown}{Enter}");
+    await waitFor(() =>
+      expect(field.value).toBe("ask [@Planner](dispatch://agent/planner-session) please")
+    );
+    frames.mockRestore();
+    for (const callback of held.splice(0)) callback(performance.now());
+    expect(document.activeElement).toBe(field);
+    expect(field.selectionStart).toBe(afterPick);
+    expect(field.selectionEnd).toBe(afterPick);
+  } finally {
+    frames.mockRestore();
+    restore();
+  }
+});

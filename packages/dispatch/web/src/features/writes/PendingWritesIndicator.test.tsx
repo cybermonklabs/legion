@@ -868,6 +868,54 @@ test("a conflict reads why, offers the reader's text to copy and Discard, and no
   }
 });
 
+// When neither the clipboard nor the legacy fallback copies the reader's draft from a conflict,
+// the button says so rather than claiming "Copied".
+test("a conflict's Copy your text button reports copy failure rather than Copied when copying fails", async () => {
+  const user = userEvent.setup();
+  const clipboard = navigator.clipboard;
+  const originalExecCommand = document.execCommand;
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: async () => Promise.reject(new Error("denied")) },
+  });
+  Object.defineProperty(document, "execCommand", { configurable: true, value: () => false });
+  const { client, unmount } = mountIndicator();
+  const writes = writesOf(client);
+  const text = "My title,\n  on two lines";
+  try {
+    act(() => {
+      void writes
+        .run({
+          detail: { text },
+          kind: draftedWrite,
+          label: "Rename the priority “P1”",
+          method: "PATCH",
+          presentation: "indicator",
+          write: () =>
+            Promise.reject(
+              new ApiError(409, { code: "PRIORITY_CHANGED", error: "the title was written" })
+            ),
+        })
+        .catch(() => undefined);
+    });
+    await settle();
+    const indicator = await screen.findByTestId("pending-writes");
+
+    await user.click(within(indicator).getByRole("button", { name: "Copy your text" }));
+    expect(
+      await within(indicator).findByRole("button", { name: "Copy failed - select the text" })
+    ).toBeTruthy();
+    expect(within(indicator).queryByRole("button", { name: "Copied" })).toBeNull();
+  } finally {
+    unmount();
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: originalExecCommand,
+    });
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
+  }
+});
+
 // A conflict a page mounted now settles with the reader is that page's: the line draws nothing
 // of it while the page holds it, and draws it again, with the reader's text to copy and no
 // Retry, once the page has gone and handed it back.

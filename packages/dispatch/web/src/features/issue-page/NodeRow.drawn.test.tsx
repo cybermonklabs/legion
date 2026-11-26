@@ -56,6 +56,7 @@ import * as nodeRowChip from "./node-row-chip";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import { AUTHOR_TEXT_ATTRIBUTE, PAGE_CHROME_ATTRIBUTE } from "./page-structure";
 import {
+  ANSWER_LINES,
   type AuthorKind,
   authorKind,
   BLOCK_TYPE_NAMES,
@@ -3228,5 +3229,71 @@ test("a press on Keep open or Let close leaves the focus where it is", async () 
     } finally {
       view.unmount();
     }
+  }
+});
+
+// When neither the clipboard nor the legacy fallback copies a check command, NodeFacts reports
+// `ANSWER_LINES.copy_failed` and never `ANSWER_LINES.copied`.
+test("NodeFacts shows Copy failed and not Copied when copying a command fails", async () => {
+  const user = userEvent.setup();
+  const originalClipboard = navigator.clipboard;
+  const originalExecCommand = document.execCommand;
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: async () => Promise.reject(new Error("denied")) },
+  });
+  Object.defineProperty(document, "execCommand", { configurable: true, value: () => false });
+  const view = renderRow(
+    node({
+      facts: [{ draw: "command", name: "run", value: "bun run test:web" }],
+      id: "check-1",
+      type: "check",
+    })
+  );
+  try {
+    await user.click(view.getByRole("button", { name: CONTROL_LABELS.copy_command }));
+    expect(await view.findByText(ANSWER_LINES.copy_failed)).toBeInTheDocument();
+    expect(view.queryByText(ANSWER_LINES.copied)).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: originalExecCommand,
+    });
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
+  }
+});
+
+// When neither the clipboard nor the legacy fallback copies a node's reference, RowActs reports
+// `ANSWER_LINES.copy_failed` and never `ANSWER_LINES.copied`.
+test("NodeRow Copy reference shows Copy failed and not Copied when copying fails", async () => {
+  const user = userEvent.setup();
+  const originalClipboard = navigator.clipboard;
+  const originalExecCommand = document.execCommand;
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: async () => Promise.reject(new Error("denied")) },
+  });
+  Object.defineProperty(document, "execCommand", { configurable: true, value: () => false });
+  const view = renderRow(
+    node({
+      author: { id: "bob", kind: "user" },
+      id: "comment-1",
+      reference: "dispatch://CORE-1/comment/comment-1",
+      type: "comment",
+    }),
+    { focused: true }
+  );
+  try {
+    await user.click(view.getByRole("button", { name: CONTROL_LABELS.copy_reference }));
+    expect(await view.findByText(ANSWER_LINES.copy_failed)).toBeInTheDocument();
+    expect(view.queryByText(ANSWER_LINES.copied)).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: originalExecCommand,
+    });
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
   }
 });
