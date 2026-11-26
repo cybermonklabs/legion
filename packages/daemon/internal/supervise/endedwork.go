@@ -42,11 +42,11 @@ type EndedWork struct {
 	// FromOutside is whether the end this record is of was one from outside the pod: the runtime
 	// read it so (runtime.PodEndNotOurs) and the daemon recorded it so (endedFromOutside), before
 	// the take-back and the decision that follow. It is written where the record is made
-	// (recordDisplaced, markFromOutside), never read off Cause, and it is what every decision
-	// reads such an end by: a report of the ended process (judge, recordedFromOutside) and the
-	// boot's replay of the decision after a restart (decidedFromOutside). So a reword of
-	// endFromOutside, a sentence told to roles, leaves the records an earlier daemon wrote read
-	// as they were.
+	// (recordDisplaced, markFromOutside), or by markFromOutside over a record displaced made of
+	// the same end first, never read off Cause, and it is what every decision reads such an end
+	// by: a report of the ended process (judge, recordedFromOutside) and the boot's replay of the
+	// decision after a restart (decidedFromOutside). So a reword of endFromOutside, a sentence
+	// told to roles, leaves the records an earlier daemon wrote read as they were.
 	//
 	// It is the one exception to the rule that a let-go that ended nothing worth telling records
 	// none (recordEnd, Claim.EndedWork, the store's ended_work): an end from outside the pod
@@ -56,6 +56,18 @@ type EndedWork struct {
 	// process is told nothing of that end. It is stored in the claim's JSON with the rest of
 	// the record, and an earlier daemon reading the row passes over the key.
 	FromOutside bool `json:"fromOutside,omitempty"`
+	// Died is whether the end this record is of was a death died judged. died records the end
+	// before its take-back and its decision (recordGoneEnd), and the store can refuse the
+	// take-back, so a record of the claim's launch that says so stands for a judged death whether
+	// or not that death is decided yet. It is written where the record is made (died), as
+	// FromOutside is, never read off Cause, and it is what a later report of the process read as
+	// from outside the pod finds that death by (judge, judgedDeath): the first judgement stands,
+	// and a reword of a sentence leaves the records an earlier daemon wrote read as they were. It
+	// is stored in the claim's JSON with the rest of the record, and an earlier daemon reading the
+	// row passes over the key. A record an earlier daemon stored without it reads as no death died
+	// judged, so where no decision was stored with it, a later report of that end read as outside
+	// goes to endedFromOutside, as it did on that daemon.
+	Died bool `json:"died,omitempty"`
 	// Generation is the launch whose process this records the end of, which is what keeps one
 	// process's end to one record: a decision that records the end of a process it already knows
 	// is gone (died, displaced) and the let-go that follows it in the same decision or at a wake's
@@ -116,7 +128,8 @@ func (e EndedWork) Tells() bool { return e.Cause != "" && !e.Told }
 // turn either cut off, every background kind either named, and no report where either process
 // left none. What the earlier process ended is still true and still untold, so the newer record
 // keeps it rather than dropping it. The cause, its death and whether the end was from outside the
-// pod are the newer's together, since the last two say what kind of end the cause names.
+// pod are the newer's together, since the last two say what kind of end the cause names; so is
+// whether it was a death died judged (Died).
 func (e EndedWork) joined(newer EndedWork) EndedWork {
 	newer.Turn = newer.Turn || e.Turn
 	newer.TaskTurn = newer.TaskTurn || e.TaskTurn
@@ -317,8 +330,10 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 //
 // fromOutside is whether the end is one from outside the pod, which the record carries from its
 // making (EndedWork.FromOutside): true where endedFromOutside records it (recordDisplaced), and
-// false for every other let-go.
-func (m *Machine) recordEnd(ctx context.Context, cause string, death runtime.DeathCauseKind, fromOutside bool) {
+// false for every other let-go. died is whether the end is a death died judged, which the record
+// carries from its making too (EndedWork.Died): true where died records it, and false for every
+// other let-go.
+func (m *Machine) recordEnd(ctx context.Context, cause string, death runtime.DeathCauseKind, fromOutside, died bool) {
 	m.untellInFlight()
 	if cause == noEnd || m.claim.Locator == nil {
 		return
@@ -327,7 +342,7 @@ func (m *Machine) recordEnd(ctx context.Context, cause string, death runtime.Dea
 		return
 	}
 	state := m.endState()
-	ended := EndedWork{Cause: cause, Death: death, FromOutside: fromOutside, Generation: m.claim.Generation,
+	ended := EndedWork{Cause: cause, Death: death, FromOutside: fromOutside, Died: died, Generation: m.claim.Generation,
 		Turn: state == StateWorking}
 	// The pending task's turn was cut off where this let-go's own decision takes the task back
 	// (interrupted, cutTurnOf), whatever the claim's state: a turn that ended before its prompt's
@@ -378,12 +393,12 @@ func (m *Machine) recordEnd(ctx context.Context, cause string, death runtime.Dea
 // mark to the id it gives the task (interrupted), and letGo clears it with the process. A
 // take-back the store refuses leaves the mark on the task it left confirmed, which no later
 // let-go of this process reads: the record of this launch already stands (EndedWork.Generation).
-// death and fromOutside are recordEnd's.
-func (m *Machine) recordGoneEnd(ctx context.Context, cause string, death runtime.DeathCauseKind, fromOutside bool) {
+// death, fromOutside and died are recordEnd's.
+func (m *Machine) recordGoneEnd(ctx context.Context, cause string, death runtime.DeathCauseKind, fromOutside, died bool) {
 	if p := m.claim.Pending; p != nil && !p.ConfirmedAt.IsZero() {
 		m.cutTurnOf = p.ID
 	}
-	m.recordEnd(ctx, cause, death, fromOutside)
+	m.recordEnd(ctx, cause, death, fromOutside, died)
 }
 
 // endState is the claim's state as a let-go reads it for the turn it cuts off (recordEnd): the

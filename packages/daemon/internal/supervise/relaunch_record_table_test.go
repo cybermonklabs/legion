@@ -133,6 +133,7 @@ type letGoKind struct {
 	name  string
 	drive func(c *letGoCell)
 	next  func(h *harness)
+	died  bool
 }
 
 // retiresAfterPromptFailures is the prompt-failure retirement as
@@ -350,7 +351,7 @@ func (row relaunchRecordRow) run(t *testing.T) {
 	if row.record.cause == "" {
 		h.wantOnlyTheOlderRecord()
 	} else {
-		h.wantEnded(EndedWork{At: at, Cause: row.record.cause, Generation: letGo, Turn: row.record.turn,
+		h.wantEnded(EndedWork{At: at, Cause: row.record.cause, Died: row.kind.died, Generation: letGo, Turn: row.record.turn,
 			TaskTurn: row.record.taskTurn, Background: len(row.state.kinds) > 0, Kinds: row.state.kinds, Reported: true})
 	}
 	c.endCompaction(ErrCompactProcessGone)
@@ -491,8 +492,8 @@ func TestARelaunchRecordsEveryLetGoKindInEveryClaimState(t *testing.T) {
 	)
 	var (
 		retirement        = letGoKind{name: "a retirement after prompt failures", drive: retiresAfterPromptFailures, next: relaunchedToReady}
-		deathBetweenTurns = letGoKind{name: "a death between turns", drive: dies, next: relaunchedToReady}
-		deathInATurn      = letGoKind{name: "a death in a turn", drive: dies, next: relaunchedToReady}
+		deathBetweenTurns = letGoKind{name: "a death between turns", drive: dies, next: relaunchedToReady, died: true}
+		deathInATurn      = letGoKind{name: "a death in a turn", drive: dies, next: relaunchedToReady, died: true}
 		repoint           = letGoKind{name: "a repoint", drive: repoints, next: relaunchedToReady}
 		stalePlugin       = letGoKind{name: "a stale-plugin relaunch", drive: relaunchesOntoTheCurrentPlugin, next: relaunchedToReady}
 		operatorsRetry    = letGoKind{name: "an operator's retry", drive: stopsForTheOperator, next: retriedByTheOperator}

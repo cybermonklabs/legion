@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -188,12 +187,14 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 	if err := json.Unmarshal([]byte(taken.Payload), &payload); err != nil {
 		t.Fatalf("decode the controller's payload %q: %v", taken.Payload, err)
 	}
-	// The tree architect's own worker-died carries no failure record, so its reason
-	// carries the launch failure's sentence instead, quoted as workflow's
-	// deathReason quotes it (strconv.Quote).
-	if want := (record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning,
-		Reason: strconv.Quote("launch failures ran out: pane launch failed")}); !reflect.DeepEqual(payload, want) {
-		t.Fatalf("the controller's payload = %+v, want the architect's own notice %+v", payload, want)
+	// The controller's copy of the tree architect's own worker-died carries the failure record, as
+	// the planner's hold above carries it to its architect, so its reason leaves out the sentence
+	// the record's detail holds (workflow's deathReason); the launch recorded no pod end, so the
+	// reason is empty.
+	wantController := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning, Failure: want.Failure}
+	if !reflect.DeepEqual(payload, wantController) {
+		t.Fatalf("the controller's payload = %+v with failure %+v, want %+v with failure %+v",
+			payload, payload.Failure, wantController, wantController.Failure)
 	}
 }
 

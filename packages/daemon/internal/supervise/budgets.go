@@ -191,7 +191,9 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause, 
 // is: by the report that decided it (died), by the sweep's next report of the same death, where
 // the lifecycle check refused the relaunch before (relaunchRefused keeps such a claim over its
 // dead process and arms no retry), and by the boot's replay of the death after a restart
-// (relaunchRecordedDeath). The first of them that passes the lifecycle check charges the launch
+// (relaunchRecordedDeath). A report read as from outside the pod is one of those reports: the
+// first judgement of a process stands, so judge sends such a report over a death died judged to
+// died (judgedDeath). The first of them that passes the lifecycle check charges the launch
 // failure, and the others charge none. What says the charge was made is the cause it records
 // (Claim.PendingCause), over an end the claim holds decided (Claim.DeathCharged): died clears
 // the cause in the decision that charges the death, and the charge sets it to died in the same

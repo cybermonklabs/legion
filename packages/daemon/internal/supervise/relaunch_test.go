@@ -138,6 +138,7 @@ func TestARelaunchSentenceSaysTheTasksTurnOnlyInFrontOfTheTaskTakenBack(t *testi
 		// ready; it answers the task that process is sent first.
 		letGo       func(h *harness) string
 		interrupted bool
+		died        bool
 		// because is the sentence's statement of why the process ended, says the statement it
 		// makes of the turn cut off, and saysNot the one it must not make.
 		because, says, saysNot string
@@ -170,6 +171,7 @@ func TestARelaunchSentenceSaysTheTasksTurnOnlyInFrontOfTheTaskTakenBack(t *testi
 				return task
 			},
 			interrupted: true,
+			died:        true,
 			because:     "Your process ended because " + died + ".",
 			says:        saysTaskTurn, saysNot: saysTurnCut,
 		},
@@ -186,7 +188,7 @@ func TestARelaunchSentenceSaysTheTasksTurnOnlyInFrontOfTheTaskTakenBack(t *testi
 
 			want := tc.letGo(h)
 
-			h.wantEnded(EndedWork{At: at, Cause: tc.cause, Generation: cut, Turn: true, TaskTurn: true,
+			h.wantEnded(EndedWork{At: at, Cause: tc.cause, Died: tc.died, Generation: cut, Turn: true, TaskTurn: true,
 				Background: true, Kinds: []string{"subagent"}, Reported: true})
 			sent, p := h.wantPrompts(2)[1], h.pending()
 			if sent.DeliveryID != p.ID || p.Task != want || p.Interrupted != tc.interrupted ||

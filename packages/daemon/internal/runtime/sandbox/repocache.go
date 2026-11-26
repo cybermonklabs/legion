@@ -175,12 +175,13 @@ func (r *Runtime) cacheManifest(repo ghrepo.Repository) sandbox {
 // Secret's projection are the same either way. The token automount stays off with the bucket on
 // too: on GKE the cache's Google identity comes from the node's metadata server through Workload
 // Identity, never from a mounted Kubernetes token. The pod carries the Cluster Autoscaler's
-// safeToEvictAnnotation as "true", with the bucket on or off, where an issue pod's and the
-// controller's carry "false" (podTemplate): a Sandbox is no controller the cluster autoscaler
-// knows, so without the annotation the autoscaler keeps every node a cache pod runs on
-// (no.scale.down.node.pod.not.backed.by.controller). A move makes the pod again on the same volume,
-// in the same zone; a /tar stream the move cuts fails its fetch, and the daemon makes that issue
-// pod again. Karpenter's do-not-disrupt, which the cluster autoscaler ignores, stays "true".
+// safeToEvictAnnotation as "true", with the bucket on or off, where the controller's pod, and an
+// issue pod while its reservation is Guaranteed, carry "false" (podTemplate): a Sandbox is no
+// controller the cluster autoscaler knows, so without the annotation the autoscaler keeps every
+// node a cache pod runs on (no.scale.down.node.pod.not.backed.by.controller). A move makes the
+// pod again on the same volume, in the same zone; a /tar stream the move cuts fails its fetch,
+// and the daemon makes that issue pod again. Karpenter's do-not-disrupt, which the cluster
+// autoscaler ignores, stays "true".
 func (r *Runtime) cachePodTemplate(name string, repo ghrepo.Repository) podTemplate {
 	memory := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}
 	container := corev1.Container{

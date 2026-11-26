@@ -167,16 +167,17 @@ func (s *supervision) releaseUnfinishedClaim(ctx context.Context, token claim.To
 	return releaseQueued
 }
 
-// recordedDeaths is the claims of claims, as the boot restored them, whose record says the process
-// they record died: a live claim with its end decided (supervise.Claim.DeathCharged) and a
-// locator. The daemon before this one judged each process gone and decided its end — charged its
-// death, or found its pod ended from outside it and charged nothing, which the replay tells apart
-// by the claim's record of that end (supervise's relaunchRecordedDeath) — and the relaunch it
-// raised for it lived in its memory alone, a wake the pacing parked, which the restart lost
-// (dispatch://INFRA-5472). The boot relaunches each beside its unfinished launches
-// (relaunchUnfinished), rather than when the runtime next reports the death: in a pod that lives
-// on — its roles container restarted — that report waits for the pod's launcher to reconnect, a
-// probe interval after boot, which put every such relaunch behind the whole of the boot's wave.
+// recordedDeaths is the claims of claims, as the boot restored them, whose record says the end of
+// the process they record is decided: a live claim with its end decided
+// (supervise.Claim.DeathCharged) and a locator. The daemon before this one judged each process
+// gone and decided its end — charged its death, or found its pod ended from outside it and
+// charged nothing, which the replay tells apart by the claim's record of that end (supervise's
+// relaunchRecordedDeath) — and the relaunch it raised for it lived in its memory alone, a wake
+// the pacing parked, which the restart lost (dispatch://INFRA-5472). The boot relaunches each
+// beside its unfinished launches (relaunchUnfinished), rather than when the runtime next reports
+// the death: in a pod that lives on — its roles container restarted — that report waits for the
+// pod's launcher to reconnect, a probe interval after boot, which put every such relaunch behind
+// the whole of the boot's wave.
 func recordedDeaths(claims []supervise.Claim) []claim.Token {
 	live := supervise.LiveStates()
 	var deaths []claim.Token

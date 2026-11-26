@@ -621,7 +621,7 @@ func TestAnEndFromOutsideThePodIsToldAsSuchAndOnlyTheDaemonsReplacementAsAReplac
 			sent := len(h.prompts())
 			if tc.held {
 				h.wantState(StateSuspended)
-				h.must(RequestResume{Claim: h.token})
+				h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 				h.reach(StateReady)
 			} else {
 				h.relaunched()

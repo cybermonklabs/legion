@@ -2528,7 +2528,7 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 		s.reconcileOrphans(store.ForConcurrentWorker(s.supervisor.ctx))
 	}()
 	s.endPluginRounds(s.claims)
-	// A claim whose record says its process died is relaunched for that death in the boot's pass
+	// A claim whose record says its end is decided is relaunched for that end in the boot's pass
 	// over the unfinished launches, in their order (relaunchUnfinished), and that launch is on this
 	// daemon's contract; a stale-plugin relaunch posted to it first would raise its launch outside
 	// that order and leave the turn the pass reserves it spent. The orphan sweep's own stale-plugin

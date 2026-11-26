@@ -504,9 +504,10 @@ type Claim struct {
 	//     decided and decides it no second time.
 	//
 	// A reader that asks whether a death was charged takes Claim.chargedDeath, which is true of
-	// the first alone: the queue a paced relaunch waits in (WakeQueue). A reader that asks
-	// whether the end is decided, whichever of the two it was, reads this field itself: died's
-	// guard against a second charge, the launch failure a death's relaunch charges once
+	// the first alone: the queue a paced relaunch waits in (WakeQueue), and judge, which sends a
+	// later report of such a death to died however the runtime read it (judgedDeath). A reader
+	// that asks whether the end is decided, whichever of the two it was, reads this field itself:
+	// died's guard against a second charge, the launch failure a death's relaunch charges once
 	// (deathLaunchFailureCharged), the boot's choice of the claims whose decision it replays
 	// (internal/daemon's recordedDeaths and recordedDeath) and the replay's own guard
 	// (relaunchRecordedDeath), the launch a stop owes (stopOwesLaunch), and the clear a running
@@ -1993,11 +1994,11 @@ type Machine struct {
 	// disarms with it, giving its place up, and it is memory only, as relaunch and staleRelaunch
 	// are: a restart loses no wake. A process-less one parked the claim launching with no process,
 	// which the boot repairs to launch_uncertain and relaunches; one over a process whose death the
-	// claim's record charges is raised again by the boot's replay of that death (RecordedDeath).
+	// claim's record decides is raised again by the boot's replay of that end (RecordedDeath).
 	// The boot places both in their queues in one pass, deaths first and then in the order their
 	// claims' work was owed (RequestSpawn.Place, RecordedDeath.Place), so the queue it rebuilds
 	// keeps the order this one drained. One over a process still running is posted again by the
-	// boot's own stale-plugin pass, and one over a death no record charges is raised again by the
+	// boot's own stale-plugin pass, and one over a death no record decides is raised again by the
 	// runtime's next observation of the dead process. Each is paced again from an empty bucket, and
 	// no wake runs twice. A launch waiting for its issue pod's start is held here too, until the
 	// gate's grant fires TimerPodStart (askPod, wake.park, podStartDue), and a restart finds it as
@@ -4337,7 +4338,9 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // prompt's result is still to come included, so a confirmed task is marked as taken by this
 // decision before the record is read (Machine.cutTurnOf), and the record says its turn was cut
 // off. The let-go that follows — the launch, the held suspension's or the failure's — finds this
-// launch's record standing and adds none.
+// launch's record standing and adds none. The record says it is of a death died judged
+// (EndedWork.Died), so a later report of the process read as from outside the pod, which can
+// come before the decision where the take-back is refused, comes back here (judge, judgedDeath).
 //
 // This is the judgement that the agent behind the claim's Envoy session has ended, so it is where
 // the session's clean stop is sent (sessionGone): a connection closing is not — a daemon restart
@@ -4364,7 +4367,7 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	// adds a rune, so the runtime's bound (runtime.PodEndRunes) still holds.
 	m.claim.PodEnd = storetext.FarSideText(observation.PodEnd)
 	ended := endDied(observation)
-	m.recordGoneEnd(ctx, ended, observation.Cause.Kind, false)
+	m.recordGoneEnd(ctx, ended, observation.Cause.Kind, false, true)
 	m.sessionGone(ctx)
 	if err := m.interrupted(ctx, "the process died in the task's turn", observation.OutOfMemory); err != nil {
 		return err
@@ -4422,11 +4425,11 @@ func (m *Machine) relaunchDeath(ctx context.Context, ended string, uncharged boo
 	return m.relaunchAfterFailure(ctx, CauseDied, ended, place)
 }
 
-// relaunchRecordedDeath is the RecordedDeath row: a boot finds the claim's record saying the
-// process it records died (Claim.DeathCharged), and raises again the relaunch that death raised,
-// which the restart lost with the memory it lived in (dispatch://INFRA-5472). It is the relaunch
-// the sweep's next report of the death would raise (died's charged branch), raised without
-// waiting for that report. What the death ended was recorded, its task taken back and its
+// relaunchRecordedDeath is the RecordedDeath row: a boot finds the claim's record saying the end
+// of the process it records is decided (Claim.DeathCharged), and raises again the relaunch that
+// end raised, which the restart lost with the memory it lived in (dispatch://INFRA-5472). It is
+// the relaunch the sweep's next report of the death would raise (died's charged branch), raised
+// without waiting for that report. What the death ended was recorded, its task taken back and its
 // session stopped by the daemon that judged it, and its charge is written: so this charges no
 // death, takes nothing back and stops nothing, and the report that comes later decides nothing
 // while the relaunch waits (judge, launchWaits), or is fenced off once it has run (fence).
@@ -4939,7 +4942,7 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // in one transaction (carriesPending): written apart, a stop between the two writes would restore
 // a stopped claim whose unsent task reads as served.
 func (m *Machine) letGo(ctx context.Context, cause string) {
-	m.recordEnd(ctx, cause, "", false)
+	m.recordEnd(ctx, cause, "", false, false)
 	m.disarmAll()
 	m.relaunch, m.podRoundWaiting, m.awaitsPod = nil, false, nil
 	m.wake = nil
@@ -5052,13 +5055,15 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 		// the record can stand where no decision does, and the report goes there to decide it.
 		// After a daemon restart such a report usually comes before the boot's replay, read
 		// neither way since the reading went with the old daemon's memory, and died would charge
-		// it as a death. An end the daemon itself made, and one the runtime read neither way of a
-		// process no such record covers, are charged exactly as they were before the reading
-		// existed.
+		// it as a death. The first judgement of a process stands, so a report read as outside over
+		// a death of this launch that died judged first goes to died, which handles it as a later
+		// report of that death (judgedDeath). An end the daemon itself made, and one the runtime
+		// read neither way of a process no record from outside the pod covers, are charged exactly
+		// as they were before the reading existed.
 		if observation.Displaced {
 			return m.displaced(ctx, observation)
 		}
-		if observation.EndReading == runtime.PodEndNotOurs || m.claim.recordedFromOutside() {
+		if (observation.EndReading == runtime.PodEndNotOurs || m.claim.recordedFromOutside()) && !m.claim.judgedDeath() {
 			return m.endedFromOutside(ctx, observation)
 		}
 		return m.died(ctx, observation)

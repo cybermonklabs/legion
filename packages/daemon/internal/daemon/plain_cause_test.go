@@ -31,9 +31,9 @@ type toldNotice struct {
 
 // When a role's deaths for memory fail its claim, whoever is told of the failure reads what killed
 // it in plain words, with the number it passed, before the runtime's own detail
-// (dispatch://INFRA-1117 R9): for a phase worker, the hold its architect gets and the controller's
-// copy of it, and the worker-died beside them; for the tree's own architect, which nobody inside
-// the tree is left to read, the worker-died the controller gets. Each carries the claim's record of
+// (dispatch://INFRA-1117 R9): for a phase worker, the hold its architect gets and the worker-died
+// beside it (a hold its architect has not escalated is the architect's alone); for the tree's own
+// architect, which nobody inside the tree is left to read, the worker-died the controller gets. Each carries the claim's record of
 // its last death as failure.death, and the row to the tree architect's own role, which carries no
 // failure record, names the same words in its reason (workflow's deathReason). The deaths are real
 // ones: a `roles` container the kubelet ended OOMKilled under a 19Gi limit ends the role's open turn
@@ -51,7 +51,6 @@ func TestPlainCauseTheNoticesOfAClaimItsDeathsFailSayWhatKilledIt(t *testing.T) 
 	}{
 		{name: "a phase worker, whose deaths hold its issue", role: claim.RolePlanner, want: []toldNotice{
 			{outbox: string(record.OutboxKindNotice), kind: "held"},
-			{outbox: string(record.OutboxKindControllerNotice), kind: "held"},
 			{outbox: string(record.OutboxKindNotice), kind: "worker-died"},
 		}},
 		{name: "the tree's own architect", role: claim.RoleArchitect, want: []toldNotice{
