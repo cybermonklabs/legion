@@ -124,9 +124,18 @@ def load_gate_files(namespace: dict) -> tuple:
 def directive_files(files: list) -> list:
     """The Go files that hold a //ci: line, read as text."""
     found = []
+    fast = os.environ.get("CI_FAST_DIRECTIVES") == "1"
     for path in files:
         if not path.endswith(".go"):
             continue
+        if fast:
+            try:
+                with open(os.path.join(REPO, path), "rb") as handle:
+                    data = handle.read()
+            except OSError:
+                continue
+            if b"//ci:" not in data:
+                continue
         try:
             text = (REPO / path).read_text(encoding="utf-8")
         except (OSError, UnicodeError):

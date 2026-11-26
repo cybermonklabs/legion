@@ -1,13 +1,18 @@
-name: zz changes-job TS listing profile (throwaway, not for merge)
+name: zz changes-job levers A/B (throwaway, not for merge)
 on:
   push:
     branches: [scratch/changes-tsl-profile]
 permissions:
   contents: read
 jobs:
-  profile:
+  leg:
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [base, install, directives, both]
+        rep: [1, 2, 3]
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 40
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -15,37 +20,25 @@ jobs:
       - run: .github/scripts/go-install-archive.sh packages/daemon/go.mod
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
-      - name: Install dependencies (timed)
-        run: |
-          s=$(date +%s.%N); bun install --frozen-lockfile; echo "TIME bun-install $(echo "$(date +%s.%N) - $s" | bc) s"
-          du -sm node_modules; find node_modules -type f | wc -l
-      - name: Profile
+      - name: Install dependencies
+        if: matrix.leg == 'base' || matrix.leg == 'directives'
+        run: bun install --frozen-lockfile
+      - name: Compute every filter from what each job reads
         env:
-          OUT: ${{ runner.temp }}/out
+          CI_TS_INSTALL: ${{ (matrix.leg == 'install' || matrix.leg == 'both') && '1' || '' }}
+          CI_FAST_DIRECTIVES: ${{ (matrix.leg == 'directives' || matrix.leg == 'both') && '1' || '' }}
+          PROF_LOG: ${{ runner.temp }}/prof.json
         run: |
-          set +e -u
-          mkdir -p "$OUT"
-          nproc
-          t() { local name=$1; shift; local s; s=$(date +%s.%N); "$@" > "$OUT/$name.out" 2> "$OUT/$name.err"; local rc=$?; echo "TIME $name $(echo "$(date +%s.%N) - $s" | bc) s exit $rc lines $(wc -l < "$OUT/$name.out")"; }
-          for i in 1 2 3; do
-            t gen$i env PROF_LOG="$OUT/prof$i.json" .github/scripts/ci-filters-generate.sh "$OUT/gen$i.yaml"
-          done
-          t genprof env PROF_LOG="$OUT/prof4.json" PROF_CPROFILE="$OUT/gen.prof" .github/scripts/ci-filters-generate.sh "$OUT/gen4.yaml"
-          python3 -c 'import pstats,sys; s=pstats.Stats(sys.argv[1]); s.sort_stats("cumulative").print_stats(60)' "$OUT/gen.prof" | sed -n '1,90p'
-          python3 -c 'import pstats,sys; s=pstats.Stats(sys.argv[1]); s.sort_stats("tottime").print_stats(40)' "$OUT/gen.prof" | sed -n '1,60p'
-          python3 - "$OUT" <<'PY'
+          s=$(date +%s.%N)
+          .github/scripts/ci-filters-generate.sh "$RUNNER_TEMP/ci-filters.yaml"
+          echo "TIME generate $(echo "$(date +%s.%N) - $s" | bc) s"
+          sha256sum "$RUNNER_TEMP/ci-filters.yaml" "$RUNNER_TEMP/ci-filters.computed.yaml" "$RUNNER_TEMP/ci-filters.computed.yaml.inputs"
+          python3 - "$RUNNER_TEMP/prof.json" <<'PY'
           import json, sys
-          d = json.load(open(f"{sys.argv[1]}/prof4.json"))
+          d = json.load(open(sys.argv[1]))
           recs = sorted(d["recs"], key=lambda r: r["t0"])
-          print(f"gen4: total {d['total']} s")
+          print(f"engine total {d['total']} s")
           for r in recs:
-              if r["wall"] >= 0.3:
-                  print(f"   {r['t0']:6.2f} +{r['wall']:5.2f} cpu {r['cpu']:5.2f}  {' '.join(r['args'])[:150]}")
+              if r["wall"] >= 0.4:
+                  print(f"   {r['t0']:6.2f} +{r['wall']:5.2f} cpu {r['cpu']:5.2f}  {' '.join(r['args'])[:100]}")
           PY
-          grep -n "loaded in\|took" "$OUT"/gen*.out "$OUT"/gen*.err | head
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always()
-        with:
-          name: tsl-profile
-          path: ${{ runner.temp }}/out
-          retention-days: 3

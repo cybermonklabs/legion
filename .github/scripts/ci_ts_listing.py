@@ -258,9 +258,19 @@ def start() -> None:
                           if pair in sources and (kind, path) not in STARTED and (REPO / path).exists())
     if not asked:
         return
-    pool = ThreadPoolExecutor(max_workers=len(asked))
+    pool = ThreadPoolExecutor(max_workers=len(asked) + 1)
+    installed = None
+    if os.environ.get("CI_TS_INSTALL") == "1":
+        installed = pool.submit(subprocess.run, ["bun", "install", "--frozen-lockfile"], cwd=REPO,
+                                capture_output=True, text=True)
+
+    def after_install(kind, path):
+        if installed is not None:
+            installed.result()
+        return listing(kind, path)
+
     for kind, path in asked:
-        STARTED[kind, path] = pool.submit(listing, kind, path)
+        STARTED[kind, path] = pool.submit(after_install, kind, path)
     pool.shutdown(wait=False)
 
 
