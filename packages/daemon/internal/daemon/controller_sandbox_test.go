@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -757,7 +758,7 @@ func controllerSandboxLegionTool(t *testing.T, dir string) string {
 		": >" + shellQuote(filepath.Join(dir, "run-")) + "\"$LEGION_GENERATION\"\n" +
 		"while [ ! -e " + shellQuote(filepath.Join(dir, "die-")) + "\"$LEGION_GENERATION\" ]; do sleep 0.1; done\n" +
 		"exit 1\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := execfile.Write(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the controller's legion stand-in: %v", err)
 	}
 	return path

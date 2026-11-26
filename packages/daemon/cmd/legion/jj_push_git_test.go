@@ -104,8 +104,10 @@ func (f *rolePushFixture) checkSnapshotFirst(calls []rolePushCall) {
 }
 
 // rolePushGitMade runs a push of a commit that the real git made in the colocated working copy and
-// that no jj command has imported yet, under each form and in each unimported row's words
-// (rolePushUnimportedRows), with a recording jj ahead of the real one. gitMakes makes the commit
+// that no jj command has imported yet, in each unimported row's words (rolePushUnimportedRows),
+// with a recording jj ahead of the real one: under each form where both is true, the git family's
+// check that the two forms agree, and under rolePushStepForm alone where it is false (the step's
+// own logic, rolePushStepLogic). gitMakes makes the commit
 // with git alone, after any jj command of its own, and answers its id, the commits the remote
 // must hold below it, which the push sends too, the tip first, and whether jj's import of it
 // makes its change divergent, as that of a git commit --amend of a commit jj made does: git keeps
@@ -117,12 +119,12 @@ func (f *rolePushFixture) checkSnapshotFirst(calls []rolePushCall) {
 // argument's ids, as the argument named that commit by its id, and no line of a dry run it cannot
 // read. @'s first parent is then the commit that line names, and `jj log` and `jj st` exit 0 with
 // no word of a stale working copy.
-func rolePushGitMade(t *testing.T, gitMakes func(f *rolePushFixture) (made string, below []rolePushCommit, diverges bool)) {
+func rolePushGitMade(t *testing.T, both bool, gitMakes func(f *rolePushFixture) (made string, below []rolePushCommit, diverges bool)) {
 	impl := rolePushImplementer
 	for _, row := range rolePushUnimportedRows {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+			rolePushForEach(t, both, func(t *testing.T, form rolePushForm) {
 				f := newRolePushFixture(t, form, rolePushRecords)
 				made, below, diverges := gitMakes(f)
 				if change := f.changeOf(made); change != "" {
@@ -204,7 +206,7 @@ func (f *rolePushFixture) gitRebaseWork() (base, c rolePushChange, made string) 
 func TestAPushAfterAGitRebaseOfAnotherRolesCommitSetsTheTrailersAuthor(t *testing.T) {
 	t.Parallel()
 	impl := rolePushImplementer
-	rolePushGitMade(t, func(f *rolePushFixture) (string, []rolePushCommit, bool) {
+	rolePushGitMade(t, false, func(f *rolePushFixture) (string, []rolePushCommit, bool) {
 		base, _, made := f.gitRebaseWork()
 		return made, []rolePushCommit{{change: base.change, author: impl, commit: base.commit}}, false
 	})
@@ -218,7 +220,7 @@ func TestAPushAfterAGitRebaseOfAnotherRolesCommitSetsTheTrailersAuthor(t *testin
 func TestAPushAfterAGitCommitOnTheDetachedHeadSetsTheTrailersAuthor(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer
-	rolePushGitMade(t, func(f *rolePushFixture) (string, []rolePushCommit, bool) {
+	rolePushGitMade(t, true, func(f *rolePushFixture) (string, []rolePushCommit, bool) {
 		c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
 		made := f.gitCommitWrite(impl, "--quiet", "--amend", "--no-edit")
 		if made == c.commit {
@@ -238,7 +240,7 @@ func TestAPushAfterAGitCommitOnTheDetachedHeadSetsTheTrailersAuthor(t *testing.T
 func TestAPushAfterAGitRebaseThatMovesOnlyABranchSetsTheTrailersAuthor(t *testing.T) {
 	t.Parallel()
 	impl := rolePushImplementer
-	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+	rolePushStepLogic(t, func(t *testing.T, form rolePushForm) {
 		f := newRolePushFixture(t, form, rolePushRecords)
 		base, c, made := f.gitRebaseWork()
 		run := f.runner(f.setupPath, impl)
@@ -288,7 +290,7 @@ func TestAPushFromAWorkspaceWithNoGitWorkingTreeComparesNothing(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+			rolePushStepLogic(t, func(t *testing.T, form rolePushForm) {
 				f := newRolePushFixture(t, form, rolePushRecords)
 				dir, workspace := f.repo, "default"
 				if !row.colocated {
