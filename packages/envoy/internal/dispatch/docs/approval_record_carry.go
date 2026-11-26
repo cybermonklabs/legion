@@ -42,16 +42,16 @@ import (
 const recordCarryEnd = ": this version changes nothing that approval covers."
 
 // RecordCarryReason is the reason of a record carry of the approval of version origin
-// (approvalOrigin): model.CarriedReviewReasonPrefix, the opening the Legion daemon matches, the
-// version and recordCarryEnd.
+// (approvalOrigin): CarriedReviewReasonPrefix, the opening the Legion daemon matches, the version
+// and recordCarryEnd.
 func RecordCarryReason(origin int) string {
-	return model.CarriedReviewReasonPrefix + strconv.Itoa(origin) + recordCarryEnd
+	return CarriedReviewReasonPrefix + strconv.Itoa(origin) + recordCarryEnd
 }
 
 // IsRecordCarry reports whether reason is a record carry's, byte for byte as RecordCarryReason
 // writes it: the fill holds such a carry to the digest its approval stood on (fillOwedDigests).
 func IsRecordCarry(reason string) bool {
-	number, opened := strings.CutPrefix(reason, model.CarriedReviewReasonPrefix)
+	number, opened := strings.CutPrefix(reason, CarriedReviewReasonPrefix)
 	number, closed := strings.CutSuffix(number, recordCarryEnd)
 	origin, err := strconv.Atoi(number)
 	return opened && closed && err == nil && RecordCarryReason(origin) == reason

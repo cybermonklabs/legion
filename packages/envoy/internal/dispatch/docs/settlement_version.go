@@ -343,10 +343,13 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	if !(refused && len(st.layout) > 0) {
 		// An issue room's ties record each block's own document's version: the one this
 		// settlement wrote of it (written), else its latest.
-		versions := written
-		if versions == nil && len(st.layout) > 0 {
+		var versions refs.Versions
+		switch {
+		case written != nil:
+			versions = written
+		case len(st.layout) > 0:
 			versions = latestFragmentVersions(fragments)
-		} else if versions == nil {
+		default:
 			versions = refs.OneVersion(room, settledVersion, st.latest.CreatedAt)
 		}
 		if err := st.reconciliation.writeOpenedAskTies(ctx, tx, room, versions, documents, st.versioned, offsets); err != nil {
@@ -660,6 +663,9 @@ func (st *settlement) blockVersions(ctx context.Context, fragments []roomFragmen
 			left = append(left, *ask.BlockID)
 		}
 	}
+	// The blocks that left go into a map of their own: documents is the settled tree's alone, as
+	// the room's pass and the ties read it.
+	var leftDocuments map[string]string
 	if len(left) > 0 {
 		rows, err := st.tx.Query(ctx, `
 			select r.block_id, r.document_id::text from issue_room_blocks r
@@ -669,17 +675,13 @@ func (st *settlement) blockVersions(ctx context.Context, fragments []roomFragmen
 			return nil, fmt.Errorf("read the documents of the blocks that left room %s: %w", st.room, err)
 		}
 		defer rows.Close()
-		// The blocks that left go into a copy: documents is the settled tree's alone, as the
-		// room's pass and the ties read it.
-		settled := documents
-		documents = make(map[string]string, len(settled)+len(left))
-		maps.Copy(documents, settled)
+		leftDocuments = make(map[string]string, len(left))
 		for rows.Next() {
 			var block, document string
 			if err := rows.Scan(&block, &document); err != nil {
 				return nil, fmt.Errorf("read the documents of the blocks that left room %s: %w", st.room, err)
 			}
-			documents[block] = document
+			leftDocuments[block] = document
 		}
 		if err := rows.Err(); err != nil {
 			return nil, fmt.Errorf("read the documents of the blocks that left room %s: %w", st.room, err)
@@ -687,6 +689,9 @@ func (st *settlement) blockVersions(ctx context.Context, fragments []roomFragmen
 	}
 	return func(blockID string) int {
 		if document, held := documents[blockID]; held {
+			return numbers[document]
+		}
+		if document, held := leftDocuments[blockID]; held {
 			return numbers[document]
 		}
 		return numbers[st.room]

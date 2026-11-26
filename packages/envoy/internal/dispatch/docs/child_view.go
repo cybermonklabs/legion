@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// A child issue is a view on its ancestor's spec (R23 of the issue tree's spec): its checks serve
+// A child issue is a view on its ancestor's spec (R23 of the issue-tree spec): its checks serve
 // the requirements of the nearest issue above it that holds requirement nodes, is no view itself
 // and is not done, and a requirement written on it is refused with that ancestor's name, so the
 // work it does is the work that ancestor states. Whether an issue is a view is read from its own

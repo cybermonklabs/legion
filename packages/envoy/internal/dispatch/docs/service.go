@@ -2058,10 +2058,11 @@ const (
 	settleRoomFailed
 	// settleReloaded is a settlement whose room instance was replaced under it: it holds a stored
 	// history that was replaced, which no catch-up can bring to the durable head
-	// (ErrRoomBehindHead), or it is an issue room loaded over documents the room no longer holds
-	// (errRoomLayoutMoved). The room has been closed for a reload or the settlement armed again
-	// (reloadReplacedRoom), which logs the refusal, and the pending-settlement row, which the
-	// refusal's rollback kept, still says the settlement is owed.
+	// (ErrRoomBehindHead), it is an issue room loaded over documents the room no longer holds
+	// (errRoomLayoutMoved), or its document moved into its issue's room (ErrRoomMoved). The room
+	// has been closed for a reload or the settlement armed again (reloadReplacedRoom), which logs
+	// the refusal, and the pending-settlement row, which the refusal's rollback kept, still says
+	// the settlement is owed.
 	settleReloaded
 )
 
@@ -2145,7 +2146,8 @@ func (s *Service) commitSettlement(ctx context.Context, tx pgx.Tx, ledger *Ledge
 // no longer holds - a document joined it, and the notice that closes the room on every process
 // (AnnounceDocumentRooms) did not reach this one (errRoomLayoutMoved) - so a settlement of it would
 // version and index the room over fragments that are not the room's, and only a load reads the
-// room's layout. The settlement has written nothing, and its caller has rolled its transaction
+// room's layout; or live's document moved into its issue's room, so the room takes nothing more
+// (ErrRoomMoved). The settlement has written nothing, and its caller has rolled its transaction
 // back, which releases the document's advisory lock that the close below needs. It closes the room
 // as the catch-up does for the same case (roomCatchUps.closeReplaced) and arms the settlement
 // again: its timer loads the document at the head, over the room's layout, and settles every

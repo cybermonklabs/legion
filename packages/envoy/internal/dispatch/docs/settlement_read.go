@@ -122,12 +122,15 @@ func (st *settlement) readLocked(ctx context.Context, parent context.Context) (s
 			// one that did not, the retry arms the settlement again, and that settlement, once this
 			// one's rollback has let the close finish, loads the room at the head.
 			return settleDone, st.stoppedShort(fmt.Errorf("catch the room up to the durable head: %w", errRoomReplaced))
-		case outcome == catchUpReplaced || outcome == catchUpMoved:
+		case outcome == catchUpReplaced:
 			// The rollback releases the document's advisory lock, which the room's close needs: a
-			// close flushes the room's persistence, whose appends take that lock. A room whose
-			// document moved into its issue's room (catchUpMoved) is closed the same way.
+			// close flushes the room's persistence, whose appends take that lock.
 			return st.reloadRefused(ctx, parent, fmt.Errorf("%w: room %s holds the document through update %d, and the stored history was replaced under it (head %d)",
 				ErrRoomBehindHead, room, st.cursor.heldThrough(), head))
+		case outcome == catchUpMoved:
+			// A room whose document moved into its issue's room takes nothing more, and is closed
+			// the same way.
+			return st.reloadRefused(ctx, parent, fmt.Errorf("%w: room %s's document is edited in its issue's room", ErrRoomMoved, room))
 		}
 		if through := st.cursor.heldThrough(); through != head {
 			return settleDone, st.stoppedShort(fmt.Errorf("%w: room %s holds the document through update %d after its catch-up, the stored document stands at %d",

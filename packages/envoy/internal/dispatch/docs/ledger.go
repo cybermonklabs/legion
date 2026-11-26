@@ -25,13 +25,13 @@ import (
 // ends: the events they generate, their writes to live documents (see liveWrite) and the versions
 // they write. Join, and joinAtOnce for the decisions step's restore of one issue and for the
 // conversion of one issue (ConvertIssue), are the only ways to join a transaction, so an operation
-// that has one always has its ledger. Commit ends the
-// transaction the way every caller must: it runs the transaction's write queue, records the
-// writes' authors and takes out the authors its versions listed in the transaction itself, runs
-// the steps registered to follow those writes (AfterWrites), commits, marks the in-flight credits
-// its versions listed consumed, records the writes' latest edit source in their rooms, and
-// publishes the writes to their rooms, in that order. Discard, which callers defer right after
-// Join, drops whatever a transaction that did not commit left behind.
+// that has one always has its ledger. Commit ends the transaction the way every caller must: it
+// runs the transaction's write queue, records the writes' authors and takes out the authors its
+// versions listed in the transaction itself, runs the steps registered to follow those writes
+// (AfterWrites), commits, marks the in-flight credits its versions listed consumed, records the
+// writes' latest edit source in their rooms, and publishes the writes to their rooms, in that
+// order. Discard, which callers defer right after Join, drops whatever a transaction that did not
+// commit left behind.
 //
 // A joined transaction runs in two phases. Its read phase takes the locks it needs - advisory
 // locks, none of which gives it a transaction id - reads, and does every operation's document
@@ -248,10 +248,11 @@ type Ledger struct {
 	// taken out of stated: its row takes no time, no seq and no digest, and is marked
 	// tree_mismatch instead (writeStatedRenders, queueTreeMismatch; R15). firstStated is each
 	// version whose version_renders row took its time from this transaction's write phase
-	// (firstStatedOn), in the order the rows were written, which the reconciliation's pass carries
-	// an approval to once the rows stand (carryFirstStated; R14).
+	// (firstStatedOn), with the record digest the row holds, in the order the rows were written,
+	// which the reconciliation's pass carries an approval to once the rows stand
+	// (carryFirstStated; R14).
 	mismatched  []statedVersion
-	firstStated []statedVersion
+	firstStated []firstStatedVersion
 	// restores holds each carry to a version that restores the approved text and takes its
 	// version_renders row in this transaction (carryRestored): its writes run in their place in
 	// the write phase, before the version's artifact.version, behind a savepoint the write phase

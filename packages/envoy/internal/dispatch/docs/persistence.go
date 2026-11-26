@@ -197,7 +197,7 @@ func (p *PgVersioned) Head(ctx context.Context, room string) (persistence.Versio
 	if err != nil {
 		return 0, err
 	}
-	return p.head(ctx, rooms, room)
+	return roomHead(ctx, rooms, room)
 }
 
 // DocumentStamp is, read through the pool that owns loads as Head reads the head, the room
@@ -547,7 +547,7 @@ func (p *PgVersioned) MaterializeAt(ctx context.Context, room string, version pe
 		return nil, fmt.Errorf("begin materialize document: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	head, err := p.head(ctx, tx, room)
+	head, err := roomHead(ctx, tx, room)
 	if err != nil {
 		return nil, err
 	}
@@ -582,7 +582,7 @@ func (p *PgVersioned) CaptureSnapshot(ctx context.Context, room, name string, st
 		if _, _, err := p.recoverPruneTx(ctx, tx, room); err != nil {
 			return err
 		}
-		version, err = p.head(ctx, tx, room)
+		version, err = roomHead(ctx, tx, room)
 		if err != nil {
 			return err
 		}
@@ -698,7 +698,7 @@ func (p *PgVersioned) RebuildTx(ctx context.Context, tx pgx.Tx, room string, loa
 	}
 	// The head as Load reads it, a pending prune's ceiling included, before the prune's recovery
 	// below lowers it.
-	current, err := p.head(ctx, tx, room)
+	current, err := roomHead(ctx, tx, room)
 	if err != nil {
 		return RebuildReport{}, err
 	}
@@ -813,10 +813,6 @@ func headVersionOf(room string) string {
 
 // headVersion is the head of the room $1 names (headVersionOf).
 var headVersion = headVersionOf("$1")
-
-func (p *PgVersioned) head(ctx context.Context, q Queryer, room string) (persistence.Version, error) {
-	return roomHead(ctx, q, room)
-}
 
 // roomHead is the head of room's stored history (headVersion), read through q. It reads nothing of
 // a PgVersioned, so a caller that holds none, a seed's check of its room, reads it here.

@@ -1,6 +1,6 @@
 package docs
 
-// person_kept.go is the one rule that R32 of the issue tree's spec reads on every path that
+// person_kept.go is the one rule that R32 of the issue-tree spec reads on every path that
 // writes a person's decision: who is a person (CallerIsPerson), which node of the store is a
 // person's decision (PersonDecisionOf), and what a text write does to one (typedBlockChanges),
 // which the edit routes and the upload refuse to an agent (refuseDroppedAnsweredAsks). An agent

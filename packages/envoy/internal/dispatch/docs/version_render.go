@@ -1340,10 +1340,10 @@ func (l *Ledger) writeStatedRenders(ctx context.Context) ([]*restoredCarry, erro
 			if err != nil {
 				return err
 			}
-			l.firstStatedOn(queued, render.version)
+			l.firstStatedOn(queued, render.version, render.record.Digest)
 		}
 		for _, version := range unrecorded {
-			l.firstStatedOn(queueVersionRenderCut(b, version, false), version)
+			l.firstStatedOn(queueVersionRenderCut(b, version, false), version, "")
 		}
 		for _, version := range l.mismatched {
 			queueTreeMismatch(b, version)
@@ -1356,14 +1356,26 @@ func (l *Ledger) writeStatedRenders(ctx context.Context) ([]*restoredCarry, erro
 // (firstStated) once queued, the statement that writes its row (queueVersionRender,
 // queueVersionRenderCut), has run and written it: a row it inserted, or one that held no time and
 // no tree_mismatch, which it updated. A row that held a time keeps it, and the statement writes
-// nothing of it.
-func (l *Ledger) firstStatedOn(queued store.Queued, version statedVersion) {
+// nothing of it. digest is the record digest the statement writes on the row, "" for none.
+func (l *Ledger) firstStatedOn(queued store.Queued, version statedVersion, digest string) {
 	queued.Exec(func(tag pgconn.CommandTag) error {
 		if tag.RowsAffected() == 1 {
-			l.firstStated = append(l.firstStated, version)
+			l.firstStated = append(l.firstStated, firstStatedVersion{version: version, digest: digest})
 		}
 		return nil
 	})
+}
+
+// firstStatedVersion is a version whose version_renders row took its time from a transaction's
+// write phase (Ledger.firstStated), with the record digest that row then holds: its record's, which
+// the pass stated (queueVersionRender), or "" for a version no query's record covers, whose row
+// holds none (queueVersionRenderCut, which writes no digest and takes only a row that holds no
+// time, which holds no digest either). No statement of the transaction writes the digest of such a
+// row again before the carry reads it (carryFirstStated): the tree_mismatch mark takes only a row
+// that holds no time (queueTreeMismatch), and the fill a row that owes its digest.
+type firstStatedVersion struct {
+	version statedVersion
+	digest  string
 }
 
 // statedRender is a version a pass of the transaction stated that a query's record covers, with
@@ -1755,7 +1767,7 @@ func queueFilledDigest(b *store.WriteBatch, version owedDigest) {
 // carries an approval of a deferred version, and the carry's reason names the version itself
 // (restoredReason); a carry the version's own write queued is repinned instead
 // (queueFilledDigest). An approval of an earlier version carries where the version's record is the
-// one it stands on (carryUnmovedEarlier).
+// one it stands on (earlierCarryOpen, carryUnmovedEarlier).
 func (s *Service) carryApprovalBeforeFill(ctx context.Context, tx pgx.Tx, version owedDigest) error {
 	id, number := version.version.artifactID, version.version.number
 	newest, err := NewestReview(ctx, tx, id)
@@ -1763,6 +1775,9 @@ func (s *Service) carryApprovalBeforeFill(ctx context.Context, tx pgx.Tx, versio
 		return err
 	}
 	if newest.Version < number {
+		if open, err := earlierCarryOpen(ctx, tx, id, number); err != nil || !open {
+			return err
+		}
 		return s.carryUnmovedEarlier(ctx, tx, id, number, version.markdown, *newest, version.record.Digest)
 	}
 	if newest.Version != number || newest.CarriedFromVersion != nil {
@@ -1775,6 +1790,26 @@ func (s *Service) carryApprovalBeforeFill(ctx context.Context, tx pgx.Tx, versio
 	return carryNewestApproval(ctx, tx, s.events, id, number, version.markdown, tree, *newest, s.serverURL, decisionStepCases{}, eventSink(ctx))
 }
 
+// earlierCarryOpen reports whether an approval of an earlier version may carry to version number of
+// the document id (carryUnmovedEarlier): no carry of this transaction wrote one to the document
+// already (refuseSecondCarry's rule), and the version is its document's latest, on an open issue -
+// a closed issue's settlement writes its versions with no carry (versionWrite.closedIssue). Its
+// caller reads it before it reads the version's markdown, which a version it refuses never needs.
+func earlierCarryOpen(ctx context.Context, tx pgx.Tx, id string, number int) (bool, error) {
+	if _, carried := queueFor(ctx, tx).PendingReview(id); carried {
+		return false, nil
+	}
+	var open bool
+	var latest int
+	if err := tx.QueryRow(ctx, `
+		select coalesce((select i.closed_at is null from issues i where i.key = a.issue_key), false),
+		       coalesce((select max(v.number) from artifact_versions v where v.artifact_id = a.id), 0)
+		from artifacts a where a.id = $1::uuid`, id).Scan(&open, &latest); err != nil {
+		return false, fmt.Errorf("read whether version %d of %s is its latest on an open issue: %w", number, id, err)
+	}
+	return open && latest == number, nil
+}
+
 // carryUnmovedEarlier carries newest, the document's newest review and an approval of a version
 // before number, to version number of the document id, stored as markdown, where digest - the
 // version's record digest, which the fill read at the version's cut or the first pass of a deferred
@@ -1783,29 +1818,13 @@ func (s *Service) carryApprovalBeforeFill(ctx context.Context, tx pgx.Tx, versio
 // write's rule passed over it, unable to vouch for its record in its read phase: a mark of the
 // issue's queries stood, or the version before it still owed its digest (recordUnmoved's P1 and
 // P2), or the write hands its rule no facts (versionWriteRecord: the node route's move, the
-// decisions step), or its pass was deferred (R15), so no pass of its write stated it. It carries
-// only to its document's latest version, on an open issue - a closed issue's settlement writes its
-// versions with no carry (versionWrite.closedIssue) - and where no carry of this transaction wrote
-// one to the document already (refuseSecondCarry's rule), through carryNewestApprovalNaming on that
-// function's own conditions, so its reason names the version the person approved
-// (RecordCarryReason). Its artifact.approved follows the version's artifact.version, which the
-// version's write appended before its COMMIT, as the fill's carry of an approval given before the
-// fill does.
+// decisions step), or its pass was deferred (R15), so no pass of its write stated it. Its caller
+// runs it only where earlierCarryOpen answers true, and it carries through
+// carryNewestApprovalNaming on that function's own conditions, so its reason names the version the
+// person approved (RecordCarryReason). Its artifact.approved follows the version's
+// artifact.version, which the version's write appended before its COMMIT, as the fill's carry of
+// an approval given before the fill does.
 func (s *Service) carryUnmovedEarlier(ctx context.Context, tx pgx.Tx, id string, number int, markdown string, newest model.ArtifactReview, digest string) error {
-	if _, carried := queueFor(ctx, tx).PendingReview(id); carried {
-		return nil
-	}
-	var open bool
-	var latest int
-	if err := tx.QueryRow(ctx, `
-		select coalesce((select i.closed_at is null from issues i where i.key = a.issue_key), false),
-		       coalesce((select max(v.number) from artifact_versions v where v.artifact_id = a.id), 0)
-		from artifacts a where a.id = $1::uuid`, id).Scan(&open, &latest); err != nil {
-		return fmt.Errorf("read whether version %d of %s is its latest on an open issue: %w", number, id, err)
-	}
-	if !open || latest != number {
-		return nil
-	}
 	tree, err := pmdoc.ParseRendering(markdown)
 	if err != nil {
 		return skipUnreadableVersion(id, number, err)
@@ -1939,16 +1958,17 @@ func queueTreeMismatch(b *store.WriteBatch, version statedVersion) {
 // approved (approvalOrigin), and one that differs carries only by carryVerdict's cases. Where it
 // is an approval of an earlier version, the version's own write passed over its record, which no
 // pass of that write stated (R15), and the first pass carries it where the record digest it
-// recorded is the one that approval stands on (carryUnmovedEarlier). Its writes go
-// on a write phase of their own in tx (queueWrites), and it answers the events they appended, for
-// its caller to publish once tx has committed.
-func (s *Service) carryFirstStated(ctx context.Context, tx pgx.Tx, versions []statedVersion) ([]model.Event, error) {
+// recorded is the one that approval stands on (carryUnmovedEarlier), reading the version's render
+// only once the digest and earlierCarryOpen leave a carry possible. Its writes go on a write phase
+// of their own in tx (queueWrites), and it answers the events they appended, for its caller to
+// publish once tx has committed.
+func (s *Service) carryFirstStated(ctx context.Context, tx pgx.Tx, versions []firstStatedVersion) ([]model.Event, error) {
 	if len(versions) == 0 {
 		return nil, nil
 	}
 	ctx, ledger := queueWrites(ctx, tx)
-	for _, version := range versions {
-		id, number := version.artifactID, version.number
+	for _, stated := range versions {
+		id, number := stated.version.artifactID, stated.version.number
 		newest, err := NewestReview(ctx, tx, id)
 		if err != nil {
 			return nil, err
@@ -1959,23 +1979,34 @@ func (s *Service) carryFirstStated(ctx context.Context, tx pgx.Tx, versions []st
 		if err := refuseSecondCarry(ctx, tx, id); err != nil {
 			return nil, err
 		}
+		if newest.Version < number {
+			// The digest the pass recorded on the version's row, its record's at the pass's cut,
+			// is what an approval of an earlier version carries by here. A version no query's
+			// record covers holds none: the restore and carryVerdict's cases alone carry an
+			// approval to it, and its own write already weighed them (carryApproval), so the pass
+			// carries nothing to it.
+			if stated.digest == "" {
+				continue
+			}
+			open, err := earlierCarryOpen(ctx, tx, id, number)
+			if err != nil {
+				return nil, err
+			}
+			if !open {
+				continue
+			}
+			rendered, err := RenderVersion(ctx, tx, model.ServerReader, id, number)
+			if err != nil {
+				return nil, err
+			}
+			if err := s.carryUnmovedEarlier(ctx, tx, id, number, rendered.Markdown, *newest, stated.digest); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		rendered, err := RenderVersion(ctx, tx, model.ServerReader, id, number)
 		if err != nil {
 			return nil, err
-		}
-		if newest.Version < number {
-			// The digest the pass recorded on the version's row, its record's at the pass's cut;
-			// a version no query's record covers holds none, and carries by carryVerdict alone.
-			var digest *string
-			if err := tx.QueryRow(ctx, `select record_sha256 from version_renders where artifact_id = $1::uuid and number = $2`, id, number).Scan(&digest); err != nil {
-				return nil, fmt.Errorf("read the record digest of version %d of %s: %w", number, id, err)
-			}
-			if digest != nil {
-				if err := s.carryUnmovedEarlier(ctx, tx, id, number, rendered.Markdown, *newest, *digest); err != nil {
-					return nil, err
-				}
-			}
-			continue
 		}
 		tree, err := pmdoc.ParseRendering(rendered.Markdown)
 		if err != nil {

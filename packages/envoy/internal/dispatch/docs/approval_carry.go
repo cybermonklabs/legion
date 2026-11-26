@@ -107,20 +107,14 @@ const CarriedReviewReasonPrefix = model.CarriedReviewReasonPrefix
 // restoreReason is the reason a review carried to a version restoring the approved text records,
 // naming the version of the approval it stands for (approvalOrigin), where that version's text is
 // the text restored. Like every carried reason, it is written from CarriedReviewReasonPrefix
-// rather than spelling that opening itself, so the sentence and its reader (CarriedFromVersion)
-// cannot drift apart.
+// rather than spelling that opening itself, so the sentence and its reader
+// (model.CarriedFromVersion) cannot drift apart.
 const restoreReason = CarriedReviewReasonPrefix + "%d: this version's text is that version's, unchanged."
 
 // restoreCarriedReason is restoreReason where the approval restored is itself a carry: it names the
 // version the person approved (approvalOrigin), then the version whose text is restored, the one
 // that approval was carried to (restoredReason).
 const restoreCarriedReason = CarriedReviewReasonPrefix + "%d: this version's text is version %d's, unchanged, which that approval was carried to."
-
-// CarriedFromVersion reads the source version from the legacy carry reason, using the same
-// parser the census uses. Readers use this fallback only when the carry row is absent.
-func CarriedFromVersion(reason string) (int, bool) {
-	return model.CarriedFromVersion(reason)
-}
 
 // carriedReasonPrefix opens the reason of every review a carry case records, naming the version
 // of the approval it stands for (approvalOrigin): CarriedReviewReasonPrefix and the version. The

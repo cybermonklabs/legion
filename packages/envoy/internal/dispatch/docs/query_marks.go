@@ -39,15 +39,26 @@ const queryMarkBatch = 100
 // queryMarkStatementOf is the statement that marks the queries of the issue $1 owed where the issue
 // has converted - an issue_trees row holds its tree - and marks nothing for any other issue. The
 // mark's causes are the greatest of each the marks of the issue hold: the event cause, an SQL
-// expression, null for a write no event records, and the newest tuple sequence this session drew,
-// which is the sequence of the last tuple the write appended, since the write queues the mark after
-// its own appends in the same batch. That tuple's writer (graph_tuples.who) is the writer the drain
-// names.
+// expression, null for a write no event records, and the newest tuple sequence this session drew
+// (latestTupleSeq), which is the sequence of the last tuple the write appended, since the write
+// queues the mark after its own appends in the same batch. That tuple's writer (graph_tuples.who)
+// is the writer the drain names.
 func queryMarkStatementOf(cause string) string {
+	return queryMarkUpsertOf(cause, latestTupleSeq, `issue_trees t where t.issue_key = $1`)
+}
+
+// latestTupleSeq is the newest tuple sequence this session drew, the graph_tuples seq sequence's
+// currval, as store.LatestEventID is the newest event id.
+const latestTupleSeq = `(select currval(pg_get_serial_sequence('graph_tuples', 'seq')))`
+
+// queryMarkUpsertOf marks owed the queries of the converted issue whose issue_trees row, aliased
+// t, from finds, with the causes cause and sequence, two SQL expressions, each kept as the greatest
+// of the marks of the issue.
+func queryMarkUpsertOf(cause, sequence, from string) string {
 	return `
 	insert into issue_query_marks (issue_key, greatest_event, greatest_seq)
-	select t.issue_key, ` + cause + `, (select currval(pg_get_serial_sequence('graph_tuples', 'seq')))
-	from issue_trees t where t.issue_key = $1
+	select t.issue_key, ` + cause + `, ` + sequence + `
+	from ` + from + `
 	on conflict (issue_key) do update set
 		greatest_event = greatest(issue_query_marks.greatest_event, excluded.greatest_event),
 		greatest_seq = greatest(issue_query_marks.greatest_seq, excluded.greatest_seq)`
@@ -115,16 +126,10 @@ func QueueQueryMark(b *store.WriteBatch, issueKey string, event int64, marked *b
 
 // treeQueryMarkStatementOf is the statement that marks owed the queries of the converted issue
 // whose issue_trees row, aliased t, from finds, with the causes cause and sequence, two SQL
-// expressions, each the greatest of the marks of the issue, and answers the issue's key. from
-// finds one row at most, so the insert never meets one issue twice.
+// expressions, each the greatest of the marks of the issue (queryMarkUpsertOf), and answers the
+// issue's key. from finds one row at most, so the insert never meets one issue twice.
 func treeQueryMarkStatementOf(cause, sequence, from string) string {
-	return `
-	insert into issue_query_marks (issue_key, greatest_event, greatest_seq)
-	select t.issue_key, ` + cause + `, ` + sequence + `
-	from ` + from + `
-	on conflict (issue_key) do update set
-		greatest_event = greatest(issue_query_marks.greatest_event, excluded.greatest_event),
-		greatest_seq = greatest(issue_query_marks.greatest_seq, excluded.greatest_seq)
+	return queryMarkUpsertOf(cause, sequence, from) + `
 	returning issue_key`
 }
 
@@ -143,8 +148,8 @@ var (
 	// whose writer the drain names its versions after. The newest tuple the transaction sees would
 	// be another writer's where that writer committed a later tuple between this write's append and
 	// its mark.
-	roomTupleQueryMarkStatement = treeQueryMarkStatementOf(`null::bigint`,
-		`(select currval(pg_get_serial_sequence('graph_tuples', 'seq')))`, `issue_trees t where t.artifact_id = $1`)
+	roomTupleQueryMarkStatement = treeQueryMarkStatementOf(`null::bigint`, latestTupleSeq,
+		`issue_trees t where t.artifact_id = $1`)
 	// askQueryMarkStatement marks the queries of the issue of the ask $1 where it is a question
 	// (questionAsk) of a converted issue: the decisions query takes such an ask by its node
 	// (decisionsTakes), and a request of a document's approval, an ask on a project document and

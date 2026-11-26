@@ -129,28 +129,11 @@ type liveOperation struct {
 }
 
 // openLiveOperation opens an operation on artifactID's document inside the transaction the
-// context's ledger joined. It refuses a document the service is shutting down
-// (ErrServiceUnavailable) and a context Join did not return (errUnjoined), resolves the room the
-// document is edited in and its fragment of it (targetOf), then takes the transaction's write to
-// that room (joinLiveWrite) and brings that write's fork up to date with the room (forkLive). The
-// caller defers the operation's abandon once it is open.
+// context's ledger joined: it takes the transaction's write to the room the document is edited in
+// (joinTargetWrite) and brings that write's fork up to date with the room (forkLive). The caller
+// defers the operation's abandon once it is open.
 func (s *Service) openLiveOperation(ctx context.Context, artifactID string) (liveOperation, error) {
-	if s.shuttingDown(artifactID) {
-		return liveOperation{}, ErrServiceUnavailable
-	}
-	tx, joined := txFromContext(ctx)
-	if !joined {
-		return liveOperation{}, errUnjoined
-	}
-	target, err := s.targetOf(ctx, artifactID)
-	if err != nil {
-		return liveOperation{}, err
-	}
-	if !target.ownRoom() && s.shuttingDown(target.room) {
-		return liveOperation{}, ErrServiceUnavailable
-	}
-	ledger := ledgerFrom(ctx)
-	write, err := s.joinLiveWrite(ctx, ledger, target)
+	tx, target, write, err := s.joinTargetWrite(ctx, artifactID)
 	if err != nil {
 		return liveOperation{}, err
 	}
@@ -159,6 +142,36 @@ func (s *Service) openLiveOperation(ctx context.Context, artifactID string) (liv
 		return liveOperation{}, err
 	}
 	return liveOperation{tx: tx, write: write, fork: fork, target: target, read: write.forkRead}, nil
+}
+
+// joinTargetWrite takes the write of the transaction the context's ledger joined to the room
+// artifactID's document is edited in, as every document write of a joined transaction opens it
+// (openLiveOperation, JoinWrite), in this order: it refuses a document the service is shutting
+// down (ErrServiceUnavailable) and a context Join did not return (errUnjoined), resolves the room
+// the document is edited in and its fragment of it (targetOf), refuses a document of an issue room
+// while that room shuts down - the shutdown is the room's, not the document's - and takes the
+// transaction's write to that room (joinLiveWrite). It answers the joined transaction, the target
+// and the write.
+func (s *Service) joinTargetWrite(ctx context.Context, artifactID string) (pgx.Tx, liveTarget, *liveWrite, error) {
+	if s.shuttingDown(artifactID) {
+		return nil, liveTarget{}, nil, ErrServiceUnavailable
+	}
+	tx, joined := txFromContext(ctx)
+	if !joined {
+		return nil, liveTarget{}, nil, errUnjoined
+	}
+	target, err := s.targetOf(ctx, artifactID)
+	if err != nil {
+		return nil, liveTarget{}, nil, err
+	}
+	if !target.ownRoom() && s.shuttingDown(target.room) {
+		return nil, liveTarget{}, nil, ErrServiceUnavailable
+	}
+	write, err := s.joinLiveWrite(ctx, ledgerFrom(ctx), target)
+	if err != nil {
+		return nil, liveTarget{}, nil, err
+	}
+	return tx, target, write, nil
 }
 
 // abandon, deferred once the operation is open, undoes what an operation that changed the fork but
@@ -1630,15 +1643,15 @@ func (s *Service) readDocumentIn(ctx context.Context, room, artifactID string, s
 
 // heldTree is the tree of the document where this server holds it, once a failed room's recovery
 // is done: the calling transaction's fork's when it has one (joinRead), else the resident room's,
-// as of one moment (liveTree). held is false where neither holds it. It is older than neither the
-// stored head, read after joinRead and before the room (readStoredHead), nor the room: a resident
-// room behind that head - another process stored an update its catch-up has not applied yet - is
-// read as the stored document merged with the updates only that room holds (storedWithUpdates),
-// which does not fail the room, sound and only behind; the read waits for no catch-up. The merge
-// is what keeps such a read from going backwards: the stored document at that head is missing the
-// room's own update whose append is still in flight, and no read takes back text the room has
-// already sent its browsers. counts is how many top-level blocks each of fragments holds of the
-// tree (treeOfFragments), nil for a read of one fragment.
+// as of one moment (liveFragmentsTree). held is false where neither holds it. It is older than
+// neither the stored head, read after joinRead and before the room (readStoredHead), nor the room:
+// a resident room behind that head - another process stored an update its catch-up has not
+// applied yet - is read as the stored document merged with the updates only that room holds
+// (storedWithUpdates), which does not fail the room, sound and only behind; the read waits for no
+// catch-up. The merge is what keeps such a read from going backwards: the stored document at that
+// head is missing the room's own update whose append is still in flight, and no read takes back
+// text the room has already sent its browsers. counts is how many top-level blocks each of
+// fragments holds of the tree (treeOfFragments), nil for a read of one fragment.
 func (s *Service) heldTree(ctx context.Context, room string, fragments []string) (tree *pmdoc.Node, counts []int, held bool, err error) {
 	if err := s.awaitRoomRecovery(ctx, room); err != nil {
 		return nil, nil, false, err
@@ -1982,27 +1995,12 @@ func modelBlockPath(path pmdoc.BlockPath) model.BlockPath {
 // (roomQueries.ask). The quote branch needs no call: MarkQuote joins the write before anything
 // takes the lock.
 //
-// The write it opens is a write like any other - it waits for the transaction holding the slot,
-// refuses a failed room and a shutting-down document - and it records what the read beside that
-// owner lock answered (lockArtifactOwner, liveWrite.ownerClosed), which is what sends a comment's
-// anchor on a closed issue down the cold fork (closedIssueCommentMark).
+// The write it opens is a write like any other (joinTargetWrite) - it waits for the transaction
+// holding the slot, refuses a failed room and a shutting-down document - and it records what the
+// read beside that owner lock answered (lockArtifactOwner, liveWrite.ownerClosed), which is what
+// sends a comment's anchor on a closed issue down the cold fork (closedIssueCommentMark).
 func (s *Service) JoinWrite(ctx context.Context, artifactID string) error {
-	if s.shuttingDown(artifactID) {
-		return ErrServiceUnavailable
-	}
-	if _, joined := txFromContext(ctx); !joined {
-		return errUnjoined
-	}
-	target, err := s.targetOf(ctx, artifactID)
-	if err != nil {
-		return err
-	}
-	// A document of an issue room is refused while that room shuts down, as openLiveOperation
-	// refuses it: the shutdown is the room's, not the document's.
-	if !target.ownRoom() && s.shuttingDown(target.room) {
-		return ErrServiceUnavailable
-	}
-	_, err = s.joinLiveWrite(ctx, ledgerFrom(ctx), target)
+	_, _, _, err := s.joinTargetWrite(ctx, artifactID)
 	return err
 }
 
