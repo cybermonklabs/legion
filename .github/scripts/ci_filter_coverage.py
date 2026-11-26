@@ -52,6 +52,11 @@ from workflow_paths import PathsFilter, UniqueKeyLoader, events, glob_regex, unr
 WORKFLOW = ".github/workflows/ci.yaml"
 # The workflow that fills, on a push to main, the Go cache families WORKFLOW's jobs restore.
 CACHE_WORKFLOW = ".github/workflows/ci-caches.yaml"
+# Every workflow that fills, on a push to main, a cache family WORKFLOW's jobs restore: the Go fills,
+# one run at a time, and the changes job's two entries, one run per commit, so that no commit's
+# entry waits for the Go fills or is lost to a newer push that replaced its run
+# (.github/ci-notes/ci-caches.md#the-two-entries-the-changes-job-restores).
+CACHE_WORKFLOWS = (CACHE_WORKFLOW, ".github/workflows/ci-caches-changes.yaml")
 REPO = Path.cwd().resolve()
 SHOWN = 20  # uncovered files printed per gate
 # A Go test file, by name: what `go list` reports as a package's TestGoFiles or XTestGoFiles

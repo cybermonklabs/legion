@@ -632,7 +632,7 @@ check "every filter is every path" \
 check "and the computed filters stand" "$(contains "$(cat "$root.generated.computed.yaml")" "^  - 'mod/cmd/\*\*'$")"
 
 # The base's filters as a push of that commit to main generated them
-# (.github/workflows/ci-caches.yaml, its changes job), which the changes job restores into the directory
+# (.github/workflows/ci-caches-changes.yaml), which the changes job restores into the directory
 # CI_FILTERS_BASE_COMPUTED names: the script reads them only when the directory's commit file names
 # the base. The base tree's own generation fails in both cases below, so a run that generated it
 # would make every filter every path.
@@ -4301,6 +4301,55 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the family nothing restores" \
   "$(contains "$out" 'job fill saves cache family go-app, which no actions/cache/restore of .github/workflows/ci.yaml or of a workflow it calls reads')"
+
+# changes_cache_workflow <root>: cache_workflow's shape with the second fill workflow,
+# ci-caches-changes.yaml, which alone saves the family go-changes, under the key ci.yaml's second
+# restore names followed by the commit, as that workflow saves changes-git. Rule 11 reads every
+# fill workflow's saves (CACHE_WORKFLOWS), so a drift of this one is refused naming its file.
+changes_cache_workflow() {
+  cache_workflow "$1"
+  cat > "$1/.github/workflows/ci-caches-changes.yaml" <<'YAML'
+name: CI caches (changes job)
+on:
+  push:
+    branches: [main]
+jobs:
+  fill:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .git
+          key: go-changes-${{ runner.os }}-${{ github.sha }}
+YAML
+  replace "$1/.github/workflows/ci.yaml" "      - name: Test the app" \
+    $'      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: .git\n          key: go-changes-${{ runner.os }}\n      - name: Test the app'
+}
+
+echo "case: a family only ci-caches-changes.yaml saves, under the key and path ci.yaml restores"
+root=$(fixture cache-changes-round-trip)
+changes_cache_workflow "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a save of ci-caches-changes.yaml whose key drifted from the key ci.yaml restores"
+root=$(fixture cache-changes-key-drift)
+changes_cache_workflow "$root"
+replace "$root/.github/workflows/ci-caches-changes.yaml" 'key: go-changes-${{ runner.os }}-${{ github.sha }}' \
+  'key: go-changes-${{ runner.arch }}-${{ github.sha }}'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file, the family and both keys" \
+  "$(contains "$out" '::error file=.github/workflows/ci-caches-changes.yaml::job fill saves family go-changes under key .*runner.arch.*, but job app of .github/workflows/ci.yaml restores it under ')"
+
+echo "case: a save of ci-caches-changes.yaml whose path drifted from the path ci.yaml restores"
+root=$(fixture cache-changes-path-drift)
+changes_cache_workflow "$root"
+replace "$root/.github/workflows/ci-caches-changes.yaml" '          path: .git' '          path: .git2'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file, the family and both paths" \
+  "$(contains "$out" '::error file=.github/workflows/ci-caches-changes.yaml::job fill saves family go-changes from .git2, but job app of .github/workflows/ci.yaml restores it into .git:')"
 
 # A restore of a family no workflow saves misses on every run and fails nothing. A misspelled
 # family name (go-envoy-tests- for go-envoy-test) is such a family: the paired-key rules above

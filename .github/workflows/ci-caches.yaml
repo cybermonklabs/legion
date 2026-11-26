@@ -82,13 +82,12 @@ name: CI caches
 # save their entries themselves.
 # why: .github/ci-notes/ci-caches.md#the-architecture-check-and-spec-check-families
 #
-# Five entries here are no Go family: the elan home the airlock-lean job restores, whose key is
-# the content of the Lean toolchain the model names rather than a Go version, the two earlier
+# Three entries here are no Go family: the elan home the airlock-lean job restores, whose key is
+# the content of the Lean toolchain the model names rather than a Go version, and the two earlier
 # Dispatch builds dispatch-two-builds restores, each keyed on a release commit and the hash of the
-# script that builds it, which the dispatch-builds job fills, and the two the changes job fills for
-# ci.yaml's changes job: main's objects (changes-git) and each pushed commit's filters (ci-filters).
+# script that builds it, which the dispatch-builds job fills. The changes job's two entries are
+# ci-caches-changes.yaml's, which runs once per commit rather than one run at a time.
 # why: .github/ci-notes/ci-caches.md#the-two-entries-that-went-with-the-jobs-that-read-them
-# why: .github/ci-notes/ci-caches.md#the-two-entries-the-changes-job-restores
 #
 # go-docs is not here: docs-pages.yaml saves it on this same push, from the build job it shares
 # with ci.yaml's docs job. The Bun cache is not here either: .github/actions/setup-bun reads and
@@ -572,64 +571,11 @@ jobs:
           KEY: ${{ steps.go-envoy-darwin-vet.outputs.cache-primary-key }}-${{ github.sha }}
         run: echo "go-envoy-darwin-vet-${RUNNER_ARCH,,}=$KEY" >>"$GITHUB_OUTPUT"
 
-  # The two entries ci.yaml's changes job restores, on its runner, ubuntu-24.04-arm (go list
-  # answers for the machine's own platform). changes-git, refilled on every push, is this commit's
-  # `.git` one commit deep, kept under refs/ci-cache/main, a ref actions/checkout leaves, so the
-  # reader's fetch offers the commit and is sent only what its own adds. ci-filters is this
-  # commit's filters and the commit they are for; its lookup's key is the changes job's restore
-  # key word for word, the base step here naming this commit as the base there names a run's.
-  # why: .github/ci-notes/ci-caches.md#the-two-entries-the-changes-job-restores
-  changes:
-    if: inputs.only != 'dispatch-builds'
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 15
-    outputs:
-      changes-git-arm64: ${{ steps.saved.outputs.key }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - run: git update-ref refs/ci-cache/main HEAD
-      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .git
-          key: changes-git-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
-      - id: saved
-        env:
-          KEY: changes-git-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
-        run: echo "key=$KEY" >>"$GITHUB_OUTPUT"
-      - id: base
-        run: echo "sha=$GITHUB_SHA" >>"$GITHUB_OUTPUT"
-      - id: ci-filters
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/ci-filters-base
-          key: ci-filters-${{ runner.os }}-${{ runner.arch }}-${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha || steps.base.outputs.sha }}
-          lookup-only: true
-      - if: steps.ci-filters.outputs.cache-hit != 'true'
-        timeout-minutes: 3
-        run: .github/scripts/go-install-archive.sh packages/daemon/go.mod
-      - if: steps.ci-filters.outputs.cache-hit != 'true'
-        uses: ./.github/actions/setup-bun
-      - if: steps.ci-filters.outputs.cache-hit != 'true'
-        run: bun install --frozen-lockfile
-      - if: steps.ci-filters.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p "$RUNNER_TEMP/ci-filters-base"
-          .github/scripts/check-ci-filters.sh generate "$RUNNER_TEMP/ci-filters-base/ci-filters.yaml"
-          rm "$RUNNER_TEMP/ci-filters-base/ci-filters.yaml.inputs"
-          git rev-parse --verify "HEAD^{commit}" >"$RUNNER_TEMP/ci-filters-base/commit"
-      - if: steps.ci-filters.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/ci-filters-base
-          key: ${{ steps.ci-filters.outputs.cache-primary-key }}
-
   # The entries of each refilled family that the fills above replaced, deleted once each fill has
   # saved its new one.
   # why: .github/ci-notes/ci-caches.md#what-the-refill-superseded-job-deletes-and-why-it-is-a-job-of-its-own
   refill-superseded:
-    needs: [daemon, notices, envoy, envoy-test, envoy-darwin-vet, changes]
+    needs: [daemon, notices, envoy, envoy-test, envoy-darwin-vet]
     if: ${{ !cancelled() && inputs.only != 'dispatch-builds' }}
     strategy:
       fail-fast: false
@@ -643,7 +589,6 @@ jobs:
           - { job: envoy-test, family: go-envoy-test, arch: x64 }
           - { job: envoy-test, family: go-envoy-test, arch: arm64 }
           - { job: envoy-darwin-vet, family: go-envoy-darwin-vet, arch: x64 }
-          - { job: changes, family: changes-git, arch: arm64 }
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     env:
@@ -651,8 +596,8 @@ jobs:
     permissions:
       actions: write
     steps:
-      # For .github/scripts/gh-read.sh alone: this repository is public, so the checkout needs no
-      # scope beyond the one the deletes need.
+      # For .github/scripts/cache-superseded.sh and the gh-read.sh it sources: this repository is
+      # public, so the checkout needs no scope beyond the one the deletes need.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs[matrix.job].outputs[format('{0}-{1}', matrix.family, matrix.arch)] != ''
         with:
@@ -851,8 +796,8 @@ jobs:
     permissions:
       actions: write
     steps:
-      # For .github/scripts/gh-read.sh alone: this repository is public, so the checkout needs no
-      # scope beyond the one the deletes need.
+      # For .github/scripts/cache-superseded.sh and the gh-read.sh it sources: this repository is
+      # public, so the checkout needs no scope beyond the one the deletes need.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.envoy-infra.outputs[format('filled-{0}', matrix.arch)] == 'true'
         with:
@@ -1005,8 +950,8 @@ jobs:
     permissions:
       actions: write
     steps:
-      # For .github/scripts/gh-read.sh alone: this repository is public, so the checkout needs no
-      # scope beyond the one the deletes need.
+      # For .github/scripts/cache-superseded.sh and the gh-read.sh it sources: this repository is
+      # public, so the checkout needs no scope beyond the one the deletes need.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.dispatch-builds.outputs[matrix.build] != ''
         with:

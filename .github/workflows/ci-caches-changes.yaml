@@ -1,0 +1,107 @@
+name: CI caches (changes job)
+
+# Fills, on every push to main, the two cache entries ci.yaml's changes job restores: changes-git,
+# this commit's `.git` one commit deep, which the job's checkout fetches only its own commit's
+# additions to, and ci-filters, this commit's filters, which its generation reads in place of
+# generating the base tree when a run is measured against this commit. A workflow of its own, beside
+# ci-caches.yaml, so that each commit's entries land within a minute of its push: ci-caches.yaml runs
+# one at a time and a newer push replaces its waiting run, so an entry there would wait for the Go
+# fills of the push before it and a replaced commit would never get one. Rule 11 of
+# check-ci-filters.sh holds this file's saves to ci.yaml's restores as it holds ci-caches.yaml's.
+# why: .github/ci-notes/ci-caches.md#the-two-entries-the-changes-job-restores
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One run per commit, each in a group of its own, and none cancelled: a cancelled run saves
+# nothing, and the entry is keyed on its commit, so a later commit's run fills nothing for it. A
+# dispatch of a commit that a push's run is filling waits for that run.
+concurrency:
+  group: ci-caches-changes-${{ github.sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # On ubuntu-24.04-arm, the changes job's runner: go list answers for the machine's own platform,
+  # and the keys carry the architecture. changes-git is kept under refs/ci-cache/main, a ref
+  # actions/checkout leaves, so the reader's fetch offers this commit and is sent only what its own
+  # adds. ci-filters' lookup key is the changes job's restore key word for word, its base step here
+  # naming this commit as the base step there names a run's base.
+  fill:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    outputs:
+      changes-git: ${{ steps.saved.outputs.key }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: git update-ref refs/ci-cache/main HEAD
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .git
+          key: changes-git-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+      - id: saved
+        env:
+          KEY: changes-git-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+        run: echo "key=$KEY" >>"$GITHUB_OUTPUT"
+      - id: base
+        run: echo "sha=$GITHUB_SHA" >>"$GITHUB_OUTPUT"
+      - id: ci-filters
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ci-filters-base
+          key: ci-filters-${{ runner.os }}-${{ runner.arch }}-${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha || steps.base.outputs.sha }}
+          lookup-only: true
+      - if: steps.ci-filters.outputs.cache-hit != 'true'
+        timeout-minutes: 3
+        run: .github/scripts/go-install-archive.sh packages/daemon/go.mod
+      - if: steps.ci-filters.outputs.cache-hit != 'true'
+        uses: ./.github/actions/setup-bun
+      - if: steps.ci-filters.outputs.cache-hit != 'true'
+        run: bun install --frozen-lockfile
+      - if: steps.ci-filters.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/ci-filters-base"
+          .github/scripts/check-ci-filters.sh generate "$RUNNER_TEMP/ci-filters-base/ci-filters.yaml"
+          rm "$RUNNER_TEMP/ci-filters-base/ci-filters.yaml.inputs"
+          git rev-parse --verify "HEAD^{commit}" >"$RUNNER_TEMP/ci-filters-base/commit"
+      - if: steps.ci-filters.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ci-filters-base
+          key: ${{ steps.ci-filters.outputs.cache-primary-key }}
+
+  # The changes-git entries of this ref older than the one the fill saved, deleted once it has
+  # saved, so one 96 MB entry stays, as refill-superseded keeps one per Go family. Only older ones:
+  # runs of two commits can overlap here, and a later commit's entry may be saved first. A job of
+  # its own, so the token that may delete caches is in no job that builds code; it runs when the
+  # fill failed after its save too.
+  # why: .github/ci-notes/ci-caches.md#what-the-refill-superseded-job-deletes-and-why-it-is-a-job-of-its-own
+  superseded:
+    needs: fill
+    if: ${{ !cancelled() && needs.fill.outputs.changes-git != '' }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    env:
+      JOB_TIMEOUT_MINUTES: 5 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    permissions:
+      actions: write
+    steps:
+      # For .github/scripts/cache-superseded.sh and the gh-read.sh it sources: this repository is
+      # public, so the checkout needs no scope beyond the one the deletes need.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+      - name: Delete this ref's changes-git entries older than the new one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          KEEP: ${{ needs.fill.outputs.changes-git }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref }}
+        run: .github/scripts/cache-superseded.sh older changes-git

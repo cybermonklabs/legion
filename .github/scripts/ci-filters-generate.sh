@@ -23,7 +23,7 @@
 # filter named. Each such filter is printed with the patterns only the base has and only this tree
 # has, and so is the step summary. When CI_FILTERS_BASE_COMPUTED names a directory whose `commit`
 # file names that base, its ci-filters.yaml is the base tree's filters as a push of the base to main
-# generated them (.github/workflows/ci-caches.yaml, its changes job), and this reads that file in
+# generated them (.github/workflows/ci-caches-changes.yaml), and this reads that file in
 # place of generating the base tree again.
 #
 # FAILING OPEN. When the computation fails for any reason - go or Bun missing, a go command that
@@ -137,7 +137,7 @@ scratch=$(mktemp -d)
 trap 'git -C "$head_root" worktree remove --force "$scratch/base" >/dev/null 2>&1; rm -rf "$scratch"' EXIT
 base_started=$(date +%s)
 # The base tree's filters as a push of that commit to main computed them, when the changes job
-# restored them (CI_FILTERS_BASE_COMPUTED, the directory ci-caches.yaml's changes job
+# restored them (CI_FILTERS_BASE_COMPUTED, the directory .github/workflows/ci-caches-changes.yaml
 # fills): the same command over the same tree, run there by the base's own Go and Bun, so the
 # generation below would write the same file. A directory that names another commit, or holds no
 # filters, is not read.
