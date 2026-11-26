@@ -53,6 +53,7 @@ import { ShellNavigationContext } from "./shell-navigation";
 import { HeaderSlot } from "./slots/header";
 import { titleWrittenElsewhere } from "./title-elsewhere-fixture";
 import { treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
+import { viewKey } from "./tree-read/tree-read";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -365,6 +366,78 @@ test("the header's count counts a waiting decision node tied to a statement", as
   try {
     await waitFor(() =>
       expect(screen.getByTestId("issue-whose-turn").textContent).toBe("Waiting on you (2)")
+    );
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// INFRA-1196's R2, R13 and its architect on R15 for a count over a paged read: the count counts
+// each decision of the review list the decisions view read holds, which holds every decision of
+// the issue, and never claims a number its reads cannot hold. Conversation's tree read is paged,
+// and its first page here ends before the second waiting decision and names a next page: until
+// the page holds the decisions view read, the count is read off that first page, beside the open
+// question whose turn is the reader's, and carries "+". Once the page holds the decisions view
+// read, as it does once the Decisions filter was on, which is whole, the count is that read's,
+// with no "+". The header watches the view under the key the page reads it by and sends no view
+// read of its own.
+test("the header's count carries + over Conversation's paged read, and counts the decisions view read whole once it is held", async () => {
+  const statement = buildDispatchReference({ block: { id: "r1" }, key: issue.key, kind: "spec" });
+  const spec = { artifact_id: "artifact-1", slug: "spec" };
+  const waiting = (block: string, position: number) =>
+    treeNode(block, "decision", issue.key, {
+      decision: {
+        changed_at: "2026-09-10T00:00:00Z",
+        links: [shaped(statement)],
+        text_sha256: `sum-${block}`,
+        waiting_review: true,
+      },
+      document: { ...spec, position },
+    });
+  const requirement = treeNode("r1", "requirement", issue.key, {
+    document: { ...spec, position: 0 },
+  });
+  answerRequests(
+    http.get("/api/v1/issues/:key/coverage", ({ params }) =>
+      Response.json({
+        gaps: [],
+        has_plan: false,
+        issue: String(params.key),
+        requirements: [
+          { block_id: "r1", checks: 1, gaps: [], plan_tasks: 0, ref: statement, text: "R1." },
+        ],
+        spec_artifact_id: "artifact-1",
+      } satisfies IssueCoverage)
+    ),
+    // Conversation's first page, which ends before the second decision and names a next page.
+    http.get("/api/v1/issues/:key/tree", ({ request }) =>
+      new URL(request.url).searchParams.has("view")
+        ? Response.json({ error: "the header sent a view read of its own" }, { status: 500 })
+        : Response.json(
+            treeAnswer([requirement, waiting("d1", 1)], [treeTuple("shaped", "d1", "r1")], {
+              cursor: "page-2",
+            })
+          )
+    )
+  );
+  const restore = stubHeader({ ...issue, open_asks: [{ ...openIssueAsk, last_reply: null }] });
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+  const count = () => screen.getByTestId("issue-whose-turn").textContent;
+
+  try {
+    await waitFor(() =>
+      expect(count(), "the count over a read that names a next page").toBe("Waiting on you (2+)")
+    );
+    act(() => {
+      queryClient.setQueryData(
+        viewKey(issue.key, "decisions"),
+        treeAnswer([waiting("d1", 1), waiting("d2", 2)])
+      );
+    });
+    await waitFor(() =>
+      expect(count(), "the count once the decisions view read is held").toBe("Waiting on you (3)")
     );
   } finally {
     view.unmount();

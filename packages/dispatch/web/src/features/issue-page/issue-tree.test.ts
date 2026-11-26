@@ -2119,11 +2119,11 @@ test("a decision sits under the ask it answers, and one that answers none under 
   expect(nodeOf(root, blockNodeId("decisions-md", "d1"))?.chips).toEqual([]);
 });
 
-// A read of the release before built a decision's asks and links paragraph by paragraph and
-// kept every repeat, so a decision whose two paragraphs cite one question and link one statement
-// named each twice; this build's read names each tie once, from the decision's node. A repeat is
-// still one placement under that question, counted once in what the question holds, and one chip
-// for the statement, stale where either of its links is.
+// The server builds a decision's links paragraph by paragraph and keeps every repeat
+// (`api/decisions.go`), and the tree read answers them on the node as that read built them, so a
+// decision whose two paragraphs link one statement names it twice. It is one placement under the
+// question the read places it under, counted once in what the question holds, and one chip for
+// the statement, stale where either of its links is.
 test("a decision naming one question and one statement twice is drawn once, with one chip", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");

@@ -107,8 +107,9 @@ export function TreeRows({
   // What each document's room last admitted the page to, read once for every row: a row of a
   // document its room admitted read-only takes no typing (`nodeEditable`).
   const admissions = useDocumentAdmissions();
-  // The Lens act each row offers in Conversation and in Graph, whatever the focus, one value
-  // while the address stands (`useLensAct`).
+  // The Lens act each row offers in Conversation and in Graph, whatever the focus, with every
+  // node's invocations read once for all the rows: one value while the address stands and no
+  // invocation of a lens changes (`useLensAct`).
   const lensAct = useLensAct();
   return (
     <>

@@ -294,7 +294,8 @@ export function lensDrafts(
  *  heading or a constraint's words: one paragraph of those runs (`lineOf`), and its words as the
  *  draft's text. Where `runs` hold none the draft keeps no reading and its text stays `""`, which
  *  the row of a lens with no verdict draws as `LENS_WORDS.no_verdict`. `store-words.ts` sets the
- *  line again where the words name a node. */
+ *  line again for a node whose words cite a `dispatch://` address, with each store address it
+ *  holds named. */
 export function setRowLine(draft: Draft, runs: DisplayTree[]): void {
   if (runs.length === 0) return;
   draft.tree = lineOf(runs);

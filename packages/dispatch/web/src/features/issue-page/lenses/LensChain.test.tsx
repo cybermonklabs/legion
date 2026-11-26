@@ -31,6 +31,7 @@ import { publishedNames } from "../projection-fixture";
 import { issueDetails, statementRef } from "../spec-filter/spec-fixtures";
 import { blockNodeId } from "../tree-drafts";
 import { treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
+import type { TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 import { LensLines } from "./LensLines";
 import { kindWords, type LensFacts, type LensPlace } from "./lens-drafts";
 import { lensChainQuery } from "./lens-reads";
@@ -944,6 +945,27 @@ test("a constraint's row takes a statement's colour, and a lens's, a finding's a
   }
 });
 
+/** The row the tree read draws (`buildIssueTree`) at the ids `path` walks down from the issue's
+ *  row, of a read of this issue that holds `nodes` and `tuples`. */
+function drawnRow(
+  nodes: readonly TreeAnswerNode[],
+  path: readonly string[],
+  tuples: readonly TreeTuple[] = []
+): TreeNode {
+  const root = buildIssueTree({
+    issue: issueDetails(),
+    tree: treeAnswer(
+      [treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }), ...nodes],
+      tuples,
+      { converted: true, tree: "artifact-tree" }
+    ),
+  });
+  let drawn: TreeNode | undefined = root;
+  for (const id of path) drawn = drawn?.children.find((row) => row.id === id);
+  if (drawn === undefined) throw new Error(`the tree draws no row at ${path.join(" / ")}`);
+  return drawn;
+}
+
 // A lens's verdict that links its author's words to a risk the tree read holds,
 // `[the failover risk](dispatch://risk/<uuid>)`, draws those words as a link that opens the
 // risk's row (`?node=`), as the lens's row draws its words from the tree read
@@ -951,22 +973,15 @@ test("a constraint's row takes a statement's colour, and a lens's, a finding's a
 test("a lens row draws its verdict's author's link to a risk as a link to the risk's row", async () => {
   const lens = "c3000000-0000-4000-8000-000000000003";
   const risk = "d4000000-0000-4000-8000-000000000004";
-  const root = buildIssueTree({
-    issue: issueDetails(),
-    tree: treeAnswer(
-      [
-        treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }),
-        treeNode(lens, "lens", KEY, {
-          attributes: { verdict: `See [the failover risk](dispatch://risk/${risk}) first.` },
-        }),
-        treeNode(risk, "risk", lens, { attributes: { heading: "Failover takes minutes" } }),
-      ],
-      [],
-      { converted: true, tree: "artifact-tree" }
-    ),
-  });
-  const drawn = root.children.find((row) => row.id === lens);
-  if (drawn === undefined) throw new Error("the tree draws no row of the lens");
+  const drawn = drawnRow(
+    [
+      treeNode(lens, "lens", KEY, {
+        attributes: { verdict: `See [the failover risk](dispatch://risk/${risk}) first.` },
+      }),
+      treeNode(risk, "risk", lens, { attributes: { heading: "Failover takes minutes" } }),
+    ],
+    [lens]
+  );
   const view = renderOnIssue(<LensRow drawn={drawn} />);
   try {
     await waitFor(() => {
@@ -990,6 +1005,22 @@ const WARNING_ROW = {
   risk: "d4000000-0000-4000-8000-000000000004",
 } as const;
 
+/** The row of the risk of `WARNING_ROW`, drawn from the tree read (`buildIssueTree`), whose early
+ *  warning is `earlyWarning`, under its lens, with `cited`, the node the warning may cite. */
+function earlyWarningRow(earlyWarning: string, cited: TreeAnswerNode): TreeNode {
+  const { lens, risk } = WARNING_ROW;
+  return drawnRow(
+    [
+      treeNode(lens, "lens", KEY),
+      treeNode(risk, "risk", lens, {
+        attributes: { early_warning: earlyWarning, heading: "Replies break the HTTP rule" },
+      }),
+      cited,
+    ],
+    [lens, risk]
+  );
+}
+
 /** Draws a risk row from the tree read (`buildIssueTree`) whose early warning is `earlyWarning`,
  *  and waits until its line draws `expected`: its author's words, and each link in it as its
  *  words and its address. */
@@ -997,26 +1028,10 @@ async function expectEarlyWarningDrawn(
   earlyWarning: string,
   expected: [string, [string, string][]]
 ): Promise<void> {
-  const { constraint, lens, risk } = WARNING_ROW;
-  const root = buildIssueTree({
-    issue: issueDetails(),
-    tree: treeAnswer(
-      [
-        treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }),
-        treeNode(lens, "lens", KEY),
-        treeNode(risk, "risk", lens, {
-          attributes: { early_warning: earlyWarning, heading: "Replies break the HTTP rule" },
-        }),
-        treeNode(constraint, "constraint", KEY, { attributes: { standard: "RFC 9110" } }),
-      ],
-      [],
-      { converted: true, tree: "artifact-tree" }
-    ),
-  });
-  const drawn = root.children
-    .find((row) => row.id === lens)
-    ?.children.find((row) => row.id === risk);
-  if (drawn === undefined) throw new Error("the tree draws no row of the risk");
+  const drawn = earlyWarningRow(
+    earlyWarning,
+    treeNode(WARNING_ROW.constraint, "constraint", KEY, { attributes: { standard: "RFC 9110" } })
+  );
   const view = renderOnIssue(<LensRow drawn={drawn} />);
   try {
     await waitFor(() => {
@@ -1183,25 +1198,17 @@ function renderWithCodeName(page: ReactNode): RenderResult {
 // as the name the page published for its target.
 test("a fact line and a chip keep an address in code as written and name it outside code", async () => {
   const { constraint, lens, risk } = WARNING_ROW;
-  const root = buildIssueTree({
-    issue: issueDetails(),
-    tree: treeAnswer(
-      [
-        treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }),
-        treeNode(lens, "lens", KEY),
-        treeNode(risk, "risk", lens, {
-          attributes: { early_warning: CODE_WORDS, heading: "Replies break the HTTP rule" },
-        }),
-        treeNode(constraint, "constraint", KEY, { attributes: { standard: CODE_WORDS } }),
-      ],
-      [treeTuple("constrained_by", risk, constraint)],
-      { converted: true, tree: "artifact-tree" }
-    ),
-  });
-  const drawn = root.children
-    .find((row) => row.id === lens)
-    ?.children.find((row) => row.id === risk);
-  if (drawn === undefined) throw new Error("the tree draws no row of the risk");
+  const drawn = drawnRow(
+    [
+      treeNode(lens, "lens", KEY),
+      treeNode(risk, "risk", lens, {
+        attributes: { early_warning: CODE_WORDS, heading: "Replies break the HTTP rule" },
+      }),
+      treeNode(constraint, "constraint", KEY, { attributes: { standard: CODE_WORDS } }),
+    ],
+    [lens, risk],
+    [treeTuple("constrained_by", risk, constraint)]
+  );
   const view = renderWithCodeName(<LensLines node={drawn} tabStops={false} />);
   try {
     const words = (line: string) =>
@@ -1232,25 +1239,16 @@ test("a chain entry keeps an address in code as written and names it outside cod
       ])
     )
   );
-  const root = buildIssueTree({
-    issue: issueDetails(),
-    tree: treeAnswer(
-      [
-        treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }),
-        treeNode(lens, "lens", KEY),
-        treeNode(risk, "risk", lens, { attributes: { heading: CODE_WORDS } }),
-        treeNode(first, "lens", risk),
-        treeNode(second, "lens", risk),
-      ],
-      [treeTuple("triggered_by", second, first)],
-      { converted: true, tree: "artifact-tree" }
-    ),
-  });
-  const drawn = root.children
-    .find((row) => row.id === lens)
-    ?.children.find((row) => row.id === risk)
-    ?.children.find((row) => row.id === second);
-  if (drawn === undefined) throw new Error("the tree draws no row of the second lens");
+  const drawn = drawnRow(
+    [
+      treeNode(lens, "lens", KEY),
+      treeNode(risk, "risk", lens, { attributes: { heading: CODE_WORDS } }),
+      treeNode(first, "lens", risk),
+      treeNode(second, "lens", risk),
+    ],
+    [lens, risk, second],
+    [treeTuple("triggered_by", second, first)]
+  );
   const view = renderWithCodeName(<LensRow drawn={drawn} focused />);
   try {
     await user.click(await drawnControl(view));
@@ -1262,13 +1260,15 @@ test("a chain entry keeps an address in code as written and names it outside cod
   }
 });
 
-/** Draws `row` as its node row and waits until its words paragraph has painted, returning that
- *  paragraph and a cleanup that unmounts the view. */
+/** Draws the row at `path` of a read that holds `nodes` (`drawnRow`) as its node row and waits
+ *  until its words paragraph has painted, returning that paragraph and a cleanup that unmounts
+ *  the view. */
 async function drawnRowParagraph(
-  row: TreeNode,
+  nodes: readonly TreeAnswerNode[],
+  path: readonly string[],
   renderRow: (page: ReactNode) => RenderResult = renderOnIssue
 ): Promise<{ paragraph: HTMLParagraphElement; unmount: () => void }> {
-  const view = renderRow(<LensRow drawn={row} />);
+  const view = renderRow(<LensRow drawn={drawnRow(nodes, path)} />);
   try {
     const paragraph = await waitFor(() => {
       const found = view.container.querySelector<HTMLParagraphElement>(
@@ -1288,23 +1288,13 @@ async function drawnRowParagraph(
 // is drawn in a `code` element rather than parsed again in the page into bold "init".
 test("a risk row draws a code span in its heading as code and parses no underscores", async () => {
   const { lens, risk } = WARNING_ROW;
-  const root = buildIssueTree({
-    issue: issueDetails(),
-    tree: treeAnswer(
-      [
-        treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }),
-        treeNode(lens, "lens", KEY),
-        treeNode(risk, "risk", lens, { attributes: { heading: "`__init__` runs twice" } }),
-      ],
-      [],
-      { converted: true, tree: "artifact-tree" }
-    ),
-  });
-  const drawn = root.children
-    .find((row) => row.id === lens)
-    ?.children.find((row) => row.id === risk);
-  if (drawn === undefined) throw new Error("the tree draws no row of the risk");
-  const { paragraph, unmount } = await drawnRowParagraph(drawn);
+  const { paragraph, unmount } = await drawnRowParagraph(
+    [
+      treeNode(lens, "lens", KEY),
+      treeNode(risk, "risk", lens, { attributes: { heading: "`__init__` runs twice" } }),
+    ],
+    [lens, risk]
+  );
   try {
     expect(paragraph.textContent).toBe("__init__ runs twice");
     expect([...paragraph.querySelectorAll("code")].map((code) => code.textContent)).toEqual([
@@ -1316,50 +1306,14 @@ test("a risk row draws a code span in its heading as code and parses no undersco
   }
 });
 
-// A lens's verdict carries a one-line reading of its plain words, so escaped emphasis stays as
-// asterisks rather than being parsed again in the page into an `em` element.
-test("a lens row draws escaped emphasis in its verdict as plain words", async () => {
-  const { lens } = WARNING_ROW;
-  const root = buildIssueTree({
-    issue: issueDetails(),
-    tree: treeAnswer(
-      [
-        treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }),
-        treeNode(lens, "lens", KEY, { attributes: { verdict: "Retry \\*all\\* jobs" } }),
-      ],
-      [],
-      { converted: true, tree: "artifact-tree" }
-    ),
-  });
-  const drawn = root.children.find((row) => row.id === lens);
-  if (drawn === undefined) throw new Error("the tree draws no row of the lens");
-  const { paragraph, unmount } = await drawnRowParagraph(drawn);
-  try {
-    expect(paragraph.textContent).toBe("Retry *all* jobs");
-    expect(paragraph.querySelector("em")).toBeNull();
-  } finally {
-    unmount();
-  }
-});
-
 // A constraint's standard carries a one-line reading that keeps code alone, so `<T>` in backticks
 // is drawn as text in a `code` element rather than parsed again in the page into an HTML node.
 test("a constraint row draws angle brackets in code as text in code with no HTML node", async () => {
   const { constraint } = WARNING_ROW;
-  const root = buildIssueTree({
-    issue: issueDetails(),
-    tree: treeAnswer(
-      [
-        treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }),
-        treeNode(constraint, "constraint", KEY, { attributes: { standard: "`<T>` leaks" } }),
-      ],
-      [],
-      { converted: true, tree: "artifact-tree" }
-    ),
-  });
-  const drawn = root.children.find((row) => row.id === constraint);
-  if (drawn === undefined) throw new Error("the tree draws no row of the constraint");
-  const { paragraph, unmount } = await drawnRowParagraph(drawn);
+  const { paragraph, unmount } = await drawnRowParagraph(
+    [treeNode(constraint, "constraint", KEY, { attributes: { standard: "`<T>` leaks" } })],
+    [constraint]
+  );
   try {
     expect(paragraph.textContent).toBe("<T> leaks");
     expect([...paragraph.querySelectorAll("code")].map((code) => code.textContent)).toEqual([
@@ -1372,30 +1326,23 @@ test("a constraint row draws angle brackets in code as text in code with no HTML
   }
 });
 
-// A citing verdict keeps a run's code mark alongside a name's link, so another `dispatch://`
-// address inside a code span stays as written in a `code` element while the cited risk is named
+// A citing verdict keeps a code span as code beside a name's link, so another `dispatch://`
+// address inside the code span stays as written in a `code` element while the cited risk is named
 // and linked to its row.
 test("a lens row keeps another dispatch:// address in code as written in a citing verdict", async () => {
   const { lens, risk } = WARNING_ROW;
-  const root = buildIssueTree({
-    issue: issueDetails(),
-    tree: treeAnswer(
-      [
-        treeNode(KEY, "issue", null, { text: "The issue page draws its lenses" }),
-        treeNode(lens, "lens", KEY, {
-          attributes: {
-            verdict: `Run \`dispatch read ${CODE_ADDRESS}\` before dispatch://risk/${risk}.`,
-          },
-        }),
-        treeNode(risk, "risk", lens, { attributes: { heading: "Failover takes minutes" } }),
-      ],
-      [],
-      { converted: true, tree: "artifact-tree" }
-    ),
-  });
-  const drawn = root.children.find((row) => row.id === lens);
-  if (drawn === undefined) throw new Error("the tree draws no row of the lens");
-  const { paragraph, unmount } = await drawnRowParagraph(drawn, renderWithCodeName);
+  const { paragraph, unmount } = await drawnRowParagraph(
+    [
+      treeNode(lens, "lens", KEY, {
+        attributes: {
+          verdict: `Run \`dispatch read ${CODE_ADDRESS}\` before dispatch://risk/${risk}.`,
+        },
+      }),
+      treeNode(risk, "risk", lens, { attributes: { heading: "Failover takes minutes" } }),
+    ],
+    [lens],
+    renderWithCodeName
+  );
   try {
     await waitFor(() => {
       expect(paragraph.textContent).toBe(
@@ -1414,4 +1361,229 @@ test("a lens row keeps another dispatch:// address in code as written in a citin
   } finally {
     unmount();
   }
+});
+
+// A lens's verdict whose author's link to a risk the tree read holds has words that hold a code
+// span, ``[the `HTTP` rule](dispatch://risk/<uuid>)``, draws those words as one link that opens
+// the risk's row (`?node=`), not one link for each run of them: a run that carries a name's link
+// keeps that link alone, so the words in code lose their code mark.
+test("a lens row draws its verdict's author's link of words with a code span as one link", async () => {
+  const { lens, risk } = WARNING_ROW;
+  const { paragraph, unmount } = await drawnRowParagraph(
+    [
+      treeNode(lens, "lens", KEY, {
+        attributes: { verdict: `Read [the \`HTTP\` rule](dispatch://risk/${risk}) first.` },
+      }),
+      treeNode(risk, "risk", lens, { attributes: { heading: "Failover takes minutes" } }),
+    ],
+    [lens]
+  );
+  try {
+    await waitFor(() => {
+      expect(paragraph.textContent).toBe("Read the HTTP rule first.");
+      expect(
+        [...paragraph.querySelectorAll("a")].map((link) => [
+          link.textContent,
+          link.getAttribute("href"),
+        ])
+      ).toEqual([["the HTTP rule", `/issues/${KEY}?node=${risk}`]]);
+    });
+  } finally {
+    unmount();
+  }
+});
+
+/** The risk the table's words cite, which the tree read holds under the lens, by its address,
+ *  its heading and its row; and the address of a risk the read holds none of. */
+const CITED_RISK = "b8000000-0000-4000-8000-000000000008";
+const CITED = `dispatch://risk/${CITED_RISK}`;
+const CITED_NAME = "Failover takes minutes";
+const CITED_ROW = `/issues/${KEY}?node=${CITED_RISK}`;
+const UNHELD = "dispatch://risk/f9000000-0000-4000-8000-000000000009";
+
+/** The cited risk as the tree read holds it, under the lens of `WARNING_ROW`. */
+function citedRisk(): TreeAnswerNode {
+  return treeNode(CITED_RISK, "risk", WARNING_ROW.lens, { attributes: { heading: CITED_NAME } });
+}
+
+/** Where a row of the table drew its stored words, and a cleanup that unmounts the view. */
+interface DrawnWords {
+  readonly words: () => Element | null;
+  readonly unmount: () => void;
+}
+
+/** The words paragraph of the row at `path` of a read that holds `nodes`, once painted
+ *  (`drawnRowParagraph`). */
+async function paragraphDrawn(
+  nodes: readonly TreeAnswerNode[],
+  path: readonly string[]
+): Promise<DrawnWords> {
+  const { paragraph, unmount } = await drawnRowParagraph(nodes, path);
+  return { unmount, words: () => paragraph };
+}
+
+/** A kind of row the table draws stored words in. */
+interface StoredKind {
+  /** Whether it draws code in a `code` element: a row's own words do, and a fact line draws its
+   *  words as plain text through the plain-text projection, an address in code as written
+   *  (`LensLines.tsx`'s `FactString`, `NodeLink.tsx`). */
+  readonly code: boolean;
+  /** Draws the row of a read whose node holds `words` where this kind draws them. */
+  readonly draw: (words: string) => Promise<DrawnWords>;
+}
+
+/** Each kind of row the table draws, by its name: a lens's verdict, a risk's heading and a
+ *  constraint's words, the row's own words, and a risk's early warning, a fact line under them. */
+const STORED_KINDS: readonly (readonly [string, StoredKind])[] = [
+  [
+    "a lens's verdict",
+    {
+      code: true,
+      draw: (words) =>
+        paragraphDrawn(
+          [
+            treeNode(WARNING_ROW.lens, "lens", KEY, { attributes: { verdict: words } }),
+            citedRisk(),
+          ],
+          [WARNING_ROW.lens]
+        ),
+    },
+  ],
+  [
+    "a risk's heading",
+    {
+      code: true,
+      draw: (words) =>
+        paragraphDrawn(
+          [
+            treeNode(WARNING_ROW.lens, "lens", KEY),
+            treeNode(WARNING_ROW.risk, "risk", WARNING_ROW.lens, {
+              attributes: { heading: words },
+            }),
+            citedRisk(),
+          ],
+          [WARNING_ROW.lens, WARNING_ROW.risk]
+        ),
+    },
+  ],
+  [
+    "a constraint's words",
+    {
+      code: true,
+      draw: (words) =>
+        paragraphDrawn(
+          [
+            treeNode(WARNING_ROW.lens, "lens", KEY),
+            citedRisk(),
+            treeNode(WARNING_ROW.constraint, "constraint", KEY, {
+              attributes: { standard: words },
+            }),
+          ],
+          [WARNING_ROW.constraint]
+        ),
+    },
+  ],
+  [
+    "a risk's early warning",
+    {
+      code: false,
+      draw: async (words) => {
+        const view = renderOnIssue(<LensRow drawn={earlyWarningRow(words, citedRisk())} />);
+        return {
+          unmount: () => view.unmount(),
+          words: () =>
+            view.container.querySelector('[data-lens-line="early_warning"] [data-author-text]'),
+        };
+      },
+    },
+  ],
+];
+
+/** What a row draws of one stored string: its text, each anchor's words and `href`, and the
+ *  words of each code span it keeps as code. */
+interface StoredDrawn {
+  readonly text: string;
+  readonly anchors: [string, string][];
+  readonly code: string[];
+}
+
+/** Each shape of stored string the table draws, by its name, and what a row draws of it. */
+const STORED_SHAPES: readonly (readonly [string, string, StoredDrawn])[] = [
+  ["plain words", "Retry the jobs", { anchors: [], code: [], text: "Retry the jobs" }],
+  ["a code span", "`__init__` runs", { anchors: [], code: ["__init__"], text: "__init__ runs" }],
+  ["bold and emphasis", "**all** of *it*", { anchors: [], code: [], text: "all of it" }],
+  ["an escape", "Retry \\*all\\* jobs", { anchors: [], code: [], text: "Retry *all* jobs" }],
+  ["a raw tag", "<T> leaks", { anchors: [], code: [], text: "leaks" }],
+  [
+    "an author's link to a node the read holds",
+    `[the rule](${CITED})`,
+    { anchors: [["the rule", CITED_ROW]], code: [], text: "the rule" },
+  ],
+  [
+    "an author's link to a node the read does not hold",
+    `[the rule](${UNHELD})`,
+    { anchors: [], code: [], text: "the rule" },
+  ],
+  ["an external link", "[docs](https://example.com/x)", { anchors: [], code: [], text: "docs" }],
+  [
+    "a bare address of a node the read holds",
+    CITED,
+    { anchors: [[CITED_NAME, CITED_ROW]], code: [], text: CITED_NAME },
+  ],
+  [
+    "an address in code of a node the read holds",
+    `\`${CITED}\``,
+    { anchors: [], code: [CITED], text: CITED },
+  ],
+  [
+    "an author's link of code and bold words to a node the read holds",
+    `[the \`HTTP\` **rule**](${CITED})`,
+    { anchors: [["the HTTP rule", CITED_ROW]], code: [], text: "the HTTP rule" },
+  ],
+];
+
+/** What `words`, the element a row drew stored words in, reads as: its text, each anchor's words
+ *  and `href`, and each element of a mark in it - code, bold, emphasis, an HTML node - by its
+ *  tag and its words. */
+function wordsDrawn(words: Element | null) {
+  return {
+    anchors: [...(words?.querySelectorAll("a") ?? [])].map((link): [string, string] => [
+      link.textContent ?? "",
+      link.getAttribute("href") ?? "",
+    ]),
+    marks: [...(words?.querySelectorAll('code, strong, em, t, [data-type="html"]') ?? [])].map(
+      (mark): [string, string] => [mark.tagName.toLowerCase(), mark.textContent ?? ""]
+    ),
+    text: words?.textContent ?? null,
+  };
+}
+
+// A lens's verdict, a risk's heading, a constraint's words and a risk's early warning, drawn from
+// the tree read (`buildIssueTree`), each draw one line of their stored string (`store-words.ts`'s
+// `namedLine` and `factWords`, `lens-drafts.ts`'s `codeOnlyRuns`): code kept as code, every other
+// mark dropped to its words, and a raw tag read as no word, as the shared reading reads HTML
+// (`stored-reading.ts`), so no HTML reaches the row. A bare address of a node the read holds is
+// one link to the node's row (`?node=`) by the node's name, and an author's link to one is one
+// link by the author's words, however they are marked; an address in code stays as written and
+// links nothing; and a link to a node the read does not hold, or to anywhere else, reads as its
+// words with no link. A fact line draws its words as plain text, so it draws no code element.
+describe("a row draws each shape of its stored words", () => {
+  test.each(
+    STORED_KINDS.flatMap(([kind, drawnIn]) =>
+      STORED_SHAPES.map(([shape, words, drawn]) => [kind, shape, drawnIn, words, drawn] as const)
+    )
+  )("%s draws %s", async (_kind, _shape, { code, draw }, words, drawn) => {
+    const { unmount, words: drawnWords } = await draw(words);
+    try {
+      await waitFor(() =>
+        expect(wordsDrawn(drawnWords())).toEqual({
+          anchors: drawn.anchors,
+          marks: code ? drawn.code.map((text): [string, string] => ["code", text]) : [],
+          text: drawn.text,
+        })
+      );
+    } finally {
+      unmount();
+    }
+  });
 });

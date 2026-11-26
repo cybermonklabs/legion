@@ -1114,8 +1114,8 @@ test("a store address inside a link's words reads as its node's name in that one
 });
 
 // An author's link whose words are a code span, ``[`RFC 9110`](dispatch://constraint/<uuid>)``,
-// keeps its words as written and links the node's row, as an author's other words do: a verdict
-// draws it as one link in its one line.
+// keeps its words and links the node's row, as an author's other words do: a verdict draws it as
+// one link in its one line, its words carrying the link alone.
 test("a verdict's author's link whose words are code links the constraint's row", () => {
   const constraint = "e5000000-0000-4000-8000-000000000005";
   const held = `dispatch://constraint/${constraint}`;

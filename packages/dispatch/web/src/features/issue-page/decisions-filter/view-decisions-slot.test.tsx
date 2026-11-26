@@ -51,6 +51,8 @@ import {
   KEY,
   READER,
   SPEC_DOCUMENT,
+  shaped,
+  specRef,
 } from "./decisions-fixtures";
 
 let stubs: { mockRestore(): void }[] = [];
@@ -211,6 +213,37 @@ test("a person's write-up of an answered question, named on the Decisions view's
   } finally {
     asks.mockRestore();
   }
+});
+
+// R6, and INFRA-1196's architect on R2: the Decisions view is drawn over the tree the decisions
+// view read builds (`useDecisionsTree`), so the node an address beside it names is found among
+// the nodes of that read. Conversation's read holds the first decision alone here, as a first
+// page that ends before the second, and the decisions view read holds both: `#b-later` keeps the
+// view, with the focus on the later decision's row.
+test("a decision only the decisions view read holds, named on the Decisions view's address, keeps the view, with the focus on its row", async () => {
+  const tied = (block: string) => decision(block, { decision: { links: [shaped(specRef("s1"))] } });
+  const statement = treeNode("s1", "requirement", KEY, inDocument(SPEC_DOCUMENT, 0));
+  spyOn(api, "getIssueTree").mockImplementation(async (_key, query) =>
+    query?.view === "decisions"
+      ? treeOf([tied("first"), tied("later")])
+      : treeOf([statement, tied("first")])
+  );
+  // The messages read is the one held: it answers last, and with it every read the tree is built
+  // from is held, once the decisions view read has answered.
+  const messagesOut = Promise.withResolvers<[]>();
+  spyOn(api, "listIssueMessages").mockReturnValue(messagesOut.promise);
+  const later = decisionNode("later").id;
+  const view = drawStage("#b-later");
+  await waitFor(() =>
+    expect(
+      focusedRow(),
+      `the later decision's address left the focus elsewhere; the stage drew ${drawnSlot(view)}`
+    ).toBe(later)
+  );
+  await act(async () => messagesOut.resolve([]));
+  await waitInAct(20);
+  expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
+  expect(focusedRow(), "the focus left the later decision's row").toBe(later);
 });
 
 // Root R20, INFRA-1196's decision 513: a decision whose `from_ask` names a question the reader

@@ -234,7 +234,7 @@ export function PlanFilterBody({
   const ordered = useMemo(() => {
     const rows = entries
       .flatMap((entry) => (entry.kind === "step" ? [entry.task] : entry.tasks))
-      .flatMap((task): TreeNode[] => {
+      .flatMap((task) => {
         const node = inView.get(task.id);
         return node === undefined ? [] : [{ ...node, facts: [...node.facts, ...stepFacts(node)] }];
       });
@@ -243,6 +243,8 @@ export function PlanFilterBody({
     rows.push(
       ...[...inView.values()]
         .filter(isOvertaken)
+        // The copy only fits `rows`' element type, whose `facts` is mutable; an overtaken task
+        // has no bar, so it carries no step facts (`stepFacts`).
         .map((node) => ({ ...node, facts: [...node.facts] }))
     );
     return { ...root, children: rows, held: heldBy(rows) };

@@ -459,7 +459,8 @@ export function IssueMarginPanel({
   // and in the header while one does: the approvals are all this reads of the count, so it
   // hands it no decisions.
   const viewer = useQuery(whoAmIQuery()).data?.login;
-  const approvalWaits = waitingOnReader(issue, viewer, () => false, undefined).approvals.length > 0;
+  const approvalWaits =
+    waitingOnReader(issue, viewer, () => false, { tree: undefined }).approvals.length > 0;
   // The status as the header draws it: the one being saved while any caller's write of it is
   // in flight, so the page never says two statuses at once.
   const status = writes.pendingStatus ?? issue.status;
