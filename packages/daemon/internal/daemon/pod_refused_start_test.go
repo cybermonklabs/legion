@@ -211,7 +211,7 @@ func TestALaunchItsPodRefusesAfterItsStartRowFinishedQueuesAStartOfTheClaim(t *t
 		{
 			name: "the turn of a resume the wake pacing held",
 			deps: func(d *supervise.Deps) {
-				d.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(parkedTurn) }}
+				d.WakePace = parkedFor(d.Clock, parkedTurn)
 			},
 			launchingAfterItsRow: func(t *testing.T, r *podRefusalRig) time.Duration {
 				drainAt(t, r.runner, 0, "the start row's attempt")
@@ -467,9 +467,10 @@ func (r *podRefusalRig) outboxSettles() {
 	}
 }
 
-// pacedTurn is the wake pacing that gives every launch its turn parkedTurn on.
+// pacedTurn is the wake pacing that lets the first launch out parkedTurn after the rig's clock
+// reads now (parkedFor).
 func pacedTurn(d *supervise.Deps) {
-	d.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(parkedTurn) }}
+	d.WakePace = parkedFor(d.Clock, parkedTurn)
 }
 
 // refusedWhileItsRowFinishes drives the rig, under pacedTurn, to the moment a start row's attempt

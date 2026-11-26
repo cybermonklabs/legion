@@ -914,7 +914,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 			t.Fatalf("merge-forward messages queued = %+v, want the implementer's ask alone: the tester's hold was delivered", queued)
 		}
 		inTx(t, pool, func(tx pgx.Tx) {
-			_, _, left, err := workflow.MergeForwardAt(context.Background(), record.NewStore(), tx, plan.Deployment{}, spParent, queued[0].Role, queued[0].Step, queued[0].Head)
+			_, _, left, err := workflow.MergeForwardAt(context.Background(), record.NewStore(), tx, plan.Deployment{}, spParent, queued[0].Role, queued[0].Claim, queued[0].Step, queued[0].Head)
 			if err != nil || left != "the record holds no merge forward" {
 				t.Fatalf("the queued ask to the implementer is left %q (%v), want it undelivered: the record holds no merge forward", left, err)
 			}
