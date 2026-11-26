@@ -7,7 +7,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -132,12 +131,6 @@ var owedApprovesRowsStatement = `
 	order by k.id
 	limit $2`
 
-// approvalRow is one approval ask whose node owes a move of its approves tuples, with the owner
-// its row stands under: its issue, or the document it belongs to.
-type approvalRow struct {
-	id, issue, artifact string
-}
-
 // backfillApproves gives each stored approval request the approves tuples its row's documents name
 // (R14 of the issue-tree spec, R21's backfill of every kind the census holds): an approves to each
 // version node an entry names that its node does not state now, dated at the row's last rewrite,
@@ -157,9 +150,9 @@ func backfillApproves(ctx context.Context, database *store.Store) (KindBackfill,
 		if err != nil {
 			return done, fmt.Errorf("read the approval requests whose node does not state their documents: %w", err)
 		}
-		batch, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (approvalRow, error) {
-			var ask approvalRow
-			err := row.Scan(&ask.id, &ask.issue, &ask.artifact)
+		batch, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (askBatchRow, error) {
+			var ask askBatchRow
+			err := row.Scan(&ask.askID, &ask.issue, &ask.document)
 			return ask, err
 		})
 		if err != nil {
@@ -168,7 +161,7 @@ func backfillApproves(ctx context.Context, database *store.Store) (KindBackfill,
 		if len(batch) == 0 {
 			break
 		}
-		after = batch[len(batch)-1].id
+		after = batch[len(batch)-1].askID
 		levelled, tuples, err := writeApprovesBatch(ctx, database, batch)
 		if err != nil {
 			return done, err
@@ -188,23 +181,21 @@ func backfillApproves(ctx context.Context, database *store.Store) (KindBackfill,
 
 // writeApprovesBatch levels one batch's approves tuples in one transaction, in the store's lock
 // order (api/inbox_read.go's markInboxReadThreads): the owner rows the batch's asks stand under
-// first, each once, in ascending key (events.LockOwnerRows), then the batch's moves read again
-// under them, then the tuples (graphstore.QueueWrite, which writes no node: each ask's node is the
-// asks' pass's or its writer's) and their head rows. Every writer of an approval request's
-// documents on this build holds its owner (the request route, a version move and a renewal, each
-// under the owner lock), so the moves read under the owner rows are the rows' as they commit. It
-// answers how many requests it levelled and how many tuples it stated.
-func writeApprovesBatch(ctx context.Context, database *store.Store, batch []approvalRow) (int64, int64, error) {
+// first, each once, in ascending key (lockAskOwners), then the batch's moves read again under
+// them, then the tuples (graphstore.QueueWrite, which writes no node: each ask's node is the asks'
+// pass's or its writer's) and their head rows. Every writer of an approval request's documents on
+// this build holds its owner (the request route, a version move and a renewal, each under the
+// owner lock), so the moves read under the owner rows are the rows' as they commit. It answers how
+// many requests it levelled and how many tuples it stated.
+func writeApprovesBatch(ctx context.Context, database *store.Store, batch []askBatchRow) (int64, int64, error) {
 	var levelled, stated int64
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		owners := events.OwnerRows{}
+		if err := lockAskOwners(ctx, tx, batch); err != nil {
+			return err
+		}
 		ids := make([]string, len(batch))
 		for index, ask := range batch {
-			owners.Add(ask.issue, ask.artifact)
-			ids[index] = ask.id
-		}
-		if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
-			return err
+			ids[index] = ask.askID
 		}
 		rows, err := tx.Query(ctx, `
 			select k.node_address, coalesce(k.edited_at, k.created_at), move.to_kind, move.node, move.asserted

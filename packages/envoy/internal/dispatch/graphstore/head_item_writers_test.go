@@ -6,7 +6,6 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
-	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -169,36 +168,9 @@ func readCommentWriteFile(t *testing.T, relative string, source []byte) commentW
 func readCommentWriteScan(t *testing.T) map[string]commentWriteReading {
 	t.Helper()
 	readings := map[string]commentWriteReading{}
-	err := filepath.WalkDir(moduleRoot, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if path != moduleRoot && skippedDirectory(path, entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		source, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if !bytes.Contains(source, []byte("comment")) {
-			return nil
-		}
-		relative, err := filepath.Rel(moduleRoot, path)
-		if err != nil {
-			return err
-		}
-		readings[filepath.ToSlash(relative)] = readCommentWriteFile(t, filepath.ToSlash(relative), source)
-		return nil
+	walkModuleSources(t, "comment", func(relative string, source []byte) {
+		readings[relative] = readCommentWriteFile(t, relative, source)
 	})
-	if err != nil {
-		t.Fatalf("read the module's source under %s: %v", moduleRoot, err)
-	}
 	return readings
 }
 
@@ -246,11 +218,9 @@ func commentWriteVerdicts(readings map[string]commentWriteReading, relative stri
 				"runs (at "+strings.Join(unkept[site], ", ")+")")
 		}
 	}
-	for _, list := range []map[string]bool{keysOf(commentWritesNoHead), keysOf(commentWritesLeftTo)} {
-		for _, site := range slices.Sorted(maps.Keys(list)) {
-			if _, ok := found[site]; !ok {
-				failures = append(failures, "a list of this test names "+site+", and no file of the module writes a conversation table there any more: take it off the list")
-			}
+	for _, site := range slices.Concat(slices.Sorted(maps.Keys(commentWritesNoHead)), slices.Sorted(maps.Keys(commentWritesLeftTo))) {
+		if _, ok := found[site]; !ok {
+			failures = append(failures, "a list of this test names "+site+", and no file of the module writes a conversation table there any more: take it off the list")
 		}
 	}
 	return failures, passing

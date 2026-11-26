@@ -157,7 +157,7 @@ var issueNeighboursStatement = sync.OnceValue(func() string {
 		) said where said.asserted
 	), targets as (
 		select held.to_kind, held.to_id from held
-		where held.kind in ('` + graphstore.TupleChildOf + `', '` + graphstore.TupleFiledFrom + `', '` + graphstore.TupleAffects + `')
+		where held.kind in (` + store.QuoteLiterals([]string{graphstore.TupleChildOf, graphstore.TupleFiledFrom, graphstore.TupleAffects}) + `)
 		   or (held.kind = '` + graphstore.TupleNeeds + `' and held.to_kind = ` + issue + `)
 		union
 		select mentioned.to_kind, mentioned.to_id from mentioned
@@ -190,7 +190,7 @@ var issueNeighboursStatement = sync.OnceValue(func() string {
 		) owner
 	), linked (key) as (
 		select held.to_id from held
-		where held.to_kind = ` + issue + ` and held.kind in ('` + graphstore.TupleChildOf + `', '` + graphstore.TupleNeeds + `', '` + graphstore.TupleDuplicateOf + `')
+		where held.to_kind = ` + issue + ` and held.kind in (` + store.QuoteLiterals([]string{graphstore.TupleChildOf, graphstore.TupleNeeds, graphstore.TupleDuplicateOf}) + `)
 		union
 		select mentioned.to_id from mentioned where mentioned.to_kind = ` + issue + `
 		union
@@ -237,7 +237,7 @@ var neighbourTargetJoins = `
 			            then split_part(shared.to_id, '/', 1) end as kind,
 			       case when shared.to_kind in ('ask', 'comment', 'message') then shared.to_id
 			            when shared.to_kind in ('ask_block', 'comment_block', 'message_block')
-			            then split_part(split_part(shared.to_id, '#', 1), '/', 2) end as id
+			            then ` + itemOfBlockNodeSQL(`shared.to_id`) + ` end as id
 		) item on true
 		left join asks k on item.kind = 'ask' and k.id = ` + store.CastableUUID(`item.id`) + `
 		left join comments c on item.kind = 'comment' and c.id = ` + store.CastableUUID(`item.id`) + `

@@ -115,10 +115,7 @@ func Decisions(ctx context.Context, q graphstore.Queryer, who model.Actor, nodes
 	if len(nodes) == 0 {
 		return decisions, nil
 	}
-	kinds, ids, documents := make([]string, len(nodes)), make([]string, len(nodes)), make([]string, len(nodes))
-	for index, node := range nodes {
-		kinds[index], ids[index], documents[index] = node.Kind, node.ID, node.Document
-	}
+	kinds, ids, documents := nodeColumns(nodes)
 	held, err := readNodes(ctx, q, who, kinds, ids, documents)
 	if err != nil {
 		return nil, err
@@ -268,10 +265,7 @@ func WordSumsOf(ctx context.Context, q graphstore.Queryer, who model.Actor, node
 	if len(nodes) == 0 {
 		return sums, nil
 	}
-	kinds, ids, documents := make([]string, len(nodes)), make([]string, len(nodes)), make([]string, len(nodes))
-	for index, node := range nodes {
-		kinds[index], ids[index], documents[index] = node.Kind, node.ID, node.Document
-	}
+	kinds, ids, documents := nodeColumns(nodes)
 	held, err := readNodes(ctx, q, who, kinds, ids, documents)
 	if err != nil {
 		return nil, err
@@ -392,6 +386,16 @@ type storedText struct {
 	Version int        `json:"version"`
 	Text    *string    `json:"text"`
 	At      *time.Time `json:"at"`
+}
+
+// nodeColumns is nodes as the arrays the reads bind them as, by index: their kinds, their ids and
+// the documents each was found in.
+func nodeColumns(nodes []Node) (kinds, ids, documents []string) {
+	kinds, ids, documents = make([]string, len(nodes)), make([]string, len(nodes)), make([]string, len(nodes))
+	for index, node := range nodes {
+		kinds[index], ids[index], documents[index] = node.Kind, node.ID, node.Document
+	}
+	return kinds, ids, documents
 }
 
 // readNodes reads each node of the arrays (nodesRead), keyed by its index among them, for who:

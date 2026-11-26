@@ -160,6 +160,12 @@ func ParseItemBlockNode(nodeID string) (kind ItemKind, itemID, blockID string, o
 	return kind, itemID, blockID, true
 }
 
+// itemOfBlockNodeSQL is the item uuid an item block's node id, the SQL text id, names
+// (ParseItemBlockNode): the part between the item kind's `/` and the block's `#`.
+func itemOfBlockNodeSQL(id string) string {
+	return `split_part(split_part(` + id + `, '#', 1), '/', 2)`
+}
+
 // CarriedEdit is the block ids an edit of a comment carries (PATCH /api/v1/comments/{id}'s
 // `blocks` and `base_revision`): the comment's revision the editor read its blocks at, and each
 // carried block's id with its From in UTF-16 code units into the body the edit writes, in body
@@ -635,7 +641,12 @@ func (i ItemIndexing) Block(blockID string) (nodeID, excerpt string, found bool)
 	if !found {
 		return "", "", false
 	}
-	return string(i.kind) + "/" + i.itemID + "#" + blockID, excerpt, true
+	return i.blockNodeID(blockID), excerpt, true
+}
+
+// blockNodeID is the node id of block blockID of the item the index indexes (ParseItemBlockNode).
+func (i ItemIndexing) blockNodeID(blockID string) string {
+	return string(i.kind) + "/" + i.itemID + "#" + blockID
 }
 
 // SettlingForms is the index settling what the forms queues hold for the item (RefsFormsOwed,
@@ -693,11 +704,11 @@ func (i ItemIndexing) queueBlockHeads(b *store.WriteBatch) {
 	nodes := make([]graphstore.NodeKey, 0, len(i.written)+len(i.kept)+len(i.removed))
 	for _, rows := range [][]itemBlockRow{i.written, i.kept} {
 		for _, row := range rows {
-			nodes = append(nodes, graphstore.NodeKey{Kind: i.kind.BlockKind(), ID: string(i.kind) + "/" + i.itemID + "#" + row.id})
+			nodes = append(nodes, graphstore.NodeKey{Kind: i.kind.BlockKind(), ID: i.blockNodeID(row.id)})
 		}
 	}
 	for _, id := range i.removed {
-		nodes = append(nodes, graphstore.NodeKey{Kind: i.kind.BlockKind(), ID: string(i.kind) + "/" + i.itemID + "#" + id})
+		nodes = append(nodes, graphstore.NodeKey{Kind: i.kind.BlockKind(), ID: i.blockNodeID(id)})
 	}
 	graphstore.QueueHeads(b, nodes)
 }

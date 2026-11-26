@@ -3,6 +3,7 @@ package refs
 import (
 	"context"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strconv"
@@ -313,7 +314,9 @@ func requireSameBlockRows(t *testing.T, read string, q Queryer, who model.Actor,
 	t.Helper()
 	want := loaderRows(t, read+", the statement replaced", q, twoReadsLoadBlockNodesStatement, who, ids)
 	got := loaderRows(t, read+", the read by joins", q, func(named blockNodesNamed) string { return blockNodesStatement(named, true) }, who, ids)
-	for _, id := range slices.Sorted(keysOf(want, got)) {
+	keys := slices.AppendSeq(slices.Collect(maps.Keys(want)), maps.Keys(got))
+	slices.Sort(keys)
+	for _, id := range slices.Compact(keys) {
 		old, oldHeld := want[id]
 		now, nowHeld := got[id]
 		if oldHeld != nowHeld {
@@ -382,22 +385,4 @@ func targetsOfBlocks(ids []string) []Target {
 		targets[index] = Target{Kind: BlockNodeKind, ID: id}
 	}
 	return targets
-}
-
-// keysOf is every key of the maps, each once.
-func keysOf(maps ...map[string]loaderRow) func(func(string) bool) {
-	return func(yield func(string) bool) {
-		seen := map[string]bool{}
-		for _, held := range maps {
-			for key := range held {
-				if seen[key] {
-					continue
-				}
-				seen[key] = true
-				if !yield(key) {
-					return
-				}
-			}
-		}
-	}
 }

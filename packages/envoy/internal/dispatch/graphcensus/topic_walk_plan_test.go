@@ -40,16 +40,21 @@ type topicWalk struct {
 // retractions (missingResultKeysStatement, owedRetractionKeysStatement), the versions
 // (missingVersionKeysStatement), a document's references, its rows owing their tuple and its
 // tuples owing their retraction (owedReferenceRowsStatement, orphanedReferenceTuplesStatement), the
-// comments' anchors (owedAnchorRowsStatement) and the issues the head fill walks
-// (unmarkedIssuesAfterStatement). Each reads an index its table's own migration built in its
+// comments' anchors (owedAnchorRowsStatement), the issues the head fill walks
+// (unmarkedIssuesAfterStatement), the search rows of the block nodes, of the documents and naming
+// no document (nodeSearchOwedKeysStatement, documentSearchOwedDocumentsStatement,
+// documentSearchOrphanRowsStatement), the approval requests' approves tuples
+// (owedApprovesRowsStatement), the asks' block pointers (owedAskBlocksStatement) and the
+// Keeps (keptSumsAfterStatement). Each reads an index its table's own migration built in its
 // transaction, a primary or unique key or artifacts_id_text, which every store holds, so none is
 // one of BackfillIndexes, the indexes a migration builds concurrently and the run refuses to start
 // without.
 //
 // The seed (seedTopicWalks) writes topicWalkRows rows owed to each walk and analyzes the tables,
-// leaving node_kind of the tables a release added it to after their analysis (topicWalkedColumns)
-// with no statistics, as the deploy leaves them; the run's own analysis (analyzeWalkedColumns),
-// which the backfill runs before its passes, must then give each of them its statistics. Each
+// leaving node_kind of the tables a release added it to after their analysis (topicWalkedColumns,
+// and asks, whose column the run does not analyze: askNodeColumn) with no statistics, as the
+// deploy leaves them; the run's own analysis (analyzeWalkedColumns), which the backfill runs
+// before its passes, must then give each of topicWalkedColumns its statistics. Each
 // batch is read from the key of the row in the middle of the seed, as a run reads a batch halfway
 // through: it must answer a whole batch. Then, with hash and merge joins off and under each
 // plan-cache mode, every read of the walk's table in the analyzed plan must be a probe of the
@@ -122,6 +127,13 @@ func topicWalks(t *testing.T, pool *store.Pool) []topicWalk {
 		join graph_tuples t on t.from_kind = 'artifact' and t.from_id = a.ref_key and t.kind = 'mentions' order by 1, 2, 3`)
 	comment := middle(`select id::text from comments order by id`)
 	issue := middle(`select key from issues order by key`)
+	block := middle(`select id from graph_nodes where kind = 'block' order by id`)
+	document := middle(`select ref_key from artifacts where kind = 'doc' order by ref_key`)
+	unnamed := middle(`select s.node_address from node_search s where s.node_kind = 'artifact'
+		and not exists (select 1 from artifacts a where a.ref_key = s.node_address and a.kind = 'doc') order by 1`)
+	approval := middle(`select id::text from asks where kind = 'approval' order by id`)
+	asked := middle(`select id::text from asks where block_artifact_id is not null order by id`)
+	keep := middle(`select artifact_id::text, block_id from decision_keeps order by artifact_id, block_id`)
 	return []topicWalk{
 		{name: "issue links", table: "issue_links", index: "issue_links_pkey",
 			drop:      "alter table issue_links drop constraint issue_links_pkey",
@@ -159,6 +171,24 @@ func topicWalks(t *testing.T, pool *store.Pool) []topicWalk {
 		{name: "head fill", table: "issues", index: "issues_pkey",
 			drop:      "alter table issues drop constraint issues_pkey cascade",
 			statement: explaintest.Statement{SQL: unmarkedIssuesAfterStatement, Args: append(issue, backfillBatch)}},
+		{name: "block search rows", table: "graph_nodes", index: "graph_nodes_pkey",
+			drop:      "alter table graph_nodes drop constraint graph_nodes_pkey cascade",
+			statement: explaintest.Statement{SQL: nodeSearchOwedKeysStatement, Args: append(block, backfillBatch)}},
+		{name: "document search rows", table: "artifacts", index: "artifacts_ref_key_key",
+			drop:      "alter table artifacts drop constraint artifacts_ref_key_key cascade",
+			statement: explaintest.Statement{SQL: documentSearchOwedDocumentsStatement, Args: append(document, backfillBatch)}},
+		{name: "search rows naming no document", table: "node_search", index: "node_search_pkey",
+			drop:      "alter table node_search drop constraint node_search_pkey",
+			statement: explaintest.Statement{SQL: documentSearchOrphanRowsStatement, Args: append(unnamed, backfillBatch)}},
+		{name: "approves", table: "asks", index: "asks_pkey",
+			drop:      "alter table asks drop constraint asks_pkey cascade",
+			statement: explaintest.Statement{SQL: owedApprovesRowsStatement, Args: append(approval, backfillBatch)}},
+		{name: "ask blocks", table: "asks", index: "asks_pkey",
+			drop:      "alter table asks drop constraint asks_pkey cascade",
+			statement: explaintest.Statement{SQL: owedAskBlocksStatement, Args: append(asked, backfillBatch)}},
+		{name: "keeps", table: "decision_keeps", index: "decision_keeps_pkey",
+			drop:      "alter table decision_keeps drop constraint decision_keeps_pkey",
+			statement: explaintest.Statement{SQL: keptSumsAfterStatement, Args: append(keep, backfillBatch)}},
 	}
 }
 
@@ -203,15 +233,20 @@ func countRows(t *testing.T, pool *store.Pool, statement explaintest.Statement) 
 // for each document a check result whose node the store does not hold, and another, numbered after
 // all of those, that holds its node and a retraction the node does not state; for each document its
 // node, named on its row, a refs row no tuple states, to its issue, and an asserted mentions tuple
-// no refs row projects, to the next issue; and for each document a comment naming its node whose
-// anchor names a block no anchored_in states. It then analyzes the tables the walks plan over, all
-// but node_kind of topicWalkedColumns' tables, whose statistics target it sets to 0 for the analysis
-// and back to the default after it, so those columns hold no statistics, as the deploy leaves them.
+// no refs row projects, to the next issue; for each document a comment naming its node whose
+// anchor names a block no anchored_in states; for each document a search row holding a vector
+// older than its version's, a search row of a removed document, numbered after all of those, and a
+// block node a release before stated gone whose search row stands; for each document an approval
+// request whose node states no approves, and an ask on a block of it, numbered after all of those,
+// whose node states no asked_on; and for each document a Keep of one decision. It then analyzes the
+// tables the walks plan over, all but node_kind of topicWalkedColumns' tables and of
+// askNodeColumn, whose statistics target it sets to 0 for the analysis and back to the default
+// after it, so those columns hold no statistics, as the deploy leaves them.
 func seedTopicWalks(t *testing.T, pool *store.Pool) {
 	t.Helper()
 	ctx := context.Background()
 	unanalyzed := func(target int) {
-		for _, table := range topicWalkedColumns {
+		for _, table := range append(slices.Clone(topicWalkedColumns), askNodeColumn) {
 			if _, err := pool.Exec(ctx, fmt.Sprintf(`alter table %s alter column node_kind set statistics %d`, table, target)); err != nil {
 				t.Fatalf("set the statistics target of %s.node_kind to %d: %v", table, target, err)
 			}
@@ -303,9 +338,48 @@ func seedTopicWalks(t *testing.T, pool *store.Pool) {
 		{"name each comment's node on its row", `
 			update comments c set node_kind = 'comment', node_address = c.id::text
 			from issues i where i.key = c.issue_key and i.project_key = 'TWK'`, nil},
+		{"give each document a search row older than its version", `
+			insert into node_search (node_kind, node_address, text, text_seq, search)
+			select 'artifact', ref_key, '', 1, to_tsvector('simple', 'An older version.') from artifacts where project_key = 'TWK'`, nil},
+		{"leave a removed document's search row for each document, numbered after them", `
+			insert into node_search (node_kind, node_address, text, text_seq, search)
+			select 'artifact', 'TWL-' || i.number || '/spec', '', 1, to_tsvector('simple', 'A removed version.')
+			from artifacts a join issues i on i.key = a.issue_key where a.project_key = 'TWK'`, nil},
+		{"give each document a block node a release before stated gone", `
+			insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
+			select 'block', ref_key || '#s1', 'block', 'project', 'gone', '{}'::jsonb, now(), '{"kind":"system","id":"topic-walks"}'::jsonb, 0
+			from artifacts where project_key = 'TWK'`, nil},
+		{"leave each gone block's search row standing", `
+			insert into node_search (node_kind, node_address, text, text_seq, search)
+			select 'block', a.ref_key || '#s1', 'A block stated gone.', 1, to_tsvector('simple', 'A block stated gone.')
+			from artifacts a where a.project_key = 'TWK'`, nil},
+		{"give each document's approval request and block ask its node", `
+			insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
+			select 'ask', numbered.prefix || lpad(i.number::text, 12, '0'), 'ask', 'project', 'live', '{}'::jsonb, now(),
+			       '{"kind":"system","id":"topic-walks"}'::jsonb, 0
+			from artifacts a join issues i on i.key = a.issue_key
+			cross join (values ('00000000-0000-4000-8000-'), ('c0000000-0000-4000-8000-')) numbered (prefix)
+			where a.project_key = 'TWK'`, nil},
+		{"request approval of each document, naming the request's node", `
+			insert into asks (id, issue_key, author, question, kind, approval, node_kind, node_address)
+			select ('00000000-0000-4000-8000-' || lpad(i.number::text, 12, '0'))::uuid, a.issue_key, '{"kind":"user","id":"alice"}',
+			       'Approve spec.md (version 1)?', 'approval',
+			       jsonb_build_object('artifact_id', a.id::text, 'name', 'spec.md', 'version', 1, 'requested_version', 1),
+			       'ask', '00000000-0000-4000-8000-' || lpad(i.number::text, 12, '0')
+			from artifacts a join issues i on i.key = a.issue_key
+			where a.project_key = 'TWK'`, nil},
+		{"ask on a block of each document, numbered after them, naming the ask's node", `
+			insert into asks (id, issue_key, author, question, block_artifact_id, block_id, node_kind, node_address)
+			select ('c0000000-0000-4000-8000-' || lpad(i.number::text, 12, '0'))::uuid, a.issue_key, '{"kind":"user","id":"alice"}',
+			       'Where does this ask stand?', a.id, 'q1', 'ask', 'c0000000-0000-4000-8000-' || lpad(i.number::text, 12, '0')
+			from artifacts a join issues i on i.key = a.issue_key
+			where a.project_key = 'TWK'`, nil},
+		{"keep a decision of each document", `
+			insert into decision_keeps (artifact_id, block_id, text_sha256, changed_version, kept_by)
+			select id, 'd1', 'sum', 1, 'alice' from artifacts where project_key = 'TWK'`, nil},
 		{"analyze the walked tables", `analyze issues, issue_links, components, component_depends, issue_components,
 			issue_component_members, check_results, check_result_retractions, artifacts, artifact_versions, refs, comments,
-			graph_nodes, graph_tuples, issue_head_marks`, nil},
+			graph_nodes, graph_tuples, issue_head_marks, node_search, asks, decision_keeps`, nil},
 	} {
 		if _, err := pool.Exec(ctx, step.sql, step.args...); err != nil {
 			t.Fatalf("%s: %v", step.what, err)
@@ -318,6 +392,12 @@ func seedTopicWalks(t *testing.T, pool *store.Pool) {
 // 20261116092210_issue_tree_markers), and the comments (migration 20261109022248), each of which
 // the run's analysis gives its statistics (walkedColumnsAnalysis).
 var topicWalkedColumns = []string{"issue_links", "components", "component_depends", "issue_component_members", "artifacts", "comments"}
+
+// askNodeColumn is asks, whose node_kind the approval requests' and the asks' block walks read the
+// rows naming their node by: migration 20261116094058_asks_node adds it after any analysis of the
+// table, as the columns of topicWalkedColumns are added, and the run's analysis does not analyze
+// it (walkedColumnsAnalysis), so the walks plan over it with no statistics of it.
+const askNodeColumn = "asks"
 
 // nodeKindStatistics answers how many of topicWalkedColumns' tables hold statistics of node_kind.
 func nodeKindStatistics(t *testing.T, pool *store.Pool) int {

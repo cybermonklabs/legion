@@ -14,18 +14,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// c-carried-from, the census's side (R27 of this issue's spec). A carried approval says that it is
-// carried: writeCarriedReview writes, for every carry, a row of artifact_review_carries keyed by the
-// review's id, naming the version the approval was carried from. A review written before this build
-// holds no such row, and a bounded pass of the backfill (Backfill) fills the rows of the carried
-// reviews that exist. It reads artifact_reviews in batches of backfillBatch, ordered by
-// artifact_id and model.ReviewOrder. The census kind review_carried_from holds the table to the
-// reviews: a carried review - one whose reason docs.CarriedFromVersion reads as carried - with no
-// row, a row naming another version than the reason, and a row whose review is gone are each one
-// difference, and the pass brings the three to zero.
-
-// carriedFromKind is the census kind R27 holds artifact_review_carries to the reviews by.
-const carriedFromKind = "review_carried_from"
+// c-carried-from, the census's side (R27 of the issue-tree spec). A carried approval says that it
+// is carried: writeCarriedReview writes, for every carry, a row of artifact_review_carries keyed by
+// the review's id, naming the version the approval was carried from. A review written before this
+// build holds no such row, and a bounded pass of the backfill (Backfill) fills the rows of the
+// carried reviews that exist. It reads artifact_reviews in batches of backfillBatch, ordered by
+// artifact_id and model.ReviewOrder. The census kind review_carried_from
+// (reviewCarriedFromKind) holds the table to the reviews: a carried review - one whose reason
+// docs.CarriedFromVersion reads as carried - with no row, a row naming another version than the
+// reason, and a row whose review is gone are each one difference, and the pass brings the three
+// to zero.
 
 // carriedFromReview is the id of the unsequenced carried review the census test seeds.
 // The backfillBatch sequenced approvals of the same artifact sort before it, so a pass that
@@ -47,7 +45,7 @@ func carriedFromReason(from int) string {
 // whose reason says it was carried from the approval of version 4.
 func seedCarriedFromReviews(t *testing.T, database *store.Store) {
 	t.Helper()
-	document, _ := seedKeepIssue(t, database)
+	document, _, _ := seedKeepIssue(t, database)
 	ctx := context.Background()
 	drivenTx(t, database, "write the reviews of LOCK-1's spec", func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `
@@ -82,24 +80,16 @@ func carriedFromRowOf(t *testing.T, database *store.Store, review string) (int, 
 	return version, true
 }
 
-// carriedFromCensus is the census kind review_carried_from as the store census reads it: how many
-// differences it reads, in both directions together, and the ones it reports.
-func carriedFromCensus(t *testing.T, database *store.Store) (int64, []Difference) {
-	t.Helper()
-	kind := censusKind(t, storeCensusOf(t, database), carriedFromKind)
-	return kind.RowDifferences + kind.NodeDifferences, append(append([]Difference{}, kind.ReportedRows...), kind.ReportedNodes...)
-}
-
 // requireCarriedFromDifference fails t unless the census kind review_carried_from reads one
 // difference, which names the review carriedFromReview, while broken holds.
 func requireCarriedFromDifference(t *testing.T, database *store.Store, broken string) {
 	t.Helper()
-	found, reported := carriedFromCensus(t, database)
+	found, reported, _ := censusDifferences(t, database, reviewCarriedFromKind)
 	named := len(reported) == 1 &&
 		(strings.Contains(reported[0].At, carriedFromReview) || strings.Contains(reported[0].Cause, carriedFromReview))
 	if found != 1 || !named {
 		t.Errorf("with %s the census reads %d difference(s) of kind %s, %v, want the one naming the review %s",
-			broken, found, carriedFromKind, reported, carriedFromReview)
+			broken, found, reviewCarriedFromKind, reported, carriedFromReview)
 	}
 }
 
@@ -107,9 +97,9 @@ func requireCarriedFromDifference(t *testing.T, database *store.Store, broken st
 // after the pass of the backfill that after names.
 func requireCarriedFromAgrees(t *testing.T, database *store.Store, after string) {
 	t.Helper()
-	if found, reported := carriedFromCensus(t, database); found != 0 {
+	if found, reported, _ := censusDifferences(t, database, reviewCarriedFromKind); found != 0 {
 		t.Errorf("after %s the census reads %d difference(s) of kind %s, %v, want none: the pass left the review %s and its artifact_review_carries row apart",
-			after, found, carriedFromKind, reported, carriedFromReview)
+			after, found, reviewCarriedFromKind, reported, carriedFromReview)
 	}
 }
 

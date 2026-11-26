@@ -97,20 +97,7 @@ func (f *orderFixture) convert(key string) {
 	f.t.Helper()
 	project, _, _ := strings.Cut(key, "-")
 	spec := f.documents[key].artifact
-	var tree, treeRef string
-	if err := f.tx.QueryRow(context.Background(), `
-		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ($1, $2, 'tree', 'tree', 'tree', false, '{"kind":"user","id":"alice"}')
-		returning id::text, ref_key
-	`, key, project).Scan(&tree, &treeRef); err != nil {
-		f.t.Fatalf("create the tree of %s: %v", key, err)
-	}
-	if _, err := f.tx.Exec(context.Background(), `
-		with held as (insert into issue_trees (issue_key, artifact_id) values ($1, $2::uuid))
-		insert into document_rooms (artifact_id, room) values ($3::uuid, $2::uuid)
-	`, key, tree, spec); err != nil {
-		f.t.Fatalf("move the spec of %s into its room: %v", key, err)
-	}
+	tree, treeRef := insertIssueRoom(f.t, f.tx, key, project, spec)
 	f.documents[key] = &orderDocument{artifact: tree, refKey: treeRef, fragment: spec}
 }
 
@@ -158,7 +145,6 @@ func (f *orderFixture) reference(key, named string) string {
 // that render and appends what the pass stated at the sentinel.
 func (f *orderFixture) plan(key string, blocks ...orderBlock) {
 	f.t.Helper()
-	ctx := context.Background()
 	document := f.documents[key]
 	document.versions++
 	var source strings.Builder
@@ -194,10 +180,7 @@ func (f *orderFixture) plan(key string, blocks ...orderBlock) {
 	for index, offset := range offsets {
 		written[index] = model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To, Attributes: offset.Attributes}
 	}
-	var pointers []Pointer
-	for _, pointer := range pmdoc.BlockPointers(tree) {
-		pointers = append(pointers, Pointer{Block: pointer.Block, BlockType: pointer.BlockType, Kind: pointer.Attribute, Target: pointer.Target, Targets: pointer.Targets})
-	}
+	pointers := pointersOf(tree)
 	versions := Versions{}
 	if document.fragment == "" {
 		at := writeAuthoredVersion(f.t, f.tx, document.artifact, document.versions, markdown, orderAuthor)
@@ -211,13 +194,7 @@ func (f *orderFixture) plan(key string, blocks ...orderBlock) {
 			written[index].Document = document.fragment
 		}
 	}
-	_, won, write, _, err := IndexBlocks(ctx, f.tx, document.artifact, versions, markdown, written, nil, pointers, "", TypedFacts{})
-	if err != nil || !won {
-		f.t.Fatalf("index version %d of the plan of %s: won %t, %v", document.versions, key, won, err)
-	}
-	if err := graphstore.Caused(ctx, f.tx, write, graphstore.NoEvent); err != nil {
-		f.t.Fatalf("append what the plan of %s stated: %v", key, err)
-	}
+	indexAndCause(f.t, f.tx, document.artifact, versions, markdown, written, pointers...)
 }
 
 // needs states that issue key waits on each of targets, as the issue route's writer states it
@@ -359,8 +336,8 @@ func orderOf(nodes []OrderedNode, base []OrderNode, needs func(OrderedNode) []Or
 	return order, cycles
 }
 
-// One read answers the order the whole tree of an issue runs in (R11 of the spec this branch
-// builds, and c-ordered-read of its Verification document). A parent issue, CORE-1, holds two
+// One read answers the order the whole tree of an issue runs in (R11 of the issue-tree spec, and
+// c-ordered-read of its Verification document). A parent issue, CORE-1, holds two
 // children, CORE-2 and CORE-3, the second converted so its room's tree keys its plan, and each
 // holds plan nodes; the plan nodes need plan nodes of their own issue and of the issue above,
 // CORE-1's p2 needs the issue CORE-2, and CORE-3 needs CORE-2 and OTHR-1, an issue of another
@@ -648,7 +625,7 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 	})
 }
 
-// The ordered read keeps each chain of steps together (R11 of the spec this branch builds, at its
+// The ordered read keeps each chain of steps together (R11 of the issue-tree spec, at its
 // version 245, and c-ordered-read of its Verification document): the position is a needs-first
 // depth-first walk from the nodes that no node needs, in the base order, which places each node's
 // unplaced needs before it, so each need stands just before the first node that needs it.

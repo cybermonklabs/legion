@@ -207,7 +207,7 @@ func requireTheCensusCountsEveryBlockNotGone(t *testing.T, database *store.Store
 	for _, kind := range report.Kinds {
 		t.Logf("%s: kind=%s rows=%d nodes=%d row differences=%d node differences=%d",
 			what, kind.Kind, kind.Rows, kind.Nodes, kind.RowDifferences, kind.NodeDifferences)
-		for _, difference := range append(append([]Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
+		for _, difference := range differencesOf(kind) {
 			t.Errorf("%s reads a difference of kind %s at %s: %s", what, kind.Kind, difference.At, difference.Cause)
 		}
 	}

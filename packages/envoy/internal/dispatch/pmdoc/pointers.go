@@ -276,11 +276,7 @@ func documentReach(writing BlockWriting, pointer BlockPointer, target BlockTarge
 // conversation node.
 func itemReach(writing BlockWriting, pointer BlockPointer, target BlockTarget, holds bool) error {
 	item, issue := ItemKindOf(pointer.Target), pointer.Target.IssueKey
-	// The kind takes the article its noun does: an ask, a comment, a message.
-	what := "a " + item
-	if item == "ask" {
-		what = "an ask"
-	}
+	what := blockName(item)
 	missing := fmt.Sprintf("which is no %s of %s", item, issue)
 	if pointer.Target.Kind == "block" {
 		what = "a block of " + what

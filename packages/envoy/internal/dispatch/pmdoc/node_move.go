@@ -23,21 +23,27 @@ type NodeTextMove struct {
 	Parent        []string
 }
 
-// ErrContainerWouldEmpty is a move that would leave a callout or a list item with no block of its
-// own: its last block, or a list item's own first paragraph, taken out of it.
-var ErrContainerWouldEmpty = errors.New("the move would leave a container with no block of its own")
+// ErrContainerWouldEmpty is a write of a node's text, a move (MoveNodeText) or a delete
+// (DeleteNodeText), that would leave a block with no block of its own: its last block, or a list
+// item's own first paragraph, taken out of it.
+var ErrContainerWouldEmpty = errors.New("the write would leave a container with no block of its own")
 
-// ContainerEmptiedError is ErrContainerWouldEmpty for one container: its block id and its type.
+// ContainerEmptiedError is ErrContainerWouldEmpty for one container: its block id and its type,
+// and Document, the id of the document whose text holds the container, empty where the writer did
+// not set it: a tree alone names no document, so the writer that knows it sets it. Its words name
+// no operation and no document, since the node route's move and its delete each answer them
+// inside a refusal that names its own.
 type ContainerEmptiedError struct {
 	Container, Type string
+	Document        string
 }
 
 func (e *ContainerEmptiedError) Error() string {
 	if e.Type == "list_item" {
-		return fmt.Sprintf("the move takes the block that %s %q holds as its own first paragraph out of it, which would leave it no first paragraph of its own",
+		return fmt.Sprintf("taking out the block that %s %q holds as its own first paragraph would leave it no first paragraph of its own",
 			blockName(e.Type), e.Container)
 	}
-	return fmt.Sprintf("the move takes the last block %s %q holds out of it, which would leave it no block of its own", blockName(e.Type), e.Container)
+	return fmt.Sprintf("taking out the last block %s %q holds would leave it no block of its own", blockName(e.Type), e.Container)
 }
 
 func (e *ContainerEmptiedError) Unwrap() error { return ErrContainerWouldEmpty }
@@ -101,7 +107,9 @@ func (d ValidDocument) MoveNodeText(move NodeTextMove) (*Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		if changed {
+		// nested was out before nestNodeText took the text out of it, so a text it put back
+		// where it stood changed nothing of out.
+		if changed && !nested.EqualWithBlockIDs(out) {
 			valid, err := ValidateDocument(nested, "MoveNodeText")
 			if err != nil {
 				return nil, &TextPlaceError{Block: move.Block, Type: block.Type, Container: move.Container, Err: err}
@@ -143,14 +151,13 @@ func writeParentAttribute(block *Node, move NodeTextMove) bool {
 	return true
 }
 
-// nestNodeText moves the text of the block at path of doc into move's Container, in place, and
-// reports whether it moved it: false where the block's text or the container stands where no move
-// takes or nests a text (textHolders), and where the text already stands where the move puts it.
+// nestNodeText takes the text of the block at path of doc out and puts it into move's Container,
+// in place, and reports whether it did: false, with doc as it was, where the block's text or the
+// container stands where no move takes or nests a text (textHolders), and where the container is
+// the block or inside it. It may put the text back where it stood; its caller compares the tree.
 func nestNodeText(doc *Node, path []int, move NodeTextMove) (bool, error) {
-	for depth := 1; depth < len(path); depth++ {
-		if !slices.Contains(textHolders, nodeAtPath(doc, path[:depth]).Type) {
-			return false, nil
-		}
+	if !inTextHolders(doc, path) {
+		return false, nil
 	}
 	block := nodeAtPath(doc, path)
 	container := doc
@@ -163,13 +170,10 @@ func nestNodeText(doc *Node, path []int, move NodeTextMove) (bool, error) {
 		if container.Type != "callout" && container.Type != "list_item" {
 			return false, nil
 		}
-		for depth := 1; depth < len(at); depth++ {
-			if !slices.Contains(textHolders, nodeAtPath(doc, at[:depth]).Type) {
-				return false, nil
-			}
+		if !inTextHolders(doc, at) {
+			return false, nil
 		}
 	}
-	before := cloneNode(doc)
 	holder := nodeAtPath(doc, path[:len(path)-1])
 	if err := detachBlock(doc, path); err != nil {
 		return false, err
@@ -190,7 +194,17 @@ func nestNodeText(doc *Node, path []int, move NodeTextMove) (bool, error) {
 	default:
 		insertChild(container, block, siblingIndex(container.Children, move, 0))
 	}
-	return !doc.EqualWithBlockIDs(before), nil
+	return true, nil
+}
+
+// inTextHolders reports whether every block above the one at path of doc is one of textHolders.
+func inTextHolders(doc *Node, path []int) bool {
+	for depth := 1; depth < len(path); depth++ {
+		if !slices.Contains(textHolders, nodeAtPath(doc, path[:depth]).Type) {
+			return false
+		}
+	}
+	return true
 }
 
 // detachBlock takes the block at path out of doc, with each list and quote that leaves empty, and
@@ -224,14 +238,13 @@ func detachBlock(doc *Node, path []int) error {
 
 // emptied is the ContainerEmptiedError naming container.
 func emptied(container *Node) error {
-	id, _ := container.Attrs[BlockIDAttr].(string)
-	return &ContainerEmptiedError{Container: id, Type: container.Type}
+	return &ContainerEmptiedError{Container: blockIDOf(container), Type: container.Type}
 }
 
 // ownList is the last list a list item holds in its own content, nil where it holds none.
 func ownList(item *Node) *Node {
 	for index := len(item.Children) - 1; index >= 0; index-- {
-		if child := item.Children[index]; child.Type == "bullet_list" || child.Type == "ordered_list" {
+		if child := item.Children[index]; isList(child) {
 			return child
 		}
 	}
@@ -280,7 +293,7 @@ func holdingChild(children []*Node, id string) int {
 		if child.Attrs[BlockIDAttr] == id {
 			return index
 		}
-		if child.Type == "bullet_list" || child.Type == "ordered_list" {
+		if isList(child) {
 			for _, item := range child.Children {
 				if item.Attrs[BlockIDAttr] == id {
 					return index

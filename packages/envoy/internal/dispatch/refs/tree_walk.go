@@ -185,7 +185,7 @@ func treeChildJoins(kind, id string) string {
 		select distinct on (t.from_kind, t.from_id) t.from_kind, t.from_id, t.asserted
 		from graph_tuples t
 		where t.to_kind = ` + kind + ` and t.to_id = ` + id + ` and t.kind = '` + graphstore.TuplePartOf + `'
-		  and t.from_kind not in ('` + strings.Join(workflowKinds, `', '`) + `')
+		  and t.from_kind not in (` + store.QuoteLiterals(workflowKinds) + `)
 		  and t.to_kind <> '` + graphstore.KindValue + `' and ` + cutBound(`$3`, `$4`) + `
 		order by t.from_kind, t.from_id, t.at desc, t.seq desc
 	) child
@@ -203,8 +203,8 @@ func treeChildStands(kind, id string) string {
 
 // conversationKinds are the kinds of the nodes the tree orders as its conversation - an ask, a
 // comment, a message, a lens and a risk - which stand first among a node's children
-// (CompareSiblings, this issue's spec R8). The list is wider than the items of R2's conversation
-// test (IsConversationNode): a lens and a risk are discussion too.
+// (CompareSiblings, R8 of the issue-tree spec). The list is wider than the items of R2's
+// conversation test (IsConversationNode): a lens and a risk are discussion too.
 var conversationKinds = []string{graphstore.KindAsk, graphstore.KindComment, graphstore.KindMessage, graphstore.KindLens, graphstore.KindRisk}
 
 // OrderedAsConversation reports whether a node of kind kind stands among the conversation nodes a
@@ -218,10 +218,10 @@ const (
 	siblingUnranked
 )
 
-// siblingClass is where a child of kind kind stands among its parent's children (this issue's
-// spec R8): a conversation node first, then a child that holds a rank, then the rest - a block
-// with no rank yet, new in a deferred version before the reconciliation ranks it, a result under
-// its check, a child issue.
+// siblingClass is where a child of kind kind stands among its parent's children (R8 of the
+// issue-tree spec): a conversation node first, then a child that holds a rank, then the rest - a
+// block with no rank yet, new in a deferred version before the reconciliation ranks it, a result
+// under its check, a child issue.
 func siblingClass(kind string, ranked bool) int {
 	switch {
 	case OrderedAsConversation(kind):
@@ -233,7 +233,7 @@ func siblingClass(kind string, ranked bool) int {
 }
 
 // CompareSiblings orders two children of one parent in the tree's order, which the tree read
-// answers (this issue's spec R8) and the record of every query follows (R14 at spec v247: "the
+// answers (R8 of the issue-tree spec) and the record of every query follows (R14 at spec v247: "the
 // conversation nodes by the time each was made, then by address, then the children that hold a
 // rank in increasing rank, the lower address first on a tie, and then the other children that hold
 // no rank by the time each was made, then by address"). The conversation nodes come first because
@@ -258,7 +258,7 @@ func CompareSiblings(left, right TreeChild) int {
 // zero time stands first, then its address, `<kind>:<id>`, each text compared byte for byte
 // (collate "C").
 func treeChildOrder(rank, madeAt, kind, id string) string {
-	conversation := kind + ` in ('` + strings.Join(conversationKinds, `', '`) + `')`
+	conversation := kind + ` in (` + store.QuoteLiterals(conversationKinds) + `)`
 	return `case when ` + conversation + ` then 0 when ` + rank + ` is not null then 1 else 2 end, ` +
 		`(case when not ` + conversation + ` then ` + rank + ` end) collate "C", ` +
 		`case when ` + conversation + ` or ` + rank + ` is null then ` + madeAt + ` end nulls first, ` +
@@ -428,21 +428,23 @@ func (row treeNodeRow) fill(child *TreeChild) {
 		child.MadeAt = *row.madeAt
 	}
 	child.Supertag = row.supertag
-	child.Type = TreeNodeType(child.Node.Kind, row.supertag, row.opening)
+	child.Type = TreeNodeType(child.Node.Kind, child.Node.ID, row.supertag, row.opening)
 }
 
-// TreeNodeType is the type a node of the tree is taken by. A block's is the typed block its text
-// opens (pmdoc's grammar of a typed block's opening line), read off its text value as of the walk's
-// cut, whatever supertag its row holds: the store keeps no history of a node's supertag -
+// TreeNodeType is the type the node of kind and id is taken by. A block's is the typed block its
+// text opens (pmdoc's grammar of a typed block's opening line), read off its text value as of the
+// walk's cut, whatever supertag its row holds: the store keeps no history of a node's supertag -
 // graphstore.Write moves the column of its row in place, and no tuple states it - so the text value
 // at the cut is the one record of a block's type at that cut, and a version is typed as it stood,
-// before a later supertag change and after one alike. A block whose text opens no typed block the
-// schema declares - a paragraph, a finding of a lens - is taken by its supertag, and every other
-// node by its supertag too: a result, an ask, a comment. A node the store holds no row of is taken
-// by its kind.
-func TreeNodeType(kind, supertag, opening string) string {
+// before a later supertag change and after one alike. The opening types the block only where its
+// directive's id is the block's own (opensOwnTypedBlock): a quote, a list or a list item whose
+// first block is a typed block opens with that block's line, and is no block of its type. A block
+// whose text opens no typed block of its own the schema declares - a paragraph, a quote, a finding
+// of a lens - is taken by its supertag, and every other node by its supertag too: a result, an ask,
+// a comment. A node the store holds no row of is taken by its kind.
+func TreeNodeType(kind, id, supertag, opening string) string {
 	if kind == BlockNodeKind {
-		if name, _, ok := pmdoc.ParseTypedDirectiveOpen(strings.TrimRight(trimContainerMarkers(opening), "\r")); ok && pmdoc.IsTypedBlock(name) {
+		if name, ok := opensOwnTypedBlock(id, opening); ok {
 			return name
 		}
 	}
@@ -450,6 +452,25 @@ func TreeNodeType(kind, supertag, opening string) string {
 		return kind
 	}
 	return supertag
+}
+
+// opensOwnTypedBlock is the typed block the opening line of the text of the block node at address
+// opens, where that block is the node's own: the line, after the markers a nested block is written
+// after (trimContainerMarkers), is a typed block's opening line of a type the schema declares
+// (pmdoc.ParseTypedDirectiveOpen), and the id it writes is the one the node's address ends on, as
+// the block index keys it (storedBlockID). The text of a quote, a list or a list item whose first
+// block is a typed block opens with that block's line, which names that block's id and not the
+// container's, so it opens no typed block of its own.
+func opensOwnTypedBlock(address, opening string) (string, bool) {
+	name, attrs, ok := pmdoc.ParseTypedDirectiveOpen(strings.TrimRight(trimContainerMarkers(opening), "\r"))
+	if !ok || !pmdoc.IsTypedBlock(name) {
+		return "", false
+	}
+	written, _ := attrs[pmdoc.BlockIDAttr].(string)
+	if written == "" || !strings.HasSuffix(address, "#"+storedBlockID(written)) {
+		return "", false
+	}
+	return name, true
 }
 
 // trimContainerMarkers drops the indentation, quote markers (`>`), list markers (`-`, `*`, `+`, or
@@ -539,7 +560,7 @@ var treePlacedAboveStatement = `
 // one of the issues the SQL text array issues names, read off the item's row by its key.
 func itemOfIssuesSQL(kind ItemKind, table, issues string) string {
 	id := `case when placed.to_kind = '` + string(kind) + `' then placed.to_id
-		else split_part(split_part(placed.to_id, '#', 1), '/', 2) end`
+		else ` + itemOfBlockNodeSQL(`placed.to_id`) + ` end`
 	return `placed.to_kind in ('` + string(kind) + `', '` + kind.BlockKind() + `') and exists (
 		select 1 from ` + table + ` item where item.id = ` + store.CastableUUID(id) + ` and item.issue_key = any(` + issues + `::text[]))`
 }
@@ -584,7 +605,7 @@ var treeMembersStatement = `
 	order by member.from_id`
 
 // TreeMembers is every block of the document whose ref_key is refKey at cut: the nodes a render
-// of that document takes (D6 of this branch's plan), by their address.
+// of that document takes (D6 of the issue-tree plan), by their address.
 func TreeMembers(ctx context.Context, q Queryer, refKey string, cut TreeCut) ([]Target, error) {
 	seq, at := cut.bounds()
 	rows, err := q.Query(ctx, treeMembersStatement, refKey, seq, at)

@@ -99,16 +99,16 @@ func TestTheNeighbourhoodReadRanksSharedTargetsAndLeavesOutLinkedIssues(t *testi
 		tuples = append(tuples, graphstore.IssueChildOf(key, parent, actor, at))
 	}
 	for _, key := range []string{h, r, d} {
-		tuples = append(tuples, graphstore.Tuple{FromKind: "issue", FromID: key, Kind: "filed_from", ToKind: "ask", ToID: ask, At: at, Who: actor, Asserted: true})
+		tuples = append(tuples, graphstore.Tuple{FromKind: graphstore.KindIssue, FromID: key, Kind: graphstore.TupleFiledFrom, ToKind: graphstore.KindAsk, ToID: ask, At: at, Who: actor, Asserted: true})
 	}
 	tuples = append(tuples,
 		graphstore.IssueChildOf(y, mentioned, actor, at),
 		graphstore.IssueNeeds(a, blocker, true, actor, at),
 		graphstore.IssueNeeds(d, blocker, true, actor, at),
-		graphstore.Tuple{FromKind: "issue", FromID: d, Kind: "duplicate_of", ToKind: "issue", ToID: duplicate, At: at, Who: actor, Asserted: true},
+		graphstore.Tuple{FromKind: graphstore.KindIssue, FromID: d, Kind: graphstore.TupleDuplicateOf, ToKind: graphstore.KindIssue, ToID: duplicate, At: at, Who: actor, Asserted: true},
 		graphstore.ArtifactMentions(dSpec, "issue", mentioned, true, actor, at),
 		graphstore.ArtifactMentions(eSpec, "ask", ask, true, actor, at),
-		graphstore.Tuple{FromKind: "block", FromID: cBlock, Kind: "mentions", ToKind: "ask", ToID: ask, At: at, Who: actor, Asserted: true},
+		graphstore.Tuple{FromKind: BlockNodeKind, FromID: cBlock, Kind: graphstore.TupleMentions, ToKind: graphstore.KindAsk, ToID: ask, At: at, Who: actor, Asserted: true},
 		// A block and its document may both cite the same target. The count and the list keep it once.
 		graphstore.ArtifactMentions(cSpec, "ask", ask, true, actor, at),
 	)

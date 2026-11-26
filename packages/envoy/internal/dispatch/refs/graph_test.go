@@ -506,8 +506,10 @@ const edgesWholeDocumentRead = "whole document"
 // and so are the kinds of a lens and what stands under it (graphstore.KindInteraction and the
 // kinds beside it), which no read of blocks covers.
 var edgesProbeCarryingReads = []string{
-	"artifact", "ask", "ask_block", "block", "comment", "comment_block", "component", "constraint", "interaction", "issue",
-	"lens", "lens_block", "lens_kind", "message", "message_block", "page", "person", "risk", "role", "session", edgesWholeDocumentRead,
+	"artifact", "ask", "ask_block", "block", "comment", "comment_block", "component",
+	graphstore.KindConstraint, graphstore.KindInteraction, "issue", graphstore.KindLens, graphstore.KindLensBlock,
+	graphstore.KindLensKind, "message", "message_block", "page", "person", graphstore.KindRisk, "role", "session",
+	edgesWholeDocumentRead,
 }
 
 // edgesPlanSettings are the two settings each plan is read under: sequential scans off, which
@@ -647,7 +649,7 @@ var edgesBlockArms = []edgesBlockArm{
 			`D projected.node_address = edge.from_id AND projected.session_id = edge.to_id OFFSET 0)) ELSE NULL::boolean END`,
 	},
 	{
-		arm: graphViewArm{table: "graph_tuples", fromKind: "lens_block"},
+		arm: graphViewArm{table: "graph_tuples", fromKind: graphstore.KindLensBlock},
 		from: `FROM ( SELECT DISTINCT ON (tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id) tuple.from_kind, tuple.from_id, tuple.kind, tuple.t` +
 			`o_kind, tuple.to_id, tuple.at AS created_at, tuple.legacy_source_seq AS source_seq, tuple.asserted FROM graph_tuples tuple WHERE tuple.from_kind = 'bl` +
 			`ock'::text AND tuple.from_id ~~ 'lens/%'::text AND (tuple.kind = ANY (ARRAY['part_of'::text, 'authored_by'::text, 'changed_by_run'::text, 'has_kind'::` +
@@ -1870,33 +1872,43 @@ func (w *edgesFixtureWriter) cite(subject, whole *edgesSubject) {
 	subject.hidden = append(subject.hidden, edgeAt("mentions", "block", node, subject.blocks[1], at))
 	whole.hidden = append(whole.hidden, edgeAt("mentions", "block", node, subject.blocks[1], at))
 
-	// This branch's arms of graph_edges that end at a block (edgesBlockArms): a document whose row
-	// names its node mentions the first current block, which the view answers from the mentions
+	// The arms of graph_edges over the store that end at a block (edgesBlockArms). A document whose
+	// row names its node mentions the first current block, which the view answers from the mentions
 	// tuple out of that node, dated as the refs row of the pair, while that row stands
-	// (keyedMentionArm); a risk's prevented_by to the first current block, which it answers from
-	// the tuple alone (keyedStoreArm); and a finding of a lens tied to it, which its arm over a
-	// lens's findings answers (keyedFindingArm). A whole-document read lists the document by its
-	// own mention, and neither tie, whose kind is no mention.
+	// (keyedMentionArm); a whole-document read lists the document by its own mention. And the
+	// relations the store holds with no projection row behind them, which the view answers from the
+	// tuples alone (keyedStoreArm): a risk whose check the first current block is, by its
+	// prevented_by, and a lens invoked on that block, by its part_of; and a finding of a lens tied to
+	// it, which the arm over a lens's findings answers (keyedFindingArm). None of these is listed: a
+	// gone risk's prevented_by at the second block, a risk's prevented_by a later tuple retracts, and
+	// a lens invoked on the gone block. A whole-document read lists none of the store's relations,
+	// since it reads mentions alone.
 	marked := w.markedDocument(nil, "CORE", w.slug("marked"))
 	at = w.ref("artifact", marked.id, subject.block(0))
 	w.storeTuple(graphstore.KindArtifact, marked.refKey, "mentions", subject.block(0), at, true)
 	mention := edgeAt("mentions", "artifact", marked.id, subject.blocks[0], at)
 	subject.listed = append(subject.listed, mention)
 	whole.listed = append(whole.listed, mention)
-	risk := w.uuid()
-	w.storeNode(graphstore.KindRisk, risk, graphstore.KindRisk, graphstore.StateLive)
-	at = w.at()
-	w.storeTuple(graphstore.KindRisk, risk, graphstore.TuplePreventedBy, subject.block(0), at, true)
-	prevented := edgeAt(graphstore.TuplePreventedBy, graphstore.KindRisk, risk, subject.blocks[0], at)
-	subject.listed = append(subject.listed, prevented)
-	whole.hidden = append(whole.hidden, prevented)
-	finding := "lens/" + w.uuid() + "#f1"
-	w.storeNode(BlockNodeKind, finding, BlockSupertag, graphstore.StateLive)
-	at = w.at()
-	w.storeTuple(BlockNodeKind, finding, graphstore.TupleConstrainedBy, subject.block(0), at, true)
-	constrained := edgeAt(graphstore.TupleConstrainedBy, graphstore.KindLensBlock, finding, subject.blocks[0], at)
-	subject.listed = append(subject.listed, constrained)
-	whole.hidden = append(whole.hidden, constrained)
+	stand := func(kind, id, state, relation string, to Target, retracted bool) edgeKey {
+		stored := StoredKindOf(kind)
+		w.storeNode(stored, id, stored, state)
+		at := w.at()
+		w.storeTuple(stored, id, relation, to, at, true)
+		if retracted {
+			w.storeTuple(stored, id, relation, to, w.at(), false)
+		}
+		key := edgeAt(relation, kind, id, to.ID, at)
+		whole.hidden = append(whole.hidden, key)
+		return key
+	}
+	subject.listed = append(subject.listed,
+		stand(graphstore.KindRisk, w.uuid(), graphstore.StateLive, graphstore.TuplePreventedBy, subject.block(0), false),
+		stand(graphstore.KindLensBlock, graphstore.KindLens+"/"+w.uuid()+"#f1", graphstore.StateLive, graphstore.TupleConstrainedBy, subject.block(0), false),
+		stand(graphstore.KindLens, w.uuid(), graphstore.StateLive, graphstore.TuplePartOf, subject.block(0), false))
+	subject.hidden = append(subject.hidden,
+		stand(graphstore.KindRisk, w.uuid(), graphstore.StateGone, graphstore.TuplePreventedBy, subject.block(1), false),
+		stand(graphstore.KindRisk, w.uuid(), graphstore.StateLive, graphstore.TuplePreventedBy, subject.block(1), true),
+		stand(graphstore.KindLens, w.uuid(), graphstore.StateLive, graphstore.TuplePartOf, gone, false))
 }
 
 // subjectDocument writes the document of the two document reads, of CORE-1, with two current
@@ -2074,9 +2086,11 @@ func (w *edgesFixtureWriter) kindsMembers(t *testing.T) []edgesRead {
 		case "component":
 			node = w.kindsComponent()
 		case graphstore.KindSession, graphstore.KindPerson, graphstore.KindRole, graphstore.KindPage,
-			graphstore.KindConstraint, graphstore.KindInteraction, graphstore.KindLens, graphstore.KindLensBlock,
-			graphstore.KindLensKind, graphstore.KindRisk:
+			graphstore.KindConstraint, graphstore.KindInteraction, graphstore.KindLens, graphstore.KindLensKind, graphstore.KindRisk:
 			node = Target{Kind: name, ID: name + "-kinds"}
+		case graphstore.KindLensBlock:
+			// A finding is addressed by its lens and its block id (graphstore.ParseFindingID).
+			node = Target{Kind: name, ID: graphstore.KindLens + "/" + w.uuid() + "#b-kinds"}
 		default:
 			t.Fatalf("the kinds case writes no node for the read %q", name)
 		}

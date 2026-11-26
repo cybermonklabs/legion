@@ -757,3 +757,10 @@ func canonicalUUID(id string) (string, bool) {
 	}
 	return parsed.String(), true
 }
+
+// isCanonicalUUID says id is a uuid in its canonical spelling (canonicalUUID): one a uuid column
+// reads, and one no other spelling of the same uuid shadows.
+func isCanonicalUUID(id string) bool {
+	canonical, held := canonicalUUID(id)
+	return held && canonical == id
+}

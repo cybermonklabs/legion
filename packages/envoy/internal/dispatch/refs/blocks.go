@@ -107,6 +107,20 @@ func (v Versions) Newest(artifactID string) (string, Version) {
 	return lead, version
 }
 
+// of is the document whose version a block of document records in a pass over v, and that
+// version: document's own where v covers it, else artifactID's where v covers that, else the
+// newest v covers (Newest). A block of no other document than artifactID passes document empty
+// or artifactID itself.
+func (v Versions) of(document, artifactID string) (string, Version) {
+	if version, covered := v[document]; covered {
+		return document, version
+	}
+	if version, covered := v[artifactID]; covered {
+		return artifactID, version
+	}
+	return v.Newest(artifactID)
+}
+
 // BlockRefKinds reads the kinds BlockRefKindsSQL selects through q. A read whose plan may reach
 // graph_nodes only by its key reads them here first, by a statement of its own in the caller's
 // transaction, and binds them as a text[] parameter (`t.kind = any($N::text[])`), so the read of
@@ -532,20 +546,10 @@ type BlockIndexing struct {
 
 // versionOf is the version block blockID records: that of the document whose fragment of an
 // issue room holds it (documentOf), where the pass covers that document, else the indexed
-// document's own, else the newest the pass covers.
+// document's own, else the newest the pass covers (Versions.of).
 func (b BlockIndexing) versionOf(blockID string) Version {
-	document := b.artifactID
-	if held, ok := b.documentOf[blockID]; ok {
-		document = held
-	}
-	if version, ok := b.versions[document]; ok {
-		return version
-	}
-	if version, ok := b.versions[b.artifactID]; ok {
-		return version
-	}
-	_, newest := b.versions.Newest(b.artifactID)
-	return newest
+	_, version := b.versions.of(b.documentOf[blockID], b.artifactID)
+	return version
 }
 
 // retains says the pass keeps block blockID as the retirement of its document left it (retained).
@@ -758,15 +762,13 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 			stands[document] = read[document]
 		}
 	}
-	// The fence decides first, so a pass that loses it plans nothing and writes nothing of its own.
+	// The fence decides first, so a pass that loses it plans nothing and writes nothing of its own:
+	// the pass wins where the row of any document it covers admits it, artifactID's own among them
+	// (stands holds index.stand).
 	won, marked := false, false
-	if own, ok := versions[artifactID]; ok && len(versions) == 1 {
-		won, marked = index.stand.admits(own.Number, rule), index.stand.owed
-	} else {
-		for document, covered := range versions {
-			won = won || stands[document].admits(covered.Number, rule)
-			marked = marked || stands[document].owed
-		}
+	for document, covered := range versions {
+		won = won || stands[document].admits(covered.Number, rule)
+		marked = marked || stands[document].owed
 	}
 	if !won {
 		if len(beside.Nodes) > 0 || len(beside.Tuples) > 0 {
@@ -841,13 +843,8 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 		}
 	}
 	versionIn := func(document string) Version {
-		if held, ok := versions[document]; ok {
-			return held
-		}
-		if held, ok := versions[artifactID]; ok {
-			return held
-		}
-		return newest
+		_, version := versions.of(document, artifactID)
+		return version
 	}
 
 	// The blocks whose text this version changed (new, changed or restored), and those it
@@ -1227,9 +1224,13 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 	for _, id := range recording {
 		settled[id] = struct{}{}
 	}
+	// A pass over one document wins its row forward (RevisionFenceStatement); the statement of a
+	// pass over an issue room never moves a row back, the tree's own among them (queueStand).
 	stood := index.stand
-	if own, ok := versions[artifactID]; ok {
+	if own, ok := versions[artifactID]; ok && len(versions) == 1 {
 		stood = index.stand.indexedAt(own.Number, rule)
+	} else if ok {
+		stood = index.stand.indexedUpTo(own.Number, rule)
 	}
 	var heldStands map[string]blockStand
 	for document, covered := range versions {
@@ -1412,11 +1413,7 @@ func (b BlockIndexing) Queue(batch *store.WriteBatch) {
 	b.queueBlockParents(batch)
 	b.queueBlockRefs(batch)
 	// Each version is recorded indexed under its own document, which that table keys by.
-	documents := slices.Sorted(maps.Keys(b.versions))
-	numbers := make([]int32, len(documents))
-	for position, document := range documents {
-		numbers[position] = int32(b.versions[document].Number)
-	}
+	documents, numbers := b.versions.numbered()
 	batch.Queue(fmt.Sprintf("record the versions of %s indexed", b.artifactID), `
 		insert into document_indexed_versions (artifact_id, version)
 		select i.artifact_id, i.version from unnest($1::uuid[], $2::int[]) as i (artifact_id, version)
@@ -2517,13 +2514,19 @@ func pendingRoomFarEnds(ctx context.Context, q Queryer, addresses, written []str
 			return nil, nil, fmt.Errorf("read the ref_keys of the issue rooms %v: %w", unread, err)
 		}
 	}
+	writes := make(map[string]struct{}, len(written))
+	for _, address := range written {
+		writes[address] = struct{}{}
+	}
 	stored := make([]string, 0, len(addresses))
 	for _, address := range addresses {
 		if room, joins := joined[address]; joins {
 			_, block, _ := strings.Cut(address, "#")
-			if key := roomKeys[room]; key != "" && slices.Contains(written, key+"#"+block) {
-				resolved[address] = key + "#" + block
-				continue
+			if key := roomKeys[room]; key != "" {
+				if _, wrote := writes[key+"#"+block]; wrote {
+					resolved[address] = key + "#" + block
+					continue
+				}
 			}
 		}
 		stored = append(stored, address)

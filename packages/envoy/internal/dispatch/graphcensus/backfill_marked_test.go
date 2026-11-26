@@ -407,13 +407,7 @@ func TestABackfillKilledAfterOneBatchLeavesThatBatchsDocumentsOwed(t *testing.T)
 func TestTheBackfillMarksEveryDocumentNoPassOfItsRuleStated(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
-		insert into issues (key, project_key, number, title, created_by, rank) values
-			('CORE-1', 'CORE', 1, 'One', '{"kind":"user","id":"alice"}', 'U');
-	`); err != nil {
-		t.Fatalf("seed issue CORE-1: %v", err)
-	}
+	censusIssue(t, database)
 	markedAt := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
 	states := []struct {
 		name                      string

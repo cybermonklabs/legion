@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -86,8 +87,8 @@ func screenshotRefKeySQL(reference string) string {
 // bound, and one screenshot to each image its screenshots name, each once.
 var resultRowLinks = `(select coalesce(string_agg(stated.link, ',' order by stated.link), '') from (
 		select named.link from (values
-			('` + graphstore.TuplePartOf + `>block:' || ` + resultCheckAddress + `),
-			('` + graphstore.TupleResultOf + `>block:' || ` + resultCheckAddress + `),
+			('` + graphstore.TuplePartOf + `>` + refs.BlockNodeKind + `:' || ` + resultCheckAddress + `),
+			('` + graphstore.TupleResultOf + `>` + refs.BlockNodeKind + `:' || ` + resultCheckAddress + `),
 			(` + authoredLink("r.actor") + `),
 			(case when r.session <> '' and octet_length(r.session) <= ` + addressBound + `
 			      then '` + graphstore.TupleRunSession + `>` + graphstore.KindSession + `:' || r.session end)
@@ -104,7 +105,7 @@ var resultRowLinks = `(select coalesce(string_agg(stated.link, ',' order by stat
 // kind of step is no node of this projection.
 var resultHoldsACheck = `exists (select 1 from (
 		` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.asserted`,
-	`t.from_kind = n.kind and t.from_id = n.id and t.kind = '`+graphstore.TupleResultOf+`' and t.to_kind = 'block'`) + `
+	`t.from_kind = n.kind and t.from_id = n.id and t.kind = '`+graphstore.TupleResultOf+`' and t.to_kind = '`+refs.BlockNodeKind+`'`) + `
 	) held where held.asserted)`
 
 // resultRowInBound and resultRowPastBound hold the check_results row aliased r to its check's
@@ -116,7 +117,7 @@ var (
 )
 
 // resultProjections are the census's kinds of the results recorded against a check (projections;
-// T11 of this branch's plan, R12): check_results against the result nodes whose far end is a check
+// T11 of the issue-tree plan, R12): check_results against the result nodes whose far end is a check
 // block, and check_result_retractions against the retracted value of each, in both directions.
 //
 // A result is one node per row, keyed by the row's id. Its digest is the row's twelve values, its
@@ -231,18 +232,34 @@ var (
 	owedRetractionKeysStatement = resultKeysStatement(owedRetractions, "x.result_id")
 )
 
-// readResultKeys reads the next batch of ids after after by statement, a walk of
-// resultKeysStatement.
-func readResultKeys(ctx context.Context, database *store.Store, statement, after string) ([]resultKey, error) {
-	rows, err := database.Pool.Query(ctx, statement, after, backfillBatch)
-	if err != nil {
-		return nil, err
+// eachResultBatch walks statement, a walk of resultKeysStatement, from the first id on, backfillBatch
+// ids at a time, and hands each batch that holds a row to write, until a batch comes back short.
+// what names the rows in the error of a read that fails.
+func eachResultBatch(ctx context.Context, database *store.Store, statement, what string, write func([]resultKey) error) error {
+	for after := zeroUUID; ; {
+		rows, err := database.Pool.Query(ctx, statement, after, backfillBatch)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", what, err)
+		}
+		batch, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (resultKey, error) {
+			var key resultKey
+			err := row.Scan(&key.id, &key.issue)
+			return key, err
+		})
+		if err != nil {
+			return fmt.Errorf("read %s: %w", what, err)
+		}
+		if len(batch) == 0 {
+			return nil
+		}
+		after = batch[len(batch)-1].id
+		if err := write(batch); err != nil {
+			return err
+		}
+		if len(batch) < backfillBatch {
+			return nil
+		}
 	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (resultKey, error) {
-		var key resultKey
-		err := row.Scan(&key.id, &key.issue)
-		return key, err
-	})
 }
 
 // lockResultOwners takes, in tx, the owner row of each issue a batch's results record a check of,
@@ -268,26 +285,17 @@ func lockResultOwners(ctx context.Context, tx pgx.Tx, batch []resultKey) ([]stri
 // caused its row, and no tuple may be updated to name it.
 func backfillResults(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: resultProjectionKind}
-	after := zeroUUID
-	for {
-		batch, err := readResultKeys(ctx, database, missingResultKeysStatement, after)
-		if err != nil {
-			return done, fmt.Errorf("read the results with no node: %w", err)
-		}
-		if len(batch) == 0 {
-			break
-		}
-		after = batch[len(batch)-1].id
+	if err := eachResultBatch(ctx, database, missingResultKeysStatement, "the results with no node", func(batch []resultKey) error {
 		written, nodes, tuples, err := writeResultBatch(ctx, database, batch)
 		if err != nil {
-			return done, err
+			return err
 		}
 		done.Rows += written
 		done.Nodes += nodes
 		done.Tuples += tuples
-		if len(batch) < backfillBatch {
-			break
-		}
+		return nil
+	}); err != nil {
+		return done, err
 	}
 	if err := database.Pool.QueryRow(ctx, `select count(*) `+missingResults).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the results still with no node: %w", err)
@@ -417,25 +425,16 @@ func screenshotRefKeys(references []string) []string {
 // the row's actor and caused by no event (NoEvent).
 func backfillResultRetractions(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: resultRetractionProjectionKind}
-	after := zeroUUID
-	for {
-		batch, err := readResultKeys(ctx, database, owedRetractionKeysStatement, after)
-		if err != nil {
-			return done, fmt.Errorf("read the retractions their results do not state: %w", err)
-		}
-		if len(batch) == 0 {
-			break
-		}
-		after = batch[len(batch)-1].id
+	if err := eachResultBatch(ctx, database, owedRetractionKeysStatement, "the retractions their results do not state", func(batch []resultKey) error {
 		written, err := writeResultRetractionBatch(ctx, database, batch)
 		if err != nil {
-			return done, err
+			return err
 		}
 		done.Rows += written
 		done.Tuples += written
-		if len(batch) < backfillBatch {
-			break
-		}
+		return nil
+	}); err != nil {
+		return done, err
 	}
 	if err := database.Pool.QueryRow(ctx, `select count(*) `+owedRetractions).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the retractions their results do not state: %w", err)

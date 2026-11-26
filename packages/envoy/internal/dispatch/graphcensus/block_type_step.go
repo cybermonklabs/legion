@@ -149,12 +149,11 @@ func typedBlockSupertagsCensus(ctx context.Context, tx pgx.Tx) (KindReport, erro
 	if _, err := tx.Exec(ctx, `set local jit = off`); err != nil {
 		return KindReport{}, fmt.Errorf("turn JIT off for the census of block types: %w", err)
 	}
-	for _, held := range blockProjections {
-		if held.name == blockTypeKind {
-			return censusOfKind(ctx, tx, held, nil)
-		}
+	held, found := projectionNamed(blockTypeKind)
+	if !found {
+		return KindReport{}, fmt.Errorf("the census holds no kind %s", blockTypeKind)
 	}
-	return KindReport{}, fmt.Errorf("the census holds no kind %s", blockTypeKind)
+	return censusOfKind(ctx, tx, held, nil)
 }
 
 // blockTypeKind is the name of the census's kind of block types (blockProjections), which reads

@@ -862,7 +862,7 @@ func seededDrives(database *store.Store) []StoreDrive {
 		// and graphstore.QueueAuthored state one (graphstore.CommentFacts,
 		// graphstore.AuthorFacts), so its kinds are the comment path's; the role sizer and its
 		// page; and the sessions the census holds to a node.
-		Name: blockBatchDrive, Sites: []string{"graphcensus/backfill_blocks.go#writeBlockBatch", "graphstore/write.go#Write"},
+		Name: blockBatchDrive, Sites: []string{"graphcensus/backfill_blocks.go#writeBlockBatch"},
 		Database: database, Drive: backfill(func(ctx context.Context, database *store.Store) (KindBackfill, error) {
 			return backfillBlocks(ctx, database, refs.BlockIndexMarkingRule)
 		}),
@@ -873,7 +873,7 @@ func seededDrives(database *store.Store) []StoreDrive {
 			{refs.BlockNodeKind, refs.TupleInDocument}:           {"block"},
 		},
 	}, {
-		Name: blockRefBatchDrive, Sites: []string{"graphcensus/backfill_block_refs.go#writeBlockRefBatch", "graphstore/write.go#Write"},
+		Name: blockRefBatchDrive, Sites: []string{"graphcensus/backfill_block_refs.go#writeBlockRefBatch"},
 		Database: database, Drive: backfill(backfillBlockRefs),
 		Counts: map[StoredKind][]string{{refs.BlockNodeKind, "mentions"}: {"block_ref"}},
 	}, {
@@ -1262,27 +1262,15 @@ func sizedTypedVersions(t *testing.T, database *store.Store) []typedStored {
 // the sentinel.
 func indexTheTypedDocuments(t *testing.T, database *store.Store) {
 	t.Helper()
-	ctx := context.Background()
 	for _, typed := range sizedTypedVersions(t, database) {
-		tx, err := database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatalf("begin the index of %s: %v", typed.artifact, err)
-		}
-		_, won, write, _, err := refs.IndexBlocks(ctx, tx, typed.artifact, refs.OneVersion(typed.artifact, 1, typed.at),
-			typed.version.markdown, typed.version.blocks, typed.version.located, typed.version.pointers, sizedServerURL, refs.TypedFacts{})
-		if err == nil && !won {
-			err = errLostFence
-		}
-		if err == nil {
-			err = graphstore.Caused(ctx, tx, write, graphstore.NoEvent)
-		}
-		if err == nil {
-			err = tx.Commit(ctx)
-		}
-		if err != nil {
-			tx.Rollback(ctx)
-			t.Fatalf("index version 1 of %s: %v", typed.artifact, err)
-		}
+		censusPass(t, database, "index version 1 of "+typed.artifact, func(ctx context.Context, tx pgx.Tx) (graphstore.Uncaused, error) {
+			_, won, write, _, err := refs.IndexBlocks(ctx, tx, typed.artifact, refs.OneVersion(typed.artifact, 1, typed.at),
+				typed.version.markdown, typed.version.blocks, typed.version.located, typed.version.pointers, sizedServerURL, refs.TypedFacts{})
+			if err == nil && !won {
+				err = errLostFence
+			}
+			return write, err
+		})
 	}
 }
 
@@ -1619,13 +1607,7 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 func TestTheSizingCountsWhatTheMarkingOwesEachUnstatedBlock(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
-	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
-		insert into issues (key, project_key, number, title, created_by, rank) values
-			('CORE-1', 'CORE', 1, 'One', '{"kind":"user","id":"alice"}', 'U');
-	`); err != nil {
-		t.Fatalf("seed issue CORE-1: %v", err)
-	}
+	censusIssue(t, database)
 	documents := map[string]string{}
 	for _, document := range []struct {
 		slug                      string
@@ -1639,14 +1621,7 @@ func TestTheSizingCountsWhatTheMarkingOwesEachUnstatedBlock(t *testing.T) {
 		{slug: "plan-md", blocks: [][2]string{{"step", ""}, {"next", ""}}, statedVersion: new(1), statedRule: new(refs.BlockIndexMarkingRule)},
 		{slug: "verification-md", blocks: [][2]string{{"check", ""}}, marked: true},
 	} {
-		var artifactID, refKey string
-		if err := database.Pool.QueryRow(ctx, `
-			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-			values ('CORE-1', 'CORE', $1, $1, 'doc', $2, '{"kind":"user","id":"alice"}')
-			returning id::text, ref_key
-		`, document.slug, document.primary).Scan(&artifactID, &refKey); err != nil {
-			t.Fatalf("create document %s: %v", document.slug, err)
-		}
+		artifactID, refKey := censusDocument(t, database, document.slug, "doc", document.primary)
 		documents[document.slug] = artifactID
 		for _, block := range document.blocks {
 			var parent *string

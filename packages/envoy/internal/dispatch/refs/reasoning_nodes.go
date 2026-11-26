@@ -114,7 +114,7 @@ func standingWalkSQL(name, kindExpr, idExpr string, carried *walkColumn) string 
 			select placed.to_kind, placed.to_id` + step + `
 			from ` + name + `
 			cross join lateral (
-				` + CurrentFarEndSQL(storedKindSQL(name+`.kind`), name+`.id`, graphstore.TuplePartOf) + `
+				` + CurrentFarEndSQL(StoredKindSQL(name+`.kind`), name+`.id`, graphstore.TuplePartOf) + `
 			) placed
 			where ` + graphstore.AddressKindSQL(name+`.kind`, name+`.id`) + ` in (` + store.QuoteLiterals(standingKinds) + `)
 		)`
@@ -594,7 +594,7 @@ func loadReasoningNodes(ctx context.Context, q Queryer, who model.Actor, kind st
 		) placed on true
 		left join lateral (
 			select parent_row.state as state_held from graph_nodes parent_row
-			where parent_row.kind = `+storedKindSQL(`placed.to_kind`)+` and parent_row.id = placed.to_id
+			where parent_row.kind = `+StoredKindSQL(`placed.to_kind`)+` and parent_row.id = placed.to_id
 			offset 0
 		) placed_parent on true
 		left join lateral (

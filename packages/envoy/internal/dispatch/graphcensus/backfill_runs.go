@@ -5,12 +5,27 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
+
+// The backfill's three passes over the runs of the command bar. A process of the release before
+// this one, during a roll or after a rollback, records a run with no interaction node, appends a
+// frame with no frame value, and deletes a run an hour old, row and frames, leaving its node live.
+// This build's sweep removes a run's rows an hour after it was asked too, and states its node gone
+// in the same transaction (api's goRunGone), so a run it removed owes the third pass nothing. Each
+// pass finds what it owes by an anti-join of one side against the other, row by row, and not by a
+// marker: going_requests and going_events carry no column naming a node, so nothing about a row
+// says whether its node was written. Each writes in a transaction of its own per run, under the
+// lock order the frame path takes (api's appendGoingEvent), and reads again under its locks
+// whether the run still owes it, so a pass beside a live server, and a second run of the backfill,
+// writes nothing it does not owe.
+//
+// Its input is each row's own content - a run's row and its frames - or, for the third, the
+// absence of the row a node projects, which an older process's delete leaves: the store is never
+// read to decide what a row should say, nor a row to mend the store.
 
 // runOwed is the from and the where of the runs whose row names no interaction node, which
 // backfillRuns reads in batches and counts once it is done.
@@ -61,7 +76,7 @@ func owedBatches(ctx context.Context, database *store.Store, read, what, after s
 // there, so a run the frame path or another backfill gave its node meanwhile is left as it is.
 func backfillRuns(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: graphstore.KindInteraction}
-	err := owedBatches(ctx, database, owedRunsRead, "the runs the store holds no node of", uuid.Nil.String(), func(owed []string) error {
+	err := owedBatches(ctx, database, owedRunsRead, "the runs the store holds no node of", zeroUUID, func(owed []string) error {
 		for _, id := range owed {
 			written, err := writeOwedRun(ctx, database, id)
 			if err != nil {
@@ -116,7 +131,7 @@ func writeOwedRun(ctx context.Context, database *store.Store, id string) (graphs
 // values, one each, with what graphstore.WriteRun stated of a run that had no node by then.
 func backfillRunFrames(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: graphstore.AttributeFrame}
-	err := owedBatches(ctx, database, owedFrameRunsRead, "the runs holding a frame the store holds no value of", uuid.Nil.String(),
+	err := owedBatches(ctx, database, owedFrameRunsRead, "the runs holding a frame the store holds no value of", zeroUUID,
 		func(owed []string) error {
 			for _, run := range owed {
 				frames, written, err := writeRunFrames(ctx, database, run)

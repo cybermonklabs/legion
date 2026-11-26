@@ -109,7 +109,7 @@ func TestTheComponentBatchesTakeTheStoreLockOrder(t *testing.T) {
 	t.Run("writeComponentBatch", func(t *testing.T) {
 		database := storetest.Open(t)
 		source, snapshot, importedAt := seedLockSource(t, database)
-		if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		drivenTx(t, database, "seed the components", func(tx pgx.Tx) error {
 			if err := graphstore.Write(ctx, tx, []graphstore.Node{graphstore.ComponentNode("LOCK", "envoy", alice, importedAt)},
 				[]graphstore.Tuple{graphstore.ComponentRelation(graphstore.KindComponent, "LOCK/envoy", graphstore.TuplePartOf, "LOCK/legion", true, alice, importedAt)}); err != nil {
 				return err
@@ -121,9 +121,7 @@ func TestTheComponentBatchesTakeTheStoreLockOrder(t *testing.T) {
 					('LOCK', 'envoy', 'Envoy', 'Routing.', 'daemon', $1, $2, 'component', 'LOCK/envoy')
 			`, snapshot, source)
 			return err
-		}); err != nil {
-			t.Fatalf("seed the components: %v", err)
-		}
+		})
 
 		owner, project := holdLockSource(t, database)
 		node := &lockstep.Hold{
@@ -158,7 +156,7 @@ func TestTheComponentBatchesTakeTheStoreLockOrder(t *testing.T) {
 	t.Run("writeComponentDependsBatch", func(t *testing.T) {
 		database := storetest.Open(t)
 		source, snapshot, importedAt := seedLockSource(t, database)
-		if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		drivenTx(t, database, "seed the components and the dependency", func(tx pgx.Tx) error {
 			if err := graphstore.Write(ctx, tx, []graphstore.Node{
 				graphstore.ComponentNode("LOCK", "daemon", alice, importedAt), graphstore.ComponentNode("LOCK", "envoy", alice, importedAt),
 			}, nil); err != nil {
@@ -173,9 +171,7 @@ func TestTheComponentBatchesTakeTheStoreLockOrder(t *testing.T) {
 			}
 			_, err := tx.Exec(ctx, `insert into component_depends (project_key, from_id, to_id) values ('LOCK', 'daemon', 'envoy')`)
 			return err
-		}); err != nil {
-			t.Fatalf("seed the components and the dependency: %v", err)
-		}
+		})
 
 		owner, project := holdLockSource(t, database)
 		row := lockstep.HoldRow(t, database, &lockstep.Hold{
@@ -199,7 +195,7 @@ func TestTheComponentBatchesTakeTheStoreLockOrder(t *testing.T) {
 		database := storetest.Open(t)
 		seedLockProject(t, database)
 		var updatedAt time.Time
-		if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		drivenTx(t, database, "seed the issue and its component", func(tx pgx.Tx) error {
 			if err := graphstore.Write(ctx, tx, []graphstore.Node{graphstore.IssueNode("LOCK-1", "LOCK", alice, time.Now().UTC())}, nil); err != nil {
 				return err
 			}
@@ -217,9 +213,7 @@ func TestTheComponentBatchesTakeTheStoreLockOrder(t *testing.T) {
 			}
 			_, err := tx.Exec(ctx, `insert into issue_component_members (issue_key, project_key, component_id) values ('LOCK-1', 'LOCK', 'envoy')`)
 			return err
-		}); err != nil {
-			t.Fatalf("seed the issue and its component: %v", err)
-		}
+		})
 
 		owner, project := holdLockOwner(t, database)
 		row := lockstep.HoldRow(t, database, &lockstep.Hold{

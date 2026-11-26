@@ -28,7 +28,7 @@ func TestTheVersionBatchTakesTheStoreLockOrder(t *testing.T) {
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	const refKey = "LOCK-1/notes-md"
 	var document string
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+	drivenTx(t, database, "seed the issue and its document", func(tx pgx.Tx) error {
 		now := time.Now().UTC()
 		if err := graphstore.Write(ctx, tx, []graphstore.Node{
 			graphstore.IssueNode("LOCK-1", "LOCK", alice, now),
@@ -47,9 +47,7 @@ func TestTheVersionBatchTakesTheStoreLockOrder(t *testing.T) {
 			values ('LOCK-1', 'LOCK', 'notes-md', 'notes.md', 'doc', '{"kind":"user","id":"alice"}', 'artifact', $1)
 			returning id::text
 		`, refKey).Scan(&document)
-	}); err != nil {
-		t.Fatalf("seed the issue and its document: %v", err)
-	}
+	})
 	// An older build's version: its row, and no node.
 	var at time.Time
 	if err := database.Pool.QueryRow(ctx, `
@@ -99,7 +97,7 @@ func TestTheVersionBackfillRestatesAGoneNodeARowAtItsAddressOwes(t *testing.T) {
 	owner := graphstore.VersionOwner{RefKey: refKey, Project: "FREE"}
 	var document string
 	var node, documentNode graphstore.Node
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+	drivenTx(t, database, "seed the document and its first version's node", func(tx pgx.Tx) error {
 		now := time.Now().UTC()
 		if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('FREE', 'Freed', 'alice')`); err != nil {
 			return err
@@ -135,12 +133,10 @@ func TestTheVersionBackfillRestatesAGoneNodeARowAtItsAddressOwes(t *testing.T) {
 		var facts []graphstore.Tuple
 		node, facts, _ = graphstore.VersionFacts(nil, owner, 1, alice, at)
 		return graphstore.Write(ctx, tx, []graphstore.Node{node}, facts)
-	}); err != nil {
-		t.Fatalf("seed the document and its first version's node: %v", err)
-	}
+	})
 	// This build's removal of the untouched document: its node and its version's node stated gone,
 	// and its rows deleted, in one transaction.
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+	drivenTx(t, database, "remove the document as this build's removal does", func(tx pgx.Tx) error {
 		now := time.Now().UTC()
 		goneVersion, goneDocument := node, documentNode
 		goneVersion.State, goneVersion.MadeAt = graphstore.StateGone, now
@@ -153,9 +149,7 @@ func TestTheVersionBackfillRestatesAGoneNodeARowAtItsAddressOwes(t *testing.T) {
 		}
 		_, err := tx.Exec(ctx, `delete from artifacts where id = $1`, document)
 		return err
-	}); err != nil {
-		t.Fatalf("remove the document as this build's removal does: %v", err)
-	}
+	})
 	// An older build's document of the same issue and name, at the same address, and its first
 	// version at the same number, with no node of either.
 	var at time.Time

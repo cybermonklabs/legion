@@ -214,7 +214,8 @@ type IssueTreeAnchor struct {
 // MarshalJSON writes each form of the anchor with its own members alone: a document anchor as the
 // comments read writes it (Anchor), its block_id null where it names no block, with its occurrence
 // where the read computed one and its container_node_id where the read resolved one, and a node
-// anchor as its node, its quote, its occurrence and its orphaned mark.
+// anchor as the comments read writes one (CommentNodeAnchor): its node, its quote, its occurrence
+// and its orphaned mark.
 func (a IssueTreeAnchor) MarshalJSON() ([]byte, error) {
 	if a.Node == nil {
 		return json.Marshal(struct {
@@ -224,12 +225,7 @@ func (a IssueTreeAnchor) MarshalJSON() ([]byte, error) {
 		}{Anchor{ArtifactID: a.ArtifactID, BlockID: a.BlockID, MarkID: a.MarkID, Version: a.Version, Quote: a.Quote, Orphaned: a.Orphaned},
 			a.Occurrence, a.ContainerNodeID})
 	}
-	return json.Marshal(struct {
-		Node       *IssueTreeAnchorNode `json:"node"`
-		Quote      string               `json:"quote"`
-		Occurrence *int                 `json:"occurrence"`
-		Orphaned   bool                 `json:"orphaned"`
-	}{a.Node, a.Quote, a.Occurrence, a.Orphaned})
+	return json.Marshal(CommentNodeAnchor{Node: *a.Node, Quote: a.Quote, Occurrence: a.Occurrence, Orphaned: a.Orphaned})
 }
 
 // IssueTreeAnchorNode is the node a node anchor names: its store kind and id, a finding's the
@@ -280,10 +276,14 @@ type IssueTreeDocument struct {
 // answered it, it also answers the decision it is (IssueTreeNode.Decision). A server of the
 // release before sends no answer member, so the document marks each optional.
 type IssueTreeAsk struct {
-	Options    []AskOption `json:"options"`
-	Urgency    string      `json:"urgency"`
-	Multiple   bool        `json:"multiple"`
-	Answer     *string     `json:"answer" required:"false"`
+	Options  []AskOption `json:"options"`
+	Urgency  string      `json:"urgency"`
+	Multiple bool        `json:"multiple"`
+	Answer   *string     `json:"answer" required:"false"`
+	// AnswerTree is Answer read as the tree a reader is shown, present only for a caller that sent
+	// `Dispatch-Trees: 1` and only where the ask holds an answer's text, as the decisions read's
+	// entry answers it: the Decisions tab draws a person's decision by that text.
+	AnswerTree DisplayTree `json:"answer_tree,omitempty"`
 	Selected   []string    `json:"selected" required:"false"`
 	AnsweredBy *string     `json:"answered_by" required:"false"`
 	AnsweredAt *time.Time  `json:"answered_at" required:"false"`

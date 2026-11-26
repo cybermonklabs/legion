@@ -144,16 +144,10 @@ type TypedFacts struct {
 
 // versionOf is the version block id's typed facts carry: that of the document whose fragment of
 // an issue room holds it (documents), where versions covers that document, else the indexed
-// document's own, else the newest the facts were read of.
+// document's own, else the newest the facts were read of (Versions.of).
 func (facts TypedFacts) versionOf(id string) Version {
-	if held, ok := facts.versions[facts.documents[id]]; ok {
-		return held
-	}
-	if held, ok := facts.versions[facts.artifactID]; ok {
-		return held
-	}
-	_, newest := facts.versions.Newest(facts.artifactID)
-	return newest
+	_, version := facts.versions.of(facts.documents[id], facts.artifactID)
+	return version
 }
 
 // TypedSources is what the typed-node pass reads of a version from the document service, which
@@ -512,7 +506,7 @@ func settledAsks(ctx context.Context, q Queryer, issue string, ties []Pointer, f
 		if _, other := foreign[tieKey{block: tie.Block, kind: tie.Kind, target: target}]; other {
 			continue
 		}
-		if canonical, ok := canonicalUUID(target.ID); !ok || canonical != target.ID {
+		if !isCanonicalUUID(target.ID) {
 			continue
 		}
 		if _, seen := settling[target.ID]; !seen {
@@ -1143,16 +1137,16 @@ type OpenedAskTies struct {
 // the versions, index what the document's block index holds (one ReadBlockIndex read, or the Held
 // of the transaction's own earlier indexing of it), and opened each such block with the id of the
 // ask opened for it, whose node the transaction writes before these rows. Each row it writes
-// records the version of its block's own document (TypedFacts.versionOf) and is dated at. An ask
-// block's shaped hangs on the ask's node (TypedFacts.pairs), so a block whose ask no row held when
-// its version was indexed had none of its ties written then, and neither has the version the
-// settlement that opens the ask writes: that version's index reads the asks table (namedAskRows)
-// before the write phase has written the row the settlement queued. The settlement writes them
-// here, beside their rows, whether or not it writes a version (docs' writeOpenedAskTies). The ask
-// a block's ties hang on is the one opened names, since the row that names it may be one this
-// transaction has queued and not written, which no read of the asks answers yet. It reconciles the
-// shaped rows of those blocks alone, in one reconcile, from the same pairs the block index
-// reconciles, so the document's next index moves none of them.
+// records the version of its block's own document (TypedFacts.versionOf) and is dated at `at`.
+// An ask block's shaped hangs on the ask's node (TypedFacts.pairs), so a block whose ask no row
+// held when its version was indexed had none of its ties written then, and neither has the
+// version the settlement that opens the ask writes: that version's index reads the asks table
+// (namedAskRows) before the write phase has written the row the settlement queued. The
+// settlement writes them here, beside their rows, whether or not it writes a version (docs'
+// writeOpenedAskTies). The ask a block's ties hang on is the one opened names, since the row that
+// names it may be one this transaction has queued and not written, which no read of the asks
+// answers yet. It reconciles the shaped rows of those blocks alone, in one reconcile, from the
+// same pairs the block index reconciles, so the document's next index moves none of them.
 //
 // Moved answers, by block, the targets whose counts that block's rows moved, which the
 // ask.opened that records its ask names: an opened block held no shaped row before, since its
@@ -1184,7 +1178,7 @@ func PlanOpenedAskTies(ctx context.Context, q Queryer, index BlockIndex, artifac
 			pairs = append(pairs, pair)
 		}
 	}
-	// Each row records the version of its block's own document, dated at.
+	// Each row records the version of its block's own document, dated at `at`.
 	versions := make(Versions, len(facts.versions))
 	for document, version := range facts.versions {
 		versions[document] = Version{Number: version.Number, At: at}

@@ -17,12 +17,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
-// c-approval-bytes, the census's side (R14 of this issue's spec). What a request asks approval for
-// is a tuple: one approves tuple out of the request's ask node to each query version node it names,
-// and the asks row's approval.documents is their projection for good. The census kind approves
-// holds each entry of every approval ask's documents to the tuples its node states, in both
-// directions, and a bounded pass of the backfill states the tuples of a row the release before
-// wrote, which names no node until the asks' pass gives it one.
+// c-approval-bytes, the census's side (R14 of the issue-tree spec). What a request asks approval
+// for is a tuple: one approves tuple out of the request's ask node to each query version node it
+// names, and the asks row's approval.documents is their projection for good. The census kind
+// approves holds each entry of every approval ask's documents to the tuples its node states, in
+// both directions, and a bounded pass of the backfill states the tuples of a row the release
+// before wrote, which names no node until the asks' pass gives it one.
 
 // approvalRequest is the id of the approval ask the census test seeds.
 const approvalRequest = "a0000000-0000-4000-8000-000000000001"
@@ -33,11 +33,8 @@ const approvalRequest = "a0000000-0000-4000-8000-000000000001"
 // answers the spec's id and its ref_key.
 func seedApprovalRequest(t *testing.T, database *store.Store) (document, refKey string) {
 	t.Helper()
-	document, _ = seedKeepIssue(t, database)
+	document, refKey, _ = seedKeepIssue(t, database)
 	ctx := context.Background()
-	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1::uuid`, document).Scan(&refKey); err != nil {
-		t.Fatalf("read the ref_key of the spec: %v", err)
-	}
 	drivenTx(t, database, "write the approval request as the release before writes it", func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			insert into asks (id, issue_key, author, question, kind, approval)
@@ -71,19 +68,11 @@ func approvesOf(t *testing.T, database *store.Store) []string {
 	return versions
 }
 
-// approvesCensus is the census kind approves as the store census reads it: how many differences it
-// reads, in both directions together, the ones it reports and how many rows it checked.
-func approvesCensus(t *testing.T, database *store.Store) (found int64, reported []Difference, rows int64) {
-	t.Helper()
-	kind := censusKind(t, storeCensusOf(t, database), TupleApproves)
-	return kind.RowDifferences + kind.NodeDifferences, append(append([]Difference{}, kind.ReportedRows...), kind.ReportedNodes...), kind.Rows
-}
-
 // requireApprovesDifference fails t unless the census kind approves reads at least one difference
 // naming the request while broken holds.
 func requireApprovesDifference(t *testing.T, database *store.Store, broken string) {
 	t.Helper()
-	found, reported, _ := approvesCensus(t, database)
+	found, reported, _ := censusDifferences(t, database, TupleApproves)
 	named := slices.ContainsFunc(reported, func(difference Difference) bool {
 		return strings.Contains(difference.At, approvalRequest) || strings.Contains(difference.Cause, approvalRequest)
 	})
@@ -97,7 +86,7 @@ func requireApprovesDifference(t *testing.T, database *store.Store, broken strin
 // one row, after the step after names.
 func requireApprovesAgrees(t *testing.T, database *store.Store, after string) {
 	t.Helper()
-	found, reported, rows := approvesCensus(t, database)
+	found, reported, rows := censusDifferences(t, database, TupleApproves)
 	if found != 0 || rows == 0 {
 		t.Errorf("after %s the census reads %d difference(s) of kind %s, %v, over %d rows, want none over the request %s's entry",
 			after, found, TupleApproves, reported, rows, approvalRequest)
@@ -131,7 +120,7 @@ func TestCensusHoldsEveryApprovalRequestsDocumentsToItsApprovesTuples(t *testing
 	}
 
 	// A row the release before wrote, which names no node: counted as a class of its own, no difference.
-	if found, reported, _ := approvesCensus(t, database); found != 0 {
+	if found, reported, _ := censusDifferences(t, database, TupleApproves); found != 0 {
 		t.Errorf("before the backfill the census reads %d difference(s) of kind %s, %v, want none: a row naming no node is a class of its own", found, TupleApproves, reported)
 	}
 	backfill("the approval request the release before wrote")
@@ -167,11 +156,31 @@ func TestCensusHoldsEveryApprovalRequestsDocumentsToItsApprovesTuples(t *testing
 	if err != nil {
 		t.Fatalf("run the backfill again: %v", err)
 	}
-	for _, pass := range report.Kinds {
-		if pass.Kind == TupleApproves && (pass.Rows != 0 || pass.Tuples != 0 || !pass.Complete) {
-			t.Errorf("a second backfill over a levelled request reads %+v of kind %s, want nothing owed", pass, TupleApproves)
-		}
+	if pass := reportedKind(t, report, TupleApproves); pass.Rows != 0 || pass.Tuples != 0 || !pass.Complete {
+		t.Errorf("a second backfill over a levelled request reads %+v of kind %s, want nothing owed", pass, TupleApproves)
 	}
+}
+
+// seedApprovalAsk writes request, an approval request of issue in project naming version 1 of the
+// document whose id is document and whose name is name, as this build writes one: its node first,
+// made by the requesting session at createdAt, then its row naming that node. Its node states no
+// approves tuple, as a process of the release before leaves a request it moves.
+func seedApprovalAsk(t *testing.T, database *store.Store, project, issue, document, name, request string, createdAt time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	drivenTx(t, database, "write the approval request with its node", func(tx pgx.Tx) error {
+		node := graphstore.AskNode(request, project, nil, model.Actor{Kind: "session", ID: "ses_requester"}, createdAt)
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, nil); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			insert into asks (id, issue_key, author, question, kind, approval, created_at, node_kind, node_address)
+			values ($1::uuid, $2, '{"kind":"session","id":"ses_requester"}', 'Approve ' || $3::text || ' (version 1)?', 'approval',
+			        jsonb_build_object('artifact_id', $4::text, 'name', $3::text, 'version', 1, 'requested_version', 1),
+			        $5, $6, $1::text)
+		`, request, issue, name, document, createdAt, graphstore.KindAsk)
+		return err
+	})
 }
 
 // TestTheApprovesBatchTakesTheStoreLockOrder holds writeApprovesBatch to the store's lock order, as
@@ -185,25 +194,9 @@ func TestCensusHoldsEveryApprovalRequestsDocumentsToItsApprovesTuples(t *testing
 func TestTheApprovesBatchTakesTheStoreLockOrder(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	document, _ := seedKeepIssue(t, database)
-	var refKey string
-	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1::uuid`, document).Scan(&refKey); err != nil {
-		t.Fatalf("read the ref_key of the spec: %v", err)
-	}
+	document, refKey, _ := seedKeepIssue(t, database)
 	createdAt := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond)
-	drivenTx(t, database, "write the approval request with its node", func(tx pgx.Tx) error {
-		node := graphstore.AskNode(approvalRequest, "LOCK", nil, model.Actor{Kind: "session", ID: "ses_requester"}, createdAt)
-		if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, nil); err != nil {
-			return err
-		}
-		_, err := tx.Exec(ctx, `
-			insert into asks (id, issue_key, author, question, kind, approval, created_at, node_kind, node_address)
-			values ($1::uuid, 'LOCK-1', '{"kind":"session","id":"ses_requester"}', 'Approve spec.md (version 1)?', 'approval',
-			        jsonb_build_object('artifact_id', $2::text, 'name', 'spec.md', 'version', 1, 'requested_version', 1),
-			        $3, $4, $1::text)
-		`, approvalRequest, document, createdAt, graphstore.KindAsk)
-		return err
-	})
+	seedApprovalAsk(t, database, "LOCK", "LOCK-1", document, "spec.md", approvalRequest, createdAt)
 
 	owner, project := holdLockOwner(t, database)
 	report := followTheRun(t, database, "writeApprovesBatch", onePass(backfillApproves), []*lockstep.Hold{owner, project})

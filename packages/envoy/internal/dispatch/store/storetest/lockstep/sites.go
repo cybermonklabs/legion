@@ -33,8 +33,9 @@ var storeWriteCallSites = map[string]string{
 	// the follower route (appendCausingEvent), an ask's create, an approval request renewed,
 	// and a settlement's asks, each stated right after its ask.opened (appendEvents). asks'
 	// TestAFollowTakesTheStoreLockOrder proves both steps on the follow alone, and each caller's
-	// test proves them inside its caller. The comment path and a delivery's reply give the follow
-	// their own event instead, which it states in its own statement.
+	// test proves them inside its caller, with the mark of the issue's queries owed that the
+	// follower route and an ask's create queue after the tuples (R14). The comment path and a
+	// delivery's reply give the follow their own event instead, which it states in its own statement.
 	"asks/followers.go#Follow":         "asks#TestAFollowTakesTheStoreLockOrder",
 	"asks/followers.go#queueFollow":    "asks#TestAFollowTakesTheStoreLockOrder",
 	"asks/followers.go#Queue":          "asks#TestAFollowTakesTheStoreLockOrder",
@@ -87,10 +88,12 @@ var storeWriteCallSites = map[string]string{
 	// One node's state a request writes or settles (api/node_state.go): the issue's owner lock,
 	// then one Write of the node as the store holds it but for its state, and, on a move into
 	// gone, of every node beneath it (graphstore.WriteState), each as the store holds it but for
-	// its state: a plain write that moves the rows and appends their state tuples. It appends no
-	// event. Its order is the order TestEveryStoreWriteTakesOneLockOrder proves of Write, after the
-	// owner lock writeReasoningNodes takes first too.
-	"api/reasoning_write.go#writeNodeState": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	// its state: a plain write that moves the rows and appends their state tuples, and after them
+	// the mark of the issue's queries owed, since a state is one of the values a query's record
+	// holds (R14). It appends no event. api's TestEveryApiStoreWriterTakesTheStoreLockOrder holds a
+	// lens's move to overtaken to those steps, the mark among them, which the order
+	// TestEveryStoreWriteTakesOneLockOrder proves of Write alone does not cover.
+	"api/reasoning_write.go#writeNodeState": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// A node's move (api/node_move.go, PATCH /api/v1/issues/{key}/nodes/{id}): the owner locks of
 	// the issue and of every issue the moved node's subtree and the parent's chain stand under, in
 	// one call (lockIssueOwners), then, where the move writes the block's text, the room's lock and
@@ -262,18 +265,15 @@ var storeWriteCallSites = map[string]string{
 	// steps around it, and api's TestEveryVersionRowIsTheProjectionOfAVersionNode holds its node to
 	// its row's transaction at each site.
 	"docs/mutation.go#WriteVersionNode": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
-	// A document's retirement, in the same order under the document's
-	// owner row: its artifact node stated gone, then the artifacts row that retires it, then
-	// document.retired and the node's facts under it. A removal of an untouched document states
-	// its node gone through its own writer (removedDocumentNodes, listed above), with each
-	// changed_by_run of the node retracted, under the owner lock and the room, then deletes its
-	// rows, appends artifact.removed and the node's facts under it (api's
-	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds it to those steps).
+	// A document's retirement, in the same order under the document's owner row: its artifact
+	// node stated gone, then the artifacts row that retires it, then document.retired and the
+	// node's facts under it.
 	"docs/retire.go#RetireDocument":   "docs#TestTheDecisionsStepsWritersTakeTheStoreLockOrder",
 	"docs/retire.go#writeRetiredNode": "docs#TestTheDecisionsStepsWritersTakeTheStoreLockOrder",
 	// A person's Keep of an agent's decision: under the issue's owner
 	// row, the person's node, then the decision_keeps row that projects the Keep, then
-	// decision.kept, and the kept_by tuple and the kept_text_sum value under it, through Caused.
+	// decision.kept, and the kept_by tuple and the kept_text_sum value under it, through Caused,
+	// then the mark of the issue's queries owed, since the decisions query takes the decision (R14).
 	"api/decisions.go#keepDecisionNode": "api#TestEveryAskTransitionAndKeepTakesTheStoreLockOrder",
 	// The decisions step's restore and conversion of an issue,
 	// under the issue's owner row and its asks' rows: each document's version and its event, the

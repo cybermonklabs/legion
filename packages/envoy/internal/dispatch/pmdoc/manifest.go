@@ -75,6 +75,9 @@ type compiledManifest struct {
 	versions    map[Element]BlockElementVersions
 	uncreatable map[Element]bool
 	creatable   int
+	// typedBlockNames is the name of every typed block the manifest declares, sorted
+	// (TypedBlockNames).
+	typedBlockNames []string
 	// linkKinds is the edge kinds the manifest's `block[]` attributes make, sorted (LinkKinds),
 	// and pointerAttributes maps each typed block declaring such an attribute to those
 	// attributes' names, sorted.
@@ -313,6 +316,7 @@ func compileManifest(raw []byte) (*compiledManifest, error) {
 	compiled := &compiledManifest{
 		schema:            value,
 		types:             make(map[string]BlockTypeSchema, len(value.Types)),
+		typedBlockNames:   make([]string, 0, len(value.Types)),
 		nodes:             make(map[string]bool, len(value.Nodes)),
 		marks:             make(map[string]bool, len(value.Marks)),
 		versions:          make(map[Element]BlockElementVersions),
@@ -365,6 +369,7 @@ func compileManifest(raw []byte) (*compiledManifest, error) {
 			return nil, err
 		}
 		compiled.types[typ.Name] = typ
+		compiled.typedBlockNames = append(compiled.typedBlockNames, typ.Name)
 		for _, parent := range typ.Parents {
 			if compiled.admitted[parent] == nil {
 				compiled.admitted[parent] = map[string]bool{}
@@ -414,6 +419,7 @@ func compileManifest(raw []byte) (*compiledManifest, error) {
 		}
 	}
 	compiled.linkKinds = slices.Sorted(maps.Keys(linkKinds))
+	slices.Sort(compiled.typedBlockNames)
 	if len(compiled.nodes) == 0 {
 		return nil, fmt.Errorf("invalid: must declare its nodes")
 	}

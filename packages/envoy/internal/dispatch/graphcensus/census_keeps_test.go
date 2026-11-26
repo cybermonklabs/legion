@@ -48,19 +48,8 @@ func seedShapedDecisions(t *testing.T, database *store.Store, artifactID, pointe
 	for index, said := range words {
 		markdown += fmt.Sprintf("\n:::decision{#d%d shaped=\"%s\"}\n%s\n:::\n", index+1, pointer, said)
 	}
-	tree, err := pmdoc.Parse(markdown)
-	if err != nil {
-		t.Fatalf("parse the decisions' document: %v", err)
-	}
-	pmdoc.EnsureBlockIDs(tree)
-	rendered, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
-	if err != nil {
-		t.Fatalf("render the decisions' document: %v", err)
-	}
-	blocks := make([]model.ArtifactBlock, len(offsets))
-	for index, offset := range offsets {
-		blocks[index] = model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To}
-	}
+	version := renderVersion(t, parsedTree(t, markdown))
+	tree, rendered, blocks := version.tree, version.markdown, version.blocks
 	var refKey string
 	var at time.Time
 	if err := database.Pool.QueryRow(ctx, `
@@ -71,13 +60,7 @@ func seedShapedDecisions(t *testing.T, database *store.Store, artifactID, pointe
 	`, artifactID, rendered, fmt.Sprintf(`[{"kind":%q,"id":%q}]`, keepDecider.Kind, keepDecider.ID)).Scan(&refKey, &at); err != nil {
 		t.Fatalf("write version 1 of the decisions' document: %v", err)
 	}
-	sources := refs.TypedSources{Authors: func(ids []string) (map[string]model.Actor, error) {
-		authors := make(map[string]model.Actor, len(ids))
-		for _, id := range ids {
-			authors[id] = keepDecider
-		}
-		return authors, nil
-	}}
+	sources := creditedSources(keepDecider)
 	drivenTx(t, database, "index version 1 of the decisions' document", func(tx pgx.Tx) error {
 		versions := refs.OneVersion(artifactID, 1, at)
 		record, err := refs.ReadIndexedVersion(ctx, tx, artifactID, artifactID, 1)
@@ -159,8 +142,9 @@ func keepAsTheReleaseBefore(t *testing.T, database *store.Store, artifactID stri
 }
 
 // seedKeepIssue writes issue LOCK-1 of project LOCK and its spec, as this build writes them,
-// before any decision of it, and answers the spec's id and the address of its block r1.
-func seedKeepIssue(t *testing.T, database *store.Store) (document, pointer string) {
+// before any decision of it, and answers the spec's id, its ref_key and the address of its block
+// r1.
+func seedKeepIssue(t *testing.T, database *store.Store) (document, refKey, pointer string) {
 	t.Helper()
 	seedLockProject(t, database)
 	drivenTx(t, database, "write issue LOCK-1 and its spec", func(tx pgx.Tx) error {
@@ -173,11 +157,11 @@ func seedKeepIssue(t *testing.T, database *store.Store) (document, pointer strin
 		return tx.QueryRow(context.Background(), `
 			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
 			values ('LOCK-1', 'LOCK', 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}')
-			returning id::text
-		`).Scan(&document)
+			returning id::text, ref_key
+		`).Scan(&document, &refKey)
 	})
 	issue := "LOCK-1"
-	return document, refs.BlockRef(refs.ArtifactRef(&issue, "LOCK", nil, "spec", "doc", true), "r1")
+	return document, refKey, refs.BlockRef(refs.ArtifactRef(&issue, "LOCK", nil, "spec", "doc", true), "r1")
 }
 
 // storedKeep is what decision's Keep stores now: its decision_keeps row's sum and its node's
@@ -221,7 +205,7 @@ func requireKeepSumCensus(t *testing.T, database *store.Store, when string, rows
 func TestTheKeepPassRewritesTheKeepsThatMatchedOverTheWordsWithShaped(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	document, pointer := seedKeepIssue(t, database)
+	document, _, pointer := seedKeepIssue(t, database)
 	decisions := seedShapedDecisions(t, database, document, pointer, "We keep the node store.", "We shard the log.")
 	d1, d2 := decisions[0], decisions[1]
 	if d1.sum == d1.shaped {
@@ -280,7 +264,7 @@ func TestTheKeepPassRewritesTheKeepsThatMatchedOverTheWordsWithShaped(t *testing
 // sum of d1's words without shaped, and the backfill reports it rewritten.
 func TestTheKeepSumBatchTakesTheStoreLockOrder(t *testing.T) {
 	database := storetest.Open(t)
-	document, pointer := seedKeepIssue(t, database)
+	document, _, pointer := seedKeepIssue(t, database)
 	d1 := seedShapedDecisions(t, database, document, pointer, "We keep the node store.")[0]
 	keepAsTheReleaseBefore(t, database, document, d1, d1.shaped)
 

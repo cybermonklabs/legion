@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -329,10 +330,8 @@ type objectBudget struct{ nodes, names int }
 // spends answers the budget a batch of rows spends: names where every row of it is owed its name
 // alone, and nodes where any row is owed a node.
 func (b *objectBudget) spends(rows []objectRow) *int {
-	for _, row := range rows {
-		if !row.named {
-			return &b.nodes
-		}
+	if slices.ContainsFunc(rows, func(row objectRow) bool { return !row.named }) {
+		return &b.nodes
 	}
 	return &b.names
 }
@@ -710,8 +709,12 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 		// partOf holds, by id, the part_of of each document an issue owns, stated with its node.
 		partOf := map[string]graphstore.Tuple{}
 		// createdAt holds, by id, each row's own created_at, which an issue's child_of claim is
-		// dated at (issueParentClaims) whatever its node's statements are dated at.
-		createdAt := make(map[string]time.Time, len(nodes))
+		// dated at (issueParentClaims) whatever its node's statements are dated at: an issue
+		// batch's alone, since no other kind's write reads it.
+		var createdAt map[string]time.Time
+		if kind.kind == graphstore.KindIssue {
+			createdAt = make(map[string]time.Time, len(nodes))
+		}
 		// retired holds the address of each retired document whose row names no node yet, which is
 		// named with the written rows and given no node write.
 		var retired []string
@@ -758,7 +761,9 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 				}
 				partOf[node.ID] = graphstore.ArtifactPartOf(node.ID, row.issue, node.MadeBy, at)
 			}
-			createdAt[node.ID] = row.MadeAt
+			if createdAt != nil {
+				createdAt[node.ID] = row.MadeAt
+			}
 			write = append(write, node)
 		}
 		written.Rows, written.Nodes = int64(len(write))-named, int64(len(write))-named
@@ -975,20 +980,15 @@ func nameArtifactNodes(ctx context.Context, tx pgx.Tx, refKeys []string) ([]grap
 		return nil, fmt.Errorf("name the nodes of a document batch on their rows: %w", err)
 	}
 	var named, files []string
-	for rows.Next() {
-		var id string
-		var file bool
-		if err := rows.Scan(&id, &file); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("name the nodes of a document batch on their rows: %w", err)
-		}
+	var id string
+	var file bool
+	if _, err := pgx.ForEachRow(rows, []any{&id, &file}, func() error {
 		named = append(named, id)
 		if file {
 			files = append(files, id)
 		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, fmt.Errorf("name the nodes of a document batch on their rows: %w", err)
 	}
 	if len(named) == 0 {
@@ -1010,7 +1010,7 @@ func nameArtifactNodes(ctx context.Context, tx pgx.Tx, refKeys []string) ([]grap
 		) v
 		where a.id = any($1::uuid[]) and v.mime is not null and v.size is not null and v.sha256 is not null
 		  and (`+presentVersionNode+`
-		       or octet_length(a.ref_key || '@v' || v.number) > `+addressBound+`)
+		       or octet_length(`+versionAddress+`) > `+addressBound+`)
 	`, files)
 	if err != nil {
 		return nil, fmt.Errorf("read the newest bytes of a batch's images and files: %w", err)

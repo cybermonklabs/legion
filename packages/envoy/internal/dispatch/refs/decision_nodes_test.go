@@ -53,10 +53,17 @@ func renderTypedTree(t *testing.T, tree *pmdoc.Node) typedVersion {
 	for _, offset := range offsets {
 		version.blocks = append(version.blocks, model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To})
 	}
-	for _, pointer := range pmdoc.BlockPointers(tree) {
-		version.pointers = append(version.pointers, Pointer{Block: pointer.Block, BlockType: pointer.BlockType, Kind: pointer.Attribute, Target: pointer.Target, Targets: pointer.Targets})
-	}
+	version.pointers = pointersOf(tree)
 	return version
+}
+
+// pointersOf is the pointers the blocks of tree hold, as docs.blockPointers reads them.
+func pointersOf(tree *pmdoc.Node) []Pointer {
+	var pointers []Pointer
+	for _, pointer := range pmdoc.BlockPointers(tree) {
+		pointers = append(pointers, Pointer{Block: pointer.Block, BlockType: pointer.BlockType, Kind: pointer.Attribute, Target: pointer.Target, Targets: pointer.Targets})
+	}
+	return pointers
 }
 
 // versionFacts is what DecisionFacts reads of version number of the document artifact, written at

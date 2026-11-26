@@ -163,11 +163,9 @@ func stateValue(t *testing.T, document parentDocument, blockID, attribute, value
 	t.Helper()
 	ctx := context.Background()
 	if err := pgx.BeginFunc(ctx, document.database.Pool, func(tx pgx.Tx) error {
-		return graphstore.Write(ctx, tx, nil, []graphstore.Tuple{{
-			FromKind: BlockNodeKind, FromID: document.address(blockID), Kind: attribute,
-			ToKind: graphstore.KindValue, ToID: value,
-			At: time.Now(), Who: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent, Asserted: true,
-		}})
+		return graphstore.Write(ctx, tx, nil, []graphstore.Tuple{
+			valueTuple(document.address(blockID), attribute, value, time.Now(), model.Actor{Kind: "user", ID: "alice"}, true),
+		})
 	}); err != nil {
 		t.Fatalf("state the %s of %s: %v", attribute, blockID, err)
 	}
@@ -518,9 +516,9 @@ func textPlaceDocument(paragraphs ...string) blockDoc {
 }
 
 // Every block that is a node holds its place in its document's text as two dated facts beside its
-// rank: a text_parent tuple to the tightest block of the version
-// that holds it and is a node, or to its document's node where no such block holds it, and a
-// text_rank value among the blocks that share that text parent, in the version's text order.
+// rank: a text_parent tuple to the tightest block of the version that holds it and is a node, or
+// to its document's node where no such block holds it, and a text_rank value among the blocks
+// that share that text parent, in the version's text order.
 //
 // The first index of a spec states both of every block, dated at the pass's own time by the
 // version's writer: the box's paragraph, its requirement and the paragraph inside the block whose
@@ -639,10 +637,7 @@ func TestEveryBlockHoldsItsPlaceInItsDocumentsText(t *testing.T) {
 		return graphstore.Write(ctx, tx, nil, []graphstore.Tuple{{
 			FromKind: BlockNodeKind, FromID: spec.address("p1"), Kind: textParentKind, ToKind: held.ToKind, ToID: held.ToID,
 			At: time.Now(), Who: writer, SourceEvent: graphstore.NoEvent, Asserted: false,
-		}, {
-			FromKind: BlockNodeKind, FromID: spec.address("p1"), Kind: textRankAttribute, ToKind: graphstore.KindValue, ToID: ranks["p1"],
-			At: time.Now(), Who: writer, SourceEvent: graphstore.NoEvent, Asserted: false,
-		}})
+		}, valueTuple(spec.address("p1"), textRankAttribute, ranks["p1"], time.Now(), writer, false)})
 	}); err != nil {
 		t.Fatalf("take p1's text facts out as a build before this one leaves a block: %v", err)
 	}

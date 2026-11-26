@@ -383,7 +383,7 @@ func blockLinkCarried(fromKind, alias string, deleted bool) string {
 //
 // The list carries this build's capabilities too (processes.Capabilities): issue_room, which no
 // relation kind spells, is how a reader of the announcements tells a build that serves the issue
-// room (decision 7 of this branch's plan). No arm renders a capability, so the view answers
+// room (decision 7 of the issue-tree plan). No arm renders a capability, so the view answers
 // nothing under that name.
 func TupleKinds() []string {
 	kinds := slices.Concat([]string{
@@ -622,9 +622,9 @@ func (a backlinkArm) tupleSQL(target backlinkTarget, deleted bool) string {
 	if a.addressIs != "" {
 		where += ` and ` + address + a.addressIs
 	}
-	carried := ` and ` + projectionCarries(a.projectedIn, a.fromKind, "tuple")
-	if deleted {
-		carried = ""
+	carried := ""
+	if !deleted {
+		carried = ` and ` + projectionCarries(a.projectedIn, a.fromKind, "tuple")
 	}
 	return `select ` + counted + ` from graph_tuples tuple` + join + ` where ` + where +
 		` and ` + keyed + ` and ` + currentTuple("tuple") + carried +

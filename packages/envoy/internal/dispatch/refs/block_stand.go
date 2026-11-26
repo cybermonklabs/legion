@@ -71,13 +71,13 @@ func (s blockStand) indexedAt(version, rule int) blockStand {
 
 // indexedUpTo is the row of a document of an issue room once a pass of marking rule rule over the
 // room that covers version of it has won the fence (queueStand): a row the pass sets forward to
-// version, as indexedAt leaves it, and a row that already stands past version, which the pass
-// never moves back, as it stands but for its mark, cleared where the mark was of rule or a lower
-// rule.
+// version, as indexedAt leaves it, and a row that already stands past version as the room's
+// statement leaves it, which never moves a row back: as it stands, its mark included, with
+// version among those indexed (BlockIndexing.Queue records every version the pass covers).
 func (s blockStand) indexedUpTo(version, rule int) blockStand {
 	if s.held && s.version != nil && *s.version > version {
-		if s.owedRule <= rule {
-			s.owed = false
+		if s.latestIndexed == nil || *s.latestIndexed < version {
+			s.latestIndexed = &version
 		}
 		return s
 	}
@@ -249,11 +249,7 @@ func (b BlockIndexing) queueStand(batch *store.WriteBatch) {
 		})
 		return
 	}
-	documents := slices.Sorted(maps.Keys(b.versions))
-	numbers := make([]int32, len(documents))
-	for position, document := range documents {
-		numbers[position] = int32(b.versions[document].Number)
-	}
+	documents, numbers := b.versions.numbered()
 	batch.Queue(fmt.Sprintf("record the blocks of %s indexed at the versions of its documents", b.artifactID), `
 		insert into document_block_versions (artifact_id, version, store_version, stated_version, stated_rule, windows_owed_at)
 		select w.artifact_id, w.version, w.version, w.version, $3, now() from unnest($1::uuid[], $2::int[]) as w (artifact_id, version)
@@ -264,6 +260,17 @@ func (b BlockIndexing) queueStand(batch *store.WriteBatch) {
 			windows_owed_at = coalesce(document_block_versions.windows_owed_at, excluded.windows_owed_at)
 		where document_block_versions.version is null or document_block_versions.version <= excluded.version
 	`, documents, numbers, b.rule)
+}
+
+// numbered is the documents v covers in id order, each with the number of the version v holds of
+// it, as a statement binds them in two arrays of one order.
+func (v Versions) numbered() ([]string, []int32) {
+	documents := slices.Sorted(maps.Keys(v))
+	numbers := make([]int32, len(documents))
+	for position, document := range documents {
+		numbers[position] = int32(v[document].Number)
+	}
+	return documents, numbers
 }
 
 // RevisionFenceStatement is the revision fence's statement of a pass over one document
@@ -359,9 +366,9 @@ var OwedBlockIndexDebts = owedBlockIndexDebtsFrom + `
 // OwedBlockIndexDebtsBeforeTheMark is OwedBlockIndexDebts over a database migration
 // 20261120122600 has not reached yet, which holds no store_owed_rule column: only a null version
 // is read as owed there. `census --store --sizing` takes its readings on such a database, before
-// this branch's migrations run (R4), where migration 20261116221539 has not added store_owed_at
-// either and the backfill has marked nothing, and reads this one there; the tick only ever runs
-// on a migrated database and reads the full text. It binds nothing.
+// the issue-tree spec's migrations run (R4), where migration 20261116221539 has not added
+// store_owed_at either and the backfill has marked nothing, and reads this one there; the tick
+// only ever runs on a migrated database and reads the full text. It binds nothing.
 const OwedBlockIndexDebtsBeforeTheMark = owedBlockIndexDebtsFrom + `
 		where b.version is null`
 

@@ -66,7 +66,7 @@ type StoreKind struct {
 	// and zero for every term a statement or the replay counts.
 	Assumed int64
 	// count is the scalar SQL that counts the kind's writes inside the window, over the rows
-	// sizingWritesWith names, and empty for the two terms replayParents counts and for an assumed
+	// sizingWritesWith names, and empty for the three terms replayParents counts and for an assumed
 	// term.
 	count string
 }
@@ -846,8 +846,8 @@ func sizingWritesWith(rooms bool) string {
 
 // readStoreKinds reads how many writes of each term the window holds: every term a statement
 // counts in one statement over sizingWritesWith, so each set of rows it names is read once, the
-// moved parents and their ranks by one replayParents, and an assumed term from the writes it is
-// assumed at.
+// moved parents, their ranks and their places in the text by one replayParents, and an assumed
+// term from the writes it is assumed at.
 func readStoreKinds(ctx context.Context, tx pgx.Tx) ([]StoreKind, error) {
 	kinds := storeKinds()
 	counts := make([]string, 0, len(kinds))

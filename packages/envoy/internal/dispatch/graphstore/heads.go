@@ -92,9 +92,6 @@ func HeldHeads(write Uncaused) []NodeKey {
 	for _, held := range write.Tuples {
 		keys = append(keys, NodeKey{Kind: held.FromKind, ID: held.FromID})
 	}
-	for _, change := range write.changes {
-		keys = append(keys, NodeKey{Kind: change.kind, ID: change.id})
-	}
 	return distinctKeys(keys)
 }
 
@@ -193,19 +190,13 @@ func headFixedSQL(kind, id string) string {
 		blockKind + `') and not ` + FindingIDSQL(id) + `))`
 }
 
-// headUUIDSQL is the SQL text expr as a uuid where it spells one, and null otherwise, so a probe of
-// an item's primary key never fails on an id that names none.
-func headUUIDSQL(expr string) string {
-	return `(case when ` + expr + ` ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (` + expr + `)::uuid end)`
-}
-
 // headOwnIssueSQL is the issue that holds the node of its own, or null: an issue's own node its key,
 // a node whose address names its issue (headFixedSQL) that issue where it stands, an ask, a comment
 // and a message its row's issue, and a block of one (`<kind>/<uuid>#<block id>`) its item's.
 func headOwnIssueSQL(kind, id string) string {
 	item := `split_part(split_part(` + id + `, '#', 1), '/', 2)`
 	itemIssue := func(table, uuid string) string {
-		return `(select own_item.issue_key from ` + table + ` own_item where own_item.id = ` + headUUIDSQL(uuid) + `)`
+		return `(select own_item.issue_key from ` + table + ` own_item where own_item.id = ` + store.CanonicalUUID(uuid) + `)`
 	}
 	return `(case
 		when ` + kind + ` = '` + KindIssue + `' then (select own_issue.key from issues own_issue where own_issue.key = ` + id + `)
@@ -214,7 +205,7 @@ func headOwnIssueSQL(kind, id string) string {
 		when ` + kind + ` = '` + KindComment + `' then ` + itemIssue("comments", id) + `
 		when ` + kind + ` = '` + KindMessage + `' then ` + itemIssue("messages", id) + `
 		when ` + kind + ` = 'ask_block' then ` + itemIssue("asks", item) + `
-		when ` + kind + ` = 'comment_block' then ` + itemIssue("comments", item) + `
+		when ` + kind + ` = '` + KindCommentBlock + `' then ` + itemIssue("comments", item) + `
 		when ` + kind + ` = 'message_block' then ` + itemIssue("messages", item) + `
 	end)`
 }
@@ -265,12 +256,12 @@ const headFactFarEnd = `t.to_kind collate "C", (case when t.to_kind = '` + KindV
 // knows the block was made there (refs' blockNodesStatement); for a comment, the columns of its row
 // the comment loader reads (refs' loadCommentNodes: its issue, author, body, times, the comment it
 // replies to (reply_to), the comment it answers (answers) and the ask it answers, its document and
-// the document and version it is written on), and
-// for a current block of a comment, its comment_blocks row, its text at its newest revision and its
-// comment's issue, author and document, as the comment block loader and the block texts read read
-// them (refs' itemBlockNodes, BlockTexts); and of both, the comment's marks, when its author last
-// edited it and when and by whom it was deleted, as both loaders read them. A node the store holds no row of, that states nothing
-// and that is no current block of a comment has no row.
+// the document and version it is written on), and for a current block of a comment, its
+// comment_blocks row, its text at its newest revision and its comment's issue, author and
+// document, as the comment block loader and the block texts read read them (refs' itemBlockNodes,
+// BlockTexts); and of both, the comment's marks, when its author last edited it and when and by
+// whom it was deleted, as both loaders read them. A node the store holds no row of, that states
+// nothing and that is no current block of a comment has no row.
 //
 // Whether a block of an issue room has stood in more than one of its documents, which leaves it no
 // first version Dispatch knows (refs.MovedRoomBlockSQL), is read as refs' blockAuthors reads it: a
@@ -383,7 +374,7 @@ func HeadRowsSQL(nodes string) string {
 			       c.ask_id::text as ask_id, c.artifact_id, coalesce((c.anchor->>'artifact_id')::uuid, c.artifact_id) as document_id,
 			       case when c.anchor->>'artifact_id' is not null then ` + headAnchorVersionSQL + ` else c.written_version end as version
 			from comments c
-			where target.kind = '` + KindComment + `' and c.id = ` + headUUIDSQL(`target.id`) + `
+			where target.kind = '` + KindComment + `' and c.id = ` + store.CanonicalUUID(`target.id`) + `
 		) comment on true
 		left join lateral (
 			select b.node_id, b.block_id, b.excerpt, b.made_at, b.changed_revision, b.changed_at, b.position,
@@ -490,14 +481,15 @@ var headWriteStatement = `
 // tables had when it was made, which it keeps until an ANALYZE or a change of a table's definition
 // drops it. A generic plan made while a probed table held a few pages reads it by a sequential
 // scan, which costs less than an index probe there, and goes on doing so once a block after the
-// rooms grow. Measured on 2026-11-25 by docs' TestThePassLockTimeGrowsLinearlyWithTheRoom, with
-// the statistics of a near-empty graph_tuples: planRoomBlocks' read of the moved blocks scanned
+// rooms grow. Measured on 2026-11-25 by docs' TestThePassLockTimeGrowsLinearlyWithTheRoom as it
+// then stood, timing the first pass over each of six rooms in one database, with the statistics
+// of a near-empty graph_tuples: planRoomBlocks' read of the moved blocks scanned
 // issue_room_blocks once for each of 20,000 blocks, 54,048 rows each, in 36.7 s; blockAuthors
 // scanned document_block_texts once for each of 20,000 blocks, 34,066 rows each, in 33.8 s; and
 // the head write scanned issue_room_blocks, document_blocks, document_block_texts, artifacts and
 // issues once for each of 2,342 targets, in 7.3 s. Under a statement timeout of 45 s the
 // reconciliation's pass over 20,000 blocks took 7.04 times its pass over 4,682 (medians 55.9 s and
-// 7.9 s), above the test's bound of 6.40; with no timeout that measurement ran 33 min 36 s. A
+// 7.9 s), above the bound it then held, 6.40; with no timeout that measurement ran 33 min 36 s. A
 // custom plan costs the planning of each run of a statement, and each of those reads runs once
 // over all its blocks, so a transaction plans it once, not once a block.
 //

@@ -133,28 +133,12 @@ const nodeSearchOwedKeysStatement = `select n.id` + nodeSearchOwedSQL + `
 // rows still owed once it has walked them all.
 func backfillNodeSearch(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: nodeSearchKind}
-	after := ""
-	for {
-		rows, err := database.Pool.Query(ctx, nodeSearchOwedKeysStatement, after, backfillBatch)
-		if err != nil {
-			return done, fmt.Errorf("read the block nodes whose search row is owed: %w", err)
-		}
-		batch, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			return done, fmt.Errorf("read the block nodes whose search row is owed: %w", err)
-		}
-		if len(batch) == 0 {
-			break
-		}
-		after = batch[len(batch)-1]
+	if err := owedBatches(ctx, database, nodeSearchOwedKeysStatement, "the block nodes whose search row is owed", "", func(batch []string) error {
 		written, err := writeNodeSearchBatch(ctx, database, batch)
-		if err != nil {
-			return done, err
-		}
 		done.Rows += written
-		if len(batch) < backfillBatch {
-			break
-		}
+		return err
+	}); err != nil {
+		return done, err
 	}
 	if err := database.Pool.QueryRow(ctx, `select count(*)`+nodeSearchOwedSQL).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the block nodes whose search row is still owed: %w", err)
@@ -195,62 +179,77 @@ func writeNodeSearchBatch(ctx context.Context, database *store.Store, ids []stri
 // row does not stand for what the store holds of it: a live doc artifact holding a markdown
 // version whose row is missing or holds a different vector, and any other artifact (retired,
 // removed, non-doc, gone or holding no markdown version) whose document search row still stands.
-const documentSearchOwedSQL = `
+var documentSearchOwedSQL = `
 	from (
 		select a.ref_key from artifacts a where a.kind = 'doc'
 		union
 		select s.node_address as ref_key from node_search s where s.node_kind = '` + graphstore.KindArtifact + `'
 	) candidate
-	left join artifacts a on a.ref_key = candidate.ref_key
-	left join graph_nodes n on n.kind = '` + graphstore.KindArtifact + `' and n.id = candidate.ref_key
+	left join artifacts a on a.ref_key = candidate.ref_key` + documentSearchJudged("candidate.ref_key")
+
+// documentSearchJudged is the rest of documentSearchOwedSQL past its artifacts row a, for the
+// ref_key key names: the joins of its node, its newest markdown version and its search row, and
+// the test of whether that row is owed.
+func documentSearchJudged(key string) string {
+	return `
+	left join graph_nodes n on n.kind = '` + graphstore.KindArtifact + `' and n.id = ` + key + `
 	left join lateral (
 		select v.search from artifact_versions v
 		where v.artifact_id = a.id and v.markdown is not null
 		order by v.number desc
 		limit 1
 	) newest on a.id is not null and a.kind = 'doc'
-	left join node_search s on s.node_kind = '` + graphstore.KindArtifact + `' and s.node_address = candidate.ref_key
+	left join node_search s on s.node_kind = '` + graphstore.KindArtifact + `' and s.node_address = ` + key + `
 	where case when a.kind = 'doc' and a.retired_at is null
 	                and n.state <> '` + graphstore.StateGone + `'
 	                and newest.search is not null
 	           then s.search is distinct from newest.search or s.text <> ''
 	           else s.node_address is not null end`
+}
 
-// documentSearchOwedKeysStatement is backfillDocumentSearch's selection: at most $2 of the
-// document ref_keys whose search row is owed (documentSearchOwedSQL), past the ref_key $1, in
-// ref_key order, so a run reads each document once however many batches it takes.
-const documentSearchOwedKeysStatement = `select candidate.ref_key` + documentSearchOwedSQL + `
-	  and candidate.ref_key > $1
-	order by candidate.ref_key
+// The pass walks documentSearchOwedSQL's keys in two walks, each with a cursor of its own, and
+// not as one walk over its union: the union's keys come from two tables, and each batch read over
+// the union read every key of both past its cursor and sorted them
+// (TestEveryTopicPassWalksOneBatchThroughAnIndex). Together the two walks answer the union's keys,
+// each once, since a ref_key names one artifact (artifacts_ref_key_key).
+//
+// documentSearchOwedDocumentsStatement is the first: at most $2 of the doc artifacts whose search
+// row is owed, past the ref_key $1, in ref_key order, read off artifacts_ref_key_key from the
+// cursor on, so a run reads each document once however many batches it takes.
+// documentSearchOrphanRowsStatement is the second: at most $2 of the document search rows whose
+// ref_key names no doc artifact, every one of them owed, past the ref_key $1, in ref_key order,
+// read off node_search_pkey from the cursor on. A row that names a doc artifact is the first
+// walk's, which the second passes over, so the second reads each document's row once in a run.
+var (
+	documentSearchOwedDocumentsStatement = `select a.ref_key
+	from artifacts a` + documentSearchJudged("a.ref_key") + `
+	  and a.kind = 'doc' and a.ref_key > $1
+	order by a.ref_key
 	limit $2`
+	documentSearchOrphanRowsStatement = `select s.node_address from node_search s
+	where s.node_kind = '` + graphstore.KindArtifact + `'
+	  and not exists (select 1 from artifacts a where a.ref_key = s.node_address and a.kind = 'doc')
+	  and s.node_address > $1
+	order by s.node_address
+	limit $2`
+)
 
 // backfillDocumentSearch writes the node_search document row of every document whose row does not
-// stand for it (documentSearchOwedSQL), backfillBatch documents a transaction
-// (writeDocumentSearchBatch), and counts the rows still owed once it has walked them all.
+// stand for it (documentSearchOwedSQL), the documents first and then the rows naming no document,
+// backfillBatch keys a transaction (writeDocumentSearchBatch), and counts the rows still owed once
+// it has walked them all.
 func backfillDocumentSearch(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: documentSearchNodeKind}
-	after := ""
-	for {
-		rows, err := database.Pool.Query(ctx, documentSearchOwedKeysStatement, after, backfillBatch)
-		if err != nil {
-			return done, fmt.Errorf("read the documents whose search row is owed: %w", err)
-		}
-		batch, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			return done, fmt.Errorf("read the documents whose search row is owed: %w", err)
-		}
-		if len(batch) == 0 {
-			break
-		}
-		after = batch[len(batch)-1]
+	write := func(batch []string) error {
 		written, err := writeDocumentSearchBatch(ctx, database, batch)
-		if err != nil {
-			return done, err
-		}
 		done.Rows += written
-		if len(batch) < backfillBatch {
-			break
-		}
+		return err
+	}
+	if err := owedBatches(ctx, database, documentSearchOwedDocumentsStatement, "the documents whose search row is owed", "", write); err != nil {
+		return done, err
+	}
+	if err := owedBatches(ctx, database, documentSearchOrphanRowsStatement, "the search rows that name no document", "", write); err != nil {
+		return done, err
 	}
 	if err := database.Pool.QueryRow(ctx, `select count(*)`+documentSearchOwedSQL).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the documents whose search row is still owed: %w", err)
