@@ -310,6 +310,17 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.DeletePullRequest(ctx, tx, key, pr.Branch))
 		}, marks: true, issue: true},
+		{name: "control: a pull request deleted that the record does not hold", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.DeletePullRequest(ctx, tx, key, pr.Branch))
+		}},
+		{name: "a pull request's base moved", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.PutPullRequest(ctx, tx, pr))
+		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.SetPullRequestBaseMoved(ctx, tx, key, pr.Branch, "main"))
+		}, marks: true, issue: true},
+		{name: "control: the base moved of a branch the record holds no pull request on", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.SetPullRequestBaseMoved(ctx, tx, key, pr.Branch, "main"))
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			inRolledBackTx(t, st, func(ctx context.Context, tx pgx.Tx) {
