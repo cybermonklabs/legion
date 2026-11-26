@@ -50,6 +50,10 @@ type idleRigPods struct {
 	// session is the Cloud SQL session database the launchers proxy to, and dial is its upstream.
 	session ompsessions.Database
 	dial    func(ctx context.Context, signer sessionproxy.Signer) (sessionproxy.Dialer, error)
+	// gitHub is a slot's gh files as the pod's projection of the slot's Secret holds them, by
+	// their path under its gh directory (issueSandboxAPI.gitHubFiles), which each launcher's
+	// projection writes (projectGitHub).
+	gitHub func(pod, slot string) map[string][]byte
 
 	mu sync.Mutex
 	// running is each live pod's launchers, by pod name.
@@ -98,7 +102,7 @@ func (processes *idleRigPodProcesses) run(f func(ctx context.Context)) {
 	}()
 }
 
-func newIdleRigPods(t *testing.T, launch func(pod, podUID string) (connect string, microVM, ok bool), session ompsessions.Database, dial func(ctx context.Context, signer sessionproxy.Signer) (sessionproxy.Dialer, error)) *idleRigPods {
+func newIdleRigPods(t *testing.T, launch func(pod, podUID string) (connect string, microVM, ok bool), session ompsessions.Database, dial func(ctx context.Context, signer sessionproxy.Signer) (sessionproxy.Dialer, error), gitHub func(pod, slot string) map[string][]byte) *idleRigPods {
 	t.Helper()
 	// Each launcher's private directory is a numbered subdirectory of this root, and the unix
 	// socket of a generation's session database proxy is `<dir>/g<n>/.s.PGSQL.5432`. A unix
@@ -123,7 +127,7 @@ func newIdleRigPods(t *testing.T, launch func(pod, podUID string) (connect strin
 	jj := fixturegit.Isolated(t, t.TempDir())
 	jj.Run(filepath.Dir(located.Clone), fixturegit.JJInit(located.Clone, false)...)
 	jj.Run(located.Clone, "jj", "workspace", "add", located.Dir, "--name", "legion-208", "-R", located.Clone)
-	p := &idleRigPods{t: t, launch: launch, session: session, dial: dial,
+	p := &idleRigPods{t: t, launch: launch, session: session, dial: dial, gitHub: gitHub,
 		running: map[string]*idleRigPodProcesses{}, logs: &syncBuffer{}, started: map[string]int{},
 		dirRoot: root, workspace: located.Dir}
 	t.Cleanup(p.stopAll)
@@ -133,7 +137,8 @@ func newIdleRigPods(t *testing.T, launch func(pod, podUID string) (connect strin
 // podReady starts a launcher for each role of the pod, with that role's own launcher token and
 // the stream and MicroVM launch answers for the pod; a pod launch refuses gets no launcher and
 // counts no start. Before each launcher starts, record is handed its role, its private directory
-// and the pod's processes, beside which record may run its own (idleRigPodProcesses.run).
+// and the pod's processes, beside which record may run its own (idleRigPodProcesses.run). Beside
+// each launcher runs the projection of its slot's gh files (projectGitHub).
 func (p *idleRigPods) podReady(pod, podUID string, roles map[string]string, record func(role, dir string, processes *idleRigPodProcesses)) {
 	connect, microVM, ok := p.launch(pod, podUID)
 	if !ok {
@@ -155,19 +160,73 @@ func (p *idleRigPods) podReady(pod, podUID string, roles map[string]string, reco
 			p.t.Errorf("make the private directory of %s/%s: %v", pod, role, err)
 			continue
 		}
-		processes.dirs = append(processes.dirs, dir)
+		gh := dir + "-gh"
+		if err := os.Mkdir(gh, 0o700); err != nil {
+			p.t.Errorf("make the gh directory of %s/%s: %v", pod, role, err)
+			continue
+		}
+		processes.dirs = append(processes.dirs, dir, gh)
 		record(role, dir, processes)
 		cfg := launcher.Config{
 			Connect: connect, MicroVM: microVM, Token: token, Sandbox: pod, Role: role, PodUID: podUID, PrivateDir: dir,
 			Stdout: p.logs, Stderr: p.logs, StopGrace: 10 * time.Second,
-			SessionDatabase: p.session, SessionDialer: p.dial, Workspace: p.workspace,
+			SessionDatabase: p.session, SessionDialer: p.dial, Workspace: p.workspace, GHDir: gh,
 		}
+		processes.run(func(ctx context.Context) { p.projectGitHub(ctx, pod, role, gh) })
 		processes.run(func(ctx context.Context) {
 			if err := launcher.Run(ctx, cfg); err != nil && ctx.Err() == nil {
 				fmt.Fprintf(p.logs, "launcher %s/%s: %v\n", pod, role, err)
 			}
 		})
 	}
+}
+
+// idleRigGitHubSync is how often a launcher's projection of its slot's gh files reads the slot's
+// Secret again: the kubelet's sync period, which is about a minute in a cluster and is the rig's
+// tick here, so a start the daemon makes into a pod it keeps waits for its files a tick or two.
+const idleRigGitHubSync = idleRigTick
+
+// projectGitHub writes the slot's gh files into dir, the directory its launcher reads them in
+// (launcher.Config.GHDir), as the kubelet projects the slot's Secret into the pod's gh directory:
+// at once, and again each idleRigGitHubSync while the pod lives, so a file the daemon rewrites
+// reaches the pod. A start into a pod the daemon keeps names the credential the slot's files
+// must hold before its generation runs (runtime/sandbox's writeLaunchCredential), and the
+// launcher waits for it (launcher's awaitGitHubCredential): without this projection that start
+// waited out its whole bound, so a role whose process ended was never started again in its pod.
+// Each file is written beside its place and renamed into it, so the launcher never reads half of
+// one, as the kubelet swaps a projection whole.
+func (p *idleRigPods) projectGitHub(ctx context.Context, pod, slot, dir string) {
+	tick := time.NewTicker(idleRigGitHubSync)
+	defer tick.Stop()
+	written := map[string]string{}
+	for {
+		for name, data := range p.gitHub(pod, slot) {
+			if written[name] == string(data) {
+				continue
+			}
+			if err := idleRigProjectFile(filepath.Join(dir, filepath.FromSlash(name)), data); err != nil {
+				fmt.Fprintf(p.logs, "project %s/%s's %s: %v\n", pod, slot, name, err)
+				continue
+			}
+			written[name] = string(data)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+// idleRigProjectFile writes data at path: beside it first, then renamed into place.
+func idleRigProjectFile(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path+".new", data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(path+".new", path)
 }
 
 // privateDir is one launcher's private directory, where its generations' credentials and the unix

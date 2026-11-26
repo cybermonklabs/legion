@@ -201,7 +201,7 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 		cfg.Runtime.Kubernetes.SessionStore.Database,
 		func(context.Context, sessionproxy.Signer) (sessionproxy.Dialer, error) {
 			return idleRigDialer{address: idleRigHostPort(t, pool)}, nil
-		})
+		}, rig.kube.gitHubFiles)
 	rig.kube.serve(t)
 	// Boot reads runtime.kubernetes' kubeconfig whatever runtime it is given (readSandbox,
 	// kubeClient), and with none it reads the pod's in-cluster credentials, so the rig names its
@@ -250,7 +250,10 @@ func (r *idleWakeRig) listenerReports() map[string]string {
 // awaitListenerReady waits until the daemon has read a `listener_ready` report of the Envoy
 // listener, which is R7's gate: it releases nothing until it has. The listener publishes one at
 // its start and every five minutes after, so a listener that came up before this daemon's durable
-// consumer existed is started again rather than waited out.
+// consumer existed is started again rather than waited out. That stop ends every call made to the
+// listener at that moment, so the rig's role processes make none until this wait is over
+// (idleRigAgents.envoyHeld): they register with the daemon and wait, and go on to the listener
+// once this returns.
 func (r *idleWakeRig) awaitListenerReady() {
 	r.t.Helper()
 	defer func() {
@@ -283,6 +286,7 @@ func (r *idleWakeRig) awaitListenerReady() {
 		}
 		return false
 	})
+	r.agents.releaseEnvoy()
 }
 
 // issue is the seeded issue the test calls name.
