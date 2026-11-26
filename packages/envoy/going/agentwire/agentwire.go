@@ -48,7 +48,7 @@ const (
 	CallEnd    = "end"
 )
 
-// The eight kinds of call (CallRequest.Kind).
+// The seven kinds of call (CallRequest.Kind).
 const (
 	// KindRoute is one read or write of Dispatch: a tool by its name and its arguments, run
 	// through the server's route table as the run's person. A write runs only as a row of the
@@ -77,21 +77,7 @@ const (
 	// none (ClaimedRun.Line): a turn of such a run that Jev reads as Ask needs no check of its
 	// reply in prose for a plan it left out.
 	KindLine = "line"
-	// KindWords asks the server how many words the bar draws of a reply's text (CallRequest.Text)
-	// as the run's answer (WordsAnswer): the text as the server stores an answering reply frame's,
-	// the first link to each issue drawn as its chip, its key, its status and its title, and a
-	// later link to that issue and a link to another item with words of its own as those words
-	// (going/chips' DrawnWords). Like the line call, it records nothing, so its step and call are
-	// 0. The agent makes it for a reply in prose that would end the run's turn done, and holds the
-	// bound of the words (going/agent's wordsBound): a reply the bar draws in that many words or
-	// more gets its rewrite (going/agent's rewrite).
-	KindWords = "words"
 )
-
-// WordsAnswer is a words call's answer: the words the bar draws of the reply's text.
-type WordsAnswer struct {
-	Words int `json:"words"`
-}
 
 // The lines on top of the command bar a run may be started from (ClaimedRun.Line), as
 // going_runs.line holds them, and the line a line call answers (LineAnswer.Line): Ask for words
@@ -604,8 +590,6 @@ type CallRequest struct {
 	URL string `json:"url,omitempty"`
 	// Block is a block call's spec, as the run's model wrote it (going.RunBlock).
 	Block json.RawMessage `json:"block,omitempty"`
-	// Text is a words call's reply, its prose as the model wrote it.
-	Text string `json:"text,omitempty"`
 }
 
 // CallAnswer is what a call answered: the status, at most CallBodyLimit bytes of the body and

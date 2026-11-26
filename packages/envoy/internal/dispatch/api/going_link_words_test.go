@@ -129,8 +129,7 @@ func TestAnAnswerIsStoredWithTheBareKeysItsReadsReturnedLinked(t *testing.T) {
 // block whose info string was draw, and the bar drew it as a box of code above the chart itself.
 // The server stores the answer of a run without each fenced code block that holds a block the run
 // drew, its spacing aside, or whose info string is draw; every other code block, JSON or not,
-// stays as it came, byte for byte. The words call counts the answer as it is stored, both blocks
-// left out, which the answer's frame says.
+// stays as it came, byte for byte.
 func TestAnAnswerIsStoredWithoutTheBlocksItsRunDrew(t *testing.T) {
 	t.Parallel()
 	rig := newGoingAgentRig(t, nil)
@@ -172,22 +171,13 @@ func TestAnAnswerIsStoredWithoutTheBlocksItsRunDrew(t *testing.T) {
 		t.Fatalf("read the answer's frame: %v", err)
 	}
 	var answer struct {
-		Text  string `json:"text"`
-		Drawn *int   `json:"drawn_words"`
+		Text string `json:"text"`
 	}
 	if err := json.Unmarshal(data, &answer); err != nil {
 		t.Fatal(err)
 	}
 	if want := "DEMO's issues:\n\n\n\n" + kept; answer.Text != want {
 		t.Errorf("the answer is stored as\n%q\nwant\n%q", answer.Text, want)
-	}
-	// DEMO's issues: ```json {"status": "todo"} The query: ```sql select count(*) from issues; That
-	// is all. The fences alone, ``` and ```, are no words.
-	switch {
-	case answer.Drawn == nil:
-		t.Error("the answer's frame says no count of drawn words, want the 15 of the answer as stored")
-	case *answer.Drawn != 15:
-		t.Errorf("the answer's frame says %d drawn words, want the 15 of the answer as stored", *answer.Drawn)
 	}
 }
 

@@ -59,9 +59,10 @@ import (
 // returned it (internal/dispatch/api's going_link_words.go); and c32's q1 answer reached 134
 // words once its chips' words were counted: the rule of 120 words says each link is drawn as a
 // chip of the issue's key, status and title, whose words count, and that the prose repeats
-// nothing a chip shows. That rule did not hold the bound alone: at 8a3e562b a tester measured 6
-// of 11 answers to q1 at 120 words or more as the bar draws them, so the bound is now held in the
-// answer path too, which gives a longer reply its rewrite (length.go). At 8a3e562b, too, a
+// nothing a chip shows. That rule does not hold every answer to the bound: at 8a3e562b a tester
+// measured 6 of 11 answers to q1 at 120 words or more as the bar draws them, and no check holds an
+// answer to it, as the architect ruled
+// (dispatch://INFRA-1588/comment/11a20169-2973-4e4f-bcd4-701a24ba4ecc). At 8a3e562b, too, a
 // chart answer's prose said DEMO has 41 issues where its list result and its chart gave 42: the
 // model counted the rows of a list it was given whole, so a list result names its total before
 // its body (resultText), and the rule says a count in the prose is a total a tool result or a
@@ -71,10 +72,9 @@ import (
 // the server takes such a code block out of the answer (going_link_words.go). In the preview at
 // 8fc4d59f, c15's answer-01 wrote DEMO-21's priority as "no priority above the default", which
 // the judge did not read as P3: the rule asks for the priority_shown value word for word, with
-// that miss as its example. At 8fc4d59f, too, the server's count, which had counted a second link
-// to an issue as its chip where the bar draws the link's words, was made to count as the bar
-// draws (chips.DrawnWords): the rule says a second link to the same item adds words to the answer
-// and draws no chip. At a2b86e05 the review found that the rules of the answer and of its rewrite
+// that miss as its example. At 8fc4d59f, too, the bar was found to draw a second link to an issue
+// as the link's words, not as the issue's chip: the rule says a second link to the same item adds
+// words to the answer and draws no chip. At a2b86e05 the review found that the rules of the answer
 // said the bar draws each link as its item's chip in place of the link's words, where it draws a
 // later link to an issue, and a link to another item with words of its own, as those words: the
 // rules say so now, as the judge's view of the answer reads them (chips.RenderAnswer).
@@ -148,26 +148,6 @@ This run has one task: the person pressed Enter on the line "File as a new issue
 - The person asked you to file this issue, so file it: never decline to file, also where an open issue already tracks the same thing.
 - Read only what you need for these: the page's issue, where the page names one, was read for you already. Write no answer: your turn ends once the issue is filed.`
 
-// rewritePrompt is the system message of the rewrite of a reply held back as long (rewrite,
-// length.go), as the architect ruled
-// (dispatch://INFRA-1588/comment/8a23ec38-289e-44c4-88a0-b332fd3f5453): the rules of systemPrompt
-// on the answer's form - the direct answer first, under 120 words unless the person asks for
-// more, the first link to each issue drawn as its chip, whose words count, each item once by its
-// link, nothing a chip shows said again in the prose, each time a link, no correction of itself -
-// and none of its tools or its reads: the call is offered no tool, and is given the person's
-// words, the held reply and longTold alone. It asks for the held reply shortened, with nothing
-// added, and the agent shows the held reply whole where the rewrite links what the held reply
-// does not (addedLink).
-const rewritePrompt = `You are the command bar of Dispatch. The person did not see your reply to their words, below, since the bar draws it in too many words. Write it again, in markdown, from that reply alone.
-
-Rules:
-- Add nothing to the reply: no fact, no item, no link, no time and no number it does not hold. Keep each link you keep as the reply writes it, its address unchanged.
-- The answer starts with the direct answer in one or two sentences, then at most a short list, and stays under 120 words unless the person asks for more.
-- The bar draws the first link to each issue as the issue's chip in place of the link's words, which no one sees: its key, status and title. A later link to that issue, and a link to another item with words of its own, shows its own words; a link to another item whose words are its address shows the start of an ask's, a comment's or a message's text, or a document's or a file's name. The words of each chip count among the 120, so the prose never repeats what a chip shows, such as an issue's title or status, and every fact a chip does not show - the author, a holder, a priority, a count - stays outside the link.
-- Name each item once, by its link alone: a second link to the same item adds its words to the answer and draws no chip.
-- Keep each time a link, such as [5 days ago](dispatch-time:2026-11-18T11:35:00Z), its words and its address as the reply writes them.
-- Say each fact once, and state the answer you settled on: never a correction of yourself or your working.`
-
 // askSpecRule is the rule systemPrompt adds for a run in Ask: a create of an issue carries a spec
 // written from the person's words, since the server refuses a create with none there and on the
 // line File as a new issue (api's goingCallRun.specRequired, R9), whose own prompt asks for the
@@ -179,9 +159,8 @@ Rules:
 const askSpecRule = `
 - A new issue, a dispatch_issue change, carries spec: a short spec in markdown, written from the person's words alone, of what they want and why, in a few sentences.`
 
-// system is the system message of the run's every model call but Auto-review's and the rewrite
-// of a reply held back as long (rewritePrompt): systemPrompt, with newIssuePrompt for a new-issue
-// run, and with askSpecRule for any other run in Ask.
+// system is the system message of the run's every model call but Auto-review's: systemPrompt,
+// with newIssuePrompt for a new-issue run, and with askSpecRule for any other run in Ask.
 func (w *worker) system() string {
 	if w.run.Kind == agentwire.RunNewIssue {
 		return systemPrompt + newIssuePrompt

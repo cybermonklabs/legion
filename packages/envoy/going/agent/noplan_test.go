@@ -70,12 +70,11 @@ func (s *fakeServer) replyFrames(t *testing.T) []replyFrame {
 	return replies
 }
 
-// messageParts is the text of each part of one message of a request: its content as one part
-// where it is a string, else the text of each part of its list.
-func messageParts(message map[string]any) []string {
+// messageText is the text of one message of a request, its content a string or a list of parts.
+func messageText(message map[string]any) string {
 	switch content := message["content"].(type) {
 	case string:
-		return []string{content}
+		return content
 	case []any:
 		var parts []string
 		for _, part := range content {
@@ -85,14 +84,9 @@ func messageParts(message map[string]any) []string {
 				}
 			}
 		}
-		return parts
+		return strings.Join(parts, "\n")
 	}
-	return nil
-}
-
-// messageText is the text of one message of a request, its content a string or a list of parts.
-func messageText(message map[string]any) string {
-	return strings.Join(messageParts(message), "\n")
+	return ""
 }
 
 // toldAfter reports whether request gives the model prose as its own reply, and the person's

@@ -5735,7 +5735,7 @@
     },
     "/api/v1/going/runs/{id}/stop": {
       "post": {
-        "description": "Stop the caller's own command-bar run at once: a run that is queued, works or waits is set stopped with the reason \"STOPPED: its person stopped it\", its end frame names it, the agent cancels its model call in flight, and what the run did stays. A run whose last step is a reply its agent held back for length (its reply frame carries held_long and no text), stopped before the reply's rewrite ended the turn, first has that reply saved whole as its next step, with a reply frame carrying its text and drawn_words before the end frame, so the stopped run's answer is that reply. Answers the run as it then stands; a run that had ended is answered as it ended, unchanged. 404 GOING_RUN_NOT_FOUND as GET /api/v1/going/runs/{id} answers it.",
+        "description": "Stop the caller's own command-bar run at once: a run that is queued, works or waits is set stopped with the reason \"STOPPED: its person stopped it\", its end frame names it, the agent cancels its model call in flight, and what the run did stays. Answers the run as it then stands; a run that had ended is answered as it ended, unchanged. 404 GOING_RUN_NOT_FOUND as GET /api/v1/going/runs/{id} answers it.",
         "operationId": "postApiV1GoingRunsByIdStop",
         "parameters": [
           {

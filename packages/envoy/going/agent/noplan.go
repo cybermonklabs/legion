@@ -10,8 +10,7 @@ package agent
 // with noPlanSaid before its text. A new-issue run is held back the same way with no check: its
 // words always ask to file an issue. A turn whose words the decision model Jev reads as Ask makes
 // no check: its words ask for no change, so its answer waits for no check (readWords). Jev is
-// asked beside the turn's first model call, so its call adds nothing to the turn's time. A reply
-// that would end the turn done is first held to the bar's bound of words (length.go).
+// asked beside the turn's first model call, so its call adds nothing to the turn's time.
 
 import (
 	"context"
@@ -213,18 +212,14 @@ func (w *worker) jevLine() string {
 // flagged with no check. Prose of a turn whose words Jev read as Ask, by the time the guard
 // decides, is not checked: its words ask for no change, and it ends the turn done as it is. Any
 // other is checked (checkProse), and a check that fails flags nothing: the reply ends the turn as
-// it is, and the failure is logged. A reply that passes, or that no check flagged, would end the
-// turn done as it is, and first the bar's count of its words decides (holdLong, length.go): one of
-// wordsBound words or more is held back once in the turn where the level leaves a model call
-// (saveLong), and the next step, its rewrite (rewrite), is told longTold. A flagged reply is held
-// back where the turn held back none before it and the run's level leaves it a model call
-// (saveNoPlan): the turn goes on, and the next step's model is told noPlanTold. Any other flagged
-// reply ends the turn done with noPlanSaid before its text. The frame of a reply the check was
-// made for says what the check took (replyFrame.CheckMS), held back or not, and whatever the check
-// answered; that of a reply Jev's Ask spared says so (replyFrame.CheckSkipped); each says what Jev
-// read the words as where the guard asked (replyFrame.JevLine); and each whose words were counted
-// says the count (replyFrame.DrawnWords). A run that is no longer the worker's to go on with by
-// the check's end, or by the count's, saves nothing.
+// it is, and the failure is logged. A reply that passes ends the turn done as it is. A flagged
+// reply is held back where the turn held back none before it and the run's level leaves it a
+// model call (saveNoPlan): the turn goes on, and the next step's model is told noPlanTold. Any
+// other flagged reply ends the turn done with noPlanSaid before its text. The frame of a reply the
+// check was made for says what the check took (replyFrame.CheckMS), held back or not, and whatever
+// the check answered; that of a reply Jev's Ask spared says so (replyFrame.CheckSkipped); and
+// each says what Jev read the words as where the guard asked (replyFrame.JevLine). A run that is no
+// longer the worker's to go on with by the check's end saves nothing.
 func (w *worker) endProse(prose *proseReply) stepOutcome {
 	flagged := w.run.Kind == agentwire.RunNewIssue
 	jev := w.jevLine()
@@ -251,15 +246,7 @@ func (w *worker) endProse(prose *proseReply) stepOutcome {
 	outcome := stepOutcome{state: agentwire.StateDone}
 	switch {
 	case !flagged:
-		held, kept := w.holdLong(prose, turn.heldLong)
-		switch {
-		case !kept:
-			return stepOutcome{}
-		case held:
-			outcome = stepOutcome{}
-		default:
-			w.saveModel(prose.body, prose.frame, nil, true)
-		}
+		w.saveModel(prose.body, prose.frame, nil, true)
 	case !turn.nudged && w.level.spent(w.name, w.used) == "":
 		// spent answers a reason once this step was the level's last model call, the one offered
 		// no tool (Bounds.Calls 1), or once the run's working time is spent: then no call is left
@@ -276,20 +263,13 @@ func (w *worker) endProse(prose *proseReply) stepOutcome {
 
 // saveNoPlan saves prose as a reply the guard held back: its body marked NoPlan, so the run's
 // history tells the model noPlanTold after it and settled reads no end of the turn in it, a
-// restarted worker's too; its note says nothing changed (noPlanSaid); and its frame marked NoPlan
-// (saveHeld).
+// restarted worker's too; its note says nothing changed before its text, as the run's older steps
+// and a later turn of the conversation read it; and its frame marked NoPlan with no text, so the
+// bar adds nothing of it to the answer, and the frame still says where the model call's time went.
 func (w *worker) saveNoPlan(prose *proseReply) {
 	prose.body.NoPlan, prose.frame.NoPlan = true, true
-	w.saveHeld(prose, noPlanSaid)
-}
-
-// saveHeld saves prose as a reply held back, its body and its frame marked by the hold
-// (saveNoPlan, saveLong): its note says said before its text, as the run's older steps and a
-// later turn of the conversation read it, and its frame has no text, so the bar adds nothing of
-// it to the answer, and the frame still says where the model call's time went.
-func (w *worker) saveHeld(prose *proseReply, said string) {
 	frame, _ := json.Marshal(prose.frame)
-	w.save(agentwire.StepRequest{Step: prose.frame.Step, Kind: agentwire.StepModel, Note: note(said + " " + prose.body.Text),
+	w.save(agentwire.StepRequest{Step: prose.frame.Step, Kind: agentwire.StepModel, Note: note(noPlanSaid + " " + prose.body.Text),
 		Frames: []agentwire.Frame{{Name: frameReply, Data: frame}}}, prose.body)
 }
 
@@ -369,19 +349,18 @@ func noPlanText(words, prose string) string {
 	return fmt.Sprintf("The person's words:\n%s\n\nThe reply:\n%s\n", words, prose)
 }
 
-// turnState is what turnSoFar reads of the run's turn so far: whether it holds a plan, whether
-// the guard held back a reply of it (saveNoPlan), and whether a reply of it was held back as long
-// (saveLong).
+// turnState is what turnSoFar reads of the run's turn so far: whether it holds a plan, and whether
+// the guard held back a reply of it (saveNoPlan).
 type turnState struct {
-	planned, nudged, heldLong bool
+	planned, nudged bool
 }
 
 // turnSoFar reads the steps of the run's turn so far, those after its last person step, which
 // starts a turn of its own: whether the turn holds a plan - a plan the server kept (a propose_plan
 // step that was not refused), its review, a row of it that ran, or the person's approval of one,
-// whose rows run in the turn it starts, a person step that does not read counted so - whether the
-// guard held back a reply of the turn (saveNoPlan), and whether a reply of it was held back as
-// long (saveLong). A step older than the history's whole turns is read by its note.
+// whose rows run in the turn it starts, a person step that does not read counted so - and whether
+// the guard held back a reply of the turn (saveNoPlan). A step older than the history's whole
+// turns is read by its note.
 func (w *worker) turnSoFar() turnState {
 	var turn turnState
 	for at := len(w.history) - 1; at >= 0; at-- {
@@ -403,14 +382,10 @@ func (w *worker) turnSoFar() turnState {
 		case agentwire.StepModel:
 			if len(step.Body) == 0 {
 				turn.nudged = turn.nudged || strings.HasPrefix(step.Note, noPlanSaid)
-				turn.heldLong = turn.heldLong || strings.HasPrefix(step.Note, longSaid)
 				continue
 			}
 			var body modelBody
-			if json.Unmarshal(step.Body, &body) == nil {
-				turn.nudged = turn.nudged || body.NoPlan
-				turn.heldLong = turn.heldLong || body.LongWords > 0
-			}
+			turn.nudged = turn.nudged || json.Unmarshal(step.Body, &body) == nil && body.NoPlan
 		}
 	}
 	return turn

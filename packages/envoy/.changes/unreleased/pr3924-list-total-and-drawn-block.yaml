@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  A tool result whose body is a list now names the list's total before the body, such as "[Total:
+  42 issues in the list below.]", so a count in the answer is the server's even where the body is
+  cut; the system prompt says a count in the prose is a total a tool result or a drawn block gives.
+  The system prompt says a second link to the same item adds its words and draws no chip. The
+  server also takes out of a stored answer each code block that holds a block the run drew, or
+  whose info string is `draw`, since the bar already draws that block beside the answer.

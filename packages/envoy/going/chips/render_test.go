@@ -1,57 +1,24 @@
 package chips
 
-//ci:reads packages/contracts/fixtures/drawn-words.json os.ReadFile (../../../contracts/fixtures/drawn-words.json): TestDrawnWordsCountsEachAnswerOfTheFixtureAsTheBarDrawsIt holds the server's count to the words the web's MarkdownBody draws
-
 import (
-	"encoding/json"
-	"os"
 	"reflect"
 	"testing"
 )
 
-// TestDrawnWordsCountsAnAnswerAsTheBarDrawsIt: an answer of the command bar's agent has fewer than
-// 120 words as the bar draws them, and in a preview at 8a3e562b 6 of 11 answers drew 120 or more
-// once their chips were counted, though the model wrote fewer. So the count is of the words the
-// bar draws: a link to an issue counts its chip's key, status and title, and not the link's own
-// words; a time link counts its words alone, the date on its hover being drawn in no text, or its
-// issue's chip where its words are the issue's key; a link to an item the store does not hold
-// counts its bare reference, and a web address the link's words. Marks that stand alone - a
-// list's dashes, a heading's hashes, a chip's separators - count as no words, and a word with
-// marks around it counts once.
-func TestDrawnWordsCountsAnAnswerAsTheBarDrawsIt(t *testing.T) {
-	for _, c := range []struct {
-		name, answer string
-		want         int
-	}{
-		{"plain words and marks", "**Done:** two words\n\n- one\n- two\n\n# Heading", 6},
-		{"an issue's chip in place of the link's words", "[the key rotation work of last quarter](dispatch://OPS-4) waits.", 8},
-		{"an issue's chip by its dashboard path", "See [OPS-4](/issues/OPS-4).", 8},
-		{"a time link's words, not its hover's date", "Moved [5 days ago](dispatch-time:2026-11-18T11:35:00Z).", 4},
-		{"a time link whose words are a key", "[OPS-4](dispatch-time:2026-10-10T09:00:00Z) moved.", 8},
-		{"an issue the store does not hold", "[DEMO-404, closed last week](dispatch://DEMO-404) is gone.", 3},
-		{"a web address", "[the runbook](https://example.com/runbook) says so.", 4},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			if got := DrawnWords(c.answer, keptItems); got != c.want {
-				t.Errorf("DrawnWords(%q) = %d, want %d: the bar draws %q", c.answer, got, c.want, render(c.answer, keptItems, false))
-			}
-		})
-	}
-	const timed = "Moved [5 days ago](dispatch-time:2026-11-18T11:35:00Z)."
-	if got, want := RenderAnswer(timed, keptItems), "Moved 5 days ago (18 Nov 2026, 11:35 UTC)."; got != want {
-		t.Errorf("RenderAnswer(%q) = %q, want %q: the judge reads the date its hover shows", timed, got, want)
-	}
-}
-
-// TestRenderAnswerWritesEachLinkAsTheBarDrawsIt: the judge reads an answer as the bar draws it,
-// which is how DrawnWords counts it too: the first link to an issue is the issue's chip, and a
-// link to another item with words of its own, such as [its spec](dispatch://OPS-4/spec), is those
-// words, where RenderAnswer wrote the item's words, the issue's title, which the bar does not
-// draw. A link to another item whose words are its address is what the bar draws for the item,
-// and a later link to an issue that has its chip, a time link whose words are its key among them,
-// is its words, the time link's with the date its hover shows.
+// TestRenderAnswerWritesEachLinkAsTheBarDrawsIt: the judge reads an answer as the bar draws it:
+// the first link to an issue is the issue's chip, and a link to another item with words of its
+// own, such as [its spec](dispatch://OPS-4/spec), is those words, where RenderAnswer wrote the
+// item's words, the issue's title, which the bar does not draw. A link to another item whose words
+// are its address is what the bar draws for the item, and a later link to an issue that has its
+// chip, a time link whose words are its key among them, is its words, the time link's with the
+// date its hover shows, as every time link's words are.
 func TestRenderAnswerWritesEachLinkAsTheBarDrawsIt(t *testing.T) {
 	for _, c := range []struct{ name, answer, want string }{
+		{
+			"a time link's words with the date its hover shows",
+			"Moved [5 days ago](dispatch-time:2026-11-18T11:35:00Z).",
+			"Moved 5 days ago (18 Nov 2026, 11:35 UTC).",
+		},
 		{
 			"a link to an issue's spec with words of its own",
 			"Read [its spec](dispatch://OPS-4/spec).",
@@ -70,52 +37,7 @@ func TestRenderAnswerWritesEachLinkAsTheBarDrawsIt(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := RenderAnswer(c.answer, keptItems); got != c.want {
-				t.Errorf("RenderAnswer(%q) = %q, want %q: the bar draws %q", c.answer, got, c.want, render(c.answer, keptItems, false))
-			}
-		})
-	}
-}
-
-// TestDrawnWordsCountsEachAnswerOfTheFixtureAsTheBarDrawsIt: the bar draws an issue's chip at the
-// first link to the issue alone, and a later link to it as the words it was written with, so in a
-// preview at 8fc4d59f the server counted 96 to 111 words of answers the page drew in 71 to 87,
-// each later link counted as a whole chip, and held answers back on counts of 175 to 266. The bar
-// also draws a link to another item, such as an issue's spec, as its own words where they are not
-// its address. packages/contracts/fixtures/drawn-words.json holds answers with the issues they
-// link and the words the bar draws of each, which the web's MarkdownBody.drawn-words.test.tsx
-// holds the bar to: DrawnWords counts each answer's words as the fixture says, so a change to
-// either side fails a test.
-func TestDrawnWordsCountsEachAnswerOfTheFixtureAsTheBarDrawsIt(t *testing.T) {
-	raw, err := os.ReadFile("../../../contracts/fixtures/drawn-words.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var fixture struct {
-		Issues []struct {
-			Key    string `json:"key"`
-			Status string `json:"status"`
-			Title  string `json:"title"`
-		} `json:"issues"`
-		Answers []struct {
-			Name     string `json:"name"`
-			Markdown string `json:"markdown"`
-			Words    int    `json:"words"`
-		} `json:"answers"`
-	}
-	if err := json.Unmarshal(raw, &fixture); err != nil {
-		t.Fatal(err)
-	}
-	if len(fixture.Answers) == 0 {
-		t.Fatal("the fixture holds no answers")
-	}
-	items := held{issues: map[string][2]string{}}
-	for _, issue := range fixture.Issues {
-		items.issues[issue.Key] = [2]string{issue.Status, issue.Title}
-	}
-	for _, answer := range fixture.Answers {
-		t.Run(answer.Name, func(t *testing.T) {
-			if got := DrawnWords(answer.Markdown, items); got != answer.Words {
-				t.Errorf("DrawnWords(%q) = %d, want %d: the bar draws %q", answer.Markdown, got, answer.Words, render(answer.Markdown, items, false))
+				t.Errorf("RenderAnswer(%q) = %q, want %q", c.answer, got, c.want)
 			}
 		})
 	}

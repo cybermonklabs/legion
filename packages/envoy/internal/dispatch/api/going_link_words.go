@@ -16,8 +16,7 @@ package api
 // conversation, History and the eval all read an answer from. The server writes it rather than
 // the agent since it reads each item the answer links from the store, as the bar reads it for its
 // chip, and the run's tool results from its saved steps, where the agent holds only what its reads
-// happened to return. The agent's words call counts the words the bar draws of that same text
-// (going_agent_words.go).
+// happened to return.
 
 import (
 	"context"
@@ -218,15 +217,14 @@ var (
 // goingAnswerItems is what the bar draws for each item an answer links (chips.Items), read from q
 // for the run's person, as the bar reads it for them: an item reserved for another author
 // (refs.VisibleKind) is one it holds nothing of, as is one no row holds. It reads the person's
-// login with its first item where it was not given the person's credential (asked), and each item
-// once: a read made again answers what the first answered. A read that fails keeps its error
-// (err), and nothing more is read.
+// login with its first item (asked), and each item once: a read made again answers what the first
+// answered. A read that fails keeps its error (err), and nothing more is read.
 type goingAnswerItems struct {
 	ctx context.Context
 	q   queryer
 	run string
 	// reader is the person's credential as a visibility predicate binds it (refs.VisibilityArg),
-	// read, or given, once asked is set.
+	// read once asked is set.
 	reader any
 	asked  bool
 	// rows is what each read scanned, by its query and its arguments, nil for no row.

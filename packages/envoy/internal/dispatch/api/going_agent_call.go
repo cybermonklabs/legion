@@ -118,9 +118,9 @@ func (a *AgentListener) call(ctx context.Context, request agentwire.CallRequest)
 		return agentwire.CallAnswer{}, refusal
 	}
 	switch request.Kind {
-	case agentwire.KindRoute, agentwire.KindGitHub, agentwire.KindWeb, agentwire.KindPlan, agentwire.KindReview, agentwire.KindBlock, agentwire.KindLine, agentwire.KindWords:
+	case agentwire.KindRoute, agentwire.KindGitHub, agentwire.KindWeb, agentwire.KindPlan, agentwire.KindReview, agentwire.KindBlock, agentwire.KindLine:
 	default:
-		return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeBadRequest, "a call is of kind route, github, web, plan, review, block, line or words, not %q", request.Kind)
+		return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeBadRequest, "a call is of kind route, github, web, plan, review, block or line, not %q", request.Kind)
 	}
 	select {
 	case a.slots <- struct{}{}:
@@ -200,8 +200,6 @@ func (a *AgentListener) runCall(ctx context.Context, request agentwire.CallReque
 		answer, refusal = a.blockCall(ctx, request)
 	case agentwire.KindLine:
 		answer, refusal = a.lineCall(ctx, request, caller)
-	case agentwire.KindWords:
-		answer, refusal = a.wordsCall(ctx, request, run.login)
 	}
 	if refusal == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		// What a route answered once the call's own time was over is not the call's answer: the

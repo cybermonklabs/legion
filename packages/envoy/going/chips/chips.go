@@ -5,12 +5,11 @@
 // and a link to another item whose words are its address shows the item, read from Dispatch.
 // RewriteLinks finds the links of an answer's markdown, ParseTarget reads the item a link names,
 // and Target.Words is what the bar draws for it; RenderAnswer writes an answer as the eval's judge
-// reads it with them, and DrawnWords counts the words the bar draws of it. LinkBareKeys writes an
-// answer so that each issue key it names bare, which a read of its run returned, is a link the bar
-// draws as the issue's chip, KeepLinkWords so that the words of a link that say more than its chip
-// draws stand beside the link, and DropCodeBlocks takes out the code blocks that hold a block the
-// bar draws itself; the server does each to each answer of a run as it stores it
-// (internal/dispatch/api's going_link_words.go).
+// reads it with them. LinkBareKeys writes an answer so that each issue key it names bare, which a
+// read of its run returned, is a link the bar draws as the issue's chip, KeepLinkWords so that the
+// words of a link that say more than its chip draws stand beside the link, and DropCodeBlocks
+// takes out the code blocks that hold a block the bar draws itself; the server does each to each
+// answer of a run as it stores it (internal/dispatch/api's going_link_words.go).
 package chips
 
 import (

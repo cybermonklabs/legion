@@ -34,21 +34,15 @@ import (
 // fakeServer is the server's side of agent/v1 for one worker: it saves each step a run saves,
 // appends the frames of each step and each frames call to the run's events, answers each call the
 // run makes with what call answers, or refuses it with what refuse answers where it is set and
-// answers a refusal, and keeps each end. A words call (agentwire.KindWords) is kept apart and
-// refused with refuseWords where it is set, else answered by words, or, where words is nil, with
-// the count of its text's white-space separated words, as the server counts a reply that links
-// nothing: call and refuse never see one.
+// answers a refusal, and keeps each end.
 type fakeServer struct {
-	call        func(agentwire.CallRequest) agentwire.CallAnswer
-	refuse      func(agentwire.CallRequest) *agentwire.Error
-	words       func(agentwire.CallRequest) agentwire.CallAnswer
-	refuseWords *agentwire.Error
+	call   func(agentwire.CallRequest) agentwire.CallAnswer
+	refuse func(agentwire.CallRequest) *agentwire.Error
 
-	mu         sync.Mutex
-	steps      []agentwire.StepRequest
-	calls      []agentwire.CallRequest
-	wordsCalls []agentwire.CallRequest
-	ends       []agentwire.EndRequest
+	mu    sync.Mutex
+	steps []agentwire.StepRequest
+	calls []agentwire.CallRequest
+	ends  []agentwire.EndRequest
 	// events is each frame of the run's events, in the order the server took them.
 	events []agentwire.Frame
 }
@@ -106,13 +100,6 @@ func (s *fakeServer) serve(t *testing.T, conn net.Conn) {
 	case agentwire.CallCall:
 		var call agentwire.CallRequest
 		_ = json.Unmarshal(request.Body, &call)
-		if call.Kind == agentwire.KindWords {
-			s.wordsCalls = append(s.wordsCalls, call)
-			if refusal = s.refuseWords; refusal == nil {
-				answer = s.answerWords(call)
-			}
-			break
-		}
 		s.calls = append(s.calls, call)
 		s.mu.Unlock()
 		if s.refuse != nil {
@@ -137,21 +124,6 @@ func (s *fakeServer) serve(t *testing.T, conn net.Conn) {
 	header := make([]byte, 4)
 	binary.BigEndian.PutUint32(header, uint32(len(reply)))
 	_, _ = conn.Write(append(header, reply...))
-}
-
-// answerWords answers a words call with words, or, where it is nil, with the count of the text's
-// white-space separated words.
-func (s *fakeServer) answerWords(call agentwire.CallRequest) agentwire.CallAnswer {
-	if s.words != nil {
-		return s.words(call)
-	}
-	return countedWords(len(strings.Fields(call.Text)))
-}
-
-// countedWords is a words call's answer of words.
-func countedWords(words int) agentwire.CallAnswer {
-	body, _ := json.Marshal(agentwire.WordsAnswer{Words: words})
-	return agentwire.CallAnswer{Status: http.StatusOK, Body: body}
 }
 
 // end is the run's one end, and its saved model steps' bodies in order.
@@ -1577,11 +1549,10 @@ func TestThePromptSaysWhatAnAnswerAndAStatusGive(t *testing.T) {
 
 // TestThePromptsExamplesNameNoItemOfTheEvalsSeed: the eval's run that answered with no read said
 // the planner is on DEMO-7, the key the prompt's examples named, which the eval's seed holds. Every
-// issue key the system prompt, the new-issue prompt, the rewrite's system message (rewritePrompt),
-// and the prompt and notes of the guard's check of a reply in prose (noplan.go) name is of the
-// project ACME, and neither the prompts nor the text of a tool the agent is offered or find_tools
-// answers - its description and its arguments' schema - names a project, session or person of
-// the eval's seed (going/eval/seed.json).
+// issue key the system prompt, the new-issue prompt, and the prompt and notes of the guard's check
+// of a reply in prose (noplan.go) name is of the project ACME, and neither the prompts nor the text
+// of a tool the agent is offered or find_tools answers - its description and its arguments' schema
+// - names a project, session or person of the eval's seed (going/eval/seed.json).
 func TestThePromptsExamplesNameNoItemOfTheEvalsSeed(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "eval", "seed.json"))
 	if err != nil {
@@ -1598,7 +1569,7 @@ func TestThePromptsExamplesNameNoItemOfTheEvalsSeed(t *testing.T) {
 	if len(seed.Projects) == 0 || len(seed.Sessions) == 0 || len(seed.People) == 0 {
 		t.Fatalf("the seed read as %d projects, %d sessions and %d people, want some of each", len(seed.Projects), len(seed.Sessions), len(seed.People))
 	}
-	prompt := systemPrompt + newIssuePrompt + noPlanPrompt + noPlanNote + newIssueNoPlanNote + lastCallNote + rewritePrompt
+	prompt := systemPrompt + newIssuePrompt + noPlanPrompt + noPlanNote + newIssueNoPlanNote + lastCallNote
 	keys := regexp.MustCompile(`\b[A-Z][A-Z0-9]*-\d+\b`).FindAllString(prompt, -1)
 	if len(keys) == 0 {
 		t.Fatal("the prompts name no issue key, so no example is checked")

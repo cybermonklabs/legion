@@ -43,7 +43,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/going/agent"
 	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -1016,10 +1015,7 @@ func (s *server) stopGoingRun(ctx context.Context, run, reason string) (bool, er
 
 // stopGoingRunIn sets run stopped for reason in tx, its lease freed, and appends its end frame,
 // which offers offers; the end of a new-issue run whose create landed also names the issue it
-// filed and offers Undo (goingNewIssueEnd). A run whose last step is a reply its agent held back
-// as long, stopped before the reply's rewrite ended the turn, first saves that reply shown whole
-// as its next step, with its frame (goingShowHeld), so the stopped run's answer is the held reply,
-// never nothing. The caller holds the run's row for update.
+// filed and offers Undo (goingNewIssueEnd). The caller holds the run's row for update.
 func stopGoingRunIn(ctx context.Context, tx pgx.Tx, run, reason string, offers []string) error {
 	ended := agentwire.EndFrame{State: agentwire.StateStopped, Reason: reason, Offers: offers}
 	if err := goingNewIssueEnd(ctx, tx, run, &ended); err != nil {
@@ -1032,63 +1028,14 @@ func stopGoingRunIn(ctx context.Context, tx pgx.Tx, run, reason string, offers [
 	`, run, reason); err != nil {
 		return fmt.Errorf("stop run %s: %w", run, err)
 	}
-	frames, err := goingShowHeld(ctx, tx, run)
-	if err != nil {
-		return err
-	}
 	frame, err := json.Marshal(ended)
 	if err != nil {
 		return err
 	}
-	if err := appendGoingRunFrames(ctx, tx, run, append(frames, agentwire.Frame{Name: agentwire.FrameEnd, Data: frame})); err != nil {
+	if err := appendGoingRunFrames(ctx, tx, run, []agentwire.Frame{{Name: agentwire.FrameEnd, Data: frame}}); err != nil {
 		return fmt.Errorf("end run %s: %w", run, err)
 	}
 	return nil
-}
-
-// goingShowHeld saves in tx run's held reply shown whole as run's next step, where the last step
-// run saved is a reply its agent held back as long - a model step whose body counts the words the
-// bar draws of it (going/agent's saveLong) - and run is not withdrawn, and answers the step's reply
-// frame; it saves and answers nothing otherwise. The agent saves such a reply with a frame of no
-// text, which the bar adds to no answer (web features/going/run-frames.ts), and its next step, the
-// reply's rewrite, ends the turn with the rewrite's reply or with the held reply shown whole
-// (going/agent's endRewrite and showHeld). A stop that lands before then frees the run's lease, so
-// the agent can save nothing after it, and the stop saves the step showHeld would have saved
-// (agent.StopStep): the reply again whole, its count of long words cleared, with the notice of the
-// tool results the run had withheld from the model, which the held step records, so a later turn
-// reads it as the answer the person saw, and its frame, which carries its prose, the count the bar
-// draws of it and how many results were withheld, its text stored as every answer is
-// (goingKeepLinkWords). A withdrawn run shows nothing it stored and stores nothing more
-// (going_run_posts.go), so its stop saves no step.
-func goingShowHeld(ctx context.Context, tx pgx.Tx, run string) ([]agentwire.Frame, error) {
-	var step int
-	var held []byte
-	err := tx.QueryRow(ctx, `
-		select s.step, s.body from going_run_steps s
-		where s.run_id = $1::uuid and s.kind = $2
-		  and s.step = (select max(l.step) from going_run_steps l where l.run_id = s.run_id)
-		  and not `+goingRunWithdrawnOf("s.run_id")+`
-	`, run, agentwire.StepModel).Scan(&step, &held)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read the last step of run %s: %w", run, err)
-	}
-	body, note, frame, shown := agent.StopStep(step+1, held)
-	if !shown {
-		return nil, nil
-	}
-	if _, err := tx.Exec(ctx, `
-		insert into going_run_steps (run_id, step, kind, body, note) values ($1::uuid, $2, $3, $4::jsonb, $5)
-	`, run, step+1, agentwire.StepModel, string(body), note); err != nil {
-		return nil, fmt.Errorf("save the held reply of run %s shown whole: %w", run, err)
-	}
-	frames := []agentwire.Frame{{Name: goingReplyFrame, Data: frame}}
-	if err := goingKeepLinkWords(ctx, tx, run, frames); err != nil {
-		return nil, fmt.Errorf("store the held reply of run %s: %w", run, err)
-	}
-	return frames, nil
 }
 
 // step saves one step of a run and appends its frames to the run's events, in sequence, in one

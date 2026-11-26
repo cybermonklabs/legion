@@ -54,11 +54,6 @@ const modelCallTime = 5 * time.Minute
 // up its lease and counts its goroutine stuck.
 const watchdogGrace = 10 * time.Second
 
-// wordsCallTime bounds the words call of a reply in prose (drawnWords), as the run's end bounds
-// its own call: the call is made once the step's watchdog stopped, so nothing else bounds a
-// sign-in outage that serverCall waits out. A variable, so a test shortens it.
-var wordsCallTime = 10 * time.Second
-
 // The codes of the reasons a bound of its level stops a run with; each run so stopped offers
 // Continue.
 const (

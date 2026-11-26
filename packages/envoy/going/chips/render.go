@@ -5,27 +5,23 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode"
 )
 
-// render.go writes an answer as the person reads it in the command bar (RenderAnswer), and counts
-// the words the bar draws of it (DrawnWords). The bar's conversation draws an answer with chips
-// (the web's MarkdownBody with chips, ItemChip and RefLink): the first link to each issue shows
-// the issue's chip, read from Dispatch, in place of the words the model gave the link; a later
-// link to that issue, and a link to another item with words of its own, shows those words; and a
-// link to another item whose words are its address shows the item, read from Dispatch. The eval's
-// judge reads the answer so (going/eval), and a fact the person reads in a chip is stated, and
-// words the chip replaced are not. A time the model wrote as a link ([5 days ago](dispatch-time:2026-11-18T11:35:00Z),
-// the web's dispatch-time.tsx) shows its words and its full date on hover, so the judge reads
-// both; a time link whose words are an issue's key shows the issue's chip in place of its words
-// (the web's timeLinkIssue) where it is the first link to that issue, so the judge reads the chip
-// and the date. The server counts the words of an answer as the bar draws them
-// (internal/dispatch/api's going_agent_words.go), which holds the answer's bound of 120 words:
-// the date on a time link's hover is no word it draws, an issue is its chip at its first link
-// alone, and a link that reads as its own words is those.
+// render.go writes an answer as the person reads it in the command bar (RenderAnswer). The bar's
+// conversation draws an answer with chips (the web's MarkdownBody with chips, ItemChip and
+// RefLink): the first link to each issue shows the issue's chip, read from Dispatch, in place of
+// the words the model gave the link; a later link to that issue, and a link to another item with
+// words of its own, shows those words; and a link to another item whose words are its address
+// shows the item, read from Dispatch. The eval's judge reads the answer so (going/eval), and a
+// fact the person reads in a chip is stated, and words the chip replaced are not. A time the model
+// wrote as a link ([5 days ago](dispatch-time:2026-11-18T11:35:00Z), the web's
+// dispatch-time.tsx) shows its words and its full date on hover, so the judge reads both; a time
+// link whose words are an issue's key shows the issue's chip in place of its words (the web's
+// timeLinkIssue) where it is the first link to that issue, so the judge reads the chip and the
+// date.
 
-// RenderAnswer is answer, an answer's markdown, as the person reads it in the bar (render, where
-// hover is set): each link as the bar draws it, and each time link with the date its hover shows.
+// RenderAnswer is answer, an answer's markdown, as the person reads it in the bar: each link as
+// the bar draws it, and each time link with the date its hover shows.
 // The first link to each issue (dispatch://DEMO-12, /issues/DEMO-12) is the issue's chip, read
 // from items (Target.Words), between square brackets: its key, its status as the chip words it
 // and its title, [DEMO-12 · In progress · Export: CSV and PDF]. A later link to the same issue,
@@ -51,47 +47,10 @@ import (
 // dashboard path names its item as it does on the dashboard's own origin. A web address names no
 // item: the bar draws one as a chip only on its own origin, which an answer gives as a path.
 func RenderAnswer(answer string, items Items) string {
-	return render(answer, items, true)
-}
-
-// DrawnWords is how many words the bar draws of answer, an answer's markdown, with each item it
-// links read from items: the answer written as the bar draws it, as RenderAnswer writes it but
-// with no time link's date (render where hover is not set) - the first link to each issue as its
-// chip, its key, its status and its title, a later link to the same issue and a link to another
-// item that reads as its own words as those words, every other link to an item as the words the
-// bar draws for it, and each time link as its words alone, or its issue's chip, since the date on
-// its hover is not drawn; then split on white space, each piece that holds a letter or a digit
-// one word. So the marks of markdown that stand alone, a list's dash or a heading's hashes, and a
-// chip's separators (·) are no words, and a word with marks around it, **Done**, is one. Each
-// link stands in its own element in the bar's DOM, so a link's drawn words are separated by space
-// from adjacent text such as a possessive ([DEMO-1](dispatch://DEMO-1)'s), as the DOM text-node
-// counter joins them. packages/contracts/fixtures/drawn-words.json holds answers with the words
-// the bar draws of each, which a test of the web's MarkdownBody holds it to too.
-func DrawnWords(answer string, items Items) int {
-	words := 0
-	for piece := range strings.FieldsSeq(render(answer, items, false)) {
-		if strings.ContainsFunc(piece, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) {
-			words++
-		}
-	}
-	return words
-}
-
-// render is answer with each link written as the bar draws it: a link whose own words the bar
-// draws (drawnLinks.ownWords) as those words, a time link as its words or its issue's chip
-// (timeLinkWords), and every other link to an item as the words the bar draws for it
-// (Target.Words) between square brackets. Where hover is set, as RenderAnswer writes it, each
-// time link is followed by the date its hover shows. Where it is not, as DrawnWords counts it,
-// each time link is its words or its issue's chip alone, and space stands either side of every
-// link so text directly beside it is not joined onto the link's words.
-func render(answer string, items Items, hover bool) string {
 	var drawn drawnLinks
 	return RewriteLinks(answer, func(out *strings.Builder, written, words, href string) {
-		if !hover {
-			out.WriteByte(' ')
-		}
 		own := drawn.ownWords(words, href)
-		if timed, ok := timeLinkWords(words, href, items, own, hover); ok {
+		if timed, ok := timeLinkWords(words, href, items, own); ok {
 			out.WriteString(timed)
 		} else if own {
 			out.WriteString(words)
@@ -101,9 +60,6 @@ func render(answer string, items Items, hover bool) string {
 			out.WriteByte('[')
 			out.WriteString(named.Words(items))
 			out.WriteByte(']')
-		}
-		if !hover {
-			out.WriteByte(' ')
 		}
 	})
 }
@@ -185,12 +141,11 @@ func shownWords(words string) string {
 // else, around spaces (timeLinkKey), and own is not set, the words of the issue's chip read from
 // items (Target.Words) between square brackets, as the bar draws that issue's chip in their place;
 // own says the bar draws the link's own words (drawnLinks.ownWords), as it does a later link to an
-// issue whose chip it drew. Where hover is set, for an address that names an instant, the words
-// and then, in parentheses, the instant's full date and time in UTC, as the hover shows it: "5
-// days ago (18 Nov 2026, 11:35 UTC)", its seconds too where it has some. For an address that
-// names none, such as dispatch-time:last week, and where hover is not set, the words alone, as
-// the bar draws them.
-func timeLinkWords(words, href string, items Items, own, hover bool) (string, bool) {
+// issue whose chip it drew. For an address that names an instant, the words and then, in
+// parentheses, the instant's full date and time in UTC, as the hover shows it: "5 days ago (18 Nov
+// 2026, 11:35 UTC)", its seconds too where it has some. For an address that names none, such as
+// dispatch-time:last week, the words alone, as the bar draws them.
+func timeLinkWords(words, href string, items Items, own bool) (string, bool) {
 	if !isTimeAddress(href) {
 		return "", false
 	}
@@ -201,9 +156,6 @@ func timeLinkWords(words, href string, items Items, own, hover bool) (string, bo
 				words = "[" + issue.Words(items) + "]"
 			}
 		}
-	}
-	if !hover {
-		return words, true
 	}
 	at, ok := linkInstant(href[len(timeScheme):])
 	if !ok {
