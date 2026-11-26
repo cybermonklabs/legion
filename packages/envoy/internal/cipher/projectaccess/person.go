@@ -15,10 +15,11 @@ import (
 )
 
 // failureTTL is how long a read of the person route that failed is the answer to the next reads
-// of the same person, MemberKind's and Person's alike, counted from when the failure came back:
-// while Dispatch does not answer, those reads fail at once rather than each waiting up to
-// requestTimeout for a call of its own. It is short beside CacheTTL because a failure is no
-// answer: the read is asked again once it passes.
+// of the same person, MemberKind's, Person's and the hold gate's alike, counted from when the
+// failure came back: while Dispatch does not answer, those reads fail at once rather than each
+// waiting up to requestTimeout for a call of its own. It stays two seconds rather than the hold
+// gate's former five: one person route answers a trade's membership decision and its hold, so both
+// retry at the same short bound. A failure is no answer, and the read is asked again once it passes.
 const failureTTL = 2 * time.Second
 
 // cachedPerson is one answer of the person route: the member kind as Dispatch answered it, held
@@ -279,13 +280,15 @@ func (c *Client) askPerson(ctx context.Context, person string, flight *personFli
 
 // settleLocked keeps the outcome of a call of the person route for person: an answer is kept,
 // aged from before its question, unless one to a question asked later is already held, and clears
-// a kept failure; a failure is kept failureTTL from when it came back. A caller whose own context
-// ended settles nothing (personAnswerNow), and the shared call runs on no caller's context
-// (askPerson). c.mu is held.
+// a kept failure; a failure is kept failureTTL from when it came back. A kept hold read belongs to
+// exactly that outcome, so either one replaces it. A caller whose own context ended settles
+// nothing (personAnswerNow), and the shared call runs on no caller's context (askPerson). c.mu is
+// held.
 func (c *Client) settleLocked(person string, answer cachedPerson, err error) {
-	if len(c.people) >= maxCached || len(c.failures) >= maxCached {
+	if len(c.people) >= maxCached || len(c.failures) >= maxCached || len(c.keptHolds) >= maxCached {
 		c.sweepLocked()
 	}
+	delete(c.keptHolds, person)
 	if err != nil {
 		if len(c.failures) < maxCached {
 			c.failures[person] = failedRead{err: err, at: c.now()}

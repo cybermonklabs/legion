@@ -492,6 +492,29 @@ func TestADispatchThatAnswersNoHeldIsLoggedOnceAMinuteForEveryone(t *testing.T) 
 	}
 }
 
+// TestADispatchThatAnswersNoHeldCachesTheKeptRead: one Dispatch older than the hold answers bob
+// with no held field, and the broker keeps no answer for him. The first check reads the empty
+// person_standing row; while the client's thirty-second answer stays cached, every later check has
+// the same no-held failure, so it reuses that empty read. Once the store is closed, bob is still
+// served: the closed pool is not a new fact about Dispatch or the answer it kept.
+//
+// The fault: each check reading KeptHold from the store, as it did; the second check answers
+// ErrUncheckable from the closed pool.
+func TestADispatchThatAnswersNoHeldCachesTheKeptRead(t *testing.T) {
+	ctx := t.Context()
+	st := storetest.Open(t)
+	asOf := time.Now().UTC().Truncate(time.Microsecond)
+	r := newRig(answering(t, http.StatusOK, `{"person":"bob@example.com","member_kind":"full","as_of":"`+asOf.Format(time.RFC3339Nano)+`"}`),
+		projectaccesstest.StaticAccount("token"), st)
+	if err := r.gate.Check(ctx, bob); err != nil {
+		t.Fatalf("Check(%s) against a Dispatch that answers no held = %v, want nil", bob, err)
+	}
+	st.Close()
+	if err := r.gate.Check(ctx, bob); err != nil {
+		t.Fatalf("Check(%s) again from the same answer after the store closed = %v, want nil from its cached empty kept read", bob, err)
+	}
+}
+
 // TestHoldGateKeepsAnswerThirtySeconds: the gate answers from Dispatch's answer as long as the
 // broker caches it, thirty seconds from its ask, so a hold Dispatch records after that answer is
 // read at the first check after those thirty seconds. Each answer is written once, by the read
@@ -531,15 +554,16 @@ func TestHoldGateKeepsAnswerThirtySeconds(t *testing.T) {
 	}
 }
 
-// TestHoldGateBoundsEachAsk: an ask of a Dispatch that never answers ends within the gate's three
-// seconds, and the failure is remembered five seconds: a check in that time asks Dispatch nothing,
-// which the number of questions Dispatch was asked decides. The first question has ended before the
-// second check (stalling's end, settle), so a second check that asked would make a question of its
-// own, not join the first: the client shares one call per person for up to its ten seconds.
+// TestHoldGateUsesTheClientsFailureMemory: an ask of a Dispatch that never answers ends within the
+// gate's three seconds. The next check asks nothing for the client's failureTTL of two seconds,
+// because Person and MemberKind share that one memory: an outage costs one call per person per two
+// seconds, and a trade's membership decision and its hold retry together. The gate holds no second
+// failure memory; keeping its former five seconds would leave the hold stale after the client was
+// ready to ask again.
 //
-// Control: the failure not remembered (the gate's `if ctx.Err() != nil` read as true); the second
-// check asks Dispatch a question of its own, and the test fails naming one more question.
-func TestHoldGateBoundsEachAsk(t *testing.T) {
+// Control: the old five-second gate memory remains; the check once the client's two seconds have
+// passed asks Dispatch no second question, and the test fails naming it.
+func TestHoldGateUsesTheClientsFailureMemory(t *testing.T) {
 	ctx := t.Context()
 	url, calls, end := stalling(t)
 	r := newRig(url, projectaccesstest.StaticAccount("token"), storetest.Open(t))
@@ -553,12 +577,19 @@ func TestHoldGateBoundsEachAsk(t *testing.T) {
 	end()
 	r.settle(t, ada)
 	before := calls()
-	r.clock.advance(5*time.Second - time.Millisecond)
+	r.clock.advance(2*time.Second - time.Millisecond)
 	if err := r.gate.Check(ctx, ada); err != nil {
-		t.Fatalf("Check(%s) again within five seconds = %v, want nil", ada, err)
+		t.Fatalf("Check(%s) a millisecond before the client's failure memory ends = %v, want nil", ada, err)
 	}
 	if got := calls() - before; got != 0 {
-		t.Fatalf("a check within five seconds of a failed ask asked Dispatch %d more question(s), want none", got)
+		t.Fatalf("a check inside the client's two-second failure memory asked Dispatch %d more question(s), want none", got)
+	}
+	r.clock.advance(time.Millisecond)
+	if err := r.gate.Check(ctx, ada); err != nil {
+		t.Fatalf("Check(%s) once the client's failure memory ended = %v, want nil", ada, err)
+	}
+	if got := calls() - before; got != 1 {
+		t.Fatalf("a check once the client's two-second failure memory ended asked Dispatch %d more question(s), want 1", got)
 	}
 }
 

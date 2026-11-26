@@ -381,9 +381,11 @@ type Client struct {
 	people  map[string]cachedPerson
 	// failures holds each person's read that failed, for failureTTL from when it came back, and
 	// flights each person's read in flight, which a read of the same person, MemberKind's or
-	// Person's, joins rather than making a call of its own.
-	failures map[string]failedRead
-	flights  map[string]*personFlight
+	// Person's, joins rather than making a call of its own. keptHolds is the one KeptHold read
+	// beside a current Person failure, so the hold gate does not reread the same kept row.
+	failures  map[string]failedRead
+	keptHolds map[string]cachedKeptHold
+	flights   map[string]*personFlight
 	// joined, when set, runs each time a read joins one already in flight for the same person: a
 	// test's signal that the read waits on that call rather than making its own.
 	joined func()
@@ -408,12 +410,13 @@ type cachedAnswer struct {
 // 10 s whatever the client.
 func New(baseURL string, account ciphertoken.Account, httpClient *http.Client) *Client {
 	return &Client{
-		read:     dispatchread.New(baseURL, account, httpClient, requestTimeout, maxAnswerBytes),
-		now:      time.Now,
-		answers:  map[accessKey]cachedAnswer{},
-		people:   map[string]cachedPerson{},
-		failures: map[string]failedRead{},
-		flights:  map[string]*personFlight{},
+		read:      dispatchread.New(baseURL, account, httpClient, requestTimeout, maxAnswerBytes),
+		now:       time.Now,
+		answers:   map[accessKey]cachedAnswer{},
+		people:    map[string]cachedPerson{},
+		failures:  map[string]failedRead{},
+		keptHolds: map[string]cachedKeptHold{},
+		flights:   map[string]*personFlight{},
 	}
 }
 
@@ -576,8 +579,8 @@ func (c *Client) keepAnswer(key accessKey, answer cachedAnswer) {
 	}
 }
 
-// sweepLocked drops every answer older than CacheTTL and every failure older than failureTTL.
-// c.mu is held.
+// sweepLocked drops every answer older than CacheTTL, every failure older than failureTTL and every
+// kept hold whose Person failure ended. c.mu is held.
 func (c *Client) sweepLocked() {
 	now := c.now()
 	for key, cached := range c.answers {
@@ -593,6 +596,11 @@ func (c *Client) sweepLocked() {
 	for person, failed := range c.failures {
 		if now.Sub(failed.at) >= failureTTL {
 			delete(c.failures, person)
+		}
+	}
+	for person, cached := range c.keptHolds {
+		if !now.Before(cached.until) {
+			delete(c.keptHolds, person)
 		}
 	}
 }

@@ -352,18 +352,90 @@ type KeptStanding struct {
 	Unkept error
 }
 
+// cachedKeptHold is one KeptHold read beside the Person outcome that needs it. Until is the
+// outcome's end: failureTTL after a failed call, or CacheTTL after an answer Person cannot read as
+// held or not held. It is never a second retry rule; Person's outcome alone decides its lifetime.
+type cachedKeptHold struct {
+	standing KeptStanding
+	found    bool
+	err      error
+	until    time.Time
+}
+
+// keptHoldUntilLocked is the end of the Person outcome for which KeptHold reads the database.
+// A client failure is shared by MemberKind and Person for failureTTL. An answer naming no held, or
+// held and no as_of, stays in people for CacheTTL, where Person returns it as an error. c.mu is
+// held.
+func (c *Client) keptHoldUntilLocked(person string) (time.Time, bool) {
+	now := c.now()
+	if failed, ok := c.failures[person]; ok && now.Sub(failed.at) < failureTTL {
+		return failed.at.Add(failureTTL), true
+	}
+	cached, ok := c.people[person]
+	if !ok || now.Sub(cached.at) >= CacheTTL || cached.held != nil && !cached.asOf.IsZero() {
+		return time.Time{}, false
+	}
+	return cached.at.Add(CacheTTL), true
+}
+
+// cachedHold is the KeptHold read already made for Person's current failed outcome.
+func (c *Client) cachedHold(person string) (standing KeptStanding, found bool, err error, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, unkept := c.kept.unkeptHeld[person]; unkept {
+		return KeptStanding{}, false, nil, false
+	}
+	until, live := c.keptHoldUntilLocked(person)
+	cached, remembered := c.keptHolds[person]
+	if !live || !remembered || !cached.until.Equal(until) || !c.now().Before(cached.until) {
+		return KeptStanding{}, false, nil, false
+	}
+	return cached.standing, cached.found, cached.err, true
+}
+
+// rememberKeptHold keeps one database read beside Person's current failed outcome. A caller that
+// ran out of time says nothing of the next caller's kept row, so it is not remembered.
+func (c *Client) rememberKeptHold(ctx context.Context, person string, standing KeptStanding, found bool, err error) {
+	if ctx.Err() != nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	until, live := c.keptHoldUntilLocked(person)
+	if !live {
+		return
+	}
+	if len(c.keptHolds) >= maxCached {
+		c.sweepLocked()
+	}
+	if len(c.keptHolds) < maxCached {
+		c.keptHolds[person] = cachedKeptHold{standing: standing, found: found, err: err, until: until}
+	}
+}
+
 // KeptHold is the last answer of whether Dispatch holds person that c keeps, for the hold gate to
 // answer from while Dispatch cannot be asked (hold.Gate.Decide). It first writes again a held
 // answer no write has kept (keepHeldAgain), and then answers the later, by as_of, of the answer
 // the Keeper keeps (Keeper.PersonStanding) and a held answer this client read and no write keeps,
 // which carries Unkept. found is false when neither is kept, which is no error. The Keeper is read
-// on ctx, which the gate bounds. A client never given a keeper answers errKeepsNothing.
+// on ctx, which the gate bounds. One read is kept beside a current Person failure: failureTTL for
+// a failed call, and CacheTTL for an answer Person cannot read as held or not held. It tries an
+// unkept held write again instead, so that change is never hidden. A client never given a keeper
+// answers errKeepsNothing.
 func (c *Client) KeptHold(ctx context.Context, person string) (standing KeptStanding, found bool, err error) {
 	if c.kept == nil {
 		return KeptStanding{}, false, errKeepsNothing
 	}
 	person = record.CanonicalLogin(person)
+	c.mu.Lock()
+	_, unkeptBefore := c.kept.unkeptHeld[person]
+	c.mu.Unlock()
 	writeErr := c.keepHeldAgain(ctx, person)
+	if !unkeptBefore {
+		if standing, found, err, ok := c.cachedHold(person); ok {
+			return standing, found, err
+		}
+	}
 	row, found, readErr := c.kept.keeper.PersonStanding(ctx, person)
 	c.mu.Lock()
 	unkept, remembered := c.kept.unkeptHeld[person]
@@ -373,11 +445,17 @@ func (c *Client) KeptHold(ctx context.Context, person string) (standing KeptStan
 		if writeErr == nil {
 			writeErr = errNotKeptYet
 		}
-		return KeptStanding{Standing: store.Standing{Held: true, AsOf: unkept.asOf}, Unkept: writeErr}, true, nil
+		standing = KeptStanding{Standing: store.Standing{Held: true, AsOf: unkept.asOf}, Unkept: writeErr}
+		found, err = true, nil
 	case readErr != nil:
-		return KeptStanding{}, false, readErr
+		standing, found, err = KeptStanding{}, false, readErr
+	default:
+		standing, err = KeptStanding{Standing: row}, nil
 	}
-	return KeptStanding{Standing: row}, found, nil
+	if writeErr == nil {
+		c.rememberKeptHold(ctx, person, standing, found, err)
+	}
+	return standing, found, err
 }
 
 // KeptProjectMessage is logged at WARN, at most once a minute per person and project, when a read

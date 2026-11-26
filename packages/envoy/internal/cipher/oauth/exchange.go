@@ -1098,16 +1098,16 @@ func (p *Provider) heldRefusal(ctx context.Context, person string) error {
 	if person == "" {
 		return nil
 	}
-	switch v := p.exchange.Hold.Decide(ctx, person); {
-	case v.Kind == hold.Served:
+	switch v := p.exchange.Hold.Decide(ctx, person); v.Kind {
+	case hold.Served:
 		return nil
-	case v.Kind == hold.Held:
+	case hold.Held:
 		return (&oauth2.RFC6749Error{
 			ErrorField:       oauthwire.MembershipHeld,
 			DescriptionField: v.Words(),
 			CodeField:        http.StatusBadRequest,
 		}).WithWrap(v.Err).WithDebugError(v.Err)
-	case errors.Is(v.Err, dispatchread.ErrBrokerRefused):
+	case hold.BrokerRefused:
 		return refusedByDispatch(v.Err)
 	default:
 		return oauth2.ErrServerError.WithHint(v.Words()).WithWrap(v.Err).WithDebugError(v.Err)
