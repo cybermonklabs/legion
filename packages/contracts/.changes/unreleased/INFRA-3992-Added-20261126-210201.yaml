@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  `newestResultsText` gives the newest result of each role at what a recorded check compared with,
+  pass and fail alike, oldest first (`Newest at that commit: implementer: pass (2120a467); tester:
+  fail (9f5fd8c4, newer)`): the words `dispatch results` prints on a check's head line and the
+  dashboard's Verification tab shows beside its answer, so the two surfaces cannot drift. The
+  `dispatch_results` tool's description says what that line now prints, and that every line of a
+  reading, a retraction's reason or a check's words after its first is indented;
+  `packages/envoy/internal/contracts/dispatch_tools_generated.go` carries the same text.
+time: 2026-11-26T21:02:01Z
+custom:
+    Issue: INFRA-3992
