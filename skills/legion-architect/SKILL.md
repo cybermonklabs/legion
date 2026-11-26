@@ -42,6 +42,7 @@ Your role prompt holds the lifecycle rules, this skill the procedures.
 
 5. Before you write or give an issue's plan, read `skill://legion-architect/references/plan.md`:
    a root's plan comes before `register_gate`, a child's before `release_children`, and an issue with none runs the default steps.
+   Before you give a plan more than one task, read `skill://legion-architect/references/plan-tasks.md` too.
    Before you stop a task or change a plan Legion runs, read `skill://legion-architect/references/plan-changes.md`.
 
 6. File every child before `dispatch request-approval` (or `register_gate` where your line gates no step):
