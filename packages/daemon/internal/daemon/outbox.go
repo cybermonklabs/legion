@@ -521,7 +521,43 @@ func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 	}); err != nil {
 		return fmt.Errorf("finish outbox row %d: %w", row.ID, err)
 	}
+	r.wakeWaitingChildren(ctx, row)
 	return nil
+}
+
+// wakeWaitingChildren wakes the board lane of each issue whose write into work outboxInOrder held
+// behind row, a dispatch_status row that has just finished (record.WaitingChildStatusIssues), so
+// the child's row runs now rather than at the next sweep: a held row takes no lease and its lane
+// exits with nothing due, and nothing else wakes it. It reads once the finish has committed, so a
+// child row committed before the read is woken here, and one committed after it is listed by its
+// own lane against a board that no longer holds row. A read that fails is logged and the sweep
+// wakes the lane within sweepInterval. While no lane runs (RunOnce) nothing is read: a wake would
+// reach none.
+func (r *outbox) wakeWaitingChildren(ctx context.Context, row record.OutboxRow) {
+	if row.Kind != record.OutboxKindDispatchStatus {
+		return
+	}
+	r.mu.Lock()
+	running := r.running
+	r.mu.Unlock()
+	if !running {
+		return
+	}
+	var children []string
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		children, err = record.WaitingChildStatusIssues(ctx, tx, row.Issue)
+		return err
+	}); err != nil {
+		if ctx.Err() == nil {
+			r.log.Warn("outbox could not read the status rows held behind a finished status row of their parent; the sweep wakes their lanes",
+				"row", row.ID, "issue", row.Issue, "error", err)
+		}
+		return
+	}
+	for _, child := range children {
+		r.wake(child, record.OutboxKindDispatchStatus)
+	}
 }
 
 // finishRefused finishes a row whose failure no retry repairs (permanentRefusal), its follow-up in
@@ -642,6 +678,7 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 	}); err != nil {
 		return fmt.Errorf("finish outbox row %d: %w", row.ID, err)
 	}
+	r.wakeWaitingChildren(ctx, row)
 	return nil
 }
 
@@ -1176,6 +1213,13 @@ const statusWriteReads = 3
 // read can show a stop and a return the daemon has not yet applied, whose entry the row must not
 // write across (R20 of dispatch://INFRA-3320).
 //
+// A set-back into work waits one more thing (awaitParentInWork): that Dispatch shows the issue's
+// parent in work where the record has it in work, since Dispatch's parent rule (R24 of
+// dispatch://INFRA-3320) refuses a child's write into work under a parent out of work. A row whose
+// parent has a write into work queued is not claimable until that write has finished
+// (record's outboxInOrder); the wait covers a parent whose own event, and so whose row, the daemon
+// has not yet applied.
+//
 // ISSUE_CHANGED is no failure of the write and no permanent refusal (dispatch.PermanentRefusal),
 // so nothing is dropped over it. The row reads the issue again and writes again only while that
 // fresh read passes the rule its own kind is judged by (stillWanted). A read already at the status
@@ -1218,6 +1262,9 @@ func (r *outbox) writeStatus(ctx context.Context, row record.OutboxRow, payload 
 			return nil
 		}
 		if stands, err := r.readStands(ctx, row, payload, read); err != nil || !stands {
+			return err
+		}
+		if err := r.awaitParentInWork(ctx, row, payload, read); err != nil {
 			return err
 		}
 		written, err := r.dispatch.SetStatusAt(ctx, read, payload.Status)
@@ -1340,6 +1387,43 @@ func (r *outbox) seenInTheLog(ctx context.Context, row record.OutboxRow, seen, s
 		return r.records.AdvanceSeenSeq(ctx, tx, row.Issue, seq)
 	}); err != nil {
 		return fmt.Errorf("record that the events of %s up to %d were seen: %w", row.Issue, seq, err)
+	}
+	return nil
+}
+
+// awaitParentInWork holds a set-back into work (record.ReassertStatusRow, record.InWorkStatus) of
+// an issue whose Dispatch parent is still in Legion's work in the daemon's record while Dispatch
+// shows that parent out of work: when a session moves a parent and its child out of work together
+// (with include_children), Dispatch emits the child's event first, so the child's set-back can run
+// before the parent's event has reached the daemon and queued the parent's set-back (which
+// outboxInOrder otherwise holds the child behind). Waiting here avoids a PARENT_STATUS_CONFLICT
+// refusal during that window; once the parent's set-back lands (or a person's move takes the parent
+// out of Legion's work in the record), this passes.
+func (r *outbox) awaitParentInWork(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, read dispatch.Issue) error {
+	if payload.Kind != record.ReassertStatusRow || payload.IncludeParent || !record.InWorkStatus(payload.Status) {
+		return nil
+	}
+	if r.pool == nil || read.Parent == nil || *read.Parent == "" || *read.Parent == row.Issue {
+		return nil
+	}
+	parentKey := *read.Parent
+	parentRec, err := r.recordedIssue(ctx, parentKey)
+	if err != nil {
+		return err
+	}
+	if parentRec == nil || !record.InLegionsWork(*parentRec) {
+		return nil
+	}
+	parent, err := r.dispatch.GetIssue(ctx, parentKey)
+	if err != nil {
+		if _, permanent := dispatch.PermanentRefusal(err); permanent {
+			return nil
+		}
+		return fmt.Errorf("read Dispatch parent %s before setting %s back to %s: %w", parentKey, row.Issue, payload.Status, err)
+	}
+	if !record.InWorkStatus(parent.Status) {
+		return wait.Errorf("outbox status row %d of %s waits for its parent %s (Dispatch shows %s, record shows %s) to be in work before setting %s back to %s",
+			row.ID, row.Issue, parentKey, parent.Status, parentRec.Status, row.Issue, payload.Status)
 	}
 	return nil
 }

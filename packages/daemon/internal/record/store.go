@@ -3199,11 +3199,15 @@ func (s *Postgres) OwedStarts(ctx context.Context, tx pgx.Tx, project string) ([
 // outboxUnleasedDue is a row due at $1 that no live lease holds.
 const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null or outbox.lease_until <= $1)`
 
-// outboxInOrder is the three rules that hold a due row back behind something else of its issue. An
-// issue's Dispatch status writes run one at a time in the order they were made: a status row waits
-// while an older one for the same issue is unfinished, because each carries the status its
-// predecessor leaves, and a newer write run first would find the board short of it and finish
-// unwritten as though a human had moved it. A start of an issue's role waits while an older
+// outboxInOrder is the four rules that hold a due row back behind something else. An issue's
+// Dispatch status writes run one at a time in the order they were made: a status row waits while an
+// older one for the same issue is unfinished, because each carries the status its predecessor
+// leaves, and a newer write run first would find the board short of it and finish unwritten as
+// though a human had moved it. A status write putting an issue into work (inWorkStatuses) without
+// includeParent waits while its parent (outboxParentSQL) still has a queued dispatch_status row
+// putting the parent into work, because Dispatch's parent status rule (R24 of
+// dispatch://INFRA-3320) refuses a child's move into work while its parent is out of work, so the
+// parent's write finishes before the child's runs. A start of an issue's role waits while an older
 // issue_branch row of the issue is unfinished, so no role starts before its issue's branch exists
 // on GitHub (IssueBranch), and a create GitHub keeps refusing holds the issue's roles back while
 // the row retries. And a start marked as waiting for the issue's admission slot
@@ -3217,16 +3221,30 @@ const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null 
 // (claims.last_start_row), so ordering them here would buy nothing that survives a retry the
 // runtime delayed.
 //
-// None of the three holds an issue's later rows back. A row that is merely unclaimable takes no
+// None of the four holds an issue's later rows back. A row that is merely unclaimable takes no
 // lease, and the lane rule (outboxLaneFree) blocks only on a live lease, so an issue whose worker
 // start waits for a slot still runs its close's suspend, its Dispatch status writes and its
 // notices as they come due. That is what lets a transition apply at once and hold only the start.
-const outboxInOrder = `not (outbox.kind = $2 and exists (select 1 from outbox older
+var outboxInOrder = `not (outbox.kind = $2 and exists (select 1 from outbox older
 			where older.kind = $2 and older.issue = outbox.issue and older.id < outbox.id))
+		and not (outbox.kind = $2 and outbox.payload->>'status' in (` + inWorkStatusesSQL + `)
+			and coalesce(outbox.payload->>'includeParent', '') <> 'true'
+			and exists (select 1 from outbox parent
+				where parent.kind = $2 and parent.issue <> outbox.issue
+					and parent.payload->>'status' in (` + inWorkStatusesSQL + `)
+					and parent.issue = ` + outboxParentSQL + `))
 		and not (outbox.kind = $3 and outbox.payload->>'op' = 'start' and exists (select 1 from outbox branch
 			where branch.kind = $4 and branch.issue = outbox.issue and branch.id < outbox.id))
 		and not (outbox.kind = $3 and outbox.payload->>'op' = 'start' and coalesce(outbox.payload->>'needsSlot', '') = 'true'
 			and not exists (select 1 from slots where slots.issue = outbox.issue))`
+
+// inWorkStatusesSQL is inWorkStatuses as an SQL literal list, shared by outboxInOrder and
+// WaitingChildStatusIssues so the two can never disagree on which statuses are in work.
+var inWorkStatusesSQL = sqlTextList(inWorkStatuses)
+
+// outboxParentSQL is the recorded parent of the outer `outbox` row's issue: the Dispatch copy's
+// parent where dispatch_issues holds one, falling back to issues.parent where the copy holds none.
+const outboxParentSQL = `coalesce((select d.parent from dispatch_issues d where d.key = outbox.issue), (select i.parent from issues i where i.key = outbox.issue))`
 
 // outboxLaneFree is the rule that a lifecycle row ($5 is the lifecycle lane's kinds) runs only while
 // no other lifecycle row of its issue is under a live lease. Each lifecycle row reads the issue and
@@ -3275,6 +3293,15 @@ func pauseFreeClause(holds []pauseHold) string {
 
 // sqlText is s as an SQL string literal.
 func sqlText(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+
+// sqlTextList is values as a comma-separated list of SQL string literals.
+func sqlTextList(values []string) string {
+	quoted := make([]string, len(values))
+	for i, value := range values {
+		quoted[i] = sqlText(value)
+	}
+	return strings.Join(quoted, ", ")
+}
 
 // outboxClaimable is a row a lane may run now: due, under no live lease, in order, with no other
 // lifecycle row of its issue running, and not held by its project's pause.
@@ -3799,6 +3826,37 @@ func (s *Postgres) FinishOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseT
 	}
 	return nil
 }
+
+// WaitingChildStatusIssues is the distinct issues whose queued dispatch_status row writes an
+// in-work status without includeParent and names parent as its parent (outboxParentSQL): the board
+// lanes to wake once a dispatch_status row of parent finishes, since outboxInOrder held them back
+// behind it.
+func WaitingChildStatusIssues(ctx context.Context, tx pgx.Tx, parent string) ([]string, error) {
+	rows, err := tx.Query(ctx, waitingChildStatusIssuesSQL, string(OutboxKindDispatchStatus), parent)
+	if err != nil {
+		return nil, fmt.Errorf("list child status rows waiting on %s: %w", parent, err)
+	}
+	defer rows.Close()
+	var issues []string
+	for rows.Next() {
+		var issue string
+		if err := rows.Scan(&issue); err != nil {
+			return nil, fmt.Errorf("list child status rows waiting on %s: %w", parent, err)
+		}
+		issues = append(issues, issue)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list child status rows waiting on %s: %w", parent, err)
+	}
+	return issues, nil
+}
+
+var waitingChildStatusIssuesSQL = `select distinct outbox.issue from outbox
+		where outbox.kind = $1 and outbox.issue <> $2
+			and outbox.payload->>'status' in (` + inWorkStatusesSQL + `)
+			and coalesce(outbox.payload->>'includeParent', '') <> 'true'
+			and ` + outboxParentSQL + ` = $2
+		order by outbox.issue`
 
 func (s *Postgres) FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error {
 	var finished int64
