@@ -891,7 +891,7 @@ func readRepositoryCache(value *yaml.Node, pod PodConfig) (RepositoryCacheConfig
 }
 
 // defaultServiceAccount is the ServiceAccount Kubernetes runs a pod as when its spec names none:
-// the namespace's own `default`, which every Legion pod runs as while
+// the namespace's own `default`, which the issue pods and the image probe's pod run as while
 // runtime.kubernetes.pod.service_account is unset. The Sandbox runtime reads an unset account the
 // same way (serviceAccountOr, internal/runtime/sandbox), whose own constant this package cannot
 // import, since that package's imports reach this one.

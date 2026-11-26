@@ -1748,8 +1748,9 @@ func (g *rig) fetchEnv(name string) map[string]string {
 // environment value. A launch makes the cache when the repository has none yet. The token reaches
 // the fetch container alone, and is the cache's own. With the cache's bucket on, the fetch is told
 // and mounts exactly what it is told and mounts without it, and the issue pod and the controller's
-// pod run as the account every pod runs as and are told no bucket: the bucket and the account that
-// holds its grant are the cache pod's alone, and an issue pod holds no grant on the bucket.
+// pod run as the account every pod but the cache's runs as and are told no bucket: the bucket and
+// the account that holds its grant are the cache pod's alone, and an issue pod holds no grant on
+// the bucket.
 func TestAnIssuePodsFetchIsToldItsRepositorysCacheAndItsToken(t *testing.T) {
 	t.Parallel()
 	// launched is what a launch gave an issue pod's fetch: its container and the provisioning
