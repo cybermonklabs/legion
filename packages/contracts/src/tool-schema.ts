@@ -66,40 +66,27 @@ interface ZodApi {
    * takes one value and reads a set as a single literal equal to the array, so it is optional
    * here and `literalOfSet` only keeps a node that accepts every value of the set.
    */
-  literal?(values: SchemaLiteral | readonly SchemaLiteral[]): ZodNode;
-  union?(options: readonly ZodNode[]): ZodNode;
+  literal?(values: readonly SchemaLiteral[]): ZodNode;
   array(item: ZodNode): ZodNode;
   unknown(): ZodNode;
   object(shape: Record<string, ZodNode>): ZodObjectNode;
 }
 
 /**
- * The host's own node for the whole set, or undefined where the host cannot build one.
+ * The host's own literal node for the whole set, or undefined where the host cannot build one.
  *
  * zod v4's `literal` takes the set and refuses everything outside it, which is the refusal
  * `formatZodIssues` renders as `false|optional|required`. Oh My Pi's `pi.zod` facade has a
- * `literal` of its own that takes one value: handed the set, it builds a single literal whose
- * value is the array (`{"k":"lit","v":[false,"optional","required"]}`, omp v18.16.0), which
- * refuses every value a call can carry. There the set is a union of one literal for each value:
- * it takes exactly the set, and Oh My Pi shows it to a model as `false | "optional" | "required"`
- * (omp v18.18.6), where a field widened to `unknown` shows no value at all. A node is kept only
- * when it accepts every value of the set; a host that can build neither widens the field, and
- * the real refusal still comes from real zod where the arguments are parsed.
+ * `literal` of its own that takes one value: measured against omp v18.16.0, it reads a set as a
+ * single literal whose value is the array (`{"k":"lit","v":[false,"optional","required"]}`), which
+ * would show a model a vocabulary no call can satisfy. So the node is kept only when it accepts
+ * every value of the set; a host that cannot say this widens the field instead, and the real
+ * refusal still comes from real zod where the arguments are parsed.
  */
 function literalOfSet(api: ZodApi, values: readonly SchemaLiteral[]): ZodNode | undefined {
-  const takesSet = (node: ZodNode | undefined): node is ZodNode =>
-    node !== undefined &&
-    typeof node.safeParse === "function" &&
-    values.every((value) => node.safeParse(value).success);
-  const whole = api.literal?.(values);
-  if (takesSet(whole)) return whole;
-  const { literal, union } = api;
-  if (literal === undefined || union === undefined) return undefined;
-  const options = union.call(
-    api,
-    values.map((value) => literal.call(api, value))
-  );
-  return takesSet(options) ? options : undefined;
+  const node = api.literal?.(values);
+  if (node === undefined || typeof node.safeParse !== "function") return undefined;
+  return values.every((value) => node.safeParse(value).success) ? node : undefined;
 }
 
 export function zodSchemaApi(zod: unknown): SchemaApi<z.ZodType> {

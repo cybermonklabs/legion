@@ -91,19 +91,25 @@ const URGENCY_VALUES = EnvelopeSchema.shape.urgency.unwrap().options as unknown 
 export function messageMetadataShape<Element extends SchemaNode<Element>>(
   schema: SchemaApi<Element>
 ): ToolArgumentsShape {
+  // Every described Envoy tool field describes last: Oh My Pi's `pi.zod` facade drops a
+  // description attached before `.optional()` on an enum or on a field widened to `unknown` (as
+  // `expects_reply` is there, `zodSchemaApi`'s `literal`), and a model reading the tool's schema
+  // would see no value it may send.
   return {
     in_reply_to: schema.string().optional(),
     supersedes: schema.string().optional(),
     urgency: schema
       .enum(URGENCY_VALUES)
+      .optional()
       .describe(
         "low | med | high | blocking: how soon the recipient should act, shown on its card. It does not deliver the message sooner or ahead of others."
-      )
-      .optional(),
+      ),
     expects_reply: schema
       .literal(EXPECTS_REPLY_VALUES)
-      .describe("false | optional | required")
-      .optional(),
+      .optional()
+      .describe(
+        'false (a boolean: no reply wanted), "optional" (a reply is welcome; nothing waits on it) or "required" (the sender waits on the answer).'
+      ),
     expires_at: schema.number({ int: true }).optional(),
   };
 }
@@ -232,10 +238,10 @@ export const envoyToolSpecs = [
       ...messageArguments(schema),
       idempotency_key: schema
         .string()
+        .optional()
         .describe(
           "Only to send again a message whose envoy_send was not confirmed delivered: the idempotency_key that error named. Omit it for a new message."
-        )
-        .optional(),
+        ),
     }),
     operation: EnvoyToolOperation.send,
   },
