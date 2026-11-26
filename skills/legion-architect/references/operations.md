@@ -38,7 +38,7 @@ A merger merges only the pull request that its issue records. The controller enq
 4. Read the base's rules (`gh api --paginate repos/<owner>/<repo>/rules/branches/<base>`) and `squash_merge_commit_message` (`gh api repos/<owner>/<repo>`). On a `merge_queue` base whose setting is `COMMIT_MESSAGES`, enqueue nothing, and open a `dispatch ask` on your root. Only a person changes the setting.
 5. On a merge-queue base, post `enqueuePullRequest(input:{pullRequestId, expectedHeadOid: <head sha>})` to `https://api.github.com/graphql` with the token. On any other base, post `enablePullRequestAutoMerge` at that head with `mergeMethod: SQUASH`, `commitHeadline: "<title> (#<n>)"` and an empty `commitBody`. `curl` exits 0 on a refusal too, so an `errors` array is GitHub's refusal. A refusal for a repository setting or an App permission is a `dispatch ask` on your root.
 6. Read the pull request again (`headRefOid`, `mergeQueueEntry`, `autoMergeRequest`), and again on each later wake while it is open.
-7. When the head moved after step 5, no review approved it. Post `dequeuePullRequest` or `disablePullRequestAutoMerge` at once, then begin again at step 1.
+7. When the head moved after step 5, no review approved it. Post `dequeuePullRequest(input:{id: <the pull request's id>})` or `disablePullRequestAutoMerge` at once, then begin again at step 1.
 
 ## A re-run of your tree's CI run
 
