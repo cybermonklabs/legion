@@ -77,7 +77,8 @@ const (
 
 // dispatchAnswerWith sends one request to the scratch Dispatch server, credential putting on it
 // the headers that say who it is from, with body as given, and answers its status and body,
-// whatever they are: the request a proof expects Dispatch to refuse goes through here.
+// whatever they are: the request a proof expects Dispatch to refuse goes through here. The reply is
+// waited for under replyContext.
 func dispatchAnswerWith(t *testing.T, baseURL, method, path string, body any, credential func(*http.Request)) (int, []byte) {
 	t.Helper()
 	var reader io.Reader
@@ -88,7 +89,9 @@ func dispatchAnswerWith(t *testing.T, baseURL, method, path string, body any, cr
 		}
 		reader = bytes.NewReader(encoded)
 	}
-	request, err := http.NewRequest(method, baseURL+path, reader)
+	ctx, cancel := replyContext(t)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, method, baseURL+path, reader)
 	if err != nil {
 		t.Fatalf("build %s %s: %v", method, path, err)
 	}

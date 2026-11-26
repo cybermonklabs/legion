@@ -99,25 +99,27 @@ type gateAnswer struct {
 	err    error
 }
 
-// gateCallAsync sends body to register_gate on a goroutine of its own, with a bound long enough
-// for a proof to hold the call between its reads and its commit (registrationPause), and answers
-// what the call comes to.
+// gateCallAsync sends body to register_gate on a goroutine of its own and answers what the call
+// comes to. A proof holds the call between its reads and its commit (registrationPause) for as long
+// as it needs, so the reply is waited for under replyContext, made here on the test's goroutine.
 func (r *personHandoverRig) gateCallAsync(body map[string]any) <-chan gateAnswer {
 	r.t.Helper()
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		r.t.Fatalf("encode the registration: %v", err)
 	}
-	client := &http.Client{Transport: r.d.transport, Timeout: 2 * time.Minute}
+	d := r.d
+	ctx, cancel := replyContext(r.t)
 	answered := make(chan gateAnswer, 1)
 	go func() {
-		request, err := http.NewRequest(http.MethodPost, r.d.base+"/legion/v1/gates/register", bytes.NewReader(encoded))
+		defer cancel()
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, d.base+"/legion/v1/gates/register", bytes.NewReader(encoded))
 		if err != nil {
 			answered <- gateAnswer{err: err}
 			return
 		}
 		request.Header.Set("Content-Type", "application/json")
-		response, err := client.Do(request)
+		response, err := d.client.Do(request)
 		if err != nil {
 			answered <- gateAnswer{err: err}
 			return
@@ -127,6 +129,26 @@ func (r *personHandoverRig) gateCallAsync(body map[string]any) <-chan gateAnswer
 		answered <- gateAnswer{status: response.StatusCode, body: read, err: err}
 	}()
 	return answered
+}
+
+// heldAfterReads waits until the registration gateCallAsync sent is held after its Dispatch reads
+// (registrationPause's reached), and fails the test if the call answers first. The wait sets no
+// span of its own: a call that is never held is answered at the latest when its replyContext ends,
+// 30 s before the test binary's deadline, and that answer fails the test naming its error.
+func (r *personHandoverRig) heldAfterReads(reached <-chan struct{}, answered <-chan gateAnswer) {
+	r.t.Helper()
+	select {
+	case <-reached:
+	case answer := <-answered:
+		r.t.Fatalf("the registration answered %d %s before it was held after its Dispatch reads: %v", answer.status, answer.body, answer.err)
+	}
+}
+
+// releasedAnswer is what the held registration answered once the proof released it, waited for
+// with testwait.Receive: no span of its own, so a commit a loaded machine makes slow is waited for.
+func (r *personHandoverRig) releasedAnswer(answered <-chan gateAnswer) gateAnswer {
+	r.t.Helper()
+	return testwait.Receive(r.t, "the released registration's answer", answered)
 }
 
 // registerApprovedGate registers artifactID, key's primary document a person approved at version,
@@ -743,25 +765,14 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	held.hold(root.Key, record.OutboxKindGateSeed)
 	reached, release := pause.arm(root.Key)
 	answered := r.gateCallAsync(basisCall(rootGrant(), root, 1, parent.PrimaryArtifactID, approval.Version, reason))
-	select {
-	case <-reached:
-	case answer := <-answered:
-		t.Fatalf("the registration answered %d %s before it was held: %v", answer.status, answer.body, answer.err)
-	case <-time.After(time.Minute):
-		t.Fatal("the registration was never held after its Dispatch reads")
-	}
+	r.heldAfterReads(reached, answered)
 	state, body = settled(t, r.d, "answer its state while the registration is held", func(api.State) bool { return true })
 	if step := stepOf(state, root.Key); step.Status != api.GatedStepUnregistered || r.gateFacts(root.Key) != 0 {
 		t.Fatalf("while the registration is held after its reads, %s's spec step = %+v with %d gate facts, want unregistered and none\nstate %s",
 			root.Key, step, r.gateFacts(root.Key), body)
 	}
 	release()
-	var answer gateAnswer
-	select {
-	case answer = <-answered:
-	case <-time.After(time.Minute):
-		t.Fatal("the released registration never answered")
-	}
+	answer := r.releasedAnswer(answered)
 	if answer.err != nil || answer.status != http.StatusOK {
 		t.Fatalf("R's registration on P's approved version %d = %d %s (%v), want 200", approval.Version, answer.status, answer.body, answer.err)
 	}

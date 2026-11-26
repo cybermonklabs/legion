@@ -1469,26 +1469,15 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 	held.hold(window.root.Key, record.OutboxKindPendingBasisSeed)
 	reached, release := pause.arm(window.root.Key)
 	answered := r.gateCallAsync(basisCall(window.grant(), window.root, window.rootVersion, window.parent.PrimaryArtifactID, window.basisVersion, basisReason))
-	select {
-	case <-reached:
-	case answer := <-answered:
-		t.Fatalf("the registration answered %d %s before it was held: %v", answer.status, answer.body, answer.err)
-	case <-time.After(time.Minute):
-		t.Fatal("the registration was never held after its Dispatch reads")
-	}
+	r.heldAfterReads(reached, answered)
 	windowApproval := r.approve(window.parent.PrimaryArtifactID)
 	r.applied(r.newestEvent(window.parent.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == windowApproval.Version }))
 	if gates := r.gates(window.root.Key); len(gates) != 0 {
 		t.Fatalf("while the registration is held, %s holds the gates %+v, want none", window.root.Key, gates)
 	}
 	release()
-	select {
-	case answer := <-answered:
-		if answer.err != nil || answer.status != http.StatusOK {
-			t.Fatalf("the held registration of %s = %d %s (%v), want 200", window.root.Key, answer.status, answer.body, answer.err)
-		}
-	case <-time.After(time.Minute):
-		t.Fatal("the released registration never answered")
+	if answer := r.releasedAnswer(answered); answer.err != nil || answer.status != http.StatusOK {
+		t.Fatalf("the held registration of %s = %d %s (%v), want 200", window.root.Key, answer.status, answer.body, answer.err)
 	}
 	r.pendingRegistered(window.basisRun, window.ask, true, phase.Admitted)
 	held.release(window.root.Key)
@@ -1519,13 +1508,7 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 	inside := r.pendingWorld([]string{"Glasshouse vent opener", "Botanical garden renewal"}, pendingOptions{place: ancestorLive, noV4: true})
 	reached, release = pause.arm(inside.root.Key)
 	answered = r.gateCallAsync(basisCall(inside.grant(), inside.root, inside.rootVersion, inside.parent.PrimaryArtifactID, inside.basisVersion, basisReason))
-	select {
-	case <-reached:
-	case answer := <-answered:
-		t.Fatalf("the registration answered %d %s before it was held: %v", answer.status, answer.body, answer.err)
-	case <-time.After(time.Minute):
-		t.Fatal("the registration was never held after its Dispatch reads")
-	}
+	r.heldAfterReads(reached, answered)
 	r.requestChanges(inside.parent.PrimaryArtifactID, "Name p2's owner.")
 	r.applied(r.newestEvent(inside.parent.Key, "artifact.changes_requested", nil))
 	if told := r.notices(inside.root.Key, "basis-changes-requested"); len(told) != 0 || len(r.gates(inside.root.Key)) != 0 {
@@ -1533,13 +1516,8 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 			inside.root.Key, r.gates(inside.root.Key), told)
 	}
 	release()
-	select {
-	case answer := <-answered:
-		if answer.err != nil || answer.status != http.StatusOK {
-			t.Fatalf("the held registration of %s = %d %s (%v), want 200", inside.root.Key, answer.status, answer.body, answer.err)
-		}
-	case <-time.After(time.Minute):
-		t.Fatal("the released registration never answered")
+	if answer := r.releasedAnswer(answered); answer.err != nil || answer.status != http.StatusOK {
+		t.Fatalf("the held registration of %s = %d %s (%v), want 200", inside.root.Key, answer.status, answer.body, answer.err)
 	}
 	r.openedOnBasis(inside.root, inside.parent, 1, inside.basisVersion)
 	r.basisChangesTold(inside.basisRun, "Name p2's owner.", true)

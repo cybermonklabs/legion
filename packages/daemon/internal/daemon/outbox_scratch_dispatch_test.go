@@ -341,12 +341,14 @@ func TestRoleHoldersLandInScratchDispatch(t *testing.T) {
 // event carries, and whether Dispatch says that body is only the first part of the message's.
 func messageCreatedEvent(t *testing.T, baseURL, token, issue string) (string, bool) {
 	t.Helper()
-	request, err := http.NewRequest(http.MethodGet, baseURL+"/api/v1/issues/"+url.PathEscape(issue)+"/events?limit=200", nil)
+	ctx, cancel := replyContext(t)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/v1/issues/"+url.PathEscape(issue)+"/events?limit=200", nil)
 	if err != nil {
 		t.Fatalf("create the events request: %v", err)
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := scratchDispatchClient.Do(request)
 	if err != nil {
 		t.Fatalf("GET the issue's events: %v", err)
 	}
@@ -479,12 +481,11 @@ func (d *scratchDispatch) start() {
 	t := d.t
 	t.Helper()
 	// Readiness is a server process starting and migrating a fresh database, whose time is the
-	// machine's load: bounded by the test binary's own deadline rather than a fixed span, so a
-	// slow start is not read as a server that will never answer.
-	deadline := time.Now().Add(2 * time.Minute)
-	if testDeadline, ok := t.Deadline(); ok && testDeadline.Add(-10*time.Second).Before(deadline) {
-		deadline = testDeadline.Add(-10 * time.Second)
-	}
+	// machine's load, so the wait for it ends on the server's own answer, its exit, or 30 s before
+	// the test binary's deadline (testwait.Remaining), and at no span of its own: a slow start is
+	// not read as a server that will never answer, as main's fixed 2 minutes read a start held
+	// 130 s, and a server that never answers still fails the test by name before Go's alarm.
+	deadline := time.Now().Add(testwait.Remaining(t))
 	// Dispatch serves on a socket held here (DISPATCH_LISTEN_FD), so no other process can take the
 	// port before Dispatch serves it: the first start on a port the kernel chose (heldSocket), a
 	// restart on the port it served before (holdPortAgain).
@@ -559,7 +560,8 @@ func (d *scratchDispatch) start() {
 		}
 		return false
 	}) {
-		t.Fatalf("scratch Dispatch did not become ready:\n%s", output.String())
+		t.Fatalf("scratch Dispatch did not become ready on %s by %s, 30s before the test binary's deadline:\n%s",
+			d.base, deadline.UTC().Format(time.RFC3339Nano), output.String())
 	}
 }
 
@@ -591,8 +593,12 @@ func (d *scratchDispatch) holdPortAgain(deadline time.Time) *os.File {
 	return held
 }
 
-// stop interrupts the running server and waits for it to exit, killing it after ten seconds. A
-// server that is not running is left as it is.
+// stop interrupts the running server and waits for it to exit. How long the stop takes is no
+// subject of these tests, and Dispatch's own stop may take up to its stopGrace (30 s,
+// packages/envoy/cmd/dispatch/shutdown.go), so the wait sets no span of its own: it ends on the
+// exit, or testwait.Receive gives up 30 s before the test binary's deadline and fails the test by
+// name; a fixed 10 s failed a stop held 12 s. A server that has not exited by then is killed, so no
+// Dispatch outlives its test. A server that is not running is left as it is.
 func (d *scratchDispatch) stop() {
 	if d.command == nil {
 		return
@@ -600,34 +606,41 @@ func (d *scratchDispatch) stop() {
 	command := d.command
 	d.command = nil
 	_ = command.Process.Signal(os.Interrupt)
-	select {
-	case err := <-d.exited:
-		if err != nil {
-			d.t.Errorf("scratch Dispatch stopped: %v\n%s", err, d.output.String())
+	exited := false
+	defer func() {
+		if !exited {
+			_ = command.Process.Kill()
+			<-d.exited
+			d.t.Logf("scratch Dispatch's output, killed after it did not exit on SIGINT:\n%s", d.output.String())
 		}
-	case <-time.After(10 * time.Second):
-		_ = command.Process.Kill()
-		<-d.exited
-		d.t.Error("scratch Dispatch did not stop after SIGINT")
+	}()
+	err := testwait.Receive(d.t, "scratch Dispatch to exit after SIGINT", d.exited)
+	exited = true
+	if err != nil {
+		d.t.Errorf("scratch Dispatch stopped: %v\n%s", err, d.output.String())
 	}
 }
 
+// createScratchDispatchIssue creates the project LEGION and one issue of it on the scratch Dispatch
+// at baseURL, as the person smoke, and answers the issue's key. Each reply, its body included, is
+// waited for under replyContext.
 func createScratchDispatchIssue(t *testing.T, baseURL string) string {
 	t.Helper()
-	client := &http.Client{Timeout: 10 * time.Second}
+	ctx, cancel := replyContext(t)
+	defer cancel()
 	request := func(path string, body any) *http.Response {
 		t.Helper()
 		encoded, err := json.Marshal(body)
 		if err != nil {
 			t.Fatalf("encode %s: %v", path, err)
 		}
-		req, err := http.NewRequest(http.MethodPost, baseURL+path, bytes.NewReader(encoded))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+path, bytes.NewReader(encoded))
 		if err != nil {
 			t.Fatalf("create %s request: %v", path, err)
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Dispatch-User", "smoke")
-		response, err := client.Do(req)
+		response, err := scratchDispatchClient.Do(req)
 		if err != nil {
 			t.Fatalf("POST %s: %v", path, err)
 		}

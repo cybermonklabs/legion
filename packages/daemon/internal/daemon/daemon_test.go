@@ -1206,11 +1206,13 @@ func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.L
 	ctx, cancel := context.WithCancel(context.Background())
 	// One transport for every request, so the test can close its own connections before it asks
 	// the daemon to stop: net/http gives an idle connection five seconds before a Shutdown may
-	// close it, and a connection this client dialled is this client's to clean up.
+	// close it, and a connection this client dialled is this client's to clean up. The client sets
+	// no span of its own: each request the test sends waits for its reply under replyContext, or
+	// under a bound of the test's own where a reply's time is the test's subject.
 	transport := &http.Transport{}
 	d := &daemon{
 		t: t, cfg: cfg, cancel: cancel, done: make(chan error, 1), transport: transport,
-		client: &http.Client{Transport: transport, Timeout: 10 * time.Second},
+		client: &http.Client{Transport: transport},
 		base:   "http://127.0.0.1:" + strconv.Itoa(cfg.Port),
 	}
 	go func() { d.done <- run(ctx, cfg, log, o) }()
@@ -1302,7 +1304,20 @@ func (d *daemon) stop() {
 	}
 }
 
-// request sends one request; a nil body sends none. It returns the status and the body.
+// replyContext is the context one request a test sends to a server it started (the daemon, a
+// scratch Dispatch) waits for its reply under: until 30 s before the test binary's deadline
+// (testwait.Remaining), at no span of its own. How long a reply takes is no subject of the tests
+// that send them, and a client timeout of 10 s failed a test whose reply a loaded machine made
+// slow; a reply that never comes still fails the test by name before Go's alarm. The reply's body
+// is read under it too, so the caller cancels it once the body is read. It calls Remaining, which
+// fails t when the margin is spent, so it is called from the test's goroutine.
+func replyContext(t *testing.T) (context.Context, context.CancelFunc) {
+	t.Helper()
+	return context.WithTimeout(context.Background(), testwait.Remaining(t))
+}
+
+// request sends one request; a nil body sends none. It returns the status and the body. The reply
+// is waited for under replyContext and under the client's Timeout where a test set one of its own.
 func (d *daemon) request(method, path string, body any, operator bool) (int, []byte) {
 	d.t.Helper()
 	var reader io.Reader
@@ -1313,7 +1328,9 @@ func (d *daemon) request(method, path string, body any, operator bool) (int, []b
 		}
 		reader = bytes.NewReader(encoded)
 	}
-	req, err := http.NewRequest(method, d.base+path, reader)
+	ctx, cancel := replyContext(d.t)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, method, d.base+path, reader)
 	if err != nil {
 		d.t.Fatalf("build the request: %v", err)
 	}
