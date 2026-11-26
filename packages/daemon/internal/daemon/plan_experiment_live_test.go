@@ -230,8 +230,8 @@ func (l *experimentLive) variantOnSteps() {
 
 // variantPlace answers nil where line stands in printed, the stdout of `dispatch steps --issue
 // key`, where the command prints the variant of the issue: right after the header `<key>: <n>
-// steps in <m> tasks` and before the first run, with the header's n runs below it and nothing
-// else. It answers where the line stands otherwise.
+// steps in <m> tasks` and before the first run, with the header's n runs below it (runFields) and
+// nothing else. It answers where the line stands otherwise.
 func variantPlace(key, line, printed string) error {
 	lines := strings.Split(strings.TrimRight(printed, "\n"), "\n")
 	header, ok := strings.CutPrefix(lines[0], key+": ")
@@ -247,7 +247,7 @@ func variantPlace(key, line, printed string) error {
 	}
 	runs := lines[2:]
 	for _, run := range runs {
-		if fields := strings.Fields(run); len(fields) != 12 || fields[5] != "attempt" {
+		if _, ok := runFields(run); !ok {
 			return fmt.Errorf("the line %q below it is no run", run)
 		}
 	}

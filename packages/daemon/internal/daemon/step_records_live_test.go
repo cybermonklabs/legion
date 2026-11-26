@@ -338,9 +338,9 @@ type stepLine struct {
 }
 
 // parseSteps reads the output of `dispatch steps --issue key` for an issue in no experiment's
-// group: the header `<key>: <n> steps in <m> tasks`, then exactly n lines of runs, each of 16
-// words, with no `Experiment <experiment>: variant <variant>.` line between them, which it would
-// read as no run. A line of 12 words, as the command printed it before the set model, is no run.
+// group: the header `<key>: <n> steps in <m> tasks`, then exactly n lines of runs (runFields),
+// with no `Experiment <experiment>: variant <variant>.` line between them, which it would read as
+// no run.
 func parseSteps(key, out string) (stepsPrinted, error) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	var printed stepsPrinted
@@ -352,8 +352,8 @@ func parseSteps(key, out string) (stepsPrinted, error) {
 		return printed, fmt.Errorf("the header %q: %v", lines[0], err)
 	}
 	for _, text := range lines[1:] {
-		fields := strings.Fields(text)
-		if len(fields) != 16 || fields[5] != "attempt" || fields[12] != "set" || fields[14] != "answered" {
+		fields, ok := runFields(text)
+		if !ok {
 			return printed, fmt.Errorf("the line %q is no run", text)
 		}
 		step, err := strconv.Atoi(fields[1])
@@ -374,6 +374,14 @@ func parseSteps(key, out string) (stepsPrinted, error) {
 		return printed, fmt.Errorf("the header says %d steps and %d lines follow it", printed.steps, len(printed.lines))
 	}
 	return printed, nil
+}
+
+// runFields is the 16 words of text where text is one run as `dispatch steps` prints it
+// (stepLine), and false where it is no run. A line of 12 words, as the command printed it before
+// the set model, is no run. parseSteps and variantPlace both read a run by this rule.
+func runFields(text string) ([]string, bool) {
+	fields := strings.Fields(text)
+	return fields, len(fields) == 16 && fields[5] == "attempt" && fields[12] == "set" && fields[14] == "answered"
 }
 
 // holdsTen says whether printed is the walk's read: exactly the ten runs of stepRecordsTen, under
