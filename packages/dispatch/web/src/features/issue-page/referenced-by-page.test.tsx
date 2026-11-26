@@ -392,6 +392,10 @@ test("with page each excerpt is drawn whole, with no clamp and no Show more, and
     await waitFor(() =>
       expect(body()?.textContent, "Details does not draw the excerpt whole").toContain(lines[5])
     );
+    expect(
+      body()?.parentElement?.hasAttribute("data-node-words"),
+      "Details' whole excerpt carries no data-node-words mark"
+    ).toBe(true);
     expect(preview(), "Details clamps the excerpt").toBeNull();
     expect(list().querySelector(".line-clamp-3"), "Details clamps the excerpt").toBeNull();
     expect(

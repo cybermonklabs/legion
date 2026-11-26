@@ -55,10 +55,12 @@ import {
   putArchitectureSource,
   putIssueState,
   putStep,
+  requestApproval,
   resolveAsk,
   resolveComment,
   syncArchitectureSource,
   uploadIssueFile,
+  withOpenedAsk,
 } from "./api";
 import { runDispatch } from "./dispatch-cli";
 import { documentEditor, indexedBlockAsk, needsYouCards } from "./editor";
@@ -5259,12 +5261,7 @@ test("each list of Details shows 20 entries and a control for the next 20", asyn
 
     // Referenced by, once read, counts every row of its list: the issues the issue blocks, then
     // the other issue's comments.
-    const referencedBy = marginSection(page, "references").getByRole("button", {
-      name: new RegExp(`^${PROPERTY_LABELS.referenced_by}`, "u"),
-    });
-    await referencedBy.click();
-    await expect(referencedBy).toHaveAttribute("aria-expanded", "true");
-    const panel = page.locator(`[id="${await referencedBy.getAttribute("aria-controls")}"]`);
+    const { control: referencedBy, panel } = await openReferencedBy(page);
     const referenceRows = panel.locator("[data-reference-rows]");
     const counted = new RegExp(`^${PROPERTY_LABELS.referenced_by} \\((\\d+)\\)$`, "u");
     await expect(referencedBy).toHaveText(counted);
@@ -6152,6 +6149,123 @@ test("a row's chip whose target is gone wraps inside the page at 390 px", async 
         seeded.address
       );
       await assertPageFits(page);
+    }
+  );
+});
+
+/**
+ * Asserts that `link`, a reference link drawn by the renderer inside Details, is drawn in the
+ * words' own ink and never in the old application's blue (`rgb(0, 105, 168)`): first that the
+ * link is drawn, so the assertion cannot pass on a page with no link, then its computed colour
+ * against the old blue and against the words around it (`.dispatch-markdown`).
+ */
+async function expectLinkInWordsInk(link: Locator, where: string): Promise<void> {
+  await expect(link, `${where} draws no link for its reference`).toHaveCount(1);
+  const { color, words } = await link.evaluate((element) => {
+    const markdown = element.closest(".dispatch-markdown");
+    return {
+      color: getComputedStyle(element).color,
+      words: markdown === null ? "" : getComputedStyle(markdown).color,
+    };
+  });
+  expect(color, `a link of ${where} is drawn in the old application's blue`).not.toBe(
+    "rgb(0, 105, 168)"
+  );
+  expect(color, `a link of ${where} is not drawn in the words' own ink`).toBe(words);
+}
+
+/** Opens Details' Referenced by section and returns its toggle and panel. */
+async function openReferencedBy(page: Page): Promise<{ control: Locator; panel: Locator }> {
+  const control = marginSection(page, "references").getByRole("button", {
+    name: new RegExp(`^${PROPERTY_LABELS.referenced_by}`, "u"),
+  });
+  await control.click();
+  await expect(control).toHaveAttribute("aria-expanded", "true");
+  return { control, panel: page.locator(`[id="${await control.getAttribute("aria-controls")}"]`) };
+}
+
+// A comment of another issue cites the issue, so Details' Referenced by draws its whole excerpt
+// through the renderer. The excerpt's wrapper carries `data-node-words`, so the link the renderer
+// draws for that reference takes the words' own ink rather than the old application's link blue.
+// SLOW(>=2s): two issues and a citing comment written, a sign-in, and one load of the issue with
+// Referenced by opened.
+test("a reference in an excerpt of Details' Referenced by is drawn in the words' ink, not the old application's blue", async ({
+  browser,
+}) => {
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: "CORE", name: "Core" });
+      const issue = await createIssue({ project: "CORE", title: "Cited by another issue" });
+      const other = await createIssue({ project: "CORE", title: "Citing issue" });
+      await createComment(
+        other.key,
+        { body: `This comment cites dispatch://${issue.key} in its excerpt.` },
+        { login: "bob" }
+      );
+      return { key: issue.key };
+    },
+    async (page, seeded) => {
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await openDetails(page);
+      const { panel } = await openReferencedBy(page);
+      await expectLinkInWordsInk(
+        panel.locator(`[data-reference-rows] .dispatch-markdown a[href="/issues/${seeded.key}"]`),
+        "Referenced by"
+      );
+    }
+  );
+});
+
+// An approval request is a line of Details' history whose question is drawn inline through the
+// renderer (`SentenceParts`). The event line carries `data-node-words`, so a reference in that
+// question takes the words' own ink rather than the old application's link blue.
+// SLOW(>=2s): two issues and an approval request written, a sign-in, and one load of the history.
+test("a reference in a question the history quotes is drawn in the words' ink, not the old application's blue", async ({
+  browser,
+}) => {
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: "CORE", name: "Core" });
+      const cited = await createIssue({ project: "CORE", title: "Referenced issue" });
+      const issue = await createIssue({
+        project: "CORE",
+        spec: "The plan.",
+        title: "Approval quoting a reference",
+      });
+      const requested = withOpenedAsk(
+        await requestApproval(
+          issue.primary_artifact_id,
+          { summary: `Follows dispatch://${cited.key} closely.` },
+          activityAgent
+        )
+      );
+      const events = await getIssueEvents(issue.key, { limit: 100 });
+      const opened = events.find(
+        (event) => event.type === "ask.opened" && event.payload.id === requested.ask.id
+      );
+      if (opened === undefined) throw new Error(`the seed recorded no ask.opened for ${issue.key}`);
+      return { at: opened.created_at, cited: cited.key, key: issue.key, seq: opened.seq };
+    },
+    async (page, seeded) => {
+      await gotoIssue(page, `/issues/${seeded.key}/activity`);
+      const line = await seededHistoryEntry(
+        page,
+        historyPanel(page).locator(`[data-event-seq="${seeded.seq}"]`),
+        seeded.at
+      );
+      await expectLinkInWordsInk(
+        line.locator(`.dispatch-markdown a[href="/issues/${seeded.cited}"]`),
+        "the history"
+      );
+      // Pinning the line draws it in Details' Pinned too (`IssuePins.tsx`'s `SentenceParts`):
+      // the same link there must take the words' own ink as well.
+      await line.getByRole("button", { exact: true, name: CONTROL_LABELS.pin }).click();
+      await expectLinkInWordsInk(
+        pinsList(page).locator(`.dispatch-markdown a[href="/issues/${seeded.cited}"]`),
+        "Pinned"
+      );
     }
   );
 });

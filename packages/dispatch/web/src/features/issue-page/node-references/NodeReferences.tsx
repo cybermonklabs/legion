@@ -135,9 +135,8 @@ export function NodeReferences({
         ? referenceRows(
             itemWords,
             (query.data?.edges ?? []).filter(drawsEdge),
-            names,
-            issueKey,
-            edited
+            { edited, names },
+            issueKey
           )
         : NO_ROWS,
     [edited, issueKey, itemWords, names, open, query.data]

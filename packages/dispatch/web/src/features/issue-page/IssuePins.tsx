@@ -203,7 +203,7 @@ export function IssuePins({
                 <li className="flex min-w-0 items-center gap-2 text-sm" data-pin={id} key={id}>
                   {event === undefined ? null : (
                     <span className={`min-w-0 flex-1 [overflow-wrap:anywhere] ${pageMutedText}`}>
-                      <span {...authorText}>
+                      <span data-node-words="" {...authorText}>
                         <SentenceParts
                           parts={[{ actor: event.actor }, " ", ...eventDescription(event)]}
                         />

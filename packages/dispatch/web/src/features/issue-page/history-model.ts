@@ -563,9 +563,10 @@ function threadEntry(
  * The line of `event`, as today's Activity tab writes it (`activityDescription`), with what that
  * line names by a token in the page's words, as an address is no name: a delivery's target by
  * the agent it went to, never its address or `session:<id>`; the status a reopened issue went
- * into by its word; and a block it names by a UUID by the words of the node that carries it,
- * from `blocks`, never by that id, with that block and the part of the line its words are
- * (`withBlock`). A stored text the line quotes, an approval request's question or the reason it
+ * into by its word; and a block it names by a UUID by a part holding the page's word for the
+ * node's kind as a stand-in, with that block and the part's place (`withBlock`), which
+ * `history-entries.tsx`'s `BlockLine` replaces with the node's one line (`BlockName`), never by
+ * that id. A stored text the line quotes, an approval request's question or the reason it
  * was resolved with, is a part of its own, which the renderer draws (`SentenceParts`). Every
  * other text a line of the history holds is a name, a key or the server's own words, none of
  * which is markdown.

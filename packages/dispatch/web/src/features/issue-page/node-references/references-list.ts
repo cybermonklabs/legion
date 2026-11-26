@@ -7,6 +7,7 @@ import type {
 } from "../../../api/types";
 import { isBlockItemKind } from "../../refs/block-reference";
 import { isPartyRoute } from "../../refs/party-references";
+import type { KnownReferences } from "../../refs/reference-names";
 import type { DispatchReferenceRoute, PartyRoute } from "../../refs/routes";
 import { wordsOf } from "../../refs/tree-fragment";
 import { NODE_REFERENCES_WORDS } from "../page-words";
@@ -39,12 +40,6 @@ import { knownIssueKeys, rowReferences, rowReferenceWords } from "../row-referen
 /** The edge kind that is no tuple of the model: one node's text names another. */
 const MENTIONS = "mentions";
 
-/** No name at all: a caller that holds none of the page's names. */
-const NO_NAMES: ReadonlyMap<string, string> = new Map();
-
-/** No reference read as edited: a caller that holds none of the page's edited references. */
-const NO_EDITED: ReadonlySet<string> = new Set();
-
 /** One node that references the focused one. */
 export interface ReferenceRow {
   /** When the reference was made (`GraphEdge.created_at`), which the old panel drew on each
@@ -72,10 +67,12 @@ export interface ReferenceRow {
    *  question of the focused node's own issue and the page holds its words (`issueItemWords`):
    *  every one of them, with no cut, and each reference they write named (`namedWords`); `""`
    *  for every other node, which the component names by its word. Never the read's own text.
-   *  The component draws the whole string as text the page did not author. One part of it can
-   *  be the page's own word all the same: the word for the kind of a reference the read has
-   *  not named (`unnamedWords`). That word is one of `NODE_REFERENCES_WORDS.kinds`, a table
-   *  the page declares, so it needs no mark of its own to be a declared word. */
+   *  The component draws the whole string as text the page did not author. Two parts of it can
+   *  be the page's own words all the same: the word for the kind of a reference the read has
+   *  not named (`unnamedWords`, from `NODE_REFERENCES_WORDS.kinds`), and ` · edited` after the
+   *  name of a reference whose post its author edited (`editedName`, from `POST_MARK_WORDS`,
+   *  declared as `CONTROL_LABELS.post_edited`). Both come from tables the page declares, so
+   *  neither needs a mark of its own to be a declared word. */
   readonly words: string;
 }
 
@@ -143,23 +140,23 @@ function blockItem(node: GraphEdge["node"]): NonNullable<GraphEdge["node"]["pare
  *
  * `itemWords` holds the words of the comments, messages and questions of the focused node's own
  * issue by their ids (`issueItemWords`). A citing item among them carries all of its words, with
- * no cut (`namedWords`), its references named from `names`, the page's one batched read of what
- * its references point at, by reference (`reference-names.tsx`); every other node, and an item
- * whose words the page does not hold yet, carries none. `issue` is the focused node's own issue,
- * which those items are of, and `edited` the references among the names whose post its author
- * edited (`KnownReferences.edited`), which a name then marks as the outline's row marks it.
+ * no cut (`namedWords`), its references named from `known.names`, the page's one batched read of
+ * what its references point at, by reference (`reference-names.tsx`), and marked where their post
+ * was edited from `known.edited` (`KnownReferences.edited`), as the outline's row marks them;
+ * every other node, and an item whose words the page does not hold yet, carries none. `issue` is
+ * the focused node's own issue, which those items are of, or `undefined` where the focused node
+ * belongs to none.
  */
 export function referenceRows(
   itemWords: ReadonlyMap<string, string>,
   edges: readonly GraphEdge[],
-  names: ReadonlyMap<string, string> = NO_NAMES,
-  issue?: string,
-  edited: ReadonlySet<string> = NO_EDITED
+  known: Pick<KnownReferences, "edited" | "names">,
+  issue: string | undefined
 ): ReferenceRow[] {
   const rows = new Map<string, ReferenceRow>();
   // The issues the page's names know, which a citing item's words tell their references by: read
   // once for the whole list.
-  const issues = knownIssueKeys(names);
+  const issues = knownIssueKeys(known.names);
   for (const edge of edges) {
     const item = blockItem(edge.node);
     const nodeKind = item?.kind ?? edge.node.kind;
@@ -175,7 +172,7 @@ export function referenceRows(
       nodeKind,
       ref: item?.ref ?? edge.node.ref,
       source: edge.node.issue_key ?? edge.node.project,
-      words: words === undefined ? "" : namedWords(words, names, issues, issue, edited),
+      words: words === undefined ? "" : namedWords(words, known, issues, issue),
     });
   }
   return [...rows.values()];
@@ -187,29 +184,28 @@ export function referenceRows(
  * reference they write named as the outline's row names it (`rowReferenceWords`), `issue` being
  * the issue the item is of: an issue by its key and its title, a party by the name its own read
  * gives it, anything else by its target's words, then ` · edited` where its post's author edited
- * it (`edited`). The server's reading of a bare `dispatch://`
+ * it (`known.edited`). The server's reading of a bare `dispatch://`
  * reference is a link whose words are the address itself, so the words write it as typed; a
  * reference the read has not named is drawn by the page's word for what it names
  * (`unnamedWords`), since an address is no name, and the rest of the words stay. The batched read
  * names no party, so a party nothing names reads as its author wrote it, as the outline's row
- * reads it. `issues` is `knownIssueKeys(names)`.
+ * reads it. `issues` is `knownIssueKeys(known.names)`.
  */
 function namedWords(
   words: string,
-  names: ReadonlyMap<string, string>,
+  known: Pick<KnownReferences, "edited" | "names">,
   issues: readonly string[],
-  issue: string | undefined,
-  edited: ReadonlySet<string>
+  issue: string | undefined
 ): string {
   const whole = words.replace(/\s+/gu, " ").trim();
   let written = "";
   let at = 0;
   for (const one of rowReferences(whole, issues)) {
     written += whole.slice(at, one.start);
-    if ((names.get(one.reference) ?? "").trim() === "" && !isPartyRoute(one.route)) {
+    if ((known.names.get(one.reference) ?? "").trim() === "" && !isPartyRoute(one.route)) {
       written += unnamedWords(one.route);
     } else {
-      const named = rowReferenceWords(one, names, issue, edited);
+      const named = rowReferenceWords(one, known.names, issue, known.edited);
       written += named.key === undefined ? named.words : `${named.key} ${named.words}`;
     }
     at = one.end;

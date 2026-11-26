@@ -143,7 +143,10 @@ export function Entry({
         data-event-seq={entry.seq}
         {...{ [HISTORY_ENTRY_ATTRIBUTE]: drawnId }}
       >
-        <span className="min-w-40 flex-1 break-words">
+        {/* Marked as a node's words, so any link an inline renderer draws inside a quoted text
+            (an approval request's question, a resolution's reason) takes the words' own ink and
+            underline (`styles.css`), never the old application's link blue. */}
+        <span className="min-w-40 flex-1 break-words" data-node-words="">
           {head}
           {/* `main`'s line links a document's name in the application's link blue, which
               Details draws in no line: those two lines are the history's own. So is a line that

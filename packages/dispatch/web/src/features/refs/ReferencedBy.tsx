@@ -292,7 +292,7 @@ function Excerpt({
   const [expanded, setExpanded] = useState(false);
   if (whole) {
     return rendered ? (
-      <div className={`mt-1 text-sm [overflow-wrap:anywhere] ${tokens.excerpt}`}>
+      <div className={`mt-1 text-sm [overflow-wrap:anywhere] ${tokens.excerpt}`} data-node-words="">
         <MarkdownBody markdown={text} source={source} surface="referenced-by-excerpt" tree={tree} />
       </div>
     ) : (
