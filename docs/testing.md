@@ -941,8 +941,9 @@ A Legion issue pod does not run that whole package: `skills/legion-worker/refere
 
 CI runs that package under `-race` in `envoy-go-race-api`, the job that runs it by itself, which
 gives it 70 minutes (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's
-steps); `envoy-go` leaves it out of its unit step, and `text-checks` runs its nineteen source-guard
-tests by name. `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
+steps); `envoy-go` leaves it out of its unit step, and `text-checks` runs its source-guard tests by
+name (`.github/workflows/ci-job-text-checks.yaml`). `docs` runs under `-race` in
+`envoy-go-race-docs`, which gives it 60.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone
 rather than beside the module's other Postgres-backed packages: together they share one database
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default

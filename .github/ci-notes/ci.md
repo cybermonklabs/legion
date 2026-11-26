@@ -1130,8 +1130,8 @@ it as the engine it compares against.
 ## dispatch_references: The reference rows' preview (dispatch-references): the eleven spec files
 
 The reference rows' preview (dispatch-references): the eleven spec files
-the reference framework's Verification document names and the nine of the reading
-list's walk, which the `references` lane of dispatch-browser.yaml runs on Chromium, and
+the reference framework's Verification document names, the nine of the reading
+list's walk and main's parse-count walk, which the `references` lane of dispatch-browser.yaml runs on Chromium, and
 what they test. Narrow on purpose: unlike every gate's filter, which the changes job computes
 from its job's reads, it names less than its job reads (the Bun
 install, the Dispatch server's whole closure, the rest of the dashboard, the e2e harness every
@@ -1164,7 +1164,7 @@ change to either changes what the lane reports.
 ## dispatch_references: The eleven spec files, and the helpers only they share
 
 The eleven spec files, and the helpers only they share: the reference surfaces'
-own helpers, the search helpers and the writing list's walk. check-ci-filters.sh
+own helpers, the search helpers, the writing list's walk and the parse-count walk. check-ci-filters.sh
 (rule 24) fails on a spec file the `lane_files` of the `references)` arm of
 .github/scripts/dispatch-browser-shard-suite.sh runs that this list misses.
 
@@ -2200,9 +2200,10 @@ no job of its own there runs nothing its filter is held to.
 .github/scripts/ci_job_reads.py's SHARED_FILE maps each new half to the file it shares, so its
 gates find their steps there. Each half keeps a filter of its own, and both name the shared
 file, so a change to it selects both. dispatch-browser.yaml has three callers,
-dispatch-browser, dispatch-browser-pr and dispatch-references, but every job of it runs under
-any of them: it takes the caller's id as `job` for its artifact names, its read of its own jobs
-and its report, never to pick a job
+dispatch-browser, dispatch-browser-pr and dispatch-references. It takes the caller's id as `job`
+for its artifact names, its read of its own jobs and its report, and the caller's lane picks its
+jobs: alone, multiprocess and visual run on the full lane alone, and embedder on the
+pull-request and full lanes, never on references
 (.github/ci-notes/ci.md#the-browser-suite-jobs-their-lanes-their-inputs-and-why-the-matrix-is-in-the-called-file).
 
 ## What the tooling-checks job runs
@@ -2439,8 +2440,8 @@ that held a slow suite beside steps a pull request runs is two jobs now
 What it runs, and why it gates nothing.
 
 The reference rows' preview: every Chromium row of the eleven spec files
-the reference framework's Verification document names and the nine of the reading list's
-walk, through the `references` lane of dispatch-browser.yaml - its binaries job, its four shard
+the reference framework's Verification document names, the nine of the reading list's
+walk and main's parse-count walk, through the `references` lane of dispatch-browser.yaml - its binaries job, its four shard
 legs and its merge job, and none of its
 alone, two-process, embedder or visual jobs. The pull-request lane, the dispatch-browser-pr job,
 runs only the few of those rows that carry `@pr`, so without this job a change to the
