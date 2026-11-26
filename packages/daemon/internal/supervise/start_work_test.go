@@ -178,10 +178,10 @@ func TestAStartParkedAtThePodsGateIsJudgedAgainAtItsGrant(t *testing.T) {
 			phaseHoldsAnswering(&holds, &asked)(&h.deps)
 			first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 			third := h.podRole(claim.RoleTester, StateSuspended)
-			h.mustPostTo(first.m, RequestResume{Claim: first.token})
+			h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 			h.wantStarts(first.token, 1)
 			h.parks(second, RequestRuleResume{Claim: second.token, Reason: "it owns its issue's step", Start: startOfStep}, 0)
-			h.parks(third, RequestResume{Claim: third.token}, 0)
+			h.parks(third, RequestResume{Claim: third.token, By: SuspendedByOperator}, 0)
 
 			holds = tc.holds
 			h.loadEnds(first)
