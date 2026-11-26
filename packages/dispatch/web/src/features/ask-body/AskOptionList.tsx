@@ -4,16 +4,20 @@ import type { AskOptionWithTrees } from "../../api/types";
 import type { TextSource } from "../refs/text-references";
 import { AskRecordRow } from "./AskOptionRow";
 import { ASK_RECORD_WORDS } from "./ask-body-words";
-import { type AskTextRenderer, markdownText } from "./ask-text";
+import { type AskPalette, type AskTextRenderer, markdownText } from "./ask-text";
 
 export function AskOptionList({
   options,
+  palette = "main",
   renderText = markdownText,
   rowClassName,
   selected,
   source,
 }: {
   options: AskOptionWithTrees[];
+  /** The palette each row draws in (`AskRecordRow`): `main`'s, unless the ask body's host hands
+   *  the page's. */
+  palette?: AskPalette;
   /** The renderer of each option's label and description (`AskTextRenderer`): `MarkdownBody`,
    *  as every surface of today's pages draws them, unless the ask body it stands in hands
    *  another. */
@@ -35,6 +39,7 @@ export function AskOptionList({
           className={rowClassName}
           key={option.label}
           option={option}
+          palette={palette}
           renderText={renderText}
           selected={selected.includes(option.label)}
           source={source}

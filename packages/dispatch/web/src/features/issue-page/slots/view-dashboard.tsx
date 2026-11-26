@@ -1,5 +1,6 @@
 import { lazy, type ReactNode, Suspense, useEffect } from "react";
 
+import { pageInkText } from "../../../theme/classes";
 import type { ViewSlotProps } from "./stage";
 
 /** Dashboard's code, in the chunk of its own that today's page loads it from too
@@ -18,9 +19,11 @@ const DashboardTab = lazy(() => import("../../dashboard/DashboardTab"));
  */
 export function ViewDashboardSlot({ issue, onAddressDrawn }: ViewSlotProps): ReactNode {
   useEffect(() => onAddressDrawn(false), [onAddressDrawn]);
-  // `data-dashboard` is the view's own mark, which the browser rows find it by.
+  // `data-dashboard` is the view's own mark, which the browser rows find it by, and under which
+  // the words Dashboard draws take the page's link colour (`styles.css`). The view is in the
+  // page's ink, as everything Dashboard draws inside it is (dispatch://INFRA-3940 R13).
   return (
-    <div className="mx-auto w-full max-w-[1000px] min-w-0 pb-6" data-dashboard="">
+    <div className={`mx-auto w-full max-w-[1000px] min-w-0 pb-6 ${pageInkText}`} data-dashboard="">
       <Suspense fallback={null}>
         <DashboardTab issueKey={issue.key} page="new" />
       </Suspense>

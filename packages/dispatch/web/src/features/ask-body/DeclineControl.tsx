@@ -13,6 +13,15 @@ import {
   card,
   cardHoverBorder,
   dangerText,
+  focusBorder,
+  pageFailedText,
+  pageHairBorder,
+  pageInkFill,
+  pageInkText,
+  pageLineBorder,
+  pageMutedText,
+  pagePaperBg,
+  pageQuietText,
   primaryButtonBg,
   primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
@@ -29,7 +38,49 @@ import { useQuestionLabel } from "../inbox/question-label";
 import { useDialog } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { ASK_DECLINE_WORDS } from "./ask-body-words";
-import { authored, type TextMarks } from "./ask-text";
+import { type AskPalette, authored, type TextMarks } from "./ask-text";
+
+/**
+ * The colours of Decline to answer and of its dialog by the palette the ask body's host hands
+ * (`AskPalette`), as `issue-page/DecisionActions.tsx` keeps its own: `main`'s are the classes
+ * every surface of today's pages draws, and the new issue page's are the ask body's own actions
+ * for the control (`AskBody`'s `ON_PAGE.action`) and, for the dialog, the page's Request changes
+ * dialog (`doc/ApprovalChip.tsx`'s `ON_PAGE`), which this one follows: the paper inside its
+ * hairline rule over the icon rail's dark, its heading the ink, its words and the field's label
+ * the muted grey, the count and the line under the box the quiet grey, a refusal the failed
+ * red, Cancel the header control's rule and muted words, and Decline to answer filled with the
+ * ink. The box keeps `main`'s focus rule, the application's one focus indicator.
+ */
+const TONES = {
+  main: {
+    backdrop: backdrop40,
+    cancel: `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`,
+    control: `${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`,
+    count: textMutedOnSurface,
+    decline: `${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`,
+    dialog: card,
+    explained: textMutedOnSurface,
+    failed: dangerText,
+    field: undefined,
+    heading: textSecondaryOnSurface,
+    hint: undefined,
+    label: undefined,
+  },
+  page: {
+    backdrop: "bg-icon-rail/40",
+    cancel: `${pageLineBorder} ${pagePaperBg} ${pageMutedText}`,
+    control: `${pageLineBorder} ${pageMutedText}`,
+    count: pageQuietText,
+    decline: `${pageInkFill} refused:cursor-not-allowed refused:bg-page-hair refused:text-page-muted`,
+    dialog: `${pageHairBorder} ${pagePaperBg}`,
+    explained: pageMutedText,
+    failed: pageFailedText,
+    field: `${pageHairBorder} ${pagePaperBg} ${pageInkText} ${focusBorder}`,
+    heading: pageInkText,
+    hint: `text-xs ${pageQuietText}`,
+    label: `block text-sm font-medium ${pageMutedText}`,
+  },
+} as const;
 
 /**
  * What **Decline to answer** opens: the person's note, which is optional, and the two controls.
@@ -51,6 +102,7 @@ function DeclineDialog({
   marks,
   onClose,
   onSubmit,
+  palette,
   project,
   saving,
 }: {
@@ -62,10 +114,12 @@ function DeclineDialog({
   marks: TextMarks | undefined;
   onClose: () => void;
   onSubmit: (note: string) => void;
+  palette: AskPalette;
   /** The project of the document the question hangs from, whose components the picker offers. */
   project?: string;
   saving: boolean;
 }): ReactNode {
+  const tones = TONES[palette];
   const [note, setNote] = useState("");
   const countId = useId();
   // The dialog moves the focus into the box it opens over, which the field hands back as its
@@ -90,20 +144,20 @@ function DeclineDialog({
 
   return (
     <>
-      <div aria-hidden="true" className={`fixed inset-0 z-40 ${backdrop40}`} onClick={close} />
+      <div aria-hidden="true" className={`fixed inset-0 z-40 ${tones.backdrop}`} onClick={close} />
       <div className="pointer-events-none fixed inset-0 z-40 flex items-start justify-center p-4 pt-20">
         <div
           aria-label={ASK_DECLINE_WORDS.decline}
           aria-modal="true"
-          className={`pointer-events-auto w-full max-w-sm space-y-3 rounded-lg border p-4 shadow-xl ${card}`}
+          className={`pointer-events-auto w-full max-w-sm space-y-3 rounded-lg border p-4 shadow-xl ${tones.dialog}`}
           ref={dialog.containerRef}
           role="dialog"
           {...marks?.authorText}
         >
-          <h2 className={`text-sm font-semibold ${textSecondaryOnSurface}`} {...marks?.pageChrome}>
+          <h2 className={`text-sm font-semibold ${tones.heading}`} {...marks?.pageChrome}>
             {ASK_DECLINE_WORDS.decline}
           </h2>
-          <p className={`text-sm ${textMutedOnSurface}`} {...marks?.pageChrome}>
+          <p className={`text-sm ${tones.explained}`} {...marks?.pageChrome}>
             {ASK_DECLINE_WORDS.explained}
           </p>
           <MentionField
@@ -111,11 +165,14 @@ function DeclineDialog({
             className="text-sm"
             describedBy={[countId]}
             disabled={saving}
+            fieldClassName={tones.field}
             fieldRef={(handle) => {
               textareaRef.current = handle?.textarea() ?? null;
             }}
+            hintClassName={tones.hint}
             issueKey={issueKey}
             label={ASK_DECLINE_WORDS.note}
+            labelClassName={tones.label}
             maxLength={DISPATCH_EVENT_BODY_MAX}
             onChange={(change) => setNote(change.body)}
             onKeyDown={(event) =>
@@ -128,13 +185,13 @@ function DeclineDialog({
             project={project}
             writing={dispatchWritingBox("ask-decline-note", "ask-decline")}
           />
-          <p className={`text-xs ${textMutedOnSurface}`} id={countId} {...marks?.pageChrome}>
+          <p className={`text-xs ${tones.count}`} id={countId} {...marks?.pageChrome}>
             {authored(marks, left)}{" "}
             {left === 1 ? ASK_DECLINE_WORDS.character : ASK_DECLINE_WORDS.characters}
             {` ${ASK_DECLINE_WORDS.left}`}
           </p>
           {error === null ? null : (
-            <p className={`text-sm ${dangerText}`} role="alert">
+            <p className={`text-sm ${tones.failed}`} role="alert">
               {/* The server's own words where it gave any - the note is too long, the ask is an
                   approval request, it is already closed - since each says what to do next. A
                   decline the reader stopped may have been made, and the button below is a press
@@ -146,20 +203,22 @@ function DeclineDialog({
                 : apiErrorMessage(error, ASK_DECLINE_WORDS.failed)}
             </p>
           )}
-          <div className="flex items-center justify-end gap-2" {...marks?.pageChrome}>
+          <div className="flex items-center justify-end gap-2">
             <button
-              className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
+              className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${tones.cancel}`}
               disabled={saving}
               onClick={close}
               type="button"
+              {...marks?.pageChrome}
             >
               {ASK_DECLINE_WORDS.cancel}
             </button>
             <button
-              className={`rounded-lg px-3 py-1.5 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium ${tones.decline}`}
               disabled={!canSend}
               onClick={() => onSubmit(note.trim())}
               type="button"
+              {...marks?.pageChrome}
             >
               {saving ? ASK_DECLINE_WORDS.declining : ASK_DECLINE_WORDS.decline}
             </button>
@@ -191,19 +250,23 @@ interface DeclinePress extends AskPress {
  * The hold is that shared store rather than a report up to the Inbox, as `SnoozeControl` makes
  * one, for the reason the store exists: this card is drawn on surfaces that take no prop of the
  * Inbox's, a document's own decision block among them. `marks` is the ask body's
- * (`AskBodyProps.marks`), which its dialog draws its words in.
+ * (`AskBodyProps.marks`), which it draws Decline to answer and its dialog's words in.
  */
 export function DeclineControl({
   ask,
   decline,
   marks,
   onDeclined,
+  palette = "main",
 }: {
   ask: Ask;
   decline: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>;
   marks?: TextMarks;
   /** Called once the server has recorded the decline, as an answer from this card calls it. */
   onDeclined?: (id: string) => void;
+  /** The palette the control and its dialog draw in (`TONES`): `main`'s, unless the ask body's
+   *  host hands the page's. */
+  palette?: AskPalette;
 }): ReactNode {
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
@@ -240,10 +303,11 @@ export function DeclineControl({
     <div className="mt-3">
       {question.reads}
       <button
-        className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
+        className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${TONES[palette].control}`}
         disabled={write.isPending}
         onClick={() => setOpen(true)}
         type="button"
+        {...marks?.pageChrome}
       >
         {write.isPending ? ASK_DECLINE_WORDS.declining : ASK_DECLINE_WORDS.decline}
       </button>
@@ -265,6 +329,7 @@ export function DeclineControl({
               })
             )
           }
+          palette={palette}
           project={ask.anchor_artifact?.project}
           saving={write.isPending}
         />

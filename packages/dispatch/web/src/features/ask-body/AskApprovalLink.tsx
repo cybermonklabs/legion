@@ -13,8 +13,9 @@ import { authored, type TextMarks } from "./ask-text";
  * document's current route, never a historical `@vN` snapshot, with this ask selected in the
  * margin. A reader who follows it after the document has moved further still reaches the live
  * document, with the approve controls in view, and the text beside it keeps saying which version
- * the request named. A host that hands `marks` gets the document's name and its number inside
- * the mark of a value, and the words between them in the body's own (`AskBodyProps.marks`).
+ * the request named. A host that hands `marks` gets the link inside the mark of the body's own
+ * words, and the document's name and its number inside it in the mark of a value
+ * (`AskBodyProps.marks`).
  */
 export function AskApprovalLink({ ask, marks }: { ask: Ask; marks?: TextMarks }): ReactNode {
   const { approval, approval_artifact: artifact } = ask;
@@ -33,7 +34,7 @@ export function AskApprovalLink({ ask, marks }: { ask: Ask; marks?: TextMarks })
     { id: ask.id, kind: "ask" }
   );
   return (
-    <Link className="underline" to={route}>
+    <Link className="underline" to={route} {...marks?.pageChrome}>
       {authored(marks, approval.name)}
       {`, ${ASK_APPROVAL_WORDS.version} `}
       {authored(marks, approval.version)}

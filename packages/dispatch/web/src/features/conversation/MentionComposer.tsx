@@ -44,10 +44,16 @@ import {
   dangerHoverBorder,
   dangerText,
   dismissButtonText,
+  focusBorder,
   focusRing,
   hoverToDangerText,
   linkHoverText,
   linkText,
+  pageHairBorder,
+  pageInkText,
+  pageMutedText,
+  pagePaperBg,
+  pageQuietText,
   primaryButtonBg,
   quoteAccentBorder,
   quoteBodyText,
@@ -187,6 +193,26 @@ function askOptionRows(ask: SentRequest["ask"] | undefined): AskOptionDraft[] {
       }));
 }
 
+/**
+ * The colours of a reply's quote, of the body's box with its label and the line under it, and of
+ * the line under Send, by the palette the host hands (`MentionComposerProps.palette`), as
+ * `issue-page/DecisionActions.tsx` keeps its own: `main`'s are the classes every surface of
+ * today's pages draws, and on the new issue page the quote is the page's (`ReplyQuote`'s
+ * `palette`), the box the page's field, which keeps `main`'s focus rule, its label the muted
+ * grey, and the lines under the box and under Send the quiet grey, as the ask body's answer box
+ * draws them (`AskBody`'s `ON_PAGE`). Send is the page's inside `NoTooltips` whatever the host
+ * hands (`RefusableButton`'s `PAGE_LOOKS`).
+ */
+const TONES = {
+  main: { field: undefined, foot: textMutedOnSurfaceMuted, hint: undefined, label: undefined },
+  page: {
+    field: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
+    foot: pageQuietText,
+    hint: `text-xs ${pageQuietText}`,
+    label: `block text-sm font-medium ${pageMutedText}`,
+  },
+} as const;
+
 interface MentionComposerProps {
   readonly agents?: readonly Agent[];
   /** How the quote of the post a reply answers names its author: `live`, as everywhere, or
@@ -267,6 +293,10 @@ interface MentionComposerProps {
    *  that comes without a count is the host's move - another row, another thread, a Reply on a
    *  message - and what the composer holds stays with the address it was made for. */
   readonly ownMoves?: number;
+  /** The palette the reply's quote, the body's box with its label and the line under it, and the
+   *  line under Send draw in (`TONES`): `main`'s, unless the host hands the new issue page's, as
+   *  Dashboard's thread items there do (dispatch://INFRA-3940 R13). */
+  readonly palette?: keyof typeof TONES;
   readonly replyTo?: ReplyTarget | null;
   /** The post `replyTo` quotes, as the host's read of it stands now (`ReplyParent`), whose
    *  deletion and edit the quote marks. `replyTo` is a copy taken when Reply was pressed, which a
@@ -325,6 +355,7 @@ export function MentionComposer({
   onSent,
   owner,
   ownMoves = 0,
+  palette = "main",
   replyParent,
   replyTo = null,
   saveEdit,
@@ -937,6 +968,7 @@ export function MentionComposer({
       unsupportedOptions.every((option) => option.capabilities.includes(mode))
   );
 
+  const tones = TONES[palette];
   const composerControls = (
     <fieldset
       className={
@@ -973,6 +1005,7 @@ export function MentionComposer({
             edited={replyParent?.edited_at}
             excerpt={replyParent === undefined ? "" : replyTo.excerpt}
             excerptTree={replyParent === undefined ? undefined : replyTo.excerptTree}
+            palette={palette}
             source={textSourceOf(
               replyTo.parentKind,
               replyTo.id,
@@ -1074,10 +1107,13 @@ export function MentionComposer({
       ) : null}
       <MentionField
         body={body}
+        fieldClassName={tones.field}
         fieldRef={field}
+        hintClassName={tones.hint}
         inline={inline}
         issueKey={pickerIssue}
         label={bodyLabel}
+        labelClassName={tones.label}
         labelHidden={compact}
         onChange={onBodyChange}
         onDrop={homes.drop}
@@ -1298,7 +1334,7 @@ export function MentionComposer({
       </RefusableButton>
       {/* While Send refuses, the line under it says why - on screen, for a reader with no
           pointer to hover it - and once the draft can go, how to send it. */}
-      <p className={`text-xs ${textMutedOnSurfaceMuted}`} id={footId}>
+      <p className={`text-xs ${tones.foot}`} id={footId}>
         {submitReason ?? "Ctrl/Cmd+Enter to send · Enter for a new line"}
       </p>
     </fieldset>

@@ -1,7 +1,13 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import type { Actor, DisplayTree, ReplyBlockWithTrees } from "../../api/types";
-import { linkHoverText, secondaryButtonBorder, textMutedOnCanvas } from "../../theme/classes";
+import {
+  linkHoverText,
+  pageLineBorder,
+  pageMutedText,
+  secondaryButtonBorder,
+  textMutedOnCanvas,
+} from "../../theme/classes";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { DeletedBody, EditedMark } from "../refs/PostMarks";
@@ -12,7 +18,22 @@ import { type AgentNames, CachedAuthor } from "./CachedAuthor";
 
 // The phone stylesheet makes every link an inline-flex 44 px tap target, which does not truncate
 // its own text; the quote therefore truncates in an inner element, whatever the link is.
-const quoteClasses = `flex min-w-0 max-w-full items-center border-l-2 pl-2 text-xs ${secondaryButtonBorder} ${textMutedOnCanvas}`;
+const quoteClasses = "flex min-w-0 max-w-full items-center border-l-2 pl-2 text-xs";
+
+/** The quote's rule and words, and its link's hover, by the palette its host hands (`palette`):
+ *  `main`'s on every surface of today's pages, and on the new issue page the page's line rule
+ *  and its muted words, as the page's own composer draws the post it answers
+ *  (`pageComposer.target`), the link turning to the ink under the pointer. */
+const TONES = {
+  main: {
+    link: linkHoverText,
+    quote: `${quoteClasses} ${secondaryButtonBorder} ${textMutedOnCanvas}`,
+  },
+  page: {
+    link: "hover:text-page-ink",
+    quote: `${quoteClasses} ${pageLineBorder} ${pageMutedText}`,
+  },
+} as const;
 
 /** The comment or message among `items` (the thread a reply sits in) that `block`, the reply's
  *  `reply_block`, is a block of: its node reads `<kind>/<id>#<block id>`. A comment reply's
@@ -53,6 +74,7 @@ export function ReplyQuote({
   edited,
   excerpt,
   excerptTree,
+  palette = "main",
   source,
   to,
 }: {
@@ -75,6 +97,9 @@ export function ReplyQuote({
   /** The reading Go made of `excerpt`, which the quote draws; absent where the caller holds no
    *  tree for it (a draft quoting a write the server has not stored yet). */
   excerptTree?: DisplayTree;
+  /** The palette the quote draws in (`TONES`): `main`'s, unless its host hands the new issue
+   *  page's. */
+  palette?: keyof typeof TONES;
   /** The record the quoted text is - the parent message or comment, whose own passage a block
    *  quote is (`TextSource`) - so a `#id` in it resolves against that record's document, as it
    *  does where the parent itself is drawn. */
@@ -85,6 +110,7 @@ export function ReplyQuote({
   const quotedText = passage ? block.text : excerpt;
   const quotedTree = passage ? block.text_tree : excerptTree;
   const unknownParent = passage ? "Replying to a passage" : "Replying to a message";
+  const tones = TONES[palette];
   // The dash opens the quoted body, so the body is never an element of its own text: a reader
   // (or a test) matching the parent's body finds the parent's turn, not its every quote.
   const quoted =
@@ -111,7 +137,7 @@ export function ReplyQuote({
     ) : null;
   if (agentNames === "cache") {
     return (
-      <span className={`${quoteClasses} gap-1 ${className}`}>
+      <span className={`${tones.quote} gap-1 ${className}`}>
         {author === undefined ? null : (
           <span className="min-w-0 truncate">
             Replying to <CachedAuthor actor={author} />
@@ -124,7 +150,7 @@ export function ReplyQuote({
           <span className="min-w-0 flex-1">{quoted}</span>
         ) : (
           <ReferenceHostIs host="control">
-            <Link className={`min-w-0 flex-1 ${linkHoverText}`} to={to}>
+            <Link className={`min-w-0 flex-1 ${tones.link}`} to={to}>
               {quoted}
             </Link>
           </ReferenceHostIs>
@@ -133,7 +159,7 @@ export function ReplyQuote({
     );
   }
   return (
-    <span className={`${quoteClasses} gap-1 ${className}`}>
+    <span className={`${tones.quote} gap-1 ${className}`}>
       {author === undefined ? null : (
         <span className="min-w-0 truncate">
           Replying to <AgentName actor={author} inline />
@@ -148,7 +174,7 @@ export function ReplyQuote({
         // The quote is the one link here, so the parent's own references read as links inside
         // it and are none: the click belongs to the turn this quote opens.
         <ReferenceHostIs host="control">
-          <Link className={`min-w-0 flex-1 ${linkHoverText}`} to={to}>
+          <Link className={`min-w-0 flex-1 ${tones.link}`} to={to}>
             {quoted}
           </Link>
         </ReferenceHostIs>
