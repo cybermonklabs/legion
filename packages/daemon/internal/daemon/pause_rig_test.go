@@ -419,8 +419,8 @@ func newPauseDaemonRig(t *testing.T, tune func(*config.Config)) *pauseDaemonRig 
 	cfg.WorkerBootTimeout = time.Hour
 	cfg.ProbeInterval = time.Hour
 	cfg.PodUpdateGrace = pauseRigPodUpdateGrace
-	// An admission pass every second, besides the one each fact makes, so a pass the pause did
-	// not stop would admit within the test's reads.
+	// An admission pass every second, besides the passes facts run (the pass rule, admit's
+	// Admission.Apply), so a pass the pause did not stop would admit within the test's reads.
 	cfg.ControllerWakeInterval = time.Second
 	clock := newWaveClock()
 	envoy := newPauseEnvoy(t, clock)

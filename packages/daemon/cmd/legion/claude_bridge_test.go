@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claudebridge"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -23,6 +24,7 @@ import (
 
 // The command's refusals come before anything starts, each naming what is missing, as a usage error.
 func TestClaudeBridgeRefusesWhatItCannotRun(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion claude-bridge` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	t.Setenv("LEGION_ROLE", "implementer")
 	t.Setenv("LEGION_ISSUE", "ACME-7")
@@ -43,6 +45,7 @@ func TestClaudeBridgeRefusesWhatItCannotRun(t *testing.T) {
 
 // A claude that cannot be started is the bridge's failure, exit 1, naming it.
 func TestClaudeBridgeNamesAClaudeItCannotStart(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion claude-bridge` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	// The bridge opens its inbox under the process TMPDIR, so a test that runs it in-process
 	// places that directory itself, with room for the inbox's socket.
@@ -58,6 +61,7 @@ func TestClaudeBridgeNamesAClaudeItCannotStart(t *testing.T) {
 // the bridge ends then as it ends on SIGTERM, stopping Claude Code and removing its inbox's
 // directory, so nothing it made stays in TMPDIR.
 func TestClaudeBridgeRemovesItsInboxWhenHungUp(t *testing.T) {
+	t.Parallel()
 	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
 	if err != nil {
 		t.Fatal(err)
@@ -79,6 +83,7 @@ func TestClaudeBridgeRemovesItsInboxWhenHungUp(t *testing.T) {
 // Claude Code's last lines are still read and answered: a frame the bridge writes then fails, is
 // logged, and ends nothing, rather than SIGPIPE ending the bridge before it removes its inbox.
 func TestClaudeBridgeOutlivesTheShimItsPaneTookWithIt(t *testing.T) {
+	t.Parallel()
 	// The stand-in answers the bridge's SIGTERM with a tool call, which the bridge shows on the pane
 	// with a frame to the shim.
 	toolCall := filepath.Join(t.TempDir(), "tool-call.json")
@@ -99,6 +104,7 @@ func TestClaudeBridgeOutlivesTheShimItsPaneTookWithIt(t *testing.T) {
 // Claude Code ends a turn and exits while the shim reads slowly: the bridge waits for the shim to
 // read every frame, the turn's agent_end among them, whole, and exits as Claude Code did.
 func TestClaudeBridgeExitsOnceTheShimHasReadEveryFrame(t *testing.T) {
+	t.Parallel()
 	turn := filepath.Join(t.TempDir(), "turn")
 	content := strings.Repeat("x", 256<<10)
 	if err := os.WriteFile(turn, []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"WAITING on CI"},`+
@@ -172,6 +178,7 @@ func goneShim(t *testing.T) *os.File {
 // (LEGION_DAEMON_URL), user name and query included, before the report is sent again: the line
 // keeps the URL's host and path, and neither the user name nor the query reaches the pane.
 func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
+	t.Parallel()
 	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
 	if err != nil {
 		t.Fatal(err)
@@ -245,7 +252,7 @@ func startClaudeBridge(t *testing.T, script string, stdout *os.File, env ...stri
 	p := &claudeBridgeProcess{t: t, tmp: testtmp.Dir(t, claudebridge.InboxLongestPath),
 		stderr: filepath.Join(dir, "stderr"), exited: make(chan struct{})}
 	claude := filepath.Join(dir, "claude")
-	if err := os.WriteFile(claude, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
+	if err := execfile.Write(claude, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	stderr, err := os.Create(p.stderr)
