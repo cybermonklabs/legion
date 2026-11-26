@@ -839,7 +839,7 @@ func TestTheRigPanesGhIsTheStandIn(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	panePath := workerbin.Path(os.Getenv("PATH"), stateDir)
+	panePath := filepath.Join(runDir, "bin") + string(os.PathListSeparator) + workerbin.Path(os.Getenv("PATH"), stateDir)
 	pane := exec.Command("bash", "-c", shellprefix.For(workerbin.LauncherDir(stateDir))+" gh pr merge 41")
 	pane.Env = []string{"PATH=" + panePath}
 	answered, err := pane.CombinedOutput()

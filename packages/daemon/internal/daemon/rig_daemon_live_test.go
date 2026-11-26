@@ -51,6 +51,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -142,10 +143,12 @@ func newRigDaemonLive(t *testing.T, req rigDaemonRequest, world rigWorldFile) *r
 	local.paneLogs = req.PaneLogs
 	local.envoyURL, local.natsURLs = req.EnvoyURL, proof.cfg.NatsURLs
 	local.dispatchURL, local.dispatchTokenFile = req.DispatchURL, req.DispatchTokenFile
-	// The gh stand-in reads its run from SKILL_SCENARIO_RUN; the pane's gh becomes the stand-in once
-	// the boot has written the launcher directory (rigPaneGH, below). The local runtime passes no
-	// launch secret on, so the Envoy bearer is named here.
+	// The run's gh, bun and pod-tool stand-ins read their run from SKILL_SCENARIO_RUN. Their
+	// directory comes before the inherited PATH; the pane's shell prefix adds the launcher's
+	// directory before it, where rigPaneGH replaces that launcher's gh with the gh stand-in.
+	// The local runtime passes no launch secret on, so the Envoy bearer is named here.
 	local.environment = []string{
+		"PATH=" + filepath.Join(req.RunDir, "bin") + string(os.PathListSeparator) + workerbin.Path(os.Getenv("PATH"), proof.cfg.StateDir),
 		"SKILL_SCENARIO_RUN=" + req.RunDir,
 		"ENVOY_TOKEN_FILE=" + req.EnvoyTokenFile,
 	}
