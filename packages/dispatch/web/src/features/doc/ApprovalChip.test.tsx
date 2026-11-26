@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
+import { heldAnswers } from "../../__tests__/held-answers";
 import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -863,13 +864,9 @@ test("a landed review whose reads have not answered by the request deadline lets
 // answers after it.
 test("the line a review's reads the bound ended draws goes as the next review lands, whose reads answer", async () => {
   // Each review's answer, held until the row gives it, so what it sets off runs in `act`.
-  const answers: ((review: ArtifactReview) => void)[] = [];
+  const { answers, next } = heldAnswers<ArtifactReview>();
   const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockImplementation(
-    () => {
-      const { promise, resolve } = Promise.withResolvers<ArtifactReview>();
-      answers.push(resolve);
-      return promise;
-    }
+    next
   );
   const waiting = { artifacts: [artifact({ latest_version: 3, state: "awaiting" })] };
   const readAgain = Promise.withResolvers<{ readonly artifacts: readonly Artifact[] }>();

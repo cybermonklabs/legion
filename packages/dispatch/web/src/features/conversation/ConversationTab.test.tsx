@@ -16,6 +16,7 @@ import { displayTree } from "../../__tests__/display-trees";
 import { type Lists, newQueryClient, stubLists, tab } from "../../__tests__/draft-matrix-fixture";
 import { jump, realClock, settle, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
+import { heldAnswers } from "../../__tests__/held-answers";
 import { pressHeld } from "../../__tests__/held-press";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import {
@@ -2987,13 +2988,9 @@ test("the line a comment edit's read the bound ended draws goes as the next save
   const stub = stubLists({ comments: [root, reply] });
   const listComments = api.listComments as Mock<typeof api.listComments>;
   // Each save's answer and each read of the comments, held until the row gives them.
-  const saves: ((saved: Comment) => void)[] = [];
-  const editComment = spyOn(api, "editComment").mockImplementation(() => {
-    const { promise, resolve } = Promise.withResolvers<Comment>();
-    saves.push(resolve);
-    return promise;
-  });
-  const rereads: ((comments: Comment[]) => void)[] = [];
+  const { answers: saves, next: nextSave } = heldAnswers<Comment>();
+  const editComment = spyOn(api, "editComment").mockImplementation(nextSave);
+  const { answers: rereads, next: nextReread } = heldAnswers<Comment[]>();
   const queryClient = new DispatchQueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -3009,11 +3006,7 @@ test("the line a comment edit's read the bound ended draws goes as the next save
     await waitFor(() =>
       expect(within(card).getAllByRole("button", { name: "Edit" })).toHaveLength(2)
     );
-    listComments.mockImplementation(() => {
-      const { promise, resolve } = Promise.withResolvers<Comment[]>();
-      rereads.push(resolve);
-      return promise;
-    });
+    listComments.mockImplementation(nextReread);
     jest.useFakeTimers();
     const onClock = userOnFakeClock();
     /** Saves `body` as the root comment's words through its editor, and lands the save. */

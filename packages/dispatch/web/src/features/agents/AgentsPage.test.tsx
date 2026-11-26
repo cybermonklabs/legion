@@ -14,6 +14,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
+import { heldAnswers } from "../../__tests__/held-answers";
 import { pressHeld } from "../../__tests__/held-press";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { pickIn } from "../../__tests__/issue-picks";
@@ -2176,19 +2177,9 @@ test("the line a retry's read the bound ended draws goes as the next retry lands
     queryClient: new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } }),
   });
   // Each retry's answer, held until the row moves the clock, so what it sets off runs in `act`.
-  const deliveries: ((delivery: MessageDelivery) => void)[] = [];
-  page.createMessageDelivery.mockImplementation(() => {
-    const { promise, resolve } = Promise.withResolvers<MessageDelivery>();
-    deliveries.push(resolve);
-    return promise;
-  });
-  const landed: MessageDelivery = {
-    ...failedAttempt("message-1", "aside"),
-    attempt: 2,
-    envelope_id: "envelope-2",
-    error: null,
-    state: "sent",
-  };
+  const { answers: deliveries, next } = heldAnswers<MessageDelivery>();
+  page.createMessageDelivery.mockImplementation(next);
+  const landed = sentAttempt("message-1", "aside", { attempt: 2, envelope_id: "envelope-2" });
   const note = /^Could not load this conversation\./;
   try {
     const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");

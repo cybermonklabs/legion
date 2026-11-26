@@ -463,7 +463,9 @@ test("the line a removal's project read the bound ended draws goes as the next r
     queryClient
   );
   await section.findByRole("cell", { name: "CORE" });
-  const removeCore = section.getByRole("button", { name: "Remove the Legion daemon of CORE" });
+  const removeCore = section.getByRole("button", {
+    name: "Remove the Legion daemon of CORE",
+  }) as HTMLButtonElement;
   const why = "Couldn't load the Legion daemons. Dispatch did not answer within 30 seconds.";
   jest.useFakeTimers();
   try {

@@ -469,9 +469,10 @@ function ChangeComposer({
         // starts, before the bound, so a read Dispatch never answers fails as a timeout. A read
         // the bound ended adds why it has not settled, until it does or the next press reads the
         // document again (`unsettled`); if it then fails, the line says why it failed in that
-        // place (`readFailed`). No press starts while `readingRef` holds, and only the bound's end
-        // clears it, so a read that fails before its bound is always the latest press's; one the
-        // bound ended says so only while its press is still the latest (`presses`).
+        // place (`readFailed`). No press starts while `readingRef` holds, and only the end of the
+        // press's wait (`waitWithinBound`) clears it, so a read that fails before its bound is
+        // always the latest press's; one the bound ended says so only while its press is still
+        // the latest (`presses`).
         readingRef.current = true;
         setReading(true);
         setPressLate(false);

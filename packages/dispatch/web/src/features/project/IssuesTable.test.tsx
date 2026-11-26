@@ -7,6 +7,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { drawnSize } from "../../__tests__/control-size";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
+import { heldAnswers } from "../../__tests__/held-answers";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { drawOver, layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
 import { optionNames, panelOf, pick, pickNamed } from "../../__tests__/list-picks";
@@ -1668,12 +1669,8 @@ test("the bar's going and its hand-off are one render when the action ends outsi
 test("Start next over three queued issues from the bar, its steps answered one after another, hands the focus to the issue marked last", async () => {
   const user = userEvent.setup();
   // What answers each step's write, in the order the steps are sent.
-  const answers: ((saved: Issue) => void)[] = [];
-  const send = spyOn(api, "send").mockImplementation(() => {
-    const answer = Promise.withResolvers<Issue>();
-    answers.push(answer.resolve);
-    return answer.promise as never;
-  });
+  const { answers, next } = heldAnswers<Issue>();
+  const send = spyOn(api, "send").mockImplementation(() => next() as never);
   restores.push(() => send.mockRestore());
   table(
     Array.from({ length: 10 }, (_, index) =>
@@ -3069,12 +3066,8 @@ test("offline, a row's Start next whose write landed is free again at the reques
 // (`DispatchQueryClient`), answers after it.
 test("the line a Start next's list read the bound ended adds goes as the next Start next lands, whose read answers", async () => {
   // Each write's answer, held until the row gives it, so what it sets off runs in `act`.
-  const answers: ((saved: Issue) => void)[] = [];
-  const send = spyOn(api, "send").mockImplementation(() => {
-    const { promise, resolve } = Promise.withResolvers<Issue>();
-    answers.push(resolve);
-    return promise as never;
-  });
+  const { answers, next } = heldAnswers<Issue>();
+  const send = spyOn(api, "send").mockImplementation(() => next() as never);
   restores.push(() => send.mockRestore());
   const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   const { listing } = table(

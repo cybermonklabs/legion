@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
+import { heldAnswers } from "../../__tests__/held-answers";
 import { pressHeld } from "../../__tests__/held-press";
 import { heldUntilLate } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
@@ -577,12 +578,8 @@ test("the line a removal's list read the bound ended draws goes as the next Dele
   ]);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
   // Each removal's answer, held until the row gives it, so what it sets off runs in `act`.
-  const removals: (() => void)[] = [];
-  const deleteArchitectureSource = spyOn(api, "deleteArchitectureSource").mockImplementation(() => {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    removals.push(resolve);
-    return promise;
-  });
+  const { answers: removals, next } = heldAnswers<void>();
+  const deleteArchitectureSource = spyOn(api, "deleteArchitectureSource").mockImplementation(next);
   const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>

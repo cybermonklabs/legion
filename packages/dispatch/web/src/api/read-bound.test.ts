@@ -137,13 +137,16 @@ test("an invalidation that does not ask to wait resolves at once for a query who
   });
 });
 
+/** Why a read still out online at the bound has not settled, as `readWithinBound` says it. */
+const NOT_ANSWERED = `Dispatch did not answer within ${REQUEST_DEADLINE_MS / 1000} seconds`;
+
 // Online, a read can still be out at the bound - a Dispatch slow to answer, a read retried - and
 // the wait ends there too, in the words of a read that timed out.
 test("a read still out online at the bound is let go, saying Dispatch did not answer in time", async () => {
   await onFakeClock(async () => {
     const answer = watch(readWithinBound(Promise.withResolvers<void>().promise));
     await tick(REQUEST_DEADLINE_MS);
-    expect(answer()).toBe(`Dispatch did not answer within ${REQUEST_DEADLINE_MS / 1000} seconds`);
+    expect(answer()).toBe(NOT_ANSWERED);
   });
 });
 
@@ -194,9 +197,6 @@ test("useReadBound shows why a hold's read has not settled until that read settl
     realClock();
   }
 });
-
-/** Why a read still out online at the bound has not settled, as `readWithinBound` says it. */
-const NOT_ANSWERED = `Dispatch did not answer within ${REQUEST_DEADLINE_MS / 1000} seconds`;
 
 // The page shows why the latest hold's read has not settled, and nothing of an earlier hold's: a
 // later hold forgets the earlier reason as it begins, though the earlier read never settles, and
@@ -263,6 +263,38 @@ test("useReadBound keeps the later hold's state when an earlier hold's bound end
     expect(hook.result.current[0]).toBe(NOT_ANSWERED);
     await act(async () => earlier.resolve());
     expect(hook.result.current[0]).toBe(NOT_ANSWERED);
+
+    await act(async () => later.resolve());
+    expect(hook.result.current[0]).toBeUndefined();
+  } finally {
+    hook.unmount();
+    realClock();
+  }
+});
+
+// An earlier hold whose bound ended before a later hold began still waits for its read to settle
+// (`useUnsettledRead`): that read settling once the later hold's bound has ended takes nothing
+// away, and the later hold's reason goes only once the later read settles (`latest`).
+test("useReadBound keeps the later hold's reason when an earlier hold's read settles after it", async () => {
+  jest.useFakeTimers();
+  const hook = renderHook(() => useReadBound());
+  try {
+    const earlier = Promise.withResolvers<void>();
+    act(() => {
+      void hook.result.current[1](earlier.promise);
+    });
+    await tick(REQUEST_DEADLINE_MS);
+    const later = Promise.withResolvers<void>();
+    act(() => {
+      void hook.result.current[1](later.promise);
+    });
+    await tick(REQUEST_DEADLINE_MS);
+    expect(hook.result.current[0]).toBe(NOT_ANSWERED);
+
+    await act(async () => earlier.resolve());
+    expect(hook.result.current[0], "an earlier read settling took the later hold's reason").toBe(
+      NOT_ANSWERED
+    );
 
     await act(async () => later.resolve());
     expect(hook.result.current[0]).toBeUndefined();

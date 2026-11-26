@@ -7,6 +7,7 @@ import userEvent from "@testing-library/user-event";
 import manifest from "../../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { heldAnswers } from "../../__tests__/held-answers";
 import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
@@ -680,12 +681,8 @@ test("inside NoTooltips, the line a rebuild's read the bound ended draws goes as
     new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL });
   const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(refusal());
   // Each rebuild's answer, held until the row gives it, so what it sets off runs in `act`.
-  const rebuilds: ((report: ArtifactRebuildReport) => void)[] = [];
-  const rebuildArtifact = spyOn(api, "rebuildArtifact").mockImplementation(() => {
-    const { promise, resolve } = Promise.withResolvers<ArtifactRebuildReport>();
-    rebuilds.push(resolve);
-    return promise;
-  });
+  const { answers: rebuilds, next } = heldAnswers<ArtifactRebuildReport>();
+  const rebuildArtifact = spyOn(api, "rebuildArtifact").mockImplementation(next);
   const confirm = spyOn(window, "confirm").mockReturnValue(true);
   const reread = Promise.withResolvers<ArtifactText>();
   const queryClient = freshReadsQueryClient();

@@ -590,8 +590,10 @@ export function IssueHeader({
                 aria-label="Issue title"
                 className={`min-w-0 flex-1 rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight outline-none md:py-0 ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
                 // The heading's 22 px type at every width, so the title is written in the size it
-                // is read in: below 1280 px `styles.css` gives every input a 16 px floor in no
-                // layer, which `data-own-type` takes off this one.
+                // is read in. Below 1280 px `styles.css` sets every input's type to 16 px
+                // (`font-size: 1rem`, the floor that keeps a phone from zooming in), in no layer,
+                // over `text-[22px]`: a set size, not a minimum. `data-own-type` takes it off this
+                // box.
                 data-own-type=""
                 disabled={isClosed}
                 maxLength={ISSUE_TITLE_MAX}

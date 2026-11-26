@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { heldAnswers } from "../../__tests__/held-answers";
 import { heldNotDisabled } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { textBoxes } from "../../__tests__/list-picks";
@@ -600,12 +601,8 @@ test("inside NoTooltips, the line a write's reads the bound ended draws goes as 
     queryClient: new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } }),
   });
   // Each write's answer, held until the row gives it, so what it sets off runs in `act`.
-  const answers: ((answer: never) => void)[] = [];
-  view.patchIssue.mockImplementation(() => {
-    const { promise, resolve } = Promise.withResolvers<never>();
-    answers.push(resolve);
-    return promise;
-  });
+  const { answers, next } = heldAnswers<never>();
+  view.patchIssue.mockImplementation(next);
   const reread = Promise.withResolvers<Priorities>();
   const name = "Edit priorities";
   const why = "Could not load the priorities. Dispatch did not answer within 30 seconds.";

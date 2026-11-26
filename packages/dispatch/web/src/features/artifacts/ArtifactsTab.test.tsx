@@ -8,6 +8,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { displayTree } from "../../__tests__/display-trees";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { heldAnswers } from "../../__tests__/held-answers";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -1387,12 +1388,8 @@ test("the line a removal's read the bound ended draws goes as the next removal l
     queryClient,
   });
   // Each removal's answer, held until the row moves the clock, so what it sets off runs in `act`.
-  const removals: (() => void)[] = [];
-  const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation(() => {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    removals.push(resolve);
-    return promise;
-  });
+  const { answers: removals, next } = heldAnswers<void>();
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation(next);
   const row = await screen.findByTestId("artifact-design-notes");
   const remove = within(row).getByRole("button", { name: "Remove" });
   const reread = Promise.withResolvers<Artifact[]>();

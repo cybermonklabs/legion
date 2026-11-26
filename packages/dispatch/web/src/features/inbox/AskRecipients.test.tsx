@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
+import { heldAnswers } from "../../__tests__/held-answers";
 import { heldNotDisabled } from "../../__tests__/held-press";
 import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api, REQUEST_DEADLINE_MS } from "../../api/client";
@@ -405,12 +406,8 @@ test("offline, an Unsubscribe's hold through the read after its write ends at th
 // it, so the next one's read, which waits for that one (`DispatchQueryClient`), answers after it.
 test("the line an Unsubscribe's read the bound ended draws goes as the next Unsubscribe lands, whose read takes the chip away", async () => {
   // Each Unsubscribe's answer, held until the row gives it, so what it sets off runs in `act`.
-  const answers: (() => void)[] = [];
-  const unsubscribeIssueSession = spyOn(api, "unsubscribeIssueSession").mockImplementation(() => {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    answers.push(resolve);
-    return promise;
-  });
+  const { answers, next } = heldAnswers<void>();
+  const unsubscribeIssueSession = spyOn(api, "unsubscribeIssueSession").mockImplementation(next);
   const client = new DispatchQueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -422,7 +419,9 @@ test("the line an Unsubscribe's read the bound ended draws goes as the next Unsu
   try {
     const section = screen.getByRole("region", { name: "Recipients" });
     const viaIssue = await within(section).findByRole("list", { name: "Via issue subscription" });
-    const unsubscribe = within(viaIssue).getByRole("button", { name: "Unsubscribe" });
+    const unsubscribe = within(viaIssue).getByRole("button", {
+      name: "Unsubscribe",
+    }) as HTMLButtonElement;
     const reread = Promise.withResolvers<Subscriber[]>();
     page.getIssueSubscribers.mockResolvedValue([]);
     page.getIssueSubscribers.mockReturnValueOnce(reread.promise);

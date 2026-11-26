@@ -452,8 +452,10 @@ export function InPlaceField({
               // is no floor, and the box takes the heading's padding, none, and no margin.
               className={`-my-[3px] block w-full resize-none overflow-hidden rounded-lg border px-2 py-[7px] outline-none md:-my-[7px] xl:my-0 xl:py-0 ${TITLE_TYPE} ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
               // The heading's 22 px type at every width, so the title wraps in the box as in the
-              // heading: below 1280 px `styles.css` gives every box a 16 px floor in no layer,
-              // which `data-own-type` takes off this one.
+              // heading. Below 1280 px `styles.css` sets every box's type to 16 px
+              // (`font-size: 1rem`, the floor that keeps a phone from zooming in), in no layer,
+              // over `TITLE_TYPE`'s `text-[22px]`: a set size, not a minimum. `data-own-type`
+              // takes it off this box.
               data-own-type=""
               rows={1}
             />

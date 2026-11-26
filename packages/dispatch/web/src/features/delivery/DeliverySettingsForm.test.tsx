@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
+import { heldAnswers } from "../../__tests__/held-answers";
 import { pressHeld } from "../../__tests__/held-press";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
@@ -659,12 +660,8 @@ test("offline, Save whose save landed is let go at the request deadline, and the
 test("the line a save's read the bound ended draws goes as the next save lands, whose read answers", async () => {
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(record);
   // Each save's answer, held until the row moves the clock, so what it sets off runs in `act`.
-  const saves: ((saved: DeliverySettings) => void)[] = [];
-  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockImplementation(() => {
-    const { promise, resolve } = Promise.withResolvers<DeliverySettings>();
-    saves.push(resolve);
-    return promise;
-  });
+  const { answers: saves, next } = heldAnswers<DeliverySettings>();
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockImplementation(next);
   const queryClient = renderForm({
     queryClient: new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } }),
   });

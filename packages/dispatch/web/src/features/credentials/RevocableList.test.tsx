@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { heldAnswers } from "../../__tests__/held-answers";
 import { pressHeld } from "../../__tests__/held-press";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
@@ -412,12 +413,8 @@ test("Sign-ins: the line a revoke's read the bound ended draws goes as the next 
     ],
   });
   // Each revoke's answer, held until the row moves the clock, so what it sets off runs in `act`.
-  const revokes: (() => void)[] = [];
-  const revoke = spyOn(api, "revokeSignIn").mockImplementation(() => {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    revokes.push(resolve);
-    return promise;
-  });
+  const { answers: revokes, next } = heldAnswers<void>();
+  const revoke = spyOn(api, "revokeSignIn").mockImplementation(next);
   const confirm = spyOn(window, "confirm").mockReturnValue(true);
   const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   const note = /^Couldn't load sign-ins\./;

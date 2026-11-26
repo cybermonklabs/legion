@@ -4504,7 +4504,7 @@ test("below 1280 px opening a one-line priority title, and a three-line one at 3
   const short = await createPriority({ owner: "alice", title: "Ship it" });
   const long = await createPriority({ owner: "alice", title: threeLines });
   const header = page.getByTestId("priority-header");
-  const button = header.getByRole("heading", { level: 1 }).getByRole("button");
+  const button = titleHeading(page).getByRole("button");
   const box = page.getByRole("textbox", { name: "Title" });
   // What the reader sees of the title, closed or open: the height of its button or its box, the
   // header's height, the title's type, the lines it takes, and the top of the box its words are

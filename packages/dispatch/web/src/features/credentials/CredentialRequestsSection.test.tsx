@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { heldAnswers } from "../../__tests__/held-answers";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -413,12 +414,8 @@ test("the line a dismissal's read the bound ended draws goes as the next dismiss
     pending: [expiredSecretRow()],
   });
   // Each dismissal's answer, held until the row moves the clock, so what it sets off runs in `act`.
-  const dismissals: (() => void)[] = [];
-  const dismiss = spyOn(api, "dismissCredentialRequest").mockImplementation(() => {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    dismissals.push(resolve);
-    return promise;
-  });
+  const { answers: dismissals, next } = heldAnswers<void>();
+  const dismiss = spyOn(api, "dismissCredentialRequest").mockImplementation(next);
   const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter>

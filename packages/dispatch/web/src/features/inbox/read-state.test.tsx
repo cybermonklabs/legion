@@ -10,6 +10,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { onFakeClock, realClock, tick } from "../../__tests__/fake-clock";
+import { heldAnswers } from "../../__tests__/held-answers";
 import { heldNotDisabled } from "../../__tests__/held-press";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
@@ -333,12 +334,8 @@ test("Mark read releases its hold when its landed mark's re-read reaches the req
 // answers after it.
 test("the line a Mark read's re-read the bound ended draws goes as the next mark lands, whose re-read answers", async () => {
   // Each mark's answer, held until the row gives it, so what it sets off runs in `act`.
-  const marks: (() => void)[] = [];
-  const mark = answerThreadReads().mockImplementation(() => {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    marks.push(resolve);
-    return promise;
-  });
+  const { answers: marks, next } = heldAnswers<void>();
+  const mark = answerThreadReads().mockImplementation(next);
   mockCommentReads();
   const client = new DispatchQueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
