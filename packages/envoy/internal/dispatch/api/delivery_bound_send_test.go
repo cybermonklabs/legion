@@ -231,7 +231,8 @@ func TestACommentResumeSendsNothingBesideALiveSenderAndTakesTheAttemptOnceItLaps
 	// A sender claimed attempt 1 a moment ago and is still sending it.
 	strandStoredAttempt(t, database, "comment_deliveries", "comment_id", comment.ID, "'0 seconds'", "'5 minutes'")
 	listener.forget()
-	held, waits, err := direct.deliverResolvedCommentMention(context.Background(), comment, event, mention, comment.Author, attemptClaim{attempt: 1}, direct.newTakeoverRetry())
+	// Each resume is the delivery sweep's, which names the server's own reader (resumeOwedDelivery).
+	held, waits, err := direct.deliverResolvedCommentMention(withReader(context.Background(), everyReader), comment, event, mention, comment.Author, attemptClaim{attempt: 1}, direct.newTakeoverRetry())
 	if err != nil || waits != nil {
 		t.Fatalf("resume beside a live sender: %v (waits %+v)", err, waits)
 	}
@@ -247,7 +248,7 @@ func TestACommentResumeSendsNothingBesideALiveSenderAndTakesTheAttemptOnceItLaps
 
 	// That sender never came back.
 	strandStoredAttempt(t, database, "comment_deliveries", "comment_id", comment.ID, "'5 minutes'", "'5 minutes'")
-	resumed, waits, err := direct.deliverResolvedCommentMention(context.Background(), comment, event, mention, comment.Author, attemptClaim{attempt: 1}, direct.newTakeoverRetry())
+	resumed, waits, err := direct.deliverResolvedCommentMention(withReader(context.Background(), everyReader), comment, event, mention, comment.Author, attemptClaim{attempt: 1}, direct.newTakeoverRetry())
 	if err != nil || waits != nil {
 		t.Fatalf("resume the abandoned attempt: %v (waits %+v)", err, waits)
 	}

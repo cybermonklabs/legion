@@ -37,15 +37,16 @@ func (s *server) parseIssueAssignee(ctx context.Context, raw json.RawMessage) (a
 	return &canonical, true, nil
 }
 
-// allowedLogin canonicalises login and checks that it names a person who has signed in.
+// allowedLogin canonicalises login and checks that it names a person who has signed in and whom the
+// reader the request's gate put in ctx may see (access.PersonClause): a person a restricted member
+// or a credential acting for one may not see is refused exactly as one who has not signed in. A
+// context with no reader reads as the closed viewer, which sees no person, so a handler that lost
+// its reader allows nobody; work the server does for no request names everyReader in ctx itself.
 func (s *server) allowedLogin(ctx context.Context, login string) (string, error) {
 	canonical := model.CanonicalLogin(login)
 	var known bool
 	if canonical != "" {
-		reader, ok := readerFromContext(ctx)
-		if !ok {
-			reader = everyReader
-		}
+		reader, _ := readerFromContext(ctx)
 		viewer := refs.VisibilityArg(reader)
 		if err := s.deps.Store.Pool.QueryRow(ctx, `select exists(select 1 from people where email = $1 and `+
 			access.PersonClause("people.email", "$2")+`)`, canonical, viewer).Scan(&known); err != nil {

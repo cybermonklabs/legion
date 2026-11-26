@@ -143,8 +143,11 @@ func resolveThenLock[R, T any](
 // before the listener is asked, exactly as a session the listener holds no record of, so a
 // restricted member or a credential acting for one reaches no session outside what it sees, and an
 // open viewer no session of a private project it does not see, and neither learns whether one is
-// live. Such a resolution alone answers hidden, which the answer never shows. A session route was
-// held to its author's reader when it was written.
+// live. Such a resolution alone answers hidden, which the answer never shows. The reader is the one
+// in ctx: the request's, which its gate put there, the comment's author's for a mention send
+// queued with one (mentionSendContext), and everyReader, by name, for the delivery sweep's resume
+// of what a writer already wrote (resumeOwedDelivery). A context with no reader reads as the closed
+// viewer, so a session route resolved with none is a session nobody sees.
 func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, delivery string) (string, string, string, bool) {
 	if s.deps.Envoy == nil {
 		return "", "", listenerNotConfiguredText, false
@@ -154,16 +157,7 @@ func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, d
 	if route.Kind == "role" {
 		target, err = s.deps.Envoy.Role(ctx, route.ID)
 	} else {
-		// A session route was held to its author's reader when it was written, so a resolve with
-		// no reader in ctx - the delivery sweep's resume of a message attempt, a mention send
-		// queued with none - reads the session as the server's own reader, by name, where
-		// sessionHiddenFromReader answers a context with no reader hidden. The listener's read
-		// below takes ctx as it came.
-		seen := ctx
-		if _, ok := readerFromContext(ctx); !ok {
-			seen = withReader(ctx, everyReader)
-		}
-		hidden, hiddenErr := s.sessionHiddenFromReader(seen, route.ID)
+		hidden, hiddenErr := s.sessionHiddenFromReader(ctx, route.ID)
 		if hiddenErr != nil {
 			return "", "", hiddenErr.Error(), false
 		}

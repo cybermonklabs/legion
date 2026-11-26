@@ -218,7 +218,13 @@ func (s *server) resumeOwedDeliveries(ctx context.Context) error {
 // whose session must take an earlier event of the comment's owner first, or whose read of that
 // rule failed (mentionHeldForOrder), is handed, under the claim the send took, to this process's
 // mention sender, whose lane for that session sends it once the outbox has sent that event.
+//
+// The sweep answers no request, so it reads as the server's own reader, by name: what it loads, and
+// the session a session route names (resolveDeliveryTarget, which reads the reader in ctx), whose
+// route was held to its author's reader when the write made it. A mention handed to the sender
+// carries that reader with it (mentionSender.enqueue).
 func (s *server) resumeOwedDelivery(ctx context.Context, owed owedDelivery) error {
+	ctx = withReader(ctx, everyReader)
 	if owed.commentID != "" {
 		comment, err := s.loadComment(ctx, s.deps.Store.Pool, everyReader, owed.commentID)
 		if err != nil {
