@@ -1201,7 +1201,8 @@ func (s *server) answerHeldKey(
 // The body is read for at most drainTime (readFor): one that stops arriving is answered 409
 // KEY_IN_FLIGHT, which is what the key said, and the connection closes after it. Neither of those
 // two answers reads the key again to judge the repeat; each names the recovery point the key holds
-// when it is answered (writeUnjudgedKeyInFlight). A body past the route's limit is answered the
+// when it is answered, to a caller that sees every issue it names (writeUnjudgedKeyInFlight,
+// recoveryPointFor). A body past the route's limit is answered the
 // route's 413 (routeBody), as a first request's body past it is. Either keeps the read's deadline
 // for net/http's own reads after the answer; only a body read to its end lifts it.
 func (s *server) answerDrainedRepeat(
