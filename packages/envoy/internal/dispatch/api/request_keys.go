@@ -42,7 +42,8 @@ import (
 //   - The row is inserted in flight, in a statement of its own, before the handler runs, and on a
 //     context the client's cancellation does not reach. A repeat that finds it answers from it
 //     instead: a different request under the key is 422 KEY_REUSED, naming the request that used
-//     it; a first request still running (its lease, IdempotencyLease, renewed every
+//     it to a caller that sees what that request's path names (heldRequestNamed); a first request
+//     still running (its lease, IdempotencyLease, renewed every
 //     keyedLeaseRenewal while it runs) is 409 KEY_IN_FLIGHT with Retry-After: 1; a finished one is
 //     answered with Idempotency-Replayed: ?1, and the handler does not run again. A route that
 //     commits a recovery point answers what it made, read now (keyedReplays), except the status
@@ -184,10 +185,16 @@ type keyedRoute struct {
 	// recovery the point the key held when the layer decided it. A KEY_IN_FLIGHT answered before
 	// the repeat's body is judged (answerDrainedRepeat's Expect: 100-continue and drain-error
 	// answers) names the running request's point whatever the repeat's body; elsewhere a point is
-	// passed only once the digest matched. recovery is nil where the layer read none, where the
-	// row is another request's (KEY_REUSED), and where it is past its window. A nil refuse answers
-	// as every route does (refuseKeyed).
+	// passed only once the digest matched, and only to a caller that sees every issue it names
+	// (recoveryPointFor). recovery is nil where the layer read none, where the row is another
+	// request's (KEY_REUSED), where it is past its window, and where the caller does not see it. A
+	// nil refuse answers as every route does (refuseKeyed), and is handed no point.
 	refuse func(w http.ResponseWriter, err error, recovery json.RawMessage)
+	// pointIssues is the keys of the issues a recovery point of the route names, which its refusals
+	// and its replay answer: a caller that does not see each of them is handed no point and no
+	// replay (recoveryPointFor, heldAnswerRefusal). nil for a route whose point names no issue
+	// beside its addressed object.
+	pointIssues func(recovery json.RawMessage) ([]string, error)
 	// reread is the route's row of keyedRereads, which keyedWrites sets; nil for a route that
 	// rereads no post.
 	reread keyedReread
@@ -204,7 +211,10 @@ func (s *server) keyedReplays() map[string]keyedRoute {
 		http.MethodPost + " /api/v1/issues/{key}/messages":        {replay: replayRecovered(s, s.replayIssueMessage)},
 		http.MethodPost + " /api/v1/issues/{key}/comments":        {replay: replayRecovered(s, s.replayComment)},
 		http.MethodPost + " /api/v1/artifacts/{id}/comments":      {replay: replayRecovered(s, s.replayComment)},
-		statusChangeRoute: {replay: replayRecovered(s, s.replayStatusChange), resumes: true, refuse: s.refuseStatusChangeKey},
+		statusChangeRoute: {
+			replay: replayRecovered(s, s.replayStatusChange), resumes: true, refuse: s.refuseStatusChangeKey,
+			pointIssues: statusChangePointIssues,
+		},
 	}
 }
 
@@ -455,11 +465,7 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		// the key back, so a check can tell a Dispatch that judged its key from one that ignored the
 		// header.
 		w.Header().Set(contracts.IdempotencyKeyHeader, key)
-		claim, answered, hidden := s.claimRequestKey(w, r, pattern, login, key, hex.EncodeToString(digest.Sum(nil)), route, body)
-		if hidden {
-			handler(w, r)
-			return
-		}
+		claim, answered := s.claimRequestKey(w, r, pattern, login, key, hex.EncodeToString(digest.Sum(nil)), route, body)
 		if answered {
 			return
 		}
@@ -780,29 +786,23 @@ func (b *keyedBody) reader() (io.Reader, error) {
 	return io.MultiReader(bytes.NewReader(b.head), b.spill), nil
 }
 
-// stringField is the string the body's top-level JSON object holds under field, and "" for a body
-// that is no JSON object or holds no string there. It reads the body from its first byte and leaves
-// a spilled body's file where reader left it, so the reader the handler holds still reads it whole.
-func (b *keyedBody) stringField(field string) (string, error) {
+// bytes is the whole body, from its first byte. It leaves a spilled body's file where reader left
+// it, so the reader the handler holds still reads it whole.
+func (b *keyedBody) bytes() ([]byte, error) {
 	body, err := b.reader()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	data, err := io.ReadAll(body)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if b.spill != nil {
 		if _, err := b.spill.Seek(0, io.SeekStart); err != nil {
-			return "", err
+			return nil, err
 		}
 	}
-	var object map[string]json.RawMessage
-	var value string
-	if json.Unmarshal(data, &object) != nil || json.Unmarshal(object[field], &value) != nil {
-		return "", nil
-	}
-	return value, nil
+	return data, nil
 }
 
 // close removes the body's temporary file, if it has one.
@@ -1001,10 +1001,10 @@ func (s *server) requestKeyAnswersItself(ctx context.Context, login, key string)
 // KEY_IN_FLIGHT until its lease lapsed. route is the route's keyedRoute, which says how a key
 // whose holder is gone is judged and taken over, how a repeat is answered from what the key
 // holds (answerHeldKey), and how a refusal is answered. body is the request's spooled body, by
-// which a repeat of a write whose body names its project is placed (heldAnswerHidden).
+// which a repeat of a write whose body names its project is placed (heldAnswerRefusal).
 func (s *server) claimRequestKey(
 	w http.ResponseWriter, r *http.Request, pattern, login, key, digest string, route keyedRoute, body *keyedBody,
-) (claim requestKeyClaim, answered, hidden bool) {
+) (claim requestKeyClaim, answered bool) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), keyedBookkeeping)
 	defer cancel()
 	pool := s.deps.Store.Pool
@@ -1021,33 +1021,29 @@ func (s *server) claimRequestKey(
 			returning attempt
 		`, login, key, digest, r.Method, r.URL.Path).Scan(&claim.attempt)
 		if err == nil {
-			return claim, false, false
+			return claim, false
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
 			s.refuseKeyed(w, route, fmt.Errorf("claim an idempotency key: %w", err), nil)
-			return claim, true, false
+			return claim, true
 		}
 		held, found, err := s.readHeldRequestKey(ctx, login, key)
 		if err != nil {
 			s.refuseKeyed(w, route, err, nil)
-			return claim, true, false
+			return claim, true
 		}
 		if !found {
 			continue
 		}
 		state := held.state(digest, route)
-		hidden, err := s.heldAnswerHidden(r, pattern, held, state, body)
-		if err != nil {
+		// A repeat whose caller does not see what the first answer is of is refused, and never
+		// run again (heldAnswerRefusal).
+		if err := s.heldAnswerRefusal(r, pattern, held, state, route, body); err != nil {
 			s.refuseKeyed(w, route, err, nil)
-			return claim, true, false
-		}
-		if hidden {
-			// The caller does not see what the first answer is of: the route runs for it unkeyed
-			// and answers that object as missing, writing nothing (heldAnswerHidden).
-			return claim, false, true
+			return claim, true
 		}
 		if s.answerHeldKey(w, r, key, held, state, route) {
-			return claim, true, false
+			return claim, true
 		}
 		if state == keyExpired {
 			if _, err := pool.Exec(ctx, `
@@ -1055,7 +1051,7 @@ func (s *server) claimRequestKey(
 				where login = $1 and idempotency_key = $2 and created_at < now() - make_interval(secs => $3)
 			`, login, key, contracts.IdempotencyKeyTTL.Seconds()); err != nil {
 				s.refuseKeyed(w, route, fmt.Errorf("expire an idempotency key: %w", err), nil)
-				return claim, true, false
+				return claim, true
 			}
 			continue
 		}
@@ -1083,15 +1079,15 @@ func (s *server) claimRequestKey(
 		}
 		if err != nil {
 			s.refuseKeyed(w, route, fmt.Errorf("take over an idempotency key: %w", err), nil)
-			return claim, true, false
+			return claim, true
 		}
 		if tag.RowsAffected() == 1 {
 			claim.attempt = held.attempt + 1
-			return claim, false, false
+			return claim, false
 		}
 	}
-	s.writeKeyInFlight(w, route, key, recovery)
-	return claim, true, false
+	s.writeKeyInFlight(w, r, route, key, recovery)
+	return claim, true
 }
 
 // readHeldRequestKey reads the row login's key holds, its recovery point as every reader reads it
@@ -1138,9 +1134,20 @@ func (s *server) answerHeldKey(
 	switch state {
 	case keyReused:
 		// Nothing ran under this request, and the row's point is another request's: it names none.
+		// The first request is named to a caller that sees what its path names, and to no other
+		// (heldRequestNamed): a key belongs to a person, whatever credential sends it.
+		named, err := s.heldRequestNamed(r, held)
+		if err != nil {
+			s.refuseKeyed(w, route, err, nil)
+			return true
+		}
+		used := "another request"
+		if named {
+			used = held.method + " " + held.path
+		}
 		s.refuseKeyed(w, route, errorf(http.StatusUnprocessableEntity, contracts.IdempotencyKeyReused,
-			"%s %q was already used for %s %s with different content; this request was not run: a changed request needs a new key",
-			contracts.IdempotencyKeyHeader, key, held.method, held.path), nil)
+			"%s %q was already used for %s with different content; this request was not run: a changed request needs a new key",
+			contracts.IdempotencyKeyHeader, key, used), nil)
 	case keyRecovered:
 		// A route that resumes answers from its point alone (replayStatusChange), so it is handed
 		// no stored answer and no delete is read for one.
@@ -1163,7 +1170,7 @@ func (s *server) answerHeldKey(
 	case keyAnswered:
 		s.replayAnswer(w, r, route, held)
 	case keyInFlight:
-		s.writeKeyInFlight(w, route, key, held.recovery)
+		s.writeKeyInFlight(w, r, route, key, held.recovery)
 	case keyCommitted:
 		// The holder committed its write and its process died, or it failed, before its answer
 		// was kept: running the request again would make the write twice.
@@ -1234,108 +1241,131 @@ func (s *server) answerDrainedRepeat(
 	var freed json.RawMessage
 	if found {
 		state := held.state(hex.EncodeToString(digest.Sum(nil)), route)
-		hidden, err := s.heldAnswerHidden(r, pattern, held, state, nil)
-		if err != nil {
+		// A repeat whose caller does not see what the first answer is of is refused, and one
+		// that cannot be placed without its body, which was not kept, is told to ask again
+		// (heldAnswerRefusal): either way it is not answered from the key.
+		if err := s.heldAnswerRefusal(r, pattern, held, state, route, nil); err != nil {
 			s.refuseKeyed(w, route, err, nil)
 			return
 		}
-		// A repeat whose caller no longer sees what the first answer is of is told to ask again:
-		// its body is gone, and the ask runs the route, which answers that object as missing.
-		if !hidden && s.answerHeldKey(w, r, key, held, state, route) {
+		if s.answerHeldKey(w, r, key, held, state, route) {
 			return
 		}
 		if state == keyAbandoned {
 			freed = held.recovery
 		}
 	}
-	s.writeKeyFreed(w, route, key, freed)
+	s.writeKeyFreed(w, r, route, key, freed)
 }
 
-// heldAnswerHidden reports whether a repeat in state would hand its caller an answer of an object
-// that caller does not see now: a replayed answer, a recovery point or a landed write's notice is
-// the first request's, and a key belongs to a person whatever credential they write through
+// heldAnswerRefusal is the refusal a repeat in state gets in place of what its key holds when that
+// would hand its caller an object the caller does not see now, and nil where the key's answer is
+// the caller's to have: a replayed answer, a recovery point or a landed write's notice is the first
+// request's, and a key belongs to a person whatever credential they write through
 // (requestKeyLogin), so a token whose list leaves the object's project out, or a person taken off
 // its project's list since, would read it. A caller that sees every object reads no statement for
-// it (R9), and nor does a repeat in any other state, which answers nothing of the first request's
-// object.
+// it (R9). A repeat in another state is judged where it is answered: a different request's 422
+// names the first request only to a caller that sees its object (heldRequestNamed), and a first
+// request still running hands its recovery point only to a caller that sees every issue it names
+// (recoveryPointFor); an abandoned or expired key runs the request, under this caller.
 //
 // The stored row is placed as its first request was placed:
 //
 //   - by the object the route's address names (projectResolverFor), read as the server sees it and
-//     as the caller does: hidden when the server finds it and the caller does not. A hidden repeat
-//     runs as a request under no key, which answers that object as missing and writes nothing,
-//     exactly as the same request under a fresh key answers that caller;
+//     as the caller does: hidden when the server finds it and the caller does not;
 //   - by the project its body names, for a write whose address names none (keyedBodyProjects): the
-//     field the first request's write check reads (refuseOutsideCallerProjects), or the key of the
-//     project a create makes. The body is the first request's, since the digest matched. A repeat
-//     in a project the caller sees is replayed; one in a project that exists and the caller does
-//     not see is refused (keyedRepeatRefused), since each of these writes is a create its handler
-//     would make again. A repeat whose body was not kept (answerDrainedRepeat, body nil) is told
-//     to ask again, and the retry, which carries its body, is placed by it;
+//     project the write's own handler reads from that body (bodyProject), the one its write check
+//     reads (refuseOutsideCallerProjects) or the key of the project a create makes. The body is
+//     the first request's, since the digest matched: hidden when that project exists and the
+//     caller does not see it. A repeat whose body was not kept (answerDrainedRepeat, body nil) is
+//     told to ask again, and the retry, which carries its body, is placed by it;
 //   - by its class otherwise: a session's row was held to that session before this layer
 //     (withinSessionScope) or is the caller's own, a deployment's row was held to an open viewer
 //     (withinProjectScope) and belongs to no project, and a row that writes nothing answers from
 //     its own body. None is hidden.
 //
-// A row none of those places - no class, and no object in its address or its body - is refused to
-// a caller that does not see every object (keyedRepeatRefused). A refusal is the error, which every
-// caller answers as the route answers the keyed layer's own refusals (refuseKeyed).
-func (s *server) heldAnswerHidden(r *http.Request, pattern string, held heldRequestKey, state keyState, body *keyedBody) (bool, error) {
+// Where the route's recovery point names issues beside its addressed object (keyedRoute.
+// pointIssues: a status change's other steps), the stored row is hidden too while the caller does
+// not see each of them, since its replay answers them.
+//
+// A hidden repeat, and a row none of those places, is refused 409 KEY_COMMITTED
+// (keyedRepeatRefused) and never run again. At this slice that is the one rule: the issue's
+// loaders bind no reader yet (loadIssue, loadIssueWithProgress), so a request run again for a
+// caller that does not see its issue would find it and write it a second time, and no create holds
+// its caller to the project its body names. Slice S3c-issues, whose loaders bind the reader, runs
+// a hidden repeat again under no key, which answers its object as missing and writes nothing.
+func (s *server) heldAnswerRefusal(r *http.Request, pattern string, held heldRequestKey, state keyState, route keyedRoute, body *keyedBody) error {
 	if state != keyAnswered && state != keyRecovered && state != keyCommitted {
-		return false, nil
+		return nil
 	}
-	reader, ok := readerFromContext(r.Context())
-	if !ok {
-		var err error
-		if reader, err = s.resolveReader(r); err != nil {
-			return true, err
-		}
+	reader, err := s.resolveReader(r)
+	if err != nil {
+		return err
 	}
 	if seesEveryObject(reader) {
-		return false, nil
+		return nil
 	}
 	ctx, pool := r.Context(), s.deps.Store.Pool
 	name := r.Method + " " + pattern
+	hidden := false
 	if resolve, addressed := s.projectResolverFor(pattern); addressed {
 		found, err := resolve(ctx, pool, r, refs.VisibilityArg(model.ServerReader))
-		if err != nil || found == "" {
-			return false, err
+		if err != nil {
+			return err
 		}
-		seen, err := resolve(ctx, pool, r, refs.VisibilityArg(reader))
-		return seen == "", err
-	}
-	if field, named := keyedBodyProjects[name]; named {
+		if found != "" {
+			seen, err := resolve(ctx, pool, r, refs.VisibilityArg(reader))
+			if err != nil {
+				return err
+			}
+			hidden = seen == ""
+		}
+	} else if read, named := keyedBodyProjects[name]; named {
 		if body == nil {
-			return true, nil
+			key, _, _ := requestKeyHeader(r)
+			refusal := errorf(http.StatusConflict, contracts.IdempotencyKeyInFlight,
+				"the first request under %s %q ended while this one's body arrived, and this one, whose body was not kept, was not run: ask again under the same key",
+				contracts.IdempotencyKeyHeader, key)
+			refusal.retryAfter = 1
+			return refusal
 		}
-		project, err := body.stringField(field)
-		if err != nil || project == "" {
-			// A body that names no project wrote nothing of one: its first request was refused,
-			// or wrote over no one project, and its answer holds no object of a project.
-			return false, err
+		data, err := body.bytes()
+		if err != nil {
+			return err
 		}
-		var hidden bool
-		err = pool.QueryRow(ctx, `select exists (select 1 from projects where key = $1)
-			and not exists (select 1 from projects where key = $1 and `+access.ProjectClause("key", "$2")+`)`,
-			project, refs.VisibilityArg(reader)).Scan(&hidden)
-		if err != nil || !hidden {
-			return hidden, err
+		// A body that names no project wrote nothing of one: its first request was refused, or
+		// wrote over no one project, and its answer holds no object of a project.
+		if project := read(data); project != "" {
+			if err := pool.QueryRow(ctx, `select exists (select 1 from projects where key = $1)
+				and not exists (select 1 from projects where key = $1 and `+access.ProjectClause("key", "$2")+`)`,
+				project, refs.VisibilityArg(reader)).Scan(&hidden); err != nil {
+				return err
+			}
 		}
-		// A create's handler makes its object again when run, and at this slice no create holds
-		// its caller to the project its body names, so a hidden create is never run unkeyed: it
-		// is refused, neither replayed nor made a second time.
-		return true, keyedRepeatRefused(r, held)
+	} else {
+		switch writeClasses[name] {
+		case scopeSession, scopeDeployment, scopeNoWrite:
+		default:
+			hidden = true
+		}
 	}
-	switch writeClasses[name] {
-	case scopeSession, scopeDeployment, scopeNoWrite:
-		return false, nil
+	if !hidden && route.pointIssues != nil && held.recovery != nil {
+		seen, err := s.pointSeen(ctx, reader, route, held.recovery)
+		if err != nil {
+			return err
+		}
+		hidden = !seen
 	}
-	return true, keyedRepeatRefused(r, held)
+	if hidden {
+		return keyedRepeatRefused(r, held)
+	}
+	return nil
 }
 
-// keyedRepeatRefused is a repeat heldAnswerHidden does not run and does not replay: 409
-// KEY_COMMITTED, the refusal a write that landed and is not answered again is given, so the client
-// reads what it wrote through the routes that read it, each of which holds it to what it sees.
+// keyedRepeatRefused is a repeat heldAnswerRefusal does not run and does not answer from its key:
+// 409 KEY_COMMITTED, the refusal a write that landed and is not answered again is given, so the
+// client reads what it wrote through the routes that read it, each of which holds it to what it
+// sees. The method and path it names are the caller's own, since the digest matched.
 func keyedRepeatRefused(r *http.Request, held heldRequestKey) error {
 	key, _, _ := requestKeyHeader(r)
 	return errorf(http.StatusConflict, contracts.IdempotencyKeyCommitted,
@@ -1344,46 +1374,190 @@ func keyedRepeatRefused(r *http.Request, held heldRequestKey) error {
 }
 
 // keyedBodyProjects is every keyed write whose address names no object and whose body names the
-// project it belongs to, by method and pattern, with the body's field that names it: the two
-// writes of the project their body names (scopeProjectInBody), whose handlers check that field
-// (refuseOutsideCallerProjects), and the project create, whose body's key is the project it
-// makes. heldAnswerHidden places a repeat of each by that project.
-var keyedBodyProjects = map[string]string{
-	http.MethodPost + " /api/v1/issues":         "project",
-	http.MethodPost + " /api/v1/going/requests": "project",
-	http.MethodPost + " /api/v1/projects":       "key",
+// project it belongs to, by method and pattern, with the read of that project its own handler
+// makes (bodyProjectOf): the two writes of the project their body names (scopeProjectInBody),
+// whose handlers check it (refuseOutsideCallerProjects), and the project create, whose body's key
+// is the project it makes. heldAnswerRefusal places a repeat of each by that project.
+var keyedBodyProjects = map[string]func(body []byte) string{
+	http.MethodPost + " /api/v1/issues":         bodyProjectOf[createIssueInput],
+	http.MethodPost + " /api/v1/going/requests": bodyProjectOf[createGoingRequestInput],
+	http.MethodPost + " /api/v1/projects":       bodyProjectOf[createProjectInput],
+}
+
+// bodyProjectOf is the project a write's body names, read as its handler reads it: decoded into the
+// handler's own input, as decodeJSON decodes one (encoding/json, which matches a member's name in
+// any case and takes the last of two), and read by the input's bodyProject, which the handler calls
+// too, so the project placed here is the project the first request wrote. "" for a body that does
+// not decode, whose handler refused it and wrote nothing.
+func bodyProjectOf[T interface{ bodyProject() string }](body []byte) string {
+	var input T
+	if json.NewDecoder(bytes.NewReader(body)).Decode(&input) != nil {
+		return ""
+	}
+	return input.bodyProject()
+}
+
+// bodyProject is the project an issue create's body names, as createIssue reads it.
+func (input createIssueInput) bodyProject() string { return strings.TrimSpace(input.Project) }
+
+// bodyProject is the project a going request's body names, as createGoingRequest reads it.
+func (input createGoingRequestInput) bodyProject() string { return strings.TrimSpace(input.Project) }
+
+// bodyProject is the key of the project a project create makes, as createProject reads it.
+func (input createProjectInput) bodyProject() string { return strings.TrimSpace(input.Key) }
+
+// heldRequestNamed reports whether a 422 KEY_REUSED may name its key's first request - its method
+// and path - to the caller r is: a caller that sees every object, or one whose first request's path
+// names no object, or names an object the caller sees, read as the first request's project check
+// reads it (projectResolverFor). A path no route of the table matches, and one whose object the
+// resolver does not know, is named to no other caller.
+func (s *server) heldRequestNamed(r *http.Request, held heldRequestKey) (bool, error) {
+	reader, err := s.resolveReader(r)
+	if err != nil {
+		return false, err
+	}
+	if seesEveryObject(reader) {
+		return true, nil
+	}
+	pattern, values, matched := heldRoute(held.method, held.path)
+	if !matched {
+		return false, nil
+	}
+	if len(values) == 0 {
+		return true, nil
+	}
+	resolve, addressed := s.projectResolverFor(pattern)
+	if !addressed {
+		return false, nil
+	}
+	first := new(http.Request)
+	for name, value := range values {
+		first.SetPathValue(name, value)
+	}
+	project, err := resolve(r.Context(), s.deps.Store.Pool, first, refs.VisibilityArg(reader))
+	return project != "", err
+}
+
+// heldRoute is the pattern of the mutating route (writeClasses) a held request's method and path
+// were served by, and the path values that pattern reads from the path: each segment of the
+// pattern the path's own, a wildcard taking any one, and of two patterns that match, the one with
+// more literal segments, as net/http's mux picks it.
+func heldRoute(method, path string) (pattern string, values map[string]string, matched bool) {
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	best := -1
+	for name := range writeClasses {
+		routeMethod, routePattern, _ := strings.Cut(name, " ")
+		parts := strings.Split(strings.Trim(routePattern, "/"), "/")
+		if routeMethod != method || len(parts) != len(segments) {
+			continue
+		}
+		literals, read := 0, map[string]string{}
+		for index, part := range parts {
+			if strings.HasPrefix(part, "{") && strings.HasSuffix(part, "}") {
+				read[part[1:len(part)-1]] = segments[index]
+				continue
+			}
+			if part != segments[index] {
+				read = nil
+				break
+			}
+			literals++
+		}
+		if read != nil && literals > best {
+			best, pattern, values = literals, routePattern, read
+		}
+	}
+	return pattern, values, best >= 0
+}
+
+// recoveryPointFor is the recovery point a refusal of the keyed layer hands the caller r is, of
+// recovery, the point the key held: the point itself to a caller that sees every issue it names
+// (pointSeen), and nil to any other, as to a key that holds none. A route that answers its
+// refusals as every route does (keyedRoute.refuse nil) is handed no point, and is answered nil.
+func (s *server) recoveryPointFor(r *http.Request, route keyedRoute, recovery json.RawMessage) (json.RawMessage, error) {
+	if recovery == nil || route.refuse == nil {
+		return nil, nil
+	}
+	reader, err := s.resolveReader(r)
+	if err != nil {
+		return nil, err
+	}
+	seen, err := s.pointSeen(r.Context(), reader, route, recovery)
+	if err != nil || !seen {
+		return nil, err
+	}
+	return recovery, nil
+}
+
+// pointSeen reports whether reader sees every issue route's recovery point names
+// (keyedRoute.pointIssues): a reader that sees every object does, reading nothing (R9), and so does
+// any reader of a point that names none. An issue no row holds is one the reader does not see. A
+// route that names no issues of its points shapes none of its refusals, and its point is seen by a
+// reader that sees every object alone.
+func (s *server) pointSeen(ctx context.Context, reader model.Actor, route keyedRoute, recovery json.RawMessage) (bool, error) {
+	if seesEveryObject(reader) {
+		return true, nil
+	}
+	if route.pointIssues == nil {
+		return false, nil
+	}
+	issues, err := route.pointIssues(recovery)
+	if err != nil || len(issues) == 0 {
+		return err == nil, err
+	}
+	var seen bool
+	err = s.deps.Store.Pool.QueryRow(ctx, `
+		select count(*) = cardinality($1::text[]) from issues
+		where key = any($1::text[]) and `+access.ProjectClause("project_key", "$2"),
+		issues, refs.VisibilityArg(reader)).Scan(&seen)
+	return seen, err
 }
 
 // writeKeyFreed answers a repeat whose body was read and not kept while its first request gave the
 // key up (answerDrainedRepeat): it was not run, and is told to ask again under the key, as a repeat
 // whose first request still runs is, so the client's retry runs it. recovery is the point the key
-// held when it was read, for the route's refuse.
-func (s *server) writeKeyFreed(w http.ResponseWriter, route keyedRoute, key string, recovery json.RawMessage) {
+// held when it was read, which the route's refuse is handed where the caller sees it
+// (recoveryPointFor).
+func (s *server) writeKeyFreed(w http.ResponseWriter, r *http.Request, route keyedRoute, key string, recovery json.RawMessage) {
 	refusal := errorf(http.StatusConflict, contracts.IdempotencyKeyInFlight,
 		"the first request under %s %q ended while this one's body arrived, and this one, whose body was not kept, was not run: ask again under the same key",
 		contracts.IdempotencyKeyHeader, key)
 	refusal.retryAfter = 1
-	s.refuseKeyed(w, route, refusal, recovery)
+	s.refuseWithPoint(w, r, route, refusal, recovery)
 }
 
 // writeKeyInFlight answers a repeat whose first request still holds the key. recovery is the point
-// the key held when it was read, for the route's refuse.
-func (s *server) writeKeyInFlight(w http.ResponseWriter, route keyedRoute, key string, recovery json.RawMessage) {
+// the key held when it was read, which the route's refuse is handed where the caller sees it
+// (recoveryPointFor).
+func (s *server) writeKeyInFlight(w http.ResponseWriter, r *http.Request, route keyedRoute, key string, recovery json.RawMessage) {
 	refusal := errorf(http.StatusConflict, contracts.IdempotencyKeyInFlight,
 		"the first request under %s %q is still running; this one was not run: ask again under the same key",
 		contracts.IdempotencyKeyHeader, key)
 	refusal.retryAfter = 1
+	s.refuseWithPoint(w, r, route, refusal, recovery)
+}
+
+// refuseWithPoint answers refusal as the route answers the keyed layer's refusals (refuseKeyed),
+// handing it recovery where the caller sees every issue that point names and none elsewhere
+// (recoveryPointFor). A read of that which fails is answered as the layer's other failed reads are.
+func (s *server) refuseWithPoint(w http.ResponseWriter, r *http.Request, route keyedRoute, refusal error, recovery json.RawMessage) {
+	recovery, err := s.recoveryPointFor(r, route, recovery)
+	if err != nil {
+		s.refuseKeyed(w, route, err, nil)
+		return
+	}
 	s.refuseKeyed(w, route, refusal, recovery)
 }
 
 // writeUnjudgedKeyInFlight answers a repeat 409 KEY_IN_FLIGHT before its digest is judged
 // (answerDrainedRepeat's Expect: 100-continue and drain-error answers), naming the recovery point
 // login's key holds as it answers, as every reader reads it (recoveryPointRead), whatever the
-// repeat's body; nil when the key holds no row. Only a route that shapes its refusals
-// (keyedRoute.refuse) reads the point, and a read that fails is answered as the layer's other
-// failed reads are. The read runs whatever the client does, bounded by keyedBookkeeping, as the
-// drained repeat's read of the key does: net/http cancels the request's context once a read of its
-// connection fails, which the drain-error answer follows.
+// repeat's body, where the caller sees every issue it names (recoveryPointFor); nil when the key
+// holds no row. Only a route that shapes its refusals (keyedRoute.refuse) reads the point, and a
+// read that fails is answered as the layer's other failed reads are. The read runs whatever the
+// client does, bounded by keyedBookkeeping, as the drained repeat's read of the key does: net/http
+// cancels the request's context once a read of its connection fails, which the drain-error answer
+// follows.
 func (s *server) writeUnjudgedKeyInFlight(w http.ResponseWriter, r *http.Request, route keyedRoute, login, key string) {
 	var recovery json.RawMessage
 	if route.refuse != nil {
@@ -1397,7 +1571,7 @@ func (s *server) writeUnjudgedKeyInFlight(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	s.writeKeyInFlight(w, route, key, recovery)
+	s.writeKeyInFlight(w, r, route, key, recovery)
 }
 
 // writeKeyCommitted answers a repeat whose first request committed its write and lost its answer:

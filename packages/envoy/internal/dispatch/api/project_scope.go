@@ -10,13 +10,18 @@ package api
 // around every mutating route after the caller is resolved and before the handler — rather than
 // in each of the routes that write.
 //
-// A write to a project's object is decided where the object is read, not here. Every loader a
-// write reads its object through binds the reader's project clause (access.ProjectClause), so an
-// object of a project the caller does not see is a row the read does not find, and the write
-// answers it exactly as it answers an object nobody holds: the same status and the same bytes,
-// and nothing written. That holds for every caller alike — a person at a browser, a credential
-// that lists the projects it may use, the shared token — because the viewer is what differs, not
-// the rule. What a credential's list decides is access.CredentialCovers': a full member's list
+// A write to a project's object is decided where the object is read, not here. The loaders of a
+// document, a comment, an ask, a message and a project (loadArtifact, loadComment, loadAsk,
+// loadMessage, loadProject) bind the reader's clause (access.ProjectClause and the item rules
+// beside it), so an object of a project the caller does not see is a row the read does not find,
+// and the write answers it exactly as it answers an object nobody holds: the same status and the
+// same bytes, and nothing written. The issue's own loaders, loadIssue and loadIssueWithProgress,
+// take no reader at this slice, so an issue write finds an issue of a project its caller does not
+// see; slice S3c-issues binds the clause in them. Until it does, a keyed repeat that would hand its
+// caller an object it does not see is refused and never run again (heldAnswerRefusal). The rule
+// is the same for every caller - a person at a browser, a credential that lists the projects it
+// may use, the shared token - because the viewer is what differs, not the rule. What a
+// credential's list decides is access.CredentialCovers': a full member's list
 // decides only which private projects it reaches, so its write to a public project's object reaches
 // the handler whatever it lists, and its write to a private project it does not list is one to an
 // object it does not see; a restricted member's list narrows every project it reaches.

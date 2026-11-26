@@ -97,7 +97,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	input.Project = strings.TrimSpace(input.Project)
+	input.Project = input.bodyProject()
 	input.Title = strings.TrimSpace(input.Title)
 	parentKey := ""
 	if input.Parent != nil {

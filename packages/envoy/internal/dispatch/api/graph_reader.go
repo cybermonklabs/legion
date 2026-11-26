@@ -124,7 +124,7 @@ func (s *server) readerAs(w http.ResponseWriter, r *http.Request, actor model.Ac
 //   - the server's own work for no request: the delivery sweep (resumeOwedDelivery and the two
 //     settles), a mention sender's claim (claimCommentDeliveryAttempt), the boot fix of a parent's
 //     status, CI's result lines (deriveCIResults), and a keyed repeat's check of whether its object
-//     exists at all (heldAnswerHidden);
+//     exists at all (heldAnswerRefusal);
 //   - and four reads a later slice gives the caller's reader, each named with that slice: the
 //     going run's search (S3c-issues), and the live socket's event relay, its replay and its five
 //     Delivery views (S4).
