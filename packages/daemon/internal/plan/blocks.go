@@ -173,7 +173,7 @@ func resolved(words []string, issue string, ids, elements map[string]bool) (need
 	}
 	needed, left, away, ofElements := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
 	keep := func(list *[]string, kept map[string]bool, value string) {
-		if !kept[value] {
+		if !slices.Contains(*list, value) {
 			kept[value] = true
 			*list = append(*list, value)
 		}
