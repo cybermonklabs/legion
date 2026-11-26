@@ -1,0 +1,5 @@
+kind: Changed
+body: "Update the dispatch skills and AskGate rules to ask only between real choices, use Done/Can't with no recommendation for a person's single act, and fix defects in place; remove the Dispatch skills word-cap test."
+time: 2026-11-25T20:47:44Z
+custom:
+    Issue: ask-rules

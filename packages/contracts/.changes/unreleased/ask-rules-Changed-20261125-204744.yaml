@@ -1,0 +1,5 @@
+kind: Changed
+body: "Update dispatch ask and edit-ask descriptions: recommend only between real choices, use Done/Can't with no recommendation for a person's single act, drop filler options, and remove the test row that pinned a sentence of dispatch ask's text."
+time: 2026-11-25T20:47:44Z
+custom:
+    Issue: ask-rules

@@ -1,0 +1,5 @@
+kind: Changed
+body: 'Ship the updated dispatch and Legion ask and ownership rules in the Claude Code plugin.'
+time: 2026-11-25T20:47:44Z
+custom:
+    Issue: ask-rules

@@ -9,24 +9,27 @@ Dispatch is a record for the people who decide, never a log of your work.
 
 - Use the `dispatch` command; the HTTP API only for what no command does. `dispatch <command> --help` gives its rules and an example.
 - Put long text on stdin, one flag per call: `--<field>-file -` with `<<'EOF'`; objects and lists take JSON.
-- Exit 2 is a usage error: fix every problem it names before you call again. Exit 1 is any other failure; run again a call that printed `ANSWER_NOT_KEPT`, which wrote nothing.
-- Never work around a hard-to-use command, or one storing or losing something wrongly: open an issue in its project and tell its controller. A Legion role tells its architect (`skill://legion-worker/references/findings.md`).
+- Exit 2 is a usage error: fix every problem it names before you call again. Exit 1 is any other failure: Dispatch's refusal, a Dispatch the command cannot reach, or `ANSWER_NOT_KEPT` for a call that wrote nothing, which you run again. `dispatch login` exits 1 when the broker cannot be reached or refuses, the person denies the login, or its code expires; its usage error names only the first bad argument.
+- Never work around a hard-to-use command, or one storing or losing something wrongly: fix it in your own pull request, coordinating only with an open one that changes the same file. A Legion role tells its architect (`skill://legion-worker/references/findings.md`).
 
 ## Asks and ask blocks
 
 - An ask is a question for a person, never a request to another agent. Ask an agent by envoy_send or a comment on the issue.
 - An ask waits on its asked-of person, else the issue's assignee, else the project's default assignee; no agent hands one on.
-- A design question's ask block ends its section:
+- Ask a question only between two or more real choices: each within your rules, and one a person could choose. With one real choice, make it and say what you did and why.
+- Give each choice's cost and one recommendation with its reason. A design question's ask block ends its section:
 
 ```md
 :::ask{urgency="med"}
-The question and the recommendation (`skill://dispatch-writing-specs`).
+The question and one recommendation (`skill://dispatch-writing-specs`).
 
 - Option one: what it costs.
 - Option two: what it costs.
 :::
 ```
 
+- Ask for one act only the person can do (an approval, a credential, a grant, their own account's setting) as that act: what it is, what it changes and how to do it, with no recommendation and the options `Done` and `Can't` (`dispatch request-approval` keeps its own answers). A safer alternative is a fact, not an option.
+- Add no option that breaks your rules or that no one would choose. Add an option not to act (`Hold`, `Leave it`) only where not acting is a real choice whose cost the question names.
 - A decision block in a comment, message or close reason is refused: ask in the issue's document, or `dispatch ask`.
 - Never repeat an open ask in a message.
 - Change an open ask's block with `dispatch edit-ask` (ask id) or `doc-edit`'s `replace` or `move` (block id). An answered ask is fixed: ask anew. `dispatch read --ref` takes either id.
