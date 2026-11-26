@@ -555,6 +555,65 @@ test("the Decisions control's to-review flag carries + while the decisions view 
   }
 });
 
+// R3 (dispatch://INFRA-4097/spec#b-r-change), R35: the to-review flag counts the review list
+// alone, and a decision a person asked to change waits on its agent, not on the reader.
+// Conversation's read is paged, and its first page here ends before `d2`, which the decisions
+// view read holds with alice's Change under it, a comment on its text that the view carries as
+// context. The flag is counted over the tree that read builds (`useDecisionsTree`), which finds
+// the Change by the one rule every reader of a Change reads, so `d2` counts among the decisions
+// and not to review, though no page of Conversation's read the page holds carries it.
+test("a decision past Conversation's first page with a Change in the decisions view read does not count to review", async () => {
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const client = newClient();
+  const { reads, waiting } = reviewReads();
+  reads.tree.mockResolvedValue(
+    treeAnswer(
+      [treeNode(KEY, "issue", null), specBlock("r1", "requirement", 0), waiting("d1", 1)],
+      [],
+      { cursor: "page-2" }
+    )
+  );
+  // Alice's Change of `d2`, under it, as the decisions view read carries it.
+  const asked = {
+    ...commentNode(
+      {
+        author: { id: "alice", kind: "user" },
+        body: "Name the read.",
+        created_at: "2026-11-06T09:00:00Z",
+        id: "c-d2",
+        reply_to: null,
+      },
+      "d2"
+    ),
+    role: "context" as const,
+  };
+  const view = renderViewRow(client, presetPath(KEY, "decisions"));
+  try {
+    await waitFor(() =>
+      expect(decisionsSignal(view.container), "the count over Conversation's first page").toEqual({
+        count: "1+",
+        flag: ` · 1+ ${FILTER_SIGNAL_WORDS.to_review}`,
+      })
+    );
+    await act(async () => {
+      client.setQueryData(
+        viewKey(KEY, "decisions"),
+        treeAnswer([treeNode(KEY, "issue", null), waiting("d1", 1), waiting("d2", 2), asked])
+      );
+    });
+    await waitFor(() =>
+      expect(
+        decisionsSignal(view.container),
+        "the flag counts a decision whose Change the decisions view read hangs under it"
+      ).toEqual({ count: "2", flag: ` · 1 ${FILTER_SIGNAL_WORDS.to_review}` })
+    );
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+    for (const spy of Object.values(reads)) spy.mockRestore();
+  }
+});
+
 /** The Outline control the row draws below 1024 px: the one control of the row that opens a
  *  dialog, the Outline sheet (`contents-frame.tsx`). */
 const OUTLINE_CONTROL = 'button[aria-haspopup="dialog"]';

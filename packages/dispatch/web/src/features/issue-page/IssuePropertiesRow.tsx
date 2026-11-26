@@ -99,9 +99,10 @@ export function IssuePropertiesRow({
   // The asks read is observed under the key the outline fills, and sends no request of its own
   // (`treeRead`): it pairs a question's block with its ask as the outline pairs them, open or
   // answered (`askOfNode`), so the count closes what the outline does.
-  // The decisions are the decisions view read's wherever the page holds it, which holds each of
-  // them however many pages of the tree read the page holds, watched under the key the page
-  // reads it by and never sent (`treeRead`), so the count sends no view read of its own.
+  // The decisions, and each Change that read hangs under its decision, are the decisions view
+  // read's wherever the page holds it, which holds each of them however many pages of the tree
+  // read the page holds, watched under the key the page reads it by and never sent (`treeRead`),
+  // so the count sends no view read of its own.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
   const comments = useQuery({ ...issueCommentsQuery(issue.key), ...EVENT_FRESH });
