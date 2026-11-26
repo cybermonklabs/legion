@@ -4,6 +4,8 @@
 // without, and a mounted intermediate with its chain; and what it refuses to start on.
 package main
 
+//ci:reads packages/envoy/scripts/lib/ca-policy.jq caPolicyNames runs the ca stand's policy filter through ../../scripts
+
 import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
