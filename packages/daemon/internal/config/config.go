@@ -274,9 +274,10 @@ type Config struct {
 	// 0 turns the rule off.
 	ControllerTurnBound time.Duration
 	// ControllerSessionMaxAge is `controller_session_max_age_hours`: how old the session of the
-	// daemon's own controller may grow, read from its id (a UUIDv7), before its keeper replaces it
-	// with a fresh session at a look that finds it idle with no task waiting (dispatch://INFRA-2045
-	// R3). Seventy-two hours by default (defaultControllerSessionMaxAge); 0 turns the rule off.
+	// daemon's own controller may grow, read from its id (a UUIDv7), before a relaunch the daemon
+	// makes of it starts a fresh session in its place (supervise.Deps.ControllerSessionMaxAge,
+	// dispatch://INFRA-2045 R3); the daemon stops no live controller for it. Seventy-two hours by
+	// default (defaultControllerSessionMaxAge); 0 turns the rule off.
 	ControllerSessionMaxAge time.Duration
 	// Capabilities is the `capabilities` block; the zero value with none.
 	Capabilities Capabilities

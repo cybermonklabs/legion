@@ -1211,8 +1211,9 @@ and supervises it the same way; the rest of this section is the Kubernetes runti
 It launches the controller at boot as an Agent Sandbox pod, `legion-<project>-controller`, with the
 same model access as the workers and a volume of its own, which its Sandbox owns, relaunches it when it
 dies, and resumes the same session, unless two launches of that session in a row end before it
-finishes another turn, or a look finds it idle and older than `controller_session_max_age_hours`
-(72 by default): then the daemon starts a fresh session instead. You start nothing, and
+finishes another turn, or the session is older than `controller_session_max_age_hours` (72 by
+default) when the daemon relaunches it: then the daemon starts a fresh session instead. The
+daemon stops no live controller for its age. You start nothing, and
 `legion controller start` against this daemon is refused: one controller runs per project. Nobody
 types into the pod: reach the controller through Dispatch (a message to its session on the Agents
 page, a reply to an ask it opened, a mention) and read its session with

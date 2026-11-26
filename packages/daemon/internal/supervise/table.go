@@ -514,21 +514,6 @@ type RequestReady struct {
 // Every other suspension leaves it false and is held as above: the outbox retries its rows until
 // the claim answers nil, and `legion claims suspend` waits the hold out.
 //
-// BetweenTurns is a suspension that must find the claim between turns: ready or idle with no task
-// waiting, its shim connected to this daemon, and its agent answering that it is not streaming
-// (Machine.betweenTurns). It is posted with NeverHold. The test runs in the suspend row, where a
-// registered, ready or idle claim lands, and a claim there that fails it refuses with a
-// *RefusedError and records nothing. The other rows answer as they answer any NeverHold
-// suspension: a working claim refuses it, but one whose process the daemon found gone is
-// suspended there (holdSuspension); a launch refuses it, but one this suspension cuts short is
-// suspended there (holdSuspendUntilReady); and a claim already suspended answers nil
-// (suspendedAgain), whoever suspended it. So a caller that goes on to act on the suspension it
-// asked for names that suspension in what it posts next (RequestForgetSession.SuspendedBy). It is
-// for a caller that read the claim idle from outside the machine — the controller keeper's
-// replacement of an old session (dispatch://INFRA-2045 R3) — where that read can be stale: a task
-// delivered since, or a turn an Envoy message started while the daemon was down, which a restarted
-// daemon reads only from the frames its shim replays after its hello.
-//
 // Pause is the project pause this suspension stops the claim for (store.Pause.ID, decision 4 of
 // dispatch://INFRA-3759's plan), 0 for a suspension of no pause. It is set by the daemon's
 // `pause_stop` row and by the gate's own stop of a launch it held (pauseStopDue), only with By
@@ -539,13 +524,12 @@ type RequestReady struct {
 // decision once that pause has ended (dropEndedPauseHold), the resume's event (ResumePause) among
 // them.
 type RequestSuspend struct {
-	Claim        claim.Token
-	Reason       string
-	By           SuspendSource
-	Deadline     time.Time
-	NeverHold    bool
-	BetweenTurns bool
-	Pause        int64
+	Claim     claim.Token
+	Reason    string
+	By        SuspendSource
+	Deadline  time.Time
+	NeverHold bool
+	Pause     int64
 }
 
 // RequestResume is the operator's resume: it relaunches a suspended claim's session, whoever
@@ -662,30 +646,9 @@ type RequestOperatorRetry struct {
 // worker is relaunched by the workflow's start of its phase, so the two halves of that retry have
 // different owners — which session the claim starts on is the operator's to say, and when it
 // starts is the workflow's.
-//
-// Why is the reason the abandoned session is recorded under (AbandonedSession.Why), which the
-// fresh agent is told in its first prompt: the controller keeper's reason for its replacement of
-// a session older than its age (internal/daemon's controllerKeeper). "" is the operator's own
-// forget, recorded under the words that name the command.
-//
-// SuspendedBy, when set, is the suspension the asker expects the claim to stand under, and a claim
-// suspended by anyone else, or not suspended, refuses the forget with a *RefusedError and records
-// nothing. The controller keeper sets it to the daemon's: its replacement suspends the claim as the
-// daemon and then forgets the session, and by the time of the forget the claim can stand suspended
-// by an operator in three ways. Two are settled before the keeper's suspension returns: an
-// operator's suspension held through a turn whose stop the runtime refused, which the keeper's
-// suspension runs as the operator's (suspendRequest), and one decided first, which the keeper's
-// suspension answers with nil (suspendedAgain). The third falls between the keeper's suspension
-// and its forget: an operator's suspension decided after the keeper's, which takes the daemon's
-// over on rank (suspendedAgain). This check is the one that closes the third, so it stays here
-// rather than in either of those. The operator's resume promises the same session, so that session
-// is not the keeper's to forget. "" is the operator's own forget, which forgets under any
-// suspension.
 type RequestForgetSession struct {
-	Claim       claim.Token
-	Session     string
-	Why         string
-	SuspendedBy SuspendSource
+	Claim   claim.Token
+	Session string
 }
 
 // RequestDeliver gives the claim a task. ID is a durable outbox delivery id when an outbox row
@@ -3056,75 +3019,28 @@ func issueClose(m *Machine, ctx context.Context, _ Event) error {
 }
 
 // forgetSession drops the named session record from a processless claim: the operator's
-// `legion claims forget-session`, the half of `legion claims retry --fresh-session` that is
-// the claim's rather than the workflow's (api's retryClaim), and the controller keeper's
-// replacement of a session older than its age, which names its reason (RequestForgetSession.Why).
-// It launches nothing — whatever starts the claim next, for a phase worker the workflow's own
-// start of its phase, spawns a fresh agent rather than resuming the turns the operator asked to
-// leave behind. The comparison runs under the machine lock, so a decision that changed the claim
-// since an operator saw it cannot clear a later session. A session the claim records but does not
-// hold is cleared only once the Envoy listener no longer names it as the claim's role holder
-// (mayForget).
-//
-// Its answer is typed, so an asker decides on the answer alone and reads the claim no second
-// time: nil, the session forgotten and written; ErrForgetSessionNotRecorded, a claim recording
-// another session, or none, by the time of the forget, so another decision cleared or replaced
-// it; ErrForgetNotSuspendedBy, a claim no longer standing under the suspension the forget names;
-// a *ForgetUnwrittenError, the session forgotten in memory and its write refused by the store,
-// which the machine's next decision writes; and any other error, a refusal of mayForget — the
-// listener's answer about the role, or the store's — which changed nothing of the claim.
+// `legion claims forget-session`, and the half of `legion claims retry --fresh-session` that is
+// the claim's rather than the workflow's (api's retryClaim). It launches nothing — whatever starts
+// the claim next, for a phase worker the workflow's own start of its phase, spawns a fresh agent
+// rather than resuming the turns the operator asked to leave behind. The comparison runs under
+// the machine lock, so a decision that changed the claim since an operator saw it cannot clear a
+// later session. A session the claim records but does not hold is cleared only once the Envoy
+// listener no longer names it as the claim's role holder (mayForget).
 func forgetSession(m *Machine, ctx context.Context, ev Event) error {
 	request := ev.(RequestForgetSession)
 	if !m.claim.HoldsSession(request.Session) {
-		return &RefusedError{Request: "forget-session", Err: forgetRefusal{kind: ErrForgetSessionNotRecorded, text: fmt.Sprintf(
+		return &RefusedError{Request: "forget-session", Err: fmt.Errorf(
 			"%s records session %s; pass --session %s to start fresh", m.claim.Token, m.claim.Session, m.claim.Session,
-		)}}
-	}
-	if by := request.SuspendedBy; by != "" && !m.claim.SuspendedFrom(by) {
-		return &RefusedError{State: m.claim.State, Request: "forget-session", Err: forgetRefusal{kind: ErrForgetNotSuspendedBy, text: fmt.Sprintf(
-			"the claim stands %s, suspended by %q, and this forget is for a claim suspended by %q", m.claim.State, m.claim.SuspendedBy, by)}}
+		)}
 	}
 	if err := m.mayForget(ctx, "forget-session"); err != nil {
 		return err
 	}
-	why, asker := request.Why, "the keeper's ask"
-	if why == "" {
-		why, asker = "an operator cleared it with `legion claims forget-session`, so this claim starts fresh", "the operator's ask"
-	}
-	m.log.Info("supervise: forgetting the recorded session at "+asker, "session", m.claim.Session,
-		"sessionFile", m.claim.SessionFile, "state", string(m.claim.State), "why", why)
-	m.forgetSession(why)
-	if err := m.persist(ctx); err != nil {
-		return &ForgetUnwrittenError{Err: err}
-	}
-	return nil
+	m.log.Info("supervise: forgetting the recorded session at the operator's ask", "session", m.claim.Session,
+		"sessionFile", m.claim.SessionFile, "state", string(m.claim.State))
+	m.forgetSession("an operator cleared it with `legion claims forget-session`, so this claim starts fresh")
+	return m.persist(ctx)
 }
-
-// ErrForgetSessionNotRecorded and ErrForgetNotSuspendedBy are forgetSession's two refusals of a
-// claim another decision moved: one that records another session, or none, and one that no longer
-// stands under the suspension the forget names (RequestForgetSession.SuspendedBy). Each is matched
-// with errors.Is through the *RefusedError that carries it.
-var (
-	ErrForgetSessionNotRecorded = errors.New("the claim does not record the session the forget names")
-	ErrForgetNotSuspendedBy     = errors.New("the claim does not stand under the suspension the forget names")
-)
-
-// forgetRefusal is one of forgetSession's refusals, its text the refusal's own and its kind the
-// sentinel an asker matches.
-type forgetRefusal struct {
-	kind error
-	text string
-}
-
-func (e forgetRefusal) Error() string        { return e.text }
-func (e forgetRefusal) Is(target error) bool { return target == e.kind }
-
-// ForgetUnwrittenError is forgetSession's answer where it dropped the session and the store refused
-// the write: the claim forgot the session in memory, and the machine's next decision writes it.
-type ForgetUnwrittenError struct{ Err error }
-
-func (e *ForgetUnwrittenError) Error() string { return e.Err.Error() }
-func (e *ForgetUnwrittenError) Unwrap() error { return e.Err }
 
 // operatorClose is the operator's own close, asked of a claim through the API. TreeClosable is
 // asked here rather than by the caller, so the answer and the stop it decides sit together rather

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
@@ -20,12 +22,15 @@ import (
 const controllerSessionEnds = 2
 
 // The lines of the controller session's replacement (dispatch://INFRA-2045 R4), which an operator
-// and a production check read whole: the Warn line of the launch that replaces the session
-// (replaceEndedSession), the Error line of a session that is not replaced because it never finished
-// a turn (sessionEnded), and the line of the fresh session's ready, which names the session it
-// replaced (the table's ready).
+// and a production check read whole: the Warn line of the launch that replaces the session under
+// R1 (replaceEndedSession) and under R3 (replaceAgedSession), the Error line of a session that is
+// not replaced because it never finished a turn (sessionEnded), the Warn line of a session id R3
+// can read no age off (replaceAgedSession), and the line of the fresh session's ready, which names
+// the session it replaced (the table's ready).
 const (
 	sessionReplacedLine    = "supervise: the controller's session ended two launches in a row before it finished a turn; this launch starts a fresh session in its place"
+	sessionAgedOutLine     = "supervise: the controller's session is older than controller_session_max_age_hours; this relaunch starts a fresh session in its place"
+	sessionUnagedLine      = "supervise: the controller's session id is no UUIDv7, so controller_session_max_age_hours cannot read its age and its relaunches resume it"
 	sessionNotReplacedLine = "supervise: the controller's session ended two launches in a row and has never finished a turn, so it is not replaced: a fresh session also failed, and the keeper retries it with its waits"
 	freshSessionReadyLine  = "supervise: the controller's fresh session is ready in place of the session it replaced"
 )
@@ -143,6 +148,63 @@ func (m *Machine) replaceEndedSession(ctx context.Context) {
 		run.Ends, len(run.Endings), strings.Join(run.Endings, "; then "))
 	m.log.Warn(sessionReplacedLine, "session", old, "requirement", "R1", "reason", why, "endings", run.Endings)
 	m.forgetSession(why)
+}
+
+// replaceAgedSession forgets the project controller's recorded session where its id says it began
+// more than Deps.ControllerSessionMaxAge ago, so the relaunch running it spawns a fresh agent
+// (dispatch://INFRA-2045 R3). It runs in every launch, after replaceEndedSession and after the
+// launch let the old process go (launchNow, letGo), which is what makes it a rule of relaunches
+// alone: the daemon stops no live controller for its session's age, and an old session is replaced
+// at the next relaunch the daemon makes anyway — after a death, a launch failure, a pod update or
+// displacement, a stale-plugin refresh, a turn ended past its bound, or the keeper's retry or
+// resume by rule. A launch an operator's own request raises (exempt: an operator's resume or retry,
+// the operator's spawn route, exemptWake) keeps its session, because the operator asked for that
+// session and said so. The fresh agent is told in its first prompt which session it replaces and
+// why (abandonedTask), and one Warn line names the old session, the reason and when it started
+// (R4). The old session's transcript stays in its store.
+//
+// The age is the time the session id records, a UUIDv7, so it survives a daemon restart and a new
+// pod. An id of another form says nothing of its age: the session is resumed, and one Warn line,
+// once for each such session, says the rule cannot read it. A session the claim may not clear yet
+// (mayForget) is resumed as replaceEndedSession resumes one, and the next relaunch asks again.
+func (m *Machine) replaceAgedSession(ctx context.Context, exempt bool) {
+	maxAge, old := m.deps.ControllerSessionMaxAge, m.claim.Session
+	if maxAge <= 0 || exempt || m.claim.Role != claim.RoleController || old == "" {
+		return
+	}
+	started, ok := sessionStarted(old)
+	if !ok {
+		if m.unagedSession != old {
+			m.unagedSession = old
+			m.log.Warn(sessionUnagedLine, "session", old)
+		}
+		return
+	}
+	now := m.deps.Clock.Now()
+	if !started.Add(maxAge).Before(now) {
+		return
+	}
+	if err := m.mayForget(ctx, "the replacement of the controller's old session"); err != nil {
+		m.log.Warn("supervise: the controller's session is older than controller_session_max_age_hours, but it cannot be cleared yet, so this launch resumes it",
+			"session", old, "sessionStartedAt", started, "error", err)
+		return
+	}
+	why := fmt.Sprintf("the session is older than controller_session_max_age_hours (%s): it started at %s, %s before this relaunch",
+		maxAge, started.UTC().Format(time.RFC3339), now.Sub(started).Round(time.Minute))
+	m.log.Warn(sessionAgedOutLine, "session", old, "requirement", "R3", "reason", why, "sessionStartedAt", started)
+	m.forgetSession(why)
+}
+
+// sessionStarted is the time an Oh My Pi session id records, which is a UUIDv7: its first 48 bits
+// are the milliseconds since the Unix epoch at which the session began. An id of any other form —
+// another version, or no UUID at all — says nothing of its age, and answers false.
+func sessionStarted(id string) (time.Time, bool) {
+	parsed, err := uuid.Parse(id)
+	if err != nil || parsed.Version() != 7 {
+		return time.Time{}, false
+	}
+	sec, nsec := parsed.Time().UnixTime()
+	return time.Unix(sec, nsec), true
 }
 
 // turnPastBound is the TurnPastBound event's row, for the one state a turn runs in.

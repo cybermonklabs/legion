@@ -50,12 +50,12 @@ func TestAControllerTurnOpenPastItsBoundIsEnded(t *testing.T) {
 	}
 }
 
-// The config half of dispatch://INFRA-2045 R3: `controller_session_max_age_hours` is the age at
-// which the keeper replaces an idle controller session. A file that sets no key, or sets it with no
-// value, reads 72 hours; 0 turns the rule off; a decimal is read as written; anything else is
-// refused, each refusal saying that 0 is the rule off. The keeper's half, the replacement itself,
-// is internal/daemon's test of the same name.
-func TestAnIdleControllerSessionOlderThanItsMaxAgeIsReplaced(t *testing.T) {
+// The config half of dispatch://INFRA-2045 R3: `controller_session_max_age_hours` is the age past
+// which a relaunch the daemon makes of its controller starts a fresh session. A file that sets no
+// key, or sets it with no value, reads 72 hours; 0 turns the rule off; a decimal is read as
+// written; anything else is refused, each refusal saying that 0 is the rule off. The replacement
+// itself is internal/daemon's test of the same name.
+func TestAnOldControllerSessionIsReplacedAtADaemonDrivenRelaunch(t *testing.T) {
 	t.Run("f: a file that sets no key reads 72", func(t *testing.T) {
 		for _, file := range []string{minimalFile, minimalFile + "controller_session_max_age_hours:\n"} {
 			cfg, err := Load(writeConfigFile(t, file), noEnv)

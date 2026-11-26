@@ -341,7 +341,7 @@ func TestTheControllerKeeperResumesEveryControllerButOneTheOperatorSuspended(t *
 					t.Fatalf("the operator's suspend: %v", err)
 				}
 			}
-			keeper := newControllerKeeper(context.Background(), sup, "legion", time.Minute, 0, 0, quietLogger())
+			keeper := newControllerKeeper(context.Background(), sup, "legion", time.Minute, 0, quietLogger())
 			if err := keeper.keep(); err != nil {
 				t.Fatalf("keep the controller: %v", err)
 			}

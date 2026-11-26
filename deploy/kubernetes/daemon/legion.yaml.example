@@ -43,9 +43,11 @@ controller: operator                   # who runs the controller: operator (legi
 #                                      # finished turn between start a fresh session.
 #                                      # 90 by default, decimals allowed, 0 the rule off
 # controller_session_max_age_hours: 72 # under controller: daemon, how old the controller's session,
-#                                      # read from its id, may grow before the daemon replaces it with
-#                                      # a fresh session at a look that finds it between turns, with no
-#                                      # task waiting. 72 by default, decimals allowed, 0 the rule off
+#                                      # read from its id, may grow before a relaunch the daemon
+#                                      # makes of it starts a fresh session instead of resuming it;
+#                                      # no live controller is stopped for it, and an operator's own
+#                                      # resume keeps the session. 72 by default, decimals allowed,
+#                                      # 0 the rule off
 worker_wakes_per_minute: 8             # how many wakes a minute the daemon lets out: the role processes it
                                        # starts, and the tasks and notices it queues to wake a session that is
                                        # already running. Each wake has its session read its whole context

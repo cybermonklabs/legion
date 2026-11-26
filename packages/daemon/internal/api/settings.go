@@ -125,9 +125,9 @@ type Settings struct {
 	// ControllerTurnBoundMinutes is `controller_turn_bound_minutes` and
 	// ControllerSessionMaxAgeHours `controller_session_max_age_hours`, decimals as the file takes
 	// them and 0 the rule off: how long a turn of the daemon's own controller may stay open before
-	// its keeper ends the launch, and how old its session may grow before the keeper replaces it
-	// while it is idle (dispatch://INFRA-2045 R2 and R3). No reader types either (answers.go's
-	// typedSettings), so neither takes a contract number.
+	// its keeper ends the launch, and how old its session may grow before a relaunch the daemon
+	// makes of it starts a fresh one (dispatch://INFRA-2045 R2 and R3). No reader types either
+	// (answers.go's typedSettings), so neither takes a contract number.
 	ControllerTurnBoundMinutes   float64              `json:"controller_turn_bound_minutes"`
 	ControllerSessionMaxAgeHours float64              `json:"controller_session_max_age_hours"`
 	Capabilities                 CapabilitiesSettings `json:"capabilities"`

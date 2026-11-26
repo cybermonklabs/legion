@@ -34,53 +34,7 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 	if err != nil {
 		return err
 	}
-	if ev.(RequestSuspend).BetweenTurns {
-		if err := m.betweenTurns(ctx); err != nil {
-			return err
-		}
-	}
 	return m.suspendNow(ctx, request, false)
-}
-
-// betweenTurns is the test a BetweenTurns suspension must pass where it arrives
-// (RequestSuspend.BetweenTurns): the claim is ready or idle with no task waiting, its shim has
-// connected to this daemon, its agent answers that it is not streaming, and it holds the session
-// it records. The answer is asked here, under the machine's lock, because the asker read the claim
-// from outside: a daemon restarted over a claim stored ready or idle reads a turn the agent began
-// while it was down only from the frames the shim replays after its hello, and before that hello
-// the claim has no connection to ask through.
-//
-// The hold is asked last, as a resume asks it (resumeRefusal), because the asker suspends to forget
-// the session and then resume the claim. A claim that does not hold its session is one whose resume
-// no launch can run, and whose forget waits on the Envoy listener's word (mayForget), so it is not
-// stopped. A claim that passes holds its session's names in this machine (Machine.heldNames), and
-// a hold so held is answered from memory: the forget that follows asks the listener nothing and
-// cannot be refused for the hold, and the resume by rule after a refused forget cannot be either.
-// So a suspension that passes this test never leaves the claim stopped for its session. Each
-// failure refuses with a *RefusedError naming why and changes nothing of the claim; a claim that
-// passes the earlier tests and is refused for the hold has had its free names held, as any resume's
-// ask holds them.
-func (m *Machine) betweenTurns(ctx context.Context) error {
-	refuse := func(why string) error {
-		return &RefusedError{State: m.claim.State, Request: "suspend", Reason: why}
-	}
-	if m.claim.State != StateReady && m.claim.State != StateIdle {
-		return refuse("the claim is not ready or idle, so it is not known to be between turns")
-	}
-	if m.claim.Pending != nil {
-		return refuse("a task waits for the claim's agent, and a suspension between turns would stop the agent before that task's turn")
-	}
-	conn, ok := m.deps.Conns.Conn(m.claim.Token)
-	if !ok {
-		return refuse("the claim's shim has not connected to this daemon, so whether its agent is in a turn is not known")
-	}
-	switch streaming, answered := m.streaming(ctx, conn); {
-	case !answered:
-		return refuse("the claim's agent did not say whether it is in a turn")
-	case streaming:
-		return refuse("the claim's agent is in a turn this daemon has not yet read the start of")
-	}
-	return m.resumeRefusal(ctx, "suspension between turns")
 }
 
 // holdSuspension is a suspension that arrives while the agent is in a turn, and this is the one

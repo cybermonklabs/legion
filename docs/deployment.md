@@ -1148,9 +1148,10 @@ provider_keys:
   starts a fresh session. `controller_turn_bound_minutes` (90 by default, `0` off) is how long a
   controller turn may stay open, steps or none, before the daemon ends that launch and counts the
   end. `controller_session_max_age_hours` (72 by default, `0` off) is how old the session, read
-  from its id, may grow before the daemon replaces it at a look that finds it between turns: idle
-  with no task waiting, its shim connected to this daemon, and its agent saying it is in no turn,
-  so a daemon restart never cuts a turn its agent began while the daemon was down. Each
+  from its id, may grow before a relaunch the daemon makes of it — after a death, a launch failure,
+  a pod update or displacement, a stale-plugin refresh, a turn ended past its bound, or the
+  keeper's retry or resume — starts a fresh session instead of resuming it. The daemon stops no
+  live controller for its age, and an operator's own resume or retry keeps the session. Each
   replacement writes one Warn line naming the claim, the old session and the reason, and the fresh
   session's ready one line naming both sessions; the fresh session's first
   prompt names the old session and the reason and says that messages sent to the old session may

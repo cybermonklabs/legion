@@ -820,12 +820,6 @@ func (c Claim) OpenTurn() (start time.Time, open bool) {
 	return c.LastTurnStart, c.LastTurnStart.After(c.LastTurnEnd)
 }
 
-// SuspendedFrom is whether the claim stands suspended by source by: the forget's test of the
-// suspension its asker names (RequestForgetSession.SuspendedBy).
-func (c Claim) SuspendedFrom(by SuspendSource) bool {
-	return c.State == StateSuspended && c.SuspendedBy == by
-}
-
 // RuleMayResume says whether the rule may resume this suspended claim: every suspension but the
 // operator's, which holds until an operator resumes the claim.
 func (c Claim) RuleMayResume() bool {
@@ -1049,6 +1043,11 @@ type Deps struct {
 	Log      *slog.Logger
 	Limits   Limits
 	Timeouts Timeouts
+	// ControllerSessionMaxAge is `controller_session_max_age_hours`: the age, read from its id (a
+	// UUIDv7), past which the project controller's recorded session is forgotten by a relaunch the
+	// daemon makes, so that relaunch spawns a fresh agent (replaceAgedSession,
+	// dispatch://INFRA-2045 R3). 0 is the rule off, which is also every harness's value.
+	ControllerSessionMaxAge time.Duration
 	// WakePace is how fast the daemon lets this machine's launches out (reserveWake); its zero
 	// value is the pacing off.
 	WakePace WakePace
@@ -1880,6 +1879,9 @@ type Machine struct {
 	// again at every sweep (sendPending, for a claim that does not hold its session) is written
 	// once rather than every probe interval; a hold admitted clears it (warnRefusal). Memory only.
 	refusalLogged string
+	// unagedSession is the last session whose id the controller's age rule could read no age off,
+	// so its line is written once for that session (replaceAgedSession). Memory only.
+	unagedSession string
 	// admitted is the session and file the store last admitted for this claim, which holdRecorded
 	// and HoldsItsSession write, and HoldsItsSession and Admits (the daemon's step record) read
 	// without the lock; forgetSession clears it with heldNames. Memory only.
@@ -3225,9 +3227,11 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt, requested bool
 	// let go; the process the launch starts is this release's own (refusedEarlierRelease).
 	m.refusedEarlierRelease = 0
 	// The launch that follows the controller session's second end in a row starts a fresh
-	// session, once the process it replaces is let go and what that process ended recorded
-	// (replaceEndedSession, dispatch://INFRA-2045 R1).
+	// session, and so does a daemon-driven relaunch of a session older than its age, once the
+	// process it replaces is let go and what that process ended recorded (replaceEndedSession,
+	// replaceAgedSession, dispatch://INFRA-2045 R1 and R3).
 	m.replaceEndedSession(ctx)
+	m.replaceAgedSession(ctx, exempt)
 	return m.launchTries(ctx, launchTry{intent: intent, charged: charged, exempt: exempt, requested: requested, waiting: waiting}, nil)
 }
 
@@ -4343,15 +4347,15 @@ func (m *Machine) sessionGone(ctx context.Context) {
 // It is the one place a claim leaves its session behind, so every start, retry or resume of a
 // claim relaunches the session the claim records — by its file, or by its id where it records no
 // file (start) — unless that launch forgets the session here, and a claim starts in a new session
-// only after this ran. It has four callers: the launch's startFresh, for a session no store holds
+// only after this ran. It has five callers: the launch's startFresh, for a session no store holds
 // any more, one the pod's launcher could not look up and Oh My Pi did not resume by its id, and
 // one a Claude Code claim records with no transcript file; the launch's replaceEndedSession, for
 // the project controller's session whose launches keep ending before it finishes a turn
-// (SessionRun); retry, when freshSession says the retry needs a new session; and the forget of a
-// recorded session (forgetSession, the table's): the operator's forget-session, which `legion
-// claims retry --fresh-session` and the controller's fresh_session run (api's freshSession), and
-// the controller keeper's replacement of a session older than its age (internal/daemon's
-// controllerKeeper). It clears the claim's mark of a start by Oh My Pi's own lookup with the
+// (SessionRun); the launch's replaceAgedSession, for the project controller's session older than
+// its age at a daemon-driven relaunch; retry, when freshSession says the retry needs a new session;
+// and the forget of a recorded session (forgetSession, the table's): the operator's
+// forget-session, which `legion claims retry --fresh-session` and the controller's fresh_session
+// run (api's freshSession). It clears the claim's mark of a start by Oh My Pi's own lookup with the
 // session (Claim.AgentResumeGeneration), and, where it drops a session, the cause of an earlier
 // forget the machine keeps for the fresh agent's launches; Machine.lostCause says why one that
 // drops nothing keeps it. startFresh sets the cause of its own forget after this call.
@@ -4370,12 +4374,12 @@ func (m *Machine) sessionGone(ctx context.Context) {
 // nothing left to say, and its next send retires it (sendPending).
 //
 // Every caller runs it after the old process's record is written, so no let-go writes a record of
-// that process later: the launch's startFresh and replaceEndedSession run after the launch let the
-// old process go (launchNow, letGo), and retry's fresh session and the table's forget-session
-// reach only a claim that runs nothing — queued, suspended, failed or retired — whose process the
-// suspension, the failure or the retirement already let go (suspended, fail, retire), or that
-// never had one. A let-go records nothing for a claim that records no process (recordEnd), so the
-// next record written is of the fresh session's own process.
+// that process later: the launch's startFresh, replaceEndedSession and replaceAgedSession run after
+// the launch let the old process go (launchNow, letGo), and retry's fresh session and the table's
+// forget-session reach only a claim that runs nothing — queued, suspended, failed or retired —
+// whose process the suspension, the failure or the retirement already let go (suspended, fail,
+// retire), or that never had one. A let-go records nothing for a claim that records no process
+// (recordEnd), so the next record written is of the fresh session's own process.
 //
 // It puts the claim's run of provider-error turns back to zero as well (Claim.ProviderErrorRun).
 // The run counts the turns one session had refused in a row, and the new session has had none,

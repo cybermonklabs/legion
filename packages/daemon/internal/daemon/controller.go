@@ -45,16 +45,17 @@ const (
 
 // controllerKeeper keeps the daemon's own controller running (`controller: daemon`). The controller
 // is one claim, on the controller role with no issue, which its machine supervises as any claim's:
-// a death relaunches the same session, within the launch failure budget, and the launch after the
+// a death relaunches the same session, within the launch failure budget, the launch after the
 // session's second end in a row with no finished turn between starts a fresh session (supervise's
-// SessionRun, dispatch://INFRA-2045 R1). What the machine leaves to its caller is the keeper's: the
-// claim is created when the store holds none, launched while queued, resumed when suspended, and,
-// when its budget ran out (failed) or its agent ended it (retired), retried with fresh budgets after
-// a wait that doubles while it keeps failing. At each ready it hands the controller the start
-// message. At each look of a running controller it ends a turn open longer than turnBound
-// (TurnPastBound, R2), and replaces an idle session older than maxAge with a fresh one (replaceOld,
-// R3). The liveness sweep (watchController) says when the controller is not registered, from a
-// loop of its own.
+// SessionRun, dispatch://INFRA-2045 R1), and a daemon-driven relaunch of a session older than
+// `controller_session_max_age_hours` starts a fresh one too (supervise's replaceAgedSession, R3).
+// What the machine leaves to its caller is the keeper's: the claim is created when the store holds
+// none, launched while queued, resumed when suspended, and, when its budget ran out (failed) or its
+// agent ended it (retired), retried with fresh budgets after a wait that doubles while it keeps
+// failing. At each ready it hands the controller the start message. At each look of a working
+// controller it ends a turn open longer than turnBound (TurnPastBound, R2). It stops no live
+// controller for any other reason. The liveness sweep (watchController) says when the controller
+// is not registered, from a loop of its own.
 type controllerKeeper struct {
 	supervisor *supervisor
 	// project is the project token the claim is filed under.
@@ -76,20 +77,17 @@ type controllerKeeper struct {
 	// written once per episode and cause, and the reason rides each later retry's Warn. Both are
 	// cleared at one point, leaveHeld, at each way out of the episode.
 	heldLogged, heldReason string
-	// turnBound is `controller_turn_bound_minutes` and maxAge `controller_session_max_age_hours`,
-	// each 0 for its rule off (config.Config.ControllerTurnBound, ControllerSessionMaxAge).
-	turnBound, maxAge time.Duration
-	// unaged is the last session whose id the age rule could read no age off, so its line is
-	// written once for that session (replaceOld).
-	unaged string
+	// turnBound is `controller_turn_bound_minutes`, 0 for the rule off
+	// (config.Config.ControllerTurnBound).
+	turnBound time.Duration
 }
 
 // newControllerKeeper is the keeper of project's controller, with the wait before its first retry
-// and its two rules' bounds (turnBound, maxAge, each 0 for the rule off), so no keeper is built
-// with a rule silently off.
-func newControllerKeeper(ctx context.Context, sup *supervisor, project string, retryFirst, turnBound, maxAge time.Duration, log *slog.Logger) *controllerKeeper {
+// and the bound of its turn rule (turnBound, 0 for the rule off), so no keeper is built with the
+// rule silently off.
+func newControllerKeeper(ctx context.Context, sup *supervisor, project string, retryFirst, turnBound time.Duration, log *slog.Logger) *controllerKeeper {
 	return &controllerKeeper{supervisor: sup, project: project, ctx: ctx, log: log, now: time.Now, retryFirst: retryFirst,
-		turnBound: turnBound, maxAge: maxAge}
+		turnBound: turnBound}
 }
 
 func (k *controllerKeeper) token() claim.Token { return claim.ControllerToken(k.project) }
@@ -110,9 +108,7 @@ func (k *controllerKeeper) run(ctx context.Context, every time.Duration) {
 	}
 }
 
-// keep is one look at the controller's claim, and the requests its state calls for: one for most
-// states, and the three of an old session's replacement for a controller between turns (mind,
-// replaceOld: a suspension, a forget and a resume by rule).
+// keep is one look at the controller's claim, and the one request its state calls for.
 func (k *controllerKeeper) keep() error {
 	// Each look is a fresh call on k.ctx, beside the ready route, so it takes a hold mark of its
 	// own, which its create and its request share as they run one after another.

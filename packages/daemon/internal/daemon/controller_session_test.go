@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -12,7 +11,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -21,6 +19,13 @@ import (
 // controllerSessionFile is the transcript every kept controller of these tests records.
 const controllerSessionFile = "/sessions/controller.jsonl"
 
+// The machine's lines of R3 (supervise's replaceAgedSession, dispatch://INFRA-2045 R3 and R4),
+// which an operator and the after-merge check read whole.
+const (
+	agedOutLine = "supervise: the controller's session is older than controller_session_max_age_hours; this relaunch starts a fresh session in its place"
+	unagedLine  = "supervise: the controller's session id is no UUIDv7, so controller_session_max_age_hours cannot read its age and its relaunches resume it"
+)
+
 // sessionAged is an Oh My Pi session id (a UUIDv7) whose recorded start is age before now.
 func sessionAged(now time.Time, age time.Duration) string {
 	ms := now.Add(-age).UnixMilli()
@@ -28,69 +33,36 @@ func sessionAged(now time.Time, age time.Duration) string {
 }
 
 // keptController is the daemon's own controller claim c, stored with a process the fake runtime
-// runs and a shim connected to this daemon whose agent is not streaming, and its keeper with the
-// shipped bounds (90 minutes, 72 hours) and the real clock the supervisor's machines read
-// (stillClock). The keeper's and the machines' lines are both written to logs, as JSON.
+// runs (none for a failed or suspended claim) and a shim connected to this daemon, its machines
+// built with the shipped session age (72 hours), and its keeper with the shipped turn bound (90
+// minutes) and the real clock the supervisor's machines read (stillClock). The keeper's and the
+// machines' lines are both written to logs, as JSON.
 func keptController(t *testing.T, c supervise.Claim) (*controllerKeeper, *supervisor, *fake.Runtime, *syncBuffer) {
 	t.Helper()
-	return keptControllerWith(t, c, nil)
+	return keptControllerAged(t, c, 72*time.Hour)
 }
 
-// keptControllerWith is keptController with before run on the supervisor before the claim is
-// created: a row that needs another store sets it there.
-func keptControllerWith(t *testing.T, c supervise.Claim, before func(*supervisor)) (*controllerKeeper, *supervisor, *fake.Runtime, *syncBuffer) {
+// keptControllerAged is keptController with the machines' session age maxAge, 0 for the rule off.
+func keptControllerAged(t *testing.T, c supervise.Claim, maxAge time.Duration) (*controllerKeeper, *supervisor, *fake.Runtime, *syncBuffer) {
 	t.Helper()
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	logs := &syncBuffer{}
 	log := slog.New(slog.NewJSONHandler(logs, nil))
 	sup.deps.Log = log
-	if before != nil {
-		before(sup)
-	}
+	sup.deps.ControllerSessionMaxAge = maxAge
 	token := claim.ControllerToken("legion")
 	c.Token, c.Project, c.Role, c.Generation = token, "legion", claim.RoleController, 1
 	c.SessionFile = controllerSessionFile
-	c.Locator = &runtime.Locator{Runtime: runtime.RuntimeTmux, Claim: token, Incarnation: "31999:999999",
-		Tmux: &runtime.TmuxLocator{Window: "@99", Pane: "%99"}}
+	if c.State != supervise.StateFailed && c.State != supervise.StateSuspended {
+		c.Locator = &runtime.Locator{Runtime: runtime.RuntimeTmux, Claim: token, Incarnation: "31999:999999",
+			Tmux: &runtime.TmuxLocator{Window: "@99", Pane: "%99"}}
+	}
 	sup.deps.Conns.(*fake.Conns).Register(token, fake.NewConn())
 	if _, _, err := sup.Create(context.Background(), c, ""); err != nil {
 		t.Fatalf("create the controller's claim: %v", err)
 	}
-	k := newControllerKeeper(context.Background(), sup, "legion", time.Minute, 90*time.Minute, 72*time.Hour, log)
+	k := newControllerKeeper(context.Background(), sup, "legion", time.Minute, 90*time.Minute, log)
 	return k, sup, rt, logs
-}
-
-// shimOf is the fake connection the controller's shim holds to this daemon, and whether it holds
-// one.
-func shimOf(sup *supervisor) (*fake.Conn, bool) {
-	conn, ok := sup.deps.Conns.(*fake.Conns).Conn(claim.ControllerToken("legion"))
-	if !ok {
-		return nil, false
-	}
-	return conn.(*fake.Conn), true
-}
-
-// forgetRefusingStore is the test supervisor's store with the write of a forgotten session refused
-// while refuseForgets is set: a claim write that records no session is the forget's
-// (supervise's forgetSession), and the store answers it with an error, as a database that went
-// away between two writes would.
-type forgetRefusingStore struct {
-	*outboxClaimStore
-	refuseForgets bool
-}
-
-func (s *forgetRefusingStore) PutClaim(ctx context.Context, c supervise.Claim) error {
-	if s.refuseForgets && c.Session == "" {
-		return errors.New("the store did not answer the forget's write")
-	}
-	return s.outboxClaimStore.PutClaim(ctx, c)
-}
-
-func (s *forgetRefusingStore) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
-	if s.refuseForgets && c.Session == "" {
-		return nil, errors.New("the store did not answer the forget's write")
-	}
-	return s.outboxClaimStore.ReleaseHolds(ctx, c, holds)
 }
 
 // controllerOf is the controller's claim as its machine holds it now.
@@ -101,6 +73,18 @@ func controllerOf(t *testing.T, sup *supervisor) supervise.Claim {
 		t.Fatal("the supervisor holds no controller machine")
 	}
 	return m.Claim()
+}
+
+// controllerDies is the runtime reporting the controller's process gone, displaced or not: a death
+// the machine relaunches.
+func controllerDies(t *testing.T, sup *supervisor, displaced bool) {
+	t.Helper()
+	m, _ := sup.Machine(claim.ControllerToken("legion"))
+	c := m.Claim()
+	if err := m.Handle(context.Background(), supervise.RuntimeObservation{Observation: runtime.Observation{
+		Locator: *c.Locator, Kind: runtime.Gone, At: time.Now(), Displaced: displaced}}); err != nil {
+		t.Fatalf("report the controller's process gone: %v", err)
+	}
 }
 
 // keepOnce is one look of the keeper, which must answer nothing its loop logs at Error.
@@ -122,6 +106,35 @@ func wantUntouched(t *testing.T, sup *supervisor, rt *fake.Runtime, state superv
 	}
 	if c := controllerOf(t, sup); c.State != state || c.Session != session {
 		t.Fatalf("the controller is %s on %q, want %s on %q kept", c.State, c.Session, state, session)
+	}
+}
+
+// wantFreshFor is the controller's latest launch a fresh agent in place of old, for its age: a
+// spawn that resumes nothing, no resume, the old session recorded as the one left behind for its
+// age, and one R3 Warn line naming it.
+func wantFreshFor(t *testing.T, sup *supervisor, rt *fake.Runtime, logs *syncBuffer, old string) {
+	t.Helper()
+	if resumes, spawns := rt.CallsOf("Resume"), rt.CallsOf("Spawn"); len(resumes) != 0 || len(spawns) != 1 || spawns[0].Spec.ResumeSessionFile != "" {
+		t.Fatalf("the relaunch started %d resumes and %d spawns (%+v), want one fresh spawn", len(resumes), len(spawns), spawns)
+	}
+	c := controllerOf(t, sup)
+	if c.Session != "" || c.Abandoned.Session != old || !strings.Contains(c.Abandoned.Why, "older than controller_session_max_age_hours") {
+		t.Fatalf("the controller records %q and abandoned %+v, want %s left behind for its age", c.Session, c.Abandoned, old)
+	}
+	lines := linesOf(t, logs, agedOutLine)
+	if len(lines) != 1 || lines[0]["level"] != "WARN" || lines[0]["session"] != old || lines[0]["requirement"] != "R3" {
+		t.Fatalf("the R3 lines are %+v, want one at Warn naming %s", lines, old)
+	}
+}
+
+// wantResumed is the controller's latest launch a resume of session, with no spawn.
+func wantResumed(t *testing.T, rt *fake.Runtime, logs *syncBuffer) {
+	t.Helper()
+	if resumes, spawns := rt.CallsOf("Resume"), rt.CallsOf("Spawn"); len(resumes) != 1 || len(spawns) != 0 || resumes[0].Spec.ResumeSessionFile != controllerSessionFile {
+		t.Fatalf("the relaunch started %d resumes and %d spawns, want the one resume of %s", len(resumes), len(spawns), controllerSessionFile)
+	}
+	if lines := linesOf(t, logs, agedOutLine); len(lines) != 0 {
+		t.Fatalf("the relaunch wrote %d R3 lines for a session it kept, want none", len(lines))
 	}
 }
 
@@ -223,266 +236,116 @@ func TestAControllerTurnOpenPastItsBoundIsEnded(t *testing.T) {
 	})
 }
 
-// dispatch://INFRA-2045 R3: at each look of the keeper, a controller that is idle, with no turn
-// open and no task waiting, whose session id (a UUIDv7) is older than
-// controller_session_max_age_hours, gets a fresh session; one in a turn, one with a task waiting
-// and one younger than the age keep theirs, and 0 turns the rule off. internal/config's test of the
-// same name holds the default of 72. The control: on main no code reads the age of the
-// controller's session, and the keeper does nothing for an idle claim, so rows (a) and (b) fail.
-func TestAnIdleControllerSessionOlderThanItsMaxAgeIsReplaced(t *testing.T) {
+// dispatch://INFRA-2045 R3: a relaunch the daemon makes of a controller whose session id (a UUIDv7)
+// is older than controller_session_max_age_hours forgets the old session inside that relaunch and
+// starts a fresh one, with R4's Warn line; the keeper stops no live controller for its age; an
+// operator's own resume keeps the session; a session younger than the age, a rule set to 0, and an
+// id that is no UUIDv7 keep theirs. internal/config's test of the same name holds the default of
+// 72. The control: on main no code reads the age of the controller's session, so every relaunch
+// resumes the old session and the (a) rows fail.
+func TestAnOldControllerSessionIsReplacedAtADaemonDrivenRelaunch(t *testing.T) {
 	now := time.Now()
 	idle := func(session string) supervise.Claim {
 		return supervise.Claim{State: supervise.StateIdle, Session: session, LastTurnStart: now.Add(-2 * time.Hour),
 			LastTurnEnd: now.Add(-time.Hour), SessionRun: supervise.SessionRun{TurnFinished: true}}
 	}
-	wantFresh := func(t *testing.T, sup *supervisor, rt *fake.Runtime, old string) {
-		t.Helper()
-		if suspends := rt.CallsOf("Suspend"); len(suspends) != 1 {
-			t.Fatalf("the runtime was asked %d times to suspend the controller, want once", len(suspends))
-		}
-		if resumes, spawns := rt.CallsOf("Resume"), rt.CallsOf("Spawn"); len(resumes) != 0 || len(spawns) != 1 || spawns[0].Spec.ResumeSessionFile != "" {
-			t.Fatalf("the replacement started %d resumes and %d spawns (%+v), want one fresh spawn", len(resumes), len(spawns), spawns)
-		}
-		c := controllerOf(t, sup)
-		if c.Session != "" || c.Abandoned.Session != old || !strings.Contains(c.Abandoned.Why, "older than controller_session_max_age_hours") {
-			t.Fatalf("the controller records %q and abandoned %+v, want %s left behind for its age", c.Session, c.Abandoned, old)
-		}
-		if c.State != supervise.StateLaunching {
-			t.Fatalf("the controller is %s after its replacement, want launching its fresh session", c.State)
-		}
+
+	for _, death := range []struct {
+		name      string
+		displaced bool
+	}{{"a death", false}, {"a pod update's displacement", true}} {
+		t.Run("a: "+death.name+" of a controller with a session 73 hours old relaunches it in a fresh session", func(t *testing.T) {
+			old := sessionAged(now, 73*time.Hour)
+			_, sup, rt, logs := keptController(t, idle(old))
+			controllerDies(t, sup, death.displaced)
+			wantFreshFor(t, sup, rt, logs, old)
+		})
 	}
 
-	t.Run("a: an idle session 73 hours old is replaced at the keeper's next look", func(t *testing.T) {
+	t.Run("a: the keeper's retry of a failed controller with a session 73 hours old relaunches it in a fresh session", func(t *testing.T) {
 		old := sessionAged(now, 73*time.Hour)
-		k, sup, rt, _ := keptController(t, idle(old))
+		k, sup, rt, logs := keptController(t, supervise.Claim{State: supervise.StateFailed, Session: old})
+		start := time.Now()
+		k.now = func() time.Time { return start }
 		keepOnce(t, k)
-		wantFresh(t, sup, rt, old)
+		k.now = func() time.Time { return start.Add(61 * time.Second) }
+		keepOnce(t, k)
+		wantFreshFor(t, sup, rt, logs, old)
 	})
 
-	t.Run("b: a session 73 hours old in a turn is kept until the turn ends", func(t *testing.T) {
-		old := sessionAged(now, 73*time.Hour)
-		c := idle(old)
-		c.State, c.LastTurnStart = supervise.StateWorking, now.Add(-time.Minute)
-		k, sup, rt, _ := keptController(t, c)
-		keepOnce(t, k)
-		wantUntouched(t, sup, rt, supervise.StateWorking, old)
+	for _, state := range []supervise.ClaimState{supervise.StateReady, supervise.StateWorking, supervise.StateIdle} {
+		t.Run("b: a live "+string(state)+" controller with a session 73 hours old is not stopped by the keeper", func(t *testing.T) {
+			old := sessionAged(now, 73*time.Hour)
+			c := idle(old)
+			c.State = state
+			if state == supervise.StateWorking {
+				c.LastTurnStart, c.LastTurnEnd = now.Add(-time.Minute), now.Add(-2*time.Minute)
+			}
+			k, sup, rt, logs := keptController(t, c)
+			keepOnce(t, k)
+			keepOnce(t, k)
+			wantUntouched(t, sup, rt, state, old)
+			if lines := linesOf(t, logs, agedOutLine); len(lines) != 0 {
+				t.Fatalf("the keeper's looks wrote %d R3 lines, want none", len(lines))
+			}
+		})
+	}
 
+	t.Run("c: an operator's resume of an operator's suspension with a session 73 hours old keeps that session", func(t *testing.T) {
+		old := sessionAged(now, 73*time.Hour)
+		_, sup, rt, logs := keptController(t, supervise.Claim{State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByOperator,
+			Session: old, SessionRun: supervise.SessionRun{TurnFinished: true}})
 		m, _ := sup.Machine(claim.ControllerToken("legion"))
-		if err := m.Handle(context.Background(), supervise.StreamTurnEnd{Claim: m.Claim().Token}); err != nil {
-			t.Fatalf("end the turn: %v", err)
+		if err := m.Handle(context.Background(), supervise.RequestResume{Claim: m.Claim().Token}); err != nil {
+			t.Fatalf("the operator's resume: %v", err)
 		}
-		if state := controllerOf(t, sup).State; state != supervise.StateIdle {
-			t.Fatalf("the controller is %s after its turn ended, want idle", state)
+		wantResumed(t, rt, logs)
+		if c := controllerOf(t, sup); c.Session != old {
+			t.Fatalf("the controller records %q after the operator's resume, want %s kept", c.Session, old)
 		}
-		keepOnce(t, k)
-		wantFresh(t, sup, rt, old)
 	})
 
-	t.Run("c: an idle session with a task waiting is kept", func(t *testing.T) {
-		old := sessionAged(now, 73*time.Hour)
-		c := idle(old)
-		c.Pending = &supervise.Delivery{ID: "dlv-start", Task: ControllerStartMessage, QueuedAt: now.Add(-time.Minute)}
-		k, sup, rt, _ := keptController(t, c)
-		keepOnce(t, k)
-		wantUntouched(t, sup, rt, supervise.StateIdle, old)
-	})
-
-	t.Run("d: an idle session 71 hours old is kept", func(t *testing.T) {
+	t.Run("d: a death of a controller with a session 71 hours old resumes it", func(t *testing.T) {
 		young := sessionAged(now, 71*time.Hour)
-		k, sup, rt, _ := keptController(t, idle(young))
-		keepOnce(t, k)
-		wantUntouched(t, sup, rt, supervise.StateIdle, young)
+		_, sup, rt, logs := keptController(t, idle(young))
+		controllerDies(t, sup, false)
+		wantResumed(t, rt, logs)
 	})
 
-	t.Run("e: with controller_session_max_age_hours 0 a session 30 days old is kept", func(t *testing.T) {
+	t.Run("e: with controller_session_max_age_hours 0 a death of a controller with a session 30 days old resumes it", func(t *testing.T) {
 		old := sessionAged(now, 30*24*time.Hour)
-		k, sup, rt, _ := keptController(t, idle(old))
-		k.maxAge = 0
-		keepOnce(t, k)
-		wantUntouched(t, sup, rt, supervise.StateIdle, old)
+		_, sup, rt, logs := keptControllerAged(t, idle(old), 0)
+		controllerDies(t, sup, false)
+		wantResumed(t, rt, logs)
 	})
 
-	t.Run("an idle session whose id is no UUIDv7 is kept, and one Warn line says the rule cannot read its age", func(t *testing.T) {
-		k, sup, rt, logs := keptController(t, idle("ses_controller"))
-		keepOnce(t, k)
-		keepOnce(t, k)
-		wantUntouched(t, sup, rt, supervise.StateIdle, "ses_controller")
-		lines := linesOf(t, logs, "controller: the controller's session id is no UUIDv7, so controller_session_max_age_hours cannot read its age and the session is not replaced for it")
-		if len(lines) != 1 || lines[0]["level"] != "WARN" {
-			t.Fatalf("the lines for an id the rule reads no age off are %+v, want one at Warn over two looks", lines)
-		}
-	})
-
-	t.Run("after a daemon restart, an old session is kept before its shim's hello and while its agent streams", func(t *testing.T) {
-		old := sessionAged(now, 73*time.Hour)
-		// The claim is restored from the store idle, and the keeper's first look comes before the
-		// controller's shim has said hello to this daemon.
-		k, sup, rt, logs := keptController(t, idle(old))
-		conn, _ := shimOf(sup)
-		sup.deps.Conns.(*fake.Conns).Remove(claim.ControllerToken("legion"))
-		keepOnce(t, k)
-		wantUntouched(t, sup, rt, supervise.StateIdle, old)
-
-		// The shim says hello while its agent is in a turn an Envoy message began while the daemon
-		// was down, and whose agent_start this daemon has not read yet.
-		conn.SetStreaming(true)
-		sup.deps.Conns.(*fake.Conns).Register(claim.ControllerToken("legion"), conn)
-		keepOnce(t, k)
-		wantUntouched(t, sup, rt, supervise.StateIdle, old)
-		if lines := linesOf(t, logs, controllerSessionReplacedLine); len(lines) != 0 {
-			t.Fatalf("the keeper wrote %d replacement lines for a controller it kept, want none", len(lines))
-		}
-
-		// The turn ends, and the next look finds the controller between turns.
-		conn.SetStreaming(false)
-		keepOnce(t, k)
-		wantFresh(t, sup, rt, old)
-	})
-
-	t.Run("the replacement's Warn line is written once when the forget's write fails, and the next look launches the fresh session", func(t *testing.T) {
-		old := sessionAged(now, 73*time.Hour)
-		var store *forgetRefusingStore
-		k, sup, rt, logs := keptControllerWith(t, idle(old), func(sup *supervisor) {
-			store = &forgetRefusingStore{outboxClaimStore: sup.deps.Store.(*outboxClaimStore)}
-			sup.deps.Store = store
-		})
-		store.refuseForgets = true
-		if err := k.keep(); err == nil {
-			t.Fatal("the look whose forget the store would not write answered nil, want the write's error")
-		}
-		if lines := linesOf(t, logs, controllerSessionReplacedLine); len(lines) != 1 || lines[0]["session"] != old {
-			t.Fatalf("the replacement lines after the failed forget are %+v, want one naming %s", lines, old)
-		}
-
-		store.refuseForgets = false
-		keepOnce(t, k)
-		wantFresh(t, sup, rt, old)
-		if lines := linesOf(t, logs, controllerSessionReplacedLine); len(lines) != 1 {
-			t.Fatalf("the replacement lines after the fresh launch are %d, want the one", len(lines))
-		}
-	})
-
-	t.Run("an idle controller holding an operator's suspension whose stop the runtime refused keeps its session for the operator's resume", func(t *testing.T) {
-		old := sessionAged(now, 73*time.Hour)
-		k, sup, rt, logs := keptController(t, idle(old))
-		m, _ := sup.Machine(claim.ControllerToken("legion"))
-		token := m.Claim().Token
-		// An operator suspends the controller during a turn; the suspension is held for the turn's
-		// end, where the runtime refuses the stop, so the claim stands idle with the operator's
-		// suspension still held.
-		if err := m.Handle(context.Background(), supervise.StreamTurnStart{Claim: token}); err != nil {
-			t.Fatalf("start a turn: %v", err)
-		}
-		if err := m.Handle(context.Background(), supervise.RequestSuspend{Claim: token, Reason: "an operator drains the daemon", By: supervise.SuspendedByOperator}); !errors.Is(err, supervise.ErrSuspendHeld) {
-			t.Fatalf("the operator's suspension in a turn answered %v, want it held", err)
-		}
-		rt.FailSuspend(errors.New("the runtime could not stop the process"))
-		_ = m.Handle(context.Background(), supervise.StreamTurnEnd{Claim: token})
-		if state := m.Claim().State; state != supervise.StateIdle {
-			t.Fatalf("the controller is %s after its turn ended with the stop refused, want idle", state)
-		}
-		rt.FailSuspend(nil)
-
-		keepOnce(t, k)
-
-		c := controllerOf(t, sup)
-		if c.State != supervise.StateSuspended || c.SuspendedBy != supervise.SuspendedByOperator || c.Session != old || c.Abandoned.Session != "" {
-			t.Fatalf("the controller is %s, suspended by %q, on %q with %q abandoned; want it suspended by the operator on %s, nothing abandoned",
-				c.State, c.SuspendedBy, c.Session, c.Abandoned.Session, old)
-		}
-		if lines := linesOf(t, logs, controllerSessionReplacedLine); len(lines) != 0 {
-			t.Fatalf("the keeper wrote %d replacement lines for a session it kept, want none", len(lines))
-		}
-		if spawns := rt.CallsOf("Spawn"); len(spawns) != 0 {
-			t.Fatalf("the runtime was asked %d times to spawn, want never", len(spawns))
-		}
-	})
-
-	t.Run("a controller whose session another claim holds is not stopped for its age, and the Envoy listener is not asked", func(t *testing.T) {
-		old := sessionAged(now, 73*time.Hour)
-		// Another claim recorded the session first, so the controller records a session it does
-		// not hold: its forget would wait on the listener (mayForget), and no launch could resume
-		// it, so the keeper must not stop it.
-		asked := 0
-		k, sup, rt, logs := keptControllerWith(t, idle(old), func(sup *supervisor) {
-			if _, err := sup.deps.Store.(*outboxClaimStore).HoldSessions(context.Background(), "legion",
-				mustClaimToken(t, "LEGION-943", claim.RoleImplementer), supervise.RecordedHolds(old, "")); err != nil {
-				t.Fatalf("hold %s for the claim that recorded it first: %v", old, err)
-			}
-			sup.deps.RoleHolder = func(context.Context, string) (string, string, error) {
-				asked++
-				return "", "", fmt.Errorf("look up the holder: %w", &notify.RoleLookupRefused{Status: 401, Reason: `listener returned 401 Unauthorized: {"error":"unauthorized"}`})
-			}
-		})
-		m, _ := sup.Machine(claim.ControllerToken("legion"))
-		if err := m.Handle(context.Background(), supervise.RequestSuspend{Claim: m.Claim().Token, Reason: "the session is old",
-			By: supervise.SuspendedByDaemon, NeverHold: true, BetweenTurns: true}); !supervise.IsSessionHeldElsewhere(err) {
-			t.Fatalf("the suspension between turns of a claim another holds the session of answered %v, want the hold's refusal", err)
-		}
-		keepOnce(t, k)
-		wantUntouched(t, sup, rt, supervise.StateIdle, old)
-		if asked != 0 {
-			t.Fatalf("the Envoy listener was asked %d times who holds the controller's role, want never", asked)
-		}
-		lines := linesOf(t, logs, "controller: the old controller session is not replaced at this look: the claim is not known to be between turns")
-		if len(lines) != 1 {
-			t.Fatalf("the keeper's lines for a session it does not hold are %+v, want one", lines)
-		}
-		if lines := linesOf(t, logs, controllerSessionReplacedLine); len(lines) != 0 {
-			t.Fatalf("the keeper wrote %d replacement lines for a session it kept, want none", len(lines))
-		}
-	})
-
-	t.Run("an operator's forget-session between the keeper's suspension and its forget is the operator's replacement: Info, no R4 line, no error", func(t *testing.T) {
-		old := sessionAged(now, 73*time.Hour)
-		k, sup, rt, logs := keptController(t, idle(old))
-		m, _ := sup.Machine(claim.ControllerToken("legion"))
-		token := m.Claim().Token
-		why := "the session is older than controller_session_max_age_hours"
-		if err := m.Handle(context.Background(), supervise.RequestSuspend{Claim: token, Reason: why,
-			By: supervise.SuspendedByDaemon, NeverHold: true, BetweenTurns: true}); err != nil {
-			t.Fatalf("the keeper's suspension between turns: %v", err)
-		}
-		// The operator clears the session before the keeper's forget runs.
-		if err := m.Handle(context.Background(), supervise.RequestForgetSession{Claim: token, Session: old}); err != nil {
-			t.Fatalf("the operator's forget-session: %v", err)
-		}
-		if err := k.forgetOld(context.Background(), m, token, old, why, now.Add(-73*time.Hour)); err != nil {
-			t.Fatalf("the keeper's forget after the operator's answered %v, want nil: the operator replaced the session", err)
-		}
-		if lines := linesOf(t, logs, controllerSessionReplacedLine); len(lines) != 0 {
-			t.Fatalf("the keeper wrote %d R4 lines for a replacement the operator made, want none", len(lines))
-		}
-		if lines := linesOf(t, logs, "controller: the old controller session is not replaced by the keeper: another decision cleared it after the keeper's suspension, an operator's forget-session among them"); len(lines) != 1 || lines[0]["level"] != "INFO" {
-			t.Fatalf("the keeper's lines for the operator's replacement are %+v, want one at Info", lines)
-		}
-		if c := controllerOf(t, sup); !strings.Contains(c.Abandoned.Why, "legion claims forget-session") {
-			t.Fatalf("the abandoned session is recorded for %q, want the operator's reason", c.Abandoned.Why)
-		}
-		// The next look's resume by rule launches the fresh session the operator asked for.
-		keepOnce(t, k)
-		if spawns := rt.CallsOf("Spawn"); len(spawns) != 1 || spawns[0].Spec.ResumeSessionFile != "" {
-			t.Fatalf("the next look spawned %+v, want one fresh agent", spawns)
+	t.Run("a death of a controller whose session id is no UUIDv7 resumes it, and one Warn line says the rule cannot read its age", func(t *testing.T) {
+		_, sup, rt, logs := keptController(t, idle("ses_controller"))
+		controllerDies(t, sup, false)
+		wantResumed(t, rt, logs)
+		lines := linesOf(t, logs, unagedLine)
+		if len(lines) != 1 || lines[0]["level"] != "WARN" || lines[0]["session"] != "ses_controller" {
+			t.Fatalf("the lines for an id the rule reads no age off are %+v, want one at Warn", lines)
 		}
 	})
 }
 
-// dispatch://INFRA-2045 R4 for a replacement under R3: one Warn line of the keeper's names the
-// claim, the old session and the reason; one line at the fresh session's ready names the old and
-// the new session; and the fresh session's first prompt, the keeper's start message, names the old
-// session and the reason and says that messages sent to the old session may be lost, before the
-// start message. internal/supervise's test of the same name holds the replacement under R1. The
-// control: on main the keeper replaces no session for its age, so none of the three is written.
+// dispatch://INFRA-2045 R4 for a replacement under R3: one Warn line names the claim, the old
+// session and the reason; one line at the fresh session's ready names the old and the new session;
+// and the fresh session's first prompt, the keeper's start message, names the old session and the
+// reason and says that messages sent to the old session may be lost, before the start message.
+// internal/supervise's test of the same name holds the replacement under R1. The control: on main
+// no relaunch replaces a session for its age, so none of the three is written.
 func TestAControllerSessionReplacementIsLoggedAndTold(t *testing.T) {
 	now := time.Now()
 	old := sessionAged(now, 73*time.Hour)
 	k, sup, _, logs := keptController(t, supervise.Claim{State: supervise.StateIdle, Session: old,
 		LastTurnStart: now.Add(-2 * time.Hour), LastTurnEnd: now.Add(-time.Hour), SessionRun: supervise.SessionRun{TurnFinished: true}})
-	keepOnce(t, k)
+	controllerDies(t, sup, false)
 
-	replaced := linesOf(t, logs, controllerSessionReplacedLine)
+	replaced := linesOf(t, logs, agedOutLine)
 	if len(replaced) != 1 || replaced[0]["level"] != "WARN" {
-		t.Fatalf("the keeper's replacement lines are %+v, want one at Warn", replaced)
+		t.Fatalf("the replacement lines are %+v, want one at Warn", replaced)
 	}
 	for key, want := range map[string]string{"claim": string(claim.ControllerToken("legion")), "session": old, "requirement": "R3"} {
 		if got := replaced[0][key]; got != want {
@@ -542,14 +405,7 @@ func TestAControllerSessionIsReplacedAfterTwoLaunchesEndBeforeAFinishedTurn(t *t
 	t.Run("f: a fresh session that never finished a turn is retried with the keeper's waits, not replaced", func(t *testing.T) {
 		k, sup, rt, logs := keptController(t, supervise.Claim{State: supervise.StateReady, Session: "ses_fresh"})
 		m, _ := sup.Machine(claim.ControllerToken("legion"))
-		dies := func() {
-			t.Helper()
-			c := m.Claim()
-			if err := m.Handle(context.Background(), supervise.RuntimeObservation{Observation: runtime.Observation{
-				Locator: *c.Locator, Kind: runtime.Gone, At: time.Now()}}); err != nil {
-				t.Fatalf("report the controller's process gone: %v", err)
-			}
-		}
+		dies := func() { controllerDies(t, sup, false) }
 		dies()
 		dies()
 		if c := m.Claim(); c.State != supervise.StateFailed || c.Session != "ses_fresh" {
