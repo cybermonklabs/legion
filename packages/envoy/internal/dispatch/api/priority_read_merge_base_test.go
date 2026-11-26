@@ -45,9 +45,10 @@ import (
 // cybermonklabs/legion#5316 (branch legion/INFRA-4865), on which this branch is built. It merged
 // main's #4316, #5302 and #5361 and the second fault's rule that an issue in backlog or icebox is
 // a fault only where it states a priority no issue above it carries (priorityBacklogQuery there).
-// The read's statements and the terms they splice are the same text at it as at d7528aa8, where
-// the copy was first frozen: each change between the two to the files holding them is a comment.
-const prioritiesReadMergeBase = "e95ca6b03acf636a49f605b913266b0874bfc769"
+// The read's statements and the terms they splice (priorities.go, priority_queries.go,
+// prioritystore, issueAdvancesTerms and the status lists) are the same text at it as at
+// d7528aa8, where the copy was first frozen; only their comments differ.
+const prioritiesReadMergeBase = "d681744f793dbaff3ea02cc46a08bd3565e953c7"
 
 var (
 	mergeBasePriorityInFlightStatuses = []string{"in_progress", "testing", "needs_review", "retro"}
