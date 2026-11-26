@@ -75,7 +75,7 @@ func stallMarks(stalls []architectStall) []record.ArchitectStall {
 func (a *Admission) architectStalls(ctx context.Context, tx pgx.Tx, read slotReading, facts record.LineFacts,
 	floor stallFloor, sent map[string]bool,
 ) ([]architectStall, error) {
-	letOuts, err := a.readPauseLetOuts(ctx, tx, floor)
+	letOuts, err := a.readPauseLetOuts(ctx, tx, floor, a.now())
 	if err != nil {
 		return nil, err
 	}
@@ -164,8 +164,9 @@ func (a *Admission) readStallFloor(ctx context.Context, tx pgx.Tx) (stallFloor, 
 // architect it stops a launch where the architect holds a task it did not finish or a launch the
 // pacing had parked, and it holds each wake of an architect that arrives while it stands; the
 // resume lets each such launch out through the pacing, so the architect could take no turn
-// before that let-out.
-func (a *Admission) readPauseLetOuts(ctx context.Context, tx pgx.Tx, floor stallFloor) (map[string]time.Time, error) {
+// before that let-out. A launch that still waits in the pacing's queue has no let-out yet, and
+// reads as let out at now, the reading's own moment, so no time counts while it waits.
+func (a *Admission) readPauseLetOuts(ctx context.Context, tx pgx.Tx, floor stallFloor, now time.Time) (map[string]time.Time, error) {
 	if floor.pause == 0 {
 		return nil, nil
 	}
@@ -173,7 +174,7 @@ func (a *Admission) readPauseLetOuts(ctx context.Context, tx pgx.Tx, floor stall
 	if err != nil {
 		return nil, err
 	}
-	letOuts, err := store.PauseLetOutsTx(ctx, tx, project, floor.pause, claim.RoleArchitect)
+	letOuts, err := store.PauseLetOutsTx(ctx, tx, project, floor.pause, claim.RoleArchitect, now)
 	if err != nil {
 		return nil, fmt.Errorf("read the architect let-outs of %s for the architect-stalled arms: %w", a.project, err)
 	}

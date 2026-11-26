@@ -4,6 +4,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // The endpoint a pod's launcher serves: a socket in the generation's own private
@@ -184,6 +186,23 @@ func TestClientURLNamesTheSocketsDirectoryAndSurvivesARoundTrip(t *testing.T) {
 	}
 	if got := u.Query().Get("sslmode"); got != "disable" {
 		t.Errorf("sslmode = %q, want disable", got)
+	}
+}
+
+// pgx itself reads ClientURL back to the socket's directory, the database and the login, a
+// directory whose name holds a space and a `+` included: url.Parse reads a `+` in a query as a
+// space, as pgx does not, so the read above cannot tell a space written as `+` from one written
+// as %20.
+func TestPgxReadsClientURLBackToTheSocketsDirectory(t *testing.T) {
+	endpoint := testEndpoint
+	endpoint.SocketDir = "/var/run/legion/private dir+1/generation-1"
+	config, err := pgconn.ParseConfig(endpoint.ClientURL())
+	if err != nil {
+		t.Fatalf("pgx cannot read ClientURL() %q: %v", endpoint.ClientURL(), err)
+	}
+	if config.Host != endpoint.SocketDir || config.Database != endpoint.Database || config.User != endpoint.User {
+		t.Errorf("pgx reads ClientURL() %q as host %q, database %q, user %q; want %q, %q, %q", endpoint.ClientURL(),
+			config.Host, config.Database, config.User, endpoint.SocketDir, endpoint.Database, endpoint.User)
 	}
 }
 
