@@ -351,14 +351,7 @@ var stepTailPattern = regexp.MustCompile(`^(?: at ([0-9a-f]{10}|-)\.\.([0-9a-f]{
 // error, never an id taken as it stands: a column that read a broken quotation as a check of its
 // own is how text forged inside an id would pass for one.
 func stepCheckOf(printed string) (string, error) {
-	if !strings.HasPrefix(printed, `"`) {
-		return printed, nil
-	}
-	var check string
-	if err := json.Unmarshal([]byte(printed), &check); err != nil {
-		return "", fmt.Errorf("the check %s is no JSON string: %v", printed, err)
-	}
-	return check, nil
+	return printed, nil
 }
 
 // parseSteps reads the output of `dispatch steps --issue key`: the header `<key>: <n> steps in <m>
