@@ -667,6 +667,9 @@ func (e *Engine) gateRequestFound(ctx context.Context, tx pgx.Tx, fact intake.Ga
 // so the gate's quiet record is what leaves refuseHandover's relay the one parked-decision of the
 // approval.
 func (e *Engine) dispatchArtifact(ctx context.Context, tx pgx.Tx, fact intake.DispatchArtifact) (intake.Result, error) {
+	if err := e.verificationChanged(ctx, tx, fact); err != nil {
+		return intake.Result{}, err
+	}
 	handover, err := e.personHandover(ctx, tx, fact)
 	if err != nil {
 		return intake.Result{}, err

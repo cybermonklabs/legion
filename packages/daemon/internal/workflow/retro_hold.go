@@ -38,7 +38,7 @@ func (e *Engine) beneathRetro(ctx context.Context, tx pgx.Tx, issue record.Issue
 // issues beneath it still in the workflow, and what ends the hold: each of them run to done, or
 // ended by the owner's own status write in Dispatch. It carries that write's rules word for word
 // (record.EndChildRule) and the sentence on a write the daemon has not taken yet
-// (record.StatusNotTakenYet), as the pr-merged notice does (waitingForTree). It names the retro
+// (record.StatusNotTakenYet), as the sign-off's refusal does (endChildrenFirst). It names the retro
 // and the implementer whose work the hold keeps, as the held notice of any hold names the phase it
 // is from (HeldNotice).
 func retroHeldNotice(parent string, beneath []string) record.Notice {

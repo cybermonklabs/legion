@@ -327,8 +327,8 @@ func writeFreshTree(task *strings.Builder, start ArchitectStart) {
 // of either. What its closing sentence says turns on that phase. A phase its own terminating fact
 // has already ended (PhaseFinished: merging, its pull request merged) starts no worker: the
 // promotion that opens the root's tree passes it over (admit's startMidPhaseMembers) and the merge
-// ended the work, and the root stands in it until the rest of its tree has left the workflow,
-// when the daemon closes it (closeMerged, closeAwaitingMerge). Otherwise it turns on the role
+// ended the work, and the root moves into verifying, where it waits for its checks and the rest of
+// its tree (closeMerged, judgeClose). Otherwise it turns on the role
 // that works the phase (phase.RoleFor): the worker of a phase a worker works is started by the
 // daemon — by that promotion where the carry put the root there, by the transition that moved it
 // where it moved on — accepting is the architect's own phase, and a phase no role works, which is

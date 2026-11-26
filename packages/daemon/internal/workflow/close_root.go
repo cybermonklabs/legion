@@ -31,6 +31,11 @@ import (
 // "close this" arrives (dispatch://INFRA-545, whose architect could not end its tree and whose
 // controller's own Dispatch close the daemon set back, as a session's write on a waiting root).
 // It keeps its slot while it waits (blockers.waitsOf), and leave frees that slot once.
+//
+// It is refused for a root whose work merged (CLOSE_AFTER_MERGE): such a root closes by the checks
+// of its goal or by a person (D16, door 8), whether it waits in verifying or a next change of it
+// waits at admitted. Its architect withdraws each defect it judges moot and asks a person, whose
+// done closes it.
 func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot) (intake.Result, error) {
 	root, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || root == nil {
@@ -38,6 +43,12 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
 	}
 	if !claim.IsTreeRoot(root.Key, root.Tree) {
 		return refused("ROOT_REQUIRED", fmt.Sprintf("%s is a child of %s. close_root ends a tree root.", root.Key, root.Tree)+" "+record.EndChildRule), nil
+	}
+	if root.Merge.Merged() {
+		return refused("CLOSE_AFTER_MERGE", fmt.Sprintf("Pull request #%d of %s merged, so %s closes by the checks of its goal. "+
+			"Withdraw each defect you judge moot with its reason, then ask a person, whose done closes it. "+
+			"A check you judge wrong goes into a new version of the Verification document that a person approves.",
+			root.Merge.Number, root.Key, root.Key)), nil
 	}
 	if !closableAtPhase(root.Phase) || root.Lingers() || record.OutOfWorkflow(root.Status) {
 		return refused("CLOSE_AFTER_PHASE_STARTED", fmt.Sprintf("%s is in phase %s with status %s; close_root ends a tree only while its root has started no phase — at admitted, whether or not it holds its slot, or waiting on a person — and a tree past that, or one already leaving, ends through its workflow or a human", root.Key, root.Phase, root.Status)), nil
