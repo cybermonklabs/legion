@@ -457,10 +457,10 @@ func sendOne(ctx context.Context, q OwnerLocker, sql string) error {
 // runs out is refused ErrPoolBusy, and the transaction is as it was before the statement
 // (boundedWait.refused). It is how a request's write takes every advisory lock of its own besides
 // the owner lock (api's dependency, rank-allocation, upload and repository-mapping locks,
-// prioritystore's priority-rank lock, delivery's session-groups lock, docs' copy and
-// conditional-edit queue locks, and a document's lock where a request waits for it), so no write
-// waits on one without end. It is one round trip, as the statement alone was. A row lock takes
-// LockRowsWithinBound instead.
+// prioritystore's priority-rank lock, delivery's session-groups and deploy-repository locks, docs'
+// copy and conditional-edit queue locks, and a document's lock where a request waits for it), so
+// no write waits on one without end. It is one round trip, as the statement alone was. A row lock
+// takes LockRowsWithinBound instead.
 func LockWithinBound(ctx context.Context, q OwnerLocker, lock string, args ...any) error {
 	results, err := sendWithinBound(ctx, q, advisoryLockWait(ctx), []boundedLock{{sql: lock, args: args, take: execLock}}, nil)
 	if err != nil {

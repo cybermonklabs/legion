@@ -70,12 +70,15 @@ type PullRequestHead struct {
 	URL                 string
 	EventAt             *time.Time
 	CheckedAt           *time.Time
-	// MergeCommitSHA is the commit GitHub made when this pull request merged. It is set only
-	// for a merged pull request, and only by a writer that read it; one that did not read it
-	// leaves it empty, which asks for nothing. It is written to no column of
-	// pull_request_heads: it exists to seed branch_commits with the one fact the merge itself
-	// proves, that the base branch held this commit (UpsertPullRequestHead).
+	// MergeCommitSHA is the commit GitHub made when this pull request merged, and MergedAt the
+	// time it merged. Each is set only for a merged pull request, and only by a writer that read
+	// it; one that did not read it leaves it empty, which keeps what the row holds
+	// (upsertHeadRow). The row stores both (merge_commit_sha, merged_at), which is how a read
+	// names the merge of the work and orders two merges by when each merged (MergeOfIssue), and
+	// the merge commit also seeds branch_commits with the one fact the merge itself proves, that
+	// the base branch held this commit (UpsertPullRequestHead).
 	MergeCommitSHA string
+	MergedAt       *time.Time
 }
 
 // PullRequestHeadState is the state a `pull_request` event leaves the row in: a pull request
@@ -417,7 +420,7 @@ const headWriteRollback = 2 * time.Second
 
 // headLaidColumns is the columns of a pull_request_heads row that the reads of the results path
 // read besides its key, (repo, number), in the order headLaidRules writes them.
-const headLaidColumns = `head_sha, base_ref, state, issue_key, event_at, checked_at`
+const headLaidColumns = `head_sha, base_ref, state, issue_key, event_at, checked_at, head_ref, merge_commit_sha, merged_at, attribution_rule`
 
 // headLaidRules is upsertHeadRow's rule for each of headLaidColumns, one expression a column, in
 // their order: stored is the row a write lands on and excluded the row it writes, as `on conflict
@@ -427,12 +430,16 @@ const headLaidColumns = `head_sha, base_ref, state, issue_key, event_at, checked
 // write carries none of keeps the row's. upsertHeadRow's `do update set` runs them, and so does a
 // read-only caller's read as it lays each answer of its request on the stored row
 // (answeredHeadsRelation), so the two lay one answer one way.
-func headLaidRules(complete string) []string {
+func headLaidRules(complete, hasMerge string) []string {
 	return []string{
 		"excluded.head_sha", "excluded.base_ref", "excluded.state",
 		"case when " + complete + " then excluded.issue_key else stored.issue_key end",
 		"coalesce(excluded.event_at, stored.event_at)",
 		"coalesce(excluded.checked_at, stored.checked_at)",
+		"excluded.head_ref",
+		"case when " + hasMerge + " then excluded.merge_commit_sha else stored.merge_commit_sha end",
+		"coalesce(excluded.merged_at, stored.merged_at)",
+		"case when excluded.checked_at is null then stored.attribution_rule else excluded.attribution_rule end",
 	}
 }
 
@@ -447,18 +454,15 @@ const headWriteApplies = `(excluded.event_at is null or stored.event_at is null 
 var upsertHeadQuery = `
 	insert into pull_request_heads as stored (
 		repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
-		title, url, event_at, checked_at, attribution_rule
+		title, url, event_at, checked_at, attribution_rule, merge_commit_sha, merged_at
 	)
-	values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $14)
+	values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $14, $15, $16)
 	on conflict (repo, number) do update set
-		(` + headLaidColumns + `) = (` + strings.Join(headLaidRules("$13::boolean"), ", ") + `),
-		head_ref = excluded.head_ref,
+		(` + headLaidColumns + `) = (` + strings.Join(headLaidRules("$13::boolean", "excluded.merge_commit_sha <> ''"), ", ") + `),
 		attribution_source = case when $13::boolean
 			then excluded.attribution_source else stored.attribution_source end,
 		title = excluded.title,
-		url = excluded.url,
-		attribution_rule = case when excluded.checked_at is null
-			then stored.attribution_rule else excluded.attribution_rule end
+		url = excluded.url
 	where ` + headWriteApplies
 
 // upsertHeadRow is the head row's own statement (upsertHeadQuery), which UpsertPullRequestHead's
@@ -478,13 +482,24 @@ var upsertHeadQuery = `
 // the row exactly as it was, which is the one way this statement writes nothing and reports no
 // error. Only an applied write can have moved the row's attribution, so that is what
 // UpsertPullRequestHead tests before it appends an event.
+//
+// The merge commit and the merge time are written only for a merged row, and a write that
+// carries neither keeps what the row holds: an envelope of the release before this one carries
+// no merge time, and an edit of a merged pull request is a write too, so a write that carries
+// none says nothing about the merge, which never changes once made. An open row stores neither:
+// GitHub answers a merge_commit_sha for an open pull request too, its test merge (mergeCommitOf),
+// which is no merge.
 func upsertHeadRow(ctx context.Context, db store.BatchSender, head PullRequestHead) (bool, error) {
+	mergeCommit, mergedAt := "", (*time.Time)(nil)
+	if head.State == "merged" {
+		mergeCommit, mergedAt = head.MergeCommitSHA, head.MergedAt
+	}
 	var write store.WriteBatch
 	var applied bool
 	write.QueueWithinBound("", upsertHeadQuery,
 		head.Repo, head.Number, head.HeadSHA, head.HeadRef, head.BaseRef, head.State,
 		head.IssueKey, head.AttributionSource, head.Title, head.URL, head.EventAt, head.CheckedAt,
-		head.AttributionComplete, AttributionRuleVersion,
+		head.AttributionComplete, AttributionRuleVersion, mergeCommit, mergedAt,
 	).Exec(func(tag pgconn.CommandTag) error {
 		applied = tag.RowsAffected() > 0
 		return nil
@@ -538,22 +553,52 @@ func dropHeadStoredUnder(ctx context.Context, db store.BatchSender, storedUnder 
 }
 
 // AttributedHead is one pull request Dispatch holds for an issue, as the results read names it
-// among the heads a `before_merge` check compares its results with: the pull request's number,
-// the commit its head is, and the two times Dispatch may have learned that head by. CheckedAt
-// is when Dispatch last read the pull request from GitHub and EventAt is the pull request's
-// own update time as its newest webhook event carried it; each is nil where no writer has
-// carried it. The reader shows the later of the two and names which it is
-// (model.BasisLearnedReadAt, model.BasisLearnedUpdatedAt). LinkedRepo is the repository of a
+// among the heads a `before_merge` check compares its results with: the repository its row is
+// stored under, the pull request's number, whether it is open, the commit its head is, and the
+// two times Dispatch may have learned that head by. Repo is the row's own, as NewestHead.Repo is:
+// the repository to read the head's check runs from, which for a pull request an issue links may
+// be another than the issue's. CheckedAt is when Dispatch last read the pull request from GitHub
+// and EventAt is the pull request's own update time as its newest webhook event carried it; each
+// is nil where no writer has carried it. The reader shows the later of the two and names which it
+// is (model.BasisLearnedReadAt, model.BasisLearnedUpdatedAt). LinkedRepo is the repository of a
 // pull request the issue links in a repository it does not resolve to (linkedPullRequestTerms),
 // under the canonical name those terms read, and "" for a pull request attributed to it: the
 // reader names that repository beside the number, which alone would read as a pull request of
 // the issue's own repository.
+//
+// MergedAt is when a merged pull request merged, as GitHub gave it (pull_request_heads.merged_at),
+// and nil where Dispatch holds no time of its merge; AttributionRule is the rule that last judged
+// the row (AttributionRuleVersion). The results read orders an issue's merged pull requests by the
+// two (MergeTime): the newest is the one that merged last.
 type AttributedHead struct {
-	Number     int
-	HeadSHA    string
-	CheckedAt  *time.Time
-	EventAt    *time.Time
-	LinkedRepo string
+	Repo    string
+	Number  int
+	HeadSHA string
+	// Open is whether the pull request is open; a merged one's head is its final head.
+	Open            bool
+	CheckedAt       *time.Time
+	EventAt         *time.Time
+	LinkedRepo      string
+	MergedAt        *time.Time
+	AttributionRule int
+	// NewestMerged is selected by SQL with newestMergeFirst, not a second Go ordering rule.
+	NewestMerged bool
+}
+
+// MergeTime is one merged pull request row as a read that orders merged pull requests by when
+// each merged takes it: the row's repository and number, when it merged (nil where the row holds
+// no time of its merge), and the rule that last judged the row (AttributionRuleVersion), which
+// says whether a read of GitHub may still give it a time. An AttributedHead gives one (MergeTime).
+type MergeTime struct {
+	Repo            string
+	Number          int
+	MergedAt        *time.Time
+	AttributionRule int
+}
+
+// MergeTime is head's row as a read orders merged pull requests by when each merged.
+func (head AttributedHead) MergeTime() MergeTime {
+	return MergeTime{Repo: head.Repo, Number: head.Number, MergedAt: head.MergedAt, AttributionRule: head.AttributionRule}
 }
 
 // The results path reads pull_request_heads in five places, each through one statement and one
@@ -676,9 +721,9 @@ func answeredHeadsRelation(first int, keeps string) string {
 	// laid row gives it to the read (laid): a text column by place, beside the stored row's value
 	// (stored, carried), and every other by value.
 	columns := strings.Split(headLaidColumns, ", ")
-	rules := headLaidRules("excluded.complete")
+	rules := headLaidRules("excluded.complete", "excluded.has_merge_commit")
 	started := make([]string, len(columns))
-	excluded := make([]string, len(columns), len(columns)+1)
+	excluded := make([]string, len(columns), len(columns)+2)
 	laying := make([]string, len(columns))
 	laid := make([]string, len(columns))
 	var storedNames, stored, carried []string
@@ -699,7 +744,8 @@ func answeredHeadsRelation(first int, keeps string) string {
 		excluded[index] = arrayOf[column].at("stored.next_place") + " as " + column
 		laid[index] = "laid." + column
 	}
-	excluded = append(excluded, arrayOf["complete"].at("stored.next_place")+" as complete")
+	excluded = append(excluded, arrayOf["complete"].at("stored.next_place")+" as complete",
+		arrayOf["has_merge_commit"].at("stored.next_place")+" as has_merge_commit")
 	// unnest is the answers as rows, with only the columns names lists, and their places.
 	unnest := func(names ...string) string {
 		arrays := make([]string, len(names))
@@ -791,11 +837,11 @@ type pullRequestKey struct {
 // times an answer may carry none of, each held as moments, so that their arrays hold no null
 // (answerArray.present).
 type answerColumns struct {
-	repo, headSHA, baseRef, state []string
-	number                        []int32
-	issueKey, renamedFrom         []*string
-	complete                      []bool
-	eventAt, checkedAt            moments
+	repo, headSHA, baseRef, state, headRef, mergeCommit []string
+	number, attributionRule                             []int32
+	issueKey, renamedFrom                               []*string
+	complete, hasMerge                                  []bool
+	eventAt, checkedAt, mergedAt                        moments
 }
 
 // answerArray is one array HeadAnswers.args answers: its name, which answeredHeadsRelation gives
@@ -815,6 +861,9 @@ var answerArrays = [...]answerArray{
 	{"state", "text", ""}, {"issue_key", "text", ""}, {"complete", "boolean", ""},
 	{"event_at", "timestamptz", "has_event_at"}, {"checked_at", "timestamptz", "has_checked_at"},
 	{"renamed_from", "text", ""}, {"has_event_at", "boolean", ""}, {"has_checked_at", "boolean", ""},
+	{"head_ref", "text", ""}, {"merge_commit_sha", "text", ""},
+	{"merged_at", "timestamptz", "has_merged_at"}, {"has_merged_at", "boolean", ""},
+	{"attribution_rule", "integer", ""}, {"has_merge_commit", "boolean", ""},
 }
 
 // sql is the array as answeredHeadsRelation's terms read it: from the one row of its answers
@@ -850,7 +899,10 @@ func (a answerArray) at(place string) string {
 func (a *HeadAnswers) Add(pulls CommitPulls) {
 	c := &a.columns
 	for _, head := range pulls.Heads {
-		if head.seedsBranch() {
+		if head.State != "merged" {
+			head.MergeCommitSHA, head.MergedAt = "", nil
+		}
+		if head.seedsBranch() && !pulls.stamped {
 			a.merges = append(a.merges, head)
 		}
 		var renamedFrom *string
@@ -878,6 +930,11 @@ func (a *HeadAnswers) Add(pulls CommitPulls) {
 		c.complete = append(c.complete, head.AttributionComplete)
 		c.eventAt.add(head.EventAt)
 		c.checkedAt.add(head.CheckedAt)
+		c.headRef = append(c.headRef, head.HeadRef)
+		c.mergeCommit = append(c.mergeCommit, head.MergeCommitSHA)
+		c.mergedAt.add(head.MergedAt)
+		c.attributionRule = append(c.attributionRule, int32(AttributionRuleVersion))
+		c.hasMerge = append(c.hasMerge, head.MergeCommitSHA != "")
 		c.renamedFrom = append(c.renamedFrom, renamedFrom)
 	}
 }
@@ -888,7 +945,9 @@ func (a *HeadAnswers) Add(pulls CommitPulls) {
 // renamed_from. The pull request itself, repo and number, is the caller's to match.
 func (c *answerColumns) equalsButCheckedAt(place int, head PullRequestHead, renamedFrom *string) bool {
 	return c.headSHA[place] == head.HeadSHA && c.baseRef[place] == head.BaseRef && c.state[place] == head.State &&
+		c.headRef[place] == head.HeadRef && c.mergeCommit[place] == head.MergeCommitSHA &&
 		sameText(c.issueKey[place], head.IssueKey) && c.complete[place] == head.AttributionComplete &&
+		sameMoment(c.mergedAt.at(place), head.MergedAt) &&
 		sameMoment(c.eventAt.at(place), head.EventAt) && sameText(c.renamedFrom[place], renamedFrom)
 }
 
@@ -950,6 +1009,7 @@ func (a HeadAnswers) args() []any {
 	return []any{
 		c.repo, c.number, c.headSHA, c.baseRef, c.state, c.issueKey, c.complete, c.eventAt.times, c.checkedAt.times,
 		c.renamedFrom, c.eventAt.present, c.checkedAt.present,
+		c.headRef, c.mergeCommit, c.mergedAt.times, c.mergedAt.present, c.attributionRule, c.hasMerge,
 	}
 }
 
@@ -960,14 +1020,19 @@ func (a HeadAnswers) args() []any {
 // repository — and `linked_repo desc` keeps the linked arm's copy: the row is of a repository the
 // issue does not resolve to, which is what the name says.
 var headsAttributedQuery = `
-	select number, head_sha, checked_at, event_at, linked_repo from (
+	select repo, number, head_sha, is_open, checked_at, event_at, linked_repo, merged_at, attribution_rule,
+		(not is_open and row_number() over (partition by is_open order by ` + newestMergeFirst + `) = 1) as newest_merged from (
 		select distinct on (number, head_sha, checked_at, event_at)
-			number, head_sha, checked_at, event_at, linked_repo
+			repo, number, head_sha, is_open, checked_at, event_at, linked_repo, merged_at, attribution_rule
 		from (
-			select number, head_sha, checked_at, event_at, '' as linked_repo from pull_request_heads
+			select repo, number, head_sha, state = 'open' as is_open, checked_at, event_at, '' as linked_repo,
+				merged_at, attribution_rule
+			from pull_request_heads
 			where issue_key = $1 and state in ('open', 'merged')
 			union all
-			select h.number, h.head_sha, h.checked_at, h.event_at, l.repo from linked_pulls l
+			select h.repo, h.number, h.head_sha, h.state = 'open', h.checked_at, h.event_at, l.repo,
+				h.merged_at, h.attribution_rule
+			from linked_pulls l
 			` + linkedHeadJoin + `
 			where h.state in ('open', 'merged')
 		) arms
@@ -992,7 +1057,7 @@ func headsAttributedRead(renames refs.Renames) headsStatement {
 // planner returned first. A reader taking the first head takes the one Dispatch learned last.
 //
 // The attributed rows are read through pull_request_heads_issue_head's leading column, as
-// BaseBranchMergedFor's are: the rows one issue's key holds are the handful of pull requests
+// MergeOfIssue's are: the rows one issue's key holds are the handful of pull requests
 // attributed to that issue. The linked rows are read through pull_request_heads_repo_head's
 // leading column, one repository's rows for each linked pull request.
 //
@@ -1009,7 +1074,8 @@ func (a *Attributor) HeadsAttributedTo(ctx context.Context, q refs.Queryer, issu
 	var heads []AttributedHead
 	for rows.Next() {
 		var head AttributedHead
-		if err := rows.Scan(&head.Number, &head.HeadSHA, &head.CheckedAt, &head.EventAt, &head.LinkedRepo); err != nil {
+		if err := rows.Scan(&head.Repo, &head.Number, &head.HeadSHA, &head.Open, &head.CheckedAt, &head.EventAt,
+			&head.LinkedRepo, &head.MergedAt, &head.AttributionRule, &head.NewestMerged); err != nil {
 			return nil, fmt.Errorf("read the pull request heads of %s: %w", issueKey, err)
 		}
 		heads = append(heads, head)
@@ -1029,12 +1095,16 @@ type NewestHead struct {
 }
 
 // NewestPullRequestHead is the head of the open pull request of the highest number attributed
-// to issueKey, or, where none is open, the final head of its merged pull request of the highest
-// number, and false where Dispatch holds neither. GitHub's numbers rise, so the highest is the
-// newest. Both are heads HeadsAttributedTo lists, so a result at the commit answered here stands
-// at one of the heads a `before_merge` check compares its results with. A closed-unmerged pull
-// request is no head. The repository is the row's own, which is the one to read the head's
-// check runs from (api/results_ci.go).
+// to issueKey, or, where none is open, the final head of its merged pull request that merged
+// last, and false where Dispatch holds neither. GitHub's numbers rise, so the highest is the
+// newest open one; a merge's time is when GitHub merged it (merged_at), and among merged pull
+// requests a row holding no time comes after every row that holds one, the higher number first
+// between two of one time or of none. A read that must not take the newest of rows it cannot
+// order asks first whether each holds a time (api's fillMergeTimes). Both are heads
+// HeadsAttributedTo lists, so a result at the commit answered here stands at one of the heads a
+// `before_merge` check compares its results with. A closed-unmerged pull request is no head. The
+// repository is the row's own, which is the one to read the head's check runs from
+// (api/results_ci.go).
 //
 // The read uses pull_request_heads_issue_head's leading column, as HeadsAttributedTo's does, and
 // takes the caller's request's answers as HeadsAttributedTo takes them.
@@ -1055,7 +1125,7 @@ func NewestPullRequestHead(ctx context.Context, q refs.Queryer, issueKey string,
 var newestPullRequestHeadQuery = `
 	select repo, number, head_sha from pull_request_heads
 	where issue_key = $1 and state in ('open', 'merged')
-	order by state = 'open' desc, number desc
+	order by state = 'open' desc, ` + newestMergeFirst + `
 	limit 1`
 
 // newestPullRequestHeadRead is newestPullRequestHeadQuery whole, for both callers.
@@ -1128,63 +1198,6 @@ const headStoredAtAnswers = `lower(answer.repo) = lower($1) and answer.head_sha 
 // head is commit $2.
 const headsStoredAtCommit = `select repo, number from public.pull_request_heads where lower(repo) = lower($1) and head_sha = $2`
 
-// BaseBranchMergedFor is the branch the merged pull request attributed to issueKey merged
-// into, and "" where Dispatch holds no merge of it: the branch an `after_merge` result of that
-// issue is measured against (api/results_comparison.go). An issue whose pull request merged
-// into an integration branch has reached that branch and no other, so a result of it at a
-// commit that branch's history carries stands at that branch. The repository's default branch
-// answers nothing about the work until the integration branch itself lands. The merged row
-// last updated answers: event_at is the pull request's updated_at as its newest event carried
-// it, which is the time of the merge only until a later event of that pull request (an edit, a
-// label) moves it. The rows are ordered by event_at descending with the rows carrying none
-// last, since a row with no event time is one whose envelope reported none and says less than
-// any row that did, and by the pull request's own number descending where two share a time, so
-// the answer does not turn on whichever row the planner returned first.
-//
-// The read is keyed by the issue and not by the result's commit because Legion merges with
-// squash: the commit that lands on the base branch is the one the squash makes, which is no
-// pull request's head and so no row's head_sha, and HeadAttributedTo — which asks whether a
-// commit is such a head — can never answer for it. Keying by the issue costs nothing in
-// honesty, since a row is attributed to an issue only where the pull request's head is a
-// branch of the repository that issue resolves to (headAttribution), so the branch this
-// answers is one the issue's own work merged into.
-//
-// An empty answer is "no branch to measure against", which a merged row carrying no base_ref
-// gives as much as no merged row at all. The column is declared not null with the empty string
-// as its default, and a `pull_request` envelope published before Dispatch carried the field
-// writes exactly that, so such a row names no base branch; the empty answer leaves the caller
-// on its own fallback, the repository's default branch, where handing that value on as a
-// branch would have it build a GitHub compare read against a branch with no name.
-//
-// No index is added for this lookup: pull_request_heads_issue_head is partial on
-// `issue_key is not null` and keyed `(issue_key, head_sha)`, so a read by the issue alone uses
-// its leading column, and the rows one issue's key holds are the handful of pull requests
-// attributed to that issue.
-//
-// answers is the caller's request's, as HeadsAttributedTo takes them.
-func BaseBranchMergedFor(ctx context.Context, q refs.Queryer, issueKey string, answers HeadAnswers) (string, error) {
-	query, args := baseBranchMergedForRead.query(answers, issueKey)
-	var branch string
-	err := q.QueryRow(ctx, query, args...).Scan(&branch)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("read the merged pull request base branch of %s: %w", issueKey, err)
-	}
-	return branch, nil
-}
-
-// baseBranchMergedForQuery is BaseBranchMergedFor's statement after its WITH list.
-var baseBranchMergedForQuery = `
-	select base_ref from pull_request_heads
-	where issue_key = $1 and state = 'merged'
-	order by event_at desc nulls last, number desc
-	limit 1`
-
-// baseBranchMergedForRead is baseBranchMergedForQuery whole, for both callers.
-var baseBranchMergedForRead = newHeadsStatement("", baseBranchMergedForQuery, 1, "")
-
 // PullRequestHeadStaleAfter is how long an open pull request's row may go unread before the
 // reconcile reads it again.
 //
@@ -1239,9 +1252,11 @@ const PullRequestHeadBatch = 200
 // keeps both where the write carries no read time). So a merged row is taken once per rule: the
 // refresh stamps it at AttributionRuleVersion whether or not GitHub's answer attributed it, and
 // it comes back only when a later build raises that constant, which is how a change to the
-// attribution reaches the merged rows already stored. The `checked_at is null` half of the
-// uncredited term keeps that bound: without it every merged row credited to nobody would come
-// back every pass for ever.
+// attribution reaches the merged rows already stored, and how a column a merged row gains is
+// filled: rule 6's refresh stores each merged row's merge commit and merge time from GitHub's
+// answer (headRow, upsertHeadRow). The `checked_at is null` half of the uncredited term keeps
+// that bound: without it every merged row credited to nobody would come back every pass for
+// ever.
 //
 // The arm is written as `(issue_key is null and checked_at is null) or attribution_rule < $3`
 // rather than the conjunction it is equal to — `(issue_key is null or attribution_rule < $3)
@@ -1320,12 +1335,18 @@ func listStaleHeads(ctx context.Context, pool *store.Pool, query string, args ..
 // not from a parameter, since the row the caller could not read is one the current rule has now
 // been offered: that is the same bound the refresh carries, and without it a merged row credited
 // to nobody whose pull request is gone would come back to the merged arm every pass for ever.
+//
+// The stamp runs in a bounded wait (store.WriteBatch, QueueWithinBound), as every write of a head
+// row does (upsertHeadRow): a results read's refresh of a merged row stamps it on a request, and
+// no lock orders that write against the intake's or the reconcile's write of the same row. At the
+// bound it is refused store.ErrPoolBusy and the row is left as it was, for the next read or pass.
 func MarkPullRequestHeadChecked(ctx context.Context, pool *store.Pool, repoFull string, number int, now time.Time) error {
-	_, err := pool.Exec(ctx, `
+	var stamp store.WriteBatch
+	stamp.QueueWithinBound("", `
 		update pull_request_heads set checked_at = $3, attribution_rule = $4
 		where repo = $1 and number = $2
 	`, repoFull, number, now, AttributionRuleVersion)
-	if err != nil {
+	if err := stamp.Send(ctx, pool); err != nil {
 		return fmt.Errorf("stamp the head of %s#%d: %w", repoFull, number, err)
 	}
 	return nil
@@ -1477,7 +1498,8 @@ func (a *Attributor) attributeHead(ctx context.Context, logger *slog.Logger, poo
 // reached: the one builder both GitHub readers below write through, so the two cannot drift.
 // The rule that judged it is the write's own (UpsertPullRequestHead binds
 // AttributionRuleVersion). The list form of a pull request carries merged_at but not merged, so
-// a merge is read from whichever of the two GitHub sent.
+// a merge is read from whichever of the two GitHub sent; merged_at is also the time the row
+// stores for the merge, so the reconcile's refresh of a merged row fills it (upsertHeadRow).
 func headRow(repoFull string, payload pullRequestPayload, attributed headAttributionResult, checkedAt *time.Time) PullRequestHead {
 	return PullRequestHead{
 		Repo: repoFull, Number: payload.Number, HeadSHA: payload.Head.SHA, HeadRef: payload.Head.Ref,
@@ -1485,6 +1507,7 @@ func headRow(repoFull string, payload pullRequestPayload, attributed headAttribu
 		IssueKey: attributed.issueKey, AttributionSource: attributed.source,
 		AttributionComplete: attributed.complete, Title: payload.Title, URL: payload.HTMLURL,
 		EventAt: payload.UpdatedAt, CheckedAt: checkedAt, MergeCommitSHA: mergeCommitOf(payload),
+		MergedAt: payload.MergedAt,
 	}
 }
 
@@ -1548,36 +1571,79 @@ func (a *Attributor) RefreshPullRequestHead(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client, broker *events.Broker,
 	repoFull string, number int, now time.Time,
 ) error {
+	pulls, stamp, err := a.readPullRequestHead(ctx, pool, client, repoFull, number, now)
+	if stamp {
+		return errors.Join(err, MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now))
+	}
+	if err != nil {
+		return err
+	}
+	_, err = StoreCommitPulls(ctx, pool, broker, pulls)
+	return err
+}
+
+// readPullRequestHead is the shared GitHub read of a refresh. stamp means that the caller
+// must mark the existing row checked, without replacing it or recording its merge again.
+func (a *Attributor) readPullRequestHead(
+	ctx context.Context, pool *store.Pool, client *githubapp.Client,
+	repoFull string, number int, now time.Time,
+) (CommitPulls, bool, error) {
 	canonical := a.canonical(repoFull)
 	owner, repo, err := refs.SplitGitHubRepo(canonical)
 	if err != nil {
-		// No read of GitHub can reach a name GitHub does not allow, so the row is stamped as an
-		// unreadable one is, and the error goes back: the reconcile warns of it on the pass that
-		// stamps it rather than on every pass.
-		if stamp := MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now); stamp != nil {
-			return errors.Join(err, stamp)
-		}
-		return err
+		return CommitPulls{}, true, err
 	}
-	token, err := client.RepositoryToken(ctx, owner, repo)
-	if err != nil {
-		if RepositoryUnreadable(err) {
-			return MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now)
+	// The token and the pull request are one stretch of GitHub calls, which a results read's
+	// request waits on holding no admission unit (onGitHub); the reconcile, whose context carries
+	// no wait, runs it in place. A stretch whose wait failed read nothing: it stamps no row and
+	// answers that failure.
+	var token string
+	var payload pullRequestPayload
+	var mintErr, readErr error
+	if refused := onGitHub(ctx, func(ctx context.Context) {
+		if token, mintErr = client.RepositoryToken(ctx, owner, repo); mintErr == nil {
+			payload, readErr = fetchPullRequestPayload(ctx, client, token, owner, repo, number)
 		}
-		return fmt.Errorf("mint installation token for %s PR #%d: %w", canonical, number, err)
+	}); refused != nil {
+		return CommitPulls{}, false, refused
 	}
-	payload, err := fetchPullRequestPayload(ctx, client, token, owner, repo, number)
-	if err != nil {
-		if errors.Is(err, ErrPullRequestNotFound) || RepositoryUnreadable(err) {
-			return MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now)
+	if mintErr != nil {
+		if RepositoryUnreadable(mintErr) {
+			return CommitPulls{}, true, nil
 		}
-		return err
+		return CommitPulls{}, false, fmt.Errorf("mint installation token for %s PR #%d: %w", canonical, number, mintErr)
+	}
+	if readErr != nil {
+		if errors.Is(readErr, ErrPullRequestNotFound) || RepositoryUnreadable(readErr) {
+			return CommitPulls{}, true, nil
+		}
+		return CommitPulls{}, false, readErr
 	}
 	attributed, err := a.attributePayload(ctx, pool, client, token, canonical, payload)
 	if err != nil {
-		return err
+		return CommitPulls{}, false, err
 	}
-	return upsertHeadUnderCanonicalName(ctx, pool, broker, headRow(canonical, payload, attributed, &now), repoFull)
+	return CommitPulls{Heads: []PullRequestHead{headRow(canonical, payload, attributed, &now)}, storedUnder: repoFull}, false, nil
+}
+
+// ReadPullRequestHead reads exactly what RefreshPullRequestHead reads, but writes nothing.
+// Its caller adds the answer to its request's HeadAnswers instead of the shared store.
+func (a *Attributor) ReadPullRequestHead(
+	ctx context.Context, pool *store.Pool, client *githubapp.Client,
+	repoFull string, number int, now time.Time, answers HeadAnswers,
+) (CommitPulls, error) {
+	pulls, stamp, err := a.readPullRequestHead(ctx, pool, client, repoFull, number, now)
+	if !stamp {
+		return pulls, err
+	}
+	// Stamp the row the writer would now see, including this request's earlier answers.
+	// No attribution, merge metadata or branch fact is replaced by a stale physical row.
+	head, found, readErr := headForRefresh(ctx, pool, repoFull, number, answers)
+	if readErr != nil || !found {
+		return CommitPulls{}, errors.Join(err, readErr)
+	}
+	head.CheckedAt = &now
+	return CommitPulls{Heads: []PullRequestHead{head}, storedUnder: repoFull, stamped: true}, err
 }
 
 // RepositoryUnreadable reports whether err is the App saying it cannot read a repository: it is
@@ -1654,6 +1720,8 @@ type CommitPulls struct {
 	// that name where it is not the canonical one the heads are keyed by
 	// (upsertHeadUnderCanonicalName).
 	storedUnder string
+	// stamped carries only the checked marker of an unreadable existing row, not a new merge.
+	stamped bool
 }
 
 // ReadCommitPulls is the read half of ReadThroughCommitPulls, and writes nothing: it asks GitHub
@@ -1875,7 +1943,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 		IssueKey: attributed.issueKey, AttributionSource: attributed.source,
 		AttributionComplete: attributed.complete, Title: payload["title"], URL: payload["url"],
 		EventAt: envelopeTime(payload["updated_at"]), CheckedAt: checkedAt,
-		MergeCommitSHA: payload["merge_commit_sha"],
+		MergeCommitSHA: payload["merge_commit_sha"], MergedAt: envelopeTime(payload["merged_at"]),
 	}, given)
 }
 

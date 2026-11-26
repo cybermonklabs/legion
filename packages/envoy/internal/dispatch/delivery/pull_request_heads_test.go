@@ -1944,7 +1944,7 @@ func TestACompareReadRefusedOnTheDefaultBranchHoldsNothing(t *testing.T) {
 // A refusal of the repository's own default branch holds nothing where the caller spelled that
 // branch out either, and not only where it passed DefaultBranch. An `after_merge` walk asks
 // about the branch the issue merged into and then about the default branch
-// (api/results_comparison.go, measuredBranches), and for an issue merged the ordinary way those
+// (api/results_comparison.go, branchesIn), and for an issue merged the ordinary way those
 // two steps are one branch under two names; a hold taken under the spelled-out name would
 // answer the default-branch step from it without a read, and every `default_branch` result of
 // the repository, and every `after_merge` result of it no stored row answers, would read

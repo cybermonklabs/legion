@@ -297,6 +297,9 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 	} else if written > 0 {
 		slog.Info("dispatch delivery: recorded issue.deployed", "events", written, "by", "reconcile")
 	}
+	if _, err := RecordProductionDeploys(ctx, r.pool, settings, r.events); err != nil {
+		record("record production deploys", err)
+	}
 
 	if len(failures) > 0 {
 		r.fail(ctx, errors.New(strings.Join(failures, "; ")))

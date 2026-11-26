@@ -505,6 +505,7 @@ func (s *server) recordResultUnderOwnerLocks(
 		ID: uuid.NewString(), IssueKey: issueKey, CheckIssueKey: check.IssueKey,
 		CheckArtifactID: check.ArtifactID, CheckBlockID: check.BlockID,
 		CheckVersion: resolved.Version, CheckSHA256: resolved.SHA256,
+		CheckSubject: resolved.Attributes.Subject, CheckProgram: resolved.Attributes.Program,
 		Role: input.Role, Surface: input.Surface, Run: input.Run, Observed: input.Observed,
 		CommitSHA: input.Commit, CommitRepo: linkedCommitRepo, NegativeControl: input.NegativeControl,
 		Failed: input.Failed, Skipped: input.Skipped, Excluded: input.Excluded,
@@ -549,14 +550,16 @@ type issueCheckResults struct {
 // check's words moved since. An issue with no Verification document has no checks and no
 // error.
 //
-// A check CI proves carries `ci` too, read from GitHub at the issue's newest pull request
-// head, and its one result is the one derived from the run its `ci_check` names
-// (deriveCIResults), which is judged as a recorded result is.
+// A check CI proves carries `ci` too, read from GitHub at each open pull request head, or where
+// none is open at the final head of the merged one that merged last, and its results are the one
+// derived from the run its `ci_check` names at each head (deriveCIResults), each judged as a
+// recorded result is. A reader of one result of such a check finds the derived one by its id
+// (ci-run:<check run id>).
 //
 // ?at=<commit> replaces what every check is compared with by the one commit the reader names.
-// The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's
-// newest pull request head as on every read: the derived result is that head's, and stands at
-// the named commit only where that commit is the head.
+// The only read of GitHub it leaves is the check runs of a check CI proves, read at each open pull
+// request head as on every read: the derived result of each is that head's, and stands at the named
+// commit only where that commit is the head.
 func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -610,21 +613,14 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		}
 		checks[index].Results = results
 	}
-	// The reader learns the heads GitHub names before any check CI proves is derived
-	// (deriveCIResults). A derived result is read at the issue's newest pull request head, which
-	// may be a head this read's read-through learns: derived first, a first read would answer
-	// that Dispatch holds no head while it names the head it learned as another check's basis. A
-	// derived result is at that newest head, which the learned heads already hold, so it leaves
-	// nothing to learn. Every head GitHub has to be asked for is learned before the first check is
-	// answered, and where the learn stored or learned any head every check's bases are read again,
-	// so each check of the answer is answered on the heads as they stand after this read's
-	// read-throughs, and two `before_merge` checks of one issue name one list of bases and not two
-	// (comparisonReader.learn). Each stretch of GitHub calls the reader makes - a commit's pull
-	// requests, a repository's default branch, a commit's branch - is a wait on another server, so
-	// the request holds no admission unit and no pinned connection across it
-	// (delivery.WithGitHubWait, awayOnNetwork). The reader reads a stretch that failed as no
-	// answer, so a take-back refused is read here, after learn and before each check is answered,
-	// and is the answer at once: every statement and stretch after it would fail on the refusal.
+	// Learn heads before deriving CI, so both reads use the same stored or request-local heads.
+	// The reader shares one merge-time fill across the comparison and every CI head. Each stretch
+	// of GitHub calls the reader makes - a commit's pull requests, a repository's default branch,
+	// a commit's branch, a pull request's refresh - is a wait on another server, so the request
+	// holds no admission unit and no pinned connection across it (delivery.WithGitHubWait,
+	// awayOnNetwork). The reader reads a stretch that failed as no answer, so a take-back refused
+	// is read here, after learn and before each check is answered, and is the answer at once:
+	// every statement and stretch after it would fail on the refusal.
 	reading := delivery.WithGitHubWait(r.Context(), awayOnNetwork)
 	reader := newComparisonReader(r.Context(), s, at)
 	reader.learn(reading, checks)
@@ -632,10 +628,12 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, refused)
 		return
 	}
-	if err := s.deriveCIResults(r.Context(), reader, issueKey, checks); err != nil {
+	headCI, err := s.deriveCIResults(reading, reader, issueKey, checks)
+	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	reader.headCI = headCI
 	// Each result's observed text is registered for its tree once no check's results are replaced
 	// any more (deriveCIResults), since what is registered is a pointer into the row.
 	for index := range checks {
@@ -1426,15 +1424,15 @@ func insertCheckResult(ctx context.Context, tx pgx.Tx, result *model.CheckResult
 		insert into check_results (
 			id, issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
 			check_sha256, role, surface, run, observed, commit_sha, negative_control,
-			failed, skipped, excluded, verdict, screenshots, session, actor, event_seq, commit_repo
+			failed, skipped, excluded, verdict, screenshots, session, actor, event_seq, commit_repo, check_subject, check_program
 		)
-		values ($1::uuid, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+		values ($1::uuid, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
 		returning created_at
 	`,
 		result.ID, result.IssueKey, result.CheckIssueKey, result.CheckArtifactID, result.CheckBlockID,
 		result.CheckVersion, result.CheckSHA256, result.Role, result.Surface, result.Run, result.Observed,
 		result.CommitSHA, result.NegativeControl, result.Failed, result.Skipped, result.Excluded,
-		result.Verdict, result.Screenshots, result.Session, actorJSON, result.EventSeq, result.CommitRepo,
+		result.Verdict, result.Screenshots, result.Session, actorJSON, result.EventSeq, result.CommitRepo, result.CheckSubject, result.CheckProgram,
 	).Scan(&result.CreatedAt)
 }
 

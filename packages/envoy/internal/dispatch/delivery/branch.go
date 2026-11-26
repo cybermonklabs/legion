@@ -27,7 +27,7 @@ import (
 // resolves the repository's own name through branchOf before it reads or writes anything under
 // it. It is a named constant rather than a bare empty string at each call site because the
 // empty string is what more than one answer about a branch is spelled with — the base branch of
-// an issue Dispatch holds no merge of is the other (BaseBranchMergedFor), and it means "no
+// an issue Dispatch holds no merge of is the other (api/results_comparison.go), and it means "no
 // branch to measure against" rather than this — so a caller that passed one for the other would
 // fall back to the default branch with no error and no failing type.
 const DefaultBranch = ""
