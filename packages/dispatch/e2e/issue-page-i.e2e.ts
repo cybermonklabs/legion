@@ -2,12 +2,12 @@ import AxeBuilder from "@axe-core/playwright";
 import type { Browser, BrowserContext, Locator, Page } from "@playwright/test";
 import type { IssueTreeRead } from "../web/src/api/types";
 import { blockIdOfNode, decisionContent } from "../web/src/features/issue-page/decision-review";
+import { firstLineOf } from "../web/src/features/issue-page/first-line";
 import {
   FOOT_HEIGHT_PROPERTY,
   IDENTITY_HEIGHT_PROPERTY,
 } from "../web/src/features/issue-page/identity-block";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
-import { firstLineOf } from "../web/src/features/issue-page/issue-tree";
 import { KEY_REPORTS } from "../web/src/features/issue-page/page-structure";
 import {
   CONTROL_LABELS,
