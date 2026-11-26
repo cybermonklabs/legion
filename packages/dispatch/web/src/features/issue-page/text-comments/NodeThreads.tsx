@@ -66,14 +66,15 @@ function useStopsOutOfTabOrder(box: RefObject<HTMLElement | null>, out: boolean)
  * - a check or a plan task under each requirement it serves - has its threads under its stored
  * parent's row alone, as in the column (R2). `tabStops` is the row's: in a tree whose keys reach a
  * row's controls the sheet's links and buttons are out of the tab order, and `f` reaches them.
- * Each row site mounts it at its part's gate.
+ * Each row site mounts it at its part's gate. It reads the node's id alone, so a row that draws a
+ * node it holds no tree node of - the Spec view's cell of a decision - hands it that id.
  */
 export function NodeThreads({
   node,
   parent,
   tabStops = false,
 }: {
-  readonly node: TreeNode;
+  readonly node: Pick<TreeNode, "id">;
   readonly parent?: string;
   readonly tabStops?: boolean;
 }): ReactNode {
@@ -84,18 +85,20 @@ export function NodeThreads({
   );
 }
 
-/** The sheet below 1024 px, once the issue the router is at is read (`useStageIssue`): only a
- *  width the sheet is drawn at watches the address and the issue's read. */
+/** The sheet below 1024 px, once the page's read of the issue the router is at holds it
+ *  (`useStageIssue`): only a width the sheet is drawn at watches the address and the issue's
+ *  read. It sends no read of the issue: the page's root holds that read before the stage draws a
+ *  row, so a view drawn alone, as its own tests draw it, sends no request for its sheets. */
 function NarrowSheet({
   node,
   parent,
   tabStops,
 }: {
-  readonly node: TreeNode;
+  readonly node: Pick<TreeNode, "id">;
   readonly parent?: string;
   readonly tabStops: boolean;
 }): ReactNode {
-  const stage = useStageIssue();
+  const stage = useStageIssue(false);
   if (stage === undefined) return null;
   return (
     <Sheet
@@ -116,7 +119,7 @@ function Sheet({
   tabStops,
 }: {
   readonly issue: IssueDetails;
-  readonly node: TreeNode;
+  readonly node: Pick<TreeNode, "id">;
   readonly parent?: string;
   readonly preset: Preset;
   readonly tabStops: boolean;

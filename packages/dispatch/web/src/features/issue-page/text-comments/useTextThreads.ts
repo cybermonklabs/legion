@@ -172,7 +172,8 @@ export function useTextThreads(issue: IssueDetails, preset: Preset): ViewThreads
  * own there; where nothing has read it - a part of the page drawn alone - it reads it once.
  * Undefined off an issue's address and until the read answers. With `read` false it only watches
  * the cache and sends no request, where nothing has read the issue: what the address target
- * (`thread-address.ts`) does, since every address of the page asks for it.
+ * (`thread-address.ts`) does, since every address of the page asks for it, and each node's sheet,
+ * which a row site draws inside a view whose own tests draw it with no read of the issue.
  */
 export function useStageIssue(
   read = true

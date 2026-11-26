@@ -5,7 +5,7 @@ export const GATES = {
   DASHBOARD: false,
   NODE_ANCHOR: true,
   OTHER_ISSUE_COMMENTS: false,
-  PART_J: false,
+  PART_J: true,
   PART_M: false,
   PART_N: false,
   PART_U: false,

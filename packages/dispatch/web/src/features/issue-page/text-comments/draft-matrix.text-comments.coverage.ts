@@ -33,7 +33,7 @@ const REASONS = {
   4: "4. The composer draws `MentionComposer` only while it has where to send: the write of the node its words are in and what that write names (`useSendTarget`), which it takes from the view while the view draws the node and keeps from where it last drew it. A mount that never met its node drawn, or whose node takes no write any more, has none, and closes at once with its draft kept under its send name, as Escape closes it; the composer opened again on the same words holds that draft, as the Escape rows read it.",
   5: "5. The composer's owner, anchor and reply target are the write of the node its words are in (`sendTargetOf`): the node is drawn when its words are selected, the composer reads it then and keeps it while the view no longer draws the node (`useSendTarget`'s `last`), and a node's issue, document, block and author never change, so none of them moves while the composer is mounted; other words are another composer, the other-words rows.",
   6: "6. The address's search names the item an address of R8 lands on (`?node=`), which the column reads only to give that item the focus and mark it in its thread's card (`outlineItemRoute`, `currentReply`); it moves no composer's address and ends no mount.",
-  7: "7. A sheet's `node` and `parent` are the node of the row it stands in and the node that row is drawn under, which the row site hands it once for its row: a node drawn under several parents has its threads and its composer in its stored parent's row alone, and another node or another parent is another row with a sheet of its own, so neither moves a composer within one. No row site mounts the sheet at this base (gate G6).",
+  7: "7. A sheet's `node` and `parent` are the node of the row it stands in and the node that row is drawn under, which the row site hands it once for its row: a node drawn under several parents has its threads and its composer in its stored parent's row alone, and another node or another parent is another row with a sheet of its own, so neither moves a composer within one. On this base the Spec view's rows mount the sheet (part J, gate G6): a statement and a row that is no statement hand it their node, and a decision's cell the node it draws the decision as; each other row site mounts it at its own part's gate.",
   8: "8. The reply an address names is marked in its thread's card (`currentReplyId`, `aria-current`) and takes the focus; that moves no address and ends no mount.",
   9: "9. A thread on text's card is fixed open (`fixedOpen`, with `expanded` and a toggle that does nothing, R4): it draws no control that collapses it, so its reply is drawn for as long as its card is.",
   10: "10. A card's thread is the thread its card is keyed by: a read again gives it a new reply, a resolution or an edit, never another root, and its reply always answers its thread's root under its thread's reply send name (`marginReplySendKey`), so it moves no address.",
@@ -43,6 +43,11 @@ const REASONS = {
   14: "14. A thread's kind is its root's (`Thread.kind`): a thread on text rooted in a message is of the kind `message`, and its reply answers that message (`in_reply_to`) under its thread's reply send name for as long as its card is drawn. A read again never gives a card another root (reason 10), and every other thread sets no kind, so the spread moves no address and ends no mount.",
   15: "15. The selection composer's kind is the kind a block's editor's selection bar or its chord chose - a comment, a suggestion or an ask - for the mark it opened the composer on (`words.mark`, through the column's place, `useMarkComposePlace`), and `comment` for every selection the page's own control opens it on. The composer draws no switch of its kind, and another action of the bar writes another mark, which is other words and another composer (`wordsKeyOf` names the mark, `key={wordsKeyOf(request)}`), so a reader cannot change the kind while the composer is mounted.",
   16: "16. On the new issue page Details draws the margin's own content - its tabs, its compose and every card of the document's editor - only while no column of comments on text takes a block's editor's composes (`EditorCards` in `slots/details.tsx`, `useMarkComposePlace`). The column offers that place for as long as it is mounted, and it mounts and unmounts only with the page's slots, in the commit that mounts or unmounts Details' fill (`IssueOutline`), so a reader cannot change it under a mounted margin composer; and while it stands, the editor's selection bar and its chord open their composer in the column (reason 15), so the margin holds no compose of that editor for Details to draw.",
+  17: "17. The Spec view draws one row for each node it keeps - each statement in its run beside the run's decision cell, under its group, and each other row after them (`groups.map`, `group.runs.map`, `run.statements.map`, `others.map`) - with that node's sheet inside it. A node the view stops drawing, as a read or the words filter leaves it out, takes its row and its sheet off the page, as another view takes the statement's row off the page: the composer keeps its draft under the send name of its words, and a thread's reply under its thread's reply send name, which the another-view rows read, and each is drawn again on its draft wherever the node's row stands next.",
+  18: "18. The Spec view keys a group by its parent or its first statement, a run by its first statement, and a row by its node (`key`). A read that groups the statements otherwise keys a group or a run anew, which draws its rows and their sheets again at the same nodes. A composer open on a node's words is the page's (`useTextComposer`, held beside the query client), not the sheet's, so the sheet drawn again draws it again on its draft, held under the send name of its words, as a composer moved from the column to a sheet at the same address is drawn again on its draft (the narrowing rows); a reply's draft waits under its thread's reply send name the same way.",
+  19: "19. A Spec view row's props other than its node - its run's decision and the rule its cell names a node by, its group, its statement, and its row's state (`rowProps`: editable, editing, focus, tab stop, report) - and the props the slot hands the view - the issue, its reader, the tree and the view of it, the Contents' request, the node an address reveals and the address's acts - say what a row draws and where the focus is. The sheet in a row reads that row's node alone (`NodeThreads`' `node`), and the issue only from the page's read of the address (`useStageIssue`), so none of them moves a composer's address or ends its mount. Where one changes which node a cell draws, as a read that gives a run another decision does, the cell's sheet is that node's (reason 7), and the composer open on the first node waits as reason 17 says.",
+  20: "20. A decision's cell draws a sheet only where a decision shaped its run (`sheetNode`): a run that no decision shaped draws no node's words, so no selection opens a composer on it and no thread stands by it. A read that gives the run a decision draws its sheet, and one that takes the decision away ends that sheet as reason 17 says of a row the view stops drawing.",
+  21: "21. The Spec view's `paned` form draws the issue's three sentences above its rows below 1024 px and leaves them to the Contents pane from 1024 px (`CONTENTS_PANE_QUERY`): it draws or ends no row, and no composer stands in it. At that same width the column and a row's sheet trade the threads and a composer (`NodeThreads`' `wide`), which the narrowing rows make.",
 } as const;
 
 export const coverage: readonly CoverageEntry[] = [
@@ -249,6 +254,95 @@ export const coverage: readonly CoverageEntry[] = [
     "NodeThreads | NarrowSheet | address prop | <NarrowSheet {...(parent === undefined ? {} : { parent })}>",
     { reason: REASONS[7] }
   ),
+  // The Spec view's rows draw the sheet (part J, G6), up to the view's slot.
+  ...answers("Statement | NodeThreads | address prop | node={node}", { reason: REASONS[7] }),
+  ...answers("OtherRow | NodeThreads | address prop | node={node}", { reason: REASONS[7] }),
+  ...answers("DecisionCell | NodeThreads | address prop | node={{ id: sheetNode }}", {
+    reason: REASONS[7],
+  }),
+  ...answers("DecisionCell | NodeThreads | conditional | !(sheetNode === undefined) ? …", {
+    reason: REASONS[20],
+  }),
+  ...answers('Group | DecisionCell | key | <div key={run.statements[0]?.node.id ?? ""}>', {
+    reason: REASONS[18],
+  }),
+  ...answers("Group | DecisionCell | conditional | drawn by group.runs.map(…)", {
+    reason: REASONS[17],
+  }),
+  ...answers("Group | DecisionCell | address prop | decision={run.decision}", {
+    reason: REASONS[19],
+  }),
+  ...answers("Group | DecisionCell | address prop | nodeIdOf={nodeIdOf}", { reason: REASONS[19] }),
+  ...answers('Group | Statement | key | <div key={run.statements[0]?.node.id ?? ""}>', {
+    reason: REASONS[18],
+  }),
+  ...answers("Group | Statement | conditional | drawn by group.runs.map(…)", {
+    reason: REASONS[17],
+  }),
+  ...answers("Group | Statement | conditional | drawn by run.statements.map(…)", {
+    reason: REASONS[17],
+  }),
+  ...answers("SpecFilterBody | Statement | key | <Statement key={statement.node.id}>", {
+    reason: REASONS[18],
+  }),
+  ...answers(
+    'SpecFilterBody | Statement | key | <Group key={group.parent?.id ?? group.runs[0]?.statements[0]?.node.id ?? ""}>',
+    { reason: REASONS[18] }
+  ),
+  ...answers("SpecFilterBody | Statement | conditional | drawn by groups.map(…)", {
+    reason: REASONS[17],
+  }),
+  ...answers(
+    "SpecFilterBody | Statement | address prop | <Statement {...rowProps(statement.node)}>",
+    { reason: REASONS[19] }
+  ),
+  ...answers("SpecFilterBody | Statement | address prop | statement={statement}", {
+    reason: REASONS[19],
+  }),
+  ...answers("SpecFilterBody | OtherRow | key | <OtherRow key={node.id}>", {
+    reason: REASONS[18],
+  }),
+  ...answers("SpecFilterBody | OtherRow | conditional | drawn by others.map(…)", {
+    reason: REASONS[17],
+  }),
+  ...answers("SpecFilterBody | OtherRow | address prop | <OtherRow {...rowProps(node)}>", {
+    reason: REASONS[19],
+  }),
+  ...answers("SpecFilterBody | OtherRow | address prop | node={node}", { reason: REASONS[7] }),
+  ...answers(
+    'SpecFilterBody | Group | key | <Group key={group.parent?.id ?? group.runs[0]?.statements[0]?.node.id ?? ""}>',
+    { reason: REASONS[18] }
+  ),
+  ...answers("SpecFilterBody | Group | conditional | drawn by groups.map(…)", {
+    reason: REASONS[17],
+  }),
+  ...answers("SpecFilterBody | Group | address prop | group={group}", { reason: REASONS[19] }),
+  ...answers("SpecFilterBody | Group | address prop | nodeIdOf={nodeIdOf}", {
+    reason: REASONS[19],
+  }),
+  ...answers("SpecFilterBody | - | form | (paned) ? …", { reason: REASONS[21] }),
+  ...answers(
+    "ViewSpecSlot | SpecFilterBody | address prop | <SpecFilterBody {...(acts === undefined ? {} : { addressActs: acts })}>",
+    { reason: REASONS[19] }
+  ),
+  ...answers(
+    "ViewSpecSlot | SpecFilterBody | address prop | <SpecFilterBody {...(request === undefined ? {} : { request })}>",
+    { reason: REASONS[19] }
+  ),
+  ...answers(
+    "ViewSpecSlot | SpecFilterBody | address prop | <SpecFilterBody {...(revealed === undefined ? {} : { reveal: revealed })}>",
+    { reason: REASONS[19] }
+  ),
+  ...answers("ViewSpecSlot | SpecFilterBody | address prop | issue={issue}", {
+    reason: REASONS[19],
+  }),
+  ...answers("ViewSpecSlot | SpecFilterBody | address prop | reader={viewer}", {
+    reason: REASONS[19],
+  }),
+  ...answers("ViewSpecSlot | SpecFilterBody | address prop | root={root}", { reason: REASONS[19] }),
+  ...answers("ViewSpecSlot | SpecFilterBody | address prop | view={view.root}", {
+    reason: REASONS[19],
+  }),
   // The page above the column, up to its root.
   ...answers(
     "IssueOutline | TextMargin | address prop | <TextMargin {...props}>",

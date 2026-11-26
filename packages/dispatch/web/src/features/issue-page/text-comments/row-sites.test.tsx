@@ -10,6 +10,7 @@ import {
   newClient,
   ON_CHECK,
   ON_DECISION,
+  ON_OTHER,
   ON_PLAN_TASK,
   ON_STATEMENT,
   readAgain,
@@ -91,7 +92,7 @@ const SITES: readonly Site[] = [
     name: "SpecFilterBody.tsx, a row that is no statement",
     preset: "spec",
     row: "[data-spec-other]",
-    thread: ON_STATEMENT,
+    thread: ON_OTHER,
   },
   {
     gate: "PART_Y",
@@ -193,8 +194,12 @@ describe("every row site draws its node's threads in the sheet below 1024 px", (
             `the sheet stands before ${site.name}'s words or facts`
           ).not.toBe(0);
         }
-        expect(sheet.textContent, "the sheet holds not the seeded thread").toContain(
-          site.thread.comment.body
+        // A card paints its body's words after it is drawn (`PaintedBody`), so the case waits
+        // for them.
+        await waitFor(() =>
+          expect(sheet.textContent, "the sheet holds not the seeded thread").toContain(
+            site.thread.comment.body
+          )
         );
       } finally {
         view.finish();

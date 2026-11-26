@@ -56,6 +56,11 @@
  * | text thread reply · its thread's kind changes                       | (14)   |
  * | selection composer · its kind changes                               | (15)   |
  * | Details' margin composer · the column takes the editor's composes   | (16)   |
+ * | either · the Spec view stops drawing the sheet's node               | (17)   |
+ * | either · the Spec view keys a group, a run or a row anew            | (18)   |
+ * | either · a Spec view row's or the view's other props change         | (19)   |
+ * | either · a decision's cell in the Spec view gains or loses it       | (20)   |
+ * | either · the Spec view's form at 1024 px                            | (21)   |
  *
  * (off) marks a move that takes the composer off the page: Escape closes the composer, other
  * words open another composer in its place (`key={wordsKeyOf(request)}`), another view draws no
@@ -69,20 +74,20 @@
  * keeps the composer mounted: another view keeps it open where the statement's row last stood.
  *
  * The page's root mounts the control that opens the composer (`SelectionComment`), which reads a
- * selection a case would have to lay out, and no row site mounts the sheet at this base (G6). So
- * each case opens the composer as the control does (`useTextComposer().open`), with a button of
- * its own, and draws the statement's row with its sheet beside the page, as `NodeThreads.test.tsx`
- * draws it. The composer sends through `MentionComposer`'s own path with the statement's block
- * anchor, so a refused draft is one `MentionComposer` sent and Dispatch refused (`REFUSAL`), and
- * a stopped one is a send to that anchor stopped under the composer's send name before the page
- * is drawn (`stopSend`).
+ * selection a case would have to lay out, and the row sites that mount the sheet (the Spec
+ * view's, from part J) draw it only inside a whole view. So each case opens the composer as the
+ * control does (`useTextComposer().open`), with a button of its own, and draws the statement's
+ * row with its sheet beside the page, as `NodeThreads.test.tsx` draws it. The composer sends
+ * through `MentionComposer`'s own path with the statement's block anchor, so a refused draft is
+ * one `MentionComposer` sent and Dispatch refused (`REFUSAL`), and a stopped one is a send to that
+ * anchor stopped under the composer's send name before the page is drawn (`stopSend`).
  *
  * A refusal or a stop is drawn as an alert (`QueryError`), which takes no key: one Escape closes
  * the composer with its draft kept in every state.
  *
  * The forms the composer census found: the column's at 1024 px (`TextMargin`'s `wide`) and the
- * sheet's (`NodeThreads`' `wide`), which the narrowing rows make. The app shell's forms above the
- * page are the sign-in file's.
+ * sheet's (`NodeThreads`' `wide`), which the narrowing rows make, and the Spec view's at the same
+ * width (`paned`, reason 21). The app shell's forms above the page are the sign-in file's.
  *
  * The numbered reasons - the moves the census found that these rows do not make - are `REASONS`
  * in `draft-matrix.text-comments.coverage.ts`, which holds each census item this file answers for

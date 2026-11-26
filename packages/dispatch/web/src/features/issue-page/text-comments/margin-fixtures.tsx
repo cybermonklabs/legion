@@ -1,6 +1,6 @@
 import { spyOn } from "bun:test";
 import { readFileSync } from "node:fs";
-import { QueryClient } from "@tanstack/react-query";
+import { QueryClient, useQuery } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import { http } from "msw";
 import { type ReactNode, useMemo, useState } from "react";
@@ -15,7 +15,7 @@ import {
 import { graphNode } from "../../../__tests__/graph-fixture";
 import { answerRequests } from "../../../__tests__/network";
 import { api } from "../../../api/client";
-import { issueAskThreadsQuery } from "../../../api/queries";
+import { issueAskThreadsQuery, issueQuery } from "../../../api/queries";
 import type {
   Anchor,
   Comment,
@@ -149,6 +149,10 @@ export const TEXT_THREADS: readonly TextThreadSeed[] = [
   ON_CHECK,
   ON_DECISION,
 ];
+
+/** A comment on the words of the row that is no statement (`OTHER`), which the Spec view draws as
+ *  a row of its own (`[data-spec-other]`). */
+export const ON_OTHER = threadOn("on-o1", PLAN_DOCUMENT, OTHER, "note beside", 6);
 
 /** A reply in the thread of `ON_STATEMENT`: a comment that answers it. */
 export const REPLY_ON_STATEMENT = readComment("reply-on-r1", 5, "on-r1");
@@ -308,6 +312,12 @@ export function answerSeededReads(reads: SeededReads): { mockRestore(): void }[]
         if (node.supertag === own[query.view as string]) return [{ ...node, role: "query" }];
         if (query.view === "verification" && node.supertag === "result") {
           return [{ ...node, role: "query" }];
+        }
+        // The Spec view's read answers the decision that shapes a statement it draws as context,
+        // as B0's server answers it (`fixtures/tree-b0-spec.json`'s `key/tree#d-agent`), so the
+        // comments on that decision's words come with it.
+        if (query.view === "spec" && node.supertag === "decision") {
+          return [{ ...node, role: "context" }];
         }
         if (query.view === "verification" && node.supertag === "requirement") {
           return [{ ...node, role: "context" }];
@@ -556,6 +566,9 @@ function FrameRoot({
 }): ReactNode {
   const { pathname, search } = useLocation();
   const route = parseIssuePath(pathname, search);
+  // The page's root reads the issue before the stage draws a row (`IssueOutlinePage`), and a
+  // node's sheet watches that read, sending none of its own (`NodeThreads.tsx`).
+  useQuery({ ...issueQuery(route?.key), enabled: route !== undefined });
   if (route === undefined) throw new Error(`${pathname} names no route`);
   return (
     <ProvidersSlot issue={issue} route={route}>

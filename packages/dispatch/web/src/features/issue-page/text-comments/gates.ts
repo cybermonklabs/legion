@@ -39,7 +39,8 @@ export const GATES: Readonly<Record<GateName, boolean>> = {
   // G3c: the comments on a node of another issue in each answer that draws that node.
   OTHER_ISSUE_COMMENTS: false,
   // G6: part J (INFRA-3939), the Spec view's rows.
-  PART_J: false,
+  // On this branch's base since its merge of part W's head, which holds part J.
+  PART_J: true,
   // G6: part M (INFRA-3948), `address-target.ts` at its `:200`.
   PART_M: false,
   // G7: part N (INFRA-3940), the opened document.

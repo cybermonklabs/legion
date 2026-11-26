@@ -11,7 +11,7 @@ import { TEXT_MARGIN_ATTRIBUTE } from "./TextMargin";
  * stage's files write, as `git grep -c` counts them, and the browser suite measures the widths
  * (c-margin (8)): the window steps are those of B0, each named here with its rule, and a step a
  * later part adds fails this test until the list names it. With the column drawn, Plan's chart,
- * the Verification view's table (and, from part J, the Spec view) step by the width of their own
+ * the Verification view's table and the Spec view's two columns step by the width of their own
  * column, through container variants beside the window classes, which apply only where the stage
  * carries the attribute that the column sets.
  */
@@ -90,8 +90,9 @@ const WINDOW_STEPS: readonly WindowStep[] = [
   },
   {
     file: "spec-filter/SpecFilterBody.tsx",
+    inColumn: true,
     lines: 10,
-    rule: "the Spec view's two columns, a decision's cell at 280 px and the statements, are one column below 902 px of window: no head, the cell above its statements, margins 0",
+    rule: "the Spec view's two columns, a decision's cell at 280 px and the statements, are one column below 902 px of window: no head, the cell above its statements, margins 0; with the column drawn, one column below a 672 px column and the two columns from there",
     token: "max-[901px]",
   },
   {
@@ -266,6 +267,22 @@ function verificationFormIn(file: string, width: number): string {
   return headHidden ? "the table's rows with no head row" : "cards under the table's head row";
 }
 
+/** What the Spec view draws in a main column `width` px wide, by the container classes of `file`
+ *  that apply there: one column where a run of the tree (`[data-spec-run]`) takes one grid
+ *  column, which is the form the browser suite reads, and the head over the columns is hidden;
+ *  its two columns where neither applies, and what applies where only one does. */
+function specFormIn(file: string, width: number): string {
+  const applied = containerTokens(file).filter((token) => appliesAt(token, width));
+  const runsInOne = applied.some(
+    (token) => token.includes("_[data-spec-run]]:") && token.endsWith(":grid-cols-[minmax(0,1fr)]")
+  );
+  const headHidden = applied.some(
+    (token) => token.includes("[data-spec-head]]:") && token.endsWith(":hidden")
+  );
+  if (runsInOne === headHidden) return runsInOne ? "one column" : "two columns";
+  return runsInOne ? "one column under the head" : "two columns with no head";
+}
+
 describe("every view steps by its column's width", () => {
   // The main column, in px, and the form Plan draws in it: the cards of its phone step below the
   // width its narrow grid's fixed tracks hold (about 482 px; `CHART_COLUMNS`' 260 px and 220 px,
@@ -330,7 +347,23 @@ describe("every view steps by its column's width", () => {
 
   // Part J's Spec view draws its two columns from a column 672 px wide (R2).
   test.skipIf(!GATES.PART_J)("the Spec view draws its two columns from a 672 px column", () => {
-    const thresholds = containerThresholds("spec-filter/SpecFilterBody.tsx");
+    const file = "spec-filter/SpecFilterBody.tsx";
+    const thresholds = containerThresholds(file);
     expect(thresholds, "the Spec view's steps by its column's width").toEqual([672]);
+    // The main column, in px, and the form the view draws in it: below the column at which the
+    // base draws its two columns at 1024 px of window (672 px) one column, the decisions above
+    // their statements, and from there the two columns.
+    const forms: readonly (readonly [number, string])[] = [
+      [392, "one column"],
+      [588, "one column"],
+      [671, "one column"],
+      [672, "two columns"],
+      [748, "two columns"],
+    ];
+    expect(
+      forms.map(([width]) => `${width} px ${specFormIn(file, width)}`),
+      "the form the Spec view draws at each main column"
+    ).toEqual(forms.map(([width, form]) => `${width} px ${form}`));
+    expect(linesHolding(file, "max-[901px]"), "the window step stays beside it").toBe(10);
   });
 });
