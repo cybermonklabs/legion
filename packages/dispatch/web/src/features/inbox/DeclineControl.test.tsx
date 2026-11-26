@@ -568,17 +568,18 @@ test("a read of the thread asked before a decline answered does not put back the
     // The read answers as Dispatch held the ask when it was asked: open.
     await act(async () => {
       reads[0]?.resolve(thread(open));
-      await asked;
     });
     // The decline's answer gave that read up and asked for the thread again, after the decline.
     await waitFor(() => expect(reads).toHaveLength(2));
     expect(badge()).toBe("Declined");
     expect(card.queryByRole("button", { name: "Decline to answer" })).not.toBeInTheDocument();
 
-    // It answers the ask declined. The decline's own refresh of the thread waited behind it, and
-    // asks once it is in: Dispatch still holds the decline then.
+    // It answers the ask declined, and the refresh asked before the decline, whose read was given
+    // up, answers with it (`DispatchQueryClient`). The decline's own refresh of the thread waited
+    // behind it, and asks once it is in: Dispatch still holds the decline then.
     await act(async () => {
       reads[1]?.resolve(thread(declined));
+      await asked;
     });
     await waitFor(() => expect(reads).toHaveLength(3));
     await act(async () => {

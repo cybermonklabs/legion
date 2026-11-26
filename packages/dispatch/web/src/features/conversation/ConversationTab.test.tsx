@@ -12,6 +12,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { correction, EDITED_AT } from "../../__tests__/correction-feed";
 import { displayTree } from "../../__tests__/display-trees";
 import { type Lists, newQueryClient, stubLists, tab } from "../../__tests__/draft-matrix-fixture";
 import { jump, realClock, settle, tick } from "../../__tests__/fake-clock";
@@ -34,8 +35,9 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
 import type { WriteBounds } from "../../api/client";
 import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
+import { markCorrectedPost } from "../../api/corrected-post";
 import { userStateQuery } from "../../api/queries";
-import { DispatchQueryClient } from "../../api/query-client";
+import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type {
   Actor,
   Agent,
@@ -2969,6 +2971,95 @@ test("a comment edit's save whose read has not answered by the request deadline 
   } finally {
     save.resolve(root);
     reread.resolve([root, reply]);
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    editComment.mockRestore();
+    stub.restore();
+  }
+});
+
+// The save's own event reaches the page while the read of the comments its landing started is
+// out, as the live feed brings it: the feed writes the edit's time into the comments over that
+// read, which it gives up and asks again (`markCorrectedPost`, `replaceQueryData`). The save holds
+// the edit through the read asked again (`DispatchQueryClient`), so where that read goes
+// unanswered the comment says why at the request deadline, until that read answers.
+test("a comment edit's save whose read its own event asks again holds the edit through the read asked again, and the comment says why at the request deadline until it answers", async () => {
+  const user = userEvent.setup();
+  const root = comment("root-comment", { body: "Root comment" });
+  const reply = comment("reply-comment", { body: "Reply comment", reply_to: "root-comment" });
+  const stub = stubLists({ comments: [root, reply] });
+  const listComments = api.listComments as Mock<typeof api.listComments>;
+  const save = Promise.withResolvers<Comment>();
+  const editComment = spyOn(api, "editComment").mockImplementation(() => save.promise);
+  // Each read of the comments from the save on, held until the row answers it.
+  const { answers: rereads, next: nextReread } = heldAnswers<Comment[]>();
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const why = "The edited comment is not read yet. Dispatch did not answer within 30 seconds.";
+  const edited = correction("comment", root.id, true);
+
+  try {
+    const card = await screen.findByTestId("margin-comment-root-comment");
+    const turn = card.closest("[data-turn]");
+    if (!(turn instanceof HTMLElement)) throw new Error("the comment's card is drawn in no turn");
+    await user.click(screen.getByRole("button", { name: "Expand thread" }));
+    await waitFor(() =>
+      expect(within(card).getAllByRole("button", { name: "Edit" })).toHaveLength(2)
+    );
+    await user.click(within(card).getAllByRole("button", { name: "Edit" })[0] as HTMLElement);
+    const editField = screen.getByLabelText("Edit comment");
+    await user.clear(editField);
+    await user.click(editField);
+    await user.paste("Updated root");
+    listComments.mockImplementation(nextReread);
+    jest.useFakeTimers();
+    await userOnFakeClock().click(screen.getByRole("button", { name: "Save" }));
+    await settle();
+    expect(editComment).toHaveBeenCalledWith(
+      "root-comment",
+      { body: "Updated root" },
+      keyedAttempt
+    );
+
+    // The save lands, and the comments' read it starts goes unanswered.
+    await act(async () => {
+      save.resolve({ ...root, body: "Updated root" });
+      await save.promise;
+    });
+    expect(rereads).toHaveLength(1);
+
+    // The save's own event comes as the feed hears it (`hearLiveEvent`, then `markCorrectedPost`,
+    // in `useEventFeed`): it gives that read up and asks the comments again, and that read goes
+    // unanswered too.
+    await act(async () => {
+      hearLiveEvent(queryClient, edited, "alice");
+      markCorrectedPost(queryClient, edited);
+    });
+    expect(rereads).toHaveLength(2);
+
+    // A second short of the request deadline the edit is still held, and nothing said.
+    await tick(REQUEST_DEADLINE_MS - 1_000);
+    expect(screen.getByLabelText("Edit comment")).toBeInTheDocument();
+    expect(screen.queryByText(why)).toBeNull();
+
+    // At it the save lets the edit go, and the comment's turn says why.
+    await tick(1_000);
+    expect(screen.queryByLabelText("Edit comment")).not.toBeInTheDocument();
+    expect(within(turn).getByText(why)).toBeInTheDocument();
+
+    // The read asked again answers with the saved words, and the line goes.
+    await act(async () =>
+      rereads[1]?.([{ ...root, body: "Updated root", edited_at: EDITED_AT }, reply])
+    );
+    await tick(0);
+    expect(screen.queryByText(why)).toBeNull();
+  } finally {
+    save.resolve(root);
+    for (const answer of rereads) answer([root, reply]);
     view.unmount();
     queryClient.clear();
     realClock();

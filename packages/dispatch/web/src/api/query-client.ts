@@ -1,5 +1,6 @@
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import {
+  CancelledError,
   type DefaultError,
   type DefaultedQueryObserverOptions,
   hashKey,
@@ -73,9 +74,15 @@ export function queryRetryDelay(
  * fetched once more when that fetch settles, so an invalidation a mutation makes mid-fetch still
  * ends on the answer composed after the write, and the first request is not left running on the
  * server with its answer thrown away. Calls for one query while it waits share that one follow-up
- * fetch. Every mutation's own `invalidateQueries` call keeps its shape. It also tells whoever
- * listens each time a query calls its function (`onAttempt`), and holds back a read that a write's
- * optimistic value stands in for until Dispatch has taken that write (`holdBackReads`).
+ * fetch. Every mutation's own `invalidateQueries` call keeps its shape. A refetch answers once the
+ * fetch it waits on settles, but where a cancel ends that fetch and the query then has a newer
+ * fetch running - the read `replaceQueryData` asks again in the same step as its cancel - the
+ * refetch waits for that newer fetch, by the same rule (`#answered`), so a hold over the read
+ * (`api/read-bound.ts`) ends on an answer and not at the cancel. A bare cancel - a board move's
+ * (`board-moves.ts`), an optimistic write's in its `onMutate` - starts no fetch, and the refetch
+ * answers at the cancel. It also tells whoever listens each time a query calls its function
+ * (`onAttempt`), and holds back a read that a write's optimistic value stands in for until
+ * Dispatch has taken that write (`holdBackReads`).
  */
 export class DispatchQueryClient extends QueryClient {
   readonly #attempts = new Set<(queryHash: string) => void>();
@@ -151,7 +158,10 @@ export class DispatchQueryClient extends QueryClient {
     const running = query.state.fetchStatus === "idle" ? undefined : query.promise;
     if (running === undefined) {
       const fetched = query.fetch(undefined, { ...options, cancelRefetch: false });
-      return (options.throwOnError ? fetched : fetched.catch(() => undefined)).then(
+      // `query.fetch` has made the fetch's retryer by now, and `query.promise` is its promise,
+      // which a cancel rejects even where `fetched` then answers the data the cancel put back.
+      const answered = this.#answered(query, query.promise ?? fetched, fetched);
+      return (options.throwOnError ? answered : answered.catch(() => undefined)).then(
         () => undefined
       );
     }
@@ -169,10 +179,11 @@ export class DispatchQueryClient extends QueryClient {
           if (this.getQueryCache().get(hash) !== query || query.isDisabled() || query.isStatic()) {
             return;
           }
-          // A fetch that began after the one waited on was composed after this call: it answers.
+          // A fetch that began after the one waited on was composed after this call: it answers,
+          // or the newer fetch a cancel of it leaves running does (`#answered`).
           const newer = query.state.fetchStatus === "idle" ? undefined : query.promise;
           if (newer !== undefined) {
-            return newer.then(
+            return this.#answered(query, newer, newer).then(
               () => undefined,
               () => undefined
             );
@@ -189,6 +200,26 @@ export class DispatchQueryClient extends QueryClient {
     return query.state.fetchStatus === "paused" && !waitingForPaused.has(this)
       ? Promise.resolve()
       : followUp;
+  }
+
+  /** What `fetched`, a fetch of `query` whose request is `request`, answers, unless a cancel ends
+   *  that request and the query then has a newer fetch running: what that newer fetch answers
+   *  then, by the same rule. Such a fetch began after the cancelled one, as the read
+   *  `replaceQueryData` asks again in the same step as its cancel does, and asks for what the
+   *  cancelled one was asked for. A bare cancel leaves no fetch running, and `fetched` answers. */
+  #answered(query: Query, request: Promise<unknown>, fetched: Promise<unknown>): Promise<unknown> {
+    return request.then(
+      () => fetched,
+      (error: unknown) => {
+        const newer = query.state.fetchStatus === "idle" ? undefined : query.promise;
+        if (!(error instanceof CancelledError) || newer === undefined || newer === request) {
+          return fetched;
+        }
+        // `fetched` rejects with the cancel where the query held no data; nothing reads it now.
+        void fetched.catch(() => undefined);
+        return this.#answered(query, newer, newer);
+      }
+    );
   }
 }
 
@@ -245,11 +276,12 @@ export function invalidateWaitingForPaused(client: QueryClient, queryKey: QueryK
  *
  * It answers once the newest check has answered, which is what a caller that reads the answer
  * needs (`unauthorized` in `write-store.ts`). Another ask made while this one's check is out - a
- * second write's 401, news of a sign-in - cancels that check and starts its own, which ends this
- * ask's invalidation before any check has answered, so the wait goes on for the check out then. A
- * check the network paused, offline, has not answered either: TanStack calls it `paused` rather
- * than `fetching`, and only `idle` says no check is out, so the wait goes on until the network
- * returns and the check answers.
+ * second write's 401, news of a sign-in - cancels that check and starts its own. Dispatch's client
+ * has this ask's invalidation wait for that newer check (`DispatchQueryClient`), and a client of
+ * TanStack's own ends it at the cancel, before any check has answered; either way the wait goes on
+ * while a check is out. A check the network paused, offline, has not answered either: TanStack
+ * calls it `paused` rather than `fetching`, and only `idle` says no check is out, so the wait goes
+ * on until the network returns and the check answers.
  */
 export async function askSignInAgain(client: QueryClient): Promise<void> {
   void client.cancelQueries({ queryKey: ["whoami"] });
@@ -278,9 +310,11 @@ export async function askSignInAgain(client: QueryClient): Promise<void> {
  * replaces. A read it cancels was asked for a reason - news of another change, a view mounting -
  * and its answer would have brought that news beside the old value, so once the write is in the
  * query is read again, if anything still shows it: the read asked then is asked after the write,
- * and answers both. A write made before Dispatch has taken it may hold its query's reads first
- * (`holdBackReads`), and then that read waits for the hold to end too. Answers what
- * `setQueryData` answers.
+ * and answers both. A refetch that waited on the cancelled read - the invalidation that started
+ * it - waits on the read asked again instead (`DispatchQueryClient`), so a hold through it
+ * (`api/read-bound.ts`) ends on that read's answer and not at the cancel. A write made before
+ * Dispatch has taken it may hold its query's reads first (`holdBackReads`), and then that read
+ * waits for the hold to end too. Answers what `setQueryData` answers.
  */
 export function replaceQueryData<T>(
   client: QueryClient,

@@ -172,6 +172,103 @@ test("a read a value is put over is asked again once the value is in, and brings
   }
 });
 
+// A write put over the read an invalidation of an idle query started, as a comment edit's own
+// event is put over the comments its save reads again (`markCorrectedPost`): the write gives that
+// read up and reads the query again. That read is asked after the write for what the first was
+// asked for, so the invalidation answers once it has, and a hold through the invalidation
+// (`api/read-bound.ts`) ends on an answer rather than at the cancel.
+test("an invalidation whose read a value is put over answers once the read asked again has", async () => {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const server = heldServer("before");
+  const observer = new QueryObserver(queryClient, {
+    queryFn: server.queryFn,
+    queryKey: ["comments", "CORE-1"],
+  });
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    await settle();
+    server.answer();
+    await settle();
+
+    let invalidated = false;
+    void queryClient.invalidateQueries({ queryKey: ["comments", "CORE-1"] }).then(() => {
+      invalidated = true;
+    });
+    await settle();
+    expect(server.requests()).toBe(2);
+
+    server.write("the edit and the other comment's news");
+    replaceQueryData<string>(queryClient, ["comments", "CORE-1"], "the edit");
+    await settle();
+    // The invalidation's read is given up and the query asked again, and the invalidation waits.
+    expect({ invalidated, requests: server.requests() }).toEqual({
+      invalidated: false,
+      requests: 3,
+    });
+
+    // The read given up lands what the server held before the write, and is dropped.
+    server.answer();
+    await settle();
+    expect({
+      data: queryClient.getQueryData<string>(["comments", "CORE-1"]),
+      invalidated,
+    }).toEqual({ data: "the edit", invalidated: false });
+
+    server.answer();
+    await settle();
+    expect({
+      data: queryClient.getQueryData<string>(["comments", "CORE-1"]),
+      invalidated,
+    }).toEqual({ data: "the edit and the other comment's news", invalidated: true });
+    expect(server.requests()).toBe(3);
+  } finally {
+    unsubscribe();
+  }
+});
+
+// A bare cancel - a board move's, an optimistic write's in its `onMutate` - asks nothing of its
+// own, so an invalidation whose read it gives up has no newer read to wait for: it answers at the
+// cancel, and nothing reads the query again.
+test("an invalidation whose read a bare cancel gives up answers at the cancel, and reads nothing more", async () => {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const server = heldServer("before");
+  const observer = new QueryObserver(queryClient, {
+    queryFn: server.queryFn,
+    queryKey: ["issues", "CORE"],
+  });
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    await settle();
+    server.answer();
+    await settle();
+
+    let invalidated = false;
+    void queryClient.invalidateQueries({ queryKey: ["issues", "CORE"] }).then(() => {
+      invalidated = true;
+    });
+    await settle();
+    expect(server.requests()).toBe(2);
+
+    void queryClient.cancelQueries({ exact: true, queryKey: ["issues", "CORE"] });
+    await settle();
+    expect({
+      fetchStatus: queryClient.getQueryState(["issues", "CORE"])?.fetchStatus,
+      invalidated,
+      requests: server.requests(),
+    }).toEqual({ fetchStatus: "idle", invalidated: true, requests: 2 });
+
+    // The read given up lands, and is dropped; nothing is asked after it.
+    server.answer();
+    await settle();
+    expect({
+      data: queryClient.getQueryData<string>(["issues", "CORE"]),
+      requests: server.requests(),
+    }).toEqual({ data: "before", requests: 2 });
+  } finally {
+    unsubscribe();
+  }
+});
+
 // An optimistic write stands in its query until its answer is in. A read asked after the write
 // but answered before the server took it would put back the state the write replaced, so the read
 // waits: it asks once the hold ends, and reads what the write left.
