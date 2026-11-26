@@ -27,13 +27,16 @@ const restartProcessHeartbeat = 2 * quickProcessHeartbeat
 // row, waits for it to lapse (processes.Register) rather than refusing to start beside a process
 // that no longer runs, and serves.
 //
-// Both processes keep the registry at restartProcessHeartbeat's pace, so the restart's wait for the
-// dead row is a live window and a heartbeat, 8 s, and not production's 20 s. Two steps keep the
-// test off either edge of that wait, so that it is the product's order it reads and not the
-// runner's load. The row's heartbeat is set an hour ahead once the kill lands, so the restart
-// meets a live dead row however long its boot and its wait for a process slot take; and once the
-// restart has logged that it was refused, the row is given a heartbeat an hour old, so it has
-// lapsed by the restart's next try, one heartbeat later, with the rest of the 8 s to spare.
+// Both processes keep the registry at restartProcessHeartbeat's pace, so the restart's wait for
+// the dead row is a live window and a heartbeat, 8 s, and not production's 20 s. The row's
+// heartbeat is set an hour ahead once the kill lands, so the restart meets a live dead row
+// however long its boot and its wait for a process slot take. Once the restart has logged that it
+// was refused, the row is given the heartbeat of a process last seen one beat ago, so it lapses
+// two beats later: the restart's next try, at most one beat away, still finds it live and is
+// refused again, and the try after that is admitted. So the row reads the whole order it is
+// about - refused, refused again, admitted once the row lapsed - and a build that gave up at its
+// first try after the refusal would exit instead. It leaves the test 4 s of the 8 s wait for its
+// own read of the output and its one statement.
 func TestADevSignInServerRestartedAfterAKillStarts(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -61,8 +64,9 @@ func TestADevSignInServerRestartedAfterAKillStarts(t *testing.T) {
 
 	second := startDispatchProcessWith(t, database.Pool.Config().ConnString(), options)
 	second.waitForLog(t, 30*time.Second, registryRefusalLine)
-	if _, err := database.Pool.Exec(ctx, `update server_processes set heartbeat_at = now() - interval '1 hour'`); err != nil {
-		t.Fatalf("lapse the killed server's row: %v", err)
+	if _, err := database.Pool.Exec(ctx, `update server_processes set heartbeat_at = clock_timestamp() - make_interval(secs => $1)`,
+		restartProcessHeartbeat.Seconds()); err != nil {
+		t.Fatalf("give the killed server's row the heartbeat of a process last seen a beat ago: %v", err)
 	}
 	second.waitHealthy(t)
 }
