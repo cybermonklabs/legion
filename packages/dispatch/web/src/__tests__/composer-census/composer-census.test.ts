@@ -22,6 +22,7 @@ import { coverage as edit } from "../../features/conversation/draft-matrix.edit.
 import { coverage as inlineReply } from "../../features/conversation/draft-matrix.inline-reply.coverage";
 import { coverage as issuePage } from "../../features/conversation/draft-matrix.issue-page.coverage";
 import { coverage as phoneThread } from "../../features/conversation/draft-matrix.phone-thread.coverage";
+import { coverage as dashboardThreadItem } from "../../features/dashboard/draft-matrix.thread-item.coverage";
 import { coverage as ask } from "../../features/inbox/draft-matrix.ask.coverage";
 import { coverage as messageBox } from "../../features/inbox/draft-matrix.message-box.coverage";
 import { coverage as threadBox } from "../../features/inbox/draft-matrix.thread-box.coverage";
@@ -41,6 +42,7 @@ const MATRIX: readonly { readonly file: string; readonly entries: readonly Cover
   { entries: inlineReply, file: "features/conversation/draft-matrix.inline-reply.test.tsx" },
   { entries: issuePage, file: "features/conversation/draft-matrix.issue-page.test.tsx" },
   { entries: phoneThread, file: "features/conversation/draft-matrix.phone-thread.test.tsx" },
+  { entries: dashboardThreadItem, file: "features/dashboard/draft-matrix.thread-item.test.tsx" },
   { entries: ask, file: "features/inbox/draft-matrix.ask.test.tsx" },
   { entries: messageBox, file: "features/inbox/draft-matrix.message-box.test.tsx" },
   { entries: threadBox, file: "features/inbox/draft-matrix.thread-box.test.tsx" },

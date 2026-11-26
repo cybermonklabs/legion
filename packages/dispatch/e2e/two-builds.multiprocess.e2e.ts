@@ -413,6 +413,18 @@ function visits(seed: Seeded): readonly Visit[] {
     },
     { route: "/issues/:key/*", shows: (page) => [issueHeading(page, shown.issue)], url: issue },
     {
+      // The panel is already in IssuePage; the region inside it needs the DashboardTab chunk.
+      loads: ["dashboard"],
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page.locator("#issue-dashboard-panel").getByRole("region", {
+          exact: true,
+          name: "Waiting on you",
+        }),
+      ],
+      url: `${issue}/dashboard`,
+    },
+    {
       loads: ["editor"],
       route: "/issues/:key/*",
       shows: (page) => openDocument(page, shown.spec),
