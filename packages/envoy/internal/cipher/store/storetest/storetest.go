@@ -63,14 +63,16 @@ const DatabaseURLEnv = "BROKER_TEST_DATABASE_URL"
 
 // serverURL is the DatabaseURLEnv server every schema and database here is made on, skipping t
 // when the variable is unset: a run with no server is skipped rather than failed, which is the
-// contract URL, Open and DatabaseURL all state.
+// contract URL, Open and DatabaseURL all state. Every connect to it, and to each URL made from it,
+// waits until the test binary's deadline (testdb.WithConnectDeadline), not pgx's default, which is
+// two minutes in a pool and no bound through pgx.Connect.
 func serverURL(t testing.TB) string {
 	t.Helper()
 	raw := os.Getenv(DatabaseURLEnv)
 	if raw == "" {
 		t.Skip(DatabaseURLEnv + " must be set to run Postgres-backed broker tests")
 	}
-	return raw
+	return testdb.WithConnectDeadline(t, raw)
 }
 
 // testSchema is the schema the template's tables are migrated into, and every clone's connection
@@ -78,7 +80,8 @@ func serverURL(t testing.TB) string {
 const testSchema = "broker_test"
 
 // templates is the template each server's migration set was found or made under, by the server's
-// URL, so a test process asks the server once.
+// URL less its connect bound (testdb.ServerKey), which each test's URL carries a value of its own
+// for, so a test process asks the server once.
 var templates sync.Map
 
 type templateDatabase struct {
@@ -110,7 +113,7 @@ const lockDatabase = "postgres"
 // the template's name is always a whole one.
 func template(t testing.TB, raw string) string {
 	t.Helper()
-	entry, _ := templates.LoadOrStore(raw, &templateDatabase{})
+	entry, _ := templates.LoadOrStore(testdb.ServerKey(raw), &templateDatabase{})
 	tmpl := entry.(*templateDatabase)
 	tmpl.once.Do(func() { tmpl.name, tmpl.err = makeTemplate(raw) })
 	if tmpl.err != nil {
@@ -168,6 +171,11 @@ func makeTemplate(raw string) (string, error) {
 	}
 	if _, err := conn.Exec(ctx, "create database "+build+" strategy file_copy"); err != nil {
 		return "", fmt.Errorf("create the template build: %w", err)
+	}
+	// The migrations run as production's do, with JIT off. Each copy of the template takes the
+	// setting itself (testdb.DatabaseOn), since a copy does not keep its template's settings.
+	if _, err := conn.Exec(ctx, testdb.WithoutJIT(build)); err != nil {
+		return "", fmt.Errorf("turn JIT off in the template build: %w", err)
 	}
 	if err := migrateTemplate(ctx, server, build); err != nil {
 		return "", err

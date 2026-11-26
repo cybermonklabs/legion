@@ -574,16 +574,18 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 // proxyTags reads the secret's proxy tags into s against rules' kinds (the profiles file's,
 // Loader.Profiles), after every other tag, so the type and max-grant they weigh are read, and
 // before the value, which only a fault no tag can fix is checked after: proxy-narrowed, whose one
-// value is "true" (ReasonProxyNarrowedMalformed); and proxy, which names a kind of the file
-// (ReasonProxyKindUnknown) whose ways hold the way the secret's type takes (WayOf,
-// ReasonProxyWay) and whose max_grant the secret's max-grant is within (kindMaxGrant,
-// ReasonProxyMaxGrant). A secret behind a kind takes that kind, its way, and the fingerprint of its
-// proxy tags and its kind's allow (proxyDigest), which ends the grants of its name when either tag
-// or that allow changes. It answers the reason and detail of the first refusal, or "" for a secret
-// its tags serve. A secret that carries a proxy tag and no kinds rollback guard in its requesters
-// tag (KindsRollbackGuard) is served all the same, as one that carries a project tag without the
-// project tags' guard is: the guard keeps an older broker from serving it, and `agent-secrets
-// secret list --json` reports a secret written without it.
+// value is "true" (ReasonProxyNarrowedMalformed); and proxy, which names a kind the file declares
+// (Profiles.Kinds, ReasonProxyKindUnknown), never a kind a file of no kinds serves a proxy block
+// behind (readsBlocks), whose ways hold the way the secret's type takes (WayOf, ReasonProxyWay)
+// and whose max_grant the secret's max-grant is within (kindMaxGrant, ReasonProxyMaxGrant). A
+// secret behind a kind takes that kind, its way, and the fingerprint of its proxy tags, its kind's
+// allow and its scopes tag (proxyDigest), which ends the grants of its name when either tag, that
+// allow or its scopes change; a secret behind no kind takes the fingerprint of its scopes tag
+// alone (scopesDigest), "" for none. It answers the reason and detail of the first refusal, or ""
+// for a secret its tags serve. A secret that carries a proxy tag and no kinds rollback guard in its
+// requesters tag (KindsRollbackGuard) is served all the same, as one that carries a project tag
+// without the project tags' guard is: the guard keeps an older broker from serving it, and
+// `agent-secrets secret list --json` reports a secret written without it.
 func proxyTags(file Profiles, s *Secret, tags map[string]string) (reason, detail string) {
 	if raw, tagged := tags[TagProxyNarrowed]; tagged {
 		if raw != ProxyNarrowedTrue {
@@ -593,9 +595,10 @@ func proxyTags(file Profiles, s *Secret, tags map[string]string) (reason, detail
 	}
 	raw, tagged := tags[TagProxy]
 	if !tagged {
+		s.ProfileDigest = scopesDigest(s.Scopes)
 		return "", ""
 	}
-	kind := file.fileRules.Kind(raw)
+	kind := proxyrules.Rules{Kinds: file.Kinds()}.Kind(raw)
 	if kind == nil {
 		return ReasonProxyKindUnknown, fmt.Sprintf("the %s tag names %q, which is no kind of the profiles file", TagProxy, raw)
 	}
@@ -607,7 +610,7 @@ func proxyTags(file Profiles, s *Secret, tags map[string]string) (reason, detail
 		return ReasonProxyMaxGrant, why
 	}
 	s.Proxy, s.Way = kind.Name, way
-	s.ProfileDigest = proxyDigest(kind.Name, s.ProxyNarrowed, file.kindAllowForm(kind.Name))
+	s.ProfileDigest = proxyDigest(kind.Name, s.ProxyNarrowed, file.kindAllowForm(kind.Name), s.Scopes)
 	return "", ""
 }
 

@@ -206,7 +206,7 @@ func TestAnEmptyListEnrollsWhenK3IsDownOrUnset(t *testing.T) {
 	t.Run("the broker cannot read its token file", func(t *testing.T) {
 		svc := newService(t)
 		dispatch := withProjects(t, svc)
-		svc.Projects = projectaccess.New(dispatch.URL, ciphertoken.NewAccountToken(filepath.Join(t.TempDir(), "missing-token")), nil)
+		svc.Projects = projectaccess.New(dispatch.URL, ciphertoken.NewAccountToken("BROKER_PROJECT_ACCESS_TOKEN_FILE", filepath.Join(t.TempDir(), "missing-token")), nil)
 		_, err := enrolSession(t, svc, aliceLogin, "box-alice-no-token")
 		uncheckable(t, err, dispatchread.ErrBrokerRefused, "a session naming no project while the broker cannot read its token file")
 		if calls := dispatch.Calls(); calls != 0 {

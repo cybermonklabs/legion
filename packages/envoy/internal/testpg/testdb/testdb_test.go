@@ -3,12 +3,15 @@ package testdb
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"net/url"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -137,4 +140,91 @@ func TestATestDatabaseOnAnOptionsURLConnectsWithTheOption(t *testing.T) {
 	if workMem != "7MB" {
 		t.Errorf("work_mem = %s, want 7MB: the options pair did not reach the connection", workMem)
 	}
+}
+
+// WithConnectDeadline replaces every connect_timeout pair with its own and keeps each other pair
+// byte for byte, as DatabaseURL keeps them: an options pair's escaped space stays %20, which a
+// re-encoded query (url.Values.Encode) would write as a plus that pgx reads as a plus.
+func TestAConnectDeadlineKeepsTheQuerysOtherPairsByteForByte(t *testing.T) {
+	t.Parallel()
+	got := WithConnectDeadline(t, "postgres://u@h:5432/db?sslmode=disable&options=-c%20work_mem%3D7MB&connect_timeout=3&connect%5Ftimeout=4&application_name=a+b")
+	prefix := "postgres://u@h:5432/db?sslmode=disable&options=-c%20work_mem%3D7MB&application_name=a+b&connect_timeout="
+	rest, ok := strings.CutPrefix(got, prefix)
+	if !ok {
+		t.Fatalf("WithConnectDeadline =\n  %s\nwant the other pairs byte for byte, then the bound:\n  %s<seconds>", got, prefix)
+	}
+	if seconds, err := strconv.Atoi(rest); err != nil || seconds < 1 {
+		t.Fatalf("WithConnectDeadline set connect_timeout=%q; want a whole number of seconds, at least 1", rest)
+	}
+}
+
+// noDeadline is a testing.TB with no Deadline method, as a benchmark's *testing.B and a fuzz
+// target's *testing.F are at Go 1.27.3: the interface it embeds carries no Deadline, so the
+// *testing.T inside does not lend it one.
+type noDeadline struct{ testing.TB }
+
+// A caller that names no deadline keeps a real connect bound, pgxpool's two minutes, for its
+// pools and its plain pgx.Connect alike, rather than the longest connect_timeout pgx holds, which
+// is no bound at all. Control: connectTimeout's old answer for such a caller,
+// math.MaxInt64/int64(time.Second), sets connect_timeout=9223372036 and fails this.
+func TestAConnectWithNoTestDeadlineIsBoundedByTwoMinutes(t *testing.T) {
+	t.Parallel()
+	if _, bounded := ConnectEnd(noDeadline{t}); bounded {
+		t.Fatal("ConnectEnd named a deadline for a testing.TB with no Deadline method")
+	}
+	got := WithConnectDeadline(noDeadline{t}, "postgres://u@h:5432/db?sslmode=disable&connect_timeout=3")
+	if want := "postgres://u@h:5432/db?sslmode=disable&connect_timeout=120"; got != want {
+		t.Fatalf("WithConnectDeadline for a caller with no deadline =\n  %s\nwant\n  %s", got, want)
+	}
+}
+
+// A teardown whose tests began now gives up TeardownGrace past the -timeout, inside cmd/go's kill
+// (TeardownGrace says why). Control: answer the -timeout alone, and this fails by TeardownGrace.
+func TestATeardownGivesUpItsGracePastTheTimeout(t *testing.T) {
+	t.Parallel()
+	timeout, _ := flag.Lookup("test.timeout").Value.(flag.Getter).Get().(time.Duration)
+	if timeout <= 0 {
+		t.Skip("run under a -timeout: under -timeout 0 the teardown has no kill to stay inside")
+	}
+	before := time.Now()
+	if got, want := TeardownDeadline(before), before.Add(timeout+TeardownGrace); !got.Equal(want) {
+		t.Fatalf("a teardown whose tests began now gives up %s from now; want TeardownGrace past the -timeout %s, %s", got.Sub(before), timeout, want.Sub(before))
+	}
+}
+
+// A database DatabaseOn makes runs with JIT off, set on the database itself (WithoutJIT), empty or
+// a copy of a template, since a copy does not keep its template's settings: a session of it reads
+// jit = off from the source 'database', which no server default, role or client gives. Control:
+// take the WithoutJIT statement out of DatabaseOn, and both rows read jit from the server's
+// default, 'on' on CI's image.
+func TestADatabaseOnRunsWithoutJIT(t *testing.T) {
+	t.Parallel()
+	admin := testServer(t)
+	ctx := context.Background()
+	template := DatabaseOn(t, admin, "", "testdb_jit_template")
+	parsed, err := url.Parse(template)
+	if err != nil {
+		t.Fatal("the template's URL does not parse")
+	}
+	name := strings.TrimPrefix(parsed.Path, "/")
+	for _, row := range []struct{ name, template string }{{"empty", ""}, {"a copy of a template", name}} {
+		conn, err := pgx.Connect(ctx, DatabaseOn(t, admin, row.template, "testdb_jit_test"))
+		if err != nil {
+			t.Fatalf("connect to the test's %s database: %v", row.name, err)
+		}
+		if setting, source := jitOn(t, conn); setting != "off" || source != "database" {
+			t.Errorf("DatabaseOn's %s database runs with jit = %s, from the %s; want off, set on the database (WithoutJIT)", row.name, setting, source)
+		}
+		conn.Close(ctx)
+	}
+}
+
+// jitOn is the jit setting conn's session runs with and where it comes from (pg_settings), or two
+// empty strings, with t failed, when it cannot be read.
+func jitOn(t *testing.T, conn *pgx.Conn) (setting, source string) {
+	t.Helper()
+	if err := conn.QueryRow(context.Background(), `select setting, source from pg_settings where name = 'jit'`).Scan(&setting, &source); err != nil {
+		t.Errorf("read jit: %v", err)
+	}
+	return setting, source
 }

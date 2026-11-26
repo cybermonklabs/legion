@@ -9,6 +9,7 @@ package api_test
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/sha256"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -54,6 +55,18 @@ func (ts *testServer) pendingRequest(t *testing.T) (enrollmentID string, key *ec
 	return enrollmentID, key, asked
 }
 
+// decideOnThePage decides recordID on machine as testApprover does on the broker's approval page:
+// it signs testApprover in to the page by its own account, under a cookie secret of its own, and
+// decides under that session (requests.Machine.ApplyPageDecision), since a person decides only
+// under a session the page read.
+func (ts *testServer) decideOnThePage(t *testing.T, machine *requests.Machine, recordID string, approve bool) error {
+	t.Helper()
+	secret := "decides " + t.Name()
+	ts.pageSession(t, testApprover, secret, &store.IssuerSubject{Issuer: "https://accounts.google.com", Subject: "sub-" + testApprover})
+	_, err := machine.ApplyPageDecision(context.Background(), recordID, approve, store.BrowserSessionRef{Hash: sha256.Sum256([]byte(secret)), Login: testApprover})
+	return err
+}
+
 // after runs change a second from now, as another process would, and answers when it finished
 // and how.
 func after(change func() error) <-chan changed {
@@ -93,8 +106,7 @@ func TestReadRequestWaitsForTheDecision(t *testing.T) {
 			other := ts.otherBroker(t)
 
 			decided := after(func() error {
-				_, err := other.ApplyDecision(context.Background(), *asked.RecordID, row.approve, testApprover)
-				return err
+				return ts.decideOnThePage(t, other, *asked.RecordID, row.approve)
 			})
 			status, body := ts.session(t, key, enrollmentID, http.MethodGet, "/v1/requests/"+asked.RequestID+"?wait=10", nil)
 			answered := time.Now()
@@ -214,8 +226,7 @@ func TestReadRequestWaitAnswersAFailedStoreUnavailable(t *testing.T) {
 		t.Fatalf("rename the requests table back: %v", err)
 	}
 	decided := after(func() error {
-		_, err := ts.machine.ApplyDecision(ctx, *asked.RecordID, true, testApprover)
-		return err
+		return ts.decideOnThePage(t, ts.machine, *asked.RecordID, true)
 	})
 	status, body = ts.session(t, key, enrollmentID, http.MethodGet, path, nil)
 	if decision := <-decided; decision.err != nil {

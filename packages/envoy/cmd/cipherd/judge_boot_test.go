@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // testJudgeModel is the model id every broker here is told the judge asks, as the endpoint at
@@ -98,6 +99,31 @@ func TestTheBinaryLogsWhichJudgeItBooted(t *testing.T) {
 		}
 		if calls := model.calls.Load() + dispatch.calls.Load(); calls != 0 {
 			t.Fatalf("booting the judge made %d calls to the model and Dispatch; want none until a request is judged", calls)
+		}
+	})
+
+	// A Dispatch URL with a made-up user name and password, which the loader takes (an http(s)
+	// URL with a host): the line names it as redact.NotPrinted, and no line of the boot holds
+	// either part of the credential.
+	t.Run("configured with userinfo in the Dispatch URL", func(t *testing.T) {
+		const credential = "madeUpJudgeUser0123:madeUpJudgePassword0123"
+		model := newCountingServer(t, `{}`)
+		dispatch := newCountingServer(t, `{"key":"INFRA-1353","title":"","status":"doing"}`)
+		env := judgeBootEnv(t, model, dispatch)
+		for i, entry := range env {
+			if strings.HasPrefix(entry, "BROKER_JUDGE_DISPATCH_URL=") {
+				env[i] = "BROKER_JUDGE_DISPATCH_URL=" + strings.Replace(dispatch.URL, "http://", "http://"+credential+"@", 1)
+			}
+		}
+		broker := startBroker(t, brokerOptions{Binary: binary, Env: env})
+		record := broker.AwaitRecord(t, "model judge", nil)
+		if want := (map[string]any{"state": "on", "dispatch": redact.NotPrinted}); !carries(record, want) {
+			t.Fatalf("the boot line %v does not carry %v", record, want)
+		}
+		for i := 0; i+10 <= len(credential); i++ {
+			if strings.Contains(broker.Boot, credential[i:i+10]) {
+				t.Fatalf("the boot log holds %q of the Dispatch URL's userinfo:\n%s", credential[i:i+10], broker.Boot)
+			}
 		}
 	})
 

@@ -30,6 +30,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/pgdsn"
 )
 
 // Every file in migrations, so pgmigrate.Load judges each one; pgmigratetest.CheckEmbedsEveryFile
@@ -73,22 +74,32 @@ func WithTokenMinter(mint TokenMinter) Option {
 	}
 }
 
-// Open opens the pool databaseURL names, configured by opts, and pings it.
+// DSNSetting names the setting the broker's DSN comes from, as Open's refusals name it (pgdsn).
+const DSNSetting = "BROKER_DATABASE_URL"
+
+// Open opens the pool databaseURL names, configured by opts, and pings it. A URL holding an "@"
+// after its user part, where a password holding an "@" or a "/" leaves part of itself, is refused
+// by DSNSetting alone before anything connects (pgdsn.Refusal), and every failure to parse, open
+// or reach the database is named without the URL's password (pgdsn.ConnectError), since cipherd
+// logs it.
 func Open(ctx context.Context, databaseURL string, opts ...Option) (*Store, error) {
+	if err := pgdsn.Refusal(DSNSetting, databaseURL); err != nil {
+		return nil, err
+	}
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("open Postgres pool: %w", err)
+		return nil, pgdsn.ConnectError(DSNSetting, databaseURL, err)
 	}
 	for _, opt := range opts {
 		opt(config)
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
-		return nil, fmt.Errorf("open Postgres pool: %w", err)
+		return nil, pgdsn.ConnectError(DSNSetting, databaseURL, err)
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("ping Postgres: %w", err)
+		return nil, pgdsn.ConnectError(DSNSetting, databaseURL, err)
 	}
 	return &Store{Pool: pool}, nil
 }

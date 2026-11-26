@@ -145,11 +145,14 @@ func TestSweeperTickDeletesExpiredBrowserSessions(t *testing.T) {
 	m, _, _, _ := newFixture(t)
 	ctx := context.Background()
 	expired, live := sha256.Sum256([]byte("expired "+t.Name())), sha256.Sum256([]byte("live "+t.Name()))
-	if err := m.Store.CreateBrowserSession(ctx, expired, "ada@example.com", time.Now().Add(-time.Minute)); err != nil {
-		t.Fatalf("create the expired session: %v", err)
-	}
-	if err := m.Store.CreateBrowserSession(ctx, live, "ada@example.com", time.Now().Add(time.Hour)); err != nil {
-		t.Fatalf("create the live session: %v", err)
+	account := store.IssuerSubject{Issuer: "https://accounts.google.com", Subject: "sub-ada@example.com"}
+	for _, s := range []store.BrowserSignIn{
+		{Hash: expired, Login: "ada@example.com", Account: account, Expires: time.Now().Add(-time.Minute)},
+		{Hash: live, Login: "ada@example.com", Account: account, Expires: time.Now().Add(time.Hour)},
+	} {
+		if err := m.Store.CreateBrowserSession(ctx, s); err != nil {
+			t.Fatalf("create the session expiring at %v: %v", s.Expires, err)
+		}
 	}
 
 	sweeper := &Sweeper{Enrollments: &enroll.Service{Store: m.Store}, Machine: m, MachineLogins: &machine.Service{Store: m.Store}, OAuth: oauthstore.New(m.Store.Pool), Interval: time.Hour}

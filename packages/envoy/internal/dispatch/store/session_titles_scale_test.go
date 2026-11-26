@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // The inputs of TestSessionTitlesBootScale, which only scripts/session-titles-scale.sh sets:
@@ -120,6 +122,9 @@ func runSessionTitlesBootScale(t *testing.T, admin url.URL, newest, floor, load 
 	name := "dispatch_titles_scale_" + randomDatabaseSuffix(t)
 	adminExec(t, admin, "create database "+name+" strategy file_copy")
 	t.Cleanup(func() { adminExec(t, admin, "drop database if exists "+name+" with (force)") })
+	// JIT off, as on production's Cloud SQL, so the boot this measures runs its statements as
+	// production's does (testdb.WithoutJIT; docs/testing.md, "A database a Go test creates").
+	adminExec(t, admin, testdb.WithoutJIT(name))
 	database, err := Open(ctx, databaseOn(admin, name))
 	if err != nil {
 		t.Fatalf("open %s: %v", name, err)

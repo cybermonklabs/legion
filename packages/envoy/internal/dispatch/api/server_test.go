@@ -66,6 +66,10 @@ import (
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const apiTestParallelism = 8
 
+// TestMain sets the package's default -parallel (apiTestParallelism) and runs its tests through
+// the Dispatch harness's Main, which waits for their databases to drop and drops their templates.
+// The contract rows' broker databases are each a test's own (brokerstoretest.URL), dropped in that
+// test's cleanup, so no broker harness wraps the run.
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(apiTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())

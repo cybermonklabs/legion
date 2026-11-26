@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -165,7 +166,7 @@ func TestMaySettleAdmitsAGroupMember(t *testing.T) {
 	t.Parallel()
 	directory := groupstest.New()
 	directory.Set(approversGroup, groupMember)
-	member, outsider := byPerson(groupMember), byPerson(groupOutsider)
+	member, outsider := bySession(store.BrowserSessionRef{Login: groupMember}), bySession(store.BrowserSessionRef{Login: groupOutsider})
 	if !member.maySettle(approversForm, approversForm, directory) || outsider.maySettle(approversForm, approversForm, directory) {
 		t.Fatalf("maySettle: member %v, outsider %v; want true, false", member.maySettle(approversForm, approversForm, directory), outsider.maySettle(approversForm, approversForm, directory))
 	}

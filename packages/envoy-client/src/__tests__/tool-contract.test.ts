@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
+  type SchemaApi,
   SLACK_POST_TEXT_MAX,
   zodSchemaApi,
 } from "@legion/contracts";
@@ -134,13 +135,16 @@ describe("envoyToolSpecs", () => {
       );
       expect(description).not.toContain("live only");
     }
-    // The ways a role publish ends in an error: the holder's refusal (403), and the window the
-    // listener spends waiting for the stream (504). On a listener of this release whose keep
-    // succeeded, no live holder is not one of them: the listener keeps the message for the role's
-    // next live holder. A keep that failed answers 404, and so does a listener of an earlier
-    // release for a holder that is not live (holder_lapsed).
+    // The ways a role publish ends in an error: the holder's refusal (403), the window the
+    // listener spends waiting for the stream (504), and no live holder for a publish that names
+    // no source session (404), which the listener keeps for nobody because no dead letter could
+    // reach its sender: a subagent whose parent session cannot be resolved publishes from none.
+    // On a listener of this release whose keep succeeded, no live holder is otherwise not one of
+    // them: the listener keeps the message for the role's next live holder. A keep that failed
+    // answers 404, and so does a listener of an earlier release for a holder that is not live
+    // (holder_lapsed).
     expect(publish?.description).toContain(
-      "the holder refuses the message, or the forward is not stored within four seconds"
+      "the holder refuses the message, the forward is not stored within four seconds, or no live session holds the role and the publish names no session of yours as its source"
     );
     expect(publish?.description).toContain(
       "A notifications. topic no stream subject captures is refused by name: nothing would store it."
@@ -545,6 +549,46 @@ describe("message metadata", () => {
 
     expect(shown).toContain("how soon the recipient should act");
     expect(shown).toContain("does not deliver the message sooner or ahead of others");
+  });
+
+  // Oh My Pi's `pi.zod` facade drops a description attached before `.optional()` on an enum or
+  // on a field widened to `unknown`, which real Zod renders identically, so only the call order
+  // shows it: on that host `expects_reply` and `urgency` lost the only text that names their
+  // values and their meaning.
+  test("every described Envoy tool field describes last, the one order the OMP facade keeps", () => {
+    type Recorder = {
+      readonly calls: readonly string[];
+      optional(): Recorder;
+      nullable(): Recorder;
+      describe(text: string): Recorder;
+    };
+    const node = (calls: readonly string[]): Recorder => ({
+      calls,
+      optional: () => node([...calls, "optional"]),
+      nullable: () => node([...calls, "nullable"]),
+      describe: () => node([...calls, "describe"]),
+    });
+    const leaf = () => node([]);
+    const api: SchemaApi<Recorder> = {
+      string: leaf,
+      number: leaf,
+      boolean: leaf,
+      enum: leaf,
+      literal: leaf,
+      array: leaf,
+      unknown: leaf,
+      object: leaf,
+      refineObject: leaf,
+    };
+
+    const described = envoyToolSpecs.flatMap((spec) =>
+      Object.entries(spec.arguments(api) as Record<string, Recorder>)
+        .filter(([, field]) => field.calls.includes("describe"))
+        .map(([name, field]) => [`${spec.name}.${name}`, field.calls.at(-1)] as const)
+    );
+
+    expect(described.map(([name]) => name)).toContain("envoy_send.expects_reply");
+    expect(described.filter(([, last]) => last !== "describe")).toEqual([]);
   });
 
   test("refuses an Envoy tool call once with every problem named", () => {

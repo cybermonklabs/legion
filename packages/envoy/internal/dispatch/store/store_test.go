@@ -124,7 +124,8 @@ func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
 			// A row that must not be refused has to reach the dial. Reading `refused` off
 			// the message alone would pass a detector that rejected a valid quoted
 			// password as unparseable, which is the same boot outage under another name.
-			if !tc.refused && err != nil && strings.Contains(err.Error(), "parse Postgres URL") {
+			var unparsed *pgconn.ParseConfigError
+			if !tc.refused && errors.As(err, &unparsed) {
 				t.Fatalf("connection string rejected at the parse, want it to reach the dial: %v", err)
 			}
 		})
@@ -1139,6 +1140,7 @@ func migratedTemplate(t *testing.T, admin url.URL, version int) string {
 	}
 	adminExec(t, admin, statement)
 	migratedTemplates.made = append(migratedTemplates.made, name)
+	adminExec(t, admin, testdb.WithoutJIT(name))
 	ctx := context.Background()
 	database, err := Open(ctx, databaseOn(admin, name))
 	if err != nil {
@@ -1163,6 +1165,7 @@ func openDatabaseCopy(t *testing.T, admin url.URL, name, template string) *Store
 	adminExec(t, admin, "create database "+name+" template "+template+" strategy file_copy")
 	// `with (force)` ends any backend still attached, as testdb.DatabaseOn's drop does.
 	t.Cleanup(func() { adminExec(t, admin, "drop database if exists "+name+" with (force)") })
+	adminExec(t, admin, testdb.WithoutJIT(name))
 	store, err := Open(context.Background(), databaseOn(admin, name))
 	if err != nil {
 		t.Fatalf("open the copy of %s: %v", template, err)
