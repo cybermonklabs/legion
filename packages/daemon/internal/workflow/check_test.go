@@ -507,7 +507,7 @@ func TestTheBoundStartsTheLastLookWhoseNothingClosesTheCheckAsNotRun(t *testing.
 			}
 			starts := superviseRowsOf(t, rig.pool, "LEGION-209", "start")
 			if len(starts) != 2 || starts[1].CheckLook != 2 || !strings.Contains(starts[1].Task, "This is the last look: no look follows.") ||
-				!strings.Contains(starts[1].Task, "woken by the bound: 2 days since the issue closed.") || !strings.Contains(starts[1].Task, "did not run") {
+				!strings.Contains(starts[1].Task, "woken by the bound: 2 days since the merge.") || !strings.Contains(starts[1].Task, "did not run") {
 				t.Fatalf("start rows = %+v, want the last look's task saying so", starts)
 			}
 			rig.apply("end", tc.end)
@@ -548,7 +548,7 @@ func TestTheBoundsLookIsToldTheBoundTheCheckOpenedWith(t *testing.T) {
 		t.Fatalf("the check at its bound under a rebuilt 3-day bound = %+v, want its last look 2 open, woken by its own 2-day bound", check)
 	}
 	starts := superviseRowsOf(t, rig.pool, "LEGION-209", "start")
-	if len(starts) != 2 || !strings.Contains(starts[1].Task, "woken by the bound: 2 days since the issue closed.") {
+	if len(starts) != 2 || !strings.Contains(starts[1].Task, "woken by the bound: 2 days since the merge.") {
 		t.Fatalf("start rows = %+v, want the last look's task naming the check's own 2-day bound", starts)
 	}
 }
