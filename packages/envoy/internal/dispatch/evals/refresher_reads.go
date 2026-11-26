@@ -298,13 +298,33 @@ const shippedMembersQuery = `
 
 // shippedMembers is where each pull request that one of runs shipped when it was last counted was
 // counted, in each of projects (eval_day_members_shipped): the merge days whose rows hold a run's
-// completion as their deploy time.
+// completion as their deploy time. projects (every project and owner key) and runs (a page's
+// items) grow with the history and the page, so each goes in cuts as heldMembers cuts them: the
+// projects in cuts of at most half of statementBytes, all in one where they fit, and the runs in
+// cuts of what the rest of a statement holds, each statement one cut of each.
 func (s *Store) shippedMembers(ctx context.Context, projects, runs []string) ([]heldMember, error) {
-	rows, err := s.database.Pool.Query(ctx, shippedMembersQuery, projects, runs, KindDelivery)
-	if err != nil {
-		return nil, fmt.Errorf("read the pull requests %d runs shipped: %w", len(runs), err)
+	projectBytes := 0
+	for i := range projects {
+		projectBytes += textBytes(&projects[i])
 	}
-	return collectHeld(rows, fmt.Sprintf("the pull requests %d runs shipped", len(runs)))
+	reserve := min(projectBytes, statementBytes/2)
+	base := paramBytes(2, KindDelivery) + reserve
+	what := fmt.Sprintf("the pull requests %d runs shipped", len(runs))
+	var held []heldMember
+	for named := range statementChunks(projects, statementBytes-reserve, textBytes) {
+		for shipped := range statementChunks(runs, base, textBytes) {
+			rows, err := s.database.Pool.Query(ctx, shippedMembersQuery, named, shipped, KindDelivery)
+			if err != nil {
+				return nil, fmt.Errorf("read %s: %w", what, err)
+			}
+			found, err := collectHeld(rows, what)
+			if err != nil {
+				return nil, err
+			}
+			held = append(held, found...)
+		}
+	}
+	return held, nil
 }
 
 // collectHeld reads rows of (project, row key, day, shipped by).
@@ -544,13 +564,14 @@ func (s *Store) legionInputStart(ctx context.Context, project string) (*time.Tim
 // (loggedZeros, the statement the readings write sends for the days its rows leave owed), and
 // answers how many it wrote. Its rows are the readings write's (writer `readings`), since a logged
 // eval's fold reads those alone: a series' first day is its first such row's, which a readings
-// write made (days.go). A day that holds a row keeps it, and the zero row takes the listing of the
-// series' newest row.
+// write made and which holds a value (days.go, dropEmptiedRows). A day that holds a row keeps
+// it, and the zero row takes the listing of the series' newest row.
 //
 // The days it writes are the gaps between a series' stored rows, each row followed by the days up
-// to the next one's (lead), and after its newest row the days up to today: so it generates and
-// probes the missing days alone, where the whole span from the first day would cost a probe of
-// every day the series holds.
+// to the next one's (lead), and after its newest row the days up to today. It reads every stored
+// all-repositories row of each eval it fills, once and under the evals' locks (a window over each
+// series' rows answers each row's next), and generates and probes the missing days alone, where
+// the whole span from the first day would cost a probe of every day the series holds.
 //
 // The readings write writes the zero rows its rows leave owed through its own today
 // (writeLoggedZeros), so what is left to the fill is the turn of each new day, which no write
@@ -598,10 +619,10 @@ func (r *refresh) fillLoggedZeros(ctx context.Context, project string) (int64, e
 		return 0, err
 	}
 	// An eval read logged above that the seed took over before its lock was taken is computed now,
-	// so the insert reads which of them are logged again, under their locks. The days it writes are
-	// the days whose stored figures it may have moved, folded again in its transaction
-	// (foldFiguresInTx) under the locks it holds.
-	spans := map[string]daySpan{}
+	// so the insert reads which of them are logged again, under their locks. The days it writes,
+	// each run apart (daySpans), are the days whose stored figures it may have moved, folded again
+	// in its transaction (foldFiguresInTx) under the locks it holds.
+	spans := daySpans{}
 	written, err := writeZeroRows(ctx, tx, `
 		select project_key, eval_id, series, day,
 		       lead(day) over series_days as next_day,
@@ -614,7 +635,7 @@ func (r *refresh) fillLoggedZeros(ctx context.Context, project string) (int64, e
 	if err != nil {
 		return 0, fmt.Errorf("write the zero rows of %s's logged evals: %w", project, err)
 	}
-	if err := foldFiguresInTx(ctx, tx, r.build, map[string]map[string]daySpan{project: spans}); err != nil {
+	if err := foldFiguresInTx(ctx, tx, r.build, writtenSpans{project: spans}.sets()...); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {

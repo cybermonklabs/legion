@@ -76,8 +76,10 @@ import (
 // every day of a repository whose first runs arrived, is written with it, in the page's one
 // commit, as a whole walk builds it (span.go).
 //
-// A pass that fails logs and leaves its cursors where they were, so the next pass reads the same
-// changes again; every write is safe to make twice.
+// A pass that fails logs, and the loop runs the next one RefresherGap later. The cursors stand
+// where its last committed page left them (commitPage), so that pass reads again the changes of
+// the page that failed, if a page did, and none of the pages before it; every write is safe to
+// make twice.
 
 // RefresherLease names the lease every refresher pass takes (duty.Exclusive with no period, which
 // is mutual exclusion and nothing else): two processes are woken by one commit, and two passes at
@@ -128,11 +130,12 @@ const horizonRetry = 250 * time.Millisecond
 const refresherPage = 1000
 
 // walkBatch is how many days of each walk the passes build each RefresherGap. A walk of INFRA's
-// history (a year of days, each one read of the day's delivery rows and one write per project) is
-// many batches, one begun each RefresherGap, so no pass holds the lease for the whole of it and the
-// rebuild's load on the database is spread over it, and the changes that arrive meanwhile are
-// answered between two of its days (RefresherGap). Every day is a transaction of its own per
-// project (walkWrite, writeProjectDay), or, in a rebuild, a batch is (stageWalk).
+// history (a year of days, each one read of the day's delivery rows and one write of every owner
+// key's) is many batches, one begun each RefresherGap, so no pass holds the lease for the whole of
+// it and the rebuild's load on the database is spread over it, and the changes that arrive
+// meanwhile are answered between two of its days (RefresherGap). Every day is a transaction of its
+// own, of every owner key's rows the delivery walk writes of it or of the project's the Legion
+// walk does (walkWrite), or, in a rebuild, a batch is (stageWalk).
 const walkBatch = 28
 
 // The cursors, one row of eval_days_cursor each, named for the feed they are read by (feedCursors).
@@ -178,21 +181,27 @@ type RefresherDeps struct {
 	Deliveries <-chan struct{}
 }
 
-// refresherSchedule is the loop's pace and the clock a pass builds as of, which a test replaces:
-// gap is RefresherGap, page refresherPage, batch walkBatch, refoldBudget refoldBatchBudget, and now
-// answers the moment whose UTC day is today. refoldBudget is about how long each batch of a stale
-// cut's refold after the pass's first takes (refoldBatchDays); none, which a test's schedule
-// leaves, bounds no batch by time, and each such batch folds batch end days.
+// refresherSchedule is the loop's pace and the clocks a pass builds and paces by, which a test
+// replaces: gap is RefresherGap, page refresherPage, batch walkBatch, refoldBudget
+// refoldBatchBudget, and now answers the moment whose UTC day is today. refoldBudget is about how
+// long each batch of a stale cut's refold after the pass's first takes, and each batch of a
+// project's figures walk after the project's first (refoldBatchDays), since each holds the locks
+// of the project's logged evals for its whole transaction; none, which a test's schedule leaves,
+// bounds no batch by time, and each such batch folds batch end days. wall is the clock the loop
+// paces itself by (when a pass starts, the gap since the last that began a batch of the walks,
+// the due times it asks for), the wall clock where it is nil, which a test moves by hand to begin
+// the next batch without waiting out the gap.
 type refresherSchedule struct {
 	gap          time.Duration
 	page         int
 	batch        int
 	refoldBudget time.Duration
 	now          func() time.Time
+	wall         func() time.Time
 }
 
 // serverRefresherSchedule is the pace the server runs the loop at, which holds each batch of a
-// stale cut's refold to about 250 ms (refoldBatchBudget).
+// stale cut's refold and of a project's figures walk to about 250 ms (refoldBatchBudget).
 var serverRefresherSchedule = refresherSchedule{
 	gap:          RefresherGap,
 	page:         refresherPage,
@@ -228,8 +237,12 @@ func (s *Store) runRefresher(ctx context.Context, deps RefresherDeps, sched refr
 	// The loop's goroutine alone reads and writes these. began is when the last pass that began a
 	// batch of the walks started; batch is that batch while it has days a pass left for the next
 	// (gapBatch), nil once a pass built them; held is the retry of a pass whose safe horizon held
-	// an event back. Their times are the wall clock's, which the loop's timer runs on, not
-	// sched.now's, which a test stands still.
+	// an event back. Their times are sched.wall's, the wall clock's, which the loop's timer runs
+	// on, unless a test moves it, and not sched.now's, which a test stands still.
+	wall := sched.wall
+	if wall == nil {
+		wall = time.Now
+	}
 	var (
 		began time.Time
 		batch *gapBatch
@@ -241,7 +254,7 @@ func (s *Store) runRefresher(ctx context.Context, deps RefresherDeps, sched refr
 		Wake:   duty.MergeWakes(ctx, deps.Events, deps.Deliveries),
 		Retry:  sched.gap,
 		Pass: func(ctx context.Context) time.Time {
-			started, asOf := time.Now(), sched.now()
+			started, asOf := wall(), sched.now()
 			begun := !started.Before(began.Add(sched.gap))
 			if begun {
 				began, batch = started, &gapBatch{}
@@ -256,7 +269,7 @@ func (s *Store) runRefresher(ctx context.Context, deps RefresherDeps, sched refr
 			}
 			if err != nil {
 				slog.Warn("dispatch: the eval day-row refresher's pass failed", "error", err)
-				return time.Now().Add(sched.gap)
+				return wall().Add(sched.gap)
 			}
 			report.logSlow(begun, walking)
 			// A due time the pass read off sched.now stands as far ahead on the wall clock.
@@ -270,7 +283,7 @@ func (s *Store) runRefresher(ctx context.Context, deps RefresherDeps, sched refr
 				next = earlier(next, began.Add(sched.gap))
 			}
 			if report.heldBack {
-				next = earlier(next, time.Now().Add(held.Next()))
+				next = earlier(next, wall().Add(held.Next()))
 			} else {
 				held.Reset()
 			}
@@ -333,13 +346,17 @@ const refreshThroughPasses = 100
 // caller that loads one and then reads it, such as the tests of the eval routes, which so read the
 // rows production writes. The event log is read through everything committed before the call
 // (events.Horizon.Await). Its schedule is the server's with no refold budget, so each batch of a
-// stale cut's refold after a pass's first folds walkBatch end days however long it takes: the
-// budget spares a readings write a long wait on a batch's locks (refoldBatchBudget), and no
-// production code calls RefreshThrough, whose caller writes nothing while it runs.
+// stale cut's refold after a pass's first, and each batch of a project's figures walk after the
+// project's first, folds walkBatch end days however long it takes: the budget spares a readings
+// write a long wait on a batch's locks (refoldBatchBudget), and no production code calls
+// RefreshThrough, whose caller writes nothing while it runs. Its passes run under transaction
+// tracking as the loop's do (store.WithTransactionTracking), so a read a pass takes while one of
+// its transactions is open is refused here as it is in the server.
 func (s *Store) RefreshThrough(ctx context.Context, deps RefresherDeps, now time.Time) error {
 	if deps.Build == "" {
 		return errors.New("evals: RefresherDeps.Build is empty, and the refresher needs the build it writes as")
 	}
+	ctx = store.WithTransactionTracking(ctx)
 	if _, err := deps.Horizon.Await(ctx); err != nil {
 		return fmt.Errorf("await the event log's safe horizon: %w", err)
 	}
@@ -864,10 +881,11 @@ type walkState struct {
 	build string
 }
 
-// staleRebuild is how long a rebuild stands unmoved before another build's refresher abandons it
-// (rebuildDays): a rebuild its build's process runs moves with each batch it stages, so one two
-// days still is one no running process holds.
-const staleRebuild = 48 * time.Hour
+// staleRebuild is how long a rebuild stands untouched before another build's refresher abandons
+// it (rebuildDays): every pass of the walks of a process of its build touches it (touchRebuild),
+// which its loop runs about each RefresherGap while the rebuild builds (walksLeft), so one untouched
+// for ten minutes is one no running process holds.
+const staleRebuild = 10 * time.Minute
 
 // readWalks is every record of a walk, whichever build's process last moved it.
 func (s *Store) readWalks(ctx context.Context) (map[walkKey]walkState, error) {

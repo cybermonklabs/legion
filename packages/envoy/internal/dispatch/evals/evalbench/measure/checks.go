@@ -932,7 +932,10 @@ type staleRead struct {
 // items differ from the stored read's fails, made before the first paint or after it, since the
 // stored figures and the day rows answer the same values (sameItems); a read made after the cut's
 // first paint is folded fails over its budget, unless info; and a read made before it is not
-// timed against the budgets, its line recording its time and node with budget_ms=none.
+// timed against the budgets, its line recording its time and node with budget_ms=none. The
+// budget fails at ten times the stated run rate too, which the first paint's database-time
+// budgets do not (report.overStated): the stale cuts' reads keep it on the run at ten times the
+// rate (dispatch://INFRA-2916/comment/fbe2d1f9-c353-4331-b785-0b738129bf70).
 func judgeStaleReads(r *report, info bool, reads []staleRead) {
 	for _, read := range reads {
 		budget := "none (before the first paint)"

@@ -1,6 +1,6 @@
 // packages/envoy/internal/cipher/proxy/dpop_test.go
 //
-// The rows of a host whose rules entry is of kind dpop: a capability the broker mints and holds
+// The rows of a host bound by a dpop block: a capability the broker mints and holds
 // (requests.MintedKind). The command holds the minted grant's placeholder alone and sends it as
 // its one Authorization header, DPoP <placeholder>; the proxy swaps in the grant's token, signs a
 // DPoP proof of the pod's own key for the bound host's origin, and sends the request without the
@@ -34,7 +34,7 @@ import (
 )
 
 // The one minted grant the dpop rows are served by: its grant id and session, the token the
-// broker minted for it, and a path its entry allows.
+// broker minted for it, and a path its block allows.
 const (
 	mintedName    = "TEST_MINTED_TOKEN"
 	mintedGrantID = "testkind:00000000-0000-4000-8000-000000000001"
@@ -46,15 +46,21 @@ const (
 // mintedPlaceholder is a minted grant's placeholder in the shape the broker mints them.
 var mintedPlaceholder = placeholder.MintedPrefix("testkind") + "QqRrSsTtUuVvWwXxYyZz0123456789ab"
 
-// dpopRules is the rules file of a broker whose airlock holds TEST_MINTED_TOKEN: kind dpop,
-// bound to the rig's host, carried in Authorization alone, allowing POST under the projects
-// route.
+// dpopRules is the airlock's rules of a broker whose profiles file holds a dpop block for
+// TEST_MINTED_TOKEN, which the policy reads as an inline binding of that name (way dpop): bound to
+// the rig's host, carried in Authorization alone, allowing POST under the projects route.
 func dpopRules() proxyrules.Rules {
-	return proxyrules.Rules{Secrets: []proxyrules.SecretRule{{
-		Name: mintedName, Hosts: []string{boundHost}, Headers: []string{"Authorization"},
+	return proxyrules.Rules{Names: []proxyrules.Binding{dpopBinding(mintedName, boundHost)}}
+}
+
+// dpopBinding is the inline binding a dpop block for name on host is read as (policy's
+// ProxyBlock.binding): its rule is the block's own, never a kind of the file's.
+func dpopBinding(name, host string) proxyrules.Binding {
+	return proxyrules.Binding{Name: name, Way: proxyrules.WayDPoP, Inline: &proxyrules.Kind{
+		Hosts: []string{host}, Headers: []string{"Authorization"},
 		Allow: []proxyrules.Allow{{Method: http.MethodPost, PathPrefix: "/api/v1/projects/"}},
-		Kind:  proxyrules.KindDPoP,
-	}}}
+		Ways:  []string{proxyrules.WayDPoP},
+	}}
 }
 
 // mintedConnection is what the broker answers for a minted grant's placeholder: the grant, its
@@ -74,7 +80,7 @@ func newDPoPRig(t *testing.T) (*rig, *ecdsa.PrivateKey) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := newRig(t, Options{Rules: dpopRules(), DPoPKey: key})
+	r := newRuledRig(t, dpopRules(), Options{DPoPKey: key})
 	r.grants.setConnection(mintedPlaceholder, mintedConnection())
 	r.grants.setValues(mintedGrantID, storedValues(mintedName, mintedToken))
 	return r, key
@@ -177,8 +183,8 @@ var commandForwardingHeaders = []string{
 
 // TestADPoPRequestLeavesWithoutTheCommandsForwardingHeaders: an allowed write carrying the six
 // forwarding headers reaches the service with none of them, so the service reads the broker's
-// address and not one the command wrote; the same headers sent to a host whose entry has no kind
-// reach it as they were sent.
+// address and not one the command wrote; the same headers sent to a host a stored value is
+// swapped into reach it as they were sent.
 func TestADPoPRequestLeavesWithoutTheCommandsForwardingHeaders(t *testing.T) {
 	r, _ := newDPoPRig(t)
 	answer, body := r.postMinted(append([]string{"Authorization", "DPoP " + mintedPlaceholder}, commandForwardingHeaders...)...)
@@ -195,11 +201,11 @@ func TestADPoPRequestLeavesWithoutTheCommandsForwardingHeaders(t *testing.T) {
 	plain := newRig(t, Options{})
 	answer, body = plain.get(plain.client(workerPlaceholder), "https://"+boundHost+"/v1/x", append([]string{"Authorization", "Bearer " + workerPlaceholder}, commandForwardingHeaders...)...)
 	if answer.StatusCode != http.StatusOK || len(plain.requests()) != 1 {
-		t.Fatalf("the plain entry's request = %d %s, want 200 and one request received", answer.StatusCode, body)
+		t.Fatalf("the swapped name's request = %d %s, want 200 and one request received", answer.StatusCode, body)
 	}
 	for i := 0; i < len(commandForwardingHeaders); i += 2 {
 		if got := plain.requests()[0].Header.Get(commandForwardingHeaders[i]); got != commandForwardingHeaders[i+1] {
-			t.Errorf("the plain entry's service received %s %q, want %q as the command sent it", commandForwardingHeaders[i], got, commandForwardingHeaders[i+1])
+			t.Errorf("the swapped name's service received %s %q, want %q as the command sent it", commandForwardingHeaders[i], got, commandForwardingHeaders[i+1])
 		}
 	}
 }
@@ -243,7 +249,7 @@ func TestACommandsOwnDPoPProofNeverReachesDispatch(t *testing.T) {
 }
 
 // TestNoKindLeavesADPoPHostItsKind: under Options.NoKind, the negative control that reads every
-// other entry's kind as none, a dpop host keeps its kind: the allowed write still arrives with one
+// other binding's way as a swap, a dpop host keeps its way: the allowed write still arrives with one
 // DPoP proof of the pod's key and none of the command's forwarding headers, and a write without
 // the placeholder is still refused 403 NO_PLACEHOLDER with nothing sent.
 func TestNoKindLeavesADPoPHostItsKind(t *testing.T) {
@@ -251,7 +257,7 @@ func TestNoKindLeavesADPoPHostItsKind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := newRig(t, Options{Rules: dpopRules(), DPoPKey: key, NoKind: true})
+	r := newRuledRig(t, dpopRules(), Options{DPoPKey: key, NoKind: true})
 	r.grants.setConnection(mintedPlaceholder, mintedConnection())
 	r.grants.setValues(mintedGrantID, storedValues(mintedName, mintedToken))
 	answer, body := r.postMinted()
@@ -273,7 +279,7 @@ func TestNoKindLeavesADPoPHostItsKind(t *testing.T) {
 // write to a dpop host is refused 403 NO_VALUE_RELEASED, saying nothing was sent, and the service
 // receives nothing.
 func TestAProxyWithNoDPoPKeySendsNothingToADPoPHost(t *testing.T) {
-	r := newRig(t, Options{Rules: dpopRules()})
+	r := newRuledRig(t, dpopRules(), Options{})
 	r.grants.setConnection(mintedPlaceholder, mintedConnection())
 	r.grants.setValues(mintedGrantID, storedValues(mintedName, mintedToken))
 	answer, body := r.postMinted("Authorization", "DPoP "+mintedPlaceholder)
@@ -347,7 +353,7 @@ func TestAnAnswerAfterTheWriteMayHaveLeftSaysItsOutcomeIsUnknown(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r := newRig(t, Options{Rules: dpopRules(), DPoPKey: key, Watch: watchFast})
+		r := newRuledRig(t, dpopRules(), Options{DPoPKey: key, Watch: watchFast})
 		r.grants.setConnection(mintedPlaceholder, mintedConnection())
 		r.grants.setValues(mintedGrantID, storedValues(mintedName, mintedToken))
 		r.answerWith(func(_ http.ResponseWriter, request *http.Request, _ proxyrulestest.Request) bool {
@@ -413,7 +419,7 @@ func TestAnAnswerAfterTheWriteMayHaveLeftSaysItsOutcomeIsUnknown(t *testing.T) {
 
 // TestAMintedGrantReachesNoHostItsGrantDoesNotBind: a minted capability's grant carries its
 // requests to the one host its grant binds, so its placeholder as the proxy password opens no
-// tunnel and no plain-HTTP forward anywhere else: a CONNECT to a host no entry binds, a CONNECT to
+// tunnel and no plain-HTTP forward anywhere else: a CONNECT to a host no binding binds, a CONNECT to
 // the bound host on another port, and a plain-HTTP request to an unbound host are each refused 403
 // MINTED_GRANT_HOST_ONLY, naming the rule, before any dial. A secret grant's CONNECT to the same
 // unbound host still opens its tunnel, the airlock's rule for every other grant.

@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -549,6 +551,120 @@ func TestAListingChangeOfALoggedSeriesMovesItsStoredDayRows(t *testing.T) {
 	if listed := r.count(t, `select count(*) from eval_days where eval_id = $1 and listed`, evalID); listed != 0 {
 		t.Errorf("%d day rows of depth are listed after it was unlisted, want none", listed)
 	}
+}
+
+// TestAListedSeriesIsReadAtOnceAndFoldedAgainInBatches: over a logged eval's history built whole,
+// EVAL's review-latency (seedLoggedQuantile: readings of minutes on the three days before today, of
+// the project and of acme/web), whose series depth, registered unlisted, holds readings ten to
+// eight days before today, of the project and of acme/web too, a register write lists depth. Right
+// after it, before any pass of the refresher, the eval list's read of each cut over the week from
+// depth's first day, which no row of minutes reaches, states depth's values, the fold of the day
+// rows that stand, as does every read of a first paint of either cut; each reads the day rows, its
+// cut marked stale naming the eval (markMovedKey). One pass, in batches of two end days, then folds
+// the eval's stored figures again under its new fold key: each of its transactions wrote the stored
+// ranges of a first paint alone or of two end days at most, no mark is left, every one of those
+// reads states the same values from the stored figures, and the stored figures are the fold of the
+// rows that stand. Red where the register write marks no cut: the week reads as holding no data of
+// depth until the pass, whose read of the change the listing logs (relistDays) then folds every day
+// of the eval in one transaction; and where that read folds the days the refold of a mark whose
+// first paint is owed folds again (leaveToRefolds): it folds them in one transaction too.
+func TestAListedSeriesIsReadAtOnceAndFoldedAgainInBatches(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	ctx := t.Context()
+	r.seedLoggedQuantile(t)
+	const slug = "review-latency"
+	evalID := EvalID(r.project, slug)
+	list := func(listed bool) {
+		t.Helper()
+		if _, err := r.registry.Register(ctx, Registration{Project: r.project, Slug: slug, Caller: alice,
+			Series: []SeriesChange{{Series: "depth", Listed: Set(listed)}}}); err != nil {
+			t.Fatalf("list depth %t: %v", listed, err)
+		}
+	}
+	list(false)
+	var rows []json.RawMessage
+	for index, value := range []float64{4, 9, 6, 2, 7, 5} {
+		fields := map[string]any{"series": "depth", "row_kind": "queue", "row_key": fmt.Sprint(index), "value": value,
+			"measured_at": refresherToday.AddDate(0, 0, -10+index%3).Add(time.Duration(index+1) * time.Hour)}
+		if index%2 == 0 {
+			fields["attributes"] = map[string]any{"repo": "acme/web"}
+		}
+		rows = append(rows, row(t, fields))
+	}
+	if _, err := r.registry.WriteReadings(ctx, Batch{Project: r.project, Slug: slug, Rows: rows, Caller: alice, BuiltBy: r.build}); err != nil {
+		t.Fatalf("log depth's readings: %v", err)
+	}
+	r.settle(t)
+	through := r.figuresFolded(t)[r.project]
+	week := paintRead{name: "the week from depth's first day", window: rangeOf(7, refresherToday.AddDate(0, 0, -3))}
+	reads := append(firstPaintReads(through), week)
+	ranges := make([]Range, 0, 2*len(reads))
+	for _, read := range reads {
+		ranges = append(ranges, read.window)
+		if read.compare != nil {
+			ranges = append(ranges, *read.compare)
+		}
+	}
+	// answers is each read's statement of the eval, by cut and read, and checks each is the fold of
+	// its day rows, stated from the stored figures where stored is set, and that the week states
+	// depth's values.
+	answers := func(what string, stored bool) map[string]string {
+		t.Helper()
+		answered := map[string]string{}
+		for _, repos := range [][]string{nil, {"acme/web"}} {
+			state := r.readListState(t, r.project, repos, ranges...)
+			for _, read := range reads {
+				stated, folded, fromFigures := state.values(t, read.window, read.compare)
+				if stated[evalID] != folded[evalID] {
+					t.Errorf("%s: the read of %v over %s states %s's values in %d bytes that differ from the fold of its day rows' %d at byte %d",
+						what, repos, read.name, evalID, len(stated[evalID]), len(folded[evalID]), firstDiffering(stated[evalID], folded[evalID]))
+				}
+				if fromFigures[evalID] != stored {
+					t.Errorf("%s: the read of %v over %s states %s from the stored figures %t, want %t", what, repos, read.name, evalID, fromFigures[evalID], stored)
+				}
+				answered[fmt.Sprintf("%v %s", repos, read.name)] = stated[evalID]
+			}
+			var values []SeriesValues
+			if err := json.Unmarshal([]byte(answered[fmt.Sprintf("%v %s", repos, week.name)]), &values); err != nil {
+				t.Fatalf("%s: decode the values of %s over the week: %v", what, evalID, err)
+			}
+			if !slices.ContainsFunc(values, func(one SeriesValues) bool {
+				return one.Series.Series == "depth" && slices.ContainsFunc(slices.Collect(maps.Values(one.Window)), func(value *float64) bool { return value != nil })
+			}) {
+				t.Errorf("%s: the read of %v over %s states %s with no value of depth: %s", what, repos, week.name, evalID, answered[fmt.Sprintf("%v %s", repos, week.name)])
+			}
+		}
+		return answered
+	}
+	before := r.storedFigures(t)
+	list(true)
+	listed := answers("right after the register write that lists depth", false)
+	r.batch = 2
+	r.pass(t)
+	paint := firstPaintOf(through)
+	for xmin, byCut := range endsWritten(t, before, r.storedFigures(t)) {
+		for cut, days := range byCut {
+			painted := true
+			for day := range days {
+				painted = painted && paint.holds(day)
+			}
+			if !painted && len(days) > r.batch {
+				t.Errorf("the pass after the listing wrote, in transaction %s, the stored ranges of %s's cut %q ending on %d end days (%s), neither its first paint's nor a batch's %d at most",
+					xmin, cut.project, cut.repo, len(days), endDaysText(days), r.batch)
+			}
+		}
+	}
+	if marks := r.staleMarks(t); len(marks) != 0 {
+		t.Errorf("the pass after the listing left the cuts %v marked, want its refold done", marks)
+	}
+	folded := answers("after the pass", true)
+	for _, read := range slices.Sorted(maps.Keys(listed)) {
+		if folded[read] != listed[read] {
+			t.Errorf("the read of %s states %s in %d bytes after the pass that differ at byte %d from the %d it stated before", read, evalID, len(folded[read]), firstDiffering(folded[read], listed[read]), len(listed[read]))
+		}
+	}
+	expectTruth(t, "after the pass after the listing", r.storedFigures(t), r.truthFigures(t))
 }
 
 // TestEveryFieldAPersonSetsIsRecordedAsSetByOne: the seed fills a field of the catalogue only

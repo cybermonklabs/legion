@@ -10,7 +10,6 @@ import (
 	"maps"
 	"math"
 	"math/rand/v2"
-	"os"
 	"reflect"
 	"runtime"
 	"slices"
@@ -19,12 +18,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/sjawhar/envoy/internal/cputest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
@@ -37,8 +36,9 @@ import (
 
 // The checks of the stored figures (figures.go): after each change, the stored rows are the
 // fold of the day rows that stand, as a read of those rows folds them (truthFigures, which reads
-// them through DayWindowIn and folds each range with FoldStatistics over its rows in the folds'
-// order, merging and sorting every quantile's samples), and the rows the change wrote (by the
+// them with the test's own statement, cutRows, and folds each range with FoldStatistics over its
+// rows in the folds' order, merging and sorting every quantile's samples; a few of them are held to
+// values worked out by hand, expectPinnedFigures), and the rows the change wrote (by the
 // transaction that last wrote each, xmin) are only those its moved days reach (figureReach).
 
 // figureRow is one stored figures row as the checks read it: the transaction that last wrote it
@@ -175,12 +175,14 @@ func (r *refresherRig) figuresFolded(t *testing.T) map[string]time.Time {
 // rows, its own and those of the owner keys it reads (eval_project_owners, owners.go): its own rows
 // (repo ""), and each repository's, which a read naming that one repository reads, the rows of the
 // repository and, of its published default, its own rows stored under legionfacts.DefaultRepo; of
-// each eval of each deploy repository read through DayWindowIn, with no repository named or that
-// one (the evals keyed by the deploy repository read with that repository, every other eval with
-// none), in the folds' order (by day, then by the key each row is stored under, its repository and
-// its series), and every range of FigureLengths ending on or before that day that holds one of them
-// folded by FoldStatistics, and every day before it that holds one folded alone over its headline
-// series. No list is sorted before the fold, so every quantile merges and sorts its samples.
+// each eval of each deploy repository, read by the test's own statement (cutRows) and not by the
+// reads the stored figures are folded from, in the folds' order (by day, then by the key each row
+// is stored under, its repository and its series), and every range of FigureLengths ending on or
+// before that day that holds one of them folded by FoldStatistics, and every day before it that
+// holds one folded alone over its headline series. No list is sorted before the fold, so every
+// quantile merges and sorts its samples. The folds are the code's own (FoldStatistics,
+// encodeFigures), so a few stored figures are held to values worked out by hand as well
+// (expectPinnedFigures).
 func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 	t.Helper()
 	ctx := t.Context()
@@ -216,28 +218,13 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 		}
 		for _, cut := range cuts {
 			repo, deployRepo := cut.repo, cut.deployRepo
-			var named []string
-			if repo != "" {
-				named = []string{repo}
-			}
 			var entries []Entry
 			for _, entry := range page.Items {
 				if KeyedByDeployRepo(entry.Definition) == (deployRepo != "") {
 					entries = append(entries, entry)
 				}
 			}
-			cutRepos := DeployReposOf(project, deployRepo)
-			if deployRepo == unionDeployRepo {
-				cutRepos = deployRepos
-			}
-			read, err := DayWindowIn(ctx, r.database.Pool, []string{project}, entries, cutRepos, named, Range{From: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), To: through}, nil)
-			if err != nil {
-				t.Fatalf("read the day rows of %s %q of %q: %v", project, repo, deployRepo, err)
-			}
-			byEval := map[string][]WindowRow{}
-			for _, row := range read {
-				byEval[row.EvalID] = append(byEval[row.EvalID], row)
-			}
+			byEval := r.cutRows(t, project, cut, deployRepos, entries, through)
 			for _, entry := range entries {
 				held := byEval[entry.Definition.EvalID]
 				listed, headline := listedAndHeadline(entry)
@@ -302,6 +289,112 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 		}
 	}
 	return truth
+}
+
+// cutRows is, by eval id, every listed day row of entries (evals of project, each of the one
+// deploy repository cut names or of none) before through that the stored figures of cut fold, read
+// by the test's own statement: the rows of the project and of each key it reads
+// (eval_project_owners), each under the project's eval id of its slug, stored under the cut's
+// repository, or, of the project's own, under legionfacts.DefaultRepo where the cut's repository is
+// the one the project publishes as its default (eval_days_defaults); of its eval's writer (the
+// computation's of a computed eval, the readings' of a logged one); where its eval is keyed by the
+// deploy repository, of the cut's deploy repository, or of each deploy repository recorded for the
+// project (deployRepos, DeployRepos.Of) for its union cut (unionDeployRepo), each row keeping the
+// deploy repository it is stored under for the folds' order, and of none otherwise; its
+// via_repository counted only where the project reads the key through the repository (o.via); and
+// its samples only where its fold reads them, a computed eval's and a logged quantile's.
+func (r *refresherRig) cutRows(t *testing.T, project string, cut figureCut, deployRepos *DeployRepos, entries []Entry, through time.Time) map[string][]WindowRow {
+	t.Helper()
+	evals := make(map[string]Entry, len(entries))
+	for _, entry := range entries {
+		evals[entry.Definition.EvalID] = entry
+	}
+	rows, err := r.database.Pool.Query(t.Context(), `
+		select o.project_key || substr(d.eval_id, length(o.owner) + 1), d.writer, d.deploy_repo, o.owner, d.repo, d.series, d.day,
+			d.n, d.sum, d.num, d.den, d.max, d.samples, d.last_value, d.last_at, nullif(d.counts, '{}'),
+			case when o.via then d.via_repository else 0 end, d.updated_at
+		from eval_project_owners o join eval_days d on d.project_key = o.owner
+		where o.project_key = $1 and d.listed and d.day < $2
+			and (d.repo = $3 or d.repo = $4 and d.project_key = $1
+				and exists (select 1 from eval_days_defaults p where p.project_key = $1 and p.repo = $3))`,
+		project, through, cut.repo, legionfacts.DefaultRepo)
+	if err != nil {
+		t.Fatalf("read the day rows of %s's cut %q of %q: %v", project, cut.repo, cut.deployRepo, err)
+	}
+	byEval := map[string][]WindowRow{}
+	var row WindowRow
+	var writer, deployRepo string
+	part := &row.Part
+	if _, err := pgx.ForEachRow(rows, []any{&row.EvalID, &writer, &deployRepo, &row.owner, &row.repo, &part.Series, &part.Day, &part.N, &part.Sum,
+		&part.Num, &part.Den, &part.Max, &part.Samples, &part.LastValue, &part.LastAt, &part.Counts, &part.ViaRepository, &row.UpdatedAt}, func() error {
+		entry, held := evals[row.EvalID]
+		ownWriter, ownDeployRepo := "readings", ""
+		if entry.Definition.Computed() {
+			ownWriter = "computation"
+		}
+		if KeyedByDeployRepo(entry.Definition) {
+			ownDeployRepo = cut.deployRepo
+		}
+		if held && writer == ownWriter && (deployRepo == ownDeployRepo || ownDeployRepo == unionDeployRepo && deployRepos.hasRepo(project, deployRepo)) {
+			if !entry.Definition.Computed() && !slices.ContainsFunc(entry.Series, func(series Series) bool { return series.Series == part.Series && series.Agg == AggQuantile }) {
+				part.Samples = nil
+			}
+			row.Range, row.UpdatedAt, row.deployRepo = RangeWindow, row.UpdatedAt.UTC(), deployRepo
+			utcPart(part)
+			byEval[row.EvalID] = append(byEval[row.EvalID], row)
+		}
+		row = WindowRow{}
+		return nil
+	}); err != nil {
+		t.Fatalf("read the day rows of %s's cut %q of %q: %v", project, cut.repo, cut.deployRepo, err)
+	}
+	return byEval
+}
+
+// expectPinnedFigures checks a few stored figures of EVAL's review-latency against what its
+// readings (seedLoggedQuantile) make of them, worked out by hand: the minutes of its first day are
+// 12, 7.5 and 45, of its second 30, 61 and 18, and of its third 30 and 2, and the readings of acme/web
+// are 12 and 45 of the first day, 61 of the second and 30 of the third. Each pin is a day's or a
+// range's count, sum and largest value, and the median of a day of three readings, the middle one.
+// truthFigures folds the rows with the folds the stored figures are folded with, so only these
+// tell a wrong fold from a right one.
+func (r *refresherRig) expectPinnedFigures(t *testing.T, what string, stored map[string]figureRow) {
+	t.Helper()
+	evalID := EvalID(r.project, "review-latency")
+	day := func(n int) time.Time { return refresherToday.AddDate(0, 0, n) }
+	for _, pin := range []struct {
+		line             string
+		n, sum, max, mid float64
+	}{
+		{dayFigureLine(r.project, "", "", day(-3), evalID), 3, 64.5, 45, 12},
+		{dayFigureLine(r.project, "", "", day(-2), evalID), 3, 109, 61, 30},
+		{dayFigureLine(r.project, "acme/web", "", day(-3), evalID), 2, 57, 45, 0},
+		{rangeLine(r.project, "", "", 7, refresherToday, evalID), 8, 205.5, 61, 0},
+		{rangeLine(r.project, "acme/web", "", 7, refresherToday, evalID), 4, 148, 61, 0},
+	} {
+		row, held := stored[pin.line]
+		if !held {
+			t.Errorf("%s: no stored row of %s", what, pin.line)
+			continue
+		}
+		folded, _, err := decodeFigures(row.figures)
+		if err != nil {
+			t.Errorf("%s: decode the stored row of %s: %v", what, pin.line, err)
+			continue
+		}
+		stats := folded["minutes"]
+		want := map[string]float64{"n": pin.n, "sum": pin.sum, "max": pin.max}
+		if pin.mid != 0 {
+			want["median"] = pin.mid
+		}
+		for _, name := range slices.Sorted(maps.Keys(want)) {
+			if got := stats[name]; got == nil {
+				t.Errorf("%s: the stored row of %s holds no %s, want %v", what, pin.line, name, want[name])
+			} else if *got != want[name] {
+				t.Errorf("%s: the stored row of %s holds a %s of %v, want %v", what, pin.line, name, *got, want[name])
+			}
+		}
+	}
 }
 
 // expectTruth checks that stored holds exactly truth's rows, each with truth's figures.
@@ -478,7 +571,9 @@ func recordDeletes(t *testing.T, r rig) {
 // stored row of each cut the rows reach written by a transaction that wrote one of those rows or
 // deleted one since the last check (recordDeletes, which the test makes first), as the projects
 // that read them read them (asReaders, cutOfRow): the day rows' own, which folds the figures of
-// the days it moves (figures.go), and not a later one. It answers after.
+// the days it moves (figures.go), and not a later one; and that each stored range row those days
+// reach (figureReach) that was written between before and after was written by a transaction that
+// wrote or deleted a row of one of the range's days. It answers after.
 func (r *refresherRig) expectFoldedInTx(t *testing.T, what string, before, after figureState) figureState {
 	t.Helper()
 	rows, err := r.database.Pool.Query(t.Context(), `
@@ -512,10 +607,32 @@ func (r *refresherRig) expectFoldedInTx(t *testing.T, what string, before, after
 	}); err != nil {
 		t.Fatalf("read the day rows' transactions: %v", err)
 	}
-	_, days := figureReach(before.days, after.days, r.figuresFolded(t), readers, defaults, deployRepos)
+	reach, days := figureReach(before.days, after.days, r.figuresFolded(t), readers, defaults, deployRepos)
 	for _, line := range days {
 		if stored, held := after.figures[line]; held && !slices.Contains(wrote[line], stored.xmin) {
 			t.Errorf("%s: the stored row of %s was written by transaction %s, and its day rows by %v", what, line, stored.xmin, wrote[line])
+		}
+	}
+	for _, line := range writtenFigures(before.figures, after.figures) {
+		stored, held := after.figures[line]
+		if !held || !reach[line] || !strings.HasPrefix(line, "range ") {
+			continue
+		}
+		var project, repo, deployRepo, end, evalID string
+		var n int
+		if _, err := fmt.Sscanf(line, "range %s %q %q %d %s %s", &project, &repo, &deployRepo, &n, &end, &evalID); err != nil {
+			t.Fatalf("read the stored range row %s: %v", line, err)
+		}
+		last, err := time.Parse(time.DateOnly, end)
+		if err != nil {
+			t.Fatalf("read the end day of the stored range row %s: %v", line, err)
+		}
+		var by []string
+		for day := last.AddDate(0, 0, -n); day.Before(last); day = day.AddDate(0, 0, 1) {
+			by = append(by, wrote[dayFigureLine(project, repo, deployRepo, day, evalID)]...)
+		}
+		if !slices.Contains(by, stored.xmin) {
+			t.Errorf("%s: the stored row of %s was written by transaction %s, and the day rows of its days by %v", what, line, stored.xmin, slices.Compact(slices.Sorted(slices.Values(by))))
 		}
 	}
 	return after
@@ -565,9 +682,10 @@ func (r *refresherRig) expectBuilt(t *testing.T, what string, today time.Time) {
 }
 
 // TestEachChangeRewritesExactlyTheFiguresItsMovedDaysReach: over the delivery, Legion and logged
-// histories, once the first whole build has folded every figure, each change of an input is folded
-// into the stored figures by the pass after it, in the day rows' own transaction where a write of
-// its rows moved them, which writes only the rows its moved days reach and leaves the stored
+// histories, once the first whole build has folded every figure, a few of which hold the values
+// worked out by hand (expectPinnedFigures), each change of an input is folded into the stored
+// figures by the pass after it, in the day rows' own transaction where a write of its rows moved
+// them, which writes only the rows its moved days reach and leaves the stored
 // figures the fold of the rows that stand: a pull request merged a day earlier, a deploy run that
 // is cancelled, a production job that fails, an issue's facts, a logged reading (in the readings
 // write's own transaction, after which the pass writes nothing), a register write that gives the
@@ -586,6 +704,7 @@ func TestEachChangeRewritesExactlyTheFiguresItsMovedDaysReach(t *testing.T) {
 	recordDeletes(t, r.rig)
 	state := r.figureState(t)
 	expectTruth(t, "the first whole build", state.figures, r.truthFigures(t))
+	r.expectPinnedFigures(t, "the first whole build", state.figures)
 	r.expectBuilt(t, "the first whole build", refresherToday)
 	t.Logf("the first whole build stored %d figures rows", len(state.figures))
 
@@ -774,6 +893,133 @@ func TestADayRowABuildWithNoFiguresWritesIsFoldedByTheNextPass(t *testing.T) {
 	t.Logf("the write of a build with no figures left %d stored rows stale", staleRows)
 	r.pass(t)
 	r.expectRewrites(t, "the next pass of a build with the figures", state, true, nil)
+}
+
+// foldHold is a tracer (storetest.TracedStore) that records the reads of the stamps of day rows on
+// the pool it traces (stampReads) and, once the pass has read the stored figures' change cursor
+// (figureChanges), calls reading at the first read of the stamps, with whether it is sent in a
+// transaction, and locking at the first statement that takes an eval's lock (lockEvals): each
+// once, before its statement is sent, on the goroutine that sends it, which waits for it.
+type foldHold struct {
+	stampReads
+	reading      func(inTx bool)
+	locking      func()
+	read, locked atomic.Bool
+}
+
+func (h *foldHold) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	ctx = h.stampReads.TraceQueryStart(ctx, conn, data)
+	h.mu.Lock()
+	armed := h.changes
+	h.mu.Unlock()
+	switch {
+	case !armed:
+	case strings.Contains(data.SQL, stampsMarker) && h.read.CompareAndSwap(false, true):
+		h.reading(conn.PgConn().TxStatus() != 'I')
+	case strings.Contains(data.SQL, "pg_advisory_xact_lock(key)") && h.locked.CompareAndSwap(false, true):
+		h.locking()
+	}
+	return ctx
+}
+
+// TestAReadingsWriteBesideTheFoldOfALoggedChangeWaitsForNoReadAndIsFolded: over EVAL's logged
+// review-latency (seedLoggedQuantile), settled, a write of its rows of three days by a build that
+// writes no figures (its change logged, and the refresher's own cursor past it) leaves their
+// stored figures stale, and the next pass's read of the figures' change log folds them
+// (refoldChanged): it reads which days moved on the pool, in no transaction, then takes the eval's
+// lock and reads the stamps and the rows of those days alone again under it, and folds them. Two
+// readings writes of the eval run inside that pass, each from a hook on its statements (foldHold):
+// one as it begins to read which days moved, which finds the eval's lock free
+// (pg_try_advisory_xact_lock), so a readings write waits for no such read, and commits a reading
+// of the first day before that read runs; and one once it has read them and before it takes the
+// lock, a reading of the second day. The pass reads under the lock the stamps of no day but the
+// second and the third, those it found moved, and after it, and after the next pass, which reads
+// the two writes' own changes, every stored figure is the fold of the rows that stand
+// (expectTruth). Red where the pass holds the eval's lock while it reads which days moved (the
+// hook finds it held), where that read stops a day short of the change's span (the third day stays
+// stale), and where the pass folds the days it found moved from the rows it read then (the second
+// write's figures are folded over until the next pass).
+func TestAReadingsWriteBesideTheFoldOfALoggedChangeWaitsForNoReadAndIsFolded(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	r.seedLoggedQuantile(t)
+	r.settle(t)
+	ctx, pool, project := t.Context(), r.database.Pool, r.project
+	evalID := EvalID(project, "review-latency")
+	days := []time.Time{refresherToday.AddDate(0, 0, -3), refresherToday.AddDate(0, 0, -2), refresherToday.AddDate(0, 0, -1)}
+	r.exec(t, "write the eval's rows of three days as a build with no figures does", `
+		update eval_days set n = n + 1, sum = sum + 1, updated_at = now()
+		where project_key = $1 and eval_id = $2 and writer = $3 and repo = '' and day = any($4)`, project, evalID, writerReadings, days)
+	r.exec(t, "move the change into the log", `select delivery_changes_drain(1000)`)
+	r.exec(t, "read the refresher's own cursor past it", `
+		update eval_days_cursor set position = head.seq, at = head.at
+		from (select seq, at from delivery_changes order by seq desc limit 1) as head where name = $1`, changesCursor)
+	stored, truth := r.storedFigures(t), r.truthFigures(t)
+	for _, day := range days {
+		if line := dayFigureLine(project, "", "", day, evalID); stored[line].same(truth[line]) {
+			t.Fatalf("the write left the stored row of %s the fold of the rows that stand, so nothing shows the pass folds it", line)
+		}
+	}
+
+	plain := r.registry
+	logReading := func(key string, day time.Time) {
+		reading := row(t, map[string]any{"series": "minutes", "row_kind": "review", "row_key": key, "value": 40, "measured_at": day.Add(15 * time.Hour)})
+		if _, err := plain.WriteReadings(ctx, Batch{Project: project, Slug: "review-latency", Rows: []json.RawMessage{reading}, Caller: alice, BuiltBy: r.build}); err != nil {
+			t.Errorf("log the reading %s of review-latency: %v", key, err)
+		}
+	}
+	hold := &foldHold{
+		reading: func(inTx bool) {
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the probe of review-latency's lock: %v", err)
+			}
+			var free bool
+			err = tx.QueryRow(ctx, `select pg_try_advisory_xact_lock(hashtext('eval:' || $1))`, evalID).Scan(&free)
+			_ = tx.Rollback(ctx)
+			if err != nil {
+				t.Fatalf("probe review-latency's lock: %v", err)
+			}
+			if inTx || !free {
+				t.Errorf("figureChanges reads which days of the change moved in a transaction %t, review-latency's lock free %t: a readings write of the eval would wait for that read", inTx, free)
+				return
+			}
+			logReading("beside-the-read", days[0])
+		},
+		locking: func() { logReading("before-the-lock", days[1]) },
+	}
+	r.registry = New(storetest.TracedStore(t, r.database, hold), r.documents, plain.events, plain.attributor)
+	r.refreshIn(ctx, t, nil)
+	r.registry = plain
+	if !hold.read.Load() || !hold.locked.Load() {
+		t.Fatalf("after the figures' change cursor the pass read the stamps %t and took an eval's lock %t, and the check needs both", hold.read.Load(), hold.locked.Load())
+	}
+	var readRows, lockedRows float64
+	var readSpans, lockedSpans []readSpan
+	for _, read := range hold.reads {
+		if !read.changes {
+			continue
+		}
+		rowsRead, _ := r.stampRowsRead(t, read)
+		if read.inTx {
+			lockedRows, lockedSpans = lockedRows+rowsRead, append(lockedSpans, spansRead(read)...)
+		} else {
+			readRows, readSpans = readRows+rowsRead, append(readSpans, spansRead(read)...)
+		}
+	}
+	if len(lockedSpans) == 0 {
+		t.Errorf("figureChanges read no stamps under the eval's lock, where the third day's stored row stood stale")
+	}
+	for _, span := range lockedSpans {
+		if span.first.Before(days[1]) || span.last.After(days[2]) {
+			t.Errorf("under the eval's lock figureChanges reads the stamps of %s, where the days it found moved are %s and %s", span,
+				days[1].Format(time.DateOnly), days[2].Format(time.DateOnly))
+		}
+	}
+	expectTruth(t, "after the pass that read the change", r.storedFigures(t), r.truthFigures(t))
+	r.pass(t)
+	expectTruth(t, "after the next pass", r.storedFigures(t), r.truthFigures(t))
+	t.Logf("figureChanges read %.0f rows of eval_days on the pool over %v, and %.0f under the eval's lock over %v", readRows, readSpans, lockedRows, lockedSpans)
 }
 
 // TestAWriteFoldsEachReaderOverEverySpanItsKeysWrote: one write of the day rows of several keys
@@ -1145,7 +1391,7 @@ func (c cutRead) cutValues(t *testing.T, repos []string, window Range, compare *
 // marked stale (refoldStaleCuts): after each, the eval list's read of every offered range (each
 // preset as a GET and as the live view reads it, with its compare range) of the project's own
 // rows, of the default repository, and after the move of the default before it, is answered by the
-// stored figures of its cut (listValues states some evals from them), with what the fold of its day
+// stored figures of its cut (listValues states every eval from them), with what the fold of its day
 // rows answers (DayWindowIn, SeriesValuesOf) and the fold of the rows of its cut as this test
 // selects them from every stored day row (cutValues); and the stored figures are the fold of the
 // rows that stand, every cut's (expectTruth). Red where the read's cut of the published default
@@ -1194,10 +1440,10 @@ func TestARepositoryFilterAnswersTheFoldOfTheDayRowsOfItsCut(t *testing.T) {
 			for _, filter := range filters {
 				stated, folded, fromFigures := r.listValues(t, project, filter, one.window, &one.compare)
 				cut := read.cutValues(t, filter, one.window, &one.compare)
-				if len(fromFigures) == 0 {
-					t.Errorf("%s: the stored figures answered none of %s's evals over %s of %v", what, project, one.name, filter)
-				}
 				for _, id := range slices.Sorted(maps.Keys(folded)) {
+					if !fromFigures[id] {
+						t.Errorf("%s: the stored figures did not answer %s over %s of %v", what, id, one.name, filter)
+					}
 					if stated[id] != folded[id] {
 						t.Errorf("%s: the read of %s of %v states %s's values in %d bytes that differ from the fold of its day rows' %d at byte %d",
 							what, one.name, filter, id, len(stated[id]), len(folded[id]), firstDiffering(stated[id], folded[id]))
@@ -1267,14 +1513,15 @@ func (r *refresherRig) seedLegionDefault(t *testing.T, defaultRepo string) strin
 
 // TestTheReadOfOneCutsDeployRepositoriesReadsItsRowsAlone: readFigureCuts' read of one cut
 // (cutDeployReposQuery), which every batch of a stale cut's refold makes, answers the cuts of that
-// repository the read of every cut answers (cutOf), and reads the cut's rows of its days and no
-// other. EVAL publishes acme/main as its default and reads the plain owner key of acme/main; over
-// 120 days of two series, EVAL's rows stand under acme/main (those of one deploy repository
-// unlisted), acme/side, "" and ':default', the key's under acme/main, "" and ':default', and
-// another project's under acme/main, each deploy repository but "" that of one cut's rows alone.
-// Over 30 of those days, each of acme/main, acme/side and acme/none is answered as the read of
-// every cut answers it: acme/main with the deploy repository of EVAL's ':default' rows, and with
-// none of the unlisted rows, the key's ':default' rows or the other project's. Its generic plan
+// repository the rows hold (cutOf), and reads the cut's rows of its days and no other, and the read
+// of every cut answers every cut the rows hold. EVAL publishes acme/main as its default and reads
+// the plain owner key of acme/main; over 120 days of two series, EVAL's rows stand under acme/main
+// (those of one deploy repository unlisted), acme/side, "" and ':default', the key's under
+// acme/main, "" and ':default', and another project's under acme/main, each deploy repository but
+// "" that of one cut's rows alone. Over 30 of those days, the read of every cut answers the
+// fixture's five cuts, written out here, and each of acme/main, acme/side and acme/none its own of
+// them: acme/main with the deploy repository of EVAL's ':default' rows, and with none of the
+// unlisted rows, the key's ':default' rows or the other project's. Its generic plan
 // reads eval_days through eval_days_window alone, each range bounded by its key, a repository (the
 // cut's or ':default') and the days, and its analyzed plan of acme/main reads exactly EVAL's and the
 // key's listed rows of acme/main and EVAL's of ':default' in those days. Red against the statement
@@ -1302,23 +1549,19 @@ func TestTheReadOfOneCutsDeployRepositoriesReadsItsRowsAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, repo := range []string{"acme/main", "acme/side", "acme/none"} {
+	ofMain := []figureCut{{repo: "acme/main"}, {repo: "acme/main", deployRepo: "acme/deploy"}, {repo: "acme/main", deployRepo: "acme/legacy"}}
+	ofSide := []figureCut{{repo: "acme/side", deployRepo: "acme/deploy"}}
+	if want := slices.Concat([]figureCut{{}}, ofMain, ofSide); !slices.Equal(every, want) {
+		t.Errorf("the read of every cut of %s answers %v, want %v", r.project, every, want)
+	}
+	for repo, want := range map[string][]figureCut{"acme/main": ofMain, "acme/side": ofSide, "acme/none": nil} {
 		got, err := readFigureCuts(ctx, pool, r.project, read, &repo)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var want []figureCut
-		for _, cut := range every {
-			if cut.repo == repo {
-				want = append(want, cut)
-			}
-		}
 		if !slices.Equal(got, want) {
-			t.Errorf("the read of %s's cut of %s answers %v, and the read of every cut %v of it", r.project, repo, got, want)
+			t.Errorf("the read of %s's cut of %s answers %v, want %v", r.project, repo, got, want)
 		}
-	}
-	if !slices.Contains(every, figureCut{repo: "acme/main", deployRepo: "acme/legacy"}) {
-		t.Fatalf("the read of every cut answers %v, and the check needs the cut of the ':default' rows under acme/main", every)
 	}
 	var rows float64
 	if err := pool.QueryRow(ctx, `
@@ -2342,11 +2585,12 @@ func writesOf(statements []figureStatement) figureWrites {
 }
 
 // rangeKeyOrder and dayFigureKeyOrder each answer the positions, from 0, of the keys its arrays
-// hold (range rows' and day rows' of the stored figures, each array a column of the keys), in
-// the byte order of the keys, every text `collate "C"`: the order of the table's primary key that
-// every writer of its rows takes them in, and so the order upsertRangeFigures' and
-// writeAfterRanges' statements must be sent their rows in, since they take them as sent (`with
-// ordinality`).
+// hold (range rows' and day rows' of the stored figures within one project, each array a column of
+// the keys), in the byte order of the keys, the columns of the table's primary key in its order and
+// every text `collate "C"`: not the order the primary key's index keeps, which compares texts by
+// the database's collation, but the order every writer of the rows takes them in, and so the order
+// upsertRangeFigures' and writeAfterRanges' statements must be sent their rows in, since they take
+// them as sent (`with ordinality`).
 const (
 	rangeKeyOrder = `
 		select (k.sent - 1)::int from unnest($1::text[], $2::int[], $3::date[], $4::text[], $5::text[]) with ordinality
@@ -2547,35 +2791,47 @@ func TestARangeChunkClosesAtARepositoryOrLengthOnceItHoldsTheLeast(t *testing.T)
 }
 
 // TestThePipelinedFoldFoldsOnItsWorkersAndSendsEachChunkOnceItIsFolded: foldInChunks on
-// figureFoldWorkers workers runs that many folds at once and never more; sends each chunk once and
-// in order, on its calling goroutine, once every fold of it is done, while the workers go on with
-// the chunks after it; and folds every index once, those after the last chunk (a write's days)
-// included. Once a send fails it sends no other chunk, leaves indexes unfolded, and answers that
-// error once no fold runs.
+// figureFoldWorkers workers runs that many folds at once and never more, which a run whose every
+// fold waits at a gate shows once every goroutine of its synctest bubble is durably blocked
+// (synctest.Wait): each worker then holds one fold, and no other fold has begun. It sends each
+// chunk once and in order, on its calling goroutine, once every fold of it is done, while the
+// workers go on with the chunks after it; and folds every index once, those after the last chunk
+// (a write's days) included. Once a send fails it sends no other chunk, leaves indexes unfolded,
+// and answers that error once no fold runs.
 func TestThePipelinedFoldFoldsOnItsWorkersAndSendsEachChunkOnceItIsFolded(t *testing.T) {
-	bound := testwait.Bounded(t, time.Minute, time.Second)
-	var folding, most, begun atomic.Int64
-	enter := func() {
-		now := folding.Add(1)
-		for seen := most.Load(); now > seen && !most.CompareAndSwap(seen, now); seen = most.Load() {
-		}
-		begun.Add(1)
-	}
+	t.Parallel()
 	const n = 64
 	ends := []int{8, 9, 20, 41, 56}
+	synctest.Test(t, func(t *testing.T) {
+		gate, done := make(chan struct{}), make(chan error, 1)
+		var running, begun atomic.Int64
+		go func() {
+			done <- foldInChunks(n, figureFoldWorkers, func(int) {
+				running.Add(1)
+				begun.Add(1)
+				<-gate
+				running.Add(-1)
+			}, ends, func(int) error { return nil })
+		}()
+		synctest.Wait()
+		if got, started := running.Load(), begun.Load(); got != figureFoldWorkers || started != figureFoldWorkers {
+			t.Errorf("with every fold held, %d folds run at once and %d have begun, want %d", got, started, figureFoldWorkers)
+		}
+		close(gate)
+		if err := <-done; err != nil {
+			t.Errorf("a fold whose every send succeeds answers %v", err)
+		}
+	})
+
+	bound := testwait.Bounded(t, time.Minute, time.Second)
+	var folding, begun atomic.Int64
+	enter := func() {
+		folding.Add(1)
+		begun.Add(1)
+	}
 	var folds [n]atomic.Int32
-	var short atomic.Bool
 	fold := func(index int) {
 		enter()
-		// The first folds wait until figureFoldWorkers of them run at once, which a pool of fewer
-		// workers never reaches, and then a while longer, in which a worker past the cap would take
-		// the next index: none does, since every worker is held.
-		if index < figureFoldWorkers {
-			if !testwait.Holds(bound, testwait.Poll, func() bool { return most.Load() >= figureFoldWorkers }) {
-				short.Store(true)
-			}
-			testwait.Holds(200*time.Millisecond, testwait.Poll, func() bool { return begun.Load() > figureFoldWorkers })
-		}
 		folds[index].Add(1)
 		folding.Add(-1)
 	}
@@ -2597,12 +2853,6 @@ func TestThePipelinedFoldFoldsOnItsWorkersAndSendsEachChunkOnceItIsFolded(t *tes
 		return nil
 	}); err != nil {
 		t.Fatalf("a fold whose every send succeeds answers %v", err)
-	}
-	if short.Load() {
-		t.Errorf("fewer than %d folds ever ran at once", figureFoldWorkers)
-	}
-	if got := most.Load(); got != figureFoldWorkers {
-		t.Errorf("at most %d folds ran at once, want %d", got, figureFoldWorkers)
 	}
 	if !slices.Equal(sent, []int{0, 1, 2, 3, 4}) {
 		t.Errorf("the chunks were sent in the order %v, want each once in order", sent)
@@ -2645,7 +2895,7 @@ func TestThePipelinedFoldFoldsOnItsWorkersAndSendsEachChunkOnceItIsFolded(t *tes
 	if got := begun.Load(); got >= many {
 		t.Errorf("a fold whose send failed went on to fold all %d indexes", got)
 	}
-	t.Logf("%d folds ran at once; once the second send failed, %d of %d indexes had been folded", most.Load(), begun.Load(), many)
+	t.Logf("once the second send failed, %d of %d indexes had been folded", begun.Load(), many)
 }
 
 // TestAStatementOfTheStoredFiguresHoldsAtMostItsBoundAsPgxEncodesIt: rows whose every field takes
@@ -2932,7 +3182,7 @@ func TestARowPastTheStatementBoundIsWrittenAlone(t *testing.T) {
 // repository's, the deploy repository's and the rows no deploy repository moves, while it writes
 // them. Its range upserts take the rows the whole fold on one worker with no
 // write answers (foldMovedDays), each once, in the byte order of their keys, each statement within
-// one chunk of the ranges it reads (readFigurePlan), as rangeChunks cuts them at rangeChunkLeast;
+// one of the several chunks of the ranges it reads (readFigurePlan) rangeChunks cuts at rangeChunkLeast;
 // its gone ranges, day rows and gone days are that fold's too, in their order, after every range;
 // the range rows and the day rows its upserts take, across their statements, are in the order
 // Postgres's `collate "C"` gives their keys (rangeKeyOrder, dayFigureKeyOrder), which each
@@ -3065,10 +3315,10 @@ func TestARefoldSendsTheWholeFoldsRowsInKeyOrderOnceEachInBoundedStatements(t *t
 	for _, row := range written.ranges {
 		evals[row.eval], repos[row.repo], deployRepos[row.deployRepo] = true, true, true
 	}
-	if len(evals) < 2 || !repos[""] || len(repos) < 2 || !deployRepos[""] || !deployRepos[deliveries.DeployRepo] || upserts < 2 ||
+	if len(evals) < 2 || !repos[""] || len(repos) < 2 || !deployRepos[""] || !deployRepos[deliveries.DeployRepo] || upserts < 2 || len(ends) < 2 ||
 		len(written.goneRanges) < 2 || len(written.goneDays) < 2 {
-		t.Errorf("the refold upserted the ranges of %d evals, of the cuts %q and of the deploy repositories %v in %d statements, and deleted %d ranges and %d days; the check needs several evals, the project's own rows and a repository's, %q and %q, several statements and the two gone ranges and days deleted",
-			len(evals), slices.Sorted(maps.Keys(repos)), slices.Sorted(maps.Keys(deployRepos)), upserts, len(written.goneRanges), len(written.goneDays), "", deliveries.DeployRepo)
+		t.Errorf("the refold upserted the ranges of %d evals, of the cuts %q and of the deploy repositories %v in %d statements of %d chunks of the ranges, and deleted %d ranges and %d days; the check needs several evals, the project's own rows and a repository's, %q and %q, several statements and chunks and the two gone ranges and days deleted",
+			len(evals), slices.Sorted(maps.Keys(repos)), slices.Sorted(maps.Keys(deployRepos)), upserts, len(ends), len(written.goneRanges), len(written.goneDays), "", deliveries.DeployRepo)
 	}
 	expectTruth(t, "a refold of every stale figure", r.storedFigures(t), r.truthFigures(t))
 	t.Logf("the refold sent %d statements, %d of them range upserts of %d rows of %d evals, of %d ranges in %d chunks over %d (repository, length) prefixes, the largest holding %d bytes of parameters as pgx encodes them",
@@ -3270,16 +3520,12 @@ func TestTheLargestEvalTheRoutesAcceptIsWrittenWithinTheStatementBound(t *testin
 		len(sent), largest, what, statementBytes, upserts, slug, widest)
 }
 
-// figureFoldTimingEnv names the variable that runs TestTheFoldOfOneCutOfSixEvalsIsTimed: set to 1,
-// it times the fold; unset, as in CI, the test is skipped.
-const figureFoldTimingEnv = "EVALS_FIGURE_FOLD_TIMING"
-
 // timedFoldInput is one cut built in memory, as a production rule's rewrite folds it: the deploy
 // repository's rows of the six delivery evals that rewrite moves, over the 200 days through
 // 2026-11-01, each lead time and the production deploy holding 10 to 60 samples a day, the deploys
 // counted and the runs shared, as each eval's group of rows (newFigureGroup); the key of each
 // group; every day, which the rewrite moves; and the end day the ranges are folded through.
-func timedFoldInput(t *testing.T) ([]*figureGroup, []figureGroupKey, []time.Time, time.Time) {
+func timedFoldInput(t testing.TB) ([]*figureGroup, []figureGroupKey, []time.Time, time.Time) {
 	t.Helper()
 	const project, deployRepo, span = "BENCH", "acme/deploy", 200
 	last := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
@@ -3298,7 +3544,11 @@ func timedFoldInput(t *testing.T) ([]*figureGroup, []figureGroupKey, []time.Time
 	var groups []*figureGroup
 	var keys []figureGroupKey
 	for _, slug := range []string{SlugDeployFrequency, SlugDeployRunSuccess, SlugMergeToProduction, SlugFirstCommitToProduction, SlugOpenToProduction, SlugProductionDeploy} {
-		catalogued := entryOf(t, slug)
+		at := slices.IndexFunc(catalogue, func(entry catalogueEntry) bool { return entry.definition.Slug == slug })
+		if at < 0 {
+			t.Fatalf("the catalogue holds no %s", slug)
+		}
+		catalogued := catalogue[at]
 		definition := catalogued.definition
 		definition.EvalID, definition.ProjectKey = EvalID(project, slug), project
 		entry := Entry{Definition: definition, Series: catalogued.series}
@@ -3332,7 +3582,7 @@ func timedFoldInput(t *testing.T) ([]*figureGroup, []figureGroupKey, []time.Time
 // foldTimedCut folds every range and day of groups (each of the cut and eval its key names) that
 // holds one of days, up to through, on workers goroutines at once, as a write folds them
 // (figurePlan.foldAndWrite, each chunk sent to no statement), and answers how many it folded.
-func foldTimedCut(t *testing.T, groups []*figureGroup, keys []figureGroupKey, days []time.Time, through time.Time, workers int) int {
+func foldTimedCut(t testing.TB, groups []*figureGroup, keys []figureGroupKey, days []time.Time, through time.Time, workers int) int {
 	t.Helper()
 	var plan figurePlan
 	for index, group := range groups {
@@ -3346,34 +3596,19 @@ func foldTimedCut(t *testing.T, groups []*figureGroup, keys []figureGroupKey, da
 	return folds
 }
 
-// TestTheFoldOfOneCutOfSixEvalsIsTimed logs the wall and CPU time, the bytes allocated and the
-// collections of a fold of one cut of six delivery evals over 200 days (timedFoldInput, folded by
-// foldTimedCut on as many workers as a write folds on), seven times after one unmeasured fold: the
-// in-memory part of what the farm measured in a production rule's rewrite. It is skipped unless
-// figureFoldTimingEnv is 1.
-func TestTheFoldOfOneCutOfSixEvalsIsTimed(t *testing.T) {
-	if os.Getenv(figureFoldTimingEnv) != "1" {
-		t.Skipf("set %s=1 to time the fold of one cut of six evals over 200 days", figureFoldTimingEnv)
-	}
-	groups, keys, days, through := timedFoldInput(t)
+// BenchmarkTheFoldOfOneCutOfSixEvals times a fold of one cut of six delivery evals over 200 days
+// (timedFoldInput, folded by foldTimedCut on as many workers as a write folds on), the in-memory
+// part of what the farm measured in a production rule's rewrite, with the bytes it allocates:
+// `go test -run '^$' -bench TheFoldOfOneCutOfSixEvals -benchmem ./internal/dispatch/evals`.
+func BenchmarkTheFoldOfOneCutOfSixEvals(b *testing.B) {
+	groups, keys, days, through := timedFoldInput(b)
 	workers := min(runtime.GOMAXPROCS(0), figureFoldWorkers)
-	folds := foldTimedCut(t, groups, keys, days, through, workers)
-	var walls, cpus []time.Duration
-	var allocated []uint64
-	var collections []uint32
-	for range 7 {
-		runtime.GC()
-		var before, after runtime.MemStats
-		runtime.ReadMemStats(&before)
-		cpu, start := cputest.Process(), time.Now()
-		foldTimedCut(t, groups, keys, days, through, workers)
-		wall, used := time.Since(start), cputest.Process()-cpu
-		runtime.ReadMemStats(&after)
-		walls, cpus = append(walls, wall), append(cpus, used)
-		allocated, collections = append(allocated, after.TotalAlloc-before.TotalAlloc), append(collections, after.NumGC-before.NumGC)
+	b.ReportAllocs()
+	folds := 0
+	for b.Loop() {
+		folds = foldTimedCut(b, groups, keys, days, through, workers)
 	}
-	t.Logf("a fold of %d ranges and days of %d evals on %d workers (GOMAXPROCS %d): wall median %v, min %v; CPU median %v, min %v; allocated %v bytes, %v collections; walls %v, CPU %v",
-		folds, len(groups), workers, runtime.GOMAXPROCS(0), median(walls), slices.Min(walls), median(cpus), slices.Min(cpus), allocated, collections, walls, cpus)
+	b.ReportMetric(float64(folds), "folds/op")
 }
 
 // TestAFigureOfADeployEvalReadsTheProjectsOwnDeployRepository: over the settled three-source

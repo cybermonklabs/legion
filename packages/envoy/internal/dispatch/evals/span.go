@@ -461,8 +461,8 @@ func rowsOf(rows []DayRow, key evalKey) []DayRow {
 // longer hold (gone); the members of the days built whole for a changed repository as they
 // are stored (stored), as they are built (members) and the days they are built of (memberDays);
 // the repositories that hold no run any more, whose every row and member goes (goneRepos, of
-// projects); the days whose stored figures it folds again, by project and eval (spans); and the
-// days it wrote, for the pass's report.
+// projects); the days whose stored figures it folds again, by project and eval, each run of them
+// apart (spans); and the days it wrote, for the pass's report.
 type spanWrite struct {
 	family     dayFamily
 	build      string
@@ -474,17 +474,14 @@ type spanWrite struct {
 	memberDays map[projectDay]bool
 	goneRepos  []string
 	projects   []string
-	spans      map[string]map[string]daySpan
+	spans      writtenSpans
 	report     []builtDay
 }
 
-// widen widens the span of project's eval evalID whose figures the span write folds again to hold
-// first to last.
+// widen adds the days first to last of project's eval evalID to those whose figures the span write
+// folds again (writtenSpans.add).
 func (b *spanWrite) widen(project, evalID string, first, last time.Time) {
-	if b.spans[project] == nil {
-		b.spans[project] = map[string]daySpan{}
-	}
-	addSpan(b.spans[project], evalID, first, last)
+	b.spans.add(project, evalID, first, last)
 }
 
 // writeRows writes the span write's day rows in tx: the named days', as writeProjectDays writes
@@ -558,7 +555,7 @@ func (b *spanWrite) writeMembers(ctx context.Context, tx pgx.Tx) error {
 // fold folds again, in tx, after the span write's rows and members, the stored figures of the days
 // whose rows it moved, each project once, an owner key's into its readers' (foldFiguresInTx).
 func (b *spanWrite) fold(ctx context.Context, tx pgx.Tx) error {
-	return foldFiguresInTx(ctx, tx, b.build, b.spans)
+	return foldFiguresInTx(ctx, tx, b.build, b.spans.sets()...)
 }
 
 // MarkRebuild marks tx as a rebuild's write of day rows, before its first write of a day row: the
@@ -747,7 +744,7 @@ func (r *refresh) writeNamed(ctx context.Context, days *pageDays, kept *keptMove
 			written = append(written, day)
 		}
 		if withPage {
-			b := &spanWrite{family: family, build: r.build, projects: projects, spans: map[string]map[string]daySpan{}}
+			b := &spanWrite{family: family, build: r.build, projects: projects, spans: writtenSpans{}}
 			for _, day := range written {
 				if err := checkProjectDay(family.what, day, family.slugs, family.families); err != nil {
 					return nil, err
@@ -797,7 +794,7 @@ func (r *refresh) writeNamed(ctx context.Context, days *pageDays, kept *keptMove
 	if err != nil {
 		return nil, err
 	}
-	b := &spanWrite{family: family, build: r.build, projects: projects, goneRepos: gone, spans: map[string]map[string]daySpan{},
+	b := &spanWrite{family: family, build: r.build, projects: projects, goneRepos: gone, spans: writtenSpans{},
 		members: built.members, memberDays: built.memberDays}
 	for _, key := range days.order {
 		named := days.days[key]

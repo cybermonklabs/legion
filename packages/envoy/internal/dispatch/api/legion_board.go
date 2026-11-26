@@ -23,11 +23,12 @@
 //     a field a daemon does not send is a field the board has no observation of. Nothing takes a
 //     slot holder for a root: a card's tree is the daemon's own `tree` where a read carried one
 //     (dispatch://INFRA-980 adds it) and the parent chain otherwise.
-//   - The columns are the spec's, in one ordered list (legionBoardColumnOrder), and a phase maps
-//     to exactly one of them (legion.PhaseColumns), so the view and metric 2's "no role" bar
-//     agree on where `awaiting_person` and `held` go (the plan's D11). The ids and that table are
-//     the legion package's, since the per-issue facts read them with no card to hand; the labels
-//     here are the view's.
+//   - The columns are the spec's, with Waiting on children for the phase dispatch://INFRA-3320
+//     added, in one ordered list (legionBoardColumnOrder), and a phase maps to exactly one of them
+//     (legion.PhaseColumns), so the view and metric 2's "no role" bar agree on where
+//     `awaiting_children`, `awaiting_person` and `held` go (the plan's D11). The ids and that
+//     table are the legion package's, since the per-issue facts read them with no card to hand;
+//     the labels here are the view's.
 package api
 
 import (
@@ -60,6 +61,7 @@ var legionBoardColumnOrder = []struct{ id, label string }{
 	{legion.ColumnAccepting, "Accepting"},
 	{legion.ColumnRetro, "Retro"},
 	{legion.ColumnMerging, "Merging"},
+	{legion.ColumnAwaitingChildren, "Waiting on children"},
 	{legion.ColumnAwaiting, "Waiting on a person"},
 	{legion.ColumnHeld, "Held"},
 }
@@ -210,10 +212,10 @@ type legionBoardHeader struct {
 }
 
 // legionBoardColumn is one column: its id, the label the view shows, and its cards in the order
-// the view draws them. ID is one of the eleven columns, in the order legionBoardColumnOrder draws
+// the view draws them. ID is one of the twelve columns, in the order legionBoardColumnOrder draws
 // them; the enum is what makes the generated type carry that set rather than a bare string.
 type legionBoardColumn struct {
-	ID    string            `json:"id" enum:"queue,design,planning,implementing,testing,reviewing,accepting,retro,merging,awaiting_person,held"`
+	ID    string            `json:"id" enum:"queue,design,planning,implementing,testing,reviewing,accepting,retro,merging,awaiting_children,awaiting_person,held"`
 	Label string            `json:"label"`
 	Cards []legionBoardCard `json:"cards"`
 }
@@ -222,10 +224,11 @@ type legionBoardColumn struct {
 // issues table, joined on the daemon's key (the plan's D13; the daemon's state carries none of the
 // three). Phase, PhaseSince, Slot, Roles and WaitingOn are the newest observations of that issue,
 // PhaseSince being when the phase it is in was first recorded — the time in the phase the card
-// shows. BlockedBy names the issues a blocker link holds it on, and Children counts the issues of
-// its tree that its tree has not started, which are on no card of their own. The card carries no
-// CI verdict: the daemon's state has none since cybermonklabs/legion#2539, and a verdict row a
-// read wrote before then is read by nothing.
+// shows. BlockedBy names the issues a blocker link holds it on; for a parent in
+// `awaiting_children` it names the open children the daemon lists it as blocked on, not blocker
+// links. Children counts the issues of its tree that its tree has not started, which are on no
+// card of their own. The card carries no CI verdict: the daemon's state has none since
+// cybermonklabs/legion#2539, and a verdict row a read wrote before then is read by nothing.
 type legionBoardCard struct {
 	Key        string     `json:"key"`
 	Title      string     `json:"title"`
@@ -666,9 +669,13 @@ func (p *legionBoardPopulation) lineIssue(key string) (legion.LineIssue, bool) {
 // which the view does not re-sort (the spec's "Rule details": that order puts answered roots
 // first, then follows Dispatch's rank); the issues a blocker link holds, after them in the Queue
 // column — of both lists only the issues that have not started work, since an issue that has
-// started keeps the column of its phase and carries its place in the line on its card; and
-// otherwise the column its phase falls in. An issue the daemon reports in `admitted` that holds
-// no slot and that neither list names is a child its tree has not started: it is on no card, and
+// started keeps the column of its phase and carries its place in the line on its card, and never
+// a parent in `awaiting_children`; and otherwise the column its phase falls in. The daemon lists
+// such a parent as blocked on its open children while one is open (dispatch://INFRA-3320, R11),
+// but it waits on them and not on a slot: its card is in Waiting on children for the whole wait,
+// naming its open children while the daemon lists them, and stays there after its last child
+// closes until the pass that returns it. An issue the daemon reports in `admitted` that holds no
+// slot and that neither list names is a child its tree has not started: it is on no card, and
 // the nearest card above it in its tree counts it. Where no issue above it carries a card — its
 // tree climbs through issues the daemon reports nothing of, or through issues whose phase is on
 // no column — it is a card of its own, since a count on an issue the board shows nothing of is a

@@ -65,8 +65,10 @@ import (
 //
 // The commit of a move folds the first paints it folds (5) after the marks it writes (7), where a
 // batch of a stale cut's refold folds (5) before it records with its mark where it stands (7):
-// every writer of both is the refresher, whose lease runs one pass at a time, and of the others the
-// readings writes take stored figures and no mark, and the rename pass marks and no stored figure.
+// every writer of both is the refresher, whose lease runs one pass at a time, or a write that marks
+// its own eval's cuts in its transaction, before it folds a first paint (a readings write past
+// inlineFoldDaySeries, foldWrittenPaints) or with no fold (a register write that moves the eval's
+// fold key), and the rename pass marks and no stored figure.
 
 // defaultsMove is what a page publishes of the projects' default repositories (syncDefaults):
 // every project's default repository as it stands (live, by project), the projects whose published

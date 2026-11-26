@@ -811,7 +811,10 @@ func TestASettingsSaveRecomputesTheEvalsViewsItMoves(t *testing.T) {
 	// save saves the settings change makes, runs the refresher's passes, and waits until the hub
 	// owes nothing for what they logged; it answers the eval_days changes the passes logged and
 	// how many times each view was recomputed, failing the test where one was recomputed for
-	// another cause than the refresher's settings rewrite.
+	// another cause than the refresher's settings rewrite. Every save records the new settings in
+	// the commit that builds under them, which logs one change that they are recorded
+	// (delivery.SettingsRecorded): that change marks the delivery views and no evals view, so save
+	// requires exactly one of it and answers the other eval_days changes alone.
 	save := func(what string, change func(*delivery.DeliverySettings)) ([]delivery.Change, map[string]int) {
 		t.Helper()
 		change(&current)
@@ -826,10 +829,17 @@ func TestASettingsSaveRecomputesTheEvalsViewsItMoves(t *testing.T) {
 			t.Fatalf("%s: read the changes the passes logged: %v", what, err)
 		}
 		var changes []delivery.Change
+		recorded := 0
 		for _, change := range logged {
-			if change.Kind == delivery.ChangeKindEvalDays {
+			switch {
+			case delivery.SettingsRecorded(change):
+				recorded++
+			case change.Kind == delivery.ChangeKindEvalDays:
 				changes = append(changes, change)
 			}
+		}
+		if recorded != 1 {
+			t.Errorf("%s: the passes logged %d changes that the settings are recorded, want 1", what, recorded)
 		}
 		rig.hub.catchUpNow()
 		rig.clock.Advance(viewMaxWait)

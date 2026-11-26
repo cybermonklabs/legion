@@ -235,6 +235,8 @@ const (
 // days: what one more day adds to a page, whatever the pass's own cost. It is skipped unless
 // dayWriteTimingEnv is 1 or statements.
 func TestAPagesDeliveryDaysAreTimed(t *testing.T) {
+	// Not parallel: it times a page's writes, which other tests' load would move; it runs only
+	// when dayWriteTimingEnv asks for it.
 	if mode := os.Getenv(dayWriteTimingEnv); mode != "1" && mode != "statements" {
 		t.Skipf("set %s=1 to time a page's delivery days at ten times the stated run rate", dayWriteTimingEnv)
 	}

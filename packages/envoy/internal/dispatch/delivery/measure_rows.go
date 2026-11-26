@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -269,65 +270,117 @@ func ReadPullRequestsMergedBefore(ctx context.Context, pool *store.Pool, to time
 
 // ReadDeployHistory reads HistoryRows' Deploys alone, the same answer ReadHistoryRows gives of
 // deployRepos and names (each repository's deploy runs on main, and the jobs named names of each
-// run), read another way: each repository's runs side by side, and then the jobs of those runs by
-// their ids (ListRunJobsForRuns), runsPerRead runs a statement, the statements dealt to readers
-// reads side by side. A read of the jobs of every deploy run on main by a subselect (what
-// ReadHistoryRows does) descends delivery_run_jobs' primary key (repo, run_id, name) over every
-// run of the repository, PR-checks runs among them, whose 24,000 jobs a day at ten times the stated
-// run rate it passes over for the few it keeps: 190 to 500 ms of the 2.2 s of a settings rewrite
-// there (dispatch://INFRA-2916); by the ids it descends once for each run and name.
-func ReadDeployHistory(ctx context.Context, pool *store.Pool, deployRepos, names []string, readers, runsPerRead int) (map[string]RunsWithJobs, error) {
-	deploys := make([]RunsWithJobs, len(deployRepos))
-	reads := make([]func(context.Context) error, len(deployRepos))
-	for i, repo := range deployRepos {
-		deploys[i].Jobs = make(map[int64][]DeliveryRunJob)
-		reads[i] = func(ctx context.Context) (err error) {
-			deploys[i].Runs, err = listDeployRunsOnMain(ctx, pool, repo)
-			return err
-		}
-	}
-	if err := store.ReadSideBySide(ctx, reads...); err != nil {
-		return nil, err
-	}
+// run), read another way: each repository's runs listed on a connection of its own, and the jobs of
+// those runs read by their ids (ListRunJobsForRuns), runsPerRead runs a statement, by readers
+// readers side by side, each taking the next runsPerRead runs as the lists read them, so the jobs
+// of a list's first runs are read while it reads on. A read of the jobs of every deploy run on main
+// by a subselect (what ReadHistoryRows does) descends delivery_run_jobs' primary key (repo, run_id,
+// name) over every run of the repository, PR-checks runs among them, whose 24,000 jobs a day at ten
+// times the stated run rate it passes over for the few it keeps: 190 to 500 ms of the 2.2 s of a
+// settings rewrite there (dispatch://INFRA-2916); by the ids it descends once for each run and
+// name. It answers too how long the lists of the runs took, the jobs of their last runs being read
+// after them.
+func ReadDeployHistory(ctx context.Context, pool *store.Pool, deployRepos, names []string, readers, runsPerRead int) (map[string]RunsWithJobs, time.Duration, error) {
+	began := time.Now()
 	type read struct {
 		repo int
 		ids  []int64
 		jobs map[int64][]DeliveryRunJob
 	}
-	var statements []read
-	for i := range deployRepos {
-		ids := make([]int64, len(deploys[i].Runs))
-		for j, run := range deploys[i].Runs {
-			ids[j] = run.RunID
-		}
-		for part := range slices.Chunk(ids, max(runsPerRead, 1)) {
-			statements = append(statements, read{repo: i, ids: part})
-		}
-	}
-	dealt := make([]func(context.Context) error, min(max(readers, 1), len(statements)))
-	for d := range dealt {
-		dealt[d] = func(ctx context.Context) error {
-			for s := d; s < len(statements); s += len(dealt) {
-				jobs, err := ListRunJobsForRuns(ctx, pool, deployRepos[statements[s].repo], statements[s].ids, names)
+	deploys := make([]RunsWithJobs, len(deployRepos))
+	listsTook := make([]time.Duration, len(deployRepos))
+	// queue is the runs the lists have read whose jobs no reader has taken yet, runsPerRead runs a
+	// read, and lists how many lists have not ended. A list hands its runs on and never waits for a
+	// reader, so it holds its connection only while it reads, and a reader waits for a list holding
+	// none: no read waits on a connection another read holds while it waits.
+	var queued sync.Mutex
+	ready := sync.NewCond(&queued)
+	var queue []read
+	lists := len(deployRepos)
+	reads := make([]func(context.Context) error, 0, len(deployRepos)+max(readers, 1))
+	for i, repo := range deployRepos {
+		deploys[i] = RunsWithJobs{Runs: []DeliveryRun{}, Jobs: make(map[int64][]DeliveryRunJob)}
+		reads = append(reads, func(ctx context.Context) error {
+			defer func() {
+				queued.Lock()
+				lists--
+				queued.Unlock()
+				ready.Broadcast()
+			}()
+			var ids []int64
+			hand := func() {
+				queued.Lock()
+				queue = append(queue, read{repo: i, ids: ids})
+				queued.Unlock()
+				ready.Signal()
+				ids = nil
+			}
+			rows, err := pool.Query(ctx, `select `+RunColumns+` `+deployRunsOnMain+` order by started_at, run_id`, repo)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				run, err := ScanRun(rows)
 				if err != nil {
 					return err
 				}
-				statements[s].jobs = jobs
+				deploys[i].Runs = append(deploys[i].Runs, run)
+				if ids = append(ids, run.RunID); len(ids) == max(runsPerRead, 1) {
+					hand()
+				}
+			}
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			listsTook[i] = time.Since(began)
+			if len(ids) > 0 {
+				hand()
 			}
 			return nil
+		})
+	}
+	done := make([][]read, max(readers, 1))
+	for d := range done {
+		reads = append(reads, func(ctx context.Context) error {
+			for {
+				queued.Lock()
+				for len(queue) == 0 && lists > 0 {
+					ready.Wait()
+				}
+				if len(queue) == 0 {
+					queued.Unlock()
+					return nil
+				}
+				one := queue[0]
+				queue = queue[1:]
+				queued.Unlock()
+				jobs, err := ListRunJobsForRuns(ctx, pool, deployRepos[one.repo], one.ids, names)
+				if err != nil {
+					return err
+				}
+				one.jobs = jobs
+				done[d] = append(done[d], one)
+			}
+		})
+	}
+	if err := store.ReadSideBySide(ctx, reads...); err != nil {
+		return nil, 0, err
+	}
+	for _, reader := range done {
+		for _, one := range reader {
+			maps.Copy(deploys[one.repo].Jobs, one.jobs)
 		}
-	}
-	if err := store.ReadSideBySide(ctx, dealt...); err != nil {
-		return nil, err
-	}
-	for _, one := range statements {
-		maps.Copy(deploys[one.repo].Jobs, one.jobs)
 	}
 	byRepo := make(map[string]RunsWithJobs, len(deployRepos))
 	for i, repo := range deployRepos {
 		byRepo[repo] = deploys[i]
 	}
-	return byRepo, nil
+	var runsRead time.Duration
+	if len(listsTook) > 0 {
+		runsRead = slices.Max(listsTook)
+	}
+	return byRepo, runsRead, nil
 }
 
 // Deploys is the measures' deploys of a window: every deploy run on main of the deploy repository

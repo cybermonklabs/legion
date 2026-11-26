@@ -10,13 +10,14 @@
 // it, which is what tells a read served by an index from one that reads the whole index and
 // filters it, and it holds a whole plan to that (RequireIndexKeyed) and builds the generic plan a
 // prepared statement settles on, which is the plan an index is lost in, explained (GenericPlan)
-// or run and measured (AnalyzedGenericPlan). For a statement over a batch of rows (batch.go) it
-// runs the statement a writer sent, after the statements it sent first, under each plan-cache
-// mode (ExplainAfter), and holds the analyzed plan to reading the batch once and each named table
-// by a probe of one row's key (UnprobedReads, RequireEachRowProbedOnce), with a control that must
-// fail it (RequireTheCheckFails), and it runs any statement under a plan-cache mode with the
-// planner's own settings and explains it with the shared buffers each node hit and read
-// (ExplainBuffered).
+// or run and measured (AnalyzedGenericPlan), and runs a statement with sequential scans off and
+// measures the plan it read its rows by (AnalyzedPlan). For a statement over a batch of rows
+// (batch.go) it runs the statement a writer sent, after the statements it sent first, under each
+// plan-cache mode (ExplainAfter), and holds the analyzed plan to reading the batch once and each
+// named table by a probe of one row's key (UnprobedReads, RequireEachRowProbedOnce), with a
+// control that must fail it (RequireTheCheckFails), and it runs any statement under a plan-cache
+// mode with the planner's own settings and explains it with the shared buffers each node hit and
+// read (ExplainBuffered).
 // RequireListReadOnce holds a plan to reading once the list a statement is given,
 // RequireStatementReadsListOnce holds a statement's two plans to it, RequireJoinedOn holds a plan
 // to matching rows by a key, RequireJoinedOnAll holds one subplan of a plan to matching rows by

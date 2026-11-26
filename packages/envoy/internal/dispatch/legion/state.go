@@ -135,20 +135,23 @@ const (
 
 // The phases the daemon reports, which is what a FieldPhase observation holds
 // (packages/daemon/internal/phase). A reader of the board or of the metrics names them from
-// here, so the two never spell one of them differently.
+// here, so the two never spell one of them differently. PhaseAwaitingChildren is a parent that
+// an open Dispatch child of it holds (dispatch://INFRA-3320, R11): no worker of it works, and it
+// keeps no slot.
 const (
-	PhaseAdmitted       = "admitted"
-	PhaseAwaitingPerson = "awaiting_person"
-	PhasePlanning       = "planning"
-	PhaseImplementing   = "implementing"
-	PhaseTesting        = "testing"
-	PhaseReviewing      = "reviewing"
-	PhaseAccepting      = "accepting"
-	PhaseRetro          = "retro"
-	PhaseMerging        = "merging"
-	PhaseAwaitingMerge  = "awaiting_merge"
-	PhaseDone           = "done"
-	PhaseHeld           = "held"
+	PhaseAdmitted         = "admitted"
+	PhaseAwaitingPerson   = "awaiting_person"
+	PhaseAwaitingChildren = "awaiting_children"
+	PhasePlanning         = "planning"
+	PhaseImplementing     = "implementing"
+	PhaseTesting          = "testing"
+	PhaseReviewing        = "reviewing"
+	PhaseAccepting        = "accepting"
+	PhaseRetro            = "retro"
+	PhaseMerging          = "merging"
+	PhaseAwaitingMerge    = "awaiting_merge"
+	PhaseDone             = "done"
+	PhaseHeld             = "held"
 )
 
 // JSONString is a JSON text's string value, or "" for a null, a number, or anything else: an

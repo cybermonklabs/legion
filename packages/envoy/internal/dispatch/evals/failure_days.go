@@ -431,11 +431,11 @@ const failureStaleDays = 31
 // writeFailureDays writes write in one transaction, as writeProjectDay writes a day: every day's
 // rows upserted where a value moved (upsertDays) and the project's stored rows of the three evals
 // on those days that the days no longer hold deleted (deleteStaleFailureDays); for a whole write,
-// every stored row of them on any other day too; and the stored figures of the days folded again
-// (foldFiguresInTx), of every day for a whole write. Its change rows wait in the change log's
-// outbox and are moved into the log once it has committed (drainChanges), so the evals view of the
-// project wakes. A row of another project, another day or another eval is refused before anything
-// is written.
+// every stored row of them on any other day too; and the stored figures of the days folded again,
+// each run of them apart (foldFiguresInTx), of every day for a whole write. Its change rows wait in
+// the change log's outbox and are moved into the log once it has committed (drainChanges), so the
+// evals view of the project wakes. A row of another project, another day or another eval is refused
+// before anything is written.
 func (s *Store) writeFailureDays(ctx context.Context, write failureWrite, builtBy string) error {
 	if len(write.days) == 0 && !write.whole {
 		return nil
@@ -445,14 +445,14 @@ func (s *Store) writeFailureDays(ctx context.Context, write failureWrite, builtB
 		evalIDs[i] = EvalID(write.project, slug)
 	}
 	var rows []DayRow
-	spans := map[string]daySpan{}
+	spans := writtenSpans{}
 	for _, day := range write.days {
 		if err := checkProjectDay(failureFamily, day, failureDaySlugs, nil); err != nil {
 			return err
 		}
 		rows = append(rows, day.Rows...)
 		for _, id := range evalIDs {
-			addSpan(spans, id, day.Day, day.Day)
+			spans.add(write.project, id, day.Day, day.Day)
 		}
 	}
 	tx, err := s.database.Pool.Begin(ctx)
@@ -490,7 +490,7 @@ func (s *Store) writeFailureDays(ctx context.Context, write failureWrite, builtB
 		var evalID string
 		var day time.Time
 		if _, err := pgx.ForEachRow(rows, []any{&evalID, &day}, func() error {
-			addSpan(spans, evalID, day, day)
+			spans.add(write.project, evalID, day, day)
 			return nil
 		}); err != nil {
 			return fmt.Errorf("delete the failure rows %s holds outside its days: %w", write.project, err)
@@ -499,7 +499,7 @@ func (s *Store) writeFailureDays(ctx context.Context, write failureWrite, builtB
 	if err := recordOwners(ctx, tx, write.owners); err != nil {
 		return err
 	}
-	if err := foldFiguresInTx(ctx, tx, builtBy, map[string]map[string]daySpan{write.project: spans}); err != nil {
+	if err := foldFiguresInTx(ctx, tx, builtBy, spans.sets()...); err != nil {
 		return err
 	}
 	if write.firstDayMoved {
@@ -548,10 +548,10 @@ func deleteStaleFailureDays(ctx context.Context, tx pgx.Tx, project string, eval
 }
 
 // deleteFailureDays deletes, in one transaction, every stored failure row of projects, each a
-// project whose failure measures are off, and folds again the stored figures of each day a row
-// went from (foldFiguresInTx), every project's in one fold. Its change rows wait in the change
-// log's outbox and are moved into the log once it has committed (drainChanges). It writes nothing
-// for no project.
+// project whose failure measures are off, and folds again the stored figures of each run of the
+// days a row went from (foldFiguresInTx), every project's in one fold. Its change rows wait in the
+// change log's outbox and are moved into the log once it has committed (drainChanges). It writes
+// nothing for no project.
 func (s *Store) deleteFailureDays(ctx context.Context, projects []string, builtBy string) error {
 	if len(projects) == 0 {
 		return nil
@@ -574,19 +574,16 @@ func (s *Store) deleteFailureDays(ctx context.Context, projects []string, builtB
 	if err != nil {
 		return fmt.Errorf("delete the failure rows of %v, whose failure measures are off: %w", projects, err)
 	}
-	spans := map[string]map[string]daySpan{}
+	spans := writtenSpans{}
 	var project, evalID string
 	var day time.Time
 	if _, err := pgx.ForEachRow(rows, []any{&project, &evalID, &day}, func() error {
-		if spans[project] == nil {
-			spans[project] = map[string]daySpan{}
-		}
-		addSpan(spans[project], evalID, day, day)
+		spans.add(project, evalID, day, day)
 		return nil
 	}); err != nil {
 		return fmt.Errorf("delete the failure rows of %v, whose failure measures are off: %w", projects, err)
 	}
-	if err := foldFiguresInTx(ctx, tx, builtBy, spans); err != nil {
+	if err := foldFiguresInTx(ctx, tx, builtBy, spans.sets()...); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -264,7 +264,11 @@ type Registered struct {
 // fields it leaves out are copied forward, under the eval's lock, so two writes each within the
 // bound cannot leave a version past it, and before it does its document work or stores anything.
 // A version that lists or unlists a logged eval's series lists or unlists that series' stored day
-// rows in the same transaction (relistDays). A write that may write the eval's section, one
+// rows in the same transaction (relistDays), and one that moves a logged eval's fold key (foldKeyOf:
+// a listing, or the fold or the role of a listed series) marks stale, in it too, each cut that holds
+// a stored figure of the eval or a row the write relisted (markMovedKey), so a read of the eval in
+// them folds its day rows, under the new listing, from the write's commit until the refresher's
+// refold has folded them again, in budgeted batches. A write that may write the eval's section, one
 // carrying doc_text or the first of an eval, takes the document's owner lock before it stores
 // anything (lockDocument) and does the section's document work there, in its read phase, queued
 // for the commit after its versions' rows (writeMethod). A write carrying doc_block takes the
@@ -340,6 +344,8 @@ func (s *Store) register(ctx context.Context, w *writeTx, change Registration) (
 	if err != nil {
 		return Registered{}, err
 	}
+	// key is the fold key the eval's stored figures hold before the write.
+	key := foldKeyOf(Entry{Definition: current, Series: slices.Collect(maps.Values(series))})
 	if found && current.Computed() {
 		if field := computationField(change, series); field != "" {
 			return Registered{}, fieldRefusal(CodeFieldComputed, field,
@@ -459,6 +465,8 @@ func (s *Store) register(ctx context.Context, w *writeTx, change Registration) (
 		}
 		answer.Definition, answer.Wrote = stored, true
 	}
+	// relisted is the repository of each row of a series the write listed or unlisted.
+	var relisted []string
 	for _, write := range seriesWrites {
 		stored, inserted, err := insertSeries(ctx, w.Tx, write.version)
 		if err != nil {
@@ -468,13 +476,20 @@ func (s *Store) register(ctx context.Context, w *writeTx, change Registration) (
 			return Registered{}, fmt.Errorf("version %d of series %s of %s was written by a write that holds no lock of the eval", write.version.Version, write.version.Series, evalID)
 		}
 		if write.relist && !answer.Definition.Computed() {
-			if err := relistDays(ctx, w.Tx, answer.Definition, stored); err != nil {
+			repos, err := relistDays(ctx, w.Tx, answer.Definition, stored)
+			if err != nil {
 				return Registered{}, err
 			}
+			relisted = append(relisted, repos...)
 		}
 		series[stored.Series], answer.Wrote = stored, true
 	}
 	answer.Series = sortedSeries(series)
+	if found && !answer.Definition.Computed() && foldKeyOf(Entry{Definition: answer.Definition, Series: answer.Series}) != key {
+		if err := markMovedKey(ctx, w.Tx, answer.Definition, relisted); err != nil {
+			return Registered{}, err
+		}
+	}
 	return answer, nil
 }
 
@@ -577,7 +592,8 @@ func rankedByMinN(definition Definition, series string) bool {
 // readings, the project's row and each repository's), definition being a logged eval: a window
 // read folds the listed rows alone (DayWindowIn), so a row stored before a version that listed its
 // series would otherwise stay out of every window, and one stored before a version that unlisted
-// it in. A row that holds the listing already is left as it is.
+// it in. A row that holds the listing already is left as it is. It answers the repository of each
+// row it relisted, "" for the project's own, each once.
 //
 // It runs under the eval's lock (Register), which every other writer of these rows takes before
 // it reads the listing it writes (WriteReadings, fillLoggedZeros), so no row is written with the
@@ -585,22 +601,30 @@ func rankedByMinN(definition Definition, series string) bool {
 // the byte order of their keys (repository, day), the order every statement that inserts or locks
 // one eval's day rows takes them in (writeDays), where the update alone would take them in the
 // order its plan reads them.
-func relistDays(ctx context.Context, tx pgx.Tx, definition Definition, series Series) error {
-	if _, err := tx.Exec(ctx, `
+func relistDays(ctx context.Context, tx pgx.Tx, definition Definition, series Series) ([]string, error) {
+	rows, err := tx.Query(ctx, `
 		with locked as (
 			select repo, day from eval_days
 			where project_key = $1 and eval_id = $2 and writer = $5 and series = $3 and listed <> $4
 			order by repo collate "C", day
 			for update
+		), relisted as (
+			update eval_days d set listed = $4, updated_at = now()
+			from locked
+			where d.project_key = $1 and d.eval_id = $2 and d.writer = $5 and d.series = $3
+			  and d.repo = locked.repo and d.day = locked.day
+			returning d.repo
 		)
-		update eval_days d set listed = $4, updated_at = now()
-		from locked
-		where d.project_key = $1 and d.eval_id = $2 and d.writer = $5 and d.series = $3
-		  and d.repo = locked.repo and d.day = locked.day
-	`, definition.ProjectKey, definition.EvalID, series.Series, series.Listed, writerReadings); err != nil {
-		return fmt.Errorf("list the day rows of series %s of %s as %t: %w", series.Series, definition.EvalID, series.Listed, err)
+		select distinct repo from relisted
+	`, definition.ProjectKey, definition.EvalID, series.Series, series.Listed, writerReadings)
+	if err != nil {
+		return nil, fmt.Errorf("list the day rows of series %s of %s as %t: %w", series.Series, definition.EvalID, series.Listed, err)
 	}
-	return nil
+	repos, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("list the day rows of series %s of %s as %t: %w", series.Series, definition.EvalID, series.Listed, err)
+	}
+	return repos, nil
 }
 
 // firstDefinition is the definition an eval registered for the first time starts from, before

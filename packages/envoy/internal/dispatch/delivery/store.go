@@ -983,10 +983,11 @@ const everyRunJobForRunsQuery = `select ` + JobColumns + ` from delivery_run_job
 // ListRunJobsForRuns lists the jobs named names of every run in runIDs on repo in one query (not
 // one query per run): a window's apply runs can number hundreds, and this package's other many-id
 // reads pass their whole list as one array parameter for the same reason, as IssueAncestors
-// (below) seeds its walk with `key = any($1)`. A caller that judges a
-// run by some of its jobs reads those alone: the production jobs containment and the measures
-// judge a deploy by (Production.JudgedJobNames) and the Pipeline's deploy cards' jobs. A run of
-// the deploy workflow holds a handful of jobs and a pull-request run dozens, and the read with no
+// (below) seeds its walk with `key = any($1)` and ResolveSessionTitles (agents.go) reads
+// session_titles_pkey for `session_id = any($1)`. A caller that judges a run by some of its
+// jobs reads those alone: the production jobs containment and the measures judge a deploy by
+// (Production.JudgedJobNames) and the Pipeline's deploy cards' jobs. A run of the deploy workflow
+// holds a handful of jobs and a pull-request run dozens, and the read with no
 // name in it cost 660 ms a call at ten times the stated run rate (dispatch://INFRA-2916, R13),
 // where `name = any($3)` keys each run's read to the jobs asked for (runJobsNamedForRunsQuery).
 // No name is no read. listRunJobsFailedForRuns is the read for a caller that needs a run's failed
@@ -1386,10 +1387,10 @@ func collectPullRequests(rows pgx.Rows) ([]DeliveryPullRequest, error) {
 	return prs, rows.Err()
 }
 
-// openP0KeysQuery is OpenP0Keys' read. Its clauses are issues_open_p0's predicate (migration
-// 20261117100010), so the planner proves the index from them and reads the whole of that index,
+// openP0KeysQuery is OpenP0Keys' read. Its clauses are issues_open_p0's predicate
+// (openP0Predicate), so the planner proves the index from them and reads the whole of that index,
 // which holds the open P0 issues alone, rather than scanning every issue of every project.
-const openP0KeysQuery = `select key from issues where priority = 0 and status <> 'done'`
+const openP0KeysQuery = `select key from issues where ` + openP0Predicate
 
 // OpenP0Keys is every open P0 issue's key, across every project: the issues whose change can move
 // the measures' unowned_p0 list. The delivery live hub (api/delivery_live_hub.go) loads it at start

@@ -3,7 +3,7 @@
 # envoy-dispatch and a database the evalbench fixture is loaded into.
 #
 #   run.sh migrate <database-url> <envoy-dispatch>
-#   run.sh measure <database-url> <envoy-dispatch> <head|failure-day|base>
+#   run.sh measure <database-url> <envoy-dispatch> <head|failure-day|base|base-failure-day>
 #
 # migrate boots the server once on an empty database, which migrates it, and stops it.
 #
@@ -23,18 +23,26 @@
 # the end of each refold (measure's own checks); after the runs this script greps the read path for
 # a read of events (k13) and judges the query keys of the list route (k16). failure-day is this head
 # over the fixture with a failure day added to it (evalbench's -failure-day), whose paint is the
-# Delivery timeline's alone, measured once, as the base's is. With EVALBENCH_PG_RESTART set it
+# Delivery timeline's alone; base is the base's paint, and base-failure-day the base's over the same
+# history with the failure day added, whose reads are the Delivery page's the head's timeline reads
+# are set beside. Each is measured once unless EVALBENCH_PAINT_RUNS names more, in which case the
+# runs are tagged and summarised as the head's are. With EVALBENCH_PG_RESTART set it
 # measures the first paint once more after a Postgres restart, for information: it judges no
 # budget, and what it misses prints as INFO-FAIL lines, which fail no step.
 #
 # The server runs with no NATS (DISPATCH_NATS_DISABLED=1), no GitHub App and the header identity
-# the Go tests use, and is reached with its agent token. Its build must be stamped
+# the Go tests use, and is reached with its agent token. It runs under the server's supervisor
+# (supervise.sh, in EVALBENCH_CONTROL), in the server's own container where the pod has one, and a
+# stand-in here takes its place: the stand-in lives as long as the server, passes it the signals it
+# is sent, and exits with its status. Its build must be stamped
 # (-ldflags "-X main.buildCommit=<commit>"): an unstamped binary is a new build at every start, and
 # its restart would rebuild every family the measurement waits for. The database URL is a
 # superuser's: the instrument resets pg_stat_statements and turns the statement log on and off.
 #
 # Environment:
 #   EVALBENCH_WORK        where the server's home, its logs and the measurement's output go (required)
+#   EVALBENCH_CONTROL     the supervisors' directory, whose server/ the server runs under (required;
+#                         job.sh sets it)
 #   EVALBENCH_MEASURE     the built measure command (required by measure)
 #   EVALBENCH_PG_LOG      Postgres's jsonlog file, with log_destination jsonlog (required by measure)
 #   EVALBENCH_PORT        the port the server serves on (58111)
@@ -42,19 +50,23 @@
 #   EVALBENCH_PG_RESTART  a command that restarts Postgres, for the information round
 #   EVALBENCH_CATCHUP     how long the catch-up may take (1h)
 #   EVALBENCH_QUIET, EVALBENCH_CATALOG   measure paint's -quiet and -catalog (30s, 65s)
-#   EVALBENCH_PAINT_RUNS  how many times this head's first paint is measured (8; fewer for a smoke
-#                         run)
+#   EVALBENCH_PAINT_RUNS  how many times the first paint is measured (8 at this head; once in every
+#                         other mode unless named; fewer for a smoke run)
 #   EVALBENCH_NOW         the UTC midnight the loaded history ends at, measure paint's -now (job.sh
 #                         sets it; the current UTC midnight where unset)
-#   EVALBENCH_NODE        the node the run is on, which measure's k16 lines name (job.yaml sets it
-#                         from the pod's spec.nodeName)
+#   EVALBENCH_TEN_TIMES   1 where the fixture is at ten times the stated run rate, measure's
+#                         -ten-times: a database time over a budget stated at the stated rate, and
+#                         k8's base control, print RECORD lines there, not FAIL lines
+#   EVALBENCH_NODE        the node the run is on, measure's -node, which its k16 lines name (job.yaml
+#                         sets it from the pod's spec.nodeName)
 #
 # Every measurement prints a RESULT line, and every one that misses its budget or its rule a FAIL
-# line; the script exits 1 when any step failed.
+# line, or a RECORD line for a budget no check gates at the run's rate; the script exits 1 when any
+# step failed.
 set -euo pipefail
 
 usage() {
-  echo "usage: run.sh migrate <database-url> <envoy-dispatch> | run.sh measure <database-url> <envoy-dispatch> <head|failure-day|base>" >&2
+  echo "usage: run.sh migrate <database-url> <envoy-dispatch> | run.sh measure <database-url> <envoy-dispatch> <head|failure-day|base|base-failure-day>" >&2
   exit 2
 }
 [ $# -ge 3 ] || usage
@@ -64,26 +76,33 @@ case "$command" in
   migrate) [ $# -eq 3 ] || usage ;;
   measure)
     [ $# -eq 4 ] || usage
-    case "$mode" in head | failure-day | base) ;; *) usage ;; esac
+    case "$mode" in head | failure-day | base | base-failure-day) ;; *) usage ;; esac
     : "${EVALBENCH_MEASURE:?EVALBENCH_MEASURE must name the built measure command}"
     : "${EVALBENCH_PG_LOG:?EVALBENCH_PG_LOG must name Postgres jsonlog file}"
+    # The first paint is measured EVALBENCH_PAINT_RUNS times: 8 by default at this head (k8), once
+    # in every other mode unless the count is named.
     runs=1
-    if [ "$mode" = head ]; then
-      runs=${EVALBENCH_PAINT_RUNS:-8}
-      case "$runs" in '' | *[!0-9]* | 0*)
-        echo "run.sh: EVALBENCH_PAINT_RUNS is a count from 1, not '$runs'" >&2
-        exit 2
-        ;;
-      esac
+    [ "$mode" != head ] || runs=8
+    runs=${EVALBENCH_PAINT_RUNS:-$runs}
+    case "$runs" in '' | *[!0-9]* | 0*)
+      echo "run.sh: EVALBENCH_PAINT_RUNS is a count from 1, not '$runs'" >&2
+      exit 2
+      ;;
+    esac
+    recorded=0
+    if [ "$mode" = head ] || [ "$runs" -gt 1 ]; then
+      recorded=1
     fi
     ;;
   *) usage ;;
 esac
 : "${EVALBENCH_WORK:?EVALBENCH_WORK must name a directory for the server home and the logs}"
+: "${EVALBENCH_CONTROL:?EVALBENCH_CONTROL must name the supervisors directory (job.sh sets it)}"
 [ -x "$server_bin" ] || {
   echo "run.sh: $server_bin is not an executable envoy-dispatch" >&2
   exit 2
 }
+here=$(cd "$(dirname "$0")" && pwd)
 work=$EVALBENCH_WORK
 port=${EVALBENCH_PORT:-58111}
 url="http://127.0.0.1:$port"
@@ -92,13 +111,16 @@ mkdir -p "$work/home" "$work/web"
 server_pid=""
 status=0
 
-# start_server boots the server with its stderr in $1 and waits until /healthz answers.
+# start_server boots the server under its supervisor with its stderr in $1 and waits until
+# /healthz answers. server_pid is its stand-in's (the header), which kill and wait treat as the
+# server's.
 start_server() {
   local log=$1
-  (cd "$work/home" && exec env -i PATH="$PATH" HOME="$work/home" XDG_CONFIG_HOME="$work/home" XDG_DATA_HOME="$work/home" \
+  "$here/supervise.sh" exec "$EVALBENCH_CONTROL/server" "$log" env -i -C "$work/home" PATH="$PATH" HOME="$work/home" \
+    XDG_CONFIG_HOME="$work/home" XDG_DATA_HOME="$work/home" \
     DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$token" DISPATCH_IDENTITY=header:X-Dispatch-User \
     DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT="$port" \
-    DISPATCH_WEB_DIST="$work/web" DISPATCH_NATS_DISABLED=1 "$server_bin" >>"$log" 2>&1) &
+    DISPATCH_WEB_DIST="$work/web" DISPATCH_NATS_DISABLED=1 "$server_bin" &
   server_pid=$!
   local started=$SECONDS
   until curl -fsS "$url/healthz" >/dev/null 2>&1; do
@@ -114,7 +136,7 @@ start_server() {
     fi
     sleep 1
   done
-  echo "MARK $(date -u +%FT%TZ) server $server_pid serving after $((SECONDS - started)) s, logging to $log"
+  echo "MARK $(date -u +%FT%TZ) server $server_pid serving after $((SECONDS - started)) s (pid $(cat "$EVALBENCH_CONTROL/server/pid" 2>/dev/null || echo gone) under its supervisor), logging to $log"
 }
 
 # stop_server stops the server with SIGTERM and waits for its exit, which is 0 or 143 when it
@@ -146,14 +168,21 @@ if [ "$command" = migrate ]; then
 fi
 
 # measure runs one subcommand of the measure command against the running server, with the day the
-# loaded history ends on where job.sh names it.
+# loaded history ends on where job.sh names it, the node where the Job names it, and -ten-times
+# where the fixture is at ten times the stated run rate.
 measure() {
-  local subcommand=$1 now=()
+  local subcommand=$1 flags=()
   shift
   if [ -n "${EVALBENCH_NOW:-}" ]; then
-    now=(-now "$EVALBENCH_NOW")
+    flags+=(-now "$EVALBENCH_NOW")
   fi
-  "$EVALBENCH_MEASURE" "$subcommand" -mode "$mode" -database "$database_url" -url "$url" "${now[@]}" "$@" || status=1
+  if [ -n "${EVALBENCH_NODE:-}" ]; then
+    flags+=(-node "$EVALBENCH_NODE")
+  fi
+  if [ "${EVALBENCH_TEN_TIMES:-0}" = 1 ]; then
+    flags+=(-ten-times)
+  fi
+  "$EVALBENCH_MEASURE" "$subcommand" -mode "$mode" -database "$database_url" -url "$url" "${flags[@]}" "$@" || status=1
 }
 
 start_server "$work/server-catchup.log"
@@ -170,17 +199,18 @@ if [ "$status" -ne 0 ]; then
   exit 1
 fi
 
-# The first paint: at this head $runs times (EVALBENCH_PAINT_RUNS), each as the first requests
-# after a fresh start of the server, each run's lines tagged run=<n> and its reads appended to
-# paint-runs.jsonl, which `measure runs` reads once the runs are done; in the other modes once.
+# The first paint: $runs times (EVALBENCH_PAINT_RUNS), each as the first requests after a fresh
+# start of the server. Where the paint is one of several, or at this head, each run's lines are
+# tagged run=<n> and its reads appended to paint-runs.jsonl, which `measure runs` reads once the
+# runs are done; a paint measured once in another mode is not tagged.
 runs_file=$work/paint-runs.jsonl
-if [ "$mode" = head ]; then
+if [ "$recorded" = 1 ]; then
   : >"$runs_file"
 fi
 for run in $(seq 1 "$runs"); do
   paint_log=$work/server-paint.log
   tagged=()
-  if [ "$mode" = head ]; then
+  if [ "$recorded" = 1 ]; then
     paint_log=$work/server-paint-$run.log
     tagged=(-run "$run" -runs-file "$runs_file")
   fi
@@ -189,7 +219,7 @@ for run in $(seq 1 "$runs"); do
     -quiet "${EVALBENCH_QUIET:-30s}" -catalog "${EVALBENCH_CATALOG:-65s}" "${tagged[@]}"
   stop_server
 done
-if [ "$mode" = head ]; then
+if [ "$recorded" = 1 ]; then
   measure runs -runs "$runs" -runs-file "$runs_file"
 fi
 
