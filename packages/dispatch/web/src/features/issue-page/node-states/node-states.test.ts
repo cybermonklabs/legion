@@ -58,8 +58,6 @@ import { artifactsBySlug } from "../issue-artifacts";
 import {
   buildIssueTree,
   heldBy,
-  isCheck,
-  isStatement,
   type NodeChip,
   type ParentLine,
   type TreeNode,
@@ -113,7 +111,7 @@ import {
   statementNode,
 } from "../verification-filter/verification-fixtures";
 import { NodeMarks, NodeStatesProvider } from "./NodeMarks";
-import { marksAt, type NodeStates, stampStates, statesByReference } from "./node-states";
+import { marksAt, type NodeStates, stampStates, stateIdOf, statesByReference } from "./node-states";
 
 /**
  * A node's life and who may read it, put on a tree built by hand: the states arrive by the read's
@@ -703,53 +701,61 @@ function checkThat(blockId: string, passed: boolean): CheckBlock {
   });
 }
 
-/** The coverage read the server answers for the issue `root` is the tree of
- *  (`coverage_tuples.go`'s `coverTreeRequirements`): a row for each statement of the tree, at any
- *  depth, in its order, whose `checks` counts the checks under it but a proposed or an overtaken
- *  one, which serve nothing (`readServingChecks`), and whose `coverage` is `closed` at or under an
- *  overtaken node and `proposed` for a statement only put forward, whatever serves it. */
-function coverageOf(root: TreeNode): IssueCoverage {
-  const statements = new Map<string, TreeNode>();
-  const walk = (at: TreeNode): void => {
-    if (isStatement(at) && !statements.has(at.id)) statements.set(at.id, at);
-    for (const child of at.children) walk(child);
+/** The coverage read's rows over `root`, as the server builds them (`coverage_tuples.go`'s
+ *  `coverTreeRequirements`): one row for each statement, with its own state, its coverage
+ *  `closed` where it, or a node above it in its walk, is overtaken by a state of its own
+ *  (`closed`), `proposed` where it is proposed, and the checks that serve it - its count of
+ *  checks where it carries one (`TreeNode.counts`), else the checks under it but a proposed or an
+ *  overtaken one, which serves nothing (`readServingChecks`). A question's row drawn from a block
+ *  takes the state of its ask's node (`stateIdOf`), which stands in no statement's walk, so the
+ *  row of a statement under it is not closed by it, though the page closes that statement. No
+ *  result is read for a proof here, so a row a check serves is `unproven`. */
+function coverageRows(root: TreeNode): RequirementCoverage[] {
+  const rows = new Map<string, RequirementCoverage>();
+  // `above` is whether a node above `node` in its walk is overtaken by a state of its own.
+  const walk = (node: TreeNode, above: boolean): void => {
+    const closed = above || (node.life === "overtaken" && stateIdOf(node) === node.readId);
+    const ref = node.reference;
+    if (node.statement === true && ref !== undefined && !rows.has(ref)) {
+      const checks =
+        node.counts?.checks ??
+        node.children.filter(
+          (child) =>
+            child.type === "check" && child.life !== "proposed" && child.life !== "overtaken"
+        ).length;
+      rows.set(ref, {
+        block_id: ref.slice(ref.lastIndexOf("#b-") + "#b-".length),
+        checks,
+        coverage: closed
+          ? "closed"
+          : node.life === "proposed"
+            ? "proposed"
+            : checks === 0
+              ? "gap"
+              : "unproven",
+        gaps: [],
+        plan_tasks: 0,
+        ref,
+        state: node.life ?? "live",
+        text: node.text,
+      });
+    }
+    for (const child of node.children) walk(child, closed);
   };
-  walk(root);
+  walk(root, false);
+  return [...rows.values()];
+}
+
+/** The coverage read the server answers for the issue `root` is the tree of, whose rows are
+ *  `coverageRows`' over it. */
+function coverageOf(root: TreeNode): IssueCoverage {
   return {
     gaps: [],
     has_plan: false,
     issue: KEY,
-    requirements: [...statements.values()].map((statement) => {
-      const serving = statement.children.filter(
-        (child) => isCheck(child) && child.life === undefined
-      );
-      return {
-        block_id: statement.id.slice(statement.id.lastIndexOf("#b-") + "#b-".length),
-        checks: serving.length,
-        coverage: coverageState(statement, serving),
-        gaps: [],
-        plan_tasks: 0,
-        ref: statement.reference ?? statement.id,
-        state: statement.life ?? "live",
-        text: statement.text,
-      };
-    }),
+    requirements: coverageRows(root),
     spec_artifact_id: SPEC_DOCUMENT.id,
   };
-}
-
-/** What the coverage read says of `statement`, served by the checks `serving`, as the server
- *  decides it (`coverTreeRequirements`): closed at or under an overtaken node and proposed while
- *  it is only put forward, whatever serves it, else a gap where no check serves it, and proved
- *  where a check of it passed. */
-function coverageState(
-  statement: TreeNode,
-  serving: readonly TreeNode[]
-): RequirementCoverage["coverage"] {
-  if (statement.closed === true) return "closed";
-  if (statement.life === "proposed") return "proposed";
-  if (serving.length === 0) return "gap";
-  return serving.some((one) => one.state === "passed") ? "proved" : "unproven";
 }
 
 /** The Verification view over `root`, with `checks` as the issue's results read and the coverage
@@ -948,6 +954,44 @@ test("under Verification an overtaken check is a row under its statement, marked
     expect(document.activeElement).toBe(statementRow);
     await user.keyboard("k");
     expect(document.activeElement).toBe(check);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The server closes a statement's coverage row only where the statement, or a node above it in
+// its walk, is overtaken by a state of its own (`coverage_tuples.go`'s `closed`). A question
+// written as an `:::ask` block is overtaken by its ask's node, which stands in no statement's
+// walk, so the row of a statement under that question comes unclosed; the page closes that
+// statement with its question all the same (`stateIdOf`). No count of the summary reads it: not
+// the covered count, and not the "of M" that count is out of. The table still draws it.
+test("the Verification summary leaves out a statement under an overtaken question whose coverage row is not closed", () => {
+  const ask = "ask-q1";
+  const passed = checkThat("c-one", true);
+  const underQuestion = checkThat("c-two", true);
+  const first = statementNode("r1", "The page draws the checks.", [checkNode(passed)]);
+  const asked = statementNode("r2", "A later question took this one's place.", [
+    checkNode(underQuestion),
+  ]);
+  const root = stamped(
+    node(KEY, "issue", [
+      first,
+      node("spec#b-q1", "ask", [asked], { source: { id: ask, issue: KEY, kind: "ask" } }),
+    ]),
+    { [ask]: { life: "overtaken" } }
+  );
+  expect(coverageRows(root).map((row) => [row.ref, row.coverage])).toEqual([
+    [first.reference, "unproven"],
+    [asked.reference, "unproven"],
+  ]);
+  expect(nodesInOrder(root).find((one) => one.id === asked.id)?.closed).toBe(true);
+
+  const view = drawVerification(root, [passed, underQuestion]);
+  try {
+    expect(view.container.querySelectorAll("[data-verification-card]")).toHaveLength(2);
+    expect(textOf(view.container, "[data-verification-covered]")).toBe(
+      `1 ${VERIFICATION_WORDS.of} 1 ${VERIFICATION_WORDS.covered}`
+    );
   } finally {
     view.unmount();
   }
@@ -3239,16 +3283,11 @@ test("the Plan chart marks a proposed step, and what a step needs and serves", (
     reading: { words: "Task t1 is carried out." },
     ref: planRef("t1"),
   };
-  // The statement's chip takes its projected line from the same reading as the view.
+  // What the page's batched read names the step's need by, and the reading the view names the
+  // statement it serves by (`presets.ts`' `nodeReading`, `PresetView.readings`).
   const published = publishedChips([
     needs,
-    {
-      answered: true,
-      gone: false,
-      label: BLOCK_ATTRIBUTE_LABELS.serves,
-      reading: nodeReading(serves),
-      ref: serves.reference ?? "",
-    },
+    { answered: true, gone: false, reading: nodeReading(serves), ref: serves.reference ?? "" },
   ]);
   const view = drawPlan(
     stamped(

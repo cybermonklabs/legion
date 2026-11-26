@@ -2184,10 +2184,10 @@ test("an ask's answer is part of the ask's node and no node of its own", () => {
 // the ask, or, for a question asked of the issue itself, stand in the ask's own place - so each
 // ask stays one node, with the person's answer on it, and carries a chip for each node its
 // decision shaped. That edge is read from the ask's node as an agent's decision's is from its
-// own: a statement another node made that the decision says it shaped draws the disagreement,
-// one the ask's own block made draws none, and the decision key reaches the ask from what it
-// shaped. An agent's decision that settles the answered question is a decision of its own under
-// it, and the Decisions filter counts each once.
+// own: a statement another node made that the decision says it shaped draws no gap for the two
+// edges disagreeing, nor does one the ask's own block made, and the decision key reaches the ask
+// from what it shaped. An agent's decision that settles the answered question is a decision of
+// its own under it, and the Decisions filter counts each once.
 test("a person's decision is the answered ask's own node, which carries what it shaped", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const answer = { at: "2026-11-06T00:00:00Z", selected: [], text: "One read.", user: "alice" };

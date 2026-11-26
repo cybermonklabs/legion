@@ -418,7 +418,6 @@ export function NodeRow({
           )}
           {oneLine ? null : <LensChain node={node} tabStops={tabStops} />}
           <RowActs
-            focused={focused}
             node={node}
             ownAnswer={ownAnswer}
             ownComment={own && node.type === "comment"}
@@ -1195,18 +1194,17 @@ export function NodeOptions({
  * Settle (`SettleAct`), on a proposed row where `settles` holds (R4), carries `data-row-act` but
  * needs no writer: a cookie proves a person.
  *
- * On the focused row alone (`focused`), after Copy reference and its answer, a node of this issue
- * that the invoke route takes draws the Lens act and its menu of lens kinds
- * (`lenses/LensMenu.tsx`), in Conversation and in Graph, which `LensMenu` reads from the context
- * `TreeRows.tsx` provides (R4). It writes as the reader, whether or not a writer is, and carries
- * `data-row-lens` rather than `data-row-act`.
+ * After Copy reference and its answer, on every row of Conversation and Graph whose node the
+ * invoke route takes, whatever the focus, the row draws the Lens act and its menu of lens kinds
+ * (`lenses/LensMenu.tsx`), which `LensMenu` reads from the context `TreeRows.tsx` provides (R4).
+ * It writes as the reader, whether or not a writer is, and carries `data-row-lens` rather than
+ * `data-row-act`.
  *
  * A press leaves the focus where it is until the action moves it to the line, as the row's other
  * controls do, so the press never lands on a row that moved under it. Each is out of the tab
  * order unless `tabStops` holds (`NodeRow`'s).
  */
 export function RowActs({
-  focused = false,
   node,
   ownAnswer,
   ownComment = false,
@@ -1215,8 +1213,6 @@ export function RowActs({
   tabStops = false,
   writer,
 }: {
-  /** Whether the row has the focus: only the focused row offers the Lens act (`LensMenu`). */
-  focused?: boolean;
   node: TreeNode;
   ownAnswer: boolean;
   /** Whether the row is the reader's own comment, which carries Edit. */
@@ -1306,7 +1302,7 @@ export function RowActs({
           {status === "copied" ? ANSWER_LINES.copied : ANSWER_LINES.copy_failed}
         </span>
       )}
-      {focused ? <LensMenu node={node} tabStops={tabStops} /> : null}
+      <LensMenu node={node} tabStops={tabStops} />
     </p>
   );
 }

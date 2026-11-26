@@ -270,7 +270,7 @@ function drawList(root: TreeNode, width: number): { container: HTMLElement; unmo
   })) as unknown as HTMLCanvasElement["getContext"]);
   // On `HTMLElement.prototype`, where `IssueTree.test.tsx` spies the same method: a spy there
   // left behind as the prototype's own property would hide one made on `Element.prototype`.
-  const box = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const box = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     return new DOMRect(0, 0, this.getAttribute("role") === "tree" ? width : 0, 0);
@@ -389,7 +389,7 @@ function drawNamedList(
     font: "",
     measureText: (text: string) => ({ width: text.length * CHARACTER }),
   })) as unknown as HTMLCanvasElement["getContext"]);
-  const box = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const box = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     return new DOMRect(0, 0, this.getAttribute("role") === "tree" ? width : 0, 0);

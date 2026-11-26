@@ -72,6 +72,7 @@ import { type Press, trackPress } from "../press-focus";
 import { RowText } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { outOfCounts } from "../tree-fold";
+import { nodesInOrder } from "../tree-keys";
 import { type OnEditing, pressAsksCaret, useNodeEditing, useWordsPress } from "../useNodeEditing";
 import { moveToRow } from "../useTreeKeymap";
 import {
@@ -323,6 +324,31 @@ export function VerificationFilterBody({
   const [only, setOnly] = useState<StatementState | undefined>(undefined);
   if (chosen !== only) setChosen(only);
   const counts = useMemo(() => statementCounts(issue.statements), [issue]);
+  // No count reads a proposed statement, or one at or under an overtaken node (R3): no row the
+  // coverage read marks so, which holds the statements the view has not loaded, and no row whose
+  // statement the issue's view holds at any depth out of the counts (`outOfCounts`). The page
+  // closes a statement under a question its ask's node overtakes (`node-states.ts`' `stateIdOf`),
+  // where the server's walk reaches the question's block alone and leaves the row unclosed. The
+  // body is given no issue to address a node by (`tree-drafts.ts`' `nodeIdOf`), so a row is
+  // paired with its statement by the address the tree gave that statement, which is the row's own
+  // `ref` (`tree-read/tree-nodes.ts`' `keptReference`).
+  const countable = useMemo(() => {
+    if (coverage === undefined) return undefined;
+    const outside = new Set(
+      nodesInOrder(issueView).flatMap((node) =>
+        node.type === "requirement" && node.reference !== undefined && outOfCounts(node)
+          ? [node.reference]
+          : []
+      )
+    );
+    return {
+      ...coverage,
+      requirements: (coverage.requirements ?? []).filter(
+        (row) => row.coverage !== "proposed" && row.coverage !== "closed" && !outside.has(row.ref)
+      ),
+    };
+  }, [coverage, issueView]);
+  coverage = countable;
   const covered = useMemo(() => issueCovered(coverage), [coverage]);
   // Whether the view read holds nodes no page read yet holds, so each count of the statements
   // and checks it has loaded carries "+" (R15).
@@ -1054,11 +1080,11 @@ function Summary({
   reading: VerificationReading;
 }): ReactNode {
   const { commit } = reading;
-  // What the summary counts of the loaded view: every statement and check but those
+  // What the summary counts: every statement and check but those
   // `outOfCounts` leaves out - a proposed statement or check, and each one at or under an
-  // overtaken node. `counts` leaves them out already; this leaves them out of the statements the
-  // bar is drawn over and of the legend's count of how the checks stand, while the table still
-  // draws every row. The covered line is the coverage read's (`covered`).
+  // overtaken node. `counts` and the covered count leave them out already; this leaves them out
+  // of the loaded statements the bar is drawn over and of the legend's count of how the checks
+  // stand, while the table still draws every row.
   const drawn = reading;
   reading = useMemo(
     () => ({

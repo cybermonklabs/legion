@@ -468,7 +468,7 @@ test("the chord that opens a view with no row reaches its failed read's Retry fr
 // box is given, 100 px above the screen, and every other box is empty.
 test("the chord that opens a view with no row brings its failed read's Retry on screen in the next frame", async () => {
   const user = userEvent.setup();
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {
     return this.matches(FAILED_READ_RETRY) ? new DOMRect(0, -100, 80, 24) : new DOMRect();

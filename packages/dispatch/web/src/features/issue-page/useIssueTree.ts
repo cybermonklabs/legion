@@ -301,14 +301,15 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // `["comments", key]` on a comment event and on a document's upload or new version;
   // `["asks", key]` on an ask event, a reply on an ask, a review of a document and a block
   // repaired or found invalid; `["issue-messages", key]` on a message event;
-  // `["issue", key, "coverage"]` on a document's upload or new version and on `artifact.indexed`;
-  // `["issue", key, "results"]` on those too, on a result recorded or retracted and on a pull
-  // request moved to another issue; and a names read (`["reference-targets", …]`) on an event
-  // that changes the words or the name under an address its key holds, on the issue or project
-  // document that address is of: a comment's or an issue message's edit or delete, an ask's edit,
-  // a document's creation, new version, rename or removal, an `artifact.indexed`, and an issue's
-  // write that changes its title (`referenceNameTargets`). A post's edit or delete also reaches a
-  // read that names the post by its whole id under another owner (`correctedPostAddresses`), and
+  // `["issue", key, "coverage"]` on a document's upload or new version and on the block index
+  // catching up on documents a write left owing it (`artifact.indexed`); `["issue", key,
+  // "results"]` on those too, on a result recorded or retracted and on a pull request moved to
+  // another issue; and a names read (`["reference-targets", …]`) on an event that changes the
+  // words or the name under an address its key holds, on the issue or project document that
+  // address is of: a comment's or an issue message's edit or delete, an ask's edit, a document's
+  // creation, new version, rename or removal, an `artifact.indexed`, and an issue's write that
+  // changes its title (`referenceNameTargets`). A post's edit or delete also reaches a read that
+  // names the post by its whole id under another owner (`correctedPostAddresses`), and
   // `markCorrectedPost` writes the post's marks into the answers the cache holds. A names read's
   // key is the set of addresses it names, so a tree that comes to hold another set reads again
   // under a key of its own, and only a change under an address the tree already names needs a

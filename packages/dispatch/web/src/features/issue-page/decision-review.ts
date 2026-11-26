@@ -126,9 +126,9 @@ export function decisionContent(
 }
 
 /** The fields of the issue read a decision's document is found by, where the decisions read names
- *  none (`decisionDocumentId`): its key, its documents and which of them is its spec. Every view
- *  that finds a decision's document hands it the issue read it already holds: the Decisions tab
- *  and the margin's decision cards. */
+ *  none (`decisionDocumentId`): its key, its documents and which of them is its spec. Each view
+ *  that finds a decision's document so hands it the issue read it already holds: today's
+ *  Decisions tab and the margin's decision cards. */
 export type DecisionDocuments = Pick<IssueDetails, "key" | "primary_artifact_id"> & {
   readonly artifacts?: readonly Pick<Artifact, "id" | "slug">[] | null;
 };

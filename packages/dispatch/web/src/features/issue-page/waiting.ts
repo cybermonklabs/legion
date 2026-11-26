@@ -1,13 +1,12 @@
 import type { Comment, IssueDetails } from "../../api/types";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import {
-  askOfNode,
   type DecisionReads,
   decidedByPerson,
   decisionsOfAnswer,
 } from "./decision-nodes/decision-nodes";
 import { decisionNodeChanges, deletedPostIds, inReviewList } from "./decision-review";
-import { askIdsOf, closedReadIds } from "./node-states/node-states";
+import { closedReadIds } from "./node-states/node-states";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
@@ -84,14 +83,8 @@ export function waitingOnReader(
 ): WaitingOnReader {
   // Each open ask and node of the tree at or under an overtaken node taken out, the decisions
   // among those nodes with them, and the count made of what is left.
-  const reads: DecisionReads = { asks: asksRead, issue };
-  const closed = closedReadIds(tree, reads);
+  const { askIds: closedAsks, readIds: closed } = closedReadIds(tree, { asks: asksRead, issue });
   if (tree !== undefined && closed.size > 0) {
-    // The ask of each closed ask node, its conversation node or its block.
-    const closedAsks = askIdsOf(
-      (tree.nodes ?? []).filter((node) => closed.has(node.id)),
-      askOfNode(reads)
-    );
     issue = {
       ...issue,
       open_asks: (issue.open_asks ?? []).filter((ask) => !closedAsks.has(ask.id)),

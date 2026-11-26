@@ -112,8 +112,8 @@ export function TreeRows({
   // The room of the issue's tree read, read once for every row as Enter reads it
   // (`useNodeEditing.ts`), by the issue the page's writer is of; with no writer there is none.
   const room = useRoomFacts(useOutlineWriter()?.issueKey);
-  // The Lens act the focused row offers in Conversation and in Graph, one value while the
-  // address stands (`useLensAct`).
+  // The Lens act each row offers in Conversation and in Graph, whatever the focus, one value
+  // while the address stands (`useLensAct`).
   const lensAct = useLensAct();
   return (
     <>
