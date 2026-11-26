@@ -50,6 +50,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 - A peer that is not there is the module's `internal/testport`: `Refused(t)` is a loopback address whose port the test holds bound, never listening, until it ends, so every dial to it is refused and no other program can bind the port, with or without `SO_REUSEADDR` or `SO_REUSEPORT`.
   It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://INFRA-3904).
   It holds no listening socket and hands nothing to a child: a process the test starts takes a socket the test holds (`cmdtest.HoldPort` and `Pass`, `DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`, `LEGION_LISTEN_FD`) or binds port 0 and names its port, never a port the test picked and let go of.
+  A server that takes neither and can listen on a unix socket listens on one in a directory of the test's own (`testtmp.Dir`), and on no TCP port, as `internal/ompsessions`' PgBouncer does in a directory docker mounts into its container.
   A daemon a test boots in its own process (`packages/daemon/internal/daemon`) takes its API listener from a socket the test holds (`heldListen`, through `overrides.listen`), and a test whose daemons must listen on one port across a restart, as the controller sandbox rig's worker stream must, hands each boot a descriptor of a socket it holds for its whole run (`heldSocketListen`, through `overrides.listen` and `overrides.streamListen`).
   A port a test holds so that another bind of it fails is held at the address that bind names: a wildcard listener from `net.Listen` (`0.0.0.0` or `[::]`, which sets `SO_REUSEADDR`) keeps a bind of one address off its port under Linux but not under gVisor, whose netstack lets a second socket that sets `SO_REUSEADDR` bind that address beside it (`internal/testnats`'s `TestAServerThatLoggedAFatalErrorFailsItsStartEvenOnceReady` holds its server's profiler port at the server's own host for this reason).
 
@@ -238,7 +239,7 @@ itself, whose tests import its sources by relative path.
   `packages/claude-envoy/tests/transpiler-cache.ts`).
 
 - Two caches stay where their tool puts them, under the user's cache directory, and this is the one
-  rule here that holds only under a condition. Oh My Pi's native modules, about 123 MiB a pin, are
+  rule here that holds only under a condition. Oh My Pi's native modules, about 124 MiB a pin, are
   hardlinked into each test's fresh HOME from one copy per binary at
   `$XDG_CACHE_HOME/legion/test-omp-natives`, or `$HOME/.cache/legion/test-omp-natives` where
   `XDG_CACHE_HOME` is unset (`nativesCacheRoot` in `packages/pi-shared/test/omp-natives.ts`);
@@ -329,6 +330,36 @@ included.
 When a test waits for a process that the code under test starts, the code tells the test that
 process's pid. A command that a test hands to the code, such as a `!` token command or a stand-in,
 writes its own pid (`echo $$ >FILE`) as its first act.
+
+## A Go test that starts a copy of its own test binary
+
+A copy of a Go test binary that a test starts with a marker, an environment variable or a first
+argument, gets its role from the package's `TestMain`, which runs that role and no test. In a build
+of the tests without that `TestMain` (a build constraint that keeps its file out of one build, a
+split of the test files) the copy runs every test, and each test that starts a copy starts more:
+on 2026-11-25 a copy of `packages/envoy/clitest`'s tests, split so that its `TestMain` was in an
+`integration` build alone, grew to 21,523 live copies and 505,340 threads, and stopped a 288-CPU
+host for 3.5 hours.
+
+So before every start of such a copy, a test asks one function of its package that returns an
+error in a process that carries a copy's marker itself (`fakeCopyRefusal` in
+`packages/envoy/clitest`, `legionCopyRefusal` in the daemon's `cmd/legion`, `helperCopyRefusal` in
+its `internal/launcher`), and refuses to start the copy on that error. A test that must set a
+copy's marker in its own process, because a copy started by code under test inherits it from there,
+starts every copy of its own before it sets it.
+
+The package has two tests of this. One is a unit test of that function: under `t.Setenv` of the
+marker (and, for a role given by the first argument, with `os.Args` set and put back) it returns
+the error, and with the marker unset it returns nil. While `TestMain` is in the build no copy ever
+reaches the function, so this test is the one that fails when the check is deleted. The other
+starts one copy with its marker and `-h`. Whatever the role does with `-h`, the testing package
+reads it before any test runs: in a build without `TestMain` that copy prints the testing package's
+flag usage and exits, so the test fails by name and starts nothing more. That covers a role chosen
+by an environment variable alone: Go stops reading flags at the first argument that is not one, so
+a copy whose role is its first argument (the launcher's `worker-shim` stand-in) never reads a `-h`
+after it, and for such a role the unit test, with `os.Args` set, is the only test. A copy started
+with `-test.run=^Name$`, whose named test reads its marker, is not of this kind: without
+`TestMain` it still runs that one test.
 
 ## The act rule of a Dispatch unit test
 
@@ -591,6 +622,20 @@ helper process that exits the test binary (`TestIdleRigRoleProcess`); or it hold
 bound that the parallel tests' load could make it miss, which the comment names (`podStopBound`'s
 one second in `TestAPodStartsItsRolesOneLoadAtATime`). A new test with neither the call nor the
 comment runs alone for no reason, as 46 tests did by 2026-11-25.
+
+## A daemon test writes a file it then executes with `internal/execfile`
+
+In a package of the daemon module whose tests run beside each other (`cmd/legion`,
+`internal/daemon`, `internal/intake`), a test writes a file it or its program then executes (a
+stand-in git, gh, jj or curl, a wrapper on a PATH) with `packages/daemon/internal/execfile`
+(`execfile.Write`, `execfile.Append`), never `os.WriteFile` or an `os.OpenFile` of its own. A child
+another test forks while the file is open for writing holds the write descriptor until its own
+exec, and the kernel refuses to exec a file open for writing: `fork/exec …: text file busy`
+(ETXTBSY, Go issue 22315), which a serial run never meets. `execfile` holds `syscall.ForkLock` for
+reading from the open to the close, so no fork lands in between. Code a test runs that writes such
+a file holds the lock the same way (`internal/runtime/workerbin`'s `writeTemporary`,
+`internal/leakguard`'s `writeCopyFile`). A file no program executes (a token, a configuration, a
+record) needs neither.
 
 ## Go's package deadline
 
