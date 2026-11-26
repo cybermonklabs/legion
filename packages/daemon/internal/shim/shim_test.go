@@ -156,9 +156,7 @@ func fakeOMP() int {
 		case "fake_end_turn":
 			emit(`{"type":"agent_end"}`)
 		case "fake_end_turn_chunked":
-			// An agent_end carries the whole transcript, so Oh My Pi chunks a long one.
-			end := `{"type":"agent_end","messages":[{"pad":"` + strings.Repeat("x", 2<<20) + `"}]}`
-			emit(chunkLines([]byte(end))...)
+			emit(chunkedAgentEnd()...)
 		case "fake_go":
 			holds.wentOn()
 		case "get_state":
@@ -246,9 +244,12 @@ func (h *fakeHolds) await(done func() bool) {
 //
 //	ready                                        Oh My Pi's ready frame
 //	end <provider> <model> [error]               one assistant message_end, which ended in an error where asked
+//	end-as <role> <provider> <model>             one message_end of a message of that role
+//	set-model <provider> <id>                    the bridge's legion_set_model frame
 //	end-chunked <provider> <model> <bytes>       one message_end of that size, as a whole rpc_chunk sequence
 //	end-chunked-half <provider> <model> <bytes>  the first half of that sequence
-//	end-chunked-rest                             the rest of it
+//	agent-end-chunked-half                       the first half of chunkedAgentEnd's sequence
+//	end-chunked-rest                             the rest of the sequence a half began
 //	await-get-state                              hold the next get_state unanswered
 //	answer-held <provider>/<id> | none           answer the oldest get_state held, naming that model or none
 //	await-go                                     wait for the next fake_go line on stdin
@@ -274,6 +275,10 @@ func runScript(actions []string, holds *fakeHolds, emit func(...string)) error {
 				stopReason = "error"
 			}
 			emit(string(messageEnd(f[1], f[2], stopReason, 0)))
+		case f[0] == "end-as" && len(f) == 4:
+			emit(string(roleMessageEnd(f[1], f[2], f[3], "stop", 0)))
+		case f[0] == "set-model" && len(f) == 3:
+			emit(fmt.Sprintf(`{"type":"legion_set_model","provider":%q,"id":%q}`, f[1], f[2]))
 		case (f[0] == "end-chunked" || f[0] == "end-chunked-half") && len(f) == 4:
 			size, err := strconv.Atoi(f[3])
 			if err != nil {
@@ -284,6 +289,10 @@ func runScript(actions []string, holds *fakeHolds, emit func(...string)) error {
 				emit(chunks...)
 				break
 			}
+			emit(chunks[:len(chunks)/2]...)
+			rest = chunks[len(chunks)/2:]
+		case f[0] == "agent-end-chunked-half" && len(f) == 1:
+			chunks := chunkedAgentEnd()
 			emit(chunks[:len(chunks)/2]...)
 			rest = chunks[len(chunks)/2:]
 		case f[0] == "end-chunked-rest" && len(f) == 1:
@@ -332,7 +341,12 @@ func runScript(actions []string, holds *fakeHolds, emit func(...string)) error {
 // messageEnd is an assistant message_end as Oh My Pi writes one. Where size is not 0, its text
 // fills the frame to size bytes.
 func messageEnd(provider, model, stopReason string, size int) []byte {
-	head := fmt.Sprintf(`{"type":"message_end","message":{"role":"assistant","provider":%q,"model":%q,"stopReason":%q,"content":[{"type":"text","text":"`, provider, model, stopReason)
+	return roleMessageEnd("assistant", provider, model, stopReason, size)
+}
+
+// roleMessageEnd is messageEnd of a message of role.
+func roleMessageEnd(role, provider, model, stopReason string, size int) []byte {
+	head := fmt.Sprintf(`{"type":"message_end","message":{"role":%q,"provider":%q,"model":%q,"stopReason":%q,"content":[{"type":"text","text":"`, role, provider, model, stopReason)
 	const tail = `"}]}}`
 	text := "done"
 	if size > 0 {
@@ -369,6 +383,13 @@ func stateAnswer(id, model string, size int) []string {
 		return []string{string(line)}
 	}
 	return chunkLines(line)
+}
+
+// chunkedAgentEnd is an agent_end of over 2 MiB as the rpc_chunk lines that carry it: an agent_end
+// carries the whole transcript, so Oh My Pi chunks a long one. Its 9 chunks are about 3 MB of
+// lines, and its first 4 more than a pipe holds.
+func chunkedAgentEnd() []string {
+	return chunkLines([]byte(`{"type":"agent_end","messages":[{"pad":"` + strings.Repeat("x", 2<<20) + `"}]}`))
 }
 
 var fakeChunkIDs atomic.Int64

@@ -257,6 +257,27 @@ func variantPlace(key, line, printed string) error {
 	return nil
 }
 
+// variantPlace reads each run below the Experiment line as `dispatch steps` prints it now: 16
+// words that end `set <set model> answered <answers>`. The walk's ten runs below the line pass.
+// The same runs in the 12 words of the command before the set model are no runs, and the place
+// fails naming the first.
+func TestVariantPlaceReadsEachRunInTheWordsDispatchStepsPrints(t *testing.T) {
+	t.Parallel()
+	const line = "Experiment planning: variant b."
+	withLine := func(printed string) string {
+		header, runs, _ := strings.Cut(printed, "\n")
+		return header + "\n" + line + "\n" + runs
+	}
+	if err := variantPlace("SR-1", line, withLine(walkPrinted(func(_ stepWant, words []string) []string { return words }))); err != nil {
+		t.Errorf("the ten runs of 16 words below %q read as %v, want the line in its place", line, err)
+	}
+	old := walkPrinted(func(_ stepWant, words []string) []string { return words[:12] })
+	first := strings.SplitN(old, "\n", 3)[1]
+	if err := variantPlace("SR-1", line, withLine(old)); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("the line %q below it is no run", first)) {
+		t.Errorf("the ten runs in the 12 words of the command before the set model read as %v, want an error naming %q", err, first)
+	}
+}
+
 // writePlan writes ownersPlan as the document plan.md of key with the real `dispatch artifact`,
 // run as the owner's session runs it, and answers the document's id, which register_plan names,
 // from Dispatch's listing of the issue's documents.

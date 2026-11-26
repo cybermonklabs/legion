@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -177,8 +178,10 @@ func shownAnswers(answers *[]record.ModelCalls) string {
 // A step's launches are the start's live launch, and each launch from the first that counts from
 // zero (record.StartTotals.FromZero) to the claim's generation now. A launch still starting is one
 // too. A launch absent at the start, whose row the store wrote only after it, counts from zero. A
-// live launch's end is the fact's read, or the newer read a committed fact kept. An ended launch's
-// end is its final totals. A launch still starting at the end has no end.
+// live launch's end is the fact's read, or the newer read a committed fact kept. A live launch the
+// fact did not read ends at its final totals where its shim sent them before it closed. An ended
+// launch's end is its final totals. A launch still starting at the end has no end. finals says,
+// for each read the end used, whether it is final totals.
 func TestTheLaunchesOfAStepAreItsStartsAndEachLaunchFromZero(t *testing.T) {
 	t.Parallel()
 	agent := claim.Token("legion-legion-legion-208-implementer")
@@ -197,21 +200,30 @@ func TestTheLaunchesOfAStepAreItsStartsAndEachLaunchFromZero(t *testing.T) {
 		starting bool
 		reads    FactReads
 		want     []launchSpan
+		finals   []bool
 	}{
 		{name: "a launch absent at the start counts from zero",
-			began: record.StartTotals{Generation: 0, FromZero: 0},
-			now:   record.AgentLaunches{Generation: 1, Live: true, Launches: []record.Launch{{Generation: 1}}},
-			reads: FactReads{key(1): *read(2, calls(modelA, 3))},
-			want:  []launchSpan{{setModel: modelA, start: fromZero, end: &read(2, calls(modelA, 3)).Totals}}},
+			began:  record.StartTotals{Generation: 0, FromZero: 0},
+			now:    record.AgentLaunches{Generation: 1, Live: true, Launches: []record.Launch{{Generation: 1}}},
+			reads:  FactReads{key(1): *read(2, calls(modelA, 3))},
+			want:   []launchSpan{{setModel: modelA, start: fromZero, end: &read(2, calls(modelA, 3)).Totals}},
+			finals: []bool{false}},
 		{name: "a live launch's end is the newer kept read",
-			began: record.StartTotals{Generation: 2, Live: true, Read: read(1, calls(modelA, 1)), FromZero: 3},
-			now:   record.AgentLaunches{Generation: 2, Live: true, Launches: []record.Launch{{Generation: 2, Newest: read(5, calls(modelA, 4))}}},
-			reads: FactReads{key(2): *read(4, calls(modelA, 3))},
-			want:  []launchSpan{{setModel: modelA, start: &read(1, calls(modelA, 1)).Totals, end: &read(5, calls(modelA, 4)).Totals}}},
+			began:  record.StartTotals{Generation: 2, Live: true, Read: read(1, calls(modelA, 1)), FromZero: 3},
+			now:    record.AgentLaunches{Generation: 2, Live: true, Launches: []record.Launch{{Generation: 2, Newest: read(5, calls(modelA, 4))}}},
+			reads:  FactReads{key(2): *read(4, calls(modelA, 3))},
+			want:   []launchSpan{{setModel: modelA, start: &read(1, calls(modelA, 1)).Totals, end: &read(5, calls(modelA, 4)).Totals}},
+			finals: []bool{false}},
 		{name: "a live launch the fact did not read has no end",
 			began: record.StartTotals{Generation: 2, Live: true, Read: read(1, calls(modelA, 1)), FromZero: 3},
 			now:   record.AgentLaunches{Generation: 2, Live: true, Launches: []record.Launch{{Generation: 2, Newest: read(5, calls(modelA, 4))}}},
 			want:  []launchSpan{{setModel: modelA, start: &read(1, calls(modelA, 1)).Totals}}},
+		{name: "a live launch the fact did not read ends at the final totals its shim sent",
+			began: record.StartTotals{Generation: 2, Live: true, Read: read(1, calls(modelA, 1)), FromZero: 3},
+			now: record.AgentLaunches{Generation: 2, Live: true, Launches: []record.Launch{
+				{Generation: 2, Newest: read(1, calls(modelA, 1)), Final: read(3, calls(modelA, 2))}}},
+			want:   []launchSpan{{setModel: modelA, start: &read(1, calls(modelA, 1)).Totals, end: &read(3, calls(modelA, 2)).Totals}},
+			finals: []bool{true}},
 		{name: "an ended launch ends at its final totals, and the next counts from zero",
 			began: record.StartTotals{Generation: 2, Live: true, Read: read(1, calls(modelA, 1)), FromZero: 3},
 			now: record.AgentLaunches{Generation: 3, Live: true, Launches: []record.Launch{
@@ -219,12 +231,14 @@ func TestTheLaunchesOfAStepAreItsStartsAndEachLaunchFromZero(t *testing.T) {
 			reads: FactReads{key(3): *read(1, calls(modelA, 1))},
 			want: []launchSpan{
 				{setModel: modelA, start: &read(1, calls(modelA, 1)).Totals, end: &read(3, calls(modelA, 2)).Totals},
-				{setModel: modelA, start: fromZero, end: &read(1, calls(modelA, 1)).Totals}}},
+				{setModel: modelA, start: fromZero, end: &read(1, calls(modelA, 1)).Totals}},
+			finals: []bool{true, false}},
 		{name: "a launch that ended before the step is not the step's",
-			began: record.StartTotals{Generation: 2, FromZero: 3},
-			now:   record.AgentLaunches{Generation: 3, Live: true, Launches: []record.Launch{{Generation: 2, Final: read(3)}, {Generation: 3}}},
-			reads: FactReads{key(3): *read(1)},
-			want:  []launchSpan{{setModel: modelA, start: fromZero, end: &read(1).Totals}}},
+			began:  record.StartTotals{Generation: 2, FromZero: 3},
+			now:    record.AgentLaunches{Generation: 3, Live: true, Launches: []record.Launch{{Generation: 2, Final: read(3)}, {Generation: 3}}},
+			reads:  FactReads{key(3): *read(1)},
+			want:   []launchSpan{{setModel: modelA, start: fromZero, end: &read(1).Totals}},
+			finals: []bool{false}},
 		{name: "a launch still starting at the end has no end",
 			began:    record.StartTotals{Generation: 0, FromZero: 0},
 			now:      record.AgentLaunches{Generation: 1},
@@ -240,12 +254,20 @@ func TestTheLaunchesOfAStepAreItsStartsAndEachLaunchFromZero(t *testing.T) {
 			starting: true,
 			want: []launchSpan{
 				{setModel: modelA, start: &read(1, calls(modelA, 1)).Totals, end: &read(3, calls(modelA, 2)).Totals},
-				{start: fromZero}}},
+				{start: fromZero}},
+			finals: []bool{true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, _ := stepSpans(agent, tc.began, tc.now, tc.starting, tc.reads)
+			got, used := stepSpans(agent, tc.began, tc.now, tc.starting, tc.reads)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("stepSpans = %+v, want %+v", got, tc.want)
+			}
+			finals := make([]bool, len(used))
+			for i := range used {
+				finals[i] = used[i].final
+			}
+			if !slices.Equal(finals, tc.finals) {
+				t.Fatalf("the reads the end used are final totals as %v, want %v", finals, tc.finals)
 			}
 		})
 	}

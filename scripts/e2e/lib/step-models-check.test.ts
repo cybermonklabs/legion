@@ -52,9 +52,10 @@ const sonnet = "anthropic/claude-sonnet-4-5";
 const A1Passes = `PASS: c-real: harness omp: ${A} default 2 step attempt 1: ${omp}=4,${fallback}=2`;
 const A6Passes = `PASS: live-at-both-reads: harness omp: ${A} default 2 step attempt 6: ${omp}=2`;
 
-/** What `dispatch steps --issue <issue>` prints of these run lines: a header, then each line. */
-function answer(issue: string, runs: string[]): string {
-  return `${[`${issue}: ${runs.length} steps in 1 tasks`, ...runs].join("\n")}\n`;
+/** What `dispatch steps --issue <issue>` prints of these lines: a header that counts steps runs,
+ *  by default one for each line, then each line. */
+function answer(issue: string, lines: string[], steps = lines.length): string {
+  return `${[`${issue}: ${steps} steps in 1 tasks`, ...lines].join("\n")}\n`;
 }
 
 // Agents files of one claim each, written beside the run. Each names its transcript by its full
@@ -108,16 +109,20 @@ const readOf = fakeDispatchRead(script, dir, []);
 // The run needs bun on its PATH beside the fake, for lib/step-models-check.ts.
 const path = `${dir}:${dirname(process.execPath)}:/usr/bin:/bin`;
 
-/** One run on each issue's records, in the order given, with the log and the agents file. */
+/** One run on each issue's records, in the order given, with the log and the agents file. A
+ *  header counts more.steps runs where it is given. */
 function check(
   records: Readonly<Record<string, string[]>>,
   agents: string,
-  more: { log?: string; args?: string[]; exit?: number; err?: string } = {}
+  more: { log?: string; args?: string[]; exit?: number; err?: string; steps?: number } = {}
 ) {
   const issues = Object.keys(records);
   const run = readOf(
     Object.fromEntries(
-      issues.map((issue) => [`steps_${issue.replaceAll("-", "_")}`, answer(issue, records[issue])])
+      issues.map((issue) => [
+        `steps_${issue.replaceAll("-", "_")}`,
+        answer(issue, records[issue], more.steps),
+      ])
     ),
     [
       ...issues.flatMap((issue) => ["--issue", issue]),
@@ -294,6 +299,35 @@ describe("step-models-check.sh", () => {
     expect(run.stdout).not.toContain("PASS");
     expect(run.verdicts).toEqual(["c-real: UNKNOWN", "live-at-both-reads: UNKNOWN"]);
     expect(run.code).toBe(2);
+  });
+
+  // Where the records of the issue's newest run name an experiment, dispatch steps prints the line
+  // `Experiment <experiment>: variant <variant>.` right after its header (steps.ts).
+  // step-records-read.sh reads it at line 2 alone, and so does the comparator.
+  const variant = "Experiment planning: variant b.";
+
+  test("the line of the issue's experiment right after the header is no fault", () => {
+    const run = check({ [A]: [variant, A1, A0] }, agentsFile("implementer"), { steps: 2 });
+    expect(run.stdout).toContain(A1Passes);
+    expect(run.stdout).not.toContain("UNKNOWN: a line");
+    expect(run.verdicts).toEqual(["c-real: PASS", "live-at-both-reads: UNKNOWN"]);
+    expect(run.code).toBe(0);
+  });
+
+  test("the same line anywhere but right after the header is no run: UNKNOWN, exit 2", () => {
+    for (const lines of [
+      [A1, variant, A0],
+      [A1, A0, variant],
+      [variant, variant, A1, A0],
+    ]) {
+      const run = check({ [A]: lines }, agentsFile("implementer"), { steps: 2 });
+      expect(run.stdout).toContain(
+        `UNKNOWN: a line of ${A} has 4 words, not the 16 that name a step's models: ${variant}`
+      );
+      expect(run.stdout).not.toContain("PASS");
+      expect(run.verdicts).toEqual(["c-real: UNKNOWN", "live-at-both-reads: UNKNOWN"]);
+      expect(run.code).toBe(2);
+    }
   });
 
   test("a dispatch steps that fails exits 2, with both verdicts", () => {

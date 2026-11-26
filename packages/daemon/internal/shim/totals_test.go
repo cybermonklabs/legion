@@ -105,12 +105,14 @@ func messageModel(t *testing.T, frame shimwire.Frame) (string, int) {
 }
 
 // The shim counts each call of its launch by the model that answered it, and answers the
-// daemon's reads of those totals. A response that ended in an error counts for no model. A call
-// that arrives as an rpc_chunk sequence counts once the sequence is whole. A read that arrives
-// while half of one is in the pipe is answered after all of it. The set model is the one the
-// harness's ready answer names, unless a call came before that answer. When the harness exits,
-// the shim sends its final totals. A launch that more models answered than the totals hold
-// (shimwire.MaxTotalsModels) says that its totals overflowed.
+// daemon's reads of those totals. A response that ended in an error counts for no model, and so
+// do a response no model wrote and a message that is not the assistant's. A name outside the form
+// of a step's agent text is counted apart. A call that arrives as an rpc_chunk sequence counts once
+// the sequence is whole. A read that arrives while half of one is in the pipe is answered after all
+// of it. The set model is the one the harness's ready answer names, unless a call came before that
+// answer. The Claude Code bridge names it in a frame that goes no further than the shim. When the
+// harness exits, the shim sends its final totals. A launch that more models answered than the
+// totals hold (shimwire.MaxTotalsModels) says that its totals overflowed.
 //
 // The shim writes each frame of its own only between whole frames of the harness. A frame that
 // lands inside an rpc_chunk sequence makes the daemon's reader drop the sequence
@@ -216,7 +218,8 @@ func TestTheShimCountsEachCallOfItsLaunchByModel(t *testing.T) {
 		{
 			// The half of the sequence is 16 chunks, about 5.6 MB of lines. That is more than a
 			// pipe holds. So the shim has read its first chunk once the fake has written the half.
-			name: "7_a_refusal_while_half_a_sequence_is_held_follows_the_whole_sequence",
+			// The pump writes the sequence only once it is whole, so the refusal goes before it.
+			name: "7_a_refusal_while_half_a_sequence_is_held_goes_before_the_whole_sequence",
 			script: slices.Concat(
 				[]string{"end-chunked-half acme model-b 8388608"},
 				slices.Repeat([]string{"await-get-state"}, 16),
@@ -232,12 +235,12 @@ func TestTheShimCountsEachCallOfItsLaunchByModel(t *testing.T) {
 				// The fake writes the rest of its sequence only once the shim has handled the 17th
 				// read: the shim forwards this line after it.
 				p.sendLine(t, `{"type":"fake_go"}`)
-				if model, size := messageModel(t, p.nextWhole(t)); model != modelB || size != 8<<20 {
-					t.Fatalf("the daemon's reader got a message_end of %d bytes by %s first, want the 8 MiB one by %s", size, model, modelB)
-				}
 				frame := p.nextWhole(t)
 				if refused, ok := frame.(shimwire.ModelTotalsResult); !ok || refused.ID != "read-17" || refused.OK || refused.Error != "16 reads already wait for the harness" {
-					t.Fatalf("the frame after the sequence is %#v, want the refusal of read-17", frame)
+					t.Fatalf("the shim's first frame is %#v, want the refusal of read-17, written before the sequence is whole", frame)
+				}
+				if model, size := messageModel(t, p.nextWhole(t)); model != modelB || size != 8<<20 {
+					t.Fatalf("the daemon's reader got a message_end of %d bytes by %s after the refusal, want the 8 MiB one by %s", size, model, modelB)
 				}
 				for n := 1; n <= 16; n++ {
 					result, before := p.awaitResult(t, fmt.Sprintf("read-%02d", n))
@@ -264,40 +267,34 @@ func TestTheShimCountsEachCallOfItsLaunchByModel(t *testing.T) {
 			},
 		},
 		{
-			// The frames of the shim's own that wait on a held sequence count toward the backlog's
-			// 1000 lines. Here 1200 refusals wait, so the oldest 200 are dropped, and once.
-			name: "9_frames_waiting_on_a_held_sequence_keep_the_backlogs_bound",
-			script: slices.Concat(
-				[]string{"end-chunked-half acme model-b 8388608"},
-				slices.Repeat([]string{"await-get-state"}, 16),
-				[]string{"await-go", "end-chunked-rest"},
-				slices.Repeat([]string{"answer-held " + modelA}, 16),
-			),
-			drive: func(t *testing.T, sh *running, p *peer, child *omp) {
-				child.awaitProgress(t, 1)
-				for n := 1; n <= 16+1200; n++ {
-					p.send(t, shimwire.ModelTotals{ID: fmt.Sprintf("read-%04d", n)})
-				}
-				p.sendLine(t, `{"type":"fake_go"}`)
-				if model, size := messageModel(t, p.nextWhole(t)); model != modelB || size != 8<<20 {
-					t.Fatalf("the daemon's reader got a message_end of %d bytes by %s first, want the 8 MiB one by %s", size, model, modelB)
-				}
-				for n := 217; n <= 16+1200; n++ {
-					frame := p.nextWhole(t)
-					if refused, ok := frame.(shimwire.ModelTotalsResult); !ok || refused.ID != fmt.Sprintf("read-%04d", n) || refused.OK {
-						t.Fatalf("the shim sent %#v where the refusal of read-%04d was due: the newest 1000 lines are kept", frame, n)
-					}
-				}
-				for n := 1; n <= 16; n++ {
-					result, before := p.awaitResult(t, fmt.Sprintf("read-%04d", n))
-					if len(before) != 0 {
-						t.Fatalf("frames %#v came before the answer to read %d", before, n)
-					}
-					expectTotals(t, result, shimwire.Totals{Read: uint64(n), Counts: []shimwire.ModelCount{{Model: modelB, Calls: 1}}})
-				}
-				if got := sh.log.count("the oldest frames beyond the newest 1000 lines that wait for the daemon are dropped"); got != 1 {
-					t.Fatalf("the drop was logged %d times, want once; log:\n%s", got, sh.log)
-				}
+			// A name of 134 characters is longer than the 128 of the form. No list names it.
+			name:   "9_a_call_by_a_name_outside_the_form_counts_apart",
+			script: slices.Concat(setModelA, []string{"end acme model-a", "end acme " + strings.Repeat("x", 129)}),
+			drive: func(t *testing.T, _ *running, p *peer, _ *omp) {
+				p.expectFrames(t, "ready", "message_end", "message_end")
+				result, _ := p.readTotals(t, "read-1")
+				expectTotals(t, result, shimwire.Totals{Read: 1, SetModel: modelA, Counts: []shimwire.ModelCount{{Model: modelA, Calls: 1}}, OutsideForm: 1})
+			},
+		},
+		{
+			name: "10_a_synthetic_response_and_a_users_message_count_for_no_model",
+			script: slices.Concat(setModelA, []string{
+				"end acme model-a", "end acme " + shimwire.SyntheticModel, "end-as user acme model-a",
+			}),
+			drive: func(t *testing.T, _ *running, p *peer, _ *omp) {
+				p.expectFrames(t, "ready", "message_end", "message_end", "message_end")
+				result, _ := p.readTotals(t, "read-1")
+				expectTotals(t, result, shimwire.Totals{Read: 1, SetModel: modelA, Counts: []shimwire.ModelCount{{Model: modelA, Calls: 1}}})
+			},
+		},
+		{
+			// The daemon's reader sees the message_end alone: the bridge's frame stops at the shim.
+			name:   "11_the_bridges_frame_names_the_set_model_and_goes_no_further",
+			script: []string{"set-model acme model-b", "end acme model-a"},
+			drive: func(t *testing.T, _ *running, p *peer, _ *omp) {
+				p.expectFrames(t, "message_end")
+				result, _ := p.readTotals(t, "read-1")
+				expectTotals(t, result, shimwire.Totals{Read: 1, SetModel: modelB, Counts: []shimwire.ModelCount{{Model: modelA, Calls: 1}}})
 			},
 		},
 	} {
@@ -429,4 +426,42 @@ func TestAChunkedAgentEndEndsTheTurnForTheDedupe(t *testing.T) {
 	p.expect(t, ack("r2"))
 	p.expect(t, shimwire.AgentStart{DeliveryID: "d1"})
 	p.expect(t, shimwire.AgentEnd{})
+}
+
+// A delivery the daemon sends again while its turn's agent_end arrives chunked is answered at once.
+// The dedupe answers the acknowledgment and the start of the delivery, since the turn still runs.
+// The pump writes the sequence only once it is whole, so the daemon reads both before the agent_end.
+// It reads the start of its delivery, and then the end of that turn.
+func TestADeliverySentAgainDuringAChunkedAgentEndIsAnsweredBeforeTheEnd(t *testing.T) {
+	path := socketPath(t)
+	daemon := listen(t, path)
+	child := scripted(t, modelA, "await-go", "agent-end-chunked-half", "await-go", "end-chunked-rest")
+	run(t, config(t, path, child), newClock())
+	p := daemon.accept(t)
+	p.open(t)
+	p.readAhead(t)
+	ack := func(id string) shimwire.Response {
+		return shimwire.Response{ID: id, Command: shimwire.TypePrompt, Success: true}
+	}
+
+	p.send(t, shimwire.Prompt{ID: "r1", DeliveryID: "d1", Message: "hold"})
+	p.expect(t, ack("r1"))
+	p.expect(t, shimwire.AgentStart{})
+	// The half of the agent_end is more than a pipe holds, so the shim has read its first chunk
+	// once the fake has written it.
+	p.sendLine(t, `{"type":"fake_go"}`)
+	child.awaitProgress(t, 2)
+	p.send(t, shimwire.Prompt{ID: "r2", DeliveryID: "d1", Message: "hold"})
+	// The fake writes the rest of the agent_end only once the shim has handled the repeat: the
+	// shim forwards this line after it.
+	p.sendLine(t, `{"type":"fake_go"}`)
+	if frame := p.nextWhole(t); !reflect.DeepEqual(frame, ack("r2")) {
+		t.Fatalf("the daemon's reader got %#v first, want the acknowledgment of r2", frame)
+	}
+	if frame := p.nextWhole(t); !reflect.DeepEqual(frame, shimwire.AgentStart{DeliveryID: "d1"}) {
+		t.Fatalf("the daemon's reader got %#v after the acknowledgment, want the start of d1", frame)
+	}
+	if frame := p.nextWhole(t); typeOf(frame) != shimwire.TypeAgentEnd {
+		t.Fatalf("the daemon's reader got %#v after the start of d1, want the turn's whole agent_end", frame)
+	}
 }

@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -483,6 +484,33 @@ func TestATotalsReadEndsAtItsBoundWhileItsAgentsWriterIsHeld(t *testing.T) {
 			return nil
 		})
 	})
+}
+
+// A read that gave no totals logs one reason. A write that the read's bound cut fails with an
+// error that wraps both stream.ErrClosed and the bound (stream's connWriter). The connection
+// closed because the bound cut the write, so the reason is the bound. The same holds where the
+// fact's own context cut it.
+func TestTheReasonOfAReadThatGaveNoTotals(t *testing.T) {
+	t.Parallel()
+	cut := func(cause error) error { return fmt.Errorf("%w: the write was cut: %w", stream.ErrClosed, cause) }
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"a shim that does not count", fmt.Errorf("worker-stream: model_totals: %w", stream.ErrNoModelTotals), "the shim does not count"},
+		{"a refusal", &stream.RefusedError{Command: "model_totals", Reason: "16 reads already wait for the harness"}, "refused: 16 reads already wait for the harness"},
+		{"a connection that closed", fmt.Errorf("%w: EOF", stream.ErrClosed), "no connection"},
+		{"the bound", errTotalsBound, "no answer within the bound"},
+		{"a write the bound cut", cut(errTotalsBound), "no answer within the bound"},
+		{"a write the fact's context cut", cut(context.Canceled), "no answer within the bound"},
+		{"a write past the fact's deadline", cut(context.DeadlineExceeded), "no answer within the bound"},
+		{"any other failure", errors.New("decode the answer: unexpected EOF"), "refused: decode the answer: unexpected EOF"},
+	} {
+		if got := totalsFailure(tc.err); got != tc.want {
+			t.Errorf("%s: totalsFailure(%v) = %q, want %q", tc.name, tc.err, got, tc.want)
+		}
+	}
 }
 
 // implementAgain walks the issue to its implementer's second run. The planner plans, the
