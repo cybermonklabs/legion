@@ -527,20 +527,25 @@ const ISSUE_UPDATE_RULE = `${ISSUE_UPDATE_FIELDS_RULE} ${ISSUE_UPDATE_DONE_RULE}
  *  here, before its reason is posted. */
 function issueStatusOptionsProblem(input: Readonly<Record<string, unknown>>): string | undefined {
   const options = issueStatusOptionsOf(input);
+  const optionInput = input as {
+    readonly include_children?: unknown;
+    readonly unlink_children?: unknown;
+    readonly status?: unknown;
+  };
   if (options.length === 0) return undefined;
   const named = options.join(", ").replace(/, ([^,]*)$/, " and $1");
   const others = ISSUE_UPDATE_PATCH_FIELDS.filter((field) => input[field] !== undefined);
   return brokenParts([
     [
-      !(input.include_children === true && input.unlink_children === true),
+      !(optionInput.include_children === true && optionInput.unlink_children === true),
       "include_children does not go with unlink_children. The open children move with the issue or leave it, so name one of the two.",
     ],
     [
-      !(input.include_children === true && input.status === "done"),
+      !(optionInput.include_children === true && optionInput.status === "done"),
       "include_children does not go with status done. Only a person who is signed in at a browser can close the open issues under an issue together with it, and this call presents a token. That person does it on the issue's page in Dispatch: Close issue, then Move them with it.",
     ],
     [
-      typeof input.status === "string",
+      typeof optionInput.status === "string",
       `status is required with ${named}. Add status, or drop ${named}.`,
     ],
     [
@@ -987,7 +992,10 @@ const RESULT_SHAPE_RULE =
  *  shapes are one command because a retraction answers for one recorded result: the reader of
  *  `dispatch results` sees the result and its retraction together. */
 function resultProblem(value: unknown): string | undefined {
-  const input = value as Record<string, unknown>;
+  const input = value as Record<string, unknown> & {
+    readonly retract?: unknown;
+    readonly reason?: unknown;
+  };
   const carried = RESULT_RECORD_FIELDS.filter((field) => input[field] !== undefined);
   if (typeof input.retract === "string") {
     const reason = input.reason;

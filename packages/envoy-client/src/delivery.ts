@@ -499,7 +499,7 @@ export function carriedItem(
         ? ("message" as const)
         : undefined;
   if (resource === undefined || !isObject(event.payload)) return undefined;
-  const id = event.payload.id;
+  const { id } = event.payload;
   if (typeof id !== "string" || id === "") return undefined;
   return { resource, id, issueKey: event.issue_key };
 }
@@ -508,7 +508,9 @@ export function carriedItem(
  *  with its long fields dropped, except the few it keeps whole (`payload_omitted`, whose doc in
  *  `@legion/contracts` names them). */
 function payloadWasOmitted(payload: unknown): boolean {
-  return isObject(payload) && payload.payload_omitted === true;
+  if (!isObject(payload)) return false;
+  const { payload_omitted } = payload;
+  return payload_omitted === true;
 }
 
 /** Whether an event payload says the body on it is not the item's body whole: the first part of
@@ -516,7 +518,9 @@ function payloadWasOmitted(payload: unknown): boolean {
  *  bus refused the event and the outbox published a stand-in with its long fields dropped
  *  (`payload_omitted`). Either way the item itself answers the rest. */
 export function bodyWasCut(payload: unknown): boolean {
-  return (isObject(payload) && payload.body_truncated === true) || payloadWasOmitted(payload);
+  if (!isObject(payload)) return false;
+  const { body_truncated } = payload;
+  return body_truncated === true || payloadWasOmitted(payload);
 }
 
 /** The Dispatch route that answers the whole item an event names. */
@@ -940,10 +944,9 @@ function dispatchPayloadForReader(
   toReader: boolean
 ): unknown {
   const whole = dispatchPayload(event);
-  const changed =
-    event.type !== "issue.created" && isObject(whole) && Array.isArray(whole.changed)
-      ? whole.changed
-      : [];
+  let changedField: unknown;
+  if (event.type !== "issue.created" && isObject(whole)) ({ changed: changedField } = whole);
+  const changed = Array.isArray(changedField) ? changedField : [];
   const payload = withoutEmptyFields(
     whole,
     (key, item) =>
@@ -1129,16 +1132,18 @@ function parseDispatchFrame(rawPayload: string, wholeBody?: string): DispatchFra
   }
   const reading = readDispatchPayload(value);
   switch (reading.kind) {
-    case "event":
+    case "event": {
       // `notify` and `quiet` are fields of the event, where the outbox marshals them (a targeted
       // frame's event, or the payload itself), and the schemas drop both as unknown keys, so they
       // are read from the event as the payload carried it.
+      const { notify, quiet } = reading.wireEvent;
       return {
         event: withWholeBody(reading.event, wholeBody),
-        notify: reading.wireEvent.notify,
-        quiet: reading.wireEvent.quiet,
+        notify,
+        quiet,
         delivery: reading.delivery,
       };
+    }
     case "recovered": {
       const { delivery, event } = reading.failure;
       const commentDelivery = isCommentTargetedDelivery(delivery);
@@ -1215,9 +1220,7 @@ type DispatchCardEvent = {
  *  for the session writing as itself, `actorText`). The event's schema passes the actor's other
  *  keys through, and one of them may be as deep as the payload, so the header writes none of them. */
 function headerActor(actor: DispatchEvent["actor"]): Readonly<Record<string, unknown>> {
-  const { kind, id } = actor;
-  const act = actor.act;
-  const service = actor.service;
+  const { kind, id, act, service } = actor;
   return {
     kind,
     ...(id === undefined ? {} : { id }),
@@ -1510,7 +1513,8 @@ export function renderInbound(
         let actor: DispatchEvent["actor"] = frame.event.actor;
         if ("origin" in frame.event.actor) {
           const { origin, ...rest } = frame.event.actor;
-          const title = isObject(origin) ? origin.session_title : undefined;
+          let title: unknown;
+          if (isObject(origin)) ({ session_title: title } = origin);
           actor =
             typeof title === "string" && title !== ""
               ? { ...rest, origin: { session_title: title } }
