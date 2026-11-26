@@ -490,7 +490,7 @@ func (d *heldDurable) takeOver(ctx context.Context) {
 		err := d.beforeTakeOver(before)
 		cancel()
 		if err != nil {
-			slog.Error("dispatch delivery: the step before the take-over failed; the next attempt takes the durable over", "name", name, "error", err)
+			d.tuning.log.Error("dispatch delivery: the step before the take-over failed; the next attempt takes the durable over", "name", name, "error", err)
 			return
 		}
 	}
