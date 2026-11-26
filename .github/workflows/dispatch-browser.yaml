@@ -449,7 +449,7 @@ jobs:
         working-directory: packages/dispatch
       - name: Browser-test the bar's answers and its agent against fake models
         # why: .github/ci-notes/dispatch-browser.md#what-the-embedder-jobs-models-step-runs-and-why-it-calls-playwright-directly
-        # (76 s + 61 s) x 1.15 = 158 s -> 3 min, plus 1 min until this runner reads the 41 agent rows.
+        # (76 s + 47 s) x 1.15 = 141 s -> 3 min, plus 1 min until a passing run reads the answer-length rows.
         timeout-minutes: 4
         run: |
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
