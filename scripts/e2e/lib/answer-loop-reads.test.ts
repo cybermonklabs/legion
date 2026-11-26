@@ -4383,3 +4383,865 @@ a17_nothing_written && echo quiet || echo "written: $read_said"`)
     expect(differs("evidence=$bare_evidence")).toEqual(files);
   });
 });
+
+// A control row reads PASS when its row's read fails over a message of its own with answers
+// removed, and a read fails as surely over a listing nobody could read, or one that holds nothing,
+// as over the control's own message or placement. Each control reads that listing once, counts the
+// read's failure only where the listing shows what the control sent or placed (control_seen,
+// listing_fault), and hands the same listing to the read. Each control below is run over a listing
+// that is missing, one that is empty and, where the control sent or placed something there, one
+// that lacks it: each reads FAIL. Over a listing that holds it, with the read failing there, the
+// control reads PASS.
+describe("a control counts a read's failure only over the listing that shows what it sent or placed", () => {
+  /** The rig's own control functions, with record_result printing the verdict it records. */
+  const controls = `declare -A control=()
+${rig("read_failed")}
+${rig("control_not_taken")}
+${rig("control_sent")}
+${rig("control_seen")}
+${rig("control_inbox_seen")}
+${rig("control_log_seen")}
+${rig("control_result")}
+${rig("control_question")}
+${rig("control_mark")}
+${rig("said_text")}
+record_result() { printf 'RESULT %s %s: %s\\n' "$1" "$2" "$3"; }`;
+  /** The line control_result records for ROW once BODY ran: `<row> control PASS|FAIL: …`. */
+  const verdict = (row: string, body: string): string => {
+    const result = run(`${controls}\n${body}\ncontrol_result ${row}`);
+    const line = result.out.split("\n").find((printed) => printed.startsWith("RESULT "));
+    if (line === undefined) throw new Error(`no verdict for ${row}: ${result.err}`);
+    return line.slice("RESULT ".length);
+  };
+  /** An evidence directory of one case's own: its inbox holds INBOX's lines, and null is no inbox. */
+  const caseEvidence = (name: string, inbox: string[] | null): string => {
+    const path = join(dir, `control-${name}`);
+    mkdirSync(path, { recursive: true });
+    if (inbox !== null) {
+      writeFileSync(join(path, "inbox.jsonl"), inbox.map((line) => `${line}\n`).join(""));
+    }
+    return path;
+  };
+  /** A line of the asker's inbox that is no reply to any control's question. */
+  const otherLine = JSON.stringify({
+    at: "2026-11-24T12:00:00.000Z",
+    session: "asker-session",
+    text: "In Reply To: event-other\nMessage:\nAnother question's answer.\n\nTopic: notifications.agent.asker-session",
+  });
+  /** place_inbox_reply as the listener relays it: the reply recorded in the case's inbox. */
+  const placeReply = `place_inbox_reply() {
+  jq -cn --arg t "In Reply To: $1"$'\\n'"Message:"$'\\n'"$2"$'\\n\\n'"Topic: notifications.agent.asker-session" \\
+    '{at: "2026-11-24T12:00:00.000Z", session: "asker-session", text: $t}' >>"$evidence/inbox.jsonl"
+}`;
+  /** A file whose presence says the control's placement was made, so that a stub reads the listing
+   * as it stands before or after it. */
+  const placedFlag = (name: string) => join(dir, `control-${name}.placed`);
+
+  test("listing_fault names a listing that is none, an empty one and one lacking what the control placed", () => {
+    const fault = (listing: string, args: string) => read(`listing_fault ${shq(listing)} ${args}`);
+    for (const none of ["", "null", "not json", '{"message":"Not Found"}']) {
+      expect(fault(none, ".")).toEqual({ code: 1, text: "no listing at all" });
+    }
+    expect(fault("[]", ".")).toEqual({ code: 1, text: "an empty listing" });
+    expect(fault('{"replies":[]}', ".replies '.id == value' reply-1")).toEqual({
+      code: 1,
+      text: "an empty listing",
+    });
+    expect(fault('{"error":"NOT_FOUND"}', ".replies '.id == value' reply-1")).toEqual({
+      code: 1,
+      text: "no listing at all",
+    });
+    const comments = JSON.stringify([{ id: "comment-230" }, { id: "comment-231" }]);
+    expect(fault(comments, ". '.id == value' comment-230 comment-231")).toEqual({
+      code: 0,
+      text: "",
+    });
+    expect(fault(comments, ". '.id == value' comment-231 comment-232 comment-233")).toEqual({
+      code: 1,
+      text: "a listing of 2 entries holding no comment-232, no comment-233",
+    });
+    // GitHub's ids are numbers, read as their digits; an entry the test cannot read matches nothing.
+    expect(fault('[{"id":9010}]', ". '(.id | tostring) == value' 9010")).toEqual({
+      code: 0,
+      text: "",
+    });
+    const mark = "<!-- legion-answer:c0de424218 -->";
+    expect(
+      fault(
+        `["a string", {"text":"a reply ${mark}"}]`,
+        `. '(.text // "") | contains(value)' '${mark}'`
+      )
+    ).toEqual({ code: 0, text: "" });
+    // With no value, a listing of any entry is one the read was handed.
+    expect(fault('[{"msg":"daemon started"}]', ".")).toEqual({ code: 0, text: "" });
+    expect(fault('[{"text":"x"}]', `. '.text == value' ${"y".repeat(100)}`).text).toBe(
+      `a listing of 1 entry holding no ${"y".repeat(79)}…`
+    );
+  });
+
+  test("control_result reads FAIL for a control whose listing did not show what it sent or placed, however its read ended", () => {
+    const fails = `r_fails() { read_said='it fails'; return 1; }`;
+    expect(verdict("A9", `${fails}\nread_failed A9 'the read' r_fails`)).toBe(
+      "A9 control PASS: with answers removed, the read failed: it fails"
+    );
+    expect(
+      verdict(
+        "A9",
+        `${fails}\ncontrol_seen A9 'the listing' null . || true\nread_failed A9 'the read' r_fails`
+      )
+    ).toBe(
+      "A9 control FAIL: with answers removed, a listing its read was handed shows nothing of what the control sent or placed there, so that read's failure shows nothing: the listing: no listing at all; the read failed: it fails"
+    );
+    expect(
+      verdict(
+        "A9",
+        `${fails}\ncontrol_seen A9 'the listing' '[{"id":"c-1"}]' . '.id == value' c-1 || true\nread_failed A9 'the read' r_fails`
+      )
+    ).toMatch(/^A9 control PASS/);
+    expect(
+      verdict(
+        "A9",
+        `control_not_taken A9 'the message' || true\ncontrol_seen A9 'the listing' '[]' . || true`
+      )
+    ).toBe(
+      "A9 control FAIL: with answers removed, the control's message was not all sent, so its read shows nothing: the message was not taken; the listing: an empty listing"
+    );
+    expect(verdict("A9", "true")).toBe(
+      "A9 control FAIL: with answers removed, none of the row's reads ran"
+    );
+    expect(
+      verdict(
+        "A9",
+        `r_holds() { read_said='it holds'; return 0; }\nread_failed A9 'the read' r_holds`
+      )
+    ).toBe("A9 control FAIL: with answers removed, the read held: it holds");
+  });
+
+  test("the inbox reads judge the inbox a control read once, and read it now where none is given", () => {
+    const inbox = "inbox=$(inbox_listing)";
+    expect(read(`${inbox}; jq length <<<"$inbox"`).text).toBe("5");
+    expect(read("evidence=$bare_evidence; inbox_listing")).toEqual({ code: 0, text: "null" });
+    expect(read("evidence=$empty_evidence; inbox_listing")).toEqual({ code: 0, text: "[]" });
+    // Given a listing, each reads it and not the file, which is gone.
+    const gone = `${inbox}; evidence=$bare_evidence`;
+    expect(read(`${gone}; inbox_replies event-two "$inbox"`).text).toBe("2");
+    expect(read(`${gone}; inbox_reply event-one "$inbox"`).text).toContain("VIOLET-OTTER-88");
+    expect(read(`${gone}; controller_notices agent-decision comment-77 "$inbox"`).text).toBe("1");
+    expect(run(`${gone}; inbox_holds asker-session VIOLET-OTTER-88 "$inbox"`).code).toBe(0);
+    expect(run(`${gone}; no_reply_to event-one "$inbox"`).code).toBe(1);
+    // A listing that is none holds no reply.
+    expect(read("inbox_replies event-one null")).toEqual({ code: 0, text: "0" });
+    expect(read("controller_notices agent-decision comment-77 null")).toEqual({
+      code: 0,
+      text: "0",
+    });
+    expect(run("inbox_reply event-one null").code).not.toBe(0);
+    expect(run("no_reply_to event-one null").code).toBe(0);
+  });
+
+  test("boot_listing reads this boot's log once, and answers_lines_in counts over it", () => {
+    expect(read("boot_listing | jq length").text).toBe(read("boot_log | jq -s length").text);
+    expect(read("daemon_log=$empty_log; boot_offset=0; boot_listing")).toEqual({
+      code: 0,
+      text: "[]",
+    });
+    expect(read(`daemon_log=${shq(join(dir, "no-such-daemon.log"))}; boot_listing`)).toEqual({
+      code: 0,
+      text: "null",
+    });
+    expect(
+      read('answers_lines_in "$(boot_listing)" "answers: question" session-architect handed_off')
+        .text
+    ).toBe(read('answers_lines "answers: question" session-architect handed_off').text);
+    expect(read('answers_lines_in null "answers: question"')).toEqual({ code: 0, text: "0" });
+  });
+
+  test("the Dispatch reads judge the record or the list a control read once", () => {
+    const refused = "dispatch_get() { return 22; }";
+    expect(
+      read(
+        `record=$(dispatch_get asks/ask-1); ${refused}; ask_reply_after ask-1 reply-person session-architect "$record"`
+      ).text
+    ).toContain("VIOLET-OTTER-88");
+    expect(read("ask_reply_after ask-1 reply-person session-architect null").code).not.toBe(0);
+    expect(
+      read(
+        `comments=$(dispatch_get issues/ALX-3/comments); ${refused}; comment_reply_by ALX-3 comment-77 session-tester "$comments"`
+      ).text
+    ).toContain("VIOLET-OTTER-88");
+    expect(
+      read('thread=$(comment_record comment-100); thread_replies_in "$thread" session-tester').text
+    ).toBe(read("thread_replies_by comment-100 session-tester").text);
+    expect(read("thread_replies_in null session-tester")).toEqual({ code: 0, text: "[]" });
+    expect(read('delivery_records_in "$(comment_record comment-111)"').text).toBe(
+      read("comment_delivery_records comment-111").text
+    );
+    expect(read("delivery_records_in ''")).toEqual({ code: 0, text: "[]" });
+  });
+
+  test("pr_review_listing reads GitHub's reviews once, and reviewer_approvals judges the listing it is given", () => {
+    expect(read("pr_review_listing 41 | jq length").text).toBe("3");
+    expect(read("pr_review_listing 42")).toEqual({ code: 0, text: "null" });
+    expect(read("pr_review_listing 43")).toEqual({ code: 0, text: "[]" });
+    expect(read("pr_review_listing 404")).toEqual({ code: 0, text: "null" });
+    expect(
+      read(
+        `reviews=$(pr_review_listing 41); smoke_gh() { return 1; }; reviewer_approvals 41 session-reviewer '' "$reviews" | jq length`
+      ).text
+    ).toBe(read("reviewer_approvals 41 session-reviewer | jq length").text);
+    expect(read("reviewer_approvals 41 session-reviewer '' null")).toEqual({ code: 0, text: "[]" });
+  });
+
+  // The asker's inbox holds replies alone, never the control's own question: a control whose read
+  // looks there for the loop's reply counts it only over an inbox the run recorded and that holds
+  // entries.
+  const inboxControls: { row: string; call: string; body: string }[] = [
+    {
+      row: "A2",
+      call: "control_read_a2",
+      body: `control[files:A2.role]=e1; control[files:A2.old]=e2; control[files:A2.pre]=e3; control[files:A2.code]=404
+a2_read() { read_said="no reply to $1"; return 1; }`,
+    },
+    {
+      row: "A4",
+      call: "control_read_a4",
+      body: `control[files:A4.event]=e1
+passed_on_read() { read_said="no reply to $2"; return 1; }`,
+    },
+    {
+      row: "A5",
+      call: "control_read_a5",
+      body: `control[files:A5.event]=e1
+passed_on_read() { read_said="no reply to $2"; return 1; }`,
+    },
+    {
+      row: "A9",
+      call: "control_resumed_a9",
+      body: `control[files:A9.e1]=e1; control[files:A9.e2]=e2; control[files:architect.m]=0
+question_text() { printf 'the task\\n'; }
+a9_read() { read_said="no reply to $1"; return 1; }`,
+    },
+    {
+      row: "A10",
+      call: "control_resumed_a10 architect",
+      body: `control[files:A10.e3]=e3; control[files:architect.m]=0
+a10_compaction_read() { read_said="no reply to $1"; return 1; }`,
+    },
+    {
+      row: "A12",
+      call: "control_window_a12",
+      body: `${rig("control_reply_placed")}
+${rig("a12_not_posted_read")}
+${rig("a12_not_posted")}
+asker_session=asker-session
+agent[files:planner.session]=session-planner; control_wait=0
+a12_stand_in() { :; }
+control_ask() { control[files:A12.event]=event-a12; }
+soft_wait() { return 0; }
+${placeReply}
+a12_leg_read() { read_said="no reply to $2"; return 1; }`,
+    },
+    {
+      row: "A15",
+      call: "control_read_a15",
+      body: `${rig("control_suffix")}
+control[files:A15.planner]=e1; control[files:A15.reviewer]=e2
+a15_read() { read_said="no reply to $1"; return 1; }`,
+    },
+    {
+      row: "A23",
+      call: "control_resumed_a23 architect",
+      body: `control[files:A23.event]=e1; control[files:architect.m]=0
+a23_search_read() { read_said="no reply to $1"; return 1; }`,
+    },
+    {
+      row: "A23",
+      call: "control_window_a23",
+      body: `agent[files:planner.session]=session-planner; control_wait=0
+a12_stand_in() { :; }
+control_ask() { control[files:A23.fourth]=e4; }
+soft_wait() { return 1; }
+a23_fourth_read() { read_said="no reply to $1"; return 1; }`,
+    },
+  ];
+  for (const [n, control] of inboxControls.entries()) {
+    test(`${control.call} counts its read only over an inbox the run recorded and that holds entries`, () => {
+      const body = (evidenceDir: string) =>
+        `${rig(control.call.split(" ")[0])}\n${control.body}\nevidence=${shq(evidenceDir)}\n${control.call}`;
+      expect(verdict(control.row, body(caseEvidence(`inbox-${n}-missing`, null)))).toMatch(
+        new RegExp(`^${control.row} control FAIL: .*the inbox, where [^:]*: no listing at all`)
+      );
+      expect(verdict(control.row, body(caseEvidence(`inbox-${n}-empty`, [])))).toMatch(
+        new RegExp(`^${control.row} control FAIL: .*the inbox, where [^:]*: an empty listing`)
+      );
+      expect(verdict(control.row, body(caseEvidence(`inbox-${n}-held`, [otherLine])))).toMatch(
+        new RegExp(`^${control.row} control PASS: with answers removed, `)
+      );
+    });
+  }
+
+  // A daemon with answers removed writes no line of the control's question: a control whose read
+  // looks in this boot's log counts it only over a log that was read and holds entries.
+  const logControls: { row: string; call: string; body: string }[] = [
+    {
+      row: "A14",
+      call: "control_read_a14",
+      body: `a14_read() { read_said="cost lines handed $(grep -c . <<<"$1" || true)"; return 1; }`,
+    },
+    {
+      row: "A23",
+      call: "control_read_a23",
+      body: `control[files:tools]=; control[files:check]=
+a23_tools_leg() { read_said="no tools line"; return 1; }`,
+    },
+  ];
+  for (const control of logControls) {
+    test(`${control.call} counts its read only over this boot's daemon log holding entries`, () => {
+      const body = (log: string) =>
+        `${rig(control.call)}\n${control.body}\n${log}\n${control.call}`;
+      expect(
+        verdict(control.row, body(`daemon_log=${shq(join(dir, "no-such-daemon.log"))}`))
+      ).toMatch(
+        new RegExp(
+          `^${control.row} control FAIL: .*this boot's daemon log, where [^:]*: no listing at all`
+        )
+      );
+      expect(verdict(control.row, body("daemon_log=$empty_log; boot_offset=0"))).toMatch(
+        new RegExp(
+          `^${control.row} control FAIL: .*this boot's daemon log, where [^:]*: an empty listing`
+        )
+      );
+      expect(verdict(control.row, body(""))).toMatch(new RegExp(`^${control.row} control PASS`));
+    });
+  }
+
+  test("control_read_a1 counts A1's read only over the ask's thread holding the control's reply, and hands it that thread", () => {
+    const a1 = (record: string) =>
+      verdict(
+        "A1",
+        `${rig("control_read_a1")}
+agent[files:a1.ask]=ask-1
+control[files:A1.comment]=reply-person
+control[files:A1.panes]=0
+dispatch_get() { ${record}; }
+a1_read() { read_said="the thread it was handed: $(jq -c '[.replies[]?.id]' <<<"$4")"; return 1; }
+control_read_a1`
+      );
+    expect(a1("return 22")).toMatch(
+      /^A1 control FAIL: .*ask ask-1's thread, where its read looks for the architect's reply: no listing at all/
+    );
+    expect(a1(`printf '{"replies":[]}\\n'`)).toMatch(/^A1 control FAIL: .*: an empty listing/);
+    expect(a1(`printf '{"replies":[{"id":"reply-other"}]}\\n'`)).toMatch(
+      /^A1 control FAIL: .*: a listing of 1 entry holding no reply-person/
+    );
+    expect(a1(`printf '{"replies":[{"id":"reply-person"}]}\\n'`)).toBe(
+      `A1 control PASS: with answers removed, A1's read failed: the thread it was handed: ["reply-person"]`
+    );
+  });
+
+  test("control_read_a3 counts A3's read only over the issue's comments holding its mention and the person's messages holding its message", () => {
+    const fixture = `jq -ce --arg p "$1" '.[$p]' "$fixtures/dispatch.json"`;
+    const message = `printf '[{"message":{"body":"the control message"},"replies":[]}]\\n'`;
+    const a3 = (comments: string, messages: string) =>
+      verdict(
+        "A3",
+        `${rig("control_read_a3")}
+${rig("message_listing")}
+agent[files:tester.issue]=ALX-3
+agent[files:tester.session]=session-tester
+control[files:A3.comment]=comment-77
+control[files:A3.body]='the control message'
+dispatch_get() { ${comments}; }
+dispatch_human() { ${messages}; }
+a3_read() { read_said="handed comments $(jq -c '[.[]?.id]' <<<"$5") and messages $(jq -c '[.[]?.message.body]' <<<"$6")"; return 1; }
+control_read_a3`
+      );
+    expect(a3("return 22", message)).toMatch(
+      /^A3 control FAIL: .*ALX-3's comments, where its read looks for the tester's reply to the control's mention: no listing at all/
+    );
+    expect(a3(`printf '[]\\n'`, message)).toMatch(/^A3 control FAIL: .*: an empty listing/);
+    expect(a3(`printf '[{"id":"comment-78"}]\\n'`, message)).toMatch(
+      /^A3 control FAIL: .*: a listing of 1 entry holding no comment-77/
+    );
+    expect(a3(fixture, "return 22")).toMatch(
+      /^A3 control FAIL: .*the proof person's messages to session-tester, where [^:]*: no listing at all/
+    );
+    expect(a3(fixture, `printf '[]\\n'`)).toMatch(/^A3 control FAIL: .*: an empty listing/);
+    expect(a3(fixture, `printf '[{"message":{"body":"another message"}}]\\n'`)).toMatch(
+      /^A3 control FAIL: .*: a listing of 1 entry holding no the control message/
+    );
+    expect(a3(fixture, message)).toBe(
+      `A3 control PASS: with answers removed, A3's read failed: handed comments ["comment-77","comment-78","comment-79"] and messages ["the control message"]`
+    );
+  });
+
+  // A6: each leg's ask thread must hold the control's reply, and the inbox the notice the control
+  // places at the controller stand-in, which the second leg's part that the decision reached the
+  // controller not at all must then read.
+  test("control_read_a6 counts each leg only over its ask's thread holding the control's reply, and the nothing-posted part only over an inbox holding the placed notice", () => {
+    const a6 = (
+      name: string,
+      inbox: string[] | null,
+      options: { record?: string; placed?: boolean } = {}
+    ) =>
+      verdict(
+        "A6",
+        `${rig("control_read_a6")}
+${rig("control_notice")}
+${rig("a6_nothing_posted")}
+evidence=${shq(caseEvidence(`a6-${name}`, inbox))}
+agent[files:a6.leg2]=1
+control[files:A6.ask1]=ask-1; control[files:A6.comment1]=reply-person
+control[files:A6.ask2]=ask-3; control[files:A6.comment2]=reply-control
+dispatch_get() { ${options.record ?? `jq -ce --arg p "$1" '.[$p]' "$fixtures/dispatch.json"`}; }
+decide_and_ask_read() { read_said="the leg over $(jq -c '[.replies[]?.id]' <<<"$6")"; return 1; }
+place_controller_notice() {
+  ${options.placed === false ? "return 0" : `jq -cn --arg s "$controller_session" --arg t "Message:"$'\\n'"$(control_notice "$1" "$2")"$'\\n\\n'"Topic: notifications.agent.$controller_session" '{at: "2026-11-24T12:00:00.000Z", session: $s, text: $t}' >>"$evidence/inbox.jsonl"`}
+}
+control_read_a6`
+      );
+    const held = a6("held", [otherLine]);
+    expect(held).toMatch(/^A6 control PASS: /);
+    expect(held).toContain(
+      `the leg over ["reply-a1","answer-a1","reply-control"]; with an agent-decision notice of reply-control`
+    );
+    expect(held).toContain(
+      "failed: agent-decision notices holding reply-control at the controller stand-in: 1"
+    );
+    expect(a6("no-thread", [otherLine], { record: "return 22" })).toMatch(
+      /^A6 control FAIL: .*ask ask-1's thread, where its first leg's read looks for the tester's reply: no listing at all/
+    );
+    expect(a6("missing", null, { placed: false })).toMatch(
+      /^A6 control FAIL: .*the inbox, where that part's read looks for the controller's notices: no listing at all/
+    );
+    expect(a6("empty", [], { placed: false })).toMatch(
+      /^A6 control FAIL: .*notices: an empty listing/
+    );
+    expect(a6("lacking", [otherLine], { placed: false })).toMatch(
+      /^A6 control FAIL: .*notices: a listing of 1 entry holding no <!-- legion-answer:c0de42426 -->/
+    );
+  });
+
+  test("control_read_a7 counts the running-agent leg's read only over row A1's thread holding A1's reply", () => {
+    const a7 = (record: string) =>
+      verdict(
+        "A7",
+        `${rig("control_read_a7")}
+${rig("a7_loop_posted_nothing")}
+agent[files:a1.ask]=ask-1; agent[files:a1.comment]=reply-person; agent[files:architect.session]=session-architect
+dispatch_get() { ${record}; }
+control_read_a7`
+      );
+    expect(a7(`jq -ce --arg p "$1" '.[$p]' "$fixtures/dispatch.json"`)).toMatch(
+      /^A7 control PASS: .*failed: the loop's mark in what the thread holds: a1a1a1a1b2b2b2b2/
+    );
+    expect(a7("return 22")).toMatch(
+      /^A7 control FAIL: .*ask ask-1's thread, row A1's, where its read looks for the loop's answer: no listing at all/
+    );
+    expect(a7(`printf '{"replies":[]}\\n'`)).toMatch(/^A7 control FAIL: .*: an empty listing/);
+    expect(a7(`printf '{"replies":[{"id":"reply-other"}]}\\n'`)).toMatch(
+      /^A7 control FAIL: .*: a listing of 1 entry holding no reply-person/
+    );
+  });
+
+  // A7's forwarded question, A12's reply out of form and A18's resume leg: the control places a reply
+  // carrying its mark on the asker's topic, and the row's read that nothing was posted is run over
+  // the inbox read once after it.
+  for (const [row, read, said] of [
+    ["A7", "a7_nothing_posted", "replies on the asker's topic to event-placed: 1"],
+    [
+      "A12",
+      "a12_not_posted_read",
+      "the reply to event-placed on the asker's topic: In Reply To: event-placed",
+    ],
+    ["A18", "a18_nothing_posted", "replies on the asker's topic to event-placed: 1"],
+  ]) {
+    test(`control_reply_placed counts ${row}'s ${read} only over an inbox holding the placed reply`, () => {
+      const placed = (name: string, inbox: string[] | null, place = placeReply) =>
+        verdict(
+          row,
+          `${rig("control_reply_placed")}
+${rig(read)}
+${row === "A12" ? rig("a12_not_posted") : ""}
+evidence=${shq(caseEvidence(`placed-${row}-${name}`, inbox))}
+asker_session=asker-session
+soft_wait() { return 0; }
+${place}
+control_reply_placed ${row} event-placed "not the reply form (placed by the control of ${row}) $(control_mark ${row})" 'its read that nothing was posted' ${read}`
+        );
+      expect(placed("held", [otherLine])).toBe(
+        `${row} control PASS: with answers removed, its read that nothing was posted failed: ${said}${row === "A12" ? ` Message: not the reply form (placed by the control of A12) <!-- legion-answer:c0de424212 -->  Topic: notifications.agent.asker-session ` : ""}`
+      );
+      const unrecorded = "place_inbox_reply() { return 0; }";
+      const mark = `<!-- legion-answer:c0de4242${row.slice(1)} -->`;
+      expect(placed("missing", null, unrecorded)).toMatch(
+        new RegExp(
+          `^${row} control FAIL: .*the inbox, where that read looks for a reply to event-placed: no listing at all`
+        )
+      );
+      expect(placed("empty", [], unrecorded)).toMatch(
+        new RegExp(`^${row} control FAIL: .*: an empty listing`)
+      );
+      expect(placed("lacking", [otherLine], unrecorded)).toContain(
+        `: a listing of 1 entry holding no ${mark}`
+      );
+      expect(placed("refused", [otherLine], "place_inbox_reply() { return 1; }")).toMatch(
+        new RegExp(
+          `^${row} control FAIL: with answers removed, the control's message was not all sent`
+        )
+      );
+    });
+  }
+
+  // A8 places a line of each session's in the daemon's log; its parts that say the loop answers
+  // nothing are run over the log read once after, and count only where it holds both lines.
+  test("control_read_a8 counts its log's reads only over this boot's log holding the two lines it placed", () => {
+    const boot = `${JSON.stringify({ time: "2026-11-24T12:00:00.000Z", level: "INFO", msg: "daemon started" })}\n`;
+    const a8 = (
+      name: string,
+      log: string | null,
+      place: boolean,
+      inbox: string[] | null = [otherLine]
+    ) => {
+      const logFile = join(dir, `control-a8-${name}.log`);
+      if (log !== null) writeFileSync(logFile, log);
+      return verdict(
+        "A8",
+        `${rig("control_read_a8")}
+${rig("a8_own_unanswered_read")}
+${rig("a8_edit_unanswered_read")}
+${rig("place_log_line")}
+daemon_log=${shq(logFile)}; boot_offset=0
+fixture_evidence=$evidence
+evidence=${shq(caseEvidence(`a8-${name}`, inbox))}
+cp "$fixture_evidence/model-calls.jsonl" "$evidence/model-calls.jsonl"
+agent[files:tester_old.session]=session-tester-old; agent[files:architect.session]=session-architect; agent[files:planner.session]=session-planner
+control[files:A8.stored]=0; control[files:A8.sent]='200 event-a8'; control[files:A8.posted]=0; control[files:A8.handed]=0
+control[files:A8.appended]=0; control[files:A8.own]=0; control[files:A8.edit]=0; control[files:A8.refused]=0
+a8_once_read() { read_said=once; return 1; }
+a8_kill_read() { read_said=kill; return 1; }
+a8_own_delivered_read() { read_said=delivered; return 1; }
+${place ? "place_log_line session-tester-old A8\nplace_log_line session-architect A8" : ""}
+control_read_a8`
+      );
+    };
+    const held = a8("held", boot, true);
+    expect(held).toMatch(/^A8 control PASS: /);
+    expect(held).toContain("failed: questions for the replaced tester 0 → 1, answers of it 0");
+    expect(held).toContain("failed: questions for the architect 0 → 1");
+    expect(a8("missing", null, false)).toMatch(
+      /^A8 control FAIL: .*this boot's daemon log, where [^:]*: no listing at all/
+    );
+    expect(a8("empty", "", false)).toMatch(
+      /^A8 control FAIL: .*this boot's daemon log, where [^:]*: an empty listing/
+    );
+    expect(a8("lacking", boot, false)).toMatch(
+      /^A8 control FAIL: .*: a listing of 1 entry holding no session-tester-old c0de42428, no session-architect c0de42428/
+    );
+    expect(a8("no-inbox", boot, true, null)).toMatch(
+      /^A8 control FAIL: .*the inbox, where its first two legs look for the planner's replies: no listing at all/
+    );
+  });
+
+  // A17's leak-guard leg: the reviewer found the control reading PASS where GitHub listed nothing
+  // after its placement. Each leg counts only over the person's messages holding the control's own,
+  // and over a listing of the pull request's comments; the nothing-written part only over the listing
+  // read after the placement, holding the placed comment.
+  test("control_read_a17 counts the nothing-written part only over a listing holding the comment it placed", () => {
+    const before = `jq -c --arg p "repos/$repo/issues/41/comments?per_page=100" '.[$p]' "$fixtures/github.json"`;
+    const after = `jq -c --arg body "$(a17_control_comment)" '. + [{id: 9010, user: {login: "example-implement[bot]"}, body: $body}]' <<<"$(${before})"`;
+    const messages = `printf '[{"message":{"body":"impl message"}},{"message":{"body":"leak message"}},{"message":{"body":"review message"}}]\\n'`;
+    const a17 = (
+      name: string,
+      options: { before?: string; after?: string; messages?: string } = {}
+    ) =>
+      verdict(
+        "A17",
+        `${rig("control_read_a17")}
+${rig("message_listing")}
+${rig("record_leak_comments")}
+${rigVariable("leak_marker")}
+${rig("a17_control_comment")}
+${rig("a17_nothing_written")}
+github_writes=()
+root=/nonexistent; work=/nonexistent
+agent[files:implementer.pr]=41; agent[files:implementer.session]=session-implementer; agent[files:pre_change.session]=session-reviewer
+control[files:A17.marker]=answer-loop-a17-control-4242-files
+control[files:A17.impl]='impl message'; control[files:A17.leak]='leak message'; control[files:A17.review]='review message'
+flag=${shq(placedFlag(`a17-${name}`))}
+dispatch_human() { ${options.messages ?? messages}; }
+smoke_gh() { if [ -f "$flag" ]; then ${options.after ?? after}; else ${options.before ?? before}; fi; }
+timeout() { touch "$flag"; printf '{"id":9010}\\n'; }
+settled_pr_comments() { :; }
+a17_impl_read() { read_said=impl; return 1; }
+a17_leak_read() { read_said=leak; return 1; }
+a17_review_read() { read_said=review; return 1; }
+control_read_a17`
+      );
+    expect(a17("held")).toMatch(
+      /^A17 control PASS: .*failed: comments on #41 holding answer-loop-leak-4242: \[9010\]$/
+    );
+    expect(a17("gone-after", { after: "return 1" })).toMatch(
+      /^A17 control FAIL: .*#41's comments as GitHub listed them for that read: no listing at all/
+    );
+    expect(a17("lacking-after", { after: before })).toMatch(
+      /^A17 control FAIL: .*for that read: a listing of 2 entries holding no 9010/
+    );
+    expect(a17("gone-before", { before: "return 1" })).toMatch(
+      /^A17 control FAIL: .*#41's comments as GitHub listed them, where its first two legs look for the implementer's comments: no listing at all/
+    );
+    expect(a17("empty-before", { before: `printf '[]\\n'` })).toMatch(
+      /^A17 control FAIL: .*implementer's comments: an empty listing/
+    );
+    expect(a17("no-messages", { messages: "return 22" })).toMatch(
+      /^A17 control FAIL: .*the proof person's messages to session-implementer, where [^:]*: no listing at all/
+    );
+    expect(
+      a17("lacking-messages", { messages: `printf '[{"message":{"body":"impl message"}}]\\n'` })
+    ).toMatch(
+      /^A17 control FAIL: .*: a listing of 1 entry holding no leak message; .*: a listing of 1 entry holding no review message/
+    );
+  });
+
+  test("control_read_a18 counts its legs only over a listing of the pull request's comments and an inbox, and its nothing-posted part over the placed reply", () => {
+    const a18 = (
+      name: string,
+      inbox: string[] | null,
+      options: { before?: string; place?: string } = {}
+    ) =>
+      verdict(
+        "A18",
+        `${rig("control_read_a18")}
+${rig("control_reply_placed")}
+${rig("a18_nothing_posted")}
+evidence=${shq(caseEvidence(`a18-${name}`, inbox))}
+asker_session=asker-session
+github_writes=()
+agent[files:implementer.pr]=41
+control[files:A18.event]=event-a18; control[files:A18.marker]=answer-loop-a18-control-4242-files
+smoke_gh() { ${options.before ?? `jq -ce --arg p "$2" '.[$p]' "$fixtures/github.json"`}; }
+soft_wait() { return 0; }
+${options.place ?? placeReply}
+a18_restart_read() { read_said=restart; return 1; }
+a18_resume_read() { read_said=resume; return 1; }
+control_read_a18`
+      );
+    expect(a18("held", [otherLine])).toMatch(
+      /^A18 control PASS: .*failed: replies on the asker's topic to event-a18: 1$/
+    );
+    expect(a18("gone", [otherLine], { before: "return 1" })).toMatch(
+      /^A18 control FAIL: .*#41's comments as GitHub listed them, where both legs look for the implementer's comment: no listing at all/
+    );
+    expect(a18("empty-listing", [otherLine], { before: `printf '[]\\n'` })).toMatch(
+      /^A18 control FAIL: .*implementer's comment: an empty listing/
+    );
+    const unrecorded = "place_inbox_reply() { return 0; }";
+    expect(a18("missing", null, { place: unrecorded })).toMatch(
+      /^A18 control FAIL: .*the inbox, where both legs look for the reply to the control's request: no listing at all/
+    );
+    expect(a18("empty", [], { place: unrecorded })).toMatch(
+      /^A18 control FAIL: .*the inbox, where both legs look for the reply to the control's request: an empty listing/
+    );
+    expect(a18("lacking", [otherLine], { place: unrecorded })).toMatch(
+      /^A18 control FAIL: .*: a listing of 1 entry holding no <!-- legion-answer:c0de424218 -->/
+    );
+  });
+
+  test("control_read_a19 counts A19's read only over GitHub's listing of the pull request's reviews holding some", () => {
+    const a19 = (reviews: string) =>
+      verdict(
+        "A19",
+        `${rig("control_read_a19")}
+agent[files:a19.number]=41; agent[files:reviewer.session]=session-reviewer; agent[files:a19.issue]=ALX-19
+agent[files:a19.head]=0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c
+control[files:A19.since]=2026-11-25T00:00:00Z
+review_app_login='example-review[bot]'
+soft_wait() { return 1; }
+smoke_gh() { ${reviews}; }
+a19_read() { read_said="handed $(jq -c 'if type == "array" then length else . end' <<<"$6") reviews"; return 1; }
+control_read_a19`
+      );
+    expect(a19(`jq -ce --arg p "$2" '.[$p]' "$fixtures/github.json"`)).toBe(
+      "A19 control PASS: with answers removed, A19's read failed: handed 3 reviews"
+    );
+    expect(a19("return 1")).toMatch(
+      /^A19 control FAIL: .*#41's reviews as GitHub listed them, where its read looks for the reviewer's approval: no listing at all/
+    );
+    expect(a19(`printf '[]\\n'`)).toMatch(/^A19 control FAIL: .*approval: an empty listing/);
+  });
+
+  test("control_read_a20 counts A20's read only over the thread holding the control's replies, and its last sentence over the placed reply", () => {
+    const before = `jq -ce --arg p "$1" '.[$p]' "$fixtures/dispatch.json"`;
+    const after = `jq -c --arg body "Placed by the control of A20 in the tester's name, as a reply of the loop's would stand: $(control_mark A20)" '.replies += [{id: "comment-106", author: {id: "session-tester", kind: "agent"}, answers: "comment-103", body: $body}]' <<<"$(${before})"`;
+    const a20 = (name: string, options: { before?: string; after?: string } = {}) =>
+      verdict(
+        "A20",
+        `${rig("control_read_a20")}
+${rig("a20_nothing_posted")}
+agent[files:a3.comment]=comment-100; agent[files:tester.session]=session-tester; agent[files:tester.issue]=ALX-3
+control[files:A20.count]=2; control[files:A20.reply]=comment-102; control[files:A20.control]=comment-103
+control[files:A20.skipped]=0; control[files:A20.panes]=0
+flag=${shq(placedFlag(`a20-${name}`))}
+dispatch_get() { if [ -f "$flag" ]; then ${options.after ?? after}; else ${options.before ?? before}; fi; }
+place_comment() { touch "$flag"; printf 'comment-106\\n'; }
+a20_read() { read_said="handed $(jq -c '[.replies[]?.id]' <<<"$7")"; return 1; }
+control_read_a20`
+      );
+    const held = a20("held");
+    expect(held).toMatch(/^A20 control PASS: /);
+    expect(held).toContain(
+      `A20's read failed: handed ["comment-101","comment-102","comment-103","comment-104","comment-105"]`
+    );
+    expect(held).toContain(
+      "failed: the tester's reply under comment-103 in the thread of comment-100: Placed by the control of A20"
+    );
+    expect(a20("gone", { before: "return 22" })).toMatch(
+      /^A20 control FAIL: .*the thread of comment-100, where its read looks for the tester's replies: no listing at all/
+    );
+    expect(a20("lacking", { before: `printf '{"replies":[{"id":"comment-101"}]}\\n'` })).toMatch(
+      /^A20 control FAIL: .*: a listing of 1 entry holding no comment-102, no comment-103/
+    );
+    expect(a20("gone-after", { after: "return 22" })).toMatch(
+      /^A20 control FAIL: .*the thread of comment-100 as that read is handed it: no listing at all/
+    );
+    expect(a20("lacking-after", { after: before })).toMatch(
+      /^A20 control FAIL: .*as that read is handed it: a listing of 5 entries holding no comment-106/
+    );
+  });
+
+  test("control_read_a21 counts its reads only over the comments holding its mentions and the placed reply, the mention's record and the inbox", () => {
+    const comments = JSON.stringify([
+      {
+        id: "comment-110",
+        author: { id: "user:smoke", kind: "user" },
+        reply_to: null,
+        body: "@implementer",
+      },
+      {
+        id: "comment-111",
+        author: { id: "user:smoke", kind: "user" },
+        reply_to: null,
+        body: "@reviewer",
+      },
+    ]);
+    const before = `printf '%s\\n' ${shq(comments)}`;
+    const after = `jq -c --arg body "Placed by the control of A21 in the failed implementer's name, as a reply of the loop's would stand: $(control_mark A21)" '. + [{id: "comment-113", author: {id: "session-implementer", kind: "session"}, reply_to: "comment-111", body: $body}]' <<<"$(${before})"`;
+    const holder = `printf '%s\\n' '{"comment":{"id":"comment-112","deliveries":[{"target":"role:legion-alx-alx-11-merger","state":"queued","session_id":null,"error":null}]},"replies":[]}'`;
+    const a21 = (
+      name: string,
+      inbox: string[] | null,
+      options: { before?: string; after?: string; holder?: string } = {}
+    ) =>
+      verdict(
+        "A21",
+        `${rig("control_read_a21")}
+${rig("a21_holder_read")}
+${rig("a21_nothing_posted")}
+evidence=${shq(caseEvidence(`a21-${name}`, inbox))}
+holder_session=holder-session
+agent[files:failed_implementer.issue]=ALX-11; agent[files:failed_implementer.session]=session-implementer
+control[files:A21.comment]=comment-110; control[files:A21.control]=comment-111; control[files:A21.panes]=1; control[files:A21.role_event]=event-role
+control[files:A21.holder]=comment-112; control[files:A21.holder_marker]=answer-loop-a21-holder-control-4242-files
+control[files:A21.claim]='{"session_id":"holder-session"}'
+claim_token() { printf 'legion-alx-%s-%s\\n' "\${1,,}" "$2"; }
+flag=${shq(placedFlag(`a21-${name}`))}
+dispatch_get() {
+  case "$1" in
+    comments/*) ${options.holder ?? holder} ;;
+    *) if [ -f "$flag" ]; then ${options.after ?? after}; else ${options.before ?? before}; fi ;;
+  esac
+}
+place_comment() { touch "$flag"; printf 'comment-113\\n'; }
+a21_read() { read_said="handed $(jq -c '[.[]?.id]' <<<"$6")"; return 1; }
+control_read_a21`
+      );
+    const held = a21("held", [otherLine]);
+    expect(held).toMatch(/^A21 control PASS: /);
+    expect(held).toContain(`A21's read failed: handed ["comment-110","comment-111"]`);
+    expect(held).toContain(
+      "settled queued naming no session: yes; the first holder holder-session's claim"
+    );
+    expect(held).toContain("its inbox holds answer-loop-a21-holder-control-4242-files: no");
+    expect(held).toContain(
+      "failed: the failed implementer's reply to comment-111 on ALX-11: Placed by the control of A21"
+    );
+    expect(a21("gone", [otherLine], { before: "return 22" })).toMatch(
+      /^A21 control FAIL: .*ALX-11's comments, where its read looks for the failed implementer's replies to the control's mentions: no listing at all/
+    );
+    expect(a21("lacking", [otherLine], { before: `printf '[{"id":"comment-110"}]\\n'` })).toMatch(
+      /^A21 control FAIL: .*: a listing of 1 entry holding no comment-111/
+    );
+    expect(a21("no-record", [otherLine], { holder: "return 22" })).toMatch(
+      /^A21 control FAIL: .*the record of the control's mention comment-112, where the first holder's leg reads it kept: no listing at all/
+    );
+    expect(a21("missing", null)).toMatch(
+      /^A21 control FAIL: .*the inbox, where its read looks for the reply to the control's message to the role's topic: no listing at all/
+    );
+    expect(a21("empty", [])).toMatch(
+      /^A21 control FAIL: .*the inbox, where the first holder's leg looks for the mention's marker: an empty listing/
+    );
+    expect(a21("gone-after", [otherLine], { after: "return 22" })).toMatch(
+      /^A21 control FAIL: .*ALX-11's comments as that read is handed them: no listing at all/
+    );
+    expect(a21("lacking-after", [otherLine], { after: before })).toMatch(
+      /^A21 control FAIL: .*as that read is handed them: a listing of 2 entries holding no comment-113/
+    );
+  });
+
+  // A22's second leg: the reviewer found the control reading PASS over a list missing the planted
+  // parent comment. The nothing-posted part counts only over the target's comments read after the
+  // placement holding both the placed comment and the reply under it.
+  test("control_read_a22 counts the nothing-posted part only over comments holding both the placed comment and the reply under it", () => {
+    const before = `jq -ce '."issues/ALX-22/comments"' "$fixtures/dispatch.json"`;
+    const reply = `{id: "comment-231", author: {id: "session-tester-old", kind: "session"}, reply_to: "comment-230", body: $body}`;
+    const parent = `{id: "comment-230", author: {id: "session-planner", kind: "session"}, reply_to: null, body: ($m + "\\n\\n" + $tool)}`;
+    const placed = (added: string) =>
+      `jq -c --arg m answer-loop-a22-control-4242-files --arg tool "$(control_tool_mark A22)" --arg body "Placed by the control of A22 in the mentioned session's name, as the loop's answer to the comment would stand: $(control_mark A22)" '. + [${added}]' <<<"$(${before})"`;
+    const messages = `printf '[{"message":{"body":"read message"}},{"message":{"body":"post message"}},{"message":{"body":"refuse message"}}]\\n'`;
+    const a22 = (
+      name: string,
+      options: { before?: string; after?: string; messages?: string } = {}
+    ) =>
+      verdict(
+        "A22",
+        `${rig("control_read_a22")}
+${rig("message_listing")}
+${rig("control_tool_mark")}
+${rig("a22_nothing_posted")}
+agent[files:a22.target]=ALX-22; agent[files:planner.session]=session-planner; agent[files:tester_old.session]=session-tester-old
+control[files:A22.marker]=answer-loop-a22-control-4242-files
+control[files:A22.read]='read message'; control[files:A22.post]='post message'; control[files:A22.refuse]='refuse message'
+control[files:A22.skipped]=0; control[files:A22.standing]=null; control[files:tools]=; control[files:check]=
+flag=${shq(placedFlag(`a22-${name}`))}
+dispatch_human() { ${options.messages ?? messages}; }
+dispatch_get() { if [ -f "$flag" ]; then ${options.after ?? placed(`${parent}, ${reply}`)}; else ${options.before ?? before}; fi; }
+place_comment() { touch "$flag"; if [ -n "\${4:-}" ]; then printf 'comment-231\\n'; else printf 'comment-230\\n'; fi; }
+a22_read_leg() { read_said=read; return 1; }
+a22_post_leg() { read_said="post over $(jq -c 'length' <<<"$7") comments"; return 1; }
+a22_refusal_leg() { read_said=refuse; return 1; }
+a22_tools_leg() { read_said=tools; return 1; }
+control_read_a22`
+      );
+    const held = a22("held");
+    expect(held).toMatch(/^A22 control PASS: /);
+    expect(held).toContain("A22's second leg failed: post over 5 comments");
+    expect(held).toContain(
+      "failed: a reply of session-tester-old to comment-230 on ALX-22: Placed by the control of A22"
+    );
+    expect(a22("gone-after", { after: "return 22" })).toMatch(
+      /^A22 control FAIL: .*ALX-22's comments as that read is handed them: no listing at all/
+    );
+    expect(a22("no-parent", { after: placed(reply) })).toMatch(
+      /^A22 control FAIL: .*as that read is handed them: a listing of 6 entries holding no comment-230;/
+    );
+    expect(a22("no-reply", { after: placed(parent) })).toMatch(
+      /^A22 control FAIL: .*as that read is handed them: a listing of 6 entries holding no comment-231;/
+    );
+    expect(a22("no-messages", { messages: "return 22" })).toMatch(
+      /^A22 control FAIL: .*the proof person's messages to session-planner, where [^:]*: no listing at all/
+    );
+    expect(a22("empty-before", { before: `printf '[]\\n'` })).toMatch(
+      /^A22 control FAIL: .*ALX-22's comments, where its second leg looks for the planner's comment: an empty listing/
+    );
+  });
+});

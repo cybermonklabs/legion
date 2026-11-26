@@ -44,15 +44,28 @@ boot_log() { tail -c "+$((boot_offset + 1))" "$daemon_log" | jq -c -R 'fromjson?
 # which is what a check judges when another check restarted the daemon before it (A14 after A12's
 # five restarts, whose own boot holds no answer at all).
 run_log() { jq -c -R 'fromjson? // empty' "$daemon_log"; }
+# boot_listing prints the current boot's daemon log lines (boot_log) as one JSON array, and `null`
+# where no log could be read: the listing a control reads once, checks for what it placed there
+# (listing_fault) and hands to the read it counts (A8's lines, A14's cost lines).
+boot_listing() {
+  local lines
+  lines=$(boot_log 2>/dev/null) || {
+    printf 'null\n'
+    return 0
+  }
+  jq -s -c . <<<"$lines"
+}
 
 # answers_lines MSG [SESSION [STATE [BECAUSE]]]: how many lines of this boot's daemon log carry MSG,
 # for SESSION, in STATE and for the reason BECAUSE, whole, when each is given. A20's control reads
 # the hand-offs of the tester's session the loop took for no question (`answers: hand-off is no
 # question; not answered`) for the reason it gives a reply in a comment thread that follows no
-# agent's comment.
-answers_lines() {
-  boot_log | jq -s --arg m "$1" --arg s "${2:-}" --arg st "${3:-}" --arg b "${4:-}" \
-    '[.[] | select(.msg == $m and ($s == "" or .session == $s) and ($st == "" or .state == $st) and ($b == "" or .because == $b))] | length'
+# agent's comment. answers_lines_in LINES MSG… counts the same over LINES, a listing of the log
+# read before (boot_listing), 0 over one that is none.
+answers_lines() { answers_lines_in "$(boot_listing)" "$@"; }
+answers_lines_in() {
+  jq --arg m "$2" --arg s "${3:-}" --arg st "${4:-}" --arg b "${5:-}" \
+    '[.[]? | select(.msg == $m and ($s == "" or .session == $s) and ($st == "" or .state == $st) and ($b == "" or .because == $b))] | length' <<<"${1:-null}"
 }
 # question_lines QUESTION: how many lines of this boot's daemon log name QUESTION, whatever the
 # `answers:` message. Zero says the boot was handed nothing of it at all.
@@ -728,14 +741,36 @@ question_suffix() { printf '(question %s of run %s, %s)' "$1" "$2" "$3"; }
 question_occurrences() { occurrences "$1" "$(question_suffix "$2" "$3" "$4")"; }
 
 # ---- the asker's inbox -------------------------------------------------------------------------------
-# inbox_reply EVENT prints the text the asker received in reply to EVENT, or fails; inbox_replies
-# EVENT counts them. A reply that never came prints nothing rather than jq's `null`, which an
-# answer key would then be looked for in. An empty EVENT, a send the listener named no event for,
-# is answered by nothing: `In Reply To: ` alone is in every reply, and would read another
-# question's answer as this one's.
+# inbox_listing prints the inbox, every envelope the run's stand-in sessions were relayed, as one
+# JSON array of {at, session, text}, oldest first, and `null` where the run recorded no inbox: the
+# listing a control reads once, checks (listing_fault) and hands to the read it counts. The reads
+# below that a control counts take it as INBOX after their own arguments, and read the inbox as it
+# stands now where it is not given. inbox_jq INBOX ARG... runs jq ARG... over INBOX, or over the
+# inbox file read as one array, and fails where neither is.
+inbox_listing() {
+  local inbox=null
+  if [ -f "$evidence/inbox.jsonl" ]; then inbox=$(jq -s -c . "$evidence/inbox.jsonl" 2>/dev/null) || inbox=null; fi
+  printf '%s\n' "$inbox"
+}
+inbox_jq() {
+  local inbox=$1
+  shift
+  if [ -n "$inbox" ]; then
+    jq "$@" <<<"$inbox"
+  else
+    [ -f "$evidence/inbox.jsonl" ] || return 1
+    jq -s "$@" "$evidence/inbox.jsonl"
+  fi
+}
+# inbox_reply EVENT [INBOX] prints the text the asker received in reply to EVENT, or fails;
+# inbox_replies EVENT [INBOX] counts them. A reply that never came prints nothing rather than jq's
+# `null`, which an answer key would then be looked for in. An empty EVENT, a send the listener named
+# no event for, is answered by nothing: `In Reply To: ` alone is in every reply, and would read
+# another question's answer as this one's.
+# shellcheck disable=SC2016 # jq's variables, run through inbox_jq
 inbox_reply() {
-  [ -n "${1:-}" ] && [ -f "$evidence/inbox.jsonl" ] || return 1
-  jq -s -e -r --arg e "In Reply To: $1" '[.[] | select(.text | contains($e)) | .text] | (.[0] // empty)' "$evidence/inbox.jsonl"
+  [ -n "${1:-}" ] || return 1
+  inbox_jq "${2:-}" -e -r --arg e "In Reply To: $1" '[.[]? | select(.text | contains($e)) | .text] | (.[0] // empty)'
 }
 # reply_message TEXT prints only the message of the reply TEXT: the inbox renders an envelope as a
 # reply header, `Message:`, the message, a blank line and `Topic: …` (lib/envoy-inbox.ts). Nothing
@@ -749,19 +784,21 @@ reply_message() {
 inbox_message() {
   reply_message "$(inbox_reply "${1:-}" 2>/dev/null || true)"
 }
-# inbox_holds SESSION MARKER: the inbox recorded an envelope relayed to SESSION whose text holds
-# MARKER (A21's first holder: the message the listener kept for a role reaches the session that
-# claimed it). An empty MARKER is no message, and holds nothing.
+# inbox_holds SESSION MARKER [INBOX]: the inbox recorded an envelope relayed to SESSION whose text
+# holds MARKER (A21's first holder: the message the listener kept for a role reaches the session
+# that claimed it). An empty MARKER is no message, and holds nothing.
+# shellcheck disable=SC2016 # jq's variables, run through inbox_jq
 inbox_holds() {
-  [ -n "${2:-}" ] && [ -f "$evidence/inbox.jsonl" ] &&
-    jq -s -e --arg s "$1" --arg m "$2" 'any(.[]; .session == $s and (.text | contains($m)))' "$evidence/inbox.jsonl" >/dev/null
+  [ -n "${2:-}" ] &&
+    inbox_jq "${3:-}" -e --arg s "$1" --arg m "$2" 'any(.[]?; .session == $s and (.text | contains($m)))' >/dev/null
 }
+# shellcheck disable=SC2016 # jq's variables, run through inbox_jq
 inbox_replies() {
-  if [ -n "${1:-}" ] && [ -f "$evidence/inbox.jsonl" ]; then
-    jq -s --arg e "In Reply To: $1" '[.[] | select(.text | contains($e))] | length' "$evidence/inbox.jsonl"
-  else
-    printf '0\n'
+  local count=0
+  if [ -n "${1:-}" ]; then
+    count=$(inbox_jq "${2:-}" --arg e "In Reply To: $1" '[.[]? | select(.text | contains($e))] | length') || count=0
   fi
+  printf '%s\n' "$count"
 }
 # replied_with_keys EVENT ID: the asker received a reply to EVENT (inbox_reply), and it holds every
 # key of question ID (answer_holds). It prints what is missing, the reply or the first key it
@@ -774,10 +811,11 @@ replied_with_keys() {
   }
   answer_holds "$2" "$reply"
 }
-# no_reply_to EVENT: the asker received no reply to EVENT, a send the listener named an event for:
-# nothing was posted on the asker's topic in answer to it (A7's question forwarded to the running
-# agent, which the loop posts nothing for). An empty EVENT is no send at all, and shows nothing.
-no_reply_to() { [ -n "${1:-}" ] && [ "$(inbox_replies "$1")" = 0 ]; }
+# no_reply_to EVENT [INBOX]: the asker received no reply to EVENT, a send the listener named an
+# event for: nothing was posted on the asker's topic in answer to it (A7's question forwarded to the
+# running agent, which the loop posts nothing for). An empty EVENT is no send at all, and shows
+# nothing.
+no_reply_to() { [ -n "${1:-}" ] && [ "$(inbox_replies "$1" "${2:-}")" = 0 ]; }
 # replies_to EVENT...: the replies the asker received to the sends whose answers named EVENT...,
 # each event's replies counted once. The listener answers a sender's own repeat under one key with
 # its first copy's event (cmd/listener's answerHandedOff), so every send of one envelope can name
@@ -797,15 +835,16 @@ first_reply_of() {
   jq -s -r --arg a "In Reply To: $1" --arg b "In Reply To: $2" \
     '[.[] | select((.text | contains($a)) or (.text | contains($b)))] | (.[0].text // empty)' "$evidence/inbox.jsonl"
 }
-# controller_notices KIND NEEDLE: how many notices of KIND the controller stand-in received whose
-# text holds NEEDLE. An empty NEEDLE, a person's reply Dispatch took none of, names no notice.
+# controller_notices KIND NEEDLE [INBOX]: how many notices of KIND the controller stand-in received
+# whose text holds NEEDLE. An empty NEEDLE, a person's reply Dispatch took none of, names no notice.
+# shellcheck disable=SC2016 # jq's variables, run through inbox_jq
 controller_notices() {
-  if [ -n "${2:-}" ] && [ -f "$evidence/inbox.jsonl" ]; then
-    jq -s --arg s "$controller_session" --arg k "\"kind\":\"$1\"" --arg n "$2" \
-      '[.[] | select(.session == $s and (.text | contains($k)) and (.text | contains($n)))] | length' "$evidence/inbox.jsonl"
-  else
-    printf '0\n'
+  local count=0
+  if [ -n "${2:-}" ]; then
+    count=$(inbox_jq "${3:-}" --arg s "$controller_session" --arg k "\"kind\":\"$1\"" --arg n "$2" \
+      '[.[]? | select(.session == $s and (.text | contains($k)) and (.text | contains($n)))] | length') || count=0
   fi
+  printf '%s\n' "$count"
 }
 
 # ---- the listener's log ------------------------------------------------------------------------------
@@ -1263,21 +1302,24 @@ a16_hit() {
 
 # ---- Dispatch -------------------------------------------------------------------------------------
 # ask_of SESSION ISSUE prints the id of the newest ask SESSION opened on ISSUE, empty for none;
-# ask_reply_after ASK COMMENT SESSION prints SESSION's first reply on ASK's thread written after the
-# reply COMMENT, a person's (A1's, A6's and their controls'), and fails when none is or when the
-# thread holds no COMMENT: SESSION's answer to that reply. Not its answer to an earlier reply, which
-# a thread the loop answered before still holds, and not a later post of SESSION's, which an agent
-# resumed since writes on its own ask (A7's control reads A1's thread after the architect's
-# resumes). The asks route answers an array, so a body that is not one (an error object) names no
-# ask.
+# ask_reply_after ASK COMMENT SESSION [RECORD] prints SESSION's first reply on ASK's thread written
+# after the reply COMMENT, a person's (A1's, A6's and their controls'), and fails when none is or
+# when the thread holds no COMMENT: SESSION's answer to that reply. Not its answer to an earlier
+# reply, which a thread the loop answered before still holds, and not a later post of SESSION's,
+# which an agent resumed since writes on its own ask (A7's control reads A1's thread after the
+# architect's resumes). RECORD is ASK's record (GET asks/<ask>, its replies oldest first) as a
+# control read it once, read now where not given. The asks route answers an array, so a body that
+# is not one (an error object) names no ask.
 ask_of() {
   dispatch_get "issues/$2/asks?thread=1" |
     jq -r --arg s "$1" 'if type == "array" then ([.[] | select(.author.id == $s)] | last | .id? // empty) else empty end' || true
 }
 ask_reply_after() {
-  dispatch_get "asks/$1" | jq -e -r --arg c "$2" --arg s "$3" '[.replies[]?] as $r
+  local record=${4:-}
+  [ -n "$record" ] || record=$(dispatch_get "asks/$1" 2>/dev/null) || record=null
+  jq -e -r --arg c "$2" --arg s "$3" '[.replies[]?] as $r
     | ([range($r | length) | select($r[.].id == $c)] | first) as $at
-    | if $at == null then empty else ([$r[$at + 1:][] | select(.author.id == $s)] | first | .body? // empty) end'
+    | if $at == null then empty else ([$r[$at + 1:][] | select(.author.id == $s)] | first | .body? // empty) end' <<<"$record"
 }
 # comment_reply_in COMMENTS COMMENT SESSION prints SESSION's first reply to COMMENT in COMMENTS, an
 # issue's list of comments (GET issues/<issue>/comments), or fails: the answer a role mention of a
@@ -1287,8 +1329,13 @@ ask_reply_after() {
 comment_reply_in() {
   jq -e -r --arg id "$2" --arg s "$3" '[.[]? | select(.reply_to == $id and .author.id == $s)] | (first | .body? // empty)' <<<"${1:-null}"
 }
-# comment_reply_by ISSUE COMMENT SESSION is comment_reply_in over the list read from Dispatch now.
-comment_reply_by() { comment_reply_in "$(dispatch_get "issues/$1/comments")" "$2" "$3"; }
+# comment_reply_by ISSUE COMMENT SESSION [COMMENTS] is comment_reply_in over COMMENTS, ISSUE's list
+# as a control read it once, or over the list read from Dispatch now where it is not given.
+comment_reply_by() {
+  local comments=${4:-}
+  [ -n "$comments" ] || comments=$(dispatch_get "issues/$1/comments") || comments=null
+  comment_reply_in "$comments" "$2" "$3"
+}
 # record_reply_by RECORD SESSION prints SESSION's first reply in the message record a conversation
 # page reads (GET agents/<session>/messages), empty for none.
 record_reply_by() {
@@ -1345,11 +1392,11 @@ comment_record() {
 }
 # comment_delivery_records COMMENT prints COMMENT's delivery records (comment_record), each as
 # {target, state, session_id, error}, and `[]` for a comment Dispatch answers no record of and for
-# a read that failed: what A3's note and A21 print and judge.
-comment_delivery_records() {
-  local body
-  body=$(comment_record "$1")
-  jq -c '[.comment.deliveries[]? | {target, state, session_id, error}]' <<<"${body:-null}" 2>/dev/null || printf '[]\n'
+# a read that failed: what A3's note and A21 print and judge. delivery_records_in RECORD prints the
+# same of RECORD, a comment's record read before (A21's control reads it once).
+comment_delivery_records() { delivery_records_in "$(comment_record "$1")"; }
+delivery_records_in() {
+  jq -c '[.comment.deliveries[]? | {target, state, session_id, error}]' <<<"${1:-null}" 2>/dev/null || printf '[]\n'
 }
 # one_delivery_for DELIVERIES STATE SESSION: the delivery records (comment_delivery_records) are
 # one, in STATE, and name SESSION, or no session at all for an empty SESSION. A21 reads its
@@ -1387,10 +1434,11 @@ one_delivery_in() {
 # {id, answers, body}: `answers` is the comment a reply was written under, which Dispatch keeps
 # beside the thread's head (`reply_to`, the head of every reply in a thread). It prints `[]` for
 # none, for Dispatch's error body, for a read that failed and for no comment id at all (A20).
-thread_replies_by() {
-  local body
-  body=$(comment_record "$1")
-  jq -c --arg s "$2" '[.replies[]? | select(.author.id == $s) | {id, answers, body}]' <<<"${body:-null}" 2>/dev/null ||
+# thread_replies_in RECORD SESSION reads the same of RECORD, HEAD's record read before (A20's
+# control reads it once).
+thread_replies_by() { thread_replies_in "$(comment_record "$1")" "$2"; }
+thread_replies_in() {
+  jq -c --arg s "$2" '[.replies[]? | select(.author.id == $s) | {id, answers, body}]' <<<"${1:-null}" 2>/dev/null ||
     printf '[]\n'
 }
 # first_reply_id REPLIES prints the id of the oldest of those replies, empty for none: in A3's
@@ -1512,21 +1560,31 @@ refusal_mentioned() { grep -qiE 'refus|denied|403|404|not accessible|permission'
 # what an agent writes for any refusal, so the write that was not made is read beside it
 # (refused_write_absent). No reply at all carries nothing.
 leak_reason_quoted() { grep -qiF -- "$2" <<<"${1:-}"; }
-# reviewer_approvals NUMBER SESSION [SINCE] prints the approving reviews of the pull request whose
-# Legion footer names SESSION, as {id, user, commit_id, submitted_at, footer}, and with SINCE (an
-# RFC 3339 UTC time, as `date -u +%FT%TZ` writes it) only those GitHub says were submitted then or
-# later: the approval that followed one ask and no earlier one (A19, and its control after A19's
-# own approval). GitHub's error body is an object, not the array of reviews, and so is no review:
-# it prints [], as a gh call that printed nothing or failed does, and one list either way
-# (pr_comments).
-reviewer_approvals() {
+# pr_review_listing NUMBER prints the smoke repository's reviews of the pull request as GitHub
+# answered them, a JSON array, and `null` where no listing was read at all: a gh call that failed or
+# printed nothing, and GitHub's error body, which is an object and no list of reviews
+# (pr_comment_listing's rule). A19's control reads it once and hands it to its read.
+pr_review_listing() {
   local body
   body=$(smoke_gh api "repos/$repo/pulls/$1/reviews" 2>/dev/null) || body=
-  jq -s -c --arg s "$2" --arg since "${3:-}" '(.[0] // []) | if type == "array" then
+  jq -s -c '(.[0] // null) | if type == "array" then . else null end' <<<"$body" 2>/dev/null ||
+    printf 'null\n'
+}
+# reviewer_approvals NUMBER SESSION [SINCE [REVIEWS]] prints the approving reviews of the pull
+# request whose Legion footer names SESSION, as {id, user, commit_id, submitted_at, footer}, and
+# with SINCE (an RFC 3339 UTC time, as `date -u +%FT%TZ` writes it) only those GitHub says were
+# submitted then or later: the approval that followed one ask and no earlier one (A19, and its
+# control after A19's own approval). REVIEWS is the listing (pr_review_listing) as a control read it
+# once, read now where not given. A listing that is none is no review: it prints [], and one list
+# either way (pr_comments).
+reviewer_approvals() {
+  local reviews=${4:-}
+  [ -n "$reviews" ] || reviews=$(pr_review_listing "$1")
+  jq -c --arg s "$2" --arg since "${3:-}" 'if type == "array" then
       [.[] | select(.state == "APPROVED" and (.body | contains("\"session\":\"" + $s + "\"")))
         | select($since == "" or ((.submitted_at // "") >= $since))
         | {id, user: .user.login, commit_id, submitted_at, footer: (.body | [capture("legion: (?<f>\\{[^}]*\\})").f] | first // null)}]
-      else [] end' <<<"$body" 2>/dev/null ||
+      else [] end' <<<"$reviews" 2>/dev/null ||
     printf '[]\n'
 }
 # approval_by APPROVALS LOGIN HEAD: the approvals are one, the review App LOGIN's, on HEAD.
@@ -1603,6 +1661,40 @@ issue_claim_roles() {
   local roles
   roles=$(jq -c --arg i "$2" '[.claims[]? | select(.issue == $i) | {role, state}]' <<<"${1:-null}" 2>/dev/null) || roles=
   printf '%s\n' "${roles:-[]}"
+}
+
+# ---- what a control sent or placed ------------------------------------------------------------------
+# A control row (answer-loop.sh's run_controls) reads PASS when its row's read fails over a message
+# of its own with answers removed. A read fails as surely over a listing nobody could read, or one
+# that holds nothing, as over the control's own message or placement: a GitHub listing that is
+# `null`, an issue's comments missing the comment the control placed, an inbox the run never wrote.
+# So a control counts a read's failure only over a listing it read once, found holding what it sent
+# or placed there, and handed to that read (answer-loop.sh's control_seen).
+#
+# listing_fault LISTING ENTRIES [MATCH [VALUE...]] prints what keeps LISTING from showing what a
+# control sent or placed, and fails; it prints nothing when LISTING shows every VALUE. LISTING is
+# the JSON a read was answered; ENTRIES the jq path of its entries, which yields one array (`.` for
+# a list, `.replies` for an ask's or a comment's record); MATCH a jq test of one entry, `value` its
+# VALUE (`.id == value`, `(.text // "") | contains(value)`). It prints `no listing at all` for a
+# LISTING that is no JSON or whose ENTRIES are no array (`null` where the read failed, an error
+# object), `an empty listing` for one of no entries, and for one that lacks a VALUE `a listing of N
+# entries holding no VALUE[, no VALUE…]`, each cut to 80 characters. With no VALUE, a listing of any
+# entry shows what the read needs: one where the control's own message cannot stand (the asker's
+# inbox, which holds replies alone), which must have been read and must hold something.
+listing_fault() {
+  local listing=$1 entries=$2 match=${3:-true} fault
+  shift "$(($# < 3 ? $# : 3))"
+  fault=$(jq -R -s -r '(fromjson? // null) as $l
+    | (if $l == null then null else (first(($l | '"$entries"')?) // null) end) as $e
+    | if ($e | type) != "array" then "no listing at all"
+      elif ($e | length) == 0 then "an empty listing"
+      else [$ARGS.positional[] as $v | def value: $v; select(any($e[]; ('"$match"')? // false) | not) | $v]
+        | if length == 0 then empty
+          else "a listing of \($e | length) \(if ($e | length) == 1 then "entry" else "entries" end) holding no \(map(if length > 80 then .[0:79] + "…" else . end) | join(", no "))" end
+      end' --args "$@" <<<"$listing" 2>/dev/null) || fault='no listing at all'
+  [ -n "$fault" ] || return 0
+  printf '%s\n' "$fault"
+  return 1
 }
 
 # ---- A13: branch against base ------------------------------------------------------------------------
