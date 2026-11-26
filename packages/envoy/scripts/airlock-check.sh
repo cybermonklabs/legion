@@ -923,12 +923,10 @@ check_k3() {
 	# T is reached end-to-end through the CONNECT tunnel the proxy opens to it, and T presents
 	# its own certificate, which the stands' authority signs (PROXY_STANDS_CA_CERT_FILE). Since
 	# #5240 the brokers' roots (AIRLOCK_CA_CERT_FILE) no longer hold that authority, so the
-	# command cannot verify T without it. The T call trusts both: the proxy roots for the tunnel
-	# and the stands' authority for T's own leaf. Built from the exported handle, not a rebuilt
-	# path, since a hard-coded path is how the T step kept working against an arrangement that
-	# moved.
-	local t_trust="$WORK_DIR/k3-t-trust.pem"
-	cat "$AIRLOCK_CA_CERT_FILE" "$PROXY_STANDS_CA_CERT_FILE" >"$t_trust"
+	# command cannot verify T without it. The proxy front is plain http, so the CONNECT uses no
+	# proxy TLS root and --cacert verifies T's leaf alone: the stands' authority is the one root
+	# that should sign T, and trusting any other - the proxy's own among them - would let a proxy
+	# that MITM'd T pass the one check that exists to catch it.
 
 	cat >"$WORK_DIR/k3-steps.sh" <<EOF
 set -u
@@ -951,7 +949,7 @@ say "post=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -o /dev/null -w 
 say "post_error=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -X POST -H @- $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
 say "other=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/other)"
 say "other_error=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -H @- $AIRLOCK_S_URL/other 2>&1 | tr '\n' ' ')"
-say "t=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS --cacert $t_trust -o /dev/null -w %{http_code} -H @- $AIRLOCK_T_URL/read)"
+say "t=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS --cacert $PROXY_STANDS_CA_CERT_FILE -o /dev/null -w %{http_code} -H @- $AIRLOCK_T_URL/read)"
 say "mismatch_sni=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS --connect-to t.airlock.test:443:s.airlock.test:443 -H @- $AIRLOCK_T_URL/read 2>&1 | tr '\n' ' ')"
 say "mismatch_host=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -H "Host: t.airlock.test" -H @- $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
 say "carries=\$(curl -sS -H "X-Key: \$(cat $WORK_DIR/k3-real)" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
@@ -1104,8 +1102,8 @@ say() { printf '%s\n' "\$1" >>"\$out"; }
 say "no_proxy=\$NO_PROXY"
 printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w "%{certs}" -H @- $AIRLOCK_S_URL/ok >"$WORK_DIR/s-leaf.pem"
 say "s_status=\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/ok)"
-curl -sS -o /dev/null -w "%{certs}" $AIRLOCK_T_URL/read >"$WORK_DIR/t-leaf.pem"
-say "t_body=\$(curl -sS -X POST --data 'the-bytes-the-command-sent' $AIRLOCK_T_URL/echo | tr '\n' ' ')"
+curl -sS --cacert $PROXY_STANDS_CA_CERT_FILE -o /dev/null -w "%{certs}" $AIRLOCK_T_URL/read >"$WORK_DIR/t-leaf.pem"
+say "t_body=\$(curl -sS --cacert $PROXY_STANDS_CA_CERT_FILE -X POST --data 'the-bytes-the-command-sent' $AIRLOCK_T_URL/echo | tr '\n' ' ')"
 say "svc=\$(curl -sS --resolve stand.default.svc:$svc_port:127.0.0.1 --max-time 10 http://stand.default.svc:$svc_port/ 2>&1 | tr '\n' ' ')"
 say "svc_exit=\$?"
 say "tsnet=\$(curl -sS --max-time 10 https://host.example-tailnet.ts.net/ 2>&1 | tr '\n' ' ')"
