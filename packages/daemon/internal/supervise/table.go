@@ -671,12 +671,16 @@ type RequestOperatorRetry struct {
 // SuspendedBy, when set, is the suspension the asker expects the claim to stand under, and a claim
 // suspended by anyone else, or not suspended, refuses the forget with a *RefusedError and records
 // nothing. The controller keeper sets it to the daemon's: its replacement suspends the claim as the
-// daemon and then forgets the session, and an operator's suspension can take the claim over
-// between the two — one held through a turn whose stop the runtime refused, which a later
-// suspension of the claim runs as the operator's (suspendRequest), or one decided first, which the
-// keeper's suspension then answers with nil (suspendedAgain). The operator's resume promises the
-// same session, so that session is not the keeper's to forget. "" is the operator's own forget,
-// which forgets under any suspension.
+// daemon and then forgets the session, and by the time of the forget the claim can stand suspended
+// by an operator in three ways. Two are settled before the keeper's suspension returns: an
+// operator's suspension held through a turn whose stop the runtime refused, which the keeper's
+// suspension runs as the operator's (suspendRequest), and one decided first, which the keeper's
+// suspension answers with nil (suspendedAgain). The third falls between the keeper's suspension
+// and its forget: an operator's suspension decided after the keeper's, which takes the daemon's
+// over on rank (suspendedAgain). This check is the one that closes the third, so it stays here
+// rather than in either of those. The operator's resume promises the same session, so that session
+// is not the keeper's to forget. "" is the operator's own forget, which forgets under any
+// suspension.
 type RequestForgetSession struct {
 	Claim       claim.Token
 	Session     string

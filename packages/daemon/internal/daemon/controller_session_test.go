@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -391,6 +392,38 @@ func TestAnIdleControllerSessionOlderThanItsMaxAgeIsReplaced(t *testing.T) {
 		}
 		if lines := linesOf(t, logs, controllerSessionReplacedLine); len(lines) != 0 {
 			t.Fatalf("the keeper wrote %d replacement lines for a session it kept, want none", len(lines))
+		}
+		if spawns := rt.CallsOf("Spawn"); len(spawns) != 0 {
+			t.Fatalf("the runtime was asked %d times to spawn, want never", len(spawns))
+		}
+	})
+
+	t.Run("a forget the Envoy listener's role lookup refuses is the keeper's error, not an operator's takeover", func(t *testing.T) {
+		old := sessionAged(now, 73*time.Hour)
+		// Another claim recorded the session first, so the controller records a session it does not
+		// hold, and the forget asks the listener who holds the controller's role (mayForget), which
+		// refuses the lookup.
+		k, sup, rt, logs := keptControllerWith(t, idle(old), func(sup *supervisor) {
+			if _, err := sup.deps.Store.(*outboxClaimStore).HoldSessions(context.Background(), "legion",
+				mustClaimToken(t, "LEGION-943", claim.RoleImplementer), supervise.RecordedHolds(old, "")); err != nil {
+				t.Fatalf("hold %s for the claim that recorded it first: %v", old, err)
+			}
+			sup.deps.RoleHolder = func(context.Context, string) (string, string, error) {
+				return "", "", fmt.Errorf("look up the holder: %w", &notify.RoleLookupRefused{Status: 401, Reason: `listener returned 401 Unauthorized: {"error":"unauthorized"}`})
+			}
+		})
+		if err := k.keep(); err == nil {
+			t.Fatal("the look whose forget the listener's lookup refused answered nil, want the refusal as the keeper's error")
+		}
+		if lines := linesOf(t, logs, "controller: the old controller session is not replaced at this look: the claim no longer stands under the keeper's suspension"); len(lines) != 0 {
+			t.Fatalf("the keeper logged the listener's refusal as an operator's takeover: %+v", lines)
+		}
+		if lines := linesOf(t, logs, controllerSessionReplacedLine); len(lines) != 0 {
+			t.Fatalf("the keeper wrote %d replacement lines for a session it kept, want none", len(lines))
+		}
+		c := controllerOf(t, sup)
+		if c.State != supervise.StateSuspended || c.SuspendedBy != supervise.SuspendedByDaemon || c.Session != old {
+			t.Fatalf("the controller is %s, suspended by %q, on %q; want it suspended by the daemon on %s", c.State, c.SuspendedBy, c.Session, old)
 		}
 		if spawns := rt.CallsOf("Spawn"); len(spawns) != 0 {
 			t.Fatalf("the runtime was asked %d times to spawn, want never", len(spawns))
