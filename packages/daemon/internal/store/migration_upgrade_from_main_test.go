@@ -526,6 +526,31 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 			},
 		},
 	} {
+		// No release here ever recorded a migration of this pull request's stack: each lacks
+		// those numbered at or below its newest too, and the upgrade applies them (stacksMigrations).
+		release.lacks = append(slices.Clone(release.lacks), stacksMigrationsUpTo(release.newest)...)
 		t.Run(release.name, func(t *testing.T) { upgradeFrom(t, release) })
 	}
+}
+
+// stacksMigrations are the versions cybermonklabs/legion#5169 and the pull requests it stands on
+// (#5164, #5156, #5165, #5168) add, which neither main nor INFRA-3320's branch recorded: the
+// embedded versions main at 169cfac79e88 does not hold. A database either of those left lacks
+// each of them numbered at or below its newest, and the test of the merge's databases builds it
+// so (stacksMigrationsUpTo).
+var stacksMigrations = []int{
+	20261117213545, 20261117223524, 20261117224125, 20261121165047, 20261121183336,
+	20261122072945, 20261122074350, 20261122122826, 20261122131321, 20261123072431,
+	20261123154051, 20261123200630, 20261123221142, 20261124023617, 20261126144204,
+}
+
+// stacksMigrationsUpTo is stacksMigrations numbered at or below newest.
+func stacksMigrationsUpTo(newest int) []int {
+	var below []int
+	for _, version := range stacksMigrations {
+		if version <= newest {
+			below = append(below, version)
+		}
+	}
+	return below
 }
