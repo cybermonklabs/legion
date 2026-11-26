@@ -510,7 +510,13 @@ func TestTheBoundStartsTheLastLookWhoseNothingClosesTheCheckAsNotRun(t *testing.
 				!strings.Contains(starts[1].Task, "woken by the bound: 2 days since the merge.") || !strings.Contains(starts[1].Task, "did not run") {
 				t.Fatalf("start rows = %+v, want the last look's task saying so", starts)
 			}
-			rig.apply("end", tc.end)
+			end := tc.end
+			if ended, ok := end.(intake.CheckLookEnded); ok {
+				// The look's bound row names the check its start named, read from that row.
+				ended.OpenedAt = starts[1].CheckOpenedAt
+				end = ended
+			}
+			rig.apply("end", end)
 			check = productionCheck(t, rig.pool, "LEGION-209")
 			if check.Open() || check.Outcome != record.CheckNotRun || check.LookOpen {
 				t.Fatalf("the check after its last look's %s = %+v, want it closed as not run", tc.name, check)
