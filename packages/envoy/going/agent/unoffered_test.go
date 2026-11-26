@@ -14,8 +14,8 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
-// TestTheBarsModelIsNotOfferedDispatchAPI: dispatch_api, a generic read of any route by its path,
-// is a tool of Dispatch the bar does not offer its model (going.UnofferedTools). find_tools answers
+// TestTheBarsModelIsNotOfferedDispatchAPI: dispatch_api sends generic requests by route path.
+// The bar does not offer it to the model (going.UnofferedTools). find_tools answers
 // it for neither its name nor a need in its words, and answers from exactly the tools it would
 // answer from were no tool going.UnofferedTools names a tool of Dispatch, so every answer of it is
 // that answer and the list leaves out those tools alone. call_tool and propose_plan refuse it by

@@ -11,6 +11,6 @@ package going
 // name, with the reason: code, a refusal of a call that names it and a reviewer read it, and no
 // tool spec or prompt the model is given says it.
 var UnofferedTools = map[string]string{
-	"dispatch_api":            "a generic read of any route by its path; the bar's tools are one per route (R12), so it reads each route through the tool of that route",
+	"dispatch_api":            "sends generic requests by path; the command bar uses the tool for each route instead",
 	"dispatch_project_update": "turns a project's proven-sessions check on or off, which only the project's roll-out issue does; the loop that proposes operations on Dispatch's graph never proposes it",
 }
