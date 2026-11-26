@@ -4,6 +4,7 @@ import {
   DEFAULT_ISSUE_READ_EVENTS,
   ISSUE_LABEL_MAX,
   ISSUE_TITLE_MAX,
+  MARKDOWN_DOCUMENT_MAX_BYTES,
   MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_COMPONENTS,
@@ -32,6 +33,10 @@ export interface DispatchToolSpec {
   readonly strict?: boolean;
   /** A schema-valid call shown after this tool rejects malformed arguments. */
   readonly example: Readonly<Record<string, unknown>>;
+  /** What the command's `--dry-run` flag does, as its help says, for a command whose dry run asks
+   *  Dispatch something past the argument check every dry run runs. A command without one says
+   *  that its dry run checks the arguments, prints them and sends nothing. */
+  readonly dryRunHelp?: string;
 }
 
 /** Builds a host-owned schema and applies any tool-level cross-field validation. */
@@ -232,6 +237,15 @@ export function artifactKindConflictRule(held: string, upload: string): string {
  * it, so its one way out is to send the stored text.
  */
 export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dispatch stores as Markdown, and a text the store would write under another spelling is refused. A typed block whose attributes differ from Dispatch's only in their order is not refused: the command uploads it with them in Dispatch's order and names each such block. A refusal names the first difference: a changed line by the attribute or the word that differs, a word of more than 200 characters by a window from its first character that differs, and a line the store adds or drops by a quote cut at 200 characters, each cut named. The refusal prints the text Dispatch stores: send that text. A name without the extension .md or .markdown has a second way out, which keeps the text as it was written: send it as a file with ${PATH_KEEPS_BYTES}.`;
+
+/**
+ * The order in which `dispatch artifact` refuses a Markdown document's text before it asks
+ * Dispatch anything, read from content-file, from stdin or from a Markdown path file: the order its
+ * upload refuses a Markdown file in, the size first, then the first NUL character or byte that is
+ * not UTF-8. The description and the dry run's help each say in their own words when the command
+ * refuses such a text, and then this one clause, so the two state one order.
+ */
+const ARTIFACT_DOCUMENT_BYTES_ORDER = `in the order its upload refuses a Markdown file in: past ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB with CAP_EXCEEDED, and otherwise at the first NUL character or byte that is not UTF-8, with NUL_CHARACTER or INVALID_UTF8, Dispatch's own refusal of it, naming the field (content, or file for path), the character and where it stands.`;
 
 /** What an extension holds: Unicode letters, marks and digits, `_`, `-` and `+`, at most 32 of
  *  them. One class, anchored at both ends, so it reads a part without backtracking. */
@@ -2364,6 +2378,8 @@ export const dispatchToolSpecs = [
   },
   {
     name: "dispatch_result",
+    dryRunHelp:
+      "Checks the arguments as the call would and prints them as JSON. A record's dry run then asks Dispatch for the pull-request body line the record would print, and prints it; Dispatch records nothing. A retraction's dry run sends nothing.",
     example: {
       issue: "DSP-1",
       check: "k1",
@@ -2548,15 +2564,17 @@ export const dispatchToolSpecs = [
   {
     name: "dispatch_artifact",
     example: { issue: "DSP-1", name: "design.md", content: "# Design\n" },
+    dryRunHelp: `Before it asks Dispatch anything, and with Dispatch off too, it refuses with exit 1 a text past ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB, or holding a NUL character or a byte that is not UTF-8, whether it is read from --content-file, from stdin (--content-file -) or from a --path file ending in .md or .markdown, a file Dispatch stores as a Markdown document, ${ARTIFACT_DOCUMENT_BYTES_ORDER} It refuses such a text once the flags are read, before it checks the arguments as the call would and before anything that needs Dispatch, as the call does. Then, for text given inline, read from --content-file or from stdin, it asks Dispatch how it would store the text (POST /api/v1/markdown/round-trip), and refuses, with the call's own refusal and exit code, a text that Dispatch would store under another spelling, but for typed blocks' attributes in another order, which the call uploads in Dispatch's order, or that the call refuses for the text alone: one past ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB of UTF-8, which it refuses without asking, or one Dispatch refuses as its upload would, such as one making more elements than one write may, or holding markdown the parser refuses. For a Markdown --path file, it then sends Dispatch the file's bytes (POST /api/v1/markdown/file-round-trip), as the call does before it uploads them, and refuses, with the call's own refusal and exit code, what Dispatch refuses of them as their upload would, but never their spelling. Without force it also refuses what Dispatch refuses only of a new document, such as an ask block that breaks its content rule, a block id written twice, a check proved by CI that breaks its rules, or a rendering past the bytes one document holds; with force (--force), which may replace a document Dispatch judges by looser rules, it asks for none of those and checks the spelling Dispatch answers as for any text, so it passes with no warning a text the call can then refuse for one of those: under a name the owner does not hold, because the call uploads a new document; under a name the owner holds, because a replacement holds those rules for the blocks it adds or changes, and refuses a rendering that grows past the bytes one document holds over the version it replaces. It does not read whether the owner holds the name, which the call reads only after it checks the text: a text this check refuses is refused alike under a held name, and a text it passes the call without force still refuses under a held name, though the dry run passes it. Otherwise it prints the arguments as JSON. It stores nothing. For any other text but an empty one given inline, read from --content-file or from stdin, which it asks Dispatch nothing about and passes with no warning, when Dispatch cannot answer, or cannot check the text or the file, it says so on stderr and passes.`,
     description:
       "Attach a local file or inline text as an issue artifact or project document, or make an empty document from its name alone. Do not use it to edit a live document; use " +
       "dispatch doc-edit instead. Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit. " +
       `${ARTIFACT_SOURCE_RULE} ` +
       `${ARTIFACT_NAME_EXISTS_RULE} A call that stores nothing - no path, and content absent or blank - is refused under a held name even with force and a token, so a title typed twice never empties the document that holds it; that refusal names no token, since no token makes such a call one Dispatch takes. ` +
-      "A markdown document is at most 1 MiB and any other file at most 25 MiB. " +
+      `A markdown document is at most ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB and any other file at most 25 MiB. ` +
       "An upload that replaces a document the owner already holds under that name says which version it replaces: precondition.document takes the document token dispatch doc-read prints as `Document token: sha256:…`, and Dispatch checks it under the write's own lock. An upload that names none is taken for now without a check, since older dispatch commands cannot name one; name the token wherever the command can, because a later release refuses an upload naming none with 400 PRECONDITION_REQUIRED. A token behind the live document is refused with 409 PRECONDITION_FAILED. The refusal tells you to read the document again with dispatch doc-read, which prints the token the document carries now, and to upload again naming that token. An upload that replaces a file or a picture names the token of the version it replaces the same way, the `Document token:` line dispatch doc-read prints for its latest version, and any other token is refused with 409 PRECONDITION_FAILED; one naming none is taken unchecked. The command's refusal of a name the owner holds prints no token: for a file or a picture it names --force with the token your own dispatch doc-read printed, or --force alone where Dispatch states no token for the file, since such a Dispatch refuses a token on a file's upload; for an upload of another kind than the name holds (a declared Markdown upload is a document, PNG, JPEG, GIF or WebP bytes a picture, anything else a file) it names another name, since Dispatch refuses it under that name with 400 ARTIFACT_KIND_MISMATCH. A first upload under a name replaces no version, so it names none. " +
       `${ARTIFACT_CONTENT_NAME_RULE} ${ARTIFACT_STORED_TEXT_RULE} ` +
-      "Markdown is also refused with 413 CAP_EXCEEDED when it makes more than 65,536 elements (a block weighs 3, and an empty list item, quote, footnote definition or typed block 3 more for the empty paragraph it holds; a table cell 4, a hard line break 3, an image 3, a piece of inline HTML 2, an autolink 2, a footnote reference 2; inline syntax, marks, lines of text and backslash escapes or character references 1 each), or when a new version would leave the document's stored markdown (what its text reads back as) longer than 1 MiB or making more than 65,536 elements, and longer or heavier than before; shorten it or split it across documents. " +
+      `A text past ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB, or holding a NUL character or a byte that is not UTF-8, read from content-file, from stdin or from a Markdown path file, is refused once the flags are read, before the arguments are checked and before anything that needs Dispatch, by the call and its dry run alike, with Dispatch on or off, ${ARTIFACT_DOCUMENT_BYTES_ORDER} ` +
+      `Markdown is also refused with 413 CAP_EXCEEDED when it makes more than 65,536 elements (a block weighs 3, and an empty list item, quote, footnote definition or typed block 3 more for the empty paragraph it holds; a table cell 4, a hard line break 3, an image 3, a piece of inline HTML 2, an autolink 2, a footnote reference 2; inline syntax, marks, lines of text and backslash escapes or character references 1 each), or when a new version would leave the document's stored markdown (what its text reads back as) longer than ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB or making more than 65,536 elements, and longer or heavier than before; shorten it or split it across documents. ` +
       "In a table row, write every | in a cell as \\|, in code too: a | after two backslashes ends the cell, and a row with more cells than its table is refused. " +
       "Markdown holding an ask block whose body breaks its content rule (one or more question paragraphs, then at most one bullet list of options, last) is refused with 400 INVALID_ASK_BLOCK; a new version of a document is held to it only for the asks it writes or changes. " +
       `${CI_CHECK_RULE} ` +
@@ -2575,7 +2593,7 @@ export const dispatchToolSpecs = [
       force: z
         .boolean()
         .describe(
-          "Write the next version of a document the owner already holds under this name; without it the upload of a name that exists is refused."
+          "Write the next version of a document the owner already holds under this name; without it the upload of a name that exists is refused. The command checks the text first, so a text it refuses for the text alone gets that refusal, not this one."
         )
         .optional(),
       precondition: uploadPreconditionArgument(z),

@@ -41,6 +41,7 @@ import type {
   EditArtifactInput,
   EditArtifactResponse,
   EditAskInput,
+  FileRoundTripInput,
   GraphEdgeKind,
   GraphReferences,
   Handoff,
@@ -58,6 +59,7 @@ import type {
   IssueSummary,
   IssueSummaryPage,
   ItemBlocks,
+  MarkdownRoundTripInput,
   MarkdownRoundTripResponse,
   Message,
   MessageRead,
@@ -101,6 +103,7 @@ import {
   retryNoRoute,
   type Sleep,
   sleep,
+  TEXT_REFUSAL_HEADER,
 } from "@legion/contracts";
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
@@ -162,6 +165,13 @@ export class DispatchServiceError extends Error {
   readonly issues: DispatchServiceErrorShape["issues"] | undefined;
   /** A status change's refusal: the entry of each step that wrote before it. */
   readonly changed: DispatchServiceErrorShape["changed"] | undefined;
+  /**
+   * Whether Dispatch marked the answer as its refusal of a text for the text alone
+   * (`TEXT_REFUSAL_HEADER`), whatever its status: the refusals of the two markdown round trips,
+   * inline and of a file, which are an upload's refusals of the same text. False for any other
+   * answer.
+   */
+  readonly textRefusal: boolean;
   /** Dispatch's `hint`, where to look next, which only its answer to a path no route serves
    *  carries (`DispatchServiceErrorShape["hint"]`); `messageFor` prints it after the message. */
   readonly hint: string | undefined;
@@ -172,7 +182,9 @@ export class DispatchServiceError extends Error {
     message: string,
     /** The members of Dispatch's refusal beside its message that a caller reads off the error:
      *  its answer's JSON, or another refusal whose members it keeps. */
-    details: { readonly [Member in RefusalMember]?: RefusalMembers[Member] | undefined } = {}
+    details: { readonly [Member in RefusalMember]?: RefusalMembers[Member] | undefined } & {
+      readonly textRefusal?: boolean | undefined;
+    } = {}
   ) {
     super(message);
     this.candidates = details.candidates;
@@ -180,6 +192,7 @@ export class DispatchServiceError extends Error {
     this.mismatches = details.mismatches;
     this.issues = details.issues;
     this.changed = details.changed;
+    this.textRefusal = details.textRefusal ?? false;
     this.hint = details.hint;
   }
 }
@@ -363,14 +376,15 @@ export class DispatchWriteLandedError extends Error {
 }
 
 /**
- * A call that writes nothing (`markdownRoundTrip`, `related`, `dryRunResult`) whose repeat under
- * its key Dispatch answered with a replayed 2xx reading `IDEMPOTENCY_ANSWER_NOT_KEPT`: Dispatch
- * kept no copy of the answer, and the call made nothing, so there is nothing to read back and no
- * landing. The client asks such a call once more under a new key before it throws this
- * (`#writingNothing`); this is what reaches the caller when that ask is answered the same way. It
- * is no refusal, so it is no `DispatchServiceError`, and no `DispatchWriteLandedError`, which says
- * a write was made. Its message is the one line a session reads: the call wrote nothing, Dispatch
- * kept no copy of its answer, and to run the command again, which asks under a new key.
+ * A call that writes nothing (`markdownRoundTrip`, `fileRoundTrip`, `related`, `dryRunResult`)
+ * whose repeat under its key Dispatch answered with a replayed 2xx reading
+ * `IDEMPOTENCY_ANSWER_NOT_KEPT`: Dispatch kept no copy of the answer, and the call made nothing, so
+ * there is nothing to read back and no landing. The client asks such a call once more under a new
+ * key before it throws this (`#writingNothing`); this is what reaches the caller when that ask is
+ * answered the same way. It is no refusal, so it is no `DispatchServiceError`, and no
+ * `DispatchWriteLandedError`, which says a write was made. Its message is the one line a session
+ * reads: the call wrote nothing, Dispatch kept no copy of its answer, and to run the command
+ * again, which asks under a new key.
  */
 export class DispatchAnswerNotKeptError extends Error {
   override readonly name = "DispatchAnswerNotKeptError";
@@ -812,10 +826,10 @@ interface WriteCall {
   readonly key: string;
   readonly request: string;
   /**
-   * Whether the call writes: false for a conversion (`markdownRoundTrip`), which Dispatch runs
-   * without storing anything. Its table state never leaves `nothing-sent` (`writeStep`), so it
-   * keeps the answers it had before the table existed: a no route to the end is the route
-   * absent, and a refusal is the refusal.
+   * Whether the call writes: false for a conversion (`markdownRoundTrip`, `fileRoundTrip`) and for
+   * a dry run (`dryRunResult`), which Dispatch runs without storing anything. Its table state
+   * never leaves `nothing-sent` (`writeStep`), so it keeps the answers it had before the table
+   * existed: a no route to the end is the route absent, and a refusal is the refusal.
    */
   readonly writes: boolean;
   readonly progress: WriteProgress;
@@ -969,8 +983,10 @@ function isStoredKeyStatus(status: number): boolean {
  * request's key after an earlier answer of the call carried it (`keyEchoed`), since Dispatch's
  * keyed layer answers every keyed write with the key once it reads it (`keyedWrites`,
  * request_keys.go). A 2xx whose body is not the JSON it says it is was cut short on the way
- * (`body-malformed`). After the retries (`retriesUnderKey`, `409 KEY_IN_FLIGHT` among them), a
- * non-2xx is final (`judged`) when:
+ * (`body-malformed`). A refusal Dispatch marks as its refusal of a text for the text alone
+ * (`TEXT_REFUSAL_HEADER`) is its verdict on that text whatever its status, a 5xx among them:
+ * asking again gets the same answer, so it is never asked again. After the retries
+ * (`retriesUnderKey`, `409 KEY_IN_FLIGHT` among them), a non-2xx is final (`judged`) when:
  * - it carries `Idempotency-Replayed: ?1`, a stored replay or a recovery replay;
  * - it is `409 KEY_COMMITTED`, a write that landed (`#payloadOf` throws it as landed);
  * - it is `422 KEY_REUSED` echoing exactly this request's key: every attempt of a call carries the
@@ -1006,7 +1022,9 @@ function answerEvent(
   ) {
     return "no-route";
   }
-  if (retriesUnderKey(status, answer.code)) {
+  const textRefusal =
+    answer.error !== undefined && answer.response.headers.has(TEXT_REFUSAL_HEADER);
+  if (!textRefusal && retriesUnderKey(status, answer.code)) {
     if (status === 409) return "in-flight";
     return status >= 500 ? "server-error" : "try-later";
   }
@@ -1170,6 +1188,26 @@ function reachesDispatch(status: number): boolean {
   return status >= 500;
 }
 
+/** What a `DispatchClient` is built with beside its URL, its credential and its fetch. */
+export interface DispatchClientOptions {
+  readonly signal?: AbortSignal | undefined;
+  /** The client's own deadline, counted from now: `DISPATCH_TOOL_DEADLINE_MS` when absent. A
+   *  maker with a budget of its own names it here rather than as a timed `signal`, so the
+   *  credential is given that budget less the request's reserve (`#credentialSignal`). */
+  readonly deadlineMs?: number | undefined;
+  readonly writeRetry?: DispatchWriteRetry | undefined;
+  readonly sleep?: Sleep | undefined;
+  /** Whether a request a Dispatch process answered with no route for it is asked again
+   *  (`#noRoute`), true by default. False runs each request once and throws that answer as it
+   *  came (a `DispatchServiceError` `isNoRoute` recognises), for a caller that has an answer
+   *  of its own to a missing route and wants it at once, rather than after the waits of
+   *  `NO_ROUTE_RETRY_DELAYS_MS`. */
+  readonly retryNoRoute?: boolean | undefined;
+  /** The `User-Agent` every request sends, the program that made this client and its release
+   *  (`<program>/<release>`); `DISPATCH_CLIENT_USER_AGENT` when unset. */
+  readonly userAgent?: string | undefined;
+}
+
 /**
  * JSON HTTP client for Dispatch's native-tool API. Every request goes through `#send`, where each
  * write (POST or PATCH) carries an `Idempotency-Key` of its own and asks again under it as
@@ -1218,24 +1256,7 @@ export class DispatchClient {
     baseUrl: string,
     credential: RequestCredential,
     readonly fetchImpl: typeof fetch = fetch,
-    options: {
-      readonly signal?: AbortSignal | undefined;
-      /** The client's own deadline, counted from now: `DISPATCH_TOOL_DEADLINE_MS` when absent. A
-       *  maker with a budget of its own names it here rather than as a timed `signal`, so the
-       *  credential is given that budget less the request's reserve (`#credentialSignal`). */
-      readonly deadlineMs?: number | undefined;
-      readonly writeRetry?: DispatchWriteRetry | undefined;
-      readonly sleep?: Sleep | undefined;
-      /** Whether a request a Dispatch process answered with no route for it is asked again
-       *  (`#noRoute`), true by default. False runs each request once and throws that answer as it
-       *  came (a `DispatchServiceError` `isNoRoute` recognises), for a caller that has an answer
-       *  of its own to a missing route and wants it at once, rather than after the waits of
-       *  `NO_ROUTE_RETRY_DELAYS_MS`. */
-      readonly retryNoRoute?: boolean | undefined;
-      /** The `User-Agent` every request sends, the program that made this client and its release
-       *  (`<program>/<release>`); `DISPATCH_CLIENT_USER_AGENT` when unset. */
-      readonly userAgent?: string | undefined;
-    } = {}
+    options: DispatchClientOptions = {}
   ) {
     this.#credential = credential;
     // Its user info held, as the Envoy client's is (`holdUrlUserinfo`).
@@ -1343,14 +1364,40 @@ export class DispatchClient {
   }
 
   /** `POST /api/v1/markdown/round-trip`: the markdown Dispatch would store for this text. The
-   *  route writes nothing: it parses the text and renders it again, as a document write does, so
-   *  a caller compares the answer with the text it holds and refuses a text the store would
-   *  change. Its failure is told as a read's (`writes: false`), and an answer Dispatch kept no copy
-   *  of is asked for again (`#writingNothing`). */
-  async markdownRoundTrip(markdown: string): Promise<string> {
+   *  route writes nothing: it checks the text as an upload checks it, parses it and renders it
+   *  again, as that upload's write does, so a caller compares the answer with the text it holds
+   *  and refuses a text the store would change. A text every upload refuses for the text alone is
+   *  refused here in the upload's own words. With `newDocument`, the request asks for the
+   *  refusals only a new document's seed makes too (`new_document`), and the answer is a new
+   *  document's; without it, which is the body every Dispatch with the route takes, Dispatch
+   *  answers as the most permissive replacement takes the text: with the rendering a replacement
+   *  over a document already holding what the text holds stores, or with a refusal every
+   *  replacement makes. */
+  async markdownRoundTrip(markdown: string, newDocument: boolean): Promise<string> {
+    return this.#roundTrip(["api", "v1", "markdown", "round-trip"], { markdown }, newDocument);
+  }
+
+  /** `POST /api/v1/markdown/file-round-trip`: `markdownRoundTrip` of a file's bytes, sent as
+   *  base64 in the body's `file`, with `newDocument` as `markdownRoundTrip` takes it. Dispatch
+   *  checks them as bytes, as it checks an upload's file part, so a file holding a byte that is
+   *  not UTF-8 is refused as its upload is. A Dispatch without this route answers 404 or 405. */
+  async fileRoundTrip(bytes: Uint8Array, newDocument: boolean): Promise<string> {
+    const file = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
+    return this.#roundTrip(["api", "v1", "markdown", "file-round-trip"], { file }, newDocument);
+  }
+
+  /** The round trip at `path` of `body`, which writes nothing (`writes: false`), asking for a new
+   *  document's refusals too where `newDocument` (`new_document`). The member is left out
+   *  otherwise, so the body is the one a Dispatch before the member takes. An answer Dispatch
+   *  kept no copy of is asked for again (`#writingNothing`). */
+  async #roundTrip(
+    path: string[],
+    body: MarkdownRoundTripInput | FileRoundTripInput,
+    newDocument: boolean
+  ): Promise<string> {
     const answer: MarkdownRoundTripResponse = await this.#writingNothing(
-      ["api", "v1", "markdown", "round-trip"],
-      { markdown },
+      path,
+      newDocument ? { ...body, new_document: true } : body,
       { writes: false }
     );
     return answer.markdown;
@@ -2424,9 +2471,9 @@ export class DispatchClient {
 
   /** `#json` with the status Dispatch answered, for a route whose status says what it did.
    *  `signal` aborts the call beside the client's own signal. `writes: false` marks a POST that
-   *  writes nothing (a conversion, `markdownRoundTrip`, or a check, `related`): it is sent as a
-   *  POST is, under one key with its retries, but never read as a write that may have landed
-   *  (`WriteCall.writes`), and its failure is told as a read's. */
+   *  writes nothing (a conversion, `markdownRoundTrip` or `fileRoundTrip`, a check, `related`, or a
+   *  dry run, `dryRunResult`): it is sent as a POST is, under one key with its retries, but never
+   *  read as a write that may have landed (`WriteCall.writes`), and its failure is told as a read's. */
   async #jsonAnswer<T>(
     method: string,
     path: readonly string[],
@@ -2553,18 +2600,19 @@ export class DispatchClient {
   }
 
   /**
-   * A `POST` of JSON to a route that writes nothing (`markdownRoundTrip`, `related`,
-   * `dryRunResult`). It is sent as a write is, under a key of its own, so an attempt with no
-   * definitive answer is asked again under that key (`#write`). Such a repeat can come back as a
-   * replayed 2xx reading `IDEMPOTENCY_ANSWER_NOT_KEPT`: an earlier attempt ran, and Dispatch kept
-   * no copy of its answer. `#payloadOf` reads that replay as a write's landing
+   * A `POST` of JSON to a route that writes nothing (`markdownRoundTrip`, `fileRoundTrip`,
+   * `related`, `dryRunResult`). It is sent as a write is, under a key of its own, so an attempt
+   * with no definitive answer is asked again under that key (`#write`). Such a repeat can come back
+   * as a replayed 2xx reading `IDEMPOTENCY_ANSWER_NOT_KEPT`: an earlier attempt ran, and Dispatch
+   * kept no copy of its answer. `#payloadOf` reads that replay as a write's landing
    * (`DispatchWriteLandedError`), but this request wrote nothing, so it is no landing: it is asked
    * once more under a new key, which `#writeCall` mints, and which runs it afresh and can double
    * nothing. That ask's answer is the call's, and a second such replay is thrown as the
    * `DispatchAnswerNotKeptError` it is rather than asked again, so the call is asked under at most
    * two keys. Every other error, a `409 IDEMPOTENCY_KEY_COMMITTED` landing among them, is thrown as
    * it came. `options` goes to `#jsonAnswer` as it is: `writes: false` for a conversion
-   * (`markdownRoundTrip`), the related check (`related`) and a dry run (`dryRunResult`).
+   * (`markdownRoundTrip`, `fileRoundTrip`), the related check (`related`) and a dry run
+   * (`dryRunResult`).
    */
   async #writingNothing<T>(
     path: readonly string[],
@@ -3221,7 +3269,10 @@ export class DispatchClient {
           refusal.code ?? `HTTP_${response.status}`,
           response.status,
           refusal.error,
-          refusal
+          {
+            ...refusal,
+            textRefusal: response.headers.has(TEXT_REFUSAL_HEADER),
+          }
         );
       }
       throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON", writes);

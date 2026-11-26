@@ -7,9 +7,8 @@ import type {
   EditPrecondition,
   UploadPrecondition,
 } from "@legion/contracts";
-import { typedBlockIdAttribute, uploadExtensionOf } from "@legion/contracts";
+import { typedBlockIdAttribute } from "@legion/contracts";
 import { goBlankPattern } from "@legion/contracts/go-blank";
-import { uploadIsDocument } from "../askgate-marker";
 import { commandName } from "../dispatch-command";
 import type { DispatchClient } from "../dispatch-http";
 import {
@@ -21,12 +20,16 @@ import {
   parseDispatchRef,
 } from "../dispatch-owner";
 import { PICTURE_SNIFF_BYTES, readPictureHead } from "../dispatch-pictures";
+import { messageFor } from "../errors";
 import { decisionBlockLines, declinedAskLines } from "../related-check";
 import { ToolInputError } from "../tool-input-errors";
 import { otherAdviceLines, renderAdvice } from "./advice";
 import {
+  askOnceWithinDryRun,
   type CommandContext,
   type DispatchToolResult,
+  type DryRunContext,
+  type DryRunVerdict,
   numberArg,
   optionalBoolean,
   optionalNumber,
@@ -45,14 +48,14 @@ import {
   resolvedTopic,
   writeResultDetails,
 } from "./results";
-import { storedUpload } from "./stored-spelling";
 import {
-  artifactNameExistsProblem,
-  artifactUnderName,
-  roundTripRouteAbsent,
+  artifactTextCheck,
+  documentFileBytes,
+  type StoredTextCheck,
   storedTextCheckFailed,
-  uploadKindOf,
-} from "./upload-checks";
+  uploadedFile,
+} from "./stored-text";
+import { artifactNameExistsProblem, artifactUnderName, uploadKindOf } from "./upload-checks";
 import { readUploadedFile } from "./uploaded-file";
 
 /** The asks of the document's `ask` blocks. An issue lists them under the issue, since the artifact
@@ -610,50 +613,6 @@ export async function planApproveCommand(context: CommandContext): Promise<Dispa
   };
 }
 
-/**
- * The file `dispatch artifact --path` sends, under the type Dispatch stores it by: an upload
- * declared `text/markdown` is a document, and any other is a picture or a file
- * (`artifactKind`, packages/envoy/internal/dispatch/api/artifacts.go). The type is
- * `text/markdown` exactly when AskGate's predicate holds the upload as a document
- * (uploadIsDocument, ../askgate-marker.ts), from its name and `path` resolved against `cwd`, the
- * file this sends, and never otherwise, so Dispatch stores as a document every upload AskGate
- * holds as one and no other (INFRA-4071 R15): a plan written to plan.txt and sent as plan.md is a
- * document, as the plan the issue reads must be, and so is a Markdown file sent under a title
- * (`Design notes`, `Plan v1.2`, `notes.md/`) or from `notes.md/`, which the path resolves to
- * notes.md. Every other upload declares the type Bun gives the extension that decides in its
- * name (`x.<extension>`, uploadExtensionOf, past trailing extensions of digits alone), whatever
- * the path, so cases.txt sent from cases.md is a file of the bytes as written, notes.txt.1 goes
- * up as `text/plain` and rows.jsonl.1 as `application/octet-stream`; a name with no extension
- * declares the type Bun reads from the resolved path. A type of those that is still
- * `text/markdown` goes up as `application/octet-stream`. `bytes` are the bytes AskGate's check
- * read, when it read them.
- */
-function uploadedFile(
-  cwd: string,
-  path: string,
-  name: string,
-  bytes: Uint8Array | undefined
-): Blob {
-  const local = resolvePath(cwd, path);
-  let type = "text/markdown";
-  if (!uploadIsDocument({ name, path }, cwd)) {
-    const extension = uploadExtensionOf(name);
-    type = notMarkdown(Bun.file(extension === undefined ? local : `x.${extension}`).type);
-  }
-  return bytes === undefined
-    ? Bun.file(local, { type })
-    : // The copy gives the bytes a plain buffer of their own, which a Blob takes.
-      new Blob([new Uint8Array(bytes)], { type });
-}
-
-/** `type`, or `application/octet-stream` for `text/markdown`, which only an upload AskGate holds
- *  as a document declares (uploadedFile). */
-function notMarkdown(type: string): string {
-  return type.split(";", 1)[0]?.trim().toLowerCase() === "text/markdown"
-    ? "application/octet-stream"
-    : type;
-}
-
 /** What an upload's answer calls the kind Dispatch stored it as, before the stored word itself:
  *  a writer who meant a document reads at once that it became a file. */
 const STORED_KIND_WORDS: Readonly<Record<Artifact["kind"], string>> = {
@@ -664,7 +623,7 @@ const STORED_KIND_WORDS: Readonly<Record<Artifact["kind"], string>> = {
 
 /** `dispatch artifact`: upload a document, a picture or a file to an issue or a project. */
 export async function artifactCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, actor, input, documentOwner, issue } = context;
+  const { args, client, actor, input, documentOwner, issue, newClient } = context;
   const summary = optionalString(args, "summary");
   const name = stringArg(args, "name");
   const content = optionalString(args, "content");
@@ -684,13 +643,77 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
     actor,
   };
   const artifactOwner = documentOwner();
+  // --force asks for the next version of a document the owner holds under the name, which is
+  // judged against the document it replaces rather than as a new one.
+  const force = optionalBoolean(args, "force") === true;
   // The server's own `blank`: a body carrying no content, or content Go's
   // `strings.TrimSpace` empties - the `blank :=` line of jsonArtifactUpload in
   // packages/envoy/internal/dispatch/api/artifacts.go, whose set is goBlankPattern's.
   // JavaScript's `trim` is another set, so it is not read here: goBlankPattern's own comment
-  // says which two characters the two sets differ on. Both checks below read this one
-  // predicate.
+  // says which two characters the two sets differ on. The held-name check reads this predicate;
+  // what the stored-text check makes of blank text is that check's own (storedTextCheck).
   const blank = content === undefined || goBlankPattern.test(content);
+  // The file a path names, as its upload sends it (uploadedFile), under the type that upload
+  // declares, which is what Dispatch reads for whether it stores the file as a Markdown document.
+  // Such a file's bytes are checked here (documentFileBytes) and refused there, before anything is
+  // asked, past the bytes one document may hold and then for its first U+0000 or byte that is not
+  // UTF-8, in the upload's order and words, so the bytes the file round trip is asked about below
+  // are the bytes sent. A file documentFileRead passes with no bytes (one Dispatch stores as its
+  // bytes, or a FIFO, a device or a socket) is not read here, is asked nothing, and goes up as the
+  // file. The bytes checked and sent are those the CLI read where it read them (`uploadBytes`:
+  // AskGate's, else the Markdown file's it checked once the flags were read, `runDispatchCli`),
+  // copied once into a plain buffer of their own, which a Blob takes; the file is read here only
+  // where the caller holds none of its bytes.
+  const file = path === undefined ? undefined : uploadedFile(input.cwd, path, name);
+  const heldBytes = input.uploadBytes === undefined ? undefined : new Uint8Array(input.uploadBytes);
+  const documentBytes = file === undefined ? undefined : await documentFileBytes(file, heldBytes);
+  // The check of the text alone, the one the dry run makes (artifactTextCheck chooses it for both),
+  // so the call and its dry run refuse a text alike. It comes before the read of the held name
+  // below, which the dry run does not make, so a text it refuses is refused for the text under a
+  // held name too, and so is inline text that is not blank whose check got no answer (`failed`,
+  // storedTextCheckFailed), which the dry run passes with a warning. The held name refuses only a
+  // text the check passes.
+  //
+  // Inline text takes storedTextCheck, which decides what each answer means for the call: text past
+  // the bytes one document may hold is refused without asking, as the server refuses such an upload
+  // whatever name it carries (documentTooLarge); a text the store would write under another
+  // spelling, or one Dispatch's round trip refuses as its upload would, is refused; and so is an
+  // upload of text that is not blank whose check did not run, since that check says nothing about
+  // what the store would write. A text whose typed blocks' attributes differ from Dispatch's only
+  // in their order is no other spelling: it goes up as Dispatch writes it (storedUpload). A
+  // Markdown file's bytes take storedFileCheck, which asks the file round trip for its refusal
+  // alone: the store keeps a Markdown file as it spells it, so no spelling is refused, and
+  // Dispatch refuses there, in the upload's own words, what the upload of those bytes is refused
+  // for. Without --force each check asks for the refusals of a new document, which this call
+  // makes; with it, the upload may replace a document, which is judged by looser rules, so it
+  // asks for none of them, and Dispatch answers as the most permissive replacement
+  // takes the text: with the rendering it stores, which the inline check compares as any other, or
+  // with a refusal every replacement makes. So the upload can refuse what the check did not ask
+  // for: under a name the owner does not hold, --force uploads a new document, which makes those
+  // refusals; under a name the owner holds, the replacement holds those rules for the blocks it
+  // adds or changes, and refuses a rendering that grows past the bytes one document holds over the
+  // version it replaces. A text the check leaves unchecked - a Dispatch without the route, or a
+  // file or blank text whose check got no answer - goes up, and the upload makes its own refusal.
+  // A file documentFileRead passes with no bytes (one Dispatch stores as its bytes, or a FIFO, a
+  // device or a socket) is asked nothing.
+  //
+  // Inline text is asked through the call's own client, which asks again after a failed attempt,
+  // since a failed check of text that is not blank refuses the upload. A file goes up whatever its
+  // check failed with, so asking again would only delay the upload: its check goes through a
+  // client of its own that asks once within the dry run's bound, with the dry run's own client
+  // options (askOnceWithinDryRun).
+  const check = artifactTextCheck({
+    tool: input.tool,
+    name,
+    content,
+    bytes: documentBytes,
+    force,
+    textClient: () => client,
+    fileClient: () => newClient(askOnceWithinDryRun()),
+  });
+  const stored = await check?.();
+  if (stored?.kind === "refused") throw stored.refusal;
+  if (stored?.kind === "failed") throw storedTextCheckFailed(stored);
   // An upload under a name the owner already holds writes that document's next version, over
   // the text it holds, so the command reads what the owner holds and refuses it. --force is
   // what asks for the version, and the API writes one for every other caller as before.
@@ -699,7 +722,7 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // force says, and that refusal names the rule which applies to it. Refusing it here would
   // answer it with --force, which writes nothing for a create that stores nothing, so it goes
   // through and reads the server's own answer.
-  if ((path !== undefined || !blank) && optionalBoolean(args, "force") !== true) {
+  if ((path !== undefined || !blank) && !force) {
     const held = artifactUnderName(
       artifactOwner.kind === "project"
         ? // unlinked, as every other read of a project's own documents is: without it the
@@ -730,46 +753,21 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
       ]);
     }
   }
-  // The text the upload sends: the text given, or the text Dispatch stores for it when the two
-  // differ only in the order of a typed block's attributes. `reordered` is the answer's line for
-  // each such block.
-  let sent = content;
-  let reordered: readonly string[] = [];
-  // Inline text is stored as Markdown: Dispatch parses it and stores its rendering, so a
-  // text it would write under another spelling is refused here rather than stored changed.
-  // The round trip is the store's own parse and render (POST /api/v1/markdown/round-trip).
-  // Only a Dispatch that holds no such route leaves the upload to make its own refusal, as
-  // it did before this check: every other failure refuses the upload, since a check that did
-  // not run says nothing about what the store would write. Blank text goes to the server
-  // unchecked: the round trip answers the empty string for every text this predicate calls
-  // blank, since storedMarkdown returns "" for whatever `strings.TrimSpace` empties before
-  // it parses anything (that package's markdown_round_trip.go), and the empty document is
-  // what such a create asks for. That short answer is not what the store writes for each of
-  // them: the parse and render a seed runs keep every character of this set but a tab, a
-  // line feed, a carriage return and a space, each of the rest rendering to itself.
-  if (!blank) {
-    let stored: string | undefined;
-    try {
-      stored = await client.markdownRoundTrip(content);
-    } catch (error) {
-      if (!roundTripRouteAbsent(error)) {
-        throw new Error(storedTextCheckFailed(error, name), { cause: error });
-      }
-    }
-    // What goes up, and what is refused, is storedUpload's rule (stored-spelling.ts).
-    if (stored !== undefined) {
-      const upload = storedUpload(content, stored, name);
-      if ("refusal" in upload) throw new ToolInputError(input.tool, [upload.refusal]);
-      sent = upload.sent;
-      reordered = upload.reordered;
-    }
-  }
-  // A call with a path uploads that file, one with content stores that text (`sent`, above),
-  // and one with neither makes an empty document the writer fills in afterwards with dispatch
-  // doc-edit.
+  // A call with a path uploads that file, one with content stores that text, and one with
+  // neither makes an empty document the writer fills in afterwards with dispatch doc-edit. The
+  // file's bytes, where the call holds them - a document's, read above, or those AskGate's check
+  // read - are sent as they were read, under the file's own type. The text is sent as given, or,
+  // where it differs from what Dispatch stores only in the order of a typed block's attributes,
+  // as Dispatch stores it, and the answer names each such block (the check's `reordered`).
+  const fileBytes = documentBytes ?? heldBytes;
+  const sent = stored?.kind === "reordered" ? stored.sent : content;
+  const reordered = stored?.kind === "reordered" ? stored.lines : [];
   const artifactInput =
-    path !== undefined
-      ? { ...options, file: uploadedFile(input.cwd, path, name, input.uploadBytes) }
+    file !== undefined
+      ? {
+          ...options,
+          file: fileBytes === undefined ? file : new Blob([fileBytes], { type: file.type }),
+        }
       : sent !== undefined
         ? { ...options, content: sent }
         : options;
@@ -809,4 +807,110 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
             ...(result.advice === undefined ? {} : { advice: result.advice }),
           },
   };
+}
+
+/** `text` as the end of a sentence: with a full stop added unless it already ends one. */
+function endedSentence(text: string): string {
+  return /[.!?]$/.test(text) ? text : `${text}.`;
+}
+
+/**
+ * `dispatch artifact --dry-run`'s step after the argument check: the call's own check of the text,
+ * so the dry run refuses a text the call would refuse for its spelling or for the text alone, with
+ * the call's own refusal and exit code, and stores nothing. The check is chosen as the call chooses
+ * it (`artifactTextCheck`). Inline text takes the call's check (`storedTextCheck`), which decides
+ * what blank text is asked. A `--path` file Dispatch stores as a Markdown document is checked as
+ * the call checks it (`documentFileBytes`), in the bytes the CLI read of it (`uploadBytes`), or
+ * read here where the CLI holds none, which makes the call's checks of its size and then of its
+ * first U+0000 or byte that is not UTF-8, and then takes the call's file check
+ * (`storedFileCheck`), which asks the file round trip for its refusal alone: the round trip
+ * refuses, in the upload's own words, what the upload of that file is refused for, and the
+ * call throws that refusal before it uploads. A file `documentFileRead` passes with no bytes (one
+ * Dispatch stores as its bytes, or a FIFO, a device or a socket) is not read here, and the call
+ * uploads the file itself; such a file, and a name alone, is asked nothing, by the call as by the
+ * dry run. Both checks ask for a new document's refusals only without
+ * `--force`, as the call's do, so every refusal the dry run gets is the call's. With `--force` they
+ * ask for none of them, so a dry run passes, with no warning, a text the call's upload can then
+ * refuse for one of them: under a name the owner does not hold, because that upload makes a new
+ * document; under a name the owner holds, because a replacement holds those rules for the blocks
+ * it adds or changes, and refuses a rendering that grows past the bytes one document holds over
+ * the version it replaces. It reads nothing else the call reads: not whether the owner holds the
+ * name, and none of the server's other refusals. The call makes its check before it reads the
+ * held name, so a text the check refuses
+ * gets the same refusal from both under a held name too; a text the check passes the call still
+ * refuses under a name the owner holds, without `--force`, and the dry run passes it. A check that
+ * cannot run passes, with a warning that says why and what the call does, as the check's kind
+ * says it: inline text that is `unchecked` the call uploads unchecked; a file the call asks about
+ * once more, as this step asks, and uploads unchecked if that gets no answer either; and a
+ * `failed` text it refuses until Dispatch answers. A dry run that failed there would let an
+ * AskGate older than DISPATCH_DRY_RUN_LOCAL, which runs the call after a failed dry run, post this
+ * write unreviewed; AskGate now sets that variable, under which this step does not run. A text
+ * the CLI refuses once the flags are read (`runDispatchCli`) never reaches this step.
+ */
+export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerdict> {
+  const { tool, args, cwd, uploadBytes, client, deadline, deadlineMs } = context;
+  const content = optionalString(args, "content");
+  const path = optionalString(args, "path");
+  let bytes: Uint8Array | undefined;
+  if (content === undefined && path !== undefined) {
+    try {
+      bytes = await documentFileBytes(
+        uploadedFile(cwd, path, optionalString(args, "name")),
+        uploadBytes
+      );
+    } catch (error) {
+      // The call checks the file the same way before it asks anything, and throws this.
+      return {
+        kind: "refused",
+        refusal: error instanceof Error ? error : new Error(messageFor(error)),
+      };
+    }
+  }
+  const check = artifactTextCheck({
+    tool,
+    name: stringArg(args, "name"),
+    content,
+    bytes,
+    force: optionalBoolean(args, "force") === true,
+    textClient: client,
+    fileClient: client,
+  });
+  if (check === undefined) return { kind: "passed" };
+  // What the check is about, which each warning names, and what the call does where the check
+  // gives no answer about it.
+  const subject = content === undefined ? "the file" : "the text";
+  const uploadsUnchecked =
+    content === undefined
+      ? "The call asks once more, and uploads the file unchecked if it gets no answer either."
+      : "The call uploads the text unchecked.";
+  const unasked = (why: string, then: string): DryRunVerdict => ({
+    kind: "passed",
+    warning: `dispatch: warning: the dry run could not ask Dispatch about ${subject}: ${endedSentence(why)} ${then}`,
+  });
+  let stored: StoredTextCheck;
+  try {
+    stored = await check();
+  } catch (error) {
+    // A session with no Dispatch, which the call refuses in the same words: the check throws
+    // only what building the client throws.
+    return unasked(messageFor(error), "The call is refused for the same reason.");
+  }
+  // A text whose typed blocks' attributes differ from Dispatch's only in their order the call
+  // uploads as Dispatch writes it, refusing nothing, so the dry run passes it too.
+  if (stored.kind === "kept" || stored.kind === "reordered") return { kind: "passed" };
+  if (stored.kind === "refused") return { kind: "refused", refusal: stored.refusal };
+  if (stored.kind === "unchecked" && stored.routeAbsent) {
+    return {
+      kind: "passed",
+      warning: `dispatch: warning: this Dispatch cannot check ${subject}: ${endedSentence(stored.failure)} ${uploadsUnchecked}`,
+    };
+  }
+  // The deadline's end reads as what it is: the client's own words for it are a write's, saying
+  // that the write may or may not have taken effect, and the round trip writes nothing.
+  return unasked(
+    deadline.aborted ? `Dispatch gave no answer within ${deadlineMs / 1000} s` : stored.failure,
+    stored.kind === "unchecked"
+      ? uploadsUnchecked
+      : "The call refuses the upload until Dispatch answers."
+  );
 }

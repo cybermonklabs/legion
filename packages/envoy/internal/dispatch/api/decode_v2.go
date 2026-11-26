@@ -971,7 +971,8 @@ func (d *v2Decoder) readBody(r *http.Request) (*http.Request, error) {
 // readJSON reads a JSON body, an object or a union of objects, once, into a buffer bounded by the
 // row's BodyLimit; decodes it into the type it declares, or into the arm its discriminating member
 // picks; and puts the bytes back as r.Body for the layers behind it. A member the type does not
-// declare is ignored and logged (logUndeclaredMembers), as decodeJSON does.
+// declare is ignored and logged (logUndeclaredMembers), as decodeJSON does. A string the body holds
+// that carries U+0000 is refused, as decodeJSON refuses it, unless the row's body is TextChecked.
 func (d *v2Decoder) readJSON(r *http.Request, decoded *v2Request) error {
 	body := d.route.Body
 	if body.Optional && r.ContentLength == 0 {
@@ -995,7 +996,11 @@ func (d *v2Decoder) readJSON(r *http.Request, decoded *v2Request) error {
 	}
 	value := reflect.New(typ)
 	r.Body = io.NopCloser(bytes.NewReader(data))
-	if _, err := readJSONBody(r, value.Interface(), d.route.BodyLimit.Bytes, d.route.BodyLimit.TooLarge); err != nil {
+	read := readJSONBody
+	if body.TextChecked {
+		read = readJSONBodyAllowingNUL
+	}
+	if _, err := read(r, value.Interface(), d.route.BodyLimit.Bytes, d.route.BodyLimit.TooLarge); err != nil {
 		return err
 	}
 	logUndeclaredMembers(r, value.Interface(), data)

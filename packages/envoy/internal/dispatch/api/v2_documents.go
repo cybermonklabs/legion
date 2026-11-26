@@ -1697,5 +1697,6 @@ func formUploadInput(body jsonArtifactUpload, file *uploadFile) (artifactUploadI
 		contentType:  uploadContentType(file.ContentType, name),
 		summary:      strings.TrimSpace(body.Summary),
 		supplied:     body.Actor,
+		file:         true,
 	}, nil
 }

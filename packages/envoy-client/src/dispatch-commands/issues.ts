@@ -707,7 +707,9 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
 /** Whether the CLI's `--dry-run` of a call asks Dispatch what the call's write would answer: a
  *  `dispatch result` record, whose dry run prints the pull-request body line the record would
  *  print, since that line is Dispatch's to write and a copy written here would be a second
- *  grammar. Every other dry run, a retraction's included, prints the arguments and sends nothing. */
+ *  grammar. Every other dry run, a retraction's included, prints the arguments and writes nothing;
+ *  one whose call asks Dispatch something before it writes asks that too, through its step in the
+ *  command table (`DispatchCommand.dryRun`): `dispatch artifact`, how Dispatch would store its text. */
 export function dryRunAsksDispatch(tool: string, args: Readonly<Record<string, unknown>>): boolean {
   return tool === "dispatch_result" && args["retract"] === undefined;
 }

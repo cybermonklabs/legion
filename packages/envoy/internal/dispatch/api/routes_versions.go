@@ -289,6 +289,11 @@ type requestBody struct {
 	Optional bool
 	// Opaque is why a bodyBytes body carries no schema; empty for every other kind.
 	Opaque string
+	// TextChecked is a bodyJSON body whose handler refuses U+0000 in the text it carries itself,
+	// under the name the write it answers for gives that text, as the /api/v1 route it answers for
+	// does (postMarkdownRoundTrip): the decoder then reads it without its own refusal of U+0000
+	// (readJSONBodyAllowingNUL). False for every other body, whose U+0000 the decoder refuses.
+	TextChecked bool
 }
 
 // routeBodyLimit is the largest body a route reads and its answer to a body one byte past it,
@@ -309,8 +314,10 @@ var (
 	uploadBodyLimit = routeBodyLimit{keyedBodyMax, errUploadTooLarge}
 	// handoffBodyLimit is a handoff write's (handoffRequestLimit).
 	handoffBodyLimit = routeBodyLimit{handoffRequestLimit, errHandoffTooLarge}
-	// markdownRoundTripBodyLimit is the markdown round trip's (markdownRoundTripLimit).
+	// markdownRoundTripBodyLimit is the inline markdown round trip's (markdownRoundTripLimit), and
+	// fileRoundTripBodyLimit the file round trip's (fileRoundTripLimit).
 	markdownRoundTripBodyLimit = routeBodyLimit{markdownRoundTripLimit, errMarkdownRoundTripTooLarge}
+	fileRoundTripBodyLimit     = routeBodyLimit{fileRoundTripLimit, errFileRoundTripTooLarge}
 )
 
 // requestPart is the part of a request an authority rule reads.

@@ -132,6 +132,7 @@ GET /api/v1/issues/{key}/summary any
 GET /api/v1/limits any
 GET /api/v1/machine-logins any
 POST /api/v1/machine-logins/{id}/revoke any
+POST /api/v1/markdown/file-round-trip any
 POST /api/v1/markdown/round-trip any
 GET /api/v1/me/agent-tokens any
 POST /api/v1/me/agent-tokens any
@@ -317,6 +318,7 @@ GET /api/v2/limit-set any
 POST /api/v2/machine-login-lookups any
 GET /api/v2/machine-logins any
 DELETE /api/v2/machine-logins/{id} any
+POST /api/v2/markdown-file-round-trips any
 POST /api/v2/markdown-round-trips any
 GET /api/v2/me any
 GET /api/v2/me/agent-tokens any

@@ -80,16 +80,6 @@
       },
       "requests": [
         {
-          "method": "GET",
-          "path": "/api/v1/issues/DSP-1/artifacts",
-          "headers": {
-            "Accept": "application/json",
-            "Authorization": "Bearer secret",
-            "User-Agent": "dispatch-client/0.1.0"
-          },
-          "body": null
-        },
-        {
           "method": "POST",
           "path": "/api/v1/markdown/round-trip",
           "headers": {
@@ -99,8 +89,19 @@
             "User-Agent": "dispatch-client/0.1.0"
           },
           "body": {
-            "markdown": "# Design\n"
+            "markdown": "# Design\n",
+            "new_document": true
           }
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/artifacts",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "User-Agent": "dispatch-client/0.1.0"
+          },
+          "body": null
         },
         {
           "method": "POST",

@@ -170,6 +170,12 @@ func miscTourSteps() []tourStep {
 			},
 		},
 		{
+			Method: http.MethodPost, Pattern: "/markdown-file-round-trips", Status: http.StatusOK,
+			Setup: func(*testing.T, *routeTour) tourRequest {
+				return tourRequest{Body: map[string]any{"file": []byte("1. one\n1. two\n")}, As: alice}
+			},
+		},
+		{
 			Method: http.MethodGet, Pattern: "/ci-reconcile-passes", Status: http.StatusOK,
 			Setup: func(t *testing.T, tour *routeTour) tourRequest {
 				endedCIPass(t, tour.database, uuid.NewString(), time.Minute, "complete")

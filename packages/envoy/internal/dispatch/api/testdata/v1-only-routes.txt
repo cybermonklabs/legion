@@ -143,6 +143,7 @@ GET /api/v1/issues/{key}/summary
 GET /api/v1/limits
 GET /api/v1/machine-logins
 POST /api/v1/machine-logins/{id}/revoke
+POST /api/v1/markdown/file-round-trip # #4369, the check of a markdown file's bytes before its upload, which POST /api/v2/markdown-file-round-trips answers
 POST /api/v1/markdown/round-trip
 GET /api/v1/me/agent-tokens
 POST /api/v1/me/agent-tokens

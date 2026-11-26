@@ -1,9 +1,7 @@
 // The `dispatch` command each host plugin bundles into its dist/dispatch.js and puts on its
 // agents' shell PATH through a `bin/dispatch` shim. `runDispatchCli` holds the behaviour.
-import { readFileSync } from "node:fs";
 import { dispatchCommandUserAgent, runDispatchCli } from "../src/dispatch-cli";
-
-const readText = (path: string): string => readFileSync(path === "-" ? 0 : path, "utf-8");
+import { readFileText } from "../src/dispatch-file-text";
 
 // Bun's `process.exit` drops what a pipe has not yet taken (every omp session reads this command
 // through one), so each write's callback is awaited before the process exits. A write that fails
@@ -22,7 +20,7 @@ const code = await runDispatchCli(Bun.argv.slice(2), process.env, {
   stdout: writeTo(process.stdout),
   stdoutBytes: writeTo(process.stdout),
   stderr: writeTo(process.stderr),
-  readText,
+  readText: readFileText,
   cwd: process.cwd(),
   // This module's own URL is the bundle's once a host plugin built it into its dist/dispatch.js,
   // whose package.json beside it names the plugin and its release.
