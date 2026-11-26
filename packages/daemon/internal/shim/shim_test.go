@@ -44,6 +44,11 @@ const (
 	grace     = 3 * time.Second
 )
 
+// TestMain runs this binary as the fake OMP where fakeOMPEnv is set, and runs the tests otherwise.
+// Only TestMain makes the fake of a copy a test starts: in a build of these tests without it, such
+// a copy runs the tests, each of which starts copies that run them again. fakeOMPCopy refuses to
+// start a copy in such a process (fakeOMPCopyRefusal), and
+// TestACopyStartedAsTheFakeOMPRunsAsTheFake fails in such a build by name.
 func TestMain(m *testing.M) {
 	if os.Getenv(fakeOMPEnv) == "1" {
 		os.Exit(fakeOMP())
@@ -51,6 +56,58 @@ func TestMain(m *testing.M) {
 	// The tests run real git and jj, in the shim's adoption (fixtureenv.MustGuard).
 	fixtureenv.MustGuard()
 	os.Exit(m.Run())
+}
+
+// fakeOMPCopy is the path of this test binary, which a test runs as the fake OMP with fakeOMPEnv=1
+// in the copy's environment. It fails t where fakeOMPCopyRefusal refuses.
+func fakeOMPCopy(t *testing.T) string {
+	t.Helper()
+	if err := fakeOMPCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
+	return os.Args[0]
+}
+
+// fakeOMPCopyRefusal is why this process may start no copy of this test binary, nil when it may. A
+// process that has fakeOMPEnv=1 was started as the fake OMP, and TestMain runs such a process as
+// the fake, so one that runs the tests runs in a build without TestMain, and a copy started there
+// would run the tests again.
+func fakeOMPCopyRefusal() error {
+	if os.Getenv(fakeOMPEnv) == "1" {
+		return fmt.Errorf("this process has %s=1, so a test started it as the fake OMP, but it runs the tests: this build of the tests has no TestMain that runs the fake, and a copy started here would run the tests again", fakeOMPEnv)
+	}
+	return nil
+}
+
+// fakeOMPCopyRefusal, which fakeOMPCopy asks before any copy starts, refuses a process that has
+// fakeOMPEnv=1 and no other. While TestMain is in the build no copy reaches it, so this test is
+// what holds the refusal.
+func TestAProcessStartedAsTheFakeOMPStartsNoCopy(t *testing.T) {
+	fixtureenv.Unset(t, fakeOMPEnv)
+	if err := fakeOMPCopyRefusal(); err != nil {
+		t.Fatalf("with %s unset: %v, want no refusal", fakeOMPEnv, err)
+	}
+	t.Setenv(fakeOMPEnv, "1")
+	if err := fakeOMPCopyRefusal(); err == nil || !strings.Contains(err.Error(), fakeOMPEnv+"=1") {
+		t.Fatalf("with %s=1: %v, want a refusal that names it", fakeOMPEnv, err)
+	}
+}
+
+// A copy started with fakeOMPEnv=1 runs as the fake OMP: it says it is ready, with its pid. The
+// fake does not read -h. In a build without TestMain, the testing package reads -h before any test
+// runs, prints its own flag usage and exits, so this test fails there by name and its copy starts
+// no copy of its own.
+func TestACopyStartedAsTheFakeOMPRunsAsTheFake(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cmd := exec.Command(fakeOMPCopy(t), "-h")
+	cmd.Env = append(os.Environ(), fakeOMPEnv+"=1", "FAKE_OMP_MARKER="+filepath.Join(dir, "marker"), "FAKE_OMP_LOG="+filepath.Join(dir, "log"))
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil || string(out) != fmt.Sprintf(`{"type":"fake_ready","pid":%d}`+"\n", cmd.Process.Pid) {
+		t.Fatalf("a copy started as the fake OMP with -h: %v, printed %q, want exit 0 and its ready line alone\n%s", err, out, stderr.String())
+	}
 }
 
 // fakeOMP runs a turn when the daemon's side asks for one (a `fake_turn` frame, which the shim
@@ -538,7 +595,7 @@ func config(t *testing.T, path string, o *omp) shim.Config {
 		Network:   "unix",
 		Address:   path,
 		BootToken: bootToken,
-		Argv:      []string{os.Args[0]},
+		Argv:      []string{fakeOMPCopy(t)},
 		Env:       o.env,
 		Grace:     grace,
 	}

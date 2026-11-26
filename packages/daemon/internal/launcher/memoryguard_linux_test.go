@@ -339,6 +339,9 @@ func TestControllerPodMemoryGuardEndsEachKindOfCommand(t *testing.T) {
 	if err != nil {
 		t.Skipf("no python3 to start the agent's Python kernel with: %v", err)
 	}
+	if err := helperCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -20,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
@@ -104,15 +106,69 @@ func (c *stopClock) fire(timer stopTimer) bool {
 // the model its turn runs on (testdata/api-error-529.jsonl:1).
 const fakeClaudeModel = "claude-sonnet-4-5"
 
-// TestMain runs the stand-in for Claude Code when the bridge under test starts this binary as one,
-// and the package's tests otherwise. The test across the daemon and the bridge
-// (take_daemon_test.go) runs the daemon's routes over a store, cloned from this package's
-// template on LEGION_TEST_PG_DSN.
+// TestMain runs this binary as the fake Claude Code where fakeClaudeEnv is set, and runs the tests
+// otherwise. Only TestMain makes the fake of a copy a test starts: in a build of these tests
+// without it, such a copy runs the tests, each of which starts copies that run them again.
+// fakeClaudeCopy refuses to start a copy in such a process (fakeClaudeCopyRefusal), and
+// TestACopyStartedAsTheFakeClaudeRunsAsTheFake fails in such a build by name. The test across the
+// daemon and the bridge (take_daemon_test.go) runs the daemon's routes over a store, cloned from
+// this package's template on LEGION_TEST_PG_DSN.
 func TestMain(m *testing.M) {
 	if os.Getenv(fakeClaudeEnv) == "1" {
 		os.Exit(fakeClaude())
 	}
 	os.Exit(testpg.Main("legion_claudebridge_test", m.Run))
+}
+
+// fakeClaudeCopy is the path of this test binary, which a test runs as the fake Claude Code with
+// fakeClaudeEnv=1 in the copy's environment. It fails t where fakeClaudeCopyRefusal refuses.
+func fakeClaudeCopy(t *testing.T) string {
+	t.Helper()
+	if err := fakeClaudeCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
+	return os.Args[0]
+}
+
+// fakeClaudeCopyRefusal is why this process may start no copy of this test binary, nil when it
+// may. A process that has fakeClaudeEnv=1 was started as the fake Claude Code, and TestMain runs
+// such a process as the fake, so one that runs the tests runs in a build without TestMain, and a
+// copy started there would run the tests again.
+func fakeClaudeCopyRefusal() error {
+	if os.Getenv(fakeClaudeEnv) == "1" {
+		return fmt.Errorf("this process has %s=1, so a test started it as the fake Claude Code, but it runs the tests: this build of the tests has no TestMain that runs the fake, and a copy started here would run the tests again", fakeClaudeEnv)
+	}
+	return nil
+}
+
+// fakeClaudeCopyRefusal, which fakeClaudeCopy asks before any copy starts, refuses a process that
+// has fakeClaudeEnv=1 and no other. While TestMain is in the build no copy reaches it, so this test
+// is what holds the refusal.
+func TestAProcessStartedAsTheFakeClaudeStartsNoCopy(t *testing.T) {
+	fixtureenv.Unset(t, fakeClaudeEnv)
+	if err := fakeClaudeCopyRefusal(); err != nil {
+		t.Fatalf("with %s unset: %v, want no refusal", fakeClaudeEnv, err)
+	}
+	t.Setenv(fakeClaudeEnv, "1")
+	if err := fakeClaudeCopyRefusal(); err == nil || !strings.Contains(err.Error(), fakeClaudeEnv+"=1") {
+		t.Fatalf("with %s=1: %v, want a refusal that names it", fakeClaudeEnv, err)
+	}
+}
+
+// A copy started with fakeClaudeEnv=1 runs as the fake Claude Code: it records its arguments, -h
+// among them. In a build without TestMain, the testing package reads -h before any test runs,
+// prints its own flag usage and exits, so the copy records nothing, this test fails there by name,
+// and the copy starts no copy of its own.
+func TestACopyStartedAsTheFakeClaudeRunsAsTheFake(t *testing.T) {
+	t.Parallel()
+	record := filepath.Join(t.TempDir(), "record")
+	cmd := exec.Command(fakeClaudeCopy(t), "-h")
+	cmd.Env = append(os.Environ(), fakeClaudeEnv+"=1", "FAKE_CLAUDE_RECORD="+record)
+	out, err := cmd.CombinedOutput()
+	recorded, readErr := os.ReadFile(record)
+	if want := "argv -h\n"; err != nil || readErr != nil || !strings.HasPrefix(string(recorded), want) {
+		t.Fatalf("a copy started as the fake Claude Code with -h: %v, recorded %q (%v), want exit 0 and a record that starts %q\n%s", err, recorded, readErr, want, out)
+	}
 }
 
 // fakeClaude answers Claude Code's stream-json the way the probes recorded it: each user message
@@ -411,7 +467,7 @@ func startRig(t *testing.T, extra []string, calls daemonCalls, clock Clock, args
 	// room for the inbox's socket.
 	t.Setenv("TMPDIR", testtmp.Dir(t, InboxLongestPath))
 	record, gate := filepath.Join(dir, "record"), filepath.Join(dir, "gate")
-	argv := append([]string{os.Args[0]}, args...)
+	argv := append([]string{fakeClaudeCopy(t)}, args...)
 	// The daemon a pane names is the case's to give (newTakingRig, newReportingRig): one the test
 	// process inherited, a Legion pod's own, would make every rig a claim's, whose ready gate holds
 	// its deliveries until a ready line no case writes.

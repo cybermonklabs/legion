@@ -529,7 +529,7 @@ func startCrossBridge(t *testing.T, daemonURL, boot string, generation uint64) *
 	env := append(os.Environ(), claudebridge.FakeClaudeEnv+"=1", claudebridge.FakeClaudeRecordEnv+"="+record,
 		"CLAUDE_CONFIG_DIR="+dir, "LEGION_ROLE=implementer", "LEGION_ISSUE="+crossIssue,
 		"LEGION_DAEMON_URL="+daemonURL, "LEGION_BOOT_TOKEN_FILE="+tokenFile, "LEGION_GENERATION="+strconv.FormatUint(generation, 10))
-	cfg, err := claudebridge.Configure([]string{os.Args[0], "-p", "--resume", crossSession}, env)
+	cfg, err := claudebridge.Configure([]string{claudebridge.FakeClaudeCopy(t), "-p", "--resume", crossSession}, env)
 	if err != nil {
 		t.Fatal(err)
 	}
