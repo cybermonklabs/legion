@@ -114,6 +114,10 @@ export interface ReadingPaneHeadProps {
   ask: OpenAskRow;
   /** The reader's own answer or review landed. */
   onAnswered: (askId: string) => void;
+  /** The reader's own Assign to me from this head started (`live`), or has stopped being in
+   *  flight or refused: the Inbox counts the row leaving its filter while the write is out, and
+   *  on the render after it ends, as the reader's own move, not as a row that left on its own. */
+  onAssignWrite: (askId: string, live: boolean) => void;
   /** Moves the column to the next block marked as changed; undefined when nothing is marked. */
   onNextChange: (() => void) | undefined;
   /** Moves the column to the decision block; undefined when the question is not one. */
@@ -147,6 +151,7 @@ export function ReadingPaneHead({
   artifact,
   ask,
   onAnswered,
+  onAssignWrite,
   onNextChange,
   onSkipToAnswer,
   onSnoozeLive,
@@ -157,7 +162,13 @@ export function ReadingPaneHead({
   // `Assigning…` and a refusal are shown by the instance that wrote rather than lost to the
   // optimistic update that takes the issue out of `isUnassigned`. The head does the same.
   const [assignLive, setAssignLive] = useState(false);
-  const onAssignLive = useCallback((_askId: string, live: boolean) => setAssignLive(live), []);
+  const onAssignLive = useCallback(
+    (askId: string, live: boolean) => {
+      onAssignWrite(askId, live);
+      setAssignLive(live);
+    },
+    [onAssignWrite]
+  );
   const { name, reads } = useControlName(ask, undefined);
   const page = openPagePath(ask, sectionBlockId);
   const reference = itemRoute("ask", ask, ask.document);

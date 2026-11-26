@@ -16,7 +16,7 @@ import {
   patchIssue,
   replyToMessageDelivery,
 } from "./api";
-import { inboxRow, READING_PANE_WIDTH } from "./inbox-pane";
+import { backToList, inboxPane, inboxRow, selectRow } from "./inbox-pane";
 import { agentRowId, asSession, replyRowId, sessionActor, THREAD_SESSION } from "./inbox-threads";
 import { drawnIds } from "./inbox-view";
 import { frontLiveView } from "./live-views";
@@ -310,12 +310,10 @@ test("the inbox lists everything that reached a person in one list", async ({ br
       await page.mouse.move(0, 0);
     }
 
-    // Each row carries its author. Beside the reading column a row is one line of what it is
-    // about and whose it is, so the author is read where the row draws its card, below that
-    // column's width: the asker in the question's card, and each reply's author on that reply's
-    // own turn in the thread the row draws.
-    const wide = page.viewportSize() ?? { height: 720, width: READING_PANE_WIDTH };
-    await page.setViewportSize({ height: wide.height, width: READING_PANE_WIDTH - 1 });
+    // Each row carries its author. A row of the list is one line of what it is about and whose
+    // it is, at every width, so the author is read in the pane of the row picked: the asker in
+    // the question's card, and each reply's author on that reply's own turn in the thread the
+    // pane draws.
     for (const row of [
       { author: THREAD_SESSION.title, id: rows.ask, on: `[data-testid="ask-${ask.id}"]` },
       {
@@ -330,12 +328,12 @@ test("the inbox lists everything that reached a person in one list", async ({ br
         on: `[data-inbox-thread-turn="${directReply.id}"]`,
       },
     ]) {
-      await expect(
-        inboxRow(page, row.id).locator(row.on),
-        `${row.id}'s author on the row`
-      ).toContainText(row.author);
+      await selectRow(page, row.id);
+      await expect(inboxPane(page).locator(row.on), `${row.id}'s author in its pane`).toContainText(
+        row.author
+      );
     }
-    await page.setViewportSize(wide);
+    await backToList(page);
 
     // The page's own Type filter narrows the one list in the browser: Threads holds the two
     // Reply rows, and Agent message the one Agent row, out of the same list.

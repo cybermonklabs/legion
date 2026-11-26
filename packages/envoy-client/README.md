@@ -1803,9 +1803,15 @@ minute later before reading the refusal as an older Dispatch. In a rollout, a se
 build took but whose answer was lost, and was then sent again to an older build, may still have
 recorded the review, at the version named: `dispatch doc-read` shows the document's approval.
 A review records an approval or a request for changes in the person's name, so it works only with
-a token that names a person who holds `approve`: a personal token (`DISPATCH_TOKEN`) the person
-gave `approve`. A broker token, a person's sign-in included, never holds it. Dispatch refuses any
-other token with `403 OAUTH_SCOPE_REQUIRED` or `403 SIGN_IN_REQUIRED`. `--version` is the version
+a token that names a person who holds `approve`. A session whose Dispatch credential is the
+person's `agent-secrets login` sign-in (no `DISPATCH_TOKEN_FILE`, `DISPATCH_TOKEN` or envoy.json
+`dispatch.token`, which are read first unless `DISPATCH_TOKEN_BROKER=1`) sends the review through Cipher's
+proxy: it trades the sign-in for the approve capability's placeholder and sends the review with
+it, and the secrets broker spends an approve-only token that never reaches the box. A broker that
+serves no approve capability refuses that trade `400 invalid_request`, saying so, and nothing
+reaches Dispatch. Otherwise the review needs a personal token (`DISPATCH_TOKEN`) the person gave
+`approve`: a broker token sent directly never holds it, and Dispatch refuses any other token with
+`403 OAUTH_SCOPE_REQUIRED` or `403 SIGN_IN_REQUIRED`. `--version` is the version
 the caller read, and it must be the version the review would record: the document's latest
 settled version, or the version an open approval request names for the document. Dispatch
 refuses any other version with `409 REVIEW_VERSION_MOVED`,
