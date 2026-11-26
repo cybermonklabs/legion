@@ -32,7 +32,7 @@ const (
 	rmAccepting    = "LEGION-303"
 	rmReopened     = "LEGION-304"
 	rmAdmitted     = "LEGION-305"
-	rmActive       = "LEGION-309"
+	rmActive       = "LEGION-ACTIVE" // CONTROL: a key that is no issue key
 )
 
 // rmMembers is every member a re-admission leaves mid-phase or reopened, the issues the root's
