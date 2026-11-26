@@ -101,10 +101,11 @@ const (
 	computeClassKey     = "cloud.google.com/compute-class"
 )
 
-// doNotDisruptAnnotation and safeToEvictAnnotation are the autoscaler stop-eviction annotation
-// keys podTemplate sets unconditionally (probeManifest sets only the first): Karpenter's own
-// (AWS), and the Cluster Autoscaler's, which GKE Autopilot honours as a request for
-// extended-duration protection.
+// doNotDisruptAnnotation and safeToEvictAnnotation are the autoscaler annotation keys:
+// Karpenter's own (AWS), and the Cluster Autoscaler's, which GKE Autopilot honours as a request
+// for extended-duration protection. podTemplate sets both against eviction, unconditionally;
+// probeManifest sets only the first; and cachePodTemplate sets the first and the second as "true",
+// so the cluster autoscaler may move a cache pod and remove the node it held.
 const (
 	doNotDisruptAnnotation = "karpenter.sh/do-not-disrupt"
 	safeToEvictAnnotation  = "cluster-autoscaler.kubernetes.io/safe-to-evict"

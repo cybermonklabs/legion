@@ -1532,6 +1532,33 @@ func TestRepositoryCacheBucketAccountReconciliation(t *testing.T) {
 	})
 }
 
+// The cache pod carries the Cluster Autoscaler's safe-to-evict annotation as "true", with the
+// cache's bucket on and off, so the autoscaler can move a cache pod and remove the node it held: a
+// Sandbox is no controller the autoscaler knows, and without the annotation the autoscaler keeps
+// every node a cache pod runs on (no.scale.down.node.pod.not.backed.by.controller). Beside it the
+// pod keeps its repository's annotation and Karpenter's do-not-disrupt, and carries nothing else.
+// A template without safe-to-evict, or with any other value ("false", as an issue pod's), fails
+// the row.
+func TestTheCachePodMayBeMovedByTheClusterAutoscaler(t *testing.T) {
+	t.Parallel()
+	name := CacheSandboxName(testProject, cacheRepo)
+	want := map[string]string{annotationCacheRepo: cacheRepo.String(), doNotDisruptAnnotation: "true", safeToEvictAnnotation: "true"}
+	for _, tc := range []struct {
+		name       string
+		configured func(*Options)
+	}{
+		{"bucket off", sharedAccount},
+		{"bucket on", withBucket(testBucket, cacheAccount)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := configuredRuntime(t, tc.configured).cachePodTemplate(name, cacheRepo).Metadata.Annotations
+			if !maps.Equal(got, want) {
+				t.Errorf("the cache pod's annotations are %v, want exactly %v", got, want)
+			}
+		})
+	}
+}
+
 // A repository of the cache set whose cache cannot be made — its token cannot be minted — is logged
 // as the sweep's warning naming the cache and tried at the next sweep; ReconcileOrphans answers
 // nil, since its error holds the claims' launches back at boot and each launch ensures its own
