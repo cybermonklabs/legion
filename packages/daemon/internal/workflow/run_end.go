@@ -196,11 +196,11 @@ func (e *Engine) joinAgain(ctx context.Context, tx pgx.Tx, keys []string) error 
 			if row.State != record.TaskRunning || row.StepWait != record.StepWaitJoin {
 				continue
 			}
-			queued, err := e.store.TaskBranchRow(ctx, tx, key, issue.Generation, row.Task)
+			queued, err := e.store.TaskBranchQueued(ctx, tx, key, issue.Generation, row.Task)
 			if err != nil {
 				return err
 			}
-			if queued == 0 {
+			if !queued {
 				unjoined = append(unjoined, row.Task)
 			}
 		}
@@ -252,7 +252,7 @@ func planTasksOf(stored *record.StoredPlan) []record.PlanTask {
 func (e *Engine) startAfterWait(ctx context.Context, tx pgx.Tx, s TaskScope, said string, args ...any) error {
 	w, view := s.walk, s.issue
 	role := w.RoleAt(w.Place)
-	if err := e.clearHandoff(ctx, tx, s, role); err != nil {
+	if err := e.clearHandoff(ctx, tx, view.Key, role); err != nil {
 		return err
 	}
 	reason := w.StartReason

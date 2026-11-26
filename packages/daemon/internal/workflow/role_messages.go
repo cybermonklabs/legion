@@ -17,7 +17,6 @@ import (
 type roleRecipient struct {
 	issue string
 	role  claim.Role
-	agent claim.Agent
 	row   string
 }
 
@@ -31,6 +30,13 @@ type addressedRole struct {
 	issue string
 }
 
+// addressRoles is the one collection the daemon's role messages are addressed by (tellChecks,
+// tellGateMoved, mergeForward, mergeForwardLanded): the claim of the worker on each recipient's
+// role's step (record.WorkerClaim over the recipient issue's phases rows, read in tx), in the order
+// given and each token once, so a role named twice - the implementer that also holds the phase,
+// two roles one keyed agent works - is told once. A recipient with no role is a phase no worker
+// holds, and is nobody.
+//
 // unnamable is the policy for a recipient whose claim token cannot be built, and the one thing the
 // four senders choose of how the collection runs: nil ends the collection with that error, and so
 // the fact's transaction, while a function is given the recipient and the error and may answer nil
@@ -48,16 +54,12 @@ func (e *Engine) addressRoles(ctx context.Context, tx pgx.Tx, project string, re
 		if recipient.role == "" {
 			continue
 		}
-		var token claim.Token
-		if recipient.agent != "" {
-			token, err = claim.AgentToken(projectToken, recipient.issue, recipient.agent)
-		} else {
-			rows, readErr := e.store.Phases(ctx, tx, recipient.issue)
-			if readErr != nil {
-				return nil, readErr
-			}
-			token, err = record.WorkerClaim(projectToken, recipient.issue, recipient.role, rows)
+		// A failed read is the transaction's failure, never a holder the daemon could not name.
+		rows, err := e.store.Phases(ctx, tx, recipient.issue)
+		if err != nil {
+			return nil, err
 		}
+		token, err := record.WorkerClaim(projectToken, recipient.issue, recipient.role, rows)
 		if err != nil {
 			if unnamable == nil {
 				return nil, err

@@ -688,7 +688,7 @@ type phaseWorker struct {
 // (workerPlans), so the start a repair composes for the step of one task of a plan of several is
 // that task's, and a candidate costs no statement of its own.
 func (a *Admission) phaseWorkersOf(project string, issue record.Issue, byKey map[string]record.Issue,
-	facts record.LineFacts, entries map[record.PhaseKey]record.PhaseEntry, plans map[string]*record.StoredPlan,
+	facts record.LineFacts, entries map[record.PhaseRole]record.PhaseEntry, plans map[string]*record.StoredPlan,
 ) ([]phaseWorker, error) {
 	steps := workflow.OpenStepsOf(issue)
 	if len(steps) == 0 || !record.AtWork(issue, facts.Gates[issue.Tree]) {
@@ -700,13 +700,13 @@ func (a *Admission) phaseWorkersOf(project string, issue record.Issue, byKey map
 	}
 	var workers []phaseWorker
 	for _, step := range steps {
+		token, err := record.WorkerClaimOf(project, issue.Key, step.Role, entries)
+		if err != nil || slices.ContainsFunc(workers, func(worker phaseWorker) bool { return worker.token == token }) {
+			continue
+		}
 		standing, err := workflow.ScopeOfStepOn(issue, plans[issue.Key], step)
 		if err != nil {
 			return nil, err
-		}
-		token, err := record.WorkerClaimOf(project, standing.PhaseKey(step.Role), entries)
-		if err != nil || slices.ContainsFunc(workers, func(worker phaseWorker) bool { return worker.token == token }) {
-			continue
 		}
 		workers = append(workers, phaseWorker{issue: standing.Issue(), scope: standing, root: root, role: step.Role, token: token})
 	}
@@ -782,7 +782,7 @@ func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []re
 // so a step of a role of the deployment counts) — read in one statement
 // (record.Store.PhaseEntries), and no statement where there is none: the rows the claim of each
 // candidate's worker is read from (record.WorkerClaimOf).
-func (a *Admission) workerEntries(ctx context.Context, tx pgx.Tx, issues []record.Issue) (map[record.PhaseKey]record.PhaseEntry, error) {
+func (a *Admission) workerEntries(ctx context.Context, tx pgx.Tx, issues []record.Issue) (map[record.PhaseRole]record.PhaseEntry, error) {
 	keys := make([]string, 0, len(issues))
 	seen := make(map[string]struct{}, len(issues))
 	for _, issue := range issues {
@@ -890,7 +890,7 @@ func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []recor
 		// entry was accepted. The rules read no store, so the pull request and the phase row
 		// that say so are read here, and only for a worker a rule has already named, never for
 		// every issue of the project.
-		_, owed, err := workflow.PhaseWorkerOwedTurn(ctx, a.store, tx, held.scope, held.role)
+		_, owed, err := workflow.PhaseWorkerOwedTurn(ctx, a.store, tx, held.issue, held.role)
 		if err != nil {
 			return nil, err
 		}
@@ -3389,7 +3389,7 @@ type slotHolder struct {
 type slotReading struct {
 	holders []slotHolder
 	runs    map[claim.Token]record.RoleRun
-	entries map[record.PhaseKey]record.PhaseEntry
+	entries map[record.PhaseRole]record.PhaseEntry
 }
 
 // readSlotHolders is the reading owedEntryRoles weighs, over its domain: every slot of the
@@ -3539,11 +3539,7 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 	var owed []owedEntryRole
 	for _, held := range read.holders {
 		run := read.runs[held.token]
-		key := record.PhaseKey{Issue: held.issue.Key, Role: held.role, Agent: claim.Agent(held.role)}
-		if held.role != claim.RoleArchitect {
-			key = held.scope.PhaseKey(held.role)
-		}
-		entry := read.entries[key]
+		entry := read.entries[record.PhaseRole{Issue: held.issue.Key, Role: held.role}]
 		send := sendPhaseEntry
 		if held.role == claim.RoleArchitect {
 			send = resendArchitectStart
@@ -3615,7 +3611,7 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 		if err != nil {
 			return nil, fmt.Errorf("read the phase rows of %s: %w", held.issue.Key, err)
 		}
-		row := record.PhaseRowAt(rows, key)
+		row := record.PhaseRowOf(rows, held.role)
 		owed = append(owed, owedEntryRole{Issue: held.issue, Scope: held.scope, Role: held.role, Row: row, Send: send, Given: workflow.GivenEntry(run)})
 	}
 	return owed, nil
@@ -3896,13 +3892,9 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 	}
 	weighed := kept[:0]
 	for _, keptRow := range kept {
-		token := keptRow.owed.Claim
-		if token == "" {
-			key := record.PhaseKey{Issue: keptRow.owed.Issue, Role: keptRow.owed.Role, Agent: claim.Agent(keptRow.owed.Role)}
-			var err error
-			if token, err = record.WorkerClaimOf(project, key, entries); err != nil {
-				continue
-			}
+		token, err := record.WorkerClaimOf(project, keptRow.owed.Issue, keptRow.owed.Role, entries)
+		if err != nil {
+			continue
 		}
 		keptRow.token = token
 		weighed = append(weighed, keptRow)

@@ -2955,10 +2955,10 @@ type Store interface {
 	// BranchQueued says whether the outbox still holds an issue_branch row of issue, whatever its
 	// lease or its next_at: the branch the row creates may not exist on GitHub yet.
 	BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
-	// TaskBranchRow is the newest task_branch outbox row of task of issue at generation,
-	// whatever its lease or next_at, or zero where none remains. Its immutable ID fences the
-	// completion of an older join from a later start of the same task.
-	TaskBranchRow(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (int64, error)
+	// TaskBranchQueued says whether the outbox still holds a task_branch row of task of issue at
+	// generation, whatever its lease or its next_at: the join of the task's needs at that
+	// generation has not ended.
+	TaskBranchQueued(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (bool, error)
 	// StepStopQueued says whether the outbox still holds a supervise row of issue whose op is
 	// step_stop, queued before the row before, whatever its lease or its next_at: the process of a
 	// stopped task's step may still run.

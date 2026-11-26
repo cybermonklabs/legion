@@ -259,7 +259,7 @@ func readOwedHolders(ctx context.Context, tx pgx.Tx, records record.Store, claim
 		if err != nil {
 			return nil, err
 		}
-		holder.entry = record.PhaseRowForClaim(rows, holder.role, holder.token).Entry
+		holder.entry = record.PhaseRowOf(rows, holder.role).Entry
 		holders[key] = holder
 		runKeys = append(runKeys, record.RoleRunKey{Token: holder.token, Issue: holder.issue.Key, Role: holder.role, Generation: holder.issue.Generation})
 	}

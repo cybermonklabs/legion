@@ -657,54 +657,10 @@ func (e *Engine) taskPullRequestRow(ctx context.Context, tx pgx.Tx, s TaskScope)
 	return e.store.PullRequestRowOfTask(ctx, tx, s.issue.Key, s.walk.Task)
 }
 
-// PhaseKey is the durable row of role's step in this task. A role occurs at most once in a
-// task. Outside a stored plan, including the root architect, the role names its own agent.
-func (s TaskScope) PhaseKey(role claim.Role) record.PhaseKey {
-	key := record.PhaseKey{Issue: s.issue.Key, Role: role, Agent: claim.Agent(role)}
-	if s.plan == nil {
-		return key
-	}
-	if s.walk.RoleAt(s.walk.Place) == role {
-		key.Task = s.walk.Task
-		if agent := s.walk.AgentAt(s.walk.Place); agent != "" {
-			key.Agent = agent
-		}
-		return key
-	}
-	for i, step := range s.walk.Steps {
-		if claim.Role(step.Role) == role {
-			key.Task = s.walk.Task
-			if agent := s.walk.AgentAt(record.TaskPlace{Kind: record.PlaceStep, Position: i + 1}); agent != "" {
-				key.Agent = agent
-			}
-			return key
-		}
-	}
-	if role == claim.RoleMerger {
-		key.Task = s.walk.Task
-	}
-	return key
-}
-
-// stepRow reads the task, role and agent together; another task's start cannot replace it.
+// stepRow is the phases row of role's step of s, the one read of it in a step handler: the row of
+// role (record.PhaseRowOf), which keys no step yet.
 func (e *Engine) stepRow(ctx context.Context, tx pgx.Tx, s TaskScope, role claim.Role) (record.PhaseRow, error) {
-	rows, err := e.store.Phases(ctx, tx, s.issue.Key)
-	if err != nil {
-		return record.PhaseRow{}, err
-	}
-	if key := s.PhaseKey(role); key.Task != "" && s.walk.RoleAt(s.walk.Place) != role {
-		var latest record.PhaseRow
-		for _, row := range rows {
-			if row.Key().Task == key.Task && row.Role == role && (latest.Role == "" || row.EntryRaisedAt.After(latest.EntryRaisedAt) ||
-				row.EntryRaisedAt.Equal(latest.EntryRaisedAt) && row.Entry > latest.Entry) {
-				latest = row
-			}
-		}
-		if latest.Role != "" {
-			return latest, nil
-		}
-	}
-	return record.PhaseRowAt(rows, s.PhaseKey(role)), nil
+	return e.phaseRow(ctx, tx, s.issue.Key, role)
 }
 
 // heldSummary is what a held notice of s's task says of the step it holds (heldTaskSummary): its
@@ -717,17 +673,11 @@ func heldSummary(s TaskScope) string {
 	return heldTaskSummary(s.walk)
 }
 
-// rowClaim is the agent of role's own step, not necessarily the task's current step.
+// rowClaim is the claim of the agent of the step s's copy stands in for role (placeToken): the
+// claim an entry of that step writes on role's phases row (enter), which record.WorkerClaim reads
+// back; role's own token where the walk holds no place there.
 func (e *Engine) rowClaim(s TaskScope, role claim.Role) (claim.Token, error) {
-	if role == claim.RoleArchitect {
-		return e.placeToken(s, record.StandsAt(s.issue), role)
-	}
-	project, err := claim.ProjectToken(s.issue.Project)
-	if err != nil {
-		return "", err
-	}
-	key := s.PhaseKey(role)
-	return claim.AgentToken(project, key.Issue, key.Agent)
+	return e.placeToken(s, record.StandsAt(s.issue), role)
 }
 
 // startClaim is the claim a start of role's step of s names (record.SuperviseRequest.Claim): for a

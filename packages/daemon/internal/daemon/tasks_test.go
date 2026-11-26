@@ -1048,7 +1048,7 @@ type acrossIssue struct {
 	steps      []claim.Role
 	place      int
 	held       bool
-	sessions   map[claim.Role]earlierReleaseSession
+	sessions   map[claim.Role]sliceFourSession
 }
 
 // role is the role of the step the issue's task stood at.
@@ -1108,7 +1108,7 @@ func TestAnIssueOfOneTaskGoesOnAcrossTheRelease(t *testing.T) {
 // its owner's retry, its tester then passing; the one at its implementer through its pull request
 // and a review that approves; the one at its reviewer through that review; then each one's retro
 // and merge.
-func (r *earlierReleaseRig) goOnAcross(issue *acrossIssue) {
+func (r *sliceFourRig) goOnAcross(issue *acrossIssue) {
 	t := r.t
 	t.Helper()
 	switch {
@@ -1135,7 +1135,7 @@ func (r *earlierReleaseRig) goOnAcross(issue *acrossIssue) {
 // wentOnAcross is the check that issue went on from the step the release before left its task at:
 // no step before that one started again (step_starts), each claim the release before recorded holds
 // the same session, and its task is done. The error names the first thing that does not hold.
-func (r *earlierReleaseRig) wentOnAcross(issue *acrossIssue) error {
+func (r *sliceFourRig) wentOnAcross(issue *acrossIssue) error {
 	r.t.Helper()
 	ctx := context.Background()
 	var earlier int
@@ -1167,7 +1167,7 @@ func (r *earlierReleaseRig) wentOnAcross(issue *acrossIssue) error {
 // this release's schema, with the daemon booted on it at the real Dispatch of this package's tests,
 // each issue's architect resumed in the session the earlier daemon recorded, and the claim of each
 // step the issues stood at but the held one's.
-func newAcrossRig(t *testing.T) (*earlierReleaseRig, []*acrossIssue, *acrossIssue) {
+func newAcrossRig(t *testing.T) (*sliceFourRig, []*acrossIssue, *acrossIssue) {
 	t.Helper()
 	proof := newLiveProofOn(t, workflowNATS(t))
 	st, dsn := storeBeforeSeveralTasks(t)
@@ -1183,7 +1183,7 @@ func newAcrossRig(t *testing.T) (*earlierReleaseRig, []*acrossIssue, *acrossIssu
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &earlierReleaseRig{stepRecordsRig: &stepRecordsRig{liveProof: proof, dispatch: startScratchDispatchOn(t, scratchDispatchOptions{}),
+	r := &sliceFourRig{stepRecordsRig: &stepRecordsRig{liveProof: proof, dispatch: startScratchDispatchOn(t, scratchDispatchOptions{}),
 		github: newStepRecordsGitHub(t), claims: map[claim.Token]*stepClaimant{}, waits: make(chan claim.Token, 16)}}
 	if err := os.WriteFile(r.cfg.DispatchTokenFile, []byte(r.dispatch.token+"\n"), 0o600); err != nil {
 		t.Fatalf("write the Dispatch token file: %v", err)
@@ -1268,7 +1268,7 @@ func storeBeforeSeveralTasks(t *testing.T) (*store.Store, string) {
 // (none for the held one's tester, whose claim failed), each a launch the earlier daemon began in
 // the session it recorded, which the boot resumes. The held one stands held from the phase of its
 // step for a failed claim, which records no reason. It answers those sessions.
-func (r *earlierReleaseRig) seedAcross(issue *acrossIssue, slot int, status, rank string, seq int64) map[claim.Role]earlierReleaseSession {
+func (r *sliceFourRig) seedAcross(issue *acrossIssue, slot int, status, rank string, seq int64) map[claim.Role]sliceFourSession {
 	t := r.t
 	t.Helper()
 	ctx := context.Background()
@@ -1312,7 +1312,7 @@ func (r *earlierReleaseRig) seedAcross(issue *acrossIssue, slot int, status, ran
 			now() - interval '2 hours', 'a', 1)`, key, string(r.token(claim.RoleImplementer)), stepRecordsHead, "implement-record-"+key)
 	}
 	// The step's entry carries the resume task the earlier daemon stored for it, in the shape the
-	// workflow composes a resume (workflow's Engine.ResumeTask), as seedEarlierReleaseIssue writes it.
+	// workflow composes a resume (workflow's Engine.ResumeTask), as seedSliceFourIssue writes it.
 	resume := fmt.Sprintf("Continue %s. Issue: %s. Phase: %s. Working copy: branch %s. Resume the existing phase work.",
 		issue.title, key, stands, claim.IssueBranch(key))
 	exec("the "+string(issue.role())+"'s row of "+key, `insert into phases (issue, role, claim, handoff_commit, rounds, verdict, summary,
@@ -1322,10 +1322,10 @@ func (r *earlierReleaseRig) seedAcross(issue *acrossIssue, slot int, status, ran
 	if !issue.held {
 		claims = append(claims, issue.role())
 	}
-	sessions := map[claim.Role]earlierReleaseSession{}
+	sessions := map[claim.Role]sliceFourSession{}
 	for _, role := range claims {
 		token := r.token(role)
-		kept := earlierReleaseSession{id: "ses_" + string(role) + "_" + strings.ToLower(key), file: filepath.Join(r.cfg.StateDir, key+"-"+string(role)+".jsonl")}
+		kept := sliceFourSession{id: "ses_" + string(role) + "_" + strings.ToLower(key), file: filepath.Join(r.cfg.StateDir, key+"-"+string(role)+".jsonl")}
 		sessions[role] = kept
 		exec("the "+string(role)+"'s claim on "+key, `insert into claims (token, project, tree, issue, role, generation, session,
 			session_file, state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, boot_token_hash, serving_generation,

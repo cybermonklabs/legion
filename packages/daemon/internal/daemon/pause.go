@@ -261,7 +261,7 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 		if issue != nil && p.backstop > 0 && c.ServingGeneration == issue.Generation {
 			// The worker of each step that takes work is a claim, not a role: at step a keyed
 			// agent's claim can work the step beside the role's own claim (workflow.OpenWorkers).
-			workers, err := workflow.OpenWorkers(p.token, *issue)
+			workers, err := workflow.OpenWorkers(ctx, p.records, tx, p.token, *issue)
 			if err != nil {
 				return made, err
 			}

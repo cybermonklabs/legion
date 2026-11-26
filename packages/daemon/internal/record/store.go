@@ -645,8 +645,8 @@ func (s *Postgres) TaskActs(ctx context.Context, tx pgx.Tx, issue Issue) ([]Runn
 }
 
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
-	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head, step_task, step_place, task, agent from phases
-		where issue = $1 order by task, role, agent`, issue)
+	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head, step_task, step_place from phases
+		where issue = $1 order by role`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
 	}
@@ -667,31 +667,32 @@ func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]Phase
 
 // PhaseEntries reads the entry of every phases row of issues, the moment it was raised, whether
 // its task is one to send as written, and the claim and step the row names, in one statement,
-// keyed by complete PhaseKey. Absent rows have no raised entry.
+// keyed by issue and role. The rows of an issue the record holds none of are simply absent, which
+// every reader takes as the zero entry.
 // entry_raised_at is the row's one nullable column (PutPhase), null on a row no entry has been
 // raised on, and reads back as the zero moment.
-func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseKey]PhaseEntry, error) {
-	entries := make(map[PhaseKey]PhaseEntry, len(issues))
+func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error) {
+	entries := make(map[PhaseRole]PhaseEntry, len(issues))
 	if len(issues) == 0 {
 		return entries, nil
 	}
-	rows, err := tx.Query(ctx, `select issue, task, role, agent, entry, entry_raised_at, entry_verbatim, claim, step_task from phases where issue = any($1)`, issues)
+	rows, err := tx.Query(ctx, `select issue, role, entry, entry_raised_at, entry_verbatim, claim, step_task from phases where issue = any($1)`, issues)
 	if err != nil {
 		return nil, fmt.Errorf("list the phase entries of %d issues: %w", len(issues), err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var key PhaseKey
-		var role, agent, token string
+		var key PhaseRole
+		var role, token string
 		var entry PhaseEntry
 		var raisedAt *time.Time
-		if err := rows.Scan(&key.Issue, &key.Task, &role, &agent, &entry.Entry, &raisedAt, &entry.Verbatim, &token, &entry.StepTask); err != nil {
+		if err := rows.Scan(&key.Issue, &role, &entry.Entry, &raisedAt, &entry.Verbatim, &token, &entry.StepTask); err != nil {
 			return nil, fmt.Errorf("read a phase entry: %w", err)
 		}
 		if raisedAt != nil {
 			entry.RaisedAt = raisedAt.UTC()
 		}
-		key.Role, key.Agent, entry.Claim = claim.Role(role), claim.Agent(agent), claim.Token(token)
+		key.Role, entry.Claim = claim.Role(role), claim.Token(token)
 		entries[key] = entry
 	}
 	if err := rows.Err(); err != nil {
@@ -701,7 +702,6 @@ func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string)
 }
 
 func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error {
-	key := phase.Key()
 	var decision []byte
 	if phase.Decision != nil {
 		var err error
@@ -726,9 +726,9 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 		raisedAt = phase.EntryRaisedAt
 	}
 	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff,
-		decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head, step_task, step_place, task, agent)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
-		on conflict (issue, task, role, agent) do update set claim = excluded.claim,
+		decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head, step_task, step_place)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+		on conflict (issue, role) do update set claim = excluded.claim,
 		handoff_commit = excluded.handoff_commit, pass = excluded.pass,
 		handoff_record = excluded.handoff_record, handoff_version = excluded.handoff_version,
 		rounds = excluded.rounds, conflict_rounds = excluded.conflict_rounds, backward_moves = excluded.backward_moves,
@@ -740,7 +740,7 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 		reviewed_head = excluded.reviewed_head, step_task = excluded.step_task, step_place = excluded.step_place`,
 		phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.Pass, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.ConflictRounds,
 		backwardMoves, phase.CapTold, phase.Verdict, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt,
-		phase.Entry, phase.EntryTask, phase.EntryVerbatim, raisedAt, phase.EntryMovedBack, phase.ReviewedHead, phase.StepTask, phase.StepPlace, key.Task, string(key.Agent),
+		phase.Entry, phase.EntryTask, phase.EntryVerbatim, raisedAt, phase.EntryMovedBack, phase.ReviewedHead, phase.StepTask, phase.StepPlace,
 	)
 	if err != nil {
 		return fmt.Errorf("put %s phase on %s: %w", phase.Role, phase.Issue, err)
@@ -755,7 +755,7 @@ func scanPhase(row scanner) (PhaseRow, error) {
 	var raisedAt *time.Time
 	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.Pass, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds, &phase.ConflictRounds,
 		&backwardMoves, &phase.CapTold, &phase.Verdict, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt,
-		&phase.Entry, &phase.EntryTask, &phase.EntryVerbatim, &raisedAt, &phase.EntryMovedBack, &phase.ReviewedHead, &phase.StepTask, &phase.StepPlace, &phase.Task, &phase.Agent); err != nil {
+		&phase.Entry, &phase.EntryTask, &phase.EntryVerbatim, &raisedAt, &phase.EntryMovedBack, &phase.ReviewedHead, &phase.StepTask, &phase.StepPlace); err != nil {
 		return PhaseRow{}, err
 	}
 	if raisedAt != nil {
@@ -3202,7 +3202,7 @@ func (s *Postgres) EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) e
 // daemon's clock, which the deployment keeps on the same time.
 func (s *Postgres) OwedStarts(ctx context.Context, tx pgx.Tx, project string) ([]OwedStart, error) {
 	rows, err := tx.Query(ctx, `select issue, created_at, id, write_mark, coalesce(payload->>'role', ''),
-			coalesce(payload->>'phase', ''), coalesce((payload->>'generation')::bigint, 0), lease_token, coalesce(payload->>'claim', '')
+			coalesce(payload->>'phase', ''), coalesce((payload->>'generation')::bigint, 0), lease_token
 		from outbox where kind = $1 and split_part(issue, '-', 1) = $2
 			and payload->>'op' = 'start' and payload->>'needsSlot' = 'true'
 			and (lease_until is null or lease_until <= now())
@@ -3215,7 +3215,7 @@ func (s *Postgres) OwedStarts(ctx context.Context, tx pgx.Tx, project string) ([
 	for rows.Next() {
 		var start OwedStart
 		if err := rows.Scan(&start.Issue, &start.CreatedAt, &start.ID, &start.WriteMark, &start.Role, &start.Phase,
-			&start.Generation, &start.LeaseToken, &start.Claim); err != nil {
+			&start.Generation, &start.LeaseToken); err != nil {
 			return nil, fmt.Errorf("list the starts %s owes its workers: %w", project, err)
 		}
 		owed = append(owed, start)
@@ -3493,16 +3493,18 @@ func (s *Postgres) BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (b
 	return queued, nil
 }
 
-// TaskBranchRow reads the newest unfinished join's identity. A later start can queue another
-// join in the same generation, branch and needs. Only that newer row may complete its wait.
-func (s *Postgres) TaskBranchRow(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (int64, error) {
-	var row int64
-	if err := tx.QueryRow(ctx, `select coalesce(max(id), 0) from outbox where issue = $1 and kind = $2
-		and (payload->>'generation')::bigint = $3 and payload->>'task' = $4`,
-		issue, string(OutboxKindTaskBranch), int64(generation), task).Scan(&row); err != nil {
-		return 0, fmt.Errorf("read the current branch row of task %s of %s at generation %d: %w", task, issue, generation, err)
+// TaskBranchQueued says whether the outbox still holds a task_branch row (TaskBranch) of task of
+// issue at generation — due, running or backing off — so the join of the task's needs at that
+// generation has not ended: a row finishes when its join ends, or when it serves a generation the
+// issue has left, which it then joins nothing of.
+func (s *Postgres) TaskBranchQueued(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (bool, error) {
+	var queued bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and kind = $2
+		and (payload->>'generation')::bigint = $3 and payload->>'task' = $4)`,
+		issue, string(OutboxKindTaskBranch), int64(generation), task).Scan(&queued); err != nil {
+		return false, fmt.Errorf("read whether the branch row of task %s of %s at generation %d is still queued: %w", task, issue, generation, err)
 	}
-	return row, nil
+	return queued, nil
 }
 
 // StepStopQueued says whether the outbox still holds a supervise row of issue whose op is
@@ -3959,7 +3961,6 @@ type roleRunIdentity struct {
 	issue      string
 	role       string
 	generation string
-	claim      string
 }
 
 // RoleRuns reads the queued supervise rows and the claims of keys in two bounded queries. The
@@ -4001,12 +4002,7 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		}
 		runs[key.Token] = RoleRun{}
 		tokens = append(tokens, string(key.Token))
-		identity := roleRunIdentity{issue: key.Issue, role: string(key.Role), generation: strconv.FormatUint(key.Generation, 10), claim: string(key.Token)}
-		candidates[identity] = key.Token
-		if _, agent, named := key.Token.Cut(); named && agent == claim.Agent(key.Role) {
-			identity.claim = ""
-			candidates[identity] = key.Token
-		}
+		candidates[roleRunIdentity{issue: key.Issue, role: string(key.Role), generation: strconv.FormatUint(key.Generation, 10)}] = key.Token
 		if _, seen := seenIssues[key.Issue]; !seen {
 			seenIssues[key.Issue] = struct{}{}
 			issues = append(issues, key.Issue)
@@ -4032,8 +4028,8 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		// A row that names a claim (SuperviseRequest.Claim) is that claim's alone: a keyed agent
 		// on a step of another role holds the role beside the role's own claim from an earlier
 		// version, and a start that names one is no queued run of the other.
-		token, wanted := candidates[roleRunIdentity{issue: row.Issue, role: role, generation: generation, claim: named}]
-		if !wanted {
+		token, wanted := candidates[roleRunIdentity{issue: row.Issue, role: role, generation: generation}]
+		if !wanted || (named != "" && named != string(token)) {
 			continue
 		}
 		decoded, err := DecodeOutboxPayload(row)

@@ -1075,8 +1075,7 @@ func (e *Engine) ranUnreported(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if token == "" {
 		return false, nil
 	}
-	rows, err := e.store.Phases(ctx, tx, issue.Key)
-	row := record.PhaseRowForClaim(rows, role, token)
+	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil || row.Completed() {
 		return false, err
 	}
@@ -1218,7 +1217,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		return refusedLingering(*issue, fmt.Sprintf("the %s's completion of phase %s", fact.Role, reported)), nil
 	}
 	if late != nil {
-		if err := e.spendLateHandoff(ctx, tx, s, fact); err != nil {
+		if err := e.spendLateHandoff(ctx, tx, fact); err != nil {
 			return intake.Result{}, err
 		}
 		return intake.Result{Refusal: late}, nil
@@ -2759,7 +2758,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if lingers {
 		return refusedLingering(*issue, fmt.Sprintf("the %s's backward move to %s", fact.Requester, fact.To)), nil
 	}
-	row, err := e.stepRow(ctx, tx, s, fact.Requester)
+	row, err := e.phaseRow(ctx, tx, issue.Key, fact.Requester)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -2994,7 +2993,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	if w.Stored && row.To != phase.Done {
 		starting = w.RoleAt(row.ToPlace)
 	}
-	if err := e.clearHandoff(ctx, tx, s, starting); err != nil {
+	if err := e.clearHandoff(ctx, tx, issue.Key, starting); err != nil {
 		return err
 	}
 	// The move out of admitted is where the run's work starts, and so where the plan it carries
@@ -3552,20 +3551,6 @@ func (e *Engine) claimTargets(ctx context.Context, tx pgx.Tx, issue record.Issue
 		if role == except {
 			continue
 		}
-		pending := false
-		for _, row := range rows {
-			if row.Role != role || row.StepTask == "" || row.Claim == "" {
-				continue
-			}
-			pending = true
-			if !named[row.Claim] {
-				targets = append(targets, claimTarget{role: role, token: row.Claim})
-				named[row.Claim] = true
-			}
-		}
-		if pending {
-			continue
-		}
 		worker, err := record.WorkerClaim(project, issue.Key, role, rows)
 		if err != nil {
 			return nil, fmt.Errorf("the %s of %s: %w", role, issue.Key, err)
@@ -3595,13 +3580,6 @@ func (e *Engine) phaseRow(ctx context.Context, tx pgx.Tx, issue string, role cla
 // agent, a keyed agent on a step of another role included. Where the role's row runs no step of
 // the plan, it is the role's own token.
 func (e *Engine) workerClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) (claim.Token, error) {
-	if issue.ViewTask != "" {
-		s, err := e.ScopeOf(ctx, tx, issue, issue.ViewTask)
-		if err != nil {
-			return "", err
-		}
-		return e.rowClaim(s, role)
-	}
 	project, err := claim.ProjectToken(issue.Project)
 	if err != nil {
 		return "", err

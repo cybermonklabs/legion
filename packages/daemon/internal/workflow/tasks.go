@@ -158,7 +158,7 @@ func (e *Engine) startReady(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			node = false
 		}
 		role := s.walk.RoleAt(first)
-		if err := e.clearHandoff(ctx, tx, s, role); err != nil {
+		if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
 			return record.Issue{}, err
 		}
 		view := s.issue

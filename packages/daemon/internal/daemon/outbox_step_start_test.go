@@ -250,11 +250,11 @@ func TestPhaseHoldsAnswersFromTheRoleOfTheRunningStep(t *testing.T) {
 	}
 }
 
-// The pod start gate puts the workers of the issue's running steps first among the starts no
-// request raised (supervise.Deps.PhaseRoles, workflowRuntime.phaseRoles). For a single running
-// step it answers one role: the checker at step 2 of `implementer checker linter`, the linter
-// at step 3. The control is an issue at implementing with no plan rows, whose implementer the
-// phase names.
+// The pod start gate puts the worker of the issue's open phase first among the starts no request
+// raised (supervise.Deps.PhaseRole, workflowRuntime.phaseRole), and at step that worker is the role
+// of the running step, read with the issue, which the phase alone does not name: the checker with
+// the task of `implementer checker linter` at step 2, the linter at step 3. The control is the
+// issue at implementing, whose implementer the phase names.
 func TestPhaseRoleAnswersTheRoleOfTheRunningStep(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -275,12 +275,12 @@ func TestPhaseRoleAnswersTheRoleOfTheRunningStep(t *testing.T) {
 			if tc.at > 0 {
 				seedStepStartPlan(t, pool, records, tc.at)
 			}
-			got, err := (&workflowRuntime{pool: pool, records: records}).phaseRoles(context.Background(), stepStartKey)
+			got, err := (&workflowRuntime{pool: pool, records: records}).phaseRole(context.Background(), stepStartKey)
 			if err != nil {
-				t.Fatalf("phaseRoles: %v", err)
+				t.Fatalf("phaseRole: %v", err)
 			}
-			if len(got) != 1 || got[0] != tc.want {
-				t.Fatalf("phaseRoles of %s (%s) = %q, want only %q, the worker of its running step", stepStartKey, tc.name, got, tc.want)
+			if got != tc.want {
+				t.Fatalf("phaseRole of %s (%s) = %q, want %q, the worker of its open phase", stepStartKey, tc.name, got, tc.want)
 			}
 		})
 	}

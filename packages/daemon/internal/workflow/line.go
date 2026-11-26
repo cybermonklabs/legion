@@ -652,23 +652,6 @@ func (w Walk) placeOfRole(role claim.Role) (record.TaskPlace, bool) {
 	return record.TaskPlace{}, false
 }
 
-func (w Walk) agentForRole(role claim.Role) claim.Agent {
-	if !w.Stored {
-		return ""
-	}
-	place := w.Place
-	if w.RoleAt(place) != role {
-		var found bool
-		if place, found = w.placeOfRole(role); !found {
-			return claim.Agent(role)
-		}
-	}
-	if agent := w.AgentAt(place); agent != "" {
-		return agent
-	}
-	return claim.Agent(role)
-}
-
 // backwardPlace is the place a move back of w's task to the phase to reaches, ok false where none
 // serves it: for a walk with no plan rows the place of to on today's line, whose phases each stand
 // once (PlaceOf); for a stored walk the one place before w.Place whose step, retro or merge runs

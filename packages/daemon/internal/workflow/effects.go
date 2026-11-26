@@ -151,8 +151,7 @@ func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role 
 // phase row's CompletedAt, which the next phase's start clears in clearHandoff). It answers the
 // role's phase row too, an empty row naming the issue and role where the record holds none, so
 // the silence repair reads it once.
-func PhaseWorkerOwedTurn(ctx context.Context, store record.Store, tx pgx.Tx, s TaskScope, role claim.Role) (record.PhaseRow, bool, error) {
-	issue := s.issue
+func PhaseWorkerOwedTurn(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue, role claim.Role) (record.PhaseRow, bool, error) {
 	finished, err := PhaseFinished(ctx, store, tx, issue)
 	if err != nil || finished {
 		return record.PhaseRow{}, false, err
@@ -161,7 +160,13 @@ func PhaseWorkerOwedTurn(ctx context.Context, store record.Store, tx pgx.Tx, s T
 	if err != nil {
 		return record.PhaseRow{}, false, err
 	}
-	row := record.PhaseRowAt(rows, s.PhaseKey(role))
+	row := record.PhaseRow{Issue: issue.Key, Role: role}
+	for _, r := range rows {
+		if r.Role == role {
+			row = r
+			break
+		}
+	}
 	return row, row.CompletedAt.IsZero(), nil
 }
 
@@ -226,10 +231,7 @@ func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string,
 		}
 	}
 	if NamesTheRound(start.Role) && !start.RoundNamed {
-		if start.Phase != "" {
-			standsIn = start.Phase
-		}
-		start.Task = namingTheReviewRound(start.Task, start.Role, standsIn, record.PhaseRowForClaim(rows, start.Role, start.Claim))
+		start.Task = namingTheReviewRound(start.Task, start.Role, standsIn, record.PhaseRowOf(rows, start.Role))
 		start.RoundNamed = true
 	}
 	return record.NewOutboxRow(issue, start, at)
@@ -241,7 +243,7 @@ func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string,
 // holds them. The queue names each such start it queues through it (queuedRow), and the daemon's
 // start executor names such a start queued for news alone through it, which carries no task for
 // the queue to name and is composed only when it runs (the daemon's newsForStart).
-func RoundTask(ctx context.Context, tx pgx.Tx, store record.Store, issue string, role claim.Role, token claim.Token, task string) (string, error) {
+func RoundTask(ctx context.Context, tx pgx.Tx, store record.Store, issue string, role claim.Role, task string) (string, error) {
 	standing, err := store.Issue(ctx, tx, issue)
 	if err != nil {
 		return "", err
@@ -255,12 +257,7 @@ func RoundTask(ctx context.Context, tx pgx.Tx, store record.Store, issue string,
 		if err != nil {
 			return "", err
 		}
-		standsIn, row = standing.Phase, record.PhaseRowForClaim(rows, role, token)
-		if _, agent, ok := token.Cut(); ok {
-			if step, running := standing.StepOfAgent(agent); running {
-				standsIn = step.Phase
-			}
-		}
+		standsIn, row = standing.Phase, record.PhaseRowOf(rows, role)
 	}
 	return namingTheReviewRound(task, role, standsIn, row), nil
 }
@@ -394,11 +391,11 @@ func refusedLingering(issue record.Issue, request string) intake.Result {
 // round inherits an earlier decision. The architect reports no handoff, so it has none to clear:
 // its phases row holds only the entry it was handed work on (EnterArchitect), which no move
 // between phases clears.
-func (e *Engine) clearHandoff(ctx context.Context, tx pgx.Tx, s TaskScope, role claim.Role) error {
+func (e *Engine) clearHandoff(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
 	}
-	row, err := e.stepRow(ctx, tx, s, role)
+	row, err := e.phaseRow(ctx, tx, issue, role)
 	if err != nil {
 		return err
 	}
@@ -1200,7 +1197,8 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, s *TaskScope, role claim.
 	if err != nil {
 		return 0, "", err
 	}
-	row := record.PhaseRowAt(rows, s.PhaseKey(role))
+	row := record.PhaseRowOf(rows, role)
+	row.Issue, row.Role = issue.Key, role
 	entry := row.Entry + 1
 	row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack = verbatim, e.now(), movedBack
 	worker := role != claim.RoleArchitect

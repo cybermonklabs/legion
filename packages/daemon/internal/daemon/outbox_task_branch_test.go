@@ -129,19 +129,6 @@ func (rig *taskBranchRig) branch(t *testing.T, id string) string {
 func (rig *taskBranchRig) run(t *testing.T, id string) {
 	t.Helper()
 	row := mustOutboxRow(t, taskBranchIssue.Key, record.TaskBranch{Generation: taskBranchIssue.Generation, Task: id}, time.Now())
-	if err := store.Transact(t.Context(), rig.pool, func(ctx context.Context, tx pgx.Tx) error {
-		if err := rig.records.SetStepWait(ctx, tx, taskBranchIssue.Key, taskBranchIssue.Generation, id, record.StepWaitJoin, &row.NextAt); err != nil {
-			return err
-		}
-		if err := rig.records.Enqueue(ctx, tx, row); err != nil {
-			return err
-		}
-		var err error
-		row.ID, err = rig.records.TaskBranchRow(ctx, tx, taskBranchIssue.Key, taskBranchIssue.Generation, id)
-		return err
-	}); err != nil {
-		t.Fatalf("queue the branch row of task %s: %v", id, err)
-	}
 	if err := rig.runner.execute(context.Background(), row); err != nil {
 		t.Fatalf("execute the branch row of task %s: %v", id, err)
 	}
@@ -255,7 +242,7 @@ func TestTheEndOfAJoinIsAppliedAsAFact(t *testing.T) {
 		}
 	}
 
-	want := intake.TaskJoined{Issue: taskBranchIssue.Key, Generation: taskBranchIssue.Generation, Task: "d", Row: row.ID, Branch: "legion/LEGION-208.d",
+	want := intake.TaskJoined{Issue: taskBranchIssue.Key, Generation: taskBranchIssue.Generation, Task: "d", Branch: "legion/LEGION-208.d",
 		Needs: []string{"a", "c"}, Conflicts: []string{"c"}}
 	got := handler.facts()
 	if len(got) != 1 || !reflect.DeepEqual(got[0], want) {

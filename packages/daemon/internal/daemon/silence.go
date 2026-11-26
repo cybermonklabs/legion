@@ -78,7 +78,7 @@ func (s *supervision) tellSilentPhaseWorkers(ctx context.Context, claims []super
 		if !workflow.ReportExplainsQuiet(c.ActivityBackground, c.ActivityNextReminderAt, now) {
 			facts = append(facts, sweptFact{
 				ID: workerSilentEventID(c.Token, c.Generation, last),
-				Fact: intake.WorkerSilent{Issue: c.Issue, Role: c.Role, Claim: c.Token, Generation: c.ServingRun(),
+				Fact: intake.WorkerSilent{Issue: c.Issue, Role: c.Role, Generation: c.ServingRun(),
 					LastStep: last, Bound: bound},
 			})
 		}
@@ -103,7 +103,7 @@ func backgroundStalledFact(c supervise.Claim, bound time.Duration, now time.Time
 	}
 	return sweptFact{
 		ID: workerBackgroundEventID(c.Token, c.Generation, reported),
-		Fact: intake.WorkerBackgroundStalled{Issue: c.Issue, Role: c.Role, Claim: c.Token, Generation: c.ServingRun(),
+		Fact: intake.WorkerBackgroundStalled{Issue: c.Issue, Role: c.Role, Generation: c.ServingRun(),
 			ReportedAt: reported, Kinds: c.ActivityKinds, Bound: bound},
 	}, true
 }

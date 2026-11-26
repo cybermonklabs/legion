@@ -510,11 +510,11 @@ func (e *Engine) lateReport(ctx context.Context, tx pgx.Tx, s TaskScope, fact in
 // the rest of the row stand as they were, and no movement is marked. The record counts as used, so
 // the step's next run is refused it (HANDOFF_NOT_NEW) and writes a handoff of its own, as the
 // refusal tells the agent. A report that names no record writes nothing.
-func (e *Engine) spendLateHandoff(ctx context.Context, tx pgx.Tx, s TaskScope, fact intake.HandoffComplete) error {
+func (e *Engine) spendLateHandoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComplete) error {
 	if fact.HandoffRecord == "" {
 		return nil
 	}
-	row, err := e.stepRow(ctx, tx, s, fact.Role)
+	row, err := e.phaseRow(ctx, tx, fact.Issue, fact.Role)
 	if err != nil || row.LastHandoff == fact.HandoffRecord {
 		return err
 	}

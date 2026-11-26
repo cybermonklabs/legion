@@ -1,8 +1,0 @@
-kind: Fixed
-body: |-
-  Each task, role, and agent keeps its own phase entry, handoff, and review state.
-  Starting another agent of the same role no longer invalidates a task's completion.
-  A new generation clears the current step attachment without merging the saved
-  entries. Queued starts, completion checks, and silence repairs read the selected
-  agent's entry rather than another task's row.
-time: 2026-11-25T07:57:10Z

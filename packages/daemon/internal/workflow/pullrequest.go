@@ -275,7 +275,7 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 		// askMergeState).
 		return intake.Result{}, nil
 	}
-	row, err := e.stepRow(ctx, tx, vs, claim.RoleImplementer)
+	row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
 	if err != nil || !row.Completed() {
 		return intake.Result{}, err
 	}
@@ -362,7 +362,7 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 		}
 		return intake.Result{}, e.reaskRound(ctx, tx, *scope, pr, prior, byPush)
 	case phase.Implementing:
-		row, err := e.stepRow(ctx, tx, *scope, claim.RoleImplementer)
+		row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
 		if err != nil || !row.Completed() {
 			return intake.Result{}, err
 		}
@@ -436,7 +436,7 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, s TaskScope, pr *rec
 	if issue.Phase != phase.Reviewing {
 		return nil
 	}
-	reviewer, err := e.stepRow(ctx, tx, s, claim.RoleReviewer)
+	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 	if err != nil {
 		return err
 	}
@@ -838,7 +838,7 @@ func (e *Engine) pullRequestMissing(ctx context.Context, tx pgx.Tx, fact intake.
 	if err != nil || !ok || issue.Phase != phase.Implementing {
 		return intake.Result{}, err
 	}
-	row, err := e.stepRow(ctx, tx, ms, claim.RoleImplementer)
+	row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
 	if err != nil || row.HandoffCommit != fact.HandoffCommit {
 		return intake.Result{}, err
 	}

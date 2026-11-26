@@ -67,8 +67,6 @@ func TestASuspendedAgentOnItsSecondRoleIsResumedAndWatched(t *testing.T) {
 		pool := migratedPool(t)
 		seedIssue(t, pool, issue)
 		seedSlot(t, pool, record.Slot{Issue: entryIssue, Index: 0})
-		seedTasks(t, pool, entryIssue, 1, planTask{id: "a", steps: []string{"implementer", "tester"},
-			agents: []claim.Agent{"implementer", "implementer"}, state: record.TaskRunning, place: atStep(2)})
 		seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: claim.RoleImplementer, Claim: keyed, StepTask: "a", StepPlace: 1, Entry: 1})
 		seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: claim.RoleTester, Claim: keyed, StepTask: "a", StepPlace: 2,
 			Entry: seededEntry, EntryTask: seededEntryTask, EntryRaisedAt: seededRaisedAt})
@@ -113,7 +111,7 @@ func TestASuspendedAgentOnItsSecondRoleIsResumedAndWatched(t *testing.T) {
 		pool := seed(t, "ready", "")
 		engine := testEngine(config.DesignGateRootIssues, nil)
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			read, err := engine.phaseWorkerRecord(ctx, tx, entryIssue, 1, claim.RoleTester, keyed)
+			read, err := engine.phaseWorkerRecord(ctx, tx, entryIssue, 1, claim.RoleTester)
 			if err != nil {
 				return err
 			}

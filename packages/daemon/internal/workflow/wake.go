@@ -513,36 +513,40 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, released.Token, kind, pause, WakeTask(kind, detail, stop)))
 }
 
-// OpenWorkers names each distinct agent of the steps that take work, in task order.
-// RunningStep already carries the canonical agent, so this reads no role-collapsed phase row.
-func OpenWorkers(project string, issue record.Issue) ([]claim.Token, error) {
+// OpenWorkers is the claim of the worker of each of issue's steps that take work (OpenStepsOf),
+// each claim once, in the steps' order, and none where no step takes work: the claim the record
+// gives the step of that step's role, through record.WorkerClaim over the issue's phases rows,
+// read in tx. That claim can be a keyed agent's, whose token names another role, beside the role's
+// own claim of an earlier version of the plan, so a role does not name it. It answers which claims
+// a pause's stop arms a backstop for — an architect gets none, because nothing of its own is due
+// and a sub-architect woken for nothing would hold a pod open for the backstop period — and
+// project is the project's token, as record.WorkerClaim takes it.
+func OpenWorkers(ctx context.Context, phases PhaseReader, tx pgx.Tx, project string, issue record.Issue) ([]claim.Token, error) {
 	open := OpenStepsOf(issue)
 	if len(open) == 0 {
 		return nil, nil
 	}
-	workers := make([]claim.Token, 0, len(open))
-	var seen map[claim.Token]bool
-	if len(open) > 1 {
-		seen = make(map[claim.Token]bool, len(open))
+	rows, err := phases.Phases(ctx, tx, issue.Key)
+	if err != nil {
+		return nil, fmt.Errorf("read the phases of %s: %w", issue.Key, err)
 	}
+	var workers []claim.Token
 	for _, step := range open {
-		agent := step.Agent
-		if agent == "" {
-			agent = claim.Agent(step.Role)
-		}
-		worker, err := claim.AgentToken(project, issue.Key, agent)
+		worker, err := record.WorkerClaim(project, issue.Key, step.Role, rows)
 		if err != nil {
 			return nil, err
 		}
-		if seen[worker] {
-			continue
+		if !slices.Contains(workers, worker) {
+			workers = append(workers, worker)
 		}
-		if seen != nil {
-			seen[worker] = true
-		}
-		workers = append(workers, worker)
 	}
 	return workers, nil
+}
+
+// PhaseReader reads an issue's phases rows (record.Store.Phases), what OpenWorkers needs of a
+// record store.
+type PhaseReader interface {
+	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]record.PhaseRow, error)
 }
 
 // OpenStepsOf is each running step of issue that takes work (record.Issue.Running), in task id

@@ -85,7 +85,7 @@ func (a *Admission) architectStalls(ctx context.Context, tx pgx.Tx, read slotRea
 			continue
 		}
 		root, run := held.issue, read.runs[held.token]
-		row := read.entries[record.PhaseKey{Issue: root.Key, Role: claim.RoleArchitect, Agent: claim.Agent(claim.RoleArchitect)}]
+		row := read.entries[record.PhaseRole{Issue: root.Key, Role: claim.RoleArchitect}]
 		now := a.now()
 		took, err := a.architectTookNothing(ctx, tx, root, row, run, floor, now)
 		if err != nil {

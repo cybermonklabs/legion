@@ -25,7 +25,7 @@ const taskCopiesMigration = "_task_copies.up.sql"
 // An issue that runs at the release goes on in the working copy it has. The store is the one the
 // release before task copies leaves: every embedded migration below taskCopiesMigration, applied by
 // hand, with one issue of one task, a, at its step 2, testing, its tester's claim a launch that
-// release began, written in that schema's columns (seedEarlierReleaseIssue). The release's migrations
+// release began, written in that schema's columns (seedSliceFourIssue). The release's migrations
 // then run on it, and the whole daemon boots on it over the real Dispatch of this package's tests.
 // After the tester's pass the task's row still holds no branch, so it reads the issue's own; the
 // reviewer's task names the issue's own branch and directory, as every task of the issue did; no
@@ -79,10 +79,10 @@ func TestAnIssueThatRunsAtTheReleaseKeepsItsWorkingCopy(t *testing.T) {
 }
 
 // newCopiesUpgradeRig is the store the release before task copies leaves (storeBeforeTaskCopies),
-// seeded with one issue of one task at testing (seedEarlierReleaseIssue), migrated to this release's
+// seeded with one issue of one task at testing (seedSliceFourIssue), migrated to this release's
 // schema, with the daemon booted on it at the real Dispatch of this package's tests and the issue's
 // architect and tester resumed in the sessions the earlier daemon recorded.
-func newCopiesUpgradeRig(t *testing.T) *earlierReleaseRig {
+func newCopiesUpgradeRig(t *testing.T) *sliceFourRig {
 	t.Helper()
 	proof := newLiveProofOn(t, workflowNATS(t))
 	st, dsn, version := storeBeforeTaskCopies(t)
@@ -98,7 +98,7 @@ func newCopiesUpgradeRig(t *testing.T) *earlierReleaseRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &earlierReleaseRig{stepRecordsRig: &stepRecordsRig{liveProof: proof, dispatch: startScratchDispatchOn(t, scratchDispatchOptions{}),
+	r := &sliceFourRig{stepRecordsRig: &stepRecordsRig{liveProof: proof, dispatch: startScratchDispatchOn(t, scratchDispatchOptions{}),
 		github: newStepRecordsGitHub(t), claims: map[claim.Token]*stepClaimant{}, waits: make(chan claim.Token, 16)}, migrationVersion: version}
 	if err := os.WriteFile(r.cfg.DispatchTokenFile, []byte(r.dispatch.token+"\n"), 0o600); err != nil {
 		t.Fatalf("write the Dispatch token file: %v", err)
@@ -118,7 +118,7 @@ func newCopiesUpgradeRig(t *testing.T) *earlierReleaseRig {
 	r.issues = append(r.issues, walkIssue{key: created.Key, number: int(number)})
 	r.on(created.Key)
 	r.github.open("legion/"+r.key, r.number)
-	sessions := r.seedEarlierReleaseIssue(title, status, created.Rank, created.LastSeq)
+	sessions := r.seedSliceFourIssue(title, status, created.Rank, created.LastSeq)
 	if _, err := st.Migrate(context.Background()); err != nil {
 		t.Fatalf("migrate the store the release before task copies left to this release's schema: %v", err)
 	}

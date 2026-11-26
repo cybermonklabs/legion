@@ -95,14 +95,6 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 				standing := *issue
 				standing.Phase, standing.Hold = standingOfTask(*issue, task, act)
 				position.issue, position.task, position.ofTask, position.branch = &standing, task.Task, task.Task, task.BranchOf(key)
-				_, agent, _ := completing.Cut()
-				row = record.PhaseRowAt(rows, record.PhaseKey{Issue: key, Task: task.Task, Role: role, Agent: agent})
-				position.entry, position.entryMovedBack = row.Entry, row.EntryMovedBack
-				for _, prior := range rows {
-					if prior.Task == task.Task && prior.Role == claim.RoleImplementer {
-						position.lastHandoff = prior.LastHandoff
-					}
-				}
 				if position.base, _, err = stored.BaseOf(*issue, task.Task); err != nil {
 					return err
 				}

@@ -1342,12 +1342,10 @@ type TaskJoined struct {
 	Issue      string
 	Generation uint64
 	Task       string
-	// Row is the immutable task_branch outbox row whose join completed.
-	Row       int64
-	Branch    string
-	Needs     []string
-	Conflicts []string
-	Unmerged  bool
+	Branch     string
+	Needs      []string
+	Conflicts  []string
+	Unmerged   bool
 }
 
 func (f TaskJoined) namedIssue() (string, bool) { return f.Issue, true }
@@ -1861,7 +1859,6 @@ func (f PodBackstopDue) namedIssue() (string, bool) { return f.Issue, true }
 type WorkerSilent struct {
 	Issue      string
 	Role       claim.Role
-	Claim      claim.Token
 	Generation uint64
 	LastStep   time.Time
 	Bound      time.Duration
@@ -1877,7 +1874,6 @@ func (f WorkerSilent) namedIssue() (string, bool) { return f.Issue, true }
 type WorkerBackgroundStalled struct {
 	Issue      string
 	Role       claim.Role
-	Claim      claim.Token
 	Generation uint64
 	ReportedAt time.Time
 	Kinds      []string

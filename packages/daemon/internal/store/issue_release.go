@@ -166,8 +166,7 @@ type releaseMark struct {
 	turn *time.Time
 	// suspended are the roles whose claims this release's own role stops have suspended as
 	// `released`, each appended once its stop has suspended it (ReleaseSuspendedClaim).
-	suspended       []string
-	suspendedClaims []string
+	suspended []string
 	// kind is the release rule that wrote this mark, releaseKindIdle or releaseKindUnowned: the
 	// release of a quiet pod, or the release of a pod no role can use, which suspends no role.
 	kind string
@@ -191,9 +190,9 @@ func (m releaseMark) decision() ReleaseDecision {
 // row no mark holds, which is a row of a release that is over, and otherwise the mark is the one
 // the row belongs to.
 func readReleaseMark(ctx context.Context, tx pgx.Tx, project, issue string, row int64) (mark releaseMark, held bool, err error) {
-	err = tx.QueryRow(ctx, `select id, first_row, boundary_row, last_row, started_row, wake_row, suspended, suspended_claims, kind, turn_start, teardown
+	err = tx.QueryRow(ctx, `select id, first_row, boundary_row, last_row, started_row, wake_row, suspended, kind, turn_start, teardown
 		from issue_releases where project = $1 and issue = $2`, project, issue).Scan(&mark.id, &mark.first, &mark.boundary,
-		&mark.last, &mark.started, &mark.wake, &mark.suspended, &mark.suspendedClaims, &mark.kind, &mark.turn, &mark.teardown)
+		&mark.last, &mark.started, &mark.wake, &mark.suspended, &mark.kind, &mark.turn, &mark.teardown)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return releaseMark{}, false, nil
 	}
@@ -259,8 +258,8 @@ func releaseOvertaken(ctx context.Context, tx pgx.Tx, project, issue string, mar
 		select 1 from claims where project = $1 and issue = $2
 		and (last_start_row > $3 or state not in ('ready', 'idle', 'suspended', 'failed', 'retired')
 			or last_turn_start > coalesce($5::timestamptz, '-infinity')
-			or (token = any($4) and not (state = 'suspended' and suspended_by = 'released'))))`,
-		project, issue, mark.started, mark.suspendedClaims, mark.turn).Scan(&overtaken)
+			or (role = any($4) and not (state = 'suspended' and suspended_by = 'released'))))`,
+		project, issue, mark.started, mark.suspended, mark.turn).Scan(&overtaken)
 	return overtaken, err
 }
 
@@ -342,22 +341,19 @@ func (s *Store) IssueReleaseStop(ctx context.Context, project, issue string, row
 // carries is what the release has actually done and not what it set out to do: a stop that could
 // not suspend its claim records nothing, and its row's retry suspends and records together.
 //
-// A row no mark holds records nothing, as it acts on nothing. A claim already in the set is left
-// as it is, so a row that ran twice counts once. Roles remain a separate, de-duplicated set for
-// the pod's release record; they never select which claims a cancel resumes.
-func (s *Store) ReleaseSuspendedClaim(ctx context.Context, project, issue string, token claim.Token, role claim.Role, row int64) error {
-	if project == "" || issue == "" || token == "" || role == "" || row <= 0 {
-		return errors.New("recording a claim a release suspended requires its project, its issue, its token, its role and its outbox row")
+// A row no mark holds records nothing, as it acts on nothing. A role already in the set is left
+// as it is, so a row that ran twice counts once.
+func (s *Store) ReleaseSuspendedClaim(ctx context.Context, project, issue string, role claim.Role, row int64) error {
+	if project == "" || issue == "" || role == "" || row <= 0 {
+		return errors.New("recording a claim a release suspended requires its project, its issue, the role and its outbox row")
 	}
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, held, err := readReleaseMark(ctx, tx, project, issue, row)
 		if err != nil || !held {
 			return err
 		}
-		_, err = tx.Exec(ctx, `update issue_releases set
-			suspended = case when $3 = any(suspended) then suspended else suspended || $3::text end,
-			suspended_claims = suspended_claims || $4::text
-			where project = $1 and issue = $2 and not ($4 = any(suspended_claims))`, project, issue, string(role), string(token))
+		_, err = tx.Exec(ctx, `update issue_releases set suspended = suspended || $3::text
+			where project = $1 and issue = $2 and not ($3 = any(suspended))`, project, issue, string(role))
 		return err
 	})
 	if err != nil {

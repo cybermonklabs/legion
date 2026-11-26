@@ -167,15 +167,17 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// The wake each claim's own view names, read from the one list the state names under
 	// `wakesWaiting`, so a claim view and that list report the same wake (api.ClaimWakes).
 	claimWakes := api.ClaimWakes(in.Wakes)
-	// An issue can hold several agents of one role. Entry and handshake readings keep the
-	// agent's name, including when no phases row has yet named its claim.
-	entries := make(map[issueAgent]roleEntry, len(in.Claims))
+	// The entry each claim was last queued a task of, by the issue and role the claim holds
+	// (supervise.Claim.GivenEntry), and beside it the claim's handshake of the last entry it was
+	// queued a task of (supervise.Claim.Handshake): the numbers and the two times an issue's view
+	// shows beside the entry its phases row names. They are keyed by issue and role rather than by
+	// claim token because the token on the phases row can be empty, for a role no claim was ever
+	// created for, or stale, from a claim an earlier run retired, where the claim of this issue and
+	// this role is the one the admission pass weighs (admit's resumeSlottedWorkers). One claim
+	// stands per issue and role (claim.NewToken), so one entry holds both readings of it.
+	entries := make(map[issueRole]roleEntry, len(in.Claims))
 	for _, current := range in.Claims {
-		_, agent, ok := current.Token.Cut()
-		if !ok {
-			agent = claim.Agent(current.Role)
-		}
-		entries[issueAgent{issue: current.Issue, agent: agent}] = roleEntry{given: current.GivenEntry, handshake: current.Handshake}
+		entries[issueRole{issue: current.Issue, role: current.Role}] = roleEntry{given: current.GivenEntry, handshake: current.Handshake}
 	}
 
 	claimViews := make(map[claim.Token]api.ClaimView, len(in.Claims))
@@ -343,21 +345,11 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		// transition has ever handed work on, which is the number admit's owedEntryRoles weighs
 		// the same role's claim against, so the state shows what the admission pass weighs.
 		role := phase.RoleFor(issue.Phase)
-		agent := claim.Agent(role)
-		key := record.PhaseKey{Issue: issue.Key, Role: role, Agent: agent}
 		if at := issue.RunningAt(issue.Phase); len(at) > 0 {
 			role = at[0].Role
-			agent = at[0].Agent
-			if agent == "" {
-				agent = claim.Agent(role)
-			}
-			key.Role, key.Agent = role, agent
-			if len(tasksOf[issue.Key]) > 0 && role != claim.RoleArchitect {
-				key.Task = at[0].Task
-			}
 		}
 		if role != "" {
-			view.PhaseEntry, view.GivenEntry = record.PhaseRowAt(phases, key).Entry, entries[issueAgent{issue: issue.Key, agent: agent}].given
+			view.PhaseEntry, view.GivenEntry = record.PhaseRowOf(phases, role).Entry, entries[issueRole{issue: issue.Key, role: role}].given
 		}
 		// Beside them the two times of a handshake: when a task of an entry was first queued to a
 		// claim and when a turn of its worker first confirmed one (api.Issue.EntryQueuedAt and
@@ -369,13 +361,13 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		// phase, and none in a phase no role works. Either is shown for the issue's current
 		// generation alone (handshakeTimes), so a re-admitted root carries neither until its new
 		// architect entry is queued.
-		handshakeRole, handshakeAgent := role, agent
+		handshakeRole := role
 		if claim.IsTreeRoot(issue.Key, issue.Tree) {
-			handshakeRole, handshakeAgent = claim.RoleArchitect, claim.Agent(claim.RoleArchitect)
+			handshakeRole = claim.RoleArchitect
 		}
 		if handshakeRole != "" {
 			view.EntryQueuedAt, view.EntryConfirmedAt =
-				handshakeTimes(entries[issueAgent{issue: issue.Key, agent: handshakeAgent}].handshake, issue.Generation)
+				handshakeTimes(entries[issueRole{issue: issue.Key, role: handshakeRole}].handshake, issue.Generation)
 		}
 
 		// The issue's own pull request is its merge's, the row of the task whose work merges, as
@@ -819,10 +811,11 @@ func quietTrees(own []record.Issue, claims []supervise.Claim, now time.Time) map
 	return record.QuietTrees(own, record.TreeClaimsOf(claims), now)
 }
 
-// issueAgent keeps distinct workers of one role distinct in the entry lookup.
-type issueAgent struct {
+// issueRole is one issue and one of its roles, the pair a claim is held under (supervise.Claim's
+// Issue and Role): the key of the lookup that answers what each role was last given.
+type issueRole struct {
 	issue string
-	agent claim.Agent
+	role  claim.Role
 }
 
 // roleEntry is what the claim of one issue and role says of its entry: the entry it was last

@@ -149,7 +149,7 @@ func TestAJoinHoldsOnlyItsOwnTask(t *testing.T) {
 	if err := rig.attemptAt(t, id, queued.Add(3*time.Hour)); err != nil {
 		t.Fatalf("d's row once c's branch is on GitHub: %v", err)
 	}
-	want := intake.TaskJoined{Issue: issue.Key, Generation: issue.Generation, Task: "d", Row: id, Branch: "legion/LEGION-208.d", Needs: []string{"c"}}
+	want := intake.TaskJoined{Issue: issue.Key, Generation: issue.Generation, Task: "d", Branch: "legion/LEGION-208.d", Needs: []string{"c"}}
 	if facts := handler.facts(); len(facts) != 1 || !reflect.DeepEqual(facts[0], want) {
 		t.Fatalf("the facts d's row applied = %#v, want the one %#v", facts, want)
 	}

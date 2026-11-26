@@ -236,7 +236,7 @@ func (r *deploymentRolesRig) walkImplementerChecker() error {
 // then moves nothing, and the assertion of step 3 fails.
 func TestAnIssueOfSliceFourGoesOnUnderThisRelease(t *testing.T) {
 	t.Parallel()
-	r := newEarlierReleaseRig(t)
+	r := newSliceFourRig(t)
 	r.work(claim.RoleTester, "test", testCompletion, phase.Reviewing)
 	if kind, position := r.taskPlace(); kind != "step" || position != 3 {
 		t.Fatalf("after the tester's pass %s's task a stands at %s %d, want step 3", r.key, kind, position)
@@ -374,6 +374,7 @@ func (r *deploymentRolesRig) seedAdmitted(title, rank string, seq int64) {
 	}); err != nil {
 		t.Fatalf("seed %s: %v", r.key, err)
 	}
+	ctx := context.Background()
 	if _, err := r.st.OpenTreeLifecycle(ctx, r.project, r.key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", r.key, err)
 	}
