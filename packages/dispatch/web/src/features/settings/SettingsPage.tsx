@@ -28,7 +28,7 @@ function fragmentId(hash: string): string | undefined {
 
 /**
  * Settings. Its groups, in this order, one under another in a single column at every width
- * (the layout rule of `packages/dispatch/AGENTS.md`, dispatch://INFRA-5200):
+ * (the layout rule of `packages/dispatch/web/src/AGENTS.md`, dispatch://INFRA-5200):
  *
  * 1. Heading: the page's title and the one line that says what it holds.
  * 2. Projects (`ProjectsSection`).

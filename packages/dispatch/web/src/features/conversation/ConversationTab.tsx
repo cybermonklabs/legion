@@ -984,7 +984,7 @@ function TargetedMessageTurn({
 
 /**
  * The issue's Conversation. Its groups, in this order (the layout rule of
- * `packages/dispatch/AGENTS.md`, dispatch://INFRA-5200):
+ * `packages/dispatch/web/src/AGENTS.md`, dispatch://INFRA-5200):
  *
  * 1. Composer: the docked `MentionComposer`. From `sm` up it sticks to the top of the column;
  *    below `sm` it is fixed at the foot of the screen, in the foot's page layer

@@ -1152,7 +1152,7 @@ claims. A baseline comes only from the pinned container, through
 `e2e/visual-run.sh --update-snapshots`; the script's header says how to take one from CI on a
 machine with no container.
 
-A third layer holds every page to the layout rule of `AGENTS.md` ("Layout"), and
+A third layer holds every page to the layout rule of `web/src/AGENTS.md` ("Layout"), and
 `bun run e2e:layout` runs all of it. It reads the routes of `e2e/layout-routes.ts` - every
 reviewed route, the excluded ones whose reason argues only against a shot or a scan, two pages a
 reader's choice in this browser draws another way (the new issue page, the project's board), and

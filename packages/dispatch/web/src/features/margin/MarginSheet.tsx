@@ -157,7 +157,7 @@ interface MarginSheetProps {
 
 /**
  * The document's review margin. Its groups, in this order (the layout rule of
- * `packages/dispatch/AGENTS.md`, dispatch://INFRA-5200):
+ * `packages/dispatch/web/src/AGENTS.md`, dispatch://INFRA-5200):
  *
  * 1. Compact toggle: below `xl`, the sheet's handle and its Open / Close review panel button,
  *    one row at the foot of the screen while the sheet is collapsed.
