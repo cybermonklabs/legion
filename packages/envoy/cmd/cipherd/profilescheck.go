@@ -385,10 +385,12 @@ func profileReport(profiles policy.Profiles, p *policy.Profile) *entryReport {
 //
 // Where a file repeats a name, the entry read is the first one, as policy.Profiles.Lookup and
 // proxyrules.Rules.Kind, and so the broker itself, read it. The new file is validated before this
-// runs and a repeated name is a refusal there; only an old file can hold one.
+// runs and a repeated name is a refusal there; only an old file can hold one. The kinds compared
+// are those each file declares (declaredKinds); a proxy block of a file that declares none is
+// compared as its profile's block.
 func writeFileChanges(out io.Writer, old, now policy.Profiles) {
 	kindOf := func(file policy.Profiles) func(string) *entryReport {
-		rules := file.FileRules()
+		rules := declaredKinds(file)
 		return func(name string) *entryReport {
 			if k := rules.Kind(name); k != nil {
 				return kindReport(k)
@@ -419,6 +421,13 @@ func kindNames(file policy.Profiles) []string {
 		names[i] = k.Name
 	}
 	return names
+}
+
+// declaredKinds is the kinds file declares, as rules to look a kind up in: never the kind of its
+// own that a file of no kinds serves each proxy block behind (policy.Profiles.Kinds), which no tag
+// and no proxy string can name, and which the report compares as the block it is.
+func declaredKinds(file policy.Profiles) proxyrules.Rules {
+	return proxyrules.Rules{Kinds: file.Kinds()}
 }
 
 // writeChanges writes what the entries of one part of the file, its kinds or its profiles, named
@@ -628,7 +637,7 @@ type serving struct {
 //     proxy tag names; but not served by its own name at all when profiles of other names use it
 //     as their source (policy.Profiles.Of), and behind nothing when the list holds no such secret.
 func servingOf(file policy.Profiles, name string, tags *storeTags) serving {
-	rules := file.FileRules()
+	rules := declaredKinds(file)
 	declares := len(file.Kinds()) > 0
 	byKind := func(s serving, kindName, via string) serving {
 		k := rules.Kind(kindName)
@@ -740,13 +749,13 @@ func writeWidens(out io.Writer, old, now policy.Profiles, tags *storeTags, oldNa
 		}
 	}
 	if tags == nil {
-		oldRules := old.FileRules()
+		oldRules, nowRules := declaredKinds(old), declaredKinds(now)
 		for _, name := range sortedUnion(kindNames(now)) {
 			was := oldRules.Kind(name)
 			if was == nil {
 				continue
 			}
-			is := now.FileRules().Kind(name)
+			is := nowRules.Kind(name)
 			kinds++
 			for _, row := range widenedRows(was.Allow, is.Allow) {
 				widened = append(widened, fmt.Sprintf("widens kind %q: %s", name, row))

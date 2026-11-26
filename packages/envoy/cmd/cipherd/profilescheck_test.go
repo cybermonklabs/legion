@@ -737,6 +737,63 @@ func TestProfilesCheckComparesAgainstAnOldFileTheBrokerWouldRefuse(t *testing.T)
 	}
 }
 
+// TestProfilesCheckComparesTheKindsAFileDeclares: an old file that declares no kinds serves each
+// proxy block behind a kind of its own (policy.ParseProfiles), named for its profile, and the report
+// compares the kinds each file declares, not those: a new file that declares a kind of the name an
+// old block's own kind has, here token for the profile TOKEN, adds that kind. So the run writes
+// `kind "token": added` with every field of it, compares no kind both files declare, writes no
+// UNKNOWN, and exits 0. The control is the same new file with the kind named bearer, which no old
+// block's kind is named.
+func TestProfilesCheckComparesTheKindsAFileDeclares(t *testing.T) {
+	old := profilesFile(t, `{"profiles": [{"name": "TOKEN", "proxy": {"hosts": ["api.example.com"]}}]}`)
+	for _, kind := range []string{"token", "bearer"} {
+		t.Run(kind, func(t *testing.T) {
+			now := profilesFile(t, `{"kinds": [{"name": "`+kind+`", "hosts": ["api.example.com"], "ways": ["swap", "mint"]}], "profiles": [{"name": "TOKEN", "proxy": "`+kind+`"}]}`)
+			code, stdout, stderr := runCheck(t, now, "--against", old)
+			if code != 0 || stderr != "" {
+				t.Fatalf("exit %d with stderr %q, want exit 0 and nothing on stderr:\n%s", code, stderr, stdout)
+			}
+			lines := strings.Split(stdout, "\n")
+			for _, want := range []string{
+				fmt.Sprintf("kind %q: added", kind),
+				fmt.Sprintf("kind %q: hosts api.example.com", kind),
+				fmt.Sprintf(`profile "TOKEN": proxy none → %s`, kind),
+				`profile "TOKEN": proxy block removed`,
+				"widens: none",
+			} {
+				if !slices.Contains(lines, want) {
+					t.Errorf("the report does not say %q:\n%s", want, stdout)
+				}
+			}
+			if strings.Contains(stdout, "UNKNOWN") || strings.Contains(stdout, "widens kind") {
+				t.Errorf("the report compares a kind the old file does not declare:\n%s", stdout)
+			}
+		})
+	}
+}
+
+// TestProfilesCheckServesNoTagByAKindAFileOfNoKindsMadeForABlock: under an old file that declares
+// no kinds, a source's proxy tag names no kind, not even one of the name an old block's own kind
+// has (the policy load refuses such a source, proxy-kind-unknown), so a profile of that source with
+// no block was behind nothing under the old file, and the report lists only the name behind a
+// block as behind the proxy there. Here TOKEN's block is behind the kind token, and OTHER's source
+// OTHER_SRC carries proxy=token, which the new file declares.
+func TestProfilesCheckServesNoTagByAKindAFileOfNoKindsMadeForABlock(t *testing.T) {
+	old := profilesFile(t, `{"profiles": [{"name": "TOKEN", "proxy": {"hosts": ["api.example.com"]}}, {"name": "OTHER", "source": "OTHER_SRC"}]}`)
+	now := profilesFile(t, `{"kinds": [{"name": "token", "hosts": ["api.example.com"], "ways": ["swap", "mint"]}], "profiles": [{"name": "TOKEN", "proxy": "token"}, {"name": "OTHER", "source": "OTHER_SRC"}]}`)
+	tags := writeTempFile(t, "secrets.json", []byte(`[
+  {"name": "projects/1/secrets/agent-secrets-token", "annotations": {"tier": "agent"}},
+  {"name": "projects/1/secrets/agent-secrets-other-src", "annotations": {"tier": "agent", "proxy": "token"}}
+]`))
+	code, stdout, stderr := runCheck(t, now, "--against", old, "--secrets-json", tags)
+	if code != 0 || stderr != "" {
+		t.Fatalf("exit %d with stderr %q, want exit 0 and nothing on stderr:\n%s", code, stderr, stdout)
+	}
+	if served := linesWith(stdout, "served "); len(served) != 1 || !strings.HasPrefix(served[0], `served "TOKEN": `) {
+		t.Errorf("the names behind the proxy under the old file are %q; want TOKEN alone, behind its block", served)
+	}
+}
+
 // TestProfilesCheckRefusesAUsageError keeps the usage errors apart from the file errors: exit 2
 // and the usage line, as the end-sessions subcommand answers its own.
 func TestProfilesCheckRefusesAUsageError(t *testing.T) {

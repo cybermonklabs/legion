@@ -1657,11 +1657,13 @@ the broker before the kinds read it, so a broker of this release starts against 
 object of no kind, of kind `aws` or of kind `azure` serves its profile's name behind the object's
 `hosts`, `headers` and `allow`, in the way its kind took: no kind swaps a stored value or a minted
 token in, `aws` signs with a stored key pair, and `azure` exchanges an `azure-login` token. The
-name is behind a kind of its own, named for the profile (`DEEL_API_KEY`'s is `deelxapixkey`),
-which the approval page shows; no `proxy` tag can name it,
-so a secret tagged `proxy` under such a file is refused as naming no kind (`proxy-kind-unknown`). A
-`judge` or `guidance` in such an object is refused, naming the source's tag that holds it now.
-This reading is transitional: it goes once every deployment's file declares kinds.
+name is behind a kind of its own, named for the profile (`DEEL_API_KEY`'s is `deelxapixkey`). No
+`proxy` tag can name that kind, so a secret tagged `proxy` under such a file is refused as naming no
+kind (`proxy-kind-unknown`). The name's fingerprint is the one the broker before the kinds gave it,
+the whole object with its source's `judge` seconds, so it does not move at the upgrade, and a change
+of the object's `kind`, `hosts`, `headers` or `allow` ends the name's live grants. A `judge` or
+`guidance` in such an object is refused, naming the source's tag that holds it now. This reading is
+transitional: it goes once every deployment's file declares kinds.
 
 Who decides a request for a value is no part of a kind: that is the secret's own `judge` and
 `guidance` tags ([The model judge](#the-model-judge)), and a profiles file that still sets `judge`

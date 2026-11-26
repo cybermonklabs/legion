@@ -92,12 +92,14 @@ type Profile struct {
 	// allows nothing. digestOf writes it, a present empty list included, so it is no field of the
 	// JSON a Profile marshals to, whose omitempty would drop that list.
 	Allow []proxyrules.Allow `json:"-"`
-	// blockKind is, in a file that declares no kinds, the name of the kind of its own that the
-	// profile's proxy block of kind "", aws or azure is served behind (readsBlocks, blockKindName),
-	// and "" for every other profile. ProfileKind answers it, since in such a file neither a
-	// source's proxy tag nor a proxy string can name a kind. It is no field of the JSON a Profile
-	// marshals to, and it goes with readsBlocks.
+	// blockKind and block are, in a file that declares no kinds, the name of the kind of its own
+	// that the profile's proxy block of kind "", aws or azure is served behind (readsBlocks,
+	// blockKindName), and that block; "" and nil for every other profile. ProfileKind answers the
+	// name, since in such a file neither a source's proxy tag nor a proxy string can name a kind,
+	// and digestOf fingerprints the block whole, as the broker before the kinds did. Neither is a
+	// field of the JSON a Profile marshals to, and both go with readsBlocks.
 	blockKind string
+	block     *ProxyBlock
 }
 
 // GitHubBlock is a GitHub App profile's scope: the installations its token is minted on, the
@@ -255,7 +257,7 @@ func readProfiles(kinds []proxyrules.Kind, entries []profileEntry) (Profiles, er
 			}
 			legacy[i] = &e.Proxy.block.ProxyBlock
 			if blocks {
-				p.blockKind = blockKindName(e.Name)
+				p.blockKind, p.block = blockKindName(e.Name), legacy[i]
 				kinds = append(kinds, legacy[i].kindOf(p.blockKind))
 			}
 		}
@@ -951,17 +953,19 @@ func (p Profiles) kindAllowForm(name string) string {
 }
 
 // digestOf is the fingerprint of profile served as served. Its JSON is the Profile's, and then,
-// for a profile behind the proxy, how it is: a dpop block is marshalled under "proxy" with a
-// "judge" field after the block's own fields, the source's judge seconds or null for none, which
-// are the bytes such a block wrote while the judge was a field of it, so a minted grant's entry
-// digest (config.MintedEntryDigest) stays the one it was made under; a profile behind a kind writes
-// that kind's name under "proxy", the kind it is served behind and not the file's spelling of it,
-// so a proxy string dropped for its source's tag of the same kind moves no digest, then its
-// source's judge seconds under "judge" where it has any, as its block held them; then
-// "proxyNarrowed": true where the source carries that tag, the profile's own allow under "allow",
-// a present empty list included, and its kind's allow under "kindAllow" where the kind has one
-// (allowForm). A profile neither behind the proxy, under that tag nor with an allow writes the
-// bytes it wrote before the kinds existed.
+// for a profile behind the proxy, how it is: a dpop block, and a block of kind "", aws or azure a
+// file of no kinds serves (Profile.block), is marshalled under "proxy" with a "judge" field after
+// the block's own fields, the source's judge seconds or null for none, which are the bytes such a
+// block wrote while the judge was a field of it, so a minted grant's entry digest
+// (config.MintedEntryDigest), and the grant of a name behind such a block that the broker before
+// the kinds decided, stays the one it was made under; a profile behind a kind writes that kind's
+// name under "proxy", the kind it is served behind and not the file's spelling of it, so a proxy
+// string dropped for its source's tag of the same kind moves no digest, then its source's judge
+// seconds under "judge" where it has any, as its block held them; then "proxyNarrowed": true where
+// the source carries that tag, the profile's own allow under "allow", a present empty list
+// included, and its kind's allow under "kindAllow" where the kind has one (allowForm). A profile
+// neither behind the proxy, under that tag nor with an allow writes the bytes it wrote before the
+// kinds existed.
 //
 // Each request records the digest of the profile it was decided under
 // (request_secrets.airlock_digest), and a release ends a grant whose profile's digest moved, so a
@@ -969,8 +973,10 @@ func (p Profiles) kindAllowForm(name string) string {
 // tag, of its allow, or, for a profile behind the proxy, of its source's judge tag, ends the
 // profile's grants. A kind's hosts and headers are in no fingerprint: a kind that only gains one
 // ends no grant, and the release ends a grant whose kind lost one by the hosts and headers its
-// request recorded. The guidance is in no fingerprint, as it never was: it decides nothing a live
-// grant may do.
+// request recorded. A block's are, with its allow and its kind, which is the way its credential
+// goes into a call: each change of the block ends the grants of its name, as it did before the
+// kinds. The guidance is in no fingerprint, as it never was: it decides nothing a live grant may
+// do.
 func digestOf(profile Profile, served servedAs) string {
 	type digestProxy struct {
 		ProxyBlock
@@ -994,6 +1000,8 @@ func digestOf(profile Profile, served servedAs) string {
 	switch {
 	case profile.Proxy != nil:
 		form.Proxy = &digestProxy{ProxyBlock: *profile.Proxy, Judge: judge}
+	case profile.block != nil:
+		form.Proxy = &digestProxy{ProxyBlock: *profile.block, Judge: judge}
 	case served.kind != "":
 		form.Proxy, form.Judge = served.kind, judge
 		if served.kindAllow != "" {

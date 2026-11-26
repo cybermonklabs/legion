@@ -125,6 +125,81 @@ func TestAFileOfNoKindsServesItsProxyBlocksAsBefore(t *testing.T) {
 	})
 }
 
+// TestAProxyBlockOfAFileOfNoKindsIsFingerprintedWhole: a name behind a proxy block of a file that
+// declares no kinds is served with a fingerprint (Secret.ProfileDigest) that holds every field of
+// its block, as the broker before the kinds fingerprinted it, so each change of what a grant of it
+// may do ends its live grants: its kind, which is the way its credential goes into a call (none
+// swaps a stored value in, aws signs with it); a host added or taken away; a header added or taken
+// away; a row of its allow added, or its allow taken away; and its source's judge tag. The control
+// is the same block written in another order and spacing, which moves nothing.
+func TestAProxyBlockOfAFileOfNoKindsIsFingerprintedWhole(t *testing.T) {
+	const (
+		hosts   = `"hosts": ["api.example.com", "uploads.example.com"]`
+		headers = `"headers": ["Authorization"]`
+		allow   = `"allow": [{"method": "GET", "pathPrefix": "/v1/"}]`
+	)
+	token := func() secrets.LocalSecret {
+		return policytest.Secret("BLOCK_TOKEN", appOwner, policy.TierAgent, "block-v1")
+	}
+	served := func(t *testing.T, block string, source secrets.LocalSecret) string {
+		t.Helper()
+		file := policytest.ProfilesFile(`{"name": "BLOCK_TOKEN", "proxy": {` + block + `}}`)
+		return servedProfile(t, policytest.ProfiledCurrent(t, secrets.NewLocal(source), file, daemonService).Get(), "BLOCK_TOKEN").ProfileDigest
+	}
+	was := served(t, hosts+", "+headers+", "+allow, token())
+	for _, c := range []struct {
+		name, block string
+		source      secrets.LocalSecret
+	}{
+		{"its kind, none to aws: the stored value is signed with, not swapped in", hosts + ", " + headers + ", " + allow + `, "kind": "aws"`, token()},
+		{"a host added", `"hosts": ["api.example.com", "uploads.example.com", "files.example.com"], ` + headers + ", " + allow, token()},
+		{"a host taken away", `"hosts": ["api.example.com"], ` + headers + ", " + allow, token()},
+		{"a header added", hosts + `, "headers": ["Authorization", "X-Api-Key"], ` + allow, token()},
+		{"its headers taken away", hosts + `, "headers": [], ` + allow, token()},
+		{"a row added to its allow", hosts + ", " + headers + `, "allow": [{"method": "GET", "pathPrefix": "/v1/"}, {"method": "POST", "pathPrefix": "/v1/"}]`, token()},
+		{"its allow taken away", hosts + ", " + headers, token()},
+		{"its source's judge tag", hosts + ", " + headers + ", " + allow, policytest.Judged(token(), 300, "")},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if is := served(t, c.block, c.source); is == was {
+				t.Errorf("BLOCK_TOKEN's fingerprint is %s before and after %s; want it moved, so the change ends its live grants", was, c.name)
+			}
+		})
+	}
+	t.Run("the control: the block in another order and spacing", func(t *testing.T) {
+		if is := served(t, allow+",\n  "+headers+",  "+hosts, token()); is != was {
+			t.Errorf("BLOCK_TOKEN's fingerprint moved from %s to %s for the same block written another way", was, is)
+		}
+	})
+}
+
+// TestAProxyBlocksDigestIsTheOneItHadBeforeTheKinds pins the digest of four proxy-block profiles of
+// a file that declares no kinds to the values the broker before the kinds (the parent of #5493's
+// merge, 3f468fe8^) computed for the same entries, printed by its Profiles.Digest: a block of no
+// kind with an allow, one of kind aws, one of kind azure, and a GitHub App's profile behind a block.
+// Each request records the digest of the profile it was decided under, and a release ends a grant
+// whose profile's digest moved, so a broker of this release reading the same file ends none of the
+// grants the broker before it made; and since that digest holds the whole block, a change of any
+// of its fields ends them (TestAProxyBlockOfAFileOfNoKindsIsFingerprintedWhole).
+func TestAProxyBlocksDigestIsTheOneItHadBeforeTheKinds(t *testing.T) {
+	profiles, err := policy.ParseProfiles([]byte(policytest.ProfilesFile(
+		`{"name": "BLOCK_TOKEN", "proxy": {"hosts": ["api.example.com", "uploads.example.com"], "headers": ["Authorization"], "allow": [{"method": "GET", "pathPrefix": "/v1/"}]}}`,
+		legacyAWS, legacyAzure, legacyApp)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{
+		"BLOCK_TOKEN":       "8645dff0bf8bdc288fa660f730202fd0a35f4c1231f41910eac0d253b4ca855e",
+		"AIRLOCK_AWS_PROBE": "19b2878e60c26ec0ac8ca9340fcf7c6fd94a33fec77f79f3de88af3aba2f4623",
+		"AZURE_ADMIN":       "38dea9c1e35fbbc92114e98c146dfdbc783ff1a3a9e301dd7f8edf1b63076464",
+		"GITHUB_READ":       "f65349449210f1011d31b6cafc703e6723bb7f0c5a5f81796520291359c7436f",
+	} {
+		if got := profiles.Digest(name); got != want {
+			t.Errorf("Digest(%s) = %s, want %s, the digest the broker before the kinds gave the same entry", name, got, want)
+		}
+	}
+}
+
 // TestAFileOfNoKindsHoldsItsProxyBlocksToTheirRules: a proxy block of a file that declares no
 // kinds is held to what the broker before the kinds held it to, each refusal naming the profile
 // by its index and name and the field: at least one host, each in a rules host's grammar; a kind
