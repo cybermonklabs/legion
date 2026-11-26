@@ -879,7 +879,7 @@ names_of() {
   # indentation is the renderer's: a block is found by its opening line with the indentation
   # trimmed (trimmed), and it ends at the first closing brace at the indentation it opened at
   # (opened, closes).
-  local block='function trimmed() {t = $0; sub(/^ */, "", t); return t}
+  local block='function trimmed(   line) {line = $0; sub(/^ */, "", line); return line}
     function opened() {f = 1; match($0, /^ */); indent = RLENGTH}
     function closes() {match($0, /^ */); return RLENGTH == indent && $0 ~ /^ *};?$/}'
   printf 'path %s\n' "$path"
@@ -940,10 +940,13 @@ names_section() {
     cp "$repo/$file" "$plant/$file" || fail "$section" "copy $file" "cp failed"
   done
   # One name of each kind but the path planted: a handler, a response shape, an operation, a
-  # contract type, a client method (and the query's call of it), a query and the words of two keys.
+  # contract type and a type of its own (read from the first's block), a client method (and the
+  # query's call of it), a query and the words of two keys.
   sed -i 's/s\.listOpenAsks},/s.listInboxOpenAsks},/' "$plant/${name_files[0]}"
   sed -i 's/Response: openAsksResponse{}/Response: openAsksInboxResponse{}/' "$plant/${name_files[1]}"
-  sed -i -e 's/\["OpenAsksResponse"\]/["OpenAsksInboxResponse"]/' -e 's/getApiV1AsksOpen/getApiV1InboxAsksOpen/g' \
+  sed -i -e 's/\["OpenAsksResponse"\]/["OpenAsksInboxResponse"]/' -e 's/^\( *\)OpenAsksResponse: {/\1OpenAsksInboxResponse: {/' \
+    -e 's/\["OpenAsk"\]/["OpenAskInbox"]/g' \
+    -e 's/getApiV1AsksOpen/getApiV1InboxAsksOpen/g' \
     "$plant/${name_files[2]}"
   sed -i 's/^  getAgentConversation(/  getAgentInboxConversation(/' "$plant/${name_files[3]}"
   sed -i -e 's/api\.getAgentConversation(/api.getAgentInboxConversation(/' \
@@ -953,12 +956,12 @@ names_section() {
     "$plant/${name_files[4]}"
   found="$(named_inbox "$plant")"
   for want in "handler listInboxOpenAsks" "shape openAsksInboxResponse" "operation getApiV1InboxAsksOpen" \
-    "contract-type OpenAsksInboxResponse" "client-method getAgentInboxConversation" \
+    "contract-type OpenAsksInboxResponse" "contract-type OpenAskInbox" "client-method getAgentInboxConversation" \
     "query agentInboxConversationQuery" "query-key open-asks-inbox" "query-key inbox-conversation"; do
     [[ "$found" == *": $want"* ]] ||
       fail "$section" "the reading of the two reads' names finds the planted $want in a scratch copy" "it found: ${found:-nothing}"
   done
-  pass "$section" "the reading of the two reads' names finds the eight names planted in a scratch copy"
+  pass "$section" "the reading of the two reads' names finds the nine names planted in a scratch copy"
 
   : >"$work/names"
   found="$(named_inbox "$repo")"
