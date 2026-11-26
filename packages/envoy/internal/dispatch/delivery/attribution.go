@@ -243,22 +243,33 @@ func uniqueKeys(text string) []string {
 // reads BranchKeys and joined to the issues Dispatch holds as attributionCandidates joins them,
 // the first such key in the name's order deciding. That is the part of the rule that needs only
 // the branch: the links, the title, the body and the commit messages are a pull request's.
-func BranchOfIssue(ctx context.Context, q refs.Queryer, issueKey, branch string) (bool, error) {
+//
+// answers is the caller's request's, as HeadsAttributedTo takes them: a write route (the record's
+// refuseBranchOfAnotherIssue) passes none and reads the stored rows, and a read-only caller's
+// results read passes its own, so a pull request its read-through learned at the branch makes the
+// branch the issue's as the row a writer's read-through stored does.
+func BranchOfIssue(ctx context.Context, q refs.Queryer, issueKey, branch string, answers HeadAnswers) (bool, error) {
+	query, args := branchOfIssueRead.query(answers, issueKey, branch, uniqueKeys(strings.ToUpper(branch)))
 	var belongs bool
-	if err := q.QueryRow(ctx, `
-		select exists (
-			select 1 from pull_request_heads
-			where issue_key = $1 and head_ref = $2 and state in ('open', 'merged')
-		) or coalesce((
-			select b.key = $1 from unnest($3::text[]) with ordinality b(key, n)
-			join issues i on i.key = b.key
-			order by b.n limit 1
-		), false)
-	`, issueKey, branch, uniqueKeys(strings.ToUpper(branch))).Scan(&belongs); err != nil {
+	if err := q.QueryRow(ctx, query, args...).Scan(&belongs); err != nil {
 		return false, fmt.Errorf("read whether branch %q belongs to %s: %w", branch, issueKey, err)
 	}
 	return belongs, nil
 }
+
+// branchOfIssueQuery is BranchOfIssue's statement after its WITH list.
+var branchOfIssueQuery = `
+	select exists (
+		select 1 from pull_request_heads
+		where issue_key = $1 and head_ref = $2 and state in ('open', 'merged')
+	) or coalesce((
+		select b.key = $1 from unnest($3::text[]) with ordinality b(key, n)
+		join issues i on i.key = b.key
+		order by b.n limit 1
+	), false)`
+
+// branchOfIssueRead is branchOfIssueQuery whole, for both callers.
+var branchOfIssueRead = newHeadsStatement("", branchOfIssueQuery, 3, "")
 
 func appendUnique(list []string, values ...string) []string {
 	for _, value := range values {
@@ -515,9 +526,9 @@ type Attributor struct {
 	candidatesQuery string
 	batchQuery      string
 	linkedQuery     string
-	headsQuery      string
-	mergedForQuery  string
-	mergedInQuery   string
+	headsRead       headsStatement
+	mergedForRead   headsStatement
+	mergedInRead    headsStatement
 	upsertQuery     string
 }
 
@@ -528,9 +539,9 @@ func NewAttributor(renames refs.Renames) *Attributor {
 		candidatesQuery: attributionCandidatesQuery(renames),
 		batchQuery:      attributionBatchQuery(renames),
 		linkedQuery:     linkedPullRequestsQuery(renames),
-		headsQuery:      headsAttributedQuery(renames),
-		mergedForQuery:  baseBranchMergedForQuery(renames),
-		mergedInQuery:   baseBranchMergedInQuery(renames),
+		headsRead:       headsAttributedRead(renames),
+		mergedForRead:   baseBranchMergedForRead(renames),
+		mergedInRead:    baseBranchMergedInRead(renames),
 		upsertQuery:     upsertHeadQuery(renames),
 	}
 }

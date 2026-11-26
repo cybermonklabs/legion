@@ -302,6 +302,7 @@ func TestReadThroughCommitPullsStoresEveryPullRequestNamedForACommit(t *testing.
 // the pull request for. Another repository's row is still another repository's: the case is all
 // that is forgiven.
 func TestHeadStoredAtFindsARowWrittenUnderGitHubsOwnSpelling(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	const sha = "cccccccccccccccccccccccccccccccccccccccc"
 	if err := unrenamed().UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
@@ -312,12 +313,12 @@ func TestHeadStoredAtFindsARowWrittenUnderGitHubsOwnSpelling(t *testing.T) {
 		t.Fatalf("store a head row under GitHub's spelling of the repository: %v", err)
 	}
 
-	stored, err := HeadStoredAt(ctx, pool, "acme/widgets", sha)
+	stored, err := HeadStoredAt(ctx, pool, "acme/widgets", sha, HeadAnswers{})
 	if err != nil || !stored {
 		t.Fatalf("HeadStoredAt(acme/widgets) = %v, %v; want true: the row is that repository's, spelt as GitHub spells it",
 			stored, err)
 	}
-	elsewhere, err := HeadStoredAt(ctx, pool, "acme/gadgets", sha)
+	elsewhere, err := HeadStoredAt(ctx, pool, "acme/gadgets", sha, HeadAnswers{})
 	if err != nil || elsewhere {
 		t.Fatalf("HeadStoredAt(acme/gadgets) = %v, %v; want false: another repository's commit is not this one's",
 			elsewhere, err)
@@ -337,6 +338,7 @@ func TestHeadStoredAtFindsARowWrittenUnderGitHubsOwnSpelling(t *testing.T) {
 // The negative control is the owner pattern as it was written here, letters, digits and `-`,
 // which drops the two links whose owner holds an `_` and names `-linkcheck/tools#13`.
 func TestALinkNamesAPullRequestOnlyOfARepositoryGitHubCanName(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	issue := seedHeadIssue(t, ctx, pool, 80)
 	// deliveryTestPool clears only the delivery tables, so the links an earlier run wrote go
@@ -390,6 +392,7 @@ func TestALinkNamesAPullRequestOnlyOfARepositoryGitHubCanName(t *testing.T) {
 // higher, a closed-unmerged pull request is no head whatever its number, another issue's pull
 // request answers for nothing, and an issue holding no pull request has no head.
 func TestNewestPullRequestHeadTakesTheOpenOneElseTheMergedOne(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	issue := seedHeadIssue(t, ctx, pool, 90)
 	other := seedHeadIssue(t, ctx, pool, 91)
@@ -407,7 +410,7 @@ func TestNewestPullRequestHeadTakesTheOpenOneElseTheMergedOne(t *testing.T) {
 	}
 	newest := func(issueKey string) (NewestHead, bool) {
 		t.Helper()
-		head, found, err := NewestPullRequestHead(ctx, pool, issueKey)
+		head, found, err := NewestPullRequestHead(ctx, pool, issueKey, HeadAnswers{})
 		if err != nil {
 			t.Fatalf("NewestPullRequestHead(%s): %v", issueKey, err)
 		}
@@ -466,7 +469,7 @@ func TestHeadsAttributedToNamesEachRowsRepository(t *testing.T) {
 			t.Fatalf("store %s#%d: %v", head.repo, head.number, err)
 		}
 	}
-	heads, err := unrenamed().HeadsAttributedTo(ctx, pool, issue)
+	heads, err := unrenamed().HeadsAttributedTo(ctx, pool, issue, HeadAnswers{})
 	if err != nil {
 		t.Fatalf("HeadsAttributedTo(%s): %v", issue, err)
 	}
@@ -555,7 +558,7 @@ func TestAPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn(t *testing.T)
 	client := fake.newTestClient()
 
 	// The envelope path: #21, reported by a `pull_request` event.
-	intake := newIntake(nil, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), nil, unrenamed())
 	if _, err := intake.recordPullRequestHead(ctx, map[string]string{
 		"kind": "pr", "action": "opened", "merged": "false", "repo": "acme/gadgets", "number": "21",
 		"title": title, "body": "", "head_ref": "legion/work", "head_repo": "acme/gadgets",
@@ -728,7 +731,7 @@ func TestAForkPullRequestEnvelopeIsNoBasisForAResult(t *testing.T) {
 		t.Error("an envelope whose head is not this repository's paged its commit messages; it attributes nobody whatever they say")
 		mustEncode(t, w, []any{})
 	})
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
 	envelope := func(number int, fields map[string]string) map[string]string {
 		payload := map[string]string{
 			"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": strconv.Itoa(number),
@@ -964,7 +967,7 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 
 	// The merge, as an envelope a publisher older than head_repo made. Its author is outside the
 	// delivery population, so the envelope writes the head row and nothing else.
-	intake := newIntake(nil, pool, nil, client, nil, nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, nil, client, nil, nil, unrenamed())
 	wrote, err := intake.handlePullRequestEnvelope(ctx, settings, map[string]string{
 		"kind": "pr", "action": "closed", "merged": "true", "repo": "acme/widgets", "number": "61",
 		"title": "HEAD-7 the work", "body": "", "head_ref": "legion/HEAD-7", "head_sha": mergedHead,
@@ -1120,7 +1123,7 @@ func TestAMergeEnvelopeNamingNoHeadRepositoryKeepsTheStoredAttribution(t *testin
 		t.Errorf("#%s's commit messages were paged; its head branch attributes it, and an envelope naming no head repository attributes nobody whatever they say", r.PathValue("number"))
 		mustEncode(t, w, []any{})
 	})
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
 	envelope := func(action, merged, headSHA, updatedAt string, fields map[string]string) map[string]string {
 		payload := map[string]string{
 			"kind": "pr", "action": action, "merged": merged, "repo": "acme/widgets", "number": "71",
@@ -1480,6 +1483,7 @@ func TestAttributionAndAHeadRefreshAnswerWithRepoProjectsDropped(t *testing.T) {
 // although the permanent yes is stored. A commit with no stored answer is unknown there, as it
 // must be: nothing can be asked.
 func TestABranchAnswerAlreadyStoredSurvivesAnUnreadableRepository(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	readable := true
 	fake := newFakeGitHub(t)
@@ -1562,6 +1566,7 @@ func branchCommitsOn(t *testing.T, ctx context.Context, pool *store.Pool, repo, 
 // has itself landed on the default branch and gone — no compare read can show the commit on
 // the base branch and the default branch holds only a squash of it.
 func TestAMergeRecordsItsMergeCommitOnItsBaseBranch(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	const base = "integration/138"
 	merged := PullRequestHead{
@@ -1607,6 +1612,7 @@ func TestAMergeRecordsItsMergeCommitOnItsBaseBranch(t *testing.T) {
 // whose owner writes their name with capitals would stand at no basis for good once its base
 // branch was deleted, which is the case the seed exists for.
 func TestAMergeRecordedUnderGitHubsSpellingIsAnsweredForTheLowercasedName(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	const base = "integration/138"
 	merged := PullRequestHead{
@@ -1666,6 +1672,7 @@ func withoutBranchCommits(t *testing.T, ctx context.Context, pool *store.Pool) (
 // a log line nobody reads: the two go in one transaction, and the caller is handed the error to
 // make of what it will.
 func TestAMergeWhoseBranchSeedCannotBeWrittenStoresNoHead(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	withoutBranchCommits(t, ctx, pool)
 	merged := PullRequestHead{
@@ -1713,6 +1720,7 @@ func TestAMergeWhoseBranchSeedCannotBeWrittenStoresNoHead(t *testing.T) {
 // arrived had the envelope been handed back again. An acknowledged message is delivered no
 // more, and the count is the one number no other test's leftovers move for this envelope.
 func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedDeliveryProject(t, ctx, pool)
@@ -1720,7 +1728,7 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
 	capOwnHandBackDeliveriesAt(t, 2)
 
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
+	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool),
 		newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
@@ -1773,9 +1781,10 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
 // answers with an error at all, and handing every rate-limited envelope back would spend the
 // whole limit over again.
 func TestTheReadsBeforeAHeadWriteAreMarkedAndTheFailuresNoRedeliveryMendsAreNot(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliveryProject(t, ctx, pool)
-	in := newIntake(nil, pool, nil, newFakeGitHub(t).newTestClient(), events.NewBroker(), nil, unrenamed())
+	in := newIntake(tuningFor(t), nil, pool, nil, newFakeGitHub(t).newTestClient(), events.NewBroker(), nil, unrenamed())
 	payload := map[string]string{
 		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "9103",
 		"head_sha": landedCommit, "head_ref": "legion/INFRA-1691", "head_repo": "acme/widgets",
@@ -1816,6 +1825,7 @@ func TestTheReadsBeforeAHeadWriteAreMarkedAndTheFailuresNoRedeliveryMendsAreNot(
 // would spend one refused GitHub call on every read of the Verification tab, for as long as
 // the issue exists.
 func TestABranchGitHubCannotAnswerForIsNotAskedAgainAtOnce(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	const gone = "integration/138"
 	var compares atomic.Int64
@@ -1854,6 +1864,7 @@ func TestABranchGitHubCannotAnswerForIsNotAskedAgainAtOnce(t *testing.T) {
 // Nor is the failure an answer about the commit: it is BranchUnknown, which no later "not on
 // it" may turn into `other_commit` (api/results_comparison.go, of).
 func TestACompareReadGitHubFailedToAnswerHoldsNothing(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	const branch = "integration/138"
 	var compares atomic.Int64
@@ -1887,6 +1898,7 @@ func TestACompareReadGitHubFailedToAnswerHoldsNothing(t *testing.T) {
 // times out cancels every read still in flight; a hold taken from that would let one abandoned
 // tab turn the branch unknown for five minutes for every other reader.
 func TestACancelledCompareReadHoldsNothing(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	const branch = "integration/138"
 	var compares atomic.Int64
@@ -1928,6 +1940,7 @@ func TestACancelledCompareReadHoldsNothing(t *testing.T) {
 // reads only until that read is made again and answers nothing. One commit nobody pushed must
 // not hold the branch every `default_branch` result of the repository is measured against.
 func TestACompareReadRefusedOnTheDefaultBranchHoldsNothing(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	var compares atomic.Int64
 	fake := newFakeGitHub(t)
@@ -1969,6 +1982,7 @@ func TestACompareReadRefusedOnTheDefaultBranchHoldsNothing(t *testing.T) {
 // ask, under the name again and with the default branch resolved by now, must take no hold at
 // all.
 func TestARefusalUnderTheDefaultBranchsOwnNameHoldsNothing(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	var compares atomic.Int64
 	fake := newFakeGitHub(t)
@@ -2018,6 +2032,7 @@ func TestARefusalUnderTheDefaultBranchsOwnNameHoldsNothing(t *testing.T) {
 // BranchUnknown otherwise. What the walk spends is one refused read of the repository per
 // BranchCommitStaleAfter, whatever the number of result commits, and no compare read at all.
 func TestTheDefaultBranchSpelledOutIsGatedByTheRepositoryRead(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	readable := true
 	var compares, repoReads atomic.Int64
@@ -2079,6 +2094,7 @@ func TestTheDefaultBranchSpelledOutIsGatedByTheRepositoryRead(t *testing.T) {
 // turn every result measured against that branch unknown for five minutes although nothing
 // was wrong with it any more.
 func TestALateRefusalDoesNotHoldAPairAnAnswerOvertook(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	const branch = "integration/138"
 	var compares atomic.Int64
@@ -2128,29 +2144,30 @@ func TestALateRefusalDoesNotHoldAPairAnAnswerOvertook(t *testing.T) {
 // answer of a minute ago is kept, since a read in flight may yet have to lose to it
 // (markUnseen), and the entry goes on the first read past its own span.
 func TestAHoldNothingStandsForIsDroppedAsItIsRead(t *testing.T) {
+	t.Parallel()
 	branches := &Branches{}
 	pair := repoBranch{repo: "acme/widgets", branch: "integration/138"}
 	asked := time.Now()
 
-	branches.markUnseen(pair, asked)
-	if !branches.unseenHeld(pair, asked.Add(BranchCommitStaleAfter/2)) {
+	branches.markUnseen(nil, pair, asked)
+	if !branches.unseenHeld(nil, pair, asked.Add(BranchCommitStaleAfter/2)) {
 		t.Fatal("a pair held half the span ago reads unheld, want held")
 	}
-	if branches.unseenHeld(pair, asked.Add(BranchCommitStaleAfter+time.Minute)) {
+	if branches.unseenHeld(nil, pair, asked.Add(BranchCommitStaleAfter+time.Minute)) {
 		t.Fatal("a pair held past the span reads held, want unheld")
 	}
 	if got := len(branches.compares); got != 0 {
 		t.Fatalf("entries after reading a hold nothing stands for = %d, want none", got)
 	}
 
-	branches.markSeen(pair, asked)
-	if branches.unseenHeld(pair, asked.Add(time.Minute)) {
+	branches.markSeen(nil, pair, asked)
+	if branches.unseenHeld(nil, pair, asked.Add(time.Minute)) {
 		t.Fatal("a pair GitHub answered reads held, want unheld")
 	}
 	if got := len(branches.compares); got != 1 {
 		t.Fatalf("entries after reading a pair answered a minute ago = %d, want the answer kept", got)
 	}
-	if branches.unseenHeld(pair, asked.Add(BranchCommitStaleAfter+time.Minute)) {
+	if branches.unseenHeld(nil, pair, asked.Add(BranchCommitStaleAfter+time.Minute)) {
 		t.Fatal("a pair answered past the span reads held, want unheld")
 	}
 	if got := len(branches.compares); got != 0 {

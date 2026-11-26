@@ -11,7 +11,7 @@ import { ApprovalChip } from "../doc/ApprovalChip";
 import { withBlock } from "../refs/block-reference";
 import { BlockReferences } from "../refs/ReferencedBy";
 import { ReferenceLink } from "../refs/ReferenceLink";
-import { useReferenceTarget } from "../refs/reference-target";
+import { useReferenceLabel, useReferenceTarget } from "../refs/reference-target";
 import { buildDispatchReference, documentRoute, parseNodeReference } from "../refs/routes";
 
 /** The `block[]` attribute `name` of `block` as the pointers it holds; empty for a block that
@@ -22,10 +22,15 @@ function pointers(block: ArtifactBlock, name: string): readonly string[] {
 }
 
 /** A block a pointer names, drawn as its own words once the graph answers them and as the
- *  reference's short form until then; a pointer that names nothing shows as the text it is. */
+ *  reference's short form until then; a pointer that names nothing shows as the text it is. The
+ *  words are the label every link to a reference shows (`useReferenceLabel`), so an empty block
+ *  never draws an empty link. Every block here is a document's - the task's own, and what its
+ *  pointers name, which is never a block of a comment or a message (`parseBlockPointerValue`) -
+ *  so no link here prints a post. */
 function BlockLink({ reference }: { reference: string }): ReactNode {
-  const { title } = useReferenceTarget(parseNodeReference(reference), { text: false });
-  return <ReferenceLink label={title} reference={reference} />;
+  const route = parseNodeReference(reference);
+  const { text } = useReferenceLabel(route, useReferenceTarget(route, { text: false }));
+  return <ReferenceLink label={text} reference={reference} />;
 }
 
 /** One side of a task's pointers: the requirements it serves, or the tasks it needs. */

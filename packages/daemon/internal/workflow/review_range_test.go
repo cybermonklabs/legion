@@ -72,6 +72,7 @@ func backToReviewing(t *testing.T, pool *pgxpool.Pool, apply func(string, intake
 // reviewer's row beside the round's decision (record.PhaseRow.ReviewedHead), and the entry into
 // the next round, which clears the decision (clearHandoff), leaves that commit where it stands.
 func TestADecidingReviewRecordsTheCommitItRead(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
@@ -161,6 +162,7 @@ func (u undecidingReview) review(t *testing.T, pool *pgxpool.Pool, id int64, hea
 // review refused for the head its footer names decides nothing, and a review of an issue outside
 // reviewing decides no round.
 func TestAReviewThatDecidesNothingRecordsNoCommit(t *testing.T) {
+	t.Parallel()
 	for _, tc := range reviewsThatDecideNothing(headOne) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -188,6 +190,7 @@ func TestAReviewThatDecidesNothingRecordsNoCommit(t *testing.T) {
 // other than headOne. A path that cleared the commit would read none, and one that moved it would
 // read the head that review names.
 func TestAReviewThatDecidesNothingKeepsTheCommitAnEarlierReviewRecorded(t *testing.T) {
+	t.Parallel()
 	for _, tc := range reviewsThatDecideNothing(headTwo) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -223,6 +226,7 @@ func TestAReviewThatDecidesNothingKeepsTheCommitAnEarlierReviewRecorded(t *testi
 // the round's decision is the person's. The commit the reviewer's next round is told is still the
 // one the reviewer's newest recorded review read: the reviewer never read the person's.
 func TestAPersonsReviewDoesNotMoveTheReviewersCommit(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
@@ -268,6 +272,7 @@ func TestAPersonsReviewDoesNotMoveTheReviewersCommit(t *testing.T) {
 // reviewer's headOne. TestAPersonsReviewDoesNotMoveTheReviewersCommit is the person's review with
 // no footer.
 func TestAPersonsReviewThatQuotesTheReviewersFooterDoesNotMoveItsCommit(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	engine := testEngine(config.DesignGateRootIssues, nil)
@@ -413,6 +418,7 @@ func onlyReviewerStart(t *testing.T, pool *pgxpool.Pool) record.SuperviseRequest
 // round of a generation has no earlier review, and its task names no commit; round 2 starts on an
 // entry of its own; and no task of another role names a commit.
 func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
+	t.Parallel()
 	pool, _, apply := reviewRoundOne(t)
 	first := reviewerRow(t, pool)
 	readsReviewingTask(t, "round 1", first.EntryTask, 1)
@@ -451,6 +457,7 @@ func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 // and not headOne. A review that kept only the first commit it saw would hand round 3 a range
 // that reads round 2's work again.
 func TestALaterRoundNamesTheCommitOfTheReviewersNewestDecidingReview(t *testing.T) {
+	t.Parallel()
 	pool, engine, apply := reviewRoundOne(t)
 	apply("request-changes-1", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
 	if got := issuePhase(t, pool); got != phase.Implementing {
@@ -488,6 +495,7 @@ func TestALaterRoundNamesTheCommitOfTheReviewersNewestDecidingReview(t *testing.
 // while its commit_id already names headTwo. A commit taken from the commit_id would hand round 2 a
 // range from a head the reviewer never read.
 func TestALaterRoundNamesTheHeadTheReviewsFooterNamesAndNotItsCommitID(t *testing.T) {
+	t.Parallel()
 	pool, _, apply := reviewRoundOne(t)
 	review := reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt)
 	review.CommitID = headTwo
@@ -511,6 +519,7 @@ func TestALaterRoundNamesTheHeadTheReviewsFooterNamesAndNotItsCommitID(t *testin
 // task — and the promotion a carried hand-over makes, which keeps its rows (admit's readmit
 // returns before the clear for an orphan) and so keeps the commit.
 func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
+	t.Parallel()
 	resumeWant := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work." + reviewedPartOf(headOne)
 	t.Run("the architect's move back after an approval", func(t *testing.T) {
 		pool, engine, apply := reviewRoundOne(t)
@@ -672,6 +681,7 @@ func testsIntoReviewing(t *testing.T, pool *pgxpool.Pool, apply func(string, int
 // reviewer's row with the rest of the generation, so the review of that generation reads the
 // whole change.
 func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
+	t.Parallel()
 	t.Run("the re-admission of the root", func(t *testing.T) {
 		pool, engine, _ := reviewedChild(t)
 		before := reviewerRow(t, pool)
@@ -736,6 +746,7 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 // reviewer's row after round 1's review, round 2's task names none; with it left, the same lines
 // name it, so the control can fail.
 func TestALaterReviewRoundWithItsRecordRemovedIsToldNoCommit(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		removed bool

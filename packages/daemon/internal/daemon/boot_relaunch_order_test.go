@@ -37,7 +37,8 @@ func (s *releaseRefusingStore) PutClaim(ctx context.Context, c supervise.Claim) 
 
 // bootRig is a boot's supervisor over n claims a previous daemon left launching with no process,
 // each holding a task, handed back newest-owed first, whose launches one limiter paces at the
-// shipped pace, with no jitter, on a clock the test moves.
+// shipped pace, with no jitter, on a clock the test moves. Each of restored is restored beside
+// them, after them in claims.
 type bootRig struct {
 	t       *testing.T
 	sup     *supervisor
@@ -49,7 +50,14 @@ type bootRig struct {
 	s       *supervision
 }
 
-func newBootRig(t *testing.T, n int, store supervise.Store) *bootRig {
+func newBootRig(t *testing.T, n int, store supervise.Store, restored ...supervise.Claim) *bootRig {
+	t.Helper()
+	return newBootRigEdited(t, n, store, nil, restored...)
+}
+
+// newBootRigEdited is newBootRig with edit, when not nil, changing its n unfinished launches before
+// the boot restores them.
+func newBootRigEdited(t *testing.T, n int, store supervise.Store, edit func([]supervise.Claim), restored ...supervise.Claim) *bootRig {
 	t.Helper()
 	project, _ := claim.ProjectToken("legion")
 	clock := newWaveClock()
@@ -61,17 +69,21 @@ func newBootRig(t *testing.T, n int, store supervise.Store) *bootRig {
 			t.Fatal(err)
 		}
 		r.claims = append(r.claims, supervise.Claim{Token: token, Project: project, Tree: issue, Issue: issue, Role: claim.RoleTester,
-			Generation: 1, State: supervise.StateLaunching, PluginContract: api.DaemonAPIVersion,
+			Generation: 1, State: supervise.StateLaunching, PluginContract: api.DaemonAPIVersion(),
 			Pending: &supervise.Delivery{ID: fmt.Sprintf("row-%d", i+1), Task: "test the change", QueuedAt: r.start.Add(-time.Duration(i+1) * time.Minute)}})
 	}
+	if edit != nil {
+		edit(r.claims)
+	}
+	r.claims = append(r.claims, restored...)
 	r.sup = newSupervisor(context.Background(), nil, "legion", t.TempDir(), quietLogger())
 	r.sup.deps = supervise.Deps{
 		Runtime: r.rt, Conns: fake.NewConns(), Store: store, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Hour, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: api.DaemonAPIVersion,
+		PluginContract: api.DaemonAPIVersion(),
 		RefreshGate:    supervise.NewRefreshGate(0),
-		WakePace:       supervise.WakePace{Reserve: r.limiter.Reserve, Rate: testWakeRate, Burst: testWakeBurst},
+		WakePace:       wakePaceOf(r.limiter),
 	}
 	t.Cleanup(r.sup.stop)
 	unfinished, err := r.sup.restore(context.Background(), r.claims)
@@ -142,6 +154,105 @@ func TestABootRelaunchesUnfinishedLaunchesInTheOrderTheirWorkWasOwed(t *testing.
 		r.wantWaitingAt(i, n-1-i)
 	}
 	r.wantNextTurn(n)
+}
+
+// A restart reserves the relaunches of the deaths the previous daemon recorded in the same order
+// as the launches it left unfinished, the order their claims' work was owed: both were waiting in
+// that daemon's pacing when it stopped, and a wake is memory only. A death whose work was owed
+// after an unfinished launch's waits behind that launch, and one owed before it goes ahead,
+// whichever the boot raises first. Raised apart, each recorded death took the first turns of the
+// restart's queue, ahead of claims whose work had waited longer (dispatch://INFRA-5472).
+func TestABootRelaunchesRecordedDeathsInOneOrderWithTheUnfinishedLaunches(t *testing.T) {
+	t.Parallel()
+	const n = 4
+	// Owed two and a half minutes before the rig starts, which is microseconds after now: after
+	// the unfinished launches owed four and three minutes before it, ahead of those owed two and
+	// one.
+	r := newBootRig(t, n, &outboxClaimStore{}, recordedDeathOwed(t, time.Now().UTC().Add(-150*time.Second)))
+	dead := n
+
+	if refused := r.s.launchUnfinished(context.Background(), waitingLaunches(unfinishedOf(r.claims[:n])), r.claims[dead].Token); len(refused) != 0 {
+		t.Fatalf("the relaunch refused %v", refused)
+	}
+
+	r.wantSpawned(n - 1)
+	r.wantWaitingAt(n-2, 1)
+	r.wantWaitingAt(dead, 2)
+	r.wantWaitingAt(1, 3)
+	r.wantWaitingAt(0, 4)
+	r.wantNextTurn(5)
+	m, _ := r.sup.Machine(r.claims[dead].Token)
+	if got := m.View().Claim.Budgets; got.Deaths != 1 || got.LaunchFailures != 1 {
+		t.Fatalf("the recorded death's claim has budgets %+v, want the one death the previous daemon charged and its one launch failure", got)
+	}
+}
+
+// A recorded death whose claim holds a suspension is reserved no turn. The death's own report
+// ends that hold as a suspension, and the replay leaves it to that report (supervise's
+// relaunchRecordedDeath), so a turn handed to it would be left spent and every wake behind it
+// would run an interval late.
+func TestABootReservesNoTurnForARecordedDeathWithAHeldSuspension(t *testing.T) {
+	t.Parallel()
+	const n = 4
+	r := newBootRig(t, n, &outboxClaimStore{}, recordedDeathOwed(t, time.Now().UTC().Add(-150*time.Second)))
+	dead := r.claims[n].Token
+	m, _ := r.sup.Machine(dead)
+	if err := m.Handle(context.Background(), supervise.RequestSuspend{Claim: dead, By: supervise.SuspendedByOperator}); err != nil && !errors.Is(err, supervise.ErrSuspendHeld) {
+		t.Fatal(err)
+	}
+	if !m.View().Claim.SuspensionHeld {
+		t.Fatalf("the operator's suspension of the restored working claim is not held, state %s", m.View().Claim.State)
+	}
+
+	if refused := r.s.launchUnfinished(context.Background(), waitingLaunches(unfinishedOf(r.claims[:n])), dead); len(refused) != 0 {
+		t.Fatalf("the relaunch refused %v", refused)
+	}
+
+	r.wantSpawned(n - 1)
+	for i := n - 2; i >= 0; i-- {
+		r.wantWaitingAt(i, n-1-i)
+	}
+	r.wantNextTurn(n)
+	if held := m.View().WakeWaiting; held != nil {
+		t.Fatalf("the suspended claim waits on wake %+v, want none: its death's report ends the hold", *held)
+	}
+}
+
+// recordedDeathOwed is a claim the previous daemon left working over a process it found dead, the
+// death charged and its relaunch lost with that daemon's memory, holding the task it was working,
+// queued to it at owed.
+func recordedDeathOwed(t *testing.T, owed time.Time) supervise.Claim {
+	t.Helper()
+	project, _ := claim.ProjectToken("legion")
+	token, err := claim.NewToken(project, "LEGION-90", claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := liveClaim(90, token, api.DaemonAPIVersion())
+	c.Token, c.Project, c.Tree, c.Issue, c.Role = token, project, "LEGION-90", "LEGION-90", claim.RoleImplementer
+	c.DeathCharged, c.Budgets.Deaths, c.LastDeathCause = true, 1, "gone: pane %90 is gone"
+	c.Pending = &supervise.Delivery{ID: "row-90", Task: "implement the change", QueuedAt: owed, ConfirmedAt: owed, Interrupted: true}
+	return c
+}
+
+// A claim that holds only the daemon's own notice of its relaunch (queueRelaunch) owes no work, so
+// it goes behind every claim owed a task, however long ago its notice was queued: the notice is
+// the daemon's sentence of what the last process ended, not work a person waits on.
+func TestABootRelaunchOfAClaimHoldingOnlyItsRelaunchNoticeGoesBehindOwedWork(t *testing.T) {
+	t.Parallel()
+	const n = 4
+	r := newBootRigEdited(t, n, &outboxClaimStore{}, func(claims []supervise.Claim) {
+		claims[n-1].Pending.ID = "relaunch:the-last-process-ended"
+	})
+
+	if refused := r.s.launchUnfinished(context.Background(), waitingLaunches(unfinishedOf(r.claims))); len(refused) != 0 {
+		t.Fatalf("the relaunch refused %v", refused)
+	}
+
+	r.wantSpawned(n - 2)
+	r.wantWaitingAt(n-3, 1)
+	r.wantWaitingAt(n-4, 2)
+	r.wantWaitingAt(n-1, 3)
 }
 
 // A claim whose release the store refuses at the boot keeps the turn the boot reserved it in the

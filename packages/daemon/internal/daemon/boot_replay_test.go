@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -119,6 +120,56 @@ func TestTheBootsReplayOfAppliedTerminalFactsWaitsBehindNoLiveFact(t *testing.T)
 	last := next[len(next)-1]
 	if want := (intake.ClaimReady{Issue: last.Issue, Role: last.Role, Launch: last.Generation}); facts[len(facts)-1] != want {
 		t.Fatalf("the replay applied %#v, want %#v", facts[len(facts)-1], want)
+	}
+}
+
+// The boot's replay counts each budget from the moment its transaction holds a connection: a
+// replay that waits in the pool's queue behind other work is not cut for the wait. Here the pool
+// has one connection, which another transaction holds for 1.5 s, three times the replay's 500 ms
+// budget, as the restored claims' live failures held a loaded boot's pool. Before, the budget
+// counted the wait too, and the replay's first read failed with "read which supervise facts are
+// applied: context deadline exceeded" (internal/daemon's
+// TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlastsItsBudget on main's CI, job
+// 137780475678).
+func TestTheBootsReplayWaitingInThePoolsQueueIsNotCutForTheWait(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	const budget, held = 500 * time.Millisecond, 1500 * time.Millisecond
+	config, err := store.PoolConfig(testpg.ClonePool(t, "legion_replay_queue_test").Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.MaxConns = 1
+	raw, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := store.NewPool(raw)
+	t.Cleanup(pool.Close)
+	handler := &outboxFactHandler{}
+	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger()}
+	claims := terminalClaims(t, "legion", 4)
+
+	holding, ended := make(chan time.Time, 1), make(chan error, 1)
+	go func() {
+		ended <- store.Transact(store.ForConcurrentWorker(ctx), pool, func(ctx context.Context, tx pgx.Tx) error {
+			holding <- time.Now()
+			_, err := tx.Exec(ctx, "select pg_sleep($1)", held.Seconds())
+			return err
+		})
+	}()
+	heldAt := <-holding
+	if err := w.replayTerminal(ctx, claims, budget); err != nil {
+		t.Fatalf("a replay waiting %s behind the pool's one connection, on a %s budget = %v, want it done: the wait is not the budget's", held, budget, err)
+	}
+	if waited := time.Since(heldAt); waited < held {
+		t.Fatalf("the replay finished %s after the connection was taken, want after the %s it was held: it did not queue, so this proves nothing", waited, held)
+	}
+	if got := len(handler.facts()); got != len(claims) {
+		t.Fatalf("the replay applied %d facts, want %d", got, len(claims))
+	}
+	if err := <-ended; err != nil {
+		t.Fatalf("the transaction that held the connection: %v", err)
 	}
 }
 
@@ -274,7 +325,7 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 		c := supervise.Claim{
 			Token: token, Project: project, Tree: issue, Issue: issue, Role: claim.RoleImplementer, Generation: 1,
 			State: supervise.StateReady, Session: "ses_" + string(token), SessionFile: "/sessions/" + string(token) + ".jsonl",
-			PluginContract: api.DaemonAPIVersion, BootTokenHash: supervise.HashBootToken(bootTokens[i]),
+			PluginContract: api.DaemonAPIVersion(), BootTokenHash: supervise.HashBootToken(bootTokens[i]),
 			Locator: &runtime.Locator{
 				Runtime: runtime.RuntimeTmux, Claim: token, Incarnation: fmt.Sprintf("4242:%d", i+1),
 				Tmux: &runtime.TmuxLocator{Window: fmt.Sprintf("@%d", i+1), Pane: fmt.Sprintf("%%%d", i+1)},

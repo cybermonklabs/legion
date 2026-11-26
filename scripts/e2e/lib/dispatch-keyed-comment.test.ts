@@ -2,14 +2,14 @@ import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
+import type { Server } from "bun";
 import { keyedLayer } from "../../../packages/envoy-client/test/keyed-layer.ts";
 import { routeAnswer } from "../../../packages/envoy-client/test/route-answers.ts";
 
-// Each row starts the check as a Bun process, and the --cli row starts the command as a second one
-// and waits its first pause of 1 s, so on a loaded host a row that works passes Bun's default
-// bound of 5 s. 90 s is above the command's own deadline of 60 s, so a command that hangs fails
-// with its own answer.
-setDefaultTimeout(90_000);
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 const check = join(import.meta.dir, "dispatch-keyed-comment.ts");
 const servers: Server<undefined>[] = [];

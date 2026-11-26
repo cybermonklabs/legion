@@ -215,7 +215,7 @@ func (m *Manager) runTokenCommand(ctx context.Context, app config.GitHubApp, req
 
 // finishedRunKeep is how long a finished token_command run's result waits for a caller whose own
 // deadline ended before the run did: longer than the boot's longest wait between attempts
-// (appMintRetry.Max, 30 s), far shorter than a released token's life.
+// (the production App-call retry's Max, 30 s; internal/daemon's productionAppCalls), far shorter than a released token's life.
 var finishedRunKeep = 2 * time.Minute
 
 // forgetRun drops run from the shared runs if it is still key's run.

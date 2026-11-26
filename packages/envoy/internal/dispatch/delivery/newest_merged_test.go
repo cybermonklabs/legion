@@ -41,7 +41,7 @@ func TestTheNewestMergedPullRequestIsTheOneThatMergedLast(t *testing.T) {
 		t.Errorf("#%s's commit messages were paged; its head branch attributes it", r.PathValue("number"))
 		mustEncode(t, w, []any{})
 	})
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
 	record := func(what string, envelope map[string]string) {
 		t.Helper()
 		number := 0
@@ -52,11 +52,11 @@ func TestTheNewestMergedPullRequestIsTheOneThatMergedLast(t *testing.T) {
 	}
 	answers := func(when string) {
 		t.Helper()
-		head, found, err := NewestPullRequestHead(ctx, pool, issue)
+		head, found, err := NewestPullRequestHead(ctx, pool, issue, HeadAnswers{})
 		if err != nil || !found || head.Number != 8 {
 			t.Errorf("%s: NewestPullRequestHead(%s) = %+v, %v, %v; want #8, which merged after #9", when, issue, head, found, err)
 		}
-		branch, err := unrenamed().BaseBranchMergedFor(ctx, pool, issue, "acme/widgets")
+		branch, err := unrenamed().BaseBranchMergedFor(ctx, pool, issue, "acme/widgets", HeadAnswers{})
 		if err != nil || branch != "integration/eight" {
 			t.Errorf("%s: BaseBranchMergedFor(%s) = %q, %v; want integration/eight, the branch #8 merged into after #9 merged",
 				when, issue, branch, err)

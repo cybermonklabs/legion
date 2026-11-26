@@ -72,6 +72,7 @@ var legionCommands = [][]string{
 	{"sessions"}, {"sessions", "import"},
 	{"probe-boot"},
 	{"controller"}, {"controller", "start"},
+	{"intake"}, {"intake", "replay"}, {"intake", "discard"},
 }
 
 // legionHidden is every command only a program runs — a pod's, a pane's, git's or an image
@@ -83,7 +84,7 @@ var legionHidden = [][]string{
 	{"claude-bridge"}, {"model-token"}, {"probe-image"},
 	{"workspace-init"}, {"workspace-init", "fetch"},
 	{"workspace-init", "provision"}, {"workspace-init", "cache"},
-	{"git-credential"}, {"git"}, {"gh"},
+	{"git-credential"}, {"git"}, {"jj"}, {"gh"},
 	{"leak-check"}, {"leak-check", "pre-push"}, {"leak-check", "text"},
 }
 

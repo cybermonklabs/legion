@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A drain ends the KV watchers, deleting the ordered consumers nats.go created for them, before it
@@ -54,8 +55,8 @@ func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 			}
 			watcher := kvwatch.New("drain-test", kv, discardingCache{})
 			watcher.Start()
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+			// No span of its own: the first scan can end late on a loaded machine with nothing wrong.
+			ctx := testwait.Context(t)
 			if err := watcher.WaitReady(ctx); err != nil {
 				t.Fatalf("wait for the watcher: %v", err)
 			}
@@ -107,6 +108,7 @@ func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 // A drain runs its hooks once the delivery subscriptions have drained and before the connection's
 // own drain, within the drain's deadline, so a hook's requests still reach the server.
 func TestDrainRunsItsHooksWhileTheConnectionCarriesRequests(t *testing.T) {
+	t.Parallel()
 	_, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {

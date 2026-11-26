@@ -803,7 +803,7 @@ function storedFourXX(status: number | undefined): boolean {
 
 /**
  * Ground truth from Dispatch, rather than the client: route layers outside `keyedWrites` answer
- * before its claim with no key echo (server.go:840-916, request_keys.go:247-312), and
+ * before its claim with no key echo (server.go:853-929, request_keys.go:311-376), and
  * `Idempotency-Replayed: ?1` marks a stored replay and a recovery replay alike. Whether a refusal
  * after a possible landing is final follows from which layer wrote it, which each row names, so
  * the oracle never reads the client's classifier:

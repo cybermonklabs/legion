@@ -11,6 +11,7 @@ import {
   type FakeLiveSockets,
   installFakeLiveSockets,
 } from "../../__tests__/live-socket-harness";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import { liveSocketFor } from "../../api/live-socket";
@@ -61,6 +62,7 @@ function agentOf(sessionId: string, title: string): Agent {
 function exchange(session: string, at: string): MessageRead {
   return {
     message: {
+      ...messageCorrectionFields(),
       author: { id: "sami", kind: "user" },
       body: "Where is the dashboard?",
       broadcast_id: null,
@@ -74,6 +76,7 @@ function exchange(session: string, at: string): MessageRead {
     },
     replies: [
       {
+        ...messageCorrectionFields(),
         author: { id: session, kind: "session" },
         body: "Done: it is at /dash.",
         broadcast_id: null,

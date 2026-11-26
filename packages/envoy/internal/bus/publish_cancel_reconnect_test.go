@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // reconnectWaitFixture is a client that reaches NATS through a proxy the test can cut, a subscriber
@@ -71,25 +72,19 @@ func (f *reconnectWaitFixture) startPublishWhileReconnecting(t *testing.T, ctx c
 	t.Helper()
 	f.proxy.refuse.Store(true)
 	f.proxy.drop()
-	waitFor(t, 5*time.Second, "the client to start reconnecting", f.client.Conn.IsReconnecting)
+	waitFor(t, "the client to start reconnecting", f.client.Conn.IsReconnecting)
 	f.onTick.Store(&onTick)
 	answer := make(chan error, 1)
 	go func() { answer <- f.client.PublishWithin(ctx, f.envelope) }()
 	return answer
 }
 
-// awaitAnswer returns the publish's answer and clears onTick, failing the test if the publish has
-// not answered within 15 s.
+// awaitAnswer returns the publish's answer and clears onTick, failing the test if the publish never
+// answers: the wait is bounded only by the test binary's deadline (testwait.Receive).
 func (f *reconnectWaitFixture) awaitAnswer(t *testing.T, answer <-chan error) error {
 	t.Helper()
 	defer f.onTick.Store(nil)
-	select {
-	case err := <-answer:
-		return err
-	case <-time.After(15 * time.Second):
-		t.Fatal("the publish never returned")
-		return nil
-	}
+	return testwait.Receive(t, "the publish to return", answer)
 }
 
 // requireNothingReceived fails the test if the subscriber receives anything from the publisher.
@@ -120,6 +115,7 @@ func (f *reconnectWaitFixture) requireNothingReceived(t *testing.T, what string,
 // the same reconnect: it must be received, so the cancelled case's silence is the cancel's doing
 // and not a publish that never reached the wait.
 func TestAPublishCancelledWhileWaitingForAReconnectSendsNothing(t *testing.T) {
+	t.Parallel()
 	f := newReconnectWaitFixture(t, "cancel-while-reconnecting")
 
 	// publishDuringReconnect starts the publish under ctx while the client is reconnecting, calls
@@ -140,7 +136,7 @@ func TestAPublishCancelledWhileWaitingForAReconnectSendsNothing(t *testing.T) {
 		release()
 		f.proxy.refuse.Store(false)
 		err := f.awaitAnswer(t, answer)
-		waitFor(t, 10*time.Second, "the client to reconnect", f.client.Conn.IsConnected)
+		waitFor(t, "the client to reconnect", f.client.Conn.IsConnected)
 		return err
 	}
 
@@ -177,6 +173,7 @@ func TestAPublishCancelledWhileWaitingForAReconnectSendsNothing(t *testing.T) {
 // The control is the same publish with the same tick and no cancel: it must be received, so the
 // cancelled case's silence is the cancel's doing and not a publish that never got past the wait.
 func TestAPublishCancelledAsTheReconnectCompletesSendsNothing(t *testing.T) {
+	t.Parallel()
 	f := newReconnectWaitFixture(t, "cancel-as-reconnected")
 
 	// publishAsTheReconnectCompletes publishes under ctx while the client is reconnecting; the

@@ -16,13 +16,20 @@ const runs = {
   sound: temporaryDirectory("gh-standin-sound", { real: true }),
   unrouted: temporaryDirectory("gh-standin-unrouted", { real: true }),
   refused: temporaryDirectory("gh-standin-refused", { real: true }),
+  listed: temporaryDirectory("gh-standin-listed", { real: true }),
+  edited: temporaryDirectory("gh-standin-edited", { real: true }),
 };
 const review = "^gh api .*pulls/702/reviews";
 
-/** Runs the stand-in as a run's `gh` with `routes`, and returns its answer and its record. */
-function gh(run: string, routes: unknown[], ...args: string[]) {
+/** Writes `routes` as the run's fixtures.json, which every later call of the run reads and keeps. */
+function routed(run: string, routes: unknown[]) {
   mkdirSync(run, { recursive: true });
   writeFileSync(path.join(run, "fixtures.json"), JSON.stringify({ routes }));
+}
+
+/** Runs the stand-in as a run's `gh` on the run's fixtures as they stand, and returns its answer
+ * and its record. */
+function ask(run: string, ...args: string[]) {
   const result = spawnWithin(
     { ...SCRIPT_RUN, part: "gh-standin.ts" },
     ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
@@ -35,6 +42,12 @@ function gh(run: string, routes: unknown[], ...args: string[]) {
     stderr: result.stderr.toString(),
     call: JSON.parse(calls.at(-1) ?? "{}"),
   };
+}
+
+/** Runs the stand-in as a run's `gh` with `routes`, and returns its answer and its record. */
+function gh(run: string, routes: unknown[], ...args: string[]) {
+  routed(run, routes);
+  return ask(run, ...args);
 }
 
 /** Runs the stand-in as a run's `gh`, with one route that answers a review's post. */
@@ -116,4 +129,61 @@ test("a route that refuses prints GitHub's body unfiltered, then gh's message, a
     'HTTP/2.0 403 Forbidden\r\nContent-Type: application/json; charset=utf-8\r\nX-Github-Api-Version-Selected: 2022-11-28\r\n\r\n{"message":"Resource not accessible by integration","status":"403"}'
   );
   expect(call).toMatchObject({ route: refusal.match, exit: 1 });
+});
+
+// Catches: a `--json` that picks fields of an object answer alone, so `gh pr list --json` prints each
+// pull request whole, and a `--jq` that reads the list before the pick.
+test("--json picks the named fields of each object of a list answer and of an object answer", () => {
+  routed(runs.listed, [
+    {
+      match: "^gh pr list",
+      stdout: [
+        { number: 7, url: "https://example.invalid/7", body: "seven" },
+        { number: 8, url: "https://example.invalid/8", body: "eight" },
+      ],
+    },
+    {
+      match: "^gh pr view",
+      stdout: { number: 7, url: "https://example.invalid/7", body: "seven" },
+    },
+  ]);
+  const { code, stdout, stderr } = ask(runs.listed, "pr", "list", "--json", "number,url");
+  expect({ code, stdout, stderr }).toEqual({
+    code: 0,
+    stdout:
+      '[{"number":7,"url":"https://example.invalid/7"},{"number":8,"url":"https://example.invalid/8"}]\n',
+    stderr: "",
+  });
+  expect(ask(runs.listed, "pr", "list", "--json", "number", "--jq", ".[].number").stdout).toBe(
+    "7\n8\n"
+  );
+  expect(ask(runs.listed, "pr", "view", "7", "--json", "url").stdout).toBe(
+    '{"url":"https://example.invalid/7"}\n'
+  );
+});
+
+// Catches: a body edit kept for an object answer alone, so the next `gh pr list --json body` reads
+// the old body where GitHub's would read the new one; and one that gives a body to a list whose
+// objects have none.
+test("a body edit gives each object of a list answer that has a body the new body", () => {
+  routed(runs.edited, [
+    { match: "^gh pr edit", stdout: "https://example.invalid/7" },
+    { match: "^gh pr list", stdout: [{ number: 7, body: "old" }] },
+    { match: "^gh pr view", stdout: { number: 7, body: "old" } },
+    { match: "^gh api .*comments", stdout: [{ id: 1 }] },
+  ]);
+  const edit = ask(runs.edited, "pr", "edit", "7", "--body", "new");
+  expect(edit.code).toBe(0);
+  expect(edit.call).toMatchObject({
+    argv: ["pr", "edit", "7", "--body", "new"],
+    body: "new",
+    exit: 0,
+  });
+  expect(ask(runs.edited, "pr", "list", "--json", "number,body").stdout).toBe(
+    '[{"number":7,"body":"new"}]\n'
+  );
+  expect(ask(runs.edited, "pr", "view", "7", "--json", "body").stdout).toBe('{"body":"new"}\n');
+  expect(ask(runs.edited, "api", "repos/example/widgets/issues/7/comments").stdout).toBe(
+    '[{"id":1}]\n'
+  );
 });

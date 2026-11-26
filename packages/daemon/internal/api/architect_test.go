@@ -298,6 +298,9 @@ func (r *statusRecorder) PutStepRating(_ context.Context, key, id string, _ disp
 	r.asked("PUT /api/v1/issues/%s/steps/%s/rating", key, id)
 	return nil
 }
+func (r *statusRecorder) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return nil
+}
 func (r *statusRecorder) PutPlan(_ context.Context, key, id string, _ dispatch.PlanWrite) error {
 	r.asked("PUT /api/v1/issues/%s/plans/%s", key, id)
 	return nil

@@ -95,8 +95,9 @@ and comes however full the cap is. An answered root stands in the admission line
 that resumes it, and nothing is sent to you about that wait: your
 record's `waitingLine` gives the live place in the line and the line's length, and the daemon
 starts you again by itself on that pass. Beside the place, `waitingLine` gives the line's own
-fields: `part` and `kind`, `partPlace` of `partLength` inside that part, `holdsSlot`, true for
-your root, which holds its slot already, `since` for an issue whose work came back or
+fields: `priority`, the priority it waits at, `part` and `kind`, `partPlace` of `partLength`
+inside its priority and part, `holdsSlot`, true for your root, which holds its slot already,
+`since` for an issue whose work came back or
 `rootRank`, `ownRank` and `rootKey` for one that has not started, and `reason`, the daemon's
 own sentence for that place. `why` on any issue of your tree that is not working now says the
 same in one word and one sentence: `claim_stopped`, a claim nothing will wake; `waiting`, this
@@ -198,6 +199,15 @@ approval to the new version and you request nothing. When it changes the spec's 
 block, rewrite that text. Then request approval again
 with a one-sentence `--summary` naming what changed since the earlier approval. A to-do only a
 human can do is a `dispatch ask`.
+
+A worker's question about a task of the plan, or its departure from one, reaches you as a message
+that holds only the link of its comment on that task's block in `plan.md`, or on the issue where no
+block fits. Answer with a reply in that thread
+(`dispatch comment --issue <issue> --reply-to <comment id> --body '<the answer>'`), then send the
+worker, with `envoy_publish` to its role topic, a message that holds only your reply's link.
+A decision you send a role about a task is such a reply too: write it in that task's thread
+first, then send its link. A role acts on no decision that has no Dispatch record, so a decision
+you send by message alone comes back to you as a request to write it there.
 
 The merge is the close: once a pull request merges while its issue awaits the merge, the daemon
 writes `done`, except that a root whose tree still runs, and a child with an issue beneath it still

@@ -338,7 +338,7 @@ func waitsOf(rows map[string]Row, issue record.Issue, facts record.LineFacts) []
 	if issue.Phase == phase.Admitted && record.AtWork(issue, facts.Gates[issue.Tree]) {
 		return nil
 	}
-	if record.QueuedRoot(issue, facts.Gates[issue.Tree]) {
+	if record.QueuedRoot(issue, facts.Lifecycles[issue.Tree], facts.Gates[issue.Tree]) {
 		return nil
 	}
 	waits := Unfinished(rows, issue.Key)

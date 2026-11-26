@@ -246,10 +246,8 @@ func manifestCases(t *testing.T) map[string]manifestCase {
 		// microvm: the pod runs in a microVM and serves the metadata endpoint, on its Sandbox's disk
 		// of runtime.kubernetes.storage_class (TestTheControllerPodRunsInTheProjectsSandbox).
 		"controller-microvm": {spec: controllerSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}},
-		"root-enrolled": {spec: rootSpec(t), agentSecrets: &AgentSecrets{
-			URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour,
-		}},
-		"root-microvm": {spec: rootSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}},
+		"root-enrolled":      {spec: rootSpec(t), agentSecrets: rootEnrolled()},
+		"root-microvm":       {spec: rootSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}},
 		// root-microvm-kept is root-microvm with keep_volume on: the one case whose issue Sandbox
 		// owns a claim template, its kept volume (TestOnlyAMicroVMPodKeepsItsVolume).
 		"root-microvm-kept": {spec: rootSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: keptMicroVM()}},
@@ -1426,7 +1424,7 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 		"relative tool":             {func(o *Options) { o.Tools.Git = "git" }, "git path \"git\" is not absolute"},
 		"bad project":               {func(o *Options) { o.Project = "s4a run" }, "is not a label value"},
 		"url no bearer":             {func(o *Options) { o.DispatchURL = "https://dispatch.internal" }, "configured together"},
-		"bearer no url":             {func(o *Options) { o.DispatchToken = "dispatch-bearer" }, "configured together"},
+		"bearer no url":             {func(o *Options) { o.Dispatch.Bearer = "dispatch-bearer" }, "configured together"},
 		"another pool":              {func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: "gpu"} }, "legion.dev/pool is the runtime's"},
 		"the pool restated":         {func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: poolValue} }, "legion.dev/pool is the runtime's"},
 		"no tokens":                 {func(o *Options) { o.Tokens = nil }, "no provisioning token source"},
@@ -1497,6 +1495,31 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 			},
 			"no storage class for the disks of the issue pods that run in a microVM",
 		},
+		"broker no url": {
+			func(o *Options) { o.AgentSecrets, o.Dispatch.Broker = exchangeEnrolled(), true },
+			"configured together",
+		},
+		"bearer and broker": {
+			func(o *Options) {
+				o.DispatchURL, o.AgentSecrets = "https://dispatch.internal", exchangeEnrolled()
+				o.Dispatch = DispatchCredential{Bearer: "dispatch-bearer", Broker: true}
+			},
+			"Dispatch.Bearer is given beside Dispatch.Broker",
+		},
+		"transition without the broker": {
+			func(o *Options) {
+				o.DispatchURL = "https://dispatch.internal"
+				o.Dispatch = DispatchCredential{Bearer: "dispatch-bearer", Transition: "dispatch-transition"}
+			},
+			"Dispatch.Transition is given without Dispatch.Broker",
+		},
+		"the broker without an exchange audience": {
+			func(o *Options) {
+				o.DispatchURL, o.Dispatch.Broker = "https://dispatch.internal", true
+				o.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
+			},
+			"Dispatch.Broker is set but AgentSecrets names no exchange audience",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			opts := testOptions()
@@ -1524,11 +1547,11 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 func TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime(t *testing.T) {
 	for name, agentSecrets := range map[string]*AgentSecrets{
 		"the exchange identity on":  exchangeEnrolled(),
-		"the exchange identity off": {URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour},
+		"the exchange identity off": rootEnrolled(),
 	} {
 		t.Run(name, func(t *testing.T) {
 			opts := testOptions()
-			opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal", "dispatch-bearer"
+			opts.DispatchURL, opts.Dispatch = "https://dispatch.internal", DispatchCredential{Bearer: "dispatch-bearer"}
 			opts.AgentSecrets = agentSecrets
 			opts.TestPostgres = true
 			r, err := configure(opts)
@@ -1646,7 +1669,7 @@ func TestTheWorkerContainersEnvCarriesTheStallLimits(t *testing.T) {
 // controller's, each enrolled with the secrets broker here, are each held to that one list.
 func TestHandedAddressesAreEveryAddressAPodCarries(t *testing.T) {
 	opts := testOptions()
-	opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal.example", "dispatch-bearer"
+	opts.DispatchURL, opts.Dispatch = "https://dispatch.internal.example", DispatchCredential{Bearer: "dispatch-bearer"}
 	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	r, err := configure(opts)
 	if err != nil {
@@ -1693,8 +1716,9 @@ func TestHandedAddressesAreEveryAddressAPodCarries(t *testing.T) {
 	}
 }
 
-// The Dispatch bearer is the runtime's to carry, not the spec's: with Dispatch configured, every
-// claim's Secret holds it as DISPATCH_TOKEN and the worker container reads it through
+// The Dispatch bearer is the runtime's to carry, not the spec's: with Dispatch configured with
+// one, every launch carries it as DISPATCH_TOKEN in its start command's Files, which the launcher
+// writes into the generation's private directory, and the worker container reads it through
 // DISPATCH_TOKEN_FILE; without it, neither exists.
 func TestTheDispatchBearerIsARuntimeOption(t *testing.T) {
 	for name, tc := range map[string]struct {
@@ -1705,7 +1729,7 @@ func TestTheDispatchBearerIsARuntimeOption(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			opts := testOptions()
-			opts.DispatchURL, opts.DispatchToken = tc.url, tc.bearer
+			opts.DispatchURL, opts.Dispatch = tc.url, DispatchCredential{Bearer: tc.bearer}
 			r, err := configure(opts)
 			if err != nil {
 				t.Fatal(err)
@@ -1716,7 +1740,7 @@ func TestTheDispatchBearerIsARuntimeOption(t *testing.T) {
 			}
 			pointer, pointed := envOf(workerOf(t, r, workerSpec(t)))["DISPATCH_TOKEN_FILE"]
 			if got := l.secrets[dispatchTokenKey]; got != tc.bearer || pointed != (tc.bearer != "") {
-				t.Fatalf("the claim's Secret carries %q as %s and DISPATCH_TOKEN_FILE is %q (set: %t), want %q",
+				t.Fatalf("the launch carries %q as %s and DISPATCH_TOKEN_FILE is %q (set: %t), want %q",
 					got, dispatchTokenKey, pointer, pointed, tc.bearer)
 			}
 			if want := generationDir(workerSpec(t).Generation) + "/" + dispatchTokenKey; pointed && pointer != want {
@@ -2178,7 +2202,7 @@ func TestNewRefusesAProvidersSecretThatIsNoLaunchSecret(t *testing.T) {
 // list that no pod carries is refused for nothing.
 func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 	opts := goldenOptions()
-	opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal", "dispatch-bearer"
+	opts.DispatchURL, opts.Dispatch = "https://dispatch.internal", DispatchCredential{Bearer: "dispatch-bearer"}
 	opts.ProviderKeys = map[string]string{"ANTHROPIC_API_KEY": "anthropic"}
 	// With every optional piece configured: the pod's own test database is one (testPGVolume), and
 	// a microVM project's metadata endpoint another (workloadIdentityTokenVolume, under RolesDir in
@@ -2187,7 +2211,7 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 	opts.Sandbox = SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}
 	for name, agentSecrets := range map[string]*AgentSecrets{
 		"the exchange identity on":  exchangeEnrolled(),
-		"the exchange identity off": {URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour},
+		"the exchange identity off": rootEnrolled(),
 	} {
 		t.Run(name, func(t *testing.T) {
 			var r *Runtime
@@ -3398,9 +3422,9 @@ func TestTextSurvivesTheKubeletsExpansion(t *testing.T) {
 	}
 }
 
-// uuid is the form a Claude Code session id takes (claudelaunch.NewSessionID), the only word of a
-// Claude launch's agent command that is not fixed.
-var uuid = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+// claudeSessionForm is the form a Claude Code session id takes (claudelaunch.NewSessionID), the
+// only word of a Claude launch's agent command that is not fixed.
+var claudeSessionForm = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 // A Claude Code role's pod runs Claude Code under `legion claude-bridge`, word for word: the
 // Claude Code this generation's start script installed under the role's state home on the issue's
@@ -3432,7 +3456,7 @@ func TestAClaudePodsAgentCommandIsClaudeCodeUnderTheBridge(t *testing.T) {
 	session := ""
 	if at := slices.Index(argv, "--session-id"); at < 0 || at+1 == len(argv) {
 		t.Fatalf("the agent command %q names no --session-id", argv)
-	} else if session = argv[at+1]; !uuid.MatchString(session) {
+	} else if session = argv[at+1]; !claudeSessionForm.MatchString(session) {
 		t.Errorf("the session is %q, want a version 4 uuid", session)
 	}
 	claude := func(generation uint64) string {

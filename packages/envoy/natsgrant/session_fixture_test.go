@@ -1,5 +1,7 @@
 package natsgrant_test
 
+//ci:reads packages/contracts/fixtures/session-grant.json TestTheSessionGrantFixtureIsNatsgrantSession readJSON and os.ReadFile (sessionFixturePath, ../../contracts/fixtures): the fixture must be natsgrant.Session of its placeholder id, as the encoder writes it
+
 import (
 	"bytes"
 	"encoding/json"

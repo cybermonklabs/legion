@@ -2,6 +2,7 @@ import { readdir, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { SESSION_LIVE_WINDOW_MS } from "@legion/contracts"
+import { daemonContract } from "@legion/contracts/daemon-contract"
 import { messageFor } from "@legion/envoy-client/errors"
 import { readSecretFile } from "@legion/envoy-client/secret-file"
 import type { EnvoyClient } from "@legion/envoy-client/transport"
@@ -9,7 +10,7 @@ import { claimFirstTurnBoundMs } from "@legion/pi-shared/claim-first-turn-bound"
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import { bootLegionClaim, type LegionClaimBoot } from "@legion/pi-shared/legion-claim-core"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
-import { legion } from "../package.json" with { type: "json" }
+import pkg from "../package.json" with { type: "json" }
 import { configuredValue } from "./claude-session"
 import type { ChannelSession } from "./envoy-channel-server"
 import { paneReminderLog } from "./legion-phase-hook"
@@ -20,6 +21,12 @@ import { paneReminderLog } from "./legion-phase-hook"
  * every harness shares (`@legion/pi-shared/legion-claim-core`). The daemon launches the pane with
  * its boot token (`LEGION_BOOT_TOKEN_FILE`) and its address (`LEGION_DAEMON_URL`).
  */
+
+/** The daemon API contract this build speaks, read once as the module loads (`daemonContract`):
+ * the manifest of the module this process loaded names it once a pack or `scripts/build.ts --out`
+ * has written it, and a checkout's own fixtures decide it for code run from the checkout. A
+ * bundle installed with neither refuses to load here rather than speak a number it guessed. */
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir)
 
 /** What the daemon put on a Legion pane: its address, the boot token the registration spends, the
  * claim's own Claude Code directory (`CLAUDE_CONFIG_DIR`), which holds the transcript, and whether
@@ -35,10 +42,10 @@ export interface LegionPane {
 /**
  * The Legion pane this server runs in, or undefined when no boot token is on its environment (a
  * Claude Code session outside Legion). A set `LEGION_BOOT_TOKEN_FILE` is authoritative, as in
- * every pane: a missing or blank file throws naming it. A pane without `LEGION_DAEMON_URL` or
- * `CLAUDE_CONFIG_DIR` throws naming the variable.
+ * every pane, and read without holding the event loop: a missing or blank file rejects naming it.
+ * A pane without `LEGION_DAEMON_URL` or `CLAUDE_CONFIG_DIR` rejects naming the variable.
  */
-export function legionPane(env: NodeJS.ProcessEnv): LegionPane | undefined {
+export async function legionPane(env: NodeJS.ProcessEnv): Promise<LegionPane | undefined> {
   const pointer = env["LEGION_BOOT_TOKEN_FILE"]
   if (pointer === undefined && configuredValue(env["LEGION_BOOT_TOKEN"]) === undefined) {
     return undefined
@@ -56,19 +63,18 @@ export function legionPane(env: NodeJS.ProcessEnv): LegionPane | undefined {
     bootToken:
       pointer === undefined
         ? required("LEGION_BOOT_TOKEN")
-        : readSecretFile("LEGION_BOOT_TOKEN_FILE", pointer),
+        : await readSecretFile("LEGION_BOOT_TOKEN_FILE", pointer),
     launcherSaves: configuredValue(env["LEGION_CLAUDE_SESSION_ID"]) !== undefined,
   }
 }
 
 /**
- * The pane's client for the daemon. It states this build's own `legion.daemonApiVersion` on
- * every request, read from the manifest of the module this process loaded, as the claim's
- * registration below reads it: the daemon serves each answer in the shape the contract the
- * caller states describes, so a pane an older or newer daemon answers still reads its answers.
+ * The pane's client for the daemon. It states this build's own contract on every request, as the
+ * claim's registration below states it: the daemon serves each answer in the shape the contract
+ * the caller states describes, so a pane an older or newer daemon answers still reads its answers.
  */
 export function paneDaemonClient(daemonUrl: string): LegionDaemonClient {
-  return createLegionDaemonClient(daemonUrl, { pluginContract: legion.daemonApiVersion })
+  return createLegionDaemonClient(daemonUrl, { pluginContract: PLUGIN_CONTRACT })
 }
 
 /** Writes one line to the pane's log, the server's stderr. */
@@ -200,7 +206,7 @@ export interface LegionClaim {
  * Boots the pane's claim in the background of the server (`bootLegionClaim`): waits for the
  * transcript, and in a pod whose launcher keeps it (`launcherSaves`) for the launcher's first save
  * of it too, registers with it as the session file (`agentId` is the session id,
- * `pluginContract` this package's `legion.daemonApiVersion`), sends `claims/ready` with no
+ * `pluginContract` this build's own contract), sends `claims/ready` with no
  * capability report, again each time the heartbeat regains the role, and claims the claim
  * token's Envoy role soft last of all — at this session's first turn (`onFirstTurn`) or at the
  * bound this pane's environment names, whichever comes first — recording it with the channel
@@ -275,7 +281,7 @@ export function startLegionClaim(deps: {
         sessionId: sessionID,
         ompSessionFile: transcript,
         agentId: sessionID,
-        pluginContract: legion.daemonApiVersion,
+        pluginContract: PLUGIN_CONTRACT,
       },
       setCapability: (registered) => {
         capability = registered

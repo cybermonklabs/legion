@@ -120,7 +120,7 @@ func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueK
 	}
 	// heads is nil where the read failed, so no head matches: the commit is asked of repo, and
 	// headsErr refuses the record wherever GitHub does not say that repo holds it.
-	heads, headsErr := s.deps.Attributor.HeadsAttributedTo(ctx, q, issueKey)
+	heads, headsErr := s.deps.Attributor.HeadsAttributedTo(ctx, q, issueKey, delivery.HeadAnswers{})
 	if at := slices.IndexFunc(heads, func(head delivery.AttributedHead) bool { return head.HeadSHA == sha }); at >= 0 {
 		return headRepositoryOther(heads[at], *repo), nil
 	}
@@ -484,13 +484,16 @@ func (c *comparisonReader) linkedBranchBases(ctx context.Context, check model.Ch
 // head is in a fork, and baseBranchMergedFor reads only the pull requests attributed to the issue
 // in the repository it resolves to. The key is the issue and the repository: an issue whose work
 // spans two repositories merged once in each. The memo keeps a failed read as
-// baseBranchMergedFor's does, for the same reason.
+// baseBranchMergedFor's does, for the same reason. It reads the caller's request's answers as
+// baseBranchMergedFor does: a merged pull request a read-only caller's read-through of a linked
+// repository's commit learned is a row a writer's read-through would have stored, which its read
+// here finds.
 func (c *comparisonReader) baseBranchMergedIn(ctx context.Context, issueKey, repo string) (string, bool) {
 	memo := [2]string{issueKey, repo}
 	if answer, memoized := c.linkedBaseBranches[memo]; memoized {
 		return answer.branch, answer.read
 	}
-	branch, err := c.server.deps.Attributor.BaseBranchMergedIn(ctx, c.server.deps.Store.Pool, issueKey, repo)
+	branch, err := c.server.deps.Attributor.BaseBranchMergedIn(ctx, c.server.deps.Store.Pool, issueKey, repo, c.answers)
 	if err != nil {
 		slog.Warn("dispatch: read the branch a result's issue merged into", "issue", issueKey, "repo", repo, "error", err)
 	}

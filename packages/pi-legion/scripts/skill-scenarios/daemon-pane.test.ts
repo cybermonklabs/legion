@@ -5,7 +5,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { composeRolePrompt, DAEMON_MODULE, RIG_GH_TOKEN, workerPane } from "./daemon-pane";
-import { RIG_OWNER } from "./rig-world";
+import { RIG_OWNER, RIG_WORLD } from "./rig-world";
 
 // Every row below asks the daemon's own functions for a pane environment or a role's prompt, which
 // `go run` compiles and runs, so a host with no go runs none of them.
@@ -19,11 +19,11 @@ const rig = temporaryDirectory("skill-scenarios-pane");
 // no envoy.json of the person running the test is read.
 const home = path.join(rig, "caller-home");
 
-// A pane's jj is the first jj on its PATH, and its git the launcher directory's git wrapper where
-// the daemon's boot writes one. Its gh is the launcher directory's wrapper over the real gh the
-// daemon resolves on its PATH at boot: the inherited PATH holds a stand-in gh, the one tool the
-// daemon needs on it for the pane to be built. It reads as a compiled program (no `#!` line),
-// since the daemon refuses a script as the first gh on PATH.
+// A pane's jj and its git are the launcher directory's jj and git wrappers where the daemon's boot
+// writes each, and the first jj and the first git on its PATH otherwise. Its gh is the launcher
+// directory's wrapper over the real gh the daemon resolves on its PATH at boot: the inherited PATH
+// holds a stand-in gh, the one tool the daemon needs on it for the pane to be built. It reads as a
+// compiled program (no `#!` line), since the daemon refuses a script as the first gh on PATH.
 // Both bins are staged in a hook, below the one the reservation above registered: a run that
 // selects no row of this file makes neither, and the run directory itself is never made.
 const outerBin = path.join(rig, "outer-bin");
@@ -56,12 +56,14 @@ const inherited = {
 // can take minutes on a cold build cache.
 test.skipIf(skip)(
   "strips an inherited Anthropic key and GitHub token, and gives the pane the claim's gh files and no grant file",
-  () => {
-    const workerEnv = workerPane(
-      { rig, port: 13399, profile: "rig-profile" },
-      inherited,
-      { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
-      { daemonModule: DAEMON_MODULE }
+  async () => {
+    const workerEnv = (
+      await workerPane(
+        { rig, port: 13399, profile: "rig-profile" },
+        inherited,
+        { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
+        { daemonModule: DAEMON_MODULE }
+      )
     ).env;
 
     expect(workerEnv).not.toHaveProperty("ANTHROPIC_API_KEY");
@@ -110,7 +112,7 @@ test.skipIf(skip)(
 // listener and NATS servers written there.
 test.skipIf(skip)(
   "names the listener and NATS servers the profile's envoy.json writes",
-  () => {
+  async () => {
     const agent = path.join(home, ".omp", "profiles", "rig-envoy-profile", "agent");
     mkdirSync(agent, { recursive: true });
     writeFileSync(
@@ -123,11 +125,13 @@ test.skipIf(skip)(
         },
       })
     );
-    const workerEnv = workerPane(
-      { rig, port: 13399, profile: "rig-envoy-profile" },
-      inherited,
-      { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
-      { daemonModule: DAEMON_MODULE }
+    const workerEnv = (
+      await workerPane(
+        { rig, port: 13399, profile: "rig-envoy-profile" },
+        inherited,
+        { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
+        { daemonModule: DAEMON_MODULE }
+      )
     ).env;
 
     expect(workerEnv).toMatchObject({
@@ -145,7 +149,7 @@ test.skipIf(skip)(
 // an Envoy that is off with an error, rather than ask the daemon for a pane with no NATS server.
 test.skipIf(skip)(
   "refuses a profile envoy.json whose NATS seed Envoy refuses",
-  () => {
+  async () => {
     const agent = path.join(home, ".omp", "profiles", "rig-seed-profile", "agent");
     mkdirSync(agent, { recursive: true });
     const file = path.join(agent, "envoy.json");
@@ -160,14 +164,14 @@ test.skipIf(skip)(
       })
     );
 
-    expect(() =>
+    await expect(
       workerPane(
         { rig, port: 13399, profile: "rig-seed-profile" },
         { ...inherited, ENVOY_NATS_URL: "nats://other-nats.internal.example:4222" },
         { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
         { daemonModule: DAEMON_MODULE }
       )
-    ).toThrow(
+    ).rejects.toThrow(
       `envoy: ENVOY_NATS_URL names other servers than ${file}'s envoy.natsUrls; set NATS_NKEY_SEED_FILE for them`
     );
   },
@@ -178,7 +182,7 @@ test.skipIf(skip)(
 // claim refuses then (pi-envoy's `requireInbound`), so the rig refuses it the same way.
 test.skipIf(skip)(
   "refuses a profile envoy.json whose Envoy has no NATS server",
-  () => {
+  async () => {
     const agent = path.join(home, ".omp", "profiles", "rig-no-nats-profile", "agent");
     mkdirSync(agent, { recursive: true });
     writeFileSync(
@@ -186,14 +190,14 @@ test.skipIf(skip)(
       JSON.stringify({ envoy: { url: "http://rig-listener.internal.example:9020" } })
     );
 
-    expect(() =>
+    await expect(
       workerPane(
         { rig, port: 13399, profile: "rig-no-nats-profile" },
         inherited,
         { project: "skillsrig", issue: "LWEVAL-1", role: "tester" },
         { daemonModule: DAEMON_MODULE }
       )
-    ).toThrow("envoy: Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL)");
+    ).rejects.toThrow("envoy: Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL)");
   },
   600_000
 );
@@ -204,17 +208,21 @@ test.skipIf(skip)(
 // panes its recording stand-in.
 test.skipIf(skip)(
   "refuses a script as the first gh on PATH and takes the gh the rig names",
-  () => {
+  async () => {
     const claim = { project: "skillsrig", issue: "LWEVAL-1", role: "tester" } as const;
     const launch = { rig, port: 13399, profile: "rig-profile" };
     const shimmed = { ...inherited, PATH: `${scriptBin}:${outerBin}:/usr/bin` };
-    expect(() => workerPane(launch, shimmed, claim, { daemonModule: DAEMON_MODULE })).toThrow(
+    await expect(
+      workerPane(launch, shimmed, claim, { daemonModule: DAEMON_MODULE })
+    ).rejects.toThrow(
       `the first gh on the daemon's PATH, ${path.join(scriptBin, "gh")}, is a script`
     );
-    const named = workerPane(launch, shimmed, claim, {
-      daemonModule: DAEMON_MODULE,
-      ghPath: path.join(scriptBin, "gh"),
-    }).env;
+    const named = (
+      await workerPane(launch, shimmed, claim, {
+        daemonModule: DAEMON_MODULE,
+        ghPath: path.join(scriptBin, "gh"),
+      })
+    ).env;
     expect(named.LEGION_GH_PATH).toBe(path.join(scriptBin, "gh"));
   },
   600_000
@@ -227,7 +235,9 @@ const promptPart = (name: string) =>
 
 // The prompt a launch of a role starts with is the daemon's composition of that role's parts and
 // its addressing, and a tree's root architect is told the design gate steps after its addressing;
-// the text starts with the role's first part and ends with the addressing's last sentence.
+// the text starts with the role's first part and ends with the addressing's last sentence. The
+// addressing names the repository and default branch of the rig's world (rig-world.json), so a
+// worker that reads its repository there reads the one the gh stand-in serves the pull request of.
 test.skipIf(skip)(
   "composes the prompt a launch of a role starts with: its parts, its addressing, and a root architect's design gate",
   () => {
@@ -249,6 +259,8 @@ test.skipIf(skip)(
     for (const prompt of [child, reviewer]) {
       expect(prompt).toMatch(/\n\nLegion addressing: your role topic is [^\n]*\.$/);
     }
+    const repository = `Your issue's repository is ${RIG_WORLD.repository} (default branch ${RIG_WORLD.defaultBranch}); `;
+    for (const prompt of [root, child, reviewer]) expect(prompt).toContain(repository);
   },
   600_000
 );

@@ -45,6 +45,12 @@ func pacedWakes() *wakepace.Limiter {
 	return wakepace.New(testWakeRate, testWakeBurst, rand.N[time.Duration])
 }
 
+// wakePaceOf is the supervise pacing the daemon hands its machines from limiter at the shipped
+// pace: its Reserve and its Interval from that one limiter, as openSupervision takes them.
+func wakePaceOf(limiter *wakepace.Limiter) supervise.WakePace {
+	return supervise.WakePace{Reserve: limiter.Reserve, Interval: limiter.Interval(), Rate: testWakeRate, Burst: testWakeBurst}
+}
+
 // wakeEngine is the workflow engine as the daemon builds it when the pacing is on: its clock held
 // at now, and its Reserve the limiter's (openWorkflow). A nil limiter is the pacing off, which is
 // the daemon giving the engine no Reserve at all.
@@ -428,7 +434,7 @@ func TestTheOutboxWritesTheWakeLineWhenItRunsAPacedNoticeRow(t *testing.T) {
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.WakePace = supervise.WakePace{Reserve: pacedWakes().Reserve, Rate: testWakeRate, Burst: testWakeBurst}
+	sup.deps.WakePace = wakePaceOf(pacedWakes())
 	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 	now := wakeOrigin
 	var logged bytes.Buffer
@@ -478,7 +484,7 @@ func TestABurstReleasedCatchUpWritesAWakeLineThatWaitedNothing(t *testing.T) {
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.WakePace = supervise.WakePace{Reserve: pacedWakes().Reserve, Rate: testWakeRate, Burst: testWakeBurst}
+	sup.deps.WakePace = wakePaceOf(pacedWakes())
 	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 	now := wakeOrigin
 	var logged bytes.Buffer
@@ -529,7 +535,7 @@ func TestAReHeldPacedCatchUpWritesItsOneWakeLineWhenItsCopyPublishes(t *testing.
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.WakePace = supervise.WakePace{Reserve: pacedWakes().Reserve, Rate: testWakeRate, Burst: testWakeBurst}
+	sup.deps.WakePace = wakePaceOf(pacedWakes())
 	architectClaimOn(t, sup, "LEGION-1", supervise.StateWorking, "ses_live")
 	now := wakeOrigin
 	var logged bytes.Buffer
@@ -589,7 +595,7 @@ func TestARetriedPacedCatchUpWritesOneWakeLineWithTheWaitItsReservationGave(t *t
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.WakePace = supervise.WakePace{Reserve: pacedWakes().Reserve, Rate: testWakeRate, Burst: testWakeBurst}
+	sup.deps.WakePace = wakePaceOf(pacedWakes())
 	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 	now := wakeOrigin
 	var logged bytes.Buffer

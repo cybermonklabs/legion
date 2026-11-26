@@ -305,7 +305,7 @@ func (c *checkStatesSettler) settleRound(ctx context.Context, issue string) (mor
 		if _, err := pool.Exec(ctx, `select pull_request_former_heads_drain($1)`, issue); err != nil {
 			return false, fmt.Errorf("drain the former heads owed to %s: %w", issue, err)
 		}
-		heads, err := c.server.deps.Attributor.HeadsAttributedTo(ctx, pool, issue)
+		heads, err := c.server.deps.Attributor.HeadsAttributedTo(ctx, pool, issue, delivery.HeadAnswers{})
 		if err != nil {
 			return false, err
 		}

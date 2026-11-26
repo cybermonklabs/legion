@@ -61,8 +61,8 @@ function put(file: string, text: string, mode = 0o644) {
 }
 
 // The checkout: this rig.sh, the world it reads (rig-world.json), the catalogs it reads for every
-// run (heads-scenarios.txt) and for each askgate run (askgate-cases.txt), and the e2e helpers it
-// sources, with the two Dispatch stand-ins.
+// run (heads-scenarios.txt) and for each askgate run (askgate-cases.txt), the e2e helpers it
+// sources and packages/envoy's pg-url.sh, which it sources too, with the two Dispatch stand-ins.
 const co = path.join(scratch, "checkout");
 const rig = path.join(co, "packages/pi-legion/scripts/skill-scenarios/rig.sh");
 const stub = path.join(scratch, "stub");
@@ -82,6 +82,9 @@ stagings.push(() => {
     mkdirSync(path.join(co, "scripts/e2e/lib"), { recursive: true });
     copyFileSync(path.join(root, "scripts/e2e/lib", lib), path.join(co, "scripts/e2e/lib", lib));
   }
+  const pgUrl = "packages/envoy/scripts/lib/pg-url.sh";
+  mkdirSync(path.dirname(path.join(co, pgUrl)), { recursive: true });
+  copyFileSync(path.join(root, pgUrl), path.join(co, pgUrl));
   mkdirSync(stub);
 });
 put(

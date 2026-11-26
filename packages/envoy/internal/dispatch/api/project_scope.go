@@ -24,20 +24,24 @@ package api
 //     the handler will write, and the check needs no transaction of its own.
 //   - The check is a no-op for a credential that carries no project: a browser cookie, a personal
 //     agent token, a Kubernetes service-account token and the shared token name none, and so do
-//     four access tokens the broker issues, each of which reaches brokerTokenActor with no
+//     five access tokens the broker issues, each of which reaches brokerTokenActor with no
 //     Project. Two of them the broker scopes to a person rather than to one project, and both
 //     carry `project_scope` `person`: a dev box session's, unscoped here with no second mechanism
 //     of its own, and a machine's that names a service and no person, whose every write
 //     writeNeedsASignedInPerson refuses below. The third is the `named` token of an account
 //     entry that names no project (`<service account>==<person>`, the shared public-session
 //     account's), which names its person and writes wherever Dispatch's own rules let it
-//     (brokerTokenActor). The fourth is a read-only token, which carries `project_scope` `none`
-//     and the scope `read` alone, names a service and no person, and never reaches this check:
-//     the read-only gate register puts outside it answers that token
-//     403 READ_ONLY_TOKEN on every route the read list does not name, every write among them
-//     (refuseLimitedToken, readScopeRoutes). That is the rule and not a transitional measure:
-//     every caller that exists today writes exactly what it wrote before, which is what lets
-//     this deploy before anything presents a broker token.
+//     (brokerTokenActor). The fourth is the `named` token of an account entry that names no
+//     person either (`<service account>==`), which names the account as its service and writes
+//     the same way, recorded under that account. The fifth is the read entry's token, which
+//     carries `project_scope` `none` and the scope `read` alone and names a service and no
+//     person. It never reaches this check, and nor does any other read-only credential (a token
+//     narrowed to reading, which may name the project it reads as, or an account it would have
+//     written as): the read-only gate register puts outside it answers every such credential 403
+//     READ_ONLY_TOKEN on every route outside the read class, every write among them
+//     (refuseReadOnlyToken, readClasses). That is the rule and not a transitional measure: every
+//     caller that exists today writes exactly what it wrote before, which is what lets this
+//     deploy before anything presents a broker token.
 //
 // For a credential that does name a project, the check fails closed: only a target that
 // resolves to that credential's own project reaches the handler. A target that resolves to
@@ -424,10 +428,10 @@ func addressesOneSession(route apiRoute) bool {
 }
 
 // writeNeedsASignedInPerson refuses every write by a caller whose credential names a service and
-// no person: an access token the secrets broker issued to a machine nobody has signed in on. The
-// refusal is here, in front of every mutating row whatever its class, rather than in each route,
-// for the reason the two checks above are: a route added later is covered by the table it joins
-// and not by a line someone remembered to write.
+// no person under the project scope person: an access token the secrets broker issued to a
+// machine nobody has signed in on. The refusal is here, in front of every mutating row whatever
+// its class, rather than in each route, for the reason the two checks above are: a route added
+// later is covered by the table it joins and not by a line someone remembered to write.
 //
 // Such a caller may read everything its session may read. What it may not do is write, because
 // Dispatch records a write under the person who made it and this credential names none; a
@@ -435,26 +439,63 @@ func addressesOneSession(route apiRoute) bool {
 // refusal's message names `agent-secrets login`, the command that signs a person in on that
 // machine, since running it is the whole remedy.
 //
-// A read-only token names a service and no person too, but it is no such caller: it reads only
-// what the read list names, and signing a person in is no remedy for it. It never reaches this
-// check, since the read-only gate register puts outside it has already answered it 403
-// READ_ONLY_TOKEN (refuseLimitedToken).
+// A token that names a service and no person under the project scope named is no such caller:
+// the broker minted it from an account entry that names no person and no project, and its
+// service is that account, which the operator listed. Its writes are recorded under that account
+// (model.Actor.Service), so it reaches the handler as a credential naming a person does, and it
+// is held to the routes its lack of OAuth scope leaves it (gateRouteScopes). The test is on the
+// project scope the broker answered, `named` and nothing else, so a scope this check does not
+// know is refused as a machine's is.
+//
+// A read-only token may name a service and no person too, an account entry's narrowed to
+// reading among them, but it is no such caller: it may only read, and signing a person in is no
+// remedy for it. It never reaches this check, since the read-only gate register puts outside it
+// has already answered it 403 READ_ONLY_TOKEN, as it answers a read-only token on every write
+// (refuseReadOnlyToken), and signInRequired answers it false.
 //
 // Every other credential is unaffected: a cookie, a personal token, a service-account token, the
 // shared token and a broker token that does name a person each reach the handler as before, at
 // the cost of the one header read brokerCredentialActor makes.
+//
+// The decision is signInRequired's, which whoami answers as sign_in_required, so a client reads
+// it from Dispatch rather than guessing it from the shape of who it is.
 func (s *server) writeNeedsASignedInPerson(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		actor, resolved := s.brokerCredentialActor(r)
-		if !resolved || actor.Owner != nil || actor.Service == nil {
+		service, required := s.signInRequired(r)
+		if !required {
 			handler(w, r)
 			return
 		}
 		writeError(w, contracts.DispatchSignInRequired, http.StatusForbidden, fmt.Sprintf(
 			"this request's credential acts for service %s and no person, so there is nobody to "+
 				"record this write under; run `agent-secrets login` on this machine and try again",
-			*actor.Service))
+			service))
 	}
+}
+
+// signInRequired is the one decision writeNeedsASignedInPerson refuses a write on and whoami
+// answers as sign_in_required: whether r presents a broker-issued token that resolved, may write,
+// and names a service and no person, and is no account entry's (actsAsItsAccount), which is a
+// machine nobody has signed in on, and the service that token names. Every other caller answers
+// false: a credential that is no broker token, one that did not resolve (its refusal is written
+// further in), one that names a person, an account entry's token naming no person, whose writes
+// are recorded under its account, and a read-only token, whatever it names. A read-only token
+// writes nothing whoever signs in: the read-only gate answers its every write 403
+// READ_ONLY_TOKEN before writeNeedsASignedInPerson runs, and whoami tells it read among its
+// scopes rather than that a person must sign in.
+func (s *server) signInRequired(r *http.Request) (string, bool) {
+	actor, resolved := s.brokerCredentialActor(r)
+	if !resolved || actor.Owner != nil || actor.Service == nil || actsAsItsAccount(actor) || (actor.Credential != nil && actor.Credential.ReadOnly) {
+		return "", false
+	}
+	return *actor.Service, true
+}
+
+// actsAsItsAccount answers whether a broker-issued token naming a service and no person is an
+// account entry's that names no person (the project scope named), whose writes are recorded under
+// the account it names, rather than a machine's nobody signed in on (the project scope person).
+func actsAsItsAccount(actor model.Actor) bool {
+	return actor.Credential != nil && actor.Credential.ProjectScope == ciphertoken.ProjectScopeNamed
 }
 
 // undecidableWrites names every mutating row the project check cannot decide: one writeClasses

@@ -48,6 +48,15 @@ export type ActorOrigin = z.output<typeof ActorOriginSchema>;
 export const DISPATCH_SCOPES = ["person", "approve"] as const;
 export type DispatchScope = (typeof DISPATCH_SCOPES)[number];
 
+/** The scope words a Dispatch token can carry where its scopes are listed: the agent token list,
+ *  and `scopes` in `GET /api/v1/whoami`. They are the two of `DISPATCH_SCOPES` and `read`. A
+ *  token that holds `read` is read-only (`DISPATCH_READ_ONLY_TOKEN`): a personal token holds it
+ *  alone or beside `person`, never beside `approve`. `read` is a mark on the token and not a
+ *  scope a credential acts under, so no act records it, and `DISPATCH_SCOPES` and
+ *  `ActorActSchema` keep `person` and `approve` alone. */
+export const DISPATCH_TOKEN_SCOPES = ["person", "approve", "read"] as const;
+export type DispatchTokenScope = (typeof DISPATCH_TOKEN_SCOPES)[number];
+
 /** The agent that made an act for the person it acts for: the session a broker-issued token
  *  proved, and the personal token presented, by id and name. It is absent wherever the person
  *  acted themselves, which is every act made at a browser.
@@ -105,6 +114,20 @@ export const ActorSchema = z.union([
    *  (`{kind: "system", id: "architecture-importer"}`). */
   z.strictObject({ kind: z.literal("system"), id: z.string() }).readonly(),
 ]);
+
+/**
+ * The actor and the act exactly as Dispatch writes them: what `ActorSchema` and `ActorActSchema`
+ * parse, which is what every `DispatchEvent` payload of this package carries.
+ *
+ * They are deliberately not the contract's `Actor` and `ActorAct`, which are the OpenAPI
+ * document's reading and keep the plain names: that reading's `kind` is a `string` and its
+ * optional fields do not carry `undefined`, so neither type is assignable to the other
+ * (`dispatch-api-spellings.test.ts`). A renderer handed an actor from a payload names these, as
+ * one handed an actor from a served row names `Actor`.
+ */
+export type WrittenActorAct = z.output<typeof ActorActSchema>;
+
+export type WrittenActor = z.output<typeof ActorSchema>;
 
 /**
  * An actor as a bus frame carries it, in the three readings the inbound parsers need.
@@ -259,6 +282,11 @@ export const ProjectSchema = z
      *  `PUT /api/v1/projects/{key}/default-repository` sets and clears it. Absent when the
      *  project has none, and from a Dispatch older than the field. */
     default_repo: z.string().optional(),
+    /** Whether the project needs a credential that proves the session: when it is on, an
+     *  architect's write of an issue's spec or Verification document passes only on a credential
+     *  that proves the architect's session, and a role-holder publication only on one that proves
+     *  `legion-daemon:<project>`. Off by default. Dispatch always answers it. */
+    proven_sessions: z.boolean(),
     created_at: z.string(),
   })
   .readonly();
@@ -386,3 +414,26 @@ export const PriorityUpdatedEventPayloadSchema = z
   .readonly();
 
 export type PriorityUpdatedEventPayload = z.output<typeof PriorityUpdatedEventPayloadSchema>;
+
+/** `project.access_changed`: one write of a project's owner, visibility, access list or Slack
+ *  channels committed. It names the project and which change it was, and nothing else: no email,
+ *  group name or channel id, since every reader of the project's events reads it. It is owned by
+ *  the project and wakes nobody. */
+export const ProjectAccessChangedEventPayloadSchema = z
+  .strictObject({
+    project: z.string(),
+    change: z.enum([
+      "owner",
+      "visibility",
+      "person_added",
+      "person_removed",
+      "group_added",
+      "group_removed",
+      "slack_channels",
+    ]),
+  })
+  .readonly();
+
+export type ProjectAccessChangedEventPayload = z.output<
+  typeof ProjectAccessChangedEventPayloadSchema
+>;

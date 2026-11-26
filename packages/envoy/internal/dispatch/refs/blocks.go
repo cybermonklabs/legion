@@ -117,8 +117,10 @@ func ReadBlockIndex(ctx context.Context, q Queryer, artifactID string) (BlockInd
 // version row is only queued hands it over from what that row will hold (docs' planBlockIndex),
 // since no read of the row answers yet; one whose row is stored reads it (ReadIndexedVersion).
 type IndexedVersion struct {
-	RefKey string
-	Writer model.Actor
+	RefKey  string
+	Writer  model.Actor
+	Project string
+	Parties []string
 }
 
 // VersionBlocks is the version a block-index pass indexes (PlanBlocks), the inputs that travel
@@ -273,7 +275,7 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 	writer := version.Record.Writer
 	nodes, fits := indexing.indexedNodes(version.Blocks)
 	texts := indexing.planBlockTexts(index, version.Markdown, nodes, fits, now)
-	statement, err := indexing.planBlockNodes(ctx, q, stale, nodes, texts, writer, now)
+	statement, err := indexing.planBlockNodes(ctx, q, stale, nodes, texts, version, now)
 	if err != nil {
 		return BlockIndexing{}, err
 	}
@@ -727,6 +729,31 @@ type blockState struct {
 // what lets the planner prove embeddings_window_owner's partial predicate and read the owner's
 // rows through that index.
 func writeWindows(ctx context.Context, tx pgx.Tx, kind, ownerKey string, windows []itemblocks.Window, state blockState) error {
+	statement, args, err := windowsStatement(kind, ownerKey, windows, state)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, statement, args...); err != nil {
+		return fmt.Errorf("write the windows of %s %s: %w", kind, ownerKey, err)
+	}
+	return nil
+}
+
+// queueWindows is writeWindows' one statement queued on a write phase's batch, for a writer that
+// decides the windows before it writes anything and sends its writes as one batch: the delete of
+// a post, whose item is left with no block and so with no window (TombstoneItem).
+func queueWindows(b *store.WriteBatch, kind, ownerKey string, windows []itemblocks.Window, state blockState) error {
+	statement, args, err := windowsStatement(kind, ownerKey, windows, state)
+	if err != nil {
+		return err
+	}
+	b.Queue(fmt.Sprintf("write the windows of %s %s", kind, ownerKey), statement, args...)
+	return nil
+}
+
+// windowsStatement is the one statement writeWindows sends and queueWindows queues, with its
+// arguments.
+func windowsStatement(kind, ownerKey string, windows []itemblocks.Window, state blockState) (string, []any, error) {
 	type row struct {
 		Suffix string   `json:"suffix"`
 		Text   string   `json:"text"`
@@ -740,11 +767,11 @@ func writeWindows(ctx context.Context, tx pgx.Tx, kind, ownerKey string, windows
 	}
 	payload, err := json.Marshal(rows)
 	if err != nil {
-		return fmt.Errorf("encode the windows of %s %s: %w", kind, ownerKey, err)
+		return "", nil, fmt.Errorf("encode the windows of %s %s: %w", kind, ownerKey, err)
 	}
-	if _, err := tx.Exec(ctx, `
+	return `
 		with state as (
-			`+state.query+`
+			` + state.query + `
 		),
 		stamped as (
 			insert into embedding_window_states (kind, owner_key, block_state, written_at)
@@ -754,15 +781,12 @@ func writeWindows(ctx context.Context, tx pgx.Tx, kind, ownerKey string, windows
 		),
 		dropped as (
 			delete from embeddings
-			where kind = $1 and kind in `+windowKinds+`
+			where kind = $1 and kind in ` + windowKinds + `
 			  and split_part(id, '#', 1) = $2 and id <> all($4::text[])
 		)
 		select embeddings_enqueue_window($1, $2 || '#' || w.suffix, w.text, w.covers)
 		from jsonb_to_recordset($3::jsonb) as w (suffix text, text text, covers text[])
-	`, append([]any{kind, ownerKey, payload, ids}, state.args...)...); err != nil {
-		return fmt.Errorf("write the windows of %s %s: %w", kind, ownerKey, err)
-	}
-	return nil
+	`, append([]any{kind, ownerKey, payload, ids}, state.args...), nil
 }
 
 // documentBlockState is the state of a document's blocks that its windows are stamped with
@@ -1179,6 +1203,11 @@ type DocumentAddress struct {
 	// that parent followed by its own. A pending issue with no parent is a root, and both paths
 	// answer the empty list.
 	PendingParent string
+	// Project is the project the document belongs to, an issue's or its own, and Session the
+	// session whose conversation holds it, "" where it is a project's: the scope its block
+	// nodes carry (IndexedVersion's Project and Parties), from the address this transaction
+	// recorded for a row it is creating or from the stored row (docs' addressOfDocument).
+	Project, Session string
 }
 
 // BlockTargets is where a write to document artifactID, which sits at address, lands and the

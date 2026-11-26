@@ -22,6 +22,7 @@ import (
 // instead waits until the test binary's deadline less testwait's margin, the row's one bound, or
 // under -timeout 0 until its day runs out and it answers ErrNotAcknowledged; either fails the row.
 func TestARequestAnswersUnavailableOnceItsWindowsLifeEndsBeforeTheClientHearsOfTheLoss(t *testing.T) {
+	t.Parallel()
 	_, url := testnats.Start(t)
 	client, err := ConnectOwningStream([]string{url})
 	if err != nil {

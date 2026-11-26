@@ -276,8 +276,8 @@ type PaneInputs struct {
 // LEGION_GH_OWNERS_DIR, the bundle's root, and
 // LEGION_GH_PATH, the real gh the `legion gh` wrapper first on the pane's PATH runs;
 // PI_SHELL_PREFIX, which keeps this daemon's launcher directory first in the agent's bash tool
-// (its legion, its gh and, where workerbin.Install writes one, its git); PI_CONFIG_FILES, the
-// operator's overlays, then the role's own, then the
+// (its legion, its gh and, where workerbin.Install writes each, its git and its jj);
+// PI_CONFIG_FILES, the operator's overlays, then the role's own, then the
 // overlays of each arm this pane's unit was drawn into, in the order the project's file declares
 // the experiments, and nothing of Legion's own, which names no
 // settings overlay at all — empty where none of the three names one), the
@@ -290,9 +290,8 @@ type PaneInputs struct {
 // issue it serves, then the
 // spec's own variables sorted, then a `<NAME>_FILE` pointer per secret file. PATH is never among
 // them — tmux would replace it (LEGION-91) — and neither is any secret's value. No other tool path
-// is told: a pane's jj is the first jj on its PATH, the daemon's, and its git is the launcher
-// directory's git wrapper where workerbin.Install writes one, and the first git on that PATH
-// otherwise.
+// is told: a pane's jj and its git are the launcher directory's jj and git wrappers where
+// workerbin.Install writes each, and the first jj and the first git on that PATH otherwise.
 //
 // A composed name is told once, which is why the operator's loop leaves it out: a second pair of
 // one name leaves the value the pane's process reads to the C library's lookup, which answers
@@ -820,14 +819,17 @@ func (r *Runtime) openPane(ctx context.Context, spec runtime.SpawnSpec, ghDefaul
 // meanwhile is left to the caller's identity read, which reports it; one still the server's copy
 // when the bound runs out is an error, and the caller kills its pane (killUnrecorded), so no
 // process the daemon never recorded runs on.
+// The bound runs on the runtime's clock (Options.Clock), so a test that moves that clock past
+// the command timeout ends this wait too. The pause between two reads is the machine's 10 ms, so
+// a fake clock that stands still keeps the launch reading the pane until the pane execs.
 func (r *Runtime) awaitPaneCommand(ctx context.Context, report paneReport) error {
-	deadline := time.Now().Add(r.commandTimeout)
+	deadline := r.clock.Now().Add(r.commandTimeout)
 	for {
 		fork, err := r.serverFork(report.pid)
 		if err != nil || !fork {
 			return err
 		}
-		if time.Now().After(deadline) {
+		if r.clock.Now().After(deadline) {
 			return fmt.Errorf("pane %s pid %d did not start its command within %s", report.pane, report.pid, r.commandTimeout)
 		}
 		select {

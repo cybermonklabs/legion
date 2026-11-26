@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { StallCall, StallWatchdogLog } from "@legion/pi-shared/stall-watchdog";
 import {
+  boundedText,
   readStallProcesses,
+  STALL_DIGEST_LIMIT,
   type StallProcessScan,
   type StallScannedProcess,
 } from "./stall-evidence";
@@ -148,10 +150,9 @@ test("the first step ends the stuck call's own processes, and only those", async
 
   // Every one of them is in the agent's tree, running the program its case names, with the
   // environment its case needs. A child the agent has forked but not yet exec'd is still a copy
-  // of the agent's shell: its command is the shell's and its environment names no call, so a
-  // scan made then reads `other` or `ended` as a process of no call started inside the call,
-  // which the second rule rightly takes (measured under gVisor: one such child was still unexec'd
-  // 15 ms after the agent printed `ready`).
+  // of the agent's shell, with the shell's command line and environment, and a scan made then
+  // judges it as that copy (src/stall-recovery.ts, "Four things it never ends"), not as the
+  // process it is about to become, so the case waits until every child runs its own program.
   const sleepers = ["before", "stuck", "other", "ended", "plain"];
   await until(async () => {
     const scan = await readStallProcesses({ agentPid: agent.pid });
@@ -241,17 +242,31 @@ test("the first step ends the stuck call's own processes, and only those", async
 // The rules, read apart from the machine: what the step would end, and what it never ends.
 // ---------------------------------------------------------------------------------------------
 
+/** A command line as `/proc/<pid>/cmdline` holds it: each argument ended by a NUL. */
+function cmdlineOf(command: string): string {
+  return `${command.split(" ").join("\0")}\0`;
+}
+
+/** One process of a scan. Its `cmdline` is its `command`'s, unless the case gives one. */
 function processOf(over: Partial<StallScannedProcess> & { pid: number }): StallScannedProcess {
+  const command = over.command ?? "sleep 300";
   return {
     ppid: 100,
-    command: "sleep 300",
     startedAt: 1_793_000_000_000,
     state: "S",
     cpuMs: 0,
     environment: {},
     ...over,
+    command,
+    cmdline: over.cmdline ?? cmdlineOf(command),
   };
 }
+
+/** The agent's own command line, which no tool process of these cases carries: Oh My Pi in RPC
+ * mode. Every scan here starts with `AGENT`, so a child built from `processOf`'s defaults is never
+ * a copy of the agent by accident. */
+const AGENT_COMMAND = "/opt/omp/bin/omp --mode rpc";
+const AGENT = processOf({ pid: 100, ppid: 1, command: AGENT_COMMAND });
 
 function scanOf(processes: readonly StallScannedProcess[]): StallProcessScan {
   return { read: true, processes };
@@ -272,9 +287,7 @@ test("the agent's own process is never ended, whatever its environment names", (
     ...base,
     call,
     openCalls: [call],
-    scan: scanOf([
-      processOf({ pid: 100, ppid: 1, environment: { PI_TOOL_CALL_ID: "toolu_stuck" } }),
-    ]),
+    scan: scanOf([{ ...AGENT, environment: { PI_TOOL_CALL_ID: "toolu_stuck" } }]),
   });
   expect(found).toEqual({
     rule: "none",
@@ -287,7 +300,7 @@ test("a call's grandchildren go with it, and another call's child never does", (
     ...base,
     call: callOf({ startedAt: 1_793_000_000_000 }),
     scan: scanOf([
-      processOf({ pid: 100, ppid: 1 }),
+      AGENT,
       processOf({ pid: 101, environment: { PI_TOOL_CALL_ID: "toolu_stuck" } }),
       // A grandchild that lost the stamp, and one of another call that did not.
       processOf({ pid: 102, ppid: 101 }),
@@ -297,12 +310,84 @@ test("a call's grandchildren go with it, and another call's child never does", (
   expect(found).toEqual({ rule: "named-call", pids: [101, 102] });
 });
 
+test("a copy of the agent that has not yet exec'd its program is left alone by the clock rule", () => {
+  // What a copy of the agent is: src/stall-recovery.ts, "Four things it never ends".
+  const call = callOf({ toolCallId: "toolu_nameless", startedAt: 1_793_000_000_000 });
+  const scan = scanOf([
+    AGENT,
+    processOf({ pid: 101, command: AGENT_COMMAND, startedAt: 1_793_000_000_500 }),
+    processOf({ pid: 102, startedAt: 1_793_000_000_500 }),
+    // The agent's command line on a grandchild, which started inside the call: the spare holds
+    // only for a direct child of the agent, so the clock rule takes it.
+    processOf({ pid: 103, ppid: 102, command: AGENT_COMMAND, startedAt: 1_793_000_000_600 }),
+  ]);
+  expect(stallCallProcesses({ ...base, call, openCalls: [call], scan })).toEqual({
+    rule: "started-after",
+    pids: [102, 103],
+  });
+});
+
+test("a child with the agent's command line that names this call is the call's, and goes", () => {
+  // A `bash` call that runs the agent's own command line: its process carries the call's name, so
+  // it is no copy of the agent, whose environment names no call.
+  const call = callOf({ toolCallId: "toolu_stuck", startedAt: 1_793_000_000_000 });
+  const scan = scanOf([
+    AGENT,
+    processOf({
+      pid: 101,
+      command: AGENT_COMMAND,
+      startedAt: 1_793_000_000_500,
+      environment: { PI_TOOL_CALL_ID: "toolu_stuck" },
+    }),
+  ]);
+  expect(stallCallProcesses({ ...base, call, openCalls: [call], scan })).toEqual({
+    rule: "named-call",
+    pids: [101],
+  });
+});
+
+test("a child running the agent's binary with other arguments is no copy of the agent", () => {
+  const call = callOf({ toolCallId: "toolu_nameless", startedAt: 1_793_000_000_000 });
+  const scan = scanOf([
+    AGENT,
+    processOf({ pid: 101, command: "/opt/omp/bin/omp --version", startedAt: 1_793_000_000_500 }),
+  ]);
+  expect(stallCallProcesses({ ...base, call, openCalls: [call], scan })).toEqual({
+    rule: "started-after",
+    pids: [101],
+  });
+});
+
+test("a command line the agent's shares only up to the evidence's cut is no copy of the agent", () => {
+  // The evidence prints each command line cut to STALL_DIGEST_LIMIT characters, so two command
+  // lines that differ only past the cut print the same; the copy is told by every byte.
+  const call = callOf({ toolCallId: "toolu_nameless", startedAt: 1_793_000_000_000 });
+  const long = `/bin/sh -c ${"x".repeat(1_100)}`;
+  const printed = boundedText(long, STALL_DIGEST_LIMIT);
+  const scan = scanOf([
+    processOf({ pid: 100, ppid: 1, command: printed, cmdline: cmdlineOf(`${long}a`) }),
+    processOf({
+      pid: 101,
+      command: printed,
+      cmdline: cmdlineOf(`${long}b`),
+      startedAt: 1_793_000_000_500,
+    }),
+  ]);
+  expect(boundedText(`${long}b`, STALL_DIGEST_LIMIT)).toBe(
+    boundedText(`${long}a`, STALL_DIGEST_LIMIT)
+  );
+  expect(stallCallProcesses({ ...base, call, openCalls: [call], scan })).toEqual({
+    rule: "started-after",
+    pids: [101],
+  });
+});
+
 test("a process already ended is not ended again", () => {
   const found = stallCallProcesses({
     ...base,
     call: callOf({ startedAt: 1_793_000_000_000 }),
     scan: scanOf([
-      processOf({ pid: 100, ppid: 1 }),
+      AGENT,
       processOf({ pid: 101, state: "Z", environment: { PI_TOOL_CALL_ID: "toolu_stuck" } }),
     ]),
   });
@@ -311,7 +396,7 @@ test("a process already ended is not ended again", () => {
 
 test("a runner that names another session, or no session, is left alone", () => {
   const runners = scanOf([
-    processOf({ pid: 100, ppid: 1 }),
+    AGENT,
     processOf({
       pid: 101,
       command: "/usr/bin/python3 -u /tmp/omp-python-runner-a.py",
@@ -329,7 +414,7 @@ test("a runner that names another session, or no session, is left alone", () => 
 
 test("a second open call of the tool leaves the runner alone, where one call takes it", () => {
   const runner = scanOf([
-    processOf({ pid: 100, ppid: 1 }),
+    AGENT,
     processOf({
       pid: 101,
       command: "/usr/bin/python3 -u /tmp/omp-python-runner-a.py",

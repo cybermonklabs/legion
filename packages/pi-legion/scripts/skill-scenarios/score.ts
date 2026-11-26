@@ -23,6 +23,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
+import { RECORD_HEAD } from "@legion/pi-shared/handoff-record";
 import { z } from "zod";
 // The gate's own names for its rules and the line its refusal opens with, read from the module
 // that writes them, so this rig scores what AskGate actually says. The rigs are not shipped
@@ -125,39 +126,49 @@ const DaemonLine = z.looseObject({
   handoffId: z.string().optional(),
   handoffVersion: z.number().optional(),
 });
-const nonEmpty = z.string().min(1);
-/** The keys a test handoff no longer holds: no completion or record carries a verdict on the
- * implementer's results, and each failure is a fail result on its check (`dispatch result
- * --verdict fail`), never a field of the handoff. TestHandoff refuses a body that holds one. */
-const TEST_HANDOFF_REFUSES = ["implementerProof", "failures", "failed"] as const;
+/** The keys a test handoff holds, as the tester role's prompt gives them, each with the shape the
+ * score reads (TestHandoff): `head`, and a `note` where the tester has one. It holds no verdict on
+ * the implementer's results and no field for a failure (`implementerProof`, `failures`, `failed`):
+ * no completion or record carries a verdict on the implementer's results, and each failure is a
+ * fail result on its check (`dispatch result --verdict fail`), never a field of the handoff. */
+const TEST_HANDOFF_KEYS = {
+  head: z.string().regex(RECORD_HEAD),
+  note: z.string().optional(),
+};
 /** The tester's handoff as the tester role's prompt spells it (the `test` shape; nothing in the
- * daemon holds it to one), as far as the score reads it: the stamps the tester writes itself
- * (`schemaVersion` 1, `phase` test and its `issue`), and none of TEST_HANDOFF_REFUSES, each of
- * which it refuses by name. What the tester ran is no part of the handoff: it is a result recorded
- * against a `check` block of the issue's Verification document (`dispatch result`), which the pull
- * request body carries one line of per check. The body carries
- * neither a time nor a `previousHandoff`, since Dispatch records when each handoff was written and
- * versions it; the object is loose, so a body from a checkout whose prompt still asks for
- * `previousHandoff` (main's, since sjawhar/legion#2585) or for a `completed` time (the prompt
- * before it) reads too, and the comparison measures the rule the score is about rather than the
- * fields the labels' prompts vary.
+ * daemon holds it to one), as far as the score reads it: `head`, the commit the tester tested, as
+ * 40 lower-case hexadecimal characters (pi-shared's `RECORD_HEAD`, as `recordHead` reads it), and
+ * a `note`, whose length the score does not read. It holds no verdict on the implementer's recorded
+ * results and no failures: each failure is a fail result on its check. What the tester ran is no
+ * part of the handoff: it is a result recorded against a `check` block of the issue's Verification
+ * document (`dispatch result`), which the pull request body carries one line of per check. The
+ * record holds the issue (`issue_key`) and the phase, and Dispatch records when each handoff was
+ * written and versions it, so the body holds no stamp, no time and no `previousHandoff`.
+ * The body is held to those keys on purpose. The check reads the own keys of the input, the object
+ * that `JSON.parse` made, before an object schema copies it: the output of an object schema never
+ * holds a `__proto__` key. A loose object assigns that key, which sets the output's prototype, and
+ * a plain object drops it. Each own key outside TEST_HANDOFF_KEYS, `__proto__` and inherited names
+ * such as `constructor` included, and so each of `implementerProof`, `failures` and `failed`, is one
+ * issue at that key, `a test handoff holds no <key>`, which `z.prettifyError` prints by name and
+ * which the tests read. The pipe runs the object schema only when the check refuses no key. So a
+ * base checkout's body, whose prompt still gives `schemaVersion`, `phase` and `issue` (and, in
+ * older prompts, `previousHandoff`, a `completed` time, `proof` or `classSearch`), is refused, and
+ * that refusal is what the negative control of INFRA-4942's `d-scenario` check reads.
  * Nothing stamps a handoff for the tester: it writes the whole body and records it with
  * `dispatch handoff-write`. */
 export const TestHandoff = z
-  .looseObject({
-    schemaVersion: z.literal(1),
-    phase: z.literal("test"),
-    issue: nonEmpty,
-  })
-  .superRefine((body, context) => {
-    for (const key of TEST_HANDOFF_REFUSES)
-      if (Object.hasOwn(body, key))
+  .unknown()
+  .superRefine((input, context) => {
+    if (typeof input !== "object" || input === null || Array.isArray(input)) return;
+    for (const key of Object.keys(input))
+      if (!Object.hasOwn(TEST_HANDOFF_KEYS, key))
         context.addIssue({
           code: "custom",
           path: [key],
           message: `a test handoff holds no ${key}`,
         });
-  });
+  })
+  .pipe(z.object(TEST_HANDOFF_KEYS));
 
 function lines(file: string): string[] {
   if (!existsSync(file)) return [];
@@ -676,11 +687,12 @@ function instant(text: string, what: string): bigint {
  *   2. the accepted completion names a record of the run's issue, at its version, recorded before
  *      the completion: the record comes first, since the `legion` tool's handoff_complete reports
  *      the phase's newest record and refuses when there is none;
- *   3. that record is a `test` record this run's own session wrote (the transcript header's id, the
- *      session `dispatch handoff-write` names), whose body is a test handoff (TestHandoff) of this
- *      issue, which holds no verdict on the implementer's results and no field for a failure,
- *      since no phase completion carries a verdict, the check states move the issue, and each
- *      failure is a fail result on its check; and the branch as the tester
+ *   3. that record is a `test` record of this issue (the record's `issue_key`, since the body holds
+ *      no issue) that this run's own session wrote (the transcript header's id, the session
+ *      `dispatch handoff-write` names), whose body is a test handoff (TestHandoff), which holds no
+ *      verdict on the implementer's results and no field for a failure, since no phase completion
+ *      carries a verdict, the check states move the issue, and each failure is a fail result on its
+ *      check; and the branch as the tester
  *      completed it (its last push before the completion, if it pushed) changes nothing under the
  *      PR's head: the handoff is never a commit, and the fixture leaves no defect for a red test;
  *   4. the PR body the gh stand-in kept last carries the line `dispatch result` printed for the
@@ -764,6 +776,8 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   if (record === undefined) problems.push(`no test record of this run's session on ${world.key}`);
   else {
     if (record.phase !== "test") problems.push(`the record is a ${record.phase} record`);
+    if (record.issue_key !== world.key)
+      problems.push(`the record is ${record.issue_key}'s, not ${world.key}'s`);
     if (record.author.kind !== "session" || record.author.id !== ownSession)
       problems.push(
         `${record.author.kind} ${record.author.id ?? ""} wrote the record, not this run's session ${ownSession}`
@@ -776,8 +790,6 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
     }
     const read = TestHandoff.safeParse(body);
     if (!read.success) problems.push(`not a test handoff: ${z.prettifyError(read.error)}`);
-    else if (read.data.issue !== world.key)
-      problems.push(`issue is ${read.data.issue}, not ${world.key}`);
   }
   const tip = pushes.filter((p) => completedAt === undefined || p.at < completedAt).at(-1);
   if (tip !== undefined) {
@@ -1114,8 +1126,9 @@ function headsArchitect(
   };
 }
 
-/** rig.sh's own_dispatch record, <run>/dispatch.json: the run's own Dispatch, a database in the
- * batch's Postgres container (its id) and the server on it. */
+/** rig.sh's own_dispatch record, <run>/dispatch.json: the run's own Dispatch, a database on the
+ * batch's Postgres (the container's id, or the given server's URL with no password) and the server
+ * on it. */
 const RunDispatch = z.object({
   postgres: z.string().min(1),
   database: z.string().min(1),
@@ -1149,13 +1162,15 @@ const BATCH_DISPATCH_NOTE =
 // (turns.txt, state-<turn>.json), the captured issue (spec.md, spec-versions/, agent-asks.json,
 // agent-texts.json, documents/, plan.md) and the judges' answers (faults.json and the rest).
 
-/** The outline every spec must follow: its `##` headings, exactly and in this order. The checks
- * are not among them: they live in the issue's Verification document, as `check` blocks. */
+/** The outline every spec must follow: its `##` headings, exactly and in this order. The
+ * Verification part only points to the issue's Verification document, which holds the checks as
+ * `check` blocks. */
 export const OUTLINE = [
   "Summary",
   "Problem",
   "Goals and non-goals",
   "Requirements",
+  "Verification",
   "Design",
   "Decisions",
 ] as const;
@@ -2216,7 +2231,7 @@ function namedTasks(step: Step): { name: string; assignment: string }[] | undefi
   }
   return parts;
 }
-/** Whether a check's assignment is a spec-only check's: it holds the six outline headings as `##`
+/** Whether a check's assignment is a spec-only check's: it holds the outline's headings as `##`
  * lines and names no path under a checkout in `reach`. */
 function specOnly(assignment: string, reach: string[]): boolean {
   const outlined = OUTLINE.every((heading) =>
@@ -2298,16 +2313,16 @@ function specSlices(assignment: string): string[] {
 }
 /** The least share of a version the run's session wrote that a pasted spec covers, for the check
  * to be of this run's spec. An agent that splits out a sibling issue can send the sibling's spec
- * for review, alone or after its own spec in one assignment; that spec holds the six headings
- * too, but the report's findings on it are about another spec. Each spec of an assignment is
- * measured on its own (specWork's kindOf), and one that pastes both is `mixed`. The share is
- * recall over the written version (how much of the version's 5-word runs the pasted spec holds,
- * the best over the versions), not over the pasted text: text pasted after the spec, with no
- * heading to end its slice, cannot lower it, and a sibling spec that borrows a few of the parent's
- * sections covers little of the parent. On the 67 spec runs of the dispatch skills' acceptance
- * measurement, each of the 9 sibling specs sent for review (7 alone, 2 after the run's own)
- * covered at most 0.01 of any version, and each of the run's own specs at least 0.24, a draft the
- * agent rewrote in plain words after the check included. */
+ * for review, alone or after its own spec in one assignment; that spec holds the outline's
+ * headings too, but the report's findings on it are about another spec. Each spec of an
+ * assignment is measured on its own (specWork's kindOf), and one that pastes both is `mixed`.
+ * The share is recall over the written version (how much of the version's 5-word runs the
+ * pasted spec holds, the best over the versions), not over the pasted text: text pasted after
+ * the spec, with no heading to end its slice, cannot lower it, and a sibling spec that borrows
+ * a few of the parent's sections covers little of the parent. On the 67 spec runs of the
+ * dispatch skills' acceptance measurement, each of the 9 sibling specs sent for review (7 alone,
+ * 2 after the run's own) covered at most 0.01 of any version, and each of the run's own specs at
+ * least 0.24, a draft the agent rewrote in plain words after the check included. */
 const OWN_SPEC = 0.1;
 /** Each pasted spec's best share, over the versions the session wrote (each version's 5-word
  * runs), of a version's runs that the spec holds, in order. */
@@ -2325,8 +2340,8 @@ function ownSpecShares(assignment: string, versions: Set<string>[]): number[] {
 }
 /** The spec writes of the run's session (writesSpec, against the run's fixture.json) and the
  * spec-only checks before them: the one list of checks that both specRow's `checked` and the
- * findings judge (judgeInputs, judge.ts) read. A spec-only check's assignment holds the six
- * outline headings as `##` lines and names no path under a checkout in `reach` (specOnly). A check
+ * findings judge (judgeInputs, judge.ts) read. A spec-only check's assignment holds the outline's
+ * headings as `##` lines and names no path under a checkout in `reach` (specOnly). A check
  * is either of:
  * - a `task` call of the session's transcript. It counts for the first spec write after it when its
  *   tasks' reports came back before that write (checkOutcome); either way it counts for no later
@@ -2827,7 +2842,8 @@ export function sharedRuns(runDir: string): SharedRun[] {
  *   when the person approved none (then no checkable judge runs);
  * - `asks`: agent-asks.json less the approval request and the seeded asks, oldest first at full
  *   precision (Dispatch writes `…:00.5Z` before `…:00.51Z`, which text order reverses);
- * - `texts`: agent-texts.json less the seeded asks;
+ * - `texts`: agent-texts.json less the seeded asks. agent-texts.json holds no post the run
+ *   deleted, because the capture (seed.ts's captureSpec) leaves each out (dispatch://INFRA-1523);
  * - `documents`: each file of documents/, as `documents/<file>`;
  * - `checks`: how many spec-only checks count for a spec write, from specWork, the one list of
  *   checks specRow's `checked` reads too: with none, no findings judge runs and findings.json has
@@ -2993,9 +3009,9 @@ const indented = (text: string, depth = 6) =>
  *   - asked and grew: the run held the conversation before it wrote the design
  *     (conversationOrder). `asked` is the session's first question to the person being older than
  *     its first spec version, so a run that writes a draft and asks after it fails however short
- *     that draft is; `grew` is no version stating a design (`## Requirements`, `## Design` or
- *     `## Acceptance`) before the person has answered a question of the run's own. A session that
- *     wrote no version fails both.
+ *     that draft is; `grew` is no version stating a design (`## Requirements` or `## Design`)
+ *     before the person has answered a question of the run's own. A session that wrote no
+ *     version fails both.
  *   - outline: outlineProblems finds nothing.
  *   - checked: the transcript holds at least one spec write (writesSpec: a write Dispatch made of
  *     the run's own primary spec, each `dispatch` command of a call apart), a spec-only check
@@ -3034,7 +3050,7 @@ const indented = (text: string, depth = 6) =>
  *     preamble.json's passages by kind; proposal.json's verdicts. Each row whose id is in
  *     seeded.json is left out. */
 /** The `##` headings whose sections hold a design, compared without case or inner spacing. */
-const DESIGN_HEADINGS = ["requirements", "design", "acceptance"];
+const DESIGN_HEADINGS = ["requirements", "design"];
 
 /** Whether this version of a spec states a design, which is what the conversation rule holds back
  *  until the person has answered.
@@ -3044,10 +3060,10 @@ const DESIGN_HEADINGS = ["requirements", "design", "acceptance"];
  *  `## Requirements`, and a `## Design` heading with nothing under it states none (both measured
  *  on this scorer by the review of 2026-11-05). So a version states a design when either holds:
  *
- *  - it carries a `**R<n>.**` requirement or `**A<n>.**` check paragraph, the outline's own design
- *    content, wherever in the document it sits - which also catches a design written out under
- *    `## Summary` before the conventional headings arrive;
- *  - a heading whose title is Requirements, Design or Acceptance has text of its own under it,
+ *  - it carries a `**R<n>.**` requirement paragraph, the outline's own design content, wherever
+ *    in the document it sits - which also catches a design written out under `## Summary` before
+ *    the conventional headings arrive;
+ *  - a heading whose title is Requirements or Design has text of its own under it,
  *    read with the heading pattern `outlineProblems` uses, so spacing and a trailing `#` change
  *    nothing.
  *
@@ -3055,7 +3071,7 @@ const DESIGN_HEADINGS = ["requirements", "design", "acceptance"];
  *  neither. */
 export function statesDesign(spec: string): boolean {
   const text = withoutFences(spec);
-  if (marked(text).some((paragraph) => /^[RA]\d/.test(paragraph.mark))) return true;
+  if (marked(text).some((paragraph) => /^R\d/.test(paragraph.mark))) return true;
   const headings = [...text.matchAll(/^(#{1,6})[ \t]+(.+?)[ \t#]*$/gm)];
   for (const [index, heading] of headings.entries()) {
     const title = (heading[2] ?? "").trim().toLowerCase().replace(/\s+/g, " ");
@@ -3345,9 +3361,9 @@ function median(values: number[]): number {
 /** Why the rig cannot score a run, or undefined when it can:
  *   - it did not have a Dispatch of its own: it records none (`dispatch` undefined: no
  *     dispatch.json) and is no spec run (BATCH_DISPATCH), or another run names the same database
- *     in the same Postgres container (`sharing`, each Dispatch's runs). A `dispatch search`
- *     searches every project of its server, so runs that share one can read each other's issue
- *     and asks, and one run's answer can be another's;
+ *     in the same Postgres (the container's id or the given server's URL) (`sharing`, each
+ *     Dispatch's runs). A `dispatch search` searches every project of its server, so runs that
+ *     share one can read each other's issue and asks, and one run's answer can be another's;
  *   - a run of a heads scenario (HEADS_SCENARIOS) whose results-before.txt holds no line of #702:
  *     its Dispatch never learned #702's head, so rig.sh's fixture_heads started no agent, and an
  *     agent's reading of the head's line would measure nothing;
@@ -3650,7 +3666,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       return [];
     }
   });
-  // Every run's own Dispatch, keyed by its Postgres container and database, with the runs that
+  // Every run's own Dispatch, keyed by its Postgres and database, with the runs that
   // name it. A run that records none is scored or not by unscored, below; a dispatch.json that does
   // not parse is its own run's rig error, below.
   const sharing = new Map<string, string[]>();

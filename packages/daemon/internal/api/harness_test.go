@@ -63,6 +63,8 @@ func (stillClock) Now() time.Time { return time.Date(2026, 9, 22, 12, 0, 0, 0, t
 
 func (stillClock) AfterFunc(time.Duration, func()) supervise.Cancel { return stopped{} }
 
+func (stillClock) At(time.Time, func()) supervise.Cancel { return stopped{} }
+
 func (stillClock) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 type stopped struct{}
@@ -256,7 +258,7 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 			Timeouts: supervise.Timeouts{
 				Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 30 * time.Second, Stop: 10 * time.Second, LaunchBackoff: time.Millisecond,
 			},
-			PluginContract:     DaemonAPIVersion,
+			PluginContract:     DaemonAPIVersion(),
 			PluginRelaunchable: relaunchable,
 			RefreshGate:        supervise.NewRefreshGate(0),
 			// The daemon's own wiring: a tree a workflow issue backs does not close here.
@@ -441,7 +443,7 @@ func (h *harness) register(bootToken, session string) *httptest.ResponseRecorder
 	h.t.Helper()
 	return h.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: bootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: "agent-" + session, PluginContract: DaemonAPIVersion,
+		AgentID: "agent-" + session, PluginContract: DaemonAPIVersion(),
 	}, nil)
 }
 
@@ -484,7 +486,7 @@ func (h *harness) registerContract(bootToken, session string, contract int, rela
 		AgentID: "agent-" + session, PluginContract: contract,
 	}, nil)
 	want := http.StatusOK
-	if contract != DaemonAPIVersion && relaunchable {
+	if contract != DaemonAPIVersion() && relaunchable {
 		want = http.StatusConflict
 	}
 	if recorder.Code != want {

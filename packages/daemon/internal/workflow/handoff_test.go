@@ -24,6 +24,7 @@ import (
 // round starts, so neither reads as the new round's completion; the tester's task then names the
 // round's record, and the commit the implementer reported with it.
 func TestReworkRoundAdvancesOnlyOnThatRoundsHandoff(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
@@ -69,6 +70,7 @@ func TestReworkRoundAdvancesOnlyOnThatRoundsHandoff(t *testing.T) {
 // (phase.RoleFor), so the route reads a record from that role's completion alone, and the task line
 // names each role's word (handoffWord).
 func TestTheHandoffWriterOfEachPhaseIsTheRoleTheWorkflowStartsOnIt(t *testing.T) {
+	t.Parallel()
 	handoffs := 0
 	for _, p := range phase.All {
 		word, writer, ok := phase.Handoff(p)
@@ -91,6 +93,7 @@ func TestTheHandoffWriterOfEachPhaseIsTheRoleTheWorkflowStartsOnIt(t *testing.T)
 // role the issue has moved on without is the other case, and its completion is recorded instead
 // (engine's leftItsPhase).
 func TestIgnoredCompletionsAreRefused(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		current phase.Phase
@@ -140,6 +143,7 @@ func TestIgnoredCompletionsAreRefused(t *testing.T) {
 // leftItsPhase records no completion while the issue stands there. The control is the same
 // completion with the issue in implementing, a phase the planner has left, where it is recorded.
 func TestArchitectUnchangedByAWorkersCompletionAtAdmitted(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		at       phase.Phase
@@ -190,6 +194,7 @@ func TestArchitectUnchangedByAWorkersCompletionAtAdmitted(t *testing.T) {
 // the request for changes moved the issue to implementing - is refused HANDOFF_NOT_CURRENT_PHASE,
 // and the row keeps the completion that was taken (engine's leftItsPhase).
 func TestAFurtherCompletionOfALeftPhaseWhoseTakenCompletionNamedNoCommitIsRefused(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	engine := testEngine(config.DesignGateRootIssues, nil)
@@ -231,6 +236,7 @@ func assertPhase(t *testing.T, pool *pgxpool.Pool, want phase.Phase) {
 // ends the round all the same, and the settlement that follows finds the issue in accepting and
 // moves nothing (dispatch://INFRA-714/spec R1).
 func TestAnApprovalBeforeTheChecksSettleAdvancesWithoutThem(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
@@ -255,6 +261,7 @@ func TestAnApprovalBeforeTheChecksSettleAdvancesWithoutThem(t *testing.T) {
 // phase ended: the completion is refused, whatever commit it reports. A new record is a new
 // handoff even at the commit the role reported before.
 func TestAHandoffMustBeNewSinceTheRolesPreviousPhase(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"})
@@ -339,6 +346,7 @@ func phaseRowOf(t *testing.T, pool *pgxpool.Pool, role claim.Role) record.PhaseR
 // the approval of head-2 waits on the daemon's read of the merge state for that head and the
 // round ends there rather than at either completion.
 func TestASecondReviewRoundIsNotCompletedByTheFirstRoundsRecord(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	engine := testEngine(config.DesignGateRootIssues, nil)
@@ -368,6 +376,7 @@ func TestASecondReviewRoundIsNotCompletedByTheFirstRoundsRecord(t *testing.T) {
 // cleared with the run, and the record it last named is kept, so its next completion must name a
 // new one.
 func TestARerunTesterIsNotCompletedByItsLastRunsRecord(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
 		Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
@@ -391,6 +400,7 @@ func TestARerunTesterIsNotCompletedByItsLastRunsRecord(t *testing.T) {
 // is no pull request a tester can test, and the completion records the handoff and leaves the
 // issue where it is, with no worker started and the status unchanged.
 func TestAnImplementerHandoffOnAPullRequestClosedWithoutMergingLeavesTheIssueInImplementing(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"})
@@ -419,6 +429,7 @@ func TestAnImplementerHandoffOnAPullRequestClosedWithoutMergingLeavesTheIssueInI
 // the merged record, where holding it for an open pull request would stall it on a branch whose
 // pull request can never open again.
 func TestAnImplementerHandoffAfterAMergeInImplementingMovesTheIssueToTesting(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"})
