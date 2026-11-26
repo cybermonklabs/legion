@@ -16,6 +16,7 @@ import {
 } from "./page-structure";
 import * as pageWords from "./page-words";
 import {
+  ADDRESS_FALLBACK_WORDS,
   ANSWER_LINES,
   ANSWER_PHRASES,
   ANSWER_SOURCES,
@@ -376,6 +377,24 @@ test("every answer to the reader's own act is one sentence with no schema token"
   // A refusal is cut where the issue it is about goes, so it is read whole, with a key in place.
   for (const { after, before } of Object.values(BLOCKED_BY_REFUSALS)) {
     const whole = `${before}CORE-9${after}`;
+    expect(sentencesIn(whole).length, whole).toBeLessThanOrEqual(1);
+    expect(whole, whole).not.toMatch(/_|#b-|dispatch:\/\//u);
+  }
+  // So is each line an address's fallback draws around the issue's key, and each heading and
+  // alert of an item, by its kind, is read whole.
+  const { back, block, children, items } = ADDRESS_FALLBACK_WORDS;
+  const fallbackLines = [
+    block.heading,
+    children.heading,
+    ...[back, block.line, children.line].map(({ after, before }) => `${before}CORE-9${after}`),
+    ...Object.values(items).flatMap(({ missing, unreadable }) => [
+      missing.heading,
+      `${missing.line.before}CORE-9${missing.line.after}`,
+      unreadable.heading,
+      unreadable.message,
+    ]),
+  ];
+  for (const whole of fallbackLines) {
     expect(sentencesIn(whole).length, whole).toBeLessThanOrEqual(1);
     expect(whole, whole).not.toMatch(/_|#b-|dispatch:\/\//u);
   }

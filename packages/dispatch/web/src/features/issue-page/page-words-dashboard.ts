@@ -175,6 +175,17 @@ export const DECISION_CARD_WORDS = freeze({
  *  after the reader's act. */
 export const DECISION_CARD_ANSWERS = freeze({ stopped: decisionStopped } as const);
 
+// The lists are typed as the join reads them (`PartWords`): two parts with tables of their own
+// give `WORD_FILES.flatMap` two element types it cannot join, so each holds `unknown`.
+const UNASKED: readonly unknown[] = [
+  DASHBOARD_WORDS,
+  PHASE_WORDS,
+  ROLE_STATE_WORDS,
+  ASK_BODY_WORDS,
+  DECISION_CARD_WORDS,
+];
+const ANSWERS: readonly unknown[] = [ASK_BODY_ANSWERS, DECISION_CARD_ANSWERS];
+
 export default {
   add: {
     EMPTY_STATE_LINES: {
@@ -182,6 +193,6 @@ export default {
       dashboard: "Nothing waits on you.",
     },
   },
-  unasked: [DASHBOARD_WORDS, PHASE_WORDS, ROLE_STATE_WORDS, ASK_BODY_WORDS, DECISION_CARD_WORDS],
-  answers: [ASK_BODY_ANSWERS, DECISION_CARD_ANSWERS],
+  unasked: UNASKED,
+  answers: ANSWERS,
 } as const satisfies PartWords;

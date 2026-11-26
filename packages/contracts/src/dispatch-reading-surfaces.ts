@@ -111,6 +111,7 @@ export type DispatchReadingSurface =
   | "ref-picker-row-label"
   | "agent-message-issue-option"
   | "issue-page-title"
+  | "issue-outline-page-title"
   | "node-row-words"
   | "node-row-child-title"
   | "node-row-first-line"
@@ -1331,6 +1332,16 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: false,
     rendered: false,
     surface: "issue-page-title",
+  },
+  // A sixth such place, beside it: the new issue page writes the same title bar
+  // (`IssueOutlinePage.tsx`) for a reader whose `issue.page` is `outline`.
+  {
+    files: ["packages/dispatch/web/src/features/issue-page/IssueOutlinePage.tsx"],
+    reach: "/issues/<ISSUE> with the new issue page, the browser's title bar",
+    reason: `${NO_MARKUP_REASON} The title bar holds an issue's key and title.`,
+    record: false,
+    rendered: false,
+    surface: "issue-outline-page-title",
   },
   {
     files: ["packages/dispatch/web/src/features/document/DocumentPage.tsx"],
