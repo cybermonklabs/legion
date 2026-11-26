@@ -312,7 +312,10 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) (fixDir, movedTo s
 // that replaced the round's, and FixFrom otherwise. One read of origin in the clone's git directory
 // (`git ls-remote`, which answers an absent branch with no line and exit 0) decides, and only where
 // it names a commit does a fetch of that one branch run, in the workspace, so the clone holds the
-// branch's head as a remote bookmark.
+// branch's head as a remote bookmark. A track of that bookmark follows: a fetch leaves it
+// untracked, and jj refuses to push a bookmark over a remote one it does not track and holds the
+// commits of one immutable. Tracked, the branch is the fix's in this clone as it was in the pod
+// that pushed it, so the fix's next push of it succeeds and the fix can rebase its own commits.
 func fixStart(request shimwire.AdoptWorkingCopy, dir, jj string, run func(stdin []byte, args ...string) (string, error)) (string, error) {
 	if request.FixBranch == "" {
 		return request.FixFrom, nil
@@ -333,6 +336,9 @@ func fixStart(request shimwire.AdoptWorkingCopy, dir, jj string, run func(stdin 
 		return request.FixFrom, nil
 	}
 	if _, err := run(nil, jj, "git", "fetch", "--remote", "origin", "--branch", request.FixBranch, "-R", dir); err != nil {
+		return "", err
+	}
+	if _, err := run(nil, jj, "bookmark", "track", "exact:"+request.FixBranch, "--remote", "exact:origin", "-R", dir); err != nil {
 		return "", err
 	}
 	return request.FixBranch + "@origin", nil
