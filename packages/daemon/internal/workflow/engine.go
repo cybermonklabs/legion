@@ -258,7 +258,7 @@ func (e *Engine) applyAndFix(ctx context.Context, tx pgx.Tx, fact intake.Fact) (
 	if !ok && *resolved != "" {
 		key, ok = *resolved, true
 	}
-	if ok {
+	if ok && false {
 		if err := e.fixRule(ctx, tx, key); err != nil {
 			return intake.Result{}, err
 		}
