@@ -478,8 +478,9 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		if len(slots) != 1 || slots[0].Issue != slot.Issue || slots[0].Index != slot.Index || !slots[0].AdmittedAt.Equal(slot.AdmittedAt) {
 			t.Fatalf("slots = %#v, want %#v", slots, slot)
 		}
-		// The slotted read admission makes on every fact returns the whole issue record, every
-		// column the issue read returns, so a column added to the issue is never left out of it.
+		// The slotted read admission makes on every pass (the pass rule on admit's
+		// Admission.Apply) returns the whole issue record, every column the issue read returns, so
+		// a column added to the issue is never left out of it.
 		slotted, err := records.SlottedIssues(ctx, tx, issue.Project)
 		must(t, err)
 		if !reflect.DeepEqual(writtenAll(t, slotted), []Issue{issue}) {

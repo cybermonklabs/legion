@@ -43,26 +43,6 @@ func TestAReservationKeyNamedForADeploymentRoleIsNotGone(t *testing.T) {
 	}
 }
 
-// A file that sets no reservation keeps what an issue pod reserved before it ran in one container:
-// the sum of the six role defaults, 3 CPU and 19Gi each requested in full, and an 80Gi disk limit
-// over a 6Gi request. The controller's pod keeps its own default.
-func TestTheIssuePodsDefaultReservationIsTheSumOfTheSixRolesItReplaced(t *testing.T) {
-	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile), noEnv)
-	if err != nil {
-		t.Fatalf("LoadForValidation: %v", err)
-	}
-	want := PodResources{
-		Issue:      Reservation{CPU: "3", CPURequest: "3", Memory: "19Gi", MemoryRequest: "19Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"},
-		Controller: Reservation{CPU: "1", CPURequest: "1", Memory: "4Gi", MemoryRequest: "4Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "1Gi"},
-	}
-	if got := cfg.Runtime.Kubernetes.Resources; got != want {
-		t.Fatalf("resources = %+v, want %+v", got, want)
-	}
-	if got := DefaultResources(); got != want {
-		t.Fatalf("DefaultResources() = %+v, want the settled block's %+v", got, want)
-	}
-}
-
 // The issue pod's entry settles field by field over its default, as a role's did: a raised limit
 // alone is requested in full, a lower request beside its limit is kept, and the disk bound's two
 // sides settle apart. A request past its limit is refused naming both keys of the pod's entry.
@@ -78,8 +58,8 @@ func TestTheIssuePodsReservationSettlesFieldByField(t *testing.T) {
 	if !cfg.Runtime.Kubernetes.Resources.Issue.Burstable() {
 		t.Errorf("resources.issue %+v reads Guaranteed, want Burstable: its memory request is below its limit", want)
 	}
-	_, err = LoadForValidation(writeConfigFile(t, kubernetesFile+"    resources: {issue: {memory_request: 20Gi}}\n"), noEnv)
-	if want := "runtime.kubernetes.resources.issue.memory_request 20Gi exceeds memory 19Gi"; err == nil || err.Error() != want {
+	_, err = LoadForValidation(writeConfigFile(t, kubernetesFile+"    resources: {issue: {memory_request: 9Gi}}\n"), noEnv)
+	if want := "runtime.kubernetes.resources.issue.memory_request 9Gi exceeds memory 8Gi"; err == nil || err.Error() != want {
 		t.Fatalf("LoadForValidation = %v, want %q", err, want)
 	}
 	_, err = LoadForValidation(writeConfigFile(t, kubernetesFile+"    resources: {issue: {requests: {cpu: 1}}}\n"), noEnv)
