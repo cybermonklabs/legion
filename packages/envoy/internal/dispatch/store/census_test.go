@@ -1957,9 +1957,10 @@ func (w postgresWait) String() string {
 
 // relayWaits starts a waitRelay to the server databaseURL names, keeping the waits of the rows whose
 // query column holds marker, and answers it with databaseURL pointed at it. It closes the relay and
-// every connection it made when t ends. It skips t, by name, where databaseURL does not say
-// sslmode=disable, since the relay reads Postgres's messages, which TLS hides, or names its server
-// by anything but the URL's host and port, as CI's and the build cluster's URLs both do.
+// every connection it made when t ends. It fails t, naming what the relay needs, where databaseURL
+// does not say sslmode=disable (the relay reads Postgres's messages, which TLS hides) or names its
+// server by anything but the URL's host and port — never skips, so the restored row can never pass
+// by asking nothing. CI's and the build cluster's URLs are plain TCP with sslmode=disable.
 func relayWaits(t *testing.T, databaseURL, marker string) (*waitRelay, string) {
 	t.Helper()
 	server, err := neturl.Parse(databaseURL)
@@ -1969,10 +1970,10 @@ func relayWaits(t *testing.T, databaseURL, marker string) (*waitRelay, string) {
 	}
 	query := server.Query()
 	if query.Get("sslmode") != "disable" {
-		t.Skip("DISPATCH_TEST_DATABASE_URL does not say sslmode=disable, and the relay this row reads the holder's wait through reads Postgres's messages, which TLS hides")
+		t.Fatal("the restored census row needs a plain-TCP DISPATCH_TEST_DATABASE_URL with sslmode=disable: the relay it reads the holder's wait through reads Postgres's messages, which TLS hides")
 	}
 	if server.Hostname() == "" || query.Has("host") || query.Has("hostaddr") || query.Has("port") {
-		t.Skip("DISPATCH_TEST_DATABASE_URL does not name its server by the URL's host and port alone, so this row cannot send the census through the relay it reads the holder's wait through")
+		t.Fatal("the restored census row needs a DISPATCH_TEST_DATABASE_URL that names its server by the URL's host and port alone, so the census can go through the relay it reads the holder's wait through")
 	}
 	port := server.Port()
 	if port == "" {
