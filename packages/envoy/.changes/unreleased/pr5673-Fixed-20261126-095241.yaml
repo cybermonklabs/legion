@@ -1,0 +1,16 @@
+kind: Fixed
+body: >-
+  Idempotent JetStream reads survive a lost reply from nats-server's
+  service-import response-prefix race (nats-server#8823, fixed upstream by
+  nats-server#8929). The reads that serve requests send once and wait their full
+  bound, and send again only when the server leaves that send unanswered, so a
+  slow-but-answering read still costs one request: the session-consumer
+  `STREAM.INFO`, the KV leader and edge `STREAM.MSG.GET`, and every stored-message
+  read of the notification stream. A start's reads, and a role or session bucket
+  open (bounded at twice `RequestTimeout`), send again sooner, each lost send
+  starting the next beside it. Server errors and permission refusals stay final on
+  a connection a client owns; on a connection no client owns, a refused
+  `STREAM.MSG.GET` cannot be told from a lost one and is sent twice.
+time: 2026-11-26T09:52:41Z
+custom:
+  Issue: pr5673

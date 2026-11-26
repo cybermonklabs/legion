@@ -190,8 +190,8 @@ func (c *Client) awaitKeeper() {
 // start removed them. A stream stamped with a generation higher than streamConfigGeneration
 // belongs to a newer build and is left exactly as it is, as a start leaves it
 // (ensureStreamWithConfig), so the two builds a release runs at once never put their own settings
-// back in turn. Its first read is sent again while the server leaves it unanswered, each send up
-// to its read limit (readAgain), so a cluster slow to answer one read is not logged as a stream the
+// back in turn. Its first read is sent again while the server leaves it unanswered, each lost send
+// starting the next beside it at its read limit (readAgain), so a cluster slow to answer one read is not logged as a stream the
 // keeper could not restore. An update whose answer never came succeeds when the stream, read
 // again, needs nothing more, and one the server refused as overlapping the stream itself is sent
 // again until the stream needs nothing more or its sends run out (updateStream). Each update sent
@@ -201,7 +201,7 @@ func (c *Client) awaitKeeper() {
 // writer set between two sends is not reported as one this pass restored. The lines of its reads
 // sent again go to logger.
 func keepStream(ctx context.Context, logger *slog.Logger, js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) ([]string, error) {
-	info, err := readAgain(ctx, logger, Stream+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) })
+	info, err := readAgain(ctx, logger, Stream+" STREAM.INFO", func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) })
 	if err != nil {
 		return nil, err
 	}

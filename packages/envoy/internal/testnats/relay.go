@@ -505,9 +505,6 @@ func (p *protocolStream) filterMessages(piece []byte, drop func(line []byte) boo
 			}
 			p.payload -= taken
 			piece = piece[taken:]
-			if p.payload == 0 {
-				p.dropping = false
-			}
 			continue
 		}
 		rest, whole := p.read(piece)
@@ -524,9 +521,6 @@ func (p *protocolStream) filterMessages(piece []byte, drop func(line []byte) boo
 			passed = append(passed, p.line...)
 		}
 		p.payload, p.broken = payloadAfter(string(p.line), p.fromServer)
-		if p.payload == 0 {
-			p.dropping = false
-		}
 		p.line = p.line[:0]
 	}
 	return passed

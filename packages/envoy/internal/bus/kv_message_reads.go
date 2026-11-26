@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -32,18 +33,21 @@ import (
 // none of the copy lag a direct get carries (GetFromLeader) applies.
 type streamMessageReads struct {
 	nats.KeyValue
-	// js is a legacy JetStream context on the handle's connection, bounded by RequestTimeout, which
-	// the reads go through.
+	// js is a legacy JetStream context on the handle's connection. Every get passes
+	// nats.Context(ctx) with its own deadline, so js's MaxWait is not reached.
 	js nats.JetStreamContext
+	// owner is the client that owns the handle's connection, whose record of the server's refusals
+	// answers a get the grant refuses (refusedBy, through leaderGet).
+	owner *Client
 }
 
 // newStreamMessageReads wraps kv, a legacy handle on conn, to read with stream message gets.
 func newStreamMessageReads(conn *nats.Conn, kv nats.KeyValue) (nats.KeyValue, error) {
-	js, err := conn.JetStream(nats.MaxWait(RequestTimeout))
+	js, err := conn.JetStream()
 	if err != nil {
 		return nil, fmt.Errorf("the stream message reads of KV bucket %s: %w", kv.Bucket(), err)
 	}
-	return streamMessageReads{KeyValue: kv, js: js}, nil
+	return streamMessageReads{KeyValue: kv, js: js, owner: clientOwning(conn)}, nil
 }
 
 // Get reads key's newest value with a stream message get.
@@ -60,8 +64,8 @@ func (kv streamMessageReads) GetRevision(key string, revision uint64) (nats.KeyV
 
 // readsDirectly is false (statedReads): Get and GetRevision send a get from the stream's leader
 // whatever the stream's AllowDirect, where the nats.go handle this wraps, built from that
-// AllowDirect, would send a direct get. So a read whose own request drew no answer takes the
-// refusal of that get, and of no direct get (readsDirect).
+// AllowDirect, would send a direct get. So a read whose own request the grant refuses names that
+// refusal; refusedBy takes it on the send itself.
 func (streamMessageReads) readsDirectly() bool { return false }
 
 // Create writes value to key when the bucket holds no live value of it, as nats.go's Create does:
@@ -87,24 +91,26 @@ func (kv streamMessageReads) Create(key string, value []byte) (uint64, error) {
 
 // read is the stream message get of key's newest message (revision 0) or of the message at
 // revision. It answers the entry of a live value; and for a delete or purge marker,
-// nats.ErrKeyNotFound with the marker's revision, which Create writes over.
+// nats.ErrKeyNotFound with the marker's revision, which Create writes over. An unanswered get is
+// sent again (leaderGet): it is a read and cannot change the bucket. A get the grant refuses draws
+// no answer either, since the server reports the refusal on the connection, so each send ends as
+// that refusal arrives (refusedBy) and is sent once.
 func (kv streamMessageReads) read(key string, revision uint64) (nats.KeyValueEntry, uint64, error) {
 	if !natsKeyValid(key) || strings.Contains(key, "..") {
 		return nil, 0, nats.ErrInvalidKey
 	}
 	bucket := kv.Bucket()
 	stream, subject := "KV_"+bucket, "$KV."+bucket+"."+key
-	var (
-		message *nats.RawStreamMsg
-		err     error
-	)
-	if revision == 0 {
-		message, err = kv.js.GetLastMsg(stream, subject)
-	} else {
-		message, err = kv.js.GetMsg(stream, revision)
-		if err == nil && message.Subject != subject {
-			return nil, 0, nats.ErrKeyNotFound
+	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
+	defer cancel()
+	message, err := leaderGet(ctx, kv.owner, stream, func(sendCtx context.Context) (*nats.RawStreamMsg, error) {
+		if revision == 0 {
+			return kv.js.GetLastMsg(stream, subject, nats.Context(sendCtx))
 		}
+		return kv.js.GetMsg(stream, revision, nats.Context(sendCtx))
+	})
+	if err == nil && revision != 0 && message.Subject != subject {
+		return nil, 0, nats.ErrKeyNotFound
 	}
 	if errors.Is(err, nats.ErrMsgNotFound) {
 		return nil, 0, nats.ErrKeyNotFound
@@ -117,4 +123,17 @@ func (kv streamMessageReads) read(key string, revision uint64) (nats.KeyValueEnt
 		return nil, message.Sequence, nats.ErrKeyNotFound
 	}
 	return leaderEntry{bucket: bucket, key: key, value: message.Data, revision: message.Sequence, created: message.Time}, 0, nil
+}
+
+// leaderGet sends a STREAM.MSG.GET read of stream and sends it again only when a send draws no
+// answer (resentOnTimeout, servingReadBound per send): a read the server answers within that bound
+// is sent once and logs nothing, where a start's readAgain would send duplicates. A get the grant
+// refuses ends at once (refusedBy on owner). The resend WARNs go where owner writes (Client.log),
+// or where slog.Default() points when no client owns the connection. Both the leader read
+// (kv_leader_read.go) and the edge stream-message read use this.
+func leaderGet(ctx context.Context, owner *Client, stream string, get func(context.Context) (*nats.RawStreamMsg, error)) (*nats.RawStreamMsg, error) {
+	subjects := []string{jsAPI("STREAM.MSG.GET", stream)}
+	return resentOnTimeout(ctx, owner.log(), stream+" STREAM.MSG.GET", servingReadBound, func(sendCtx context.Context) (*nats.RawStreamMsg, error) {
+		return refusedBy(owner, subjects, func() (*nats.RawStreamMsg, error) { return get(sendCtx) })
+	})
 }

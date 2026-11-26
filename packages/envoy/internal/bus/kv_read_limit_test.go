@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -303,27 +304,58 @@ func TestAServerThatAnswersEveryReadLateKeepsALimitAboveItsDelay(t *testing.T) {
 }
 
 // The steps of one start share one run of reads (withReadLimit), so a delay the first step's reads
-// measured holds for the next step's first read: here a server answers every read 3 s late, a read
-// sent again until it is answered (readAgain) learns the delay over three cut reads, and the leader
-// wait after it (awaitStreamLeader) waits for its first read at three times that delay and finds the
-// leader in one read, inside a 13 s wait. A step that learnt the delay again would cut three more
-// reads and answer at about 15 s, after the wait ended.
+// measured holds for the next step's first read. Here a server answers every read 3 s late: the
+// first step's readAgain keeps its first send alive and takes its 3 s answer, which sets the run's
+// read limit to three times that delay (readLimit.answered). The second step reads at that limit and
+// finds the leader in its first read. The test asserts the run the second step would use carries
+// the delay the first measured: a step given its own run would hold firstReadLimit instead.
 func TestTheStepsOfOneStartShareOneRunOfReads(t *testing.T) {
 	reads := &slowReads{delay: 3 * time.Second}
-	// The bound under test, not a wait: steps that share the run of reads find the leader inside
-	// 13 s, and a step that learnt the delay again answers at about 15 s (above).
 	ctx, cancel := context.WithTimeout(withReadLimit(t.Context()), 13*time.Second)
 	defer cancel()
 	start := time.Now()
-	if _, err := readAgain(ctx, slog.Default(), "KV_envoy_shared_run_test STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) {
+	if _, err := readAgain(ctx, slog.Default(), "KV_envoy_shared_run_test STREAM.INFO", func() (*nats.StreamInfo, error) {
 		return reads.StreamInfo("KV_envoy_shared_run_test")
 	}); err != nil {
 		t.Fatalf("the first step's read = %v after %s, want it answered", err, time.Since(start).Round(time.Millisecond))
 	}
+	// The run the next step reads carries the 3 s delay the first step measured, not firstReadLimit:
+	// three times 3 s, so the next step's first read is not cut and found the leader in one read.
+	if limit := readLimitOf(ctx).limit; limit < 3*reads.delay {
+		t.Fatalf("the run of reads the next step reads carries a limit of %s, want at least %s: the steps do not share the run", limit, 3*reads.delay)
+	}
 	if err := awaitStreamLeader(ctx, slog.Default(), reads, afterOpen, "KV_envoy_shared_run_test"); err != nil {
 		t.Fatalf("the leader wait after it = %v after %s, want the leader in one read: the steps share the run of reads", err, time.Since(start).Round(time.Millisecond))
 	}
-	if readLimitOf(ctx) != readLimitOf(ctx) {
-		t.Fatal("two reads of one context's run of reads found two runs")
+}
+
+// TestASlowButAnsweringServingReadIsSentOnce proves resentOnTimeout, which the reads that serve
+// requests use (the KV leader and edge gets, the stored-message reads, the session stream-state
+// read), sends a read that answers within its bound once and logs no WARN. A start's readAgain would
+// start a second send beside it at its 630 ms read limit; these reads start every call fresh, so
+// that would send duplicates on every read a loaded server answers slower than that.
+func TestASlowButAnsweringServingReadIsSentOnce(t *testing.T) {
+	t.Parallel()
+	var logs logtest.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	var sends atomic.Int64
+	value, err := resentOnTimeout(context.Background(), logger, "KV_envoy_slow_read STREAM.MSG.GET", RequestTimeout,
+		func(ctx context.Context) (string, error) {
+			sends.Add(1)
+			select {
+			case <-time.After(time.Second):
+				return "value", nil
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		})
+	if err != nil || value != "value" {
+		t.Fatalf("a read answering at 1 s = %q, %v, want the value", value, err)
+	}
+	if n := sends.Load(); n != 1 {
+		t.Fatalf("a read answering at 1 s sent %d requests, want 1: a merely-slow read is sent once", n)
+	}
+	if again := logs.Lines("sending it again"); again != "" {
+		t.Fatalf("a read answering at 1 s logged a resend WARN, want none: %s", again)
 	}
 }

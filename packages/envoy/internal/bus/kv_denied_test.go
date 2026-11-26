@@ -369,8 +369,8 @@ func TestARefusalOfAnotherSubjectDoesNotAnswerAnUnansweredLookup(t *testing.T) {
 		t.Fatal("no client owns the connection the start looks the bucket up on, so nothing records the server's refusals")
 	}
 
-	// Every send of the lookup is dropped, so the step sends until its hang guard passes: each
-	// send a read waited for up to its read limit (readAgain), sent again after it.
+	// Every send of the lookup is dropped, so the step sends until its hang guard passes: each send
+	// still unanswered at its read limit starts another beside it (readAgain).
 	relay.arm(1 << 30)
 	recorded := make(chan refusalSeen, 1)
 	callEnded := make(chan struct{})
@@ -405,8 +405,8 @@ func TestARefusalOfAnotherSubjectDoesNotAnswerAnUnansweredLookup(t *testing.T) {
 }
 
 // refusalGuard is the hang guard of the row above: long enough for the lookup to be sent several
-// times, each up to its read limit, and for the refusal of another subject to be recorded while
-// one of them is in flight.
+// times, each starting the next at its read limit, and for the refusal of another subject to be
+// recorded while one of them is in flight.
 const refusalGuard = RequestTimeout + 5*time.Second
 
 // refusalRecordWait is the window TestAWatchIsAnsweredByItsOwnCreateAndNotByAnotherConsumersRefusal

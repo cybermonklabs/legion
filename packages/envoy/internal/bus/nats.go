@@ -1160,8 +1160,11 @@ func (c *Client) Connected() bool {
 }
 
 // log is the logger the client writes its lines to: WithLogger's, or followsDefault, which also
-// answers a zero-value Client (nil logger) rather than leaving a line to panic.
+// answers a nil client and a zero-value Client (nil logger) rather than leaving a line to panic.
 func (c *Client) log() *slog.Logger {
+	if c == nil {
+		return followsDefault
+	}
 	return cmp.Or(c.logger, followsDefault)
 }
 

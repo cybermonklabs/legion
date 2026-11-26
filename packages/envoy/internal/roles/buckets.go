@@ -20,9 +20,15 @@ import (
 // that has not answered by then is left to finish on its own.
 const readTimeout = 2 * time.Second
 
+// openBound bounds a bucket's open, which retries a lost reply (OpenKeyValueAgain). It is twice
+// bus.RequestTimeout: room for one of the two STREAM.INFO requests to be lost and sent again,
+// while a server that never answers stops the open rather than letting it send forever on a ctx
+// with no deadline.
+const openBound = 2 * bus.RequestTimeout
+
 // JetStream is the client Buckets reads through: its JetStream context on the current connection
 // (bus.Client.JS) and that connection itself (bus.Client.Connection), which a bucket handle's
-// watch side is opened on (bus.OpenKeyValue).
+// watch side is opened on (bus.OpenKeyValueAgain).
 type JetStream interface {
 	JS() nats.JetStreamContext
 	Connection() *nats.Conn
@@ -67,14 +73,17 @@ var openBucketHook atomic.Pointer[func()]
 // bucket returns the handle of bucket on the client's current connection, opening it within ctx
 // when it is not open on that connection yet.
 //
+// The open passes the caller's ctx, not the read's short timeout, and openKeyValue bounds each of
+// its two STREAM.INFO requests by its own RequestTimeout. So a slow open runs to its own bound and
+// caches its handle even after `within` has returned its caller the read's timeout error. On main
+// handing the read's short context to the open cut it and cached nothing, so every later read
+// reopened. Each idempotent STREAM.INFO is sent again only while its own RequestTimeout lasts.
+//
 // b.mu guards the handles alone, and the open is made with it released: the open sends a
 // STREAM.INFO, which waits for nats.go's connection lock, and nats.go holds that lock through a
 // reconnect's dial and handshake. Held across the open, b.mu kept every other read of Buckets
-// waiting behind that handshake. The read that makes the open answers its caller at its own bound
-// (within); an open still waiting then goes on to ctx's end or the JetStream MaxWait, holding
-// nothing. Two reads that both find a handle missing each open one, and the first to finish keeps
-// its handle; an open reads the bucket's stream (two STREAM.INFO requests, the legacy handle's and
-// the jetstream handle's) and leaves nothing behind.
+// waiting behind that handshake. Two reads that both find a handle missing each open one, and the
+// first to finish keeps its handle.
 func (b *Buckets) bucket(ctx context.Context, name string) (bus.KeyValue, error) {
 	js := b.client.JS()
 	b.mu.Lock()
@@ -95,7 +104,9 @@ func (b *Buckets) bucket(ctx context.Context, name string) (bus.KeyValue, error)
 	if hook := openBucketHook.Load(); hook != nil {
 		(*hook)()
 	}
-	kv, err := bus.OpenKeyValue(ctx, conn, js, name)
+	openCtx, cancel := context.WithTimeout(ctx, openBound)
+	defer cancel()
+	kv, err := bus.OpenKeyValueAgain(openCtx, conn, js, name)
 	if err != nil {
 		return bus.KeyValue{}, err
 	}
@@ -108,11 +119,13 @@ func (b *Buckets) bucket(ctx context.Context, name string) (bus.KeyValue, error)
 }
 
 // within runs read, waiting for it no longer than ctx and at most readTimeout (bus.Bounded). A
-// read that did not answer in time is named by what.
+// read that did not answer in time is named by what. read captures the caller's ctx, so a bucket
+// open it starts runs to that open's own bound and caches, while within answers its caller at
+// readTimeout.
 func within[T any](ctx context.Context, what string, read func() (T, error)) (T, error) {
-	ctx, cancel := context.WithTimeout(ctx, readTimeout)
+	waitCtx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
-	value, answered, err := bus.Bounded(ctx, read)
+	value, answered, err := bus.Bounded(waitCtx, read)
 	if !answered {
 		return value, fmt.Errorf("%s: %w", what, err)
 	}

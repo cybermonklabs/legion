@@ -1003,7 +1003,7 @@ func ensureStreamWithConfig(ctx context.Context, logger *slog.Logger, js nats.Je
 	ctx = withReadLimit(ctx)
 	read, create := Stream+" STREAM.INFO", Stream+" STREAM.CREATE"
 	readStream := func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) }
-	info, err := readAgain(ctx, logger, read, readLimitOf(ctx), readStream)
+	info, err := readAgain(ctx, logger, read, readStream)
 	if errors.Is(err, nats.ErrStreamNotFound) {
 		created := *cfg
 		created.Metadata = stampGeneration(cfg.Metadata)
@@ -1030,7 +1030,7 @@ func ensureStreamWithConfig(ctx context.Context, logger *slog.Logger, js nats.Je
 		if !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			return nil, refusedSettings(err, nil, &created)
 		}
-		info, err = readAgain(ctx, logger, read, readLimitOf(ctx), readStream)
+		info, err = readAgain(ctx, logger, read, readStream)
 	}
 	if unanswered(err) || ctx.Err() != nil {
 		return nil, namedRequest(read, err)
@@ -1291,7 +1291,7 @@ type streamUpdate struct {
 // naming ctx's cause.
 //
 // The read after the update is a read of a stream's state, sent again while the server leaves it
-// unanswered, each send up to its read limit, for as long as ctx lasts (readAgain): an update
+// unanswered, each lost send starting the next beside it at its read limit, for as long as ctx lasts (readAgain): an update
 // sent while the stream's group elects a leader can draw no answer, and a read sent then can be
 // lost too, so a read sent once could leave a raise that landed reported as one that failed. The
 // lines of those reads sent again go to logger.
@@ -1314,7 +1314,7 @@ func updateStream(ctx context.Context, logger *slog.Logger, js nats.JetStreamCon
 		case !unanswered(err):
 			return result, err
 		}
-		again, readErr := readAgain(ctx, logger, name+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(name) })
+		again, readErr := readAgain(ctx, logger, name+" STREAM.INFO", func() (*nats.StreamInfo, error) { return js.StreamInfo(name) })
 		switch {
 		case readErr == nil && holds(again):
 			return result, nil

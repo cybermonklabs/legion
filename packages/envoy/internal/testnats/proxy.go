@@ -2,11 +2,9 @@ package testnats
 
 import (
 	"bytes"
-	"fmt"
 	"maps"
 	"net"
 	"net/url"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -130,7 +128,6 @@ func (c *replyDropConnection) drops(line []byte) bool {
 		return false
 	}
 	c.drop.dropped++
-	fmt.Fprintf(os.Stderr, "testnats reply drop fired: response on %s discarded\n", fields[1])
 	return true
 }
 

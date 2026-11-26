@@ -78,19 +78,46 @@ const RequestTimeout = 10 * time.Second
 
 // OpenKeyValue opens the existing KV bucket named bucket on conn, through js, and creates nothing,
 // as a rebuild does. It raises nothing either: the start that opened the bucket with EnsureKeyValue
-// did that. Both of its requests end when ctx does: the jetstream handle's open is made under ctx,
-// and the legacy lookup (js.KeyValue, whose STREAM.INFO nats.go gives no context: the call takes
-// none and reads js's MaxWait alone) is waited for only until ctx ends, its answer then dropped
-// (Bounded; the lookup changes nothing, so a dropped one leaves nothing behind). A reconnect hook
-// gives it the run's context, so a lookup sent on a connection that then drops ends the hook at
-// the drop.
+// did that. Each of its two requests, the legacy lookup and the jetstream handle's open, is bounded
+// by its own RequestTimeout within ctx, so a lookup or an open that draws no answer ends on its own
+// rather than on the caller's whole wait. A lookup's answer is dropped when its wait ends (Bounded;
+// the lookup changes nothing, so a dropped one leaves nothing behind).
 func OpenKeyValue(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string) (KeyValue, error) {
+	return openKeyValue(ctx, conn, js, bucket, oneSend)
+}
+
+// OpenKeyValueAgain is OpenKeyValue for a caller that must survive an unanswered read. It sends the
+// legacy and jetstream STREAM.INFO reads again while ctx remains, each bounded by its own
+// RequestTimeout, so an account-response race cannot leave a caller holding an acknowledged result
+// behind a failed bucket open.
+func OpenKeyValueAgain(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string) (KeyValue, error) {
+	return openKeyValue(ctx, conn, js, bucket, retryOpen)
+}
+
+func openKeyValue(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string, sendAgain bool) (KeyValue, error) {
 	js = readsRefusals(conn, js)
-	kv, _, err := Bounded(ctx, func() (nats.KeyValue, error) { return js.KeyValue(bucket) })
+	// Each lookup send is bounded by its own RequestTimeout within ctx, as wrapKeyValue bounds each
+	// open send (kv.go open), so a lost send ends its own goroutine rather than waiting out the
+	// caller's whole ctx.
+	lookup := func() (nats.KeyValue, error) {
+		lookupCtx, cancel := context.WithTimeout(ctx, RequestTimeout)
+		defer cancel()
+		kv, _, err := Bounded(lookupCtx, func() (nats.KeyValue, error) { return js.KeyValue(bucket) })
+		return kv, err
+	}
+	var (
+		kv  nats.KeyValue
+		err error
+	)
+	if sendAgain {
+		kv, err = readAgain(ctx, loggerOwning(conn), "KV_"+bucket+" legacy handle open", lookup)
+	} else {
+		kv, err = lookup()
+	}
 	if err != nil {
 		return KeyValue{}, err
 	}
-	return wrapKeyValue(ctx, conn, kv, false, oneSend)
+	return wrapKeyValue(ctx, conn, kv, false, sendAgain)
 }
 
 // WrapKeyValue pairs kv, a legacy handle opened on conn, with the jetstream handle of the same
@@ -102,11 +129,12 @@ func WrapKeyValue(conn *nats.Conn, kv nats.KeyValue) (KeyValue, error) {
 	return wrapKeyValue(context.Background(), conn, kv, false, oneSend)
 }
 
-// startSendsAgain and oneSend are wrapKeyValue's sendAgain, named at the call so the two readings
-// of an unanswered handle open are told apart where they are chosen: a program's start sends the
-// open again (sentAgain), and every other caller sends it once.
+// startSendsAgain, retryOpen and oneSend are wrapKeyValue's sendAgain, named at the call so the
+// readings of an unanswered handle open are told apart where they are chosen: a program's start,
+// and a role or session holder resolution, send again; every other caller sends once.
 const (
 	startSendsAgain = true
+	retryOpen       = true
 	oneSend         = false
 )
 
@@ -119,22 +147,22 @@ const (
 // (awaitBucketApplied): the create's own answer came from the metadata group, and this read goes
 // to whichever member conn is on, which may not have applied it yet.
 //
-// sendAgain says the caller is EnsureKeyValue, so each send of that read is sent again when the
-// server leaves it unanswered (readAgain), which a member whose meta leader is changing does. It
-// is the caller and not created that decides this: a start whose buckets are already there
-// creates nothing, which is every restart of a deployment, and it loses an answer exactly as the
-// start that creates them does.
+// sendAgain says the caller sends each STREAM.INFO again when the server leaves it unanswered
+// (readAgain): EnsureKeyValue (startSendsAgain) and the role and session holder resolution
+// (retryOpen, OpenKeyValueAgain). Every other caller sends once (oneSend, OpenKeyValue,
+// WrapKeyValue). The choice is the caller's wait: a start bounds its waits by the hang guard and a
+// role resolution bounds its open at twice RequestTimeout (roles.openBound), so each can afford to
+// send a lost read again; a caller with no such budget takes the server's first answer, or the end
+// of its own ctx.
 //
 // A bucket missing and a request unanswered are two different answers and are waited out
 // differently: the first is a member that has not applied the create and is read again until it
-// has, the second is a request that drew nothing and is sent again. So a start's send is waited
-// for up to its read limit, 630 ms first and twice that after each send left unanswered, up to
-// RequestTimeout (readAgain); a start's waits, on the member and on an answer, last as long as its
-// ctx, which EnsureKeyValue bounds by the start's hang guard (startHangGuard); and any other
-// caller is one send, bounded by RequestTimeout as a lone read is. One send is right there because
-// such a caller waits on a budget of its own: roles.Buckets.bucket, for one, opens a bucket again
-// for a read whose caller waits two seconds for it, and an open that kept sending would leave that
-// read and every one after it unanswered rather than save a start.
+// has, the second is a request that drew nothing and is sent again. A send left unanswered stays
+// alive and another starts beside it (readAgain): its read limit, 630 ms first and twice that after
+// each unanswered send up to RequestTimeout, decides when the next send starts, not when a result
+// is taken. A start's waits last as long as its ctx, which EnsureKeyValue bounds by the hang guard;
+// a role or session holder resolution uses the same retry under its open's twice-RequestTimeout
+// bound; and every other caller is one send.
 func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (KeyValue, error) {
 	// Its lines go where the client owning conn writes, and where slog.Default() points at each
 	// line when no client owns it: every caller of this function wants that one reading.
@@ -162,7 +190,7 @@ func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, create
 	}
 	if sendAgain {
 		send := open
-		open = func() (jetstream.KeyValue, error) { return readAgain(ctx, logger, request, readLimitOf(ctx), send) }
+		open = func() (jetstream.KeyValue, error) { return readAgain(ctx, logger, request, send) }
 	}
 	var watch jetstream.KeyValue
 	if created {

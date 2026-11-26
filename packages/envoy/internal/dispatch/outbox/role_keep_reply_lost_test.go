@@ -13,10 +13,10 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// TestAKeptCopyWhoseFirstLaneReadReplyIsLostStillPrecedesTheIssuesNextEvent proves the handover
-// keeps the per-issue order a role holder reads. The proxy discards the first stored-message reply
-// after the server sends it, so main leaves the kept copy for the next sweep and sends the next
-// event first; the retry sends the idempotent read again inside this batch's bound.
+// TestAKeptCopyWhoseFirstLaneReadReplyIsLostStillPrecedesTheIssuesNextEvent proves a role handover
+// whose stored-message read loses one reply still moves the kept copy, and in order: the proxy
+// discards the first stored-message reply after the server sends it, the read is sent again inside
+// this batch's bound, and the holder reads the kept copy before the issue's next event.
 func TestAKeptCopyWhoseFirstLaneReadReplyIsLostStillPrecedesTheIssuesNextEvent(t *testing.T) {
 	t.Parallel()
 	const role, holder, key = "kept-lost-lane-reply", "ses_kept_lost_lane_reply", "T-1"
