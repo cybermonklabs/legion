@@ -34,11 +34,9 @@ GATE = gate("test", "test", runs=[
     # @legion/envoy-client/*.
     ("packages/envoy-client/test/fake-dispatch.ts", "`scripts/e2e/lib/agent-replay.test.ts#startFakeDispatch` imports it by path"),
     ("packages/envoy-client/test/keyed-layer.ts", "`scripts/dispatch/__tests__/moved-approval-production-check.test.ts#keyedLayer` and "
-                                                  "`scripts/e2e/lib/dispatch-keyed-comment.test.ts#keyedLayer` import it by path, and "
-                                                  f"{at('test', 'Typecheck the Dispatch census script')} compiles the first"),
+                                                  "`scripts/e2e/lib/dispatch-keyed-comment.test.ts#keyedLayer` import it by path"),
     ("packages/envoy-client/test/route-answers.ts", "`scripts/dispatch/__tests__/moved-approval-production-check.test.ts#routeAnswer` and "
-                                                    "`scripts/e2e/lib/dispatch-keyed-comment.test.ts#routeAnswer` import it by path, and "
-                                                    f"{at('test', 'Typecheck the Dispatch census script')} compiles the first"),
+                                                    "`scripts/e2e/lib/dispatch-keyed-comment.test.ts#routeAnswer` import it by path"),
     ("packages/contracts/schemas/dispatch-openapi.json", "`packages/envoy-client/test/route-answers.ts#document` reads it, and "
                                                          "`scripts/dispatch/__tests__/moved-approval-production-check.test.ts#routeAnswer` and "
                                                          "`scripts/e2e/lib/dispatch-keyed-comment.test.ts#routeAnswer` import that module"),
