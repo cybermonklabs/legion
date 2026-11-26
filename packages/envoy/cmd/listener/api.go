@@ -3748,4 +3748,4 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 	})
 }
 
-// R5 timing probe 1 of INFRA-5794: this pull request measures an unlabelled run and is closed unmerged.
+// R5 timing probe 2 of INFRA-5794: this pull request measures an unlabelled run and is closed unmerged.
