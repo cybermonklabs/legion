@@ -1660,7 +1660,7 @@ Its Sandbox goes, and its volume and session go with it, so step 5 clears the se
    Copy one tree at a time, in the pod of [A shell on an issue's disk](#a-shell-on-an-issues-disk) with that tree's claim: a pod of the worker image, under gVisor, with the tree's volume read-only at `/legion` and nothing else mounted.
    The import reads two more files, and both come from your machine after the pod is `Ready`.
    `claims.json` from step 2 goes to the import's standard input (`--claims -`).
-   `<url file>` is a file of mode 0600 on your machine that holds the session database's `postgres://` URL, one that a pod on the Legion pool can reach; under `postgres` it is the value of the providers Secret's `session_dsn_secret` key.
+   `<url file>` is a file of mode 0600 on your machine that holds the session database's `postgres://` URL, one that a Legion pod can reach; under `postgres` it is the value of the providers Secret's `session_dsn_secret` key.
    The URL goes into the pod on standard input, into a file of mode 0600 in a directory of mode 0700, so no command line holds it:
 
    ```sh
@@ -1721,7 +1721,7 @@ The daemon never probes a host Oh My Pi for this: pods run the image's build, no
 ## Kubernetes runtime: the Go daemon on Agent Sandbox
 
 Under the Go coordinator, `runtime: kubernetes` runs every issue as one Agent Sandbox:
-an `agents.x-k8s.io` `Sandbox` (kubernetes-sigs/agent-sandbox, LEGION-206) named for the issue, `legion-<project>-<issue>`, whose one pod runs under gVisor on the Legion pool, or in a GKE Sandbox microVM where `runtime.kubernetes.sandbox` puts the issue there ([Pods in microVMs](#pods-in-microvms)).
+an `agents.x-k8s.io` `Sandbox` (kubernetes-sigs/agent-sandbox, LEGION-206) named for the issue, `legion-<project>-<issue>`, whose one pod runs under gVisor on the cluster's general nodes, or in a GKE Sandbox microVM where `runtime.kubernetes.sandbox` puts the issue there ([Pods in microVMs](#pods-in-microvms)).
 The pod holds two init containers and one container, `roles`, whose PID 1 is one `legion launcher`, a supervisor with no workflow policy that runs every workflow role
 — `architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`:
 it holds one connection to the daemon's worker stream per role, each authenticated with that role's own token, and starts or stops that role's `legion worker-shim` and Oh My Pi when the daemon tells it to, each role's generation in Linux namespaces of its own.
@@ -3958,6 +3958,7 @@ So after the roll-forward a cause the earlier release wrote with other text is s
 `20261122154643_outbox_kinds_with_the_basis_seeds.up.sql`, of #4592's release, carries no way back of its own: #4592's rollback ([Rolling back the release that holds a parent's start while a child of it is open](#rolling-back-the-release-that-holds-a-parents-start-while-a-child-of-it-is-open)) deletes the outbox rows of its two kinds and no version row.
 `20261124130001_pull_request_reviews_requested.up.sql`, of #5398's release, carries no way back, since an earlier release neither reads nor writes the five columns it adds and its insert leaves them at the values that say no read wrote them; a row such a release updates, at a new head or at the same one, keeps them beside its own `state_read_at`, and `pull_requests.evidence_read_at` makes them read as unread there.
 `20261124182040_issue_pod_disks.up.sql`, of #4392's release, carries no way back, since an earlier release names `issue_pod_disks` in no statement and leaves it standing.
+`20261125181828_p0_bound.up.sql`, of dispatch://INFRA-5636's release, carries no way back, since an earlier release reads no row of the table it adds or of the columns it adds to `issues`.
 A rollback of a store that #4590's release or a later one migrated runs #4903's way back and the steps of [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages) first, and those steps delete rows alone and keep the version row of `20261120144241_intake_failures`.
 A rollback of a store that #5303's release or a later one migrated runs the way back in the header of `20261123224717_members_owed.up.sql` first, which deletes that version's row.
 A rollback of a store that cybermonklabs/legion#5310's release or a later one migrated runs the way back in the header of `20261124033010_plan_earlier_givers.up.sql` too, with the steps of [Rolling back the release whose owner's plan picks the steps](#rolling-back-the-release-whose-owners-plan-picks-the-steps), and it deletes that version's row.
@@ -4063,6 +4064,8 @@ A rollback to a release before it leaves the table in place and needs no SQL for
 20261125023041_idle_release_declines_told_pod adds the column `idle_release_declines.told_pod`, null on every row it finds, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, newest first in the block of [Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace), which drops the column and deletes its version row.
 20261125023100_pod_replacements adds the table `pod_replacements`, empty, the daemon's record of each replacement of an issue pod that may take a disk until the issue's architect's `workspace-taken` notice of it is queued, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, newest first in the block of [Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace), which drops the table and deletes its version row.
 20261125163328_message_wake_pacing, of dispatch://INFRA-5682, adds `claims.message_mark_at`, null on every claim it finds, and `pod_resumes.queued`, false on every resume it finds, and touches none of the six, so the block holds over it and leaves the two columns standing, which the earlier release names in no statement; a rollback to a release before it runs the way back in its own header first, with every daemon of the database stopped, which makes every catch-up that the wake pacing still holds due at once, since the release before publishes a notice only once it is due and the pacing holds such a row at a due time of 2100, takes `paced_turns` off every queued catch-up, a key the release before refuses as one it does not know, and clears every claim's message mark.
+20261125181828_p0_bound, of dispatch://INFRA-5636, adds the table `project_p0_bound_changes`, empty, and the columns `issues.resolved_priority`, `issues.resolved_known` and `issues.priority_from`, and touches none of the six, so the block holds over it and leaves the table and the columns standing, which the earlier release names in no statement; it carries no way back.
+A rollback past it takes `admission_p0_bound` out of `legion.yaml` first, since the earlier release refuses a key it does not know (`unknown key admission_p0_bound`), and after it every P0 issue waits for a slot under the cap again.
 20261125212800_claims_tree adds the index `claims_tree` on `claims (tree)`, which the reads of a session's claims in one tree use, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads and writes `claims` the same with the index in place, and a rollback leaves it standing.
 20261125223008_claim_held_for, of cybermonklabs/legion#5505, adds `claims.held_for` at its default, the empty string, writes `provider_error` in place of each `cyber_policy` that `claims.failure_cause` or `claims.pending_cause` holds and `cyber_policy` in that row's `held_for`, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; it carries no way back, since the two cause columns then hold only words an earlier release knows, and that release reads a claim held for `cyber_policy` as one failed under `provider_error` and does not hold it.
 The same release writes the outbox key `decided` on each supervise start a person, the controller or the issue's architect decided (`record.SuperviseRequest.Decided`), and an earlier release decodes outbox rows strictly, so a row that carries it fails there on every attempt: before the earlier image boots, with every daemon of the database stopped, run `update outbox set payload = payload - 'decided' where kind = 'supervise' and payload ? 'decided';`, which takes that key off each supervise row and leaves every other key, and every row of another kind, a catch-up notice's own `decided` among them; the earlier release then runs such a start as one of its own.
@@ -4282,8 +4285,8 @@ runtime:
     issue_volume: 50Gi          # default 50Gi; one volume per issue, and one for the controller's pod
     kubeconfig: /home/ubuntu/.kube/legion-daemon-production   # relative to legion.yaml's directory
     context: legion-daemon@example   # required when the kubeconfig sets no current context
-    scheduling:                 # optional, beyond the Legion pool the runtime always selects
-      node_selector: {}         # merged over legion.dev/pool=legion, which it may not name
+    scheduling:                 # optional: every pod's whole placement on the cluster's general nodes
+      node_selector: {}         # as written; it may not name legion.dev/pool, the retired Legion pool's label
       tolerations: []
       priority_class: legion
     sandbox:                    # optional: the sandbox of the project's issue pods and of its controller's pod (Pods in microVMs, below)
@@ -5229,10 +5232,10 @@ The daemon renders the placement of a microVM pod, an issue pod or the controlle
 
 - `runtimeClassName: microvm`, in place of `gvisor`.
 
-- The node selector is a gVisor pod's, `legion.dev/pool: legion` and then the operator's `scheduling.node_selector`, with `cloud.google.com/compute-class` set to `microvm.compute_class`.
+- The node selector is a gVisor pod's, the operator's `scheduling.node_selector`, with `cloud.google.com/compute-class` set to `microvm.compute_class`.
   That entry replaces any class the operator's selector names, and every other entry stays.
 
-- The tolerations are a gVisor pod's, the pool's `legion.dev/pool=legion:NoSchedule` and then the operator's, less any operator toleration whose key is `cloud.google.com/compute-class`, which tolerates the class being replaced.
+- The tolerations are a gVisor pod's, the operator's `scheduling.tolerations`, less any whose key is `cloud.google.com/compute-class`, which tolerates the class being replaced.
   One toleration follows them: `cloud.google.com/compute-class=<compute_class>:NoSchedule`, operator `Equal`, the taint GKE puts on the nodes of a custom ComputeClass.
 
 - The priority class is `scheduling.priority_class`, as on every pod.
@@ -5822,7 +5825,7 @@ and the five deployment rows are the daemon's to measure, from its own configura
   controller's pod`, so `legion state --json` shows which pods reserve less than they may use.
   Under tmux it is open unless decided: a pane has no requests or limits.
 
-- `pool-capacity`: the Legion pool had room for the image probe pod's own 500m / 1Gi reservation at boot — the probe pod scheduled at its first attempt.
+- `pool-capacity`: the cluster's nodes had room for the image probe pod's own 500m / 1Gi reservation at boot — the probe pod scheduled at its first attempt.
   While it did not (`stuck`, `internal/runtime/sandbox/probe.go`:
   the pod `Pending` with `PodScheduled=False Unschedulable` for longer than `worker_boot_timeout_seconds`), the daemon stays up and retries without exiting ([Issue sizing](#issue-sizing-one-reservation-per-pod), "The bound"), and once the probe passes the row is open, saying how many attempts waited and the scheduler's last reason (`the image
   probe pod was Unschedulable <n> time(s) at boot before it scheduled: <reason>; the pool had no
@@ -6426,7 +6429,7 @@ Every pod runs:
 
 - under Pod Security "restricted": non-root user 1000 on the pod, and on each container no privilege escalation, ALL capabilities dropped and the RuntimeDefault seccomp profile;
 
-- on the Legion pool, with its node selector and toleration (and, for a microVM pod, an issue pod or the controller's, the `cloud.google.com/compute-class` selector and toleration of its ComputeClass), and nothing else of its placement that Legion itself sets:
+- on the cluster's general nodes, with the operator's `scheduling.node_selector` and `scheduling.tolerations` alone (and, for a microVM pod, an issue pod or the controller's, the `cloud.google.com/compute-class` selector and toleration of its ComputeClass), and nothing else of its placement that Legion itself sets:
   no affinity (GKE Autopilot adds its own to an annotated pod, below);
 
 - `Guaranteed` at the default reservations:
@@ -6464,7 +6467,7 @@ one Sandbox, `legion-<project>-cache-<owner>-<repo>-<8 hex>` (`CacheSandboxName`
 the hex is of the repository's name, so two repositories whose names slug alike get two caches), labelled `legion.dev/project` and `legion.dev/cache=true` and annotated `legion.dev/cache-repo: <owner>/<repo>`, which is the one place its repository is read from (`kubectl -n legion get sandbox -l legion.dev/cache`).
 It is no issue's and no claim's: no tree's cleanup lists it, and nothing of it registers on the worker stream (`internal/runtime/sandbox/repocache.go`).
 Its pod runs one container, `cache`, the image's `legion workspace-init cache --repo <owner>/<repo> --root /legion/cache --listen :8418 --refresh
-10m0s` (`refresh_minutes`, as a duration), on the Legion pool under gVisor with the operator's ServiceAccount, and nothing of an agent's:
+10m0s` (`refresh_minutes`, as a duration), under gVisor with the operator's ServiceAccount and scheduling, and nothing of an agent's:
 no model route, provider key or Dispatch variable.
 It owns one volume, `cache-<sandbox>`, of `runtime.kubernetes.repository_cache.volume` (20Gi by default), holding a bare clone of the repository at `/legion/cache/<owner>/<repo>.git`, and a headless Service of its own name, whose DNS name resolves to the pod only while it is Ready.
 Its Secret, `<sandbox>-token`, holds the implement App's reading lease on the repository's owner, the same lease an issue pod's `workspace-fetch` clones with ("Trust model: the provisioning token"), read again as every transfer from GitHub starts and brought to the current lease on the gh refresher's minute, and the cache's own bearer token, 32 random bytes made with the Secret and kept while it stands;
@@ -6567,8 +6570,8 @@ each `live[]` repository carries `cache` (`repo`, `sandbox`, `state` — `starti
 — `ready`, `address`, the cache's Service, while Ready behind its own Service, and from the last health read of the pod it runs now `head`, `lastFetchAt` and `bytes`, or `healthError`) once the cache exists, and `caches` lists the caches of repositories no live record names any more, each with `retainedUntil`.
 
 An issue pod's launch makes its repository's cache when there is none yet, and the daemon makes the cache of each repository a live record names at boot and on every orphan sweep after it, once a minute:
-a missing cache is created (its Sandbox `Suspended`, then its Secret owned by that Sandbox, then its pod template and `Running`), and a cache whose pod runs another image than the daemon's, runs as a ServiceAccount other than `runtime.kubernetes.pod.service_account`, has ended, or was left `Suspended`, or whose Sandbox's pod template reserves other than `runtime.kubernetes.repository_cache.resources` now says, gets a new pod while its Sandbox and volume stay, so a new release, a new account or a new reservation costs a pod, not a clone.
-The reservation is read from the Sandbox's pod template, never from the pod, since GKE Autopilot rewrites a pod's requirements at admission; the account is read from the pod, where the API server keeps a named account as written and writes `default` for a pod that names none.
+a missing cache is created (its Sandbox `Suspended`, then its Secret owned by that Sandbox, then its pod template and `Running`), and a cache whose pod runs another image than the daemon's, runs as a ServiceAccount other than `runtime.kubernetes.pod.service_account`, has ended, or was left `Suspended`, or whose Sandbox's pod template reserves other than `runtime.kubernetes.repository_cache.resources` now says, or places its pod other than the daemon now would (a RuntimeClass other than `gvisor`, or a node selector or tolerations other than `runtime.kubernetes.scheduling`'s, such as the retired Legion pool's `legion.dev/pool` selector and toleration that a cache an earlier release made carries), gets a new pod while its Sandbox and volume stay, so a new release, a new account, a new reservation or a new placement costs a pod, not a clone.
+The reservation and the placement are read from the Sandbox's pod template, never from the pod, since GKE Autopilot rewrites a pod's requirements at admission and RuntimeClass admission adds the class's own node selector and tolerations to the pod; the account is read from the pod, where the API server keeps a named account as written and writes `default` for a pod that names none.
 A pod still running is replaced only once it serves no stream:
 the daemon asks its `/healthz` first, whose `streams` counts the tars it is sending or holding in its queue, and while that is above 0 it logs `repository cache pod is replaced once it serves no
 stream` and leaves the pod to a later sweep, because the replacement would end every one of those tars, failing each fetch reading one and making its issue pod again.
@@ -6747,8 +6750,6 @@ metadata: { name: legion-tree-shell, namespace: legion }   # no legion.dev/* lab
 spec:
   runtimeClassName: gvisor
   automountServiceAccountToken: false
-  nodeSelector: { legion.dev/pool: legion }
-  tolerations: [{ key: legion.dev/pool, operator: Equal, value: legion, effect: NoSchedule }]
   securityContext:
     runAsNonRoot: true
     runAsUser: 1000
@@ -7411,11 +7412,11 @@ A role's Go test lane, its agent and a browser summed to about 3.9 GiB, and a `G
 A deployment whose roles still run heavy builds and whole test suites in the pod sizes `issue` from those readings, not from the default.
 
 Legion sets no affinity itself (GKE Autopilot adds its own to an annotated pod, [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)):
-each pod owns its volume and shares nothing with another pod, so the scheduler bin-packs it wherever the `legion` pool has room for its reservation, and Karpenter adds a node under the pool's limits when none has, of the smallest type the pool's requirements allow.
-In production (read 2026-10-08) those are `instance-cpu Gt 3` and `instance-memory Gt 65535`, so the floor is an 8-vCPU, 64 GiB type whose allocatable is about 7.9 CPU and 60.8 GiB:
+each pod owns its volume and shares nothing with another pod, so the scheduler bin-packs it wherever a node of the cluster has room for its reservation, and Karpenter adds a node under its NodePool's limits when none has, of the smallest type that NodePool's requirements allow.
+In production (read 2026-10-08) those were the `legion` NodePool's `instance-cpu Gt 3` and `instance-memory Gt 65535`, so its floor was an 8-vCPU, 64 GiB type whose allocatable is about 7.9 CPU and 60.8 GiB:
 a 2 CPU / 8 GiB issue pod fits, three per node (7.9 / 2 by cpu, where 60.8 / 8 would place seven), cpu the binding dimension.
 On GKE Autopilot each issue and controller pod tends to get a node of its own instead ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), so node count there tracks pod count rather than this three-per-node packing.
-The scheduler puts a pod with a kept volume only in the zones of the first pod that mounted its claim, one zone for a zonal disk and two for a regional disk, wherever else the pool has room ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
+The scheduler puts a pod with a kept volume only in the zones of the first pod that mounted its claim, one zone for a zonal disk and two for a regional disk, wherever else a node has room ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 The **controller's** pod, whose Sandbox owns its claim, and an issue pod with a kept volume are the pods that wait on a volume when they are relaunched onto another node:
 each one's `ReadWriteOnce` volume must detach from the old node first, which shows as transient `FailedAttachVolume` or `Multi-Attach` events until the old pod is gone; then it runs on.
 Every other **issue** pod waits on neither: its disk is the pod's own generic ephemeral volume, so a replacement takes no predecessor's claim and nothing detaches (INFRA-80).
@@ -7433,7 +7434,7 @@ The reservation is the pod's working set, and its request is what the scheduler 
 Measured on INFRA's pool on 2026-11-05, a pod's own processes on that platform reached about 1.3 to 1.9 cores whether the pod reserved 2, 2.5 or 3 CPU (1.321, 1.367 and 1.392 cores over 300-second runs on one node, and 1.8227 cores in a running issue pod at a 3-CPU limit), so reserving more cpu there bought that workload little more work ([kubernetes/kubernetes#91665](https://github.com/kubernetes/kubernetes/issues/91665), "Actual CPU capacity is lower than assigned CPU capacity when gVisor sandbox is enabled").
 
 **The bound.**
-Concurrently running issue pods are bounded by the nodes the pool's `limits.cpu` and `limits.memory` let Karpenter make: Karpenter counts each node's whole capacity against those limits, not the pods' requests, and stops making nodes once a limit is reached ([NodePools](https://karpenter.sh/docs/concepts/nodepools/), `spec.limits`).
+Concurrently running issue pods are bounded by the nodes the NodePool's `limits.cpu` and `limits.memory` let Karpenter make: Karpenter counts each node's whole capacity against those limits, not the pods' requests, and stops making nodes once a limit is reached ([NodePools](https://karpenter.sh/docs/concepts/nodepools/), `spec.limits`).
 Karpenter checks the limits eventually consistently, because it provisions in parallel, so a rapid scale-out can make nodes past a limit (the same page).
 At the defaults three pods fit a floor node, so `limits.cpu: 256` makes about 32 floor nodes and places about 96 two-CPU pods (less what the nodes' daemonsets hold), and a larger instance type places more, up to the 128 two-CPU pods that 256 CPU holds; `limits.memory` divided by 64 GiB, a floor node's memory, bounds the nodes too when that is the smaller, three pods to each (a `Burstable` issue pod's lower request places more on each node)
 — where the tree-volume layout ran one tree per node, each pinned to a node of its own.
@@ -7442,24 +7443,24 @@ So the issue pods a deployment runs at once are at most `admission_cap`, plus th
 Fewer run than that bound, for two reasons.
 Under the default idle release a pod with no turn in progress and no turn due for ten minutes is released with its disk (a [kept volume](#a-kept-volume-on-a-microvm-pod) stays) while its slot stands, and the daemon makes the pod again at that issue's next turn; `idle_minutes: 0` turns the release off, and a pod then stands from its issue's first role start to its close, and again for each look of a production check after it.
 And an open issue of a live tree is not a running pod by itself: a child the daemon has not started yet has no slot and no pod, and neither has any issue of a tree whose root still waits in the line.
-A pod the pool cannot place stays `Pending`, unscheduled;
-once it has been for longer than `worker_boot_timeout_seconds` the boot watchdog reads it dead ([Liveness rules](#liveness-rules)), one launch failure, its relaunch meets the same pool, and the claim fails once its launch failures run out
+A pod for which no node has room and no NodePool may add one stays `Pending`, unscheduled;
+once it has been for longer than `worker_boot_timeout_seconds` the boot watchdog reads it dead ([Liveness rules](#liveness-rules)), one launch failure, its relaunch meets the same nodes, and the claim fails once its launch failures run out
 — no later than its registration deadline.
 Two pods beside the issue pods count against the same limits:
 the image probe pod, its own 500m / 1Gi, present at every boot and daemon restart for as long as the probe runs;
 and, under `controller: daemon`, the controller's pod, 1 CPU / 4Gi at the default, for as long as the daemon runs.
-Size the pool's limits for the nodes that bound needs, three default issue pods to a floor node, plus room for those two pods, since `admission_cap` counts the issues the daemon has started rather than the pods kept by an issue in `accepting`, `retro` or `merging`, by an issue that released its slot to wait on another issue and by a production check.
+Size the NodePool's limits for the nodes that bound needs, three default issue pods to a floor node, plus room for those two pods, since `admission_cap` counts the issues the daemon has started rather than the pods kept by an issue in `accepting`, `retro` or `merging`, by an issue that released its slot to wait on another issue and by a production check.
 
-A pool with no room for the probe pod itself does not refuse the boot.
+A NodePool with no room for the probe pod itself does not refuse the boot.
 The probe pod stays `Pending` with `PodScheduled=False Unschedulable`;
-once it has been so for longer than `worker_boot_timeout_seconds` — the same bound the liveness rules give an issue pod, long enough for Karpenter to add a node when the pool's limits allow one, so a cold pool scaling up is not read as full
+once it has been so for longer than `worker_boot_timeout_seconds` — the same bound the liveness rules give an issue pod, long enough for Karpenter to add a node when the NodePool's limits allow one, so a NodePool scaling up from cold is not read as full
 — the attempt ends waiting on capacity (`stuck`, `internal/runtime/sandbox/probe.go`).
 That stop can always fire within the attempt:
 the attempt's own budget is derived from `worker_boot_timeout_seconds` whenever `slow_command_timeout_seconds` would otherwise leave it less room (`ProbeBudget`, "Image size and pull time" above), so the attempt outlives the boot timeout by construction.
 Ending the attempt, its Sandbox deleted, the daemon logs `boot probe is waiting on capacity; running it again` with `probe=worker image`, the pod's name and the scheduler's own reason in `detail` (`probe pod
 legion-probe-<project>-<digest12> is Unschedulable: 0/83 nodes are available: 25 Insufficient cpu …`) and `retryIn`, the probe's longest interval, 5 min.
 It then creates the probe Sandbox again, as many times as it takes:
-such a wait is counted against none of the probe's six attempts (`bootprobe.Run`, `Outcome.Waiting`), since a full pool says nothing about the image and a daemon that exited would not make room.
+such a wait is counted against none of the probe's six attempts (`bootprobe.Run`, `Outcome.Waiting`), since nodes with no room say nothing about the image and a daemon that exited would not make room.
 The daemon stays up through it, but serves nothing yet:
 the probe runs before the API is served (`plan.probe` precedes `serve` in `internal/daemon/daemon.go`), so `legion state` answers nothing while the probe waits, and the log is where the wait shows.
 Once a probe pod is placed and passes, the `pool-capacity` row of [The deployment's capability report](#the-deployments-capability-report) records how many attempts waited and the scheduler's last reason, open until `capabilities.decided.pool-capacity` names a reason;
@@ -9682,10 +9683,10 @@ a refusal is boot's own, on stderr, and exits 1.
   It deletes its Sandbox when it ends, a SIGTERM or SIGINT included; after a SIGKILL, or one cut off mid-create, the Sandbox ends at its `shutdownTime`.
 
 - **Capacity.**
-  It waits on room in the Legion pool without limit, as the daemon's probe does (a waiting attempt counts against no retry), so the caller bounds it:
+  It waits on room on the cluster's nodes without limit, as the daemon's probe does (a waiting attempt counts against no retry), so the caller bounds it:
   a CI job's timeout, or `timeout <duration> legion probe-boot …`.
   The daemon's own probe runs at boot, before it launches any pod;
-  probe-boot runs while the daemon serves, so its pod (`probeReservation`) competes with live issue pods for the pool's capacity until it finishes, and on a pool with a hard cap it can delay an issue pod's launch or relaunch.
+  probe-boot runs while the daemon serves, so its pod (`probeReservation`) competes with live issue pods for the nodes' capacity until it finishes, and on a pool with a hard cap it can delay an issue pod's launch or relaunch.
 
 A change to the worker pod (a new projected token, a ConfigMap mount, a variable) is proven with it, run as the daemon's identity, on a cluster that admits Legion's pods before any daemon restarts on it:
 a pod the cluster would not admit, mount or start fails here as it would fail the daemon's boot.
@@ -9716,7 +9717,7 @@ This section is the retired TypeScript daemon's, which now refuses `runtime: kub
 what follows is the block it read before
 — for the pods Legion runs today see [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod), and for the live settings [Configuration](#configuration), the Go daemon's.
 The Go coordinator (`packages/daemon`, LEGION-208) reads the same `runtime.kubernetes` key with different rules, and refuses the examples below as written:
-its runtime selects the Legion pool itself, so `scheduling.node_selector` may not set `legion.dev/pool`;
+`scheduling.node_selector` may not set `legion.dev/pool`, since Legion's pods share the cluster's general nodes and that label would set them apart on nodes of their own;
 `resources` is keyed by role, with no `role_profiles`;
 `storage_class` is required, and a `gateway` block is refused as removed (LEGION-270:
 a pod's model route is the operator's `pod` below); every pod dials the worker stream at `tcp://<advertise_host, or bind with
@@ -9772,7 +9773,7 @@ the command runs with the daemon's environment plus `exec.env`, its `status.toke
 uid `legion` on the devbox receives the instance role through IMDS, so no credential file exists.
 
 Every Legion pod is annotated `karpenter.sh/do-not-disrupt: "true"`, which stops consolidation and drift from evicting it;
-a NodePool's `expireAfter` is forceful in Karpenter v1 and must be `Never` for Legion's pool, provisioned by your infrastructure-as-code.
+a NodePool's `expireAfter` is forceful in Karpenter v1 and must be `Never` for every NodePool whose nodes run Legion's pods, provisioned by your infrastructure-as-code.
 
 The block is file-only: there are no `LEGION_KUBERNETES_*` environment keys, and `LEGION_RUNTIME` never outranks the file (a disagreement is logged once and ignored).
 Defaults (root spec §3):
@@ -11104,7 +11105,7 @@ a token no launch resolves is refused as an invalid boot token, the operator's c
 in an architect's or phase worker's session it needs the operator's capability like any other takeover, and stops before any daemon call without one.
 
 **The pod.**
-Sandbox `legion-<project>-controller` in `runtime.kubernetes.namespace` runs the pod an issue's Sandbox runs ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)) with a one-role list, on the Legion pool, under gVisor or, where `runtime.kubernetes.sandbox.type` is `microvm`, in a GKE Sandbox microVM ([Pods in microVMs](#pods-in-microvms)), with the operator's pod (`runtime.kubernetes.pod`) and the providers Secret, so it reaches models by the route every worker does.
+Sandbox `legion-<project>-controller` in `runtime.kubernetes.namespace` runs the pod an issue's Sandbox runs ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)) with a one-role list, under gVisor or, where `runtime.kubernetes.sandbox.type` is `microvm`, in a GKE Sandbox microVM ([Pods in microVMs](#pods-in-microvms)), with the operator's pod (`runtime.kubernetes.pod`) and the providers Secret, so it reaches models by the route every worker does.
 Its one container, `controller`, runs `legion launcher --role controller`:
 it authenticates to the worker stream with its own launcher token and starts and stops the controller's `legion worker-shim` and Oh My Pi, on the pod baseline (`--pod-safety`:
 the two session-placing variables, [Settings order](#operator-configuration), and Oh My Pi's profile directory made under its state home, `/legion/scratch/state/controller`), on the daemon's command, as an issue pod's launcher does each role's, so a relaunch in a healthy pod is a new generation of that child rather than a new pod.

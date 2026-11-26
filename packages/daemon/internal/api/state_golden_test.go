@@ -58,6 +58,7 @@ advertise_host: legion-daemon.internal.example
 postgres_dsn: postgres://legion:fixture-dsn-password@postgres.internal.example:5432/legion
 state_dir: /var/lib/legion
 admission_cap: 6
+admission_p0_bound: 4
 daemon_url: http://legion-daemon.internal.example:13370
 worker_stream_port: 13371
 provider_keys: {ANTHROPIC_API_KEY: ANTHROPIC_API_KEY_FIXTURE, GEMINI_API_KEY: GEMINI_API_KEY_FIXTURE}
@@ -256,17 +257,19 @@ func composedFixture(t *testing.T, path string) State {
 }
 
 // keepNullPriorities puts back each `priority` the file at path writes as null, on an issue and on
-// its waitingLine. Those are the two keys of the state the daemon writes as null rather than
-// leaving out: an issue the workflow records with no Dispatch priority, and a line member neither
-// it nor its tree root has one for (PriorityView's MarshalJSON). encoding/json reads a null into
+// its waitingLine, and each issue's `resolvedPriority` it writes as null. Those are the three keys
+// of the state the daemon writes as null rather than leaving out: an issue the workflow records
+// with no Dispatch priority, a line member neither it nor its tree root has one for, and an issue
+// Dispatch resolves to a known none (PriorityView's MarshalJSON). encoding/json reads a null into
 // a pointer as no pointer at all, so a decode alone drops the key, and the read-back would fail on
 // a value the daemon serves. Only a key the file holds is put back; an absent one stays absent.
 func keepNullPriorities(t *testing.T, path string, written []byte, state State) {
 	t.Helper()
 	var held struct {
 		Issues map[string]struct {
-			Priority    json.RawMessage `json:"priority"`
-			WaitingLine *struct {
+			Priority         json.RawMessage `json:"priority"`
+			ResolvedPriority json.RawMessage `json:"resolvedPriority"`
+			WaitingLine      *struct {
 				Priority json.RawMessage `json:"priority"`
 			} `json:"waitingLine"`
 		} `json:"issues"`
@@ -279,6 +282,9 @@ func keepNullPriorities(t *testing.T, path string, written []byte, state State) 
 		issue := state.Issues[key]
 		if bytes.Equal(keys.Priority, null) {
 			issue.Priority = new(PriorityView(record.NoPriority))
+		}
+		if bytes.Equal(keys.ResolvedPriority, null) {
+			issue.ResolvedPriority = new(PriorityView(record.NoPriority))
 		}
 		if keys.WaitingLine != nil && issue.WaitingLine != nil && bytes.Equal(keys.WaitingLine.Priority, null) {
 			issue.WaitingLine.Priority = new(PriorityView(record.NoPriority))

@@ -128,6 +128,9 @@ func populatedRecord(s *seeding) {
 	merged := issue("LEGION-207", "LEGION-207", phase.Done, "done", "acme/widgets", 2, 3)
 	lingerUntil := at(22, 10, 10, 12)
 	merged.LingerUntil = &lingerUntil
+	// LEGION-207 has no priority of its own, and Dispatch resolves it to P2 from OTHER-5, an
+	// ancestor in another project (record.Resolved, which intake's dispatchResolved writes).
+	merged.Resolved = record.Resolved{Priority: record.P2, From: "OTHER-5", Known: true}
 
 	// LEGION-208: the root at work.
 	root := issue("LEGION-208", "LEGION-208", phase.Implementing, "in_progress", "acme/widgets", 3, 4)
@@ -148,6 +151,8 @@ func populatedRecord(s *seeding) {
 	// recordObservation).
 	handed := issue("LEGION-211", "LEGION-211", phase.Implementing, "todo", "acme/widgets", 2, 7)
 	handed.Rank, handed.HandedOverFrom, handed.Priority = "00011", "LEGION-200", record.P1
+	// Dispatch resolves LEGION-211 to its own P1, so the resolution names no issue it comes from.
+	handed.Resolved = record.Resolved{Priority: record.P1, Known: true}
 
 	// LEGION-212: its architect asked a person, and the person answered at 09:12, a movement of
 	// the root (workflow's awaiting reconcile). It keeps the slot it took when it was started.
@@ -163,6 +168,10 @@ func populatedRecord(s *seeding) {
 	// LEGION-214: a root of its own tree whose record says the Legion label is off.
 	labelOff := issue("LEGION-214", "LEGION-214", phase.Admitted, "todo", "zeta/archive", 1, 9)
 	labelOff.HandedOver = false
+	// LEGION-214 has no priority of its own and none above it, which Dispatch sends as a resolved
+	// none, a known none. Every other issue stands as a Dispatch release that resolves no priority
+	// leaves it, with none resolved at all, so the state holds every reading of the field.
+	labelOff.Resolved = record.Resolved{Priority: record.NoPriority, Known: true}
 
 	// LEGION-215: a labelled root under LEGION-217, which Dispatch shows under LEGION-208: admission
 	// records the chain with the parent it starts at (admit's record, admit.go; intake/facts.go's
@@ -662,8 +671,8 @@ func populatedDeployment(s *seeding) composition {
 
 // seedPopulatedRecord is the populated record the populated and paused states share, written in
 // the order its writers need: the issues, the outbox rows the claims' tasks name, the claims, the
-// deployment's boots and controller, the intake's give-ups and the pod's hold. It answers the
-// daemon's composition of it and the outbox rows the claims hold.
+// deployment's boots and controller, the intake's give-ups, the pod's hold and the live P0 bound.
+// It answers the daemon's composition of it and the outbox rows the claims hold.
 func seedPopulatedRecord(s *seeding) (composition, populatedRows) {
 	populatedRecord(s)
 	rows := populatedOutbox(s)
@@ -671,6 +680,16 @@ func seedPopulatedRecord(s *seeding) (composition, populatedRows) {
 	c := populatedDeployment(s)
 	populatedIntake(s)
 	populatedPodHolds(s)
+	// The controller set the P0 bound to 3 while the daemon ran, below legion.yaml's 4 (the route
+	// writes it as admission's recordP0BoundChange does, store.RecordP0BoundChangeTx), so the bound
+	// in force is the live one and every key of the bound's view is in the record. LEGION-212, the
+	// one P0 issue holding a slot by its own priority, holds it outside the cap.
+	s.in("the live P0 bound", func(ctx context.Context, tx pgx.Tx) error {
+		_, err := store.RecordP0BoundChangeTx(ctx, tx, store.P0BoundChange{Project: c.cfg.Project, Mode: store.P0BoundSet, Bound: 3,
+			By:     store.PauseActor{Kind: store.PauseByController, Session: "ses_controller"},
+			Reason: "the P0 issues outran the gateway", At: at(22, 9, 10, 0)})
+		return err
+	})
 	return c, rows
 }
 

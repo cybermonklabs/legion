@@ -205,39 +205,47 @@ func TestTheWaitLimitEndsInsideTheRequestDeadline(t *testing.T) {
 	}
 }
 
-// airlockTestSettings is the eleven test-only settings of the broker's local stack, the
-// airlock's ten and the judge's one, each as a Config the refusal below reads and as the
-// environment a real broker is started with. One row per setting: the refusal has to name
+// airlockTestSettings is the fourteen test-only settings of the broker's local stack: the
+// airlock's ten, the proxy chain's three and the judge's one, each as a Config the refusal below
+// reads and as the environment a real broker is started with, with what else that environment
+// needs for the setting to load at all (with). One row per setting: the refusal has to name
 // whichever one it found, since an operator reads from it which setting to take out.
 func airlockTestSettings() []struct {
 	name string
 	cfg  func(*config.Config)
 	env  string
+	with []string
 } {
+	margin := time.Duration(0)
+	pool := []string{"BROKER_PROXY_CA_POOL=" + testProxyPool}
 	return []struct {
 		name string
 		cfg  func(*config.Config)
 		env  string
+		with []string
 	}{
-		{"BROKER_AIRLOCK_TEST_GITHUB_API_BASE", func(c *config.Config) { c.AirlockTestGitHubAPIBase = "http://127.0.0.1:18080" }, "http://127.0.0.1:18080"},
-		{"BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL", func(c *config.Config) { c.AirlockTestGoogleTokenURL = "http://127.0.0.1:18081/token" }, "http://127.0.0.1:18081/token"},
-		{"BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL", func(c *config.Config) { c.AirlockTestAnthropicTokenURL = "http://127.0.0.1:18082/v1/oauth/token" }, "http://127.0.0.1:18082/v1/oauth/token"},
-		{"BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL", func(c *config.Config) { c.AirlockTestIAMCredentialsURL = "http://127.0.0.1:18083" }, "http://127.0.0.1:18083"},
-		{"BROKER_AIRLOCK_TEST_DIAL_ALLOW", func(c *config.Config) { c.AirlockTestDialAllow = []string{"s.airlock.test:443"} }, "s.airlock.test:443"},
-		{"BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE", func(c *config.Config) { c.AirlockTestUpstreamCAFile = "/run/airlock/ca.crt" }, "/run/airlock/ca.crt"},
+		{"BROKER_AIRLOCK_TEST_GITHUB_API_BASE", func(c *config.Config) { c.AirlockTestGitHubAPIBase = "http://127.0.0.1:18080" }, "http://127.0.0.1:18080", nil},
+		{"BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL", func(c *config.Config) { c.AirlockTestGoogleTokenURL = "http://127.0.0.1:18081/token" }, "http://127.0.0.1:18081/token", nil},
+		{"BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL", func(c *config.Config) { c.AirlockTestAnthropicTokenURL = "http://127.0.0.1:18082/v1/oauth/token" }, "http://127.0.0.1:18082/v1/oauth/token", nil},
+		{"BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL", func(c *config.Config) { c.AirlockTestIAMCredentialsURL = "http://127.0.0.1:18083" }, "http://127.0.0.1:18083", nil},
+		{"BROKER_AIRLOCK_TEST_DIAL_ALLOW", func(c *config.Config) { c.AirlockTestDialAllow = []string{"s.airlock.test:443"} }, "s.airlock.test:443", nil},
+		{"BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE", func(c *config.Config) { c.AirlockTestUpstreamCAFile = "/run/airlock/ca.crt" }, "/run/airlock/ca.crt", nil},
 		{"BROKER_AIRLOCK_TEST_RESOLVE", func(c *config.Config) {
 			c.AirlockTestResolve = map[string]netip.Addr{"s.airlock.test": netip.MustParseAddr("127.0.0.1")}
-		}, "s.airlock.test=127.0.0.1"},
-		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", func(c *config.Config) { c.AirlockTestKeepValues = true }, "true"},
-		{"BROKER_AIRLOCK_TEST_NO_KIND", func(c *config.Config) { c.AirlockTestNoKind = true }, "true"},
-		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", func(c *config.Config) { c.AirlockTestAzureAuthority = "microsoft.airlock.test" }, "microsoft.airlock.test"},
-		{"BROKER_JUDGE_TEST_SKIP_CHECKS", func(c *config.Config) { c.JudgeTestSkipChecks = true }, "true"},
+		}, "s.airlock.test=127.0.0.1", nil},
+		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", func(c *config.Config) { c.AirlockTestKeepValues = true }, "true", nil},
+		{"BROKER_AIRLOCK_TEST_NO_KIND", func(c *config.Config) { c.AirlockTestNoKind = true }, "true", nil},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", func(c *config.Config) { c.AirlockTestAzureAuthority = "microsoft.airlock.test" }, "microsoft.airlock.test", nil},
+		{"BROKER_PROXY_TEST_CA_URL", func(c *config.Config) { c.ProxyTestCAURL = "http://127.0.0.1:18082" }, "http://127.0.0.1:18082", pool},
+		{"BROKER_PROXY_TEST_CLOCK_OFFSET_FILE", func(c *config.Config) { c.ProxyTestClockOffsetFile = "/run/stack/clock-offset" }, "/run/stack/clock-offset", nil},
+		{"BROKER_PROXY_TEST_RENEWAL_MARGIN", func(c *config.Config) { c.ProxyTestRenewalMargin = &margin }, "0s", pool},
+		{"BROKER_JUDGE_TEST_SKIP_CHECKS", func(c *config.Config) { c.JudgeTestSkipChecks = true }, "true", nil},
 	}
 }
 
-// TestEachAirlockTestSettingIsRefusedInProduction: every one of the eleven points the broker at
-// a stand-in, lets it dial what no production proxy may, or turns a check off, so each on its
-// own refuses a start that is not a local run, naming itself.
+// TestEachAirlockTestSettingIsRefusedInProduction: every one of the fourteen points the broker at
+// a stand-in, lets it dial what no production proxy may, moves its clock, or turns a check off,
+// so each on its own refuses a start that is not a local run, naming itself.
 func TestEachAirlockTestSettingIsRefusedInProduction(t *testing.T) {
 	for _, setting := range airlockTestSettings() {
 		var cfg config.Config
@@ -253,7 +261,7 @@ func TestEachAirlockTestSettingIsRefusedInProduction(t *testing.T) {
 	}
 }
 
-// TestEveryAirlockTestSettingIsFineForALocalRun: all eleven at once, with the fake secrets file
+// TestEveryAirlockTestSettingIsFineForALocalRun: all fourteen at once, with the fake secrets file
 // that makes a start a local run, are accepted - and a production start naming none of them is
 // accepted too, since this refusal must not stand in the way of an ordinary boot.
 func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
@@ -262,7 +270,7 @@ func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
 		setting.cfg(&cfg)
 	}
 	if err := refuseAirlockTestSettingsInProduction(cfg, "/dev/fake-secrets.json"); err != nil {
-		t.Fatalf("all eleven with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", err)
+		t.Fatalf("all fourteen with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", err)
 	}
 	if err := refuseAirlockTestSettingsInProduction(config.Config{}, ""); err != nil {
 		t.Fatalf("a production start naming none of them: want nil, got %v", err)
@@ -270,7 +278,7 @@ func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
 }
 
 // TestMainRefusesAnAirlockTestSettingInProduction drives the REAL compiled binary with each of
-// the eleven, as the port-0 row above drives it: the helper's rows prove it is correct, and this
+// the fourteen, as the port-0 row above drives it: the helper's rows prove it is correct, and this
 // proves the broker runs it at boot, before it migrates the database or binds a socket. The
 // database it is given is unreachable, so a broker that read these settings later would fail on
 // the host instead of on the setting.
@@ -278,11 +286,11 @@ func TestMainRefusesAnAirlockTestSettingInProduction(t *testing.T) {
 	binary := buildBroker(t)
 	for _, setting := range airlockTestSettings() {
 		t.Run(setting.name, func(t *testing.T) {
-			out := runRefusedBroker(t, binary,
+			out := runRefusedBroker(t, binary, append([]string{
 				"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
 				"BROKER_PUBLIC_URL=https://secrets.internal.example",
-				setting.name+"="+setting.env,
-			)
+				setting.name + "=" + setting.env,
+			}, setting.with...)...)
 			if !strings.Contains(out, setting.name) || !strings.Contains(out, "local stack") {
 				t.Fatalf("broker refused, but its output does not name %s as a local-stack setting: %s", setting.name, out)
 			}
@@ -313,7 +321,7 @@ func TestTheRequestMachineCarriesTheServicesByAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, "", nil, nil, nil)
+	m := newRequestMachine(cfg, nil, nil, nil, nil, nil, nil, nil, nil)
 	want := map[string]string{
 		"system:serviceaccount:example:example-sa": "example-service",
 		"system:serviceaccount:example:another-sa": "example-service",
@@ -375,7 +383,7 @@ func TestTheAnthropicMinterMintsAtTheLocalStacksStandIns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, "", nil, nil, nil)
+	m := newRequestMachine(cfg, nil, nil, nil, nil, nil, nil, nil, nil)
 	minted, err := m.Minters[policy.TypeAnthropicFederation](t.Context(), secrets.MintRequest{
 		Name: secret, Source: secret, Type: policy.TypeAnthropicFederation, HumanTier: true, Value: storedVal,
 	})
@@ -951,13 +959,8 @@ func (p *brokerProcess) AwaitExit(t *testing.T) error {
 // requireHealthy fails t unless GET /healthz at addr answers 200.
 func requireHealthy(t *testing.T, addr string) {
 	t.Helper()
-	resp, err := http.Get("http://" + addr + "/healthz")
-	if err != nil {
-		t.Fatalf("GET http://%s/healthz: %v", addr, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET http://%s/healthz: status %d, want 200", addr, resp.StatusCode)
+	if status, body := healthz(t, addr); status != http.StatusOK {
+		t.Fatalf("GET http://%s/healthz: status %d %s, want 200", addr, status, body)
 	}
 }
 
@@ -1538,11 +1541,11 @@ func TestTheReleasesCertificateIsTheAuthoritysOwnAndCarriesNoKey(t *testing.T) {
 	}
 	combined := writeTempFile(t, "combined.pem", append(append([]byte{}, certPEM...), keyPEM...))
 
-	ca, err := proxy.NewAuthority(combined, keyFile)
+	ca, err := proxy.NewAuthority(combined, keyFile, proxy.AuthorityOptions{})
 	if err != nil {
 		t.Fatalf("the authority on a file holding the certificate and the key: %v; the row is about a file the boot accepts", err)
 	}
-	released := airlockCACertificatePEM(ca)
+	released := ca.ReleaseRoots()
 	if strings.Contains(released, "PRIVATE KEY") {
 		t.Fatalf("the release carries a private key:\n%s", released)
 	}
@@ -1554,7 +1557,7 @@ func TestTheReleasesCertificateIsTheAuthoritysOwnAndCarriesNoKey(t *testing.T) {
 		t.Fatal("the release's certificate is not the one the proxy signs with")
 	}
 	// And a deployment with no airlock releases no certificate at all.
-	if released := airlockCACertificatePEM(nil); released != "" {
+	if released := (*proxy.Authority)(nil).ReleaseRoots(); released != "" {
 		t.Fatalf("a broker with no airlock released %q; want nothing", released)
 	}
 }

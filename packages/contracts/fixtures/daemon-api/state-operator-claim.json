@@ -8,6 +8,11 @@
   },
   "admission": {
     "cap": 4,
+    "p0Holders": 0,
+    "p0Bound": {
+      "bound": null,
+      "configured": null
+    },
     "active": [],
     "waiting": [],
     "trees": [],

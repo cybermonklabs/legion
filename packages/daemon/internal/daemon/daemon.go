@@ -3180,6 +3180,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		// A test's seam alone (overrides.gateRegistrationRead); nil in production.
 		GateRegistrationRead: p.gateRegistrationRead,
 		Pause:                pauses,
+		P0BoundConfigured:    cfg.AdmissionP0Bound,
 	})
 
 	group, serving := errgroup.WithContext(ctx)
@@ -3280,7 +3281,10 @@ type source struct {
 	projectToken string
 	runtime      string
 	admissionCap int
-	startedAt    time.Time
+	// p0Bound is legion.yaml's P0 bound (config.Config.AdmissionP0Bound), nil for none: the bound
+	// in force while no value set while the daemon runs stands.
+	p0Bound   *int
+	startedAt time.Time
 	// now is the daemon's one clock (overrides.clock, the wall clock in production), the moment
 	// the state is read at; nil, in a source a test builds by hand, is the wall clock.
 	now func() time.Time
@@ -3357,6 +3361,7 @@ func stateSource(cfg config.Config, st *store.Store, records record.Store, start
 		projectToken: p.project,
 		runtime:      cfg.Runtime.Name,
 		admissionCap: cfg.AdmissionCap,
+		p0Bound:      cfg.AdmissionP0Bound,
 		startedAt:    startedAt,
 		now:          p.clock.Now,
 		secretsLogin: p.secretsLogin,
@@ -3856,6 +3861,12 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	}
 	state.Settings = s.settings
 	state.Admission.Cap = s.admissionCap
+	// The P0 bound in force, read through tx as every admission pass reads it (api.P0BoundStateTx).
+	p0Bound, err := api.P0BoundStateTx(ctx, tx, s.project, s.p0Bound)
+	if err != nil {
+		return api.State{}, nil, err
+	}
+	state.Admission.P0Bound = &p0Bound
 	controller, _, err := s.store.ControllerTx(ctx, tx, s.projectToken)
 	if err != nil {
 		return api.State{}, nil, err
