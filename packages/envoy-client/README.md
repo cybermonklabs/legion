@@ -46,9 +46,19 @@ of it. A payload that is text already is never held to the bound; its frame boun
 Malformed input is safe: a non-JSON frame becomes a TOON block naming its topic and an
 `unrecognised` parse failure. The renderer never emits raw frame bytes. Dispatch envelopes
 (`source: "dispatch"`) render through the same TOON path as every other source, nesting the
-parsed event under `dispatch: { issue_key, type, actor, payload }` with `payload` typed per event
-type; a payload whose shape disagrees with its event type's schema is preserved as its raw parsed
-value under `dispatch`, never dropped or reduced to prose. A dispatch envelope with no payload at
+parsed event under `dispatch: { owner, type, actor, payload }` with `payload` typed per event
+type. The card's `payload` leaves out each field that states nothing (`null`, `""`, `false`,
+`[]`, or an object left empty; a list keeps every item), each field that repeats the card
+(`issue_key`, an `author` each of whose fields is the `actor`'s, a `created_at` less than a
+second from the time Envoy issued the card, whose `at` is that time cut to the second, and a
+comment's `thread_root_id` and `answers` equal to its `reply_to`), and Dispatch's own outbox and
+client bookkeeping (`deliveries`, `thread_logins`, `references_changed*`,
+`mentions_decide_routes`, `suppress*`, an issue's board `rank`). A field whose value is the fact even when empty stays as
+written: each field an update's `changed` names, a present `suggestion`, and a present `forced`.
+A session actor's `origin` keeps only its `session_title`. A payload whose shape disagrees with
+its event type's schema keeps its raw parsed fields under the same rules, and a frame that is no
+Dispatch event is shown as its raw parsed value under `dispatch`; neither is dropped or reduced
+to prose. A dispatch envelope with no payload at
 all falls back to the same `summary` field every other source gets and marks `unrecognised:
 payload`. On a `notifications.dispatch.*` topic, which carries every event of its owner, the
 renderer skips the events Dispatch marks `quiet` — a delivery receipt, an anchor refresh,
@@ -400,7 +410,14 @@ attempt was refused: the message may or may not have arrived. The error names it
 (`agent.<target>.<key>`) is one a repeat is recognised by (`MINTED_DEDUPE_KEY_PATTERN`); when it
 is, a resend under that key inside the 72-hour duplicate window is dropped as a repeat if the
 first copy arrived (`DELIVERY_DUPLICATE_WINDOW_MS` names the rare cases a recipient that restarted
-still sees it twice). A send
+still sees it twice). One 5xx is not such an attempt: the listener's `503` whose `error` opens
+with `MESSAGE_NOT_SENT_PREFIX` (`@legion/contracts`), which says the message bus refused the
+message before anything went out, because the deployed stream does not capture its topic for
+now, as during a hub move. It is sent again like any 5xx, under the same key, and a send or a
+publish that gets it on every attempt throws that `EnvoyApiError`, whose `notSent` is true and
+whose message is the listener's: nothing was stored, so the message may be sent again later.
+After an earlier attempt that got no answer or another 5xx, a send is unconfirmed as above, and a
+publish's error says that attempt may have stored the message, with `notSent` false. A send
 refused with a 4xx on every attempt stays an `EnvoyApiError`. An `EnvoyApiError` keeps the
 listener's `error` as its message, with ` (reason: <reason>)` after it where the body names one,
 and keeps the body's `code`, `reason` and `expected`, and the `retry_after_seconds` of a refusal
@@ -916,7 +933,16 @@ Dispatch's own rule reads it) or not JSON, but for a bodiless 204 or 205: every 
 reads as JSON answers JSON (`WriteJSON`), so such a read is a `DispatchGatewayError` too, naming
 the body the same way, and a retry may succeed, since a proxy or a captive portal in the way can
 be got past. Before, its text was handed back as the route's answer, and `dispatch open-asks` read a
-portal's page as no asks at all.
+portal's page as no asks at all. Such a 2xx reaches that advice only for a read, a `PUT` or a
+`DELETE`: a keyed write's 2xx, a `POST`'s or a `PATCH`'s, is read by its own table
+(`write-outcome.ts`), which says the write may have landed.
+`readRoute` and `sendRoute`, which send the route `dispatch api`'s caller wrote, give every 2xx
+but Dispatch's JSON back as the bytes that came, with its Content-Type (`RouteAnswer`): a file
+version's bytes and a document version's Markdown download are such answers, and an answer that
+carries `Content-Disposition: attachment` is stored content whatever its type, JSON included, so it
+is never parsed. A 2xx whose body holds a credential the request presented, a token or its DPoP
+proof, is refused instead (`DispatchCredentialEchoError`, code `CREDENTIAL_ECHOED`), since no
+route of Dispatch's answers the caller's own credential.
 
 `DispatchWriteUnsettledError` is deliberately not a `DispatchServiceError`, since a caller reads
 one as a refusal Dispatch decided: its message is the last answer or failure, the number of
@@ -999,7 +1025,7 @@ With no bearer configured at all, the session's credential is traded at the secr
 instead (`AGENT_SECRETS_URL` with `AGENT_SECRETS_MACHINE_IDENTITY`, `brokerCredential`). The
 credential is then a DPoP-bound access token presented under the `DPoP` scheme rather than a
 bearer. Every bearer source above is resolved first and unchanged, so a session that has one
-behaves exactly as it did. The machine's identity is one of four (`machineIdentity` in
+behaves exactly as it did. The machine's identity is one of five (`machineIdentity` in
 `@legion/cipher-client/environment`). `kubernetes` reads a pod's projected token from
 `AGENT_SECRETS_MACHINE_TOKEN_FILE`. `metadata` asks the metadata server for a Compute Engine
 machine's Google identity token, for the audience `AGENT_SECRETS_MACHINE_AUDIENCE`. `pool` mints
@@ -1007,6 +1033,15 @@ a Google identity token through a workload identity pool, as the Go client's `Po
 does (`pool-identity.ts`), for a machine with no Google service account of its own, such as an
 Azure box. `pool` needs all four of `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
 `AGENT_SECRETS_MACHINE_AUDIENCE`, `AGENT_SECRETS_POOL_AUDIENCE` and `AGENT_SECRETS_POOL_ACCOUNT`.
+`github-actions` asks GitHub for a GitHub Actions run's OIDC token, as the Go client's
+`GitHubActionsIdentity` does (`github-actions-identity.ts`), from `ACTIONS_ID_TOKEN_REQUEST_URL`,
+`ACTIONS_ID_TOKEN_REQUEST_TOKEN` and `AGENT_SECRETS_MACHINE_AUDIENCE`, read in that order. GitHub
+sets the first two in a job that holds `id-token: write`. The client adds `audience` to the
+request URL's own query and sends the request token as its bearer, follows no redirect, and reads
+the answer's `value`; it refuses a request URL that is not https, except on this machine's
+loopback, and no refusal names the URL or the token. It asks for a new token at every trade,
+since the broker takes each GitHub token once, and the broker answers it from the workflow's
+entry. `AGENT_SECRETS_MACHINE_AUDIENCE` must equal the broker's `BROKER_EXCHANGE_GITHUB_AUDIENCE`.
 An identity with one of its variables missing is an error that names the variable.
 
 `device-login` is the identity of a machine that has none of its own, such as a person's laptop
@@ -1049,10 +1084,13 @@ later wherever that half is over the minute. A file with no `access_life_seconds
 build writes it, keeps the minute alone until the next refresh. A refusal of the trade's session or
 projects is not refreshed: a refresh cures none of those. A refresh the broker did not answer is
 sent once more at once: the broker redeems the spent refresh token again within its five-minute
-grace, and past it the login ends. The broker's `invalid_grant` to a refresh is final
-(`DeviceLoginEndedError` in `token-errors.ts`): the login was revoked or ran out, and only a new
-`dispatch login --device` cures it. A trade whose time ran out while another process of the
-machine held the lock says so (`LockHeldError`), and not that the broker did not answer.
+grace, and past it the login ends. The broker's 400 or 401 `invalid_grant` to a refresh is final
+(`DeviceLoginEndedError` in `token-errors.ts`, decided by `endsGrant` in `oauth-refusal.ts`): the
+login was revoked or ran out, and only a new `dispatch login --device` cures it. An
+`invalid_grant` at another status, a 403 or a 429, is a refusal like any other
+(`BrokerRefusedError`), and a later refresh gets past a 429. A trade whose time ran out while
+another process of the machine held the lock says so (`LockHeldError`), and not that the broker
+did not answer.
 
 A pod writes under a session name only once its deployment has registered that name for the pod,
 and its trade can reach the broker first. The broker refuses that trade with a description
@@ -1077,7 +1115,7 @@ next one:
 |---|---|
 | a token | answers every caller, and both schedules start over |
 | a pod session not registered yet | trades again 2 s later, doubling to 30 s, so the trade after a registration lands is at most 30 s away; that trade has its own 30 s |
-| no answer within 30 s, no connection, a 5xx, the broker's 429 or a DPoP refusal, an answer that is not the grant's, an identity source that could not be read | trades again 15 s later, doubling to 5 minutes, the Go client's schedule |
+| no answer within 30 s, no connection, a 5xx, a 408 or a 429, a DPoP refusal, a 4xx naming no OAuth error, an answer that is not the grant's, an identity source that could not be read | trades again 15 s later, doubling to 5 minutes, the Go client's schedule |
 | a refusal no trade cures | ends; a call before the next slot is told the same refusal with no trade |
 
 The loop logs through `console.warn`, as the Go client does: a pod session not registered yet
@@ -1088,16 +1126,20 @@ registration at that deadline fails with `RegistrationPendingError`, which names
 Once a renewal has failed, a call made while the token in hand is live goes on with that token.
 
 The identity the client trades depends on the sign-ins on the machine (`brokerTokenClient`). With
-no sign-in, the client trades the machine. The machine's identity is the subject, the DPoP key is
-one this process makes, and the session name is the caller's own session, else
-`AGENT_SECRETS_SESSION`. Where a person ran `agent-secrets login` on the machine, the client
-trades that person, as the Go client does:
+no sign-in, the client trades the machine. The machine's identity is the subject, and the session
+name is the caller's own session, else `AGENT_SECRETS_SESSION`. In a pod, where
+`AGENT_SECRETS_MACHINE_IDENTITY` is `kubernetes` and `AGENT_SECRETS_KEY_DIR` names the role's own
+directory, the DPoP key is the role's own agent-secrets key, the `key.pem` that
+`agent-secrets keygen` wrote there, which the broker holds the pod session's trade to; when that
+file cannot be read, the call fails naming the path. Everywhere else the DPoP key is one this
+process makes. Where a person ran `agent-secrets login` on the machine, the client trades that
+person, as the Go client does:
 
 - The subject is the person's Google identity token. The client renews it at every trade, from
   the refresh token the sign-in keeps, at the sign-in issuer (`person-identity.ts`).
 - The actor is the machine's identity token. The broker takes only a Google identity token as
   the actor, so the machine's identity is `metadata` or `pool`. The broker refuses a `kubernetes`
-  actor in its own words.
+  or `github-actions` actor in its own words.
 - The DPoP key is the sign-in's box key. So the broker records one sign-in for the box, and a
   revoke of that sign-in stops the session's trades.
 - The session name is the caller's own session, else `signin-<person>-<thumbprint>`, where
@@ -1160,13 +1202,17 @@ presentation was dead (`stale(session, presented)`), presents the credential aga
 request one more time. The credential drops that dead token alone, from the client that presented
 it: a session the host moved to in between keeps its live token, and a token the client traded
 since is kept; the next presentation uses the token the client holds now, trading at the broker
-where it holds none. A write goes again under the same `Idempotency-Key`. A read does this once
-for each send, and a write once for the call: a second such answer is a refusal Dispatch's auth
-made before its keyed layer ran, so it is the write's refusal while nothing may have landed and
-the write is `DispatchWriteUnsettledError` once something may have (`write-outcome.ts`). If the
-broker refuses the new trade, the call fails in the broker's words, unless an attempt of the
-write may have landed: then the write asks again on its pacing, and with no ask left it is
-`DispatchWriteUnsettledError`.
+where it holds none. A keyed write, a named command's (`#write`), goes again under the same
+`Idempotency-Key`. A read does this once for each send, and a keyed write once for the call: a
+second such answer is a refusal Dispatch's auth made before its keyed layer ran, so it is the
+write's refusal while nothing may have landed and the write is `DispatchWriteUnsettledError` once
+something may have (`write-outcome.ts`). If the broker refuses the new trade, the call fails in
+the broker's words, unless an attempt of a keyed write may have landed: then that write asks again
+on its pacing, and with no ask left it is `DispatchWriteUnsettledError`. `dispatch api`'s request,
+its GET or its write, goes through one `#send`: one resend after `401 BROKER_TOKEN_NOT_ACTIVE`,
+never on a pacing, and never `DispatchWriteUnsettledError`. Dispatch's answer of no route does not
+repeat it, and the command prints a refusal, the broker's refusal of the trade among them, as it
+came.
 
 A sign-in reaches the sessions that start after it. The broker holds a session name for one
 identity for 90 days after the name's last token. So a session that traded as the machine cannot
@@ -1297,13 +1343,25 @@ exception is Debian's OpenSSH (its `user-group-modes` patch, which Debian and Ub
 not upstream OpenSSH, which refuses every directory its group may write to. The rest is this
 command's own choice: it takes a sticky directory, which OpenSSH refuses, and it checks each link
 on the way and the directory each is in, where OpenSSH resolves the path first. It exits 1 when
-the broker refuses the login, the person denies it, its code expires, or the broker answers a
-poll with any other 4xx, with an OAuth error or without one (a proxy's page, a bare challenge),
-naming its status; a poll the broker did not answer, its 429 and a 5xx are polled again, at the
-broker's interval, from 1 s and at most 60 s before any `slow_down` (each of which adds 5 s),
-and 5 s where it names none. It then writes no file. It exits 1 too when a login that was approved
-cannot be kept: it names the login's credential, which the broker holds live, and says to revoke
-it in Machine logins on the page the code was typed into. Where it wrote a copy of the login whole,
+the broker refuses the login, the person denies it, its code expires, the broker answers a code
+that would lapse before its first poll (refused before the code is printed, naming the broker's
+interval and its codes' lifetime, or the hour this machine polls a code at most, and what must
+change at the broker), or the broker answers a poll with any other 4xx, with another OAuth error
+or without one (a proxy's page, a bare challenge), naming its status. The status decides first
+(`oauth-refusal.ts` in `@legion/cipher-client`): a poll the broker did not answer, a 408, its 429
+and a 5xx are polled again, whatever OAuth error they name, and only in another
+4xx does a deciding error count: `access_denied`, which the broker answers 403, is the denial,
+`expired_token` and `invalid_grant` the expiry, and `authorization_pending` and `slow_down` poll
+again. It polls at the broker's interval, 1 s at least, and 5 s where it names none; each
+`slow_down` adds 5 s, at whatever status it comes, and so does each poll the broker did not answer
+or answered 408, 429 or 5xx, once for a poll that is both, as RFC 8628 has it. Such an answer's
+`Retry-After`, in seconds or as a date, is waited before the next poll where it asks longer,
+though never past the code's lifetime, which no wait passes and which is kept on the monotonic
+clock, so a step of the system clock does not move it; a code that lapses after such polls says
+how many came in a row before it. It then writes no file. It
+exits 1 too when a login that was approved cannot be kept: it names the login's credential, which
+the broker holds live, and says to revoke it in Machine logins on the page the code was typed
+into. Where it wrote a copy of the login whole,
 the copy is kept beside the file, under the file's name with `.kept-<uuid>` added, and the message
 names that suffix, whatever fails after it, letting go of the lock included: moved over the file,
 the copy is the login and its credential needs no revoke; unused, the person deletes it, since it
@@ -1320,6 +1378,95 @@ the command names that credential and says to revoke it in Machine logins on the
 typed into. The earlier login is the one the file holds just before the save, read under the lock
 the save holds, so of two logins made at once the one kept second names the other. On a machine
 whose `AGENT_SECRETS_MACHINE_IDENTITY` is not `device-login`, it says to set that variable.
+
+`dispatch api --path <route> [--method POST|PUT|PATCH|DELETE] [--body-file <file>|-]` sends one
+request of a route under `/api/v1` that no other command sends (`apiCommand`,
+`src/dispatch-commands/api.ts`), with the session's own credential as every command presents it
+(a set bearer, the token files' broker token, else a token traded at the secrets broker, with a
+new DPoP proof for the request), and prints the answer's body: Dispatch's JSON, indented as every
+command prints it, for `jq`; any other 2xx body as it came. It is the contract's spec
+`dispatch_api`. With no `--method` it sends a GET (`DispatchClient.readRoute`); `--method` sends
+`POST`, `PUT`, `PATCH` or `DELETE` in its place (`DispatchClient.sendRoute`), and `GET` is no
+value of it. A write that a named command
+makes goes through that command (`dispatch --help` lists them): `dispatch api` is for a route no
+command sends, and it is how a script or a job writes, since a broker token is bound to a key and
+no script can send it as a bearer. `--body-file <file>` sends the file's text, `--body-file -`
+standard input, and `--body` its value, as the request's JSON body
+(`Content-Type: application/json`), and only beside `--method`: a GET sends no body, and a write
+given none sends no body and no `Content-Type`. Standard input is read only with
+`--body-file -`. `<route>` is `/api/v1`, which lists every route, or a route under it, with its
+query after `?`. The spec refuses, before anything is sent, a path that does not begin `/api/v1`
+(a URL among them), one that holds a space, a backslash, a `#` or a character outside printable
+ASCII, one that holds `"`, `<`, `>`, `^`, `` ` ``, `{` or `}` before its query, which a URL parser
+would send percent-encoded, and one with a `.` or `..` segment, plain or percent-encoded, since a
+URL parser would resolve any of those out of `/api/v1`; each refusal names the path, so the
+credential goes to no other server and no other route. It sends the request once, and once more
+only after Dispatch answers that the token it presented is not live (Dispatch authenticated
+nothing, so nothing ran), with no redirect followed and no `Idempotency-Key`. On a 2xx answer it
+exits 0 and prints Dispatch's JSON, indented as every command prints it; any other 2xx body as it
+came, byte for byte, with nothing added and nothing else on standard output: a bodiless 204 as
+nothing, a body typed JSON that is empty or does not parse, and stored content, such as a file
+version's bytes (`GET /api/v1/artifacts/{id}/versions/{number}`) or a document version's Markdown
+(`?download=true`). An answer that carries `Content-Disposition: attachment` is stored content
+whatever its type, so a file stored as JSON prints as it was stored and is never parsed. Under a
+host, the session's ledger records a body printed as it came by its Content-Type and size, never
+its bytes. A 2xx whose body holds a credential the command presented (its token, or the DPoP
+proof of its request) is not printed: something in Dispatch's place echoed the request, so the
+command exits 1 with `CREDENTIAL_ECHOED`, naming the status, saying that a write may have been
+made and to check whether it took effect before sending it again, and naming nothing of the
+body. Any other answer exits 1 with its code: a refusal is Dispatch's error with its code and,
+where Dispatch gives one, its hint
+(`NOT_FOUND: no route for GET /api/v1/x; GET /api/v1 lists every route`), and an answer that is
+neither a 2xx nor Dispatch's JSON, such as a proxy's page or a redirect, is named by its status. A
+usage error, such as a path outside `/api/v1` or a body with no method, exits 2. Under Claude
+Code, a JSON answer longer than the output limit is written to a file the output names; a body
+printed as it came is written whole.
+
+Under a host it acts as that host's session, as every command does, and refuses a missing
+session id with the usage error they give. Where no host is found (`commandHost`), as in a
+GitHub Actions job, it runs all the same, like `dispatch login`: it reads Dispatch from the
+environment alone and no envoy.json (`unhostedDispatch`): `DISPATCH_URL`, and `DISPATCH_TOKEN`,
+`DISPATCH_TOKEN_FILE`, the token files (below) or the broker's `AGENT_SECRETS_URL` and
+`AGENT_SECRETS_MACHINE_IDENTITY`, with `DISPATCH_TOKEN_BROKER` read as every command reads it.
+Its trade names the session `DISPATCH_SESSION_ID` holds, else `AGENT_SECRETS_SESSION`'s, else no
+session, which the fixed session of the job's broker entry answers; with none, the broker refuses
+the trade and the command exits 1 naming the refusal. With no Dispatch or no credential set it
+exits 2, naming those variables. It keeps no session's state there, since no session runs it:
+only a refusal made before a credential is resolved, a usage error or AskGate's refusal of a
+write, goes to the ledger of the session the environment names, if any, and a failure of the
+credential, the broker's refusal of the trade among them, or of the request records nothing. For
+a write, the AskGate record of every session the environment names
+(`ENVOY_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `DISPATCH_SESSION_ID`, `CODEX_THREAD_ID`) is read,
+host or no host. Where any of them is on, or cannot be read, it sends only `GET`, and refuses
+every other method before any request with exit 1, naming the `dispatch` command that makes that
+write (`WRITE_ROUTES`), which AskGate reviews; the gate sits in the command itself, under a host
+and with none, and the refusal's ledger line carries AskGate's mark, so pi-envoy counts it. For a
+write, a variable that holds no valid session id (1 to 128 letters, digits, `.`, `_` or `-`) is a
+usage error that names the variable; a `GET` reads no AskGate record. Where every record is off,
+or the environment names no session (CI, a terminal, a script), every method is sent.
+
+A GitHub Actions job runs it with no host plugin. The command is the `bin/dispatch` of
+`@sjawhar/codex-envoy`, which is that package's npm `bin`
+(`npx --package @sjawhar/codex-envoy dispatch api …`), or of `@sjawhar/pi-envoy`, which declares
+no npm `bin` (`node_modules/@sjawhar/pi-envoy/bin/dispatch` once the package is installed). Each
+runs the bundled `dist/dispatch.js` with `bun`, so the job puts bun on its `PATH` first. The job
+holds `id-token: write`, the broker lists its workflow (`BROKER_EXCHANGE_JOB_WORKFLOWS` for a job
+that writes for no person), and the job's environment names the identity `github-actions`
+(above), with `AGENT_SECRETS_MACHINE_AUDIENCE` set to the broker's
+`BROKER_EXCHANGE_GITHUB_AUDIENCE`:
+
+```yaml
+permissions:
+  id-token: write
+steps:
+  # bun is on PATH from an earlier step: bin/dispatch runs dist/dispatch.js with it.
+  - run: npx --package @sjawhar/codex-envoy dispatch api --path /api/v1/whoami
+    env:
+      DISPATCH_URL: https://dispatch.example
+      AGENT_SECRETS_URL: https://cipher.example
+      AGENT_SECRETS_MACHINE_IDENTITY: github-actions
+      AGENT_SECRETS_MACHINE_AUDIENCE: <the broker's BROKER_EXCHANGE_GITHUB_AUDIENCE>
+```
 
 `runDispatchCli` (`dispatch-cli.ts`) runs one call per process. The host plugin sets
 `DISPATCH_HOST` (`omp` or `claude`) and the session's id (`CLAUDE_CODE_SESSION_ID` under Claude

@@ -15,8 +15,9 @@ import { isStepRole } from "./legion-roles";
 const nonEmptyString = z.string().min(1);
 
 /** The role of a claim of an issue: one of Legion's six, the role acceptance, or a role of the
- * deployment (contract 258) or of the plan, a name of the step grammar but the controller's
- * (`isStepRole`). `legion-api.ts` reads its claims' roles through this one schema too. */
+ * deployment (the deployment roles' contract entry) or of the plan, a name of the step grammar but
+ * the controller's (`isStepRole`). `legion-api.ts` reads its claims' roles through this one schema
+ * too. */
 export const legionStepRole = z.string().refine(isStepRole, {
   message: "a role of the step grammar, ^[a-z][a-z0-9-]{0,31}$, and not the controller",
 });
@@ -27,11 +28,12 @@ export const legionStepRole = z.string().refine(isStepRole, {
  * refusal of the controller's own claim, belongs to the operator's door, and this one never
  * gives it.
  *
- * `claim` (contract 259) names the claim by its token, as a notice of provider errors names it: two
- * claims of one issue can hold one role (`record.WorkerClaim`), and `issue` and `role` alone reach
- * the one that works the role's step that started last. The daemon refuses a token that is
- * no claim of `issue` (`INVALID_CLAIM`) and a claim that holds another role (`CLAIM_NOT_OF_ROLE`).
- * Leave it out for the step's worker: a daemon below 259 refuses the member as unknown.
+ * `claim` (the stranded token's contract entry) names the claim by its token, as a notice of
+ * provider errors names it: two claims of one issue can hold one role (`record.WorkerClaim`), and
+ * `issue` and `role` alone reach the one that works the role's step that started last. The daemon
+ * refuses a token that is no claim of `issue` (`INVALID_CLAIM`) and a claim that holds another role
+ * (`CLAIM_NOT_OF_ROLE`). Leave it out for the step's worker: a daemon below that entry refuses the
+ * member as unknown.
  *
  * `fresh_session` has that claim leave the session it recorded behind and start again in a new
  * one, the effect `legion claims retry --fresh-session` runs for an operator. It reaches a claim

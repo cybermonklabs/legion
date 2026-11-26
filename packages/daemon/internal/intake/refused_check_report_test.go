@@ -29,6 +29,7 @@ func (h *decidingHandler) Apply(context.Context, pgx.Tx, Fact) (Result, error) {
 // as a completion of an entry raised since the route's read: an unmarked refusal of any other
 // kind would make a refused handoff apply on its next delivery.
 func TestARefusedCheckReportAppliesWhenItIsSentAgain(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	const reportID = "check:LEGION-209:2026-10-30T00:00:00Z:1:pass"
@@ -66,6 +67,7 @@ func TestARefusedCheckReportAppliesWhenItIsSentAgain(t *testing.T) {
 // (Result.Unspent), so the fact is not applied again: the handoff refusals exist to stop a
 // completion of an ended run from being taken on its redelivery.
 func TestARefusedFactThatIsNoCheckReportStaysRecorded(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	refusing := &decidingHandler{refusal: &Refusal{Status: http.StatusConflict, Code: "HANDOFF_STALE_GENERATION", Message: "the run it reports is over"}}

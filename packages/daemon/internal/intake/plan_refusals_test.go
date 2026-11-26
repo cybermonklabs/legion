@@ -21,6 +21,7 @@ var inPlanningB = record.Assignment{Experiment: "planning", Unit: "issue", Varia
 // words: the route and the workflow name them through these constructors, so an owner reads the
 // same text whichever of the two refused, and a change of a word is a change of this test.
 func TestThePlanRefusalsSayWhy(t *testing.T) {
+	t.Parallel()
 	accepting := func(starts int64) record.StepEntry {
 		return record.StepEntry{Place: record.StepPlace{Task: "a", Kind: "step", Place: 2}, Starts: starts}
 	}
@@ -120,6 +121,7 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 }
 
 func TestStaleEntryRefusalsNameARecordedCountZeroRun(t *testing.T) {
+	t.Parallel()
 	entry := record.StepEntry{Place: record.StepPlace{Task: "a", Kind: "step", Place: 2}}
 	for _, stale := range []struct {
 		name string
@@ -145,6 +147,7 @@ func TestStaleEntryRefusalsNameARecordedCountZeroRun(t *testing.T) {
 }
 
 func TestStaleEntryRefusalsNameAZeroEntryAsNoRun(t *testing.T) {
+	t.Parallel()
 	for _, stale := range []struct {
 		name string
 		make func(record.StepEntry) *Refusal
@@ -176,12 +179,28 @@ func TestAStaleCompletionReportsItsTwoEntryIdentities(t *testing.T) {
 			t.Fatalf("stale completion refusal names no receiver %q: %s", receiver, refusal.Message)
 		}
 	}
-	reason, _, _ := strings.Cut(refusal.Message, ". ")
-	numbers := make(map[string]int)
-	for _, number := range regexp.MustCompile(`[0-9]+`).FindAllString(reason, -1) {
-		numbers[number]++
+	clause := StaleEntryClause("LEGION-208", claim.RoleTester, phase.Testing, 9, 2, "completion")
+	if !strings.HasPrefix(refusal.Message, clause+", and ") {
+		t.Fatalf("stale completion refusal does not use the shared entry clause %q: %s", clause, refusal.Message)
 	}
-	if want := (map[string]int{"208": 1, "2": 1, "9": 1}); !reflect.DeepEqual(numbers, want) {
-		t.Fatalf("stale completion refusal reports numeric values %v, want only receiver and entry identities %v: %s", numbers, want, reason)
+}
+
+func TestAStaleEntryClauseReportsItsTwoEntryIdentities(t *testing.T) {
+	for _, report := range []string{"completion", "move back"} {
+		t.Run(report, func(t *testing.T) {
+			clause := StaleEntryClause("LEGION-208", claim.RoleTester, phase.Testing, 9, 2, report)
+			for _, receiver := range []string{"LEGION-208", string(claim.RoleTester), string(phase.Testing)} {
+				if !strings.Contains(clause, receiver) {
+					t.Fatalf("stale-entry clause names no receiver %q: %s", receiver, clause)
+				}
+			}
+			numbers := make(map[string]int)
+			for _, number := range regexp.MustCompile(`[0-9]+`).FindAllString(clause, -1) {
+				numbers[number]++
+			}
+			if want := (map[string]int{"208": 1, "2": 1, "9": 1}); !reflect.DeepEqual(numbers, want) {
+				t.Fatalf("stale-entry clause reports numeric values %v, want only receiver and entry identities %v: %s", numbers, want, clause)
+			}
+		})
 	}
 }

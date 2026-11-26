@@ -179,6 +179,9 @@ which its checks pass.
 The daemon starts each phase's worker itself, one phase at a time, and runs only the phases of the
 steps the issue's [plan](#the-plan-of-an-issue) names, in the order the plan names them, a phase
 once for each step of its role: `implementer:a reviewer implementer:a` runs `implementing` twice.
+A return to an earlier step runs the steps from there again (below): where the review of that
+plan requests changes once, `implementing` runs three times, step 1 twice and then step 3 after
+the second review.
 The table below lists them in the order of the default steps. A step whose key is `owner` starts no
 worker: the issue's architect does that step's work itself, acts on GitHub as that worker's App
 while it does, and reports it with the `legion` tool's `complete_step`
@@ -216,13 +219,19 @@ back from anywhere: the review round and CI are two rules, each read on its own.
 The approval ends the round whatever the CI verdict at that commit, once GitHub reports that
 head one the issue may advance on. The round reads no check's conclusion, since the reviewer
 reads the code commit's checks on GitHub before it approves ([review signalling](#review-signalling)).
-An approved head that GitHub holds blocked, on a check or a review the base branch requires,
-keeps the issue in `reviewing` until that merge state comes clean. A review step that no review
-on GitHub decides, on an issue with no pull request or the architect's own, ends by its reported
-verdict. What a red check does is
-reach the architect that owns the issue, the worker of the issue's current phase and the agent of
-the task's implementation step, as one message naming each check and its conclusion; and hold the
-merge, where GitHub applies the base branch's own required checks.
+An approved head that GitHub holds blocked keeps the issue in `reviewing` while a check or a
+commit status of that head is still running, while GitHub has not yet computed whether the head
+merges cleanly, and while GitHub holds a review request open on the pull request. Once the head
+is mergeable, nothing of it runs, its own checks have concluded and no review is asked for, the
+approval ends the round even though GitHub still reports the head blocked: that state is GitHub's
+answer to the reader, and a rule about the reader or another pull request's checks on the same
+commit can hold it where the merge would not be held. The merger's merge is then what GitHub
+answers, accepted or refused with its reason, and the merger brings a refusal to the architect.
+A review step that no review on GitHub decides, on an issue with no pull request or the
+architect's own, ends by its reported verdict. What a red check does is reach the architect that
+owns the issue, the worker of the issue's current phase and the agent of the task's
+implementation step, as one message naming each check and its conclusion; and hold the merge,
+where GitHub applies the base branch's own required checks.
 
 ### The plan of an issue
 
@@ -281,9 +290,8 @@ and its `prompt_file`. A role may also name its `model`, and its `github_app`, `
 `review`, the review App by default.
 A role of the type `review` works as the review App, and the loader refuses one that names
 `implement`.
-A step of such a role reads no pull request, so a plan may put it at any place, except that a role
-of the type implementation stands before the task's first `implementer` step, since Legion's retro
-is done by the implementer. It runs at `step` and reports `pass` or `fail`: a fail sends the work
+A step of such a role reads no pull request, so a plan may put it at any place, and the agent of
+the task's last step of the type implementation does the retro. It runs at `step` and reports `pass` or `fail`: a fail sends the work
 back as a failed test does, and a fail of a step of the type review counts a review round. A role
 the deployment no longer defines stops each task that still has a step of it to run, and its owner
 is told (`docs/deployment.md`, "Roles the deployment defines").
@@ -555,8 +563,10 @@ Legion uses GitHub's own review mechanisms rather than labels:
   undecided until the new head arrives; anything else sets it aside, and only an approval of the
   head itself or a request for changes ends the round. An approval does not end it on its own:
   the round ends once the record reaches the approved head and GitHub reports that head one the
-  issue may advance on. A head GitHub holds blocked, on a check or a review the repository
-  requires, leaves the issue in `reviewing` until that merge state comes clean.
+  issue may advance on. A head GitHub holds blocked leaves the issue in `reviewing` while a check of
+  it runs, while GitHub has not computed whether it merges, and while GitHub holds a review request
+  open; once it is mergeable, nothing of it runs, its own checks have concluded and no review is
+  asked for, the approval ends the round and the merger's merge answers the blocked state.
 - **CI** on the pull request's head is information, not a verdict. When GitHub's checks settle, the
   daemon names every check GitHub reported, with the conclusion GitHub gave it, and judges none of
   them: it sends one message each to the architect that owns the issue, the worker of the issue's
@@ -774,6 +784,9 @@ controller, which gives it to the tree that owns that code and files an issue on
 One that needs a decision is a Dispatch ask on Legion's
 daily report issue, so you decide whether it needs an issue.
 The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message.
+Each look's report names `check_opened_at`, the RFC 3339 opening time its task gives, with the
+stored microseconds unchanged. That field alone selects a report on that check: without it,
+`handoff_complete` completes a step, never a look, whatever phase the issue is in.
 
 Nothing waits for the deploy, and the agent names its own next look. A `pending` on any look but
 the check's last carries `wake_at`, an RFC 3339 time: when the agent wants to look again. The
@@ -784,8 +797,17 @@ next look. A time less than 60 seconds ahead becomes 60 seconds ahead, and a tim
 check's own bound starts no look of its own, because the look at that bound already stands.
 Nothing else wakes a check: no deploy run, no Dispatch `issue.deployed`, no Dispatch build and no
 daemon boot, and the daemon reads no deployment's production workflows at all.
-A look is bounded at two hours, and a look nobody reported — its two hours, an operator's hold,
-or a claim that failed to start — starts the next look two hours later. A look that began before
+A look is bounded at two hours, and a look nobody reported — its two hours or an operator's
+hold — starts the next look two hours later. An agent whose claim fails, in a look or after it
+ended, backs the check off: the next look comes two hours later after the first such look, and
+twice as long after each failed look in a row after it (four hours, eight, and so on, never past
+the check's bound), until a look the agent reports sets it back to two hours. That look tries the
+agent once more, with one attempt left of the budget its failure spent, so an agent that cannot
+start is launched once a look rather than a whole budget's worth of times; a failure that spent no
+budget, a provider error's, starts a fresh run. The architect is told of each such failure, with
+its cause, how the agent's last pod ended and when the next look tries it. An operator's
+`legion claims retry` or the controller's fresh session gives the agent its whole budget again.
+A look that began before
 a pause of the project ended counts its two hours from the resume, or from its agent's last ready
 after the resume where that is later, and counts nothing while that agent is still starting.
 The whole check is bounded at `production_check_hours` (336, fourteen

@@ -814,6 +814,7 @@ func mountsClaim(t *testing.T, pod *rigPod, name string) {
 // nothing it runs reads the provisioning token, no host the plant named receives it, and no file
 // on the disk holds it.
 func TestWhatAnIssuePlantsNeitherReadsTheProvisioningTokenNorOutlivesItsPod(t *testing.T) {
+	t.Parallel()
 	legion := buildLegion(t)
 	testbin.RequireJJFilters(t)
 
@@ -1088,6 +1089,7 @@ func TestWhatAnIssuePlantsNeitherReadsTheProvisioningTokenNorOutlivesItsPod(t *t
 // project without keep_volume gives each pod a disk of its own, and its next pod finds nothing that
 // the first pod's agent left.
 func TestAKeptVolumeCarriesItsWorkspaceToTheIssuesNextPod(t *testing.T) {
+	t.Parallel()
 	legion := buildLegion(t)
 	for _, tc := range []struct {
 		name     string
@@ -1194,6 +1196,7 @@ func TestAKeptVolumeCarriesItsWorkspaceToTheIssuesNextPod(t *testing.T) {
 // from nothing; the test process's own values are emptied here all the same, so that a child that
 // took them would not pass for one that has the cap.
 func TestEveryProcessTheRigStartsHasItsContainersCPULimit(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	t.Setenv("GOMAXPROCS", "")
 	t.Setenv("RAYON_NUM_THREADS", "")
 	const report = `printf 'GOMAXPROCS=%s RAYON_NUM_THREADS=%s' "${GOMAXPROCS-unset}" "${RAYON_NUM_THREADS-unset}"`

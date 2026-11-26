@@ -1,0 +1,20 @@
+-- 20261125212800_claims_tree.up.sql — the index the reads of a session's claims in one tree use.
+--
+-- record.Store.SessionClaimsTree asks whether a session holds a claim in a tree (`select exists
+-- (select 1 from claims where tree = $1 and session = $2 and session <> '')`), and
+-- record.Store.ArchitectIssueOfSession reads the architect claim of a session in a tree by the same
+-- two columns. Every admission pass reads the first for each root waiting on a person whose
+-- Dispatch claim a session holds (workflow.Unresumable), under the one lock every fact takes, and
+-- so does each ask event of a recorded root. claims had no index on either column, only its key
+-- and 0002's claims_boot_token_hash, so each of those reads scanned the whole table, which holds
+-- the claims of every project that shares the database. claims_tree bounds each of them to the
+-- claims of one tree, among which the read finds the session.
+--
+-- The index is on tree alone. A btree that holds session too cannot be built over a claim whose
+-- session is longer than a btree row may be, which the table does not refuse: over a claim whose
+-- session is 3,200 bytes such an index failed to build with "index row size 3224 exceeds btree
+-- version 4 maximum 2704".
+--
+-- It carries no way back: a release before this one reads and writes claims the same with the
+-- index in place, so a rollback leaves it standing.
+create index claims_tree on claims (tree);

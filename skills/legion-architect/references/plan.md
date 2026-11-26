@@ -25,7 +25,7 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 - Steps that share a key, `<role>:<key>`, are one agent in one session, and a step with no key has an agent of its own.
   Your role prompt gives the rules of keys and of a role at two steps.
   The key `owner` makes a step yours to do on your own model, so its role must name no `model` (`skill://legion-architect/references/own-steps.md`).
-  The agent of the step whose role your `Production check` line names keeps its session past the close, for that check; where no step of the task has that role, the check starts a fresh agent of it.
+  The agent of the step whose role your `Production check` line names keeps its session past the close, for that check, and where two steps of the task have that role, the agent of the one that ran last; where no step of the task has that role, the check starts a fresh agent of it.
   Write in the task's text whether each step needs a fresh agent or an earlier one, and why.
   Retro rates the plan's steps, and the agent that worked each, against that choice.
   A later version's agent names: `skill://legion-architect/references/plan-changes.md`.
@@ -35,7 +35,7 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 Name the steps in `steps` in the order they run.
 A step names one of Legion's roles in the table below, a role this deployment defines, or a role your plan defines (`skill://legion-architect/references/plan-roles.md`): your `Legion addressing` line lists the first two, each with the type of its step.
 Any step may stand at any place, and a role at two steps, as step 3 of `implementer:a reviewer implementer:a` does.
-A role this deployment defines runs where its step stands in your plan, at the phase `step`, and reports pass or fail.
+A role this deployment defines runs where its step stands, at the phase `step`, and reports pass or fail.
 The table lists Legion's steps in the default steps' order:
 
 | Step | Type | Phase | What leaving it out means |
@@ -49,10 +49,13 @@ The table lists Legion's steps in the default steps' order:
 
 Without an acceptance step, retro holds the checks (`skill://legion-retro`), and so does a reviewer step where the task has one.
 A reviewer step approves, or passes by its verdict, only once a pass stands for every `before_merge` check at the head.
-And retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read, whose derived result is a fail, whose name no run answers (`absent`, which the retro sends to you as a finding), or whose `run` is a whole test suite.
+Retro's first step sends back a check with no pass at the head, with two exceptions.
+Do not send back a `ci_check` whose run has not concluded or cannot be read, whose derived result is a fail, or whose name no run answers (`absent`).
+Send a whole-suite `run` to the architect as a finding, not a move back, because the implementer runs no whole suite.
+Send an `absent` name as a finding too, unless GitHub is holding the job back until its label is on.
 A `ci_check` that reads `no_head`, on an issue with no pull request, can never pass: it holds the retro until you rewrite the check.
-So on a task with no reviewer, `acceptance:owner` or `acceptance` step, such a check holds the merge only where it is among the checks the base branch requires.
-A step of a role of this deployment runs and holds the checks only where its prompt file asks it to.
+On a task with no reviewer, `acceptance:owner` or `acceptance` step, such a check holds the merge only where it is among the checks the base branch requires.
+A step of a role of this deployment runs and holds the checks only as its prompt file asks.
 
 ## What Legion refuses
 
@@ -90,5 +93,5 @@ Plan no code for the root, and create no child only to give it a commit.
 ## Reading how plans went
 
 `dispatch steps --issue <KEY>` lists each run of each step of an issue and how it ended.
-`dispatch plans --project <KEY>` lists each finished issue of a project with its plan's source and steps, its retro's ratings, its time and its count of failed steps.
+`dispatch plans --project <KEY>` lists each finished issue of a project with its plan and how that plan went.
 Read it before you plan an issue like one that finished.

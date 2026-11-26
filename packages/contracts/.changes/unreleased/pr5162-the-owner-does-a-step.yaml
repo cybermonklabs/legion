@@ -2,8 +2,9 @@ kind: Added
 custom:
   Issue: pr5162
 body: |-
-  The daemon API contract 302: the request and the answer of the owner's report of a step it does
-  itself (the route `complete_step` calls), and the issue's `placeRole` in the state, the role
-  that works the place where the issue's task stands, which a reader below contract 302 is not
-  served. Contract 302 also adds the architect notice kinds `owner-step` and `merge-forward-lost`,
+  The daemon API contract entry 20261126114001 complete-step: the request and the answer of the
+  owner's report of a step it does itself (the route `complete_step` calls), and the issue's
+  `placeRole` in the state, the role that works the place where the issue's task stands, which a
+  reader below that entry is not served. The entry also adds the architect notice kinds `owner-step`
+  and `merge-forward-lost`,
   which ride inside a notice's payload and are in no answer a plugin parses.

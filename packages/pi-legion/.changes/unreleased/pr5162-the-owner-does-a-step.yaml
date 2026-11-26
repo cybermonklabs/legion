@@ -5,4 +5,4 @@ body: |-
   The architect's Legion tool has `complete_step`, the owner's report of a step of its issue's
   plan that it does itself (a step keyed `owner`), with the step's verdict, commit and handoff
   record. The tool tells the architect that a `sign_off` of an acceptance another agent works is
-  refused. It asks for daemon API contract 302.
+  refused. It asks for the daemon API contract entry 20261126114001 complete-step.

@@ -619,7 +619,7 @@ func TestAnOperatorsRetryLetsOutATryThePauseMetAfterItsWrite(t *testing.T) {
 	h.wantStarts(h.token, 0)
 	var paused sync.Once
 	h.store.onPut = func(c Claim) {
-		if c.Token == h.token && c.State == StateLaunching && c.Generation > 0 {
+		if c.Token == h.token && c.State == StateLaunching && c.Launched() {
 			paused.Do(func() { flag.set(7) })
 		}
 	}

@@ -533,7 +533,7 @@ func deploymentOf(ctx context.Context, store record.Store, tx pgx.Tx, issue reco
 // reaches. Legion's own roles are never lost, and a caller that reads a role of an issue's plan
 // passes the deployment with the plan's roles (Walk.deployment, deploymentOf).
 func lostRole(role claim.Role, deployment plan.Deployment) bool {
-	return !claim.IsBuiltin(role) && !deployment.Defines(string(role))
+	return claim.IsDeploymentRole(role) && !deployment.Defines(string(role))
 }
 
 // lostAgent says whether name, the name of a step's agent (record.PlanStep.AgentName), is named
@@ -778,12 +778,9 @@ func mergedForwardRefusal(issue record.Issue, role claim.Role, by claim.Token, r
 	return refused("HANDOFF_HEAD_MERGED_FORWARD", fmt.Sprintf("the %s's completion of phase %s of %s %s. %s", role, reported, issue.Key, clause, next)), true
 }
 
-// awaitedMergeForward ends a refusal of mergedForwardRefusal while the record's ask is of the head
-// pr stands at, has not landed, and sent its hold to the role that completes, which tells that
-// role not to complete at that head (record.MergeForwardHold). It names that head, says the merge
-// of the ask's base forward onto it is asked and has not landed, and tells the role to wait for
-// the daemon's landed message (record.MergeForwardLanded), do the phase's work at the new head
-// that message names, and then complete at it as again says.
+// awaitedMergeForward ends a refusal when the merge forward of the current head is pending and
+// the completion's role is eligible to wait for it (mergedForwardRefusal). It names that head and
+// tells the role to work at the head in the daemon's landed message, then complete as again says.
 func awaitedMergeForward(pr *record.PullRequest, again string) string {
 	return fmt.Sprintf("Pull request #%d stands at head %s now, and the merge of %s forward onto head %s is asked and has not landed. Wait for the daemon's message that this merge landed, do the phase's work at the new head that message names, then %s; this completion changed nothing",
 		pr.Number, pr.HeadSHA, pr.MergeForward.Base, pr.HeadSHA, again)

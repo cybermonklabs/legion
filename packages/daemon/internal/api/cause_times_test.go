@@ -223,8 +223,9 @@ func TestALastStartFailureCarriesItsTimeUntilReady(t *testing.T) {
 // each through withEachClaimView). The worker is given it here rather than in the golden state:
 // a worker's lastDeathCause there would be a key no record of a contract below this one holds.
 // The daemon's log names what the narrowed body lost: its first line is the cause times' band,
-// and the roles of the deployment's band (deploymentRolesContract), which stands above this one,
-// writes the one line after it (narrowingsExpected).
+// and the Dispatch credential's band (dispatchCredentialContract) and the roles of the
+// deployment's band (deploymentRolesContract), which stand above this one, write the two lines
+// after it, in the table's order (narrowingsExpected).
 func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 	state := populatedState(t)
 	architect := state.Issues[recordGoldenIssue].Architect
@@ -292,16 +293,20 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 		})
 	}
 
+	// A caller below causeTimesContract is below dispatchCredentialContract, the frozen row above
+	// it, and below every entry's band too, so it is told of each of them, in the table's order:
+	// the cause times' line, the Dispatch credential's, then one line for each band of an entry
+	// that takes something off this state. It counts no entry (R4 of dispatch://INFRA-1569).
 	below := causeTimesContract - 1
 	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), below)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
-	if len(narrowings) == 0 || narrowings[0].Dropped != dropped {
-		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want the first one saying it dropped %q",
-			narrowings, below, dropped)
+	if len(narrowings) < 2 || narrowings[0].Dropped != dropped || narrowings[1].Dropped != "dispatchCredential" {
+		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want the first one saying it dropped %q and the second %q",
+			narrowings, below, dropped, "dispatchCredential")
 	}
 	want := narrowingsExpected(populatedState(t), below)
-	if len(want) != 3 {
-		t.Fatalf("a caller at %d expects the lines %v, want the cause times', deployment roles' and claim tokens' rows alone", below, want)
+	if len(want) < 2 || want[0] != dropped || want[1] != "dispatchCredential" {
+		t.Fatalf("a caller at %d expects the lines %v, want the cause times' row's and the Dispatch credential's row's first", below, want)
 	}
 	wantNarrowings(t, narrowings, below, want)
 }

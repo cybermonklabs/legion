@@ -18,9 +18,9 @@ var builtin = Deployment{Roles: BuiltinRoles()}
 // What no release carries out, as this release checks it: a step that names a role neither the
 // deployment nor the plan defines is refused, naming the step, its task and the role. Validate
 // refuses no plan for a step that it lacks, so each plan of Legion's own roles passes it whatever
-// steps it leaves out; a task with no implementer step, and a tester, reviewer or acceptance step
-// with no implementer before it, are what this release does not carry out yet, and Supported
-// refuses them. The control is in the second half: a validator that also required a reviewer
+// steps it leaves out, and Supported refuses no task for the order of its steps or for a role it
+// leaves out, an implementer among them (TestSupportedTakesStepsInAnyOrder). The control is in the
+// second half: a validator that also required a reviewer
 // step would refuse `implementer tester`, and one that required a tester would refuse
 // `implementer reviewer`.
 func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {

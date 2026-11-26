@@ -178,7 +178,7 @@ func (r *idleRig) closedIssuesWithStoppedClaims(t *testing.T, count int) {
 		if err := r.st.PutClaim(ctx, supervise.Claim{Token: token, Project: "legion", Tree: key,
 			Issue: key, Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
 			State: supervise.StateRetired, Session: "ses-" + key, SessionFile: "/tmp/" + key + ".jsonl",
-			PluginContract: api.DaemonAPIVersion}); err != nil {
+			PluginContract: api.DaemonAPIVersion()}); err != nil {
 			t.Fatalf("seed the retired claim of %s: %v", key, err)
 		}
 	}
@@ -201,11 +201,11 @@ func (s *countedSandboxReads) IssueSandbox(issue string) (string, bool) {
 	return s.issuePods.IssueSandbox(issue)
 }
 
-// An issue whose every claim is failed, retired or suspended holds a Kubernetes pod of 3 CPU and
-// 19 GiB that no role can take a turn in, and the second release rule takes it
-// (workflow.UnownedPodRelease). That release is one act and one row, the teardown: it suspends no
-// role, checks no workspace and changes no claim, because there is no live claim to stop, no shim
-// left to read the workspace through and no role coming back to it.
+// An issue whose every claim is failed, retired or suspended holds a Kubernetes pod no role can
+// take a turn in, and the pod's reservation with it (2 CPU and 8 GiB at the defaults), and the
+// second release rule takes it (workflow.UnownedPodRelease). That release is one act and one row,
+// the teardown: it suspends no role, checks no workspace and changes no claim, because there is no
+// live claim to stop, no shim left to read the workspace through and no role coming back to it.
 //
 // The four pods below are the four answers the rule gives a pod with no live claim in it: the one
 // it takes, the one that is already gone, the one a process still runs in, and the one that holds
@@ -315,7 +315,8 @@ func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
 		}
 		// The locator reaches the rule through the store's own read of the claims row
 		// (pods.IdleClaim.HasProcess), and the hold is recorded because such a pod stands past
-		// the quiet period with 3 CPU and 19 GiB held by something that is not work.
+		// the quiet period with its reservation (2 CPU and 8 GiB at the defaults) held by
+		// something that is not work.
 		holds := rig.records(t).Holds
 		if len(holds) != 1 || holds[0].Reason != workflow.IdleHoldUnownedClaimProcess.String() {
 			t.Fatalf("holds = %+v, want the one %s", holds, workflow.IdleHoldUnownedClaimProcess)

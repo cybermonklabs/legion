@@ -146,6 +146,7 @@ func holdPod(st *Store, pause Pause, issue string, at time.Time) (bool, error) {
 // the controller's notice under the project's key. A second pause is refused with the pause that
 // stands and writes nothing.
 func TestAPauseStopsEveryLiveRoleButTheControllerAndRefusesASecond(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	seedPauseClaims(t, st)
@@ -236,6 +237,7 @@ func TestAPauseStopsEveryLiveRoleButTheControllerAndRefusesASecond(t *testing.T)
 // resume of a project that is not paused is refused. A stop that ends after the resume is still
 // recorded as stopped.
 func TestAResumeEndsThePauseAndWhatItStillWaitedOn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	seedPauseClaims(t, st)
@@ -400,6 +402,7 @@ func TestAResumeEndsThePauseAndWhatItStillWaitedOn(t *testing.T) {
 // under the pause's own project, and each read and end of a hold finds it by that project, never
 // by the issue key's prefix.
 func TestAPausePodHoldOpensOnceAndEnds(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	pause, _ := pauseLegion(t, st, pausedAt)
@@ -472,6 +475,7 @@ func waitingOnThePauseLock(t *testing.T, st *Store, issue string) bool {
 // nothing, and leave the hold standing once the first commits. With it the end waits, reads the
 // committed hold, and ends it.
 func TestTheIssueLockSerializesTwoWritersOfOnePodsHold(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	pause, _ := pauseLegion(t, st, pausedAt)
@@ -530,6 +534,7 @@ func TestTheIssueLockSerializesTwoWritersOfOnePodsHold(t *testing.T) {
 // had, and starts its stuck clock at its own moment; a reservation moves that clock later and
 // never back; a wake no pause holds is the wake it always was, paired with the issue's release.
 func TestAHeldWakeRecordsItsPauseAndPairsWithNoRelease(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	pause, _ := pauseLegion(t, st, pausedAt)
@@ -589,6 +594,7 @@ func TestAHeldWakeRecordsItsPauseAndPairsWithNoRelease(t *testing.T) {
 // reads the open pause of the project whose pod tables it is, never another project's: it answers
 // no pause while only OTHER is paused, and LEGION's pause once LEGION is paused too.
 func TestAWakeOfAClaimOfAnotherProjectsIssueIsHeldByThisProjectsPause(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := podRecords(t, st)
@@ -625,6 +631,7 @@ func TestAWakeOfAClaimOfAnotherProjectsIssueIsHeldByThisProjectsPause(t *testing
 // takes while the project is paused does. Before the fix the delivery wake read its row's mark
 // alone.
 func TestADeliveryWakeTakenWhileTheProjectIsPausedIsTheOpenPauses(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	recordRelease(t, st, pausedAt.Add(-3*time.Hour))
@@ -665,6 +672,7 @@ func TestADeliveryWakeTakenWhileTheProjectIsPausedIsTheOpenPauses(t *testing.T) 
 // nothing, not a claim of a recorded issue, not a claim that runs again or that the operator has
 // suspended since, and not a stop of an earlier pause that ended before this one began.
 func TestTheResumeNamesTheOperatorsSpawnsItsPauseStoppedOwingALaunch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	operator := PauseActor{Kind: PauseByOperator}
@@ -741,6 +749,7 @@ func TestTheResumeNamesTheOperatorsSpawnsItsPauseStoppedOwingALaunch(t *testing.
 // stopped again answers 0, since its first stop is older than its ready, and the claim whose later
 // stop was cancelled answers the first pause.
 func TestAWakesStoppingPauseIsTheClaimsNewestStop(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	base := pausedAt
@@ -829,6 +838,7 @@ func TestAWakesStoppingPauseIsTheClaimsNewestStop(t *testing.T) {
 // The negative control is either read taking the ended pauses oldest first: each answers the first
 // pause where the second is the newest.
 func TestTheLastPauseIsTheNewestTheResumeEnded(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	operator := PauseActor{Kind: PauseByOperator}
@@ -878,6 +888,7 @@ func TestTheLastPauseIsTheNewestTheResumeEnded(t *testing.T) {
 // first: the third record finds the taken-over row, writes a third row and answers that it
 // recorded a stop, where the role's newest row already says it stopped.
 func TestAPausesStopOfARoleIsRecordedOnItsNewestStopRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	seedPauseClaims(t, st)

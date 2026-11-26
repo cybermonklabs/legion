@@ -42,7 +42,7 @@ func TestAnOperatorVolumeOfASlotsFormIsTakenAndOneOfARolesSlotRefused(t *testing
 		return Pod{Volumes: []corev1.Volume{{Name: name, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}}
 	}
 	check := func(name string) error {
-		return CheckPod(podOf(name), roles, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false)
+		return CheckPod(podOf(name), roles, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange)
 	}
 	for _, name := range []string{"launcher-implementer", "private-tester", "state-controller", "gh-architect", "agent-secrets-key-merger", "state-" + long} {
 		want := "runtime.kubernetes.pod.volumes[0].name " + name + " is a volume Legion puts in every pod"
@@ -340,7 +340,7 @@ func TestALocatorOfANameThatIsNoRoleIsAnIssuePodsAndIsObserved(t *testing.T) {
 	// recordOf is slot's record of generation 1 as a runtime under the moved daemon address wrote
 	// it when that generation started.
 	recordOf := func(slot claim.Role) string {
-		record, err := earlier.recordFor(slot, 1, earlier.enrollsIn(nil, slot))
+		record, err := earlier.recordFor(slot, 1, earlier.enrollsIn(nil, slot), earlier.dispatch.Bearer != "")
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -667,7 +667,7 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 // payload this one accepts it accepts. A row this branch's release queued can carry `claim`
 // besides, which the way back of 20261124213820_plan_step_agent takes off before this rollback
 // runs (its header, and upgradeRecoveryReadsAnswer runs it), and `agent`, which the way back of
-// 20261125053850_claim_session_agent takes off first of all (its header); the rows this test
+// 20261125114600_claim_session_agent takes off first of all (its header); the rows this test
 // queues name no agent, so no payload this shape judges carries either.
 type preEntrySuperviseRequest struct {
 	Op            record.SuperviseOp    `json:"op"`

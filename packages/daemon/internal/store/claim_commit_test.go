@@ -16,6 +16,7 @@ import (
 // transaction has committed (PublishRoleHolders), even when the reply to its commit comes after
 // the caller's cancel: the row the lane runs is in the store, so the wake is owed.
 func TestAClaimWriteWhoseCommitReplyIsLostWakesItsRoleHolders(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	openHolderTree(t, st)
 	if _, err := st.AdmitClaim(context.Background(), holderClaim(supervise.StateLaunching, "")); err != nil {

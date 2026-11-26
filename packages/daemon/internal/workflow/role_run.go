@@ -157,11 +157,12 @@ func startsWork(request record.SuperviseRequest) bool {
 // and 0 for a role the daemon holds no claim row of at all, which was given nothing) is below
 // entry, and no queued start of the role carries an entry at or above it. That second term is
 // what keeps one entry to one start row: the given number moves when the outbox queues the
-// delivery, not when the transition writes the row, and an admission pass runs on every fact of
-// the project, so without it every pass between the write and the delivery would write another
-// start for the same entry. A stop that still acts (actingStop) undoes the start it outlives,
-// which may run first, so past one only a queued start newer than the stop counts, which is the
-// body StartFor reads the same rows with.
+// delivery, not when the transition writes the row, and more than one reading of the entries can
+// come between the two — an admission pass on each fact that writes a record, the tick's and a
+// hold release's (the pass rule on admit's Admission.Apply), and the entry sweep's every minute —
+// so without it each of them would write another start for the same entry. A stop that still
+// acts (actingStop) undoes the start it outlives, which may run first, so past one only a queued
+// start newer than the stop counts, which is the body StartFor reads the same rows with.
 //
 // Two tests the caller holds are deliberately not here, because each is about the issue rather
 // than about the role's entry: that the role is the one that works the issue where it stands

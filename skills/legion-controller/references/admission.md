@@ -15,14 +15,17 @@ The rules behind them: [Admission and the `legion` label](https://cybermonklabs.
   Use it, not `admission.active`, for which trees run.
 
 - `admission.waiting`: the line, in order.
-  First the issues whose work came back, oldest first; then the issues whose first phase can start, by their root's Dispatch rank and then their own.
-  `issues.<KEY>.waitingLine` says where one stands (`part`, `kind`, `holdsSlot`, `reason`): quote its `reason` before you call an order wrong.
+  It is ordered by Dispatch priority first: P0, P1, P2, P3, then the issues with no priority, each issue at its own priority, else at its tree root's.
+  Within one priority, first the issues whose work came back, oldest first; then the issues whose first phase can start, by their root's Dispatch rank and then their own.
+  A priority changed in Dispatch moves the issue at the next admission pass; priority takes no slot back from work that runs.
+  `issues.<KEY>.priority` is the issue's own priority (0 for P0 to 3 for P3, null for none), and `waitingLine.priority` the one it waits at (null for one that waits after P3).
+  `issues.<KEY>.waitingLine` says where one stands (`priority`, `part`, `kind`, `holdsSlot`, `reason`): quote its `reason` before you call an order wrong.
 
 - `admission.blocked`: issues waiting on an unfinished `blocked_by` issue, or a parent waiting for its open children.
   A started issue here gave its slot back and takes one again by itself; nothing of its work stops.
 
 - `phase: awaiting_person` with `waitingOn`: a root waiting on a person's answer or review keeps its slot and is in no line.
-  `waitingOn.answeredAt` means the daemon has put it in `admission.waiting` as well, among the issues whose work came back, oldest first, where it stands until the pass that resumes it.
+  `waitingOn.answeredAt` means the daemon has put it in `admission.waiting` as well, within its priority, among the issues whose work came back, oldest first, where it stands until the pass that resumes it.
 
 - `phase: admitted`, in no list, with a `child_of` parent: a child that has not started.
   Leave it to its tree.

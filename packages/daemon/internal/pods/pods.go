@@ -152,10 +152,11 @@ const StartWaitsForPodPrefix = "the start waits for its issue's pod: "
 
 // WaitingStart is one start row that waits because its issue's pod lacks the slot of the start's
 // claim or the role of its step (StartWaitsForPodPrefix): the role of the start's step, and the
-// claim the row names, "" for a row that names none, whose claim is the one record.StartClaim
+// claim the row names, "" for a row that names none, whose claim is the one record.QueuedClaim
 // gives it. Two claims of one issue can hold one role (record.WorkerClaim), so the role alone does
-// not say which agent a start brings up. It is a type of this package, which record imports, so the
-// idle view and the record's own read of these rows (record.Store.StartsWaitingForPod) share it.
+// not say which agent a start brings up, and the claim the start acts on is another type
+// (record.WaitingClaim). It is a type of this package, which record imports, so the idle view and
+// the record's own read of these rows (record.Store.StartsWaitingForPod) share it.
 type WaitingStart struct {
 	Role  claim.Role
 	Claim claim.Token
@@ -209,7 +210,7 @@ type IdleView struct {
 	// queued, that wait because the issue's pod lacks the slot of the start's claim or the role of
 	// its step (an outbox start row whose last error begins with StartWaitsForPodPrefix): only the
 	// pod's update round or its release lets them start. record.StartClaims gives each the claim it
-	// starts, once.
+	// starts, once (record.WaitingClaim).
 	StartsWaitingForPod []WaitingStart
 	// HeldFor is the reason of the pod's running hold streak (store's pod_holds), "" for none.
 	HeldFor string

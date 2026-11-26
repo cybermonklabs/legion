@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/cipherclient"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -39,6 +41,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
@@ -248,6 +251,12 @@ type overrides struct {
 	// serves the socket `legion start` inherited from LEGION_LISTEN_FD (handed); a test's hands
 	// over a listener it holds.
 	listen func(network, address string) (net.Listener, error)
+	// paneLegion is the legion executable a tmux daemon's boot hands workerbin.Install, which every
+	// script of the panes' launcher directory execs: bin/legion, bin/gh, bin/git and bin/jj. Empty,
+	// in production, is this process's own executable. A test whose panes run these scripts (a live
+	// proof over localRuntime, through its daemonOverrides) names the legion it built
+	// (buildProofLegion).
+	paneLegion string
 	// streamListen takes the worker stream's listener for the address the stream binds
 	// (stream.Options.Listen); nil, in production, binds it. A test whose two daemons must listen
 	// on one worker_stream_port hands over a socket it holds across both, so the port is never free
@@ -308,15 +317,16 @@ type overrides struct {
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
 // configuration first, then, under tmux, the plugin gate, which holds the Oh My Pi plugin every
-// pane will load to this daemon's contract — then opens the store (trying again a connection error
-// the next attempt can clear, and refusing by the host it could not reach), migrates, takes its
-// API listener and its worker stream, builds the runtime (under kubernetes, once Agent Sandbox's
-// install check passes), proves the worker image under kubernetes, records the boot, supervises
-// every claim the store holds, serves the API, and blocks until ctx is done. Then it stops: it
-// says so, cancels the decisions it makes itself, drains the API and the decisions its routes
-// asked for, ends the workflow and supervision, stamps the boot's end and closes the pool, in that
-// order, because the stamp needs the pool. The waits before the stamp share one budget, which a
-// boot that has not finished supervising its claims shares too (stopBudget).
+// pane will load to this daemon's contract, then the credential its Dispatch client presents
+// (dispatchCredential) — then opens the store (trying again a connection error the next attempt
+// can clear, and refusing by the host it could not reach), migrates, takes its API listener and
+// its worker stream, builds the runtime (under kubernetes, once Agent Sandbox's install check
+// passes), proves the worker image under kubernetes, records the boot, supervises every claim the
+// store holds, serves the API, and blocks until ctx is done. Then it stops: it says so, cancels
+// the decisions it makes itself, drains the API and the decisions its routes asked for, ends the
+// workflow and supervision, stamps the boot's end and closes the pool, in that order, because the
+// stamp needs the pool. The waits before the stamp share one budget, which a boot that has not
+// finished supervising its claims shares too (stopBudget).
 //
 // Everything that can refuse comes before the boot record: a recorded boot is a boot that
 // served, and a daemon whose port, socket, tmux, cluster, or image refused it never ran.
@@ -324,9 +334,9 @@ type overrides struct {
 // ctx decides one thing: how long the daemon serves. The boot record and its stamp are the
 // daemon's own bookkeeping and run on a context the shutdown did not cancel, so a signal that
 // arrives once the store is open still leaves a recorded, stamped boot rather than a row with no
-// end. A signal that arrives while the plugin gate, the store's attempts to open, the GitHub Apps'
-// logins and key proof, or the image probe waits ends the daemon there, cleanly: it has served
-// nothing and records nothing.
+// end. A signal that arrives while the plugin gate, the Dispatch credential's trade or read, the
+// store's attempts to open, the GitHub Apps' logins and key proof, or the image probe waits ends
+// the daemon there, cleanly: it has served nothing and records nothing.
 //
 // listener, when not nil, is the API listener the daemon serves on in place of binding cfg's bind
 // and port: the socket `legion start` inherited (LEGION_LISTEN_FD), which it checked names both.
@@ -382,6 +392,22 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 			}
 			return err
 		}
+	}
+	// The credential every Dispatch call of the daemon's presents: the bearer dispatch_token_file
+	// names, or, under dispatch_token_broker, the daemon's own pod identity traded at the secrets
+	// broker, whose first trade and Dispatch's reading of it wait out a broker or a Dispatch that
+	// does not answer, which the boot budget does not bound, as it does not bound the plugin gate.
+	environ := o.environment()
+	dispatchTransport, err := dispatchCredential(ctx, cfg, plan.dispatchToken, func(name string) string {
+		value, _ := envValue(environ, name)
+		return value
+	}, log)
+	if err != nil {
+		if ctx.Err() != nil {
+			log.Info("legion daemon stopped before it settled its Dispatch credential", "project", cfg.Project)
+			return nil
+		}
+		return err
 	}
 
 	// The cluster's refusals run before the store opens, so before any schema write, image probe or
@@ -489,7 +515,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// The one reader of a claim's App (roleApps) is built here, over the store just opened, and
 	// handed to the workflow and, through supervision, to the runtime: each reads this one value.
 	claimApps := roleApps(deploymentApps(cfg.Roles), planRoleOf(st))
-	workflow, err := openWorkflow(ctx, cfg, st, claimApps, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, reserveWake, plan.clock.Now, o.experimentSource, o.appCalls)
+	workflow, err := openWorkflow(ctx, cfg, st, claimApps, plan.project, dispatchTransport, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, reserveWake, plan.clock.Now, o.experimentSource, o.appCalls)
 	if err != nil {
 		st.Close()
 		if ctx.Err() != nil {
@@ -508,6 +534,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		workflow.outboxSweep = o.outboxSweep
 		workflow.catchUpRetryDelay = o.catchUpRetry
 		plan.identity, plan.identityAs = workflow.identity, workflow.identityAs
+		plan.knownIdentity = workflow.knownIdentity
 		plan.repository, plan.launchRepository = workflow.issueRepository, workflow.launchRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
 		plan.owner = workflow.owningArchitect
@@ -556,11 +583,14 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		}
 	}
 	if cfg.Runtime.Name == "tmux" {
-		executable, err := os.Executable()
-		if err != nil {
-			workflow.stop()
-			st.Close()
-			return fmt.Errorf("resolve this daemon's executable for the pane legion launcher: %w", err)
+		executable := o.paneLegion
+		if executable == "" {
+			executable, err = os.Executable()
+			if err != nil {
+				workflow.stop()
+				st.Close()
+				return fmt.Errorf("resolve this daemon's executable for the pane legion launcher: %w", err)
+			}
 		}
 		// The panes inherit this daemon's PATH (tmux.PaneEnvironment), so Install reads its first
 		// git there to decide whether the launcher directory holds a git wrapper.
@@ -888,6 +918,179 @@ func closeStore(st *store.Store, log *slog.Logger) {
 	}
 }
 
+// dispatchCredentialLine is the boot's one line naming the credential the daemon's Dispatch client
+// presents (dispatchCredential): credential=broker and the session its token names, or
+// credential=file and the file, beside transitionFile where the configuration names one. It names
+// no token.
+const dispatchCredentialLine = "legion daemon's Dispatch credential"
+
+// dispatchCredential settles, at boot and before anything opens (run), the credential every
+// Dispatch call of the daemon's presents, as the transport openWorkflow's client sends through.
+// Without dispatch_url there is none, and it logs nothing.
+//
+// Without dispatch_token_broker the transport presents dispatchToken, the bearer
+// dispatch_token_file names (readBoot), as the client always has (dispatch.BearerTransport). With
+// it, the daemon's own pod identity, which getenv names as it does for every machine client of the
+// broker (daemonBrokerClient), is traded at the secrets broker for a token of the session
+// legion-daemon:<PROJECT> (dispatch.DaemonSession), presented as `Authorization: DPoP` beside a
+// proof of the request's own URL (cipherclient.NewTokenTransport), and renewed ahead of its expiry
+// with no restart by the client's own renewal loop, off the request path, for as long as ctx lives
+// (renewDispatchCredential). Those reads and the first trade are boot's alone, never
+// `legion config check`'s (readBoot; dispatch://INFRA-4425 R1).
+//
+// The first trade runs here, at the boot gate's pacing (readinessRetry): a refusal no retry cures
+// (cipherclient.RefusedError.Permanent) refuses the boot in the broker's words, and any other
+// failure is logged and tried again. Then Dispatch's reading of the token, GET /api/v1/whoami,
+// waited out as the boot waits out a Dispatch that does not answer (dispatch.Unreachable), must
+// name the daemon's session, its project and a person (checkDaemonCaller). After boot, a failed
+// trade is a failed Dispatch call that sent nothing (dispatch.TransientError), which the outbox
+// waits out as it waits out a Dispatch outage.
+//
+// The transition token dispatch_token_transition_file holds (sandbox.DispatchCredential.Transition)
+// is never this credential: it is the sandbox runtime's alone, for a launch into a pod built before
+// the setting.
+func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken string, getenv func(string) string, log *slog.Logger) (http.RoundTripper, error) {
+	switch {
+	case cfg.DispatchURL == "":
+		return nil, nil
+	case !cfg.DispatchTokenBroker:
+		log.Info(dispatchCredentialLine, "credential", "file", "file", cfg.DispatchTokenFile)
+		return dispatch.BearerTransport(dispatchToken, http.DefaultTransport), nil
+	}
+	client, broker, err := daemonBrokerClient(cfg, getenv, log)
+	if err != nil {
+		return nil, err
+	}
+	session := dispatch.DaemonSession(cfg.Project)
+	var held *cipherclient.Token
+	err = bootprobe.Run(ctx, "daemon's Dispatch credential trade", readinessRetry, log, readinessAttempt(func(ctx context.Context) error {
+		var err error
+		held, err = client.Token(ctx)
+		return err
+	}, bootTimeout, tradeTransient))
+	if err != nil {
+		return nil, fmt.Errorf("dispatch_token_broker: the daemon's Dispatch credential, a token of the session %s, cannot be traded at %s: %w", session, broker, err)
+	}
+	transport := cipherclient.NewTokenTransport(client, http.DefaultTransport)
+	daemonDispatch := dispatch.New(cfg.DispatchURL, transport)
+	var caller dispatch.Caller
+	err = bootprobe.Run(ctx, "Dispatch whoami of the daemon's credential", readinessRetry, log, readinessAttempt(func(ctx context.Context) error {
+		var err error
+		caller, err = daemonDispatch.Whoami(ctx)
+		return err
+	}, bootTimeout, dispatch.Unreachable))
+	if err != nil {
+		return nil, err
+	}
+	if err := checkDaemonCaller(caller, cfg.Project); err != nil {
+		return nil, err
+	}
+	go renewDispatchCredential(ctx, client, held, session, log)
+	attrs := []any{"credential", "broker", "session", session}
+	if cfg.DispatchTokenTransitionFile != "" {
+		attrs = append(attrs, "transitionFile", cfg.DispatchTokenTransitionFile)
+	}
+	log.Info(dispatchCredentialLine, attrs...)
+	return transport, nil
+}
+
+// renewDispatchCredential renews the daemon's Dispatch token off the request path until ctx ends,
+// so a Dispatch call presents the token in hand while it is still good, without trading for the
+// next one or waiting on that trade (cipherclient.NewTokenTransport). Boot has just traded for
+// held, so the loop starts when held comes due for renewal (cipherclient.Client.RenewalAt) rather
+// than trade again at once. The loop is the client's own (cipherclient.Client.Run): it trades
+// RenewBefore ahead of each token's expiry, and waits out a broker that does not answer from 15 s
+// doubling to 5 minutes. A refusal no retry cures ends it, logged once at Error; the transport then
+// trades on the call that finds no token still good, as it would with no loop, and that call
+// answers the refusal.
+func renewDispatchCredential(ctx context.Context, client *cipherclient.Client, held *cipherclient.Token, session string, log *slog.Logger) {
+	due := time.NewTimer(time.Until(client.RenewalAt(held)))
+	defer due.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-due.C:
+	}
+	if err := client.Run(ctx, func(context.Context, *cipherclient.Token) error { return nil }); err != nil {
+		log.Error("legion daemon's Dispatch credential renewal stopped", "session", session, "error", err)
+	}
+}
+
+// daemonBrokerClient is the broker client of the daemon's own pod identity, and the broker it
+// trades at: the identity getenv names as it does for every machine client of the broker
+// (cipherclient.MachineIdentity), at the broker AGENT_SECRETS_URL names, proving
+// cipherclient.MachineKey's key, under the daemon's session (dispatch.DaemonSession), and declining
+// the launcher credential, since the daemon enrols nothing with this identity. A variable the
+// identity needs and does not have is refused by name: AGENT_SECRETS_MACHINE_IDENTITY, the
+// variables the identity it names reads (MachineIdentity's own words), and AGENT_SECRETS_URL.
+func daemonBrokerClient(cfg config.Config, getenv func(string) string, log *slog.Logger) (*cipherclient.Client, cipheraddr.Address, error) {
+	identity, err := cipherclient.MachineIdentity(getenv)
+	if err != nil {
+		return nil, cipheraddr.Address{}, fmt.Errorf("dispatch_token_broker is set, so the daemon trades its own pod identity for its Dispatch credential: %w", err)
+	}
+	if identity == nil {
+		return nil, cipheraddr.Address{}, fmt.Errorf("dispatch_token_broker is set, so the daemon's Dispatch credential is its own pod identity traded at the secrets broker, and %s names none: a daemon pod sets it to %s, with %s naming its projected service-account token",
+			cipherclient.IdentityVar, cipherclient.IdentityKubernetes, cipherclient.MachineTokenFileVar)
+	}
+	broker := cipheraddr.New(strings.TrimSpace(getenv(cipherclient.BrokerURLVar)))
+	if broker.Empty() {
+		return nil, cipheraddr.Address{}, fmt.Errorf("dispatch_token_broker is set, so the daemon trades its own pod identity for its Dispatch credential, and %s names no secrets broker to trade it at",
+			cipherclient.BrokerURLVar)
+	}
+	key, err := cipherclient.MachineKey(getenv)
+	if err != nil {
+		return nil, cipheraddr.Address{}, fmt.Errorf("dispatch_token_broker: the key the daemon's trade proves: %w", err)
+	}
+	client, err := cipherclient.New(cipherclient.Config{
+		BrokerURL: broker, Key: key, Subject: identity, Session: dispatch.DaemonSession(cfg.Project),
+		NoLauncherCredential: true, HTTP: cipherclient.HTTPClient(), Log: log,
+	})
+	if err != nil {
+		return nil, cipheraddr.Address{}, fmt.Errorf("dispatch_token_broker: %w", err)
+	}
+	return client, broker, nil
+}
+
+// tradeTransient is every failed trade but a refusal no retry cures
+// (cipherclient.RefusedError.Permanent): a broker that did not answer or answered 5xx, a 408 or its
+// 429, a DPoP refusal, a pod session it holds no registration for yet, and an identity this pod
+// could not read yet, such as a projected token the kubelet has not written.
+func tradeTransient(err error) bool {
+	var refused *cipherclient.RefusedError
+	return !(errors.As(err, &refused) && refused.Permanent())
+}
+
+// checkDaemonCaller refuses a broker token Dispatch takes for a caller whose every write it would
+// refuse: another session than the daemon's (403 ACTOR_SESSION_MISMATCH, every write of the
+// daemon's naming its own session as the actor), another project than the daemon's (403
+// PROJECT_SCOPE) or no person (SIGN_IN_REQUIRED). The outbox reads a 401 and a 403 as an outage
+// (dispatch.PermanentRefusal), so it would wait on each such write for ever; each is a fault of
+// the secrets broker's exchange entry for the daemon's own account, which the refusal names.
+func checkDaemonCaller(caller dispatch.Caller, project string) error {
+	session := dispatch.DaemonSession(project)
+	const entry = "the deployment must fix the secrets broker's exchange entry for the daemon's own account (BROKER_EXCHANGE_ACCOUNTS)"
+	switch {
+	case caller.Session == nil || *caller.Session != session:
+		return fmt.Errorf("GET /api/v1/whoami answers the session %s for the daemon's broker token, not %s, and Dispatch refuses every write the daemon makes as %s with it (403 ACTOR_SESSION_MISMATCH): %s so that it fixes the session %s",
+			whoamiValue(caller.Session), session, session, entry, session)
+	case caller.Project == nil || *caller.Project != project:
+		return fmt.Errorf("GET /api/v1/whoami answers the project %s for the daemon's broker token, not %s, and Dispatch refuses every write of the daemon's to %s with it (403 PROJECT_SCOPE): %s so that it names the project %s",
+			whoamiValue(caller.Project), project, project, entry, project)
+	case caller.Owner == nil:
+		return fmt.Errorf("GET /api/v1/whoami answers the owner null for the daemon's broker token, and Dispatch refuses every write of a token that acts for no person (SIGN_IN_REQUIRED): %s so that it names the person the daemon acts for",
+			entry)
+	}
+	return nil
+}
+
+// whoamiValue is a field of GET /api/v1/whoami's answer as a refusal quotes it: quoted, or null.
+func whoamiValue(value *string) string {
+	if value == nil {
+		return "null"
+	}
+	return strconv.Quote(*value)
+}
+
 // plan is what the daemon resolved from its configuration before touching anything.
 type plan struct {
 	// identity is the role's App bot identity on an issue, whose plan can define the role, for
@@ -898,6 +1101,9 @@ type plan struct {
 	// identityAs is identity for a launch that resolved the App its role acts as already
 	// (workflowRuntime.identityAs, specs.identity); nil without a workflow.
 	identityAs func(ctx context.Context, app appauth.AppRole, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error)
+	// knownIdentity is the bot identity of an App that the workflow's token source already holds,
+	// read with no mint (workflowRuntime.knownIdentity); nil without a workflow.
+	knownIdentity func(app appauth.AppRole) (runtime.GitIdentity, bool)
 	// repository is the repository an issue works and its default branch
 	// (workflowRuntime.issueRepository: its record's, or, for an issue the workflow does not
 	// record, the one Dispatch resolves it to, read at the first launch and kept while the issue
@@ -995,6 +1201,10 @@ type plan struct {
 	project       string
 	operatorToken string
 	secrets       map[string]string
+	// privateNameRules is the deployment's private-name rule file as boot compiled it
+	// (bootReads.privateNameRules), which the outbox's branch create runs (ghbranch.Create); nil
+	// when the deployment names none, and the create then runs no private-name rule.
+	privateNameRules *leakguard.RuleSet
 	// nats is the user the daemon's own NATS connection authenticates as (natsConnection); no launch
 	// carries its seed unless it is the pane seed.
 	nats natsConnection
@@ -1003,7 +1213,8 @@ type plan struct {
 	// each launch reads again first (writeInstructionsCopies).
 	instructions       string
 	instructionsCopies *instructionsCopies
-	// dispatchToken is the Dispatch bearer dispatch_token_file names; "" without Dispatch.
+	// dispatchToken is the Dispatch bearer dispatch_token_file names; "" without Dispatch, and
+	// under dispatch_token_broker, whose credential is the daemon's own (dispatchCredential).
 	dispatchToken string
 	// hookPrompts are the words boot read for each hook whose `prompt_file` names a file, by
 	// hook name (readBoot): the engine is given words and never a path (engineConfig).
@@ -1159,17 +1370,27 @@ type runtimeFactory func(ctx context.Context, listener *stream.Listener, address
 
 // prepare is every refusal that needs nothing but the configuration and the machine (readBoot's,
 // then what writes or runs something: the state directory, the instructions copy, and what the
-// runtime needs) — all before the plugin gate runs and before any agent can launch.
+// runtime needs) — all before the plugin gate runs and before any agent can launch. It logs the
+// boot's one line on the deployment's private-name rules: privateNameRulesNone before readBoot,
+// the first thing that can stop the boot, where the deployment names no rule file; and the file,
+// its sha256 and its number of rules once readBoot has compiled it where it names one, since a
+// file readBoot cannot use stops the boot with its own message instead.
 func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	getenv := o.getenv
 	if getenv == nil {
 		getenv = os.Getenv
+	}
+	if cfg.PrivateNameRulesFile == "" {
+		log.Info(privateNameRulesNone)
 	}
 	// A test that replaced the runtime runs no host Oh My Pi, so boot resolves no OMP invocation.
 	hostOMP := o.runtime == nil
 	reads, err := readBoot(cfg, environLookup(o.environment()), getenv, hostOMP, log)
 	if err != nil {
 		return plan{}, err
+	}
+	if reads.privateNameRules != nil {
+		logPrivateNameRules(log, cfg.PrivateNameRulesFile, reads.privateNameRules)
 	}
 	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
 		return plan{}, fmt.Errorf("create state directory %s: %w", cfg.StateDir, err)
@@ -1208,7 +1429,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	}
 	p := plan{
 		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames), installed: appauth.NewInstalled(), left: appauth.NewLeftOut(),
-		project: reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions, instructionsCopies: copies,
+		project: reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, privateNameRules: reads.privateNameRules, nats: reads.nats, instructions: instructions, instructionsCopies: copies,
 		dispatchToken: reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
 		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
@@ -1273,7 +1494,7 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 			prefix:         cfg.OmpLaunchPrefix,
 			timeout:        cfg.SlowCommandTimeout,
 			retry:          bootprobe.Daemon,
-			contract:       api.DaemonAPIVersion,
+			contract:       api.DaemonAPIVersion(),
 			roleReferences: p.roleReferences,
 			log:            log,
 		}
@@ -1669,9 +1890,10 @@ type supervision struct {
 	// round (endPodUpdates), where the hook writes one of another round of the issue, and at the
 	// first sweep that finds no claim of the issue that has not retired (forgetLaunchRounds).
 	// Nothing of it is in the store: a restart forgets it, and the sweep then reads a pod a launch
-	// replaced as a pod gone, whose message names the same members. A mutex of its own, never held
-	// across a runtime call, because the hook runs on a launching machine's goroutine beside the
-	// sweep.
+	// replaced as a pod gone, whose message names the members by the same rule (lostClaims), where
+	// each machine built over its stored claim reads its set of pods as unknown wherever the stored
+	// claim shows a session (supervise's bootRegisteredPods). A mutex of its own, never held across
+	// a runtime call, because the hook runs on a launching machine's goroutine beside the sweep.
 	podUpdateLaunchMu       sync.Mutex
 	podUpdateLaunchReplaced map[string]*launchRound
 	// reportStore persists each report as it arrives (store.Store), so a restart renders the
@@ -1901,7 +2123,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	launches := specs{
 		stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, copies: p.instructionsCopies, secrets: p.secrets, prompts: p.prompts,
 		roles: cfg.Roles, models: cfg.ListedModels(), planRole: planRole,
-		identity: p.identityAs, repository: p.launchRepository, owner: p.owner, stepWorkers: p.stepWorkers,
+		identity: p.identityAs, knownIdentity: p.knownIdentity, repository: p.launchRepository, owner: p.owner, stepWorkers: p.stepWorkers, log: log,
 		appOwners:   p.appOwners(cfg.Runtime.Name, deploymentApps(cfg.Roles)),
 		designSteps: cfg.Gates.Steps(), productionCheck: cfg.Projects[cfg.Project].ProductionCheck, slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 		runtimeName: cfg.Runtime.Name, plugins: p.plugins,
@@ -1962,7 +2184,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		},
 		RefreshGate:        refreshGate,
 		PodStarts:          podStarts(cfg, p.clock),
-		PluginContract:     api.DaemonAPIVersion,
+		PluginContract:     api.DaemonAPIVersion(),
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall: func(ctx context.Context, c supervise.Claim) (bool, error) {
 			return noPluginInstall(ctx, cfg, backends, c)
@@ -2044,6 +2266,17 @@ func cleanSessionStop(inFlight *sessionStopsInFlight, envoyURL, token string, lo
 	}
 }
 
+// roleHolderLookup is the supervisor's read of a role's holder at the Envoy listener
+// (supervise.Deps.RoleHolder, notify.HTTPPublisher.RoleHolder), which a forget of a session its
+// claim does not hold asks before it clears anything (supervise's mayForget). With no listener
+// configured it is nil, and nothing is asked.
+func roleHolderLookup(envoyURL, token string) func(ctx context.Context, role string) (holder, state string, err error) {
+	if envoyURL == "" {
+		return nil
+	}
+	return notify.New(envoyURL, token).RoleHolder
+}
+
 // sessionStopsInFlight counts the clean stops of session registrations in flight
 // (cleanSessionStop), which no decision waits for and the halt does not end. The daemon's stop
 // waits for them last, in a final wait (supervision.stop), and that wait is for every clean stop
@@ -2106,17 +2339,6 @@ func (s *sessionStopsInFlight) wait() {
 	drained := s.drained
 	s.mu.Unlock()
 	<-drained
-}
-
-// roleHolderLookup is the supervisor's read of a role's holder at the Envoy listener
-// (supervise.Deps.RoleHolder, notify.HTTPPublisher.RoleHolder), which a forget of a session its
-// claim does not hold asks before it clears anything (supervise's mayForget). With no listener
-// configured it is nil, and nothing is asked.
-func roleHolderLookup(envoyURL, token string) func(ctx context.Context, role string) (holder, state string, err error) {
-	if envoyURL == "" {
-		return nil
-	}
-	return notify.New(envoyURL, token).RoleHolder
 }
 
 // sessionStop sends this daemon's clean stops, one call of send each; cleanSessionStop says when a
@@ -2646,6 +2868,10 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			// and the NoPluginInstall option three lines below).
 			noPluginInstall: stateNoPluginInstall(cfg),
 			architectStalls: architectStalls,
+			// Under dispatch_token_broker alone: without it the state carries no
+			// `dispatchCredential` (dispatchTokensOf).
+			dispatchSession: dispatch.DaemonSession(cfg.Project),
+			dispatchTokens:  dispatchTokensOf(cfg, s.runtime),
 		},
 		ConsumerLag:        consumerLag,
 		Intake:             giveUps,
@@ -2803,6 +3029,13 @@ type source struct {
 	// secretsLogin is the daemon's own agent-secrets token login client (newSecretsLogin), read
 	// through LoginStatus for the state route; nil when the deployment enrolls no pod.
 	secretsLogin *cipher.Client
+	// dispatchSession is the session the daemon's own Dispatch calls run under
+	// (dispatch.DaemonSession), and dispatchTokens the Sandbox runtime's counts of the Dispatch
+	// tokens its launches hand out (sandbox.Runtime.DispatchTokens), which State serves together
+	// as `dispatchCredential`. dispatchTokens is nil without dispatch_token_broker
+	// (dispatchTokensOf), and the state then carries no such key.
+	dispatchSession string
+	dispatchTokens  func() sandbox.DispatchTokens
 	// deployment is the deployment's capabilities as this boot knows them with the repository
 	// caches it is handed (supervision.deploymentWith), whose report the state carries.
 	deployment func([]sandbox.CacheStatus) capabilities.Deployment
@@ -3122,6 +3355,13 @@ func (s projectRecords) DropCatchUps(ctx context.Context, tx pgx.Tx, issue strin
 	return s.Store.DropCatchUps(ctx, tx, issue, now)
 }
 
+func (s projectRecords) DropUnfencedCheckWakes(ctx context.Context, tx pgx.Tx, issue string) error {
+	if !s.ownsKey(record.OutboxKindCheckWake, issue) {
+		return nil
+	}
+	return s.Store.DropUnfencedCheckWakes(ctx, tx, issue)
+}
+
 func (s projectRecords) DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string) error {
 	if !s.ownsKey(record.OutboxKindDispatchStatus, issue) {
 		return nil
@@ -3326,6 +3566,18 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if s.secretsLogin != nil {
 		state.AgentSecretsLogin = &api.AgentSecretsLoginView{State: s.secretsLogin.LoginStatus().State}
 	}
+	if s.dispatchTokens != nil {
+		tokens := s.dispatchTokens()
+		credential := &api.DispatchCredentialView{
+			Session: s.dispatchSession, TransitionLaunches: tokens.TransitionLaunches,
+			LiveLaunchesWithDispatchToken: tokens.LiveLaunches,
+		}
+		if !tokens.LastTransitionLaunch.IsZero() {
+			at := tokens.LastTransitionLaunch.UTC()
+			credential.LastTransitionLaunchAt = &at
+		}
+		state.DispatchCredential = credential
+	}
 	var caches []sandbox.CacheStatus
 	if s.caches != nil {
 		caches = s.caches()
@@ -3373,6 +3625,17 @@ func adoptIdentity(identity func(context.Context, string, claim.Role, ghrepo.Rep
 func repositoryCachesOf(rt runtime.Runtime) func() []sandbox.CacheStatus {
 	if keeper, ok := rt.(*sandbox.Runtime); ok {
 		return keeper.RepositoryCaches
+	}
+	return nil
+}
+
+// dispatchTokensOf is rt's counts of the Dispatch tokens its launches hand out
+// (sandbox.Runtime.DispatchTokens) when the deployment runs under dispatch_token_broker and rt is
+// the Sandbox runtime, the one runtime the loader takes that setting under, and nil otherwise, as
+// repositoryCachesOf is: a deployment without the setting serves no `dispatchCredential`.
+func dispatchTokensOf(cfg config.Config, rt runtime.Runtime) func() sandbox.DispatchTokens {
+	if counter, ok := rt.(*sandbox.Runtime); ok && cfg.DispatchTokenBroker {
+		return counter.DispatchTokens
 	}
 	return nil
 }

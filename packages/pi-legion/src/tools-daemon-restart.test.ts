@@ -330,7 +330,8 @@ test("register_plan and stop_task wait out a restarting daemon", async () => {
   }
 });
 
-// The owner's report of its own step (contract 302) waits out a restart too, the whole attempt
+// The owner's report of its own step (the owner's step completion entry) waits out a restart too,
+// the whole attempt
 // again: the record that says which role's report it carries, that report, a fresh grant and the
 // post, which goes through the contract's request schema to the route with the step it names. A
 // repeat after a report that landed finds the step no longer running and changes nothing.

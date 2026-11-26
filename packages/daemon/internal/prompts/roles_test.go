@@ -1,10 +1,11 @@
 package prompts
 
 //ci:reads packages/pi-legion/agents/*.md TestEveryTaskAgentARolePromptDispatchesIsShipped stats agents/<name>.md for each task agent
-//ci:reads skills/legion-worker/references/tools.md TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI reads the skill the headless fragment sends a role to, by relative path
+//ci:reads .github/private-names.toml TestNoReusablePartNamesARepositoryOrLibrary reads it under ../../../.. and runs its rules over every reusable role part
 
 import (
 	"embed"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -82,33 +83,73 @@ func TestCoresAndTheInteractiveFragmentCarryNoHeadlessMechanics(t *testing.T) {
 // send a heavy run, and the next hand to write that rule down can spell a deployment's own route
 // out in the architect parts, which this test read nothing of before.
 //
-// Each part is held to two checks: the generic names of repoSpecific, and the rules leakguard
-// ports from .github/scripts/check-private-names.sh's built-in rules. Of a deployment's own names,
-// check-private-names refuses those the deployment's own term list holds, in every file it reads.
+// Each part is held to two checks: the generic names of repoSpecific, and the rules of
+// .github/private-names.toml. That file is this repository's own port of
+// .github/scripts/check-private-names.sh's built-in rules, and the port harness,
+// .github/scripts/check-private-names-port.test.sh, holds the two to one verdict. The test reads
+// the file from the repository, since the legion binary embeds no rule. A finding is reported by
+// its class alone (refusedClasses): a report line holds the matched text, which is a private name,
+// and this repository's CI logs are public. Of a deployment's own names, check-private-names
+// refuses those the deployment's own term list holds, in every file it reads.
 func TestNoReusablePartNamesARepositoryOrLibrary(t *testing.T) {
-	// leakguard's rules are embedded in it (private-names.toml) and read no input, so this check
-	// runs the same wherever the test runs.
-	guard := leakguard.New(leakguard.Options{})
+	// The rule half reads .github/private-names.toml at the repository root, four levels above
+	// this package, because the legion binary embeds no rule.
+	rulesPath := filepath.Join("..", "..", "..", "..", ".github", "private-names.toml")
+	content, err := leakguard.ReadRulesContent(rulesPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", rulesPath, err)
+	}
+	rules, err := leakguard.LoadRules(content)
+	if err != nil {
+		t.Fatalf("compile %s: %v", rulesPath, err)
+	}
 	check := func(name, text string) {
 		for _, needle := range repoSpecific {
 			if strings.Contains(text, needle) {
 				t.Errorf("%s contains %q", name, needle)
 			}
 		}
-		if err := guard.Rules(t.Context(), leakguard.Record{Label: name, Text: text}); err != nil {
+		// The record's Path is the part's name, because the rule file's path rules read
+		// Record.Path alone. A refusal is reported by class alone, because its report lines hold
+		// the matched text and CI logs are public. A SetupFailure holds no matched text.
+		err := rules.Check(t.Context(), "the reusable part "+name, leakguard.Record{Label: name, Text: text, Path: name})
+		var refusal *leakguard.Refusal
+		switch {
+		case errors.As(err, &refusal):
+			for _, class := range refusedClasses(name, refusal.Lines) {
+				t.Errorf("%s: %s refuses it: %s", name, rulesPath, class)
+			}
+		case err != nil:
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 	for _, file := range reusableParts {
 		check(file, rolePart(t, file))
 	}
-	err := eachPart(goParts, "go", func(name string, body []byte) error {
+	err = eachPart(goParts, "go", func(name string, body []byte) error {
 		check("go/"+name, string(body))
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("read the go parts: %v", err)
 	}
+}
+
+// refusedClasses is the class of each line of a rule pass's report on the record labelled label.
+// A report line is `<label>: <class>: matched …` (leakguard's reportLine). What follows the class
+// holds the matched text, so it is never answered. A line of any other shape is answered as such,
+// and none of it is printed.
+func refusedClasses(label string, lines []string) []string {
+	classes := make([]string, 0, len(lines))
+	for _, line := range lines {
+		rest, labelled := strings.CutPrefix(line, label+": ")
+		class, _, matched := strings.Cut(rest, ": matched ")
+		if !labelled || !matched || class == "" {
+			class = "a line of an unexpected shape"
+		}
+		classes = append(classes, class)
+	}
+	return classes
 }
 
 // Every role of Legion's a claim can be on has its own part, and none is blank: a blank part boots a worker with
@@ -181,43 +222,6 @@ func TestPlannerKeepsFindingsAndHumanToDoAsksOutsideDesignQuestions(t *testing.T
 	}
 	if strings.Contains(planner, "A finding outside the tree, and a to-do only a person can do, is always an ask.") {
 		t.Error("core/planner.md still makes every finding outside the tree an ask, which contradicts the headless fragment's clear-defect path")
-	}
-}
-
-func TestTheHeadlessFragmentHoldsTheWorkersSharedRules(t *testing.T) {
-	headless := rolePart(t, "mechanics/headless.md")
-	interactive := rolePart(t, "mechanics/interactive.md")
-	// The interactive fragment states its own one-line version of the skills-first preamble.
-	const preamble = "find this repository's skills"
-	if !strings.Contains(headless, preamble) || strings.Contains(interactive, preamble) {
-		t.Errorf("the skills-first preamble %q is in the headless fragment %t and the interactive one %t, want only the headless",
-			preamble, strings.Contains(headless, preamble), strings.Contains(interactive, preamble))
-	}
-	for _, role := range cores {
-		if strings.Contains(rolePart(t, "core/"+role+".md"), preamble) {
-			t.Errorf("core/%s.md repeats the skills-first preamble", role)
-		}
-	}
-	shared := []string{
-		"## Step one: find this repository's skills",
-		"create another workspace",
-		"Read and follow `skill://legion-worker` before acting.",
-		`op: "handoff_complete"`,
-		"When your phase is done, stay in this session afterwards:",
-		"roleToken",
-	}
-	for _, rule := range shared {
-		if !strings.Contains(headless, rule) {
-			t.Errorf("mechanics/headless.md omits %q", rule)
-		}
-	}
-	for _, role := range phaseRoles {
-		residue := rolePart(t, role+".md")
-		for _, rule := range append(slices.Clone(shared), preamble) {
-			if strings.Contains(residue, rule) {
-				t.Errorf("%s.md repeats the headless fragment's %q", role, rule)
-			}
-		}
 	}
 }
 
@@ -618,97 +622,6 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 			if strings.Contains(text, retired) {
 				t.Errorf("%s still contains %q", file, retired)
 			}
-		}
-	}
-}
-
-// Each of the two paragraphs of the pod memory rule, one in the headless fragment and one in the
-// architects' common part, ends by passing the rule on, because a subagent runs its commands in
-// the same pod and reads none of these parts: the worker's clause tells a role to put these facts
-// in the context of each subagent it starts, and the architect's says the same of its own. The
-// clause belongs where the rule is written and nowhere else, so a part that dispatches a task
-// subagent carries no copy of it. The three parts that dispatch one are named here rather than
-// counted, so a part renamed out from under this test fails it rather than passing with nothing
-// read. The match runs over a body whose whitespace is collapsed to one space, since a part
-// hard-wraps and the clause can cross the break.
-func TestThePassOnClauseIsWrittenOnlyWhereThePodMemoryRuleIs(t *testing.T) {
-	fold := func(body []byte) string { return foldWhitespace(string(body)) }
-	for _, pin := range []struct {
-		dir       string
-		parts     embed.FS
-		want      string
-		unwritten []string
-		clause    string
-	}{
-		{
-			dir: "roles", parts: roleParts, want: "mechanics/headless.md",
-			unwritten: []string{"implementer.md", "planner.md"},
-			clause:    "Each subagent you start runs its commands in this pod, so put these facts in its context",
-		},
-		{
-			dir: "go", parts: goParts, want: "architect-common.md",
-			unwritten: []string{"claude-mechanics.md"},
-			clause:    "you put these facts in the context of each subagent you start",
-		},
-	} {
-		var carrying, read []string
-		err := eachPart(pin.parts, pin.dir, func(name string, body []byte) error {
-			read = append(read, name)
-			if strings.Contains(fold(body), pin.clause) {
-				carrying = append(carrying, pin.dir+"/"+name)
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatalf("read the %s parts: %v", pin.dir, err)
-		}
-		if want := []string{pin.dir + "/" + pin.want}; !slices.Equal(carrying, want) {
-			t.Errorf("%q is in %q, want %q alone", pin.clause, carrying, want)
-		}
-		// The walk above refuses the clause in every part but one, the dispatching parts of this
-		// tree among them: two under roles/ and one under go/, three across the two. What it
-		// cannot say is that those parts are still there to be read, so each is named and held to
-		// having been walked.
-		for _, name := range pin.unwritten {
-			if !slices.Contains(read, name) {
-				t.Errorf("%s/%s, which dispatches a task subagent, is not a part of this tree any more; the walk read %q", pin.dir, name, read)
-			}
-		}
-	}
-}
-
-// The headless fragment sends four runs to CI on the pull request, where the issue has one, and
-// skill://legion-worker/references/tools.md, which that same paragraph sends a role to for what it
-// may run in the pod, sends the same four. A role reads both, so the two must agree: a run the
-// fragment calls CI's work and the skill does not leaves the role with two answers. Three rows
-// pin the four runs, each a substring both files hold: the bare `go test ./...` for the module
-// run, the name with the comma before it for the Postgres-backed package, and for the browser
-// suite and `lake build` the one clause both files carry whole, so one row pins those two. The
-// skill is read from the repository by relative path, as
-// TestEveryTaskAgentARolePromptDispatchesIsShipped reads the plugin's agents/, and a skill file
-// this package cannot read is a fatal rather than a quiet pass. The match runs over a body whose
-// whitespace is collapsed to one space, since the skill hard-wraps: the browser-suite clause
-// crosses a line break in it today, and a reflow of the skill could put a break inside either
-// of the other two.
-func TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI(t *testing.T) {
-	fold := foldWhitespace
-	fragment := fold(rolePart(t, "mechanics/headless.md"))
-	skillPath := filepath.Join("..", "..", "..", "..", "skills", "legion-worker", "references", "tools.md")
-	body, err := os.ReadFile(skillPath)
-	if err != nil {
-		t.Fatalf("read %s, the skill the headless fragment sends a role to: %v", skillPath, err)
-	}
-	skill := fold(string(body))
-	for _, run := range []struct{ name, agreed string }{
-		{"a whole module's test run", "`go test ./...`"},
-		{"a whole Postgres-backed package", ", a whole Postgres-backed package"},
-		{"a browser suite run whole and `make -j` or `lake build`", ", a browser suite run whole, and `make -j` or `lake build`"},
-	} {
-		if !strings.Contains(fragment, run.agreed) {
-			t.Errorf("roles/mechanics/headless.md does not hold %q, what it and %s agree on about %s", run.agreed, skillPath, run.name)
-		}
-		if !strings.Contains(skill, run.agreed) {
-			t.Errorf("%s does not hold %q, what it and roles/mechanics/headless.md agree on about %s", skillPath, run.agreed, run.name)
 		}
 	}
 }

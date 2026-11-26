@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	k8stesting "k8s.io/client-go/testing"
@@ -27,18 +28,18 @@ func TestASlotsLauncherSaysWhetherItWaitsForTheCredential(t *testing.T) {
 	if pod, waits := launchers.credentialWaits(workerToken); pod != "" || !waits {
 		t.Fatalf("with no launcher connected = %q, %t; want none, waits", pod, waits)
 	}
-	old := launchers.accept(workerToken, testTree, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "old"})
+	old := launchers.accept(workerToken, testTree, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "old"})
 	if pod, waits := launchers.credentialWaits(workerToken); pod != "pod-1" || waits {
 		t.Fatalf("a launcher that said no credential wait = %q, %t; want pod-1, no wait", pod, waits)
 	}
-	launchers.accept(workerToken, testTree, shimwire.LauncherHello{PodUID: "pod-2", LauncherID: "new", CredentialWait: true})
+	launchers.accept(workerToken, testTree, time.Time{}, shimwire.LauncherHello{PodUID: "pod-2", LauncherID: "new", CredentialWait: true})
 	if pod, waits := launchers.credentialWaits(workerToken); pod != "pod-2" || !waits {
 		t.Fatalf("a launcher that waits = %q, %t; want pod-2, waits", pod, waits)
 	}
 	if !old.closed {
 		t.Fatal("the earlier launcher's connection is still open: the case's premise")
 	}
-	launchers.accept(workerToken, testTree, shimwire.LauncherHello{PodUID: "pod-3", LauncherID: "newest"}).close()
+	launchers.accept(workerToken, testTree, time.Time{}, shimwire.LauncherHello{PodUID: "pod-3", LauncherID: "newest"}).close()
 	if pod, waits := launchers.credentialWaits(workerToken); pod != "" || !waits {
 		t.Fatalf("after the launcher's connection closed = %q, %t; want none, waits", pod, waits)
 	}

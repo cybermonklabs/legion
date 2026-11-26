@@ -114,7 +114,7 @@ type podUpdateRole struct {
 // readyWorker is the ordinary case: a registered worker of the issue's pod, on this daemon's
 // contract.
 func readyWorker(role claim.Role) podUpdateRole {
-	return podUpdateRole{role: role, state: supervise.StateReady, session: true, inPod: true, contract: api.DaemonAPIVersion}
+	return podUpdateRole{role: role, state: supervise.StateReady, session: true, inPod: true, contract: api.DaemonAPIVersion()}
 }
 
 type podUpdateRig struct {
@@ -154,6 +154,13 @@ type podUpdateRig struct {
 	// asked is every update-ask row the sweep has written, by id, kept once read: the lane
 	// deletes each row it finishes, as the outbox does, and asks reads every row ever written.
 	asked map[int64]record.UpdateAsk
+	// keptSince is when the API server made the issue's Sandbox, where that Sandbox owns the
+	// issue's kept volume, as a pod's launcher session reads it (sandbox's keptVolumeSince), and
+	// the zero time while the issue's pods have volumes of their own. While it is set, the start of
+	// a role into a pod through startInPod, displacedInto, startsFreshInto, retriesInto or wakesInto
+	// asks the store what that pod's launcher asks (launcherStarts); intoPod,
+	// relaunchedUnregistered and runParkedLaunch ask nothing.
+	keptSince time.Time
 }
 
 func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
@@ -173,9 +180,15 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 // openSupervision hands the daemon's one limiter to its machines. A machine takes its deps when the
 // boot restores it, so the pacing is set before that, as beforeDecision is. The zero pace is the
 // pacing off: every launch runs where it is raised.
+//
+// paused is the project's pause flag every machine reads (supervise.Deps.Paused), as
+// openSupervision hands the daemon's pause service to its machines: the open pause's id, or
+// false while the project runs. It is set before the boot restores the first machine, as the
+// pacing is. nil is a project that is never paused.
 type podUpdateRigOptions struct {
 	beforeDecision func(claim.Token, supervise.Event)
 	wakePace       supervise.WakePace
+	paused         func() (int64, bool)
 }
 
 // newPodUpdateRigWith is newPodUpdateRig with the machines built with opts.
@@ -267,7 +280,7 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 		ClaimActivity:  st.ClaimActivity,
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: api.DaemonAPIVersion,
+		PluginContract: api.DaemonAPIVersion(),
 		// This daemon can relaunch a stale process onto a plugin, as the supervision's own plan
 		// says it can: a registration's relaunch and its refusal are decided by this field alone
 		// (staleRegistration), and a rig that left it false would accept every stale registration
@@ -278,6 +291,7 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 		},
 		RefreshGate: supervise.NewRefreshGate(0),
 		WakePace:    opts.wakePace,
+		Paused:      opts.paused,
 		// A firing timer and a prompt's send take a hold mark of their own, as openSupervision
 		// sets for the daemon, so the guard sees the machines as it does in production.
 		Worker: store.ForConcurrentWorker,
@@ -326,8 +340,8 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 // and records, and one handler, a real engine over those same records. The engine alone is
 // handler enough for the facts this supervision applies, which are the silence sweep's: its
 // handler reads the record and writes its start row and its notice itself. Production runs
-// admission as a second handler, which promotes the waiting line for every fact whatever its
-// kind (admit's Apply, promote); this rig admits nothing and holds no line, so that pass would
+// admission as a second handler, which promotes the waiting line on the facts its pass rule
+// names (admit's Apply, promote); this rig admits nothing and holds no line, so that pass would
 // read an empty waiting line and decide nothing (workflow.(*Engine).workerSilent). The engine
 // runs on the rig's clock, so the record it writes measures a silence from the moment the test
 // moved the clock to, and on the rig's logger, so the line it writes beside the notice is in
@@ -614,8 +628,23 @@ func (r *podUpdateRig) startInPod(role claim.Role, pod string) {
 		}
 	}
 	r.rt.ScriptSpawn(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, pod)})
+	r.launcherStarts(pod)
 	r.handle(role, supervise.RequestSpawn{Claim: token})
 	r.registerInto(role, pod)
+}
+
+// launcherStarts is what the launcher of pod asks of the store at a role's start there, before the
+// role runs, where the issue's Sandbox owns a kept volume (keptSince): the record of a role's start
+// in a pod of a kept volume, which records pod with its volume (sandbox's launchers.recordKeptPod,
+// store.StartKeptPod). It asks nothing where the issue's pods have volumes of their own.
+func (r *podUpdateRig) launcherStarts(pod string) {
+	r.t.Helper()
+	if r.keptSince.IsZero() {
+		return
+	}
+	if err := r.st.StartKeptPod(r.ctx, podUpdateProject, podUpdateIssue, pod, r.keptSince); err != nil {
+		r.t.Fatalf("the launcher of pod %s asked the store to record its start in a pod of the kept volume: %v", pod, err)
+	}
 }
 
 // displacedInto is the role's process ending with the pod it ran in and the daemon starting the
@@ -635,6 +664,7 @@ func (r *podUpdateRig) displacedInto(role claim.Role, pod string) {
 	r.conns.Register(token, conn)
 	r.workers[role] = conn
 	r.rt.ScriptResume(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, pod)})
+	r.launcherStarts(pod)
 	r.handle(role, supervise.RuntimeObservation{Observation: runtime.Observation{
 		Locator: *ended, Kind: runtime.Gone, At: r.clock.Now(), Displaced: true,
 	}})
@@ -650,7 +680,7 @@ func (r *podUpdateRig) registerInto(role claim.Role, pod string) {
 	for _, ev := range []supervise.Event{
 		supervise.StreamHello{Claim: token, Generation: generation},
 		supervise.RequestRegister{Claim: token, Generation: generation, Session: "ses_" + string(role),
-			SessionFile: "/sessions/" + string(role) + ".jsonl", CapabilityHash: []byte(role), PluginContract: api.DaemonAPIVersion},
+			SessionFile: "/sessions/" + string(role) + ".jsonl", CapabilityHash: []byte(role), PluginContract: api.DaemonAPIVersion()},
 		supervise.RequestReady{Claim: token, Generation: generation, Session: "ses_" + string(role)},
 	} {
 		r.handle(role, ev)
@@ -828,11 +858,11 @@ func TestPodUpdateWaitsForAClaimThatLeftAnEarlierRound(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		// The implementer is a worker of this pod's round and has answered it.
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true,
-			contract: api.DaemonAPIVersion, round: podUpdateRound, reasons: podUpdateDrift, signalled: true},
+			contract: api.DaemonAPIVersion(), round: podUpdateRound, reasons: podUpdateDrift, signalled: true},
 		// The tester came up in this pod out of the round over the pod before it, which it left
 		// unanswered, and no post of this round has reached it.
 		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, inPod: true,
-			contract: api.DaemonAPIVersion, round: previous, reasons: podUpdateDrift, left: previous},
+			contract: api.DaemonAPIVersion(), round: previous, reasons: podUpdateDrift, left: previous},
 	)
 	rig.drifts(podUpdateDrift)
 
@@ -914,7 +944,7 @@ func TestPodUpdateEndsTheRoundOnceTheRoleStartedIntoTheKeptPodAnswers(t *testing
 func TestPodUpdateHoldsTheReplacementWhileAClaimIsWorking(t *testing.T) {
 	t.Parallel()
 	rig := newPodUpdateRig(t,
-		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateWorking, session: true, inPod: true, contract: api.DaemonAPIVersion},
+		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateWorking, session: true, inPod: true, contract: api.DaemonAPIVersion()},
 		readyWorker(claim.RoleTester),
 	)
 	rig.drifts(podUpdateDrift)
@@ -948,7 +978,7 @@ func TestPodUpdateToldOnceAtTheBoundOfARoundAnOperatorsSuspensionHolds(t *testin
 	t.Parallel()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true,
-			contract: api.DaemonAPIVersion, suspendedBy: supervise.SuspendedByOperator},
+			contract: api.DaemonAPIVersion(), suspendedBy: supervise.SuspendedByOperator},
 		readyWorker(claim.RoleTester),
 	)
 	rig.drifts(podUpdateDrift, "disk")
@@ -1220,9 +1250,9 @@ func TestAPodGoneFromAKeptVolumeSaysTheWorkStays(t *testing.T) {
 	const opened = "The pod that ran this issue's roles is gone. The daemon opened an update round over that pod (" + podUpdateRound + "). " +
 		"The reasons were: " + podUpdateDrift + ". The pod went before the round was over.\n\n"
 	const restarted = "\n\nThe daemon starts each role again, in the same session, on a new pod. Each role must read its issue branch at origin to see the work that it pushed."
-	const lost = opened + "These roles did not answer the update ask before the pod went: implementer (ready). " +
+	const lost = opened + "These roles did not answer the update round before the pod went: implementer (ready). " +
 		"The pod's disk went with the pod. Work that these roles did not push is lost." + restarted
-	const stays = opened + "These roles did not answer the update ask before the pod went: implementer (ready). " +
+	const stays = opened + "These roles did not answer the update round before the pod went: implementer (ready). " +
 		"The pod's disk is a kept volume, and the volume is still there. Work that these roles did not push is on that volume. " +
 		"The next pod of this issue mounts the volume." + restarted
 	for _, tc := range []struct {
@@ -1524,7 +1554,7 @@ func (r *podUpdateRig) resumeInPod(role claim.Role) {
 	for _, ev := range []supervise.Event{
 		supervise.StreamHello{Claim: token, Generation: generation},
 		supervise.RequestRegister{Claim: token, Generation: generation, Session: "ses_" + string(role),
-			SessionFile: "/sessions/" + string(role) + ".jsonl", CapabilityHash: []byte(role), PluginContract: api.DaemonAPIVersion},
+			SessionFile: "/sessions/" + string(role) + ".jsonl", CapabilityHash: []byte(role), PluginContract: api.DaemonAPIVersion()},
 		supervise.RequestReady{Claim: token, Generation: generation, Session: "ses_" + string(role)},
 	} {
 		r.handle(role, ev)
@@ -1754,7 +1784,7 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 	}
 	next := &podUpdateRig{t: r.t, ctx: r.ctx, sup: sup, rt: rt, pool: r.pool, records: r.records, clock: r.clock,
 		conns: conns, workers: workers, tokens: r.tokens, st: st, logs: r.logs, log: r.log,
-		listener: r.listener, asked: r.asked}
+		listener: r.listener, asked: r.asked, keptSince: r.keptSince}
 	next.lane = &outbox{pool: r.pool, records: r.records, project: podUpdateProject, notices: next.listener, supervisor: sup, log: r.log}
 	next.s = s
 	return next
@@ -1782,7 +1812,7 @@ func TestPodUpdateIgnoresARetiredClaimsLeftoverRound(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		podUpdateRole{role: claim.RoleTester, state: supervise.StateRetired, session: true,
-			contract: api.DaemonAPIVersion, round: supervise.PodRound(podUpdatePreviousPod), reasons: podUpdateDrift},
+			contract: api.DaemonAPIVersion(), round: supervise.PodRound(podUpdatePreviousPod), reasons: podUpdateDrift},
 	)
 	rig.drifts(podUpdateDrift)
 
@@ -1946,9 +1976,9 @@ func TestPodUpdateReadsAReleasedPodAsNoPodRatherThanAPodThatWent(t *testing.T) {
 	t.Parallel()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true,
-			contract: api.DaemonAPIVersion, suspendedBy: supervise.SuspendedByReleased},
+			contract: api.DaemonAPIVersion(), suspendedBy: supervise.SuspendedByReleased},
 		podUpdateRole{role: claim.RoleTester, state: supervise.StateSuspended, session: true,
-			contract: api.DaemonAPIVersion, suspendedBy: supervise.SuspendedByReleased},
+			contract: api.DaemonAPIVersion(), suspendedBy: supervise.SuspendedByReleased},
 	)
 	rig.drifts(podUpdateDrift)
 
@@ -1983,7 +2013,7 @@ func TestStalePluginLeavesEveryClaimInARoundToThatRound(t *testing.T) {
 		// operator pinned ahead of the daemon — can answer, so its round carries it and the stale
 		// lane leaves it alone.
 		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, inPod: true,
-			contract: api.DaemonAPIVersion + 1, round: podUpdateRound, reasons: podUpdateDrift},
+			contract: api.DaemonAPIVersion() + 1, round: podUpdateRound, reasons: podUpdateDrift},
 	)
 	claims, err := rig.sup.Claims(rig.ctx)
 	if err != nil {
@@ -2059,7 +2089,7 @@ func TestPodUpdateNoticeKeepsTheReasonsWhole(t *testing.T) {
 	t.Parallel()
 	rig := newPodUpdateRig(t, podUpdateRole{
 		role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true,
-		contract: api.DaemonAPIVersion, round: podUpdateRound,
+		contract: api.DaemonAPIVersion(), round: podUpdateRound,
 		reasons: podUpdateTwoReasons,
 	})
 	// A round held past its bound is what the notice is for: the runtime refuses its replacement.
@@ -2949,9 +2979,9 @@ func TestPodUpdateEndsOnlyTheDeadRoundOfATwoRoundGroup(t *testing.T) {
 	const ended = "supervise: the pod this issue's update round was opened over is gone; the round is over"
 	live := supervise.PodRound(podUpdateReplacementPod)
 	rig := newPodUpdateRig(t,
-		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion,
+		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion(),
 			pod: podUpdateReplacementPod, round: podUpdateRound, reasons: podUpdateDrift, signalled: true, left: podUpdateRound},
-		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion,
+		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion(),
 			pod: podUpdateReplacementPod, round: live, reasons: podUpdateDrift},
 	)
 	if dead, other := rig.tokens[claim.RoleImplementer], rig.tokens[claim.RoleTester]; dead >= other {
@@ -2997,9 +3027,9 @@ func TestPodUpdateEndsAStaleRoundAfterAFreshSession(t *testing.T) {
 		fresh = "ses_implementer_fresh"
 	)
 	rig := newPodUpdateRig(t,
-		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion,
+		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion(),
 			pod: podUpdateReplacementPod, round: podUpdateRound, reasons: podUpdateDrift, signalled: true, left: podUpdateRound},
-		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion,
+		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion(),
 			pod: podUpdateReplacementPod},
 	)
 	rig.drifts(podUpdateDrift)
@@ -3022,7 +3052,7 @@ func TestPodUpdateEndsAStaleRoundAfterAFreshSession(t *testing.T) {
 	for _, ev := range []supervise.Event{
 		supervise.StreamHello{Claim: token, Generation: generation},
 		supervise.RequestRegister{Claim: token, Generation: generation, Session: fresh,
-			SessionFile: "/sessions/implementer-fresh.jsonl", CapabilityHash: []byte(claim.RoleImplementer), PluginContract: api.DaemonAPIVersion},
+			SessionFile: "/sessions/implementer-fresh.jsonl", CapabilityHash: []byte(claim.RoleImplementer), PluginContract: api.DaemonAPIVersion()},
 		supervise.RequestReady{Claim: token, Generation: generation, Session: fresh},
 	} {
 		rig.handle(claim.RoleImplementer, ev)
@@ -3077,9 +3107,9 @@ func TestPodUpdateEndsAPodlessRoundWhoseOwnPodIsGone(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			rig := newPodUpdateRig(t,
-				podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true, contract: api.DaemonAPIVersion,
+				podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true, contract: api.DaemonAPIVersion(),
 					round: podUpdateRound, reasons: podUpdateDrift, suspendedBy: supervise.SuspendedByOperator},
-				podUpdateRole{role: claim.RoleTester, state: supervise.StateSuspended, session: true, contract: api.DaemonAPIVersion,
+				podUpdateRole{role: claim.RoleTester, state: supervise.StateSuspended, session: true, contract: api.DaemonAPIVersion(),
 					round: podUpdateRound, reasons: podUpdateDrift, signalled: true, suspendedBy: supervise.SuspendedByDaemon},
 			)
 			rig.drifts(podUpdateDrift)
@@ -3154,9 +3184,9 @@ func TestPodUpdateKeepsARoundOverTheRecordedPod(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			rig := newPodUpdateRig(t,
 				podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true,
-					contract: api.DaemonAPIVersion, round: podUpdateRound, reasons: podUpdateDrift, signalled: true},
+					contract: api.DaemonAPIVersion(), round: podUpdateRound, reasons: podUpdateDrift, signalled: true},
 				podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, inPod: true,
-					contract: api.DaemonAPIVersion, round: podUpdateRound, reasons: podUpdateDrift},
+					contract: api.DaemonAPIVersion(), round: podUpdateRound, reasons: podUpdateDrift},
 			)
 			rig.drifts(drift...)
 

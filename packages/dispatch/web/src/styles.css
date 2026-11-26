@@ -626,6 +626,14 @@ html:has([data-issue-page]) {
   max-width: none;
 }
 
+/* A priority's description is drawn in the documents' editor (`PriorityDescription.tsx`), but it
+   is a short field of the priority and not a whole document, so it does not take a document's
+   24rem. The editor library's own `min-height` is unlayered, so a utility class on the
+   description cannot lower it; this rule (0,4,0) outranks the one above (0,3,0). */
+.dispatch-doc.dispatch-description .milkdown .editor {
+  min-height: 6rem;
+}
+
 /* A document's own headings are content, not the page's identity. `@legion/proof-editor` sizes
    `h1` at 2em, so an issue specification that opens with a heading repeating the issue title
    printed that title twice, the second time at nearly twice the size of the page title 40px
@@ -1109,7 +1117,7 @@ html:has([data-issue-page]) {
 }
 
 /* A block or a document a node's words cite is a chip in place, named as a tie's chip is
-   (`RowText.tsx`'s `chipName`, part G's R4): 12 px, in the row's muted grey, as the chips at the
+   (`row-references.ts`'s `rowReferenceWords`, part G's R4): 12 px, in the row's muted grey, as the chips at the
    end of the words are drawn. */
 [data-node-words] a[data-row-chip] {
   font-size: 12px;
@@ -1178,6 +1186,15 @@ html:has([data-issue-page]) {
   color: var(--tw-prose-links);
   font-weight: 500;
   text-decoration: underline;
+}
+
+/* A reference whose target Dispatch answered does not exist is its writer's words with no link
+   (`RefLink`'s `unlinkMissingReference`), so it reads as the text around it, not as Typography's
+   `a`. */
+.dispatch-markdown [data-dispatch-missing] {
+  color: inherit;
+  font-weight: inherit;
+  text-decoration: none;
 }
 
 /* A body's drawn Mermaid diagram (features/refs/mermaid-diagrams.ts). The SVG's inline style reads

@@ -53,7 +53,7 @@ func TestADurableMessageOnAPrivateSubjectAStoredRowNamesReachesNoOtherSession(t 
 	if _, err := interests.Put(sessionID, value); err != nil {
 		t.Fatalf("store %s's row naming %s's inbox and %s: %v", sessionID, victim, otherLane, err)
 	}
-	waitFor(t, 10*time.Second, "the registry's copy to hold the stored row", func() bool {
+	waitFor(t, "the registry's copy to hold the stored row", func() bool {
 		cached, ok := rig.harness.registry.Cached(sessionID)
 		return ok && strings.Contains(strings.Join(cached.Topics, " "), otherLane)
 	})

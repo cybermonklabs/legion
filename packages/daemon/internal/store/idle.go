@@ -168,8 +168,8 @@ func issueKeys(rows pgx.Rows) ([]string, error) {
 // — no live claim, that is — and whose own row and whose tree root's row both still stand in
 // the workflow. It is the candidate list of the second release rule
 // (workflow.UnownedPodRelease), beside IdlePods, which answers the other half: the pods a live
-// claim still holds. Such a pod stands with 3 CPU and 19 GiB reserved and no role that can take
-// a turn in it, which is what the rule releases.
+// claim still holds. Such a pod holds its reservation (2 CPU and 8 GiB at the defaults) with no
+// role that can take a turn in it, which is what the rule releases.
 //
 // The project is spelled two ways, and the two are not the same string, so this read takes
 // both. project is the issue record's own project (issues.project, the Dispatch project key
@@ -503,15 +503,17 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 // IdleReleaseDecline is what the workspace check found when it declines a release, or the close of
 // a left pod (DeclineIssueRelease, DeclineLeftPodClose). At is the moment of the check, by the
 // caller's clock, which the rules compare a later turn's start with (pods.IdleDecline.Stands).
-// Role is the role the workspace was read through, and Reason is one of pods.DeclineUnpushedWork
-// and pods.DeclineWorkspaceUnread. Head, Commits and Changed are what the read found: the
-// working-copy commit, how many commits on a working copy or a local bookmark no branch or tag on
-// origin holds, and whether the working copy holds a change; a read that failed found none of
-// them. PodUID is the pod the read was made in, "" where the runtime could not say. Message is the
-// one row that tells the role the release waits for its push; nil sends none.
+// Role is the role the workspace was read through, and Claim is the worker told of its work.
+// Reason is one of pods.DeclineUnpushedWork and pods.DeclineWorkspaceUnread. Head, Commits and
+// Changed are what the read found: the working-copy commit, how many commits on a working copy or
+// a local bookmark no branch or tag on origin holds, and whether the working copy holds a change;
+// a read that failed found none of them. PodUID is the pod the read was made in, "" where the
+// runtime could not say. Message is the one row that tells the claim the release waits for its
+// push; nil sends none.
 type IdleReleaseDecline struct {
 	At      time.Time
 	Role    claim.Role
+	Claim   claim.Token
 	Reason  string
 	Head    string
 	Commits int
@@ -581,14 +583,12 @@ func (s *Store) DeclineLeftPodClose(ctx context.Context, project, issue string, 
 // message. The row's started_row is the newest start row of the issue's claims, read in this
 // transaction, so a role process started after it ends the decline (pods.IdleDecline.Stands).
 //
-// A decline that finds the same work as the decline on record, read through the same role — the
-// same working-copy commit, the same count of commits, the same change and the same role — is a
-// read that role was already told of: it moves checked_at, started_row and pod_uid, sets the
-// reason, keeps declined_at, and queues no message. That is what ends the loop a message would
-// otherwise start. The message starts a turn in the role's session, the turn ends the decline (it
-// can change the workspace), the next read finds the same work, and a second message would start
-// the next turn. The role is part of the key because the row names the role that was told: a role
-// that takes over, the next phase's worker, is told of the work once, as its own.
+// A decline that finds the same work as the decline on record, read through the same claim — the
+// same working-copy commit, count of commits and change — is work that claim was already told of:
+// it moves checked_at, started_row and pod_uid, sets the reason, keeps declined_at, and queues no
+// message. That ends the loop a message would otherwise start: its turn ends the decline, and a
+// read of the same work would start another turn. The claim is part of the key because two agents
+// can hold one role; a different worker taking over is told once, as its own.
 //
 // A decline whose read failed (pods.DeclineWorkspaceUnread) says nothing of the work, so it keeps
 // what the last read that could read found, and the role that read told: on a row that stands it
@@ -619,9 +619,9 @@ func recordDecline(ctx context.Context, tx pgx.Tx, project, issue string, declin
 		return false, nil
 	}
 	var same bool
-	err := tx.QueryRow(ctx, `select head = $3 and commits = $4 and changed = $5 and role = $6
+	err := tx.QueryRow(ctx, `select head = $3 and commits = $4 and changed = $5 and role = $6 and claim = $7
 		from idle_release_declines where project = $1 and issue = $2 for update`,
-		project, issue, decline.Head, decline.Commits, decline.Changed, string(decline.Role)).Scan(&same)
+		project, issue, decline.Head, decline.Commits, decline.Changed, string(decline.Role), string(decline.Claim)).Scan(&same)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return false, fmt.Errorf("read the decline of %s's release: %w", issue, err)
 	}
@@ -634,14 +634,14 @@ func recordDecline(ctx context.Context, tx pgx.Tx, project, issue string, declin
 		return false, nil
 	}
 	if _, err := tx.Exec(ctx, `insert into idle_release_declines
-		(project, issue, declined_at, checked_at, role, reason, head, commits, changed, started_row, pod_uid)
-		values ($1, $2, $3, $3, $4, $5, $6, $7, $8, `+startedRow+`, $9)
+		(project, issue, declined_at, checked_at, role, reason, head, commits, changed, started_row, pod_uid, claim)
+		values ($1, $2, $3, $3, $4, $5, $6, $7, $8, `+startedRow+`, $9, $10)
 		on conflict (project, issue) do update set declined_at = excluded.declined_at,
 			checked_at = excluded.checked_at, role = excluded.role, reason = excluded.reason,
 			head = excluded.head, commits = excluded.commits, changed = excluded.changed,
-			started_row = excluded.started_row, pod_uid = excluded.pod_uid`,
+			started_row = excluded.started_row, pod_uid = excluded.pod_uid, claim = excluded.claim`,
 		project, issue, decline.At, string(decline.Role), decline.Reason, decline.Head, decline.Commits, decline.Changed,
-		decline.PodUID); err != nil {
+		decline.PodUID, string(decline.Claim)); err != nil {
 		return false, fmt.Errorf("record the decline of %s's release: %w", issue, err)
 	}
 	if decline.Message == nil {

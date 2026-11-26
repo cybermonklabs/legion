@@ -109,6 +109,7 @@ func implementerView(t *testing.T, pool *pgxpool.Pool, key string) api.PhaseView
 // passes and three rounds there, and the cap of 3 is told once. The served state's implementer
 // view shows the task's counts.
 func TestAnIssueWithPlanRowsCountsOnItsTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	root := stepRoot(t, pool, phase.Admitted)
@@ -141,6 +142,7 @@ func TestAnIssueWithPlanRowsCountsOnItsTask(t *testing.T) {
 // issue given plan rows in the middle of its run: the returns after that count on the task, so
 // the first check of this test, the implementer's row, fails for it.
 func TestAnIssueWithNoPlanRowsCountsAsToday(t *testing.T) {
+	t.Parallel()
 	t.Run("no plan rows", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := stepEngine(nil)

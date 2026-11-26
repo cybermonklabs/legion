@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // stubSecrets is a `secrets` stand-in: it answers `get <NAME> --no-request` with a status and
@@ -240,6 +242,32 @@ func TestProviderKeysMayNotNameAGhVariableEveryPaneSets(t *testing.T) {
 	}
 	if want := []ProviderKey{{Env: "GEMINI_API_KEY", Secret: "GEMINI_API_KEY_TESTS"}}; !reflect.DeepEqual(cfg.ProviderKeys, want) {
 		t.Fatalf("ProviderKeys = %+v, want %+v", cfg.ProviderKeys, want)
+	}
+}
+
+// A provider key under tmux named for a variable that runtime.PaneVariableRefusal refuses with no
+// value, which the tmux runtime also refuses at boot (tmux's readProviderKeyNames), as
+// LEGION_ROLE_IDENTITIES, a variable a resumed Oh My Pi pane is told after the operator's, and a
+// launch secret's pointer, is refused by the loader with that function's reason, a secretsd key
+// and a file alike, so `legion config check` refuses the file rather than the daemon at boot.
+func TestATmuxProviderKeyIsRefusedForAVariablePaneEnvMayNotSet(t *testing.T) {
+	for _, tc := range []struct{ name, how, value string }{
+		{runtime.RoleIdentitiesVariable, "a secretsd key", runtime.RoleIdentitiesVariable + "_TESTS"},
+		{runtime.RoleIdentitiesVariable, "a file", "file:/etc/legion/providers/" + runtime.RoleIdentitiesVariable},
+		{runtime.SessionExclusiveVariable, "a secretsd key", runtime.SessionExclusiveVariable + "_TESTS"},
+		{"ENVOY_TOKEN_FILE", "a secretsd key", "ENVOY_TOKEN_FILE_TESTS"},
+	} {
+		t.Run(tc.name+" as "+tc.how, func(t *testing.T) {
+			why := runtime.PaneVariableRefusal(tc.name, "")
+			if why == "" {
+				t.Fatalf("runtime.PaneVariableRefusal(%s, \"\") refuses nothing, so this row tests nothing", tc.name)
+			}
+			want := "provider_keys names " + tc.name + ": " + why
+			_, err := LoadForValidation(writeConfigFile(t, minimalFile+"provider_keys:\n  "+tc.name+": "+tc.value+"\n"), noEnv)
+			if err == nil || err.Error() != want {
+				t.Fatalf("LoadForValidation = %v, want %q", err, want)
+			}
+		})
 	}
 }
 

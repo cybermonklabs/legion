@@ -85,6 +85,7 @@ func plannerDone(key string) intake.HandoffComplete {
 // row, drop the later task and finish clean: a phase with no task, no error and no row behind it
 // (dispatch://INFRA-2800).
 func TestTwoTransitionsBeforeTheSlotLeaveTheLaterStartAppendOnly(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedAppendOnlyRoot(t, pool, appendOnlyIssue, 42)
 	engine := testEngine(config.DesignGateRootIssues, nil)
@@ -131,6 +132,7 @@ func TestTwoTransitionsBeforeTheSlotLeaveTheLaterStartAppendOnly(t *testing.T) {
 // issue that took a new creation time would go to the back of the line for finishing a phase,
 // behind issues that came to wait after it.
 func TestASecondTransitionBeforeTheSlotKeepsTheIssuesPlaceInTheWaitingLine(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	const ahead, behind = "LEGION-100", "LEGION-300"

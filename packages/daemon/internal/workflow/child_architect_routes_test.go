@@ -20,6 +20,7 @@ import (
 // message is queued on the child either way. A child in accepting with no plan rows, whose
 // acceptance is its architect's own, tells that architect once.
 func TestASettlementOfAChildTellsTheArchitectThatOwnsIt(t *testing.T) {
+	t.Parallel()
 	const root, child = "LEGION-208", "LEGION-209"
 	token := func(issue string, role claim.Role) string {
 		t.Helper()
@@ -86,6 +87,7 @@ func TestASettlementOfAChildTellsTheArchitectThatOwnsIt(t *testing.T) {
 // of the root reaches that child's architect while it holds its role, and a child released under
 // the root reaches the root's.
 func TestAChildNotRecordedIsToldOnItsRecordedParent(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, parent string
 	}{

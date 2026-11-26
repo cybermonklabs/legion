@@ -48,10 +48,6 @@
         "since": 46
       },
       {
-        "value": "step",
-        "since": 258
-      },
-      {
         "value": "testing",
         "since": 46
       },
@@ -158,204 +154,6 @@
       {
         "value": "working",
         "since": 46
-      }
-    ]
-  },
-  {
-    "answer": "state",
-    "keyPath": "issues.*.otherClaims.*.claim.state",
-    "values": [
-      {
-        "value": "failed",
-        "since": 259
-      },
-      {
-        "value": "idle",
-        "since": 259
-      },
-      {
-        "value": "launch_uncertain",
-        "since": 259
-      },
-      {
-        "value": "launching",
-        "since": 259
-      },
-      {
-        "value": "queued",
-        "since": 259
-      },
-      {
-        "value": "ready",
-        "since": 259
-      },
-      {
-        "value": "registered",
-        "since": 259
-      },
-      {
-        "value": "retired",
-        "since": 259
-      },
-      {
-        "value": "shim_connected",
-        "since": 259
-      },
-      {
-        "value": "suspended",
-        "since": 259
-      },
-      {
-        "value": "working",
-        "since": 259
-      }
-    ]
-  },
-  {
-    "answer": "state",
-    "keyPath": "issues.*.otherClaims.*.claim.updateState",
-    "values": [
-      {
-        "value": "answered",
-        "since": 259
-      },
-      {
-        "value": "asked",
-        "since": 259
-      },
-      {
-        "value": "none",
-        "since": 259
-      },
-      {
-        "value": "open",
-        "since": 259
-      }
-    ]
-  },
-  {
-    "answer": "state",
-    "keyPath": "issues.*.otherClaims.*.claim.failure.cause",
-    "values": [
-      {
-        "value": "died",
-        "since": 259
-      },
-      {
-        "value": "launch_refused",
-        "since": 259
-      },
-      {
-        "value": "never_registered",
-        "since": 259
-      },
-      {
-        "value": "prompt_retires_exhausted",
-        "since": 259
-      },
-      {
-        "value": "provider_error",
-        "since": 259
-      },
-      {
-        "value": "stale_plugin",
-        "since": 259
-      },
-      {
-        "value": "unrecorded",
-        "since": 259
-      }
-    ]
-  },
-  {
-    "answer": "state",
-    "keyPath": "issues.*.otherClaims.*.claim.pendingCause",
-    "values": [
-      {
-        "value": "died",
-        "since": 259
-      },
-      {
-        "value": "launch_refused",
-        "since": 259
-      },
-      {
-        "value": "never_registered",
-        "since": 259
-      },
-      {
-        "value": "prompt_retires_exhausted",
-        "since": 259
-      },
-      {
-        "value": "provider_error",
-        "since": 259
-      },
-      {
-        "value": "stale_plugin",
-        "since": 259
-      },
-      {
-        "value": "unrecorded",
-        "since": 259
-      }
-    ]
-  },
-  {
-    "answer": "state",
-    "keyPath": "issues.*.otherClaims.*.claim.pendingTask.phase",
-    "values": [
-      {
-        "value": "accepting",
-        "since": 259
-      },
-      {
-        "value": "admitted",
-        "since": 259
-      },
-      {
-        "value": "awaiting_person",
-        "since": 259
-      },
-      {
-        "value": "done",
-        "since": 259
-      },
-      {
-        "value": "held",
-        "since": 259
-      },
-      {
-        "value": "implementing",
-        "since": 259
-      },
-      {
-        "value": "integrating",
-        "since": 259
-      },
-      {
-        "value": "merging",
-        "since": 259
-      },
-      {
-        "value": "planning",
-        "since": 259
-      },
-      {
-        "value": "retro",
-        "since": 259
-      },
-      {
-        "value": "reviewing",
-        "since": 259
-      },
-      {
-        "value": "step",
-        "since": 259
-      },
-      {
-        "value": "testing",
-        "since": 259
       }
     ]
   },
@@ -651,24 +449,6 @@
   },
   {
     "answer": "state",
-    "keyPath": "strandedClaims.*.state",
-    "values": [
-      {
-        "value": "failed",
-        "since": 46
-      },
-      {
-        "value": "retired",
-        "since": 56
-      },
-      {
-        "value": "suspended",
-        "since": 46
-      }
-    ]
-  },
-  {
-    "answer": "state",
     "keyPath": "strandedClaims.*.role",
     "values": [
       {
@@ -695,8 +475,25 @@
         "value": "tester",
         "since": 46
       }
-    ],
-    "until": 258
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "strandedClaims.*.state",
+    "values": [
+      {
+        "value": "failed",
+        "since": 46
+      },
+      {
+        "value": "retired",
+        "since": 56
+      },
+      {
+        "value": "suspended",
+        "since": 46
+      }
+    ]
   },
   {
     "answer": "state",
@@ -726,8 +523,7 @@
         "value": "tester",
         "since": 53
       }
-    ],
-    "until": 258
+    ]
   },
   {
     "answer": "state",
@@ -757,8 +553,7 @@
         "value": "tester",
         "since": 178
       }
-    ],
-    "until": 258
+    ]
   },
   {
     "answer": "state",
@@ -943,10 +738,6 @@
       {
         "value": "reviewing",
         "since": 75
-      },
-      {
-        "value": "step",
-        "since": 258
       },
       {
         "value": "testing",
@@ -1139,10 +930,6 @@
         "since": 75
       },
       {
-        "value": "step",
-        "since": 258
-      },
-      {
         "value": "testing",
         "since": 75
       }
@@ -1195,10 +982,6 @@
       {
         "value": "reviewing",
         "since": 75
-      },
-      {
-        "value": "step",
-        "since": 258
       },
       {
         "value": "testing",
@@ -1437,10 +1220,6 @@
         "since": 46
       },
       {
-        "value": "step",
-        "since": 258
-      },
-      {
         "value": "testing",
         "since": 46
       },
@@ -1547,204 +1326,6 @@
       {
         "value": "working",
         "since": 46
-      }
-    ]
-  },
-  {
-    "answer": "issue-record",
-    "keyPath": "otherClaims.*.claim.state",
-    "values": [
-      {
-        "value": "failed",
-        "since": 259
-      },
-      {
-        "value": "idle",
-        "since": 259
-      },
-      {
-        "value": "launch_uncertain",
-        "since": 259
-      },
-      {
-        "value": "launching",
-        "since": 259
-      },
-      {
-        "value": "queued",
-        "since": 259
-      },
-      {
-        "value": "ready",
-        "since": 259
-      },
-      {
-        "value": "registered",
-        "since": 259
-      },
-      {
-        "value": "retired",
-        "since": 259
-      },
-      {
-        "value": "shim_connected",
-        "since": 259
-      },
-      {
-        "value": "suspended",
-        "since": 259
-      },
-      {
-        "value": "working",
-        "since": 259
-      }
-    ]
-  },
-  {
-    "answer": "issue-record",
-    "keyPath": "otherClaims.*.claim.updateState",
-    "values": [
-      {
-        "value": "answered",
-        "since": 259
-      },
-      {
-        "value": "asked",
-        "since": 259
-      },
-      {
-        "value": "none",
-        "since": 259
-      },
-      {
-        "value": "open",
-        "since": 259
-      }
-    ]
-  },
-  {
-    "answer": "issue-record",
-    "keyPath": "otherClaims.*.claim.failure.cause",
-    "values": [
-      {
-        "value": "died",
-        "since": 259
-      },
-      {
-        "value": "launch_refused",
-        "since": 259
-      },
-      {
-        "value": "never_registered",
-        "since": 259
-      },
-      {
-        "value": "prompt_retires_exhausted",
-        "since": 259
-      },
-      {
-        "value": "provider_error",
-        "since": 259
-      },
-      {
-        "value": "stale_plugin",
-        "since": 259
-      },
-      {
-        "value": "unrecorded",
-        "since": 259
-      }
-    ]
-  },
-  {
-    "answer": "issue-record",
-    "keyPath": "otherClaims.*.claim.pendingCause",
-    "values": [
-      {
-        "value": "died",
-        "since": 259
-      },
-      {
-        "value": "launch_refused",
-        "since": 259
-      },
-      {
-        "value": "never_registered",
-        "since": 259
-      },
-      {
-        "value": "prompt_retires_exhausted",
-        "since": 259
-      },
-      {
-        "value": "provider_error",
-        "since": 259
-      },
-      {
-        "value": "stale_plugin",
-        "since": 259
-      },
-      {
-        "value": "unrecorded",
-        "since": 259
-      }
-    ]
-  },
-  {
-    "answer": "issue-record",
-    "keyPath": "otherClaims.*.claim.pendingTask.phase",
-    "values": [
-      {
-        "value": "accepting",
-        "since": 259
-      },
-      {
-        "value": "admitted",
-        "since": 259
-      },
-      {
-        "value": "awaiting_person",
-        "since": 259
-      },
-      {
-        "value": "done",
-        "since": 259
-      },
-      {
-        "value": "held",
-        "since": 259
-      },
-      {
-        "value": "implementing",
-        "since": 259
-      },
-      {
-        "value": "integrating",
-        "since": 259
-      },
-      {
-        "value": "merging",
-        "since": 259
-      },
-      {
-        "value": "planning",
-        "since": 259
-      },
-      {
-        "value": "retro",
-        "since": 259
-      },
-      {
-        "value": "reviewing",
-        "since": 259
-      },
-      {
-        "value": "step",
-        "since": 259
-      },
-      {
-        "value": "testing",
-        "since": 259
       }
     ]
   },
@@ -2087,10 +1668,6 @@
         "since": 75
       },
       {
-        "value": "step",
-        "since": 258
-      },
-      {
         "value": "testing",
         "since": 75
       }
@@ -2281,10 +1858,6 @@
         "since": 75
       },
       {
-        "value": "step",
-        "since": 258
-      },
-      {
         "value": "testing",
         "since": 75
       }
@@ -2337,10 +1910,6 @@
       {
         "value": "reviewing",
         "since": 75
-      },
-      {
-        "value": "step",
-        "since": 258
       },
       {
         "value": "testing",
@@ -2474,8 +2043,7 @@
         "value": "tester",
         "since": 46
       }
-    ],
-    "until": 258
+    ]
   },
   {
     "answer": "intake-replay",

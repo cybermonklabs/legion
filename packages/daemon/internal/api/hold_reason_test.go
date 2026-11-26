@@ -106,7 +106,7 @@ func recordHoldServed(t *testing.T, handler http.Handler, key string, contract i
 func TestAnOlderCallerIsServedNoNewHoldReason(t *testing.T) {
 	const remote = "192.0.2.1:41000"
 	state := heldIssues(t)
-	handler := stateServer(t, state, podClaims(DaemonAPIVersion))
+	handler := stateServer(t, state, podClaims(DaemonAPIVersion()))
 	newer := map[string][2]string{
 		taskStoppedIssue: {"task-stopped", "testing"},
 		childrenIssue:    {"children", "retro"},
@@ -183,7 +183,7 @@ func TestAnOlderCallerReadsTheNewHeldWordsAsUnclassified(t *testing.T) {
 	if golden == 0 {
 		t.Fatal("the state golden holds no held row, so nothing here shows a row of another word served as it stands")
 	}
-	handler := stateServer(t, state, podClaims(DaemonAPIVersion))
+	handler := stateServer(t, state, podClaims(DaemonAPIVersion()))
 
 	at := heldRowsServed(t, stateStating(t, handler, remote, OwnerPlanContract))
 	if row := at[childrenIssue]; row["reason"] != string(record.HeldChildrenBeforeRetro) || !reflect.DeepEqual(row["heldBy"], []any{beneath}) {

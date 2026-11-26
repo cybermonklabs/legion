@@ -50,11 +50,11 @@ const idleRigSessionForgotten = "api: a fresh session left the claim's recorded 
 // real Envoy listener (idle_rig_test.go says where each part comes from).
 //
 // Each subtest takes one issue of the rig and runs the same three acts on it: an operator stops
-// its one role, which retires the claim and leaves a pod of 3 CPU and 19 GiB with nobody in it;
-// the daemon's own pass releases that pod, changing no claim; and one of the starts that build
-// such a pod again is made. The three subtests are the three of them the daemon has: the
-// operator's retry, which resumes the claim's recorded session; the same retry with
-// `--fresh-session`, which leaves that session behind; and the start the daemon queues for a
+// its one role, which retires the claim and leaves a pod and its reservation (2 CPU and 8 GiB at
+// the defaults) with nobody in it; the daemon's own pass releases that pod, changing no claim; and
+// one of the starts that build such a pod again is made. The three subtests are the three of them
+// the daemon has: the operator's retry, which resumes the claim's recorded session; the same retry
+// with `--fresh-session`, which leaves that session behind; and the start the daemon queues for a
 // phase worker itself.
 //
 // Every pass here is made with the listener gate shut (idleWakeRig.keepListenerGateShut), which is
@@ -305,8 +305,8 @@ func idleRigPodMadeAgain(t *testing.T, rig *idleWakeRig, issue idleRigIssue, reg
 // the claim reads retired holding no process. That leaves the pod this rule is for: its one
 // claim is in one of the three states no role can take a turn from, and nothing of the daemon's
 // starts such a worker again (TestAnOperatorsStopOfASlottedWorkerHolds). The pod, its disk and
-// its Sandbox stand, with 3 CPU and 19 GiB reserved and nobody in them, which is what the
-// release takes.
+// its Sandbox stand, with the pod's reservation (2 CPU and 8 GiB at the defaults) held and nobody
+// in them, which is what the release takes.
 func (r *idleWakeRig) stopRole(issue idleRigIssue) {
 	r.t.Helper()
 	token := r.token(issue)

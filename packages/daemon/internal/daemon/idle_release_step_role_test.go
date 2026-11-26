@@ -45,6 +45,7 @@ func TestAnIdleReleaseAtAStepReadsThroughTheRoleOfTheStep(t *testing.T) {
 		} {
 			t.Run(w.name+"/"+c.name, func(t *testing.T) {
 				c.view.Issue, c.view.Tree, c.view.Generation, c.view.Root.Generation = "LEGION-1", "LEGION-1", 2, 1
+				c.view.Project = "legion"
 				decision := w.decision
 				for _, role := range c.live {
 					decision.Claims = append(decision.Claims, store.ReleasedClaim{Token: mustClaimToken(t, c.view.Issue, role), Role: role})

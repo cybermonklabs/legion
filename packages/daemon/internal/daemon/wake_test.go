@@ -298,7 +298,7 @@ func armedAtRelease(t *testing.T, key string, stands phase.Phase, at int, steps 
 			Issue: key, Role: c.role, TreeEpoch: 1, Generation: 2, ServingGeneration: c.serving,
 			State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
 			Session: "ses-" + string(c.role), SessionFile: "/tmp/" + string(c.role) + ".jsonl",
-			PluginContract: api.DaemonAPIVersion}); err != nil {
+			PluginContract: api.DaemonAPIVersion()}); err != nil {
 			t.Fatalf("seed the released %s: %v", c.role, err)
 		}
 	}

@@ -134,8 +134,8 @@ soon as its filed version has your approving spec review and you have given it i
 its `--blocked-by` links name close), and adjust open children when closures change your
 decomposition. Release a child that builds on another repository's change only after that pull
 request merges (`skill://legion-architect/references/decomposition.md`, "Across repositories").
-Your issue's own first phase has already started when you start, so a child you file
-runs beside your issue's own work. Your issue's acceptance, or its retro where its task ends with
+When you start, your issue is in a phase, and that phase's agent is at work or starts just after you. So
+a child you file runs beside your issue's own work. Your issue's acceptance, or its retro where its task ends with
 no acceptance step, then waits for them to leave the workflow. Its acceptance passes in its last
 round: your sign-off where the acceptance is yours, or the verdict of a fresh agent of
 `acceptance`. `skill://legion-architect/references/acceptance.md`, "The last round", says what

@@ -16,11 +16,11 @@ import (
 // (claim.IsRole, which refuses the controller). The fresh session and the
 // compaction take the same members, so they take one type (controllerClaim).
 //
-// Claim, from contract 259, names the claim by its token: two claims of one issue can hold one role
-// (record.WorkerClaim), and the issue and the role reach the one that works the role's step, while
-// a notice of provider errors can name the other. It must be a claim of Issue that holds Role.
-// Without it the request reaches the worker on the role's step, as it did before 259; a daemon
-// below 259 refuses the member as unknown.
+// Claim, from the stranded token's entry (strandedTokenContract), names the claim by its token:
+// two claims of one issue can hold one role (record.WorkerClaim), and the issue and the role
+// reach the one that works the role's step, while a notice of provider errors can name the other.
+// It must be a claim of Issue that holds Role. Without it the request reaches the worker on the
+// role's step, as it did before that entry; a daemon below it refuses the member as unknown.
 type ClaimRequest struct {
 	GrantID string `json:"grantId"`
 	Issue   string `json:"issue"`
@@ -161,10 +161,10 @@ type controllerTarget struct {
 }
 
 // controllerClaim is the door both of the controller's claim recoveries come through
-// (claimFreshSession, claimCompact): the claim is named by its issue and role, and from contract
-// 259 by its token too, and the caller is its project's controller rather than the operator. It
-// answers every refusal of the body, the grant and the lookup itself, and reports false when it
-// has; only the effect behind it differs between the two.
+// (claimFreshSession, claimCompact): the claim is named by its issue and role, and from the
+// stranded token's entry by its token too, and the caller is its project's controller rather than
+// the operator. It answers every refusal of the body, the grant and the lookup itself, and reports
+// false when it has; only the effect behind it differs between the two.
 //
 // The controller is refused its own claim here and nowhere else: the token is the claim of the
 // agent that works the role's step of the issue (workerToken), which the issue's role names, or
@@ -930,7 +930,7 @@ func (s *server) refusedAfterTheStop(w http.ResponseWriter, r *http.Request, m *
 	}
 	s.operatorFailure(w, r, step.request, token, err)
 	s.log.Info(servedTheStopAsAFailure, "caller", r.RemoteAddr, "pod", at.pod,
-		"pluginContract", at.restore, "daemonApiVersion", DaemonAPIVersion, "follows", followsRestore,
+		"pluginContract", at.restore, "daemonApiVersion", DaemonAPIVersion(), "follows", followsRestore,
 		"claim", token, "request", step.request, "served", servedTheRefusedStep)
 	return 0, "", false, false
 }

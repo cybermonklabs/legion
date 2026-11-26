@@ -77,7 +77,7 @@ func (r *ownerStepsRig) relaunchedAs(c *stepClaimant, before int, role claim.Rol
 	r.built.mu.Unlock()
 	sh := helloAcked(t, address, launch.BootToken)
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: sessionFile(c), AgentID: c.session, PluginContract: api.DaemonAPIVersion,
+		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: sessionFile(c), AgentID: c.session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s in its session %s = %d %s, want 200", c.token, c.session, status, body)

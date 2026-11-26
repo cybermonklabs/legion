@@ -43,6 +43,7 @@ import (
 // neither number, so the line never names one, and neither does an issue held from step, which
 // names its step's role and carries no number.
 func TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	now := time.Now().UTC()
 	at := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339Nano) }
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +

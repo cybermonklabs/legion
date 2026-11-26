@@ -40,19 +40,20 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
    - A check carrying `ci_check` is CI's: its derived result is the pass it needs (`skill://legion-worker/references/ci-checks.md`).
      A `ci_check` check has no pass standing at that head when its derived result is a fail, its run concluded `skipped`, `neutral` or `cancelled`, or it names a job held back without its label, whose run is `absent` or `skipped` until the label is on.
      A run that has not concluded, or one GitHub could not be read for, is neither a pass nor a fail yet.
-     Never wait for, watch or poll it.
-     Name each run that has not concluded in step 5's `Runs still going` line, and go on.
-     Send any other name that no run answers (`absent`), or a `run` that is a whole test suite, to the architect as a finding.
-     The check's words are wrong.
+     Never wait for, watch or poll it, as your role prompt says of CI.
+     Name each run not concluded, with the time you read it, in step 5's `Runs still going` line, and go on.
+     When CI settles, the daemon tells the architect and the worker of the phase the issue then stands in.
+     Send any other name no run answers (`absent`) to the architect as a finding: the check's words are wrong.
      Neither that run nor that finding moves the issue back.
      A `no_head` check can never pass: it is a defect, held as *When retro stops* says.
 
    - A `ci_check` check whose derived result is a fail is the merger's: the change passed every step of its task, and the merger decides at the merge whether the base or the change broke it.
      Name it in your retro message and complete.
 
-   - Any other check with no pass standing, or a check with no `ci_check` whose only evidence is a unit suite: `request_backward_move` it.
-     Use `to: implementing` for the implementer's result, or `to: testing` for the tester's result.
-     Do so where the task has that step, else send it to the architect.
+   - A check whose `run` is a whole test suite has wrong words: send it to the architect as a finding, not the work back.
+
+   - Any other check with no pass standing: `request_backward_move` it.
+     Use `to: implementing` for the implementer's result or `to: testing` for the tester's, where the task has that step, else send it to the architect.
      Name the check's block id in the reason.
 
    - With no reviewer step and a pull request, list the unresolved bot threads and answer the ones you find, as `skill://legion-worker/references/review-threads.md` says.

@@ -161,9 +161,13 @@ func stepRecordFields(r StepRecord) string {
 	if r.PlanRating != nil {
 		rating = fmt.Sprintf("%d %q", r.PlanRating.Rating, r.PlanRating.Reason)
 	}
-	return fmt.Sprintf("{id %s task %q step %d kind %q role %q type %q agent %q generation %d session %s model %s started %s ended %s result %s returned_to %s report %s rating %s}",
+	variant := "<absent>"
+	if r.StepExperiment != nil {
+		variant = fmt.Sprintf("%q %q", r.StepExperiment.Experiment, r.StepExperiment.Variant)
+	}
+	return fmt.Sprintf("{id %s task %q step %d kind %q role %q type %q agent %q generation %d session %s model %s started %s ended %s result %s returned_to %s report %s rating %s variant %s}",
 		r.ID, r.Task, r.Step, r.Kind, r.Role, r.Type, r.Agent, r.Generation, text(r.Session), text(r.Model),
-		at(r.StartedAt), at(r.EndedAt), text(r.Result), number(r.ReturnedTo), text(r.Report), rating)
+		at(r.StartedAt), at(r.EndedAt), text(r.Result), number(r.ReturnedTo), text(r.Report), rating, variant)
 }
 
 // A record the workflow builds without its id or its identity is a defect of the daemon, refused
@@ -261,6 +265,69 @@ func TestARetrosRatingIsTakenWithItsReasonOrNotAtAll(t *testing.T) {
 			tc.change(&record)
 			if _, err := NewOutboxRow("LEG-1", record, time.Now()); err == nil || !strings.Contains(err.Error(), "its reason or neither") {
 				t.Fatalf("NewOutboxRow = %v, want a refusal naming %q", err, "its reason or neither")
+			}
+		})
+	}
+}
+
+// The experiment a draw put a record's issue in and the variant it drew are one value, as a
+// rating and its reason are: a write names both or neither. A record naming one alone is a defect
+// of the daemon, refused where it is queued and where a stored row is read, rather than found by
+// Dispatch's refusal after the work it records went on. A record naming both is queued with the two
+// members beside its other fields, and that payload, read back, is the record; a record naming
+// neither is queued as the payload the stored rows already hold.
+func TestAStepRecordsExperimentIsTakenWithItsVariantOrNotAtAll(t *testing.T) {
+	start := StepRecord{ID: stepRecordID, Task: "default", Step: 2, Kind: "step", Role: "implementer",
+		Type: "implementation", Agent: "legion-leg-leg-1-implementer", Generation: 1}
+	identity := `{"id":"` + stepRecordID + `","task":"default","step":2,"kind":"step","role":"implementer",` +
+		`"type":"implementation","agent":"legion-leg-leg-1-implementer","generation":1`
+	named := start
+	named.StepExperiment = &StepExperiment{Experiment: "planning", Variant: "b"}
+	for _, tc := range []struct {
+		name   string
+		record StepRecord
+		stored string
+	}{
+		{name: "a start that names no experiment", record: start, stored: identity + `}`},
+		{name: "a start that names the experiment with its variant", record: named,
+			stored: identity + `,"experiment":"planning","variant":"b"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row, err := NewOutboxRow("LEG-1", tc.record, time.Now())
+			if err != nil {
+				t.Fatalf("the record was refused: %v", err)
+			}
+			if string(row.Payload) != tc.stored {
+				t.Fatalf("the record is queued as %s, want %s", row.Payload, tc.stored)
+			}
+			decoded, err := DecodeOutboxPayload(OutboxRow{ID: 71, Kind: OutboxKindStepRecord, Payload: json.RawMessage(tc.stored)})
+			if err != nil {
+				t.Fatalf("the stored payload was refused: %v", err)
+			}
+			got, ok := decoded.(StepRecord)
+			if !ok || stepRecordFields(got) != stepRecordFields(tc.record) {
+				t.Fatalf("the stored payload reads as %T %+v, want %s", decoded, decoded, stepRecordFields(tc.record))
+			}
+		})
+	}
+	const reason = "its variant or neither"
+	for _, tc := range []struct {
+		name   string
+		pair   StepExperiment
+		stored string
+	}{
+		{name: "an experiment without its variant", pair: StepExperiment{Experiment: "planning"}, stored: identity + `,"experiment":"planning"}`},
+		{name: "a variant without its experiment", pair: StepExperiment{Variant: "b"}, stored: identity + `,"variant":"b"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			record := start
+			record.StepExperiment = &tc.pair
+			if _, err := NewOutboxRow("LEG-1", record, time.Now()); err == nil || !strings.Contains(err.Error(), reason) {
+				t.Errorf("NewOutboxRow = %v, want a refusal naming %q", err, reason)
+			}
+			_, err := DecodeOutboxPayload(OutboxRow{ID: 72, Kind: OutboxKindStepRecord, Payload: json.RawMessage(tc.stored)})
+			if err == nil || !strings.Contains(err.Error(), reason) {
+				t.Errorf("DecodeOutboxPayload(%s) = %v, want a refusal naming %q", tc.stored, err, reason)
 			}
 		})
 	}

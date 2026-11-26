@@ -11,7 +11,7 @@ body: |-
   after its agents push, and the new agent's start waits for that round. A launch whose issue's
   plan cannot be read builds the slots of its roles and of its own claim instead of failing, and
   the update round reads each issue's plan once a sweep. Migration
-  `20261125053850_claim_session_agent` adds `claims.session_agent`, and records on each claim the
+  `20261125114600_claim_session_agent` adds `claims.session_agent`, and records on each claim the
   release before made the agent that ran on it last, else the agent the plan's rows give its name
   last, so a key keeps its name and its session after later versions of the plan leave the key
   out, and a new agent given a name starts in a session of its own. Before a rollback, finish or stop

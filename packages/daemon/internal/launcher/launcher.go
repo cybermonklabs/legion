@@ -24,8 +24,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/memoryguard"
@@ -301,9 +299,11 @@ func serveVolumeTrim(ctx context.Context, m *manager, guard *pidGuard) <-chan st
 	return done
 }
 
-// podTrimmer is the trimmer's own loop, a package variable for the reason readVolumeUsage is one
-// (volumeusage.go): a test drives the trimmer the launcher built — its tree, its /proc,
-// its clock and its ticker — and watches the very loop Run waits on return.
+// podTrimmer is the trimmer's own loop, a package variable so a test can drive the trimmer the
+// launcher built — its tree, its volume reading, its /proc, its clock and its ticker — and watch
+// the very loop Run waits on return. Only a launcher taken for the container's first process
+// (containerInit) reads it, and only a test that runs alone makes a launcher one
+// (useContainerInit).
 var podTrimmer = func(ctx context.Context, trim *trimmer) { trim.run(ctx) }
 
 // newManagers is one manager per role the launcher serves, each with its own token, private
@@ -1026,7 +1026,7 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 		return abandon(err)
 	}
 	recreated := false
-	var sessions *pgx.Conn
+	var sessions *ompsessions.Conn
 	if command.ResumeFile != "" {
 		if recreated, sessions, err = resumable(ctx, env, command.ResumeFile, clientURL, m.stderr); err != nil {
 			return abandon(err)
@@ -1620,7 +1620,7 @@ func endSession(proxy *sessionproxy.Proxy, dir string) {
 // only what was pushed. A workspace with no record, or a child with no workspace (the controller),
 // was not. A record that cannot be read, which an init container killed mid-write can leave, only
 // decides that notice: it is written to log and taken as no record, and the resume goes ahead.
-func resumable(ctx context.Context, env []string, file, clientURL string, log io.Writer) (recreated bool, conn *pgx.Conn, err error) {
+func resumable(ctx context.Context, env []string, file, clientURL string, log io.Writer) (recreated bool, conn *ompsessions.Conn, err error) {
 	sessions, err := newSessionDial(env, clientURL)
 	if err != nil {
 		return false, nil, fmt.Errorf("resume session %s: %w: %v", file, shimwire.SessionStoreUnreachable, err)
@@ -1647,10 +1647,10 @@ func resumable(ctx context.Context, env []string, file, clientURL string, log io
 // the child's Oh My Pi keeps it in (resumable) through a connection sessions dials, which it returns
 // open. A table that could not be asked at all is shimwire.SessionStoreUnreachable; a session the
 // table answers it does not hold is shimwire.SessionGone, refused at once.
-func sessionWritten(parent context.Context, sessions sessionDial, file string) (time.Time, *pgx.Conn, error) {
+func sessionWritten(parent context.Context, sessions sessionDial, file string) (time.Time, *ompsessions.Conn, error) {
 	var written time.Time
 	var found bool
-	conn, err := sessions.dial(parent, func(ctx context.Context, conn *pgx.Conn) (err error) {
+	conn, err := sessions.dial(parent, func(ctx context.Context, conn *ompsessions.Conn) (err error) {
 		written, found, err = ompsessions.Written(ctx, conn, file)
 		return err
 	})
@@ -1677,7 +1677,7 @@ func sessionByID(ctx context.Context, env []string, id, clientURL string) (strin
 	}
 	var file string
 	var found bool
-	conn, err := sessions.dial(ctx, func(ctx context.Context, conn *pgx.Conn) (err error) {
+	conn, err := sessions.dial(ctx, func(ctx context.Context, conn *ompsessions.Conn) (err error) {
 		file, found, err = ompsessions.FindByID(ctx, conn, id)
 		return err
 	})

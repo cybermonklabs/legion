@@ -139,6 +139,7 @@ func marksConflicting(t *testing.T, pool *pgxpool.Pool, engine *Engine, head str
 // moves here only the review's request for changes opens one (recordRound): it is the only round,
 // and no move at the conflicting head makes a second.
 func TestEveryBackwardMoveIsCountedByItsPair(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	// The cap is set above every round this proof opens: what it posts is another test's subject
 	// (TestTheArchitectIsToldOncePerCapValue), and a cap reached here would say nothing about the
@@ -220,6 +221,7 @@ func reviewerMovesBack(t *testing.T, pool *pgxpool.Pool, engine *Engine, to phas
 // with a cap of 1, three such moves leave no round, no conflict round, no cap mark and no pr-blocked
 // notice.
 func TestAReviewersOwnMoveBackCountsItsPairAndNoReviewRound(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := workBackEngine(1)
 	seedWorkBackIssue(t, pool, headOne)
@@ -274,6 +276,7 @@ func testerMovesBack(t *testing.T, pool *pgxpool.Pool, engine *Engine, key strin
 // walks today's line, where the tester's pass into reviewing counts nothing and the reviewer's
 // move back to testing counts reviewing-testing.
 func TestAReturnInAnyOrderCountsItsPair(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	root := stepRoot(t, pool, phase.Admitted)
@@ -314,6 +317,7 @@ func TestAReturnInAnyOrderCountsItsPair(t *testing.T) {
 // forward pair of phase.Order among them: `testing-reviewing=4`. The fifth move is the tester's
 // move back to reviewing, which the prompt names.
 func TestAHookNamesAMoveOfAnyOrderAtItsFifthReturn(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)

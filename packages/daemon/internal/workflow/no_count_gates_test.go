@@ -52,6 +52,7 @@ func startWriteMark(t *testing.T, pool *pgxpool.Pool, id int64) int64 {
 // waiting line, and the owed row is what the next move's start replaces, so the work would wait
 // for the cap rather than for anything this proof is about.
 func TestNoCountGatesTheWork(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := workBackEngine(3, Hook{Name: "work-back", On: HookEventWorkBack, Every: 3,
 		Roles:  []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer},

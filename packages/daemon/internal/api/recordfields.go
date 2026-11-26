@@ -57,7 +57,7 @@ type RecordFieldDecision struct {
 // ClaimRecordFields is every field of `supervise.Claim`, in the order the record declares them.
 var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "Token", Column: ColumnAgents, Keys: []string{"token"},
-		Reason: "two claims of one issue can hold one role, so the issue and the role do not name a claim; both agent surfaces name each claim by its token (contract 259)"},
+		Reason: "two claims of one issue can hold one role, so the issue and the role do not name a claim; both agent surfaces name each claim by its token (the stranded token's contract entry)"},
 	{Field: "Project", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "Tree", Column: ColumnOperator, Keys: []string{"tree"},
 		Reason: "the operator's listing names each claim's tree; an agent reads it as its issue's own `tree`"},
@@ -125,6 +125,10 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "the supervisor's own accounting of one dead process: the record that keeps a second report of that process from being charged a second death"},
 	{Field: "UnrecordedRefusal", Column: ColumnOperator, Keys: []string{"unrecordedRefusal"},
 		Reason: "the store never writes it, so the state route would serve a constant for it while the operator route reads the live machine"},
+	{Field: "AwaitsPod", Column: ColumnWithheld,
+		Reason: "the update round's own reading of a claim that records no process, which the store never writes and a restart forgets; the claim's lastStartFailure names the same pod in the runtime's words"},
+	{Field: "RegisteredPods", Column: ColumnWithheld,
+		Reason: "the update round's own record of the pods an agent of the claim registered a session in, which only the claim's machine holds, in memory: the store never writes it, and a restart reads no pod of it back, only whether the stored claim shows a session it held, which leaves the set unknown"},
 	{Field: "PluginContract", Column: ColumnAgents, Keys: []string{"pluginContract"},
 		Reason: "the contract the claim's registration declared, which says what shape its seat parses this body with"},
 	{Field: "PluginRelaunchFor", Column: ColumnWithheld, Reason: BookkeepingReason},

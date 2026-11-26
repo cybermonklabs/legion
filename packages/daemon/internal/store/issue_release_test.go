@@ -75,6 +75,7 @@ func markReleaseOf(t *testing.T, store *Store, issue string, first, boundary, la
 // unreserved, a wait while one of the release's own role stops is unrun or a stored claim may
 // still hold a process. It then makes the release-only wait while its own workspace check is queued.
 func TestIssueReleaseAuthorizesAnIssueInTheWorkflowAndWaitsForAllStoredRoles(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		change    string
@@ -218,6 +219,7 @@ func TestIssueReleaseAuthorizesAnIssueInTheWorkflowAndWaitsForAllStoredRoles(t *
 // news in the pod that replaces this one. A phase start queued after it is the pod being used
 // again, and cancels the release as overtaken, as it does at a role stop.
 func TestTheTeardownIsCancelledByAPhaseStartQueuedAfterTheReleaseAndNotByAStartOfNewsAlone(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -285,6 +287,7 @@ func TestTheTeardownIsNotCancelledByAStartThatWaitsForItsPod(t *testing.T) {
 // what adding 'release' to both op fences buys. A release row below a close's own row makes the
 // close wait, exactly as one of its own suspends would.
 func TestACloseWaitsForAReleasesRoleStops(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openLingeringTree(t, st)
@@ -316,6 +319,7 @@ func TestACloseWaitsForAReleasesRoleStops(t *testing.T) {
 // CancelIssueRelease, which queues the resumes and deletes the mark together, and a mark
 // deleted here would leave a cancel that did not finish unreadable by the row's own retry.
 func TestTheReleasesBoundaryCancelsOnWorkThePodWasGivenAfterTheMark(t *testing.T) {
+	t.Parallel()
 	const first, boundary, last = 18, 20, 22
 	for _, tc := range []struct {
 		name      string
@@ -436,6 +440,7 @@ func releaseThroughTheStore(t *testing.T, st *Store, issue string) (first, bound
 // shows as a claim holding a process — cancels the whole release, because the check's read of the
 // workspace is older than what the pod has done since.
 func TestWorkThePodIsGivenAfterTheMarkCancelsTheReleaseAtItsBoundary(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		kind    string
@@ -505,6 +510,7 @@ func TestWorkThePodIsGivenAfterTheMarkCancelsTheReleaseAtItsBoundary(t *testing.
 // a claim whose last turn started after it cancels the release at the stop, as a turn in progress
 // does (releaseOvertaken). The control keeps the turn the mark was taken at, and the stop acts.
 func TestATurnBetweenTheMarkAndAStopCancelsTheRelease(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		later time.Duration
@@ -557,6 +563,7 @@ func TestATurnBetweenTheMarkAndAStopCancelsTheRelease(t *testing.T) {
 // and a claim whose last turn started after it cancels the release before any read
 // (releaseOvertaken). The control keeps the turn the mark was taken at, and the check acts.
 func TestAWorkspaceCheckOfAReleaseGivenWorkSinceItsMarkIsCancelled(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		later time.Duration
@@ -603,6 +610,7 @@ func TestAWorkspaceCheckOfAReleaseGivenWorkSinceItsMarkIsCancelled(t *testing.T)
 // suspend a claim of the live release, or tear its pod down with the workspace on its disk. The
 // mark holds the ids of its own rows, and a row outside them does nothing at all.
 func TestARowOfACancelledReleaseNeitherActsNorCancelsTheReleaseRunningNow(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -714,6 +722,7 @@ func startRows(t *testing.T, st *Store) []string {
 // `released` in a pod that still stands, which is what a resume that fails, or a daemon that
 // stops between the two, produces.
 func TestACancelKeepsTheMarkUntilItsResumesAreQueued(t *testing.T) {
+	t.Parallel()
 	const first, boundary, last = 18, 20, 22
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -777,6 +786,7 @@ func TestACancelKeepsTheMarkUntilItsResumesAreQueued(t *testing.T) {
 // already committed — writes nothing and answers Declined false, so no second row and no second
 // message is ever written for one release.
 func TestADeclineWritesItsRowAndItsMessageOnceWithTheCancel(t *testing.T) {
+	t.Parallel()
 	const first, boundary, last = 18, 20, 22
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -871,6 +881,7 @@ func TestADeclineWritesItsRowAndItsMessageOnceWithTheCancel(t *testing.T) {
 // (checked_at, started_row, pod_uid) and tells nobody. A check that finds other work replaces the
 // row at its own moment and tells the role again.
 func TestADeclineOfTheSameWorkKeepsItsMomentAndTellsNobody(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -947,6 +958,7 @@ func TestADeclineOfTheSameWorkKeepsItsMomentAndTellsNobody(t *testing.T) {
 // a check that declines it has nothing to cancel: DeclineLeftPodClose writes the decline row and
 // its message and touches no mark, under the same rule for the same work as a release's decline.
 func TestALeftPodCloseDeclineRecordsWithNoMark(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -1001,6 +1013,7 @@ func TestALeftPodCloseDeclineRecordsWithNoMark(t *testing.T) {
 // that finds that same work through that same role is no news: it keeps the moment, puts the
 // reason back and tells nobody.
 func TestADeclineToAnotherRoleIsToldAndAFailedReadKeepsTheWork(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -1090,6 +1103,7 @@ func TestADeclineToAnotherRoleIsToldAndAFailedReadKeepsTheWork(t *testing.T) {
 // keeps no work, so the idle view reads none (pods.IdleDecline.Work) and no rule holds the new pod
 // for it. A failed read in the same pod, or in a pod the runtime could not name, keeps the work.
 func TestAFailedReadInAnotherPodKeepsNoWork(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		pod  string
@@ -1136,6 +1150,7 @@ func TestAFailedReadInAnotherPodKeepsNoWork(t *testing.T) {
 // suspended set the teardown would wait on that claim for good — its stored claim may hold a
 // process, so the fence waits, and the mark it waits under keeps every idle tick off the pod.
 func TestAClaimTheReleaseSuspendedThatSomethingResumedOvertakesIt(t *testing.T) {
+	t.Parallel()
 	const first, boundary, last = 18, 20, 22
 	for _, tc := range []struct {
 		name  string
@@ -1193,6 +1208,7 @@ func TestAClaimTheReleaseSuspendedThatSomethingResumedOvertakesIt(t *testing.T) 
 // can hold claims an earlier release left: resuming those puts a role back into a pod that has
 // no work for it, with no wake, no task and no record of why it is there.
 func TestACancelResumesNoClaimAnEarlierReleaseSuspended(t *testing.T) {
+	t.Parallel()
 	const first, boundary, last = 18, 20, 22
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -1219,6 +1235,7 @@ func TestACancelResumesNoClaimAnEarlierReleaseSuspended(t *testing.T) {
 // claim, and a row of a release that is over writes nothing: it is the record of what this
 // release did, which the cancel and the release's own record are read from.
 func TestAReleasesMarkRecordsTheClaimsItsStopsSuspended(t *testing.T) {
+	t.Parallel()
 	const first, boundary, last = 18, 20, 22
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -1280,6 +1297,7 @@ func TestAReleasesMarkRecordsTheClaimsItsStopsSuspended(t *testing.T) {
 // The wake taken before the mark is the mark's own high-water, so a release is never cancelled
 // by a wake that was over before it began.
 func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// woken is a wake of the architect taken after this release's mark; late holds this
@@ -1372,6 +1390,7 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 // the root is parked while the check runs so the linger's rows are queued above the release's,
 // and the release's teardown is the next row of the lane.
 func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)

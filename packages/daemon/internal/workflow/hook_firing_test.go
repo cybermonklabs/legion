@@ -81,6 +81,7 @@ const (
 // issue has one and left out where it has none; and the words of each message the hook's own,
 // never Legion's shipped default.
 func TestAFiringReachesEachRoleItNames(t *testing.T) {
+	t.Parallel()
 	// The hook of the first three cases: one role named twice, which reaches that role once, and
 	// an every of 1, so the first move back of the issue fires it.
 	oneFiring := Hook{Name: "work-back", On: HookEventWorkBack, Every: 1,

@@ -162,6 +162,7 @@ func (move reviveMove) moved(t *testing.T, pool *pgxpool.Pool, engine *Engine, k
 // does the child's first phase start, which queues its architect's start whatever the claim's
 // state.
 func TestAChildsNextPhaseStartRestartsItsFailedArchitect(t *testing.T) {
+	t.Parallel()
 	for _, move := range []reviveMove{plannerCompletes, reviewerApproves} {
 		for _, tc := range []struct {
 			name   string

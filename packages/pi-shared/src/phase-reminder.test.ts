@@ -689,9 +689,10 @@ async function remindedAt(role: string, record: LegionIssue): Promise<boolean> {
   return reminded;
 }
 
-// Contract 302: the issue's `placeRole` names the claim that works its place, which neither the
-// phase nor `stepRole` names where a fresh agent of acceptance accepts, a role of the deployment
-// does the retro, or the owner does a step of a role. The record check reminds that claim alone.
+// The owner's step completion entry: the issue's `placeRole` names the claim that works its place,
+// which neither the phase nor `stepRole` names where a fresh agent of acceptance accepts, a role of
+// the deployment does the retro, or the owner does a step of a role. The record check reminds that
+// claim alone.
 test("the fresh agent of acceptance is reminded at accepting, where placeRole names it", async () => {
   const accepting = issueAt({ phase: "accepting", placeRole: "acceptance" });
   expect(await remindedAt("acceptance", accepting)).toBe(true);
@@ -714,9 +715,10 @@ test("a claim of the step's role is not reminded at a step placeRole gives the o
   expect(await remindedAt("checker", ownerStep)).toBe(false);
 });
 
-// A daemon below contract 302 serves no `placeRole`: the record check reads the phase, and
-// `stepRole` at `step`, as it did before that contract: a role of the deployment (contract 258) is
-// reminded at `step` while the step is its own, and not while another role's step runs.
+// A daemon below the owner's step completion entry serves no `placeRole`: the record check reads
+// the phase, and `stepRole` at `step`, as it did before that entry: a role of the deployment (the
+// deployment roles' contract entry) is reminded at `step` while the step is its own, and not while
+// another role's step runs.
 test("an issue with no placeRole is read by its phase, and by its stepRole at step", async () => {
   expect(await remindedAt("acceptance", issueAt({ phase: "accepting" }))).toBe(false);
   expect(await remindedAt("implementer", issueAt({ phase: "retro" }))).toBe(true);
@@ -725,12 +727,12 @@ test("an issue with no placeRole is read by its phase, and by its stepRole at st
   expect(await remindedAt("checker", issueAt({ phase: "step", stepRole: "linter" }))).toBe(false);
 });
 
-// Contract 259: two claims of one issue can hold one role — the agent implementer's claim on the
-// tester's step, beside the tester's own claim of an earlier version of the plan — and only the
-// worker on the role's step, the claim `workers.<role>.claim.token` names, works the phase. The
-// other claim of the role is not reminded, so it neither nudges a phase it does not work nor
-// reaches the architect as that role's worker. A record that names no token (a daemon below 259)
-// keeps the role's rule.
+// The stranded token's contract entry: two claims of one issue can hold one role — the agent
+// implementer's claim on the tester's step, beside the tester's own claim of an earlier version of
+// the plan — and only the worker on the role's step, the claim `workers.<role>.claim.token` names,
+// works the phase. The other claim of the role is not reminded, so it neither nudges a phase it
+// does not work nor reaches the architect as that role's worker. A record that names no token (a
+// daemon below that entry) keeps the role's rule.
 test("only the worker on its role's step is reminded, not another claim of that role", async () => {
   const worker = "legion-legion-legion-208-implementer";
   const own = "legion-legion-legion-208-tester";

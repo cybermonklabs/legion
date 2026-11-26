@@ -60,6 +60,7 @@ func assertDefaultPlan(t *testing.T, stored *record.StoredPlan, key string, gene
 // planner. An owner's plan whose one block names no steps stores the project's default steps under
 // the block's id, and the first step writes no default plan beside it.
 func TestAnIssueWithNoPlanStoresTheDefaultSteps(t *testing.T) {
+	t.Parallel()
 	t.Run("a project that names no default_steps stores today's line and starts planning", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -129,6 +130,7 @@ func TestAnIssueWithNoPlanStoresTheDefaultSteps(t *testing.T) {
 // and the notice name the plan it runs: the carried one. The twin: a child whose owner gave no
 // plan runs the default steps, from planning.
 func TestAnOwnersPlanStartsItsFirstStep(t *testing.T) {
+	t.Parallel()
 	const notTaken = "workflow: a plan of an earlier owner is not taken"
 
 	t.Run("a plan given at admitted starts its first step, and no planner", func(t *testing.T) {
@@ -238,6 +240,7 @@ func TestAnOwnersPlanStartsItsFirstStep(t *testing.T) {
 // same version is taken and its task starts. The twin: an issue that started its work before
 // the release, with no plan rows, is refused with that earlier release's text.
 func TestAnIssueOfThisReleaseJudgesALaterPlanAsALaterVersion(t *testing.T) {
+	t.Parallel()
 	t.Run("the default task running refuses it, and stopped takes it", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()

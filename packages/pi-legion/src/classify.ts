@@ -22,7 +22,7 @@ export function classifySession(env: NodeJS.ProcessEnv): LegionSessionKind {
   if (env.LEGION_ROLE === undefined) return { kind: "not-legion" };
 
   // A phase worker's role is one of Legion's six, the role acceptance, or a role of the deployment
-  // (contract 258) or of the plan.
+  // (the deployment roles' contract entry) or of the plan.
   if (!isStepRole(env.LEGION_ROLE)) {
     throw new Error(`LEGION_ROLE "${env.LEGION_ROLE}" is not a Legion role`);
   }

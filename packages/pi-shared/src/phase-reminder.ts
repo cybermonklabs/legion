@@ -256,22 +256,22 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * D5: this session's own issue record, read as `read_record` reads it, bounded. The reminder is
    * dropped when the record says this role no longer works the issue's place — the shape of a
    * worker that completed its phase from the shell instead of the tool. The role that works it is
-   * the record's `placeRole` where it names one (contract 302: the fresh agent of acceptance at
-   * `accepting`, the retro's agent at `retro`, and the architect at a step of its own, where no
-   * worker is reminded), and otherwise the phase's role, or at `step`, which no role's phase names,
-   * the issue's `stepRole`, a role of the deployment or of the plan — when another claim of this
-   * role works the role's step, and when the daemon has failed this claim, which is the daemon's own
-   * word that this process is finished. Two claims of one issue can hold one role (the daemon's
-   * `record.WorkerClaim`), and only the worker on the step, the claim the record names by its token
-   * under `workers` (contract 259), works the phase: the other claim is not reminded, so it never
-   * reaches the architect as that role's worker. A record that names no token, from a daemon below
-   * 259, keeps the role's rule. A claim the daemon failed runs no further turn in this process — its
-   * retry relaunches this session in a new process, or starts a new session once the daemon's
-   * `forgetSession` (its supervise package) has dropped this one — and a reminder written now
-   * reaches nobody who can act on it. That is what stops Claude Code's reminder, which has no
-   * refused-turn settle of its own for a turn the provider never answered. Everything else fails
-   * open and is logged at debug: an unreachable daemon is exactly when a stalled worker must still
-   * be nudged.
+   * the record's `placeRole` where it names one (the owner's step completion entry: the fresh agent
+   * of acceptance at `accepting`, the retro's agent at `retro`, and the architect at a step of its
+   * own, where no worker is reminded), and otherwise the phase's role, or at `step`, which no role's
+   * phase names, the issue's `stepRole`, a role of the deployment or of the plan — when another
+   * claim of this role works the role's step, and when the daemon has failed this claim, which is
+   * the daemon's own word that this process is finished. Two claims of one issue can hold one role
+   * (the daemon's `record.WorkerClaim`), and only the worker on the step, the claim the record names
+   * by its token under `workers` (the stranded token's contract entry), works the phase: the other
+   * claim is not reminded, so it never reaches the architect as that role's worker. A record that
+   * names no token, from a daemon below that entry, keeps the role's rule. A claim the daemon failed
+   * runs no further turn in this process — its retry relaunches this session in a new process, or
+   * starts a new session once the daemon's `forgetSession` (its supervise package) has dropped this
+   * one — and a reminder written now reaches nobody who can act on it. That is what stops Claude
+   * Code's reminder, which has no refused-turn settle of its own for a turn the provider never
+   * answered. Everything else fails open and is logged at debug: an unreachable daemon is exactly
+   * when a stalled worker must still be nudged.
    */
   const recordCheck = async (): Promise<RecordCheck> => {
     const claim = deps.claim();

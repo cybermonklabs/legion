@@ -135,7 +135,7 @@ import {
   phaseStallFile,
 } from "./legion-phase-hook"
 import {
-  executeLegionTool,
+  answerLegionTool,
   LEGION_TOOL_NAME,
   type LegionToolRuntime,
   legionToolDefinition,
@@ -521,6 +521,30 @@ export async function postDispatchReply(
   ).dispatch
   if (!config.enabled) throw new Error(config.error ?? config.notice)
   await postDeliveryReply(config, identity.id, delivery, result)
+}
+
+/**
+ * The Dispatch client a person's message, command, pick or BTW is accepted and read through
+ * (`UserTurnRouterOptions.dispatch`), bounded to `ms`, or undefined while nothing configures
+ * Dispatch. It trades under this session's id, as `postDispatchReply` does: no pod sets
+ * `AGENT_SECRETS_SESSION`, so a trade that named no session would write under none.
+ */
+export async function userTurnDispatchClient(
+  identity: SessionIdentity,
+  configFile: SessionConfigFile,
+  ms: number,
+): Promise<DispatchClient | undefined> {
+  const active = activeDispatchSettings(
+    (
+      await sessionDispatchSettings(configFile, process.env, {
+        cwd: identity.directory,
+        session: () => identity.id,
+      })
+    ).dispatch,
+  )
+  return active === null
+    ? undefined
+    : new DispatchClient(active.url, active.credential, fetch, { deadlineMs: ms })
 }
 
 /**
@@ -2652,17 +2676,15 @@ export async function runEnvoyChannelServer(): Promise<void> {
       }
       // The request's signal aborts on the client's notifications/cancelled, which ends a wait
       // for a restarting daemon.
-      const answer = await executeLegionTool(legionRuntime, request.params.arguments, extra.signal)
-      // A call that returned without throwing: a completion, and a backward move, which hands the
-      // issue to an earlier step of its task. Either way this session's phase is no longer open, and the
-      // reminder must stop — the same two operations the Oh My Pi host closes its phase on
-      // (`createLegionTool` in `packages/pi-legion/src/tools.ts`). `ready_for_update` ends no
-      // phase: it answers the pod's update message, and the worker then waits for its process to be
-      // replaced, so the `Stop` of the turn it answered in blocks nothing (`updateAnswered`,
-      // `./legion-phase-hook`), as the Oh My Pi host's `onUpdateAnswered` does.
-      const op = request.params.arguments?.["op"]
-      if (op === "handoff_complete" || op === "request_backward_move") phaseHook?.phaseClosed()
-      else if (op === "ready_for_update") phaseHook?.updateAnswered()
+      const answer = await answerLegionTool(
+        legionRuntime,
+        request.params.arguments ?? {},
+        {
+          phaseClosed: () => phaseHook?.phaseClosed(),
+          updateAnswered: () => phaseHook?.updateAnswered(),
+        },
+        extra.signal,
+      )
       return mcpResult(answer)
     }
     if (runtime === undefined)
@@ -2798,16 +2820,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
    */
   const router = (state: UserTurnState): UserTurnRouter => {
     const options: UserTurnRouterOptions = {
-      dispatch: async (ms) => {
-        const active = activeDispatchSettings(
-          (await sessionDispatchSettings(configFile, process.env, { cwd: directory })).dispatch,
-        )
-        return active === null
-          ? undefined
-          : new DispatchClient(active.url, active.credential, fetch, {
-              deadlineMs: ms,
-            })
-      },
+      dispatch: (ms) => userTurnDispatchClient(identity, configFile, ms),
       effortPicked: (effort) => agentStream?.pickedEffort(effort),
       refreshSettings: () => agentStream?.refresh(),
       reply: (delivery, result) => postDispatchReply(identity, configFile, delivery, result),

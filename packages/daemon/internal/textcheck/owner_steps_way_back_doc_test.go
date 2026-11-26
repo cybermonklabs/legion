@@ -6,8 +6,8 @@ package textcheck
 // rollback below the release whose owner does a step, reads no text outside its package:
 // owner_does_a_step_way_back_extract.txt, its copy of the guide's block of those statements,
 // stands in its own directory, and the second row below is what holds that copy to the guide.
-//ci:reads docs/kubernetes.md internal/textcheck/waiting_line_texts_test.go:498 reads it under ../../../.. for TestTheOwnerStepsWayBackIsOneTextInTheHeaderAndTheGuide (wayBackBlockOfTheGuide, way_back_doc_test.go:188)
-//ci:reads packages/daemon/internal/store/owner_does_a_step_way_back_extract.txt TestTheOwnerDoesAStepWayBackExtractIsTheGuidesBlock reads it as ../store/owner_does_a_step_way_back_extract.txt (quotedBody)
+//ci:reads docs/kubernetes.md `packages/daemon/internal/textcheck/waiting_line_texts_test.go#shippedText` reads it under ../../../.. for TestTheOwnerStepsWayBackIsOneTextInTheHeaderAndTheGuide (through `packages/daemon/internal/textcheck/way_back_doc_test.go#wayBackBlockOfTheGuide`)
+//ci:reads packages/daemon/internal/store/owner_does_a_step_way_back_extract.txt TestTheOwnerDoesAStepWayBackExtractIsTheGuidesBlock reads it as ../store/owner_does_a_step_way_back_extract.txt (through `packages/daemon/internal/textcheck/waiting_line_texts_test.go#quotedBody`)
 
 import "testing"
 

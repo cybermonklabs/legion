@@ -45,6 +45,7 @@ func runtimeWithRoleFiles(t *testing.T, files map[claim.Role][]string) *Runtime 
 // role it does not name runs exactly the process, in exactly the pod, a daemon without the key
 // gives it, and so does a named role's pod: its overlays ride the start command.
 func TestARoleIsToldItsOwnOverlaysAfterTheOperators(t *testing.T) {
+	t.Parallel()
 	with, without := runtimeWithRoleFiles(t, roleFiles), runtimeWithRoleFiles(t, nil)
 	operator := operatorPod().Env["PI_CONFIG_FILES"]
 	for _, tc := range []struct {
@@ -85,6 +86,7 @@ func TestARoleIsToldItsOwnOverlaysAfterTheOperators(t *testing.T) {
 // With no overlay in the operator's pod env, a named role's PI_CONFIG_FILES is its own overlays
 // alone.
 func TestARolesOwnOverlaysStandAloneWithoutTheOperators(t *testing.T) {
+	t.Parallel()
 	opts := testOptions()
 	opts.Pod = operatorPod()
 	opts.Pod.Env = nil
@@ -187,6 +189,7 @@ func TestAPlansRoleLaunchedIntoAKeptPodNamesNoneOfTheDeploymentRolesOverlays(t *
 // workflow's order, so it reads them in the mounts every pod carries; a deployment that names none
 // probes with the command it always had.
 func TestTheImageProbeIsToldEachRolesOwnOverlays(t *testing.T) {
+	t.Parallel()
 	command := func(r *Runtime) []string {
 		return containerNamed(t, r.probeManifest("legion-probe", ImageProbe{Contract: 5, RoleReferences: testRoleReferences}, time.Time{}).Spec.PodTemplate.Spec, probeContainer).Command
 	}
@@ -205,6 +208,7 @@ func TestTheImageProbeIsToldEachRolesOwnOverlays(t *testing.T) {
 // The probe pod's refusal line is the daemon's refusal, naming the role, the file and what to fix,
 // not the image's.
 func TestTheProbesRoleOverlayRefusalIsTheBootsRefusal(t *testing.T) {
+	t.Parallel()
 	r := runtimeWithRoleFiles(t, roleFiles)
 	pod := &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{{
 		Name: probeContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}},
@@ -220,6 +224,7 @@ func TestTheProbesRoleOverlayRefusalIsTheBootsRefusal(t *testing.T) {
 
 // New refuses role overlays no role of the pod, Legion's or the deployment's, or PI_CONFIG_FILES could carry.
 func TestNewRefusesRoleOverlaysNoRoleCouldCarry(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		files map[claim.Role][]string
@@ -249,6 +254,7 @@ func TestNewRefusesRoleOverlaysNoRoleCouldCarry(t *testing.T) {
 // pod created now is not handed and has drifted from nothing, and a sibling the key does not name
 // resumes into that same new pod.
 func TestAddingARoleOverlaysMountDriftsAnIssuePodMadeWithoutIt(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	tester, reviewer := workerSpec(t), testSpec(t, otherToken, claim.RoleReviewer, testTree)
 	testerLoc, reviewerLoc := g.spawn(tester), g.spawn(reviewer)
@@ -327,6 +333,7 @@ func TestAddingARoleOverlaysMountDriftsAnIssuePodMadeWithoutIt(t *testing.T) {
 // parent directory, and a mount under the image's home (which an issue pod's roles container holds
 // at its HomeMountsDir view) are no move, for an issue pod and the controller's pod alike.
 func TestMovingARoleOverlaysMountPathIsAMove(t *testing.T) {
+	t.Parallel()
 	roles := corev1.Volume{Name: "operator-roles", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 		LocalObjectReference: corev1.LocalObjectReference{Name: "legion-operator-roles"},
 	}}}
@@ -384,6 +391,7 @@ func runtimeWithOptions(t *testing.T, change func(*Options)) *Runtime {
 // roles working in it. The controller's pod is its own: an issue role's missing mount is no drift
 // for it.
 func TestAMissingRoleOverlayMountIsDriftForEveryRoleOfThePod(t *testing.T) {
+	t.Parallel()
 	vol := func(name string) corev1.Volume {
 		return corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: name}}}}
 	}
@@ -417,6 +425,7 @@ func TestAMissingRoleOverlayMountIsDriftForEveryRoleOfThePod(t *testing.T) {
 // /etc/a/roles/fallback.yml from X alone, so the old pod's deepest mount at the file is Y, not the
 // configured holder X — for an issue pod and the controller's pod alike.
 func TestADroppedMountThatHidTheFileIsAMove(t *testing.T) {
+	t.Parallel()
 	vol := func(name string) corev1.Volume {
 		return corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: name}}}}
 	}

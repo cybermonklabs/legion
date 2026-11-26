@@ -2,5 +2,5 @@ kind: Changed
 custom:
   Issue: pr5162
 body: |-
-  The Legion tool asks for daemon API contract 302, the contract in which an issue's owner does a
-  step of its plan itself and reports it with `complete_step`.
+  The Legion tool asks for the daemon API contract entry 20261126114001 complete-step, the entry in
+  which an issue's owner does a step of its plan itself and reports it with `complete_step`.

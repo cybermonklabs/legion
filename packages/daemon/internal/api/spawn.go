@@ -5,12 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/experiment"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -69,6 +73,12 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	}
 	if !claim.IsRole(req.Role) {
 		s.refuse(w, r, http.StatusBadRequest, fmt.Sprintf("role %q is not a role", req.Role))
+		return
+	}
+	role := string(req.Role)
+	if !claim.IsBuiltin(req.Role) && (plan.RunsAs(role) != phase.Step || !s.deployment.Defines(role)) {
+		s.refuse(w, r, http.StatusBadRequest, fmt.Sprintf("role %q is not a spawnable role; deployment-defined roles: %s",
+			req.Role, s.deploymentRoleNames()))
 		return
 	}
 	token, err := s.workerToken(r.Context(), req.Issue, req.Role)
@@ -130,6 +140,22 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	}
 	s.operatorDone(r, token)
 	s.writeUnparsedAnswer(w, r, status, s.operatorAnswer(ctx, m.Claim()))
+}
+
+// deploymentRoleNames lists the spawnable roles configured in addition to Legion's six.
+func (s *server) deploymentRoleNames() string {
+	var names []string
+	for role := range s.deployment.Roles {
+		// The plan's built-in steps, including owner acceptance, are not deployment roles.
+		if plan.RunsAs(role) == phase.Step && !claim.IsBuiltin(claim.Role(role)) {
+			names = append(names, role)
+		}
+	}
+	if len(names) == 0 {
+		return "none"
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 // drawExperiments draws the tree-unit experiments the project declares for tree, for the open

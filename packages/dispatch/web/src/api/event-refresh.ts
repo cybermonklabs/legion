@@ -721,12 +721,8 @@ function issueWriteTargets(
   if (titleOrStatus) {
     targets.push(issueSummaryOf(key, event));
   }
-  // The Reference picker's project list and the Agents page's open-issue picker list titles and
-  // whether an issue is open.
+  // The Agents page's open-issue picker lists titles and whether an issue is open.
   if (created || closed || titleOrStatus) {
-    if (project !== undefined) {
-      targets.push({ exact: true, queryKey: ["issues", project] });
-    }
     targets.push({ exact: true, queryKey: ["agents", "issue-picker"] });
   }
   if (!created && titleOrStatus) {
@@ -1117,6 +1113,11 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   if (event.type === "priority.updated") {
     // A create, a rename, a move, a description or a delete of a priority, by anybody.
     return priorityWriteTargets(event);
+  }
+  if (event.type === "project.access_changed") {
+    // An owner given, or another change of who may see the project: no read of the dashboard
+    // carries a project's owner, visibility or access list yet, so nothing is refreshed.
+    return [];
   }
   if (event.type === "subscription.remove_requested") {
     return [];

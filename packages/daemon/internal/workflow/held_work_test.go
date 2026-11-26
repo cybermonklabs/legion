@@ -84,6 +84,7 @@ func (h heldWork) stand(t *testing.T, pool *pgxpool.Pool, issue record.Issue) re
 // promotion, is admission's (admit's TestAStoppedTaskAndAHeldParentGetNoWorkFromAPromotion). Each
 // path's twins, issues with no plan rows in the same phases, are resumed as today.
 func TestAStoppedTaskAndAHeldParentGetNoWork(t *testing.T) {
+	t.Parallel()
 	t.Run("the ready of a claim", func(t *testing.T) {
 		for _, h := range heldWorks {
 			t.Run(h.name, func(t *testing.T) {
@@ -194,6 +195,7 @@ func TestAStoppedTaskAndAHeldParentGetNoWork(t *testing.T) {
 // none), which each release resumes as today: the retry and the restart give back the phase
 // and start its role, and the escalation records `escalated` and tells the controller.
 func TestARetryOfAStoppedTaskOrAHeldParentIsRefused(t *testing.T) {
+	t.Parallel()
 	const beneath = heldBeneath
 	stopped := intake.Refusal{Status: 409, Code: "TASK_STOPPED", Message: "task a of LEGION-208 was stopped by its owner; a later version of the plan that changes the task starts it again at its first step (register_plan), and a task that never started waits for its gate and its line first. This retry changed nothing."}
 	waiting := intake.Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: "LEGION-208 waits before its retro for these issues beneath it: " + beneath + ". Legion starts the retro when the last one leaves. This retry changed nothing."}

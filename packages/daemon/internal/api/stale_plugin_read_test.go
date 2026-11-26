@@ -46,7 +46,7 @@ func TestAFailedInstallReadIsLoggedOnlyWhileItsCallerWaits(t *testing.T) {
 		State: fakeSource{}, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}},
 		Log: slog.New(slog.NewJSONHandler(logs, nil)),
 	}).Handler
-	stale := DaemonAPIVersion - 1
+	stale := DaemonAPIVersion() - 1
 
 	for _, tc := range []struct {
 		name   string
@@ -60,7 +60,7 @@ func TestAFailedInstallReadIsLoggedOnlyWhileItsCallerWaits(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			token, boot := h.launch(tc.issue, claim.RoleTester)
 			session := "ses_" + tc.issue
-			current := h.registerContract(boot, session, DaemonAPIVersion, true)
+			current := h.registerContract(boot, session, DaemonAPIVersion(), true)
 			h.makeStale(t, token, session, current.Secret, stale)
 			body, err := json.Marshal(claim.ReadyRequest{ClaimToken: token, SessionID: session, Secret: current.Secret, Generation: current.Generation})
 			if err != nil {

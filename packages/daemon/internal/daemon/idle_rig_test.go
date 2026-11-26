@@ -595,7 +595,7 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	r.built.address = address
 	r.built.mu.Unlock()
 	k := *r.cfg.Runtime.Kubernetes
-	opts, err := sandboxOptions(r.cfg, k, r.project, "placeholder-dispatch-token", lookup(nil), slog.New(slog.NewJSONHandler(r.logs, nil)))
+	opts, err := sandboxOptions(r.cfg, k, r.project, sandbox.DispatchCredential{Bearer: "placeholder-dispatch-token"}, lookup(nil), slog.New(slog.NewJSONHandler(r.logs, nil)))
 	if err != nil {
 		return nil, fmt.Errorf("sandboxOptions: %w", err)
 	}

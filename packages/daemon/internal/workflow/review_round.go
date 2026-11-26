@@ -67,7 +67,7 @@ import (
 func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row record.PhaseRow, rows []record.PhaseRow) string {
 	if role != claim.RoleReviewer {
 		switch {
-		case claim.IsBuiltin(role) || plan.RunsAs(string(role)) != at:
+		case !claim.IsDeploymentRole(role) || plan.RunsAs(string(role)) != at:
 			return task
 		case row.ReviewedHead != "":
 			return task + " " + reviewround.CommitLabel + ": " + row.ReviewedHead + "."
@@ -91,5 +91,5 @@ func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row reco
 // (record.SuperviseRequest.RoundNamed), the queue names the others (queuedRow), and the daemon's
 // start executor names such a start queued for news alone (its newsForStart).
 func NamesTheRound(role claim.Role) bool {
-	return role == claim.RoleReviewer || !claim.IsBuiltin(role)
+	return role == claim.RoleReviewer || claim.IsDeploymentRole(role)
 }

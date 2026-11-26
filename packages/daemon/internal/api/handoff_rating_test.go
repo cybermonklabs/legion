@@ -146,7 +146,7 @@ func TestARatingOnAProductionChecksReportIsRefused(t *testing.T) {
 		reason *string
 	}{{rating: new(3), reason: new("The plan fit the work.")}, {reason: new("")}} {
 		message := refused(t, h.complete(HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "looked", Verdict: "pass",
-			PlanRating: named.rating, PlanReason: named.reason}), http.StatusBadRequest, "PLAN_RATING_UNEXPECTED")
+			PlanRating: named.rating, PlanReason: named.reason, CheckOpenedAt: &checkOpenedAt}), http.StatusBadRequest, "PLAN_RATING_UNEXPECTED")
 		for _, want := range []string{"this report on look 2 of LEGION-208's production check", "only the completion that ends the retro rates the plan", "nothing was recorded"} {
 			if !strings.Contains(message, want) {
 				t.Fatalf("the refusal = %q, want it to say %q", message, want)
@@ -160,7 +160,7 @@ func TestARatingOnAProductionChecksReportIsRefused(t *testing.T) {
 		t.Fatalf("GitHub was asked for %v before the refusals, want nothing: the rating is refused before any read", served)
 	}
 
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "looked", Verdict: "pass"}))
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "looked", Verdict: "pass", CheckOpenedAt: &checkOpenedAt}))
 	got := facts.recorded()
 	if report, ok := got[len(got)-1].(intake.CheckReport); len(got) != 1 || !ok || report.Claim != worker.token {
 		t.Fatalf("facts after the report without the rating = %#v, want %s's one report", got, worker.token)
@@ -303,7 +303,7 @@ func TestAnEmptyPlanReasonIsAReasonNamed(t *testing.T) {
 		// taken is the rating of the completion the claim's plugin is taken with.
 		taken rating
 	}{
-		{name: "a plugin at PlanRatingContract or later", contract: DaemonAPIVersion, taken: rating{rating: new(4), reason: new("fit")}},
+		{name: "a plugin at PlanRatingContract or later", contract: DaemonAPIVersion(), taken: rating{rating: new(4), reason: new("fit")}},
 		{name: "a plugin before it", contract: PlanRatingContract - 1},
 	} {
 		t.Run("the retro of "+band.name, func(t *testing.T) {
@@ -315,7 +315,7 @@ func TestAnEmptyPlanReasonIsAReasonNamed(t *testing.T) {
 			// the daemon's own contract, so a band below it, PlanRatingContract once a later contract
 			// came, declares its own.
 			grants := []string{implementer.grant(t), implementer.grant(t), implementer.grant(t)}
-			if band.contract != DaemonAPIVersion {
+			if band.contract != DaemonAPIVersion() {
 				h.makeStale(t, implementer.token, implementer.session, implementer.secret, band.contract)
 			}
 			if c := h.stored(implementer.token); c.State != supervise.StateWorking || c.PluginContract != band.contract {
@@ -421,7 +421,7 @@ func TestAPluginAboveTheRatingContractMustRateToo(t *testing.T) {
 	seedPullRequest(t, h, "LEGION-208", headSHA)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	grants := []string{implementer.grant(t), implementer.grant(t)}
-	later := DaemonAPIVersion + 1
+	later := DaemonAPIVersion() + 1
 	h.makeStale(t, implementer.token, implementer.session, implementer.secret, later)
 	if c := h.stored(implementer.token); c.State != supervise.StateWorking || c.UpdateRound != "" || c.PluginContract != later {
 		t.Fatalf("the claim is %s in round %q at contract %d, want working in no round at %d: this case proves nothing",
@@ -772,17 +772,17 @@ func TestTheRatingIsJudgedOnTheIssueTheWorkflowEndsTheRetroOn(t *testing.T) {
 		ratedRecords int
 	}{
 		{name: "a rated completion from a plugin that must rate, its hold retried after the route read it", at: phase.Retro, stands: retried,
-			contract: DaemonAPIVersion, request: retroDone, rated: true, status: http.StatusOK, standAt: phase.Merging, ratedRecords: 1},
-		{name: "its unrated twin", at: phase.Retro, stands: retried, contract: DaemonAPIVersion, request: retroDone,
+			contract: DaemonAPIVersion(), request: retroDone, rated: true, status: http.StatusOK, standAt: phase.Merging, ratedRecords: 1},
+		{name: "its unrated twin", at: phase.Retro, stands: retried, contract: DaemonAPIVersion(), request: retroDone,
 			status: http.StatusBadRequest, code: "PLAN_RATING_REQUIRED", says: "this completion of phase retro of %s carries no rating of the plan", standAt: phase.Retro},
-		{name: "a rated completion of an issue held from its retro", at: phase.Retro, stands: held, contract: DaemonAPIVersion, request: retroDone, rated: true,
+		{name: "a rated completion of an issue held from its retro", at: phase.Retro, stands: held, contract: DaemonAPIVersion(), request: retroDone, rated: true,
 			status: http.StatusConflict, code: "HANDOFF_NOT_CURRENT_PHASE", standAt: phase.Held},
-		{name: "an unrated completion of an issue held from its retro", at: phase.Retro, stands: held, contract: DaemonAPIVersion, request: retroDone,
+		{name: "an unrated completion of an issue held from its retro", at: phase.Retro, stands: held, contract: DaemonAPIVersion(), request: retroDone,
 			status: http.StatusConflict, code: "HANDOFF_NOT_CURRENT_PHASE", standAt: phase.Held},
 		{name: "an unrated completion from a plugin before the rating, in retro", at: phase.Retro, stands: inPhase, contract: PlanRatingContract - 1, request: retroDone,
 			status: http.StatusOK, standAt: phase.Merging},
 		{name: "a rated completion judged in implementing, its hold retried after the route read it", at: phase.Implementing, stands: retried,
-			contract: DaemonAPIVersion, request: implemented, rated: true, status: http.StatusBadRequest, code: "PLAN_RATING_UNEXPECTED",
+			contract: DaemonAPIVersion(), request: implemented, rated: true, status: http.StatusBadRequest, code: "PLAN_RATING_UNEXPECTED",
 			says: "this completion of phase implementing of %s names planRating or planReason", standAt: phase.Implementing},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -800,7 +800,7 @@ func TestTheRatingIsJudgedOnTheIssueTheWorkflowEndsTheRetroOn(t *testing.T) {
 			// came, declares its own.
 			req := row.request(implementer)
 			req.GrantID = implementer.grant(t)
-			if row.contract != DaemonAPIVersion {
+			if row.contract != DaemonAPIVersion() {
 				h.makeStale(t, implementer.token, implementer.session, implementer.secret, row.contract)
 			}
 			if c := h.stored(implementer.token); c.State != supervise.StateWorking || c.PluginContract != row.contract {
@@ -867,6 +867,7 @@ func TestALateCompletionWhileTheIssueStandsInRetroEndsNoRetro(t *testing.T) {
 	seedPullRequest(t, h, "LEGION-208", "ccddee")
 	seedApproval(t, h, "LEGION-208", "ccddee")
 	reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
+	markPhaseStarted(t, h, "LEGION-208", claim.RoleReviewer)
 	if got := pluginContractOf(t, h, reviewer.token); got < PlanRatingContract {
 		t.Fatalf("the reviewer's plugin declared contract %d, below PlanRatingContract %d: this case proves nothing", got, PlanRatingContract)
 	}

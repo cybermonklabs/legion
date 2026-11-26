@@ -93,3 +93,16 @@ export function stepTasks(steps: IssueSteps): StepTaskRows[] {
     task: task.task,
   }));
 }
+
+/** The experiment a draw put the issue in and the variant it drew there, as the records of its
+ *  newest run, its highest generation, name them: `Experiment <experiment>: variant <variant>`,
+ *  or null where none of those records names one. A Dispatch older than the two fields answers a
+ *  record without them, which names none either. */
+export function stepVariant(steps: IssueSteps): string | null {
+  const records = (steps.tasks ?? []).flatMap((task) => task.steps ?? []);
+  const newest = Math.max(...records.map((record) => record.generation));
+  const named = records.find(
+    (record) => record.generation === newest && record.experiment != null && record.variant != null
+  );
+  return named === undefined ? null : `Experiment ${named.experiment}: variant ${named.variant}`;
+}

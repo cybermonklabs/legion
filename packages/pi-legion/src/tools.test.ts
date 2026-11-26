@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { type LegionRole, type LegionStepRole, roleToken } from "@legion/contracts";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import {
   LEGION_PHASES,
   LEGION_WORKFLOW_PHASES,
@@ -23,6 +24,9 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { z } from "zod";
 import pkg from "../package.json";
 import { createLegionTool, type LegionToolSession } from "./tools";
+
+/** The contract this build speaks, as `tools.ts` reads it (`daemonContract`): this checkout's. */
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir);
 
 function context(sessionId = "ses_208"): SessionContext {
   return {
@@ -173,7 +177,7 @@ function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
       : Response.json(daemonFixture(golden), { status });
   }) as typeof fetch;
   const client = createLegionDaemonClient("http://daemon.test", {
-    pluginContract: pkg.legion.daemonApiVersion,
+    pluginContract: PLUGIN_CONTRACT,
     fetch: stub,
   });
   return { posted, daemon: () => client };
@@ -328,6 +332,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     summary: { type: "string" },
     verdict: { type: "string", enum: ["pass", "pending", "fail"] },
     wake_at: { type: "string" },
+    check_opened_at: { type: "string" },
     plan_rating: { type: "integer", minimum: 1, maximum: 5 },
     plan_reason: { type: "string" },
     // Zod renders a whole number with no stated bound above as the largest safe integer.
@@ -1314,6 +1319,55 @@ const stateAt = (phase: LegionPhase) => ({
   },
 });
 
+test("a named look's report leaves the phase open and a step's completion closes it", async () => {
+  let completed = 0;
+  const { calls, daemon } = recordingDaemon({ state: stateAt("testing") });
+  const tool = createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: () => {
+      completed++;
+    },
+    onUpdateAnswered: () => undefined,
+    handoffReport: async () => ({ commit: TIP, handoffId: RECORD.id, handoffVersion: 2 }),
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => claimSession("tester"),
+  });
+  const report = await tool.execute(
+    "",
+    {
+      op: "handoff_complete",
+      summary: "looked",
+      verdict: "pass",
+      check_opened_at: "2026-10-19T06:00:00.123456Z",
+    },
+    undefined,
+    undefined,
+    context()
+  );
+  expect(report).not.toHaveProperty("isError", true);
+  expect(completed).toBe(0);
+  expect(calls.at(-1)).toEqual([
+    "handoffComplete",
+    {
+      grantId: "grant-208",
+      summary: "looked",
+      verdict: "pass",
+      checkOpenedAt: "2026-10-19T06:00:00.123456Z",
+    },
+  ]);
+  await tool.execute(
+    "",
+    { op: "handoff_complete", summary: "tested", verdict: "pass" },
+    undefined,
+    undefined,
+    context()
+  );
+  expect(completed).toBe(1);
+});
+
 test("handoff_complete finds the phase's handoff record and the pushed tip, posts them with a fresh grant, and closes the phase on success", async () => {
   const completed: string[] = [];
   const reads: string[] = [];
@@ -1426,8 +1480,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
   expect(calls).toHaveLength(before);
   expect(completed).toHaveLength(4);
 
-  // `pending` is a production check's verdict: on a phase completion it is refused once the record
-  // says the completion is a phase's, with nothing minted or posted.
+  // Without check_opened_at, pending is refused as a phase completion before any daemon call.
   const pendingOnPhase = await run(claimSession("tester"), {
     op: "handoff_complete",
     summary: "Waiting on the deploy.",
@@ -1437,10 +1490,10 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
   expect(pendingOnPhase.content).toEqual([
     {
       type: "text",
-      text: "handoff_complete's verdict is pass or fail on a phase completion; pending is a production check's",
+      text: "handoff_complete's pending verdict reports a production check. Send check_opened_at with the time from the look task or check.openedAt from read_record. To complete a step, send pass or fail.",
     },
   ]);
-  expect(calls.at(-1)).toEqual(["record", { issue: "LEGION-208" }]);
+  expect(calls).toHaveLength(before);
   expect(completed).toHaveLength(4);
 
   // Each refusal of the report is the tool's error, naming the remedy: the state is read, and
@@ -1802,9 +1855,7 @@ test("a report on its closed issue's production check carries a verdict and no c
       session: () => session,
     }).execute("", parameters, undefined, undefined, context());
 
-  // Each of the three verdicts is posted with a fresh grant, the summary and no commit, and the
-  // check task's turn is closed as a phase's would be. The pending names its next look, which
-  // travels as the daemon's own `wakeAt`.
+  // A named check report posts a grant and report only, and leaves phase input open.
   for (const verdict of ["pending", "pass", "fail"]) {
     const wake = verdict === "pending" ? { wake_at: NEXT_LOOK } : {};
     await expect(
@@ -1812,11 +1863,11 @@ test("a report on its closed issue's production check carries a verdict and no c
         op: "handoff_complete",
         summary: `Look 2: ${verdict}.`,
         verdict,
+        check_opened_at: openCheck.openedAt,
         ...wake,
       })
     ).resolves.toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
-    expect(calls.slice(-3)).toEqual([
-      ["record", { issue: "LEGION-208" }],
+    expect(calls.slice(-2)).toEqual([
       [
         "grant",
         { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
@@ -1827,31 +1878,31 @@ test("a report on its closed issue's production check carries a verdict and no c
           grantId: "grant-208",
           summary: `Look 2: ${verdict}.`,
           verdict,
+          checkOpenedAt: openCheck.openedAt,
           ...(verdict === "pending" ? { wakeAt: NEXT_LOOK } : {}),
         },
       ],
     ]);
   }
-  expect(completed).toEqual(["ses_208", "ses_208", "ses_208"]);
+  expect(completed).toEqual([]);
 
-  // Refused after the record is read, with nothing minted or posted: a report with no verdict.
+  // A missing verdict is refused before any daemon call.
   const noVerdict = await run(claimSession("implementer"), {
     op: "handoff_complete",
     summary: "Looked.",
+    check_opened_at: openCheck.openedAt,
   });
   expect(noVerdict.isError).toBe(true);
   expect(noVerdict.content).toEqual([
     {
       type: "text",
-      text: "handoff_complete on a production check names a verdict of pass, pending or fail",
+      text: "handoff_complete with check_opened_at names a verdict of pass, pending or fail",
     },
   ]);
-  expect(calls.at(-1)).toEqual(["record", { issue: "LEGION-208" }]);
-  expect(completed).toHaveLength(3);
+  expect(calls).toHaveLength(6);
+  expect(completed).toHaveLength(0);
 
-  // A completion on a done issue carries what a check report carries, whatever role sends it, and
-  // the daemon decides which it is: the tester's report on a check the tester's role works is
-  // posted, with the wake its pending named.
+  // A tester's named report posts the wake its pending supplied.
   const { calls: testerCalls, daemon: testerDaemon } = recordingDaemon({
     state: {
       issues: {
@@ -1875,7 +1926,13 @@ test("a report on its closed issue's production check carries a verdict and no c
     session: () => claimSession("tester"),
   }).execute(
     "",
-    { op: "handoff_complete", summary: "Looked.", verdict: "pending", wake_at: NEXT_LOOK },
+    {
+      op: "handoff_complete",
+      summary: "Looked.",
+      verdict: "pending",
+      wake_at: NEXT_LOOK,
+      check_opened_at: openCheck.openedAt,
+    },
     undefined,
     undefined,
     context()
@@ -1888,13 +1945,11 @@ test("a report on its closed issue's production check carries a verdict and no c
       summary: "Looked.",
       verdict: "pending",
       wakeAt: NEXT_LOOK,
+      checkOpenedAt: openCheck.openedAt,
     },
   ]);
 
-  // The implementer's completion on a done issue carries what a check report carries whatever the
-  // record shows: once the check closed, or when none opened, no commit is looked up and the
-  // report is posted as given, for the daemon to answer (api/handoff.go): CHECK_NOT_OPEN for a
-  // session working a look, and CHECK_LOOK_NOT_SERVED for one that works none.
+  // A named report on an absent check is posted for the daemon to refuse.
   const { calls: closedCalls, daemon: closedDaemon } = recordingDaemon({
     state: { issues: { "LEGION-208": { key: "LEGION-208", phase: "done" } } },
   });
@@ -1908,11 +1963,27 @@ test("a report on its closed issue's production check carries a verdict and no c
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
     session: () => claimSession("implementer"),
-  }).execute("", { op: "handoff_complete", summary: "Looked." }, undefined, undefined, context());
+  }).execute(
+    "",
+    {
+      op: "handoff_complete",
+      summary: "Looked.",
+      verdict: "pass",
+      check_opened_at: openCheck.openedAt,
+    },
+    undefined,
+    undefined,
+    context()
+  );
   expect(implementerAtDone.isError).toBeUndefined();
   expect(closedCalls.at(-1)).toEqual([
     "handoffComplete",
-    { grantId: "grant-208", summary: "Looked.", verdict: "" },
+    {
+      grantId: "grant-208",
+      summary: "Looked.",
+      verdict: "pass",
+      checkOpenedAt: openCheck.openedAt,
+    },
   ]);
 });
 
@@ -2192,14 +2263,15 @@ test("the controller reads the state without a grant and sets an issue's status 
     "compact",
     { grantId: "controller-grant-1", issue: "LEGION-209", role: "implementer" },
   ]);
-  // A claim of a role of the deployment (contract 258) is recovered as Legion's own roles' are.
+  // A claim of a role of the deployment (the deployment roles' contract entry) is recovered as
+  // Legion's own roles' are.
   await run({ op: "fresh_session", issue: "LEGION-209", role: "checker" });
   expect(calls.at(-1)).toEqual([
     "freshSession",
     { grantId: "controller-grant-1", issue: "LEGION-209", role: "checker" },
   ]);
-  // A claim named by its token (contract 259), another claim of the role than the step's worker,
-  // is sent as named, and only when named; compact takes it the same way.
+  // A claim named by its token (the stranded token's contract entry), another claim of the role
+  // than the step's worker, is sent as named, and only when named; compact takes it the same way.
   await run({
     op: "fresh_session",
     issue: "LEGION-209",
@@ -2290,8 +2362,8 @@ test("the controller reads the state without a grant and sets an issue's status 
   ]);
 });
 
-// Contract 258: the summary lists each worker of an issue's map, a role of the deployment's after
-// Legion's own in the order of the default steps, so the controller sees the claim that works a step.
+// The summary lists each worker of an issue's map, a role of the deployment's after Legion's own in
+// the order of the default steps, so the controller sees the claim that works a step.
 test("read_state's summary lists the claim of a role of the deployment under its issue", async () => {
   const state = stateOf92Issues(1);
   const running = state.issues["INFRA-100"];
@@ -2327,8 +2399,9 @@ test("read_state's summary lists the claim of a role of the deployment under its
   ]);
 });
 
-// Contract 259: two claims of one issue can hold one role, and `workers` shows one of them, so the
-// summary lists each of the issue's `otherClaims` after the workers, with its role, its state,
+// The stranded token's contract entry: two claims of one issue can hold one role, and `workers`
+// shows one of them, so the summary lists each of the issue's `otherClaims` after the workers,
+// with its role, its state,
 // both turn times and its token, marks it as another claim of that role, and names the token
 // because fresh_session and compact reach that claim only by it (their `claim`).
 test("read_state's summary lists another claim of a role after the workers of its issue", async () => {
@@ -2368,13 +2441,13 @@ test("read_build answers the package and version this process loaded, both contr
   const atImagePath = {
     ...pkg,
     version: "0.0.0-image",
-    legion: { daemonApiVersion: pkg.legion.daemonApiVersion - 1 },
+    legion: { daemonApiVersion: PLUGIN_CONTRACT - 1 },
   };
   await withImageManifest("/opt/legion/pi-legion/package.json", atImagePath, async () => {
     const { createLegionTool: createFreshLegionTool } = (await import(
       TOOLS_LOADED_UNDER_THE_IMAGE_MOCK
     )) as { readonly createLegionTool: typeof createLegionTool };
-    const { calls, daemon } = recordingDaemon({ daemonContract: pkg.legion.daemonApiVersion + 1 });
+    const { calls, daemon } = recordingDaemon({ daemonContract: PLUGIN_CONTRACT + 1 });
     const tool = createFreshLegionTool({
       pi,
       daemon,
@@ -2393,8 +2466,8 @@ test("read_build answers the package and version this process loaded, both contr
       details: {
         plugin: pkg.name,
         version: pkg.version,
-        pluginContract: pkg.legion.daemonApiVersion,
-        daemonContract: pkg.legion.daemonApiVersion + 1,
+        pluginContract: PLUGIN_CONTRACT,
+        daemonContract: PLUGIN_CONTRACT + 1,
         daemonContractNote: null,
       },
     });
@@ -2435,7 +2508,7 @@ test("read_build says the daemon stated no contract, and belongs to the controll
     details: {
       plugin: pkg.name,
       version: pkg.version,
-      pluginContract: pkg.legion.daemonApiVersion,
+      pluginContract: PLUGIN_CONTRACT,
       daemonContract: null,
       daemonContractNote: "the daemon stated no contract",
     },

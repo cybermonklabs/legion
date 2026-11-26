@@ -68,6 +68,7 @@ import { libraryRemarkFrontmatterPlugin } from './lib-remark-frontmatter-plugin'
 import { libraryRemarkDirectivePlugin } from './lib-remark-directive-plugin';
 import { libraryRemarkHtmlBlockPlugin, libraryRemarkHtmlFlowPlugin } from './html-blocks';
 import { libraryRemarkNestedLinksPlugin } from './nested-links';
+import { libraryRemarkKeepAddressesWholePlugin } from './whole-addresses';
 import { liveTypedBlocksRemarkPlugin } from './read-only-directives';
 import { brokenAskInputGuards, keepUnselectedAskBlocks, relaxAskContentCheck } from './ask-content';
 import { remarkProofMarksPlugin } from 'proof-sdk-upstream/src/editor/schema/remark-proof-marks-plugin';
@@ -123,6 +124,12 @@ import {
   setReferences as applyReferences,
 } from './reference-decorations';
 import type { EditorReferences } from './reference-decorations';
+import {
+  insertReference as applyReferenceInsertion,
+  referencePickerPlugin,
+  setReferencePicker as applyReferencePicker,
+} from './reference-picker';
+import type { EditorReferencePicker, ReferenceInsertion } from './reference-picker';
 import { removeRecordMark, remarkRecordMark, retypeMark as retypeRecordMark } from './record-mark-retype';
 import type { RemarkOutcome, RetypeOutcome } from './record-mark-retype';
 
@@ -130,7 +137,8 @@ export type { MarkAction, RecordMarkPlacement, SelectionBarActionKind, PopoverAc
 export type { ProofEditorAccess } from './dispatch-action-bar';
 export type { RemarkOutcome, RemarkRefusal, RetypedMark, RetypeRefusal, RetypeOutcome } from './record-mark-retype';
 export type { BlockWidget, ChangeDecorations, TextDecoration } from './editor-change-decorations';
-export type { EditorReferences, ReferenceCandidate, ReferenceTarget } from './reference-decorations';
+export type { EditorReferences, OfferedReference, ReferenceCandidate, ReferenceTarget } from './reference-decorations';
+export type { EditorReferencePicker, ReferenceInsertion, ReferencePickerCaret } from './reference-picker';
 export type { BlockMark } from './editor-highlights';
 export type { DocumentJSON, DocumentMarkJSON } from './document-json';
 export type {
@@ -198,6 +206,14 @@ export interface CreateProofEditorOptions {
   /** The host's Mermaid renderer, which draws each mermaid code block's diagram. Without one a
    *  document's mermaid blocks show their source. */
   drawMermaid?: MermaidDrawer;
+  /** Whether the editor writes Proof's marks of its own. Defaults to true. Turned off, it
+   *  offers no mark action - neither the selection bar's Comment, Suggest and Ask, nor the mark
+   *  popover's actions, nor the " ->" comment shortcut, nor the popover hook - and records no
+   *  authorship (`proofAuthored`) on what a person types, so no selection is offered one, no
+   *  mark is written from one, `commentOnSelection` answers false and `getMarkdown` carries no
+   *  mark the editor wrote: for a host whose text takes no comment, suggestion or ask - a field
+   *  it saves as markdown. */
+  proofMarks?: boolean;
 }
 
 /**
@@ -253,8 +269,9 @@ export interface ProofEditorHandle extends TypedBlockCommands {
     placement: RecordMarkPlacement | null
   ): RemarkOutcome;
   /** Starts a comment on the current selection exactly as the selection bar's Comment button
-   *  does, `onMarkAction` included, and answers whether it did: false for an empty selection and
-   *  while the document is read-only and takes no comments, where the bar offers no Comment. */
+   *  does, `onMarkAction` included, and answers whether it did: false for an empty selection,
+   *  while the document is read-only and takes no comments, where the bar offers no Comment, and
+   *  in an editor built with `proofMarks: false`, which has no bar. */
   commentOnSelection(): boolean;
   /** Scrolls a mark's anchor into view and pulses it. Works for both the
    *  unified marks system and dispatchAsk marks: both render `data-id`. */
@@ -283,6 +300,14 @@ export interface ProofEditorHandle extends TypedBlockCommands {
    *  the editor reports the document's candidate keys to, in one value that replaces the last
    *  one; `null` draws none. See ./reference-decorations.ts. */
   setReferences(references: EditorReferences | null): void;
+  /** Hosts the reference picker in the document, in place of the last one; `null` hosts none.
+   *  The host is told what stands before the caret and is offered the focused document's keys,
+   *  and writes a pick through `insertReference`. See ./reference-picker.ts. */
+  setReferencePicker(picker: EditorReferencePicker | null): void;
+  /** Writes a pick - the words, and the stretch of the text last reported they replace - as one
+   *  transaction, and answers whether it did: an insertion the document has moved under is
+   *  refused and changes nothing. See ./reference-picker.ts. */
+  insertReference(insertion: ReferenceInsertion): boolean;
   /** The stable id of the block containing the selection head, if any. */
   blockIdAtSelection(): string | null;
   /** Tears the editor and any collab binding down, the ProseMirror view first. Idempotent, and
@@ -406,6 +431,7 @@ export async function createProofEditor(
   setCurrentActor(`human:${opts.user.name}`);
   let alive = true;
   const heatMapMode: HeatMapMode = opts.heatMapMode ?? 'background';
+  const proofMarks = opts.proofMarks ?? true;
 
   const builder = Editor.make()
     .config((ctx) => {
@@ -416,6 +442,10 @@ export async function createProofEditor(
     .config(nord)
     .use(commonmark)
     .use(gfm)
+    // After remark-gfm, whose two readers of bare addresses may start an email or a URL inside a
+    // `dispatch://` address: each such link is text again, so a paste and `setMarkdown` keep the
+    // address whole (./whole-addresses.ts), as the headless engine and Go's reader keep it.
+    .use(libraryRemarkKeepAddressesWholePlugin)
     // Frontmatter and typed directives register before their node schemas claim their AST nodes.
     .use(libraryRemarkFrontmatterPlugin)
     .use(libraryRemarkDirectivePlugin)
@@ -454,7 +484,7 @@ export async function createProofEditor(
     .use(heatmapCtx)
     .use(agentCursorCtx)
     // Register plugins
-    .use(authoredTrackerPlugin)
+    .use(proofMarks ? authoredTrackerPlugin : [])
     .use(heatmapPlugin)
     .use(agentCursorPlugin)
     .use(suggestionsPlugins);
@@ -462,15 +492,15 @@ export async function createProofEditor(
   const marginMode = Boolean(opts.onMarkClick || opts.onMarkHover);
   if (marginMode) {
     builder.use(dispatchMarkEventsPlugin({ onMarkClick: opts.onMarkClick, onMarkHover: opts.onMarkHover }));
-  } else {
+  } else if (proofMarks) {
     builder.use(markPopoverPlugin).use(arrowCommentPlugin);
   }
+  // This library's own Comment/Suggest/Ask bar replaces upstream's
+  // markSelectionBarPlugin, which has no extension point for Ask or a hook
+  // for Comment/Suggest.
+  if (proofMarks) builder.use(dispatchActionBarPlugin({ by: opts.user.name, onMarkAction: opts.onMarkAction }));
 
   const editor = await builder
-    // This library's own Comment/Suggest/Ask bar replaces upstream's
-    // markSelectionBarPlugin, which has no extension point for Ask or a hook
-    // for Comment/Suggest.
-    .use(dispatchActionBarPlugin({ by: opts.user.name, onMarkAction: opts.onMarkAction }))
     .use(findHighlightsPlugin)
     .use(taskCheckboxesPlugin)
     .use(mermaidCodeBlockPlugin(opts.drawMermaid))
@@ -486,6 +516,7 @@ export async function createProofEditor(
     .use(editorHighlightsPlugin)
     .use(editorChangeDecorationsPlugin)
     .use(referenceDecorationsPlugin)
+    .use(referencePickerPlugin)
     .use(placeholderPlugin)
     .use(keepUnselectedAskBlocks) // no read-back edit drops an unselected block of an off-rule ask (./ask-content.ts)
     .config((ctx) => {
@@ -543,7 +574,7 @@ export async function createProofEditor(
     }
   });
 
-  const unregisterPopoverHook = marginMode
+  const unregisterPopoverHook = marginMode || !proofMarks
     ? () => {}
     : registerPopoverHookInstance(view, opts.onMarkAction);
 
@@ -677,6 +708,12 @@ export async function createProofEditor(
     },
     setReferences(references: EditorReferences | null): void {
       applyReferences(view, references);
+    },
+    setReferencePicker(picker: EditorReferencePicker | null): void {
+      applyReferencePicker(view, picker);
+    },
+    insertReference(insertion: ReferenceInsertion): boolean {
+      return applyReferenceInsertion(view.state, (transaction) => view.dispatch(transaction), insertion);
     },
     blockIdAtSelection(): string | null {
       const $head = view.state.selection.$head;
