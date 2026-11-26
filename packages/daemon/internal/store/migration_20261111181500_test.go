@@ -195,28 +195,29 @@ func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
 	// row with the stored number still right.
 	records := podRecords(t, store)
 	for _, tc := range []struct {
-		name   string
-		issue  string
-		id     int64
-		closed bool
-		gone   int64
+		name  string
+		issue string
+		id    int64
+		// heals is whether the heal closes the row; closed is whether the row stands closed after it.
+		heals, closed bool
+		gone          int64
 	}{
-		{"a release came after the wake", "LEGION-208", staleResume, true, gone},
-		{"the pod is coming back", "LEGION-209", liveResume, false, 0},
-		{"the issue has no release", "LEGION-210", noRelease, false, 0},
-		{"the wake stands before its own release", "LEGION-213", listenerResume, false, 0},
-		{"the role took its turn", "LEGION-211", finished, false, 0},
-		{"the resume is already closed", "LEGION-212", closedResume, true, 0},
+		{"a release came after the wake", "LEGION-208", staleResume, true, true, gone},
+		{"the pod is coming back", "LEGION-209", liveResume, false, false, 0},
+		{"the issue has no release", "LEGION-210", noRelease, false, false, 0},
+		{"the wake stands before its own release", "LEGION-213", listenerResume, false, false, 0},
+		{"the role took its turn", "LEGION-211", finished, false, false, 0},
+		{"the resume is already closed", "LEGION-212", closedResume, false, true, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			inTx(t, store, func(tx pgx.Tx) error {
-				answered, _, err := records.ClosePodGoneResume(ctx, tx, tc.issue, claim.RoleImplementer)
+				answered, healed, err := records.ClosePodGoneResume(ctx, tx, tc.issue, claim.RoleImplementer)
 				if err != nil {
 					t.Fatalf("the heal of %s: %v", tc.issue, err)
 				}
-				if answered != tc.gone {
-					t.Fatalf("the heal of %s answered release %d, want %d: it names the issue's newest release, which stands above the row it closed, and 0 where it closed none",
-						tc.issue, answered, tc.gone)
+				if healed != tc.heals || answered != tc.gone {
+					t.Fatalf("the heal of %s closed a resume = %t and answered release %d, want %t and %d: it closes the row a release came after and no other, and names the issue's newest release, which stands above the row it closed, and 0 where it closed none",
+						tc.issue, healed, answered, tc.heals, tc.gone)
 				}
 				return nil
 			})

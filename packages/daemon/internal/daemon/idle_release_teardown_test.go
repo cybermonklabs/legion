@@ -389,7 +389,10 @@ func TestATeardownWhoseRecordFailsEveryTimeGivesUpAtTheBound(t *testing.T) {
 			resumes := len(rig.rt.CallsOf("Resume"))
 
 			// attempt runs the teardown row once, with the outbox's clock at after past the mark, and
-			// answers the lines that run logged.
+			// answers the lines that run logged. These rows run their own attempts, not
+			// teardownGivesUp's two: each checks the first attempt's own lines and state before the
+			// next attempt, (b) runs that next attempt a second before the bound, and (a2) changes
+			// the store between the two and runs a third.
 			attempt := func(after time.Duration) string {
 				t.Helper()
 				rig.runner.now = func() time.Time { return markedAt.Add(after) }
@@ -477,8 +480,8 @@ func TestATeardownWhoseRecordFailsEveryTimeGivesUpAtTheBound(t *testing.T) {
 				t.Fatalf("the implementer's queued starts = %d, want the wake's one start", starts)
 			}
 
-			if closed, taken := rig.implementerWake(t, gaveUp); closed != 0 || taken {
-				t.Fatalf("the role's next wake before its start ran closed the resume of release %d and took a wake = %t; want neither: the wake's start is the role's one start",
+			if _, closed, taken := rig.implementerWake(t, gaveUp); closed || taken {
+				t.Fatalf("the role's next wake before its start ran closed a resume = %t and took a wake = %t; want neither: the wake's start is the role's one start",
 					closed, taken)
 			}
 			// The drain runs the wake's start, which resumes the role once, in the new pod. The
@@ -489,8 +492,8 @@ func TestATeardownWhoseRecordFailsEveryTimeGivesUpAtTheBound(t *testing.T) {
 				t.Fatalf("the claim after the drain = %s by %s after %d resumes, with %d starts queued; want it resumed once, by the wake's one start",
 					got.State, got.SuspendedBy, len(rig.rt.CallsOf("Resume"))-resumes, rig.implementerStarts(t))
 			}
-			if closed, taken := rig.implementerWake(t, gaveUp); closed != 0 || taken {
-				t.Fatalf("the role's next wake after its start ran closed the resume of release %d and took a wake = %t; want neither",
+			if _, closed, taken := rig.implementerWake(t, gaveUp); closed || taken {
+				t.Fatalf("the role's next wake after its start ran closed a resume = %t and took a wake = %t; want neither",
 					closed, taken)
 			}
 			rig.wantImplementerResume(t, settled)
@@ -506,9 +509,9 @@ func TestATeardownWhoseRecordFailsEveryTimeGivesUpAtTheBound(t *testing.T) {
 			if err != nil {
 				t.Fatalf("record a later release: %v", err)
 			}
-			if closed, taken := rig.implementerWake(t, gaveUp.Add(2*time.Hour)); closed != later || !taken {
-				t.Fatalf("the wake after a later release closed the resume of release %d and took a wake = %t; want the resume closed under release %d and a wake taken",
-					closed, taken, later)
+			if newest, closed, taken := rig.implementerWake(t, gaveUp.Add(2*time.Hour)); !closed || newest != later || !taken {
+				t.Fatalf("the wake after a later release closed a resume = %t under release %d and took a wake = %t; want the resume closed under release %d and a wake taken",
+					closed, newest, taken, later)
 			}
 		})
 	}
@@ -562,18 +565,7 @@ func TestARoleAPauseStoppedBeforeAReleaseThatGaveUpIsToldTheReleasesWords(t *tes
 			got.State, got.SuspendedBy, rig.marked(t))
 	}
 
-	refusePodReleaseRecords(t, rig.pool)
-	var markedAt time.Time
-	if err := rig.pool.QueryRow(ctx, `select marked_at from issue_releases where issue = $1`, rig.issue.Key).Scan(&markedAt); err != nil {
-		t.Fatalf("read the release's mark: %v", err)
-	}
-	for _, after := range []time.Duration{workflow.WakeHeldForRelease - time.Minute, workflow.WakeHeldForRelease} {
-		rig.runner.now = func() time.Time { return markedAt.Add(after) }
-		teardownDueAgain(t, rig, false)
-		if err := rig.runner.RunOnce(ctx); err != nil {
-			t.Fatalf("run the teardown %s after the mark: %v", after, err)
-		}
-	}
+	markedAt := rig.teardownGivesUp(t)
 	if records := rig.records(t); rig.marked(t) || len(records.Releases) != 0 {
 		t.Fatalf("after the attempt at the bound the mark stands = %t and the releases = %+v; want the teardown given up, with no release recorded",
 			rig.marked(t), records.Releases)
@@ -593,7 +585,7 @@ func TestARoleAPauseStoppedBeforeAReleaseThatGaveUpIsToldTheReleasesWords(t *tes
 		rig.issue.Key).Scan(&fired); err != nil || fired != 1 {
 		t.Fatalf("the implementer's fired backstops = %d (%v), want the one the teardown armed", fired, err)
 	}
-	starts := rig.queuedStarts(t)
+	starts := startRequestsOf(t, rig.pool, rig.issue.Key)
 	if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].WakeKind != pods.WakeBackstop {
 		t.Fatalf("queued starts = %+v, want the backstop's one start of the implementer", starts)
 	}
@@ -650,18 +642,7 @@ func TestAWakeAfterAReleaseThatGaveUpClosesTheResumeItLeftOpenAndTakesItsOwn(t *
 	if kind, role := rig.releaseMark(t); kind != "unowned" || role != "" {
 		t.Fatalf("the mark = kind %q for role %q, want the release of a pod no claim can use", kind, role)
 	}
-	refusePodReleaseRecords(t, rig.pool)
-	var markedAt time.Time
-	if err := rig.pool.QueryRow(ctx, `select marked_at from issue_releases where issue = $1`, rig.issue.Key).Scan(&markedAt); err != nil {
-		t.Fatalf("read the release's mark: %v", err)
-	}
-	for _, after := range []time.Duration{workflow.WakeHeldForRelease - time.Minute, workflow.WakeHeldForRelease} {
-		rig.runner.now = func() time.Time { return markedAt.Add(after) }
-		teardownDueAgain(t, rig, false)
-		if err := rig.runner.RunOnce(ctx); err != nil {
-			t.Fatalf("run the teardown %s after the mark: %v", after, err)
-		}
-	}
+	rig.teardownGivesUp(t)
 	var gaveUp int
 	if err := rig.pool.QueryRow(ctx, `select count(*) from pod_release_give_ups where issue = $1`, rig.issue.Key).Scan(&gaveUp); err != nil {
 		t.Fatalf("read the give-ups of the release: %v", err)
@@ -688,7 +669,7 @@ func TestAWakeAfterAReleaseThatGaveUpClosesTheResumeItLeftOpenAndTakesItsOwn(t *
 	if err != nil || result.Refusal != nil {
 		t.Fatalf("apply the listener's report = %#v, %v", result, err)
 	}
-	starts := rig.queuedStarts(t)
+	starts := startRequestsOf(t, rig.pool, rig.issue.Key)
 	if len(starts) != 1 || starts[0].Role != claim.RoleArchitect || starts[0].WakeKind != pods.WakeRoleMessage {
 		t.Fatalf("queued starts = %+v, want the listener wake's one start of the architect: the release that gave up took the pod the open resume waited for",
 			starts)
@@ -726,6 +707,28 @@ func refusePodReleaseRecords(t *testing.T, pool *store.Pool) {
 			t.Fatalf("refuse every record of a release: %v", err)
 		}
 	}
+}
+
+// teardownGivesUp runs the rig's teardown row until it gives up on the release's record: it
+// refuses every record of the release (refusePodReleaseRecords), then runs the row a minute before
+// workflow.WakeHeldForRelease after the release's mark, where it fails, and at that bound, where
+// it gives up. It answers the mark's time (issue_releases.marked_at).
+func (r *idleRig) teardownGivesUp(t *testing.T) time.Time {
+	t.Helper()
+	ctx := context.Background()
+	refusePodReleaseRecords(t, r.pool)
+	var markedAt time.Time
+	if err := r.pool.QueryRow(ctx, `select marked_at from issue_releases where issue = $1`, r.issue.Key).Scan(&markedAt); err != nil {
+		t.Fatalf("read the release's mark: %v", err)
+	}
+	for _, after := range []time.Duration{workflow.WakeHeldForRelease - time.Minute, workflow.WakeHeldForRelease} {
+		r.runner.now = func() time.Time { return markedAt.Add(after) }
+		teardownDueAgain(t, r, false)
+		if err := r.runner.RunOnce(ctx); err != nil {
+			t.Fatalf("run the teardown %s after the mark: %v", after, err)
+		}
+	}
+	return markedAt
 }
 
 // wokenResume is what a test reads of the implementer's resume: the release it pairs with, the
@@ -780,8 +783,12 @@ func (r *idleRig) implementerStarts(t *testing.T) int {
 // implementerWake takes a backstop's wake of the implementer at at as the workflow's wake takes
 // one (wakeReleased): in one transaction, the pause that holds it (PauseOfWake), the close of a
 // resume whose pod went away (ClosePodGoneResume) and the take (TakePodWake). It answers the
-// release the close named, 0 where it closed nothing, and whether the take took the wake.
-func (r *idleRig) implementerWake(t *testing.T, at time.Time) (closed int64, taken bool) {
+// close's two answers and whether the take took the wake. closed is whether the close closed a
+// resume. newest is 0 where it closed none; where a recorded release closed it, it is the issue's
+// newest recorded release, and where a give-up alone closed it, the resume's own seen release,
+// which is 0 for an issue with no recorded release. So a row reads a close from closed, and
+// compares newest only with a release it recorded.
+func (r *idleRig) implementerWake(t *testing.T, at time.Time) (newest int64, closed, taken bool) {
 	t.Helper()
 	ctx := context.Background()
 	records, err := r.st.PodRecordsOf("legion")
@@ -793,7 +800,7 @@ func (r *idleRig) implementerWake(t *testing.T, at time.Time) (closed int64, tak
 		if err != nil {
 			return err
 		}
-		if closed, _, err = records.ClosePodGoneResume(ctx, tx, r.issue.Key, claim.RoleImplementer); err != nil {
+		if newest, closed, err = records.ClosePodGoneResume(ctx, tx, r.issue.Key, claim.RoleImplementer); err != nil {
 			return err
 		}
 		taken, err = records.TakePodWake(ctx, tx, r.issue.Key, claim.RoleImplementer, pods.WakeBackstop, at, pause)
@@ -801,7 +808,7 @@ func (r *idleRig) implementerWake(t *testing.T, at time.Time) (closed int64, tak
 	}); err != nil {
 		t.Fatalf("take the implementer's next wake: %v", err)
 	}
-	return closed, taken
+	return newest, closed, taken
 }
 
 // restarted is the rig's daemon after a restart: a supervisor that restores every claim the store

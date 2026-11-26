@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -11,50 +10,13 @@ import (
 )
 
 // relayTooLargeLine is the WARN a relay writes when it acknowledges a stored message too large to
-// relay. It is a string here rather than the relay's own, so the row compiles against a relay
-// that has no such line.
+// relay (sessionRelays.passTooLarge). The relay writes that message as a literal in its one log
+// call, so the row holds its own copy.
 const relayTooLargeLine = "session relay acknowledged a message too large to relay; the session does not receive it"
 
-// relayPausedPrefix begins the line a relay writes when it pauses a session that answered no
+// relayPausedPrefix begins the INFO line a relay writes when it pauses a session that answered no
 // frame within the receipt wait.
 const relayPausedPrefix = "session relay paused: the session answered no frame"
-
-// relayPausedLines counts the lines of relayPausedPrefix the rig's listener wrote for sessionID.
-func relayPausedLines(rig *relayRig, sessionID string) int {
-	count := 0
-	for line := range strings.SplitSeq(rig.harness.logs.String(), "\n") {
-		var record relayTooLargeRecord
-		if json.Unmarshal([]byte(line), &record) == nil && record.SessionID == sessionID && strings.HasPrefix(record.Msg, relayPausedPrefix) {
-			count++
-		}
-	}
-	return count
-}
-
-// relayTooLargeRecord is what a row reads of a log record.
-type relayTooLargeRecord struct {
-	Level     string `json:"level"`
-	Msg       string `json:"msg"`
-	SessionID string `json:"session_id"`
-	EventID   string `json:"event_id"`
-	StreamSeq uint64 `json:"stream_seq"`
-}
-
-// relayTooLargeWarnings is every WARN record of relayTooLargeLine the rig's listener wrote for
-// sessionID.
-func relayTooLargeWarnings(rig *relayRig, sessionID string) []relayTooLargeRecord {
-	var found []relayTooLargeRecord
-	for line := range strings.SplitSeq(rig.harness.logs.String(), "\n") {
-		var record relayTooLargeRecord
-		if json.Unmarshal([]byte(line), &record) != nil {
-			continue
-		}
-		if record.Level == "WARN" && record.Msg == relayTooLargeLine && record.SessionID == sessionID {
-			found = append(found, record)
-		}
-	}
-	return found
-}
 
 // storeEnvelopeOfSize stores on subject, raw and with no headers, an envelope whose serialized size
 // is size bytes, its payload padded to that, and returns it with its stream sequence.
@@ -106,11 +68,11 @@ func TestRelayStoredNearLimitEnvelopeDoesNotBlockFollowingFrame(t *testing.T) {
 		requireFrames(t, standIn.collect(t, 1, 15*time.Second), marker)
 		standIn.none(t, time.Second)
 		awaitAcked(t, rig.consumers, sessionID, markerSeq)
-		warnings := relayTooLargeWarnings(rig, sessionID)
-		if len(warnings) != 1 || warnings[0].EventID != large.EventID || warnings[0].StreamSeq != largeSeq {
+		warnings := edgeSessionLogLines(rig.harness.logs.String(), "WARN", relayTooLargeLine, sessionID)
+		if len(warnings) != 1 || warnings[0]["event_id"] != large.EventID || warnings[0]["stream_seq"] != float64(largeSeq) {
 			t.Fatalf("the relay wrote %+v, want one WARN %q naming event %s at stream sequence %d", warnings, relayTooLargeLine, large.EventID, largeSeq)
 		}
-		if n := relayPausedLines(rig, sessionID); n != 0 {
+		if n := len(edgeSessionLogLines(rig.harness.logs.String(), "INFO", relayPausedPrefix, sessionID)); n != 0 {
 			t.Fatalf("the relay paused the session %d times; want no receipt wait for a frame that never went out:\n%s", n, rig.harness.logs.String())
 		}
 	})
@@ -125,7 +87,7 @@ func TestRelayStoredNearLimitEnvelopeDoesNotBlockFollowingFrame(t *testing.T) {
 
 		requireFrames(t, standIn.collect(t, 2, 15*time.Second), half, marker)
 		awaitAcked(t, rig.consumers, sessionID, markerSeq)
-		if warnings := relayTooLargeWarnings(rig, sessionID); len(warnings) != 0 {
+		if warnings := edgeSessionLogLines(rig.harness.logs.String(), "WARN", relayTooLargeLine, sessionID); len(warnings) != 0 {
 			t.Fatalf("the relay wrote %+v for a message half the limit, want no WARN", warnings)
 		}
 	})
@@ -139,8 +101,10 @@ func TestRelayStoredNearLimitEnvelopeDoesNotBlockFollowingFrame(t *testing.T) {
 		marker, _ := rig.storeEvent(t, agent)
 
 		requireFrames(t, standIn.collect(t, 1, 15*time.Second), marker)
-		waitFor(t, "the relay to pause the silent session", func() bool { return relayPausedLines(rig, sessionID) > 0 })
-		if n := relayPausedLines(rig, sessionID); n != 1 {
+		waitFor(t, "the relay to pause the silent session", func() bool {
+			return len(edgeSessionLogLines(rig.harness.logs.String(), "INFO", relayPausedPrefix, sessionID)) > 0
+		})
+		if n := len(edgeSessionLogLines(rig.harness.logs.String(), "INFO", relayPausedPrefix, sessionID)); n != 1 {
 			t.Fatalf("the relay paused the silent session %d times, want once:\n%s", n, rig.harness.logs.String())
 		}
 	})

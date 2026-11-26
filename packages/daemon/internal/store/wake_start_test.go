@@ -322,7 +322,7 @@ func TestACancelDeletesTheResumeOfAWakeWhoseClaimAnOperatorTookOver(t *testing.T
 
 // The kept start of TestACancelDeletesTheResumeOfAWakeWhoseClaimAnOperatorTookOver was written for
 // a session a release stopped, and its task says that the release took the pod. The release took
-// none, and the role reads that task when the operator resumes it (R3 of dispatch://INFRA-3589:
+// none, and the role reads that task when the operator resumes it (R4 of dispatch://INFRA-3589:
 // the woken role's wake text is true). So the cancel rewrites that task in the same transaction,
 // through the workflow's rule (ReleaseCancelPause.TakenOverWakeTask), told the wake kind the start
 // carries, whether the project runs or is paused. Only that task changes: the start keeps its wake
@@ -621,7 +621,7 @@ func earlierDaemonsWakes(t *testing.T, st *Store) {
 		rootIssue, pods.WakeChecks))
 }
 
-// R3 of dispatch://INFRA-3589, the woken role's wake text is true: a cancel and a release's record
+// R4 of dispatch://INFRA-3589, the woken role's wake text is true: a cancel and a release's record
 // tell a wake's start again by rendering WakeTask from the wake's kind and the detail its start
 // carries (record.SuperviseRequest.WakeDetail). A start that an earlier daemon queued carries no
 // detail, so its task cannot be rendered again, and no words are cut out of it either. Each retell

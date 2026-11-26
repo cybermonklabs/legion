@@ -179,7 +179,7 @@ func TestATakenOverWakeTaskIsTheTaskOfAWakeOfACancelledRelease(t *testing.T) {
 	}
 }
 
-// R2 of dispatch://INFRA-3589: a wake that comes during a release is applied again, never dropped
+// R3 of dispatch://INFRA-3589: a wake that comes during a release is applied again, never dropped
 // in silence. A CI settlement and a backstop reach the woken role only through the wake's task,
 // so a cancel that drops such a wake hands its task to the role's resume. A wake of a role that a
 // project's pause stopped, taken while the release stood, is told the pause's words, which say
@@ -222,7 +222,7 @@ func TestACancelledWakeTaskKeepsThePausesWordsOfASettlementOrABackstop(t *testin
 	}
 }
 
-// R3 of dispatch://INFRA-3589, the woken role's wake text is true: every retell renders WakeTask
+// R4 of dispatch://INFRA-3589, the woken role's wake text is true: every retell renders WakeTask
 // again from the wake's kind and detail (retellWakeTask) and cuts no words out of the sentence.
 // A detail is whatever the wake names, a role token, a session, a head's settlement, and here it
 // holds the very words a retell of a message wake changes, ") while your pod was gone. ". A retell

@@ -482,7 +482,7 @@ func TestARecordedReleaseTellsAHeldWakeThatTheReleaseTookItsPod(t *testing.T) {
 		t.Fatalf("the mark stands = %t and the releases = %+v, want the release finished and recorded once", rig.marked(t), records.Releases)
 	}
 
-	starts := rig.queuedStarts(t)
+	starts := startRequestsOf(t, rig.pool, rig.issue.Key)
 	want := workflow.WakeTask(pods.WakeChecks, detail, workflow.StoppedByRelease)
 	if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Task != want ||
 		starts[0].WakeKind != pods.WakeChecks || starts[0].Pause != pause {

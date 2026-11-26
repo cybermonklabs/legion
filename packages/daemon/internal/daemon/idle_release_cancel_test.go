@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"slices"
@@ -53,38 +52,11 @@ func (r *idleRig) queueRoleMessageWake(t *testing.T, role claim.Role) string {
 	return task
 }
 
-// queuedStarts is every start the outbox holds for the rig's issue, in id order.
-func (r *idleRig) queuedStarts(t *testing.T) []record.SuperviseRequest {
-	t.Helper()
-	rows, err := r.pool.Query(context.Background(), `select payload from outbox where issue = $1 and kind = 'supervise'
-		and payload->>'op' = 'start' order by id`, r.issue.Key)
-	if err != nil {
-		t.Fatalf("read the queued starts: %v", err)
-	}
-	defer rows.Close()
-	var starts []record.SuperviseRequest
-	for rows.Next() {
-		var payload []byte
-		if err := rows.Scan(&payload); err != nil {
-			t.Fatalf("read a queued start: %v", err)
-		}
-		var start record.SuperviseRequest
-		if err := json.Unmarshal(payload, &start); err != nil {
-			t.Fatalf("decode the queued start %s: %v", payload, err)
-		}
-		starts = append(starts, start)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read the queued starts: %v", err)
-	}
-	return starts
-}
-
 // startsOf is the task of each start of role the outbox holds for the rig's issue, in id order.
 func (r *idleRig) startsOf(t *testing.T, role claim.Role) []string {
 	t.Helper()
 	var tasks []string
-	for _, start := range r.queuedStarts(t) {
+	for _, start := range startRequestsOf(t, r.pool, r.issue.Key) {
 		if start.Role == role {
 			tasks = append(tasks, start.Task)
 		}
@@ -134,7 +106,7 @@ func (r *idleRig) wakePairs(t *testing.T, role claim.Role) []wakePair {
 	return pairs
 }
 
-// R3 of dispatch://INFRA-3589, the woken role's wake text is true. A cancel tells the wake's start
+// R4 of dispatch://INFRA-3589, the woken role's wake text is true. A cancel tells the wake's start
 // of each role its release stopped and no cancel resumes in the words of a release that did not
 // finish, and leaves the start of a role the release did not stop as it was.
 //
@@ -349,7 +321,7 @@ func TestACancelAfterASettlementWakeTellsTheRoleTheSettlement(t *testing.T) {
 		t.Fatal("the teardown left the release marked, want it cancelled")
 	}
 
-	starts := rig.queuedStarts(t)
+	starts := startRequestsOf(t, rig.pool, rig.issue.Key)
 	const cancelled = "An idle release of your issue's pod stopped your role, and that release did not finish, so your role goes on in the same pod. " +
 		"Your session, your workspace and any work you had not pushed are as you left them. "
 	const settled = "The wake is a CI settlement on your pull request's head: head1 failed build. Read the checks before you decide anything."
@@ -418,7 +390,7 @@ func TestACancelWhileThePausedProjectTellsTheKeptWakeThatThePauseStoppedTheRole(
 		t.Fatal("the teardown left the release marked, want it cancelled")
 	}
 
-	starts := rig.queuedStarts(t)
+	starts := startRequestsOf(t, rig.pool, rig.issue.Key)
 	want := workflow.WakeTask(pods.WakeChecks, detail, workflow.StoppedByPause)
 	if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Task != want ||
 		starts[0].WakeKind != pods.WakeChecks || starts[0].Pause != pause {
@@ -477,7 +449,7 @@ func TestACancelAfterASettlementWakeKeepsACheckLookQueuedForTheRole(t *testing.T
 		t.Fatal("the teardown left the release marked, want it cancelled")
 	}
 
-	starts := rig.queuedStarts(t)
+	starts := startRequestsOf(t, rig.pool, rig.issue.Key)
 	const cancelled = "An idle release of your issue's pod stopped your role, and that release did not finish, so your role goes on in the same pod. " +
 		"Your session, your workspace and any work you had not pushed are as you left them. "
 	const settled = "The wake is a CI settlement on your pull request's head: head1 failed build. Read the checks before you decide anything."

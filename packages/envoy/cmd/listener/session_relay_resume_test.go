@@ -1,8 +1,6 @@
 package main
 
 import (
-	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -17,30 +15,10 @@ const (
 	relayProbePauseMax   = 30 * time.Second
 )
 
-// relayResumedPrefix begins the line a relay writes when a registration ends its pause before the
-// backoff does. It is a string here rather than the relay's own, so the rows compile against a
-// relay that has no such line.
+// relayResumedPrefix begins the INFO line a relay writes when a registration, or at the edge a
+// role claim, ends its pause before the backoff does (sessionRelays.relay). The relay writes that
+// message as a literal in its one log call, so the rows hold their own copy of its start.
 const relayResumedPrefix = "session relay resumed:"
-
-// relayResumedRecord is what a row reads of a resume line.
-type relayResumedRecord struct {
-	Level     string `json:"level"`
-	Msg       string `json:"msg"`
-	SessionID string `json:"session_id"`
-	Backoff   string `json:"backoff"`
-}
-
-// relayResumedLines is every line of relayResumedPrefix the rig's listener wrote for sessionID.
-func relayResumedLines(rig *relayRig, sessionID string) []relayResumedRecord {
-	var found []relayResumedRecord
-	for line := range strings.SplitSeq(rig.harness.logs.String(), "\n") {
-		var record relayResumedRecord
-		if json.Unmarshal([]byte(line), &record) == nil && record.SessionID == sessionID && strings.HasPrefix(record.Msg, relayResumedPrefix) {
-			found = append(found, record)
-		}
-	}
-	return found
-}
 
 // relayInAProbe brings sessionID to the moment R21 is about and returns there. The session
 // registers and answers e0, and registers again while it answers, as its heartbeat does; then it
@@ -79,9 +57,11 @@ func relayInAProbe(t *testing.T, sessionID string) (*relayRig, *sessionStandIn, 
 }
 
 // requireInsideTheProbe fails the row unless the registration it just made answered inside the
-// receipt wait of the probe whose first frame arrived at probed: a registration answered after
-// it may have been heard once the pause began, which every build ends at once, and the row would
-// prove nothing.
+// receipt wait of the probe whose first frame arrived at probed, so the relay heard it before the
+// pause began. A registration answered after that wait may have been heard during the pause, and
+// the relay ends a pause at once at a registration heard during it, as at one heard before it
+// (relayRun.waitPause), so the row would not show that a registration heard before the pause ends
+// it.
 func requireInsideTheProbe(t *testing.T, probed time.Time) {
 	t.Helper()
 	if waited := time.Since(probed); waited >= relayProbeReceipt {
@@ -112,8 +92,8 @@ func TestARegistrationResumesARelayPausedWhileTheSessionCouldNotAnswer(t *testin
 
 	requireFrames(t, returned.collect(t, 2, 2*time.Second), e1, e2)
 	returned.none(t, time.Second)
-	lines := relayResumedLines(rig, sessionID)
-	if len(lines) != 1 || lines[0].Level != "INFO" || lines[0].Backoff != (2*relayProbePauseFirst).String() {
+	lines := edgeSessionLogLines(rig.harness.logs.String(), "INFO", relayResumedPrefix, sessionID)
+	if len(lines) != 1 || lines[0]["backoff"] != (2*relayProbePauseFirst).String() {
 		t.Fatalf("the resume was logged %+v, want one INFO line naming the %s backoff it cut short:\n%s", lines, 2*relayProbePauseFirst, rig.harness.logs.String())
 	}
 }
@@ -137,7 +117,7 @@ func TestARegistrationEarnsAPausedRelayOneProbe(t *testing.T) {
 	// The pause after this probe waits 8 s; a relay that took the registration again would probe
 	// within the receipt wait.
 	silent.none(t, 3*time.Second)
-	if lines := relayResumedLines(rig, sessionID); len(lines) != 1 {
+	if lines := edgeSessionLogLines(rig.harness.logs.String(), "INFO", relayResumedPrefix, sessionID); len(lines) != 1 {
 		t.Fatalf("the resume was logged %d times, want once for the one registration:\n%s", len(lines), rig.harness.logs.String())
 	}
 }

@@ -254,7 +254,8 @@ func TestAWakeWhileANewerReleaseIsRecordedClosesTheOldResumeAndTakesItsOwn(t *te
 	wakeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	type woken struct {
-		closed int64
+		newest int64
+		closed bool
 		taken  bool
 		err    error
 	}
@@ -263,7 +264,7 @@ func TestAWakeWhileANewerReleaseIsRecordedClosesTheOldResumeAndTakesItsOwn(t *te
 		var w woken
 		w.err = Transact(wakeCtx, store.Pool(), func(wakeCtx context.Context, tx pgx.Tx) error {
 			var err error
-			if w.closed, _, err = records.ClosePodGoneResume(wakeCtx, tx, rootIssue, claim.RoleImplementer); err != nil {
+			if w.newest, w.closed, err = records.ClosePodGoneResume(wakeCtx, tx, rootIssue, claim.RoleImplementer); err != nil {
 				return err
 			}
 			w.taken, err = records.TakePodWake(wakeCtx, tx, rootIssue, claim.RoleImplementer, pods.WakeBackstop, at, 0)
@@ -282,9 +283,9 @@ func TestAWakeWhileANewerReleaseIsRecordedClosesTheOldResumeAndTakesItsOwn(t *te
 		t.Fatalf("the wake: %v", w.err)
 	}
 
-	if w.closed != newer || !w.taken {
-		t.Errorf("the wake closed a resume under release %d and took its own wake = %t; want the old resume closed under release %d and the wake taken: that release was recorded before the take",
-			w.closed, w.taken, newer)
+	if !w.closed || w.newest != newer || !w.taken {
+		t.Errorf("the wake closed a resume = %t under release %d and took its own wake = %t; want the old resume closed under release %d and the wake taken: that release was recorded before the take",
+			w.closed, w.newest, w.taken, newer)
 	}
 	var oldClosed bool
 	if err := store.Pool().QueryRow(ctx, `select closed_at is not null from pod_resumes where id = $1`,
