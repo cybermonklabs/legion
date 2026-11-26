@@ -511,8 +511,8 @@ func TestAControllerSessionIsReplacedAfterTwoLaunchesEndBeforeAFinishedTurn(t *t
 		if len(lines) != 1 || lines[0]["level"] != "ERROR" {
 			t.Fatalf("the lines that say the session is not replaced are %+v, want one at Error", lines)
 		}
-		if lines[0]["session"] != "ses_fresh" || lines[0]["replacement"] != true || lines[0]["replaced"] != "ses_old" {
-			t.Errorf("the Error line names session %v, replacement %v, replaced %v; want ses_fresh, true, ses_old", lines[0]["session"], lines[0]["replacement"], lines[0]["replaced"])
+		if lines[0]["session"] != "ses_fresh" || lines[0]["oldSession"] != "ses_old" {
+			t.Errorf("the Error line names session %v and oldSession %v; want ses_fresh and ses_old", lines[0]["session"], lines[0]["oldSession"])
 		}
 		resumes := len(rt.CallsOf("Resume"))
 

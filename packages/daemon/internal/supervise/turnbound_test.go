@@ -192,58 +192,71 @@ func TestAControllerTurnOpenPastItsBoundIsEnded(t *testing.T) {
 		h.wantEnds(1)
 	})
 
-	t.Run("the R1 Error line of an end a take-back undid is written once, when the end stands, naming the session and both endings though the relaunch lost the session", func(t *testing.T) {
-		// A controller whose session has never finished a turn, with one end counted.
-		h := newHarnessOf(t, controllerClaim())
-		h.reach(StateReady)
-		h.dies()
-		h.relaunched()
-		h.wantEnds(1)
-		if h.claim().SessionRun.TurnFinished {
-			t.Fatal("the controller's session reads as having finished a turn, want one that never has")
-		}
-		start := h.inATurn()
-		h.advance(turnBound + time.Minute)
-		resumes, spawns := h.startsSoFar()
-		h.store.fail("PutDelivery", errBoom)
-		_ = h.handle(TurnPastBound{Claim: h.token, Bound: turnBound, TurnStart: start})
-		h.wantEnds(1)
-		if lines := h.records.of(sessionNotReplacedLine); len(lines) != 0 {
-			t.Fatalf("the refused take-back wrote %d lines that say the session is not replaced, want none", len(lines))
-		}
-
-		// The relaunch the standing end makes finds the session gone, so it forgets the session
-		// and its run and spawns a fresh agent (startFresh): the line still names what ended.
-		h.store.fail("PutDelivery", nil)
-		h.rt.ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: no OMP session anywhere", h.token, runtime.ErrSessionFileMissing)})
-		h.must(TurnPastBound{Claim: h.token, Bound: turnBound, TurnStart: start})
-		if got, gotSpawns := h.startsSoFar(); got != resumes+1 || gotSpawns != spawns+1 {
-			t.Fatalf("the relaunch made %d resumes and %d spawns, want the one resume the runtime refused and one fresh spawn", got-resumes, gotSpawns-spawns)
-		}
-		if c := h.claim(); c.Session != "" || c.SessionRun.Ends != 0 {
-			t.Fatalf("after the lost session's relaunch the claim records session %q with the run %+v, want both cleared", c.Session, c.SessionRun)
-		}
-		lines := h.records.of(sessionNotReplacedLine)
-		if len(lines) != 1 || lines[0].level != slog.LevelError {
-			t.Fatalf("the lines that say the session is not replaced are %+v, want one at Error", lines)
-		}
-		if got, _ := lines[0].attr("session"); got.String() != session {
-			t.Errorf("the Error line names session %q, want %q", got, session)
-		}
-		// The controller's first session replaced none, though the relaunch since left it behind.
-		if got, ok := lines[0].attr("replacement"); !ok || got.Kind() != slog.KindBool || got.Bool() {
-			t.Errorf("the Error line says replacement %v (present %t), want false: %q is the controller's first session", got, ok, session)
-		}
-		if got, _ := lines[0].attr("replaced"); got.String() != "" {
-			t.Errorf("the Error line names the replaced session %q, want none", got)
-		}
-		endings, _ := lines[0].attr("endings")
-		for _, want := range []string{"died after the controller was ready", "its turn stayed open longer than 1h30m0s"} {
-			if !strings.Contains(endings.String(), want) {
-				t.Errorf("the Error line names the endings %q, want one that says %q", endings, want)
+	// The R1 Error line of an end a take-back undid, for the controller's first session and for a
+	// fresh one. The relaunch that loses the session records it as the one left behind, so the line
+	// names the session it replaced only as that stood at the end (endTurnPastBound's capture).
+	for _, tc := range []struct {
+		name string
+		// abandoned is the session the claim left behind before this one: "" for none.
+		abandoned string
+	}{
+		{name: "the controller's first session"},
+		{name: "a fresh session", abandoned: "ses_left_behind"},
+	} {
+		t.Run("the R1 Error line of an end a take-back undid is written once, when the end stands, naming the session, both endings and the session it replaced though the relaunch lost the session: "+tc.name, func(t *testing.T) {
+			// A controller whose session has never finished a turn, with one end counted.
+			c := controllerClaim()
+			if tc.abandoned != "" {
+				c.Abandoned = AbandonedSession{Session: tc.abandoned, Why: "its launches ended before it finished a turn", At: epoch.Add(-time.Hour), Told: true}
 			}
-		}
-	})
+			h := newHarnessOf(t, c)
+			h.reach(StateReady)
+			h.dies()
+			h.relaunched()
+			h.wantEnds(1)
+			if h.claim().SessionRun.TurnFinished {
+				t.Fatal("the controller's session reads as having finished a turn, want one that never has")
+			}
+			start := h.inATurn()
+			h.advance(turnBound + time.Minute)
+			resumes, spawns := h.startsSoFar()
+			h.store.fail("PutDelivery", errBoom)
+			_ = h.handle(TurnPastBound{Claim: h.token, Bound: turnBound, TurnStart: start})
+			h.wantEnds(1)
+			if lines := h.records.of(sessionNotReplacedLine); len(lines) != 0 {
+				t.Fatalf("the refused take-back wrote %d lines that say the session is not replaced, want none", len(lines))
+			}
+
+			// The relaunch the standing end makes finds the session gone, so it forgets the session
+			// and its run and spawns a fresh agent (startFresh): the line still names what ended.
+			h.store.fail("PutDelivery", nil)
+			h.rt.ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: no OMP session anywhere", h.token, runtime.ErrSessionFileMissing)})
+			h.must(TurnPastBound{Claim: h.token, Bound: turnBound, TurnStart: start})
+			if got, gotSpawns := h.startsSoFar(); got != resumes+1 || gotSpawns != spawns+1 {
+				t.Fatalf("the relaunch made %d resumes and %d spawns, want the one resume the runtime refused and one fresh spawn", got-resumes, gotSpawns-spawns)
+			}
+			if c := h.claim(); c.Session != "" || c.SessionRun.Ends != 0 || c.Abandoned.Session != session {
+				t.Fatalf("after the lost session's relaunch the claim records session %q with the run %+v and abandoned %q, want both cleared and %q left behind",
+					c.Session, c.SessionRun, c.Abandoned.Session, session)
+			}
+			lines := h.records.of(sessionNotReplacedLine)
+			if len(lines) != 1 || lines[0].level != slog.LevelError {
+				t.Fatalf("the lines that say the session is not replaced are %+v, want one at Error", lines)
+			}
+			if got, _ := lines[0].attr("session"); got.String() != session {
+				t.Errorf("the Error line names session %q, want %q", got, session)
+			}
+			if got, ok := lines[0].attr("oldSession"); !ok || got.String() != tc.abandoned {
+				t.Errorf("the Error line names oldSession %q (present %t), want %q", got, ok, tc.abandoned)
+			}
+			endings, _ := lines[0].attr("endings")
+			for _, want := range []string{"died after the controller was ready", "its turn stayed open longer than 1h30m0s"} {
+				if !strings.Contains(endings.String(), want) {
+					t.Errorf("the Error line names the endings %q, want one that says %q", endings, want)
+				}
+			}
+		})
+	}
 
 	t.Run("a turn begun under a compaction is ended past the bound after a daemon restart", func(t *testing.T) {
 		h := controllerUp(t)

@@ -222,12 +222,9 @@ func TestAControllerSessionIsReplacedAfterTwoLaunchesEndBeforeAFinishedTurn(t *t
 		if got, _ := lines[0].attr("session"); got.String() != replacingSession {
 			t.Errorf("the Error line names session %q, want the fresh one, %q", got, replacingSession)
 		}
-		// The fresh session started in place of the first one, and the line says so.
-		if got, ok := lines[0].attr("replacement"); !ok || got.Kind() != slog.KindBool || !got.Bool() {
-			t.Errorf("the Error line says replacement %v (present %t), want true: the session replaced %q", got, ok, session)
-		}
-		if got, _ := lines[0].attr("replaced"); got.String() != session {
-			t.Errorf("the Error line names the replaced session %q, want %q", got, session)
+		// The fresh session started in place of the first one, and the line names it.
+		if got, ok := lines[0].attr("oldSession"); !ok || got.String() != session {
+			t.Errorf("the Error line names oldSession %q (present %t), want %q", got, ok, session)
 		}
 
 		// The launch budget runs out, the claim fails, and the keeper's retry (RequestRetry, made
