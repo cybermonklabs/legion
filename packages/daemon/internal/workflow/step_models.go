@@ -211,8 +211,10 @@ type spanRead struct {
 // still starting (startingLaunch), and reads are the fact's reads. The launches are the start's
 // live launch, each launch from began.FromZero to the generation now, and the launch still
 // starting. A launch counts from zero where it started after the start. Its end is the read
-// usedRead gives where it is live now, and its final totals where it ended. A launch still
-// starting has no end. used is each read the end used.
+// usedRead gives where it is live now. Where it ended, or is live with no such read, its end is the
+// final totals its shim sent, if any. A launch is live a moment after its shim sent them and closed,
+// until its claim's locator is cleared, and its final totals cannot change. A launch still starting
+// has no end. used is each read the end used.
 func stepSpans(agent claim.Token, began record.StartTotals, now record.AgentLaunches, starting bool, reads FactReads) (spans []launchSpan, used []spanRead) {
 	var generations []uint64
 	if began.Live {
@@ -241,7 +243,8 @@ func stepSpans(agent claim.Token, began record.StartTotals, now record.AgentLaun
 		final := false
 		if now.Live && generation == now.Generation {
 			end = usedRead(reads, key, launch)
-		} else if launch != nil && launch.Final != nil {
+		}
+		if end == nil && launch != nil && launch.Final != nil {
 			end, final = launch.Final, true
 		}
 		if end != nil {
