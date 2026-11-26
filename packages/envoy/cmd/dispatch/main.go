@@ -495,6 +495,22 @@ func main() {
 		slog.Info("dispatch: filled document_search for the documents stored before this release", "rows", filled)
 	}
 
+	// session_titles (migration 20261117100008) holds each session's newest stamped title,
+	// 20261117100015's trigger keeps it in step from the deploy on, and this fills it for the
+	// events stored before that, in committed batches, for document_search's reason above
+	// (20261117100016's comment). A failure stops the boot: delivery.ResolveSessionTitles reads
+	// session_titles alone, so a process that served with the table unfilled would name every
+	// session stored before this release by its id. Production runs one replica under a
+	// Kubernetes Deployment's `strategy: Recreate` (README.md, "Database migrations"), so no
+	// process serves while this one migrates and fills: the old process has stopped, and this
+	// one listens only once the fill has ended.
+	if filled, err := database.FillSessionTitles(ctx); err != nil {
+		slog.Error("dispatch: fill session_titles for the events stored before this release", "error", err)
+		os.Exit(1)
+	} else if filled > 0 {
+		slog.Info("dispatch: filled session_titles for the events stored before this release", "rows", filled)
+	}
+
 	// asks_anchor_artifact_id (migration 0148) indexes the anchors whose artifact_id is a
 	// lower-case document id, the form every server-written anchor carries. A row an earlier
 	// release stored with another spelling is left out, and settlement records no mark for it:
