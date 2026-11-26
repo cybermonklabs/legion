@@ -538,6 +538,18 @@ const (
 	reloadCount       = 200
 )
 
+// reloadRequestStep bounds how long each request of TestAReloadUnderJetStreamRequestsAnswersEveryOne
+// waits for its answer. It is twice connectTimeout, the most that each of the two waits through
+// which one Reload holds a connection's bytes may take before that Reload fails the test:
+// relay.hold's wait for every connection to stop at a message boundary, and relay.barrier's wait
+// for the server's answers to the relay's PINGs (relay.await). It is a bound chosen from those
+// waits, not a proof that an answer was lost: the hold also lasts while the server reloads, and a
+// request can wait through more than one reload in a row. Requests the holds only delay are
+// answered far sooner: in INFRA-3904's build Jobs, 32,520 runs of a copy of this row with a 15 s
+// wait per request, plain, under -race and beside up to 16 busy loops, ran out of that wait only in
+// the one run whose answers nats-server had dropped (below).
+const reloadRequestStep = 2 * connectTimeout
+
 // A reload under clients' JetStream requests answers every request and keeps every connection, and
 // under the race detector it is no data race. nats-server writes each service import's account on
 // an authorization reload and reads it without the lock while it sets up the response to a request
@@ -547,50 +559,119 @@ const (
 // that held the clients without waiting for the server to finish what it had; each reload here
 // changes the user's grant, so each one runs the server's authorization reload, and the server's
 // log says so.
+//
+// Each request waits reloadRequestStep for its answer, cut to the test's deadline (testDeadline). A
+// request that draws none in its step fails the test by name at once, and its requester sends
+// another, so the reloads still run under requests; one whose wait the deadline cut fails the test
+// naming the deadline. No reload starts past that deadline, and each Reload's hold and barrier
+// waits end at the test's deadline as that Reload reads it, which is never past the binary's own.
+// So a lost answer costs this test about one step, where a request that waited to the binary's
+// deadline held every later test of the package until then (dispatch://INFRA-3904: CI run
+// 45724862942 lost two answers, this test ran 1,111 s, and the package's last tests failed for want
+// of time).
+//
+// Before the requesters start, one request is sent until it is answered, each send bounded by the
+// same step, as a setup step is (sendCreate). That works around a race in nats-server, not a defect
+// of this test: v2.15.1 (and 2.15.3) makes an exporting account's prefix for the replies of its
+// service imports on the first request through one, releases the account's lock, and only then
+// subscribes to the prefix (newServiceReply, server/accounts.go 2504-2522 in 2.15.1, the lock
+// released at 2516 and the subscribe at 2521). A request another connection's read loop handles in
+// between takes the prefix, and its answer is published before the subscription exists, matches
+// nothing and is dropped; nothing sends it again. The global account's $JS.API.INFO requests go
+// through the system account's $JS.API.> export, and the requesters start 32 first requests from
+// four connections at once, so without that one answer, which reaches the client only through the
+// subscription, a run could lose a connection's first answers: in a build Job at GOMAXPROCS=2 under
+// load, one run in 3,200 lost all eight of a connection's first requests, sent before the first
+// reload, and the system account still held their eight response mappings. The awaited request can
+// go once nats-server subscribes to the prefix before it hands the prefix out.
 func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
 	seed, public := User(t)
 	grant := func(n int) string {
 		return publishGrantConfig(public, []string{"$JS.API.>", "_INBOX.>", fmt.Sprintf("reload%d.>", n)})
 	}
 	server, uri := StartConfig(t, grant(0), []string{"-js"}, false)
-	stop := make(chan struct{})
-	var answered atomic.Int64
-	failures := make(chan error, reloadConnections*reloadRequesters)
-	var requesters sync.WaitGroup
-	for range reloadConnections {
+	bound := boundOf(t)
+	conns := make([]*natsgo.Conn, reloadConnections)
+	for c := range conns {
 		conn, err := ConnectSeed(t, uri, seed)
 		if err != nil {
 			t.Fatalf("connect as the user: %v", err)
 		}
 		t.Cleanup(conn.Close)
-		for range reloadRequesters {
+		conns[c] = conn
+	}
+	for {
+		_, err := conns[0].Request("$JS.API.INFO", nil, bound.step(reloadRequestStep))
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, natsgo.ErrTimeout) {
+			t.Fatalf("the first request, whose answer shows nats-server subscribed to the replies of its JetStream API: %v", err)
+		}
+		if bound.over() {
+			t.Fatalf("the first request, whose answer shows nats-server subscribed to the replies of its JetStream API, drew no answer by %s, short of the test's deadline", bound)
+		}
+	}
+	stop := make(chan struct{})
+	var answered atomic.Int64
+	var requesters sync.WaitGroup
+	stopRequesters := sync.OnceFunc(func() { close(stop) })
+	stopped := func() bool {
+		select {
+		case <-stop:
+			return true
+		default:
+			return false
+		}
+	}
+	// An early failure (a Reload's t.Fatalf among them) still stops the requesters and joins them
+	// before the test returns, closing the connections first so a request need not spend its step;
+	// each requester reports through t, which it must not do once the test has returned.
+	defer func() {
+		stopRequesters()
+		for _, conn := range conns {
+			conn.Close()
+		}
+		requesters.Wait()
+	}()
+	for c, conn := range conns {
+		for r := range reloadRequesters {
 			requesters.Go(func() {
-				for {
-					select {
-					case <-stop:
+				for !stopped() {
+					if bound.over() {
+						t.Errorf("connection %d, requester %d: the reloads did not end by %s, short of the test's deadline", c, r, bound)
+						return
+					}
+					step := bound.step(reloadRequestStep)
+					_, err := conn.Request("$JS.API.INFO", nil, step)
+					switch {
+					case err == nil:
+						answered.Add(1)
+					case errors.Is(err, natsgo.ErrTimeout) && step < reloadRequestStep:
+						t.Errorf("connection %d, requester %d: a request across the reloads was not answered by %s, short of the test's deadline", c, r, bound)
+						return
+					case errors.Is(err, natsgo.ErrTimeout):
+						t.Errorf("connection %d, requester %d: a request across the reloads drew no answer within %s", c, r, step)
+					case errors.Is(err, natsgo.ErrConnectionClosed) && stopped():
 						return
 					default:
-					}
-					if _, err := conn.Request("$JS.API.INFO", nil, requestWait(t)); err != nil {
-						failures <- err
+						t.Errorf("connection %d, requester %d: a request across the reloads failed: %v", c, r, err)
 						return
 					}
-					answered.Add(1)
 				}
 			})
 		}
 	}
 	for n := 1; n <= reloadCount; n++ {
+		if bound.over() {
+			t.Fatalf("completed only %d of %d reloads by %s, short of the test's deadline", n-1, reloadCount, bound)
+		}
 		if err := server.Reload(t, grant(n)); err != nil {
 			t.Fatalf("reload %d: %v", n, err)
 		}
 	}
-	close(stop)
+	stopRequesters()
 	requesters.Wait()
-	close(failures)
-	for err := range failures {
-		t.Errorf("a request across the reloads failed: %v", err)
-	}
 	if answered.Load() == 0 {
 		t.Fatal("no request was answered; this test says nothing about a reload under requests")
 	}
