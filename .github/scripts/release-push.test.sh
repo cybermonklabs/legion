@@ -169,10 +169,10 @@ leak_host="quartz-lantern.marble-otter.$tailnet_suffix"
 # The rule file the leak guard reads out of the checkout the script under test runs from, and
 # leak_rules_into <tree>, which puts a copy of it where a copy of that script at
 # <tree>/.github/scripts/release-push.sh looks for it, as a real checkout holds both.
-leak_rules_file="$script_dir/../../packages/daemon/internal/leakguard/private-names.toml"
+leak_rules_file="$script_dir/../private-names.toml"
 leak_rules_into() {
-  mkdir -p "$1/packages/daemon/internal/leakguard"
-  cp "$leak_rules_file" "$1/packages/daemon/internal/leakguard/private-names.toml"
+  mkdir -p "$1/.github"
+  cp "$leak_rules_file" "$1/.github/private-names.toml"
 }
 
 identity() {
@@ -1491,12 +1491,12 @@ echo "Case: a rule file that is absent, and one that does not parse, each refuse
 # of the script under test in a tree holding no rule file at all, and one in a tree whose rule
 # file is no TOML. Each refuses the write as a setup failure of its own and says which it met.
 k7="$work/k7"
-mkdir -p "$k7/none/.github/scripts" "$k7/bad/.github/scripts" "$k7/bad/packages/daemon/internal/leakguard"
+mkdir -p "$k7/none/.github/scripts" "$k7/bad/.github/scripts"
 cp "$release_push" "$k7/none/.github/scripts/release-push.sh"
 cp "$release_push" "$k7/bad/.github/scripts/release-push.sh"
 cp "$script_dir/gh-read.sh" "$k7/none/.github/scripts/gh-read.sh"
 cp "$script_dir/gh-read.sh" "$k7/bad/.github/scripts/gh-read.sh"
-printf 'this file is no TOML at all {{{\n' > "$k7/bad/packages/daemon/internal/leakguard/private-names.toml"
+printf 'this file is no TOML at all {{{\n' > "$k7/bad/.github/private-names.toml"
 # k7_run <tree>: the `release` create from that tree's copy of the script, against the stub gh.
 k7_run() {
   : > "$work/calls"
@@ -1512,7 +1512,7 @@ k7_run "$k7/none"
 check "the rule file absent: exits 1, the stub logged the view alone and no create" \
   "$(is "$rc|$calls" "1|$view")"
 check "the rule file absent: says the guard could not run and names the file it did not find" \
-  "$(is "$(contains "$out" 'the leak guard could not run, so the release create is refused')|$(contains "$out" 'packages/daemon/internal/leakguard/private-names\.toml is not in this checkout')" 'true|true')"
+  "$(is "$(contains "$out" 'the leak guard could not run, so the release create is refused')|$(contains "$out" '\.github/private-names\.toml is not in this checkout')" 'true|true')"
 k7_run "$k7/bad"
 check "the rule file unparseable: exits 1, the stub logged the view alone and no create" \
   "$(is "$rc|$calls" "1|$view")"

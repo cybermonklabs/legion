@@ -11,6 +11,7 @@ import (
 // enroll, names --projects, the option that names a session's Dispatch projects. A person's pod
 // names its projects as the person's session does, so enroll's --pod half names it too.
 func TestTheRegisterAndEnrollSynopsesNameProjects(t *testing.T) {
+	t.Parallel()
 	if synopsis := lookupCommand("register").synopsis; !strings.Contains(synopsis, "[--projects ") {
 		t.Errorf("register's synopsis %q names no --projects", synopsis)
 	}
@@ -26,6 +27,7 @@ func TestTheRegisterAndEnrollSynopsesNameProjects(t *testing.T) {
 // project, in the request form and the exec form; the line names no project, and a denial for
 // any other reason adds nothing.
 func TestADenialForAnUnnamedProjectSaysHowToNameIt(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
