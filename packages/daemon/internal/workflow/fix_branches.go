@@ -112,7 +112,10 @@ func (e *Engine) UpdatePushes(ctx context.Context, tx pgx.Tx, key string) (map[c
 		if start.Run != record.RunOpen || role == claim.RoleReviewer {
 			continue
 		}
-		branch := start.PushBranch
+		branch := ""
+		if fix != nil && fix.Place != i+1 {
+			branch, _ = e.besideBranchOf(*issue, w.Task, fix.Fix, role)
+		}
 		if branch != "" {
 			pushes[role] = supervise.UpdatePush{Branch: branch}
 		}
