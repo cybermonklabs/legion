@@ -195,8 +195,49 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // address, beside `dispatch priorities`: 5 words more, which the bound holds. The blocked-by
 // bullet's "read its links first" became "read that list first", the same count, so that the
 // words name the list the command replaces. Counted as this test counts, over the staged skills,
-// the three stand at 2,334 words, 6 under the bound: the other edits of the three since #5051
-// hold the words the two counts above leave out.
+// the three then stood at 2,334 words, 6 under the bound: the other edits of the three since
+// #5051 hold the words the two counts above leave out.
+//
+// The bound did not move for dispatch://INFRA-5908. Main stood at 2,334 words. The change that
+// adds the blocker rule (cybermonklabs/legion#5481, which this issue's pull request replaces) took
+// from the `dispatch` exit bullet its 30-word sentence on `dispatch login`'s exits, which the
+// exit-1 and exit-2 rule covers, and put 58 words in dispatch-first's "Work already tracked"
+// bullet, so the merge stood at 2,362. R1 of dispatch://INFRA-5768 puts the rule and its
+// exception in that bullet: 19 words more, net of the 11-word sentence on code owners and pull
+// requests that it deletes. R6 of that issue puts one line of 30 words in `dispatch`: a session
+// begins no Dispatch comment, ask, reply or message with who it is or which role it holds. The
+// payments give 74 words back, each a reason another skill says, words another sentence says, an
+// inert clause, or the wording of a rule:
+//
+// - 7: skills/dispatch-first/SKILL.md's secret-request sentence: the reason "is already in their
+//   Inbox, so", which skills/agent-secrets/SKILL.md says.
+// - 3: the same skill's searched bullet, "each you did not, with its queries" for "each part you
+//   did not, with the queries you ran": the wording of a rule.
+// - 11: skills/dispatch/SKILL.md's description: its list "a message, comment, ask, artifact,
+//   document edit, claim or status change", an inert clause, since every use of `dispatch` is one.
+// - 10: the same skill's exit bullet: "Dispatch's refusal, a Dispatch the command cannot reach",
+//   which "any other failure" says (9), and the wording of its run-again rule (1).
+// - 1: the same skill's defect bullet, "its project" for "the owning project": the wording of a
+//   rule.
+// - 14: skills/dispatch-writing-specs/SKILL.md's "A spec is a conversation, not a document you
+//   write and then ask about.", which the heading "The conversation" and its steps 2 and 3 say.
+// - 2: the same skill's ask-block bullet, "2 to 4 short options;" for "2 to 4 options, short and
+//   self-contained:": "self-contained" is what the clause after it says.
+// - 7: the same skill's measure bullet: "No unmeasured number goes in a premise.", which the
+//   sentence before it says.
+// - 3: the same skill's privileged-act bullet, "try its source, then the records that hold it"
+//   for "try the source that answers it, then the other records holding it": the wording of a
+//   rule.
+// - 3: the second step of the same skill's "Each version", "Give a large spec ... whole" for
+//   "Where a spec is large ... give the whole spec": the wording of a rule.
+// - 2: the same skill's "Old specs" heading, deleted: its sentence is the fourth step of "Each
+//   version", the wording of a rule.
+// - 11: the same skill's decisions paragraph: "as a `:::decision` block once the server's block
+//   types include `decision`", an inert clause, since Dispatch's block types are callout, ask,
+//   requirement, plan_task and check.
+//
+// So 2,362 + 19 + 30 - 74 = 2,337. Counted as this test counts, over the staged skills, the three
+// stand at 2,337 words, 2 under the bound.
 test("the three Dispatch skills total fewer than 2,340 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))

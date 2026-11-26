@@ -1,6 +1,6 @@
 ---
 name: dispatch
-description: "Use when you first use `dispatch` in a session: a message, comment, ask, artifact, document edit, claim or status change."
+description: "Use when you first use `dispatch` in a session."
 ---
 
 # Dispatch
@@ -9,8 +9,8 @@ Dispatch is a record for the people who decide, never a log of your work.
 
 - Use the `dispatch` command; the HTTP API only for what no command does. `dispatch <command> --help` gives its rules and an example.
 - Put long text on stdin, one flag per call: `--<field>-file -` with `<<'EOF'`; objects and lists take JSON.
-- Exit 2 is a usage error: fix every problem it names before you call again. Exit 1 is any other failure: Dispatch's refusal, a Dispatch the command cannot reach, or `ANSWER_NOT_KEPT` for a call that wrote nothing, which you run again.
-- Never work around a hard-to-use command, or one storing or losing something wrongly: open an issue in the owning project and tell its controller. A Legion role tells its architect (`skill://legion-worker/references/findings.md`).
+- Exit 2 is a usage error: fix every problem it names before you call again. Exit 1 is any other failure; run again a call that printed `ANSWER_NOT_KEPT`, which wrote nothing.
+- Never work around a hard-to-use command, or one storing or losing something wrongly: open an issue in its project and tell its controller. A Legion role tells its architect (`skill://legion-worker/references/findings.md`).
 
 ## Asks and ask blocks
 
@@ -58,6 +58,7 @@ A claim (or `dispatch issue-update --route session:<your id>`, `--route ''` to r
 
 - One issue per deliverable, its content the issue's document.
 - A message replies to a person or tells them what they must know now.
+- Begin no Dispatch comment, ask, reply or message with who you are or which role you hold: Dispatch shows the sender. A first line that a program reads stays.
 - Text a person must read to decide belongs in the spec. An artifact is a real file; markdown uploads as `.md` whatever its local name, never `.txt`.
 
 ## Architecture components

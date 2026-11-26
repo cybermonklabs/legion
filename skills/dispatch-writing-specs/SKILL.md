@@ -7,7 +7,7 @@ description: "Use when you write or change a spec, ask, comment or message a per
 
 ## The conversation
 
-Reach shared understanding at the least cost of the person's time. A spec is a conversation, not a document you write and then ask about. A Legion phase worker writes none (`skill://legion-worker`).
+Reach shared understanding at the least cost of the person's time. A Legion phase worker writes none (`skill://legion-worker`).
 
 1. Read the issue, the code and what the person wrote.
 2. Send what you found and the questions it leaves open, a few at a time, before the spec states a design.
@@ -46,23 +46,20 @@ For each spec, ask, comment and message:
 
 - Name the concrete case and its numbers, then the choice in those terms, never "Which option?".
 - A choice inside what the person asked for, one their messages favour, routine cleanup, sequencing, naming, a choice between equivalent options, and a fix you can make are yours.
-- Ask with an [ask block](skill://dispatch/SKILL.md#asks-and-ask-blocks): 2 to 4 options, short and self-contained: a person answers it with no other reading.
-- Measure each claim the ask rests on, its premise and each option's precondition. A claim you cannot measure stays out of the ask until it is measured. Call an option unavailable only where a precondition demonstrably fails. No unmeasured number goes in a premise.
-- Before you pass a question on as one only an attended or privileged act answers, try the source that answers it, then the other records holding it. Keep a privileged read for what only the live system knows.
+- Ask with an [ask block](skill://dispatch/SKILL.md#asks-and-ask-blocks): 2 to 4 short options; a person answers it with no other reading.
+- Measure each claim the ask rests on, its premise and each option's precondition. A claim you cannot measure stays out of the ask until it is measured. Call an option unavailable only where a precondition demonstrably fails.
+- Before you pass on a question as one only an attended or privileged act answers, try its source, then the records that hold it. Keep a privileged read for what only the live system knows.
 
 ## Each version
 
 1. After a person's answer, comment or edit, reread the problem and rewrite what the answer touches, deleting what it contradicts. Answer each comment in its thread. Never narrate an edit.
-2. Where a spec is large, or changed in a way you cannot check alone, give the whole spec to a fresh subagent to find its gaps or check its facts.
+2. Give a large spec, or one changed in a way you cannot check alone, whole to a fresh subagent to find its gaps or check its facts.
 3. Name each version with `dispatch doc-edit --summary`.
+4. Rewrite a spec outside the outline whole in one version, its ask blocks moved with `doc-edit`'s `move`.
 
 ## Decisions
 
-A choice earns an entry in the spec's `## Decisions` part only if a disagreeing reader would act differently; keep others to one spec line each. Write it in the spec, never in a separate document: the choice first, then the reason and the options weighed, as a `:::decision` block once the server's block types include `decision`. A person's answered ask is their decision: it stays in the spec where it was asked.
-
-## Old specs
-
-Rewrite a spec outside the outline whole in one version, its ask blocks moved with `doc-edit`'s `move`.
+A choice earns an entry in the spec's `## Decisions` part only if a disagreeing reader would act differently; keep others to one spec line each. Write it in the spec, never in a separate document: the choice first, then the reason and the options weighed. A person's answered ask is their decision: it stays in the spec where it was asked.
 
 ## Approval
 

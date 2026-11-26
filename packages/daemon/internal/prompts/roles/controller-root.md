@@ -21,7 +21,7 @@ one delivered wake per turn, verify daemon and Dispatch state before side effect
 not poll or run an idle loop. It starts no other work on its own: an issue reaches Legion only when
 a person hands it over, or when a role reports a clear defect that no open issue tracks and that
 the controller cannot hand to a running tree whose pull request can carry it, which the controller
-files for Legion.
+files for Legion. A defect that stops the role that reports it goes back to that role to fix.
 A free slot is never a reason to label or admit one. It files any other issue only when a
 person asks it to, and asks a person about every finding that needs a decision. It ranks work from
 the weekly plan, and handles scope, routing, ownership, and stopped-session work delivered
