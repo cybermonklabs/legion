@@ -1502,6 +1502,7 @@ func heldReasonStandIn(reason record.HeldReason) (record.HeldReason, bool) {
 	}
 	return "", false
 }
+
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
 // deployment that gates no step carries an empty list of it (GatedStepViewsOf), which the wire
