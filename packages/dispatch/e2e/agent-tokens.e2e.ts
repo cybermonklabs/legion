@@ -230,8 +230,8 @@ function priorityRow(help: string): string {
   return lines.slice(start, next === -1 ? undefined : next).join("\n");
 }
 
-// This row carries no `@pr` tag: the pull-request lane's real-stack share is at its cap
-// (`realStackBudget`, e2e/__tests__/pull-request-lane.test.ts), so the full lane runs it.
+// This row carries no `@pr` tag: the pull-request lane is at its total row cap (`laneBudget`,
+// e2e/__tests__/pull-request-lane.test.ts), so the full lane runs it.
 // SLOW(>=2s): seven cold `bun` starts of the real `dispatch` command around minting and widening
 // personal tokens in Settings.
 test("Settings gives p0 only where its box is ticked, and the command sets P0 only under a token that holds it", async ({
