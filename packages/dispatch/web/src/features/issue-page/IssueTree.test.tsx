@@ -1238,9 +1238,9 @@ test("f steps through a row's chips, links and then the controls no key presses"
 });
 
 // A row holds its margin - the kind's tag, the author, the time - ahead of its words in the DOM,
-// so that on a phone the margin floats beside the words' first line (`NodeRow.tsx`). `f` still
+// so that on a phone the margin floats beside the words' first line (`NodeRow.tsx`), and `f`
 // steps through the row in the order it reads: the links its words hold, then the kind's link,
-// then the controls no key presses. Taken in the DOM's order, the kind's link came first.
+// then the controls no key presses. Taken in the DOM's order, the kind's link would come first.
 test("f steps through a row's controls in its reading order: the words' links before the kind's link", async () => {
   setViewport(1440);
   const user = userEvent.setup();

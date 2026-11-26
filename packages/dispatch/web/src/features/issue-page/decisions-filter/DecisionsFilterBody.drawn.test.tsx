@@ -48,7 +48,12 @@ import {
 } from "../page-words";
 import { presetView } from "../presets";
 import { blockReads, Publisher, publishedNames } from "../projection-fixture";
-import { accessibleNameOf, asBeforeTheMove, rowControls, tabStopsOf } from "../row-name-fixtures";
+import {
+  accessibleNameOf,
+  rowControls,
+  tabStopsOf,
+  withMarginAfterWords,
+} from "../row-name-fixtures";
 import { ViewStage } from "../slots/stage";
 import { AppProviders } from "../slots/stage-fixtures";
 import { decisionBehind, nodesInOrder } from "../tree-keys";
@@ -2690,22 +2695,24 @@ test("nothing the body draws is hidden at a width", async () => {
   expect(view.container.querySelectorAll("[data-decisions-body] [hidden]").length).toBe(0);
 });
 
-// The Decisions row holds the outline's margin - the kind's tag, who decided and when, how it
-// stands - ahead of its words in the DOM, as the outline's row does, so that on a phone it floats
-// beside the words' first line (`NodeRow.tsx`). Its name still reads its words first, word for
-// word the name its text gave it before the margin stood first; named by its text in the DOM's
-// order, it would read the kind first. Its controls are the ones it had, in the order it reads
-// in - the link to the statement it informs, Keep, Change and the link to the entry in the
-// conversation, all under its words - and it takes no tab stop of its own.
-test("a Decisions row's name reads its words before its kind, and its controls are the ones it had", () => {
+// A Decisions row holds the outline's margin - the kind's tag, who decided and when, how it
+// stands - first in the document, as the outline's row does, so that on a phone it floats beside
+// the words' first line (`NodeRow.tsx`). It is named by its words and what it draws under them,
+// then its margin: word for word the name its text gives a copy of the row with its margin after
+// its words, and with the kind after the words. Named by its text in the document's order, it
+// would read the kind first. Its controls stand in the order it reads in - the link to the
+// statement it informs, Keep, Change and the link to the entry in the conversation, all under its
+// words - and it takes no tab stop of its own.
+test("a Decisions row is named by its words before its kind, and its controls stand in its reading order", () => {
   const view = renderBody(wholeIssue());
   const row = rowOf(view, D("first"));
-  const before = asBeforeTheMove(row);
+  const ordered = withMarginAfterWords(row);
+  const words = "The decision first.";
   try {
     const name = accessibleNameOf(row);
-    expect(name.startsWith("The decision first."), name).toBe(true);
-    expect(name.indexOf(NODE_TYPE_NAMES.decision, 1), name).toBeGreaterThan(0);
-    expect(name).toBe(accessibleNameOf(before));
+    expect(name.startsWith(words), name).toBe(true);
+    expect(name.indexOf(NODE_TYPE_NAMES.decision, words.length), name).toBeGreaterThan(0);
+    expect(name).toBe(accessibleNameOf(ordered));
     expect(rowControls(row)).toEqual([
       "The page draws s1.",
       CONTROL_LABELS.keep_decision,
@@ -2714,7 +2721,7 @@ test("a Decisions row's name reads its words before its kind, and its controls a
     ]);
     expect(tabStopsOf(row)).toEqual([]);
   } finally {
-    before.remove();
+    ordered.remove();
     view.unmount();
   }
 });

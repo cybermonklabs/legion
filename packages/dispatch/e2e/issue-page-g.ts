@@ -538,6 +538,9 @@ export async function parentOfRow(page: Page, id: string): Promise<string | null
  *  of its words and their first line, its tag, its byline and its time, and their colours. */
 export interface RowLayout {
   readonly author: { readonly color: string; readonly name: string } | null;
+  /** The box the author's name is drawn in: its width and the width its text takes, which is
+   *  more where the box cuts it. */
+  readonly authorBox: { readonly client: number; readonly scroll: number } | null;
   readonly byline: { readonly left: number; readonly top: number } | null;
   /** The time's computed colour. */
   readonly bylineColor: string | null;
@@ -567,6 +570,7 @@ export interface RowLayout {
   readonly statement: boolean;
   /** The kind's tag: its box, its words, and the shape it draws, by its glyph token. */
   readonly tag: {
+    readonly bottom: number;
     readonly glyph: string | null;
     readonly left: number;
     readonly right: number;
@@ -574,6 +578,13 @@ export interface RowLayout {
     readonly top: number;
   } | null;
   readonly time: string | null;
+  /** The time's box against the margin's, where the row draws a time. */
+  readonly timeBox: {
+    readonly left: number;
+    readonly marginLeft: number;
+    readonly marginRight: number;
+    readonly right: number;
+  } | null;
   readonly type: string;
   /** Whether the first thing the row's content draws is the node's words. */
   readonly wordsFirst: boolean;
@@ -649,6 +660,8 @@ export function rowLayouts(page: Page, spec: string): Promise<RowLayout[]> {
         const tagBox = tag?.getBoundingClientRect();
         const bylineBox = row.querySelector("[data-node-byline]")?.getBoundingClientRect();
         const time = row.querySelector("[data-node-time]");
+        const timeBox = time?.getBoundingClientRect();
+        const marginBox = row.querySelector("[data-node-margin]")?.getBoundingClientRect();
         const name = author?.querySelector("[data-author-text], [data-page-chrome]") ?? null;
         const fold = bullet?.matches("button") === true ? bullet : null;
         const card = row.querySelector("[data-node-card]") ?? row;
@@ -657,6 +670,7 @@ export function rowLayouts(page: Page, spec: string): Promise<RowLayout[]> {
             name === null
               ? null
               : { color: getComputedStyle(name).color, name: (name.textContent ?? "").trim() },
+          authorBox: name === null ? null : { client: name.clientWidth, scroll: name.scrollWidth },
           bullet: {
             fill: dot === null ? "" : getComputedStyle(dot).backgroundColor,
             kindFill: computed("backgroundColor", kindToken),
@@ -691,6 +705,7 @@ export function rowLayouts(page: Page, spec: string): Promise<RowLayout[]> {
             tag === null || tagBox === undefined
               ? null
               : {
+                  bottom: tagBox.bottom,
                   glyph: tag.querySelector("svg[data-glyph]")?.getAttribute("data-glyph") ?? null,
                   left: tagBox.left,
                   right: tagBox.right,
@@ -698,6 +713,15 @@ export function rowLayouts(page: Page, spec: string): Promise<RowLayout[]> {
                   top: tagBox.top,
                 },
           time: time?.textContent ?? null,
+          timeBox:
+            timeBox === undefined || marginBox === undefined
+              ? null
+              : {
+                  left: timeBox.left,
+                  marginLeft: marginBox.left,
+                  marginRight: marginBox.right,
+                  right: timeBox.right,
+                },
           type,
           wordsFirst: content?.firstElementChild === words,
           wordsHidden: words === null ? 0 : Math.max(0, words.scrollHeight - words.clientHeight),
@@ -719,9 +743,10 @@ const UNTYPED_KINDS: readonly string[] = ["comment", "message"];
  * turn draws none. A requirement is a statement in the spec alone, with the statement's colour,
  * word and shape; one of any other document is a block, in a block's colour, whose tag says
  * "requirement" and draws no shape (decision 246). At every width the tag stands at the right end
- * of the words' first line and inside the screen, its left edge right of that line's last word,
- * and the author and the time stand after it on that same line; a turn's author and time stand
- * there too.
+ * of the words' first line and inside the screen, its left edge right of that line's last word.
+ * The author and the time stand after it on that line, or, where the three do not fit, on the
+ * line under the tag's; a turn's, which has no tag, stand on the first line. The author's name is
+ * drawn whole - no box cuts it - and the time stands whole inside the margin.
  */
 export function expectRowLayouts(
   layouts: readonly RowLayout[],
@@ -794,19 +819,38 @@ export function expectRowLayouts(
           `${at} draws its tag past the right edge of the ${width} px screen`
         ).toBeLessThanOrEqual(width);
       }
-      if (row.byline !== null) {
-        expect(
-          row.byline.left,
-          `${at} draws its author and its time before its tag`
-        ).toBeGreaterThanOrEqual((row.tag?.right ?? 0) - 1);
-      }
     }
     if (row.byline !== null && row.line.right > 0) {
       expect(
         row.byline.left,
         `${at} draws its author and its time before the end of its words' first line`
       ).toBeGreaterThanOrEqual(row.line.right - 1);
-      expectOnFirstLine(row.byline.top, row, `${at} draws its author and its time`);
+      const tag = row.tag;
+      if (tag === null || row.byline.top < tag.bottom - 1) {
+        expectOnFirstLine(row.byline.top, row, `${at} draws its author and its time`);
+        expect(
+          row.byline.left,
+          `${at} draws its author and its time before its tag`
+        ).toBeGreaterThanOrEqual((tag?.right ?? 0) - 1);
+      } else {
+        expect(
+          row.byline.top,
+          `${at} draws its author and its time lower than the line under its tag`
+        ).toBeLessThanOrEqual(tag.bottom + 8);
+      }
+    }
+    if (row.authorBox !== null) {
+      expect(
+        row.authorBox.scroll,
+        `${at} cuts its author's name: its text takes ${row.authorBox.scroll} px of a ${row.authorBox.client} px box`
+      ).toBeLessThanOrEqual(row.authorBox.client + 1);
+    }
+    if (row.timeBox !== null) {
+      const box = row.timeBox;
+      expect(
+        box.left >= box.marginLeft - 1 && box.right <= box.marginRight + 1 && box.right <= width,
+        `${at} draws its time outside its margin or past the screen's edge`
+      ).toBe(true);
     }
     if (row.author !== null && row.author.name !== READER) {
       expect(row.author.color, `${at} draws its author other than in grey`).toBe(row.quiet);
@@ -928,13 +972,13 @@ export function rowGroups(page: Page): Promise<RowGroup[]> {
 }
 
 /**
- * The group of every row one view draws. At every width a row that is not open draws its kind,
- * its author and its time on one line, and its state on a second line under it. No row draws the
- * page's words for an author nobody recorded. Each tie is a chip inside the box of the node's
- * words, named by at most 32 characters and by no address, slug or short form of one
- * (`addresses`). A link in a node's words is the words' own colour, a child's blocker the ink,
- * each underlined in the bullets' grey. On a phone a fold control is 24 px square at least (WCAG
- * 2.5.8).
+ * The group of every row one view draws. At every width a row draws its state on a line under
+ * the line of its kind, its author and its time, which take one line where they fit and more
+ * where the author stands under the tag (`expectRowLayouts`). No row draws the page's words for
+ * an author nobody recorded. Each tie is a chip inside the box of the node's words, named by at
+ * most 32 characters and by no address, slug or short form of one (`addresses`). A link in a
+ * node's words is the words' own colour, a child's blocker the ink, each underlined in the
+ * bullets' grey. On a phone a fold control is 24 px square at least (WCAG 2.5.8).
  */
 export function expectRowGroups(
   groups: readonly RowGroup[],
@@ -948,19 +992,11 @@ export function expectRowGroups(
       row.author,
       `${at} draws the page's words for an author nobody recorded on its row`
     ).not.toBe(CONTROL_LABELS.unknown_author);
-    if (row.group !== null) {
-      if (!row.open) {
-        expect(
-          row.group.lines,
-          `${at} draws its kind, its author and its time on more than one line`
-        ).toBe(1);
-      }
-      if (row.stateTop !== null) {
-        expect(
-          row.stateTop,
-          `${at} draws its state on the line of its kind, its author and its time`
-        ).toBeGreaterThan(row.group.top + 8);
-      }
+    if (row.group !== null && row.stateTop !== null) {
+      expect(
+        row.stateTop,
+        `${at} draws its state on the line of its kind, its author and its time`
+      ).toBeGreaterThan(row.group.top + 8);
     }
     for (const chip of row.chips) {
       expect(

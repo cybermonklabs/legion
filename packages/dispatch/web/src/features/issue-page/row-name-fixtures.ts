@@ -20,10 +20,10 @@ export function accessibleNameOf(row: HTMLElement): string {
   return named;
 }
 
-/** A copy of `row` as it stood before its margin moved ahead of its words, put in the document
- *  outside the view it was drawn in: its margin after its words' column, named by its text alone,
- *  with no id of the row's. The caller removes it. */
-export function asBeforeTheMove(row: HTMLElement): HTMLElement {
+/** A copy of `row` with its margin after its words' column and no name of its own - no
+ *  `aria-labelledby`, and no id of the row's - so that its name is its text in reading order. It
+ *  is put in the document outside the view `row` was drawn in; the caller removes it. */
+export function withMarginAfterWords(row: HTMLElement): HTMLElement {
   const copy = row.cloneNode(true) as HTMLElement;
   copy.removeAttribute("aria-labelledby");
   for (const named of copy.querySelectorAll("[id]")) named.removeAttribute("id");

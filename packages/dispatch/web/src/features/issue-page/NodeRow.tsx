@@ -269,7 +269,7 @@ export function NodeRow({
         {/* The margin stands before the words in the DOM, so that on a phone it floats at the
             right of their first line and the words take the row's whole width under it
             (`NODE_ROW_LAYOUT`); from 761 px up the grid places each part in its column. The
-            row's name still reads its words before the margin (`rowNameIds`). */}
+            row's name reads its words before the margin (`rowNameIds`). */}
         <RowMargin
           author={author}
           context={context}
@@ -426,20 +426,21 @@ const BULLET_BOX =
  * row, which c-row reads by the same marks.
  *
  * From 761 px up the row is three columns: the bullet's 18 px, the words, and the margin - the
- * kind's tag, then the author and the time, on one line at the right end of the words' first
- * line, and the state on a second, smaller line under them - which is as wide as its lines need
- * and no more than two fifths of the row. At 760 px and below the row is no grid: the bullet
- * floats left in its 16 px, the words stand 6 px past it, and the margin floats right at the top
- * of the row, no wider than two fifths of the row, so the words share only the lines beside it -
- * one, or two where a state stands under the tag - and take the row's whole width under it. A
- * block of the words that cannot wrap beside it - a code block, a table, a drawn diagram, a
- * picture's paragraph, a rule - starts under it instead, where it has the row's whole width.
+ * kind's tag at the right end of the words' first line, then the author and the time, and the
+ * state on a smaller line under them - which is as wide as its lines need and no more than two
+ * fifths of the row. At 760 px and below the row is no grid: the bullet floats left in its
+ * 16 px, the words stand 6 px past it, and the margin floats right at the top of the row, no
+ * wider than two fifths of the row, so the words share only the lines beside it and take the
+ * row's whole width under it. A block of the words that cannot wrap beside it - a code block, a
+ * table, a drawn diagram, a picture's paragraph, a rule - starts under it instead, where it has
+ * the row's whole width.
  *
- * At every width the author's name is what gives way in the margin's first line: it is cut with
- * an ellipsis (`RowMargin`), and the tag and the time are never cut. So the margin is never
- * narrower than the least width of that line - the tag, the author's shape, the ellipsis and the
- * time - which at a deep indent on a phone is more than two fifths of the row, and the words
- * keep the rest of the line.
+ * At every width the author's name is drawn whole, never cut: the author and the time are one
+ * piece that follows the tag on its line where the tag, the name and the time fit in two fifths
+ * of the row, and that stands on a line of its own under the tag's where they do not, the name
+ * wrapping at a space where it is wider than the margin, and the time after its last word. The
+ * margin's line wraps by itself (`flex-wrap`): no script measures a row to decide it. The tag and
+ * the time never break, so the margin is never narrower than either of them.
  *
  * A phone class is `max-[761px]:`, not `max-[760px]:`: Tailwind writes an arbitrary `max-[N]`
  * as `(width < N)`, so only 761 draws 760 px itself as a phone, as the prototype's query and the
@@ -479,8 +480,9 @@ export const NODE_ROW_LAYOUT = {
    *  the row. */
   margin:
     "col-start-3 row-start-1 self-start text-right text-xs leading-6 max-[761px]:float-right max-[761px]:ml-1.5 max-[761px]:max-w-[40%] max-[761px]:min-w-min",
-  /** Its first line: the tag, then the author and the time, which never wraps. */
-  marginLine: "flex items-baseline justify-end gap-x-[7px]",
+  /** Its first line: the tag, then the author and the time, which move to a line of their own
+   *  under the tag's where the three do not fit (`RowMargin`). */
+  marginLine: "flex flex-wrap items-baseline justify-end gap-x-[7px]",
   /** Its second, smaller line: the state. */
   marginState: "flex flex-wrap items-center justify-end gap-x-1.5 leading-4 font-semibold",
 } as const;
@@ -488,9 +490,9 @@ export const NODE_ROW_LAYOUT = {
 /**
  * The ids of a row's parts and the `aria-labelledby` its `treeitem` carries, from `base`, the
  * row's own `useId`. The row is named by its words with everything under them, then its margin:
- * the order it reads in, and word for word the name its text gave it before the margin stood
- * ahead of the words in the DOM (`NODE_ROW_LAYOUT`), which a name taken from the text would now
- * read with the kind first. The fold control names no row: `aria-expanded` says how it stands.
+ * the order it reads in, though the margin stands ahead of the words in the DOM
+ * (`NODE_ROW_LAYOUT`), where a name taken from the row's text would read the kind first. The fold
+ * control names no row: `aria-expanded` says how it stands.
  */
 export function rowNameIds(base: string): {
   readonly content: string;
@@ -726,11 +728,12 @@ export const NODE_EDITED_MARKS: Readonly<Record<string, string>> = freeze({
  * unsure says of itself, on a second, smaller line (ruling 5). All of it is grey but the tag, the
  * reader's own name and a state that asks something of the reader. A node the model holds no
  * author for draws none here: its row says so under its words (`BodyAuthor`, ruling 5). It is a
- * column as wide as its lines, at every width (`NODE_ROW_LAYOUT`): where that column is at its
- * limit, the author's name is cut with an ellipsis and the tag and the time stay whole on the
- * line. Where `tagTo` is given, the tag is a link that opens the node in its own view (R9), out
- * of the tab order unless `tabStops` holds: `f` steps to it and Enter follows it. `id` names it
- * in the row's name, after the words (`rowNameIds`).
+ * column as wide as its lines, at every width (`NODE_ROW_LAYOUT`): the author and the time are
+ * one piece of the first line, after the tag, which stands on a line of its own under the tag's
+ * where the three do not fit in the column, with the whole name and the time after it; no part
+ * of the margin is ever cut. Where `tagTo` is given, the tag is a link that opens the node in its
+ * own view (R9), out of the tab order unless `tabStops` holds: `f` steps to it and Enter follows
+ * it. `id` names it in the row's name, after the words (`rowNameIds`).
  */
 export function RowMargin({
   author,
@@ -808,22 +811,25 @@ export function RowMargin({
           </span>
         )}
         {!authored && time === "" ? null : (
-          <span className="flex items-baseline" data-node-byline="">
+          // One piece: as one flex item of the line, it follows the tag where the tag and all of
+          // it fit, and takes a line of its own under the tag's where they do not. Inside it the
+          // name wraps at a space, or anywhere in a word too long for the margin, so nothing of
+          // it is cut, and the time follows its last word, or the next line where that one is
+          // full: the time is never on the tag's line while the name is under it, since a line
+          // the name has left is not one its later parts can return to.
+          <span className="min-w-0 [overflow-wrap:anywhere]" data-node-byline="">
             {/* Who made it, by a word and a shape: one shape per kind of author, so a person and
                 an agent never share one (R9). The name is the page's one name for an author
-                (`AgentText.author`), never an id (R22). It is the one part of the line that
-                gives way: its track shrinks to an em, where the ellipsis still shows, and no
-                further, so the column's least width holds the shape, the ellipsis and the time
-                and never the whole name. */}
+                (`AgentText.author`), never an id (R22), and it is drawn whole. */}
             {authored ? (
               <span
-                className="inline-grid grid-cols-[auto_minmax(1em,max-content)] items-center gap-1"
+                className="inline-flex max-w-full items-center gap-1"
                 data-author-kind={author.kind}
                 data-node-author=""
               >
                 <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors[author.kind]} />
                 <span
-                  className={`truncate${author.reader && !context ? ` font-semibold ${pageInkText}` : ""}`}
+                  className={`min-w-0${author.reader && !context ? ` font-semibold ${pageInkText}` : ""}`}
                   {...authorText}
                 >
                   {/* An agent by its role's word; the line under its words gives the whole
@@ -834,15 +840,13 @@ export function RowMargin({
             ) : null}
             {time === "" ? null : (
               <>
-                {/* Each part of the line is a box of its own, so the spaces around the dot are
-                    kept as written. */}
-                {authored ? (
-                  <span className="whitespace-pre" {...pageChrome}>
-                    {" · "}
+                {/* The line may break between the name and the time, and never inside "· time". */}
+                {authored ? <span {...pageChrome}> </span> : null}
+                <span className="whitespace-nowrap">
+                  {authored ? <span {...pageChrome}>· </span> : null}
+                  <span data-node-time="" {...authorText}>
+                    {time}
                   </span>
-                ) : null}
-                <span className="whitespace-nowrap" data-node-time="" {...authorText}>
-                  {time}
                 </span>
               </>
             )}
@@ -850,7 +854,11 @@ export function RowMargin({
                 surface (`EditedMark`, INFRA-1523, R2): here at the right of the row, which no
                 fold of its words reaches, so a post folded to one line keeps it.
                 The mark is the page's own word (`CONTROL_LABELS.post_edited`). */}
-            <EditedMark at={node.editedAt} className="whitespace-pre" marks={NODE_EDITED_MARKS} />
+            <EditedMark
+              at={node.editedAt}
+              className="whitespace-nowrap"
+              marks={NODE_EDITED_MARKS}
+            />
           </span>
         )}
       </div>
