@@ -135,6 +135,9 @@ func TestARunningRunOfTheReleaseBeforeKeepsNoFlag(t *testing.T) {
 // head releases the hold, and the retro starts.
 func TestTheJoinsTestingMoveLeavesCIToTheFix(t *testing.T) {
 	r := newStatesRig(t, phase.Testing)
+	// The tree runs, as its root's admission opens it, so the release of the end hold starts the
+	// retro (startHeldRetro reads record.TreeRunning).
+	seedTreeLifecycle(t, r.pool, "LEGION-208")
 	r.states(headOne, 1, ofSet(passOf("k1", "tester"), "k1", "k2"), ofSet(inCI(stateOf("k2", "no", "fail", "ci"), "failure"), "k1", "k2"))
 	r.complete(headOne, 2)
 	assertPhase(t, r.pool, phase.Reviewing)
