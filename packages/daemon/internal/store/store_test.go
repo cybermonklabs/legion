@@ -83,8 +83,9 @@ func emptyStore(t *testing.T) *Store {
 	if _, err := admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
 		t.Fatalf("create %s: %v", name, err)
 	}
-	dropContext := testwait.Context(t)
 	t.Cleanup(func() {
+		dropContext, cancel := testwait.TeardownContext(t)
+		defer cancel()
 		if err := testdb.Drop(dropContext, admin, name); err != nil {
 			t.Errorf("drop %s: %v", name, err)
 		}

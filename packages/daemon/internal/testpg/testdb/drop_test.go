@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-const heldBackend = "pid=17 type=client backend state=active query=select pg_sleep(60)"
+const heldBackend = "pid=17 type=client backend user=legion state=active wait=Lock/relation"
 
 // TestDropNamesTheHolderWhenTheLastDropAttemptEndsWithItsContext preserves both the PostgreSQL
 // refusal that began the retry and the context failure of the attempt that ran into the bound. A
@@ -24,9 +24,13 @@ func TestDropNamesTheHolderWhenTheLastDropAttemptEndsWithItsContext(t *testing.T
 	admin := &heldDropAdmin{blockSecondAttempt: make(chan struct{})}
 	result := make(chan error, 1)
 	go func() { result <- Drop(ctx, admin, "legion_drop_holder") }()
-	testwait.Receive(t, "Drop to make its second forced-drop attempt", admin.blockSecondAttempt)
-	cancel()
-	err := <-result
+	select {
+	case <-admin.blockSecondAttempt:
+		cancel()
+	case err := <-result:
+		t.Fatalf("Drop returned before its second forced-drop attempt: %v", err)
+	}
+	err := testwait.Receive(t, "Drop to return once its context ended", result)
 	if err == nil {
 		t.Fatal("Drop returned nil although its second forced drop ended with the context")
 	}

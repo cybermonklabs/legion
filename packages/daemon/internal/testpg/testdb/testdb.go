@@ -85,9 +85,10 @@ func PlainDatabase(t testing.TB, prefix string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dropContext := testwait.Context(t)
 	t.Cleanup(func() {
-		if err := drop(dropContext); err != nil {
+		ctx, cancel := testwait.TeardownContext(t)
+		defer cancel()
+		if err := drop(ctx); err != nil {
 			t.Error(err)
 		}
 	})
@@ -156,11 +157,11 @@ type Execer interface {
 // database a test has just filled. Where the login may terminate every session, the drop then
 // waits only a few seconds for those backends to exit, and answers 55006 while one has not.
 //
-// Both refusals are retried until ctx ends. A caller supplies the test binary's deadline: a
-// test's cleanup takes testwait.Context(t), and testpg.Main uses testwait.TeardownDeadline after
-// m.Run has returned. That lets a correct teardown survive machine load but still ends a holder
-// that never leaves, naming its backends. Any error that is not either refusal is the caller's at
-// once.
+// Both refusals are retried until ctx ends. A caller supplies the test binary's bound: a test's
+// cleanup takes testwait.TeardownContext(t), which stays before go test's alarm and is finite
+// under -timeout 0; testpg.Main uses testwait.TeardownDeadline after m.Run has returned. That
+// lets a correct teardown survive machine load but still ends a holder that never leaves, naming
+// its backends. Any error that is not either refusal is the caller's at once.
 //
 // It lives here rather than in internal/testpg because this package imports no package of the
 // module except internal/testwait, which imports none, so every package's tests can take it —
@@ -205,7 +206,9 @@ func Drop(ctx context.Context, admin Execer, name string) error {
 			return err
 		}
 		last = err
-		backends = holdingBackends(ctx, admin, name)
+		if read := holdingBackends(ctx, admin, name); read != "" {
+			backends = read
+		}
 		timer := time.NewTimer(250 * time.Millisecond)
 		select {
 		case <-ctx.Done():
@@ -216,23 +219,29 @@ func Drop(ctx context.Context, admin Execer, name string) error {
 	}
 }
 
+// holdingBackends names the backends still attached to the database. It returns "" when the read
+// fails, so the caller keeps the last list a live context read rather than a cut read's error. It
+// prints usename, state, the wait event and the backend type, never the statement text, which can
+// hold a role's password.
 func holdingBackends(ctx context.Context, admin Execer, name string) string {
 	var backends string
 	if err := admin.QueryRow(ctx, `select coalesce(string_agg(
 		'pid=' || pid::text || ' type=' || coalesce(backend_type, 'not visible') ||
-		' state=' || coalesce(state, '') || ' query=' || left(coalesce(query, ''), 120),
+		' user=' || coalesce(usename, '') || ' state=' || coalesce(state, '') || ' wait=' ||
+		coalesce(nullif(coalesce(wait_event_type, '') || '/' || coalesce(wait_event, ''), '/'), 'none'),
 		'; ' order by pid), 'none')
 		from pg_stat_activity where datname = $1 and pid <> pg_backend_pid()`, name).Scan(&backends); err != nil {
-		return "could not read pg_stat_activity: " + err.Error()
+		return ""
 	}
 	return backends
 }
 
-// dropDeadlineError keeps the PostgreSQL error that says why the drop was retried and names the
-// backends a live pg_stat_activity read saw before the context ended.
+// dropDeadlineError keeps the PostgreSQL error that explains why the drop was retried, and names
+// the backends the last live pg_stat_activity read saw. reason says what the context's end
+// interrupted, so it reads right whether or not any attempt was refused.
 func dropDeadlineError(cause, err error, attempts int, reason, name, backends string) error {
-	return fmt.Errorf("%w (still refused after %d attempts before its context bound: %s; backends still holding %s: %s): %w",
-		err, attempts, reason, name, backends, cause)
+	return fmt.Errorf("%w (gave up dropping %s after %d attempt(s) before its context bound: %s; backends still holding %s: %s): %w",
+		err, name, attempts, reason, name, backends, cause)
 }
 
 // RandomName is prefix with a random suffix, so two databases of one prefix never collide. It is

@@ -189,8 +189,9 @@ func dropInBackground(name string) {
 	})
 }
 
-// teardownContext is one clone drop's bound. It reads the test timeout lazily, after m.Run has
-// parsed its flags; under -timeout 0 its fallback starts when this teardown starts.
+// teardownContext bounds each clone drop and the template drop after m.Run returns. It reads the
+// test timeout lazily, once m.Run has parsed its flags; under -timeout 0 its fallback starts when
+// this teardown starts.
 func teardownContext() (context.Context, context.CancelFunc) {
 	return context.WithDeadline(context.Background(), testwait.TeardownDeadline())
 }
