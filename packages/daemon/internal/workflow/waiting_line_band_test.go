@@ -64,6 +64,7 @@ import (
 // enough to leave running-legion.md's honest definition of the ordinal, `1 being first in the
 // line`, standing.
 func TestTheShippedWordsNameTheWaitingLineBand(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join("..", "..", "..", "..")
 	body := func(file string) string {
 		t.Helper()

@@ -137,7 +137,7 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 	if !deadline.IsZero() && (m.held.Deadline.IsZero() || deadline.Before(m.held.Deadline)) {
 		m.held.Deadline = deadline
 		if a, ok := m.timers[TimerSuspend]; !ok || deadline.Before(a.due) {
-			m.arm(TimerSuspend, max(0, deadline.Sub(m.deps.Clock.Now())), "")
+			m.armAt(TimerSuspend, deadline, "")
 			m.log.Info("supervise: the held suspension stops the agent at its deadline if its turn has not ended", "deadline", deadline, "by", m.held.By)
 		}
 	}
@@ -161,11 +161,11 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 //
 // One claim here does not wait: the one whose paced wake is still waiting over no process at all,
 // which the gate wrote launching and parked before it had launched anything (reserveWake,
-// parkWake). A hold protects a turn and a process, and this claim has neither — the launch its
-// wake holds has not been made — so the suspension has nothing to wait for, and the wait is dear.
-// A wave's queue is hundreds of claims let out at a few wakes a minute, so a claim far down it
-// waits tens of minutes, and for that long both halves of R2 of dispatch://INFRA-976/spec fail: the
-// claim does not "still decide" the suspend, since an operator's drain, a park or a tree close
+// waitOnMachine). A hold protects a turn and a process, and this claim has neither — the launch
+// its wake holds has not been made — so the suspension has nothing to wait for, and the wait is
+// dear. A wave's queue is hundreds of claims let out at a few wakes a minute, so a claim far down
+// it waits tens of minutes, and for that long both halves of R2 of dispatch://INFRA-976/spec fail:
+// the claim does not "still decide" the suspend, since an operator's drain, a park or a tree close
 // lands only at the wake's turn (wakeNow), and it loses it as well, since the hold lives in memory
 // alone (holdSuspension) and an operator's suspend writes no outbox row — a restart inside those
 // minutes forgets the drain while the claim stands persisted launching, and the boot relaunches
@@ -175,9 +175,9 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 // source and reason and written (suspendedFor), which is why this row names StateSuspended among
 // its destinations (Handle, which holds every row to its own destinations because nothing is held
 // here). The wake goes with the process the claim never had (letGo clears it and disarms
-// TimerWake), and no token is handed back, since the limiter charges on the reserve: every wake
-// behind it keeps the turn it already holds, exactly as a wake dropped for a request that does not
-// wait leaves them (dropWakeFor, reparkWake).
+// TimerWake), which gives its place in the pacing up: the place had drawn no token, so the turn it
+// would have taken goes to the wake behind it, as a dropped wake's place does when the decision it
+// was dropped for takes it up no more (placeTimer, reparkWake).
 //
 // A claim whose launch waits for its issue pod's start does not wait either (askPod, wake.park):
 // the launch has let its process go and parked on the machine with no process started, waiting
@@ -187,9 +187,9 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 // (suspended, endPodPark), where the launch writes that it was cut short.
 //
 // A claim whose process still runs is untouched by any of this. The gate left such a claim exactly
-// as it stood (parkWake), so its suspend is decided by the row of the state it still holds — and a
-// launch that did start a process reaches the hold here as it always did, since that process is
-// what the hold is for.
+// as it stood (waitOnMachine), so its suspend is decided by the row of the state it still holds —
+// and a launch that did start a process reaches the hold here as it always did, since that process
+// is what the hold is for.
 //
 // A project pause's stop of a claim whose relaunch waits parked over the process it still records
 // — one that died and whose relaunch the pacing parked before letting it go (the gate sits before
@@ -227,13 +227,13 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 	if m.wake != nil && m.claim.Locator == nil {
 		if m.wake.park == nil {
 			m.log.Info("supervise: a suspension reached a claim whose paced wake waits over no process; deciding it here",
-				"reason", request.Reason, "by", request.By, "kind", m.wake.kind, "due", m.wake.at)
+				"reason", request.Reason, "by", request.By, "kind", m.wake.kind, "due", m.wake.due())
 		}
 		return m.suspendedFor(ctx, request, true)
 	}
 	if m.wake != nil && request.Pause != 0 {
 		m.log.Info("supervise: a project pause's stop reached a claim whose paced relaunch waits over the process it would replace; stopping that process now",
-			"reason", request.Reason, "pause", request.Pause, "kind", m.wake.kind, "due", m.wake.at, "incarnation", m.claim.Locator.Incarnation)
+			"reason", request.Reason, "pause", request.Pause, "kind", m.wake.kind, "due", m.wake.due(), "incarnation", m.claim.Locator.Incarnation)
 		return m.letProcessGoFor(ctx, request, true, stopOwed)
 	}
 	switch held := m.held; {
@@ -560,10 +560,10 @@ const (
 // toward the deaths limit for a death the daemon is being asked to recover from. A suspension is
 // no launch failure of its own either.
 func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSuspend) error {
-	cause := m.claim.LastDeathCause
-	m.claim.LastDeathCause = m.goneCause
+	cause, at := m.claim.LastDeathCause, m.claim.LastDeathAt
+	m.claim.LastDeathCause, m.claim.LastDeathAt = m.goneCause, m.deps.Clock.Now()
 	if err := m.interrupted(ctx, "the process the task's turn ran on is gone", m.goneOutOfMemory); err != nil {
-		m.claim.LastDeathCause = cause
+		m.claim.LastDeathCause, m.claim.LastDeathAt = cause, at
 		return err
 	}
 	m.recordEnd(ctx, endDied(m.goneCause))

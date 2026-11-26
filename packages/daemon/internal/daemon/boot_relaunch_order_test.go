@@ -36,25 +36,32 @@ func (s *releaseRefusingStore) PutClaim(ctx context.Context, c supervise.Claim) 
 }
 
 // bootRig is a boot's supervisor over n claims a previous daemon left launching with no process,
-// each holding a task, handed back newest-owed first, whose launches one limiter paces at the
-// shipped pace, with no jitter, on a clock the test moves. Each of restored is restored beside
-// them, after them in claims.
+// each holding a task, handed back newest-owed first, whose launches one pacer paces over one
+// limiter at the shipped pace, with no jitter, on a clock the test moves. Each of restored is
+// restored beside them, after them in claims.
 type bootRig struct {
-	t       *testing.T
-	sup     *supervisor
-	rt      *fake.Runtime
-	limiter *wakepace.Limiter
-	clock   *waveClock
-	start   time.Time
-	claims  []supervise.Claim
-	s       *supervision
+	t      *testing.T
+	sup    *supervisor
+	rt     *fake.Runtime
+	pacer  *wakepace.Pacer
+	clock  *waveClock
+	start  time.Time
+	claims []supervise.Claim
+	s      *supervision
 }
 
 func newBootRig(t *testing.T, n int, store supervise.Store, restored ...supervise.Claim) *bootRig {
 	t.Helper()
+	return newBootRigEdited(t, n, store, nil, restored...)
+}
+
+// newBootRigEdited is newBootRig with edit, when not nil, changing its n unfinished launches before
+// the boot restores them.
+func newBootRigEdited(t *testing.T, n int, store supervise.Store, edit func([]supervise.Claim), restored ...supervise.Claim) *bootRig {
+	t.Helper()
 	project, _ := claim.ProjectToken("legion")
 	clock := newWaveClock()
-	r := &bootRig{t: t, rt: fake.NewRuntime(), limiter: wakepace.New(testWakeRate, testWakeBurst, nil), clock: clock, start: clock.Now()}
+	r := &bootRig{t: t, rt: fake.NewRuntime(), clock: clock, start: clock.Now()}
 	for i := range n {
 		issue := fmt.Sprintf("LEGION-%d", i+1)
 		token, err := claim.NewToken(project, issue, claim.RoleTester)
@@ -62,8 +69,11 @@ func newBootRig(t *testing.T, n int, store supervise.Store, restored ...supervis
 			t.Fatal(err)
 		}
 		r.claims = append(r.claims, supervise.Claim{Token: token, Project: project, Tree: issue, Issue: issue, Role: claim.RoleTester,
-			Generation: 1, State: supervise.StateLaunching, PluginContract: api.DaemonAPIVersion,
+			Generation: 1, State: supervise.StateLaunching, PluginContract: api.DaemonAPIVersion(),
 			Pending: &supervise.Delivery{ID: fmt.Sprintf("row-%d", i+1), Task: "test the change", QueuedAt: r.start.Add(-time.Duration(i+1) * time.Minute)}})
+	}
+	if edit != nil {
+		edit(r.claims)
 	}
 	r.claims = append(r.claims, restored...)
 	r.sup = newSupervisor(context.Background(), nil, "legion", t.TempDir(), quietLogger())
@@ -71,10 +81,11 @@ func newBootRig(t *testing.T, n int, store supervise.Store, restored ...supervis
 		Runtime: r.rt, Conns: fake.NewConns(), Store: store, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Hour, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: api.DaemonAPIVersion,
+		PluginContract: api.DaemonAPIVersion(),
 		RefreshGate:    supervise.NewRefreshGate(0),
-		WakePace:       wakePaceOf(r.limiter),
+		WakePace:       wakePaceOf(wakepace.New(testWakeRate, testWakeBurst, nil), clock),
 	}
+	r.pacer = r.sup.deps.WakePace.Pacer
 	t.Cleanup(r.sup.stop)
 	unfinished, err := r.sup.restore(context.Background(), r.claims)
 	if err != nil {
@@ -113,12 +124,16 @@ func (r *bootRig) wantWaitingAt(i, k int) {
 	}
 }
 
-// wantNextTurn is the next wake anyone reserves now coming k intervals after the rig's start: each
-// relaunch was charged one turn, and none took a second at its gate.
+// wantNextTurn is the next place anyone joins in the second queue now waiting for the turn k
+// intervals after the rig's start: each relaunch holds one place, and none took a second at its
+// gate. A waiting place draws no token, so this reads the estimate of a probe place, which it
+// gives up again, where it once read the limiter's next reservation.
 func (r *bootRig) wantNextTurn(k int) {
 	r.t.Helper()
-	if next, want := r.limiter.Reserve(r.clock.Now()), r.start.Add(time.Duration(k)*testWakeInterval); !next.Equal(want) {
-		r.t.Fatalf("the next wake is due at %s, want %s", next, want)
+	probe := r.pacer.Join(wakepace.Second)
+	defer probe.Leave()
+	if next, want := probe.Estimate(), r.start.Add(time.Duration(k)*testWakeInterval); !next.Equal(want) {
+		r.t.Fatalf("the next place is due at %s, want %s", next, want)
 	}
 }
 
@@ -146,42 +161,49 @@ func TestABootRelaunchesUnfinishedLaunchesInTheOrderTheirWorkWasOwed(t *testing.
 	r.wantNextTurn(n)
 }
 
-// A restart reserves the relaunches of the deaths the previous daemon recorded in the same order
-// as the launches it left unfinished, the order their claims' work was owed: both were waiting in
-// that daemon's pacing when it stopped, and a wake is memory only. A death whose work was owed
-// after an unfinished launch's waits behind that launch, and one owed before it goes ahead,
-// whichever the boot raises first. Raised apart, each recorded death took the first turns of the
-// restart's queue, ahead of claims whose work had waited longer (dispatch://INFRA-5472).
-func TestABootRelaunchesRecordedDeathsInOneOrderWithTheUnfinishedLaunches(t *testing.T) {
+// A restart relaunches the deaths the previous daemon recorded ahead of the launches it left
+// unfinished, whatever their claims' work was owed: the relaunch of a role whose own process died
+// waits in the pacing's first queue (supervise.WakeQueue, dispatch://INFRA-5682 R2), and the
+// boot's pass places the first queue before the second, so the death takes the first turn the
+// pass hands out and the unfinished launches follow in the order their work was owed. Before R2
+// the boot placed both in one owed order, and a death owed after an unfinished launch waited
+// behind it; this test held that order, and holds the new one. Another launch of the restarted
+// daemon has taken the fresh bucket's one turn already, so every relaunch of the pass waits at
+// its place, and the order reads off those places, as the budgets the replay leaves read off a
+// relaunch that has not run.
+func TestABootRelaunchesRecordedDeathsAheadOfTheUnfinishedLaunches(t *testing.T) {
 	t.Parallel()
 	const n = 4
 	// Owed two and a half minutes before the rig starts, which is microseconds after now: after
 	// the unfinished launches owed four and three minutes before it, ahead of those owed two and
-	// one.
+	// one. The first queue puts it ahead of all four.
 	r := newBootRig(t, n, &outboxClaimStore{}, recordedDeathOwed(t, time.Now().UTC().Add(-150*time.Second)))
 	dead := n
+	if _, out := r.pacer.Join(wakepace.Second).Let(); !out {
+		t.Fatal("the fresh pacer's first place waits, want it let out at its join")
+	}
 
 	if refused := r.s.launchUnfinished(context.Background(), waitingLaunches(unfinishedOf(r.claims[:n])), r.claims[dead].Token); len(refused) != 0 {
 		t.Fatalf("the relaunch refused %v", refused)
 	}
 
-	r.wantSpawned(n - 1)
-	r.wantWaitingAt(n-2, 1)
-	r.wantWaitingAt(dead, 2)
-	r.wantWaitingAt(1, 3)
-	r.wantWaitingAt(0, 4)
-	r.wantNextTurn(5)
+	r.wantSpawned()
+	r.wantWaitingAt(dead, 1)
+	for i := n - 1; i >= 0; i-- {
+		r.wantWaitingAt(i, n+1-i)
+	}
+	r.wantNextTurn(n + 2)
 	m, _ := r.sup.Machine(r.claims[dead].Token)
 	if got := m.View().Claim.Budgets; got.Deaths != 1 || got.LaunchFailures != 1 {
 		t.Fatalf("the recorded death's claim has budgets %+v, want the one death the previous daemon charged and its one launch failure", got)
 	}
 }
 
-// A recorded death whose claim holds a suspension is reserved no turn. The death's own report
+// A recorded death whose claim holds a suspension is placed in no queue. The death's own report
 // ends that hold as a suspension, and the replay leaves it to that report (supervise's
-// relaunchRecordedDeath), so a turn handed to it would be left spent and every wake behind it
-// would run an interval late.
-func TestABootReservesNoTurnForARecordedDeathWithAHeldSuspension(t *testing.T) {
+// relaunchRecordedDeath), so a place taken for it would be given up again, and one that went
+// unbound until its turn would let nothing out and put every wake behind it an interval late.
+func TestABootPlacesNoRelaunchForARecordedDeathWithAHeldSuspension(t *testing.T) {
 	t.Parallel()
 	const n = 4
 	r := newBootRig(t, n, &outboxClaimStore{}, recordedDeathOwed(t, time.Now().UTC().Add(-150*time.Second)))
@@ -218,16 +240,36 @@ func recordedDeathOwed(t *testing.T, owed time.Time) supervise.Claim {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := liveClaim(90, token, api.DaemonAPIVersion)
+	c := liveClaim(90, token, api.DaemonAPIVersion())
 	c.Token, c.Project, c.Tree, c.Issue, c.Role = token, project, "LEGION-90", "LEGION-90", claim.RoleImplementer
 	c.DeathCharged, c.Budgets.Deaths, c.LastDeathCause = true, 1, "gone: pane %90 is gone"
 	c.Pending = &supervise.Delivery{ID: "row-90", Task: "implement the change", QueuedAt: owed, ConfirmedAt: owed, Interrupted: true}
 	return c
 }
 
-// A claim whose release the store refuses at the boot keeps the turn the boot reserved it in the
-// order of the work it is owed, and waits for that turn when the sweep that retries it releases
-// it before the turn has come: a transient refusal does not put the claim behind every claim
+// A claim that holds only the daemon's own notice of its relaunch (queueRelaunch) owes no work, so
+// it goes behind every claim owed a task, however long ago its notice was queued: the notice is
+// the daemon's sentence of what the last process ended, not work a person waits on.
+func TestABootRelaunchOfAClaimHoldingOnlyItsRelaunchNoticeGoesBehindOwedWork(t *testing.T) {
+	t.Parallel()
+	const n = 4
+	r := newBootRigEdited(t, n, &outboxClaimStore{}, func(claims []supervise.Claim) {
+		claims[n-1].Pending.ID = "relaunch:the-last-process-ended"
+	})
+
+	if refused := r.s.launchUnfinished(context.Background(), waitingLaunches(unfinishedOf(r.claims))); len(refused) != 0 {
+		t.Fatalf("the relaunch refused %v", refused)
+	}
+
+	r.wantSpawned(n - 2)
+	r.wantWaitingAt(n-3, 1)
+	r.wantWaitingAt(n-4, 2)
+	r.wantWaitingAt(n-1, 3)
+}
+
+// A claim whose release the store refuses at the boot keeps the place the boot took for it in the
+// order of the work it is owed, and waits at that place when the sweep that retries it releases
+// it before the place is let out: a transient refusal does not put the claim behind every claim
 // released after it in owed order.
 func TestABootRelaunchWhoseReleaseIsRefusedKeepsItsTurnForTheRetry(t *testing.T) {
 	t.Parallel()
@@ -239,8 +281,8 @@ func TestABootRelaunchWhoseReleaseIsRefusedKeepsItsTurnForTheRetry(t *testing.T)
 
 	refused := r.s.launchUnfinished(context.Background(), waitingLaunches(unfinishedOf(r.claims)))
 
-	if turn, kept := refused[third]; len(refused) != 1 || !kept || !turn.Equal(r.start.Add(2*testWakeInterval)) {
-		t.Fatalf("the relaunch refused %v, want only %s, keeping its turn two intervals on", refused, third)
+	if place, kept := refused[third]; len(refused) != 1 || !kept || !place.Estimate().Equal(r.start.Add(2*testWakeInterval)) {
+		t.Fatalf("the relaunch refused %v, want only %s, keeping its place, due two intervals on", refused, third)
 	}
 	r.wantSpawned(n - 1)
 	r.wantWaitingAt(2, 1)
@@ -255,9 +297,9 @@ func TestABootRelaunchWhoseReleaseIsRefusedKeepsItsTurnForTheRetry(t *testing.T)
 	r.wantNextTurn(n)
 }
 
-// A refusal that outlasts the turns it kept leaves no burst behind it: each kept turn that has
-// passed by the retry is reserved again, in owed order, so the claims a store outage held launch
-// at the pace the operator set rather than all at once.
+// A refusal that outlasts the places it kept leaves no burst behind it: each kept place the pacer
+// let out by the retry, unbound, is joined afresh, in owed order, so the claims a store outage held
+// launch at the pace the operator set rather than all at once.
 func TestABootRelaunchRefusedPastItsTurnIsPacedAgainAtTheRetry(t *testing.T) {
 	t.Parallel()
 	const n = 4
@@ -270,9 +312,13 @@ func TestABootRelaunchRefusedPastItsTurnIsPacedAgainAtTheRetry(t *testing.T) {
 	if len(refused) != 2 {
 		t.Fatalf("the relaunch refused %v, want %s and %s", refused, oldest, second)
 	}
-	// Ten turns on, the two released claims have run at their turns, and both kept turns have
-	// passed.
-	r.clock.advance(10 * testWakeInterval)
+	// Ten turns on, the two released claims have run at their turns, and the pacer has let both
+	// kept places out, with nothing bound to them. The clock moves a turn at a time, as a clock
+	// that moves on its own does: the pacer reads the clock at each turn, and a turn fired ten
+	// intervals late would find the bucket refilled and let out only the turns the refill holds.
+	for range 10 {
+		r.clock.advance(testWakeInterval)
+	}
 	for _, c := range r.claims {
 		m, _ := r.sup.Machine(c.Token)
 		m.Wait()
@@ -288,11 +334,11 @@ func TestABootRelaunchRefusedPastItsTurnIsPacedAgainAtTheRetry(t *testing.T) {
 	r.wantNextTurn(12)
 }
 
-// The claims owed longest keep the earliest turns however a refusal leaves their kept turns: the
-// store refuses all four releases at the boot, and by the retry, an interval and a half on, the
-// two earliest kept turns have passed while the two later have not. The retry pools the two still
-// to come with two fresh ones and hands them out in owed order, so the claim owed longest still
-// launches first, and no more turns are reserved than were passed.
+// The claims owed longest keep the earliest places however a refusal leaves the places they kept:
+// the store refuses all four releases at the boot, and by the retry, an interval and a half on,
+// the pacer has let the two earliest kept places out while the two later still wait. The retry
+// pools the two still waiting with two places joined afresh and hands them out in owed order, so
+// the claim owed longest still launches first, and no more places are joined than were let out.
 func TestABootRelaunchRefusedAcrossPassingTurnsKeepsTheOwedOrder(t *testing.T) {
 	t.Parallel()
 	const n = 4
@@ -320,18 +366,15 @@ func TestABootRelaunchRefusedAcrossPassingTurnsKeepsTheOwedOrder(t *testing.T) {
 	r.wantNextTurn(n + 2)
 }
 
-// A refusal that never clears takes no turn of the pacing at every sweep: the claim's one turn
-// passes, and the sweeps after it reserve it nothing more until its release comes.
+// A refusal that never clears takes no turn of the pacing at every sweep: the claim's one place is
+// let out, and the sweeps after it join it nothing more until its release comes. Where this test
+// once counted the limiter's reservations, it holds the sweeps to handing back the one place the
+// boot took: a place joined at each sweep would take a turn at each.
 func TestABootRelaunchRefusedAtEverySweepTakesOneTurn(t *testing.T) {
 	t.Parallel()
 	store := &releaseRefusingStore{outboxClaimStore: &outboxClaimStore{}}
 	r := newBootRig(t, 1, store)
 	token := r.claims[0].Token
-	reserved := 0
-	r.sup.deps.WakePace.Reserve = func(now time.Time) time.Time {
-		reserved++
-		return r.limiter.Reserve(now)
-	}
 	refuse := func() {
 		store.mu.Lock()
 		store.refuse = map[claim.Token]bool{token: true}
@@ -339,18 +382,22 @@ func TestABootRelaunchRefusedAtEverySweepTakesOneTurn(t *testing.T) {
 	}
 	refuse()
 	waiting := r.s.launchUnfinished(context.Background(), waitingLaunches(unfinishedOf(r.claims)))
+	kept := waiting[token]
+	if len(waiting) != 1 || kept == nil {
+		t.Fatalf("the boot refused %v, want %s alone, holding the place the boot took for it", waiting, token)
+	}
+	if _, out := kept.Let(); !out {
+		t.Fatalf("the place the boot took for %s waits, want it let out at its join by the fresh pacer", token)
+	}
 	for range 3 {
 		r.clock.advance(time.Minute)
 		refuse()
-		if waiting = r.s.launchUnfinished(context.Background(), waiting); len(waiting) != 1 {
-			t.Fatalf("the sweep's retry refused %v, want %s again", waiting, token)
+		if waiting = r.s.launchUnfinished(context.Background(), waiting); len(waiting) != 1 || waiting[token] != kept {
+			t.Fatalf("the sweep's retry refused %v, want %s again, holding the one place the boot took for it", waiting, token)
 		}
 	}
 
 	r.wantSpawned()
-	if reserved != 1 {
-		t.Fatalf("the boot and three sweeps reserved %d turns for a release the store never took, want the boot's one", reserved)
-	}
 }
 
 // unfinishedOf is the tokens of claims, in the order the store handed them back.

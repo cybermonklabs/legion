@@ -1,5 +1,5 @@
 {
-  "commands": 41,
+  "commands": 43,
   "refusals": 29,
   "runs": [
     {
@@ -20,6 +20,28 @@
       "outcome": "result",
       "text": [
         "No person wrote to this session in the last 72 hours."
+      ]
+    },
+    {
+      "tool": "dispatch_api",
+      "call": "valid",
+      "args": {
+        "path": "/api/v1/issues/DSP-1/events?limit=200"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/events?limit=200",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "[]"
       ]
     },
     {
@@ -899,7 +921,7 @@
       "tool": "dispatch_handoff_write",
       "call": "valid",
       "args": {
-        "body": "{\"schemaVersion\":1,\"phase\":\"implement\",\"issue\":\"DSP-1\"}",
+        "body": "{\"head\":\"0123456789abcdef0123456789abcdef01234567\",\"note\":\"Run the checks with bun test src/x.test.ts in packages/x.\"}",
         "issue": "DSP-1",
         "phase": "implement"
       },
@@ -923,7 +945,7 @@
                 "session_title": "Record the command surface"
               }
             },
-            "body": "{\"schemaVersion\":1,\"phase\":\"implement\",\"issue\":\"DSP-1\"}"
+            "body": "{\"head\":\"0123456789abcdef0123456789abcdef01234567\",\"note\":\"Run the checks with bun test src/x.test.ts in packages/x.\"}"
           }
         }
       ],
@@ -1098,7 +1120,7 @@
       "text": [
         "dispatch issues was not called: 1 problem",
         "- --all takes every matching issue in one unpaged read, so it cannot be combined with --limit or --offset: name --all on its own, or page with --limit and --offset",
-        "- Allowed flags: --project, --project-file, --status, --status-file, --parent, --parent-file, --label, --label-file, --priority, --clear-priority, --updated-since, --updated-since-file, --route-status, --route-status-file, --limit, --offset, --all, --no-all, --help, --dry-run",
+        "- Allowed flags: --project, --project-file, --status, --status-file, --parent, --parent-file, --label, --label-file, --priority, --clear-priority, --updated-since, --updated-since-file, --route-status, --route-status-file, --limit, --offset, --all, --no-all, --json, --no-json, --help, --dry-run",
         "- Example: dispatch issues --project PROJ --limit 250 --offset 250"
       ]
     },
@@ -1347,8 +1369,8 @@
         "Work under no priority (1: DSP 1):",
         "- DSP-7 [in_progress] Rotate the broker keys · DSP · person@example.com · changed 2026-01-02T03:04:05Z",
         "",
-        "Priority work parked (1: ship-the-daemon 1):",
-        "- DSP-9 [backlog] Backfill the index · DSP · advances ship-the-daemon (inherited) · parked 2026-01-02T03:04:05Z by session:session-… · changed 2026-01-02T03:04:05Z"
+        "Priority work in backlog or icebox (1: ship-the-daemon 1):",
+        "- DSP-9 [backlog] Backfill the index · DSP · advances ship-the-daemon (inherited) · moved to backlog 2026-01-02T03:04:05Z by session:session-… · changed 2026-01-02T03:04:05Z"
       ]
     },
     {
@@ -1386,6 +1408,41 @@
       "outcome": "result",
       "text": [
         "Created project CORE (Core) at 2026-01-02T03:04:05Z: http://dispatch.test/projects/CORE"
+      ]
+    },
+    {
+      "tool": "dispatch_project_update",
+      "call": "valid",
+      "args": {
+        "project": "CORE",
+        "proven_sessions": "on"
+      },
+      "requests": [
+        {
+          "method": "PUT",
+          "path": "/api/v1/projects/CORE/proven-sessions",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Project CORE (Core): proven sessions on."
       ]
     },
     {
@@ -1576,7 +1633,7 @@
         "Priority: P1",
         "Labels: infra",
         "Components: none live",
-        "Advances: ship-the-daemon (own), legion-first (inherited)",
+        "Advances: ship-the-daemon (own), legion-first (inherited); revision 7",
         "Route: none",
         "Repository: owner/repo (own)",
         "Progress: none",

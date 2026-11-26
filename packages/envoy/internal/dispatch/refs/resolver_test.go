@@ -3,6 +3,7 @@ package refs
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -149,7 +150,7 @@ func TestMentionsStoreTheWholeIdOfAShortReferenceAndTheKeysThatExist(t *testing.
 		source := resolverSource(index + 1)
 		insertPrefixComment(t, tx, source, "ACME-1", test.body)
 		located := NewReader(ctx, tx, prefixAuthor, "comment", source, resolverServer).Mentions(test.body)
-		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil); err != nil {
+		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil, false); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
 		if got := storedRefs(t, tx, "comment", source); !reflect.DeepEqual(got, test.want) {
@@ -226,7 +227,7 @@ func TestMentionsStoreTheWholeIdOfAProjectDocumentsShortReference(t *testing.T) 
 		source := resolverSource(index + 100)
 		insertPrefixComment(t, tx, source, "ACME-1", test.body)
 		located := NewReader(ctx, tx, prefixAuthor, "comment", source, resolverServer).Mentions(test.body)
-		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil); err != nil {
+		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil, false); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
 		if got := storedRefs(t, tx, "comment", source); !reflect.DeepEqual(got, test.want) {
@@ -296,7 +297,7 @@ func TestQuestionReferencesResolveAgainstTheTextsOwnDocument(t *testing.T) {
 			insertPrefixComment(t, tx, test.source, "ACME-1", test.body)
 		}
 		located := NewReader(ctx, tx, prefixAuthor, "comment", test.source, resolverServer).Mentions(test.body)
-		if _, err := replaceRefs(ctx, tx, "comment", test.source, text.Refs(located), nil); err != nil {
+		if _, err := replaceRefs(ctx, tx, "comment", test.source, text.Refs(located), nil, false); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
 		if got := storedRefs(t, tx, "comment", test.source); !reflect.DeepEqual(got, test.want) {
@@ -465,7 +466,7 @@ func TestAFailedResolverLeavesTheWriteStoringTheTextAsWritten(t *testing.T) {
 	if want := text.ExtractAt(body, resolverServer); !reflect.DeepEqual(located, want) {
 		t.Errorf("a failed resolver read %#v; want the text as written, %#v", located, want)
 	}
-	if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil, true); err != nil {
 		t.Fatalf("the write failed on what its body cites: %v", err)
 	}
 	want := []Target{{"ask", resolverAsk[:8]}}
@@ -479,6 +480,225 @@ func TestAFailedResolverLeavesTheWriteStoringTheTextAsWritten(t *testing.T) {
 		if !strings.Contains(record, "["+source+"]") {
 			t.Errorf("a logged failure does not name its source: %q", record)
 		}
+	}
+}
+
+// failingScanQueryer is a database whose every read answers one row no scan reads: the failure a
+// candidate reader meets after its query has run rather than at it.
+type failingScanQueryer struct{ failingQueryer }
+
+func (failingScanQueryer) Query(context.Context, string, ...any) (pgx.Rows, error) {
+	return &failingRows{}, nil
+}
+
+// failingRows is one row whose scan fails with errResolverRead. The methods no candidate reader
+// calls are those of the nil pgx.Rows it embeds.
+type failingRows struct {
+	pgx.Rows
+	read bool
+}
+
+func (r *failingRows) Next() bool {
+	next := !r.read
+	r.read = true
+	return next
+}
+
+func (*failingRows) Scan(...any) error { return errResolverRead }
+func (*failingRows) Close()            {}
+func (*failingRows) Err() error        { return nil }
+
+// A short id whose read fails is logged (Reader.failed), and the error it logs, like the one
+// ResolvePrefix answers the API with, is built of constant words: it quotes nothing a reference
+// wrote, neither the prefix nor its length nor the owner, so two references of one kind that
+// differ in all three fail with the same text. It still wraps the database's failure, met at the
+// query or at the scan of each kind's reader. A comment or a message whose delete mark does not
+// decode fails with a text that names neither its kind nor its id, whose head is the prefix a
+// reference wrote.
+func TestAFailedPrefixReadQuotesNothingAReferenceWrote(t *testing.T) {
+	ctx := context.Background()
+	databases := []struct {
+		name string
+		q    Queryer
+	}{
+		{"failing its query", failingQueryer{}},
+		{"failing its scan", failingScanQueryer{}},
+	}
+	// Each body writes one short id: a reader whose read fails resolves no later short id of
+	// the body and asks for none, so each kind's reader is reached by a body of its own. The two
+	// bodies of a kind differ in the prefix, its length and its owner.
+	type reference struct {
+		body    string
+		written []string
+	}
+	bodies := []struct {
+		kind string
+		pair [2]reference
+	}{
+		{"ask", [2]reference{
+			{"See dispatch://ACME-1/ask/1a2b3c4d.", []string{"1a2b3c4d", "ACME-1"}},
+			{"See dispatch://BETA-22/ask/9f8e7d6c-5b.", []string{"9f8e7d6c-5b", "BETA-22"}},
+		}},
+		{"comment", [2]reference{
+			{"See dispatch://ACME/artifact/handbook/comment/0c1d2e3f-0000.", []string{"0c1d2e3f-0000", "ACME/handbook"}},
+			{"See dispatch://BETA/artifact/guide/comment/6a5b4c3d.", []string{"6a5b4c3d", "BETA/guide"}},
+		}},
+		{"message", [2]reference{
+			{"See dispatch://ACME-1/message/5c6d7e8f-9a.", []string{"5c6d7e8f-9a", "ACME-1"}},
+			{"See dispatch://BETA-22/message/4e3d2c1b-0a1b.", []string{"4e3d2c1b-0a1b", "BETA-22"}},
+		}},
+		{"block", [2]reference{
+			{"See dispatch://ACME-1/artifact/notes#b-cafef00d.", []string{"cafef00d", "ACME-1/notes"}},
+			{"See dispatch://BETA-22/artifact/plan#b-beadfeed42.", []string{"beadfeed42", "BETA-22/plan"}},
+		}},
+	}
+	for _, database := range databases {
+		for _, body := range bodies {
+			t.Run(body.kind+" with the database "+database.name, func(t *testing.T) {
+				var texts [2][]string
+				for index, reference := range body.pair {
+					for _, err := range loggedErrors(t, database.q, reference.body) {
+						requireQuotesNone(t, err, reference.written)
+						texts[index] = append(texts[index], err.Error())
+					}
+					if len(texts[index]) == 0 {
+						t.Errorf("the failed read of %q logged no error", reference.body)
+					}
+				}
+				if !slices.Equal(texts[0], texts[1]) {
+					t.Errorf("two references of one kind logged %q and %q; want one text", texts[0], texts[1])
+				}
+			})
+		}
+	}
+
+	type asked struct {
+		scope  Scope
+		prefix string
+	}
+	resolves := []struct {
+		kind string
+		pair [2]asked
+	}{
+		{"ask", [2]asked{{Scope{IssueKey: "ACME-1"}, "1a2b3c4d"}, {Scope{IssueKey: "BETA-22"}, "9f8e7d6c-5b"}}},
+		{"comment", [2]asked{{Scope{Document: "ACME/handbook"}, "0c1d2e3f-0000"}, {Scope{Document: "BETA/guide"}, "6a5b4c3d"}}},
+		{"message", [2]asked{{Scope{IssueKey: "ACME-1"}, "5c6d7e8f-9a"}, {Scope{IssueKey: "BETA-22"}, "4e3d2c1b-0a1b"}}},
+		{"artifact", [2]asked{{Scope{IssueKey: "ACME-1"}, "8a9b0c1d"}, {Scope{IssueKey: "BETA-22"}, "2f3e4d5c-6b"}}},
+		{"block", [2]asked{{Scope{Document: "ACME-1/notes", Version: 2}, "cafef00d"}, {Scope{Document: "BETA-22/plan", Version: 3}, "beadfeed42"}}},
+	}
+	for _, database := range databases {
+		for _, resolve := range resolves {
+			var texts [2]string
+			for index, asked := range resolve.pair {
+				_, err := ResolvePrefix(ctx, database.q, prefixAuthor, resolve.kind, asked.scope, asked.prefix, Viewer{})
+				if err == nil {
+					t.Errorf("the %s %q resolved with the database %s", resolve.kind, asked.prefix, database.name)
+					continue
+				}
+				requireQuotesNone(t, err, []string{asked.prefix, cmp.Or(asked.scope.IssueKey, asked.scope.Document)})
+				texts[index] = err.Error()
+			}
+			if texts[0] != texts[1] {
+				t.Errorf("two %s prefixes failed with %q and %q with the database %s; want one text", resolve.kind, texts[0], texts[1], database.name)
+			}
+		}
+	}
+
+	// The id of a row a prefix's read matches starts with that prefix, so a candidate's error
+	// that quoted its id would quote what the reference wrote.
+	const id = "0c1d2e3f-0000-4000-8000-000000000001"
+	deletedAt := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	for _, kind := range []string{"comment", "message"} {
+		_, err := itemCandidate(kind, id, nil, "", "", "", resolverServer, postMarks{deletedAt: &deletedAt, deletedBy: []byte("no actor")})
+		if syntax := new(*json.SyntaxError); !errors.As(err, syntax) {
+			t.Errorf("a %s whose delete mark does not decode failed with %v; want the decode's failure wrapped", kind, err)
+			continue
+		}
+		if strings.Contains(err.Error(), id[:8]) {
+			t.Errorf("%q quotes the %s's id, whose head a reference wrote", err, kind)
+		}
+	}
+}
+
+// loggedErrors is every error a resolver over q logs as it reads body, failing t on a logged
+// error attribute that holds no error.
+func loggedErrors(t *testing.T, q Queryer, body string) []error {
+	t.Helper()
+	recorder := &logtest.Recorder{}
+	restore := logtest.Swap(t, recorder)
+	defer restore()
+	NewReader(context.Background(), q, prefixAuthor, "comment", resolverSource(1), resolverServer).Mentions(body)
+	var logged []error
+	for _, record := range recorder.Records() {
+		record.Attrs(func(attr slog.Attr) bool {
+			if attr.Key != "error" {
+				return true
+			}
+			if err, ok := attr.Value.Any().(error); ok {
+				logged = append(logged, err)
+			} else {
+				t.Errorf("a logged failure's error is %v, which is no error", attr.Value)
+			}
+			return true
+		})
+	}
+	return logged
+}
+
+// requireQuotesNone fails t where err does not wrap errResolverRead or its text quotes any of
+// written, the text a reference wrote.
+func requireQuotesNone(t *testing.T, err error, written []string) {
+	t.Helper()
+	if !errors.Is(err, errResolverRead) {
+		t.Errorf("%q does not wrap the database's failure", err)
+	}
+	for _, quoted := range written {
+		if strings.Contains(err.Error(), quoted) {
+			t.Errorf("%q quotes %q, which a reference wrote", err, quoted)
+		}
+	}
+}
+
+// A body citing a prefix two asks of the issue carry, a prefix a third ask carries alone and a
+// prefix no ask carries reads the lone ask's whole id and the other two as written, and its
+// reader logs nothing: a prefix that names two items is no failure, any more than one that names
+// none. ResolvePrefix still refuses the shared prefix with ErrPrefixAmbiguous naming both asks,
+// the answer the API's 409 lists.
+func TestAnAmbiguousShortIDReadsAsWrittenAndLogsNothing(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	createReferenceProject(t, tx, "ACME")
+	insertResolverIssue(t, tx, "ACME-1", 1)
+	issue := "ACME-1"
+	for _, id := range []string{resolverAsk, resolverAmbiguous, resolverTwin} {
+		insertPrefixAsk(t, tx, id, &issue, nil, "Which?")
+	}
+	recorder := &logtest.Recorder{}
+	logtest.SetDefault(t, recorder)
+
+	shared, lone := resolverAmbiguous[:8], resolverAsk[:8]
+	body := "See dispatch://ACME-1/ask/" + shared + ", dispatch://ACME-1/ask/" + lone + " and dispatch://ACME-1/ask/deadbeef."
+	var read []string
+	for _, mention := range NewReader(ctx, tx, prefixAuthor, "comment", resolverSource(1), resolverServer).Mentions(body) {
+		read = append(read, mention.Kind+"/"+mention.ID)
+	}
+	if want := []string{"ask/" + shared, "ask/" + resolverAsk, "ask/deadbeef"}; !slices.Equal(read, want) {
+		t.Errorf("the body read %q; want %q", read, want)
+	}
+	for _, record := range recorder.Records() {
+		t.Errorf("the body logged %q; want nothing logged", record.Message)
+	}
+
+	_, err = ResolvePrefix(ctx, tx, prefixAuthor, "ask", Scope{IssueKey: issue}, shared, Viewer{})
+	var ambiguous *ErrPrefixAmbiguous
+	if !errors.As(err, &ambiguous) || ambiguous.Prefix != shared || len(ambiguous.Candidates) != 2 ||
+		ambiguous.Candidates[0].ID != resolverAmbiguous || ambiguous.Candidates[1].ID != resolverTwin {
+		t.Errorf("the shared prefix %q resolved with %v; want ErrPrefixAmbiguous naming %s and %s", shared, err, resolverAmbiguous, resolverTwin)
 	}
 }
 

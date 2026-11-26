@@ -83,6 +83,12 @@ export interface ExecuteDispatchToolInput {
 export interface DispatchToolResult {
   readonly text: string;
   readonly details: Record<string, unknown>;
+  /** A body the dispatch CLI writes to standard output as it came, byte for byte, in place of
+   *  `text`, with no line of its own beside it there: `dispatch api`'s answer to a 2xx that is not
+   *  Dispatch's JSON: stored content (an attachment) whatever its type, a body that is not JSON,
+   *  or a bodiless 204's none. `text` then says what it is, and `details` records it without its
+   *  bytes. */
+  readonly body?: Uint8Array;
   /** Pictures the model is shown after the text, in the order the text names them. */
   readonly images?: readonly ToolImage[];
   /** What the caller should hear beside the result rather than in it: the dispatch CLI writes
@@ -106,12 +112,17 @@ export interface OwnerResolution {
   readonly owner: Owner | null;
   /** The conversation upload a `dispatch://agent/...` ref names; it has no issue or project. */
   readonly agentArtifact?: AgentArtifactRef;
+  /** Set when the call needed an owner and the resolution pushed that it found none: no issue and
+   *  no LEGION_ISSUE, a LEGION_ISSUE that is not an issue, or a bare number with no GitHub
+   *  repository in cwd. Unset whenever the call names its owner or rightly has none. */
+  readonly ownerMissing?: true;
 }
 export interface CheckedCall {
   /** Every problem the check found; the call is refused once, listing them all. */
   readonly problems: string[];
   readonly owner: OwnerResolution;
-  /** The arguments as the schema parsed them (the owner-resolved ones when it refused them). */
+  /** The arguments as the schema parsed them: the owner-resolved ones when it refused them, or
+   *  when it parsed them with the stand-in issue. */
   readonly args: ToolArguments;
   readonly pictures: LocalPicture[];
 }

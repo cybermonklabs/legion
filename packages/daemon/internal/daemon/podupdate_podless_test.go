@@ -347,7 +347,7 @@ func TestAPodlessRoundIsReplacedByIssueOnceNothingHoldsIt(t *testing.T) {
 func TestTheByIssueReplacementWaitsForAMachineInADecision(t *testing.T) {
 	t.Parallel()
 	rig := newPodUpdateRig(t, podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true,
-		contract: api.DaemonAPIVersion, suspendedBy: supervise.SuspendedByDaemon, round: podUpdateRound, reasons: podUpdateDrift, unasked: true})
+		contract: api.DaemonAPIVersion(), suspendedBy: supervise.SuspendedByDaemon, round: podUpdateRound, reasons: podUpdateDrift, unasked: true})
 	rig.drifts(podUpdateDrift)
 	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
 
@@ -408,10 +408,11 @@ const pauseStoppedRole = claim.RoleImplementer
 
 var pauseLetOut = podUpdateStart.Add(10 * time.Minute)
 
-// pacedUntil is a wake pacing that lets every paced launch out at letOut. An operator's resume is
-// not paced (supervise's exemptWake).
-func pacedUntil(letOut time.Time) supervise.WakePace {
-	return supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(time.Time) time.Time { return letOut }}
+// pacedUntil is a wake pacing, built on the rig's clock, that lets the first paced launch out at
+// letOut (parkedFor, from the clock's time when the rig builds it). An operator's resume is not
+// paced (supervise's exemptWake).
+func pacedUntil(letOut time.Time) func(supervise.Clock) supervise.WakePace {
+	return func(clock supervise.Clock) supervise.WakePace { return parkedFor(clock, letOut.Sub(clock.Now())) }
 }
 
 // heldLaunchLetOut is what the round waits for while the wake pacing parks the held launch of
@@ -695,9 +696,9 @@ func TestALaunchUnderARoundWithNoProcessIsLaunchedOnce(t *testing.T) {
 		members []podUpdateRole
 		// resumeAt is when the claim is resumed.
 		resumeAt time.Time
-		// pace is the wake pacing, which parks the launch until a minute past the bound; the
-		// zero pace launches where the resume is made.
-		pace supervise.WakePace
+		// pace is the wake pacing, which parks the launch until a minute past the bound; nil
+		// launches where the resume is made.
+		pace func(supervise.Clock) supervise.WakePace
 		// alongside is a second launching claim, of the first's shape, resumed and launched at
 		// once with the first.
 		alongside claim.Role
@@ -772,7 +773,7 @@ func TestALaunchUnderARoundWithNoProcessIsLaunchedOnce(t *testing.T) {
 				rig.intoRoundPod(launching)
 				rig.handle(launching, rig.lookStart(launching))
 			}
-			if tc.pace.Reserve != nil {
+			if tc.pace != nil {
 				rig.wantLaunchParked(launching, launchTurn)
 				// The sweep before the bound, while the launch waits for its turn and no machine
 				// is in a decision.
@@ -939,7 +940,7 @@ func TestALaunchUnderARoundWithNoProcessKeepsThePodForAMemberThatHoldsItsAsk(t *
 	t.Run("the launching member holds the ask", func(t *testing.T) {
 		const holder = claim.RoleTester
 		rig := newPodUpdateRig(t, podUpdateRole{role: holder, state: supervise.StateReady, session: true, inPod: true,
-			contract: api.DaemonAPIVersion, round: podUpdateRound, reasons: podUpdateDrift})
+			contract: api.DaemonAPIVersion(), round: podUpdateRound, reasons: podUpdateDrift})
 		rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
 
 		// Its process goes while it holds the ask, and the daemon launches it again.
@@ -1006,7 +1007,7 @@ func TestALaunchUnderARoundWithNoProcessKeepsThePodForAMemberThatHoldsItsAsk(t *
 	t.Run("a fresh session never answers", func(t *testing.T) {
 		const holder, fresh = claim.RoleTester, "ses_tester_fresh"
 		rig := newPodUpdateRig(t, podUpdateRole{role: holder, state: supervise.StateReady, session: true, inPod: true,
-			contract: api.DaemonAPIVersion, round: podUpdateRound, reasons: podUpdateDrift})
+			contract: api.DaemonAPIVersion(), round: podUpdateRound, reasons: podUpdateDrift})
 		rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
 		token := rig.tokens[holder]
 		recorded := rig.claimOf(holder).Session
@@ -1028,7 +1029,7 @@ func TestALaunchUnderARoundWithNoProcessKeepsThePodForAMemberThatHoldsItsAsk(t *
 		for _, ev := range []supervise.Event{
 			supervise.StreamHello{Claim: token, Generation: generation},
 			supervise.RequestRegister{Claim: token, Generation: generation, Session: fresh,
-				SessionFile: "/sessions/tester-fresh.jsonl", CapabilityHash: []byte(holder), PluginContract: api.DaemonAPIVersion},
+				SessionFile: "/sessions/tester-fresh.jsonl", CapabilityHash: []byte(holder), PluginContract: api.DaemonAPIVersion()},
 			supervise.RequestReady{Claim: token, Generation: generation, Session: fresh},
 		} {
 			rig.handle(holder, ev)

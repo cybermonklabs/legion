@@ -2,19 +2,21 @@ import { scrub } from "@legion/contracts/held-secrets";
 import { errorClass } from "@legion/contracts/log-text";
 
 /**
- * The code of the refusal `error` carries, or undefined for an error carrying none.
+ * The `code` or the `hint` of the refusal `error` carries, or undefined for an error carrying none
+ * (or an empty one).
  *
  * A refusal Dispatch decided (`DispatchServiceError`, and the gateway answer that stands in for
  * one) carries the code of the first rule the call broke beside its message, and `fromDispatch`
  * is what tells such an error from a Node errno error, which carries a `code` of its own (ENOENT,
- * EPERM, …) that says nothing about what Dispatch decided. The check is structural rather than an
- * `instanceof`, because those classes live in `dispatch-http.ts`, which reads this module's
- * neighbours.
+ * EPERM, …) that says nothing about what Dispatch decided. Only Dispatch's answer to a path no
+ * route serves carries a hint ("GET /api/v1 lists every route"). The check is structural rather
+ * than an `instanceof`, because those classes live in `dispatch-http.ts`, which reads this
+ * module's neighbours.
  */
-function dispatchCode(error: Error): string | undefined {
-  if (!("fromDispatch" in error) || !("code" in error)) return undefined;
-  const code = error.code;
-  return typeof code === "string" && code !== "" ? code : undefined;
+function dispatchField(error: Error, field: "code" | "hint"): string | undefined {
+  if (!("fromDispatch" in error)) return undefined;
+  const value: unknown = Reflect.get(error, field);
+  return typeof value === "string" && value !== "" ? value : undefined;
 }
 
 /**
@@ -24,18 +26,21 @@ function dispatchCode(error: Error): string | undefined {
  * branch on an error's code rather than on its words, and the code was in no line the command
  * printed: a reader had to run the same call through curl to see it (reported by the tree of
  * dispatch://INFRA-1523). A message that already opens with its own code is left as it is, and
- * every other thrown value prints as it always did. Every text it answers passes the scrub of the
- * secrets this process holds (`@legion/contracts/held-secrets`): a server at the wrong URL can
- * echo the bearer it was sent inside a refusal this prints as guidance.
+ * every other thrown value prints as it always did. Where Dispatch gave a hint beside its refusal,
+ * it follows the message after "; ", since the hint says where to look next. Every text it
+ * answers passes the scrub of the secrets this process holds (`@legion/contracts/held-secrets`):
+ * a server at the wrong URL can echo the bearer it was sent inside a refusal this prints as
+ * guidance.
  */
 export function messageFor(error: unknown): string {
   if (!(error instanceof Error)) return scrub(String(error));
-  const code = dispatchCode(error);
-  return scrub(
+  const code = dispatchField(error, "code");
+  const message =
     code === undefined || error.message.startsWith(code)
       ? error.message
-      : `${code}: ${error.message}`
-  );
+      : `${code}: ${error.message}`;
+  const hint = dispatchField(error, "hint");
+  return scrub(hint === undefined ? message : `${message}; ${hint}`);
 }
 
 /** True when `error` is a Node errno error carrying `code` (ENOENT, EPERM, …). */

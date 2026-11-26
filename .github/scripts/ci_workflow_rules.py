@@ -236,6 +236,49 @@ def cache_steps(document: dict, action: str) -> list:
             for family, given in job_cache_steps(job or {}, action)]
 
 
+# The composite actions of this repository, whose steps a job runs as its own.
+ACTIONS_DIR = ".github/actions"
+
+
+@cache
+def local_actions() -> dict:
+    """Every composite action of this repository, as {its action file's repository-relative path:
+    the parsed document}, in path order."""
+    directory = REPO / ACTIONS_DIR
+    if not directory.is_dir():
+        return {}
+    return {path.relative_to(REPO).as_posix(): load_repository_yaml(path) or {}
+            for path in sorted(directory.glob("*/action.y*ml"))}
+
+
+def save_families(steps: list, where: str) -> tuple:
+    """(The families the actions/cache/save steps among `steps` write, the saves among them whose
+    family cannot be read), for one job or one composite action, `where` naming it. A save under
+    `steps.<id>.outputs.cache-primary-key` writes the family of the actions/cache/restore of those
+    steps with that id; one that names no such step (another job's output, or a step that is no
+    restore) cannot be read, nor can a key whose text starts with an expression. A key's
+    hashFiles() is read like any other expression after the family's text."""
+    families, unread = set(), []
+    for step in steps:
+        if str((step or {}).get("uses", "")).split("@")[0] != "actions/cache/save":
+            continue
+        key = str((step.get("with") or {}).get("key", "")).strip()
+        named = COMPUTED_KEY.fullmatch(key)
+        if named:
+            restore = next((s for s in steps if str((s or {}).get("id", "")) == named.group(1)
+                            and str((s or {}).get("uses", "")).split("@")[0] == "actions/cache/restore"), None)
+            if restore is None:
+                unread.append(f"the save of {where} under `{key}`, which names no actions/cache/restore of its steps")
+                continue
+            key = str((restore.get("with") or {}).get("key", "")).strip()
+        family = cache_family(key)
+        if family:
+            families.add(family)
+        else:
+            unread.append(f"the save of {where} under `{key}`, whose key starts with an expression")
+    return families, unread
+
+
 def restores_of(documents: dict) -> dict:
     """Every restore of the given workflows, as family -> [(where it is, its with:)]. Given the
     document set the engine loads - ci.yaml, and each local workflow one of its jobs calls:
@@ -304,8 +347,14 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
     expression, and it is what
     pairs a save with the restores to hold it to; the keys are compared as text and the paths as
     the ordered lists of lines they name. A family ci.yaml restores that this workflow does not
-    save is no fault: docs-pages.yaml saves go-docs. The other way round is one, a family nothing
-    restores being a fill nobody reads.
+    save is no fault when another workflow of the directory saves it: docs-site.yaml saves go-docs.
+    A family no save writes is one: its restore misses on every run and nothing fails, as a
+    restore whose family name is misspelled does (`go-envoy-tests-` for go-envoy-test), so every
+    restore of the directory names a family some save writes. The saves read for it are those of
+    every workflow and of every composite action of .github/actions (save_families says how a
+    key's family is read). A save whose family cannot be read leaves the refusal unable to say that
+    no save writes the family, so the refusal then names each such save rather than saying none
+    exists. The other way round is one too, a family nothing restores being a fill nobody reads.
 
     This workflow's own restores of a family it saves under the commit are what the fill builds on,
     and have one shape: no lookup-only at all (an expression can evaluate to true), so the newest
@@ -334,6 +383,31 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
     elsewhere = restores_of({path: document for path, document in directory_workflows().items()
                              if path not in documents})
     saves = saves_of(caches, problems)
+    saved_anywhere, unread = set(), []
+    for path, document in {**directory_workflows(), **documents}.items():
+        for job_id, job in (document.get("jobs") or {}).items():
+            families, missed = save_families((job or {}).get("steps") or [], f"job {job_id} of {path}")
+            saved_anywhere |= families
+            unread += missed
+    for path, action in local_actions().items():
+        families, missed = save_families(((action.get("runs") or {}).get("steps")) or [], path)
+        saved_anywhere |= families
+        unread += missed
+    for path, document in {**directory_workflows(), **documents}.items():
+        for job_id, family, _ in cache_steps(document, "restore"):
+            if not family or family in saved_anywhere:
+                continue
+            if unread:
+                why = (f"which no actions/cache/save this check can read writes. It cannot read the family "
+                       f"of {'; '.join(unread)}, so one of those may write it: give such a save a key whose "
+                       f"text names its family, or name a family a save writes "
+                       f"({', '.join(sorted(saved_anywhere))})")
+            else:
+                why = (f"which no actions/cache/save of any workflow or local action of this repository "
+                       f"writes: the restore misses on every run and nothing fails, the job building from "
+                       f"nothing what it meant to restore; name a family a save writes "
+                       f"({', '.join(sorted(saved_anywhere))})")
+            problems.append(error(path, f"job {job_id} restores cache family {family}, {why}"))
     refilled = {family for _, family, key, _ in saves if key.endswith(COMMIT_SUFFIX)}
     for family in sorted(refilled & {family for _, family, key, _ in saves if not key.endswith(COMMIT_SUFFIX)}):
         problems.append(error(CACHE_WORKFLOW, f"this workflow saves family {family} both under `{COMMIT_SUFFIX}` and "
@@ -408,7 +482,7 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
 # DAEMON_RACE_FILL_JOB names). Spelled as the engine's tag-run triggers are, so `-racy` is not the
 # flag and a go vet or go build line is no such command, and read through script_lines, so a
 # comment is no trigger. The packages are the words beginning `./`, which is how a go command
-# names one and how ci_job_reads.py's DAEMON_RACE_PKGS spells that same list; the `-o /dev/null`
+# names one and how go_legs.py prints that same list for the race legs; the `-o /dev/null`
 # of the build is no package. TABLE, the file the list is in, is the workspaces section's constant
 # below: both rules name that one file, so there is one spelling of it here. A race build of
 # another job fills another family's cache, for another lane, and is not this rule's: the
@@ -556,7 +630,7 @@ def check_workspace_table(workspaces: list, problems: list) -> None:
     already, and because nothing here imports ci_job_reads: the engine's names are all this
     module takes.
 
-    The manifest is read as .github/scripts/check-bun-workspace-manifests.sh:101-109 reads it,
+    The manifest is read as `.github/scripts/check-bun-workspace-manifests.sh#root_manifest` reads it,
     at every shape, since the two checks are about the same list and a list one of them cannot
     read is not a list the other may pass over: a root manifest that is missing or is not valid
     JSON, and a `workspaces` that is not a list or holds anything but non-empty strings, are

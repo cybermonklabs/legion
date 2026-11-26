@@ -16,18 +16,25 @@ import {
   type ParsedCommand,
   parseCommand,
 } from "./dispatch-command";
+import { ApiGateRefusal, sendApiCall } from "./dispatch-commands/api";
 import { defined } from "./dispatch-commands/context";
+import { OK, REFUSED, USAGE } from "./dispatch-commands/exit-codes";
+import { parentStatusConflictLines } from "./dispatch-commands/failures";
+import { hostedDispatch, hostSession, unhostedDispatch } from "./dispatch-commands/host-session";
+import { printsJson } from "./dispatch-commands/issues";
 import { loginCommand } from "./dispatch-commands/login";
-import type { ActiveDispatchConfig } from "./dispatch-config";
-import type { DispatchHost } from "./dispatch-cwd";
 import {
   checkDispatchCall,
   dispatchServerUrls,
   dryRunAsksDispatch,
   executeDispatchTool,
 } from "./dispatch-execute";
-import { DispatchWriteLandedError } from "./dispatch-http";
-import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
+import { DispatchClient, DispatchWriteLandedError } from "./dispatch-http";
+import {
+  SESSION_VARIABLES,
+  sessionDirectory,
+  sessionStateRoot,
+} from "./dispatch-session-directory";
 import {
   appendResult,
   loadSessionMemory,
@@ -41,18 +48,18 @@ import {
 import { followedAsk, followNoticeText } from "./dispatch-subscribe";
 import { messageFor } from "./errors";
 import { nearestAncestorNamed } from "./process-ancestry";
-import {
-  handedConfigFile,
-  sessionConfigFile,
-  sessionDispatchSettings,
-  sessionEnvoySettings,
-} from "./session-settings";
+import { sessionDispatchSettings, sessionEnvoySettings } from "./session-settings";
 import { ToolInputError } from "./tool-input-errors";
 import { createEnvoyClient, EnvoyApiError } from "./transport";
 
 export interface DispatchCliIo {
   /** Where the text the model reads goes: results, refusals and notices alike. */
   stdout(text: string): void;
+  /** Where a body that is not Dispatch's JSON goes, byte for byte, and alone on standard output:
+   *  `dispatch api`'s answer to a 2xx that is stored content or a body that is not JSON
+   *  (`DispatchToolResult.body`), a Markdown download's text among them. Without it the bytes go
+   *  to `stdout` decoded as UTF-8, for a caller that reads text alone. */
+  stdoutBytes?(bytes: Uint8Array): void;
   /** Where a result's warnings go (`DispatchToolResult.warnings`), one line each, beside it. */
   stderr(text: string): void;
   /** A file's text; `-` is all of stdin. */
@@ -66,16 +73,6 @@ export interface DispatchCliIo {
    *  a test that answers the poll at once. */
   readonly sleep?: ((ms: number, signal?: AbortSignal) => Promise<void>) | undefined;
 }
-
-/** Exit codes, as `skill://dispatch` states them: written or read, a refusal, and a usage error.
- *  REFUSED is a call Dispatch itself turned down (a near copy, an AskGate block, a server
- *  refusal); an argument this CLI refuses before any request is USAGE, whether the argv named a
- *  command or not. */
-const OK = 0;
-const REFUSED = 1;
-const USAGE = 2;
-
-const HOSTS = ["omp", "claude", "codex"] as const satisfies readonly DispatchHost[];
 
 /** Claude Code reads back at most 30,000 characters of a command's output by default
  *  (`BASH_MAX_OUTPUT_LENGTH`), and Codex cuts the middle out of a long command output, so under
@@ -245,13 +242,29 @@ export async function runDispatchCli(
   rawEnv: Readonly<Record<string, string | undefined>>,
   io: DispatchCliIo
 ): Promise<number> {
-  const print = (text: string): void => io.stdout(text.endsWith("\n") ? text : `${text}\n`);
+  // `dispatch api`'s lines from before its request (`note`), held until its answer says where they
+  // go: before text they are printed first, as every command prints them, and beside an answer
+  // written as bytes, which takes standard output alone, they go to standard error.
+  const held: string[] = [];
+  const print = (text: string): void => {
+    for (const line of held.splice(0)) io.stdout(`${line}\n`);
+    io.stdout(text.endsWith("\n") ? text : `${text}\n`);
+  };
+  /** Writes `bytes` to standard output as they came (`DispatchCliIo.stdoutBytes`), and the held
+   *  lines, then `notes`, the CLI's own, to standard error. */
+  const writeBody = (bytes: Uint8Array, notes: readonly string[] = []): void => {
+    for (const line of [...held.splice(0), ...notes]) io.stderr(`${line}\n`);
+    if (io.stdoutBytes === undefined) io.stdout(new TextDecoder().decode(bytes));
+    else io.stdoutBytes(bytes);
+  };
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(rawEnv)) {
     if (value !== undefined && value !== "") env[name] = value;
   }
   // `dispatch login` logs the machine in, before any session of it exists: a person runs it in a
   // terminal, so it reads no host, no session and no envoy.json (`dispatch-commands/login.ts`).
+  // It refuses while either token file is set, after its own `--help`; `tokenFilesTarget` in
+  // `dispatch-config.ts` says when a call below runs on the files.
   if (argv[0] === "login") {
     return await loginCommand(argv.slice(1), env, {
       print,
@@ -265,9 +278,6 @@ export async function runDispatchCli(
   // The host need not be known for the session to be: a Python `subprocess.run(["dispatch", …])`
   // inherits the session id without `DISPATCH_HOST`. A ledger that cannot be written changes
   // nothing here: the refusal is already printed, and the caller is exiting.
-  // Under Claude Code the session is the one claude-envoy registers and claims under: its QA
-  // override ENVOY_SESSION_ID, else CLAUDE_CODE_SESSION_ID (`claudeSessionId` in claude-envoy).
-  const claudeSession = env.ENVOY_SESSION_ID ?? env.CLAUDE_CODE_SESSION_ID;
   // The host, worked out once and only when asked: the walk of the parent processes it may take
   // runs at most once per call, for the refusal ledger and the call alike.
   let resolvedHost: { readonly name: string | undefined } | undefined;
@@ -277,6 +287,25 @@ export async function runDispatchCli(
     };
     return resolvedHost.name;
   };
+  /** Appends `text`, a refusal made before the call reached Dispatch, to the ledger of the
+   *  session this call knows, if any: Codex's thread under Codex, else the first id of
+   *  `SESSION_VARIABLES` that is set. */
+  const ledgerRefusal = (text: string, tool?: string, askgate?: ResultInput["askgate"]): void => {
+    const sessionId =
+      ledgerHost() === "codex"
+        ? env.CODEX_THREAD_ID
+        : SESSION_VARIABLES.map((variable) => env[variable]).find((id) => id !== undefined);
+    if (sessionId === undefined) return;
+    try {
+      appendResult(sessionDirectory(env, sessionId), {
+        tool: tool ?? "dispatch",
+        error: text.trimEnd(),
+        ...(askgate === undefined ? {} : { askgate }),
+      });
+    } catch {
+      // The session's directory is unusable; the printed refusal stands on its own.
+    }
+  };
   const refuse = (
     text: string,
     code: number,
@@ -284,21 +313,7 @@ export async function runDispatchCli(
     askgate?: ResultInput["askgate"]
   ): number => {
     print(text);
-    const sessionId =
-      ledgerHost() === "codex"
-        ? env.CODEX_THREAD_ID
-        : (claudeSession ?? env.DISPATCH_SESSION_ID ?? env.CODEX_THREAD_ID);
-    if (sessionId !== undefined) {
-      try {
-        appendResult(sessionDirectory(env, sessionId), {
-          tool: tool ?? "dispatch",
-          error: text.trimEnd(),
-          ...(askgate === undefined ? {} : { askgate }),
-        });
-      } catch {
-        // The session's directory is unusable; the printed refusal stands on its own.
-      }
-    }
+    ledgerRefusal(text, tool, askgate);
     return code;
   };
 
@@ -326,30 +341,51 @@ export async function runDispatchCli(
         );
   }
 
-  const hostName = ledgerHost();
-  const host = HOSTS.find((name) => name === hostName);
-  if (host === undefined) {
-    return refuse(
-      hostName === undefined
-        ? "dispatch: DISPATCH_HOST is not set. The host plugin sets it in an agent's shell. From an agent's session, send the command as a bash call. To run dispatch by hand, set DISPATCH_HOST, and set DISPATCH_SESSION_ID to the id of your own session."
-        : `dispatch: DISPATCH_HOST is ${JSON.stringify(hostName)}, not omp, claude or codex.`,
-      USAGE,
-      parsed.tool
-    );
+  // `dispatch api` also runs where no host is found (`commandHost`), as in a GitHub Actions job,
+  // like `dispatch login`: it reads Dispatch from the environment alone (`unhostedDispatch`),
+  // keeps no session's state, and runs the call as the contract's command does (`sendApiCall`,
+  // dispatch-commands/api.ts) once the check every call has passed. No session runs it, so there
+  // is no session ledger: only the refusals made before a credential is resolved, its usage
+  // errors and AskGate's refusal of a write (with AskGate's mark), go to the ledger of the session
+  // the environment names, if any, under its tool; a failure of the credential, the broker's
+  // refusal of a trade among them, or of the request records nothing.
+  if (parsed.tool === "dispatch_api" && ledgerHost() === undefined) {
+    const { problems, args } = await checkDispatchCall({
+      tool: parsed.tool,
+      args: parsed.args,
+      cwd: io.cwd,
+      env,
+      serverUrls: [],
+    });
+    if (problems.length > 0) {
+      return refuse(new ToolInputError(parsed.tool, problems).message, USAGE, parsed.tool);
+    }
+    if (parsed.dryRun) {
+      print(JSON.stringify(parsed.args, null, 2));
+      return OK;
+    }
+    const resolved = await unhostedDispatch(env);
+    if ("problem" in resolved) return refuse(resolved.problem, USAGE, parsed.tool);
+    const { url, credential } = resolved.config;
+    try {
+      const client = new DispatchClient(url, credential, io.fetchImpl ?? fetch);
+      const result = await sendApiCall(args, env, client);
+      if (result.body === undefined) print(result.text);
+      else writeBody(result.body);
+      return OK;
+    } catch (error) {
+      if (error instanceof ToolInputError) return refuse(error.message, USAGE, parsed.tool);
+      if (error instanceof ApiGateRefusal) {
+        return refuse(error.message, REFUSED, parsed.tool, error.askgate);
+      }
+      print(messageFor(error));
+      return REFUSED;
+    }
   }
-  const [sessionId, sessionVariable] =
-    host === "claude"
-      ? [claudeSession, "ENVOY_SESSION_ID or CLAUDE_CODE_SESSION_ID"]
-      : host === "codex"
-        ? [env.CODEX_THREAD_ID, "CODEX_THREAD_ID"]
-        : [env.DISPATCH_SESSION_ID, "DISPATCH_SESSION_ID"];
-  if (sessionId === undefined) {
-    return refuse(
-      `dispatch: ${sessionVariable} is not set, so this call has no session to act as. The host plugin sets it in an agent's shell.`,
-      USAGE,
-      parsed.tool
-    );
-  }
+
+  const hosted = hostSession(ledgerHost(), env);
+  if ("problem" in hosted) return refuse(hosted.problem, USAGE, parsed.tool);
+  const { host, sessionId, file } = hosted;
   let dir: string;
   try {
     dir = sessionDirectory(env, sessionId);
@@ -357,11 +393,6 @@ export async function runDispatchCli(
     return refuse(messageFor(error), USAGE, parsed.tool);
   }
 
-  // The file the session's plugin handed its shell (each plugin sets DISPATCH_HOST and
-  // ENVOY_CONFIG_FILE together), else the host's own rule.
-  const file =
-    (env.DISPATCH_HOST === undefined ? null : handedConfigFile(env)) ??
-    sessionConfigFile(host, env);
   if (parsed.dryRun && !dryRunAsksDispatch(parsed.tool, parsed.args)) {
     // The call's own argument check, so the call refuses no arguments its dry run passed; what
     // the call needs besides (Dispatch's configuration, this session's state, Dispatch's answers)
@@ -371,7 +402,13 @@ export async function runDispatchCli(
     const settings =
       file.path === null
         ? null
-        : sessionDispatchSettings(file, env, { cwd: io.cwd, session: sessionId }).dispatch;
+        : (
+            await sessionDispatchSettings(file, env, {
+              cwd: io.cwd,
+              session: sessionId,
+              tokenFiles: true,
+            })
+          ).dispatch;
     const { problems } = await checkDispatchCall({
       tool: parsed.tool,
       args: parsed.args,
@@ -385,27 +422,22 @@ export async function runDispatchCli(
     print(JSON.stringify(parsed.args, null, 2));
     return OK;
   }
-  if (file.path === null) {
-    return refuse(`dispatch: ${file.error}`, USAGE, parsed.tool);
-  }
-  // The session this call acts as is the session a broker trade writes under, so the token this
-  // call presents names it rather than naming none or another of this machine's.
-  const { dispatch: resolution, warnings } = sessionDispatchSettings(file, env, {
-    cwd: io.cwd,
-    session: sessionId,
-  });
+  // The session this call acts as is the session a broker trade writes under, and the command
+  // takes the token files (hostedDispatch).
+  const resolved = await hostedDispatch(file, env, { cwd: io.cwd, session: sessionId });
+  // A call whose whole output is one JSON object (`printsJson`) prints the CLI's own lines on
+  // standard error, so its standard output is the object alone. `dispatch api`'s are held until
+  // its answer is known (`held`).
+  const wholeJson = printsJson(parsed.tool, parsed.args);
+  const note = (line: string): void => {
+    if (wholeJson) io.stderr(`${line}\n`);
+    else if (parsed.tool === "dispatch_api") held.push(line);
+    else print(line);
+  };
   // A checkout's OpenCode-era file, which is not read, is said on every call while it is there.
-  for (const warning of warnings) print(`dispatch: ${warning}`);
-  if (!resolution.enabled) {
-    return refuse(
-      resolution.error === null
-        ? `dispatch: ${resolution.notice}`
-        : `dispatch: dispatch config: ${resolution.error}`,
-      USAGE,
-      parsed.tool
-    );
-  }
-  const config: ActiveDispatchConfig = resolution;
+  for (const line of resolved.warnings) note(line);
+  if ("problem" in resolved) return refuse(resolved.problem, USAGE, parsed.tool);
+  const { config } = resolved;
 
   // A `dispatch result` record's dry run (`dryRunAsksDispatch`) prints the JSON, then the
   // pull-request body line the record would print, which Dispatch writes and records nothing
@@ -546,7 +578,7 @@ export async function runDispatchCli(
   let topics: Promise<readonly string[] | null> | undefined;
   const readTopics = async (): Promise<readonly string[] | null> => {
     try {
-      const envoy = sessionEnvoySettings(file, env, {
+      const envoy = await sessionEnvoySettings(file, env, {
         cwd: io.cwd,
         nats: false,
         session: sessionId,
@@ -578,6 +610,8 @@ export async function runDispatchCli(
   }
   const { tool, args } = parsed;
   let text: string;
+  // The body of an answer written as bytes (`DispatchToolResult.body`), which no line joins.
+  let body: Uint8Array | undefined;
   const pictures: string[] = [];
   const notes: string[] = [];
   const problems: string[] = [];
@@ -598,6 +632,7 @@ export async function runDispatchCli(
       subscriptions,
     });
     text = result.text;
+    body = result.body;
     for (const warning of result.warnings ?? []) {
       io.stderr(`${warning}\n`);
     }
@@ -620,7 +655,12 @@ export async function runDispatchCli(
     // is never told an issue was filed. Its text is the same either way.
     code = result.refused === true ? REFUSED : OK;
   } catch (error) {
-    text = messageFor(error);
+    // A 409 PARENT_STATUS_CONFLICT names each issue that holds the rule and what the refused
+    // command's caller does next (`parentStatusConflictLines`), as a near copy's refusal names
+    // each open issue. LEGION_ISSUE tells the project of the issue a call with no --issue names.
+    text = (
+      parentStatusConflictLines(error, tool, args, env.LEGION_ISSUE) ?? [messageFor(error)]
+    ).join("\n");
     // The command's write landed but its answer was lost: it is done, so the call succeeded, and
     // its one line says to read back what it made. The executor turns a landing of a write that
     // was only a step of its command (a picture, a closing reason) into a failure of its own. A
@@ -630,7 +670,13 @@ export async function runDispatchCli(
       entry = { tool, details: { landed_without_answer: error.code } };
       code = OK;
     } else {
-      entry = { tool, error: text };
+      // `dispatch api`'s refusal of a write in a session AskGate gates carries AskGate's mark, as
+      // the CLI's own refusal of a gated write does, so pi-envoy counts it.
+      entry = {
+        tool,
+        error: text,
+        ...(error instanceof ApiGateRefusal ? { askgate: error.askgate } : {}),
+      };
       // An argument the executor refuses (a ref naming another owner, a picture that is not
       // there, an id that matches no ask) is the same usage error as one the parse refuses, and
       // exits 2 alike. `--dry-run` runs the call's own check (checkDispatchCall): the owner,
@@ -647,6 +693,12 @@ export async function runDispatchCli(
     problems.push(messageFor(error));
   }
   const kept = [...notes, ...problems.map(stateWriteFailed)];
+  // An answer written as bytes takes standard output alone, as it came: nothing cuts it or moves
+  // it to a file, and the CLI's own lines go to standard error. Its ledger line holds its details.
+  if (body !== undefined) {
+    writeBody(body, kept);
+    return code;
+  }
   const writeFull = (full: string): string => {
     try {
       return writeLongOutput(dir, full);
@@ -654,12 +706,17 @@ export async function runDispatchCli(
       return `not written, ${messageFor(error)}`;
     }
   };
+  // A cut JSON object is no JSON object, so a call whose output is one is printed whole on every
+  // host, and its kept lines go to standard error.
+  if (wholeJson) for (const line of kept) note(line);
   print(
     fitOutput(
       text,
       pictures,
-      kept,
-      host === "claude" || host === "codex" ? CLAUDE_OUTPUT_MAX : Number.POSITIVE_INFINITY,
+      wholeJson ? [] : kept,
+      (host === "claude" || host === "codex") && !wholeJson
+        ? CLAUDE_OUTPUT_MAX
+        : Number.POSITIVE_INFINITY,
       writeFull
     )
   );

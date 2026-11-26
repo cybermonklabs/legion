@@ -11,6 +11,7 @@ import (
 // an older daemon queued is deleted at the upgrade rather than left to fail its decode for good,
 // every other row is kept, and the kind check then refuses the three.
 func TestTheDaemonsMergeRowsAndNoticesAreDroppedAt20261029120800(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 20261029120700)

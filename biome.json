@@ -7,6 +7,7 @@
   },
   "files": {
     "ignoreUnknown": false,
+    "maxSize": 2097152,
     "includes": [
       "**",
       "!!packages/contracts/fixtures/classification",
@@ -17,6 +18,7 @@
       "!!packages/envoy/internal/dispatch/pmdoc/testdata",
       "!!packages/envoy/internal/dispatch/text/testdata",
       "!!packages/envoy/internal/dispatch/textversions/testdata",
+      "!!packages/envoy/infra/scripts/testdata",
       "!!packages/envoy/internal/cipher/approval/templates",
       "!!packages/daemon/docker/language-servers/package-lock.json",
       "!!.legion"
@@ -40,7 +42,8 @@
       "!packages/contracts/fixtures/capability-redaction-plugin-report.json",
       "!packages/daemon/internal/capabilities/testdata/web-search-open-planner.json",
       "!packages/daemon/internal/runtime/tmux/testdata/golden/launch-baseline-no-experiment.json",
-      "!packages/envoy/going/testdata/filtered-answers.json"
+      "!packages/envoy/going/testdata/filtered-answers.json",
+      "!packages/envoy/internal/cipherclient/testdata/gcloud-credential-case-distinct-headers.json"
     ]
   },
   "linter": {
@@ -49,6 +52,9 @@
       "recommended": true,
       "suspicious": {
         "noImportCycles": "error"
+      },
+      "nursery": {
+        "noFloatingPromises": "error"
       }
     }
   },
@@ -90,10 +96,12 @@
         "!packages/proof-editor/src/editor-change-decorations.ts",
         "!packages/proof-editor/src/document-reading.ts",
         "!packages/proof-editor/src/reference-decorations.ts",
+        "!packages/proof-editor/src/reference-picker.ts",
         "!packages/proof-editor/src/document-json.ts",
         "!packages/proof-editor/src/editor/schema/dom-attributes.ts",
         "!packages/proof-editor/src/editor/schema/leaf-marks.ts",
         "!packages/proof-editor/src/nested-links.ts",
+        "!packages/proof-editor/src/whole-addresses.ts",
         "!packages/proof-editor/src/tests/block-ids-cost.test.ts",
         "!packages/proof-editor/src/tests/reference-links-import.test.ts",
         "packages/proof-editor/upstream/**"
@@ -144,6 +152,69 @@
       }
     },
     {
+      "includes": ["packages/dispatch/web/src/features/*/logic/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "@legion/contracts": {
+                    "importNames": [
+                      "actorAttribution",
+                      "actorLabel",
+                      "actorName",
+                      "sessionLabel",
+                      "shortSessionId"
+                    ],
+                    "message": "An agent is shown only through features/refs/AgentName.tsx (AgentName, or useAgentText for an attribute or other plain string)."
+                  },
+                  "@testing-library/dom": {
+                    "importNames": ["fireEvent"],
+                    "message": "An interaction is performed with user-event (userEvent.setup(), or userOnFakeClock() from __tests__/user.ts under a held clock): fireEvent dispatches one DOM event, so it neither focuses what it clicks nor refuses a disabled control. Where user-event has no form for it, keep fireEvent behind a biome-ignore comment on the line above, stating why."
+                  },
+                  "@testing-library/react": {
+                    "importNames": ["fireEvent"],
+                    "message": "An interaction is performed with user-event (userEvent.setup(), or userOnFakeClock() from __tests__/user.ts under a held clock): fireEvent dispatches one DOM event, so it neither focuses what it clicks nor refuses a disabled control. Where user-event has no form for it, keep fireEvent behind a biome-ignore comment on the line above, stating why."
+                  }
+                },
+                "patterns": [
+                  {
+                    "group": ["**/refs/routes", "./routes"],
+                    "importNamePattern": "AGENT_LIVE_PATH",
+                    "message": "A link to an agent's live conversation is AgentName's (features/refs/AgentName.tsx)."
+                  },
+                  {
+                    "group": ["react-dom", "react-dom/**"],
+                    "message": "A logic module (features/*/logic/) renders nothing: a page or a ui module renders."
+                  },
+                  {
+                    "group": [
+                      "**/components",
+                      "**/components/**",
+                      "**/theme",
+                      "**/theme/**",
+                      "**/ui",
+                      "**/ui/**"
+                    ],
+                    "message": "A logic module (features/*/logic/) imports no component, theme class or ui module: it gives data and behaviour to a page, and the page renders them."
+                  }
+                ]
+              }
+            },
+            "useFilenamingConvention": {
+              "level": "error",
+              "options": {
+                "filenameCases": ["kebab-case", "camelCase"],
+                "match": "(.+?)[.]((?:test[.])?ts)"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
       "includes": ["packages/dispatch/web/src/app.tsx"],
       "linter": {
         "rules": {
@@ -163,6 +234,71 @@
                     "message": "An agent is shown only through features/refs/AgentName.tsx (AgentName, or useAgentText for an attribute or other plain string)."
                   }
                 }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["packages/dispatch/web/src/features/*/ui/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "@legion/contracts": {
+                    "importNames": [
+                      "actorAttribution",
+                      "actorLabel",
+                      "actorName",
+                      "sessionLabel",
+                      "shortSessionId"
+                    ],
+                    "message": "An agent is shown only through features/refs/AgentName.tsx (AgentName, or useAgentText for an attribute or other plain string)."
+                  },
+                  "@tanstack/react-query": "A ui module (features/*/ui/) holds no data: it takes values and callbacks as props, or reads a context the app provides.",
+                  "@testing-library/dom": {
+                    "importNames": ["fireEvent"],
+                    "message": "An interaction is performed with user-event (userEvent.setup(), or userOnFakeClock() from __tests__/user.ts under a held clock): fireEvent dispatches one DOM event, so it neither focuses what it clicks nor refuses a disabled control. Where user-event has no form for it, keep fireEvent behind a biome-ignore comment on the line above, stating why."
+                  },
+                  "@testing-library/react": {
+                    "importNames": ["fireEvent"],
+                    "message": "An interaction is performed with user-event (userEvent.setup(), or userOnFakeClock() from __tests__/user.ts under a held clock): fireEvent dispatches one DOM event, so it neither focuses what it clicks nor refuses a disabled control. Where user-event has no form for it, keep fireEvent behind a biome-ignore comment on the line above, stating why."
+                  }
+                },
+                "patterns": [
+                  {
+                    "group": ["**/refs/routes", "./routes"],
+                    "importNamePattern": "AGENT_LIVE_PATH",
+                    "message": "A link to an agent's live conversation is AgentName's (features/refs/AgentName.tsx)."
+                  },
+                  {
+                    "group": [
+                      "**/api",
+                      "**/api/**",
+                      "!**/api/paths",
+                      "!**/api/types",
+                      "**/hooks/useIsHuman",
+                      "**/hooks/useIsHuman/**",
+                      "**/hooks/useSending",
+                      "**/hooks/useSending/**",
+                      "**/logic",
+                      "**/logic/**",
+                      "**/writes",
+                      "**/writes/**",
+                      "!**/writes/LandedWithoutAnswer",
+                      "!**/writes/StopTrying"
+                    ],
+                    "message": "A ui module (features/*/ui/) holds no data: it imports no API client, query, write or logic module, and takes values and callbacks as props, or reads a context the app provides."
+                  },
+                  {
+                    "group": ["**/*Page", "**/*Page/**"],
+                    "message": "A ui module (features/*/ui/) imports no page: only app.tsx imports a page."
+                  }
+                ]
               }
             }
           }

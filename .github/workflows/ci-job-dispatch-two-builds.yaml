@@ -1,6 +1,6 @@
 name: CI job dispatch-two-builds
 
-# The steps of ci.yaml's `dispatch-two-builds` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#dispatch-two-builds` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
@@ -17,19 +17,19 @@ name: CI job dispatch-two-builds
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
       dispatch_two_builds_go:
         description: >-
-          ci.yaml's `needs.changes.outputs.dispatch_two_builds_go`: the Go step below runs when
+          `.github/workflows/ci.yaml#needs.changes.outputs.dispatch_two_builds_go`: the Go step below runs when
           that filter matched.
         type: string
         required: true
@@ -151,12 +151,22 @@ jobs:
           done
           echo "::error::Three fetches of main's history and the release tags did not complete within 30 s each."
           exit 1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # why: .github/ci-notes/ci.md#why-the-two-builds-jobs-restore-go-envoy-test
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       - uses: ./.github/actions/setup-bun
       # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).
       - run: bun install --frozen-lockfile
@@ -171,12 +181,12 @@ jobs:
       # and a pull request's only by that pull request, so such entries filled the repository's
       # cache (25 entries, 12.2 GB on 2026-11-23) and evicted entries other jobs read. A run whose
       # release main has not built yet (a release tagged since the last push to main) builds it below.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - name: Restore the previous build
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ${{ runner.temp }}/dispatch-previous
-            !${{ runner.temp }}/dispatch-previous/src
           key: dispatch-previous-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.previous.outputs.commit }}
       # A restored directory holds the complete build of that commit, which the script leaves as it
       # is. The runner context is not available in a job's env, so each step that reads the build's
@@ -203,12 +213,12 @@ jobs:
           fi
           echo "commit=$FIRST_ROLLOUT_COMMIT" >> "$GITHUB_OUTPUT"
       # Restored only, as the previous build is: ci-caches.yaml's dispatch-builds job fills it on main.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - name: Restore the first-rollout build
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ${{ runner.temp }}/dispatch-first-rollout
-            !${{ runner.temp }}/dispatch-first-rollout/src
           key: dispatch-first-rollout-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.first-rollout.outputs.commit }}
       - name: Build the first-rollout build
         env:
@@ -216,6 +226,11 @@ jobs:
         run: packages/envoy/scripts/build-dispatch-build.sh --commit "$FIRST_ROLLOUT_COMMIT" --out "$DISPATCH_FIRST_ROLLOUT_BUILD"
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
       # Only what the twobuild tag adds: envoy-go's unit step runs ./cmd/dispatch's untagged tests,
       # so the -run comes from .github/scripts/go-tagged-tests.sh, which reads the names off the
       # source at run time. The assignment is a line of its own: under bash -e it carries the
@@ -260,8 +275,8 @@ jobs:
       # The stack's connection limit, read outside the browser steps, where
       # e2e/harness-postgres.ts would otherwise compile it (DISPATCH_E2E_PG_CONNECTIONS), as
       # dispatch-browser.yaml's multiprocess job reads it, for the reason that job's head gives:
-      # each browser step below runs on the harness's own Postgres, whose commits do not wait for
-      # the runner's disk, rather than on the service, which keeps crash safety on.
+      # each browser step below runs on the harness's own Postgres (e2e/harness-postgres.ts),
+      # which every stack starts for itself, rather than on the service.
       - name: Read the connections the two-build stack's Postgres must allow
         id: connections
         timeout-minutes: 2
@@ -405,12 +420,22 @@ jobs:
           done
           echo "::error::Three fetches of main's history and the release tags did not complete within 30 s each."
           exit 1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # why: .github/ci-notes/ci.md#why-the-two-builds-jobs-restore-go-envoy-test
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       - uses: ./.github/actions/setup-bun
       # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).
       - run: bun install --frozen-lockfile
@@ -421,6 +446,11 @@ jobs:
         run: packages/envoy/scripts/build-dispatch-build.sh --commit HEAD --out "$DISPATCH_PREVIOUS_BUILD"
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
       # The job above's Go step, its -run read the same way, against this tree's own build.
       - name: Two-build tests of the Dispatch server against its own build
         env:

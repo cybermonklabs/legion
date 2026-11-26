@@ -417,6 +417,13 @@ func (m *Machine) endJudgedGrant(ctx context.Context, grantID string, chainErr e
 // sees. The session that holds the grant is checkRelease's alone, which ends a grant of a private
 // project the session no longer names for good.
 func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, call ReleaseCall) (Release, error) {
+	return m.values(ctx, grantID, enrollmentID, call, nil)
+}
+
+// values is Values, and with narrowing, a release body's github_app field, ValuesNarrowed
+// (github_app.go): the grant's one name is minted as narrowedServed hands it over, outside the
+// airlock, and answered under the name of the stored secret it is a profile of.
+func (m *Machine) values(ctx context.Context, grantID, enrollmentID string, call ReleaseCall, narrowing *GitHubAppNarrowing) (Release, error) {
 	if err := m.hideGrantFromSession(ctx, grantID, enrollmentID); errors.Is(err, pgx.ErrNoRows) {
 		return Release{}, ErrGrantNotLive
 	} else if err != nil {
@@ -426,7 +433,13 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, call
 	if err != nil {
 		return Release{}, err
 	}
-	read, err := m.readRelease(ctx, grantID, checked, releaseRead{})
+	asked := ""
+	if narrowing != nil {
+		if asked, err = m.narrowedRelease(ctx, checked, *narrowing); err != nil {
+			return Release{}, err
+		}
+	}
+	read, err := m.readRelease(ctx, grantID, checked, releaseRead{narrowing: narrowing})
 	if err != nil {
 		return Release{}, err
 	}
@@ -444,6 +457,10 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, call
 			// The real value goes no further than the loop that read it: the session is given
 			// the placeholders airlockRelease mints for the slots the split found.
 			splits[released.name] = released.split
+			continue
+		}
+		if narrowing != nil {
+			values[asked] = released.value
 			continue
 		}
 		values[released.name] = released.value
@@ -469,6 +486,9 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, call
 		return Release{}, err
 	}
 	m.giveBack(ctx, heldBack(read))
+	if narrowing != nil {
+		logGitHubAppAnswer(ctx, "release", asked, checked.granted[0].name, checked.enr, *narrowing, "grant", grantID)
+	}
 	return release, nil
 }
 
@@ -742,6 +762,14 @@ func trimmedValue(value, name string) string {
 type requestedSecret struct {
 	name, source, decision, profileDigest string
 	target                                record.Target
+	// gitHubAppField is true for a name of a request an earlier agent-secrets made with a
+	// github_app field, and gitHubAppReadOnly what that field's read_only said, nil for every
+	// other name. A release that carries the field is answered only for such a grant, with the
+	// same read_only (narrowedRelease); one that carries none is refused for it, so dropping the
+	// field widens nothing (readRelease); and a live grant is reused only for a request of the
+	// same kind and read_only (sameGitHubAppField).
+	gitHubAppField    bool
+	gitHubAppReadOnly *bool
 }
 
 // requestedSecrets reads request requestID's names that the policy did not deny, in name order:
@@ -749,7 +777,7 @@ type requestedSecret struct {
 // waits to have approved (currentPolicyAdmits, and Create's join of a pending request), since one
 // denied name denies the whole request.
 func requestedSecrets(ctx context.Context, q querier, requestID string) ([]requestedSecret, error) {
-	rows, err := q.Query(ctx, `select name, source, decision, airlock_digest, coalesce(target_account, ''), target_repositories
+	rows, err := q.Query(ctx, `select name, source, decision, airlock_digest, coalesce(target_account, ''), target_repositories, github_app_field, github_app_read_only
 		from request_secrets where request_id=$1 and decision <> 'deny' order by name`, requestID)
 	if err != nil {
 		return nil, err
@@ -758,7 +786,7 @@ func requestedSecrets(ctx context.Context, q querier, requestID string) ([]reque
 	var requested []requestedSecret
 	for rows.Next() {
 		var g requestedSecret
-		if err := rows.Scan(&g.name, &g.source, &g.decision, &g.profileDigest, &g.target.Account, &g.target.Repositories); err != nil {
+		if err := rows.Scan(&g.name, &g.source, &g.decision, &g.profileDigest, &g.target.Account, &g.target.Repositories, &g.gitHubAppField, &g.gitHubAppReadOnly); err != nil {
 			return nil, err
 		}
 		requested = append(requested, g)
@@ -772,6 +800,20 @@ func requestedSecrets(ctx context.Context, q querier, requestID string) ([]reque
 // a request of several names records none on any of them.
 func sameTarget(requested []requestedSecret, target record.Target) bool {
 	return !slices.ContainsFunc(requested, func(g requestedSecret) bool { return !g.target.Equal(target) })
+}
+
+// sameGitHubAppField reports whether requested, a grant's names, were
+// asked for the way narrowing says (nil for a request with no github_app field): the same kind of
+// request, and for a narrowed one the same read_only. A --target request never takes a narrowed
+// request's grant, whose release hands a token past the airlock, and a narrowed one never takes a
+// --target grant.
+func sameGitHubAppField(requested []requestedSecret, narrowing *GitHubAppNarrowing) bool {
+	return !slices.ContainsFunc(requested, func(g requestedSecret) bool {
+		if narrowing == nil {
+			return g.gitHubAppField
+		}
+		return !g.gitHubAppField || g.gitHubAppReadOnly == nil || *g.gitHubAppReadOnly != narrowing.ReadOnly
+	})
 }
 
 // neededADecision answers, for a request's names as requestedSecrets reads them, which ones the
@@ -1388,7 +1430,7 @@ func writtenBeforeMigration13(alias string) string {
 // that enrolled on another box gets back the grant that moved with it instead of asking a person
 // a second time for names it already holds
 // (TestTheMovedSessionAsksAgainAndGetsTheSameGrantBack).
-func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted []string, lifetime *int, set *policy.Set, target record.Target, facts projectFacts) (Request, bool, error) {
+func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted []string, lifetime *int, set *policy.Set, target record.Target, facts projectFacts, narrowing *GitHubAppNarrowing) (Request, bool, error) {
 	matches, err := matchingRequests(ctx, m.Store.Pool, `select r.id, g.id::text, array_agg(s.name) from requests r
 		join request_secrets s on s.request_id=r.id
 		join grants g on g.request_id=r.id
@@ -1411,7 +1453,7 @@ candidates:
 		if err != nil {
 			return Request{}, false, err
 		}
-		if !sameTarget(granted, target) {
+		if !sameTarget(granted, target) || !sameGitHubAppField(granted, narrowing) {
 			continue
 		}
 		var rulesVersion, decidedBy string

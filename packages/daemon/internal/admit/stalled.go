@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -102,10 +103,10 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 // (record.NoticePerClaim), so a second tree that stops while the first tree's notice waits is
 // told in the same pass.
 //
-// What it reads, and in what order. This runs inside promoteHolds, on every fact, every tick
-// and every boot, and on a healthy project the answer is always that nothing has stopped, so
-// each read is made only once the pass cannot answer without it, and every read it makes is one
-// read for the whole pass and never a read per tree:
+// What it reads, and in what order. This runs inside promoteHolds, on every pass (the pass rule,
+// Admission.Apply) and every boot, and on a healthy project the answer is always that nothing has
+// stopped, so each read is made only once the pass cannot answer without it, and every read it
+// makes is one read for the whole pass and never a read per tree:
 //
 //  1. the records alone (record.QuietTrees with no claims), which costs no query. A claim's
 //     step times only ever move a tree's measured movement forward, so the quiet time with the
@@ -283,9 +284,9 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	// tell and of no other. A root whose own tree-stalled notice still waits unsent is left for
 	// a later pass; the kind is keyed by its issue and by no role at all (record.NoticePerClaim,
 	// wakeController), which is the pair asked for here. Every root is asked in the one read
-	// (record.Store.ControllerNoticesPending), because this runs on every fact, every tick and
-	// every boot of a deployment whose projects hold hundreds of trees, and a read per root
-	// would put that many round trips on the fact lock.
+	// (record.Store.ControllerNoticesPending), because this runs on every pass and every boot of
+	// a deployment whose projects hold hundreds of trees, and a read per root would put that many
+	// round trips on the fact lock.
 	roots := make([]string, 0, len(stopped))
 	for _, root := range stopped {
 		roots = append(roots, root.Key)
@@ -546,9 +547,11 @@ type lineHolds struct {
 	// ladder's word over one set of facts, so the first row is the one kept, as record.HeldList
 	// keeps it.
 	words map[string]record.HeldReason
-	// gates is the pass's design gates, by root key, which tell a root waiting for its tree to be
-	// opened (record.QueuedRoot) from one the daemon has already started.
-	gates map[string]record.TreeGate
+	// gates and lifecycles are the pass's design gates and tree lifecycles, by root key, which
+	// tell a root waiting for its tree to be opened (record.QueuedRoot) from one the daemon has
+	// already started.
+	gates      map[string]record.TreeGate
+	lifecycles map[string]treelifecycle.Lifecycle
 	// childWaits is the pass's children-first judgement, by parent key
 	// (record.LineFacts.ChildWaits): the open Dispatch children each parent's own first phase
 	// waits for, each with whether the daemon has released it (record.OpenChild.Released), which
@@ -565,7 +568,7 @@ func lineHoldsOf(facts record.LineFacts, slots []record.Slot, line []record.Line
 ) lineHolds {
 	holds := lineHolds{line: make(map[string]record.LineEntry, len(line)),
 		holders: make(map[string]struct{}, len(slots)),
-		words:   make(map[string]record.HeldReason, len(dropped)), gates: facts.Gates,
+		words:   make(map[string]record.HeldReason, len(dropped)), gates: facts.Gates, lifecycles: facts.Lifecycles,
 		childWaits: facts.ChildWaits}
 	for _, entry := range line {
 		holds.line[entry.Issue.Key] = entry
@@ -616,7 +619,7 @@ func (h lineHolds) waitsByDesign(issue record.Issue) bool {
 	if entry, waits := h.line[issue.Key]; waits {
 		return !entry.Holds
 	}
-	if issue.Phase != phase.Admitted || !record.InWorkflow(issue) || record.QueuedRoot(issue, h.gates[issue.Key]) {
+	if issue.Phase != phase.Admitted || !record.InWorkflow(issue) || record.QueuedRoot(issue, h.lifecycles[issue.Key], h.gates[issue.Key]) {
 		return false
 	}
 	return silences(h.words[issue.Key])

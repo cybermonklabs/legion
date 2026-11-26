@@ -4,6 +4,7 @@ import {
   legionProjectToken,
   slackMentionTopic,
 } from "@legion/contracts";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import { scrub } from "@legion/contracts/held-secrets";
 import type { LegionGrant } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
@@ -29,6 +30,10 @@ import {
   requiredSecret,
 } from "./classify";
 import { daemonControllerSlackChannels, daemonLaunchedController } from "./slack-channels";
+
+/** The daemon API contract this build speaks, which the controller's registration states as
+ * `pluginContract` (`daemonContract`, read once as the module loads). */
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir);
 
 type PersistedTranscript = (
   context: CommandContext | SessionContext
@@ -272,8 +277,8 @@ export function createControllerSession(deps: {
     const capability =
       controllerCapability ??
       (supervised
-        ? requiredSecret(process.env, "LEGION_BOOT_TOKEN")
-        : requiredControllerCapability(process.env));
+        ? await requiredSecret(process.env, "LEGION_BOOT_TOKEN")
+        : await requiredControllerCapability(process.env));
     controllerCapability = capability;
     const launched = classifySession(process.env).kind === "controller";
     // Read and validate before anything below mutates daemon-side state (the registration that
@@ -309,7 +314,7 @@ export function createControllerSession(deps: {
         sessionId: sessionID,
         ompSessionFile: sessionFile,
         agentId,
-        pluginContract: pkg.legion.daemonApiVersion,
+        pluginContract: PLUGIN_CONTRACT,
       })
       .catch((error: unknown) => {
         if (error instanceof LegionDaemonApiError) {
