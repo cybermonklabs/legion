@@ -14,7 +14,9 @@ import (
 // Start, and no later than its read after, both by ProcStart and by the process's own MarkStart.
 func TestTheStartClockAgreesWithTheUptimeClock(t *testing.T) {
 	mark := filepath.Join(t.TempDir(), "mark")
-	cmd := exec.Command("sh", "-c", MarkStart(`"$1"`)+`; read -r _ <&0`, "sh", mark)
+	// The shell holds until the row closes its stdin, so it is alive when ProcStart reads it. read
+	// returns 1 at that end of input, which is the row's release, not a failure of the shell.
+	cmd := exec.Command("sh", "-c", MarkStart(`"$1"`)+`; read -r _ || :`, "sh", mark)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
