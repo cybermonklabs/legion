@@ -138,10 +138,10 @@ const PAGE = 20;
  * list's tab stop where it was pressed on no row, as the outline's keys do (the tester's F16):
  * Left on a row of the parts says the list has no level above it; on a row of the foot, which
  * stands a level down, under the foot's control, it goes up to that control, as Left goes to a
- * row's parent in the outline. Until the view knows what the issue holds - the tree read its rows
- * come from and the asks have answered (`decisions-entries.ts`' `readsHeld`) - `q` and `w` with
- * nowhere to go say nothing: no question or decision to go to may mean only that they have not
- * arrived.
+ * row's parent in the outline. Until the view knows what the issue holds - Conversation's read,
+ * which says which statement a tie names, and the asks have answered (`decisions-entries.ts`'
+ * `readsHeld`) - `q` and `w` with nowhere to go say nothing: no question or decision to go to
+ * may mean only that they have not arrived.
  *
  * A read that says which entries there are and stands refused - the decisions' reads, the tree
  * read and the decisions view, and the asks - draws the page's one line for a failed read over
@@ -160,9 +160,12 @@ const PAGE = 20;
  * names place no entry, so their line takes none away.
  *
  * The reads are the seam's: the ones the page's tree is built from, under the keys it reads them
- * by (`useIssueTree.ts`), so the body costs no request of its own (R20), and the names its rows
- * draw are the page's batched read's, which the body hands every row in the render that draws it
- * (`published`), so no row reads a reference the page asks for.
+ * by (`useIssueTree.ts`), and the decisions view read, so the body costs no request of its own
+ * (R20), and the names its rows draw are the page's batched read's, which the body hands every
+ * row in the render that draws it (`published`), so no row reads a reference the page asks for.
+ * The tree it is drawn over is the one that view read builds (`decisions-entries.ts`'
+ * `useDecisionsTree`), which its slot hands it, so its rows, its keys and the node an address
+ * names are the nodes of that read, whatever page of Conversation's read the page holds.
  */
 export function DecisionsFilterBody({
   artifacts,
@@ -223,7 +226,9 @@ export function DecisionsFilterBody({
    *  the row of the question it answers, where the list draws one. Undefined where the address
    *  names no node or the tree holds none it names. */
   reveal?: string;
-  /** The whole tree, which holds each ask and each decision and each statement a tie names. */
+  /** The whole tree `view` was drawn over, which holds each ask and each decision and each
+   *  statement a tie names: the tree the decisions view read builds, as the slot hands it
+   *  (`useDecisionsTree`), and Conversation's until that read holds an answer. */
   root: TreeNode;
   /** The tree as the Decisions filter leaves it (`presetView`). */
   view: TreeNode;

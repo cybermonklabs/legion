@@ -759,6 +759,45 @@ test("a person's decision whose question the tree does not hold is drawn as the 
   expect(groups[0]?.runs[0]?.decision).toMatchObject({ said: "agent", type: "decision" });
 });
 
+// R5, R9 and INFRA-1253 R8: Conversation's read is paged, so the page's tree may not have reached
+// the question a person answered. The Spec view read holds that answered question as context of
+// the statement its `shaped` tie names, and the tree it builds (`TreeViews.trees.spec`) holds its
+// node: the person's decision is drawn by their own answer, never as the agent's record of it.
+test("a person's decision whose question only the Spec view read's tree holds is drawn by their answer", () => {
+  const tree = issueTree([statement("r1"), decisionNode("d1")]);
+  const groups = specDecidedBy({
+    asksHeld: true,
+    checks: [],
+    decisions: decisionNodes(
+      specViewAnswer([
+        decision("d1", {
+          decision: {
+            asks: ["ask-1"],
+            kind: "person",
+            links: [shaped(statementRef("r1"))],
+          },
+        }),
+      ]),
+      { issue: { key: KEY } }
+    ),
+    nameOf: NO_NAMES,
+    nodeIdOf,
+    reader: READER,
+    root: tree,
+    view: presetView(tree, "spec", "").root,
+    viewTree: issueTree([
+      statement("r1"),
+      answeredAsk("ask-1", { text: "Draw the rail once. Then stop." }),
+    ]),
+  }).groups;
+  expect(groups[0]?.runs[0]?.decision).toMatchObject({
+    id: "ask-1",
+    quote: "Draw the rail once.",
+    said: "you",
+    type: "ask",
+  });
+});
+
 // R17: the mark is how the statement stands in the Verification filter's own reading, so one
 // statement reads the same in both views: Met where every check of it passed, Not met where one
 // failed, Unknown otherwise, and no check where none serves it. Each check is read at the commit

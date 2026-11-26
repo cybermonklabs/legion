@@ -126,8 +126,9 @@ export function ViewReadProvider({
  *  Conversation or of a filter, for Plan always, for Spec where the issue is a child, and for
  *  Verification where the issue has children and Conversation's answer holds no check of an
  *  issue under it, which is not known until that answer is held. The decisions view is never
- *  one: Conversation's read holds the decisions, and the Decisions filter's count is read off the
- *  tree (`presets.ts`' `filterSignals`). */
+ *  one: it is read once the Decisions filter is on, and until then the filter's count and the
+ *  header's count of what waits are read off Conversation's read, the pages of it held so far,
+ *  each with "+" while that read names a next page (`presets.ts`' `filterSignals`, `waiting.ts`). */
 function sentWithLoad(
   view: TreeView,
   preset: Preset,

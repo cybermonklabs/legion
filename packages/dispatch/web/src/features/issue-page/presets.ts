@@ -51,9 +51,10 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  * Spec, Verification and Plan are each drawn from the issue's view read of that filter once the
  * page holds it (`TreeNode.views` on the issue's node, `heldFilterView`): the view's query names
  * the nodes, and each is drawn as the tree's node of that id, so a row reads as it does in the
- * outline. Until the view answers, and for Decisions until its view read stands in the decisions
- * read's place, a filter is read off the tree `issue-tree.ts` builds: the kinds are R2's, and the
- * context and the parent's line are this module's.
+ * outline. Until the view answers, a filter is read off the tree `issue-tree.ts` builds: the
+ * kinds are R2's, and the context and the parent's line are this module's. Decisions is always
+ * read so, off the tree it is given, which its slot gives as the tree its own view read builds
+ * once the page holds that read (`decisions-filter/decisions-entries.ts`' `useDecisionsTree`).
  *
  * A node the address names outranks the filter: an address that names one node and then draws a
  * page without it would not have resolved at all (R20), so `named` is kept whatever the filter
@@ -905,10 +906,16 @@ function countOf(root: TreeNode, type: NodeType, counts: (node: TreeNode) => boo
 
 /** The signal each filter's control draws under `query`, which its count follows. A count read
  *  from a read that names a next page carries "+" (`PresetSignal.more`): the held view's own read
- *  for a filter whose view is held, and the tree's for every other. */
+ *  for a filter whose view is held, and the tree's for every other. Decisions is counted off the
+ *  tree its view is drawn over (`decisionsRoot`, `decisions-filter/decisions-entries.ts`'
+ *  `useDecisionsTree`): the one its own view read builds once the page holds that read, which
+ *  holds every question and decision whatever page of the tree read the page holds, so its count
+ *  and its flag are that read's, with "+" only where it names a next page itself; and `root`
+ *  until then, with "+" while the tree read names one (R15). */
 export function filterSignals(
   root: TreeNode,
-  query: string
+  query: string,
+  decisionsRoot: TreeNode = root
 ): Readonly<Record<Filter, PresetSignal>> {
   const view = (filter: Filter) => presetView(root, filter, query);
   const more = (answer: TreeAnswer | undefined): Pick<PresetSignal, "more"> =>
@@ -935,7 +942,7 @@ export function filterSignals(
     ).size;
   };
   const verification = view("verification");
-  const decisions = view("decisions");
+  const decisions = presetView(decisionsRoot, "decisions", query);
   // A check's state is the page's one reading of it, as the server reads its results
   // (`tree-drafts.ts`'s `checkStanding`), so this flag and the Verification body count the same
   // checks as failed.
@@ -951,7 +958,7 @@ export function filterSignals(
     decisions: {
       count: decisions.matches,
       ...(toReview === 0 ? {} : { flag: { count: toReview, word: "to_review" } }),
-      ...more(undefined),
+      ...more(decisionsRoot === root ? undefined : root.views?.decisions),
     },
     plan: { count: count("plan"), ...more(root.views?.plan), unit: "steps" },
     spec: { count: count("spec"), ...more(root.views?.spec) },

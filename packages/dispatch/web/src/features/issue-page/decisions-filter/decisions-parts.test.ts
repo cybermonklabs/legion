@@ -1,6 +1,6 @@
 import { beforeAll, expect, test } from "bun:test";
 
-import type { Actor, DecisionLink, DisplayTree } from "../../../api/types";
+import type { Actor, DecisionLink, DisplayTree, IssueCoverage } from "../../../api/types";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { decisionNodes } from "../decision-nodes/decision-nodes";
 import { inReviewList } from "../decision-review";
@@ -8,7 +8,7 @@ import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
 import { parentLinkWords } from "../projection-fixture";
-import { nodeIdOf as issueNodeIdOf } from "../tree-drafts";
+import { coverageStatements, nodeIdOf as issueNodeIdOf } from "../tree-drafts";
 import { treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
 import { changesOf } from "./decisions-entries";
@@ -1051,6 +1051,43 @@ test("an overtaken decision stays in its part and is not in waitingOrder", () =>
   expect(idsOf(parts).review).toEqual([D("overtaken"), D("waits")]);
   expect(parts.review[0]).toMatchObject({ overtaken: true, standing: "waiting_review" });
   expect(parts.review[1]).not.toHaveProperty("overtaken");
+  expect(waitingOrder(parts)).toEqual([D("waits")]);
+});
+
+// R35, and INFRA-1196's architect on R2: a tie counts where its far end is a statement, and the
+// coverage read, which is no paged read, says which addresses name one, by the rule the review
+// list is read by everywhere (`coverageStatements`). Conversation's read is paged, so the tree
+// may hold no node of the statement a waiting decision is tied to: the decision stands in the
+// review list all the same, not at the foot, and its row draws no line for the statement.
+test("a waiting decision whose tied statement only the coverage read holds stands in the review list", () => {
+  const made = [decision("waits", { decision: { links: [shaped(specRef("s-late"))] } })];
+  const coverage: IssueCoverage = {
+    gaps: [],
+    has_plan: false,
+    issue: KEY,
+    requirements: [
+      {
+        block_id: "s-late",
+        checks: 0,
+        gaps: [],
+        plan_tasks: 0,
+        ref: specRef("s-late"),
+        text: "The page draws s-late.",
+      },
+    ],
+    spec_artifact_id: SPEC_DOCUMENT.id,
+  };
+  const parts = decisionsParts({
+    asks: [],
+    decisions: decisionsOf(made),
+    isCoverageStatement: coverageStatements(issueDetails(), coverage),
+    issueKey: KEY,
+    nodeIdOf,
+    reader: READER,
+    root: issueTree([decisionNode("waits")]),
+  });
+  expect(idsOf(parts)).toMatchObject({ agents: [], review: [D("waits")] });
+  expect(parts.review[0]).toMatchObject({ shapes: [], standing: "waiting_review" });
   expect(waitingOrder(parts)).toEqual([D("waits")]);
 });
 

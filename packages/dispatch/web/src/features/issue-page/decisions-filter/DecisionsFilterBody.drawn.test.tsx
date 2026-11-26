@@ -1416,6 +1416,43 @@ test("every state of the tree read, the decisions view read and the asks read dr
   }
 });
 
+// R2, and INFRA-1196's architect on it: the view's entries are the decisions view read's.
+// Conversation's tree read is paged, and the page reads a next page of it only when the reader
+// asks for one (R15), so a decision past its first page is a node of no page the page holds.
+// Here the tree read and the page's tree hold the first decision, and the decisions view read,
+// as the page holds it once the filter is on, holds a later one too, tied to the same statement:
+// the later one is a row of the review list with its state, newest first, the outline's keys
+// reach it, and the node an address names lands on its row.
+test("a decision past Conversation's first page is a row of its part, which the keys and an address reach", async () => {
+  const user = userEvent.setup();
+  const made = (block: string, at: string) =>
+    decision(block, { decision: { changed_at: at, links: [shaped(specRef("s1"))] } });
+  const first = made("first", "2026-11-10T12:00:00Z");
+  const view = renderBody({ children: [statement("s1"), decisionNode("first")], made: [first] });
+  try {
+    expect(rowsOfPart(view, "review")).toEqual([D("first")]);
+    await act(async () => {
+      view.client.setQueryData(
+        viewKey(KEY, "decisions"),
+        treeAnswer([first, made("later", "2026-11-12T12:00:00Z")])
+      );
+    });
+    expect(rowsOfPart(view, "review")).toEqual([D("later"), D("first")]);
+    expect(rowOf(view, D("later")).getAttribute("data-node-state")).toBe("waiting_review");
+
+    await act(async () => rowOf(view, D("first")).focus());
+    await user.keyboard("k");
+    expect(focusedRow(view)).toBe(D("later"));
+    await user.keyboard("j");
+    expect(focusedRow(view)).toBe(D("first"));
+
+    view.again({ reveal: D("later") });
+    await waitFor(() => expect(focusedRow(view)).toBe(D("later")));
+  } finally {
+    view.unmount();
+  }
+});
+
 /**
  * The body over `client`, drawn over the page's tree as `useIssueTree.ts` builds it from
  * `children`: the issue alone until the case hands it the nodes of a tree read that answered.
@@ -1521,9 +1558,11 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
     // The tree read was read three times: refused as the page loaded, refused again under the
     // first Retry, and answered under the second.
     expect(treeReads?.mock.calls.filter(([, query]) => query?.view === undefined)).toHaveLength(3);
-    // The line is gone and the page's tree does not hold the decision yet: the tree holds the
-    // focus, in the list.
-    await waitFor(() => expect(document.activeElement).toBe(tree));
+    // The line is gone, and the decision both reads hold is a row of the list though the page's
+    // tree holds no node of it yet: the view draws it from the tree the decisions view read
+    // builds (`useDecisionsTree`). It takes the focus the line left, in the list, and keeps it
+    // once the page's tree holds the decision too.
+    await waitFor(() => expect(focusedRow(failed)).toBe(D("first")));
     failed.again([statement("s1"), decisionNode("first")]);
     await waitFor(() => expect(focusedRow(failed)).toBe(D("first")));
   } finally {
@@ -2194,7 +2233,7 @@ test("a closed issue draws the review list with no Keep and no Change", () => {
 // to the view's first row, else, where no row is left, to the tree: never to the page.
 test("a focused entry that another person deletes gives the focus to its neighbour", async () => {
   /** Reads the issue again with `block`'s decision deleted: gone from the tree and from the
-   *  decisions view. */
+   *  decisions view, which answers the decision by its block (`block_id`). */
   const deleted = async (
     view: Drawn,
     issue: { children: TreeNode[]; made: TreeAnswerNode[] },
@@ -2203,7 +2242,7 @@ test("a focused entry that another person deletes gives the focus to its neighbo
     await act(async () => {
       view.client.setQueryData(
         viewKey(KEY, "decisions"),
-        treeAnswer(issue.made.filter((made) => made.id !== block))
+        treeAnswer(issue.made.filter((made) => made.block_id !== block))
       );
       view.again({ children: issue.children.filter((child) => child.id !== D(block)) });
     });

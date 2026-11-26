@@ -223,6 +223,11 @@ export function SpecFilterBody({
     () => (held === undefined ? [] : decisionNodes(held, { asks, issue })),
     [asks, held, issue]
   );
+  // The tree that view read builds (`TreeViews.trees`), the one last held as its answer is: it
+  // holds each answered question whose `shaped` ties name a statement of the view, which
+  // Conversation's read the page's tree is built from may not have reached, so a person's
+  // decision is drawn by their answer whatever page of that read the page holds.
+  const heldTree = useLastAnswer(root.views?.trees?.spec);
   // The view read as the lines below read a read: held where the column holds an answer of it,
   // the last one included, and refused, run and asked again by its own query.
   const decisionsRead = {
@@ -317,8 +322,9 @@ export function SpecFilterBody({
         reader,
         root,
         view,
+        ...(heldTree === undefined ? {} : { viewTree: heldTree }),
       }),
-    [asksHeld, decisions, nameOf, nodeIdOf, reader, resultsRead.data, root, view]
+    [asksHeld, decisions, heldTree, nameOf, nodeIdOf, reader, resultsRead.data, root, view]
   );
   const specSlug = spec?.slug ?? "";
   const summary = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
