@@ -437,12 +437,20 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 		}
 		report.Pending = append(report.Pending, entry)
 	}
+	// A session waiting for its client outside a transaction (state = 'idle') holds no client
+	// transaction, yet Postgres can still report a non-null xact_start for it: an idle-time
+	// interrupt (ProcessCatchupEvent on a shared-invalidation catchup, or ProcessIncomingNotify on
+	// LISTEN/NOTIFY) starts an internal transaction without updating stmtStartTimestamp, so
+	// StartTransaction stamps xact_start with the start time of the session's last finished client
+	// statement, however long ago that was. Excluding state = 'idle' keeps those stale timestamps
+	// out of the long-transaction list as well as the skew below.
+	//
 	// A session whose transaction's age the census cannot see - another role's without
 	// pg_read_all_stats, which Postgres shows with no state, any with track_activities off, shown
 	// as disabled, or a WAL sender, whose xact_start Postgres never records - shows no xact_start,
 	// as one in no transaction does; the virtual transaction id every transaction locks tells the
-	// two apart. Only an idle session that shows no xact_start yet locks a virtual transaction id
-	// is one whose transaction began after Postgres read pg_stat_activity, within this query
+	// two apart. An idle session that shows no xact_start yet locks a virtual transaction id is
+	// one whose transaction began after Postgres read pg_stat_activity, within this query
 	// (holderRefusal says why idle is the one state that shows it): Postgres reads
 	// pg_stat_activity once per transaction and keeps it (freshActivity), so the census clears that
 	// copy first and such a transaction is younger than this query.
@@ -454,8 +462,9 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 			clock_timestamp() - a.xact_start, coalesce(a.backend_type = 'autovacuum worker', false)
 		from pg_stat_activity a
 		where a.datname = current_database() and a.pid <> pg_backend_pid()
+			and a.state is distinct from 'idle'
 			and (clock_timestamp() - a.xact_start >= $1::interval
-				or a.xact_start is null and a.state is distinct from 'idle'
+				or a.xact_start is null
 					and exists (select from pg_locks l where l.pid = a.pid and l.locktype = 'virtualxid'))
 		order by a.xact_start, a.pid`, options.LongTransaction)
 	if err != nil {
@@ -816,6 +825,14 @@ func holderRefusal(holder lockHolder, table string, pastFreezeAge bool, bound lo
 		return ""
 	}
 	switch {
+	case holder.State == idleState:
+		// Idle: pg_stat_activity, read afresh in the query that read pg_locks (lockHolders), saw
+		// it waiting for its client between transactions, so the transaction holding the lock
+		// began or ended within that one query, and is not old. An idle session can still show an
+		// xact_start while handling a catchup or notify interrupt (ProcessCatchupEvent,
+		// ProcessIncomingNotify), whose internal transaction stamps xact_start with the start time
+		// of the session's last finished client statement rather than a real transaction age.
+		return ""
 	case holder.XactAge == nil && untracked:
 		return fmt.Sprintf("%s holds a lock on %s, and Postgres records no transaction start for it with track_activities off, so the census cannot rule out a transaction older than %s", holder.Session, table, long)
 	case holder.XactAge == nil && holder.State == "":
@@ -824,10 +841,10 @@ func holderRefusal(holder lockHolder, table string, pastFreezeAge bool, bound lo
 		// pg_read_all_stats; so here, and only here, the session runs as another role and the
 		// grant is what would let the census read the age.
 		return fmt.Sprintf("%s holds a lock on %s, and Postgres hides its transaction's age from the census's role, which is not the session's role, so the census cannot rule out a transaction older than %s; granting the census's role pg_read_all_stats lets the census read the age", holder.Session, table, long)
-	case holder.XactAge == nil && holder.State != idleState:
-		// Idle is the one state that tells a session read between its transactions, the skew the
-		// next arm passes: one read while it waited for its client, before the transaction holding
-		// the lock began or after it ended, reads idle (as the census's stale copy read the holder
+	case holder.XactAge == nil:
+		// Idle is the one state that tells a session read between its transactions, handled above:
+		// one read while it waited for its client, before the transaction holding the lock began
+		// or after it ended, reads idle (as the census's stale copy read the holder
 		// TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCensus sets up),
 		// and a session other than a WAL sender shows xact_start whenever it holds a relation lock
 		// in a transaction (xact.c sets it before the transaction runs a statement and clears it
@@ -839,11 +856,6 @@ func holderRefusal(holder lockHolder, table string, pastFreezeAge bool, bound lo
 		// before it starts the transaction, and until it reports it idle after the commit),
 		// refuses here too: spuriously, and only at that instant, so a census taken again passes it.
 		return fmt.Sprintf("%s holds a lock on %s, and Postgres records no transaction start for it though its state is %s (it records none for a WAL sender, to any role), so the census cannot rule out a transaction older than %s", holder.Session, table, holder.State, long)
-	case holder.XactAge == nil:
-		// Idle with no transaction start: pg_stat_activity, read afresh in the query that read
-		// pg_locks (lockHolders), saw it waiting for its client between transactions, so the
-		// transaction holding the lock began or ended within that one query, and is not old.
-		return ""
 	case *holder.XactAge >= long:
 		return fmt.Sprintf("%s has held a lock on %s for %s, longer than %s", holder.Session, table, *holder.XactAge, long)
 	}

@@ -3,13 +3,20 @@ package pgmigrate
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
+	"net"
+	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Every statement form the repository's migrations take a lock with names its table, once, with
@@ -300,6 +307,11 @@ func TestAHolderRefusesOnlyWhatWouldHoldTheMigrationPastItsLockTimeout(t *testin
 		// A holder whose state the census sees, idle when pg_stat_activity was read in the query
 		// that read pg_locks, was between transactions, so it holds one younger than that query.
 		"a session of a visible role between transactions": {holder: lockHolder{Session: Session{PID: 85, User: "dispatch", State: "idle"}}, cancellation: true},
+		// An idle session handling a catchup or notify interrupt starts an internal transaction
+		// without updating stmtStartTimestamp, so Postgres reports the start of its last finished
+		// client statement as xact_start while state stays idle; that stale timestamp is no age
+		// of the lock.
+		"an idle session showing a stale transaction start from an idle-time interrupt": {holder: lockHolder{Session: Session{PID: 88, User: "dispatch", State: "idle", XactAge: &old}}, cancellation: true},
 		// One whose state says it is in a transaction, or running, yet shows no transaction start
 		// is not: Postgres records none for a WAL sender, to any role.
 		"a session in a transaction with no transaction start": {holder: lockHolder{Session: Session{PID: 86, User: "dispatch", State: "idle in transaction"}}, cancellation: true, want: "pid 86 (user dispatch, application \"\", idle in transaction, transaction age not visible) holds a lock on things, and Postgres records no transaction start for it though its state is idle in transaction (it records none for a WAL sender, to any role), so the census cannot rule out a transaction older than 1m0s"},
@@ -359,5 +371,136 @@ func TestHolderDiagnosisSaysAQueryItMayNotSeeIsNotVisible(t *testing.T) {
 		if got := visibleQuery(tc.query); got != tc.want {
 			t.Errorf("%s: visibleQuery() = %q, want %q", name, got, tc.want)
 		}
+	}
+}
+
+// A session waiting for its client outside a transaction (state = 'idle') holds no client
+// transaction, yet Postgres can still report a non-null xact_start for it: an idle-time interrupt
+// (ProcessCatchupEvent on a shared-invalidation catchup, or ProcessIncomingNotify on LISTEN/NOTIFY)
+// starts an internal transaction without updating stmtStartTimestamp, so StartTransaction stamps
+// xact_start with the start time of the session's last finished client statement. Census must not
+// count such an idle session as a long transaction, while still reporting a genuine open one.
+//
+// The test triggers the exact PostgreSQL behaviour deterministically with LISTEN/NOTIFY: listener
+// runs LISTEN, sits idle past the bound, and stops reading its socket (with a small receive buffer
+// so TCP flow control backpressures quickly even on kernels with large autotuned receive buffers);
+// notifier floods the channel until ProcessIncomingNotify blocks on ClientWrite and pg_stat_activity
+// shows listener as idle with xact_start past the bound.
+func TestCensusDoesNotReportAnIdleSessionShowingAStaleTransactionStart(t *testing.T) {
+	t.Parallel()
+	raw := os.Getenv("DISPATCH_TEST_DATABASE_URL")
+	if raw == "" {
+		t.Skip("DISPATCH_TEST_DATABASE_URL must be set to run the census's database tests")
+	}
+	adminURL, err := url.Parse(raw)
+	if err != nil {
+		// url.Parse's own error quotes the URL, which carries a credential.
+		t.Fatal("DISPATCH_TEST_DATABASE_URL is not a URL")
+	}
+	adminURL.Path = "/postgres"
+	ctx := testwait.Context(t)
+	dbURL := testdb.DatabaseOn(t, adminURL.String(), "pgmigrate_idle_xact")
+
+	censusConn := connect(t, ctx, dbURL)
+	if _, err := censusConn.Exec(ctx, "create table schema_migrations (version integer primary key); insert into schema_migrations values (1)"); err != nil {
+		t.Fatalf("seed schema_migrations: %v", err)
+	}
+
+	listenerConfig, err := pgx.ParseConfig(dbURL)
+	if err != nil {
+		t.Fatalf("parse database URL: %v", err)
+	}
+	listenerConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		if tcp, ok := conn.(*net.TCPConn); ok {
+			_ = tcp.SetReadBuffer(4096)
+		}
+		return conn, nil
+	}
+	listener, err := pgx.ConnectConfig(ctx, listenerConfig)
+	if err != nil {
+		t.Fatalf("connect listener: %v", err)
+	}
+	t.Cleanup(func() {
+		// Close the underlying socket directly so teardown never blocks on a full socket buffer;
+		// Postgres sees the closed peer, leaves ClientWrite, and exits cleanly.
+		_ = listener.PgConn().Conn().Close()
+		_ = listener.Close(context.Background())
+	})
+	if _, err := listener.Exec(ctx, "listen idle_xact_probe"); err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	listenerPID := listener.PgConn().PID()
+
+	// A real open transaction alongside the idle listener: Census must still report this one.
+	holder := connect(t, ctx, dbURL)
+	held, err := holder.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin holder transaction: %v", err)
+	}
+	t.Cleanup(func() { _ = held.Rollback(context.Background()) })
+	if _, err := held.Exec(ctx, "select 1"); err != nil {
+		t.Fatalf("holder select: %v", err)
+	}
+	holderPID := holder.PgConn().PID()
+
+	const bound = 200 * time.Millisecond
+	time.Sleep(bound + 100*time.Millisecond)
+
+	var state string
+	var hasXactStart bool
+	if err := censusConn.QueryRow(ctx,
+		"select coalesce(state, ''), xact_start is not null from pg_stat_activity where pid = $1",
+		listenerPID,
+	).Scan(&state, &hasXactStart); err != nil {
+		t.Fatalf("read listener before notify: %v", err)
+	}
+	if state != idleState || hasXactStart {
+		t.Fatalf("before notify listener pid %d reads state=%q has_xact_start=%v, want idle with no xact_start", listenerPID, state, hasXactStart)
+	}
+
+	notifier := connect(t, ctx, dbURL)
+	readListener := func() (string, *time.Duration) {
+		t.Helper()
+		var st string
+		var age *time.Duration
+		if err := censusConn.QueryRow(ctx,
+			"select coalesce(state, ''), clock_timestamp() - xact_start from pg_stat_activity where pid = $1",
+			listenerPID,
+		).Scan(&st, &age); err != nil {
+			t.Fatalf("read listener activity: %v", err)
+		}
+		return st, age
+	}
+	testwait.Until(t, "listener to show idle with a stale xact_start past the bound", func() (string, bool) {
+		if _, err := notifier.Exec(ctx,
+			"select pg_notify('idle_xact_probe', repeat('x', 7000) || g::text) from generate_series(1, 200) g",
+		); err != nil {
+			t.Fatalf("send notify batch: %v", err)
+		}
+		st, age := readListener()
+		if st == idleState && age != nil && *age >= bound {
+			return fmt.Sprintf("state=%q age=%v", st, *age), true
+		}
+		return fmt.Sprintf("state=%q age=%v", st, age), false
+	})
+
+	report, err := Census(ctx, censusConn, nil, "schema_migrations", CensusOptions{LongTransaction: bound})
+	if err != nil {
+		t.Fatalf("Census: %v", err)
+	}
+
+	// Confirm the idle backend still carried its stale xact_start across the whole census read.
+	st, age := readListener()
+	if st != idleState || age == nil || *age < bound {
+		t.Fatalf("after Census listener pid %d reads state=%q age=%v; the stale xact_start did not hold across the census", listenerPID, st, age)
+	}
+
+	if len(report.LongTransactions) != 1 || report.LongTransactions[0].PID != holderPID {
+		t.Fatalf("LongTransactions = %v, want only holder pid %d (idle listener pid %d had stale xact_start age %v)",
+			report.LongTransactions, holderPID, listenerPID, *age)
 	}
 }

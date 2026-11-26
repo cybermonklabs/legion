@@ -183,7 +183,10 @@ func holdCIReconcileLease(t *testing.T, database *store.Store) {
 // start still counts as live when the route reads it however long the steps between take; the
 // production fifteen seconds would read a slow run's process as gone.
 func TestCIReconcilePassesShowsARunningPass(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it writes processes.LiveWindow, a variable of another package that every
+	// server of this package reads where it admits a document socket (docs' readSchemaFleet, through
+	// processes.Live); beside the parallel tests that write raced one's served socket
+	// (envoy-go-race-api job 140094784809).
 	handler, database := newTestHandlerWithStore(t)
 	was := processes.LiveWindow
 	processes.LiveWindow = pastTheRun
@@ -213,6 +216,9 @@ func TestCIReconcilePassesShowsARunningPass(t *testing.T) {
 // without completing. Only the heartbeat can decide this one, and the route decides nothing of
 // its own -- this is the cireconcile rule reaching a caller through HTTP.
 func TestCIReconcilePassesShowsAKilledPassAsEndedWithoutCompleting(t *testing.T) {
+	// Not parallel: it writes processes.LiveWindow, a variable of another package that every
+	// server of this package reads where it admits a document socket (docs' readSchemaFleet, through
+	// processes.Live).
 	handler, database := newTestHandlerWithStore(t)
 	was := processes.LiveWindow
 	processes.LiveWindow = time.Second
