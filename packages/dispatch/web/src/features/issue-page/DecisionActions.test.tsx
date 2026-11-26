@@ -586,6 +586,43 @@ test("Keep posts the node's document, block id and sum", async () => {
   }
 });
 
+// Conversation's tree read is paged: on a large issue its first page ends before the last
+// decisions, which the Decisions view read holds (measured on a preview of 3aa8782b: on
+// INFRA-1196's copy the Decisions view drew the agent's decision under an answered question in
+// the review list, waiting, with no Keep and no Change, where every decision on the first page
+// drew both). A decision that waits for review draws Keep and Change wherever the page draws it
+// (spec R2, R3, R4, R8), whether or not the outline read's first page holds its node.
+test("a waiting decision past the outline read's first page draws Keep and Change from the view read", async () => {
+  const other = decisionNode("d0", "Another decision\n\nOn the first page.");
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(
+    conversationTreeKey(KEY),
+    treeAnswer([other], [], { cursor: "next-page", remaining: 30 })
+  );
+  client.setQueryData(viewKey(KEY, "decisions"), treeAnswer([ONE]));
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <MemoryRouter>{children}</MemoryRouter>
+    </QueryClientProvider>
+  );
+  const view = render(
+    <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />,
+    { wrapper }
+  );
+  try {
+    await waitFor(() =>
+      expect(
+        screen.queryAllByRole("button").map((button) => button.textContent),
+        "a waiting decision the Decisions view read holds draws no Keep and no Change"
+      ).toEqual(
+        expect.arrayContaining([CONTROL_LABELS.keep_decision, CONTROL_LABELS.change_decision])
+      )
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 // Dispatch refuses a Keep of words the agent changed since the node was drawn
 // (`409 DECISION_CHANGED`). The decision still waits, so Keep stays drawn, with the alert that
 // says why; and the tree is read again and the Decisions view dropped, so the page draws the
