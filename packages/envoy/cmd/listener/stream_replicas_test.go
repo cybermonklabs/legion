@@ -110,6 +110,7 @@ func TestRaisingTheStreamMovesTheListenersDurableToThreeCopies(t *testing.T) {
 // opens CI state) at one copy, and its next start creates and updates
 // nothing.
 func TestADefaultListenerOnASingleServerCreatesEverythingAtOneCopyAndItsNextStartWritesNothing(t *testing.T) {
+	t.Parallel()
 	const machineID = "replicas-default"
 	uri := testnats.URL(t)
 	binary := cmdtest.Build(t, "envoy-listener")

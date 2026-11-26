@@ -1,14 +1,16 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { connect, createInbox, Events, headers, type Msg, type NatsConnection, nkeys } from "nats";
-import { createConsumerDelivery, deliverSubject, RelayHeader } from "../consumer-delivery";
-import { natsAuthOptions } from "../nats-auth";
 import {
   NATS_START_HOOK_MS,
   NATS_STOP_HOOK_MS,
   natsHookDeadline,
   natsServerWithConfig,
+  sessionGrantConfig,
+  sessionReplySubject,
   useNatsServerDirectory,
-} from "./nats-server";
+} from "../../test/nats-server";
+import { createConsumerDelivery, deliverSubject, RelayHeader } from "../consumer-delivery";
+import { natsAuthOptions } from "../nats-auth";
 
 /** nats.js types its `nkeys` export `any`. */
 const testKeys: { createUser(): { getSeed(): Uint8Array; getPublicKey(): string } } = nkeys;
@@ -17,16 +19,6 @@ const serverDirectory = useNatsServerDirectory();
 
 const SESSION = "ses_reply_grant";
 const AGENT = `notifications.agent.${SESSION}`;
-/** A 26-character token of the alphabet the listener's and Dispatch's tokens use
- *  (Go's crypto/rand.Text). */
-const token = () =>
-  Array.from(
-    crypto.getRandomValues(new Uint8Array(26)),
-    (byte) => "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"[byte % 32]
-  ).join("");
-/** The reply subject a listener (bus.SessionReplySubject) asks this session on now:
- *  `<inbox>.<session id>.<token>`. */
-const sessionReply = () => `${createInbox()}.${SESSION}.${token()}`;
 
 /** The row's bound, passed to the row. Its waits give up 5 s inside it, so a wait that gives up
  *  fails naming what it waited for rather than as the row's timeout. */
@@ -70,12 +62,13 @@ const CLOSE_MS = 5_000;
 
 // The shared consumer delivery is the one place both plugins answer the listener's relay frames
 // and connection probe (pi-envoy's and claude-envoy's `publish` is `connection.publish(reply, …)`).
-// Here it runs on a real nats.js connection authenticated as a session user whose grant is a
-// session's own: publish its replies under `_INBOX.*.<session id>.>` (`bus.SessionReplies`) alone.
-// Every answer to a frame or probe asked on a reply subject naming the session reaches the
-// requester; the same answers on the shapes the listener asked on before - its reply inbox and a
-// counter, and a plain inbox for the probe - are refused by the server and reach nobody, which is
-// the control that the grant is enforced and that the watcher hears what the session publishes.
+// Here it runs on a real nats.js connection authenticated as a session user whose grant is the
+// one the NATS auth service gives a session (`sessionGrantConfig`): publish its replies under
+// `_INBOX.*.<session id>.>` alone. Every answer to a frame or probe asked on a reply subject naming
+// the session reaches the requester; the same answers on the shapes the listener asked on before -
+// its reply inbox and a counter, and a plain inbox for the probe - are refused by the server and
+// reach nobody, which is the control that the grant is enforced and that the watcher hears what
+// the session publishes.
 //
 // Docker-backed: CI runs this package's tests with LEGION_E2E=1 after pulling the image.
 describe.skipIf(process.env.LEGION_E2E !== "1")("a session's replies under its own grant", () => {
@@ -86,14 +79,11 @@ describe.skipIf(process.env.LEGION_E2E !== "1")("a session's replies under its o
   const requesterSeed = new TextDecoder().decode(requesterUser.getSeed());
   const server = natsServerWithConfig(
     serverDirectory,
-    `jetstream {}
-authorization {
-  users = [
-    { nkey: ${JSON.stringify(requesterUser.getPublicKey())} }
-    { nkey: ${JSON.stringify(user.getPublicKey())}, permissions: { publish: { allow: [${JSON.stringify(`_INBOX.*.${SESSION}.>`)}, ${JSON.stringify(`agentstream.${SESSION}.frames`)}] }, subscribe: { allow: [${JSON.stringify(deliverSubject(SESSION))}, ${JSON.stringify(`agentstream.${SESSION}.control`)}] } } }
-  ]
-}
-`
+    sessionGrantConfig({
+      sessionID: SESSION,
+      sessionKey: user.getPublicKey(),
+      requesterKey: requesterUser.getPublicKey(),
+    })
   );
   const open: NatsConnection[] = [];
   /** The teardown's bound: the connections' closes and then the container's removal. */
@@ -186,8 +176,8 @@ authorization {
       const answersOn = (subject: string) =>
         heard.filter(([to]) => to === subject).map(([, body]) => body);
 
-      const ownFrame = sessionReply();
-      const ownProbe = sessionReply();
+      const ownFrame = sessionReplySubject(createInbox(), SESSION);
+      const ownProbe = sessionReplySubject(createInbox(), SESSION);
       frame(1, ownFrame);
       probe(ownProbe);
       await waitFor(

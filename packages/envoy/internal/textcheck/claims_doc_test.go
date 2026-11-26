@@ -1,5 +1,8 @@
 package textcheck
 
+//ci:reads docs/kubernetes.md TestTheClaimExtractIsTheGuidesClaimList reads it under ../../../..
+//ci:reads packages/envoy/internal/cipher/oauth/claims_doc_extract.txt extractLines reads the committed copy it holds the guide's list to (extractLines, called with it in TestTheClaimExtractIsTheGuidesClaimList)
+
 import (
 	"errors"
 	"fmt"

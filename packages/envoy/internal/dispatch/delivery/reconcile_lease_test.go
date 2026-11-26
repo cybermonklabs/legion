@@ -16,11 +16,12 @@ import (
 // - the other envoy-dispatch process, inside a pass of its own - this process's pass asks GitHub
 // for nothing and leaves the settings' freshness untouched.
 func TestAReconcilePassWhoseLeaseIsHeldElsewhereAsksGitHubNothing(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	leases := deliveryTestLeases(t, pool)
 	seedDeliverySettings(t, ctx, pool)
 	fake := newFakeGitHub(t)
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 
 	// 0: this caller stands for the other process's pass while it is inside it, which is all
 	// this row is about, and records no pass of its own -- so what the passes below do is the
@@ -28,7 +29,7 @@ func TestAReconcilePassWhoseLeaseIsHeldElsewhereAsksGitHubNothing(t *testing.T) 
 	taken, release := make(chan struct{}), make(chan struct{})
 	held := make(chan bool, 1)
 	go func() {
-		held <- duty.Exclusive(ctx, leases, deliveryReconcileLease, time.Time{}, 0, func(context.Context) {
+		held <- duty.Exclusive(ctx, nil, leases, deliveryReconcileLease, time.Time{}, 0, func(context.Context) {
 			close(taken)
 			<-release
 		})
@@ -81,6 +82,7 @@ func TestAReconcilePassWhoseLeaseIsHeldElsewhereAsksGitHubNothing(t *testing.T) 
 // nothing. With them, the pass's first request is its permission check, the lookup of the deploy
 // repository's installation, which the fake counts here.
 func TestTwoReconcileTicksTheShortestWaitApartBothRun(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	leases := deliveryTestLeases(t, pool)
 	settings := seedDeliverySettings(t, ctx, pool)
@@ -90,7 +92,7 @@ func TestTwoReconcileTicksTheShortestWaitApartBothRun(t *testing.T) {
 		checks.Add(1)
 		mustEncode(t, w, map[string]any{"id": fake.installID, "app_slug": "delivery-test", "permissions": fake.permissions})
 	})
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 
 	interval := ReconcileInterval.Nanoseconds()
 	first := time.Unix(0, time.Now().UnixNano()/interval*interval)

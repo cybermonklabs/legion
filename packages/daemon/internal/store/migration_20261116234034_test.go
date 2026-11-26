@@ -22,6 +22,7 @@ const phaseReviewedHeadVersion = 20261116234034
 // was. A commit written after it reads back as it was written, through a store reopened as a
 // daemon restart reopens it, and the column refuses null, which the phases read cannot scan.
 func TestThePhaseReviewedHeadMigrationLeavesEveryRowWithNoCommitAndTheCommitRoundTrips(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, phaseReviewedHeadVersion-1)
@@ -55,7 +56,7 @@ func TestThePhaseReviewedHeadMigrationLeavesEveryRowWithNoCommitAndTheCommitRoun
 	const reviewed = "2222222222222222222222222222222222222222"
 	want := found
 	want.ReviewedHead = reviewed
-	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPhase(ctx, tx, want)
 	}); err != nil {
 		t.Fatalf("put the reviewer's row with the commit its review read: %v", err)

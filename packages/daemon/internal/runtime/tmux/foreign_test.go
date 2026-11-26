@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A tmux daemon that takes over a project's store from a daemon that ran it under runtime
@@ -219,7 +220,9 @@ func TestAForeignLocatorStoppedBeforeTheSweepIsNotReported(t *testing.T) {
 func TestAResumeOverAForeignIncarnationOpensThePaneOnTheCarriedSession(t *testing.T) {
 	ctx := context.Background()
 	f := takingOver(t)
-	f.stopGrace = time.Hour
+	// A hundred years, past any test binary's deadline, -timeout 0 included: a resume that waited
+	// for the previous incarnation could never return, and the wait below fails it by name.
+	f.stopGrace = 100 * 365 * 24 * time.Hour
 	spec := f.spec(t, claim.RoleTester)
 	prev := sandboxLocator(t, spec.Project, spec.Issue, claim.RoleTester)
 	spec.ResumeSessionFile = podSession
@@ -231,13 +234,9 @@ func TestAResumeOverAForeignIncarnationOpensThePaneOnTheCarriedSession(t *testin
 		_, err := f.Resume(ctx, &prev, spec)
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Resume over a foreign incarnation: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("Resume over a foreign incarnation waited for a process this runtime cannot see")
+	// A resume that waited for the previous incarnation would wait out the hundred-year grace.
+	if err := testwait.Receive(t, "the resume over a foreign incarnation, which waits for no process this runtime cannot see", done); err != nil {
+		t.Fatalf("Resume over a foreign incarnation: %v", err)
 	}
 	var command string
 	for _, argv := range f.argvs {

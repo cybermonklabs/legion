@@ -33,11 +33,12 @@ const (
 // because the record knows no document of that step to hand to a person. The same root with that
 // step registered and still closed enters awaiting_person and its notice does reach the
 // controller, which is what tells the two apart; it keeps its row through either, since a started
-// issue holds one of the cap's slots until its work is past its review (record.KeepsSlot), and
-// this root stands in admitted with a gate that has never opened, or in awaiting_person,
-// throughout: those are two of the three roots that keep their row even while they wait on
-// another issue (blockers.waitsOf), and the third, a queued root carrying the row it held in
-// another tree, is not driven here. It starts once the step is registered and approved.
+// issue holds one of the cap's slots while it stands in a phase that keeps one (record.KeepsSlot),
+// as admitted and awaiting_person do, and this root stands in admitted with a gate that has never
+// opened, or in awaiting_person, throughout: those are two of the three roots that keep their row
+// even while they wait on another issue (blockers.waitsOf), and the third, a queued root carrying
+// the row it held in another tree, is not driven here. It starts once the step is registered and
+// approved.
 func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 	steps := []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}
 	t.Run("the step nobody registered", func(t *testing.T) {
@@ -209,8 +210,9 @@ func TestGatedStepsKeepTheStaleApprovalOfItsOwnDocument(t *testing.T) {
 
 	readmitRoot(t, pool, admission)
 
-	want := "The decisions document is approved at version 2 and is now at version 3: request approval of version 3, " +
-		"as skill://legion-architect/references/design-gate.md (\"The armed gate\") says."
+	want := "A person approved version 2 of the decisions document, and the decisions document is now at version 3. " +
+		"Request approval of version 3, as skill://legion-architect/references/design-gate.md (\"The armed gate\") says. " +
+		"The other way is to write LEGION-ROOT as a view on an approved ancestor and register the step on that ancestor's approval, as the same page says."
 	starts := architectStartRows(t, pool)
 	if len(starts) != 1 || starts[0].Task != architectStart(t, pool, admission, "LEGION-ROOT", want) {
 		t.Fatalf("architect starts %#v, want one whose task names %q", starts, want)

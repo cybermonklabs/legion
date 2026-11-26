@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/dpopproof"
 )
 
 // ErrNoNonce is ConnectionProof's answer for a server that sent no nonce. A server sends a nonce
@@ -29,5 +30,5 @@ func ConnectionProof(key *ecdsa.PrivateKey, accessToken, nonce string) (string, 
 	case nonce == "":
 		return "", ErrNoNonce
 	}
-	return signProof(key, oauthwire.ConnectionProofMethod, oauthwire.ConnectionProofTarget, nonce, tokenHash(accessToken))
+	return dpopproof.Sign(key, oauthwire.ConnectionProofMethod, oauthwire.ConnectionProofTarget, nonce, dpopproof.TokenHash(accessToken))
 }

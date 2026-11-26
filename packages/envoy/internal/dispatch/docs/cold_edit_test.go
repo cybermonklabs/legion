@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A write to a document no room holds forks the stored document and loads no room while it runs:
@@ -20,6 +21,7 @@ import (
 // (audit finding 11): the write keeps no fork, its verdict on what it inserted is judged on the
 // store (nothing was lost), and the next read loads the room from the store, holding the write.
 func TestAColdWriteLoadsNoRoom(t *testing.T) {
+	t.Parallel()
 	for _, conditional := range []bool{false, true} {
 		name := "unconditional"
 		if conditional {
@@ -87,12 +89,14 @@ func TestAColdWriteLoadsNoRoom(t *testing.T) {
 // The room a cold write's settlement loads stays resident as any room does (roomIdleTimeout), and
 // the writes after it publish into it, so a run of writes to a document no browser holds, each
 // settled before the next, loads the document once. Only the room a late departure's settlement
-// loads is retired as that settlement ends (retireSettlementRoom). ygo's idle sweep is held off
-// for the test's run, so its result does not depend on how long the machine takes to settle.
+// loads is retired as that settlement ends (retireSettlementRoom). The test's rooms are held
+// resident (holdRoomsResident), so its result does not depend on how long the machine takes to
+// settle.
 func TestColdWritesSettledOneAfterAnotherLoadTheDocumentOnce(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = 20 * time.Millisecond
-	service.srv.RoomIdleTimeout = time.Hour
+	holdRoomsResident(t, service)
 	var loads atomic.Int32
 	service.bootstrapping = func(room string, _ []byte) {
 		if room == artifactID {
@@ -148,6 +152,7 @@ func (s *insideFirstLoadStore) Load(ctx context.Context, room string) (persisten
 // no copy of the document beside the room's own; one that loads after the read meets the write at
 // its publish (LEGION-504).
 func TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits(t *testing.T) {
+	t.Parallel()
 	for _, during := range []bool{true, false} {
 		name := "after the store read"
 		if during {
@@ -165,7 +170,7 @@ func TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits(t *testing.T) {
 				ServerURL:   "https://dispatch.example",
 				Settle:      time.Hour,
 			})
-			t.Cleanup(func() {
+			testcleanup.Add(t, func() {
 				if err := service.Shutdown(context.Background()); err != nil {
 					t.Errorf("shutdown document service: %v", err)
 				}

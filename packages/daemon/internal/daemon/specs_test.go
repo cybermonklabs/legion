@@ -37,6 +37,7 @@ func noAppOwners(claim.Role) []string { return nil }
 // (ProductionCheckFragment), the root's after the steps, which
 // TestEveryArchitectIsToldTheProjectsProductionCheck reads for both settings.
 func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -118,6 +119,7 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 // (dispatch://INFRA-175 R7). No phase worker is told it: none of them writes a Verification
 // document.
 func TestEveryArchitectIsToldTheProjectsProductionCheck(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -179,6 +181,7 @@ func TestEveryArchitectIsToldTheProjectsProductionCheck(t *testing.T) {
 // after its role's parts; every other role, and every role when the daemon names no backend, on Oh
 // My Pi with its parts alone.
 func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -246,6 +249,7 @@ func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing
 // repository. A deployment whose Apps are installed nowhere is told the App is installed on
 // none, as the controller's addressing is.
 func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -317,6 +321,7 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 // no git identity and neither App login: it works Dispatch, never a checkout or GitHub, and
 // commits nothing.
 func TestTheControllersLaunchIsItsHeadlessPromptAndNoCheckout(t *testing.T) {
+	// Not parallel: it unsets environment variables of the whole process (Unset).
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -369,6 +374,7 @@ func TestTheControllersLaunchIsItsHeadlessPromptAndNoCheckout(t *testing.T) {
 // environment's LEGION_SLACK_CHANNELS is the runtime's to set (sandbox.Options.ControllerSlackChannels),
 // never the spec's, which the runtime would refuse.
 func TestTheControllersLaunchNamesTheProjectsSlackChannels(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -410,6 +416,7 @@ func TestTheControllersLaunchNamesTheProjectsSlackChannels(t *testing.T) {
 // controller's own App's, the review App's, which the daemon answers for the controller role
 // (plan.appOwners).
 func TestTheControllersAddressingGainsTheReachItsAppGives(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -462,6 +469,7 @@ func TestTheControllersAddressingGainsTheReachItsAppGives(t *testing.T) {
 // launch, naming the issue. What an issue works, its record's repository or, unrecorded, the
 // project's default, is the workflow's (TestAnUnrecordedIssueWorksTheProjectsDefaultRepository).
 func TestAWorkerLaunchIsOnItsIssuesRecordedRepository(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -509,6 +517,7 @@ func TestAWorkerLaunchIsOnItsIssuesRecordedRepository(t *testing.T) {
 // deployment's configured repository_renames — so a claim on the name a transfer moved a
 // repository away from stamps exactly as one on the name the project wrote.
 func TestASpecStampsTheIssueKeyOnlyOnARepositoryTheProjectNames(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -582,6 +591,7 @@ func TestASpecStampsTheIssueKeyOnlyOnARepositoryTheProjectNames(t *testing.T) {
 // runtime/sandbox's mainEnvironment of issuePod.agentEnv. So a Claude Code launch carries
 // LEGION_ISSUE_TRAILER into its pane exactly as an Oh My Pi one does.
 func TestAClaudeLaunchCarriesTheIssueKeyItStampsIntoItsPane(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -625,11 +635,12 @@ func TestAClaudeLaunchCarriesTheIssueKeyItStampsIntoItsPane(t *testing.T) {
 // already at the daemon's contract, or a daemon that knows no plugin pair (LEGION-164's degraded
 // mode) — and always with Contract already api.DaemonAPIVersion.
 func TestSpawnSpecPluginsIsSetOnlyForAStaleKubernetesClaimWithASession(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}
+	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion()}
 	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
 	if err != nil {
 		t.Fatal(err)
@@ -645,7 +656,7 @@ func TestSpawnSpecPluginsIsSetOnlyForAStaleKubernetesClaimWithASession(t *testin
 		{"kubernetes, session, recorded 0", "kubernetes", pair, base, true},
 		{"kubernetes, session, recorded a stale number", "kubernetes", pair, withContract(base, 23), true},
 		{"kubernetes, no session", "kubernetes", pair, withSession(base, ""), false},
-		{"kubernetes, at the daemon's contract", "kubernetes", pair, withContract(base, api.DaemonAPIVersion), false},
+		{"kubernetes, at the daemon's contract", "kubernetes", pair, withContract(base, api.DaemonAPIVersion()), false},
 		{"kubernetes, no known pair", "kubernetes", nil, base, false},
 		{"tmux", "tmux", pair, base, false},
 	} {
@@ -670,11 +681,12 @@ func TestSpawnSpecPluginsIsSetOnlyForAStaleKubernetesClaimWithASession(t *testin
 
 // The daemon's own controller (`controller: daemon`) is covered the same way as any claim.
 func TestSpawnSpecPluginsCoversTheDaemonsControllerToo(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}
+	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion()}
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, runtimeName: "kubernetes", plugins: pair, appOwners: noAppOwners}
 	c := supervise.Claim{Token: claim.ControllerToken("s1"), Project: "s1", Role: claim.RoleController, Session: "sess-1", PluginContract: 23}
 	spec, err := s.SpawnSpec(context.Background(), c)
@@ -687,15 +699,16 @@ func TestSpawnSpecPluginsCoversTheDaemonsControllerToo(t *testing.T) {
 }
 
 // A launch carries the passthrough variables the daemon's own environment holds — the seven stall
-// limits and the two refusal cooldowns — merged into the git identity's variables rather than
-// replacing them or being replaced by them, and carries no variable the two lists do not hold: a
-// session told none of one runs on the default its plugin holds
-// (packages/pi-shared/src/stall-limits.ts, packages/pi-shared/src/fallback-cooldown.ts). The
+// limits and the two refusal cooldowns — merged into the git identity's variables and the table of
+// every role's identity rather than replacing them or being replaced by them, and carries no
+// variable the two lists do not hold: a session told none of one runs on the default its plugin
+// holds (packages/pi-shared/src/stall-limits.ts, packages/pi-shared/src/fallback-cooldown.ts). The
 // stall limits are merged after SpawnSpec's fork, so the controller's launch is told them as a
 // phase worker's is, and the cooldowns reach the controller from its own spec
 // (controllerSpawnSpec). Both runtimes forward Env verbatim, so this is where they reach a pane
 // and a pod alike.
 func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it unsets environment variables of the whole process (Unset).
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -720,8 +733,12 @@ func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
 	fixtureenv.Unset(t, "LEGION_STALL_ARCHITECT_AFTER", "LEGION_REFUSAL_COOLDOWN_MAX_MS")
 
 	bot := runtime.GitIdentity{Name: "legion-implement[bot]", Email: "9+legion-implement[bot]@users.noreply.github.com"}
+	var asked []appauth.AppRole
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
-		identity: func(context.Context, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) { return bot, nil }}
+		identity: func(_ context.Context, role claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
+			asked = append(asked, appauth.AppRoleFor(role))
+			return bot, nil
+		}}
 	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
 	if err != nil {
 		t.Fatal(err)
@@ -734,8 +751,17 @@ func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
 	}
 	want := maps.Clone(held)
 	maps.Copy(want, bot.Env())
+	want[runtime.RoleIdentitiesVariable] = runtime.RoleIdentities(map[claim.Role]runtime.GitIdentity{
+		claim.RoleArchitect: bot, claim.RolePlanner: bot, claim.RoleImplementer: bot,
+		claim.RoleTester: bot, claim.RoleReviewer: bot, claim.RoleMerger: bot,
+	})
 	if !maps.Equal(spec.Env, want) {
-		t.Errorf("the worker's Env = %v, want the seven passthrough variables the daemon holds beside the git identity, %v", spec.Env, want)
+		t.Errorf("the worker's Env = %v, want the seven passthrough variables the daemon holds beside the git identity and the role identities, %v", spec.Env, want)
+	}
+	// One identity per App, the claim's own first: the implement App's, then the review App's for
+	// its four roles (specs.roleIdentities).
+	if want := []appauth.AppRole{appauth.Implement, appauth.Review}; !slices.Equal(asked, want) {
+		t.Errorf("identity asked for the Apps %q, want %q: the claim's own App, then the other App", asked, want)
 	}
 
 	// The controller's launch is told the same seven — the stall limits after the fork, the
@@ -766,11 +792,12 @@ func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
 // the same shape is installed for as before, the daemon's own controller among them: it runs on
 // Oh My Pi whatever worker_backends names for a phase worker.
 func TestSpawnSpecPluginsSkipsAClaudeClaimAndNoOther(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}
+	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion()}
 	// `worker_backends: {implementer: claude}`: every other role, and the controller, on Oh My Pi.
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, runtimeName: "kubernetes", plugins: pair,
 		appOwners: noAppOwners,
@@ -829,6 +856,7 @@ func withContract(c supervise.Claim, contract int) supervise.Claim {
 // provisions its own (a Sandbox pod), nothing is asked of the host. The controller works no
 // checkout.
 func TestAHostLaunchProvisionsItsWorkspaceFirst(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)

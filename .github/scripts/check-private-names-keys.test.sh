@@ -8,8 +8,9 @@
 # which is no private name, passing where a key beside it or inside it is refused; a diff GitHub's
 # REST answer does not hold whole read from git, and one neither holds whole refused as UNKNOWN; a
 # key the same diff also removes carried over; a merge's own diff passed over for the pull
-# request's net diff; a key beside a "_"; a list with terms and no `key:` line refused; and a keys
-# run under no list at all saying it checked nothing.
+# request's net diff; a key beside a "_"; a list with terms and no `key:` line refused; a keys
+# run under no list at all saying it checked nothing; and the count line of a `names` run,
+# which reads the `key:` lines but checks none, saying so.
 #
 # The terms and the project key are placeholders this file and check-private-names-test-lib.sh
 # set, never a real one, and every case is named by a neutral label, since this script's own
@@ -117,7 +118,7 @@ as_merge() {
   mv "$work/compare.next" "$work/compare"
 }
 # pr_files <status> <path> <patch> [...]: the pull request's files route, one page holding those
-# files (a patch of "-" is none at all), and the pull request route's totals to match them.
+# files (a patch of "-" is none at all), and the pull request's totals to match them.
 pr_files() {
   local list='[]' additions
   while [ $# -gt 0 ]; do
@@ -327,6 +328,43 @@ check "names the line the new commit adds, at its line in the file" \
   "$(contains "$out" "commit:new-sha:docs/notes.md:5: $key_refused")"
 check "reads nothing of the commit dated before the cutoff" "$(is "$(contains "$out" 'old-sha')" false)"
 check "and never asks GitHub for its files" "$(is "$(contains "$(< "$work/calls")" 'commits/old-sha')" false)"
+
+echo "case: a commit's date is compared in UTC, whatever offset its committer's clock wrote"
+# GitHub's GraphQL committer { date } keeps the committer's own offset, where the cutoff is in UTC;
+# the script reads committedDate, which is in UTC. The first commit was made 4 hours after the
+# cutoff on a clock 8 hours behind UTC, so its date as written sorts before the cutoff's; the
+# second 2 hours before the cutoff on a clock 8 hours ahead, so its date as written sorts after.
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+opened_at 2026-11-21T00:00:00Z
+commits west-sha 2026-11-19T20:00:00-08:00 "fix: as $planted_key said" \
+  east-sha 2026-11-20T06:00:00+08:00 "fix: as $planted_key said"
+commit_file west-sha modified docs/notes.md $'@@ -3,0 +4,1 @@\n+new '"$planted_key"' line'
+key_run
+check "fails on the commit made after the cutoff on a clock behind UTC" "$(is "$status" 1)"
+check "names its message" "$(contains "$out" "commit:west-sha:1: $key_refused")"
+check "names the line it adds" "$(contains "$out" "commit:west-sha:docs/notes.md:4: $key_refused")"
+check "reads nothing of the commit made before the cutoff on a clock ahead of UTC" \
+  "$(is "$(contains "$out" 'east-sha')" false)"
+check "and never asks GitHub for its files" "$(is "$(contains "$(< "$work/calls")" 'commits/east-sha')" false)"
+
+echo "case: the marker commit is found past the first page of its history"
+# The marker commit is the oldest that touches the marker, the last listed; here 100 later commits
+# touch it too, so it is on the second page.
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+jq -nc --arg sha "$marker_sha" '[range(100) | {sha: "later-\(.)"}] + [{sha: $sha}]
+  | map(. + {commit: {committer: {date: "2026-11-18T00:00:00Z"}}})' > "$work/cutoff-commits"
+key_run
+check "the rule is active since the release that holds it" \
+  "$(contains "$out" "^check-pr-text: the issue-key rule is active since legion-v9.0.0, published $cutoff_at\$")"
+check "reads the history's second page by its cursor" \
+  "$(contains "$(< "$work/calls")" '^graphql PrText .*"history":true.*"historyAfter":"1"')"
+echo 1 > "$work/cut.history"
+key_run
+check "a history GitHub lists short of its total exits 1" "$(is "$status" 1)"
+check "names the list and both counts" \
+  "$(contains "$out" "^::error::GitHub's GraphQL API reports 101 commits on main that touch .github/issue-key-cutoff but listed 100")"
 
 echo "case: a path a new commit adds is new text, and a path it only changes is not"
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
@@ -796,7 +834,9 @@ root=$(fixture key-tree)
 printf 'From before the rule: %s.\n' "$planted_key" > "$root/docs/notes.md"
 run_check_as pull_request "$key_terms" "$root"
 check "a key in a tree file passes the repository scan" "$(is "$status" 0)"
-check "and the scan names the keys it read" "$(contains "$out" 'PRIVATE_NAME_TERMS: 3 terms and 1 issue key read')"
+check "and its count line says the key is read but not checked" \
+  "$(contains "$out" '^check-private-names: PRIVATE_NAME_TERMS: 3 terms read; 1 issue key not checked: rule 6 runs only with PRIVATE_NAME_RULES=keys$')"
+check "and does not count the key beside the terms it checks" "$(is "$(contains "$out" 'and 1 issue key read')" false)"
 set +e
 out=$(cd "$root" && PRIVATE_NAME_TERMS=$key_terms GITHUB_EVENT_NAME=pull_request PRIVATE_NAME_RULES=keys \
   .github/scripts/check-private-names.sh docs 2>&1)
@@ -804,6 +844,8 @@ status=$?
 set -e
 check "the same file fails a keys run" "$(is "$status" 1)"
 check "names its line" "$(contains "$out" "docs/notes.md:1: $key_refused")"
+check "and the keys run counts the key it checks" \
+  "$(contains "$out" '^check-private-names: PRIVATE_NAME_TERMS: 3 terms and 1 issue key read$')"
 
 # keys_run_in <root> <terms> [path...]: a keys run of the check from <root> on a merge group,
 # under <terms> as the list.

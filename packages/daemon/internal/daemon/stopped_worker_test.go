@@ -212,6 +212,7 @@ func outOfTheLine(t *testing.T, d *daemon, issue, when string) {
 // with nobody in it, until a start of the workflow's own — the held phase's retry, the tree's
 // re-admission — or a person moves it. TestAStopEndsTheOwedStartOfAWaitingIssue drives that retry.
 func TestAnOperatorsStopOfASlottedWorkerHolds(t *testing.T) {
+	t.Parallel()
 	pool, cfg, o, rt := stoppedWorkerDaemon(t)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -228,7 +229,7 @@ func TestAnOperatorsStopOfASlottedWorkerHolds(t *testing.T) {
 		DispatchStatus: "in_progress", HandedOver: true, Rank: "U"},
 		supervise.Claim{Token: implementer, Project: project, Tree: root, Issue: root, Role: claim.RoleImplementer, Generation: 1,
 			State: supervise.StateWorking, Session: "ses_implementer", SessionFile: filepath.Join(cfg.StateDir, "implementer.jsonl"),
-			PluginContract: api.DaemonAPIVersion, Locator: workingPane(implementer),
+			PluginContract: api.DaemonAPIVersion(), Locator: workingPane(implementer),
 			Pending: &supervise.Delivery{ID: "outbox:11", Task: "Carry on implementing.", Generation: 1, Phase: phase.Implementing,
 				QueuedAt: now, DeliveredAt: now, ConfirmedAt: now}})
 	writePrompt(t, cfg, implementer)
@@ -291,7 +292,7 @@ func seedWaitingMember(t *testing.T, dsn string, member record.Issue, worker sup
 	}
 	defer st.Close()
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, member); err != nil {
 			return err
 		}
@@ -335,7 +336,7 @@ func seedWaitingTester(t *testing.T, cfg config.Config, project, root, key, rank
 		Status: "testing", DispatchStatus: "testing", Rank: rank},
 		supervise.Claim{Token: tester, Project: project, Tree: root, Issue: key, Role: claim.RoleTester, Generation: 1,
 			State: supervise.StateReady, Session: "ses_" + key, SessionFile: filepath.Join(cfg.StateDir, key+".jsonl"),
-			PluginContract: api.DaemonAPIVersion, Locator: workingPane(tester)},
+			PluginContract: api.DaemonAPIVersion(), Locator: workingPane(tester)},
 		record.SuperviseRequest{Op: "start", Tree: root, Role: claim.RoleTester, Generation: 1, Phase: phase.Testing,
 			Task: "Test the change.", NeedsSlot: true})
 	writePrompt(t, cfg, tester)
@@ -369,6 +370,7 @@ func seedWaitingTester(t *testing.T, cfg config.Config, project, root, key, rank
 // line, takes the free slot, and its tester is launched — so what the stop ended is one start, not
 // the issue's ability to run again.
 func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
+	t.Parallel()
 	pool, cfg, o, rt := stoppedWorkerDaemon(t)
 	cfg.AdmissionCap = 2
 	project, err := claim.ProjectToken(cfg.Project)
@@ -451,6 +453,7 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 // take it once the test lets it go is the pass this test is about: one pass, with the retired
 // claim and the free slot both in front of it.
 func TestAFreedSlotGoesPastTheStoppedIssueToTheNextInLine(t *testing.T) {
+	t.Parallel()
 	pool, cfg, o, rt := stoppedWorkerDaemon(t)
 	cfg.AdmissionCap = 2
 	project, err := claim.ProjectToken(cfg.Project)
@@ -487,7 +490,7 @@ func TestAFreedSlotGoesPastTheStoppedIssueToTheNextInLine(t *testing.T) {
 
 	// The stop and the end of the other root's work, under the lock every fact takes, so that the
 	// first pass after them is one pass with both.
-	lock, err := pool.Begin(context.Background())
+	lock, err := pool.BeginTx(context.Background(), pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("open the transaction the fact lock is held in: %v", err)
 	}

@@ -24,6 +24,7 @@ import (
 // names the failure, and no part of a user name, password, query or fragment AGENT_SECRETS_URL
 // carries. The values are made up.
 func TestSelfPrintsNoPartOfTheBrokerURLCredential(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at urlcredential_test.go:36); it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.run, main.loadClientConfig, clientConfig set at config.go:98).
 	for form, address := range map[string]string{
 		"a user name and password": "http://demouser7q:demopass9z-not-a-secret@127.0.0.1:1",
 		"a query":                  "http://127.0.0.1:1/?token=demoquery4k",
@@ -63,6 +64,7 @@ func TestSelfPrintsNoPartOfTheBrokerURLCredential(t *testing.T) {
 // anyone who can answer for it - must reach no other host. The client answers the 3xx to its
 // caller instead, and the target receives nothing.
 func TestTheCLIsBrokerClientFollowsNoRedirect(t *testing.T) {
+	t.Parallel()
 	for _, status := range []int{http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
 		t.Run(strconv.Itoa(status), func(t *testing.T) {
 			var targetCalls atomic.Int64
@@ -101,6 +103,7 @@ func TestTheCLIsBrokerClientFollowsNoRedirect(t *testing.T) {
 // answer id print on `agent-secrets status`'s stderr and in the client's error, and its code in a
 // pod login's refusal line.
 func TestABrokerRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at urlcredential_test.go:127); it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.run, main.loadClientConfig, clientConfig set at config.go:98).
 	const answerID = "demopass9z-not-a-secret"
 	var asked atomic.Int64
 	var words string
@@ -195,16 +198,17 @@ func TestABrokerRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 // the release's command as an unknown field (callRefused), and its PROOF_INVALID saying an
 // enrollment is not live (enrollmentNotLive). Beside an address that carries a credential the
 // client prints none of those words, and each still reads as it does beside a clean one; the
-// same codes with other words, another narrowing refusal and a skewed clock's proof failure, read
-// as neither, beside either address.
+// same codes with other words, another refusal of the release and a skewed clock's proof failure,
+// read as neither, beside either address.
 func TestTheRefusalsToldApartByTheirWordsHoldBesideACredentialedAddress(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		answers := map[string]struct {
 			status      int
 			code, words string
 		}{
 			"/older-release": {http.StatusBadRequest, "INVALID_NARROWING", `body must be one valid JSON object: json: unknown field "command"`},
-			"/narrowing":     {http.StatusBadRequest, "INVALID_NARROWING", "github_app.owner names no installation"},
+			"/other-refusal": {http.StatusBadRequest, "INVALID_NARROWING", "the release cannot be read"},
 			"/ended":         {http.StatusUnauthorized, "PROOF_INVALID", "proof invalid: not live"},
 			"/skewed":        {http.StatusUnauthorized, "PROOF_INVALID", "iat outside the proof skew"},
 		}
@@ -229,7 +233,7 @@ func TestTheRefusalsToldApartByTheirWordsHoldBesideACredentialedAddress(t *testi
 				}
 				return err
 			}
-			for path, want := range map[string]bool{"/older-release": true, "/narrowing": false} {
+			for path, want := range map[string]bool{"/older-release": true, "/other-refusal": false} {
 				if err := refusal(path); callRefused(err) != want {
 					t.Errorf("%s answered %v, read as an older broker's refusal of the command %v; want %v", path, err, !want, want)
 				}
@@ -249,6 +253,7 @@ func TestTheRefusalsToldApartByTheirWordsHoldBesideACredentialedAddress(t *testi
 // of them, so an answer that repeats the credential prints none of it; beside a clean address it
 // quotes both, as it did before the address was held as a cipheraddr.Address.
 func TestAnAudienceRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
+	t.Parallel()
 	const audience = "//iam.googleapis.com/projects/1/demopass9z-not-a-secret"
 	const kept = "//iam.googleapis.com/projects/1/the-kept-one"
 	t.Run("an address carrying a credential", func(t *testing.T) {

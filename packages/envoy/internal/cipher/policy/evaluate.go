@@ -22,8 +22,8 @@ type Requester struct {
 	// account listed for another service, or for none, proves nothing here.
 	Service string
 	// Withheld is the names the session's operator withheld from it by revoking a grant of them
-	// the session got without asking (requests.Machine.RevokeByApprover). Evaluate answers each as
-	// a human-tier secret.
+	// the session got without asking (requests.Machine.RevokeByApprover). Evaluate answers each,
+	// and every other name served from the same source (Set.Withholds), as a human-tier secret.
 	Withheld []string
 	// Restricted is true when Dispatch calls the person the session was made for a restricted
 	// member: a person an access list admitted from outside the deployment's sign-in domain, who
@@ -89,10 +89,11 @@ const ReasonProjectNotNamed = "project-not-named"
 const ReasonProjectMissing = "project-missing"
 
 // ReasonProjectChannelsNeedAirlock is the Reason of a Deny for a project-channels secret
-// (TagProjectChannels) with no airlock entry, asked for by a credential that names a private
-// project (Requester.ListsPrivate). Outside the airlock the release hands the session the real
-// token, which it could then spend anywhere; behind it the proxy holds each post to the channels
-// the project's owner named. A credential that names no private project is unchanged.
+// (TagProjectChannels) not served behind Cipher's proxy (Secret.Proxy), asked for by a credential
+// that names a private project (Requester.ListsPrivate). Outside the airlock the release hands the
+// session the real token, which it could then spend anywhere; behind it the proxy holds each post
+// to the channels the project's owner named. A credential that names no private project is
+// unchanged.
 const ReasonProjectChannelsNeedAirlock = "project-channels-need-airlock"
 
 // ListsPrivate reports whether any project the credential names is private: the one predicate
@@ -158,25 +159,35 @@ func CallerReason(reason string) string {
 // policy's to see.
 const ReasonSignInOff = "a person must approve it, and this broker signs nobody in (BROKER_SIGNIN=off)"
 
-// Evaluate answers r's ask for name. A name the set does not serve is ErrUnknownSecret. A
-// requester whose person Dispatch calls a restricted member (Requester.Restricted) is denied
-// every name the set serves, ReasonRestrictedMember, before anything else is read. A secret
-// whose requesters are listed (Secret.Requesters) is denied, ReasonRequesterNotListed, to every
-// requester the list does not name, a group entry naming those the set's group reader admits
-// (Set.Groups), before owner and tier are read at all; ReasonRequesterGroupUnread where a group
-// entry's group is not read fresh and might name the person. A secret tagged with a project
-// (Secret.Project) is then read by ProjectRule: no state is ErrNoProjectState, a project Dispatch
-// does not hold is denied to everyone (ReasonProjectMissing), and a private project is denied to a
-// credential that does not name it (ReasonProjectNotNamed); a public project, and a private one r
-// names, go on to owner and tier unchanged. An agent-tier secret a group owns goes to a session
-// whose person the group reader admits to that group, and is an approval request to the group for
-// anyone else. A name withheld from r (Requester.Withheld) is decided as a human-tier secret: what
-// r would have got at once is an approval request to the owner, or to anyone for a shared secret,
-// and a service's own secret, which no person approves, is denied.
+// Evaluate answers r's ask for name. A name the set does not serve is ErrUnknownSecret, or, where
+// the profiles file says why, ErrProfileRefused for a profile that failed or a github-app secret
+// no profile names, and ErrServedOnlyAsProfiles for a source profiles of other names use, each
+// naming what the caller asks for instead or why (notServed). A requester whose person Dispatch
+// calls a restricted member (Requester.Restricted) is denied every name the set serves, and every
+// name the profiles file answers, ReasonRestrictedMember, before anything else is read: such a
+// session is told nothing of a profile, its source or why it fails, and a name neither the store
+// nor the file holds is ErrUnknownSecret to it as to anyone. A secret whose requesters are listed
+// (Secret.Requesters) is denied, ReasonRequesterNotListed, to every requester the list does not
+// name, a group entry naming those the set's group reader admits (Set.Groups), before owner and
+// tier are read at all; ReasonRequesterGroupUnread where a group entry's group is not read fresh
+// and might name the person. A secret tagged with a project (Secret.Project, which a profile
+// holds from its source) is then read by ProjectRule: no state is ErrNoProjectState, a project
+// Dispatch does not hold is denied to everyone (ReasonProjectMissing), and a private project is
+// denied to a credential that does not name it (ReasonProjectNotNamed); a public project, and a
+// private one r names, go on to owner and tier unchanged. An agent-tier secret a group owns goes
+// to a session whose person the group reader admits to that group, and is an approval request to
+// the group for anyone else. A name withheld from r (Requester.Withheld), or served from the
+// source of a name that is (Set.Withholds), is decided as a human-tier secret: what r would have
+// got at once is an approval request to the owner, or to anyone for a shared secret, and a
+// service's own secret, which no person approves, is denied.
 func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
 	secret, ok := s.Secrets[name]
 	if !ok {
-		return Decision{}, ErrUnknownSecret
+		err := s.unservedError(name)
+		if r.Restricted && (errors.Is(err, ErrProfileRefused) || errors.Is(err, ErrServedOnlyAsProfiles)) {
+			return Decision{Outcome: Deny, Reason: ReasonRestrictedMember}, nil
+		}
+		return Decision{}, err
 	}
 	if r.Restricted {
 		return Decision{Outcome: Deny, Reason: ReasonRestrictedMember, Source: secret.Source}, nil
@@ -198,12 +209,12 @@ func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
 	}
 	// After the project rule: a secret whose use a private project's owner limits goes to such a
 	// credential only behind the airlock, where the proxy holds each post to the channels that
-	// owner named. Outside it the release hands over the real token, which the session could then
-	// spend anywhere.
-	if secret.ProjectChannels != "" && secret.AirlockDigest == "" && r.ListsPrivate() {
+	// owner named, which only a kind puts a name behind (Secret.Proxy). Outside it the release
+	// hands over the real token, which the session could then spend anywhere.
+	if secret.ProjectChannels != "" && secret.Proxy == "" && r.ListsPrivate() {
 		return Decision{Outcome: Deny, Reason: ReasonProjectChannelsNeedAirlock, Source: secret.Source}, nil
 	}
-	withheld := slices.Contains(r.Withheld, name)
+	withheld := s.Withholds(r, name)
 	d := Decision{Source: secret.Source}
 	switch {
 	case secret.ownership == ownerService:

@@ -1,6 +1,6 @@
 name: CI job dispatch-two-builds
 
-# The steps of ci.yaml's `dispatch-two-builds` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#dispatch-two-builds` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
@@ -17,19 +17,19 @@ name: CI job dispatch-two-builds
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
       dispatch_two_builds_go:
         description: >-
-          ci.yaml's `needs.changes.outputs.dispatch_two_builds_go`: the Go step below runs when
+          `.github/workflows/ci.yaml#needs.changes.outputs.dispatch_two_builds_go`: the Go step below runs when
           that filter matched.
         type: string
         required: true
@@ -54,8 +54,13 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
         options: >-
-          --health-cmd "pg_isready -U postgres"
+          --shm-size=1g
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -71,28 +76,50 @@ jobs:
       # commit.
       FIRST_ROLLOUT_COMMIT: edb69e0d7588ec037847182e74a04a343a0664c9
     steps:
-      # A BOUND OF ITS OWN AND A SECOND ATTEMPT, here and in dispatch-two-builds-same below. Of
-      # the 755 checkouts of this file's two jobs in ci.yaml runs created from 2026-11-16 12:52Z
-      # to 2026-11-18 13:39Z, 753 took 96 s at most (median 44 s) and two hung: run
-      # 44143226907's for 44 minutes, until the job's budget cancelled it, and run
-      # 44125069013's for 25 minutes. Each attempt carries 2 minutes, the 96 s plus 15 per cent
-      # rounded up to the next whole minute (dispatch-browser.yaml's rule). The second attempt
-      # runs only when the first did not end in success, and a second failure fails the job
-      # there. A step cut at its budget can leave its git running: the runner signals the
-      # action's own process, not the git processes it started (actions/runner,
-      # ProcessInvoker.cs). A git killed while it wrote refs or config can also leave a lock
-      # (.git/config.lock, packed-refs.lock, a ref's .lock) that actions/checkout does not delete
-      # before it reuses a directory: it deletes index.lock and shallow.lock alone
+      # THIS COMMIT ALONE, THEN THE HISTORY THE BUILD SCRIPT READS, here and in
+      # dispatch-two-builds-same below. With fetch-depth 0, actions/checkout fetched every branch
+      # head and every tag of the repository (+refs/heads/* and +refs/tags/*): on 2026-11-23,
+      # 3,242 branches and 3,710 tags, 908,848 objects in a 1.12 GiB pack. These two jobs'
+      # checkouts took p50 75 s, p90 90 s and p99 120 s in the 745 ci.yaml runs created that day,
+      # against p50 7 s and p99 17 s for the 62,144 checkouts of every other job, and they grew
+      # with the repository's refs: a median of 44 s on 2026-11-16 to 18, 69 s on 2026-11-22.
+      # On 2026-11-23 ten first attempts ran out their 2-minute budget and six more took 111 to
+      # 118 s; of the eleven second attempts, which fetched the same from nothing, three ran out
+      # too and failed the job, in merge-group runs 45174478128, 45247545394 and 45265727164. No
+      # checkout of another job ran out its budget on 2026-11-22 or 23: the 23 that failed did so
+      # in 1 to 15 s, on a runner shutdown or a ref that was gone.
+      #
+      # The jobs read none of those branches. build-dispatch-build.sh reads origin/main, the
+      # legion-envoy-v* tags, the history that joins them to HEAD, and the files of each commit it
+      # builds (git archive). So the checkout takes this commit alone (fetch-depth 1, as every
+      # other job of ci.yaml does), and the step after it fetches main and the release tags with
+      # their history but no file contents (--filter=blob:none). git archive fetches a release's
+      # files when it reads them, and a cached build reads none. The repository is public, so
+      # those fetches need no token, and the checkout keeps none (persist-credentials: false).
+      # Measured on a developer machine on 2026-11-23: the old fetch took 161 s; the checkout of
+      # one commit 12.6 s and the history 9 to 12 s. The script's three resolves named the same
+      # commits as a full clone's, its archive of each release wrote the same bytes, and without
+      # the history step each of the three refused.
+      #
+      # Each attempt still carries 2 minutes, and a second attempt follows a first that did not
+      # end in success: two of the 755 checkouts of 2026-11-16 to 18 hung, for 44 and 25 minutes,
+      # and a hang is not a matter of size. A step cut at its budget can leave its git running:
+      # the runner signals the action's own process, not the git processes it started
+      # (actions/runner, ProcessInvoker.cs). A git killed while it wrote refs or config can also
+      # leave a lock (.git/config.lock, packed-refs.lock, a ref's .lock) that actions/checkout
+      # does not delete before it reuses a directory: it deletes index.lock and shallow.lock alone
       # (src/git-directory-helper.ts). So the step between the two attempts ends every git
       # process on the runner, which runs this one job, and then empties the workspace, and the
-      # second attempt is a fresh clone.
+      # second attempt is a fresh clone. The history step bounds each of its own three attempts
+      # and does the same between them. With the checkout this small, the job's last step finds
+      # ./.github/actions/ci-ok-report in it even when the history fetch fails, so a failing
+      # merge group is reported at once.
       - id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 2
         continue-on-error: true
         with:
           persist-credentials: false
-          fetch-depth: 0
       - name: End the git processes and the workspace a first attempt cut at its budget leaves
         if: steps.checkout.outcome != 'success'
         timeout-minutes: 2
@@ -109,13 +136,42 @@ jobs:
         timeout-minutes: 2
         with:
           persist-credentials: false
-          fetch-depth: 0
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - name: Fetch main's history and the release tags, without their files
+        timeout-minutes: 2
+        run: |
+          for attempt in 1 2 3; do
+            args=(--no-tags --filter=blob:none)
+            [[ -f .git/shallow ]] && args+=(--unshallow)
+            if timeout -k 5 30 git fetch "${args[@]}" origin "$(git rev-parse HEAD)" \
+              '+refs/heads/main:refs/remotes/origin/main' \
+              '+refs/tags/legion-envoy-v*:refs/tags/legion-envoy-v*'; then
+              echo "attempt $attempt: $(git rev-list --count HEAD) commits in the history of HEAD, $(git tag --list 'legion-envoy-v*' | wc -l) release tags"
+              exit 0
+            fi
+            echo "attempt $attempt did not complete within 30 s"
+            pkill -KILL -x git || true
+            pkill -KILL -f git-remote-http || true
+            while pgrep -x git > /dev/null || pgrep -f git-remote-http > /dev/null; do sleep 1; done
+            find .git -name '*.lock' -delete
+          done
+          echo "::error::Three fetches of main's history and the release tags did not complete within 30 s each."
+          exit 1
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # why: .github/ci-notes/ci.md#why-the-two-builds-jobs-restore-go-envoy-test
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       - uses: ./.github/actions/setup-bun
       # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).
       - run: bun install --frozen-lockfile
@@ -124,13 +180,18 @@ jobs:
         run: |
           commit=$(packages/envoy/scripts/build-dispatch-build.sh --previous-release --resolve)
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
-      # The cache saves the build when the job ends in success and found none under this key.
-      - name: Cache the previous build
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restored only: .github/workflows/ci-caches.yaml's dispatch-builds job builds this release on
+      # a push to main and saves it in main's scope, which every pull request and merge group reads.
+      # A save here would land in the run's own ref: a merge group's ref is read by no later run,
+      # and a pull request's only by that pull request, so such entries filled the repository's
+      # cache (25 entries, 12.2 GB on 2026-11-23) and evicted entries other jobs read. A run whose
+      # release main has not built yet (a release tagged since the last push to main) builds it below.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
+      - name: Restore the previous build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ${{ runner.temp }}/dispatch-previous
-            !${{ runner.temp }}/dispatch-previous/src
           key: dispatch-previous-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.previous.outputs.commit }}
       # A restored directory holds the complete build of that commit, which the script leaves as it
       # is. The runner context is not available in a job's env, so each step that reads the build's
@@ -145,27 +206,35 @@ jobs:
       # packages/envoy/cmd/dispatch/twobuild_harness_test.go, which holds the same commit). The
       # transition row that drives the fleet's first rollout runs it as its earlier build, since
       # every previous release from legion-envoy-v30.21.0 on registers its numbers. This step fails
-      # when the release's tag names another commit than the pin. The release is pinned, so its
-      # cache entry is written once and restored after that.
+      # when the release's tag names another commit than the pin. Its output is the pin, which the
+      # restore below and ci-caches.yaml's dispatch-builds job both key the entry on.
       - name: Resolve the first-rollout build's commit
+        id: first-rollout
         run: |
           resolved=$(packages/envoy/scripts/build-dispatch-build.sh --commit legion-envoy-v30.20.2 --resolve)
           if [[ "$resolved" != "$FIRST_ROLLOUT_COMMIT" ]]; then
             echo "::error::The tag legion-envoy-v30.20.2 names commit $resolved. FIRST_ROLLOUT_COMMIT pins the first-rollout build to commit $FIRST_ROLLOUT_COMMIT, and firstRolloutRelease in packages/envoy/cmd/dispatch/twobuild_harness_test.go holds the same commit. Move the tag back to $FIRST_ROLLOUT_COMMIT, or change the pin in both places."
             exit 1
           fi
-      - name: Cache the first-rollout build
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+          echo "commit=$FIRST_ROLLOUT_COMMIT" >> "$GITHUB_OUTPUT"
+      # Restored only, as the previous build is: ci-caches.yaml's dispatch-builds job fills it on main.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
+      - name: Restore the first-rollout build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ${{ runner.temp }}/dispatch-first-rollout
-            !${{ runner.temp }}/dispatch-first-rollout/src
-          key: dispatch-first-rollout-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ env.FIRST_ROLLOUT_COMMIT }}
+          key: dispatch-first-rollout-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.first-rollout.outputs.commit }}
       - name: Build the first-rollout build
         env:
           DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
         run: packages/envoy/scripts/build-dispatch-build.sh --commit "$FIRST_ROLLOUT_COMMIT" --out "$DISPATCH_FIRST_ROLLOUT_BUILD"
-      - name: Size the service for this lane's Dispatch processes
+      # The settings the service's command: line asks for, read back from the server; why each one
+      # is .github/scripts/postgres-service-settings.sh's header.
+      - name: Read the service's settings back
+        timeout-minutes: 2
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      - name: Check the service allows this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # Only what the twobuild tag adds: envoy-go's unit step runs ./cmd/dispatch's untagged tests,
       # so the -run comes from .github/scripts/go-tagged-tests.sh, which reads the names off the
@@ -186,7 +255,7 @@ jobs:
       # gives: Playwright's
       # Node runner reads `@legion/contracts` out of a build this checkout has to make before the
       # config loads, and the entries Dispatch imports are all it needs. `build:dispatch` bundles
-      # those four and so compiles no module outside the set this job's filter lists - not
+      # those three and so compiles no module outside the set this job's filter lists - not
       # ./legion-api, which nothing of this job loads. `bun run e2e:multiprocess` below makes the
       # same build again (packages/dispatch's build:contracts).
       - name: Build contracts for dispatch e2e
@@ -211,8 +280,8 @@ jobs:
       # The stack's connection limit, read outside the browser steps, where
       # e2e/harness-postgres.ts would otherwise compile it (DISPATCH_E2E_PG_CONNECTIONS), as
       # dispatch-browser.yaml's multiprocess job reads it, for the reason that job's head gives:
-      # each browser step below runs on the harness's own Postgres, whose commits do not wait for
-      # the runner's disk, rather than on the service, which keeps crash safety on.
+      # each browser step below runs on the harness's own Postgres (e2e/harness-postgres.ts),
+      # which every stack starts for itself, rather than on the service.
       - name: Read the connections the two-build stack's Postgres must allow
         id: connections
         timeout-minutes: 2
@@ -301,8 +370,13 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
         options: >-
-          --health-cmd "pg_isready -U postgres"
+          --shm-size=1g
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -310,16 +384,16 @@ jobs:
       JOB_TIMEOUT_MINUTES: 45 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
-      # The whole history and the tags, as the job above takes them: build-dispatch-build.sh
-      # refuses a commit older than its floor release, which it reads by its tag. Bounded and
-      # tried again as the job above's checkout is, for the reasons its comment gives.
+      # This commit alone, then main's history and the release tags, as the job above takes them:
+      # build-dispatch-build.sh refuses a commit older than its floor release, which it reads by
+      # its tag. Bounded and tried again as the job above's checkout and history are, for the
+      # reasons its comment gives.
       - id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 2
         continue-on-error: true
         with:
           persist-credentials: false
-          fetch-depth: 0
       - name: End the git processes and the workspace a first attempt cut at its budget leaves
         if: steps.checkout.outcome != 'success'
         timeout-minutes: 2
@@ -336,13 +410,42 @@ jobs:
         timeout-minutes: 2
         with:
           persist-credentials: false
-          fetch-depth: 0
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - name: Fetch main's history and the release tags, without their files
+        timeout-minutes: 2
+        run: |
+          for attempt in 1 2 3; do
+            args=(--no-tags --filter=blob:none)
+            [[ -f .git/shallow ]] && args+=(--unshallow)
+            if timeout -k 5 30 git fetch "${args[@]}" origin "$(git rev-parse HEAD)" \
+              '+refs/heads/main:refs/remotes/origin/main' \
+              '+refs/tags/legion-envoy-v*:refs/tags/legion-envoy-v*'; then
+              echo "attempt $attempt: $(git rev-list --count HEAD) commits in the history of HEAD, $(git tag --list 'legion-envoy-v*' | wc -l) release tags"
+              exit 0
+            fi
+            echo "attempt $attempt did not complete within 30 s"
+            pkill -KILL -x git || true
+            pkill -KILL -f git-remote-http || true
+            while pgrep -x git > /dev/null || pgrep -f git-remote-http > /dev/null; do sleep 1; done
+            find .git -name '*.lock' -delete
+          done
+          echo "::error::Three fetches of main's history and the release tags did not complete within 30 s each."
+          exit 1
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # why: .github/ci-notes/ci.md#why-the-two-builds-jobs-restore-go-envoy-test
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       - uses: ./.github/actions/setup-bun
       # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).
       - run: bun install --frozen-lockfile
@@ -351,7 +454,12 @@ jobs:
         env:
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-same
         run: packages/envoy/scripts/build-dispatch-build.sh --commit HEAD --out "$DISPATCH_PREVIOUS_BUILD"
-      - name: Size the service for this lane's Dispatch processes
+      # The settings the service's command: line asks for, read back from the server; why each one
+      # is .github/scripts/postgres-service-settings.sh's header.
+      - name: Read the service's settings back
+        timeout-minutes: 2
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      - name: Check the service allows this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The job above's Go step, its -run read the same way, against this tree's own build.
       - name: Two-build tests of the Dispatch server against its own build

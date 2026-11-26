@@ -24,6 +24,7 @@ import {
 } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
 import { expectConsecutiveLinksClear } from "./layout";
+import { refPicker } from "./ref-picker";
 import { insertExternalLink } from "./seed";
 import { navigateInApp, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
@@ -164,16 +165,6 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
       await assertTabTrapped(page, '[data-testid="margin-sheet"]');
       await commentBody.focus();
     }
-
-    // D12: Ctrl+K opens a real dialog; Escape dismisses only the picker, restores focus to
-    // the composer, and leaves the composer's own draft (and, on phone, the sheet) open.
-    await commentBody.press("Control+k");
-    const picker = page.getByRole("dialog", { name: "Reference picker" });
-    await expect(picker).toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect(picker).toHaveCount(0);
-    await expect(commentComposer).toBeVisible();
-    await expect(commentBody).toBeFocused();
 
     // D11: Escape on a non-empty draft shows an inline "Discard draft?" affordance (not a
     // blocking confirm()); Escape again closes it. Only the composer closes — the phone
@@ -388,9 +379,9 @@ test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @
     await page.goto(`/issues/${issue.key}/conversation`);
     const composer = page.getByRole("form", { name: "Comment composer" });
     await composer.getByLabel("Comment").fill("@");
-    const picker = composer.getByRole("listbox", { name: "Mention suggestions" });
+    const picker = refPicker(composer);
     await expect(picker).toBeVisible();
-    const option = picker.getByRole("option", { exact: true, name: "planner" });
+    const option = picker.getByRole("option", { name: /^planner\b/ });
     await expect(option).toBeVisible();
     // The planner option above shows the live list has drawn, and a new issue has no
     // collaborators to add a Not running option, so one read lists every control.
@@ -439,11 +430,12 @@ test("an inline link keeps its line and grows its hit box without covering its n
     { ask_id: ask.id, body: "Still measuring." },
     { actor: { id: "e2e-session", kind: "session" }, as: "agent" }
   );
-  // An open ask's question renders in full on the Inbox, so it is where a body with a wrapped
-  // link, two stacked links and two links on consecutive lines can be measured. A generous hit
-  // box would reach the words beside the first, the link below the stacked pair's upper one, and
-  // the text of the line above the last. A question reads a single newline as a space, so the
-  // last pair is split by a hard break.
+  // An open ask's question renders in full in the Inbox's card - on a phone, the card of the
+  // reading view its row opens - so it is where a body with a wrapped link, two stacked links and
+  // two links on consecutive lines can be measured. A generous hit box would reach the words
+  // beside the first, the link below the stacked pair's upper one, and the text of the line above
+  // the last. A question reads a single newline as a space, so the last pair is split by a hard
+  // break.
   const bodyAsk = await createAsk(
     issue.key,
     {
@@ -641,11 +633,13 @@ test("an inline link keeps its line and grows its hit box without covering its n
       .toBe("Upper line");
 
     await navigateInApp(page, "/");
-    const card = page.getByTestId(`ask-${bodyAsk.id}`);
+    // On a phone the Inbox lists short rows: the question's card is in the reading view its row
+    // opens, in place of the list, and the measurement reads the links there.
+    const card = await askCard(page, bodyAsk.id);
     await expect(card.getByRole("link", { name: "Second choice" })).toBeVisible();
 
-    const measured = await page.evaluate(() => {
-      const links = [...document.querySelectorAll("main a")];
+    const measured = await card.evaluate((cardElement) => {
+      const links = [...cardElement.querySelectorAll("a")];
       const named = (text: string) =>
         links.find((link) => (link.textContent ?? "").startsWith(text));
       const wrapped = named("handbook for the deployment gate");
@@ -866,9 +860,9 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
     await expect.soft(artifactLink.locator("[title]")).toHaveAttribute("title", longName);
 
     // The long name belongs to a project document, whose ask nobody holds: the cleared filter
-    // is where the Inbox lists it. From 1280 px the owner link is on the short row and again
-    // in the reading column's head (INFRA-575), so each is read where it belongs: the name on
-    // the row of the list, the author chip on the question's own card.
+    // is where the Inbox lists it. The owner link is on the short row and again in the head of
+    // the pane the row opens (INFRA-575, INFRA-5200), so each is read where it belongs: the
+    // name on the row of the list, the author chip on the question's own card.
     await navigateInApp(page, "/?assignee=everyone");
     const inboxOwner = inboxList(page).locator("[data-inbox-owner]", { hasText: longName });
     await expectEllipsis(inboxOwner);
@@ -899,11 +893,13 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
     await navigateInApp(page, `/issues/${issue.key}/conversation`);
     const composer = page.getByRole("form", { name: "Comment composer" });
     await composer.getByLabel("Comment").fill("@");
-    const roleOption = composer
-      .getByRole("listbox", { name: "Mention suggestions" })
-      .getByRole("option", { exact: true, name: "legion-implementer" });
+    const roleOption = refPicker(composer).getByRole("option", {
+      name: /^legion-implementer\b/,
+    });
     await expectEllipsis(roleOption);
-    await expectStacked(roleOption);
+    // The row's own text column: its kind's icon sits beside it rather than above its words
+    // (`RefPickerList`), so what stacks is the column the words and the detail share.
+    await expectStacked(roleOption.locator("> span"));
     const detail = roleOption.getByText(new RegExp(`^${longTitle} · /w/legion · `));
     await expect.soft(detail).toHaveAttribute("title", (await detail.textContent()) ?? "");
 

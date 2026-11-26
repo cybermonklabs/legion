@@ -173,7 +173,10 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   labels, so they never collide with a label someone else applies.
 - **`--tier agent`** lets the owner's own sessions use it without asking, and **`--tier human`**
   sends every use to a person for approval. Both flags are required.
-- **`--type`** is optional. Use `github-app` for a GitHub App key, `google-login` for an
+- **`--type`** is optional. Use `github-app` for a GitHub App key, `github-installations` for the
+  installation tokens a minter outside the broker stores again every few minutes, which a
+  deployment writes and no person types ([Concepts](/legion/broker/concepts/#requests-and-grants)),
+  `google-login` for an
   authorized-user Google login, `azure-login` for the Entra ids of the one secret the deployment
   names in `BROKER_AZURE_LOGIN_SECRET`, whose stored value is
   `{"tenant_id": "<tenant>", "client_id": "<client>"}` and which is `--tier human` alone,
@@ -186,7 +189,7 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   with `"workspace_id": "wrkspc_…"` where the federation rule is enabled for more than one
   workspace ([Concepts](/legion/broker/concepts/#requests-and-grants)). An `anthropic-federation`
   secret is `--tier human` alone, a person approves every release of it (the model judge decides
-  none, whatever the airlock rules say), and its federation rule's `token_lifetime_seconds` must be
+  none, whatever the profiles file says), and its federation rule's `token_lifetime_seconds` must be
   3600 or less, or the broker refuses its tokens. A `google-service-account` and an
   `anthropic-federation` secret are an administrator's to write and to set a new value for, not a
   self-service step, even for the person who owns one: which account the broker
@@ -201,8 +204,9 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   legion-envoy-v13.19.0 to the release before v16.0.0 read, and refuse; it stops no later broker
   from before the `type` tag. So once a secret carries a type, the first release that reads
   `type` is the broker's rollback floor: a rollback past it serves the secret's stored key.
-- **`--github-owners`** is required with `--type github-app`, and refused with any other type. It
-  lists the GitHub accounts the broker mints installation tokens for, separated by spaces, so the
+- **`--github-owners`** is required with `--type github-app` or `--type github-installations`, and
+  refused with any other type. It lists the GitHub accounts the broker hands installation tokens
+  over for, separated by spaces, so the
   shell quotes it: `--github-owners "acme-org ada"`. A comma is refused before anything is written.
 - **`--requesters`** is optional. It lists who may ask for this secret at all — people by their
   lowercase sign-in email, Google groups as `group:` and the group's lowercase email, which admits
@@ -237,8 +241,33 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   `--max-grant` of an hour or less, so a person approves every release, only someone it names may
   ask, and the grant is short enough to review while it is live. A person approves every release
   of one even where a deployment runs a model judge: the judge refuses an administrator's
-  secret, so no airlock rules entry can move one of its requests off the person who approves it
+  secret, so no `--judge` can move one of its requests off the person who approves it
   ([The model judge](/legion/broker/concepts/#the-model-judge)). Any value but `true` is refused.
+- **`--judge SECONDS`** is optional. It lets the model judge, where the deployment runs one,
+  decide a request for the secret in its owner's place, granting at most that many seconds, from
+  1 to 900 (`--judge 900` is 15 minutes); a request that names no `--ttl` gets that long. Any
+  other value is refused before anything is written, as the broker refuses it
+  (`judge-out-of-range`). Without it a person decides every request that needs a decision. A
+  profile is decided by its source's tag, so tag the stored secret. `retag --judge none` gives
+  the decision back to a person, and ends each live grant the judge made of the secret at its
+  next release; lowering the seconds below a live judged grant's lifetime ends that grant the
+  same way, and putting the tag back does not bring an ended grant back. Any change of the
+  seconds also ends the live grants of each profile of it that is behind a kind, since the
+  seconds are in the profile's fingerprint.
+- **`--guidance TEXT`** is optional: your instruction to the judge, saying when it should grant a
+  request for the secret, for example
+  `--guidance 'grant for the release job when the reason names its run'`. On Google Secret
+  Manager it holds up to 2000 characters of any kind. On AWS Secrets Manager it is a tag value, so
+  it holds at most 256 characters, of Unicode letters, digits, spaces and `_ . : / = + - @`
+  alone: no comma, apostrophe, quote or parenthesis. The same holds for every tag value this
+  command writes on AWS. A value past either limit is refused before
+  anything is written, naming the limit and, for a character, the first one that fails. The judge
+  shows it to
+  its model with each request, and anyone who can reach the broker can read it
+  (`GET /v1/settings`), so write nothing in it you would not show them. A profile is decided on its
+  source's guidance, so the judge shows one guidance for every profile made from that source; to
+  give them different rules, name each profile in it with its own. `retag --guidance none`
+  removes it; writing it ends no grant.
 - **`--project`** is optional. It names the one Dispatch project the secret belongs to, by its
   key as Dispatch writes it: `--project PRIV`. A secret of a **private** project goes only to a
   session or pod whose credential names that project; every other one is denied
@@ -262,9 +291,28 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   airlock ([The airlock](/legion/broker/concepts/#the-airlock)), and only to post with
   `POST /api/chat.postMessage`, carrying `channel`, `thread_ts` and `text`, to a channel id the
   owner of every private project it names allows; the proxy refuses every other call
-  `CHANNEL_NOT_ALLOWED`. Where the secret has no airlock entry, such a credential is denied it
+  `CHANNEL_NOT_ALLOWED`. Where the secret is behind no kind of the airlock (it carries no `proxy` tag), such a credential is denied it
   `project-channels-need-airlock`. A credential that names no private project gets the secret as
   before. Any other value, and on `create` the word `none`, is refused before anything is written.
+- **`--proxy KIND`** is optional. It puts the secret behind a kind of the broker's profiles file,
+  one lowercase word such as `github` or `anthropic`
+  ([The airlock](/legion/broker/concepts/#the-airlock)): a session gets a placeholder, and the
+  broker's proxy puts the credential only into the calls the kind allows. Unset, the secret is
+  released as its value. The CLI checks only the word's form; the broker refuses the secret at its
+  next load when the file declares no such kind (`proxy-kind-unknown`), when the secret's type
+  takes a way the kind does not list (`proxy-way-not-in-kind`), or when the kind sets a
+  `max_grant` and the secret has no `--max-grant`, or a longer one
+  (`proxy-max-grant-above-kind`). Beside `--proxy` or `--proxy-narrowed`, the CLI also writes
+  `rollback-guard:kinds` into the secret's `requesters` tag, after its list and after a project
+  tags' guard, so that a broker from before the kinds refuses the secret rather than release its
+  value; the guard stays while either tag remains and goes with the last of the two, and `show`
+  prints `kinds_rollback_guard: yes` and the list without it
+  ([Rolling back past the kinds](/legion/broker/operate/#rolling-back-past-the-kinds)).
+- **`--proxy-narrowed true`** is optional. It says that the secret's one profile narrows its kind
+  with an `allow` of its own: the broker serves it only through exactly one profile that has an
+  `allow`, and refuses it otherwise (`proxy-narrowed-profiles`). A profile's own `allow` is refused
+  unless its source carries this tag, so taking a narrowing away needs a change of the file and a
+  change of the tag. `retag --proxy-narrowed none` removes it.
 - **`--max-grant`** is optional, except with `--admin true`, `--type google-service-account` and
   `--type anthropic-federation`, where each needs it, of an hour or less. It is the longest
   `--ttl` a request for this secret may use.
@@ -579,8 +627,9 @@ max_grant: -
 default_grant: -
 created: 2026-10-06T20:31:08Z
 last_changed: 2026-10-06T20:31:08Z
-decides: nobody, for a session its tags allow; otherwise a person, on the broker page
+judge: -
 guidance: -
+decides: nobody, for a session its tags allow; otherwise a person, on the broker page
 version: 8ae2ea20-8e93-4f1a-b3d1-2e5396ecef72 AWSCURRENT
 ```
 

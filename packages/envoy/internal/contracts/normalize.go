@@ -93,6 +93,29 @@ func GithubEnvelopes(input GithubEnvelopeInput, trigger string) []Envelope {
 	return append(mentions, item)
 }
 
+// CIHead names one pull request head of the CI state aggregator: the identity a record's key is
+// built from (cistore.Key). It is here rather than in cistore so that a writer of the CI store
+// (Dispatch's CI reconcile) can speak to it through an interface without importing the store.
+type CIHead struct {
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	Number string `json:"number"`
+	SHA    string `json:"sha"`
+}
+
+// CIVerifyRequest is one verify request of the CI store: a head whose settlement a listener holds
+// until Dispatch's CI reconcile has read it from GitHub; the KV revision of the request as the
+// reconcile read it, which its answer carries back (cistore.Writer.MarkVerified); the settlement
+// episode it asks for, the generation of the claim it was written for, which every rewrite of one
+// episode shares; and the identity of the bucket's stream the revision is of (its creation time in
+// Unix nanoseconds), since a revision compares only with revisions of the same stream.
+type CIVerifyRequest struct {
+	Head     CIHead
+	Revision uint64
+	Episode  uint64
+	Stream   int64
+}
+
 // CIObservation is a per-PR check_run or check_suite fact for the CI state
 // aggregator.
 type CIObservation struct {
@@ -124,13 +147,10 @@ type CIObservation struct {
 // one place a webhook's CI observations are built (the webhook route's only source of them), so
 // the CI store takes a check suite only once it completes, as Dispatch's CI reconcile records
 // only completed suites.
-func GithubCIObservations(event string, body map[string]any) []CIObservation {
-	if event == "check_suite" {
-		switch stringValue(body["action"]) {
-		case "requested", "rerequested":
-			return nil
-		}
-	}
+//
+// A check suite the verdict App created (VerdictAppsOwnSuite) maps to nothing, in every action,
+// and the listener logs a line for each one left out, a requested suite's too.
+func GithubCIObservations(event string, body map[string]any, verdictAppID string) []CIObservation {
 	numbers := githubCIPullRequests(event, body)
 	if len(numbers) == 0 {
 		// A check suite GitHub runs on a pull request's head carries that head's ref even when it
@@ -149,12 +169,47 @@ func GithubCIObservations(event string, body map[string]any) []CIObservation {
 	if !ok {
 		return nil
 	}
+	if VerdictAppsOwnSuite(obs, verdictAppID) {
+		log.Printf("ci: left out the verdict App's own check suite suite=%s app_id=%s action=%s repo=%s/%s sha=%s pr=%s",
+			obs.SuiteID, obs.AppID, stringValue(body["action"]), owner, repo, obs.SHA, strings.Join(numbers, ","))
+		return nil
+	}
+	if event == "check_suite" {
+		switch stringValue(body["action"]) {
+		case "requested", "rerequested":
+			return nil
+		}
+	}
 	out := make([]CIObservation, 0, len(numbers))
 	for _, number := range numbers {
 		obs.Number = number
 		out = append(out, obs)
 	}
 	return out
+}
+
+// VerdictAppsOwnSuite reports whether an observation is a check suite the verdict App created,
+// in any state, which is no CI result: GitHub makes the App a check suite on every push, queued
+// until the App writes a run in it, and a head's record that kept it would never settle. With no
+// verdict App id nothing is the App's own.
+func VerdictAppsOwnSuite(observation CIObservation, verdictAppID string) bool {
+	return verdictAppID != "" && observation.CheckName == "" && observation.AppID == verdictAppID
+}
+
+// IsGithubAppID reports whether id is a GitHub App's id as GitHub's JSON gives it and an
+// observation's AppID writes it (nestedNumberString): a whole number above 0, in decimal digits
+// with no leading zero. Any other id would match no App's suite, so a verdict App setting of one
+// is refused rather than read as a filter that leaves nothing out.
+func IsGithubAppID(id string) bool {
+	if id == "" || id[0] == '0' {
+		return false
+	}
+	for _, digit := range []byte(id) {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // GithubCIObservation maps one GitHub check-run or check-suite object (event is "check_run" or
@@ -1033,7 +1088,7 @@ func githubPayload(event string, body map[string]any) string {
 			"pusher": nestedString(body, "pusher", "name"),
 			// sender is the account that pushed, as a pull request's synchronize names it.
 			"sender":       nestedString(body, "sender", "login"),
-			"head_subject": firstNonEmptyLine(nestedString(body, "head_commit", "message")),
+			"head_subject": FirstNonEmptyLine(nestedString(body, "head_commit", "message")),
 			"commit_count": strconv.Itoa(len(sliceValue(body["commits"]))),
 			"compare_url":  stringValue(body["compare"]),
 		}
@@ -1624,10 +1679,13 @@ func stringValue(value any) string {
 }
 
 func first(s string, maxRunes int) string {
-	return truncateWithEllipsis(firstNonEmptyLine(s), maxRunes)
+	return truncateWithEllipsis(FirstNonEmptyLine(s), maxRunes)
 }
 
-func firstNonEmptyLine(s string) string {
+// FirstNonEmptyLine is the first line of s that holds more than whitespace, without its leading
+// spaces, tabs and carriage returns: the line OneLineSummary cuts, and the line Dispatch cuts
+// where no reference crosses the cut (refs.FirstLine).
+func FirstNonEmptyLine(s string) string {
 	for line := range strings.SplitSeq(s, "\n") {
 		line = strings.TrimLeft(line, " \t\r")
 		if strings.TrimSpace(line) != "" {
@@ -1641,7 +1699,7 @@ func firstNonEmptyLine(s string) string {
 // including its ellipsis. It is the common human-facing summary contract for
 // normalized webhooks, listener API messages, and settled CI notifications.
 func OneLineSummary(s string) string {
-	line := firstNonEmptyLine(s)
+	line := FirstNonEmptyLine(s)
 	runes := []rune(line)
 	if len(runes) <= 160 {
 		return line

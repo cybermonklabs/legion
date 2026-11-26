@@ -1,18 +1,16 @@
 // packages/envoy/internal/cipher/requests/judge_grant_test.go
 // The life of a grant the model judge decided, after the decision: what keeps releasing it — its
-// airlock entry rather than any person — what ends it, who sees it on the Live grants page, and
+// key's judge tag rather than any person — what ends it, who sees it on the Live grants page, and
 // who may end it there.
 package requests
 
 import (
 	"crypto/ecdsa"
 	"errors"
-	"slices"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
@@ -31,9 +29,7 @@ func judgedGrant(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.Priva
 
 // releasedValue is what one release handed the session for name: the value itself, or, for a
 // name the airlock holds back, what the command's variable of that name holds. Empty means the
-// release carried nothing for it. A judged name is always an airlock entry's — the rules are
-// what let the judge decide it — so the same grant answers through the other half of a release
-// once that entry is gone.
+// release carried nothing for it.
 func releasedValue(release Release, name string) string {
 	if release.Airlock != nil {
 		if held, ok := release.Airlock.Names[name]; ok {
@@ -43,54 +39,33 @@ func releasedValue(release Release, name string) string {
 	return release.Values[name]
 }
 
-// withJudge answers the rules file an operator rewrote: name's entry giving the judge seconds,
-// or, for a nil seconds, an entry with no judge at all. Every other entry is left as it was.
-func withJudge(name string, seconds *uint32) func(proxyrules.Rules) proxyrules.Rules {
-	return func(rules proxyrules.Rules) proxyrules.Rules {
-		changed := proxyrules.Rules{Secrets: slices.Clone(rules.Secrets)}
-		for i := range changed.Secrets {
-			if changed.Secrets[i].Name == name {
-				changed.Secrets[i].Judge = seconds
-			}
+// TestAJudgedGrantLivesByItsJudgeTagAndNotByAnOwner: the judge approves an owned human-tier
+// secret in its owner's stead, so the grant is decided by no login any owner rule admits. What
+// keeps such a grant releasing is the judge tag its approval rested on: the seconds the key's tag
+// gives the judge must still cover the lifetime the grant holds. Every release re-verifies the
+// grant's chain against the live tags (record.MayJudge, the chain verifier's JudgeSeconds), so a
+// policy move that leaves the tag alone goes on releasing it, and a retag that takes the judge off
+// the key or lowers it below the grant's lifetime refuses it there, as a broken chain. The owner's
+// own grant of the same secret is decided by a person and is held to the person's rule
+// throughout: none of this moves it.
+func TestAJudgedGrantLivesByItsJudgeTagAndNotByAnOwner(t *testing.T) {
+	deel := func(judge int) secrets.LocalSecret {
+		s := policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1")
+		if judge == 0 {
+			return s
 		}
-		return changed
+		return policytest.Judged(s, judge, "")
 	}
-}
-
-// withoutEntry answers the rules file with name's entry gone from it altogether.
-func withoutEntry(name string) func(proxyrules.Rules) proxyrules.Rules {
-	return func(rules proxyrules.Rules) proxyrules.Rules {
-		var changed proxyrules.Rules
-		for _, s := range rules.Secrets {
-			if s.Name != name {
-				changed.Secrets = append(changed.Secrets, s)
-			}
-		}
-		return changed
-	}
-}
-
-// asDecided is the rules file the grant was decided under, left alone.
-func asDecided(rules proxyrules.Rules) proxyrules.Rules { return rules }
-
-// TestAJudgedGrantLivesByItsRulesEntryAndNotByAnOwner: the judge approves an owned human-tier
-// secret in its owner's stead, so the grant is decided by no login any owner rule admits. Once
-// the policy version moves, every release re-checks what it was granted, and what is asked of
-// such a grant is the rules entry its approval rested on: the judge the entry gives this name
-// must still cover the lifetime the grant holds. So a policy move that leaves the entry alone
-// goes on releasing it, and a file that takes the judge off the name, lowers it below the grant's
-// lifetime, or drops the name altogether ends it. The owner's own grant of the same secret is
-// decided by a person and is held to the person's rule throughout: none of this moves it.
-func TestAJudgedGrantLivesByItsRulesEntryAndNotByAnOwner(t *testing.T) {
 	for name, c := range map[string]struct {
-		rules func(proxyrules.Rules) proxyrules.Rules
+		retag func(t *testing.T, m *Machine)
 		live  bool
 	}{
-		"the entry is the one the grant was decided under":  {rules: asDecided, live: true},
-		"the entry's judge is exactly the grant's lifetime": {rules: withJudge("DEEL_API_KEY", new(uint32(600))), live: true},
-		"the entry's judge is below the grant's lifetime":   {rules: withJudge("DEEL_API_KEY", new(uint32(599)))},
-		"the entry has no judge at all":                     {rules: withJudge("DEEL_API_KEY", nil)},
-		"the rules no longer name the secret":               {rules: withoutEntry("DEEL_API_KEY")},
+		"the tag is the one the grant was decided under": {retag: func(t *testing.T, m *Machine) {
+			retag(t, m, policytest.Secret("UNRELATED_KEY", otherPerson, policy.TierAgent, "unrelated-v1"))
+		}, live: true},
+		"the tag's judge is exactly the grant's lifetime": {retag: func(t *testing.T, m *Machine) { retag(t, m, deel(600)) }, live: true},
+		"the tag's judge is below the grant's lifetime":   {retag: func(t *testing.T, m *Machine) { retag(t, m, deel(599)) }},
+		"the key carries no judge tag":                    {retag: func(t *testing.T, m *Machine) { retag(t, m, deel(0)) }},
 	} {
 		t.Run(name, func(t *testing.T) {
 			m, session, key := newJudgeFixture(t)
@@ -106,53 +81,74 @@ func TestAJudgedGrantLivesByItsRulesEntryAndNotByAnOwner(t *testing.T) {
 				t.Fatalf("ApplyDecision by the owner = %+v, %v; want a grant", byOwner, err)
 			}
 
-			// A secret neither grant holds is retagged, which moves the policy version and so
-			// makes both releases re-check every name they were granted. DEEL_API_KEY's own
-			// tags, owner and tier are untouched.
+			// Each retag moves the policy version, so both releases re-check every name they
+			// were granted as well as re-verifying their chains.
 			before := m.Policy.Get().Version
-			retag(t, m, policytest.Secret("UNRELATED_KEY", otherPerson, policy.TierAgent, "unrelated-v1"))
+			c.retag(t, m)
 			if m.Policy.Get().Version == before {
 				t.Fatalf("the policy version stood still at %s, so the re-checks this test is about never ran", before)
 			}
-			// The rules the release reads. The chain verifier keeps the bound the fixture built
-			// it with, so what answers below is the release's own re-check of the entry and not
-			// the chain's re-verification of the approval; a pod that booted on the rewritten
-			// file refuses such a grant at both.
-			m.Airlock = c.rules(m.Airlock)
 
-			release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{})
+			release, err := m.Values(t.Context(), judged, session, ReleaseCall{})
 			switch {
 			case c.live && (err != nil || releasedValue(release, "DEEL_API_KEY") == ""):
 				t.Fatalf("Values(the judge's grant) = %+v, %v; want DEEL_API_KEY released", release, err)
-			case !c.live && !errors.Is(err, ErrGrantNotLive):
-				t.Fatalf("Values(the judge's grant) = %+v, %v; want ErrGrantNotLive", release, err)
+			case !c.live && !errors.Is(err, ErrGrantChainInvalid):
+				t.Fatalf("Values(the judge's grant) = %+v, %v; want ErrGrantChainInvalid, the judge tag no longer admitting the approval", release, err)
 			}
-			if release, err := m.Values(t.Context(), byOwner.GrantID, own, nil, ReleaseCall{}); err != nil || releasedValue(release, "DEEL_API_KEY") == "" {
-				t.Fatalf("Values(the owner's own grant) = %+v, %v; want DEEL_API_KEY released whatever the rules now say of the judge", release, err)
+			if release, err := m.Values(t.Context(), byOwner.GrantID, own, ReleaseCall{}); err != nil || releasedValue(release, "DEEL_API_KEY") == "" {
+				t.Fatalf("Values(the owner's own grant) = %+v, %v; want DEEL_API_KEY released whatever the judge tag now says", release, err)
 			}
 		})
 	}
 }
 
+// TestJudgeStillDecidesReadsTheJudgeTag pins stillAllowed's arm for a judged grant on its own,
+// since every release re-verifies the chain first and refuses there what this arm also refuses:
+// a key whose judge tag still covers the grant's lifetime passes, and one whose tag is gone, is
+// lower than that lifetime, or whose grant names no lifetime is no longer live.
+func TestJudgeStillDecidesReadsTheJudgeTag(t *testing.T) {
+	store := secrets.NewLocal(
+		policytest.Judged(policytest.Secret("JUDGED_KEY", fixtureOperator, policy.TierHuman, "v"), 600, ""),
+		policytest.Secret("UNJUDGED_KEY", fixtureOperator, policy.TierHuman, "v"),
+	)
+	set := policytest.Current(t, store).Get()
+	for _, c := range []struct {
+		name     string
+		lifetime *int
+		live     bool
+	}{
+		{"JUDGED_KEY", new(600), true},
+		{"JUDGED_KEY", new(601), false},
+		{"JUDGED_KEY", nil, false},
+		{"UNJUDGED_KEY", new(60), false},
+	} {
+		err := judgeStillDecides(set, c.name, c.lifetime)
+		if live := err == nil; live != c.live || (!live && !errors.Is(err, ErrGrantNotLive)) {
+			t.Errorf("judgeStillDecides(%s, %v) = %v; want live %v, else ErrGrantNotLive", c.name, c.lifetime, err, c.live)
+		}
+	}
+}
+
 // deelAsAdmin is the fixture's own DEEL_API_KEY tagged as an administrator's secret: the same
-// owner, tier and value, now carrying admin: "true" and, beside it, the two things policy.TagRules
-// demands of such a secret — a requesters list naming the person every session below is signed
-// in as, and a max-grant, an hour here (policytest.FixtureMaxGrant), which is longer than any
-// grant this file makes. Nothing else about the secret moves, so what answers below is the tag
-// and not a secret that changed hands or shrank its cap.
+// owner, tier, value and judge tag, now carrying admin: "true" and, beside it, the two things
+// policy.TagRules demands of such a secret — a requesters list naming the person every session
+// below is signed in as, and a max-grant, an hour here (policytest.FixtureMaxGrant), which is
+// longer than any grant this file makes. Nothing else about the secret moves, so what answers
+// below is the admin tag and not a secret that changed hands, shrank its cap or lost its judge.
 func deelAsAdmin() secrets.LocalSecret {
 	admin := policytest.ListedSecret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, fixtureOperator, "deel-v1")
 	admin.Tags[policy.TagAdmin] = policy.AdminTrue
-	return admin
+	return policytest.Judged(admin, 900, "")
 }
 
 // TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone: a person approves every release
 // of a secret its owner tags as an administrator's (policy.TagAdmin). The model judge may have
-// decided a grant of it before the tag was written — the rules file gave the name judge seconds,
+// decided a grant of it before the tag was written — its judge tag gave the judge seconds of it,
 // and the judge read a secret that was not yet an administrator's — and the tag moves the policy
 // version, so every release of that grant and every reuse of it re-reads what it was granted.
 // Both refuse it and end the grant for good, rather than let a model's approval go on releasing
-// an administrator's credential for the rest of the seconds the rules gave it. Taking the tag
+// an administrator's credential for the rest of the seconds its judge tag gave it. Taking the tag
 // off again leaves the grant ended: the session asks afresh, as a new request. A grant of the
 // same secret that its owner approved releases throughout, a person's approval being all the
 // tag asks.
@@ -177,23 +173,23 @@ func TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone(t *testing.T)
 			t.Fatalf("the policy version stood still at %s, so the re-checks this test is about never ran", before)
 		}
 
-		release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{})
+		release, err := m.Values(t.Context(), judged, session, ReleaseCall{})
 		if !errors.Is(err, ErrGrantNotLive) || releasedValue(release, "DEEL_API_KEY") != "" {
 			t.Fatalf("Values(the judge's grant of what is now an administrator's secret) = %+v, %v; want ErrGrantNotLive and nothing released", release, err)
 		}
 		if by, audits := endedForGood(t, m, judged); by != GrantEndedActor || audits != 1 {
 			t.Fatalf("the judged grant's revoked_by = %q with %d grant.revoked rows by %s; want it ended once for good", by, audits, GrantEndedActor)
 		}
-		if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || releasedValue(release, "DEEL_API_KEY") != "" {
+		if release, err := m.Values(t.Context(), judged, session, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || releasedValue(release, "DEEL_API_KEY") != "" {
 			t.Fatalf("a second Values of the judged grant = %+v, %v; want it refused as ended, not merely passed over once", release, err)
 		}
-		if release, err := m.Values(t.Context(), byOwner.GrantID, own, nil, ReleaseCall{}); err != nil || releasedValue(release, "DEEL_API_KEY") == "" {
+		if release, err := m.Values(t.Context(), byOwner.GrantID, own, ReleaseCall{}); err != nil || releasedValue(release, "DEEL_API_KEY") == "" {
 			t.Fatalf("Values(the owner's own grant) = %+v, %v; want DEEL_API_KEY released: a person approved it, which is all the tag asks", release, err)
 		}
 
-		// The tag taken off again does not bring the judged grant back.
-		retag(t, m, policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1"))
-		if _, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+		// The admin tag taken off again does not bring the judged grant back.
+		retag(t, m, policytest.Judged(policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1"), 900, ""))
+		if _, err := m.Values(t.Context(), judged, session, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 			t.Fatalf("Values of the judged grant once the tag is gone = %v; want it still ended", err)
 		}
 		if by, audits := endedForGood(t, m, judged); by != GrantEndedActor || audits != 1 {
@@ -204,13 +200,13 @@ func TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone(t *testing.T)
 	t.Run("the next request ends it rather than handing it back", func(t *testing.T) {
 		m, session, key := newJudgeFixture(t)
 		judged := judgedGrant(t, m, session, key, 600, "DEEL_API_KEY")
-		reused, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "INFRA-1353 wants it again", 600, "DEEL_API_KEY"), "", nil)
+		reused, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "INFRA-1353 wants it again", 600, "DEEL_API_KEY"), "")
 		if err != nil || reused.GrantID == nil || *reused.GrantID != judged {
 			t.Fatalf("a request for the same name and lifetime while the secret is an ordinary one = %+v, %v; want the judged grant %s handed back", reused, err, judged)
 		}
 
 		retag(t, m, deelAsAdmin())
-		again, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "INFRA-1353 wants it once more", 600, "DEEL_API_KEY"), "", nil)
+		again, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "INFRA-1353 wants it once more", 600, "DEEL_API_KEY"), "")
 		if err != nil || again.GrantID != nil || again.State != "pending" {
 			t.Fatalf("Create once the secret is an administrator's = %+v, %v; want no grant handed back and a card its person answers", again, err)
 		}

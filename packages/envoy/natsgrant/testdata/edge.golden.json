@@ -58,6 +58,7 @@
     "$JS.API.CONSUMER.DELETE.KV_envoy_dpop_proofs.>",
     "$JS.FC.KV_envoy_dpop_proofs.>",
     "$JS.API.STREAM.PURGE.KV_envoy_interests",
+    "$JS.API.STREAM.PURGE.KV_envoy_known_sessions",
     "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.*",
     "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.*.>",
     "$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.*",

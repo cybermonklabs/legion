@@ -3,8 +3,13 @@ import { type ReactNode, type RefCallback, useEffect, useId, useRef, useState } 
 import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
-import { projectsQuery, referenceTargetsQuery, whoAmIQuery } from "../../api/queries";
-import type { Artifact, IssueDetails, ReferenceTargets, UserState } from "../../api/types";
+import {
+  projectsQuery,
+  type ReferenceTargetsAnswer,
+  referenceTargetsQuery,
+  whoAmIQuery,
+} from "../../api/queries";
+import type { Artifact, IssueDetails, UserState } from "../../api/types";
 import {
   pageAvatar,
   pageFailedText,
@@ -107,7 +112,7 @@ export const TITLES_READ_FAILED = "Could not read the titles of these issues.";
  *  (`keptUntilFailed`: the last answer that held data, of an earlier set), and any other is
  *  undefined; undefined too where the read failed holding no answer, and where it names nothing
  *  at the issue's address. */
-function issueTitleIn(read: ReferenceTargets | undefined, key: string): string | undefined {
+function issueTitleIn(read: ReferenceTargetsAnswer | undefined, key: string): string | undefined {
   const reference = buildDispatchReference({ key, kind: "issue" });
   return read?.targets?.find((target) => target.ref === reference)?.name;
 }
@@ -163,7 +168,7 @@ export function IssueMarginCards({
             threads anchored in an open document and its composer, in the margin's words and the
             authors' own, and not the page's declared vocabulary (`page-structure.ts`). They are
             first because the margin places an anchored card at a `top` it measures down from
-            the top of its own content (`margin/ThreadList.tsx`'s `regionOrigin`), so anything
+            the top of its own content (`margin/card-stack.ts`'s `regionOrigin`), so anything
             drawn over them moves that anchor and a card can no longer reach the line its mark
             is on. */}
         <div className="contents" {...authorText}>
@@ -394,25 +399,20 @@ export function IssueMarginPanel({
   const blockingRetry = useRetryHandOff(() => firstWaiting() ?? blocksNone.current);
   const waitingRetry = useTitlesRetry(waitingTitles, waitingRead.queryKey, firstWaiting);
   const priority = usePriorityHandOffs(issue, developmentHeading);
-  // The Repository row's control draws its own failed read of the mappings and its own refused
-  // write, and hands each to the row to say (`sayFailure`), as Details says its own. A read's
-  // line stands while the mappings stand failed (`standsFailed`), so a refresh that fails over
-  // mappings the control holds draws none, and the box still suggests them. The line keeps its
-  // words while its Retry reads again, as Details' own read lines do: the read that is out holds
-  // no error, so words taken from the error would change as Retry is pressed. A press of a
-  // write's Retry clears the refusal as it sends the pick again, taking the line with it, so that
-  // Retry never waits on the write it sent and reads no busy. Each line notes the press of its
-  // own Retry. As a line goes with a reader's focus on its Retry after their press of that Retry
-  // - a write's at that press, a read's once the mappings answer - the focus goes on to the row's
-  // own control: the box, drawn while a write is out, else the text or None the row draws in its
-  // place; and where the row holds nothing that takes it, on a closed issue, to Development's
-  // heading. A line that goes with no press of its own Retry - the mappings read again on an
-  // event, or a write's Retry taken away by a close made in another session, after a press of the
-  // read's Retry or of none - hands nothing on. On a closed issue a write's line has no Retry:
-  // Dispatch refuses every repository of a closed issue (`ISSUE_CLOSED`), so the pick sent again
-  // would be refused again, and a pick the reader stopped says the issue is closed in place of the
-  // Retry its line would offer; the control says which pick the reader stopped
-  // (`RepoControlFailure`'s `stopped`).
+  // The Repository row's control draws its own refused write, and hands it to the row to say
+  // (`sayFailure`), as Details says its own. A failed read of the project list, which the box's
+  // suggestion of the project's default repository comes from, costs the suggestion and says
+  // nothing (`RepoControl`). A press of the line's Retry clears the refusal as it sends the pick
+  // again, taking the line with it, so that Retry never waits on the write it sent and reads no
+  // busy. The line notes the press of its Retry. As the line goes with a reader's focus on its
+  // Retry at their press of it, the focus goes on to the row's own control: the box, drawn while
+  // a write is out, else the text or None the row draws in its place; and where the row holds
+  // nothing that takes it, on a closed issue, to Development's heading. A line that goes with no
+  // press of its Retry - its Retry taken away by a close made in another session - hands nothing
+  // on. On a closed issue the line has no Retry: Dispatch refuses every repository of a closed
+  // issue (`ISSUE_CLOSED`), so the pick sent again would be refused again, and a pick the reader
+  // stopped says the issue is closed in place of the Retry its line would offer; the control
+  // says which pick the reader stopped (`RepoControlFailure`'s `stopped`).
   const repoValue = useRef<HTMLDivElement>(null);
   const repoControlLeft = () =>
     firstUsable(
@@ -420,28 +420,18 @@ export function IssueMarginPanel({
       ...(repoValue.current?.querySelectorAll<HTMLElement>("button") ?? []),
       developmentHeading.current
     );
-  const repoReadRetry = useRetryHandOff(repoControlLeft);
   const repoWriteRetry = useRetryHandOff(repoControlLeft);
   const repoWhat = `the repository of ${issue.key}`;
-  const sayRepoFailure = (failure: RepoControlFailure): ReactNode =>
-    failure.kind === "write" ? (
-      <DetailsErrorLine
-        message={
-          closedStoppedNote({ isClosed, stopped: failure.stopped }, repoWhat, "repository") ??
-          failure.message
-        }
-        onRetry={isClosed ? undefined : failure.retry}
-        {...repoWriteRetry}
-      />
-    ) : standsFailed(failure.read) ? (
-      <DetailsErrorLine
-        failure={failure.read.errorUpdateCount}
-        message={failure.message}
-        onRetry={retryRead(failure.read)}
-        {...repoReadRetry}
-        retrying={failure.read.isFetching}
-      />
-    ) : null;
+  const sayRepoFailure = (failure: RepoControlFailure): ReactNode => (
+    <DetailsErrorLine
+      message={
+        closedStoppedNote({ isClosed, stopped: failure.stopped }, repoWhat, "repository") ??
+        failure.message
+      }
+      onRetry={isClosed ? undefined : failure.retry}
+      {...repoWriteRetry}
+    />
+  );
   // Referenced by's line stands while its read stands failed (`standsFailed`), as each line of
   // Details' own does - `ReferencedBy` draws it so where it is handed `retried` - so its Retry
   // goes with it once the read the press sent answers. Where the reader's press of Retry took it
@@ -690,8 +680,8 @@ export function IssueMarginPanel({
             disabled={isClosed}
             inRow
             issueKey={issue.key}
-            mappingsFreshness={EVENT_FRESH}
             project={issue.project}
+            projectsFreshness={EVENT_FRESH}
             repo={issue.repo}
             resolvedRepo={issue.resolved_repo}
             sayFailure={sayRepoFailure}

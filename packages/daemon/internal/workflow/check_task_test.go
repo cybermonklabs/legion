@@ -8,6 +8,28 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
+func TestTheCheckTaskNamesItsCheckInTheFormAReportSendsBack(t *testing.T) {
+	t.Parallel()
+	opened := time.Date(2026, 10, 19, 6, 0, 0, 123456000, time.UTC)
+	issue := record.Issue{Key: "LEGION-208", Title: "a production check"}
+	task := checkTask(issue, record.ProductionCheck{Issue: issue.Key, OpenedAt: opened, Looks: 2}, "merge", "merge-43", false)
+	_, value, ok := strings.Cut(task, "check_opened_at `")
+	if !ok {
+		t.Fatal("the task gives no check identity to report")
+	}
+	value, _, ok = strings.Cut(value, "`")
+	if !ok {
+		t.Fatal("the task gives no closing delimiter for the check identity")
+	}
+	got, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil || !got.Equal(opened) {
+		t.Fatalf("reported check identity %q = %s (%v), want %s", value, got, err, opened)
+	}
+	if value != "2026-10-19T06:00:00.123456Z" {
+		t.Fatalf("wire identity = %q, want RFC3339 with its microseconds", value)
+	}
+}
+
 // checkTaskWakes are the four wakes a look can have, each written as its own caller writes it:
 // the merge that opened the check (openCheck, the merge commit as the detail), the wake the
 // checking agent named on a pending report (checkReported, the report's summary), the retry of a
@@ -43,6 +65,7 @@ func checkTaskFor(cause, detail string, last bool) string {
 // started names the summary that report gave, and one the retry started names the retry, so a
 // reader can tell the look it asked for from the look it was given after saying nothing.
 func TestTheCheckTaskNamesWhatWokeItsOwnLook(t *testing.T) {
+	t.Parallel()
 	for _, tc := range checkTaskWakes {
 		t.Run(tc.name, func(t *testing.T) {
 			task := checkTaskFor(tc.cause, tc.detail, false)
@@ -64,6 +87,7 @@ func TestTheCheckTaskNamesWhatWokeItsOwnLook(t *testing.T) {
 // hold the pod for a wake that never comes. The look ends with the report, and the agent's own
 // `wake_at` starts the next one.
 func TestNoCheckTaskNamesADeployWakeOrTellsItsReaderToWait(t *testing.T) {
+	t.Parallel()
 	retired := []string{"issue.deployed", "deploy workflow", "daemon's boot", "Dispatch serving build",
 		"Dispatch's build", "the deploy's event", "wakes the check on", "Wait for no deploy",
 		"await no reply", "deploy role"}
@@ -82,23 +106,30 @@ func TestNoCheckTaskNamesADeployWakeOrTellsItsReaderToWait(t *testing.T) {
 	}
 }
 
-// A pending on a look that is not the check's last names when the next look is due: nothing else
-// starts one, and the route refuses a pending without it (CHECK_WAKE_REQUIRED). On the bound's
-// look no look follows, the pending closes the check as not run, and a time there is refused
-// (CHECK_WAKE_UNEXPECTED), so that task asks for none and says what to write before reporting it.
+// A pending on a look that is not the check's last names when the next look is due, and the route
+// refuses a pending without it (CHECK_WAKE_REQUIRED). Besides that wake, only the bound's look and
+// the retry of a look nobody reported start one (checkBound, endLook), and the task says so. On the
+// bound's look no look follows, the pending closes the check as not run, and a time there is
+// refused (CHECK_WAKE_UNEXPECTED), so that task asks for none and says what to write before
+// reporting it.
 func TestTheCheckTaskAsksForAWakeOnEveryPendingButTheLastLooks(t *testing.T) {
+	t.Parallel()
 	const asks = "A pending report also carries wake_at, an RFC 3339 time: when you want your next look."
 	task := checkTaskFor(wakeMerge, "merge-43", false)
 	if !strings.Contains(task, asks) {
 		t.Errorf("the task of a look that is not the last = %q, want it to ask %q", task, asks)
 	}
 	for _, want := range []string{
+		"Besides it, only the look at the check's bound and the retry of a look nobody reported start one.",
 		"the daemon stops this process and keeps this session",
 		"a task naming the summary you gave as what woke it",
 	} {
 		if !strings.Contains(task, want) {
 			t.Errorf("the task of a look that is not the last = %q, want it to say %q", task, want)
 		}
+	}
+	if retired := "Nothing else starts one."; strings.Contains(task, retired) {
+		t.Errorf("the task of a look that is not the last still says %q, though the bound and a retry start a look too", retired)
 	}
 	last := checkTaskFor(wakeBound, boundText(14*24*time.Hour)+" since the issue closed", true)
 	if strings.Contains(last, asks) {
@@ -163,6 +194,7 @@ func isTaskFailClause(clause string) bool {
 // There a requirement still unobserved is a fail whether or not production carries the merge, and
 // the pending is only for an issue with none of those requirements.
 func TestTheCheckTaskPendsADeployedMergeWhoseRequirementIsStillUnobserved(t *testing.T) {
+	t.Parallel()
 	const pendsAnUnobservedRequirement = "pending when production does not carry the merge yet, or carries it with one of those requirements still unobserved and a look still to follow,"
 	for _, last := range []bool{false, true} {
 		task := checkTaskFor(wakeMerge, "merge-43", last)
@@ -196,6 +228,7 @@ func TestTheCheckTaskPendsADeployedMergeWhoseRequirementIsStillUnobserved(t *tes
 // production carries the merge". One fail clause at least holds those words, and one holds
 // "observed as not met", so the test cannot pass on a task that dropped the rule.
 func TestTheLastLookFailsARequirementStillUnobservedWhetherOrNotProductionCarriesTheMerge(t *testing.T) {
+	t.Parallel()
 	for _, tc := range checkTaskWakes {
 		for _, last := range []bool{false, true} {
 			task := checkTaskFor(tc.cause, tc.detail, last)
@@ -237,6 +270,7 @@ func TestTheLastLookFailsARequirementStillUnobservedWhetherOrNotProductionCarrie
 // task of a look before the last says nothing of a close as not run, since its pending names the
 // time of the next look.
 func TestTheLastLooksPendingIsOnlyForAnIssueWithNoneOfThoseRequirements(t *testing.T) {
+	t.Parallel()
 	const closes = "This last look's pending carries no wake_at and closes the check as not run: before reporting it, write on the pull request why the check did not run within the bound."
 	for _, tc := range checkTaskWakes {
 		last := checkTaskFor(tc.cause, tc.detail, true)

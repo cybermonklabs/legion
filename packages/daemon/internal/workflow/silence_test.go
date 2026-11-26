@@ -98,9 +98,9 @@ func silenceToken(t *testing.T, role claim.Role) claim.Token {
 }
 
 // seedSilence writes rec as the store holds it: the issue, the admission slot its phase keeps
-// (record.KeepsSlot: none past its review) and its open tree, the role's phase row with the
-// completion it carries, the claim with the moment its agent last stepped, the task it holds and
-// the start already queued for it.
+// (record.KeepsSlot: none in accepting, retro or merging) and its open tree, the role's phase row
+// with the completion it carries, the claim with the moment its agent last stepped, the task it
+// holds and the start already queued for it.
 func seedSilence(t *testing.T, pool *pgxpool.Pool, rec silenceRecord) record.Issue {
 	t.Helper()
 	issue := record.Issue{Key: silenceIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
@@ -151,9 +151,13 @@ func seedSilence(t *testing.T, pool *pgxpool.Pool, rec silenceRecord) record.Iss
 	}
 	if rec.queuedStart {
 		seedRecord(t, pool, func(tx pgx.Tx) error {
+			task, err := testEngine(config.DesignGateRootIssues, nil).ResumeTask(t.Context(), tx, issue)
+			if err != nil {
+				return err
+			}
 			return StartOrOwe(t.Context(), tx, record.NewStore(), silenceIssue, record.SuperviseRequest{Op: "start",
 				Tree: silenceIssue, Role: claim.RoleTester, Generation: rec.generation, Phase: rec.phase,
-				Task: ResumePhaseTask(issue), ResumeTask: true}, silenceClock())
+				Task: task, ResumeTask: true}, silenceClock())
 		})
 	}
 	return issue
@@ -275,19 +279,21 @@ func namesTheSilence(t *testing.T, reason string, outcome string, absent string)
 
 // A silent phase worker level with the phase entry its row names is sent its phase's task again
 // at no entry, marked the phase's resume task, and its architect is told what the daemon read
-// and what it did, naming that entry. The task is ResumePhaseTask: the phase the worker is in
-// is already under way, and no handoff begins it again. A silent worker behind that entry is
-// sent the entry's own work instead (TestASilentWorkerIsSentTheWorkOfTheEntryItIsBehind).
+// and what it did, naming that entry. The task is the phase's resume task (Engine.ResumeTask):
+// the phase the worker is in is already under way, and no handoff begins it again. A silent
+// worker behind that entry is sent the entry's own work instead
+// (TestASilentWorkerIsSentTheWorkOfTheEntryItIsBehind).
 func TestASilentWorkerIsSentItsPhasesTaskAgainOnTheEntryItsRowNames(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
-	issue := seedSilence(t, pool, aSilentTester())
+	seedSilence(t, pool, aSilentTester())
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
 	if err := applySilence(t, pool, engine, aSilenceOf(claim.RoleTester, 1)); err != nil {
 		t.Fatalf("apply the silence: %v", err)
 	}
 
-	want := []silenceSuperviseRow{{op: "start", role: claim.RoleTester, task: ResumePhaseTask(issue),
+	want := []silenceSuperviseRow{{op: "start", role: claim.RoleTester, task: phaseResumeTask(t, pool, engine, silenceIssue),
 		stands: phase.Testing, entry: 0, resumeTask: true}}
 	if got := silenceSuperviseRows(t, pool); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the supervise rows of %s = %+v, want %+v: the worker comes back on one start row carrying the phase's resume task at no entry, the claim being on the entry its row names already",
@@ -311,6 +317,7 @@ func TestASilentWorkerIsSentItsPhasesTaskAgainOnTheEntryItsRowNames(t *testing.T
 // case above, and together they are R6 of dispatch://INFRA-3163, the workers the daemon must
 // not prompt.
 func TestASilenceTheRecordAnswersForChangesNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		rec  silenceRecord
@@ -461,6 +468,7 @@ func (s refusingStore) EnqueueStart(ctx context.Context, tx pgx.Tx, row record.O
 // retry. A notice written in its place would be the last word on this silence for ever, the
 // fact's identity being the claim token and a last step that does not move.
 func TestAStartRowTheStoreRefusesWritesNoNoticeAndLeavesTheFactUnapplied(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedSilence(t, pool, aSilentTester())
 	engine := testEngine(config.DesignGateRootIssues, nil)
@@ -494,6 +502,7 @@ func TestAStartRowTheStoreRefusesWritesNoNoticeAndLeavesTheFactUnapplied(t *test
 // will be. That is R6 of dispatch://INFRA-3163: nothing can tell a background job that hung
 // from a long one, so the daemon tells and the architect decides.
 func TestAStalledBackgroundWorkerIsToldToItsArchitectAndSentNothing(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedSilence(t, pool, aStalledTester())
 	engine := testEngine(config.DesignGateRootIssues, nil)
@@ -529,6 +538,7 @@ func TestAStalledBackgroundWorkerIsToldToItsArchitectAndSentNothing(t *testing.T
 // is what the architect would be told about, so this fact writes nothing and the standing of the
 // new reading is for the fact the sweep mints under its own moment to carry.
 func TestAStandingReportTheSessionHasReplacedChangesNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		rec  silenceRecord
@@ -567,6 +577,7 @@ func TestAStandingReportTheSessionHasReplacedChangesNothing(t *testing.T) {
 // notice and no supervise row. Each row changes one term of the told case above: the report's
 // own terms, then one of the structural terms this handler shares with the silence handler.
 func TestABackgroundReportTheRecordAnswersForChangesNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		rec  silenceRecord
@@ -633,6 +644,7 @@ func TestABackgroundReportTheRecordAnswersForChangesNothing(t *testing.T) {
 // fact, which is the retry. The report does not move while the job hangs, so a fact marked
 // applied over a failed write would be the last word on that job for ever.
 func TestANoticeTheStoreRefusesLeavesTheBackgroundFactUnapplied(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedSilence(t, pool, aStalledTester())
 	engine := testEngine(config.DesignGateRootIssues, nil)

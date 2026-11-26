@@ -34,18 +34,22 @@ package main
 //   - Roles: a claim or a read names a role that works for one of the token's projects
 //     (edgeRoleRefusal), and a role held by a session of none of them reads as one no claim holds
 //     in a role read, a role send's answers and a claim's 409, which name neither its holder nor
-//     its claim revision (edgeScope.holder, edgeScope.namesHolder, roleHeldElsewhere); a read of a
-//     holder's session that does not answer names no holder either (edgeScope.unresolved). A
-//     registration first releases the session's claims of other projects' roles, refused 503 when
-//     a release fails (edgeTopicHold.releaseRefusedRoles), renews its token's projects' roles
-//     alone (edgeTopicHold.holdsRole), and a claimant is handed the kept messages of those alone
-//     (edgeScope.roles).
+//     its claim revision (edgeScope.holderConfirmed, edgeScope.namesHolderConfirmed,
+//     roleHeldElsewhere); a read of a holder's session that does not answer names no holder either
+//     (edgeScope.unresolved). A registration first releases the session's claims of other
+//     projects' roles, refused 503 when a release fails (edgeTopicHold.releaseRefusedRoles), renews
+//     its token's projects' roles alone (edgeTopicHold.holdsRole), and a claimant is handed the
+//     kept messages of those alone (edgeScope.roles).
 //   - Sends: the target session's token lists one of the token's projects, else the send is
-//     answered as to a missing session (edgeScope.hides).
+//     answered as to a missing session (edgeScope.hidesConfirmed).
 //   - Reads: the session list, the registry, the session rows' roles and topics and the Legion
 //     agent routes answer only sessions, roles, topics and agents of the token's projects
-//     (edgeScope); the interest list and another session's interests are 403, and the Legion
-//     agent registry is not written here.
+//     (edgeScope), each session shown confirmed by its stored record read from the stream's leader
+//     (edgeScope.showsConfirmed, session.SessionRegistry.StoredByWriter), so a record the server
+//     wrote at a session's key reads as no session's, and a read that did not answer is the
+//     bus-unavailable 503, whose text names no session (edgeScope.confirmUnanswered); the interest
+//     list and another session's interests are 403, and the Legion agent registry is not written
+//     here.
 //   - The start: refused beside every other credential, beside Dispatch's principal, beside
 //     webhooks, and without the broker-token settings (validateEdgeMode).
 //
@@ -80,12 +84,16 @@ var ErrEdgeNotAdmitted = errors.New("this edge listener does not admit the acces
 
 // EdgeAdmits is the admission: whether an edge listener serving edgeProjects admits caller, the
 // session a broker token names. It admits a token of project scope named or person whose projects
-// are all among edgeProjects, and at least one, and refuses a read-only token. nil is admitted;
-// every refusal wraps ErrEdgeNotAdmitted and names the rule and what the token carries, and never
-// a project the edge serves: the refusal reaches the token's holder (apiAuth), who may not know
-// another customer's project, so the projects served go to apiAuth's log line alone. It reads
-// nothing but its arguments. apiAuth never hands it a read-only token: the listener's verifier
-// refuses one as no session (ciphertoken.ErrNotASession), the 401 of a request with no session.
+// are all among edgeProjects, and at least one, and refuses a read-only token and every other
+// project scope. A job's named token, which names a service, no person and exactly one project,
+// is admitted for that project as a person's named token is. A job's public token is refused,
+// whatever private projects it lists: it reaches every public project besides them, and no
+// edge's list bounds the public projects such a token reaches. nil is admitted; every refusal
+// wraps ErrEdgeNotAdmitted and names the rule and what the token carries, and never a project the
+// edge serves: the refusal reaches the token's holder (apiAuth), who may not know another
+// customer's project, so the projects served go to apiAuth's log line alone. It reads nothing but
+// its arguments. apiAuth never hands it a read-only token: the listener's verifier refuses one as
+// no session (ciphertoken.ErrNotASession), the 401 of a request with no session.
 func EdgeAdmits(edgeProjects []string, caller ciphertoken.Caller) error {
 	switch {
 	case caller.ReadOnly:
@@ -134,17 +142,24 @@ func (e *edgeRefusal) write(w http.ResponseWriter) { writeJSON(w, e.status, e.bo
 // edgeHoldKey is the context key that marks a request an edge listener admitted.
 type edgeHoldKey struct{}
 
+// edgeHold is the mark withEdgeHold puts on a request an edge listener admitted: the logger that
+// gets what the edge's answers hide (edgeScope.confirmUnanswered), apiAuth's own.
+type edgeHold struct {
+	logger *logging.Logger
+}
+
 // withEdgeHold marks a request an edge listener admitted (apiAuth): every rule here holds it to
-// the projects of the broker token it was admitted on, which its broker caller carries.
-func withEdgeHold(ctx context.Context) context.Context {
-	return context.WithValue(ctx, edgeHoldKey{}, true)
+// the projects of the broker token it was admitted on, which its broker caller carries. logger
+// gets what an answer to it hides.
+func withEdgeHold(ctx context.Context, logger *logging.Logger) context.Context {
+	return context.WithValue(ctx, edgeHoldKey{}, edgeHold{logger: logger})
 }
 
 // heldProjects is the projects r is held to, its broker token's (ciphertoken.Caller.Projects, the
 // caller's own copy), and whether it is held at all: true only for a request an edge listener
 // admitted, false on every other listener.
 func heldProjects(r *http.Request) ([]string, bool) {
-	if held, _ := r.Context().Value(edgeHoldKey{}).(bool); !held {
+	if _, held := r.Context().Value(edgeHoldKey{}).(edgeHold); !held {
 		return nil, false
 	}
 	caller, _ := brokerCaller(r)
@@ -155,10 +170,12 @@ func heldProjects(r *http.Request) ([]string, bool) {
 // (heldProjects), and the repository reader that says which of their GitHub topics stand. It is
 // nil for a request no edge listener admitted, and each method answers a nil scope as every
 // listener answers, so a read route asks it unconditionally and writes no edge branch of its own;
-// only the answers a session with no entry gets test the scope itself (hides).
+// only the answers a session with no entry gets test the scope itself (hidesConfirmed). logger gets
+// what its answers hide (confirmUnanswered).
 type edgeScope struct {
 	projects     []string
 	repositories *edgeRepositories
+	logger       *logging.Logger
 }
 
 // edgeScopeOf is r's scope, nil for a request no edge listener admitted. repositories may be nil
@@ -168,23 +185,72 @@ func edgeScopeOf(r *http.Request, repositories *edgeRepositories) *edgeScope {
 	if !held {
 		return nil
 	}
-	return &edgeScope{projects: projects, repositories: repositories}
+	hold, _ := r.Context().Value(edgeHoldKey{}).(edgeHold)
+	return &edgeScope{projects: projects, repositories: repositories, logger: hold.logger}
 }
 
-// shows reports whether the scope shows the session whose entry is entry: the token that
-// registered it (session.SessionEntry.Projects) lists one of the scope's projects. An entry no
-// token's list was recorded on, one an earlier build wrote among them, is no project's. A nil
-// scope shows every session.
+// shows reports whether the scope shows the session whose entry is entry: its record names its own
+// key (session.SessionEntry.SessionID) and the token that registered it
+// (session.SessionEntry.Projects) lists one of the scope's projects. An entry no token's list was
+// recorded on, one an earlier build wrote among them, is no project's, and so is one that names no
+// key: a record naming no key cannot be told from another session's record the server copied under
+// this one, so the edge grants no project on it (session.DecodeEntry reads such a record with no
+// SessionID). The cache alone cannot say the record is a writer's; showsConfirmed adds the leader
+// read that does. A nil scope shows every session.
 func (s *edgeScope) shows(entry session.SessionEntry) bool {
-	return s == nil || slices.ContainsFunc(entry.Projects, func(project string) bool { return slices.Contains(s.projects, project) })
+	return s == nil || (entry.SessionID != "" && slices.ContainsFunc(entry.Projects, func(project string) bool { return slices.Contains(s.projects, project) }))
 }
 
-// hides reports whether the scope answers a session read as entry with err as one no listener has
-// heard of (unknownSession): a session it does not show, and one the bucket holds no record of
-// (nats.ErrKeyNotFound), which names no project. A read that did not answer is not hidden: its
-// route answers it as every listener does. A nil scope hides nothing.
-func (s *edgeScope) hides(entry session.SessionEntry, err error) bool {
-	return s != nil && (errors.Is(err, nats.ErrKeyNotFound) || (err == nil && !s.shows(entry)))
+// showsConfirmed is shows, and for a session it would show, confirmed by sessionID's newest message
+// on the bucket's stream, read from the stream's leader with the headers stored with it
+// (session.SessionRegistry.StoredByWriter). sessionID is the key the decision is about - the list
+// row's key, the send's target, the registry route's id - never the key a cached record names: a
+// record the server wrote, or one a cached entry still shows under projects a newer write dropped,
+// is judged by the record the leader holds for the key now. shows is re-judged on that leader record,
+// so the session is granted only when the leader's newest message is a writer's registration the
+// scope shows. A message the server wrote, one that does not decode as the key's registration, or
+// none, reads as no session's, and so does a key the leader refused or held no message for
+// (nats.ErrKeyNotFound, bus.ErrRefused). A read that did not answer is returned as an error, not as
+// an absence, so a caller answers the bus-unavailable 503 it answers for any read that did not
+// answer, never the 404 of a session it does not show nor a silent drop from a list; that error
+// names no session (confirmUnanswered). A nil scope shows every session, and an entry the cache
+// would not show, both cost no read.
+func (s *edgeScope) showsConfirmed(ctx context.Context, sessions *session.SessionRegistry, sessionID string, entry session.SessionEntry) (bool, error) {
+	if s == nil {
+		return true, nil
+	}
+	if !s.shows(entry) {
+		return false, nil
+	}
+	stored, ok, err := sessions.StoredByWriter(ctx, sessionID)
+	if err != nil {
+		return false, s.confirmUnanswered(sessionID, err)
+	}
+	return ok && s.shows(stored), nil
+}
+
+// hidesConfirmed answers a session read, as entry with err, hidden with showsConfirmed's leader read: a session the scope does not show,
+// confirmed by the record the leader holds for sessionID, and one the bucket holds no record of
+// (nats.ErrKeyNotFound), are hidden as a session no listener has heard of (unknownSession).
+// sessionID is the key the decision is about. A read that did not answer, the confirmation's own
+// among them, is returned as an error, not as hidden, so the route answers the bus-unavailable 503;
+// the confirmation's names no session (confirmUnanswered).
+// A nil scope hides nothing.
+func (s *edgeScope) hidesConfirmed(ctx context.Context, sessions *session.SessionRegistry, sessionID string, entry session.SessionEntry, err error) (bool, error) {
+	if s == nil {
+		return false, nil
+	}
+	if errors.Is(err, nats.ErrKeyNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		return false, nil
+	}
+	shown, confErr := s.showsConfirmed(ctx, sessions, sessionID, entry)
+	if confErr != nil {
+		return false, confErr
+	}
+	return !shown, nil
 }
 
 // roles is the roles among roles, each named by its claim's key, that work for one of the scope's
@@ -205,52 +271,140 @@ func (s *edgeScope) topics(sessionID string, topics []string) []string {
 	return edgeShownTopics(s.repositories, s.projects, sessionID, topics)
 }
 
-// showsAgent reports whether the scope shows a Legion agent registry entry: the issue it works is
-// of one of the scope's projects. A nil scope shows every entry.
-func (s *edgeScope) showsAgent(agent legionagents.Agent) bool {
+// showsAgentConfirmed reports whether the scope shows a Legion agent registry entry with the agent's session confirmed by its stored record: the
+// issue the entry works is of one of the scope's projects, and the entry's session is a session of
+// that issue's project, confirmed by its stored record (sessionInProject, through
+// session.SessionRegistry.StoredByWriter), so a record the server wrote reads as no session. An
+// entry is a record any writer of the registry's bucket can store, naming any session under any
+// issue, so the issue it names says nothing of whose session it names: a chosen entry naming an
+// in-house session under an outside project's issue would otherwise show that session's id, a title
+// its writer chose and its live state to the outside session. Its replacement (replaced_by,
+// replaced_at) is read from the other entries of its role token, records of the same kind, so it is
+// shown only when it too is a session of that project, and answered as none otherwise. A
+// confirmation read that did not answer is returned as an error that names no session
+// (confirmUnanswered), so the route answers the bus-unavailable 503. A nil scope shows every entry.
+func (s *edgeScope) showsAgentConfirmed(ctx context.Context, sessions *session.SessionRegistry, agent legionagents.Agent) (legionagents.Agent, bool, error) {
 	if s == nil {
-		return true
+		return agent, true, nil
 	}
 	project, ok := contracts.IssueProject(agent.Issue)
-	return ok && slices.Contains(s.projects, project)
+	if !ok || !slices.Contains(s.projects, project) {
+		return legionagents.Agent{}, false, nil
+	}
+	shown, err := sessionInProject(ctx, sessions, agent.SessionID, project)
+	if err != nil {
+		return legionagents.Agent{}, false, s.confirmUnanswered(agent.SessionID, err)
+	}
+	if !shown {
+		return legionagents.Agent{}, false, nil
+	}
+	if agent.ReplacedBy != nil {
+		replaced, err := sessionInProject(ctx, sessions, *agent.ReplacedBy, project)
+		if err != nil {
+			return legionagents.Agent{}, false, s.confirmUnanswered(*agent.ReplacedBy, err)
+		}
+		if !replaced {
+			agent.ReplacedBy, agent.ReplacedAt = nil, nil
+		}
+	}
+	return agent, true, nil
 }
 
-// agents is agents with only the entries the scope shows (showsAgent), in their order.
-func (s *edgeScope) agents(agents []legionagents.Agent) []legionagents.Agent {
+// confirmUnanswered is err, the error of a leader read confirming sessionID's stored record
+// (session.SessionRegistry.StoredByWriter, through showsConfirmed or sessionInProject) that did not
+// answer, as an edge answer gives it. err's own text names sessionID, a session the read did not
+// confirm and the request may not have named: a role's holder, a row of the session list, a Legion
+// agent's session or its replacement, any of which can be another project's session whose record
+// the server re-published under one of the token's projects. So the answer is in the listener's own
+// words, which name no session (edgeHolderHidden), with err beneath, which still decides the
+// answer's status and Retry-After (writeBusUnavailable, writeLegionAgentError), and err goes to the
+// scope's log with the session it names.
+func (s *edgeScope) confirmUnanswered(sessionID string, err error) error {
+	s.logger.Warn("edge listener could not confirm a session's stored record from the stream's leader; its answer names no session",
+		slog.String("session_id", sessionID), slog.String("error", err.Error()))
+	return &edgeHolderHidden{text: "confirm a session's stored record from the bucket's stream leader", err: err}
+}
+
+// agentsConfirmed is agents with only the entries whose session the scope shows, each confirmed (showsAgentConfirmed), in their
+// order, without those it shows not. A confirmation read that did not answer ends the listing with
+// its error, which the route answers as the bus-unavailable 503. A nil scope returns agents as it
+// is.
+func (s *edgeScope) agentsConfirmed(ctx context.Context, sessions *session.SessionRegistry, agents []legionagents.Agent) ([]legionagents.Agent, error) {
 	if s == nil {
-		return agents
+		return agents, nil
 	}
-	return slices.DeleteFunc(agents, func(agent legionagents.Agent) bool { return !s.showsAgent(agent) })
+	shown := agents[:0]
+	for _, agent := range agents {
+		agent, ok, err := s.showsAgentConfirmed(ctx, sessions, agent)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			shown = append(shown, agent)
+		}
+	}
+	return shown, nil
 }
 
-// holder is result, the resolution of a role's holder, as the scope answers it: whole for a holder
-// whose session entry it shows (shows), and for any other, live or lapsed, the resolution of a
-// role no claim holds (roles.Unclaimed), which names no holder, process, state, last registration,
-// hand-back or claim revision. A role of one of the scope's projects can be claimed by any
-// session, and its claim record written by any writer of the role bucket, so the claim says
-// nothing of whose session it names: a holder outside the scope's projects is another project's
-// session, whose id and activity the scope shows nobody, as it shows no such session in a read. A
-// lapsed holder whose session record is gone has no projects to show, so it reads as unclaimed
-// too, even where it was a session of one of the scope's projects: the rule fails closed, and a
-// claim of the role still takes it from the holder that stopped answering. GET /v1/roles/<role>
-// and a role send through the publish route answer by it; the send still forwards to the holder.
-// A nil scope answers result as it is.
-func (s *edgeScope) holder(result roles.Resolution) roles.Resolution {
-	if result.State == roles.Unclaimed || s.shows(result.Entry) {
-		return result
+// sessionInProject reports whether sessionID is a live session of project, confirmed by the record
+// the stream's leader holds for its key (session.SessionRegistry.StoredByWriter): the cached entry
+// lists project and is not gone (a cheap pre-check), and the leader's own record is a writer's
+// registration of sessionID that lists project. sessionID is the key the decision is about, never
+// the key a cached record names. A session the registry reads gone is no session this answers, as
+// the README and the changelog say the edge shows no gone Legion agent even of the token's own
+// project. A read that did not answer is returned as its error.
+func sessionInProject(ctx context.Context, sessions *session.SessionRegistry, sessionID, project string) (bool, error) {
+	entry, state := sessions.Lookup(sessionID)
+	if entry.SessionID == "" || state == session.Gone || !slices.Contains(entry.Projects, project) {
+		return false, nil
 	}
-	return roles.Resolution{State: roles.Unclaimed}
+	stored, ok, err := sessions.StoredByWriter(ctx, sessionID)
+	if err != nil {
+		return false, err
+	}
+	return ok && stored.SessionID != "" && slices.Contains(stored.Projects, project), nil
 }
 
-// namesHolder reports whether an answer the scope holds may name holderID, the holder of a role an
-// answer names with no resolution beside it (a claim's 409): the entry sessions holds of it is one
-// the scope shows, as holder decides for a resolution. A nil scope names every holder.
-func (s *edgeScope) namesHolder(sessions *session.SessionRegistry, holderID string) bool {
-	if s == nil {
-		return true
+// holderConfirmed is result, the resolution of a role's holder, as the scope answers it with the
+// leader read every other edge decision uses: a role no claim holds (roles.Unclaimed) is returned
+// as it is, and a claimed role's holder is named only when the stream's leader confirms the record
+// it holds for the holder's key is a writer's registration the scope shows (showsConfirmed,
+// session.SessionRegistry.StoredByWriter). So a record the server wrote at the holder's key, and
+// one a cache that trails the bucket still shows under projects a newer write dropped, each read as
+// a role no claim holds, which names no holder, process, state, last registration, hand-back or
+// claim revision: a holder outside the scope's projects is another project's session, whose id and
+// activity the scope shows nobody. A lapsed holder whose session record is gone has no projects to
+// show, so it reads as unclaimed too, even where it was a session of one of the scope's projects:
+// the rule fails closed, and a claim of the role still takes it from the holder that stopped
+// answering. The holder's key is result.Holder, the id the claim names, never the key a cached
+// record names. A read that did not answer is returned as an error that names no session
+// (confirmUnanswered), so the role read answers the bus-unavailable 503. A nil scope, and a role no
+// claim holds, both cost no read.
+func (s *edgeScope) holderConfirmed(ctx context.Context, sessions *session.SessionRegistry, result roles.Resolution) (roles.Resolution, error) {
+	if result.State == roles.Unclaimed {
+		return result, nil
 	}
+	shown, err := s.showsConfirmed(ctx, sessions, result.Holder, result.Entry)
+	if err != nil {
+		return roles.Resolution{}, err
+	}
+	if !shown {
+		return roles.Resolution{State: roles.Unclaimed}, nil
+	}
+	return result, nil
+}
+
+// namesHolderConfirmed reports whether a 409 may name holderID, the holder of a role an answer
+// names with no resolution beside it: the record the stream's leader holds for holderID is a
+// writer's registration the scope shows (showsConfirmed, session.SessionRegistry.StoredByWriter),
+// judged on the entry the cache holds of holderID. So a record the server wrote at the holder's
+// key, and one a cache that trails the bucket still shows under projects a newer write dropped,
+// each name no holder. holderID is the id the claim names, the key the decision is about. A read
+// that did not answer is returned as an error that names no session (confirmUnanswered). A nil
+// scope names every holder with no read.
+func (s *edgeScope) namesHolderConfirmed(ctx context.Context, sessions *session.SessionRegistry, holderID string) (bool, error) {
 	entry, _ := sessions.Lookup(holderID)
-	return s.shows(entry)
+	return s.showsConfirmed(ctx, sessions, holderID, entry)
 }
 
 // unresolved is err, the error of a read of role's holder that failed, as an answer the scope
@@ -288,9 +442,9 @@ func hideHolder(logger *logging.Logger, line, role, holder, text string, err err
 	return &edgeHolderHidden{text: text, err: err}
 }
 
-// edgeHolderHidden is the error an edge answer gives a failure whose own text names a holder the
-// scope may not show (hideHolder): its text is the listener's own, and it unwraps to the failure,
-// which decides how the answer is written.
+// edgeHolderHidden is the error an edge answer gives a failure whose own text names a holder or a
+// session the scope may not show (hideHolder, edgeScope.confirmUnanswered): its text is the
+// listener's own, and it unwraps to the failure, which decides how the answer is written.
 type edgeHolderHidden struct {
 	text string
 	err  error
@@ -828,25 +982,49 @@ func runEdgeRepositories(ctx context.Context, d *listenerDeps, machineID string,
 }
 
 // pruneEdgeInterests removes, from every interest record this listener registered, each GitHub
-// topic whose repository no fresh answer of its session's projects names, and refollows that
-// session's consumer, as an unsubscribe does. A session one of whose projects has no fresh
-// answer keeps every topic: an answer that is not there says nothing of a repository's leaving,
-// and the relay withholds the session's GitHub frames meanwhile. A record it cannot list, or a
-// removal that fails, is logged and left to the next pass.
+// topic whose repository no fresh answer of the projects the token this replica admitted the
+// session on names (edgeAdmissions, never the stored record, which a RePublish can list another
+// project on), and refollows that session's consumer, as an unsubscribe does. A session this
+// replica admitted none of is skipped, since nothing here registered it. A session one of whose
+// admitted projects has no fresh answer keeps every topic: an answer that is not there says nothing
+// of a repository's leaving, and the relay withholds the session's GitHub frames meanwhile. A
+// record it cannot list, or a removal that fails, is left to the next pass. Each run of such
+// failures is logged when it starts rather than at every pass: a failed list after a list that
+// answered (notePruneList), and a session's failed removal after a pass that weighed the session's
+// topics and removed them, found none leaving, or did not list the session
+// (edgeRepositories.unremoved).
 func pruneEdgeInterests(ctx context.Context, d *listenerDeps, machineID string) {
 	logger := d.repositories.logger
 	items, err := d.registry.List()
-	if err != nil {
-		logger.Warn("edge listener could not list the interests a repository may have left", slog.String("error", err.Error()))
+	if !d.repositories.notePruneList(err) {
 		return
 	}
+	d.repositories.mu.Lock()
+	failing := d.repositories.unremoved
+	d.repositories.mu.Unlock()
+	unremoved, listed := map[string]bool{}, map[string]bool{}
+	// ended logs the end of sessionID's run of failed removals that no removal ended, and why.
+	ended := func(sessionID, why string) {
+		logger.Info("edge listener no longer removes the interests of a repository that left the session's projects, after its removals failed",
+			slog.String("session_id", sessionID), slog.String("why", why))
+	}
 	for _, item := range items {
+		if failing[item.SessionID] {
+			listed[item.SessionID] = true
+		}
 		if item.MachineID != machineID {
+			if failing[item.SessionID] {
+				ended(item.SessionID, "the session's interests are another listener's")
+			}
 			continue
 		}
-		entry, _ := d.sessions.Lookup(item.SessionID)
-		repositories, complete := d.repositories.standing(entry.Projects)
-		if !complete {
+		projects, admitted := d.consumers.admissions.of(item.SessionID)
+		repositories, complete := d.repositories.standing(projects)
+		if !admitted || !complete {
+			// Nothing of the session's topics was weighed, so a run of failed removals goes on.
+			if failing[item.SessionID] {
+				unremoved[item.SessionID] = true
+			}
 			continue
 		}
 		var leaving []string
@@ -859,14 +1037,23 @@ func pruneEdgeInterests(ctx context.Context, d *listenerDeps, machineID string) 
 			}
 		}
 		if len(leaving) == 0 {
+			// Nothing leaving: the answer names the repository again, or the session itself dropped
+			// the topic (an unsubscribe, or a registration after a refusal). The pass cannot tell
+			// which, so the why says what it found.
+			if failing[item.SessionID] {
+				ended(item.SessionID, "no interest of the session is outside its projects' repositories now")
+			}
 			continue
 		}
 		removeCtx, cancel := context.WithTimeout(ctx, sendRequestBudget)
 		removed, err := d.registry.Remove(removeCtx, item.SessionID, leaving, store.RoleReleaseAuthority{})
 		if err != nil {
 			cancel()
-			logger.Warn("edge listener could not remove the interests of a repository that left the session's projects",
-				slog.String("session_id", item.SessionID), slog.Any("topics", leaving), slog.String("error", err.Error()))
+			unremoved[item.SessionID] = true
+			if !failing[item.SessionID] {
+				logger.Warn("edge listener could not remove the interests of a repository that left the session's projects; every refresh tries again while the session holds them, and the end of the run is logged, a removal's line or one saying why no removal is needed",
+					slog.String("session_id", item.SessionID), slog.Any("topics", leaving), slog.String("error", err.Error()))
+			}
 			continue
 		}
 		recordFollowedTopics(removeCtx, d, item.SessionID, logger)
@@ -875,4 +1062,36 @@ func pruneEdgeInterests(ctx context.Context, d *listenerDeps, machineID string) 
 		logger.Info("edge listener removed the interests of a repository that left the session's projects",
 			slog.String("session_id", item.SessionID), slog.Any("topics", removed))
 	}
+	for sessionID := range failing {
+		if !listed[sessionID] {
+			ended(sessionID, "the session's interest record is gone")
+		}
+	}
+	d.repositories.mu.Lock()
+	d.repositories.unremoved = unremoved
+	d.repositories.mu.Unlock()
+}
+
+// notePruneList reports whether a refresh pass's list of the interest records, which ended with
+// err, answered, and logs what it starts or ends: a WARN for a failed list after one that answered,
+// an INFO for a list that answers after failed ones, and nothing otherwise, so a copy of the
+// interest bucket that stays stale logs two lines, not one at every refresh.
+func (e *edgeRepositories) notePruneList(err error) bool {
+	e.mu.Lock()
+	failed := e.unlisted
+	if err != nil {
+		e.unlisted++
+	} else {
+		e.unlisted = 0
+	}
+	e.mu.Unlock()
+	switch {
+	case err != nil && failed == 0:
+		e.logger.Warn("edge listener could not list the interests a repository may have left; it lists them again at every refresh and logs again once a list answers",
+			slog.String("error", err.Error()))
+	case err == nil && failed > 0:
+		e.logger.Info("edge listener lists the interests again; a repository that left a session's projects leaves its interests from this pass on",
+			slog.Int("failed_passes", failed))
+	}
+	return err == nil
 }

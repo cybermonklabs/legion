@@ -116,7 +116,7 @@ func newNewsReconcileRig(t *testing.T) *newsReconcileRig {
 
 func (r *newsReconcileRig) inTx(write func(pgx.Tx) error) {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, write); err != nil {
+	if err := store.Transact(r.ctx, r.pool, func(_ context.Context, tx pgx.Tx) error { return write(tx) }); err != nil {
 		r.t.Fatalf("write the record: %v", err)
 	}
 }
@@ -322,6 +322,7 @@ func heldItem(issue string, from int) record.DeliveryNewsItem {
 // took the same version are owed the same change set, which is read from Dispatch once, recorded,
 // and told to each by a news-only start of its own.
 func TestAChangeSetIsReadOnceAndReusedByTwoMembers(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	r.member(reconcileRoot, "", phase.Reviewing)
 	r.member(reconcileChild, reconcileRoot, phase.Implementing)
@@ -354,6 +355,7 @@ func TestAChangeSetIsReadOnceAndReusedByTwoMembers(t *testing.T) {
 // refusal in its reason, and the news goes, naming the versions and why the change list could not
 // be read.
 func TestAPairADispatchWithoutTheChangesRouteRefusesIsRetriedWithinTheRowsAttempts(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		refused int
@@ -415,6 +417,7 @@ func TestAPairADispatchWithoutTheChangesRouteRefusesIsRetriedWithinTheRowsAttemp
 // recorded unavailable at once, with a reason that says the document is gone and not that the route
 // is missing. The row finishes without a retry, and the news goes.
 func TestAPairOfADocumentDispatchNoLongerHoldsIsRecordedUnavailableWithNoRetry(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	r.member(reconcileRoot, "", phase.Reviewing)
 	r.told(reconcileRoot, record.AudienceHolder, 4)
@@ -446,6 +449,7 @@ func TestAPairOfADocumentDispatchNoLongerHoldsIsRecordedUnavailableWithNoRetry(t
 // document is gone, and the told row still knows no version. The row finishes on its first attempt
 // with no retry, and the news goes, saying that the version the holder last took could not be read.
 func TestAReviewHistoryOfADocumentDispatchNoLongerHoldsIsRecordedUnreadWithNoRetry(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	r.member(reconcileRoot, "", phase.Reviewing)
 	r.told(reconcileRoot, record.AudienceHolder, -1)
@@ -477,6 +481,7 @@ func TestAReviewHistoryOfADocumentDispatchNoLongerHoldsIsRecordedUnreadWithNoRet
 // outbox retries it, and records nothing; the row's third attempt records the pair unavailable with
 // the last error instead, so the news goes and a merger held for it is released.
 func TestARunOfFailedReadsIsRetriedThenRecordedUnavailable(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	r.member(reconcileRoot, "", phase.Reviewing)
 	r.told(reconcileRoot, record.AudienceHolder, 4)
@@ -519,6 +524,7 @@ func TestARunOfFailedReadsIsRetriedThenRecordedUnavailable(t *testing.T) {
 // issue holds changed, so its news-only start is queued, and its told version waits for that task's
 // confirmation.
 func TestADecisionOnlyChangeRaisesWhatEachHolderTookAndSendsNothing(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	r.member(reconcileRoot, "", phase.Reviewing)
 	r.member(reconcileChild, reconcileRoot, phase.Implementing)
@@ -572,6 +578,7 @@ func TestADecisionOnlyChangeRaisesWhatEachHolderTookAndSendsNothing(t *testing.T
 // answered with a changed section: the pair is not unchanged, nothing rises, and each holder and
 // the root architect gets a news-only start.
 func TestAnUnchangedVersionRaisesWhatEachWorkingHolderTookAndSendsNoNews(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		answer dispatch.ArtifactChanges
@@ -629,6 +636,7 @@ func TestAnUnchangedVersionRaisesWhatEachWorkingHolderTookAndSendsNoNews(t *test
 // refuses and nothing needs to compare, so it is recorded read with no change listed and Dispatch
 // is not asked.
 func TestAnUnknownBaselineIsReadFromTheReviewHistoryIntoTheToldRow(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		before    int
@@ -681,6 +689,7 @@ func TestAnUnknownBaselineIsReadFromTheReviewHistoryIntoTheToldRow(t *testing.T)
 // same start while the pair's change set is not recorded yet: it carries its own text alone and
 // the news stays owed.
 func TestAPhaseStartIntoReviewingCarriesTheNewsTheTesterNeverTook(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		recorded bool
@@ -728,6 +737,7 @@ func TestAPhaseStartIntoReviewingCarriesTheNewsTheTesterNeverTook(t *testing.T) 
 // The held phase's retry hands the role the work of the entry it is still on (ResendEntry), and
 // its task carries the news the role is owed as any phase start's does (R5).
 func TestAHeldRestartsTaskCarriesTheNews(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	r.member(reconcileRoot, "", phase.Implementing)
 	r.told(reconcileRoot, record.AudienceHolder, 4)
@@ -757,6 +767,7 @@ func TestAHeldRestartsTaskCarriesTheNews(t *testing.T) {
 // the old phase's claim nothing. The same start once the member stands in that phase again is the
 // control: it hands the claim its news.
 func TestANewsOnlyStartForAMemberWhosePhaseMovedFinishesWithoutActing(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	root := r.member(reconcileRoot, "", phase.Testing)
 	r.told(reconcileRoot, record.AudienceHolder, 4)
@@ -790,6 +801,7 @@ func TestANewsOnlyStartForAMemberWhosePhaseMovedFinishesWithoutActing(t *testing
 // form of the member's news — the change list and the accepting answer, sign-off or a move back —
 // and no summary of the tree, since the root architect took the approved version itself.
 func TestANewsOnlyStartForAnAcceptingMemberReachesItsOwningArchitectInTheHolderForm(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	r.member(reconcileRoot, "", phase.Implementing)
 	r.member(reconcileChild, reconcileRoot, phase.Accepting)
@@ -828,6 +840,7 @@ func TestANewsOnlyStartForAnAcceptingMemberReachesItsOwningArchitectInTheHolderF
 // with no design_changes row queued gets one, a tree owed nothing gets none, and the next tick
 // queues no second beside the one still to run.
 func TestTheSweepQueuesTheReconcileOfATreeOwedNewsAndOfNoOther(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	r.member(reconcileRoot, "", phase.Reviewing)
 	r.told(reconcileRoot, record.AudienceHolder, 4)
@@ -882,6 +895,7 @@ func TestTheSweepQueuesTheReconcileOfATreeOwedNewsAndOfNoOther(t *testing.T) {
 // every tick would ask Dispatch again to send nothing. The first tick after the resume queues the
 // reconcile of the tree still owed.
 func TestTheSweepQueuesNoReconcileWhileTheProjectIsPaused(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	r.told(reconcileRoot, record.AudienceHolder, 4)
 	sweeper := &workflowRuntime{pool: r.pool, records: r.records, gatedSteps: config.DesignGateRootIssues.Steps(), dispatchProject: "LEGION",

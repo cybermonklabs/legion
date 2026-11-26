@@ -722,7 +722,9 @@ func TestAWriteThatRunsOutOfItsBudgetLogsTheHeadAndItsAttempts(t *testing.T) {
 			<-release
 			return nil
 		}
-		return errors.New("nats: wrong last sequence: 1")
+		// What nats.go v1.55.0 answers an Update over a revision another write moved.
+		moved := &natsgo.APIError{Code: 400, ErrorCode: natsgo.JSErrCodeStreamWrongLastSequence, Description: "wrong last sequence: 1"}
+		return fmt.Errorf("%w: %w", moved, natsgo.ErrKeyRevisionMismatch)
 	})
 	batch := newCalls(t, s, h.key(), 4, checkCall(s, h, 500))
 	batch.behind(entered, 4)

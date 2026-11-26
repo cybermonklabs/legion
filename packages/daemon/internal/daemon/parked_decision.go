@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -42,12 +43,17 @@ func keptJSON(kept *record.KeptDecisions) ([]byte, error) {
 // nobody in its tree hears (record.RelayParkedDecision): the project's controller is told, in a
 // parked-decision notice of its own, and the decision is kept for the root's next architect start.
 // It runs in a transaction of its own that marks key processed and owns the commit hook the write
-// registers (projectRecords, intake.OnCommit), so the notice's lane wakes as it commits. It does
-// nothing for a kind that is no spec decision. Every outcome logs one line that pairs the
+// registers (projectRecords, store.OnCommit), so the notice's lane wakes as it commits. It does
+// nothing for a kind that is no spec decision, nor for a changes request the person has since
+// replaced with a newer one of the same document (workflow.ChangesSuperseded): the workflow tells
+// such a request when it arrives after the newer one — late, or replayed from a message the intake
+// gave up on, however late — and kept now it would take the newer decision's place, and its
+// claim, under the document's ref. Every outcome logs one line that pairs the
 // undelivered row with what became of its decision: sent, kept for a root that waits for its slot,
-// not relayed (by no person, on a root that is no parked tree, on a tree that hears it, or on a
-// root with no record), or handled before under the same key, by an earlier run or another row
-// carrying the same notice, whose own line said what became of it.
+// not relayed (by no person, on a root that is no parked tree, on a tree that hears it, on a root
+// with no record, or replaced since), or handled before under the same key, by an earlier run or
+// another row carrying the same notice, whose own line said what became of it. The line is a hook
+// of the transaction, so it is logged once the transaction has committed.
 func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice record.Notice, key string, row int64) error {
 	decision, ok := record.SpecDecision(notice.Kind)
 	if !ok {
@@ -55,41 +61,117 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 	}
 	args := []any{"row", row, "kind", notice.Kind, "issue", issue, "root", root, "key", key}
 	now := r.now().UTC()
-	outcome, fresh, recorded := record.RelayNone, false, false
-	scoped, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
-		marked, err := r.records.MarkProcessed(scoped, tx, parkedDecisionSource, key)
+	outcome, fresh, recorded, replaced := record.RelayNone, false, false, false
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		store.OnCommit(ctx, func() {
+			switch {
+			case !fresh:
+				r.log.Info("outbox parked decision handled before under this key", args...)
+			case !recorded:
+				r.log.Info("outbox parked decision not relayed: its root has no record", args...)
+			case replaced:
+				r.log.Info("outbox parked decision not relayed: a newer changes request of its document replaced it", append(args, "ref", notice.Ref, "version", notice.Version)...)
+			case outcome == record.RelaySent:
+				r.log.Info("outbox parked decision sent to the controller", args...)
+			case outcome == record.RelayKept:
+				r.log.Info("outbox parked decision kept for its root's start, which waits for its slot", args...)
+			case outcome == record.RelayNoPerson, outcome == record.RelayNoPersonWaiting:
+				r.log.Info("outbox parked decision not relayed: it names no person", append(args, "ref", notice.Ref)...)
+			case outcome == record.RelayNotParked:
+				r.log.Info("outbox parked decision not relayed: its root is not parked", args...)
+			default:
+				r.log.Info("outbox parked decision not relayed: its tree hears it", args...)
+			}
+		})
+		marked, err := r.records.MarkProcessed(ctx, tx, parkedDecisionSource, key)
 		if err != nil || !marked {
 			return err
 		}
 		fresh = true
-		stored, err := r.records.Issue(scoped, tx, root)
+		stored, err := r.records.Issue(ctx, tx, root)
 		if err != nil || stored == nil {
 			return err
 		}
 		recorded = true
-		outcome, err = record.RelayParkedDecision(scoped, tx, r.records, issue, *stored, true,
+		if decision == record.DecisionDesignChangesRequested {
+			gates, err := r.records.GatesOf(ctx, tx, issue)
+			if err != nil {
+				return err
+			}
+			if replaced = workflow.ChangesSuperseded(gates, issue, notice); replaced {
+				return nil
+			}
+		}
+		outcome, err = record.RelayParkedDecision(ctx, tx, r.records, issue, *stored, true,
 			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: now}, notice.Version, notice.Reason, r.gatedSteps)
 		return err
 	}); err != nil {
 		return fmt.Errorf("send the controller the decision %s carried on %s: %w", key, issue, err)
 	}
-	committed()
-	switch {
-	case !fresh:
-		r.log.Info("outbox parked decision handled before under this key", args...)
-	case !recorded:
-		r.log.Info("outbox parked decision not relayed: its root has no record", args...)
-	case outcome == record.RelaySent:
-		r.log.Info("outbox parked decision sent to the controller", args...)
-	case outcome == record.RelayKept:
-		r.log.Info("outbox parked decision kept for its root's start, which waits for its slot", args...)
-	case outcome == record.RelayNoPerson, outcome == record.RelayNoPersonWaiting:
-		r.log.Info("outbox parked decision not relayed: it names no person", append(args, "ref", notice.Ref)...)
-	case outcome == record.RelayNotParked:
-		r.log.Info("outbox parked decision not relayed: its root is not parked", args...)
-	default:
-		r.log.Info("outbox parked decision not relayed: its tree hears it", args...)
+	return nil
+}
+
+// keptPodControllerSource is the processed-event source of the copies of workspace-kept and
+// workspace-taken notices that the outbox queues for the controller (tellControllerOfKeptPod). Its
+// event id is the dedupe key the undelivered notice went under (record.Notice.Published: a re-held
+// copy's is its original row's), so one notice queues one controller row however often its row
+// runs and however many copies carry it.
+const keptPodControllerSource = "workspace-kept-controller"
+
+// diskNotice is whether kind is a notice of an issue pod's disk that must not finish with nobody
+// told: a pod the daemon keeps for its disk (record.WorkspaceKeptNotice), or a replacement that
+// still took a disk that may hold work (record.WorkspaceTakenNotice, R7 of #5285).
+// Where its owning architect will not hold its role again, it goes to the controller
+// (tellControllerOfKeptPod).
+func diskNotice(kind record.NoticeKind) bool {
+	return kind == record.WorkspaceKeptNotice || kind == record.WorkspaceTakenNotice
+}
+
+// tellControllerOfKeptPod hands a notice of an issue pod's disk (diskNotice) whose owning
+// architect will not hold its role again, for why, to the project's controller (the Legion
+// reviewer's point 1 on R6 of #5285). The daemon counts a kept pod told when it
+// queues the notice (store's recordDecline), and keeps the pod until a read finds it clean, and a
+// workspace-taken notice is the one word of a disk that is gone, so neither must finish with
+// nobody told: the controller gets a controller notice of its own with the notice's words
+// (record.ControllerNotice, published on the controller topic by its own row, controllerNotice),
+// queued once under key in a transaction that marks key processed, so a row whose finish did not
+// commit runs again and queues nothing more. The undelivered row then finishes.
+//
+// It does nothing for a kind that is no disk notice, as parkDecision does nothing for a kind that
+// is no spec decision, so every place a notice finishes undelivered because nobody will hold its
+// architect's role calls both, before its own line: an architect that will not hold its role
+// again (noticeAnswered), and one that stopped with its finished tree, found before a publish
+// (deliverNotice, the Legion reviewer's point 3 on R6's review fixes) or before a re-hold
+// (reholdNotice). Every outcome logs one line that pairs the undelivered row with what became of
+// its notice, sent or handed over before under the same key, once the transaction has committed.
+func (r *outbox) tellControllerOfKeptPod(ctx context.Context, issue string, row int64, notice record.Notice, key string,
+	architect claim.Token, why string) error {
+	if !diskNotice(notice.Kind) {
+		return nil
+	}
+	copied, err := record.NewOutboxRow(issue, record.ControllerNotice(notice), r.now().UTC())
+	if err != nil {
+		return fmt.Errorf("the controller's copy of the %s notice of %s is a row the outbox refuses: %w", notice.Kind, issue, err)
+	}
+	args := []any{"row", row, "kind", notice.Kind, "issue", issue, "architect", architect, "because", why, "key", key}
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		fresh, err := r.records.MarkProcessed(ctx, tx, keptPodControllerSource, key)
+		if err != nil {
+			return err
+		}
+		store.OnCommit(ctx, func() {
+			if !fresh {
+				r.log.Info("outbox disk notice handed to the controller before under this key", args...)
+				return
+			}
+			r.log.Info("outbox disk notice sent to the controller: no architect will hear it", args...)
+		})
+		if !fresh {
+			return nil
+		}
+		return r.records.Enqueue(ctx, tx, copied)
+	}); err != nil {
+		return fmt.Errorf("send the controller the %s notice of %s: %w", notice.Kind, issue, err)
 	}
 	return nil
 }
@@ -152,21 +234,19 @@ func (r *outbox) writeSettlement(ctx context.Context, root string, row int64, wr
 
 // settleUnderFacts runs write in a transaction of its own that serializes with every fact
 // (intake.SerializeFacts) and owns the commit hooks its writes register (projectRecords,
-// intake.OnCommit), so the lane of each row its writes queue wakes as it commits. Every settlement
+// store.OnCommit), so the lane of each row its writes queue wakes as it commits. Every settlement
 // the outbox writes under the fact lock runs here: a hand-over of what a root keeps
 // (writeSettlement), and the settlement of the news a tree is owed (settleNews). The caller names
 // what was settled in the error.
 func (r *outbox) settleUnderFacts(ctx context.Context, write func(context.Context, pgx.Tx) error) error {
-	scoped, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
-		if err := intake.SerializeFacts(scoped, tx); err != nil {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
 			return fmt.Errorf("serialize the settlement with every fact: %w", err)
 		}
-		return write(scoped, tx)
+		return write(ctx, tx)
 	}); err != nil {
 		return err
 	}
-	committed()
 	return nil
 }
 
@@ -179,7 +259,7 @@ func (r *outbox) settleUnderFacts(ctx context.Context, write func(context.Contex
 // (record.Notice.Published), since one key is one telling however many rows publish it. A start
 // needs none: its claim records the row with the delivery (supervise.Claim.DeliveredRows).
 func (r *outbox) toldKept(ctx context.Context, root, key string) error {
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := r.records.MarkProcessed(ctx, tx, record.KeptToldSource, key)
 		return err
 	}); err != nil {
@@ -208,7 +288,7 @@ func (r *outbox) settleTold(ctx context.Context, row record.OutboxRow, payload r
 	// copy's being the row it copies (record.Notice.Published).
 	root := row.Issue
 	_, key := payload.Published(row.ID)
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		told, err := r.records.Processed(ctx, tx, record.KeptToldSource, key)
 		if err != nil || !told {
 			return err

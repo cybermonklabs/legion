@@ -24,6 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
@@ -44,22 +45,26 @@ const (
 )
 
 var (
-	awsKeyPlaceholder     = requests.PlaceholderPrefix + "awsKeyIdAwsKeyIdAwsKeyIdAwsKey01"
-	awsSecretPlaceholder  = requests.PlaceholderPrefix + "awsSecretAwsSecretAwsSecretAws01"
-	awsSessionPlaceholder = requests.PlaceholderPrefix + "awsSessionAwsSessionAwsSession01"
+	awsKeyPlaceholder     = placeholder.Prefix + "awsKeyIdAwsKeyIdAwsKeyIdAwsKey01"
+	awsSecretPlaceholder  = placeholder.Prefix + "awsSecretAwsSecretAwsSecretAws01"
+	awsSessionPlaceholder = placeholder.Prefix + "awsSessionAwsSessionAwsSession01"
 )
 
-// awsRules is the rules file of a key pair: one entry of kind aws, bound to the one host, with
-// no allow list, since what bounds an AWS call is the key the broker signs it with.
+// awsRules is the airlock's rules of a key pair: the aws kind on the one host, whose one way is
+// sign, with no allow list, since what bounds an AWS call is the key the broker signs it with, and
+// the pair's name bound to it by way of sign.
 func awsRules() proxyrules.Rules {
-	return proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: awsName, Hosts: []string{boundHost}, Kind: "aws"}}}
+	return proxyrules.Rules{
+		Kinds: []proxyrules.Kind{{Name: "aws", Hosts: []string{boundHost}, Ways: []string{proxyrules.WaySign}}},
+		Names: []proxyrules.Binding{{Name: awsName, Kind: "aws", Way: proxyrules.WaySign}},
+	}
 }
 
 // newAWSRig is the rig with the key pair as the grant's one name. session says whether the pair
 // has a session token, which is the slot a stored pair fills only when its value holds one.
 func newAWSRig(t *testing.T, session bool) *rig {
 	t.Helper()
-	r := newRig(t, Options{Rules: awsRules()})
+	r := newRuledRig(t, awsRules(), Options{})
 	awsGrant(r, session)
 	return r
 }
@@ -373,7 +378,7 @@ func TestTheThreeAWSShapesTheAirlockRefuses(t *testing.T) {
 func TestTheAirlockHoldsOnlyItsBudgetOfBodiesToHash(t *testing.T) {
 	const body = "a body of thirty-two bytes, this"
 	// A budget of exactly one such body, so the second call of that size has to wait for it.
-	r := newRig(t, Options{Rules: awsRules(), HashBudget: int64(len(body))})
+	r := newRuledRig(t, awsRules(), Options{HashBudget: int64(len(body))})
 	awsGrant(r, false)
 
 	// The stand-in holds every call it is sent until the row lets them all answer, so a call

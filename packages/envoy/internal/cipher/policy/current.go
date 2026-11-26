@@ -21,7 +21,9 @@ import (
 // listing neither undoes what a single-name read settled nor undoes a change that reload's own
 // re-describe caught. Each set it makes live is compared with the live one before it (publish),
 // and only a change of a secret's state writes a line: a load that finds what the one before
-// found writes nothing, however often it runs.
+// found writes nothing, however often it runs. Every set it makes live has the deployment's
+// profiles applied to what the store holds (withhold, Profiles.apply), and its first writes
+// ProfilesAppliedMessage.
 //
 // It also reads each type secret's stored value, once for each version and type a load or
 // reread lists that this pod has not decoded together, and decodes it with secrets.ParseValue
@@ -77,9 +79,11 @@ type valueState struct {
 	// refused is whether the value is refused, ReasonValueMalformed, at the version refusedAt:
 	// by the decoder of a read (readValues) or by a mint's own (RefuseValue). Each read that
 	// decodes sets it afresh; a read that fails keeps it when the read was of that version, and
-	// ends it when the read was of another version listed since.
+	// ends it when the read was of another version listed since. why is the decoder's or the
+	// mint's error, the refusal's Detail, which never quotes the value (DecodeValue).
 	refused   bool
 	refusedAt string
+	why       string
 	// failing is whether the last read of the value failed: ValueReadFailedMessage was written for
 	// it, and ValueReadRecoveredMessage is owed at the next read that succeeds.
 	failing bool
@@ -94,11 +98,12 @@ type valueRead struct {
 }
 
 // valueOutcome is what one valueRead came to: the read's error, or whether the decoder refused the
-// value it read.
+// value it read, and its words of why.
 type valueOutcome struct {
 	valueRead
 	err     error
 	refused bool
+	why     string
 }
 
 // NewCurrent loads the policy once, failing when that load fails, reads and decodes the value of
@@ -221,17 +226,28 @@ func (c *Current) reload(ctx context.Context) (reads []valueRead, first bool, er
 				c.recent[name] = c.now()
 			}
 		}
-		set = setOf(set.Secrets, set.Refused, set.Pending, set.versions)
+		set = setOf(c.loader.Profiles, set.Secrets, set.Refused, set.Pending, set.versions)
 	}
 	first = c.base == nil
 	c.base = set
 	reads = c.list()
 	c.publish(c.withhold(), first)
+	// Each profile the live set serves behind its own proxy string whose source's proxy tag names
+	// the same kind is a string the file can drop now: one line for each, at each full load, so
+	// it stands out until the file drops it, and no reread repeats it. The loop goes with the
+	// proxy string, once every source a profile names carries its own proxy tag.
+	live := c.Get()
+	for _, name := range live.redundantProxy {
+		served := live.Secrets[name]
+		slog.Warn(ProxyKindRedundantMessage, "profile", name, "source", served.Profile.Source, "kind", served.Proxy)
+	}
 	// A full load, and only a full load, names its groups to the reader: a group it names for
 	// the first time is read at once, and a reread's new group (RefreshOne) waits for the next
-	// load, admitting nobody until then.
+	// load, admitting nobody until then. The groups are those of the stored secrets with the
+	// profiles applied, before any value refusal: a profile's requesters may name a group its
+	// source's do not, and a secret whose value is refused now still names its groups.
 	if c.loader.Groups != nil {
-		c.loader.Groups.Want(c.base.GroupNames())
+		c.loader.Groups.Want(c.loader.Profiles.apply(c.base, c.loader.Prefix).GroupNames())
 	}
 	return reads, first, nil
 }
@@ -262,36 +278,125 @@ var ErrValueUnchecked = errors.New("the reread merged the secret's tags, and its
 //
 // A type secret whose value this pod has not decoded at the version and type the reread
 // lists is then read and decoded (readValues), on ctx, and the answer is the policy's after that:
-// a served secret whose value is refused answers ReasonValueMalformed. The value read waits for
+// a served secret the live policy refuses answers that refusal, ReasonValueMalformed for a value
+// refused, or a reason of the profiles file's (ReasonGitHubAppNoProfile, ReasonGitHubInstallationsNoProfile, ReasonProfileNameTaken).
+// A stored secret profiles of other names use answers as the store holds it, served, since what
+// a reread tells its caller is whether the write it made took; a request names one of its
+// profiles. A profile's name (Profiles.Lookup) rereads the profile's source, which is the secret
+// the store holds for it, and answers the profile as the live policy then serves or refuses it.
+// The value read waits for
 // the writer lock to record that read only while ctx lives, and records nothing once ctx has
 // ended: a caller may be waiting on it, and a reread nobody waits on is bounded by ctx's own
 // deadline. When ctx ends before that read is recorded - its Store.Read cut
 // short, or its wait for the writer lock - the reread has merged what it read, and its value read
-// did not finish: RefreshOne answers ErrValueUnchecked wrapping ctx's error, rather than a Lookup
-// the value read never checked. What the reread merged stays live, and the value is read at the
-// next load or reread. Each of its callers tells that apart from a reread that merged nothing:
-// the reread route answers a session's 503 REQUEST_ENDED, and logs it as a failed reread when it
-// ran after a 202 that nobody waits on, and tells the other pods to reread the name either way,
-// since this pod now serves the tags it read; the miss path takes it as its request's own
-// failure; and the reread listener (cmd/cipherd), which a peer's notification drives, takes it as
-// a reread that ran.
+// did not finish: RefreshOne answers ErrValueUnchecked wrapping ctx's error, with a Lookup that
+// holds Moved alone rather than one the value read never checked. What the reread merged stays
+// live, and the value is read at the next load or reread. Each of its callers tells that apart
+// from a reread that merged nothing: the reread route answers a session's 503 REQUEST_ENDED, and
+// logs it as a failed reread when it ran after a 202 that nobody waits on, and tells the other
+// pods to reread the name either way, since this pod now serves the tags it read; the miss path
+// takes it as its request's own failure; and the reread listener (cmd/cipherd), which a peer's
+// notification drives, takes it as a reread that ran.
+//
+// Once name passes CheckName, the answer's Moved is every name whose value the reread may have
+// moved (movedByReread), read against the live set as it stood when RefreshOne began, whatever
+// the reread came to: the names whose held values the airlock's proxy drops (cmd/cipherd). It is
+// set on an error too, ErrValueUnchecked or a reread that merged nothing, since a peer's
+// notification is the signal that a stored value has a new one even where this pod's own reread
+// failed. RefreshOne takes that set itself, so no caller reads what moved against another one.
 func (c *Current) RefreshOne(ctx context.Context, name string) (Lookup, error) {
 	if err := c.CheckName(name); err != nil {
 		return Lookup{}, err
 	}
-	lk, reads, err := c.reread(ctx, name)
+	before := c.Get()
+	lk, err := c.refreshOne(ctx, name)
+	lk.Moved = c.movedByReread(name, before)
+	return lk, err
+}
+
+// refreshOne is RefreshOne for a name CheckName passed, but for Moved.
+func (c *Current) refreshOne(ctx context.Context, name string) (Lookup, error) {
+	// A profile's name is no secret in the store: the secret a reread of it reads is its source,
+	// and the answer is the profile as the policy then serves or refuses it.
+	read, profile := c.loader.Profiles.SourceOf(name)
+	lk, reads, err := c.reread(ctx, read)
 	if err != nil {
 		return Lookup{}, err
 	}
 	if err := c.readValues(ctx, ctx, reads, false); err != nil {
 		return Lookup{}, fmt.Errorf("%w: %w", ErrValueUnchecked, err)
 	}
+	live := c.Get()
+	if profile {
+		return profileLookup(live, name), nil
+	}
 	if lk.Served {
-		if refusal := c.Get().Refused[c.storeID(name)]; refusal.Reason == ReasonValueMalformed {
+		if refusal, refused := live.Refused[c.storeID(name)]; refused {
 			return Lookup{Reason: refusal.Reason, Owner: refusal.Owner}, nil
 		}
 	}
 	return lk, nil
+}
+
+// profileLookup is the Lookup of the profile name as set holds it: served, as the Secret its
+// source makes and at its source's value version, or refused, with that refusal.
+func profileLookup(set *Set, name string) Lookup {
+	if secret, served := set.Secrets[name]; served {
+		return Lookup{Secret: secret, Served: true, version: set.versions[name]}
+	}
+	refusal := set.Refused[profileKey(name)]
+	return Lookup{Reason: refusal.Reason, Owner: refusal.Owner}
+}
+
+// RereadNames is every name a reread of name may have given a new value: the stored secret the
+// reread reads, which is name or, for a profile's name, the profile's source (RefreshOne), and
+// each profile of that source (Profiles.Of), since every one of them is served from that one
+// stored value. The airlock's proxy holds a grant's values by the name the grant was released
+// under, a profile's own name for a profile, so a reread that moved that value (Lookup.Moved)
+// drops each of these from it (cmd/cipherd), and a new value of a source reaches every profile of
+// it rather than only a grant of the name that was reread. A name no profile is of, or that the
+// policy has never heard of, is itself alone.
+func (c *Current) RereadNames(name string) []string {
+	source, _ := c.loader.Profiles.SourceOf(name)
+	names := []string{source}
+	for _, profile := range c.loader.Profiles.Of(source) {
+		if !slices.Contains(names, profile) {
+			names = append(names, profile)
+		}
+	}
+	if !slices.Contains(names, name) {
+		names = append(names, name)
+	}
+	return names
+}
+
+// movedByReread is the names whose value a reread of name may have moved, read against before,
+// the live set as it stood when RefreshOne began: RereadNames(name) where the reread moved the
+// value version (Set.ValueVersion) of a name served from the stored secret it read, or where
+// neither set lists a version of any of them, and none where both list the same versions. A type
+// secret's served names each carry its value version, which a reread moves only when the store
+// holds a new value, so a reread that finds the value the policy held gave no name a new one:
+// what a proxy holds of it was minted from that same value and is spent until it nears its
+// expiry, rather than minted again for each held grant of each profile of the source at every
+// reread anyone may ask for. A stored value has no version the policy lists, and nor does a name
+// neither set serves, so for those the reread is the only signal of a new value, and every one of
+// its names is moved. The live set is read after the reread, so a reload that moved a version in
+// between counts as moved too.
+func (c *Current) movedByReread(name string, before *Set) []string {
+	names := c.RereadNames(name)
+	live := c.Get()
+	listed := false
+	for _, served := range names {
+		was := before.ValueVersion(served)
+		if was != live.ValueVersion(served) {
+			return names
+		}
+		listed = listed || was != ""
+	}
+	if listed {
+		return nil
+	}
+	return names
 }
 
 // reread is RefreshOne up to its value read, under the writer lock: the reread, its merge into
@@ -311,7 +416,7 @@ func (c *Current) reread(ctx context.Context, name string) (Lookup, []valueRead,
 	if changed {
 		merged := &Set{Secrets: maps.Clone(c.base.Secrets), Refused: maps.Clone(c.base.Refused), Pending: maps.Clone(c.base.Pending), versions: maps.Clone(c.base.versions)}
 		merge(merged, name, id, lk)
-		c.base = setOf(merged.Secrets, merged.Refused, merged.Pending, merged.versions)
+		c.base = setOf(c.loader.Profiles, merged.Secrets, merged.Refused, merged.Pending, merged.versions)
 		c.recent[name] = c.now()
 	}
 	read, unread := c.listOne(name)
@@ -476,11 +581,15 @@ func (c *Current) readValues(ctx, wait context.Context, reads []valueRead, first
 		outcome := valueOutcome{valueRead: read}
 		switch {
 		case errors.Is(err, secrets.ErrValueNotText):
-			outcome.refused = true
+			// The sentinel's own words: the store's error around it names the call and the
+			// secret, which the refusal's line names already.
+			outcome.refused, outcome.why = true, secrets.ErrValueNotText.Error()
 		case err != nil:
 			outcome.err = err
 		default:
-			outcome.refused = DecodeValue(read.key.secretType, value) != nil
+			if err := DecodeValue(read.key.secretType, value); err != nil {
+				outcome.refused, outcome.why = true, err.Error()
+			}
 		}
 		outcomes = append(outcomes, outcome)
 	}
@@ -504,7 +613,7 @@ func (c *Current) readValues(ctx, wait context.Context, reads []valueRead, first
 				state.failing = true
 			}
 			if state.refused && state.refusedAt != o.key.version {
-				state.refused, changed = false, true
+				state.refused, state.why, changed = false, "", true
 			}
 			continue
 		}
@@ -513,10 +622,10 @@ func (c *Current) readValues(ctx, wait context.Context, reads []valueRead, first
 			state.failing = false
 		}
 		state.decoded = o.key
-		if state.refused != o.refused {
+		if state.refused != o.refused || state.why != o.why {
 			changed = true
 		}
-		state.refused, state.refusedAt = o.refused, o.key.version
+		state.refused, state.refusedAt, state.why = o.refused, o.key.version, o.why
 	}
 	if changed {
 		c.publish(c.withhold(), first)
@@ -527,15 +636,20 @@ func (c *Current) readValues(ctx, wait context.Context, reads []valueRead, first
 // RefuseValue refuses the value of the type secret name at version, read as type, as
 // a load's decode refuses one (ReasonValueMalformed): the mint path calls it when
 // secrets.ParseValue refused the value a release read, with the version the live policy listed
-// for name when that release read it (Set.ValueVersion) and the type that release
-// decoded it under, so a pod whose own load could not read the value refuses the secret from its
-// first mint. A key that is no longer the one listed - a load or reread has listed a new value
-// since, or a retag a new type for the same value - is not refused, since that key is
-// decoded afresh; nor is a name Current holds no type secret for. A secret it newly refuses is
-// published, writing one RefusedMessage line. It waits on the writer lock for as long as ctx
-// lives, the release's own request: one whose caller has gone marks nothing, and the next mint of
-// the secret, or the next load that reads a new version, marks it then.
-func (c *Current) RefuseValue(ctx context.Context, name, version, secretType string) {
+// for name when that release read it (Set.ValueVersion), the type that release decoded it under,
+// and the minter's error, the refusal's Detail, which never quotes the value; so a pod whose own
+// load could not read the value refuses the secret from its first mint. A key that is no longer
+// the one listed - a load or reread has listed a new value since, or a retag a new type for the
+// same value - is not refused, since that key is decoded afresh; nor is a name Current holds no
+// type secret for. A secret it newly refuses, or refuses for other words, is published, writing
+// one RefusedMessage line. It waits on the writer lock for as long as ctx lives, the release's
+// own request: one whose caller has gone marks nothing, and the next mint of the secret, or the
+// next load that reads a new version, marks it then.
+func (c *Current) RefuseValue(ctx context.Context, name, version, secretType string, cause error) {
+	// A profile has no value of its own: what a release of it decoded is its source's, so the
+	// refusal is the source's, as a load's would be, and every profile of the source is refused
+	// with it (withhold).
+	name, _ = c.loader.Profiles.SourceOf(name)
 	if c.lock(ctx) != nil {
 		return
 	}
@@ -544,17 +658,25 @@ func (c *Current) RefuseValue(ctx context.Context, name, version, secretType str
 	if !known || state.listed != (valueKey{version: version, secretType: secretType}) {
 		return
 	}
-	wasRefused := state.refused
-	state.refused, state.refusedAt = true, version
-	if !wasRefused {
+	why := ""
+	if cause != nil {
+		why = cause.Error()
+	}
+	was, wasWhy := state.refused, state.why
+	state.refused, state.refusedAt, state.why = true, version, why
+	if !was || wasWhy != why {
 		c.publish(c.withhold(), false)
 	}
 }
 
 // withhold is base as Current serves it: each type secret whose value is refused
 // (valueState.refused) taken out of Secrets and put in Refused under ReasonValueMalformed, with
-// its owner tag. With none refused it is base itself. The caller holds mu.
+// its owner tag, and then the profiles applied (Profiles.apply), with none refused too, so every
+// set the four publishes make live (reload, reread, readValues and RefuseValue) holds them, and a
+// profile of a source whose value is refused is refused with that source's reason. The caller
+// holds mu.
 func (c *Current) withhold() *Set {
+	set := c.base
 	var served map[string]Secret
 	var refused map[string]Refusal
 	for name, state := range c.values {
@@ -568,12 +690,12 @@ func (c *Current) withhold() *Set {
 			maps.Copy(refused, c.base.Refused)
 		}
 		delete(served, name)
-		refused[c.storeID(name)] = Refusal{Reason: ReasonValueMalformed, Owner: secret.Owner}
+		refused[c.storeID(name)] = Refusal{Reason: ReasonValueMalformed, Owner: secret.Owner, Detail: state.why, SupersededBy: secret.SupersededBy}
 	}
-	if served == nil {
-		return c.base
+	if served != nil {
+		set = setOf(c.loader.Profiles, served, refused, c.base.Pending, c.base.versions)
 	}
-	return setOf(served, refused, c.base.Pending, c.base.versions)
+	return c.loader.Profiles.apply(set, c.loader.Prefix)
 }
 
 // publish makes next the live policy, first writing a line for each secret whose state next
@@ -589,11 +711,16 @@ func (c *Current) withhold() *Set {
 // write nothing, nor does its value landing, since a secret coming to be served writes no line,
 // nor its leaving the store. A secret refused for the reason live held writes nothing, whatever its
 // owner tag now says: next carries the new tag, and broker_unservable_secrets with it. A publish
-// that changes no refusal and no wait allocates nothing here.
+// that changes no refusal and no wait allocates nothing here. A refused profile is named by its
+// key (profileKey), and a refusal with a Detail writes it as detail.
+//
+// The first publish of c, the one with no live set before it, writes ProfilesAppliedMessage after
+// those lines, once: c is the process's one policy, so that is once per process.
 func (c *Current) publish(next *Set, first bool) {
 	var before map[string]Refusal
 	var waited map[string]Pending
-	if live := c.set.Load(); live != nil {
+	live := c.set.Load()
+	if live != nil {
 		before, waited = live.Refused, live.Pending
 	}
 	var changed []string
@@ -621,9 +748,9 @@ func (c *Current) publish(next *Set, first bool) {
 		pending, waits := next.Pending[id]
 		switch {
 		case refused && !wasRefused:
-			slog.Error(RefusedMessage, "name", id, "reason", now.Reason, "owner", now.Owner, "first_load", first)
+			slog.Error(RefusedMessage, refusedAttrs(id, now, first, "")...)
 		case refused:
-			slog.Error(RefusedMessage, "name", id, "reason", now.Reason, "owner", now.Owner, "first_load", false, "was", was.Reason)
+			slog.Error(RefusedMessage, refusedAttrs(id, now, false, was.Reason)...)
 		case waits && !wasRefused:
 			slog.Info(PendingMessage, "name", id, "reason", ReasonPendingValue, "owner", pending.Owner, "first_load", first)
 		case waits:
@@ -634,16 +761,51 @@ func (c *Current) publish(next *Set, first bool) {
 			slog.Info(ServableMessage, "name", id, "reason", was.Reason, "owner", was.Owner, "now", "absent")
 		}
 	}
+	if live == nil {
+		c.profilesApplied(next)
+	}
 	// Every set made live carries the loader's group reader, the reread's as much as the load's,
 	// so no decision reads another; publish names no group to it (reload does, for a full load).
 	next.groups = c.loader.Groups
 	c.set.Store(next)
 }
 
-// serves reports whether set serves the secret whose whole name in the store is id. One outside
-// the prefix, or whose name under it is no slug (ReasonNameMalformed), maps to no name a session
-// asks for, so it is served by no set and never taken for the secret its name would fold onto.
+// refusedAttrs are RefusedMessage's fields for the refusal of id: name, reason, owner, first_load,
+// was where the reason before it is not "", and detail where the refusal carries one.
+func refusedAttrs(id string, refusal Refusal, first bool, was string) []any {
+	attrs := []any{"name", id, "reason", refusal.Reason, "owner", refusal.Owner, "first_load", first}
+	if was != "" {
+		attrs = append(attrs, "was", was)
+	}
+	if refusal.Detail != "" {
+		attrs = append(attrs, "detail", refusal.Detail)
+	}
+	return attrs
+}
+
+// profilesApplied writes ProfilesAppliedMessage for next, the first set c makes live: how many
+// of the profiles file's entries it serves and how many it refuses, and the file's digest.
+func (c *Current) profilesApplied(next *Set) {
+	served, refused := 0, 0
+	for _, name := range c.loader.Profiles.Names() {
+		if _, held := next.Refused[profileKey(name)]; held {
+			refused++
+		} else if next.Secrets[name].Profile != nil {
+			served++
+		}
+	}
+	slog.Info(ProfilesAppliedMessage, "served", served, "refused", refused, "file_digest", c.loader.Profiles.fileDigest)
+}
+
+// serves reports whether set serves the secret whose whole name in the store is id, or, for a
+// profile's key (profileKey), the profile of that name. One outside the prefix, or whose name
+// under it is no slug (ReasonNameMalformed), maps to no name a session asks for, so it is served
+// by no set and never taken for the secret its name would fold onto.
 func (c *Current) serves(set *Set, id string) bool {
+	if name, profile := strings.CutPrefix(id, profileKeyPrefix); profile {
+		_, served := set.Secrets[name]
+		return served
+	}
 	slug, ok := strings.CutPrefix(id, c.loader.Prefix)
 	if !ok || !slugPattern.MatchString(slug) {
 		return false

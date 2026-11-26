@@ -34,11 +34,12 @@ const home = join(dir, "home");
 // lib/github-apps.sh as a stage proof uses it: sourced under the stage scripts' shell options with
 // their check helpers, the inputs in the environment, and `then` run after. The seams are bun,
 // handed the stand-in GitHub after the helper's own arguments, and a stand-in `agent-secrets` first
-// on PATH, which, as the real CLI does, puts the release the github-app secret it names gives
-// (STORE/<name>) into the environment of the command after `--` under that name. It appends its
-// argv to ARGV_LOG, fails with exit 3 when the `<owner>/<read-only>` it was asked for matches
-// FAIL_MINT, refuses the names UNKNOWN_SECRETS lists as the broker refuses a name it does not
-// serve (`UNKNOWN_SECRET`, exit 1, under the line UNKNOWN_PREFACE gives when it gives one, as the
+// on PATH, which, as the real CLI does, puts the release the profile it names gives (STORE/<name>)
+// into the environment of the command after `--` under that name. It appends its argv to
+// ARGV_LOG, fails with exit 3 when the `<owner>/<read-only>` it was asked for matches FAIL_MINT
+// (the owner is the one --target names, and read-only is 1 for a profile whose name ends _READ),
+// refuses the names UNKNOWN_SECRETS lists as the broker refuses a name it does not serve
+// (`UNKNOWN_SECRET`, exit 1, under the line UNKNOWN_PREFACE gives when it gives one, as the
 // client's own progress lines put it), writes WAIT_NOTICE to its stderr when that is set, as the
 // client writes the line a grant waiting on a person is approved by, releases nothing when
 // EMPTY_MINT is set, and streams stdout when OVERSIZED_MINT is set.
@@ -74,8 +75,12 @@ beforeAll(() => {
   mkdirSync(home);
   mkdirSync(store);
   mkdirSync(fakeBin);
+  // The implement App's profile and its read profile, each of App 101; the store names each
+  // profile as the broker serves it.
   writeFileSync(join(store, "IMPLEMENT_APP"), release({ sjawhar: tokenOf(101) }));
+  writeFileSync(join(store, "IMPLEMENT_APP_READ"), release({ sjawhar: tokenOf(101) }));
   writeFileSync(join(store, "OTHER_APP"), release({ sjawhar: tokenOf(404) }));
+  writeFileSync(join(store, "OTHER_APP_READ"), release({ sjawhar: tokenOf(404) }));
   // The review App's key, behind the key command below: the file an operator's own command would
   // read, written where every child of this file can read it.
   reviewKey = appPrivateKey(202);
@@ -89,8 +94,9 @@ name=$1
 shift
 owner=
 ro=
+case $name in *_READ) ro=1 ;; esac
 while [ "$1" != -- ]; do
-  case $1 in --github-owner) owner=$2; shift ;; --github-read-only) ro=1 ;; esac
+  case $1 in --target) owner=$2; shift ;; esac
   shift
 done
 shift
@@ -171,7 +177,7 @@ async function githubApps(inputs: Record<string, string | undefined>, then: stri
 const line = (stdout: string, prefix: string) =>
   (stdout.split("\n").find((l) => l.startsWith(prefix)) ?? "").slice(prefix.length);
 const tokenCommand = (name: string) =>
-  `agent-secrets ${name} --ttl 12h --reason=legion-live-proof-github-app-token \${LEGION_GITHUB_OWNER:+--github-owner "$LEGION_GITHUB_OWNER"} \${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s "$${name}"'`;
+  `P=${name}\${LEGION_GITHUB_READ_ONLY:+_READ}; agent-secrets "$P" --ttl 12h --reason=legion-live-proof-github-app-token \${LEGION_GITHUB_OWNER:+--target "$LEGION_GITHUB_OWNER"} -- printenv "$P"`;
 // The review role's private_key_command in every block the lib writes: a `cat` of the key file it
 // resolved the operator's command into, under the credential directory the caller named.
 const keyFileCommand = (dir: string) => `cat -- '${join(dir, "review", "key.pem")}'`;
@@ -359,27 +365,33 @@ printf 'command %s\\n' "$(app_token_command "$implement_app_secret")"`
     expect(line(stdout, "command ")).toBe(tokenCommand("IMPLEMENT_APP"));
   });
 
-  test("the token command asks agent-secrets for the owner and read-only flag the daemon names, and prints the release", async () => {
+  test("the token command asks agent-secrets for the profile and target the daemon names, and prints the release", async () => {
     const argvLog = join(dir, "argv-command");
-    const cases: [Record<string, string>, string][] = [
-      [
-        {},
-        'IMPLEMENT_APP --ttl 12h --reason=legion-live-proof-github-app-token -- sh -c printf %s "$IMPLEMENT_APP"',
-      ],
+    const flags = "--ttl 12h --reason=legion-live-proof-github-app-token";
+    const cases: [Record<string, string>, string, string][] = [
+      [{}, "IMPLEMENT_APP", `IMPLEMENT_APP ${flags} -- printenv IMPLEMENT_APP`],
       [
         { LEGION_GITHUB_OWNER: "Acme-Org" },
-        'IMPLEMENT_APP --ttl 12h --reason=legion-live-proof-github-app-token --github-owner Acme-Org -- sh -c printf %s "$IMPLEMENT_APP"',
+        "IMPLEMENT_APP",
+        `IMPLEMENT_APP ${flags} --target Acme-Org -- printenv IMPLEMENT_APP`,
       ],
       [
         { LEGION_GITHUB_OWNER: "Acme-Org", LEGION_GITHUB_READ_ONLY: "1" },
-        'IMPLEMENT_APP --ttl 12h --reason=legion-live-proof-github-app-token --github-owner Acme-Org --github-read-only -- sh -c printf %s "$IMPLEMENT_APP"',
+        "IMPLEMENT_APP_READ",
+        `IMPLEMENT_APP_READ ${flags} --target Acme-Org -- printenv IMPLEMENT_APP_READ`,
+      ],
+      [
+        { LEGION_GITHUB_READ_ONLY: "1" },
+        "IMPLEMENT_APP_READ",
+        `IMPLEMENT_APP_READ ${flags} -- printenv IMPLEMENT_APP_READ`,
       ],
       [
         { LEGION_GITHUB_OWNER: "", LEGION_GITHUB_READ_ONLY: "" },
-        'IMPLEMENT_APP --ttl 12h --reason=legion-live-proof-github-app-token -- sh -c printf %s "$IMPLEMENT_APP"',
+        "IMPLEMENT_APP",
+        `IMPLEMENT_APP ${flags} -- printenv IMPLEMENT_APP`,
       ],
     ];
-    for (const [daemonEnv, argv] of cases) {
+    for (const [daemonEnv, profile, argv] of cases) {
       rmSync(argvLog, { force: true });
       const child = Bun.spawnSync(["sh", "-c", tokenCommand("IMPLEMENT_APP")], {
         env: { PATH: `${fakeBin}:${process.env.PATH}`, ARGV_LOG: argvLog, ...daemonEnv },
@@ -388,7 +400,8 @@ printf 'command %s\\n' "$(app_token_command "$implement_app_secret")"`
       });
       expect(child.stderr.toString()).toBe("");
       expect(child.exitCode).toBe(0);
-      expect(child.stdout.toString()).toBe(readFileSync(join(store, "IMPLEMENT_APP"), "utf8"));
+      // printenv ends the value with a newline, which every reader of a release trims.
+      expect(child.stdout.toString()).toBe(`${readFileSync(join(store, profile), "utf8")}\n`);
       expect(readFileSync(argvLog, "utf8")).toBe(`${argv}\n`);
     }
   });
@@ -510,19 +523,21 @@ echo minted`
     for (const file of files) {
       const path = join(tokenDir, "implement", file);
       expect(statSync(path).mode & 0o777).toBe(0o600);
-      expect(readFileSync(path, "utf8")).toBe(readFileSync(join(store, "IMPLEMENT_APP"), "utf8"));
+      // The release of the profile the file's flag asks for, with the newline printenv ends it with.
+      const profile = file.endsWith(".read.json") ? "IMPLEMENT_APP_READ" : "IMPLEMENT_APP";
+      expect(readFileSync(path, "utf8")).toBe(`${readFileSync(join(store, profile), "utf8")}\n`);
     }
     const flags = "--ttl 12h --reason=legion-live-proof-github-app-token";
     const asked = readFileSync(argvLog, "utf8")
       .trim()
       .split("\n")
-      .map((argv) => argv.replace(/ -- sh -c .*$/, ""));
+      .map((argv) => argv.replace(/ -- printenv [A-Z_]+$/, ""));
     expect(asked).toEqual([
       `IMPLEMENT_APP ${flags}`,
-      `IMPLEMENT_APP ${flags} --github-owner sjawhar`,
-      `IMPLEMENT_APP ${flags} --github-owner sjawhar --github-read-only`,
-      `IMPLEMENT_APP ${flags} --github-owner acme-org`,
-      `IMPLEMENT_APP ${flags} --github-owner acme-org --github-read-only`,
+      `IMPLEMENT_APP ${flags} --target sjawhar`,
+      `IMPLEMENT_APP_READ ${flags} --target sjawhar`,
+      `IMPLEMENT_APP ${flags} --target acme-org`,
+      `IMPLEMENT_APP_READ ${flags} --target acme-org`,
     ]);
     holdsNoToken(stdout + stderr);
   });
@@ -546,10 +561,13 @@ echo minted`
     expect(statSync(join(tokenDir, "review", "key.pem")).mode & 0o777).toBe(0o600);
     // What the key command printed, byte for byte.
     expect(readFileSync(join(tokenDir, "review", "key.pem"), "utf8")).toBe(reviewKey);
-    // The broker was asked for the implement App's releases and for nothing else: the review
+    // The broker was asked for the implement App's two profiles and for nothing else: the review
     // App's credential never passes through it.
     const asked = readFileSync(argvLog, "utf8").trim().split("\n");
-    expect([...new Set(asked.map((argv) => argv.split(" ")[0]))]).toEqual(["IMPLEMENT_APP"]);
+    expect([...new Set(asked.map((argv) => argv.split(" ")[0]))]).toEqual([
+      "IMPLEMENT_APP",
+      "IMPLEMENT_APP_READ",
+    ]);
     holdsNoKey(stdout + stderr, keyIDs);
     holdsNoToken(stdout + stderr);
   });
@@ -600,7 +618,7 @@ echo minted`
     );
     expect(code).toBe(1);
     expect(stdout).not.toContain("minted");
-    expect(stderr).toContain("grant for IMPLEMENT_APP denied");
+    expect(stderr).toContain("grant for IMPLEMENT_APP_READ denied");
     expect(stderr).toMatch(
       /^FAIL prerequisites: the implement App \(App 101, github-app secret IMPLEMENT_APP\) gave no release for .*sjawhar\.read\.json: agent-secrets exited 3; no token is printed$/m
     );
@@ -665,9 +683,11 @@ mint_app_tokens "$TOKEN_DIR" sjawhar`
   test("the refresher mints the releases again on its period, never the key, and stops when told", async () => {
     const tokenDir = mkdtempSync(join(dir, "tokens."));
     const refreshStore = mkdtempSync(join(dir, "store."));
-    // The one secret the refresher may ask for: a round that asked for any other would print a
-    // refresh failure on stderr, which this row refuses.
+    // The two profiles the refresher may ask for, the implement App's and its read profile: a
+    // round that asked for any other would print a refresh failure on stderr, which this row
+    // refuses.
     copyFileSync(join(store, "IMPLEMENT_APP"), join(refreshStore, "IMPLEMENT_APP"));
+    copyFileSync(join(store, "IMPLEMENT_APP_READ"), join(refreshStore, "IMPLEMENT_APP_READ"));
     const { code, stdout, stderr } = await githubApps(
       { ...appInputs, TOKEN_DIR: tokenDir, STORE: refreshStore },
       `require_app_inputs implement review
@@ -676,7 +696,7 @@ key=$TOKEN_DIR/review/key.pem
 echo "key before $(stat -c '%i %s %Y' -- "$key")"
 app_token_refresh_seconds=1
 start_app_token_refresher "$TOKEN_DIR"
-printf '%s' '${release({ sjawhar: "ghs_rotated" })}' >"$STORE/IMPLEMENT_APP"
+printf '%s' '${release({ sjawhar: "ghs_rotated" })}' >"$STORE/IMPLEMENT_APP_READ"
 for _ in $(seq 50); do
   grep -q ghs_rotated "$TOKEN_DIR/implement/sjawhar.read.json" && break
   sleep 0.1
@@ -1049,11 +1069,14 @@ echo wrote`
     expect(stderr).toBe("");
     expect(code).toBe(0);
     expect(stdout).toContain("wrote");
-    // The broker was asked for the implement App's releases and for nothing else.
+    // The broker was asked for the implement App's two profiles and for nothing else.
     const asked = readFileSync(argvLog, "utf8").trim().split("\n");
-    expect([...new Set(asked.map((argv) => argv.split(" ")[0]))]).toEqual(["IMPLEMENT_APP"]);
-    // The strip list carries the implement App's secret name and no stale review value.
-    expect(line(stdout, "unsets ")).toContain("-u IMPLEMENT_APP");
+    expect([...new Set(asked.map((argv) => argv.split(" ")[0]))]).toEqual([
+      "IMPLEMENT_APP",
+      "IMPLEMENT_APP_READ",
+    ]);
+    // The strip list carries the implement App's profile names and no stale review value.
+    expect(line(stdout, "unsets ")).toContain("-u IMPLEMENT_APP -u IMPLEMENT_APP_READ ");
     expect(line(stdout, "unsets ")).not.toContain("STALE_REVIEW_SECRET");
     // And the review App's credential is still its key.
     const sources = appCredentialSources(readFileSync(join(work, "github-apps.yaml"), "utf8"));

@@ -41,8 +41,9 @@ machine, and `enroll` writes the enrollment id to
 as one whose agent connects at launch, needs its launcher to create
 `$AGENT_SECRETS_KEY_DIR/enrollment.pending` before the box starts and remove it once `enroll` has
 written the id. While that file is there, and for up to 160 seconds, a call waits up to
-`AGENT_SECRETS_ENROLL_WAIT` (20 seconds by default) for the enrollment. Without it, a call made
-before enrollment fails at once.
+`AGENT_SECRETS_ENROLL_WAIT` (20 seconds by default) for the enrollment, and says on stderr that it
+waits and for which of `key.pem` and `enrollment`. Without it, a call made before enrollment fails
+at once.
 
 `enroll` waits up to 30 seconds for the helper's answer, and the helper ends its call to the
 broker after 20 seconds. If `enroll` fails with `ENROLL_OUTCOME_UNKNOWN`, or says

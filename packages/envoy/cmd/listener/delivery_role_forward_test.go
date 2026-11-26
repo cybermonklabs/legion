@@ -22,6 +22,7 @@ import (
 // handler with dedupe and attempt caches of its own, as another listener of the machine's queue
 // group, or this one after a restart, would deliver it again.
 func TestARoleForwardIsStoredOncePerMessageAndTwoUnderOneChosenKeyTwice(t *testing.T) {
+	t.Parallel()
 	chosen := func(name string) contracts.Envelope {
 		item := listenerTestEnvelope("", "shared-key")
 		item.SourceEventID = "src-" + name
@@ -59,16 +60,17 @@ func TestARoleForwardIsStoredOncePerMessageAndTwoUnderOneChosenKeyTwice(t *testi
 				t.Cleanup(cfg.attemptCache.Stop)
 				var forwardErr error
 				forwards := 0
-				cfg.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+				cfg.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 					forwards++
 					wait, err := forwardThrough(subject, item, msgID, timeout)
 					if err != nil {
 						forwardErr = err
 						return nil, err
 					}
-					return func() error {
-						forwardErr = wait()
-						return forwardErr
+					return func() (bus.StoredAck, error) {
+						var ack bus.StoredAck
+						ack, forwardErr = wait()
+						return ack, forwardErr
 					}, nil
 				}
 				cfg = wireTestRoleForwarder(t, cfg)

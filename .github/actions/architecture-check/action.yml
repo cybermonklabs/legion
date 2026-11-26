@@ -9,6 +9,13 @@ description: >-
   README.md says why, and gives the inputs, the output, the exit statuses and a job to copy.
 
 inputs:
+  go:
+    description: >-
+      How the action gets Go: `setup-go` (the default) installs Go with actions/setup-go, and
+      `path` uses the Go already on PATH, refusing when its release differs from the release
+      packages/envoy/go.mod names. Any other value is refused. GitHub compares the input without
+      regard to case, so `Path` acts as `path`.
+    default: 'setup-go'
   path:
     description: >-
       The notes directory. A relative path is resolved against the caller's checkout,
@@ -31,11 +38,22 @@ outputs:
 runs:
   using: composite
   steps:
+    # Refuse an unknown value of the go input before any step uses Go.
+    - name: Refuse an unknown go input value
+      if: inputs.go != 'setup-go' && inputs.go != 'path'
+      shell: bash
+      env:
+        ARCHITECTURE_CHECK_GO: ${{ inputs.go }}
+      run: |
+        echo "architecture-check action: the input go must be 'setup-go' or 'path', not '$ARCHITECTURE_CHECK_GO'" >&2
+        exit 2
+
     # The runner fetches this whole repository for the action, and github.action_path is
     # .github/actions/architecture-check inside it, so the version comes from this repository's
     # packages/envoy/go.mod and never from the caller's tree.
     - id: setup-go
       name: Install the Go that packages/envoy/go.mod names
+      if: inputs.go == 'setup-go'
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: ${{ github.action_path }}/../../../packages/envoy/go.mod
@@ -43,16 +61,36 @@ runs:
         token: ''
         cache: false
 
-    # setup-go adds its `go` problem matcher for the rest of the job, and the runner reads every
-    # later line of the job through it, so a file name or a front-matter value holding `.go: `
-    # (for example `cmd.go: forged annotation`) would become an error annotation with the
-    # author's text. The action builds only this repository's command and needs no Go matcher, so
-    # it removes it. The runner keeps one matcher per owner, so the action's setup-go already
-    # replaced a `go` matcher an earlier setup-go of the caller's job added, and this removal
-    # deletes it for the rest of the job (README.md, "The Go toolchain").
-    - name: Remove the Go problem matcher setup-go added
+    # In path mode the caller installed Go already, and this step refuses when its release
+    # differs from the release packages/envoy/go.mod names. The comparison is in check.sh so
+    # it can be tested.
+    - name: Check the Go on PATH is the release packages/envoy/go.mod names
+      if: inputs.go == 'path'
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/check.sh" go-path
+
+    # In setup-go mode, setup-go adds a `go` problem matcher; in path mode, the caller's own Go
+    # install may have registered the same matcher (a go.dev archive install does not). The
+    # runner reads every later line of the job through it, so a file name or a front-matter
+    # value holding `.go: ` (for example `cmd.go: forged annotation`) would become an error
+    # annotation with the author's text. The action builds only this repository's command and
+    # needs no Go matcher, so it removes it. The runner keeps one matcher per owner, and this
+    # removal deletes the `go` matcher for the rest of the job (README.md, "The Go toolchain").
+    - name: Remove the Go problem matcher
       shell: bash
       run: echo "::remove-matcher owner=go::"
+
+    # The Go release for the cache key: `go env GOVERSION` stripped of its `go` prefix, which
+    # is the same form as setup-go's go-version output. It reads with GOTOOLCHAIN=local,
+    # GOWORK=off and GOENV=off, the same settings build-envoy-command.sh uses, so the caller's
+    # own GOTOOLCHAIN, go env -w file or workspace cannot change the version.
+    - id: go-release
+      name: Read the Go release for the cache key
+      shell: bash
+      run: |
+        cd "$GITHUB_ACTION_PATH/../../../packages/envoy"
+        v=$(GOTOOLCHAIN=local GOWORK=off GOENV=off go env GOVERSION)
+        echo "go-version=${v#go}" >> "$GITHUB_OUTPUT"
 
     # The cache key carries the SHA-256 of this repository's packages/envoy/go.sum at the pinned
     # commit, so a caller that moves its pin to a commit with other modules gets a new key. The
@@ -82,6 +120,7 @@ runs:
     # hash), so the build fetches only the modules that changed. actions/cache/restore sets
     # cache-hit to true only for an exact match of the key and not for a restore-keys match, so
     # the save step below runs after such a fallback too.
+    # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
     - id: cache
       name: Restore the command's module and build caches
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -89,8 +128,8 @@ runs:
         path: |
           ${{ runner.temp }}/architecture-check/mod
           ${{ runner.temp }}/architecture-check/build
-        key: architecture-check-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ steps.gosum.outputs.hash }}
-        restore-keys: architecture-check-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
+        key: architecture-check-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go-release.outputs.go-version }}-${{ steps.gosum.outputs.hash }}
+        restore-keys: architecture-check-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go-release.outputs.go-version }}-
 
     - name: Build the architecture-check command
       shell: bash

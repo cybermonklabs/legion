@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  `dispatch issue --external` refuses an empty project before it sends a request: every create names its project, an import included, and the Dispatch server answers a create with `external` and no project `400 INVALID_ISSUE`.
+time: 2026-11-19T05:16:39.000000000Z
+custom:
+  Issue: pr4457

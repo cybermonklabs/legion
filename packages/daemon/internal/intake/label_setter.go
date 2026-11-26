@@ -2,7 +2,6 @@ package intake
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 )
@@ -15,34 +14,26 @@ import (
 // those two event types move the label state: every other event (a comment, a claim, a review,
 // an issue.closed) is passed over and counts for nothing, so a person's comment between a
 // session's label and a person's later unrelated edit leaves the session the setter, and a label
-// removed and set again names whoever set it last. It is "" when no event added the label. An
-// event that does not decode as a Dispatch event, or whose issue payload does not decode, is an
-// error naming its position, since a log the daemon cannot read names no setter it can act on.
+// removed and set again names whoever set it last. It is "" when no event added the label. The
+// log is read by walkIssueEvents, an issue.closed's payload too: for a log it cannot read,
+// LabelSetter returns the walk's *dispatch.EventLogError, since a log the daemon cannot read names
+// no setter it can act on.
 //
 // The daemon reads the log for this because an unrecorded issue has no earlier state in the
 // daemon: the event that reaches it says the label is there, not who put it there (DispatchIssue.
 // LabelSetter).
 func LabelSetter(events []json.RawMessage) (string, error) {
 	setter, labelled := "", false
-	for i, raw := range events {
-		var event dispatchEvent
-		if err := json.Unmarshal(raw, &event); err != nil {
-			return "", fmt.Errorf("decode Dispatch event %d of %d: %w", i+1, len(events), err)
+	for event, err := range walkIssueEvents(events) {
+		if err != nil {
+			return "", err
 		}
 		if event.Type != "issue.created" && event.Type != "issue.updated" {
 			continue
 		}
-		var issue struct {
-			Labels []string `json:"labels"`
-		}
-		if len(event.Payload) > 0 {
-			if err := json.Unmarshal(event.Payload, &issue); err != nil {
-				return "", fmt.Errorf("decode Dispatch issue payload of event %d of %d: %w", i+1, len(events), err)
-			}
-		}
-		now := dispatch.CarriesLegionLabel(issue.Labels)
+		now := dispatch.CarriesLegionLabel(event.Labels)
 		if now && !labelled {
-			setter = event.Actor.Kind
+			setter = event.ActorKind
 		}
 		labelled = now
 	}

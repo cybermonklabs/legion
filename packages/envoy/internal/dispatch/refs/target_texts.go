@@ -92,10 +92,10 @@ func scanBlockTexts(rows pgx.Rows, kind string, texts map[Target]string) error {
 	return rows.Err()
 }
 
-// messageBlockTexts is BlockTexts for the blocks of messages. A message never changes and no
-// table records its blocks' texts, so each is re-read from its message's body as
-// CurrentItemBlockText reads one (messageBlockText), the body split once however many of its
-// blocks are named. A direct message has no address and its blocks resolve to no node
+// messageBlockTexts is BlockTexts for the blocks of messages. No table records a message's
+// block texts, so each is re-read from its message's body as it stands now - an edit replaces
+// the body and a delete clears it - as CurrentItemBlockText reads one (messageBlockText), the
+// body split once however many of its blocks are named. A direct message has no address and its blocks resolve to no node
 // (loadMessageBlockNodes), so none is read here.
 func messageBlockTexts(ctx context.Context, q Queryer, kind string, nodes []string, texts map[Target]string) error {
 	rows, err := q.Query(ctx, `

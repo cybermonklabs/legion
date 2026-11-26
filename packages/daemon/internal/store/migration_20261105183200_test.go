@@ -32,6 +32,7 @@ const oneOpenResumeVersion = 20261105183200
 // its first turn is not moved: closing is its own column, so nothing here writes a first turn
 // that never happened.
 func TestTheOpenResumesTheIndexRefusesAreClosedBy20261105183200(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, oneOpenResumeVersion-1)

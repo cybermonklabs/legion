@@ -33,14 +33,14 @@ import (
 // main did not have, so it acts on no other source: an operator's suspension holds until the
 // operator resumes the claim, and a suspension recorded before the source existed (unknown) may be
 // a drain made before the upgrade, so both are left as they are. A released claim is the one ByRule
-// source the boot leaves too: the daemon released its idle pod, and what brings the pod and its
-// bundled work back is the next wake for its role, not a daemon restart, so a boot that started it
-// would raise a pod nothing asked for. Two other boot steps can start a released claim. Admission's
-// pass at the boot sends the work of an entry to a released claim that stands behind the entry its
-// phases row names (admit's owedEntryRoles), as each of its passes does. And the cutover's repair
-// (cutoverMergerRepair), a fact of its own that the boot applies once per project, before its
-// consumers start, owes a start to each merger the `awaiting_merge` cutover left released with no
-// wake to come.
+// source the boot leaves too: the daemon released its idle pod, which held no unpushed work, and
+// what brings the pod back is the next wake for its role, not a daemon restart, so a boot that
+// started it would raise a pod nothing asked for. Two other boot steps can start a released claim.
+// Admission's pass at the boot sends the work of an entry to a released claim that stands behind
+// the entry its phases row names (admit's owedEntryRoles), as each of its passes does. And the
+// cutover's repair (cutoverMergerRepair), a fact of its own that the boot applies once per project,
+// before its consumers start, owes a start to each merger the `awaiting_merge` cutover left
+// released with no wake to come.
 //
 // The claims it weighs are the suspended owners of the project's unfinished phases in running
 // trees (suspendedPhaseOwners), the read the cutover's repair picks its mergers from too, and it
@@ -55,10 +55,10 @@ import (
 // work on, and the work of an entry this claim was never given is work it does not have, so the
 // resume would spend the claim's first turn after the boot on the wrong prompt and the completion
 // it answered with would be refused as behind that entry. A claim level with that entry is sent
-// the task that takes its phase on (ResumePhaseTask), which the outbox does not deliver to a claim
+// the task that takes its phase on (ResumeTask), which the outbox does not deliver to a claim
 // still holding its phase's task. Either start resumes the claim by rule and takes the slot mark
 // the slot rule gives its phase (StartOrOwe), as every start of a phase worker does, so it waits
-// for the issue's admission slot in a phase up to the review and for none past it. A role a start
+// for the issue's admission slot in a phase that keeps one and for none in accepting, retro or merging. A role a start
 // already covers (StartFor) gets no second.
 //
 // The sweep runs first so the resume reads the trees it closed as lingering. The owners' read
@@ -219,7 +219,7 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 // built from the entry row names, and says whether the claim stands behind that entry. A claim
 // behind it (OwedEntry, which reads the owner's root for a tree close) is sent the work of that
 // entry at that entry (sendOwedEntry). A claim level with it is sent the phase's resume task
-// (ResumePhaseTask) at entry 0: that start hands the role the work it is already on rather than a
+// (ResumeTask) at entry 0: that start hands the role the work it is already on rather than a
 // new entry, so it moves no phases row either. The boot's resume by rule (booted) and the
 // cutover's repair of a merger the `awaiting_merge` cutover left released (oweCutoverMerger) both
 // build their start here, so the two are built alike. Neither hands it a claim the operator
@@ -240,8 +240,11 @@ func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner suspe
 	if OwedEntry(owner.run, owner.root, row.Entry) {
 		return true, e.sendOwedEntry(ctx, tx, owner.issue, owner.role, row, startMarks{ruleResume: true})
 	}
-	return false, e.started(ctx, tx, owner.issue, owner.role, ResumePhaseTask(owner.issue), 0,
-		startMarks{resumeTask: true, ruleResume: true, reasserts: true})
+	resume, err := e.ResumeTask(ctx, tx, owner.issue)
+	if err != nil {
+		return false, err
+	}
+	return false, e.started(ctx, tx, owner.issue, owner.role, resume, 0, startMarks{resumeTask: true, ruleResume: true, reasserts: true})
 }
 
 // sweepMerged closes every issue of the project that awaits a merge GitHub already reported
@@ -259,7 +262,7 @@ func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {
 		if !awaitsMerge(listed) {
 			continue
 		}
-		pr, err := e.store.PullRequest(ctx, tx, listed.Key)
+		pr, err := e.store.PullRequestRow(ctx, tx, listed.Key)
 		if err != nil || pr == nil || pr.State != record.PullRequestMerged {
 			if err != nil {
 				return err

@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The results write takes the owner locks of the recording issue and of the check's issue
@@ -20,104 +21,87 @@ import (
 // document no room holds is a cold read bounded by a minute (docs/read_cache.go). This file holds
 // the writer that must not wait behind that read.
 
-// slowCheckRead is how long this file's document service takes over the live read the route
-// makes once the check's version or digest has moved. It stands in for a cold read's minute, so
-// the test measures a fixed number instead of waiting one out, and it is far longer than any
-// other statement either request runs.
-const slowCheckRead = 2 * time.Second
+// Every wait the test's own goroutine makes on the held request - a handshake, or the request's
+// answer - is testwait.Receive, whose one bound is the test binary's deadline less testwait's
+// margin: a route that stops taking a step - a comparison dropped, a read moved back under the
+// locks - fails the test naming the step that never came, and a step that is merely slow is no
+// failure. The held read's own waits run on the request's goroutine, which cannot fail the test,
+// and end with the test (awaitCheckGate, offerCheckRead).
 
-// checkReadWait bounds every wait this file makes: the handshakes with the held request, and
-// the answer to the request itself. Each is a step the route takes on another goroutine, so a
-// route that stops taking it - a comparison dropped, a read moved back under the locks - would
-// park the test until the package's own timeout and say nothing about what it was waiting for.
-// Waiting through this bound names the step that never came instead. It is far longer than any
-// step here takes, slowCheckRead included.
-const checkReadWait = 30 * time.Second
+// heldCheckReadKey marks the one request whose document reads this file's service holds. Every
+// other caller of the same service - the uploads that seed the fixture, the PATCH beside the held
+// read - reads straight through, so only the marked route is held.
+type heldCheckReadKey struct{}
 
-// awaitCheckRead takes the next value the held request sends, or fails the test saying which
-// step of it never came. Every receive the test's own goroutine makes goes through it; the held
-// read's own receives go through awaitCheckGate.
-func awaitCheckRead[T any](t *testing.T, from <-chan T, what string) T {
-	t.Helper()
-	select {
-	case value := <-from:
-		return value
-	case <-time.After(checkReadWait):
-		t.Fatalf("%s within %s", what, checkReadWait)
-		return *new(T)
-	}
-}
-
-// letCheckRead releases a held read, or fails the test saying which read never asked to be
-// released. Every send the test's own goroutine makes goes through it; the held read's own sends
-// go through offerCheckRead.
-func letCheckRead[T any](t *testing.T, to chan<- T, value T, what string) {
-	t.Helper()
-	select {
-	case to <- value:
-	case <-time.After(checkReadWait):
-		t.Fatalf("%s within %s", what, checkReadWait)
-	}
-}
-
-// slowCheckReadKey marks the one request whose document reads this file's service gates and slows.
-// Every other caller of the same service - the uploads that seed the fixture, the PATCH that
-// measures the wait - reads at full speed, so only the measured route is held up.
-type slowCheckReadKey struct{}
-
-// slowCheckReads is the document service with the marked request's reads of one document made
-// observable and slow. The first such read is the route's own resolve of the check, which runs
-// before the transaction opens: it is held there until the test has written the version that
-// rewords the check, so the route reaches its locks carrying words a version has replaced. Every
-// read after that one - the read a moved version or digest needs - says when it started and then
-// takes slowCheckRead, so the test can time a writer of the same issue against it.
-type slowCheckReads struct {
+// heldCheckReads is the document service with the marked request's reads of one document held
+// until the test lets each go. The first such read is the route's own resolve of the check, which
+// runs before the transaction opens: it is held there until the test has written the version that
+// rewords the check, so the route reaches its locks carrying words a version has replaced. The
+// read after it - the read the moved version or digest needs - says when it started and is held
+// again, so the test can look at the issue's owner lock, and make a writer of the same issue,
+// while that read is still under way.
+type heldCheckReads struct {
 	docs.API
 	// artifactID is the Verification document; reads of anything else pass straight through.
 	artifactID string
+	// stop is closed when the test ends (t.Context), which ends a read the test never let go.
+	stop <-chan struct{}
 	// resolved is closed when the route's resolve reaches the document; release lets it go on.
 	resolved chan struct{}
 	release  chan struct{}
-	// reading is closed when the read a moved version or digest needs starts.
+	// reading is closed when the read a moved version or digest needs starts; reread lets it go
+	// on.
 	reading     chan struct{}
+	reread      chan struct{}
 	resolveOnce sync.Once
 	readingOnce sync.Once
 }
 
-func (d *slowCheckReads) Text(ctx context.Context, artifactID string) (string, error) {
-	if artifactID != d.artifactID || ctx.Value(slowCheckReadKey{}) == nil {
+func (d *heldCheckReads) Text(ctx context.Context, artifactID string) (string, error) {
+	if artifactID != d.artifactID || ctx.Value(heldCheckReadKey{}) == nil {
 		return d.API.Text(ctx, artifactID)
 	}
 	resolve := false
 	d.resolveOnce.Do(func() { resolve = true })
 	if resolve {
 		close(d.resolved)
-		if err := awaitCheckGate(d.release); err != nil {
+		if err := awaitCheckGate(d.release, d.stop); err != nil {
 			return "", err
 		}
 		return d.API.Text(ctx, artifactID)
 	}
-	d.readingOnce.Do(func() { close(d.reading) })
-	time.Sleep(slowCheckRead)
+	reading := false
+	d.readingOnce.Do(func() { reading = true })
+	if reading {
+		close(d.reading)
+		if err := awaitCheckGate(d.reread, d.stop); err != nil {
+			return "", err
+		}
+	}
 	return d.API.Text(ctx, artifactID)
 }
 
 // A results write whose check was reworded between its resolve and its locks reads the check's
 // words again - and reads them with the two issues' owner locks given back, never while it holds
-// them. A PATCH of the recording issue, made while that read runs, answers at once; before the
-// read moved out of the locked window it waited the whole read out, which for a document no room
-// holds is a cold read of up to a minute.
+// them. While that read is held, no transaction holds the issue's owner lock, and a PATCH of the
+// recording issue, which takes that lock, answers: the read cannot end until the test lets it go,
+// so the PATCH did not wait it out. No clock decides either. Before the read moved out of the
+// locked window, a PATCH waited the whole read out, which for a document no room holds is a cold
+// read of up to a minute (docs/read_cache.go).
 //
 // The result recorded is still judged by the check as the transaction that writes it sees the
 // check: the version the second upload wrote and the digest it left, not the ones the resolve
 // read.
 func TestAResultsWriteReadsTheChecksWordsWithBothIssuesOwnerLocksFree(t *testing.T) {
-	reads := &slowCheckReads{
+	t.Parallel()
+	reads := &heldCheckReads{
+		stop:     t.Context().Done(),
 		resolved: make(chan struct{}),
 		release:  make(chan struct{}),
 		reading:  make(chan struct{}),
+		reread:   make(chan struct{}),
 	}
-	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
+	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
 		t.Cleanup(func() {
 			if err := service.Shutdown(context.Background()); err != nil {
@@ -127,18 +111,19 @@ func TestAResultsWriteReadsTheChecksWordsWithBothIssuesOwnerLocksFree(t *testing
 		reads.API = service
 		return reads
 	})
-	var releasing sync.Once
+	var releasing, rereading sync.Once
 	release := func() { releasing.Do(func() { close(reads.release) }) }
-	// However this test ends, the held resolve is let go at once: a failure before the release
-	// would otherwise leave the measured request's read waiting out its own bound (awaitCheckGate).
+	reread := func() { rereading.Do(func() { close(reads.reread) }) }
+	// However this test ends, both held reads are let go at once, so the marked request ends.
 	defer release()
+	defer reread()
 
 	issue := createInteractionIssue(t, handler, "RESL", "A check reworded under the write", "A spec\n")
 	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", siblingChecks)
 	reads.artifactID = verification.Artifact.ID
 
 	marked := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), slowCheckReadKey{}, true)))
+		handler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), heldCheckReadKey{}, true)))
 	})
 	recorded := make(chan *httptest.ResponseRecorder, 1)
 	go func() { recorded <- recordResult(t, marked, issue.Key, resultBody("k1", "pass", headCommit, nil)) }()
@@ -146,27 +131,32 @@ func TestAResultsWriteReadsTheChecksWordsWithBothIssuesOwnerLocksFree(t *testing
 	// The route has read the version and digest the index holds for k1 and is reading the
 	// document for the words they name, holding no lock of its own. This version moves both, so
 	// what it read is stale before it reaches its locks.
-	awaitCheckRead(t, reads.resolved, "the route's resolve never reached the check's words")
+	testwait.Receive(t, "the route's resolve to reach the check's words", reads.resolved)
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", siblingChecksReworded)
 	release()
 
-	// The read the moved version or digest needs has started. A PATCH of the same issue takes
-	// that issue's owner lock, the lock the results write takes too: it waits only if the write
-	// is holding it across this read.
-	awaitCheckRead(t, reads.reading, "the results write never re-read the check's words")
-	started := time.Now()
-	patch := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key,
-		map[string]any{"labels_add": []string{"waited"}}, "alice")
-	waited := time.Since(started)
+	// The read the moved version or digest needs has started and is held. The results write takes
+	// the owner locks of the issue it records on and of the check's issue, here one issue, so
+	// while this read is held no transaction may hold that issue's owner lock.
+	testwait.Receive(t, "the results write to read the check's words again", reads.reading)
+	if holder := readIssueOwnerLockHolder(t, database, issue.Key); holder != nil {
+		t.Fatalf("while the results write reads the check's words again, %s's owner lock is held by %s: the write holds its issues' owner locks across that read",
+			issue.Key, holder)
+	}
+	// A PATCH of the same issue takes that issue's owner lock. It answers only if no one holds it
+	// across the held read, which ends only once this test lets it go below.
+	patched := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		patched <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key,
+			map[string]any{"labels_add": []string{"waited"}}, "alice")
+	}()
+	patch := testwait.Receive(t, "a PATCH of "+issue.Key+" while the results write's read of the check's words is held", patched)
+	reread()
 	if patch.Code != http.StatusOK {
 		t.Fatalf("PATCH the issue beside the results write: status=%d body=%s", patch.Code, patch.Body.String())
 	}
-	if waited > slowCheckRead/2 {
-		t.Errorf("a PATCH of %s waited %s for the results write's read of the check's words, want well under %s: the write is holding both issues' owner locks across that read",
-			issue.Key, waited.Round(time.Millisecond), slowCheckRead)
-	}
 
-	response := awaitCheckRead(t, recorded, "the results write never answered")
+	response := testwait.Receive(t, "the results write to answer", recorded)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("record the result: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -193,22 +183,25 @@ type contendedCheckReads struct {
 	docs.API
 	// artifactID is the Verification document; reads of anything else pass straight through.
 	artifactID string
-	// held carries the ordinal of each held read, and let releases it.
+	// stop is closed when the test ends (t.Context), which ends a read the test never let go.
+	stop <-chan struct{}
+	// held carries the ordinal of each held read, and let releases it: one send for each, which
+	// its buffer takes without waiting for the read.
 	held  chan int
 	let   chan struct{}
 	reads int
 }
 
 func (d *contendedCheckReads) Text(ctx context.Context, artifactID string) (string, error) {
-	if artifactID != d.artifactID || ctx.Value(slowCheckReadKey{}) == nil {
+	if artifactID != d.artifactID || ctx.Value(heldCheckReadKey{}) == nil {
 		return d.API.Text(ctx, artifactID)
 	}
 	d.reads++
 	if d.reads <= resolutionAttempts {
-		if err := offerCheckRead(d.held, d.reads); err != nil {
+		if err := offerCheckRead(d.held, d.reads, d.stop); err != nil {
 			return "", err
 		}
-		if err := awaitCheckGate(d.let); err != nil {
+		if err := awaitCheckGate(d.let, d.stop); err != nil {
 			return "", err
 		}
 	}
@@ -221,7 +214,8 @@ func (d *contendedCheckReads) Text(ctx context.Context, artifactID string) (stri
 // retry a second later asks, and no budget of its own that a longer wait would refill
 // (checkContendedRetryAfter).
 func TestAResultsWriteRefusesACheckRewordedAtEveryAttempt(t *testing.T) {
-	reads := &contendedCheckReads{held: make(chan int), let: make(chan struct{})}
+	t.Parallel()
+	reads := &contendedCheckReads{stop: t.Context().Done(), held: make(chan int), let: make(chan struct{}, resolutionAttempts)}
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
 		t.Cleanup(func() {
@@ -238,7 +232,7 @@ func TestAResultsWriteRefusesACheckRewordedAtEveryAttempt(t *testing.T) {
 	reads.artifactID = verification.Artifact.ID
 
 	marked := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), slowCheckReadKey{}, true)))
+		handler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), heldCheckReadKey{}, true)))
 	})
 	recorded := make(chan *httptest.ResponseRecorder, 1)
 	go func() { recorded <- recordResult(t, marked, issue.Key, resultBody("k1", "pass", headCommit, nil)) }()
@@ -248,12 +242,12 @@ func TestAResultsWriteRefusesACheckRewordedAtEveryAttempt(t *testing.T) {
 	// version and digest moved. So the route reaches its locks with stale words both times, and the
 	// second time is its last attempt.
 	for _, words := range []string{siblingChecksReworded, siblingChecksRewordedAgain} {
-		awaitCheckRead(t, reads.held, "the route never reached its next read of the check's words")
+		testwait.Receive(t, "the route to reach its next read of the check's words", reads.held)
 		uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", words)
-		letCheckRead(t, reads.let, struct{}{}, "the route's held read never took the version that replaced its words")
+		reads.let <- struct{}{}
 	}
 
-	response := awaitCheckRead(t, recorded, "the contended results write never answered")
+	response := testwait.Receive(t, "the contended results write to answer", recorded)
 	code, text := refusalOf(t, response)
 	if response.Code != http.StatusConflict || code != "CHECK_CONTENDED" {
 		t.Fatalf("a check reworded at each attempt: status=%d body=%s, want 409 CHECK_CONTENDED",
@@ -280,6 +274,8 @@ type restoredCheckReads struct {
 	docs.API
 	// artifactID is the Verification document; reads of anything else pass straight through.
 	artifactID string
+	// stop is closed when the test ends (t.Context), which ends a read the test never let go.
+	stop <-chan struct{}
 	// resolving is closed when the route's resolve reaches the document; moved releases it once
 	// the version whose words it is to read has landed.
 	resolving chan struct{}
@@ -292,7 +288,7 @@ type restoredCheckReads struct {
 }
 
 func (d *restoredCheckReads) Text(ctx context.Context, artifactID string) (string, error) {
-	if artifactID != d.artifactID || ctx.Value(slowCheckReadKey{}) == nil {
+	if artifactID != d.artifactID || ctx.Value(heldCheckReadKey{}) == nil {
 		return d.API.Text(ctx, artifactID)
 	}
 	resolve := false
@@ -301,37 +297,38 @@ func (d *restoredCheckReads) Text(ctx context.Context, artifactID string) (strin
 		return d.API.Text(ctx, artifactID)
 	}
 	close(d.resolving)
-	if err := awaitCheckGate(d.moved); err != nil {
+	if err := awaitCheckGate(d.moved, d.stop); err != nil {
 		return "", err
 	}
 	markdown, err := d.API.Text(ctx, artifactID)
 	close(d.read)
-	if gate := awaitCheckGate(d.restored); gate != nil {
+	if gate := awaitCheckGate(d.restored, d.stop); gate != nil {
 		return "", gate
 	}
 	return markdown, err
 }
 
-// awaitCheckGate bounds a wait the held read itself makes: it runs on the request's goroutine,
-// which cannot fail the test, so the bound ends the read with an error rather than hanging.
-func awaitCheckGate(gate <-chan struct{}) error {
+// awaitCheckGate is a wait the held read itself makes: it runs on the request's goroutine, which
+// cannot fail the test, so the test's end (stop) ends the read with an error rather than leaving it
+// waiting.
+func awaitCheckGate(gate, stop <-chan struct{}) error {
 	select {
 	case <-gate:
 		return nil
-	case <-time.After(checkReadWait):
-		return fmt.Errorf("the test did not release the held read of the check's words within %s", checkReadWait)
+	case <-stop:
+		return fmt.Errorf("the test ended before it let the held read of the check's words go")
 	}
 }
 
-// offerCheckRead bounds a handshake the held read itself makes, as awaitCheckGate bounds the
-// waits: it runs on the request's goroutine, so a value the test never takes ends the read with
-// an error rather than hanging.
-func offerCheckRead[T any](to chan<- T, value T) error {
+// offerCheckRead is a handshake the held read itself makes, ended as awaitCheckGate's wait is: it
+// runs on the request's goroutine, so a value the test never takes ends the read with an error
+// once the test ends (stop).
+func offerCheckRead[T any](to chan<- T, value T, stop <-chan struct{}) error {
 	select {
 	case to <- value:
 		return nil
-	case <-time.After(checkReadWait):
-		return fmt.Errorf("the test did not take the handshake of the held read of the check's words within %s", checkReadWait)
+	case <-stop:
+		return fmt.Errorf("the test ended before it took the handshake of the held read of the check's words")
 	}
 }
 
@@ -346,7 +343,9 @@ func offerCheckRead[T any](to chan<- T, value T) error {
 // check at version 1 under version 3's digest - the check as a version this transaction cannot
 // see.
 func TestAResultsWriteReadsTheCheckAgainWhenALaterVersionRestoredItsDigest(t *testing.T) {
+	t.Parallel()
 	reads := &restoredCheckReads{
+		stop:      t.Context().Done(),
 		resolving: make(chan struct{}),
 		moved:     make(chan struct{}),
 		read:      make(chan struct{}),
@@ -368,24 +367,24 @@ func TestAResultsWriteReadsTheCheckAgainWhenALaterVersionRestoredItsDigest(t *te
 	reads.artifactID = verification.Artifact.ID
 
 	marked := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), slowCheckReadKey{}, true)))
+		handler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), heldCheckReadKey{}, true)))
 	})
 	recorded := make(chan *httptest.ResponseRecorder, 1)
 	go func() { recorded <- recordResult(t, marked, issue.Key, resultBody("k1", "pass", headCommit, nil)) }()
 
 	// The route holds the index row of k1 at version 1 and is about to read the document for
 	// that row's words. This version rewords k1, so the words it reads are version 2's.
-	awaitCheckRead(t, reads.resolving, "the route's resolve never reached the check's words")
+	testwait.Receive(t, "the route's resolve to reach the check's words", reads.resolving)
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", siblingChecksReworded)
 	close(reads.moved)
 
 	// Version 2's words are in hand. This version restores version 1's, so the digest the locks
 	// read is the one the resolve was made against while changed_version has moved to 3.
-	awaitCheckRead(t, reads.read, "the route never read the reworded check's words")
+	testwait.Receive(t, "the route to read the reworded check's words", reads.read)
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", siblingChecks)
 	close(reads.restored)
 
-	response := awaitCheckRead(t, recorded, "the results write never answered")
+	response := testwait.Receive(t, "the results write to answer", recorded)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("record the result: status=%d body=%s", response.Code, response.Body.String())
 	}

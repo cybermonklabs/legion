@@ -13,16 +13,15 @@ import (
 // session, its workspace and everything it knows stay, and what goes is the length of the
 // transcript the provider is being asked to read (dispatch://INFRA-956 R3). `legion claims
 // compact` and the controller's own compact both run it (api's compact), and this file is the
-// machine's half: taking the claim, asking Oh My Pi, and giving the claim back with its owed
-// task sent again.
+// machine's half: taking the claim, asking Oh My Pi for a handoff (runtime.Conn's Compact), and
+// giving the claim back with its owed task sent again. Oh My Pi's `compact` is never asked for:
+// Anthropic refuses its summary request for a long Claude session (dispatch://INFRA-5798).
 
-// ErrCompactInstructions is a compaction asked for with nothing to write the summary to. Oh My
-// Pi runs the image-based snapcompact method for a compaction that carries no instructions and
-// no internal guidance (`runsManually`, packages/coding-agent/src/session/session-maintenance.ts
-// at the pinned tag), and a worker resumed on images needs a vision model to read its own past:
-// the instructions are what make the summary text, so a compaction with none is refused before
-// anything is sent.
-var ErrCompactInstructions = errors.New("a compaction carries custom instructions, so Oh My Pi writes its summary as text rather than snapcompact's images")
+// ErrCompactInstructions is a compaction asked for with nothing to write the handoff document
+// to. The instructions are what keep the reviewer's entry in the document (api's
+// compactInstructions), and a document that dropped it leaves the reviewer no entry to write, so
+// a compaction with none is refused before anything is sent.
+var ErrCompactInstructions = errors.New("a compaction carries custom instructions, which keep the reviewer's entry in the handoff document")
 
 // ErrCompactNotTaken is a compaction nothing was asked for: the claim could not be written as
 // working, it lost its process between the take and the ask, its shim is not connected, a
@@ -102,8 +101,10 @@ type compacting struct {
 	// idle, since the claim has had a turn by then (turnStartedWhileBusy, turnEnded).
 	back ClaimState
 	// inTurn is whether a turn Oh My Pi started under the compaction is still running: an
-	// Envoy follow-up it queued, which starts as the compaction ends. The claim is left
-	// working for that turn and its end gives the claim back (compactEnded, turnEnded).
+	// Envoy follow-up it queued, or the turn of a prompt of the task that reached it while the
+	// handoff ran, which it parks and admits only once the handoff ends; either starts as the
+	// compaction ends. The claim is left working for
+	// that turn and its end gives the claim back (compactEnded, turnEnded).
 	inTurn bool
 }
 
@@ -121,10 +122,11 @@ type compacting struct {
 // already asks whether the claim is working, and none of them has learned a second word for busy
 // (compactStart).
 //
-// Nil is a session compacted and the claim given back. A compaction Oh My Pi refused or skipped
-// — a session too small, one already compacted, a summarizer that failed — carries its words
-// (runtime.RefusalReason); a wait that ran out, or a transport that failed, is an error of its
-// own. The claim is given back in every one of those cases, and the task it owes goes with it —
+// Nil is a session shortened and the claim given back. A handoff Oh My Pi refused — one asked
+// for in a turn, a session with nothing to hand off, a model call that failed — carries its
+// words, and one it answered with no document the daemon's (runtime.RefusalReason); a wait that
+// ran out, or a transport that failed, is an error of its own. The claim is given back in every
+// one of those cases, and the task it owes goes with it —
 // or waits for the turn of a launch the pacing parked over its process, where every send of
 // such a claim waits (sendPending) — and only a compaction that ran puts the claim's run of
 // provider-error turns back to zero (compactEnded). A take that did not happen at all is
@@ -211,7 +213,7 @@ func (m *Machine) compaction() (compacting, bool) {
 //
 // A compaction is the claim's own when the claim still records one, since a process let go and
 // a process found gone each drop it (letGo, compactionLostProcess), and when it is the one this
-// end names, since launchNow's bump leaves an earlier generation's behind.
+// end names, since launchTries' bump leaves an earlier generation's behind.
 //
 // A process still running that a parked launch is to replace is no such loss: the compaction
 // ran over a live session, so the claim records it to the end, that end gives the claim back
@@ -274,19 +276,19 @@ func (m *Machine) compactionLostProcess() {
 // the shape a restart already knows: it asks the agent whether the turn is still running and
 // ends it when the agent says it is not (askTurnOver), and the owed task goes on that end.
 //
-// A prompt the agent has not answered yet is taken back before anything is asked. Oh My Pi runs
-// one thing at a time, so the compaction aborts the turn that prompt started, and the result of
-// an aborted turn carries no error of its own (shimwire.PromptResult): left as it was, the task
-// would be confirmed by that result and retired as worked at the end of the compaction, unsent
-// (promptResulted, settle). Taken back it is unconfirmed under a new id, which the result of
-// the aborted prompt no longer names (Machine.fence), and the end of the compaction sends it.
-// A task re-sent after work that may have run is this operation's lesser fault, as it is at
-// every other send that may repeat one (sendPending). So is a sentence told again: what the
-// confirmation the take-back clears had told — the abandoned session, or what the last let-go
-// ended — goes back to untold with it (takeBackPending, moveTelling), and the re-sent task
-// carries it again. The aborted turn may have read it, and a sentence repeated in the next prompt
-// is the safe way round, where one marked told for a turn the compaction cut short may reach
-// nobody.
+// A prompt of the task that the agent has accepted, or one still on its way to it, is left as it
+// is (dispatch://INFRA-5798 R1). The compaction is Oh My Pi's handoff (stream's Conn.Compact),
+// which aborts no turn, where its `compact` aborted the turn the prompt started: the pinned Oh
+// My Pi refuses a handoff while a turn runs, a turn counting as running from a prompt's
+// admission, and it parks a prompt that reaches it while a handoff runs, admitting and
+// acknowledging it only once the handoff ends (waitForMaintenanceCleanup in
+// packages/coding-agent/src/session/session-maintenance.ts at the pinned tag). So the turn that
+// prompt starts is the task's own, its start confirms the task and its result settles it
+// (turnStarted, promptResulted), and the task is sent once. What keeps the end of the compaction
+// from sending it a second time is the wait for that turn, which the end arms again where the
+// turn can start (compactEnded); an acknowledgement that lands under the compaction, which records
+// the prompt as every acknowledgement does (ackedInTurn); and the send held past its wait, whose
+// prompt stays the task's (heldSend, keepHeldPrompt).
 //
 // A claim whose launch waits its turn in the wake pacing is taken for nothing either
 // (launchWaits). What becomes of the process its session runs on is already decided — the turn
@@ -345,22 +347,21 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 		return fmt.Errorf("the claim's session is not held to it, so nothing is asked of that session: %w", err)
 	}
 	if m.claim.Pending != nil && (m.send != nil || m.resultPending()) {
-		m.log.Info("supervise: the compaction aborts the turn this task's prompt is running; the task goes back to waiting",
+		m.log.Info("supervise: the compaction leaves the task's prompt to its turn; a handoff aborts no turn",
 			"delivery", m.claim.Pending.ID)
-		// The compaction aborts whatever run its session had, so no prompt of the task is left
-		// outstanding for a turn of its own (Machine.outstanding).
-		m.forgetOutstanding()
-		if err := m.takeBackPending(ctx, taskRead); err != nil {
-			return err
-		}
 	}
-	was := m.claim.State
+	was, held := m.claim.State, m.heldSend
+	if m.send != nil {
+		// Oh My Pi parks this send's prompt until the handoff ends, so the send's wait may run out
+		// before its acknowledgement can come (heldSend, refused).
+		m.heldSend = m.send.id
+	}
 	m.compacting = &compacting{conn: conn, generation: m.claim.Generation, back: was}
 	m.claim.State = StateWorking
 	m.log.Info("supervise: the claim's session is being compacted; it is busy until the compaction ends",
 		"generation", m.claim.Generation, "session", m.claim.Session)
 	if err := m.persist(ctx); err != nil {
-		m.compacting = nil
+		m.compacting, m.heldSend = nil, held
 		m.claim.State = was
 		return err
 	}
@@ -389,10 +390,23 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 // (Delivery.ProviderErrorRetries), so a turn that fails again waits the step it had reached.
 //
 // A turn Oh My Pi started under the compaction and has not ended — a follow-up an Envoy
-// delivery queued while the session was being compacted — leaves the claim working for that
-// turn, and that turn's end gives the claim back and sends the owed task (turnEnded). Idling
-// the claim here would send the owed task into a running turn and leave the daemon reading the
-// agent as free while it works.
+// delivery queued while the session was being compacted, or the turn of a prompt of the task that
+// reached it while the handoff ran, which it parks until the handoff ends — leaves the claim
+// working for that turn, and that turn's
+// end gives the claim back and sends the owed task, or its prompt's result settles the task
+// (turnEnded, promptResulted). Idling the claim here would send the owed task into a running
+// turn and leave the daemon reading the agent as free while it works.
+//
+// A prompt of the pending delivery that the agent accepted, or that a send held past its wait left
+// outstanding (keepHeldPrompt), and whose turn has not started yet is the task sent, not a task
+// owed (compactStart): Oh My Pi parks a prompt that reaches it while a handoff runs, and its turn
+// starts once the handoff is over. The wait for that turn is armed again
+// here, from the moment the turn can start, so the send below holds the task rather than
+// prompting it a second time (sendPending), and a turn that never starts is answered as the wait
+// always answers one (noTurn). The wait armed at the acknowledgement may have run out under the
+// compaction, where a working claim ignores it. A prompt of an earlier id that the wait already
+// took the task back from is no such prompt: the task under its new id is still owed, and the
+// send below sends it, as it would have with no compaction.
 //
 // A suspension held over the claim is the one end that gives the claim back to nothing, and it
 // says so to whoever asked for the compaction (ErrCompactSuspended). The hold runs here, as
@@ -436,6 +450,10 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 			return errors.Join(err, m.persist(ctx))
 		}
 		return ErrCompactSuspended
+	}
+	if p := m.claim.Pending; p != nil && p.ConfirmedAt.IsZero() && m.outstandingPrompt(p.ID) {
+		m.disarm(TimerTurn)
+		m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
 	}
 	m.claim.State = run.back
 	if err := m.persist(ctx); err != nil {

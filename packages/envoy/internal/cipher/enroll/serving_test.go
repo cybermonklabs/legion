@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -23,17 +24,44 @@ const notServingAfter = 15 * time.Second
 // what a beat takes, so no beat in this file fails on its bound unless a test holds it up.
 const servingInterval = 5 * time.Second
 
-// servingRig is a Service on a fresh schema, the serving clock beating on its store, and one
-// person's launcher credential to enroll sessions under.
+// servingRig is a Service on a store of the test's own, the serving clock beating on its store,
+// and one person's launcher credential to enroll sessions under.
 type servingRig struct {
 	svc   *Service
 	clock *ServingClock
 	cred  Credential
 }
 
+// newServingRig is a servingRig on a fresh schema (newService).
 func newServingRig(t *testing.T) servingRig {
 	t.Helper()
-	svc := newService(t)
+	return servingRigOn(t, newService(t))
+}
+
+// newServingRigOnItsOwnDatabase is a servingRig on a migrated database of the test's own
+// (storetest.DatabaseURL) rather than a schema of the shared one, for a test that holds
+// servingLock while it waits. servingLock is an advisory lock, whose key is database-wide, and a
+// broker of another test takes it whenever its beat finds a gap in its own schema's
+// broker_serving, as the second broker of cmd/cipherd's TestABrokerOutageLongerThanALease does at
+// its first beat. On the shared database such a beat would wait behind the holder, and the
+// holder's wait for its own beats to queue would count it as one of them.
+func newServingRigOnItsOwnDatabase(t *testing.T) servingRig {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(ctx, storetest.DatabaseURL(t))
+	if err != nil {
+		t.Fatalf("open the test database: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate the test database: %v", err)
+	}
+	return servingRigOn(t, serviceOn(st))
+}
+
+// servingRigOn is a servingRig on svc.
+func servingRigOn(t *testing.T, svc *Service) servingRig {
+	t.Helper()
 	return servingRig{
 		svc:   svc,
 		clock: &ServingClock{Enrollments: svc, Interval: servingInterval, NotServingAfter: notServingAfter},
@@ -296,9 +324,10 @@ func TestTheTimeNoBrokerServedIsGivenBackToTheLeasesItRanOut(t *testing.T) {
 
 // Two brokers beating at once after a gap give the time back once: both find the gap, the second
 // waits on the lock the first holds while it gives the gap back, then reads the row the first wrote
-// and finds no gap.
+// and finds no gap. The test holds servingLock until both beats wait on it, so it runs on a
+// database of its own (newServingRigOnItsOwnDatabase).
 func TestTwoBeatsAtOnceGiveTheTimeBackOnce(t *testing.T) {
-	r := newServingRig(t)
+	r := newServingRigOnItsOwnDatabase(t)
 	ctx := context.Background()
 	other := &ServingClock{Enrollments: r.svc, Interval: servingInterval, NotServingAfter: notServingAfter}
 	r.beat(t)
