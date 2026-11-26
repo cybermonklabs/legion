@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, setSystemTime, test } from "bun
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ArtifactBlock } from "@legion/contracts";
+import type { ArtifactBlock, DispatchToolSpec } from "@legion/contracts";
 import {
   DISPATCH_BLOCK_UNITS,
   DISPATCH_READ_ONLY_TOKEN,
@@ -10,11 +10,13 @@ import {
   MARKDOWN_DOCUMENT_MAX_BYTES,
   PROJECT_KEY_RULE,
   TEXT_REFUSAL_HEADER,
+  dispatchToolSpecs,
 } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { forgetBrokerClients } from "../broker-credential";
 import { cliRefusals, type DispatchCliIo, fitOutput, runDispatchCli } from "../dispatch-cli";
+import { DRY_RUN_HELP } from "../dispatch-command";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { readFileText } from "../dispatch-file-text";
 import { forgetShownPictures } from "../dispatch-picture-tools";
@@ -2286,17 +2288,16 @@ describe("the dispatch CLI", () => {
     ]);
   });
 
-  test("artifact's help says its dry run asks Dispatch how it would store the text, and another command's that it sends nothing", async () => {
+  test("artifact's help prints its spec's own dry-run sentence, and another command's the shared one", async () => {
+    const specs = new Map<string, DispatchToolSpec>(dispatchToolSpecs.map((s) => [s.name, s]));
+    const artifactDryRun = specs.get("dispatch_artifact")?.dryRunHelp;
+    expect(typeof artifactDryRun).toBe("string");
+    expect(artifactDryRun).not.toBe(DRY_RUN_HELP);
+    expect(specs.get("dispatch_message")?.dryRunHelp).toBeUndefined();
     const artifact = await run(["artifact", "--help"], omp);
-    const dryRun = artifact.stdout.slice(artifact.stdout.indexOf("  --dry-run\n")).split("\n");
-    expect(dryRun[0]).toBe("  --dry-run");
-    expect(dryRun[1]).toContain(
-      "it asks Dispatch how it would store the text (POST /api/v1/markdown/round-trip)"
-    );
+    expect(artifact.stdout).toContain(`  --dry-run\n      ${artifactDryRun}\n`);
     const message = await run(["message", "--help"], omp);
-    expect(message.stdout).toContain(
-      "  --dry-run\n      Checks the arguments as the call would, then prints them as JSON and sends nothing.\n"
-    );
+    expect(message.stdout).toContain(`  --dry-run\n      ${DRY_RUN_HELP}\n`);
   });
 
   test("the follow notice is printed once per ask across processes", async () => {
