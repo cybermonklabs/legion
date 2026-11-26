@@ -13,8 +13,11 @@ export interface InboxThreadRows {
   /** The read mark of the list read these rows came from, which **Mark all read** and a
    *  **Select all** dismiss both carry. */
   readonly asOf: string | undefined;
-  /** Whether the thread side has answered: the read of the list showing has settled, with rows
-   *  or with an error, or this list reads none - asks only, or a principal that is no person. */
+  /** Whether the list draws every thread row it will draw from this read: the read of the list
+   *  showing has settled with an error, or with rows the pointer hold has handed on (`rows`), or
+   *  this list reads none - asks only, or a principal that is no person. A read that lands while
+   *  a pointer travels over the list is not drawn until the pointer settles, and until then the
+   *  list holds none of its rows. */
   readonly ready: boolean;
   readonly rows: readonly InboxListRow[];
   /** Reads the next page of the Dismissed view, or undefined where there is none to read: the
@@ -68,11 +71,17 @@ export function useInboxThreadRows({
   const adopted = useMotionHold(read, listRef);
   const listed = asksOnly ? [] : (adopted ?? []);
   const reads = human && !asksOnly;
+  const shownRead = show === "dismissed" ? dismissed : threads;
   return {
     // The mark of the read these rows came from: the Dismissed view's is its first page's, the
     // one snapshot its cursor walks on from.
     asOf: show === "dismissed" ? pages?.[0]?.as_of : threads.data?.as_of,
-    ready: !reads || (show === "dismissed" ? dismissed.isFetched : threads.isFetched),
+    // A settled read whose rows the hold still keeps back is not ready: the hold's first value
+    // is the `undefined` from before the read landed. A read that answered no rows at all (`rows:
+    // null`) has nothing to keep back.
+    ready:
+      !reads ||
+      (shownRead.isFetched && (shownRead.isError || read === undefined || adopted !== undefined)),
     rows: listed.map((thread): InboxListRow => ({ kind: "thread", thread })),
     showMore:
       show === "dismissed" && dismissed.hasNextPage

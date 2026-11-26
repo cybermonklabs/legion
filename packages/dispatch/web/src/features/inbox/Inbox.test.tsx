@@ -1,6 +1,6 @@
 import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, a blur naming no target, and the Enter presses whose survival only fireEvent reports.
+// biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, the motion hold's bare pointermove, a blur naming no target, and the Enter presses whose survival only fireEvent reports.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
@@ -2707,6 +2707,73 @@ test("?item= naming a thread row whose read lands after the asks' selects that r
     narrow();
     threads.restore();
     listComments.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+test("?item= naming a thread row whose read lands while a pointer moves over the list keeps that row until the pointer settles, and then selects it", async () => {
+  const narrow = widenToReadingPane();
+  const rows = [inboxIssue("ask-a", "CORE-1", "Which approach?")];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const threads = holdThreadsRead();
+  const { unmount } = renderInbox("/?item=reply:c1");
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a"]));
+    // A pointer travels over the list as the threads' read lands: the list keeps its rows as they
+    // are until the pointer settles (`useMotionHold`), so the named row is not drawn yet, and the
+    // column does not take the first row in its place.
+    // user-event has no bare pointermove: hover sends a fixed mouse sequence, not the one move
+    // this hold arms on.
+    fireEvent.pointerMove(shortRow("ask-a"));
+    await threads.land([replyRow("c1")]);
+    expect(rowIds()).toEqual(["ask-a"]);
+    expect(selectedIds()).toEqual([]);
+    expect(address()).toBe("/?item=reply:c1");
+
+    // Settled, the list draws the thread row, and the address the reader opened selects it.
+    await waitFor(() => expect(selectedIds()).toEqual(["reply:c1"]), { timeout: 2000 });
+    expect(address()).toBe("/?item=reply:c1");
+  } finally {
+    unmount();
+    narrow();
+    threads.restore();
+    listComments.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+test("a thread read that answers no rows at all (`rows: null`) still lets the column take its first row", async () => {
+  const narrow = widenToReadingPane();
+  const rows = [inboxIssue("ask-a", "CORE-1", "Which approach?")];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  // The server answers an Inbox with no thread in it with `rows: null` (the schema allows it):
+  // the read has landed, and there is nothing for the pointer hold to hand on.
+  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
+    as_of: "2026-10-12T02:00:00Z",
+    limit: 0,
+    offset: 0,
+    rows: null,
+    total: 0,
+  });
+  const { unmount } = renderInbox("/");
+
+  try {
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-a"]));
+    expect(address()).toBe("/?item=ask-a");
+  } finally {
+    unmount();
+    narrow();
+    listMyReplies.mockRestore();
     getAsk.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();
