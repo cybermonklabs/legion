@@ -2168,13 +2168,12 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
   },
   {
     file: `${FEATURES}/delivery/JudgedFigure.tsx`,
-    holds:
-      "a figure's digits as the page writes them, with the word for its verdict (`judgeFigure`)",
+    holds: "a figure's digits as the page writes them (`judgeFigure`)",
     written: "text",
   },
   {
     file: `${FEATURES}/delivery/MeasuresPanel.tsx`,
-    holds: "a day's figure as the page writes it, with the word for its verdict (`judgeFigure`)",
+    holds: "a day's figure, its digits as the page writes them (`judgeFigure`)",
     written: "text",
   },
   {
@@ -2189,13 +2188,12 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
   },
   {
     file: `${FEATURES}/delivery/SpreadBars.tsx`,
-    holds: "a day's median as the page writes it, with the word for its verdict (`judgeFigure`)",
+    holds: "a day's median, its digits as the page writes them (`judgeFigure`)",
     written: "median.text",
   },
   {
     file: `${FEATURES}/delivery/SpreadBars.tsx`,
-    holds:
-      "a day's 90th percentile as the page writes it, with the word for its verdict (`judgeFigure`)",
+    holds: "a day's 90th percentile, its digits as the page writes them (`judgeFigure`)",
     written: "p90.text",
   },
   {

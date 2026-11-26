@@ -444,12 +444,13 @@ test("a lead-time card names the statistics its target judges and tones those fi
 });
 
 // R5, and review v2's R2-3: a figure takes a tone only where the card's target judges the
-// statistic it shows. The answer also carries a verdict of the merge median and one of the failure
-// rate's upper bound, each judged against the target whatever the person's judges
-// (api/delivery_measures.go measuresStatus); where the judges leave that statistic out, its figure
-// reads plain whatever that verdict says (dispatch://INFRA-2916, the testing round of 2026-11-18
-// at 0ea9989f, which drove the same answer from the server: judges-median-W.r10.out).
-test("a figure whose statistic the target does not judge takes no tone, whatever verdict of it the answer carries: the merge median under its longest change, the upper bound under the per-PR rate", () => {
+// statistic it shows. The answer's verdicts of the merge median and of the failure rate's upper
+// bound are null where the target's judges leave that statistic out (api/delivery_measures.go
+// measuresStatus, deliveryJudgeVerdict), as these judges do, and the figure reads plain rather
+// than toned by its own value (dispatch://INFRA-2916: the testing round of 2026-11-18 at
+// 0ea9989f drove a median verdict under the longest change's judge from a server that then
+// judged the median whatever the judges, judges-median-W.r10.out).
+test("a figure whose statistic the target does not judge takes no tone, and the answer carries no verdict of it: the merge median under its longest change, the upper bound under the per-PR rate", () => {
   renderPanel({
     ...fixtureMeasures,
     targets: {
@@ -464,7 +465,7 @@ test("a figure whose statistic the target does not judge takes no tone, whatever
     status: {
       ...fixtureMeasures.status,
       merge_to_production: false,
-      merge_to_production_median: true,
+      merge_to_production_median: null,
     },
   });
   const merge = within(card("Merge \u2192 production"));
@@ -505,7 +506,7 @@ test("a figure whose statistic the target does not judge takes no tone, whatever
     status: {
       ...fixtureMeasures.status,
       change_failure_rate: true,
-      change_failure_rate_upper_bound: false,
+      change_failure_rate_upper_bound: null,
     },
   });
   const failures = within(card("Change failure rate"));
@@ -886,6 +887,14 @@ test("each fold figure of a statistic a delivery eval may judge is toned by its 
     [],
     [],
   ]);
+  // The strip under the same targets: its deploys a day miss, and its merge median and its per-PR
+  // failure rate meet. The strip's per-PR rate is the one figure outside the fold that a judge of
+  // the per-PR rate tones.
+  expect(tonesIn(screen.getByTestId("measures-strip"), "window")).toEqual({
+    "deploys.per_day": "missed",
+    "minutes.median": "met",
+    "per_pr.rate": "met",
+  });
   // The cards' text reads as before.
   expect(definition("Deploy frequency").textContent).toBe(
     "Deploy frequency0.17/day5 successful (5 shipped a PR, 0.17/day)"

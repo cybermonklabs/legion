@@ -52,9 +52,7 @@ const keptTables: readonly { table: string; why: string }[] = [
   // read as exactly one row. The suite measured what emptying them costs: with
   // document_search_backfill emptied, the next server to boot logged "read the document_search
   // fill's progress: no rows in result set" and exited 1, and the harness refused to start at
-  // all (2026-11-12, this pod). The other three are read the same way. No migration inserts a
-  // row into any other table of this schema except from the rows already there, which the reset
-  // empties beside them.
+  // all (2026-11-12, this pod). The other three are read the same way.
   {
     table: "document_search_backfill",
     why: "The one row that says how far the fill of document_search for documents stored before that release has got (migration 20261101182501). A process reads `select done from document_search_backfill` at boot, over one row, and a boot that finds none logs the read's error and exits 1: measured, the harness could then start no stack at all.",
@@ -76,7 +74,7 @@ const keptTables: readonly { table: string; why: string }[] = [
 // Beside the rows a scenario itself wrote, the reset empties the tables below, and what
 // emptying each one does is the reason it is safe to empty.
 //
-// Five of the nine cursors, horizons, queues and markers of this schema are emptied:
+// Among the cursors, horizons, queues and markers of this schema, the reset empties these:
 //
 // - event_horizon, the highest event id a reader may read. The row names an event by its id and
 //   by that event's created_at, and both statements that touch it skip a row whose event is gone
@@ -93,9 +91,28 @@ const keptTables: readonly { table: string; why: string }[] = [
 //   fill wrote the keyword rows of (search_text_versions, emptied beside it). The fill creates it
 //   again, at no event, on its next pass (textversions/fill.go, createCursorQuery), where a row
 //   kept past a reset of the event log would name a position in the log the reset emptied.
-//
-// The other four are the singleton rows above, which the suite refused: emptying them leaves a
-// reader that expects exactly one row with none.
+// - session_titles_backfill, a migration's own row too (20261117100016), which says that the fill
+//   of session_titles for the events stored before that release is owed and how far it has got.
+//   Unlike the four rows above, it is read as one row or none: the fill deletes it once it is
+//   done, and an empty table owes no fill (store.FillSessionTitles), as that migration says of
+//   this reset, which empties session_titles and events beside it.
+// - eval_days_cursor, where the eval day-row refresher stands in the delivery change log and in
+//   the event log, and where the stored figures stand in the change log. With no row, the
+//   refresher's next pass reads the database as one no pass has committed on
+//   (evals/refresher_work.go, page; evals/figures_refresher.go, figureChanges): it starts each
+//   cursor at its log's head, and the rebuild such a pass begins is of the families whose rows
+//   are served (eval_days_serving) or whose figures are built (eval_figures_built), both of
+//   which the reset empties beside it, so it begins none.
+// - eval_days_walks, how far each of the refresher's walks over the days has built. With no row,
+//   each walk begins at the first input day of what it walks (evals/refresher_work.go, walk), so
+//   the walks build every day of the next scenario's inputs, among them the days of any change
+//   the cursors pass over by starting at the logs' heads.
+// - eval_days_owed, the days a write left owing a rewrite, each a project's day whose rows
+//   (eval_days, eval_day_members) the reset deletes beside it. With no row, the next pass owes no
+//   day a rewrite (evals/refresher_reads.go, owedDays).
+// - eval_rebuild_walks, how far each walk of a rebuild has built, by the rebuild's id. The reset
+//   empties eval_rebuilds beside it, so the next pass finds no rebuild building
+//   (evals/rebuild.go, readRebuild), as on a database that never began one.
 //
 // The rest of what the reset empties beside a scenario's own rows is per-scenario data or a
 // cache of it: each such table is keyed by a row the reset deletes, or is written again by the
