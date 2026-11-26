@@ -478,21 +478,22 @@ class Session:
                 path.write_text(json.dumps({"Replace": {str(REPO / a): str(REPO / b) for a, b in run_.overlay}}))
         return ["-overlay", str(path)]
 
-    def answer(self, key, compute):
-        """The cache's answer under `key`: one start() began, its problems put in this session's
-        when it is first asked, as a command run then would have put them; else compute(problems)
-        run now. Either way the cache then holds it, and only what the walk asked is in it."""
+    def answer(self, key, command, finish):
+        """The cache's answer under `key`: finish() of what command(problems) printed, taken from
+        the command start() began, whose problems go into this session's when the answer is first
+        asked, as the command's own would have had it run then; else command run now. Either way
+        the cache then holds it, and only what the walk asked is in it."""
         if key in self.cache:
             return self.cache[key]
         with self.lock:
             begun = self.early.pop(key, None)
         if begun is not None:
-            value, raised = begun.result()
+            printed, raised = begun.result()
             self.problems += raised
         else:
-            value = compute(self.problems)
-        self.cache[key] = value
-        return value
+            printed = command(self.problems)
+        self.cache[key] = finish(printed)
+        return self.cache[key]
 
     def listing_command(self, run_: Run) -> tuple:
         """(the cache key, the go list arguments) of the run's listing."""
@@ -511,7 +512,7 @@ class Session:
         by the command it runs, so Runs that differ only in a mode that asks the same listing (a
         test and a vet, a build and a run) share one."""
         key, args = self.listing_command(run_)
-        return self.answer(key, lambda problems: decode_stream(self.go(run_, args, problems)))
+        return self.answer(key, lambda problems: self.go(run_, args, problems), decode_stream)
 
     def named(self, run_: Run) -> list:
         """The packages the run's command names, out of its listing: each entry go list matched to
@@ -523,39 +524,38 @@ class Session:
 
     def module_files(self, run_: Run) -> list:
         """go.work, go.work.sum and each bound module's go.mod and go.sum, or the one module's."""
-        return self.answer(("mod", run_.workdir, run_.env), lambda problems: self.read_module_files(run_, problems))
-
-    def read_module_files(self, run_: Run, problems: list) -> list:
-        info = json.loads(self.go(run_, ["env", "-json", "GOWORK", "GOMOD"], problems) or "{}")
-        reads = []
-        gowork = info.get("GOWORK", "")
-        if gowork and gowork != "off":
-            why = f"the workspace of go commands in {run_.workdir} (go env GOWORK)"
-            reads += [Read(rel(gowork), why), Read(rel(gowork + ".sum"), why)]
-            work = json.loads(self.go(run_, ["work", "edit", "-json", gowork], problems) or "{}")
-            for use in work.get("Use") or []:
-                moddir = (Path(gowork).parent / use["DiskPath"]).resolve()
-                reads += [Read(rel(str(moddir / name)), f"{why}, use {use['DiskPath']}") for name in ("go.mod", "go.sum")]
-        elif info.get("GOMOD") and info["GOMOD"] != os.devnull:
-            why = f"the module of go commands in {run_.workdir} (go env GOMOD)"
-            reads += [Read(rel(info["GOMOD"]), why), Read(rel(str(Path(info["GOMOD"]).parent / "go.sum")), why)]
-        return [r for r in reads if r.glob]
+        key = ("mod", run_.workdir, run_.env)
+        if key not in self.cache:
+            info = json.loads(self.go(run_, ["env", "-json", "GOWORK", "GOMOD"]) or "{}")
+            reads = []
+            gowork = info.get("GOWORK", "")
+            if gowork and gowork != "off":
+                why = f"the workspace of go commands in {run_.workdir} (go env GOWORK)"
+                reads += [Read(rel(gowork), why), Read(rel(gowork + ".sum"), why)]
+                work = json.loads(self.go(run_, ["work", "edit", "-json", gowork]) or "{}")
+                for use in work.get("Use") or []:
+                    moddir = (Path(gowork).parent / use["DiskPath"]).resolve()
+                    reads += [Read(rel(str(moddir / name)), f"{why}, use {use['DiskPath']}") for name in ("go.mod", "go.sum")]
+            elif info.get("GOMOD") and info["GOMOD"] != os.devnull:
+                why = f"the module of go commands in {run_.workdir} (go env GOMOD)"
+                reads += [Read(rel(info["GOMOD"]), why), Read(rel(str(Path(info["GOMOD"]).parent / "go.sum")), why)]
+            self.cache[key] = [r for r in reads if r.glob]
+        return self.cache[key]
 
     def start(self, run_: Run) -> None:
-        """Begin the run's listing and module files on the pool start_early() made, and return at
-        once: run() calls it for each Run as the table declares it, so the go commands run while the
-        rest of the table loads rather than after it. A command already begun or answered is not
-        begun again; what it raises waits in its future until answer() is asked for it."""
+        """Begin the run's listing on the pool start_early() made, and return at once: run() calls
+        it for each Run as the table declares it, so `go list` runs while the rest of the table
+        loads rather than after it. The thread only waits on the command: what it printed is
+        decoded when the walk asks it (answer), since decoding there would hold the interpreter the
+        table's load runs on. A listing already begun or answered is not begun again; the problem a
+        failed one raises waits in its future until then."""
         if self.pool is None:
             return
         key, args = self.listing_command(run_)
-        jobs = ((key, lambda problems: decode_stream(self.go(run_, args, problems))),
-                (("mod", run_.workdir, run_.env), lambda problems: self.read_module_files(run_, problems)))
-        for key, compute in jobs:
-            with self.lock:
-                if key in self.cache or key in self.early:
-                    continue
-                self.early[key] = self.pool.submit(begun, compute)
+        with self.lock:
+            if key in self.cache or key in self.early:
+                return
+            self.early[key] = self.pool.submit(begun, lambda problems: self.go(run_, args, problems))
 
     def prefetch(self, runs) -> int:
         """Run, at once, the go commands closure() asks of each of `runs` - its listings and its
@@ -590,11 +590,11 @@ def go_jobs() -> int:
     return int(os.environ.get("CI_FILTERS_JOBS") or min(8, os.cpu_count() or 1))
 
 
-def begun(compute) -> tuple:
-    """compute's answer and the problems it raised, apart from any session's: a command start()
-    began, whose problems answer() puts in the session's when the walk asks it."""
+def begun(command) -> tuple:
+    """What command printed and the problems it raised, apart from any session's: a command
+    start() began, whose problems answer() puts in the session's when the walk asks it."""
     raised: list = []
-    return compute(raised), raised
+    return command(raised), raised
 
 
 # The session whose pool begins each Run's go commands as run() declares it (start_early); None
@@ -3455,7 +3455,8 @@ def gate_read_sets(session: Session, data, files: list, expander: Expander, unre
     own: dict = defaultdict(set)  # id of a gate -> the files it reads
     report = []
     # The go commands the walk below asks, run at once first: each gate's own and each one a
-    # //ci:builds line starts. A command only a listing below reveals runs when the walk asks it.
+    # //ci:builds line starts, most of them begun already as the table declared their runs
+    # (start_early). A command only a listing below reveals runs when the walk asks it.
     runs = [r for g in data.GATES for r in gate_runs(g)]
     runs += [action for actions in data.RULES.values() for action in actions if isinstance(action, Run)]
     jobs = session.prefetch(runs)
