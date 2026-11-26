@@ -618,6 +618,9 @@ func (img Image) runWithin(ctx context.Context, budget time.Duration, name strin
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	killed := procgroup.Configure(cmd)
 	err := cmd.Run()
+	if cmd.Process != nil && !killed() && errors.Is(context.Cause(attempt), errCommandTimeout) {
+		_ = cmd.Cancel() // CONTROL ONLY: a budget that passed after the command's own exit still stops its group, and reads as its stop
+	}
 	// Read before the deferred cancel, which ends a context nothing else ended with a cause of its
 	// own, context.Canceled.
 	cause := context.Cause(attempt)
