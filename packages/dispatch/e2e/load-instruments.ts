@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { errors, expect, type Page, type Request } from "@playwright/test";
 import type * as WebVitals from "web-vitals";
@@ -1038,7 +1038,12 @@ export async function installInstruments(page: Page, config: InstrumentConfig): 
         "web-vitals, a devDependency of packages/dispatch"
     );
   }
-  await page.addInitScript({ path: WEB_VITALS_IIFE });
+  // Playwright runs each init script inside a function of its own (`(() => { ... })();`,
+  // `InitScript` in playwright-core), so the build's top-level `var webVitals` would stay local to
+  // that function: the script names it on the window, where the init script below reads it.
+  await page.addInitScript({
+    content: `${readFileSync(WEB_VITALS_IIFE, "utf8")}\nwindow.webVitals = webVitals;`,
+  });
   await page.addInitScript(instrumentPage, {
     ...config,
     groups: BOX_GROUPS,
