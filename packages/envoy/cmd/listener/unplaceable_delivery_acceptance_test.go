@@ -238,13 +238,12 @@ func TestAnAgentDeliveryLogsAtWarnASessionReadThatDidNotAnswer(t *testing.T) {
 		if len(lines) != 1 {
 			t.Fatalf("the delivery to %s logged %d lines %q, want 1:\n%s", unread, len(lines), unreadLine, harness.logs.String())
 		}
-		line := lines[0]
-		message, _ := line["error"].(string)
-		if line["level"] != "WARN" || line["event_id"] != item.EventID || line["bound"] != float64(deliverySessionReadTimeout) ||
-			!strings.Contains(message, failure.Error()) {
-			t.Fatalf("the line is %v, want it at WARN naming event %s, the bound %s (%d ns) and the error %q",
-				line, item.EventID, deliverySessionReadTimeout, deliverySessionReadTimeout, failure)
-		}
+		assertRecordFields(t, lines[0], map[string]any{
+			"level":    "WARN",
+			"event_id": item.EventID,
+			"bound":    float64(deliverySessionReadTimeout),
+		})
+		assertRecordErrorCarries(t, lines[0], failure.Error())
 	})
 }
 

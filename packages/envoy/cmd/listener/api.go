@@ -611,11 +611,12 @@ func expectsReplyAnswer(requested json.RawMessage, answered contracts.ExpectsRep
 // than a miss, so it reaches the bucket not at all.
 //
 // A read-through that answers neither the row nor the bucket's word that it holds none - one the
-// window ended, or one the bus failed - is logged at WARN through the registry's logger, with the
-// window and its error: the stamp it left short says nothing of why. A cache hit makes no read, a
-// sender with no row is answered nats.ErrKeyNotFound, and an interest read's answer about the
-// record (interestReadAnswered) is no failed read either, so the line is never one a healthy bus
-// writes per message; a record that does not decode is left to the registry's own line.
+// window ended, or one the bus failed - is logged at WARN through the registry's logger, with its
+// bound (senderStampReadTimeout) and its error: the stamp it left short says nothing of why. A
+// cache hit makes no read, a sender with no row is answered nats.ErrKeyNotFound, and an interest
+// read's answer about the record (interestReadAnswered) is no failed read either, so the line is
+// never one a healthy bus writes per message; a record that does not decode is left to the
+// registry's own line.
 func senderStamp(ctx context.Context, registry *store.Registry, sessions *session.SessionRegistry, sourceSession string) *contracts.EnvelopeSender {
 	if sourceSession == "" {
 		return nil
@@ -648,9 +649,9 @@ func senderStamp(ctx context.Context, registry *store.Registry, sessions *sessio
 		sender.Machine, sender.Cwd = entry.MachineID, entry.Dir
 	}
 	if readErr := errors.Join(unansweredInterest, titleErr); readErr != nil {
-		registry.Logger().Warn("listener sender stamp left out what a read-through did not answer within its window",
+		registry.Logger().Warn("listener sender stamp left out what a read-through did not answer within its bound",
 			slog.String("session_id", sourceSession),
-			slog.Duration("window", senderStampReadTimeout),
+			slog.Duration("bound", senderStampReadTimeout),
 			slog.String("error", readErr.Error()),
 		)
 	}

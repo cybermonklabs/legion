@@ -1,15 +1,15 @@
 kind: Changed
 body: |-
-  The listener logs at WARN when a read it bounds does not answer in time and it goes on
-  without the answer, so an operator can see why: a sender stamp sent without what the
-  interest or the session bucket did not answer within its window, an agent delivery that
-  could not read the session's record within its bound, a kept role drain that leaves
-  the lane to the role's next claim, which now names the read that did not answer, its bound
-  and its error, where it logged at DEBUG, and a kept role drain that empties the lane after
-  walking the role's copies with no holder because the holder lookup did not answer, which
-  names the same three where it logged nothing, while a dead letter it sent could say that no
-  session held the role. None of them is written on a cache hit or for a record the bucket does
-  not hold.
+  The listener logs at WARN when a read it bounds fails and it goes on without the answer, so
+  an operator can see why: a sender stamp sent without what the interest or the session bucket
+  did not answer within its bound, an agent delivery that could not read the session's record
+  within its bound, a kept role drain that leaves the lane to the role's next claim, which now
+  names the read that failed (one that did not answer, or answered something that does not
+  decode), the window it was given and its error, where it logged at DEBUG, and a kept role
+  drain that empties the lane after walking the role's copies with no holder because the holder
+  lookup failed, which names the same three where it logged nothing, while a dead letter it sent
+  could say that no session held the role. The stamp and delivery lines are not written on a
+  cache hit or for a record the bucket does not hold.
 time: 2026-11-25T23:42:05Z
 custom:
     Issue: INFRA-1075

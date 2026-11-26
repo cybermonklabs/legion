@@ -873,14 +873,14 @@ type keptRoleHandover struct {
 // shows no holder waiting - is the keep's own case, a copy kept for a role nobody holds or for a
 // claim no read answered, so the handover ends with nothing to report, leaving the lane to the
 // role's next claim and to the sweep (sweepKeptRoleLanes), and says so at WARN, naming the read
-// that did not answer, its bound and its error. A resolution that did not answer still walks the
-// lane with no holder before the record decides, since a copy whose hour ended needs no holder to
-// end; that walk ends the handover only where it drained the lane, and there it writes a WARN line
-// naming the resolution that did not answer, since no read of the record follows to say why the
-// walk had no holder. That record is read under roleHolderReadTimeout and not under ctx, since a
-// handover whose window ended inside a read still decides by the record whether that read's
-// failure is carried out; the listener's shutdown, which cancels ctx, is asked before the read and
-// after it.
+// that failed - one that did not answer, or answered something that does not decode - the window
+// it was given and its error. A resolution that failed still walks the lane with no holder before
+// the record decides, since a copy whose hour ended needs no holder to end; that walk ends the
+// handover only where it drained the lane, and there it writes a WARN line naming the resolution
+// that failed, since no read of the record follows to say why the walk had no holder. That record
+// is read under roleHolderReadTimeout and not under ctx, since a handover whose window ended inside
+// a read still decides by the record whether that read's failure is carried out; the listener's
+// shutdown, which cancels ctx, is asked before the read and after it.
 //
 // The one failure carried out of nothing is a read's, or a walk's that forwarded nothing it did
 // not confirm, that this handover's own cancellation ended: the listener is shutting the sweep's
@@ -921,11 +921,16 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 	}
 	// shutDown reports whether the listener's shutdown, and not a deadline, ended ctx.
 	shutDown := func() bool { return errors.Is(ctx.Err(), context.Canceled) }
-	// retry is what a pass does with a read that did not answer within bound: it writes line for
-	// that read and reports whether this handover reads again, which the rule above decides. A
-	// handover that does not read again returns no error of that read's (ended), so the read's
-	// error is logged at WARN there: the role's wake then passes the lane over with nothing else
-	// to say why. A read answers on a healthy bus, so the line is never one written per message.
+	// retry is what a pass does with a read that failed - it did not answer, or answered something
+	// that does not decode: it writes line for that read and reports whether this handover reads
+	// again, which the rule above decides. Where it does not read again because no claim record
+	// names a holder, the handover returns no error of that read's (ended), so that exit logs the
+	// read at WARN: the role's next claim and the sweep then take the lane over with nothing else to
+	// say why. bound is the window the read was given, not how long it took: ctx, or a holder
+	// session read's roleHolderReadTimeout, can end it sooner, and a read that does not decode ends
+	// at once. A lane whose cursor does not decode, which any publisher on notifications.> can
+	// write, has this WARN written at every handover of a role no record names, the one each keep
+	// for that role starts included.
 	retry := func(line string, bound time.Duration, cause error) bool {
 		cfg.logger.LogEvent(slog.LevelDebug, line,
 			slog.String("role", role),
@@ -948,14 +953,14 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 		}
 		cfg.logger.LogEvent(slog.LevelWarn, "listener kept role drain left the lane to the role's next claim",
 			slog.String("role", role),
-			slog.String("unanswered", line),
+			slog.String("read", line),
 			slog.Duration("bound", bound),
 			slog.String("error", cause.Error()),
 			slog.Bool("claim_read_failed", claimErr != nil))
 		return false
 	}
-	// unresolved is the line a pass writes for a resolution of the role's holder that did not
-	// answer (retry), which the line of a walk with no holder that drained the lane names too.
+	// unresolved is the line a pass writes for a resolution of the role's holder that failed
+	// (retry), which the WARN of a walk with no holder that drained the lane names too.
 	const unresolved = "listener kept role message could not resolve the role's holder"
 	for {
 		if ctx.Err() != nil {
@@ -1013,20 +1018,20 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 		if progressed {
 			idle, backoff = 0, 0
 		}
-		if holderErr != nil && result.end != roleKeepLaneDrained {
-			if !retry(unresolved, roleKeepHolderWindow, holderErr) {
-				return ended()
-			}
-			continue
-		}
-		// A walk with no holder that drained the lane ends the handover with no read of the role's
-		// claim record (retry), so this line is the one that says why it had no holder: the dead
-		// letter it sent for a copy whose hour ended can say that no session held the role while
-		// one did.
 		if holderErr != nil {
-			cfg.logger.LogEvent(slog.LevelWarn, "listener kept role drain walked the role's copies with no holder because the holder lookup did not answer",
+			if result.end != roleKeepLaneDrained {
+				if !retry(unresolved, roleKeepHolderWindow, holderErr) {
+					return ended()
+				}
+				continue
+			}
+			// A walk with no holder that drained the lane ends the handover with no read of the
+			// role's claim record (retry), so this line is the one that says why it had no holder:
+			// the dead letter it sent for a copy whose hour ended can say that no session held the
+			// role while one did.
+			cfg.logger.LogEvent(slog.LevelWarn, "listener kept role drain walked the role's copies with no holder because the holder lookup failed",
 				slog.String("role", role),
-				slog.String("unanswered", unresolved),
+				slog.String("read", unresolved),
 				slog.Duration("bound", roleKeepHolderWindow),
 				slog.String("error", holderErr.Error()))
 		}
