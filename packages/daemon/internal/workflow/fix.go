@@ -969,19 +969,15 @@ func (e *Engine) tellFixStarted(ctx context.Context, tx pgx.Tx, issue record.Iss
 // fixStartedBody is the body of the fix-started row to role, a step beside the fix of news, or the
 // owner for the architect, branch being its branch beside the fix ("" for the reviewer): the fix,
 // its check, head and job, and the step it runs again in its own working copy; that the failure is
-// the fix's (for the tester, whose testing still judges the check, that its report can fail for
-// it); and how it pushes until its step ends, where it records each result and what it does where
-// GitHub refuses its push. The owner is told what it accepts on instead of where it records.
+// the fix's, so the step's report does not fail for it (the testing step leaves each check a CI job
+// runs to its task's end); and how it pushes until its step ends, where it records each result and
+// what it does where GitHub refuses its push. The owner is told what it accepts on instead of where
+// it records.
 func fixStartedBody(key string, news fixStarted, role claim.Role, branch string) string {
 	fix := news.fix
 	body := fmt.Sprintf("A fix of task %s of %s runs: check %s failed at %s (CI job %s). It is step %d (%s) again, in a working copy of its own.",
 		fix.Task, key, fix.Check, fix.Head, jobOf(fix), fix.Place, news.step)
-	if role == claim.RoleTester {
-		body += fmt.Sprintf(" Leave the fixing of that failure to the fix, and run its job no more. Your testing still judges each check a CI job runs, %s among them, "+
-			"so your report can fail for it: a failed report moves nothing while the fix runs, and the way after the fix reads it.", fix.Check)
-	} else {
-		body += " Leave that failure to the fix: your report does not fail for it, and you run its job no more."
-	}
+	body += " Leave that failure to the fix: your report does not fail for it, and you run its job no more."
 	if branch == "" {
 		return body + " Until your step ends, push nothing to the branch of the task."
 	}
