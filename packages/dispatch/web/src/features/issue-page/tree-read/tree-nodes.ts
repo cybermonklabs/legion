@@ -36,6 +36,7 @@ import {
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
 import { lensChips, lensDrafts } from "../lenses/lens-drafts";
 import { storeWords } from "../lenses/store-words";
+import { modelDraftSteps } from "../model-rows/model-drafts";
 import {
   blockAttributeLabel,
   coverageNotes,
@@ -86,8 +87,10 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
  * makes no draft and stays in the answer, which the page keeps whole (R7);
  * a later part draws a kind of its own with one line in that list, and adds a member to another
  * step's draft with one line in `treeDraftMarks`. A check of an issue under this one makes no
- * draft either, nor does its plan task but where the read answers its place in the plan
- * (`draftServing`), as the Plan view's read does.
+ * draft in this part's steps either, nor does its plan task but where the read answers its place
+ * in the plan (`draftServing`), as the Plan view's read does. Part Y's steps, first in that list
+ * (`model-rows/model-drafts.ts`), draw a criterion and a check, a plan task and a result of an
+ * issue under this one.
  *
  * `buildIssueTree` builds the tree from these drafts, so this module imports no code of
  * `issue-tree.ts`, which would close an import cycle (`biome.json`'s `noImportCycles`): the word
@@ -214,14 +217,14 @@ export type TreeDraftMark = (
  * The steps that draft the answer's nodes, each node offered to them in this order and drafted by
  * the first that answers one. These steps draw the kinds the outline draws, a fixed list read
  * from each node's supertag and not from the page's names for kinds (`NODE_TYPE_NAMES`), which
- * later parts widen: a requirement, a criterion, a check and a plan task, a result, a decision,
- * an ask, a comment and a message, a callout and an image, a paragraph and every other plain
- * block (`isPlainBlock`), a reading, and a child issue.
+ * later parts widen: a requirement, a check and a plan task, a result, a decision, an ask, a
+ * comment and a message, a callout and an image, a paragraph and every other plain block
+ * (`isPlainBlock`), a reading, and a child issue.
  */
 export const treeDraftSteps: readonly TreeDraftStep[] = [
+  ...modelDraftSteps({ draftOf, isForeign, isStatementNode, madeBy }),
   lensDrafts,
   draftRequirement,
-  draftCriterion,
   draftServing,
   draftResult,
   draftDecision,
@@ -513,24 +516,6 @@ function draftRequirement(
   // A proposed statement is a question still open and an overtaken one is closed: neither owes
   // any work, so neither draws a gap, whatever the counts say.
   if (node.state === "proposed" || node.state === "overtaken") draft.gaps = [];
-  return draft;
-}
-
-/** A criterion of this issue: what a person wants to be able to do, written under the ask, the
- *  comment or the message that asked for it, drawn by its kind, its words and who wrote it, as the
- *  outline draws a turn's. It stands under the parent the read gives it, as every draft whose step
- *  names no parent does (`placeOf`): the row of that ask, comment or message, an ask's the row of
- *  the block it was indexed from where the asks read names one (`treeIdOfNode`). A criterion the
- *  read marks as another issue's is a block of that issue's text, which this issue's conversation
- *  never wrote, and makes no draft. */
-function draftCriterion(
-  node: TreeAnswerNode,
-  _answer: TreeAnswer,
-  context: TreeDraftContext
-): Draft | undefined {
-  if (node.supertag !== "criterion" || isForeign(node, context.key)) return undefined;
-  const draft = draftOf(node, "criterion", context);
-  madeBy(draft, node);
   return draft;
 }
 
@@ -888,16 +873,19 @@ function isPlainBlock(node: TreeAnswerNode, context: TreeDraftContext): boolean 
 }
 
 /** A reading: an agent's reading of the ask or the decision it reads, never of the issue, drawn
- *  as the outline drew one, by its kind and its words and nothing more. It stands under the
- *  parent the read gives it, the ask or the decision its `part_of` reaches, as every draft whose
- *  step names no parent does (`placeOf`), and nowhere else. */
+ *  as the outline drew one, by its kind, its words, and the agent that wrote it and when, as the
+ *  read answers them (`madeBy`). It stands under the parent the read gives it, the ask or the
+ *  decision its `part_of` reaches, as every draft whose step names no parent does (`placeOf`),
+ *  and nowhere else. */
 function draftReading(
   node: TreeAnswerNode,
   _answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
   if (node.supertag !== "reading") return undefined;
-  return draftOf(node, "reading", context);
+  const draft = draftOf(node, "reading", context);
+  madeBy(draft, node);
+  return draft;
 }
 
 /** A child issue, with its row as the issue read carries it (`TreeNode.child`). The issue itself
