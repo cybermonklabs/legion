@@ -64,14 +64,23 @@ whole jobs 4.5 and 4.2 min), against 274 s and 214 s for the `-c` fill (jobs 139
 
 Go reads a module it has extracted from its tree, ~/go/pkg/mod/<module>@<version>. The zip that
 tree came from, under ~/go/pkg/mod/cache/download/<module>/@v/, is read only to extract the tree
-again when it is missing, and by `go mod download` and `go mod verify`, which no job that
-restores these entries runs: a build checks that the tree and its .ziphash exist
-(cmd/go/internal/modfetch/fetch.go, DownloadDir), and the .info, .mod and .ziphash files beside
-the zip stay. So every fill that saves a module cache deletes its zips before the save: the end
+again when it is missing, and by `go mod download` and `go mod verify`: a build checks that the
+tree and its .ziphash exist (cmd/go/internal/modfetch/fetch.go, DownloadDir), and the .info, .mod
+and .ziphash files beside the zip stay. No job that restores these entries runs `go mod verify`.
+One step ran `go mod download` on a module they hold: daemon-go's forced-order step in its leg 2,
+which restores go-daemon (packages/envoy/scripts/forced-order.sh; envoy-go-race runs the same
+script on a module cache it restores from no entry). The script took nats-server's tree from
+`go mod download -json`, which fetches the zip whenever the cache holds none
+(cmd/go/internal/modcmd/download.go calls DownloadZip), so on an entry without zips it would have
+fetched that zip on every run. The script now reads the tree's directory from `go list -m -json`,
+which fetches nothing, and keeps `go mod download` for a version no cache holds (its -server
+2.10.29 run). So every fill that saves a module cache deletes its zips before the save: the end
 command of .github/scripts/go-cache-working-set.sh does it for go-daemon, go-notices, go-envoy and
 go-envoy-test, and its zips command alone for go-envoy-infra, which builds from nothing and runs
-no begin. A job that
-does need a zip downloads it again, as it downloads a module the entry never held.
+no begin. The go-envoy-darwin-vet fill runs end too, on the go-envoy entry it restores for its
+module cache; its save holds only its own darwin build cache directory, so the zips it deletes
+are in no entry and the delete changes nothing it saves. A job that does need a zip downloads it
+again, as it downloads a module the entry never held.
 
 go-envoy-test's were measured first, in its scratch runs above: 160 zips and 272 MB of the arm64
 entry's module cache (150 and 210 MB on x64), stored as they are, since a zip does not compress
