@@ -10,10 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -40,8 +43,10 @@ const storeStepWait = 30 * time.Second
 //     document_block_versions row (the block index's queueStand), the blocks' nodes in ascending
 //     (kind, id), then their document_blocks rows; it then appends what the index stated under
 //     the event that recorded the version, an event the log held before the tick began
-//     (graphstore.QueueCaused), so it appends no event of its own and its tuples' cause is in the
-//     log before any step of it;
+//     (graphstore.QueueCaused), so its tuples' cause is in the log before any step of it. The one
+//     event it appends, its issue's artifact.indexed (queueIndexedEvent), is its last write, after
+//     every step above, and takes only its issue's owner row, under the owner lock it already
+//     holds;
 //   - a settlement that writes a version (commitVersion): the owner lock, then, first in its write
 //     phase, the document's fence row (lockSettlementFence), the block index as the tick runs it,
 //     the artifact.version event, and then what the index stated under it (appendEvents);
@@ -105,6 +110,44 @@ func TestEveryDocsStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 	t.Run("the roll tick's object pass", requireTheRollTicksObjectPassLockOrder)
 }
 
+// TestTheQueryDrainTakesTheStoreLockOrder is c-lock-order's proof of the drain of the queries a
+// write left owed (drainMark, docs/query_marks.go). A recorded result moves the record of its
+// issue's Verification query and writes no version of that document: its route's batch marks the
+// issue's queries owed (QueueQueryMark), and api's TestEveryApiStoreWriterTakesTheStoreLockOrder
+// holds that transaction alone, whose last step is the mark's upsert. The drain writes the
+// version in a transaction of its own once the route has committed, and this package runs it, so
+// its steps are held here, to the order written on api/inbox_read.go's markInboxReadThreads and
+// docs/persistence.go's: the issue's owner lock, then the lock of the issue's room
+// (LockQueryRooms), both advisory locks that no table lock shows, then, in the one batch of its
+// write phase, the version's row, the version's node (WriteVersionNode), the artifact.version
+// event, the clear of the mark, the tuples that stand under the mark's cause - the version's node
+// moved onto it and its facts (graphstore.QueueCaused) - and last the head rows
+// (graphstore.QueueHeads). The batch also writes the version's version_renders row and, where the
+// document's block index stood at the version before, its stand (queueRevisionStand); neither is a
+// step of the written order, so the path declares neither.
+//
+// Each run writes an issue of its own, born in its room as approval_carry_order_test.go's result
+// row writes one (createIssueRoom), settles a Verification document of one check through a peer,
+// and leaves a recorded result's mark standing with no drain (leaveResultOwed), so the drain finds
+// the Verification record moved and owes one version, which the run reads back with the mark gone.
+// The path's steps are listed in the order the drain queues them (requireTheDocsOrderAdmits), then
+// each is held, one run per step, and the statement the drain waits at is read from
+// pg_stat_activity (requireEachDocsStepIsWaitedAtInTurn). The owner lock and the room's lock are
+// read from pg_locks: stopped at the owner lock the drain holds neither, stopped at the room's it
+// holds the owner's alone, and stopped at any later step it holds both, so the owner lock comes
+// before the room's, and both before the first write. The version's row, its node, the event, the
+// tuples and the head rows are held as the tables they are written to, and the mark as its row.
+func TestTheQueryDrainTakesTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	database := storetest.Open(t)
+	service, server := newTestServiceInstance(t, database)
+	rig := &docsWriterRig{database: database, service: service}
+	writer := rig.queryDrain(server.URL)
+	requireTheDocsOrderAdmits(t, writer)
+	requireEachDocsStepIsWaitedAtInTurn(t, ctx, rig, writer)
+}
+
 // --- the steps ----------------------------------------------------------------------------
 
 // docsOrderStep is the step of the written order a lock step takes.
@@ -112,6 +155,10 @@ type docsOrderStep int
 
 const (
 	docsOwnerStep docsOrderStep = iota
+	// docsRoomStep is a room's lock (LockQueryRooms), which a transaction that takes both an
+	// owner's lock and a room's takes right after the owner's advisory lock, before the owner row and
+	// every write (docs/persistence.go's order).
+	docsRoomStep
 	// docsCursorStep is the block-index tick's own event cursor row, which no writer but a tick
 	// takes, so the written order names no place for it; the tick takes it before anything else
 	// but the owner locks of the comments its events name.
@@ -121,6 +168,8 @@ const (
 	docsProjectionStep
 	docsEventStep
 	docsTupleStep
+	// docsHeadStep is the head rows (graphstore.QueueHeads), the last statement a write queues.
+	docsHeadStep
 )
 
 // The lock modes a step shows in pg_locks: `for update`, `for no key update` and a foreign key's
@@ -183,14 +232,29 @@ type docsStep struct {
 type docsWriter struct {
 	name  string
 	steps []docsStep
+	// locks are the advisory locks the path takes, which a table lock does not show.
+	locks []docsAdvisoryLock
 	// ready writes what one run needs and answers the run, not yet started.
 	ready func(t *testing.T, ctx context.Context) docsRun
+}
+
+// docsAdvisoryLock is a transaction advisory lock a path takes at its step number step (an index of
+// docsWriter.steps). A write stopped at a later step holds it, granted, and a write stopped at that
+// step or before it does not: it waits for it there, or has not reached it. holds reads that from
+// pg_locks for the backend the write runs on.
+type docsAdvisoryLock struct {
+	name  string
+	step  int
+	holds func(t *testing.T, ctx context.Context, rig *docsWriterRig, backend uint32, run docsRun) bool
 }
 
 // docsRun is one run of a write path.
 type docsRun struct {
 	// document is the document the run writes.
 	document string
+	// issue is the issue whose drain the run follows, and tree the id of its room's tree artifact,
+	// whose lock the drain takes after the issue's owner lock.
+	issue, tree string
 	// made is the session node the run's follow makes, which no write before the run recorded,
 	// and the zero node for a path that follows nobody.
 	made graphstore.Node
@@ -242,6 +306,14 @@ const (
 	// docsCommentRowStatement is the comment write's naming of each comment's node on its row
 	// (refs.CommentWrite.Queue).
 	docsCommentRowStatement = "update comments c set node_kind"
+	// docsVersionStatement is a document version's insert (RenderStampHead), which the drain's
+	// batch starts with.
+	docsVersionStatement = "with head as (select "
+	// docsClearMarkStatement is the drain's delete of the issue's row of issue_query_marks
+	// (queryMarkClearStatement).
+	docsClearMarkStatement = "delete from issue_query_marks"
+	// docsHeadStatement is the head write of the nodes a batch wrote (graphstore.QueueHeads).
+	docsHeadStatement = "with head_nodes as materialized ("
 )
 
 // --- the paths ----------------------------------------------------------------------------
@@ -582,6 +654,198 @@ func (r *docsWriterRig) askOpenedAndCaused(ctx context.Context, document, sessio
 	return nil
 }
 
+// drainVerification is the Verification document the drain's runs settle: one check, c1, which the
+// result a run leaves owed is recorded on.
+const drainVerification = ":::check{#c1}\nThe first check holds.\n:::\n"
+
+// queryDrain is the drain of the queries a recorded result left owed (drainMark), run as the
+// block-index tick and a request's drain run it. It takes the issue's owner lock and then the lock
+// of its room, reads the mark and what each query version is decided on, and in one batch writes
+// the version's row, its node, the artifact.version event that records it, the clear of the mark,
+// the tuples caused by the mark's cause - the mark holds none, so the sentinel, as a result's
+// recorded with no event of its own leaves it - and the head rows. The owner lock and the room's
+// lock are advisory and held by their key; the version's row and node, the event, the tuple append
+// and the head rows are new, and are held as their tables; the mark is there, and is held as its
+// row, which the delete that clears it waits for.
+//
+// Each run is an issue of its own (createIssueRoom), so a run's drain finds the one mark its run
+// left and owes the one version, of the Verification document its peer settled. A query document
+// with no version_renders row is left as it is (planRevisions), so the spec and the plan owe none.
+func (r *docsWriterRig) queryDrain(serverURL string) docsWriter {
+	return docsWriter{
+		name: "drainMark",
+		steps: []docsStep{
+			{
+				name: "the issue's owner lock", order: docsOwnerStep,
+				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, run docsRun) {
+					t.Helper()
+					if err := store.LockOwner(ctx, holder, store.IssueOwner(run.issue)); err != nil {
+						t.Fatalf("hold issue %s's owner lock: %v", run.issue, err)
+					}
+				},
+				at: docsOwnerStatement,
+			},
+			{
+				name: "the lock of the issue's room", order: docsRoomStep,
+				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, run docsRun) {
+					t.Helper()
+					if _, err := holder.Exec(ctx, `select pg_advisory_xact_lock(hashtext($1::text))`, run.tree); err != nil {
+						t.Fatalf("hold the lock of the room of %s: %v", run.issue, err)
+					}
+				},
+				at: lockQueryRoomsStatement,
+			},
+			{
+				name: "the version's row", order: docsProjectionStep,
+				hold: holdDocsTableWrites("artifact_versions"), at: docsVersionStatement,
+				takes: []docsTableLock{{"artifact_versions", docsRowExclusiveMode}},
+			},
+			{
+				name: "the version's node", order: docsNodeStep,
+				hold: holdDocsTableWrites("graph_nodes"), at: docsNodeStatement,
+				takes: []docsTableLock{{"graph_nodes", docsRowExclusiveMode}},
+			},
+			docsEventAppendStep(),
+			{
+				name: "the clear of the mark", order: docsProjectionStep,
+				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, run docsRun) {
+					t.Helper()
+					holdDocsRow(t, ctx, holder, `select 1 from issue_query_marks where issue_key = $1 for update`, run.issue)
+				},
+				at:    docsClearMarkStatement,
+				takes: []docsTableLock{{"issue_query_marks", docsRowExclusiveMode}},
+			},
+			{
+				name: "the tuple append", order: docsTupleStep, caused: true,
+				hold: holdDocsTableWrites("graph_tuples"), at: docsTupleStatement,
+				takes: []docsTableLock{{"graph_tuples", docsRowExclusiveMode}},
+			},
+			{
+				name: "the head rows", order: docsHeadStep,
+				hold: holdDocsTableWrites("issue_head_nodes"), at: docsHeadStatement,
+				takes: []docsTableLock{{"issue_head_nodes", docsRowExclusiveMode}},
+			},
+		},
+		locks: []docsAdvisoryLock{
+			{
+				name: "the issue's owner lock", step: 0,
+				holds: func(t *testing.T, ctx context.Context, rig *docsWriterRig, backend uint32, run docsRun) bool {
+					return rig.holdsOwnerLock(t, ctx, backend, store.IssueOwner(run.issue))
+				},
+			},
+			{
+				name: "the lock of the issue's room", step: 1,
+				holds: func(t *testing.T, ctx context.Context, rig *docsWriterRig, backend uint32, run docsRun) bool {
+					return rig.holdsRoomLock(t, ctx, backend, run.tree)
+				},
+			},
+		},
+		ready: func(t *testing.T, ctx context.Context) docsRun {
+			r.named++
+			room := createIssueRoom(t, r.database, 100+r.named)
+			writeRoomQueryNodes(t, r.database, room)
+			r.settleVerification(t, ctx, serverURL, room)
+			stated := newestVersionNumber(t, r.database, room.verification)
+			requireStatedRow(t, r.database, room.issue, graphstore.QueryVerification, room.verification, stated)
+			leaveResultOwed(t, r.database, room)
+			versions := r.versionCount(t, room.verification)
+			return docsRun{document: room.verification, issue: room.issue, tree: room.tree, write: func() error {
+				if _, found, err := r.service.drainMark(ctx, room.issue); err != nil || !found {
+					return fmt.Errorf("the drain of %s found its mark: %v, %v", room.issue, found, err)
+				}
+				if now, err := r.versionsOf(ctx, room.verification); err != nil || now != versions+1 {
+					return fmt.Errorf("the drain left %d versions of %s's Verification document (%v), want the %d before it and its own", now, room.issue, err, versions)
+				}
+				var owed bool
+				if err := r.database.Pool.QueryRow(ctx, `select exists (select 1 from issue_query_marks where issue_key = $1)`, room.issue).Scan(&owed); err != nil || owed {
+					return fmt.Errorf("the drain of %s left its mark standing (%t, %v)", room.issue, owed, err)
+				}
+				return nil
+			}}
+		},
+	}
+}
+
+// settleVerification writes drainVerification into the Verification document of room through a
+// peer's live edit and settles the room, as the result row of TestEachCarryKindIsWrittenBeforeItsVersion
+// does, so the document's newest version holds the check c1 and the version_renders row the room's
+// pass recorded for it.
+func (r *docsWriterRig) settleVerification(t *testing.T, ctx context.Context, serverURL string, room issueRoom) {
+	t.Helper()
+	peer := connectPeer(t, serverURL, room.verification, "alice")
+	if err := peer.WaitForText(fragmentMarkdown(room.plan), planSeed, roomWait(t)); err != nil {
+		t.Fatalf("a peer's copy of %s's room: %v", room.issue, err)
+	}
+	stored := roomUpdateCount(t, r.database, room.tree)
+	tree, err := pmdoc.Parse(drainVerification)
+	if err != nil {
+		t.Fatalf("parse the Verification document: %v", err)
+	}
+	want, err := pmdoc.Render(tree)
+	if err != nil {
+		t.Fatalf("render the Verification document: %v", err)
+	}
+	fragment := peer.Doc.GetXmlFragment(room.verification)
+	var updated error
+	if _, err := peer.Send(func(txn *crdt.Transaction) { updated = pmdoc.Update(txn, fragment, tree) }); err != nil || updated != nil {
+		t.Fatalf("write the Verification document of %s: %v, %v", room.issue, err, updated)
+	}
+	if err := peer.WaitForText(fragmentMarkdown(room.verification), want, roomWait(t)); err != nil {
+		t.Fatalf("a peer's copy of %s's room: %v", room.issue, err)
+	}
+	waitForStoredUpdates(t, r.database, room.tree, stored)
+	if err := r.service.waitForDurableAppends(ctx, room.tree); err != nil {
+		t.Fatalf("wait for %s's appends: %v", room.issue, err)
+	}
+	if err := r.service.settleOwedNow(ctx, room.tree, time.Now().Add(roomWait(t))); err != nil {
+		t.Fatalf("settle %s's room: %v", room.issue, err)
+	}
+}
+
+// leaveResultOwed records a result of the check c1 of room's Verification document as the results
+// route states one (graphstore.ResultFacts), with the mark of the room issue's queries in the same
+// transaction (QueueQueryMark), and drains nothing: the mark stands for the drain under test, whose
+// version of the Verification document the moved record owes. recordResult writes the same result
+// and mark, and runs the drain after them.
+func leaveResultOwed(t *testing.T, database *store.Store, room issueRoom) {
+	t.Helper()
+	ctx := context.Background()
+	var treeRef string
+	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, room.tree).Scan(&treeRef); err != nil {
+		t.Fatalf("read the ref_key of %s's tree: %v", room.issue, err)
+	}
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		var at time.Time
+		if err := tx.QueryRow(ctx, `select clock_timestamp()`).Scan(&at); err != nil {
+			return err
+		}
+		nodes, tuples, ok := graphstore.ResultFacts(graphstore.Result{
+			ID: uuid.NewString(), Project: "DOC", Check: treeRef + "#c1",
+			Verdict: "pass", Surface: "cli", Run: "go test ./...", Observed: "The first check holds.",
+			Recorder: model.Actor{Kind: "user", ID: "alice"}, At: at, Event: graphstore.NoEvent,
+		})
+		if !ok {
+			return fmt.Errorf("the result of %s#c1 is past the store's bound", treeRef)
+		}
+		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+			return err
+		}
+		var marked bool
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			QueueQueryMark(b, room.issue, graphstore.NoEvent, &marked)
+			return nil
+		}); err != nil {
+			return err
+		}
+		if !marked {
+			return fmt.Errorf("%s took no mark of its queries owed", room.issue)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("record a result of %s#c1: %v", treeRef, err)
+	}
+}
+
 // ownerStep is the owner lock of the rig's documents and their comments, issue CORE-1's, which
 // lockArtifactOwner and refs.LockCommentOwners take first: a transaction advisory lock,
 // which locks no table and no row.
@@ -744,6 +1008,8 @@ func holdDocsBlockNode(t *testing.T, ctx context.Context, holder pgx.Tx, run doc
 // statement. A step of a path that appends several events names the one its tuples carry
 // (docsStep.cause), and a step of a path that writes several documents the fence it is under
 // (docsStep.fence); a step that names none is held to the path's one event or fence.
+// A path's room lock comes right after its owner lock, before every other step (docsRoomStep), as
+// api's requireTheWrittenOrderAdmits holds it, and its head rows come last (docsHeadStep).
 func requireTheDocsOrderAdmits(t *testing.T, writer docsWriter) {
 	t.Helper()
 	position := make(map[string]int, len(writer.steps))
@@ -777,6 +1043,12 @@ func requireTheDocsOrderAdmits(t *testing.T, writer docsWriter) {
 		if step.order == docsCursorStep && index != 0 && (index != 1 || writer.steps[0].order != docsOwnerStep) {
 			t.Errorf("%s takes %s as its step %d: it comes first but for the owner lock", writer.name, step.name, index+1)
 		}
+		if step.order == docsRoomStep && slices.ContainsFunc(writer.steps[:index], func(before docsStep) bool { return before.order != docsOwnerStep }) {
+			t.Errorf("%s takes %s after a step that is no owner lock: a room's lock comes right after the owner's, before the owner row and every write", writer.name, step.name)
+		}
+		if step.order == docsHeadStep && index != len(writer.steps)-1 {
+			t.Errorf("%s takes %s as its step %d of %d: the head rows are the last rows a write takes", writer.name, step.name, index+1, len(writer.steps))
+		}
 		if step.order == docsProjectionStep && step.names != "" {
 			if node, ok := named(step, step.names, docsNodeStep, -1); ok && node > index {
 				t.Errorf("%s takes %s before %s, the node its foreign key names", writer.name, step.name, step.names)
@@ -803,6 +1075,10 @@ func requireTheDocsOrderAdmits(t *testing.T, writer docsWriter) {
 // (docsParseTimeMode). Every event these paths append is an issue's, so none of them takes a
 // projects row. Held at the revision fence, the write is held to taking no lock besides those as
 // well (requireNothingBetweenTheStepsAndTheFence).
+// A path that takes advisory locks (docsWriter.locks) is held to those as well, read from pg_locks:
+// stopped at the step that takes one, or before it, the write does not hold it, and stopped at a
+// later step it holds it granted, so the locks are taken in their order, and before the writes
+// that follow them.
 func requireEachDocsStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig *docsWriterRig, writer docsWriter) {
 	t.Helper()
 	first := map[docsTableLock]int{}
@@ -825,6 +1101,18 @@ func requireEachDocsStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig 
 		held := rig.locksHeld(t, ctx, backend)
 		t.Logf("held at %s, %s waits at: %s", step.name, writer.name, running)
 		t.Logf("held at %s, %s holds: %v", step.name, writer.name, held)
+		for _, lock := range writer.locks {
+			holds := lock.holds(t, ctx, rig, backend, run)
+			t.Logf("held at %s, %s holds %s: %t", step.name, writer.name, lock.name, holds)
+			switch {
+			case index > lock.step && !holds:
+				t.Errorf("%s held at %s holds no %s, which is a lock of an earlier step: it reached %s before it took that lock",
+					writer.name, step.name, lock.name, step.name)
+			case index <= lock.step && holds:
+				t.Errorf("%s held at %s already holds %s, the lock of step %d: it took that lock before %s",
+					writer.name, step.name, lock.name, lock.step+1, step.name)
+			}
+		}
 		if !strings.HasPrefix(running, docsNormalizedStatement(step.at)) {
 			t.Errorf("%s held at %s waits at %q, which is not the statement that takes %s (%q)",
 				writer.name, step.name, running, step.name, step.at)
@@ -1202,6 +1490,44 @@ func (r *docsWriterRig) locksHeld(t *testing.T, ctx context.Context, backend uin
 	})
 	if err != nil {
 		t.Fatalf("read the locks backend %d holds: %v", backend, err)
+	}
+	return held
+}
+
+// holdsOwnerLock is whether backend's transaction holds owner's lock (store.LockOwner), granted: a
+// two-key advisory lock, the owner namespace as its classid and the hashtext of the owner's lock
+// key as its objid, as the unsigned 32-bit values pg_locks carries, in this database alone, which
+// is how api's issueOwnerLockKey names it. A backend waiting for the lock holds no such row granted.
+func (r *docsWriterRig) holdsOwnerLock(t *testing.T, ctx context.Context, backend uint32, owner store.Owner) bool {
+	t.Helper()
+	var held bool
+	if err := r.database.Pool.QueryRow(ctx, `
+		select exists (select 1 from pg_locks l
+			where l.pid = $3 and l.granted and l.locktype = 'advisory' and l.objsubid = 2
+			  and l.database = (select oid from pg_database where datname = current_database())
+			  and l.classid = ($2::bigint & 4294967295)::oid
+			  and l.objid = (hashtext($1)::bigint & 4294967295)::oid)
+	`, owner.LockKey(), int64(store.OwnerLockNamespace), backend).Scan(&held); err != nil {
+		t.Fatalf("read whether backend %d holds %s %s's owner lock: %v", backend, owner.Kind, owner.Key, err)
+	}
+	return held
+}
+
+// holdsRoomLock is whether backend's transaction holds the lock of the room whose artifact id is
+// room, granted: the single-key advisory lock on the hashtext of the id (lockDocumentRoom,
+// LockQueryRooms), whose key pg_locks splits into the high and the low 32 bits of the bigint, as
+// the room's read of its own lock reads it (room_query.go).
+func (r *docsWriterRig) holdsRoomLock(t *testing.T, ctx context.Context, backend uint32, room string) bool {
+	t.Helper()
+	var held bool
+	if err := r.database.Pool.QueryRow(ctx, `
+		select exists (select 1 from pg_locks l
+			where l.pid = $2 and l.granted and l.locktype = 'advisory' and l.objsubid = 1
+			  and l.database = (select oid from pg_database where datname = current_database())
+			  and l.classid = ((hashtext($1)::bigint >> 32) & 4294967295)::oid
+			  and l.objid = (hashtext($1)::bigint & 4294967295)::oid)
+	`, room, backend).Scan(&held); err != nil {
+		t.Fatalf("read whether backend %d holds the lock of room %s: %v", backend, room, err)
 	}
 	return held
 }

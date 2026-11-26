@@ -208,6 +208,20 @@ func TestAnAskAgreesWithItsNodeShowingNoAnswerStateOrTheRowsOwn(t *testing.T) {
 		copiedSource{ask: rows["own"], document: source}, rows["own"]) {
 		t.Error("a copy showing its provenance and no state, its source answered on its node and its row: agrees with its source, want it to disagree")
 	}
+	// A process of the release before reopened own, and the catch-up has not yet stated that on
+	// own's node, which still holds the answer: a settlement on a fleet of one build then writes a
+	// copy of own from the row (keptFromItsNode), its provenance and no state, which agrees with
+	// the source as the row holds it, as the copy of an open ask does.
+	reopened := rows["own"]
+	reopened.State, reopened.Answer = asks.StateOpen, nil
+	if !copyAgreesWithItsSource(askNodeOf(t, `:::ask{#own urgency="low" multiple="false" copied_from="own-ask" copied_from_document="`+source+`"}`+"\n"+ownBody),
+		copiedSource{ask: reopened, document: source}, rows["own"]) {
+		t.Error("a copy showing its provenance and no state, its source reopened on its row and answered on its node: disagrees with its source, want it to agree")
+	}
+	if copyAgreesWithItsSource(askNodeOf(t, `:::ask{#own urgency="low" multiple="false" state="resolved" copied_from="own-ask" copied_from_document="`+source+`"}`+"\n"+ownBody),
+		copiedSource{ask: reopened, document: source}, rows["own"]) {
+		t.Error("a copy showing resolved, its source reopened on its row and answered on its node: agrees with its source, want it to disagree")
+	}
 }
 
 // withoutAskServerAttributes takes the eight off every ask block wherever it stands - at the top
@@ -339,6 +353,119 @@ func TestCarryVerdictOverTheApprovedAndTheNewVersion(t *testing.T) {
 		}
 		if want := attributeRemovalCase.change + carriedReasonEnd; carried && change != want {
 			t.Errorf("%s: the carried change reads %q, want %q", test.name, change, want)
+		}
+	}
+}
+
+// The answer carry over the two versions (answerCase), the case the release before held: N
+// carries the approval of A when it differs from A only in ask blocks whose asks the approver
+// answered after the approval (approverAnswered), a block added since among them - the
+// approver's answer to it is the whole change since the version they approved - and a block A
+// held open under other words. It composes with R10's case, naming both. A block added since that
+// nobody answered, or that someone else answered, an edit outside the blocks and a block of A
+// removed carry nothing.
+// An issue's reopen is carried too: the closed issue's version shows the question the close
+// withdrew resolved, and the reopen's version shows it open again, which differs in the
+// server-owned attributes of its block alone, on a fleet of one build and while two builds serve.
+func TestCarryVerdictCarriesTheApproversAnswersGivenSinceTheApproval(t *testing.T) {
+	const prose = "# Rollout\n\nThe service ships behind a flag.\n\n"
+	const waveBody = "How many regions take the first wave?\n\n- One: One region.\n- Two: Two regions.\n:::\n"
+	own := ownWithheld + ownBody
+	waveOpen := `:::ask{#wave urgency="med" multiple="false"}` + "\n" + waveBody
+	waveAnswered := `:::ask{#wave urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-03T10:00:00Z"}` + "\n" + waveBody
+	waveReworded := `:::ask{#wave urgency="med" multiple="false"}` + "\nHow many regions go first?\n\n- One: One region.\n- Two: Two regions.\n:::\n"
+	waveResolved := `:::ask{#wave urgency="med" multiple="false" state="resolved"}` + "\n" + waveBody
+	waveOpenInStep := `:::ask{#wave urgency="med" multiple="false" state="open"}` + "\n" + waveBody
+	approvers := map[string]bool{"wave": true}
+	parse := func(markdown string) *pmdoc.Node {
+		t.Helper()
+		tree, err := pmdoc.ParseRendering(markdown)
+		if err != nil {
+			t.Fatalf("parse %q: %v", markdown, err)
+		}
+		return tree
+	}
+	answers := answerCase.change + carriedReasonEnd
+	attributes := attributeRemovalCase.change + carriedReasonEnd
+	for _, test := range []struct {
+		name              string
+		approved, version string
+		approverAnswered  map[string]bool
+		change            string
+	}{
+		{"the approver's answer to a block added since the approval", prose + own, prose + own + "\n" + waveAnswered, approvers, answers},
+		{"the approver's answer to a block the approved version held open under other words", prose + own + "\n" + waveReworded, prose + own + "\n" + waveAnswered, approvers, answers},
+		{"the approver's answer to a block added since, the attributes dropped from another", prose + ownDecided + ownBody, prose + ownBare + ownBody + "\n" + waveAnswered, approvers, answerCase.change + ", and " + attributes},
+		{"a block added since that someone else answered", prose + own, prose + own + "\n" + waveAnswered, nil, ""},
+		{"a block added since and left open", prose + own, prose + own + "\n" + waveOpen, nil, ""},
+		{"the approver's answer to a block added since beside an edit outside the blocks", prose + own, strings.Replace(prose, "a flag", "a switch", 1) + own + "\n" + waveAnswered, approvers, ""},
+		{"the approver's answer beside a block they approved removed", prose + own + "\n" + waveOpen, prose + waveAnswered, approvers, ""},
+		{"the reopen: the question the close withdrew open again", prose + own + "\n" + waveResolved, prose + own + "\n" + waveOpen, nil, attributes},
+		{"the reopen while two builds serve", prose + own + "\n" + waveResolved, prose + own + "\n" + waveOpenInStep, nil, attributes},
+	} {
+		if rendered, err := pmdoc.Render(parse(test.approved)); err != nil || rendered != test.approved {
+			t.Fatalf("%s: the approved version renders %q (%v), want itself: the verdict compares stored bytes", test.name, rendered, err)
+		}
+		change, carried, err := carryVerdict(carryInput{
+			approved: parse(test.approved), approvedText: test.approved, version: parse(test.version), agrees: true, approverAnswered: test.approverAnswered,
+		})
+		if err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		if carried != (test.change != "") || change != test.change {
+			t.Errorf("%s: carry = %v with the change %q, want carry %v with %q", test.name, carried, change, test.change != "", test.change)
+		}
+	}
+}
+
+// The answers the answer carry takes out are the approver's own, read off each ask's node with the
+// row's act (approverAnswers): given after the approval - not before it, nor at its own instant -
+// at a browser or by an agent whose act holds the approve scope, on a row of the version's own
+// document. Another person's answer, an agent's under the person scope alone, an answer the
+// node does not hold yet, a copy of another document's ask and an approval no person gave carry
+// nothing by it.
+func TestApproverAnswersAreTheApproversOwnGivenSinceTheApproval(t *testing.T) {
+	approvedAt := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	alice := model.ArtifactReview{State: "approved", Actor: model.Actor{Kind: "user", ID: "alice"}, CreatedAt: approvedAt}
+	narrow := &model.ActorAct{Session: "session-agent", TokenID: "token-1", TokenName: "planner", Scopes: []string{model.ScopePerson}}
+	approving := &model.ActorAct{Session: "session-agent", TokenID: "token-1", TokenName: "architect", Scopes: []string{model.ScopePerson, model.ScopeApprove}}
+	wave := askNodeOf(t, `:::ask{#wave urgency="med" multiple="false"}`+"\nHow many regions take the first wave?\n:::\n")
+	// answered is the block wave whose ask, a row of the document, by answers at with act, on its
+	// row and on its node, as asks.Settle writes them.
+	answered := func(by string, at time.Time, act *model.ActorAct) versionAsks {
+		state, user := asks.StateAnswered, model.CanonicalLogin(by)
+		return versionAsks{
+			nodes:   map[string]*pmdoc.Node{"wave": wave},
+			rows:    map[string]model.Ask{"wave": {ID: "wave-ask", State: asks.StateAnswered, Answer: &model.AskAnswer{User: by, Selected: []string{}, At: at, Act: act}}},
+			answers: map[string]askNodeAnswer{"wave-ask": {NodeAnswer: asks.NodeAnswer{State: &state, AnsweredBy: &user, AnsweredAt: &at}}},
+		}
+	}
+	since, before := approvedAt.Add(time.Minute), approvedAt.Add(-time.Minute)
+	behind := answered("alice", since, nil)
+	behind.answers = nil
+	copied := answered("alice", since, nil)
+	copied.sources = map[string]copiedSource{"wave": {ask: copied.rows["wave"]}}
+	copied.rows = nil
+	session := alice
+	session.Actor = model.Actor{Kind: "session", ID: "alice"}
+	for _, test := range []struct {
+		name   string
+		shown  versionAsks
+		review model.ArtifactReview
+		ours   bool
+	}{
+		{"the approver's answer since, at a browser", answered("alice", since, nil), alice, true},
+		{"the approver's answer since, by an agent whose act holds approve", answered("alice", since, approving), alice, true},
+		{"the approver's answer since, by an agent whose act holds the person scope alone", answered("alice", since, narrow), alice, false},
+		{"another person's answer since", answered("bob", since, nil), alice, false},
+		{"the approver's answer before the approval", answered("alice", before, nil), alice, false},
+		{"the approver's answer at the approval's own instant", answered("alice", approvedAt, nil), alice, false},
+		{"the approver's answer the row holds and the node does not yet", behind, alice, false},
+		{"the approver's answer to the source of a copy", copied, alice, false},
+		{"an approval no person gave", answered("alice", since, nil), session, false},
+	} {
+		if got := approverAnswers(test.shown, test.review)["wave"]; got != test.ours {
+			t.Errorf("%s: the approver's answer = %v, want %v", test.name, got, test.ours)
 		}
 	}
 }
@@ -1200,7 +1327,7 @@ func TestATransactionCannotCarryOneDocumentsApprovalTwice(t *testing.T) {
 	// The upload route writes its version itself and carries its approval through its own entry
 	// (the api package's storeArtifact calls CarryUploadedApproval), so that route's own guard
 	// call is what refuses it here.
-	if err := CarryUploadedApproval(joinedCtx, tx, service.events, artifactID, restored.Version.Number, "Context\n", nil, service.serverURL); !errors.Is(err, errApprovalCarriedTwice) {
+	if err := CarryUploadedApproval(joinedCtx, tx, service.events, artifactID, restored.Version.Number, "Context\n", nil, RecordCarry{}, service.serverURL); !errors.Is(err, errApprovalCarriedTwice) {
 		t.Fatalf("the upload route's carry over the same document in the same transaction = %v, want %v", err, errApprovalCarriedTwice)
 	}
 }

@@ -74,6 +74,14 @@ export default {
        *  key, which links to it. */
       issue: "issue",
     },
+    GAP_LINES: {
+      /** A statement no plan task serves, once the issue or an issue under it holds a plan task
+       *  (`tree-read/tree-nodes.ts`' `draftRequirement`). */
+      no_plan_task: "No plan task serves this statement.",
+    },
+    GAP_WORDS: {
+      no_plan_task: "No plan task",
+    },
     GLYPH_TOKENS: {
       types: {
         /** A `prose` node's shape (`NodeGlyph.tsx`), by the model's token, as every type's is. */

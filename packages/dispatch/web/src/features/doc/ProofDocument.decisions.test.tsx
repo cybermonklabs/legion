@@ -338,7 +338,7 @@ test("a closed issue's current document shows a withdrawn block's record from it
 });
 
 test("a copy on a saved version that records no answer state finds its source as the live card does", async () => {
-  // The source is on the issue's plan; the issue's asks list carries it under the same block id.
+  // The live text identifies the source. An ask with the same block id is not enough.
   const source: Ask = {
     ...blockAsk,
     answer: {
@@ -352,10 +352,26 @@ test("a copy on a saved version that records no answer state finds its source as
     state: "answered",
   };
   const queryClient = createQueryClient();
-  queryClient.setQueryData(["asks", "CORE-1"], [source]);
-  issueAskRows = [{ ...source, last_reply: null }];
+  const decoy: Ask = {
+    ...blockAsk,
+    block_artifact: { id: "artifact-notes", primary: false, slug: "notes-md" },
+    id: "ask-decoy",
+  };
+  queryClient.setQueryData(["asks", "CORE-1"], [decoy, source]);
+  issueAskRows = [decoy, source].map((ask) => ({ ...ask, last_reply: null }));
+  queryClient.setQueryData(["artifact", "artifact-1", "text"], {
+    asks: [
+      {
+        block_id: "b-1",
+        copied_from: source.id,
+        copied_from_document: "dispatch://CORE-1/artifact/plan",
+        state: "answered",
+      },
+    ],
+    markdown: ':::ask{#b-1 urgency="high" multiple="false"}\nShould we ship?\n:::\n',
+  });
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
-  // A version this release wrote: the copy's opening line records no state and no source.
+  // An older saved version carries no state or source on its opening line.
   queryClient.setQueryData(["artifact", "artifact-1", "version", 1], {
     authors: [{ id: "alice", kind: "user" }],
     created_at: "2026-09-09T00:00:00Z",

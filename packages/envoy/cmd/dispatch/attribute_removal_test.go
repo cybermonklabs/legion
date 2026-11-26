@@ -471,20 +471,30 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 				t.Errorf("dispatch doc-read prints an ask block with a server-owned attribute: %s", opener)
 			}
 		}
-		answered := 0
+		answered, resolved := 0, 0
 		for _, entry := range servedTextOf(t, current, "/api/v1/artifacts/"+first+"/text").Asks {
-			if entry.State != asks.StateAnswered {
-				continue
+			quotedID, _ := json.Marshal(entry.BlockID)
+			switch entry.State {
+			case asks.StateResolved:
+				resolved++
+				line := fmt.Sprintf("Resolved %s", quotedID)
+				if !strings.Contains(trailer, line) {
+					t.Errorf("dispatch doc-read's trailer holds no line %q:\n%s", line, trailer)
+				}
+			case asks.StateAnswered:
+				answered++
+				line := fmt.Sprintf("Answered %s by %s at %s: ", quotedID, entry.AnsweredBy, entry.AnsweredAt)
+				if entry.Answer != nil {
+					words, _ := json.Marshal(*entry.Answer)
+					line += string(words)
+				}
+				if !strings.Contains(trailer, line) {
+					t.Errorf("dispatch doc-read's trailer holds no line opening %q:\n%s", line, trailer)
+				}
 			}
-			answered++
-			line := fmt.Sprintf("Answered %s by %s at %s: ", entry.BlockID, entry.AnsweredBy, entry.AnsweredAt)
-			if entry.Answer != nil {
-				words, _ := json.Marshal(*entry.Answer)
-				line += string(words)
-			}
-			if !strings.Contains(trailer, line) {
-				t.Errorf("dispatch doc-read's trailer holds no line opening %q:\n%s", line, trailer)
-			}
+		}
+		if resolved == 0 {
+			t.Errorf("the first document answers no resolved ask, so its read proves no Resolved line:\n%s", trailer)
 		}
 		if answered == 0 {
 			t.Fatalf("the first document answers no answered ask, so its read proves nothing:\n%s", trailer)

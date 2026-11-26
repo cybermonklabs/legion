@@ -598,7 +598,6 @@ export const EMPTY_STATE_LINES = joinWords("EMPTY_STATE_LINES", {
  */
 export const GAP_LINES = joinWords("GAP_LINES", {
   no_check: "No check serves this statement.",
-  no_plan_task: "No plan task serves this statement.",
   nobody_asked: "This task names no statement it serves and nothing a person asked for.",
   serves_not_requirement: "What this says it serves is not a statement.",
   shaped_disagreement: "A decision says it shaped this, but this says it came from somewhere else.",
@@ -614,7 +613,6 @@ export type GapKind = keyof typeof GAP_LINES;
  */
 export const GAP_WORDS = joinWords("GAP_WORDS", {
   no_check: "No check",
-  no_plan_task: "No plan task",
   /** The task names no requirement it serves and nothing a person asked for, so no reason
    *  stands behind it. The chip says that and passes no judgement on the work. */
   nobody_asked: "No reason given",

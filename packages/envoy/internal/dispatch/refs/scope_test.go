@@ -1,14 +1,20 @@
 package refs
 
+//ci:reads packages/envoy/internal/dispatch/pmdoc/testdata/ask-block-scanner.json `packages/envoy/internal/dispatch/refs/scope_test.go#TestQuestionBlocksReadTheAskBlocksPmdocReads` reads it at ../pmdoc/testdata/ask-block-scanner.json: the corpus of the two block scanners, which `packages/contracts/src/dispatch-block-ref.test.ts` reads as well
+
 import (
 	"cmp"
 	"context"
+	"encoding/json"
+	"os"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -463,81 +469,139 @@ func TestQuestionMapReadsABlockIDWrittenQuoted(t *testing.T) {
 	}
 }
 
-// questionBlocks reads an ask block only where pmdoc's parser opens one, and each case holds its
-// want to pmdoc.Parse of its markdown too. A backslash in a footnote's label escapes the `]` after
-// it, as the renderer writes a label that holds one (pmdoc's escapeFootnoteLabel), so a block or a
-// fence written on that label's line opens there, and the definition's later blocks stand four
-// columns in, as the renderer writes them. A label of a form feed is a label: goldmark's white
-// space is the space, the tab and the line endings alone. A line four columns or more past its
-// containers opens no block: it is indented code. A later line of a paragraph there, an inline
-// code span's among them, can open no block either, but pmdoc refuses such a line in a write, so
-// no version holds one. After a front-matter opener that no line closes, no typed block opens at
-// the document's level (pmdoc's frontmatterAttempt).
+// askBlockScannerCase is one row of pmdoc/testdata/ask-block-scanner.json, the one corpus of the two
+// hand-written block scanners: this package's questionBlocks and packages/contracts'
+// readAskBlocks (dispatch-block-reader.ts), whose test reads the same file. A row is a document
+// (Lines, joined by line feeds), the ids of the ask blocks that open in it (IDs), and the rule it
+// holds (Why). Pmdoc says whether pmdoc.Parse holds the row too: the rows it parses without
+// refusing the document (a block with a body and a closing fence) are held to the ask blocks it
+// reads, and the others, openers with no body that a scanner reads and pmdoc refuses in a
+// write, to the scanners alone.
+type askBlockScannerCase struct {
+	Name  string   `json:"name"`
+	Why   string   `json:"why"`
+	Pmdoc bool     `json:"pmdoc"`
+	Lines []string `json:"lines"`
+	IDs   []string `json:"ids"`
+}
+
+// questionBlocks reads an ask block only where pmdoc's parser opens one, and each row of the
+// shared corpus holds its ids to that parser too where the row says pmdoc parses it. A backslash in
+// a footnote's label escapes the `]` after it, as the renderer writes a label that holds one
+// (pmdoc's escapeFootnoteLabel), so a block or a fence written on that label's line opens there,
+// and the definition's later blocks stand four columns in, as the renderer writes them. A label of
+// a form feed is a label: goldmark's white space is the space, the tab and the line endings
+// alone. A line four columns or more past its containers opens no block: it is indented code. A
+// later line of a paragraph there, an inline code span's among them, can open no block either,
+// but pmdoc refuses such a line in a write, so no version holds one. After a front-matter opener
+// that no line closes, no typed block opens at the document's level (pmdoc's frontmatterAttempt).
 func TestQuestionBlocksReadTheAskBlocksPmdocReads(t *testing.T) {
-	for _, test := range []struct {
-		name, markdown string
-		want           []string
-	}{
-		{
-			name:     "a block opened on the line of a footnote label that holds an escaped bracket",
-			markdown: "See.[^a\\]b]\n\n[^a\\]b]: :::ask{#noted}\n    Which?\n    :::\n",
-			want:     []string{"noted"},
-		},
-		{
-			name:     "a fence opened on the line of a footnote label that holds an escaped bracket",
-			markdown: "See.[^a\\]b]\n\n[^a\\]b]: ```\n    :::ask{#fenced}\n    ```\n\n:::ask{#after}\nWhich?\n:::\n",
-			want:     []string{"after"},
-		},
-		{
-			name:     "a later block of a footnote four columns in, after a fence the label's line opened",
-			markdown: "See.[^a\\]b]\n\n[^a\\]b]: ```\n    code\n    ```\n\n    :::ask{#later}\n    Which?\n    :::\n",
-			want:     []string{"later"},
-		},
-		{
-			name:     "a later block of a footnote four columns in",
-			markdown: "See.[^n]\n\n[^n]: Note.\n\n    :::ask{#plain}\n    Which?\n    :::\n",
-			want:     []string{"plain"},
-		},
-		{
-			name:     "a block opened on the line of a footnote label that holds only a form feed",
-			markdown: "See.[^\f]\n\n[^\f]: :::ask{#x}\n    Which?\n    :::\n",
-			want:     []string{"x"},
-		},
-		{
-			name:     "a line of indented code",
-			markdown: "Intro.\n\n    :::ask{#indented}\n    Which?\n    :::\n",
-		},
-		{
-			name:     "a line four columns past a quote's marker or a list item's",
-			markdown: ">     :::ask{#quoted}\n\n-     :::ask{#listed}\n",
-		},
-		{
-			name:     "a line after a front-matter opener that no line closes",
-			markdown: "---\n:::ask{#unclosed}\nWhich?\n:::\n",
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			tree, err := pmdoc.Parse(test.markdown)
-			if err != nil {
-				t.Fatalf("pmdoc refuses the markdown: %v", err)
-			}
-			var parsed []string
-			pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
-				if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); node.Type == "ask" {
-					parsed = append(parsed, id)
+	raw, err := os.ReadFile("../pmdoc/testdata/ask-block-scanner.json")
+	if err != nil {
+		t.Fatalf("read the shared corpus: %v", err)
+	}
+	var corpus []askBlockScannerCase
+	if err := json.Unmarshal(raw, &corpus); err != nil || len(corpus) == 0 {
+		t.Fatalf("parse the shared corpus: %v (%d rows)", err, len(corpus))
+	}
+	for _, test := range corpus {
+		t.Run(test.Name, func(t *testing.T) {
+			markdown := strings.Join(test.Lines, "\n")
+			if test.Pmdoc {
+				tree, err := pmdoc.Parse(markdown)
+				if err != nil {
+					t.Fatalf("pmdoc refuses the markdown: %v", err)
 				}
-				return true
-			})
-			if !slices.Equal(parsed, test.want) {
-				t.Fatalf("pmdoc reads the ask blocks %q, want %q", parsed, test.want)
+				var parsed []string
+				pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+					if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); node.Type == "ask" {
+						parsed = append(parsed, id)
+					}
+					return true
+				})
+				if !slices.Equal(parsed, test.IDs) {
+					t.Fatalf("pmdoc reads the ask blocks %q, want %q", parsed, test.IDs)
+				}
 			}
 			var scanned []string
-			for _, block := range questionBlocks(test.markdown) {
+			for _, block := range questionBlocks(markdown) {
 				scanned = append(scanned, block.id)
 			}
-			if !slices.Equal(scanned, test.want) {
-				t.Errorf("questionBlocks reads the ask blocks %q, want %q as pmdoc reads them", scanned, test.want)
+			if !slices.Equal(scanned, test.IDs) {
+				t.Errorf("questionBlocks reads the ask blocks %q, want %q (%s)", scanned, test.IDs, test.Why)
 			}
 		})
+	}
+}
+
+// queuedVersion is the Pending of a transaction that has queued a version of document artifact
+// holding markdown, and no other row.
+type queuedVersion struct{ artifact, markdown string }
+
+func (v queuedVersion) PendingIssue(string) bool                      { return false }
+func (v queuedVersion) PendingArtifact(string) (string, string, bool) { return "", "", false }
+func (v queuedVersion) PendingDocument(string) (DocumentAddress, bool) {
+	return DocumentAddress{}, false
+}
+func (v queuedVersion) PendingRoom(string) (string, bool)                { return "", false }
+func (v queuedVersion) PendingAuthors(string, int) ([]model.Actor, bool) { return nil, false }
+func (v queuedVersion) PendingBlockAsks(string) []PendingBlockAsk        { return nil }
+func (v queuedVersion) PendingAsk(string) (PendingBlockAsk, bool)        { return PendingBlockAsk{}, false }
+func (v queuedVersion) PendingMarkdown(artifactID string) (string, bool) {
+	return v.markdown, artifactID == v.artifact
+}
+
+// A copy's source is the ask its block node's copied_from tuple names before the one its opening
+// line names, since a stored version's line may be one the release before wrote. A version the
+// reading transaction has queued is read before that transaction claims its copies, so there a
+// line that names a source is the newer of the two. Over one text, in which the copy c names
+// the second source on its line and the copy d names none, and whose nodes' tuples both name the
+// first: the stored version maps both to the first source, and the queued one maps c to the
+// second and d to the first.
+func TestAQueuedVersionsCopyResolvesToTheSourceItsLineNames(t *testing.T) {
+	database := parentDatabase(t)
+	ctx := context.Background()
+	document := newParentDocument(t, database, "COPY", "notes")
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the sources: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	first := insertScopeAsk(t, tx, document.issue, "", nil)
+	second := insertScopeAsk(t, tx, document.issue, "", nil)
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the sources: %v", err)
+	}
+	markdown := `:::ask{#c copied_from="` + second + `"}` + "\nWhich?\n:::\n\n:::ask{#d}\nWhich too?\n:::\n"
+	version := renderTypedVersion(t, markdown)
+	record := document.writeVersion(t, 1, version.markdown, alice)
+	commitIndex(t, database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
+		_, _, write, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 1, record.at), version.markdown, version.blocks, version.located, version.pointers, "", TypedFacts{})
+		for _, block := range []string{"c", "d"} {
+			write.Tuples = append(write.Tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+				FromKind: BlockNodeKind, FromID: document.address(block), Kind: graphstore.TupleCopiedFrom,
+				ToKind: graphstore.KindAsk, ToID: first, At: record.at, Who: alice, Asserted: true,
+			}})
+		}
+		return write, err
+	}, record.event)
+
+	ref := func(ask string) text.Ref { return text.Extract("dispatch://"+document.issue+"/ask/"+ask, "")[0] }
+	for _, read := range []struct {
+		name string
+		ctx  context.Context
+		want map[string]text.Ref
+	}{
+		{"the stored version", ctx, map[string]text.Ref{"c": ref(first), "d": ref(first)}},
+		{"the queued version", WithPending(ctx, queuedVersion{artifact: document.artifact, markdown: markdown}), map[string]text.Ref{"c": ref(second), "d": ref(first)}},
+	} {
+		got, err := questionMap(read.ctx, database.Pool, nil, document.artifact)
+		if err != nil {
+			t.Fatalf("the question map of %s: %v", read.name, err)
+		}
+		if !reflect.DeepEqual(got, read.want) {
+			t.Errorf("the question map of %s = %#v; want %#v", read.name, got, read.want)
+		}
 	}
 }

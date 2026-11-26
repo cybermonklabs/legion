@@ -24,9 +24,9 @@ import type {
   IssueDecisions,
 } from "../../api/types";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
+import { buildDispatchReference } from "../refs/routes";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { DecisionsPanel } from "./DecisionsPanel";
-import type { DecisionsRead } from "./decision-entries";
 
 const documentId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const askId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -96,6 +96,8 @@ function entry(
   };
 }
 
+/** A link of a decision's to the spec block `blockId`, as the read answers it: the graph node of
+ *  the block, with the block's own address. */
 function shapedLink(blockId: string, stale: boolean): DecisionLink {
   return {
     changed_since_tie: false,
@@ -107,6 +109,7 @@ function shapedLink(blockId: string, stale: boolean): DecisionLink {
       block_id: blockId,
       id: `CORE-1/spec#${blockId}`,
       kind: "block",
+      ref: buildDispatchReference({ block: { id: blockId }, key: "CORE-1", kind: "spec" }),
       text: blockId === "p1" ? "Notices are stored." : "Old rows expire.",
     }),
   };
@@ -208,7 +211,8 @@ test("the panel sorts the view into its four lists, in order", async () => {
       )
     );
     // The name links the node that holds the decision, and each link of what it shaped opens the
-    // spec at that block, its id written as `encodeBlockId` writes it.
+    // node its own address names, the spec at that block, its id written as `encodeBlockId`
+    // writes it.
     const shaped = within(waiting)
       .getAllByRole("link")
       .map((link) => link.getAttribute("href"));
@@ -388,143 +392,45 @@ test("an agent's decision links each ask its from_ask settles", async () => {
   }
 });
 
-const decisionsDocumentId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
-
-/** The issue's documents as the release before stored them: its decisions document beside them. */
-const beforeArtifacts = [
-  ...artifacts,
-  {
-    id: decisionsDocumentId,
-    issue_key: "CORE-1",
-    kind: "doc",
-    name: "decisions.md",
-    primary: false,
-    project: "",
-    slug: "decisions-md",
-  },
-] as unknown as Artifact[];
-
-/** The Decisions read as a server of the release before answers it: no `entries`, its open
- *  questions, and its decisions, each a `##` section of the issue's decisions document addressed
- *  by its heading block - the agent's waiting one, a person's that cites the ask it answers, and
- *  a replaced one. */
-function beforeView(): DecisionsRead {
-  const section = (
-    block: string,
-    text: string,
-    fields: Partial<NonNullable<DecisionsRead["decisions"]>[number]>
-  ) => ({
-    asks: [],
-    block_id: block,
-    changed_at: "2026-11-01T00:00:00Z",
-    changed_version: 3,
-    heading: "",
-    kept: null,
-    kind: "agent",
-    links: [],
-    ref: `dispatch://CORE-1/artifact/decisions-md#b-${block}`,
-    replaced: false,
-    text,
-    text_sha256: `sum-${block}`,
-    text_tree: displayTree(text),
-    unsure: false,
-    waiting_review: false,
-    ...fields,
-  });
-  return {
-    decisions: [
-      section(
-        "h-store",
-        "## Store notices in a table\n\nA table keeps them queryable.\n\nUnsure: the index may be slow.",
-        {
-          heading: "Store notices in a table",
-          links: [shapedLink("p1", false)],
-          unsure: true,
-          waiting_review: true,
-        }
-      ),
-      section("h-name", "## Name them notices\n\nThe person chose the name.", {
-        asks: [askId],
-        heading: "Name them notices",
-        kind: "person",
-      }),
-      section("h-file", "## Keep them in a file\n\nA file was simpler.", {
-        heading: "Keep them in a file",
-        replaced: true,
-      }),
-    ],
-    document: "dispatch://CORE-1/artifact/decisions-md",
-    open_questions: [
-      {
-        block_id: "q1",
-        id: questionId,
-        issue_key: "CORE-1",
-        kind: "question",
-        multiple: false,
-        options: [],
-        question: "Which index should the table carry?",
-        state: "open",
-        urgency: "normal",
-      } as unknown as IssueAskRow,
-    ],
-  };
-}
-
-// During a roll a page of this build can reach a server of the release before, which answers no
-// `entries`. The tab then draws that read's open questions and decisions as it drew them before
-// decisions were nodes, and never says the issue has none; a Keep is written against the block of
-// the decisions document the decision's address names.
-test("a Decisions read of the release before, with no entries, is drawn from its own lists", async () => {
+// The tree read names a document only on a typed block of a role document, so the entry of a
+// decision of any other document names none. The tab finds its document and its block by the
+// decision's own address: its link opens that block, and a Keep is written against it.
+test("a decision the read names no document for is opened and kept by its own address", async () => {
   const user = userEvent.setup();
-  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(beforeView() as IssueDecisions);
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue({
+    decisions: [],
+    document: null,
+    entries: [
+      entry({
+        block: "store",
+        document: null,
+        shaped: [shapedLink("p1", false)],
+        text: "Store notices in a table.",
+        waiting_review: true,
+      }),
+    ],
+    open_questions: [],
+  });
   const keep = spyOn(api, "keepDecision").mockResolvedValue({
-    artifact_id: decisionsDocumentId,
-    block_id: "h-store",
+    artifact_id: documentId,
+    block_id: "store",
     changed_version: 3,
     kept_at: "2026-11-02T00:00:00Z",
     kept_by: "alice",
   } satisfies DecisionKeep);
   try {
-    renderPanel(undefined, beforeArtifacts);
-    await screen.findByRole("region", { name: "Open questions" });
-    expect(screen.queryByText("This issue has no decisions yet.")).not.toBeInTheDocument();
-    expect(
-      within(list("Open questions")).getByRole("link", {
-        name: "Which index should the table carry?",
-      })
-    ).toHaveAttribute("href", `/issues/CORE-1/asks/${questionId}`);
-
+    renderPanel();
+    await screen.findByRole("region", { name: "Waiting for your review" });
     const waiting = list("Waiting for your review");
-    expect(within(waiting).getByText("Store notices in a table")).toBeDefined();
-    await waitFor(() =>
-      expect(within(waiting).getByTestId("decision-unsure")).toHaveTextContent(
-        "the index may be slow."
-      )
-    );
     expect(
       within(waiting)
         .getAllByRole("link")
         .map((link) => link.getAttribute("href"))
-    ).toEqual(["/issues/CORE-1/artifacts/decisions-md#b-h-store", "/issues/CORE-1/spec#b-p1"]);
-
-    const mine = list("Your decisions");
-    expect(within(mine).getByText("Name them notices")).toBeDefined();
-    expect(within(mine).getByRole("link", { name: "The ask it answers" })).toHaveAttribute(
-      "href",
-      `/issues/CORE-1/asks/${askId}`
-    );
-    expect(within(list("Replaced")).getByText("Keep them in a file")).toBeDefined();
+    ).toEqual(["/issues/CORE-1/artifacts/notes-md#b-store", "/issues/CORE-1/spec#b-p1"]);
 
     await user.click(within(waiting).getByRole("button", { name: "Keep" }));
     await waitFor(() => expect(keep).toHaveBeenCalled());
-    expect(keep.mock.calls[0]?.slice(0, 3)).toEqual([
-      decisionsDocumentId,
-      "h-store",
-      "sum-h-store",
-    ]);
-    await waitFor(() =>
-      expect(within(list("Your decisions")).getByText("Store notices in a table")).toBeDefined()
-    );
+    expect(keep.mock.calls[0]?.slice(0, 3)).toEqual([documentId, "store", "sum-store"]);
   } finally {
     read.mockRestore();
     keep.mockRestore();
@@ -661,11 +567,11 @@ test("an open question and the Change's name read their text's plain-text projec
   }
 });
 
-// A link under "Shaped in the spec" names the spec block by its id, in the panel's own words: the
-// decisions read sends no text of the block a link points to (`refs.BlockLinks` resolves each end
-// as a graph node, whose text only a reference read fills), so there is no stored text to draw,
-// and the panel reads none. Handed a node that did carry text, the link still reads `Block p1`:
-// a projection of that text would read `Warm CORE-2 Cut the release before the cut.`.
+// A link under "Shaped:" names the block by its id, in the panel's own words: the decisions read
+// sends no text of the block a link points to (`refs.BlockLinks` resolves each end as a graph
+// node, whose text only a reference read fills), so there is no stored text to draw, and the
+// panel reads none. Handed a node that did carry text, the link still reads `Block p1`: a
+// projection of that text would read `Warm CORE-2 Cut the release before the cut.`.
 test("a shaped block's link names the block by its id and draws no text of the block", async () => {
   const view = waitingView({
     shaped: [
@@ -679,6 +585,7 @@ test("a shaped block's link names the block by its id and draws no text of the b
           block_id: "p1",
           id: "CORE-1/spec#p1",
           kind: "block",
+          ref: "dispatch://CORE-1/spec#b-p1",
           text: "**Warm** dispatch://CORE-2 before the cut.",
         }),
       },
@@ -704,6 +611,56 @@ test("a shaped block's link names the block by its id and draws no text of the b
   } finally {
     read.mockRestore();
     summary.mockRestore();
+  }
+});
+
+// A decision shapes a node of any document of the issue (`decisionread`), a plan's task as well
+// as a spec's block: each link opens the node its own address names, never the spec at the
+// other document's block id. A target whose address opens no page draws no link.
+test("a shaped node outside the spec links its own document at its block", async () => {
+  const target = (
+    ref: string | undefined,
+    blockId: string,
+    kind: DecisionLink["to"]["kind"] = "block"
+  ): DecisionLink => ({
+    changed_since_tie: false,
+    created_at: "2026-11-01T00:00:00Z",
+    created_version: 1,
+    from_block: "only",
+    stale: false,
+    to: graphNode({
+      block_id: blockId,
+      id: `CORE-1/${blockId}`,
+      kind,
+      ...(ref === undefined ? {} : { ref }),
+    }),
+  });
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    waitingView({
+      shaped: [
+        target("dispatch://CORE-1/artifact/plan-md#b-t1", "t1"),
+        target("dispatch://CORE-1/spec#b-p1", "p1"),
+        target(undefined, "unaddressed"),
+        target("dispatch://person/bob", "bob", "person"),
+      ],
+      text: "## Order the tasks by their needs\n\nThe plan reads them so.",
+    })
+  );
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    expect(await within(waiting).findByRole("link", { name: "Block t1" })).toHaveAttribute(
+      "href",
+      "/issues/CORE-1/artifacts/plan-md#b-t1"
+    );
+    expect(within(waiting).getByRole("link", { name: "Block p1" })).toHaveAttribute(
+      "href",
+      "/issues/CORE-1/spec#b-p1"
+    );
+    expect(within(waiting).queryByText("Block unaddressed")).toBeNull();
+    expect(within(waiting).queryByText("Block bob")).toBeNull();
+  } finally {
+    read.mockRestore();
   }
 });
 
@@ -1136,6 +1093,34 @@ test("a #id in an open question and in a decision's name names the question of i
     }
   }
   read.mockRestore();
+});
+
+// A person's decision is the answered ask, and its answer is the ask's own record: the server
+// reads a `#id` in it against the document the ask's block is on (`refs.ScopeOf`). The Decisions
+// view names no document for an ask's node, and an ask's address names no block, so the card
+// hands the renderer the ask as the answer's source, and the `#q2` the person wrote reads as the
+// question it names. Handed the document the view names, which is none, it would keep `#q2`.
+test("a #id in a person's answer names the question of the ask's own record", async () => {
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    answeredView({ answer: "Call them what #q2 settled.", document: null, selected: [] })
+  );
+  const answers = answerQuestionOf("ask", askId);
+  try {
+    renderPanel();
+    const mine = await screen.findByRole("region", { name: "Your decisions" });
+    const cited = await waitFor(() => {
+      const found = mine.querySelector<HTMLElement>(`[data-dispatch-ref="${NAMED_ASK}"]`);
+      if (found === null) {
+        throw new Error("the answer's `#q2` is still plain text");
+      }
+      return found;
+    });
+    await waitFor(() => expect(cited).toHaveTextContent(NAMED_QUESTION));
+    expect(within(mine).queryByText(/#q2/)).toBeNull();
+  } finally {
+    answers.restore();
+    read.mockRestore();
+  }
 });
 
 // Each block of an answer that carried no reading cites what its own markdown holds and nothing

@@ -387,7 +387,7 @@ export function isStatement(node: Pick<TreeNode, "statement">): boolean {
 
 /**
  * Whether `node` is a check: a `check` block of the issue's Verification document, the one the
- * issue read names by `verification_artifact_id`, or a check the results read answers for. Each
+ * issue read names for its verification query, or a check the results read answers for. Each
  * draws a state - `no-result` until the results read answers (`tree-read/tree-nodes.ts`'
  * `draftServing`) - and a `check` block of any other document draws none and is a block and
  * nothing more: no row and no count of the Verification filter, and no check of a statement.
@@ -425,17 +425,19 @@ export interface IssueTreeReads {
   /** The issue's comments with each body's reading: what a Change of a decision the tree read
    *  holds no node for is found among (`addDecisions`). */
   readonly comments?: readonly (Comment & Pick<CommentWithTrees, "body_tree">)[];
+  /** Whether the Plan view read's answer (`?view=plan`), which holds the plan tasks of the issue
+   *  and of every issue under it, holds one that is not gone (`tree-read/tree-nodes.ts`'
+   *  `holdsPlanTask`): that says whether a statement no plan task serves is a gap
+   *  (`draftRequirement`). It is read from the answer the page holds: not true until the read
+   *  first answers and while that first read stands refused, and the answer held before where a
+   *  later read of it is refused. Held as one value rather than the answer, so a new answer that
+   *  does not change it builds no tree again (`useIssueTree.ts`' `builtTree`). */
+  readonly holdsPlanTask?: boolean;
   readonly issue: IssueDetails;
   /** The issue's messages with their replies: what a message's author did to one - deleted it or
    *  last replaced its body - which the tree read answers no mark of
    *  (`tree-read/tree-nodes.ts`'s `postMarksOf`). The tree read answers each message as a node. */
   readonly messages?: readonly MessageRead[];
-  /** The Plan view read's answer (`?view=plan`), which holds the plan tasks of the issue and of
-   *  every issue under it: whether it holds one says whether a statement no plan task serves is a
-   *  gap (`tree-read/tree-nodes.ts`' `draftRequirement`). It is the answer the page holds:
-   *  undefined until the read first answers and while that first read stands refused, and the
-   *  answer held before where a later read of it is refused. */
-  readonly plan?: TreeAnswer;
   /** Each check of the Verification document with the results recorded against it. */
   readonly results?: IssueCheckResults;
   /** What every `dispatch://` address the tree holds points at, in one read. */

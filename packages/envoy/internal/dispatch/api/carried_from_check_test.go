@@ -28,18 +28,21 @@ import (
 // this build, answers the version its reason's fixed sentence names (docs.CarriedFromVersion) until
 // the backfill's pass fills its row.
 //
-// The tests read the member off the JSON each route answers, a member absent and a member null
-// alike reading null, and the row by SQL.
+// The tests read the member off the JSON each route answers, where a member left out fails the
+// test: every review, approval and payload this build writes carries it, null for a person's own
+// act, so a reader never takes its absence for one. They read the row by SQL.
 
 // carriedFromReview is one review as GET /api/v1/artifacts/{id}/reviews answers it, with its
-// carried_from_version: nil where the member is null or absent.
+// carried_from_version: nil where the member is null, and the member as the route wrote it, ""
+// where the route left it out.
 type carriedFromReview struct {
-	ID          string  `json:"id"`
-	Version     int     `json:"version"`
-	State       string  `json:"state"`
-	Kind        string  `json:"kind"`
-	Reason      *string `json:"reason"`
-	CarriedFrom *int    `json:"-"`
+	ID                 string  `json:"id"`
+	Version            int     `json:"version"`
+	State              string  `json:"state"`
+	Kind               string  `json:"kind"`
+	Reason             *string `json:"reason"`
+	CarriedFrom        *int    `json:"-"`
+	CarriedFromWritten string  `json:"-"`
 }
 
 // The edits the carried-from tests make to the reading tests' spec (readingSpec) as the agent's
@@ -79,11 +82,16 @@ func carriedFromEdit(t *testing.T, handler http.Handler, database *store.Store, 
 }
 
 // carriedFromMember is the carried_from_version member of members, a review, an approval or an
-// event's payload as what names it answers it: nil where the member is absent or null.
+// event's payload as what names it answers it: nil where the member is null. It fails t where the
+// member is left out, and answers nil then.
 func carriedFromMember(t *testing.T, what string, members map[string]json.RawMessage) *int {
 	t.Helper()
 	raw, present := members["carried_from_version"]
-	if !present || string(raw) == "null" {
+	if !present {
+		t.Errorf("%s leaves carried_from_version out, want a version or null", what)
+		return nil
+	}
+	if string(raw) == "null" {
 		return nil
 	}
 	var version int
@@ -113,6 +121,7 @@ func carriedFromReviews(t *testing.T, handler http.Handler, artifactID string) [
 			t.Fatalf("decode a review of %s, %s: %v", artifactID, raw, err)
 		}
 		review.CarriedFrom = carriedFromMember(t, "the reviews route, for the review "+review.ID, members)
+		review.CarriedFromWritten = string(members["carried_from_version"])
 		reviews = append(reviews, review)
 	}
 	return reviews
@@ -220,10 +229,11 @@ func requireCarriedFrom(t *testing.T, what string, got, want *int) {
 // TestACarriedReviewNamesTheVersionItCarriesFrom is c-carried-from's first case (R27). Alice
 // approves version 4 of the spec (carriedFromFixture), and the agent's session adds a reading under
 // a decision, which carries her approval to version 5. The reviews route answers the review of
-// version 5 with carried_from_version 4 and the review of version 4, her own act, with null; the
-// approval read answers 4; the artifact.approved of the carry carries 4. The session then changes a
-// reading's words, which carries that carry to version 6, and the carry of the carry names 4, the
-// version alice approved, through the same three reads. A row of artifact_review_carries written by
+// version 5 with carried_from_version 4 and the review of version 4, her own act, with null written
+// out, never left out; the approval read answers 4; the artifact.approved of the carry carries 4,
+// and that of her own approval null. The session then changes a reading's words, which carries
+// that carry to version 6, and the carry of the carry names 4, the version alice approved, through
+// the same three reads. A row of artifact_review_carries written by
 // SQL for the review of version 6, naming version 3 while its reason names 4, reads 3 through the
 // reviews route and the approval read, so a reader that parses the reason alone fails. The session
 // then changes the prose, which carries nothing, and alice approves version 7 herself: the reviews
@@ -252,8 +262,13 @@ func TestACarriedReviewNamesTheVersionItCarriesFrom(t *testing.T) {
 	reviews := carriedFromReviews(t, handler, fixture.artifactID)
 	requireCarriedFrom(t, fmt.Sprintf("the reviews route, for the review %s carried to version %d", carry.ID, carriedTo),
 		carriedFromReviewOf(t, reviews, carry.ID).CarriedFrom, &approved)
+	firstOwn := carriedFromReviewOf(t, reviews, fixture.approval.ID)
 	requireCarriedFrom(t, fmt.Sprintf("the reviews route, for alice's own approval %s of version %d", fixture.approval.ID, approved),
-		carriedFromReviewOf(t, reviews, fixture.approval.ID).CarriedFrom, nil)
+		firstOwn.CarriedFrom, nil)
+	if firstOwn.CarriedFromWritten != "null" {
+		t.Errorf("the reviews route writes carried_from_version %q for alice's own approval %s of version %d, want null written out: a member left out reads as no answer, not as her own act",
+			firstOwn.CarriedFromWritten, fixture.approval.ID, approved)
+	}
 	requireCarryRow("the reviews route")
 	state, version, carried := carriedFromApproval(t, handler, fixture.artifactID)
 	if state != "approved" || version != carriedTo {
@@ -264,6 +279,8 @@ func TestACarriedReviewNamesTheVersionItCarriesFrom(t *testing.T) {
 	requireCarriedFrom(t, fmt.Sprintf("the artifact.approved of the carry to version %d", carriedTo),
 		carriedFromEventOf(t, handler, fixture.issueKey, fixture.artifactID, carriedTo), &approved)
 	requireCarryRow("the carry's artifact.approved")
+	requireCarriedFrom(t, fmt.Sprintf("the artifact.approved of alice's own approval of version %d", approved),
+		carriedFromEventOf(t, handler, fixture.issueKey, fixture.artifactID, approved), nil)
 
 	// A carry of that carry names the version alice approved.
 	again := carriedTo + 1

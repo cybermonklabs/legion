@@ -188,9 +188,11 @@ export async function refuseOpenDecisionBlocks(
  * does not exempt it: telling a block written back from an opener quoted in code needs the
  * server's parser, so the executor fails closed. An open block is reworded with `replace`, moved
  * with `move`, or, when this session asked it, has its question, options, urgency or multiple
- * changed with `dispatch_edit_ask`; each keeps it. Costs nothing for an edit with no such
- * operation, then one `GET /artifacts/{id}/blocks`, and the owner's asks only when an operation
- * reaches an `ask` block.
+ * changed with `dispatch_edit_ask`; each keeps it. An answered block is none of this check's: it
+ * stays in its document, and the server refuses an agent's removal or retype of one, `409
+ * ANSWERED_ASK_KEPT`, so only a resolved block may be removed. Costs nothing for an edit with no
+ * such operation, then one `GET /artifacts/{id}/blocks`, and the owner's asks only when an
+ * operation reaches an `ask` block.
  */
 export async function refuseRemovingOpenDecisionBlocks(
   client: DispatchClient,
@@ -235,7 +237,7 @@ export async function refuseRemovingOpenDecisionBlocks(
       ...open.map(
         (ask) => `- ${JSON.stringify(ask.question)} (block ${ask.block_id}, ask ${ask.id})`
       ),
-      "An ask block leaves the document once its ask is answered or resolved. Until then, reword it with replace, relocate it with move, or change its question, options, urgency or multiple with dispatch edit-ask if you asked it; each keeps it.",
+      "An answered ask block stays in its document (an agent's removal or retype of one is refused 409 ANSWERED_ASK_KEPT); only a resolved one may be removed. While an ask is open, reword its block with replace, relocate it with move, or change its question, options, urgency or multiple with dispatch edit-ask if you asked it; each keeps it.",
     ].join("\n")
   );
 }

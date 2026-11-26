@@ -172,8 +172,7 @@ function Named({
  *  `focused` whether it holds the tree's focus. It is drawn inside `NoTooltips`, as the page's
  *  slots draw every row, so an author is named as the page names one, and under the names
  *  store, with `published` published to it where it is given, as the page publishes its batched
- *  read. `redraw` draws the same row of another node, as a later read of the tree does;
- *  `publish` publishes another value, as a later answer of the batched read does. */
+ *  read. `publish` publishes another value, as a later answer of the batched read does. */
 function renderRow(
   drawn: TreeNode,
   {
@@ -227,19 +226,12 @@ function renderRow(
       </MemoryRouter>
     </QueryClientProvider>
   );
-  let shown = drawn;
-  let publishedNow = published;
   const view = render(row(drawn, published));
   return Object.assign(view, {
     publish: (next: PublishedReferences) => {
-      publishedNow = next;
-      view.rerender(row(shown, publishedNow));
+      view.rerender(row(drawn, next));
     },
     queryClient,
-    redraw: (next: TreeNode) => {
-      shown = next;
-      view.rerender(row(shown, publishedNow));
-    },
   });
 }
 

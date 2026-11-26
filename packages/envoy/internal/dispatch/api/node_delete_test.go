@@ -387,6 +387,10 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 			t.Fatalf("the move of %s under %s answered %d %s, want 200", node, parent, response.Code, response.Body.String())
 		}
 	}
+	approvedView := "?view=spec&v=" + strconv.Itoa(approved.Version)
+	if _, held := treeNodes(t, handler, key, approvedView)[spec.address("r1")]; !held {
+		t.Fatalf("the approved spec version %d does not answer R1 before the delete", approved.Version)
+	}
 	r1, r2, r6, r7, k := spec.address("r1"), spec.address("r2"), spec.address("r6"), spec.address("r7"), spec.address("k")
 	move(alice, key, r1, k)
 	move(alice, key, spec.address("d6"), r6)
@@ -420,7 +424,7 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 			key, child.Key, listed, placementWords(unplaced.PlacementSeq), childOf)
 	}
 	childTag := `"` + strconv.FormatInt(childOf[0].Seq, 10) + `"`
-	placed := patchNodeAs(alice, child.Key, childNode, childTag, map[string]any{"parent": k})
+	placed := patchNodeAs(alice, key, childNode, childTag, map[string]any{"parent": k})
 	if placed.Code != http.StatusOK {
 		t.Fatalf("the move of %s under %s with the tag of its child_of answered %d %s, want 200", childNode, k, placed.Code, placed.Body.String())
 	}
@@ -429,7 +433,7 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 		t.Errorf("the move of %s answered %s and left it under %s %s at seq %d, want it under %s at the placement_seq it answered",
 			childNode, placed.Body.String(), childPlacement.ToKind, childPlacement.ToID, childPlacement.Seq, k)
 	}
-	refusedWith(t, "the repeat of the move of "+childNode+" with the tag of its child_of", patchNodeAs(alice, child.Key, childNode, childTag, map[string]any{"parent": k}),
+	refusedWith(t, "the repeat of the move of "+childNode+" with the tag of its child_of", patchNodeAs(alice, key, childNode, childTag, map[string]any{"parent": k}),
 		http.StatusPreconditionFailed, codePreconditionFailed)
 	if after, _ := placementOf(t, database, graphstore.KindIssue, child.Key); after.Seq != childPlacement.Seq {
 		t.Errorf("the refused repeat of the move of %s left it at placement_seq %d, want %d", childNode, after.Seq, childPlacement.Seq)
@@ -471,6 +475,7 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 	awaitBackgroundWrites(t, rig.served)
 
 	r1Paragraph, c1Paragraph := blockWithText(t, database, deleteR1Words), blockWithText(t, database, deleteC1Words)
+	r2Paragraph := blockWithText(t, database, deleteR2Words)
 	documents := map[string]string{
 		"the spec": issue.PrimaryArtifactID, "the Verification document": verification.id, "the room's own fragment": tree.id,
 		"the child's room": child.PrimaryArtifactID,
@@ -578,16 +583,16 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 	if state := nodeStateOf(t, database, graphstore.KindComment, onR1.ID); state != graphstore.StateLive {
 		t.Errorf("the agent's comment on R1's text is %s after the delete, want live", state)
 	}
-	if holdsRelation(t, database, graphstore.KindComment, onR1.ID, graphstore.TupleAnchoredIn, r1) || holdsRelation(t, database, graphstore.KindComment, onR1.ID, graphstore.TuplePartOf, r1) {
-		t.Errorf("the agent's comment on R1's text keeps its anchored_in or its part_of to R1")
+	if holdsRelation(t, database, graphstore.KindComment, onR1.ID, graphstore.TupleAnchoredIn, r1Paragraph) || holdsRelation(t, database, graphstore.KindComment, onR1.ID, graphstore.TuplePartOf, r1Paragraph) {
+		t.Errorf("the agent's comment on R1's text keeps its anchored_in or its part_of to R1's paragraph %s", r1Paragraph)
 	}
 	if holdsRelation(t, database, graphstore.KindComment, onLens.ID, graphstore.TupleAnchoredIn, lens.ID) || holdsRelation(t, database, graphstore.KindComment, onLens.ID, graphstore.TuplePartOf, lens.ID) {
 		t.Errorf("alice's comment on L's text keeps its anchored_in or its part_of to L")
 	}
 	read := commentsWithNodeAnchors(t, handler, key)
 	if comment := read[onR1.ID]; comment.Anchor == nil || !comment.Anchor.Orphaned || comment.NodeAnchor == nil ||
-		comment.NodeAnchor.Node.ID != r1 || comment.NodeAnchor.Node.State != graphstore.StateGone {
-		t.Errorf("the agent's comment on R1's text reads %+v, want orphaned with a node_anchor naming %s gone", comment, r1)
+		comment.NodeAnchor.Node.ID != r1Paragraph || comment.NodeAnchor.Node.State != graphstore.StateGone || comment.NodeAnchor.Quote != "answers in a second" {
+		t.Errorf("the agent's comment on R1's text reads %+v, want orphaned with its quote and a node_anchor naming %s gone", comment, r1Paragraph)
 	}
 	if comment := read[onLens.ID]; comment.NodeAnchor == nil || !comment.NodeAnchor.Orphaned || comment.NodeAnchor.Quote != "one cache" ||
 		comment.NodeAnchor.Node.State != graphstore.StateGone {
@@ -600,14 +605,14 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 	// An edit that drops the quote of the agent's comment on R2 orphans it with R2 live, so
 	// orphaned alone tells no delete; the same edit's index pass leaves R1 gone.
 	if edited := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{"ops": []map[string]any{{
-		"op": "replace", "find": "stores nothing", "with": "leaves no trace",
+		"op": "delete", "find": "stores nothing",
 	}}}, "alice"); edited.Code != http.StatusOK {
 		t.Fatalf("alice edits R2's words: status=%d body=%s", edited.Code, edited.Body.String())
 	}
 	awaitNoSettlementOwed(t, database)
 	if comment := commentsWithNodeAnchors(t, handler, key)[onR2.ID]; comment.Anchor == nil || !comment.Anchor.Orphaned ||
-		comment.NodeAnchor == nil || comment.NodeAnchor.Node.State != graphstore.StateLive {
-		t.Errorf("the agent's comment on R2's text reads %+v after R2's edit, want orphaned with R2 live", comment)
+		comment.NodeAnchor == nil || comment.NodeAnchor.Node.ID != r2Paragraph || comment.NodeAnchor.Node.State != graphstore.StateLive {
+		t.Errorf("the agent's comment on R2's text reads %+v after R2's edit, want orphaned with its paragraph %s live", comment, r2Paragraph)
 	}
 	if state := nodeStateOf(t, database, "block", r1); state != graphstore.StateGone {
 		t.Errorf("R1 reads %s again after the next index pass of the spec, want gone", state)
@@ -630,7 +635,7 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 			t.Errorf("the store census reads %d differences of comment_anchor_block after the delete, want 0", kind.RowDifferences+kind.NodeDifferences)
 		}
 	}
-	if _, held := treeNodes(t, handler, key, "?view=spec&v="+strconv.Itoa(approved.Version))[r1]; !held {
+	if _, held := treeNodes(t, handler, key, approvedView)[r1]; !held {
 		t.Errorf("the spec query at the approved version %d no longer answers R1", approved.Version)
 	}
 	if newestQuery := newestQueryVersion(t, database, specQuery); newestQuery.number <= approved.Version {
@@ -784,8 +789,8 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 		"agent DELETE":   deleteNodeAs(first, key, hiddenAddress, false, 1, hiddenTag),
 		"agent PATCH of": patchNodeAs(first, key, hiddenAddress, hiddenTag, map[string]any{"parent": r2}),
 	} {
-		if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), notFound) {
-			t.Errorf("%s %s answered %d, want 404 NOT_FOUND: %s", what, hiddenAddress, response.Code, response.Body.String())
+		if refusal := decodeBody[refusalAnswer](t, response); response.Code != http.StatusNotFound || refusal.Code != "NOT_FOUND" || !strings.Contains(refusal.Error, notFound) {
+			t.Errorf("%s %s answered %d %s, want 404 NOT_FOUND with the words %q: %s", what, hiddenAddress, response.Code, refusal.Code, notFound, refusal.Error)
 		}
 	}
 	refusedWith(t, "the hidden lens's author's dry run", deleteNodeAs(second, key, hiddenAddress, true, -1, ""), http.StatusForbidden, codeStateNotPermitted)

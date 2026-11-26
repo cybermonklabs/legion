@@ -12,12 +12,11 @@ import {
   phase,
   presetCount,
   presetToggle,
-  presetToggles,
   presetToolbar,
 } from "./issue-page";
 import { expectIssuePageDrawn, expectOpeningLanded, focusThePage } from "./issue-page-g";
 import { expectActivePreset, pickPreset } from "./issue-page-i";
-import { ROW_MS } from "./issue-page-t-rows";
+import { addressOf, FILTERS, PAGE_VIEWS, presetControls, ROW_MS } from "./issue-page-t-rows";
 import {
   convertedGate,
   dashboardPartGate,
@@ -50,19 +49,6 @@ const ROOT_R2_ORDER = [
   "graph",
 ] as const;
 
-/** The views this head's own work draws, so their controls are in the row whatever else is. */
-const HEAD_VIEWS = [
-  "conversation",
-  "spec",
-  "verification",
-  "plan",
-  "decisions",
-  "graph",
-] as const satisfies readonly Preset[];
-
-/** The four filters, each of which draws its count. */
-const FILTERS = ["spec", "verification", "plan", "decisions"] as const satisfies readonly Preset[];
-
 /** The token a control's drawn name is the word of (`PRESET_NAMES`), and the name itself where no
  *  token's word is it. */
 function tokenOf(name: string): string {
@@ -72,20 +58,14 @@ function tokenOf(name: string): string {
 
 /** Each control of the row of toggles, by its token, in the order the row draws them. */
 async function drawnControls(page: Page): Promise<string[]> {
-  const names = await presetToggles(page).evaluateAll((buttons) =>
-    buttons.map((button) => (button.querySelector("[data-preset-name]")?.textContent ?? "").trim())
-  );
-  return names.map(tokenOf);
+  return (await presetControls(page)).map((control) => tokenOf(control.name));
 }
 
 /** Each control of the row whose pressed state is on, by its token. */
 async function activeControls(page: Page): Promise<string[]> {
-  const names = await presetToggles(page).evaluateAll((buttons) =>
-    buttons
-      .filter((button) => button.matches('[aria-pressed="true"]'))
-      .map((button) => (button.querySelector("[data-preset-name]")?.textContent ?? "").trim())
+  return (await presetControls(page)).flatMap((control) =>
+    control.pressed ? [tokenOf(control.name)] : []
   );
-  return names.map(tokenOf);
 }
 
 /** Fails unless the one control whose pressed state is on is `view`'s, after `what`. */
@@ -95,11 +75,6 @@ async function expectOneActive(page: Page, view: Preset, what: string): Promise<
       message: `after ${what}, one control is active, ${PRESET_NAMES[view]}`,
     })
     .toEqual([view]);
-}
-
-/** The address `view` has on `key`, at the end of the page's URL. */
-function addressOf(key: string, view: Preset): RegExp {
-  return new RegExp(`${presetPath(key, view)}$`);
 }
 
 // c-row-controls.
@@ -114,14 +89,14 @@ test("the view row holds its controls in order, one active at a time", async ({ 
     await expect(presetToolbar(page), "the row of toggles is not drawn at 1440 px").toHaveCount(1);
 
     // Root R2's order, read from the drawn row and not from the page's own list: each control the
-    // row draws stands where that order puts it, and the head's own six are among them.
+    // row draws stands where that order puts it, and the six views of this page are among them.
     const drawn = await drawnControls(page);
     expect(drawn, "the controls stand in root R2's order").toEqual(
       ROOT_R2_ORDER.filter((view) => drawn.includes(view))
     );
     expect(
-      HEAD_VIEWS.filter((view) => !drawn.includes(view)),
-      "the row draws a control for each view the head holds"
+      PAGE_VIEWS.filter((view) => !drawn.includes(view)),
+      "the row draws a control for each of the page's six views"
     ).toEqual([]);
 
     // Each filter draws its count, and Graph none.
@@ -182,9 +157,9 @@ test("the view row holds its controls in order, one active at a time", async ({ 
 });
 
 // What Dashboard's row can only read once Dashboard's part draws it: each is a clause of
-// c-dashboard-reads that reads a mark or a page only that part brings, so it is built against
-// that part's marks by whichever of this part and that one reaches `main` second. Each is false
-// here, and each fails the row past its gate until it is built.
+// c-dashboard-reads that reads a mark or a page only that part brings, so it can be built only
+// once that part's marks are on this branch's base. Each is false here, and each fails the row
+// past its gate until it is built.
 /** Today's Dashboard tab's reads: one read each of the three views, and no results, coverage or
  *  decisions read, read on that tab's own load. */
 const TODAY_DASHBOARD_READS_BUILT = false;
@@ -196,8 +171,9 @@ const DASHBOARD_DRAWS_BUILT = false;
 
 // c-dashboard-reads, owed on Dashboard's part (`dashboardPartGate`), which brings Dashboard: a
 // load of the new page's Dashboard reads the three views once each and no results, coverage or
-// decisions read. Past the gate the row reads what this head lets it name - the new page's own
-// Dashboard reads - and fails on each clause that needs that part's marks until it is built.
+// decisions read. Past the gate the row reads what the page reads without that part's marks -
+// the new page's own Dashboard reads - and fails on each clause that needs those marks until it
+// is built.
 // SLOW(>=2s): the whole seeded issue, loaded, Dashboard pressed, and the page loaded again on
 // Dashboard's address with that load waited out.
 test("Dashboard reads the tree read views", async ({ browser }) => {

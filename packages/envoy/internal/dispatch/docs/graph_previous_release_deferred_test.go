@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"io"
+	"maps"
 	"testing"
 	"time"
 
@@ -25,6 +26,11 @@ import (
 // therefore sets this build's own mark beside it (store_owed_at, oweDocumentIndex), which that
 // release neither reads nor clears, and this build's drain of the mark names every row's node and
 // states what each row projects (refs.IndexBlocks).
+//
+// That release's renderer records no list item's offset, so it writes a row of the list and of
+// each item's paragraph and none of an item. R7 of the issue-tree spec nests a moved block under a
+// list item, so this build's renderer records each item's offset (renderer.list in
+// pmdoc/render.go) and its drain writes each item's row and node beside naming the others.
 //
 // The test writes such a version through this build's request path, lets the stand-in for the
 // previous release's block index (indexVersionAsThePreviousRelease, which
@@ -107,7 +113,9 @@ func TestADeferredVersionThePreviousReleaseIndexesReachesTheStore(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	// What the previous release left: every row naming no node, and the version settled.
+	// What the previous release left: every row naming no node, and the version settled. Its
+	// render holds the list and each item's paragraph and no list item
+	// (indexVersionAsThePreviousRelease), so it left a row of each of those and none of an item.
 	unnamed := func() (blocks, links int) {
 		t.Helper()
 		if err := database.Pool.QueryRow(ctx, `
@@ -118,9 +126,13 @@ func TestADeferredVersionThePreviousReleaseIndexesReachesTheStore(t *testing.T) 
 		}
 		return blocks, links
 	}
-	if blocks, links := unnamed(); blocks != deferredItems+1 || links != 1 {
-		t.Fatalf("the previous release left %d block row(s) and %d link row(s) naming no node, want all %d blocks and the one link",
-			blocks, links, deferredItems+1)
+	previousReleaseBlocks := 1 + deferredItems
+	if blocks, links := unnamed(); blocks != previousReleaseBlocks || links != 1 {
+		t.Fatalf("the previous release left %d block row(s) and %d link row(s) naming no node, want all %d blocks of its render, the list and each item's paragraph, and the one link",
+			blocks, links, previousReleaseBlocks)
+	}
+	if types := blockRowTypes(t, database, document); !maps.Equal(types, map[string]int{"bullet_list": 1, "paragraph": deferredItems}) {
+		t.Fatalf("the previous release left block rows of %v by type, want the list and each item's paragraph, and no list item", types)
 	}
 	if stands := blockIndexAt(t, database, document); stands == nil || *stands != version {
 		t.Fatalf("the previous release left the document's blocks standing at %v, want version %d", stands, version)
@@ -143,6 +155,16 @@ func TestADeferredVersionThePreviousReleaseIndexesReachesTheStore(t *testing.T) 
 	if blocks, links := unnamed(); blocks != 0 || links != 0 {
 		t.Errorf("%d block row(s) and %d link row(s) of the document name no node after this build drained its mark, want none",
 			blocks, links)
+	}
+	// The drain wrote each list item's row and node, which the previous release never wrote: the
+	// document holds this build's whole render, each row naming a node of the store.
+	types := blockRowTypes(t, database, document)
+	t.Logf("after this build's drain the document holds block rows of %v by type", types)
+	if want := map[string]int{"bullet_list": 1, "list_item": deferredItems, "paragraph": deferredItems}; !maps.Equal(types, want) {
+		t.Errorf("after this build's drain the document holds block rows of %v by type, want %v", types, want)
+	}
+	if nodes := countBlockNodes(t, database, document); nodes != deferredBlocks {
+		t.Errorf("after this build's drain the store holds %d block nodes of the document, want one for each of its %d blocks", nodes, deferredBlocks)
 	}
 	var address string
 	if err := database.Pool.QueryRow(ctx, `select ref_key || '#' || $2 from artifacts where id = $1`, document, link.blockID).Scan(&address); err != nil {

@@ -271,17 +271,23 @@ func (s *server) moveNode(ctx context.Context, move nodeMoveRequest) (nodeMoved,
 			moved.word(), moved.named)
 	}
 	// A decision that holds a from_ask stands under the ask it settles, whatever a move would
-	// store (R2): R7 answers it 400 NODE_NOT_MOVABLE at the same point, naming its ask, whoever the
-	// caller is, so an agent's move of a person's such decision is this and not R32's 409.
+	// store (R2): R7 answers it 400 NODE_NOT_MOVABLE at the same point, whoever the caller is, so
+	// an agent's move of a person's such decision is this and not R32's 409. The refusal names the
+	// ask where the caller may read it (refs.DecisionFromAsk), and in the same words names none
+	// where the caller may not, or where no ask resolves.
 	if moved.kind == refs.BlockNodeKind && moved.typ == refs.DecisionSupertag {
-		ask, holds, err := refs.DecisionFromAsk(ctx, tx, moved.id)
+		ask, holds, err := refs.DecisionFromAsk(ctx, tx, move.who, moved.id)
 		if err != nil {
 			return nodeMoved{}, nil, nil, err
 		}
 		if holds {
+			held := "a from_ask"
+			if ask != "" {
+				held += ", " + ask
+			}
 			return nodeMoved{}, nil, nil, errorf(http.StatusBadRequest, codeNodeNotMovable,
-				"the %s %s does not move: it holds a from_ask, %s, so it stands under the ask it settles and its place follows that from_ask - a move would leave it where the next index pass undoes it; to move it, change or remove its from_ask through a write of its document's text",
-				moved.word(), moved.named, ask)
+				"the %s %s does not move: it holds %s, so it stands under the ask it settles and its place follows that from_ask - a move would leave it where the next index pass undoes it; to move it, change or remove its from_ask through a write of its document's text",
+				moved.word(), moved.named, held)
 		}
 	}
 	// R7 reads the constraint rule next, before every other rule: a constraint stands only under an
@@ -351,6 +357,17 @@ func (s *server) moveNode(ctx context.Context, move nodeMoveRequest) (nodeMoved,
 		return nodeMoved{}, nil, nil, errorf(http.StatusPreconditionFailed, codePreconditionFailed,
 			"the %s %s stands at placement_seq %s, which no If-Match tag names: its parent has changed since it was read, so nothing was moved; read the tree and move it again",
 			moved.word(), moved.named, placementWords(read.placementSeq))
+	}
+	// A reparent can take a child out of the route's tree while the request waits for its locks.
+	// Recheck that scope under the locks before changing its placement.
+	if moved.kind == graphstore.KindIssue && moved.id != move.key {
+		below, err := issueNodeBelow(ctx, tx, move.who, moved.id, move.key)
+		if err != nil {
+			return nodeMoved{}, nil, nil, err
+		}
+		if !below {
+			return nodeMoved{}, nil, nil, nodeNotFound(move.key, move.id)
+		}
 	}
 	reparents := read.parentKind != parent.stored || read.parentID != parent.id
 	if reparents {

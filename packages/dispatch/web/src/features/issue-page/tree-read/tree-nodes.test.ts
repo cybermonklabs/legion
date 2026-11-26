@@ -17,22 +17,21 @@ import type {
   IssueDetails,
   RequirementCoverage,
 } from "../../../api/types";
-import { withEntries } from "../../issue/decision-entries";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { decisionChanges, decisionNodeChanges } from "../decision-review";
+import { decisionsRead } from "../decisions-filter/decisions-fixtures";
 import {
   assemble,
   buildIssueTree,
   type IssueTreeReads,
   lineWordsRaw,
-  type NodeChip,
   nodeWords,
   type TreeNode,
   treeWordsOf,
 } from "../issue-tree";
 import { GLYPH_TOKENS, NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
-import { nameOf } from "../projection-fixture";
+import { drawnChip, nameOf } from "../projection-fixture";
 import { blockNodeId } from "../tree-drafts";
 import {
   pagedAnswer,
@@ -43,6 +42,7 @@ import {
 } from "./tree-fixtures";
 import {
   blocksOfRole,
+  holdsPlanTask,
   nextTreeCursor,
   nodesRemaining,
   type TreeDraftMark,
@@ -75,13 +75,6 @@ const KEY = "CORE-1";
 beforeAll(async () => {
   await warmMarkdownRenderer();
 });
-
-/** A chip as a row reads it: its fields, with the name it draws (`nameOf`) in place of the
- *  reading. */
-function drawnChip(chip: NodeChip): Omit<NodeChip, "reading"> & { readonly name: string } {
-  const { reading: _reading, ...fields } = chip;
-  return { ...fields, name: nameOf(chip) };
-}
 
 /** A supertag no part's step drafts, so a node of it is drawn by no row whatever later parts add
  *  to `treeDraftSteps` (later work drafts a lens, a finding, a risk, a constraint and a
@@ -686,8 +679,8 @@ test("a statement no plan task serves is marked once the plan view holds a plan 
   ]);
   const reads: IssueTreeReads = {
     coverage: coverage([unplanned("r1"), requirement("r2")]),
+    holdsPlanTask: holdsPlanTask(plan),
     issue: issueDetails(),
-    plan,
   };
 
   expect(statementGaps(tree, reads, ["r1", "r2"])).toEqual([["no_plan_task"], []]);
@@ -713,8 +706,8 @@ test("a plan task of an issue under this one counts", () => {
   ]);
   const reads: IssueTreeReads = {
     coverage: coverage([unplanned("r1"), requirement("r2")]),
+    holdsPlanTask: holdsPlanTask(plan),
     issue: issueDetails(),
-    plan,
   };
 
   expect(statementGaps(tree, reads, ["r1", "r2"])).toEqual([["no_plan_task"], []]);
@@ -732,7 +725,12 @@ test("no statement is marked for a missing plan task while no plan task exists, 
     block("t-gone", "plan_task", KEY, PLAN, 1, { role: "query", state: "gone" }),
   ]);
 
-  expect(statementGaps(tree, { ...reads, plan: none }, ["r1"])).toEqual([[]]);
+  expect(holdsPlanTask(none), "a plan role and a task gone at its cut hold a plan task").toBe(
+    false
+  );
+  expect(statementGaps(tree, { ...reads, holdsPlanTask: holdsPlanTask(none) }, ["r1"])).toEqual([
+    [],
+  ]);
   expect(statementGaps(tree, reads, ["r1"])).toEqual([[]]);
 });
 
@@ -745,8 +743,8 @@ test("no statement is marked for a missing plan task while a document of the iss
   const plan = answer([block("t1", "plan_task", KEY, PLAN, 0, { role: "query" })]);
   const reads: IssueTreeReads = {
     coverage: { ...coverage([unplanned("r1")]), gaps: [owed] },
+    holdsPlanTask: holdsPlanTask(plan),
     issue: issueDetails(),
-    plan,
   };
 
   expect(statementGaps(tree, reads, ["r1"])).toEqual([[]]);
@@ -765,8 +763,8 @@ test("a proposed or an overtaken statement draws no gap for a missing check or p
   const ids = ["r-live", "r-proposed", "r-overtaken"];
   const reads: IssueTreeReads = {
     coverage: coverage(ids.map((id) => ({ ...unplanned(id), checks: 0 }))),
+    holdsPlanTask: holdsPlanTask(plan),
     issue: issueDetails(),
-    plan,
   };
 
   expect(statementGaps(tree, reads, ids)).toEqual([["no_check", "no_plan_task"], [], []]);
@@ -1012,13 +1010,12 @@ test("an ask's shaped ties are chips on its row, each naming a node the ask shap
   ]);
 });
 
-// R3: a decision of a decisions read of the release before - a section of `decisions.md`, which
-// no node of the answer holds, read as its entry (`withEntries`) - finds its Change by its words,
-// with no block of the decisions document read: the change is the first decision whose words
-// hold the anchor's quote. The read hangs the comment under the issue, since no node holds the
-// decision, and the outline draws it under the decision it changes, which reads Change
-// requested; a comment quoting words no decision holds is no change and stays where the read
-// hangs it.
+// R3: a decision no node of the answer holds - a block of `decisions.md`, as the decisions read
+// answers its entry (`decisionsRead`) - finds its Change by its words, with no block of the
+// decisions document read: the change is the first decision whose words hold the anchor's quote.
+// The read hangs the comment under the issue, since no node holds the decision, and the outline
+// draws it under the decision it changes, which reads Change requested; a comment quoting words
+// no decision holds is no change and stays where the read hangs it.
 test("a decisions.md section finds its Change by its words", () => {
   const anchored = (id: string, quote: string): Comment => ({
     anchor: {
@@ -1056,14 +1053,7 @@ test("a decisions.md section finds its Change by its words", () => {
     anchored("c-change", "Draw it once."),
     anchored("c-stray", "Words no decision holds."),
   ];
-  const decisions = withEntries(
-    {
-      decisions: [keep, draw],
-      document: `dispatch://${KEY}/artifact/decisions-md`,
-      open_questions: [],
-    },
-    KEY
-  );
+  const decisions = decisionsRead([keep, draw], DECISIONS);
 
   const changes = decisionChanges(decisions, comments, issueDetails(), undefined);
   expect([...changes].map(([ref, comment]) => [ref, comment.id])).toEqual([[draw.ref, "c-change"]]);
@@ -1084,22 +1074,15 @@ test("a decisions.md section finds its Change by its words", () => {
   expect(nodeOf(root, blockNodeId("decisions-md", "d1"))?.state).toBe("waiting_review");
 });
 
-// A decision of a decisions read of the release before is drafted beside the tree read's nodes,
-// and a re-read of the same reads hands its row the words and the source it handed it before, as
-// a node of the tree read's does.
+// A decision of the decisions read that no node of the answer holds is drafted beside the tree
+// read's nodes, and a re-read of the same reads hands its row the words and the source it handed
+// it before, as a node of the tree read's does.
 test("drawing the same decisions read twice hands a section's row the same words and source", () => {
   const section = decisionsSection("d1", "Keep it", "Keep the model pure.", {
     text_tree: typedReading("decision", { blockId: "d1" }, "Keep the model pure."),
   });
   const reads = {
-    decisions: withEntries(
-      {
-        decisions: [section],
-        document: `dispatch://${KEY}/artifact/decisions-md`,
-        open_questions: [],
-      },
-      KEY
-    ),
+    decisions: decisionsRead([section], DECISIONS),
     issue: issueDetails(),
     tree: answer([]),
   };
@@ -2208,7 +2191,14 @@ test("a plain block of the room's fragment is drafted and named as prose in Grap
 // view draws it as a row in the walk's order after the issue's own task, with its size and its
 // issue. The outline's answer, which carries no `plan`, drafts no task of another issue.
 test("a plan task's size and issue come from the plan view's answer", () => {
-  const place = (size: string | null) => ({ cycle: false, needs: [], position: 0, size });
+  const place = (size: string | null) => ({
+    cycle: false,
+    docs: null,
+    needs: [],
+    position: 0,
+    size,
+    skills: null,
+  });
   const childPlan = { artifact_id: "artifact-child-plan", slug: "plan-md" };
   const child = (id: string, position: number, size: string | null) =>
     node(id, "plan_task", "CORE-2", {

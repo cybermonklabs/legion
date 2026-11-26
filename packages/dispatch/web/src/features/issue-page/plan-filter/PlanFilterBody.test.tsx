@@ -8,12 +8,18 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { displayTree } from "../../../__tests__/display-trees";
 import { nextFrame } from "../../../__tests__/frames";
 import { api } from "../../../api/client";
-import { issueCoverageQuery, issueResultsQuery, whoAmIQuery } from "../../../api/queries";
+import {
+  issueAskThreadsQuery,
+  issueCoverageQuery,
+  issueResultsQuery,
+  whoAmIQuery,
+} from "../../../api/queries";
 import type { Artifact, IssueDetails } from "../../../api/types";
 import { pageFocusedRow } from "../../../theme/classes";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
+import * as referenceNames from "../../refs/reference-names";
 import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
 import { buildIssuePath, type IssueRoute } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
@@ -54,7 +60,6 @@ import { ViewPlanSlot } from "../slots/view-plan";
 import { blockNodeId, treeContext } from "../tree-drafts";
 import { treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import { outlineQuery, type TreeAnswerNode, viewQuery } from "../tree-read/tree-read";
-import { issueAskThreadsQuery } from "../useIssueTree";
 import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody";
 
 /**
@@ -120,8 +125,8 @@ function taskRef(blockId: string): string {
   return `dispatch://${KEY}/artifact/${PLAN}#b-${blockId}`;
 }
 
-/** The chip the tree draws for one `needs` pointer of a task's block (`tree-drafts.ts`'s
- *  `placeBlocks`), under the attribute's own word; `issue` names it as the tree names the task it
+/** The chip the tree draws for one `needs` pointer of a task's block (`tree-read/tree-nodes.ts`'
+ *  `needsChips`), under the attribute's own word; `issue` names it as the tree names the task it
  *  points at, once a test has built every task. */
 function need(blockId: string): NodeChip {
   return {
@@ -1025,6 +1030,24 @@ function issueRead(verification?: Artifact): IssueDetails {
     plan_artifact_id: PLAN_ARTIFACT,
     primary_artifact_id: SPEC_ARTIFACT,
     verification_artifact_id: verification?.id ?? "",
+    queries: [
+      ...(verification === undefined
+        ? []
+        : [
+            {
+              query: "verification" as const,
+              artifact_id: verification.id,
+              takes: ["check", "result"],
+              subtree: `issue:${KEY}`,
+            },
+          ]),
+      {
+        query: "plan",
+        artifact_id: PLAN_ARTIFACT,
+        takes: ["plan_task", "plan_role"],
+        subtree: `issue:${KEY}`,
+      },
+    ],
   };
 }
 
@@ -1182,7 +1205,9 @@ test("the body drawn again over the same tasks keeps Steps pressed and the focus
 // none of them. The view publishes the reading of each block a chip or a parent line of its rows
 // names (`presets.ts`' `PresetView.readings`, `slots/view-readings.ts`), and the chart names a
 // step's need and the statement it serves by the line the names store projects from it. The case
-// draws the slot itself, so nothing hands the body a name the slot does not publish.
+// draws the slot itself, so nothing hands the body a name the slot does not publish. The view
+// worked out again over the same answers names each block by equal readings, and publishes
+// nothing new: the store keeps the readings it holds.
 test("a step names the step it needs and the statements it serves from the view's own tree", async () => {
   setViewport(1440);
   const client = slotClient({ specHeld: false });
@@ -1218,6 +1243,13 @@ test("a step names the step it needs and the statements it serves from the view'
     )
   );
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const publishes = spyOn(referenceNames, "usePublishReferenceNames");
+  // The values the view publishes: the page's own names read answers no target here, so its
+  // value names no reading.
+  const viewValues = () =>
+    publishes.mock.calls.flatMap(([value]) =>
+      value === undefined || value.readings.size === 0 ? [] : [value]
+    );
   const view = renderSlot(client, issueRead(), {
     path: `/issues/${KEY}/plan`,
     route: { key: KEY, kind: "plan" },
@@ -1239,9 +1271,22 @@ test("a step names the step it needs and the statements it serves from the view'
         "t1 does not name the statement it serves"
       ).toEqual([["Draw the chart of the plan.", expect.stringMatching(/#b-r1$/)]]);
     });
+
+    const before = viewValues();
+    const held = before.at(-1)?.readings;
+    expect(held, "the view publishes no reading").toBeDefined();
+    view.redraw(issueRead());
+    await waitFor(() => expect(viewValues().length).toBeGreaterThan(before.length));
+    expect(
+      viewValues()
+        .slice(before.length)
+        .filter((value) => value.readings !== held),
+      "the view worked out again over the same answers published its readings anew"
+    ).toEqual([]);
   } finally {
     view.unmount();
     names.mockRestore();
+    publishes.mockRestore();
     client.clear();
   }
 });

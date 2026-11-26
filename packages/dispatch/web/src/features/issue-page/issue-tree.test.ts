@@ -30,7 +30,6 @@ import type {
   RequirementCoverage,
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
-import { withEntries } from "../issue/decision-entries";
 import { askResolutionBadge } from "../refs/actor";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { usePlainHeadline } from "../refs/plain-text";
@@ -49,7 +48,6 @@ import {
   firstLineOf,
   type IssueTreeReads,
   lineWordsRaw,
-  type NodeChip,
   nodeWords,
   type TreeAsk,
   type TreeNode,
@@ -59,6 +57,7 @@ import { useNodeLine } from "./node-line";
 import { NODE_TYPE_NAMES, NODE_TYPES, nodeStateWord, PRESET_NAMES } from "./page-words";
 import { filterSignals, presetView } from "./presets";
 import {
+  drawnChip,
   nameOf,
   namesOf,
   nodeLineOf,
@@ -99,13 +98,6 @@ import {
 beforeAll(async () => {
   await warmMarkdownRenderer();
 });
-
-/** A chip as a row reads it: its fields, with the name it draws (`nameOf`) in place of the
- *  reading. */
-function drawnChip(chip: NodeChip): Omit<NodeChip, "reading"> & { readonly name: string } {
-  const { reading: _reading, ...fields } = chip;
-  return { ...fields, name: nameOf(chip) };
-}
 
 const KEY = "CORE-1";
 const SPEC = "spec";
@@ -2089,6 +2081,14 @@ test("a document chip names a part only where the issue read names that document
       ...issueDetails([flagged, made, plan]),
       decisions_artifact_id: made.id,
       plan_artifact_id: plan.id,
+      queries: [
+        {
+          query: "plan",
+          artifact_id: plan.id,
+          takes: ["plan_task", "plan_role"],
+          subtree: `issue:${KEY}`,
+        },
+      ],
       primary_artifact_id: "",
     },
   });
@@ -2139,40 +2139,6 @@ test("a decision sits under the ask it answers, and one that answers none under 
   expect(nodeOf(root, blockNodeId(SPEC, "d3"))?.chips.map((chip) => chip.ref)).toEqual([
     `dispatch://${KEY}/ask/ask-elsewhere`,
   ]);
-});
-
-// A server of the release before answers the Decisions read with no `entries`: its decisions are
-// the sections of the issue's decisions document, each with the asks it cites. A page of this
-// build that reaches it during a roll reads them as entries (`withEntries`), so the tree still
-// draws each agent's section as a decision under the question it settles, with what it shaped.
-test("a Decisions read of the release before, with no entries, still places its decisions", () => {
-  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
-  const section = decision("h-store", "Answers the issue's own question.", ["r1"]);
-  const read = withEntries(
-    {
-      decisions: [
-        {
-          ...section,
-          asks: ["ask-own"],
-          ref: `dispatch://${KEY}/artifact/decisions-md#b-h-store`,
-          text: "## Answers the issue's own question.\n\nThe words of the section.",
-        },
-      ],
-      document: `dispatch://${KEY}/artifact/decisions-md`,
-      open_questions: [],
-    },
-    KEY
-  );
-  const root = treeOf({
-    asks: [question("ask-own", { state: "answered" })],
-    decisions: read,
-    issue: issueDetails([spec]),
-  });
-
-  const id = blockNodeId("decisions-md", "h-store");
-  expect(nodeOf(root, id)?.type).toBe("decision");
-  expect(placementsOf(root, id).map((one) => one.parent)).toEqual(["ask-own"]);
-  expect(nodeOf(root, id)?.chips.map((chip) => chip.ref)).toEqual([`dispatch://${KEY}/spec#b-r1`]);
 });
 
 // A read of the release before built a decision's asks and links paragraph by paragraph and
@@ -3618,6 +3584,20 @@ test("a requirement block outside the spec is no statement, and the spec's are, 
         ...issueDetails([spec, plan, checks]),
         plan_artifact_id: plan.id,
         verification_artifact_id: checks.id,
+        queries: [
+          {
+            query: "verification",
+            artifact_id: checks.id,
+            takes: ["check", "result"],
+            subtree: `issue:${KEY}`,
+          },
+          {
+            query: "plan",
+            artifact_id: plan.id,
+            takes: ["plan_task", "plan_role"],
+            subtree: `issue:${KEY}`,
+          },
+        ],
       },
     });
 
@@ -3687,6 +3667,20 @@ test("a check block outside the Verification document draws no state and is coun
         ...issueDetails([spec, plan, checks]),
         plan_artifact_id: plan.id,
         verification_artifact_id: checks.id,
+        queries: [
+          {
+            query: "verification",
+            artifact_id: checks.id,
+            takes: ["check", "result"],
+            subtree: `issue:${KEY}`,
+          },
+          {
+            query: "plan",
+            artifact_id: plan.id,
+            takes: ["plan_task", "plan_role"],
+            subtree: `issue:${KEY}`,
+          },
+        ],
       },
       ...(answered ? { results } : {}),
     });

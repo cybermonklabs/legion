@@ -23,6 +23,7 @@ import type {
   IssueCheckResults,
   IssueCoverage,
   IssueDetails,
+  RequirementCoverage,
 } from "../../../api/types";
 import { actorLabelText } from "../../refs/AgentName";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
@@ -62,8 +63,8 @@ import { ViewStage } from "../slots/stage";
 import { drawStage, inDocument, REFUSED, stubReads, treeOf } from "../slots/stage-fixtures";
 import { useVerificationReads } from "../slots/view-verification";
 import { blockNodeId, treeContext } from "../tree-drafts";
-import { treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
-import type { TreeAnswer } from "../tree-read/tree-read";
+import { pagedAnswer, treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
+import { type TreeAnswer, type TreeAnswerNode, viewKey } from "../tree-read/tree-read";
 import { shortCommit } from "./statement-state";
 import {
   type FailedRead,
@@ -106,17 +107,19 @@ beforeAll(async () => {
 /** What a case gives the body beside its statements and its checks: the words the reader typed
  *  (`query`), which the view is filtered by (`presetView`), the nodes an address named, how the
  *  three reads stand (`reads`), which is all of them answered where a case gives nothing else,
- *  the view with no query where a case builds it itself (`whole`), which is otherwise built as
- *  the slot builds it, whether the body is drawn inside the stage the page draws a view in
- *  (`staged`), which moves the focus where a failed read's line leaves with it or the view's
- *  tree itself takes it (`ViewStage`), and what the page publishes of its batched names read
- *  (`published`), which is what it publishes for the issue's statements where a case gives
- *  nothing else (`publishedStatements`). */
+ *  the coverage read's rows (`requirements`), which are the rows of the statements the case
+ *  draws where it gives none (`coverageOf`), the view with no query where a case builds it
+ *  itself (`whole`), which is otherwise built as the slot builds it, whether the body is drawn
+ *  inside the stage the page draws a view in (`staged`), which moves the focus where a failed
+ *  read's line leaves with it or the view's tree itself takes it (`ViewStage`), and what the page
+ *  publishes of its batched names read (`published`), which is what it publishes for the issue's
+ *  statements where a case gives nothing else (`publishedStatements`). */
 interface DrawOptions {
   readonly named?: readonly string[];
   readonly published?: PublishedReferences;
   readonly query?: string;
   readonly reads?: VerificationReads;
+  readonly requirements?: readonly RequirementCoverage[];
   readonly staged?: boolean;
   readonly whole?: TreeNode;
 }
@@ -127,6 +130,28 @@ function statementsOf(root: TreeNode): TreeNode[] {
     ...(root.statement === true && root.reference !== undefined ? [root] : []),
     ...root.children.flatMap(statementsOf),
   ];
+}
+
+/** The coverage read's rows for `statements`, as the server answers them for an issue whose every
+ *  statement the case draws: one row for each statement, with the checks the case gave it - its
+ *  count of checks where it carries one (`TreeNode.counts`), else the checks drawn under it. */
+function coverageOf(statements: readonly TreeNode[]): RequirementCoverage[] {
+  const rows = new Map<string, RequirementCoverage>();
+  for (const statement of statements) {
+    const ref = statement.reference;
+    if (ref === undefined || rows.has(ref)) continue;
+    rows.set(ref, {
+      block_id: ref.slice(ref.lastIndexOf("#b-") + "#b-".length),
+      checks:
+        statement.counts?.checks ??
+        statement.children.filter((child) => child.type === "check").length,
+      gaps: [],
+      plan_tasks: 0,
+      ref,
+      text: statement.text,
+    });
+  }
+  return [...rows.values()];
 }
 
 /** What the page publishes for `statements`: what its batched read names them by, by the page's
@@ -169,6 +194,7 @@ function bodyOf(
     published: givenPublished,
     query = "",
     reads = { state: "answered" },
+    requirements: givenRequirements,
     staged = false,
     whole: given,
   }: DrawOptions = {},
@@ -180,6 +206,7 @@ function bodyOf(
     given ??
     (queryTyped(query) ? presetView(issue, "verification", "", new Set(named)).root : undefined);
   const published = givenPublished ?? publishedStatements(statementsOf(issue));
+  const requirements = givenRequirements ?? coverageOf(statementsOf(issue));
   const slot = (
     <NoTooltips>
       <Publisher published={published} />
@@ -189,6 +216,7 @@ function bodyOf(
         namesLine={NO_FAILED_READS}
         published={published}
         reads={reads}
+        requirements={requirements}
         view={view.root}
         whole={whole}
       />
@@ -2666,6 +2694,125 @@ test("a row drawn from a view's own tree names its other parent by that parent's
     );
     // The names read was never asked for the second statement, so its line is the view's own.
     expect(names.mock.calls.flat(2)).not.toContain(specRef("r2"));
+  } finally {
+    view.unmount();
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// The summary counts the issue's statements from the coverage read, which answers every statement
+// of the issue's spec, and never the statements of the view read's loaded pages. The server ends
+// a page of the view at a bound of bytes as well as of nodes, so a node written before the cut
+// moves it: here the first load's first page holds fourteen of the issue's sixteen statements,
+// and a re-read's, once a check of an issue under this one is placed under the first statement,
+// holds thirteen. The coverage read answers the same sixteen both times, and so does the summary.
+// What the chips count is the statements loaded, so each count carries "+" while the view read
+// names a next page (R15).
+test("the summary counts the issue's statements from the coverage read, whatever page of the view is loaded", async () => {
+  const stubs = stubReads();
+  const base = issueDetails();
+  const verification = artifact("artifact-verification", VERIFICATION_SLUG);
+  const issue: IssueDetails = {
+    ...base,
+    artifacts: [...(base.artifacts ?? []), verification],
+    verification_artifact_id: verification.id,
+  };
+  const ids = Array.from({ length: 16 }, (_unused, at) => at + 1);
+  // A statement of the spec, as the view read answers it: context, under the issue.
+  const statement = (at: number): TreeAnswerNode =>
+    treeNode(`r${at}`, "requirement", ISSUE_KEY, {
+      ...inDocument(SPEC_DOCUMENT, at),
+      role: "context",
+      text: `Statement ${at}.`,
+    });
+  // The check of the Verification document that serves it, the view's query.
+  const checkOf = (at: number): TreeAnswerNode =>
+    treeNode(`c${at}`, "check", `r${at}`, { ...inDocument(verification, at), role: "query" });
+  // A check of CORE-3, an issue under this one, that serves the first statement: the read places
+  // it under that statement, as context.
+  const elsewhere = treeNode("c-under", "check", "r1", {
+    document: { artifact_id: "artifact-core-3", position: 0, slug: VERIFICATION_SLUG },
+    issue: "CORE-3",
+    role: "context",
+  });
+  // The view read's first page: the first `statements` statements, the checks of the first
+  // `checks` of them, `under` after the first statement's check, and the cursor of the next page.
+  const firstPage = (
+    statements: number,
+    checks: number,
+    under: readonly TreeAnswerNode[],
+    cursor: string
+  ): TreeAnswer =>
+    pagedAnswer(
+      treeAnswer(
+        ids
+          .slice(0, statements)
+          .flatMap((at) => [
+            statement(at),
+            ...(at <= checks ? [checkOf(at)] : []),
+            ...(at === 1 ? under : []),
+          ]),
+        [
+          ...ids.slice(0, checks).map((at) => treeTuple("serves", `c${at}`, `r${at}`)),
+          ...under.map((node) => treeTuple("serves", node.block_id ?? node.id, "r1")),
+        ]
+      ),
+      cursor,
+      2 * ids.length - statements - checks
+    );
+  const firstLoad = firstPage(14, 13, [], "the page from c14");
+  const reRead = firstPage(13, 13, [elsewhere], "the page from r14");
+  let answer = firstLoad;
+  spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    const asked = query as { readonly view?: string };
+    if (asked.view === undefined) return treeAnswer([treeNode(ISSUE_KEY, "issue", null)]);
+    return asked.view === "verification" ? answer : Promise.withResolvers<never>().promise;
+  });
+  // The one coverage answer: every statement of the issue, each served by its check.
+  spyOn(api, "getIssueCoverage").mockResolvedValue({
+    gaps: [],
+    has_plan: false,
+    issue: ISSUE_KEY,
+    requirements: ids.map((at) => ({
+      block_id: `r${at}`,
+      checks: 1,
+      gaps: [],
+      plan_tasks: 0,
+      ref: specRef(`r${at}`),
+      text: `Statement ${at}.`,
+    })),
+    spec_artifact_id: SPEC_DOCUMENT.id,
+  });
+  spyOn(api, "getIssueResults").mockResolvedValue({
+    checks: ids.map((at) => check({ block_id: `c${at}`, pass_stands: { answer: "no" } })),
+    issue: ISSUE_KEY,
+    verification_artifact_id: verification.id,
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = drawStage("", { client, issue, preset: "verification" });
+  const cards = () => view.container.querySelectorAll("[data-verification-card]");
+  const chips = (count: number) => [
+    `${VERIFICATION_WORDS.all} ${count}+`,
+    `${VERIFICATION_WORDS.states.met} 0+`,
+    `${VERIFICATION_WORDS.states.not_met} 0+`,
+    `${VERIFICATION_WORDS.states.unknown} ${count}+`,
+  ];
+  try {
+    await waitFor(() => expect(cards(), "the first load drew no statement").toHaveLength(14));
+    const [first] = textsOf(view, "[data-verification-covered]");
+    expect(textsOf(view, "[data-verification-chip]")).toEqual(chips(14));
+
+    answer = reRead;
+    await act(async () => {
+      void client.invalidateQueries({ queryKey: viewKey(ISSUE_KEY, "verification") });
+    });
+    await waitFor(() => expect(cards(), "the re-read did not land").toHaveLength(13));
+    expect(
+      textsOf(view, "[data-verification-covered]"),
+      "the summary counts other statements after a re-read than at the first load"
+    ).toEqual([first]);
+    expect(first).toBe(`16 ${VERIFICATION_WORDS.of} 16 ${VERIFICATION_WORDS.covered}`);
+    expect(textsOf(view, "[data-verification-chip]")).toEqual(chips(13));
   } finally {
     view.unmount();
     for (const stub of stubs) stub.mockRestore();
