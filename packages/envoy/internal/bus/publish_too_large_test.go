@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -150,7 +151,7 @@ func TestTooLargeToPublishRefusesWhatThePublishWouldWithoutSendingIt(t *testing.
 		t.Fatalf("the size checks sent %d messages, want none", sent)
 	}
 
-	// The publish's own refusal of the same envelope, which nats.go makes, says the same.
+	// The publish of the same envelope is refused in the same words.
 	checked := client.TooLargeToPublish(pastBound)
 	if published := client.Publish(pastBound); published == nil || published.Error() != checked.Error() {
 		t.Fatalf("the publish of the envelope one byte past the bound answered %v, want the check's own refusal %q", published, checked)
@@ -166,4 +167,63 @@ func TestTooLargeToPublishRefusesWhatThePublishWouldWithoutSendingIt(t *testing.
 			t.Fatalf("a client that knows no max payload refused an envelope of %d bytes: %v", maxPayload+1, err)
 		}
 	})
+}
+
+// A publish whose body is past the server's max payload is refused for its size whatever is left
+// of its context. nats.go refuses such bytes before sending them, but only after a JetStream
+// publish has read its context, and a core publish is refused on an ended context first
+// (publishConfirmed), so bytes the bus can never send were answered as a bus that did not answer
+// whenever the caller's deadline had run out before the publish. Each path the bus publishes a
+// body on is asked under a context that has already ended: a stored publish (a team topic), a core
+// publish (a role topic) and a raw stored write (PublishCursorAt). The control is each path with a
+// body within the bound under the same ended context: it is refused for that context and not for
+// its size, so the check cannot pass by refusing every publish as too large.
+func TestAPublishPastTheMaxPayloadIsRefusedForItsSizeWhateverIsLeftOfItsContext(t *testing.T) {
+	t.Parallel()
+	client, err := ConnectOwningStream([]string{testnats.URL(t)})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	maxPayload := int(client.Conn.MaxPayload())
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	envelope := func(topic, payload string) contracts.Envelope {
+		return contracts.Envelope{
+			EventID:        "event",
+			Source:         "agent",
+			SourceEventID:  "source-event",
+			Topic:          topic,
+			DedupeKey:      "publish.ended-context",
+			IssuedAt:       contracts.NowMillis(),
+			PayloadSummary: "a message under an ended context",
+			Payload:        payload,
+			TraceID:        "trace",
+		}
+	}
+	stored, core := "notifications.team.ended-context", contracts.RoleTopicPrefix+"ended-context"
+	for _, path := range []struct {
+		name    string
+		publish func(payload string) error
+	}{
+		{"a stored publish", func(payload string) error {
+			_, err := client.PublishAckWithin(ended, envelope(stored, payload))
+			return err
+		}},
+		{"a core publish", func(payload string) error {
+			return client.PublishCoreContext(ended, core, envelope(core, payload))
+		}},
+		{"a raw stored write", func(payload string) error {
+			_, err := client.PublishCursorAt(ended, stored+"-cursor", []byte(payload), 0)
+			return err
+		}},
+	} {
+		past := path.publish(strings.Repeat("p", maxPayload+1))
+		if !errors.Is(past, ErrTooLarge) || !strings.Contains(past.Error(), fmt.Sprintf("max payload of %d bytes", maxPayload)) {
+			t.Errorf("%s of a body past the max payload under an ended context: %v, want ErrTooLarge naming the max payload of %d bytes", path.name, past, maxPayload)
+		}
+		if within := path.publish("{}"); !errors.Is(within, context.Canceled) || errors.Is(within, ErrTooLarge) {
+			t.Errorf("control: %s of a body within the max payload under an ended context: %v, want the context's own error", path.name, within)
+		}
+	}
 }

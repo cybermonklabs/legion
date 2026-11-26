@@ -11,4 +11,7 @@ body: |-
   the max payload its connection's server reports, as soon as it has built the envelope, so such a
   message is refused before the sender limit (a `413` at any count, not a `429`), and before the send
   route reads the target session, probes it, or reports a wake for it (a `413` for an unknown session,
-  not a `404`).
+  not a `404`). Every stored and core publish of the bus now makes the same check of the bytes it is
+  about to send before it waits on a reconnect or reads its deadline, so a webhook whose envelope is
+  past the max payload is answered `422` and logged `<source> publish refused`, never a `503` its
+  sender redelivers, however long its body took to read.
