@@ -434,14 +434,14 @@ func TestANewGenerationQueuesDeletionAfterItsLastOldStartEnds(t *testing.T) {
 	if called == 0 {
 		t.Fatal("the generation ended no old start through the hook")
 	}
-	assertStrings(t, "the deletion after every old start ended", r.deletions(), []string{"1 a fix 1"})
+	assertStrings(t, "the deletion after every old start ended", r.deletions(), []string{"1 a fix 0 through 1"})
 	if fix := r.latestFix(); fix.Pushed[string(claim.RoleTester)] != pushed {
 		t.Fatalf("the old tester's push = %+v, want %s before its start ended", fix.Pushed, pushed)
 	}
 }
 
-// A leave ends the old starts through the same settle. Its deletion waits for the tester's end
-// too, so a push of that tester's branch before the end is recorded before deletion is queued.
+// A leave ends the old starts through the same settle. Its deletion waits for every old start of
+// the task, so a push of that tester's branch is recorded before deletion is queued.
 func TestALeaveQueuesDeletionAfterItsLastOldStartEnds(t *testing.T) {
 	engine := returnEngine()
 	r := newFixRig(t, engine, []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
@@ -455,11 +455,7 @@ func TestALeaveQueuesDeletionAfterItsLastOldStartEnds(t *testing.T) {
 			return nil
 		}
 		called++
-		tester, err := engine.store.StepStarts(ctx, tx, "LEGION-208", record.StepPlace{Task: "a", Kind: record.PlaceStep, Place: 2})
-		if err != nil {
-			return err
-		}
-		if tester.Run == record.RunOpen {
+		if called == 1 {
 			if err := engine.store.RecordBesidePush(ctx, tx, "LEGION-208", 1, "a", 1, string(claim.RoleTester), pushed); err != nil {
 				return err
 			}
@@ -479,7 +475,7 @@ func TestALeaveQueuesDeletionAfterItsLastOldStartEnds(t *testing.T) {
 	if called == 0 {
 		t.Fatal("the leave ended no old start through the hook")
 	}
-	assertStrings(t, "the deletion after every old start ended", r.deletions(), []string{"1 a fix 1"})
+	assertStrings(t, "the deletion after every old start ended", r.deletions(), []string{"1 a fix 0 through 1"})
 	if fix := r.latestFix(); fix.Pushed[string(claim.RoleTester)] != pushed {
 		t.Fatalf("the leaving tester's push = %+v, want %s before its start ended", fix.Pushed, pushed)
 	}
