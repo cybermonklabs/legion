@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -47,11 +48,13 @@ import (
 //
 // The catch-up a start writes in place of a launch (intake.ClaimReady.Paced) is a wake of the
 // architect — it reads its whole context when the catch-up arrives, which is what the per-minute
-// cap counts — so it takes its turn in the daemon's pacing (Config.Reserve) and the row is due at
-// the moment that turn comes, rather than at once. The turn is taken here, inside the fact's
-// transaction, so a start row that runs again after a crash takes no second one: the fact applies
-// once for the row that wrote it. A launch's own ready takes none, since the launch took its turn
-// at the machine's gate (supervise's reserveWake); so does every ready while the pacing is off.
+// cap counts — so it takes its turn in the daemon's pacing: it is written held, with no due
+// moment (record.CatchUpHeldAt), and joins the pacing's queue once this fact commits
+// (Config.HoldCatchUp), whose let-out makes it due (dispatch://INFRA-5682 R1). The join is the
+// commit's hook rather than a step of the fact, so a fact that rolls back spends no turn, and a
+// start row that runs again after a crash joins once: the fact applies once for the row that
+// wrote it. A launch's own ready is held to nothing, since the launch took its turn at the
+// machine's gate (supervise's reserveWake); nor is any ready while the pacing is off.
 //
 // A launch's ready that carries the sentence of what the last let-go of the architect's process
 // ended (intake.ClaimReady.Relaunch) has its catch-up open with it (QueueCatchUp): the first turn
@@ -81,12 +84,11 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 			return intake.Result{}, err
 		}
 	}
-	now := e.now()
-	var paced time.Time
-	if fact.Paced && e.cfg.Reserve != nil {
-		paced = e.cfg.Reserve(now)
+	var hold func(id int64, issue string)
+	if fact.Paced {
+		hold = e.cfg.HoldCatchUp
 	}
-	return intake.Result{}, QueueCatchUp(ctx, tx, e.store, e.cfg.Steps, *issue, fact.Launch, fact.Relaunch, now, paced)
+	return intake.Result{}, queueCatchUp(ctx, tx, e.store, e.cfg.Steps, *issue, fact.Launch, fact.Relaunch, e.now(), hold)
 }
 
 // QueueCatchUp is the one composer of an architect's catch-up, which both the ready (claimReady)
@@ -117,15 +119,9 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // tree) and stays the root architect's, so a child's catch-up carries no Decided and no Kept. The
 // notice goes through the outbox like any other, so it is held and re-held as they are.
 //
-// paced is the moment the daemon's wake pacing reserved for this catch-up, which is both the
-// notice row's next_at and the moment the notice itself carries (record.Notice.PacedAt): the zero
-// value, which every caller but the paced ready passes (CatchUpTheTreesOwed for HandOverKept, and
-// the ready of a launch), is now, so a catch-up no pacing holds is due as it always was. The row
-// keeps the moment of its own because a failed attempt rewrites next_at to its backoff: the
-// moment is what keeps a ready from pulling the row forward before its turn (the daemon's
-// releaseWaiting), and with now beside it (record.Notice.PacedFrom) it is the wait in the line
-// that wake writes when it runs (the daemon's wakeRan). The pair is written only where the
-// pacing reserved something: a catch-up it held to no moment reports no wait, having had none.
+// The catch-up is due now. The one the wake pacing holds is the paced ready's alone (claimReady,
+// queueCatchUp): every other caller writes one no pacing holds (CatchUpTheTreesOwed for
+// HandOverKept).
 //
 // The reason names the issues waiting in accepting for this architect's acceptance
 // (acceptanceWaits), the one thing a catch-up leaves the architect to start, except while the work
@@ -134,13 +130,27 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // as ever. Nothing else of it names that acceptance: its issues state each issue's phase and
 // status, and no field asks for a step. The gate can close after this, before the outbox delivers
 // the row, so the outbox asks again then (CatchUpWithoutAcceptance).
-func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue, launch uint64, relaunch string, now, paced time.Time) error {
-	catchUp, awaiting, err := treeCatchUp(ctx, tx, store, steps, issue)
+func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue, launch uint64, relaunch string, now time.Time) error {
+	return queueCatchUp(ctx, tx, store, steps, issue, launch, relaunch, now, nil)
+}
+
+// queueCatchUp is QueueCatchUp, and with a hold it writes the catch-up held instead: the row's
+// next_at and the moment the notice carries are record.CatchUpHeldAt, which is no due moment,
+// with now beside it as the moment the hold began (record.Notice.PacedAt, PacedFrom), and hold is
+// called with the row's id once the transaction commits, which is where the daemon joins the row
+// to its wake pacing's queue (Config.HoldCatchUp). The row keeps the moment of its own because a
+// failed attempt rewrites next_at to its backoff: the moment is what keeps a ready from pulling
+// the row forward before its turn (the daemon's releaseWaiting), and with the moment the hold
+// began it is the wait in the line that wake writes when it runs (the daemon's wakeRan). Neither
+// is written on a catch-up no pacing holds, which reports no wait, having had none.
+func queueCatchUp(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, issue record.Issue, launch uint64,
+	relaunch string, now time.Time, hold func(id int64, issue string)) error {
+	catchUp, awaiting, err := treeCatchUp(ctx, tx, records, steps, issue)
 	if err != nil {
 		return err
 	}
 	catchUp.Launch = launch
-	if err := store.DropCatchUps(ctx, tx, issue.Key, now); err != nil {
+	if _, err := records.DropCatchUps(ctx, tx, issue.Key, now); err != nil {
 		return err
 	}
 	var kept *record.KeptDecisions
@@ -153,14 +163,14 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 		// in this transaction; its publish forgets those rows (the outbox's notice), and a
 		// catch-up a newer one supersedes hands them to a fresh catch-up (HandOverKept).
 		var decided string
-		if decided, kept, err = ParkedDecisionTask(ctx, tx, store, steps, issue); err != nil {
+		if decided, kept, err = ParkedDecisionTask(ctx, tx, records, steps, issue); err != nil {
 			return err
 		}
 		catchUp.Decided, catchUp.Kept = decided, kept
 		reason = fmt.Sprintf("the tree of %s at generation %d as the daemon records it now; start or resume it as your role says", issue.Key, issue.Generation)
 	}
 	if len(awaiting) > 0 {
-		held, err := workHoldStands(ctx, tx, store, issue)
+		held, err := workHoldStands(ctx, tx, records, issue)
 		if err != nil {
 			return err
 		}
@@ -171,13 +181,17 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 	if relaunch != "" {
 		reason = relaunch + "\n\n" + reason
 	}
-	at := now
 	notice := record.Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: reason, CatchUp: &catchUp}
-	if !paced.IsZero() {
-		at = paced
-		notice.PacedAt, notice.PacedFrom = paced, now
+	if hold == nil {
+		return EnqueueNaming(ctx, tx, records, issue.Key, issue.Tree, notice, kept, now)
 	}
-	return EnqueueNaming(ctx, tx, store, issue.Key, issue.Tree, notice, kept, at)
+	notice.PacedAt, notice.PacedFrom = record.CatchUpHeldAt, now
+	id, err := enqueueNamingID(ctx, tx, records, issue.Key, issue.Tree, notice, kept, record.CatchUpHeldAt)
+	if err != nil {
+		return err
+	}
+	store.OnCommit(ctx, func() { hold(id, issue.Key) })
+	return nil
 }
 
 // acceptanceWaitsLead and acceptanceWaitsTail are the two fixed parts of the clause of a

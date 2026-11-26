@@ -407,36 +407,40 @@ type Notice struct {
 	// Resends counts the times the notice was queued again after the listener could not forward
 	// it to its architect's session (the daemon's rehold), which stops at a cap.
 	Resends int `json:"resends,omitempty"`
-	// PacedAt is the moment the daemon's wake pacing reserved for a catch-up it holds to its turn,
-	// and the zero value on every other notice: the catch-up the outbox writes in place of a
-	// launch when a start row finds an architect already running (the outbox's start,
-	// workflow.Config.Reserve). Reading that catch-up is a wake of the architect, and what the
-	// organization's per-minute cap counts is the context it reads, so the row waits its turn like
-	// a launch does.
+	// PacedAt is the moment the daemon's wake pacing let out a catch-up it held to its turn: the
+	// catch-up the outbox writes in place of a launch when a start row finds an architect already
+	// running (the outbox's start, workflow's claimReady). Reading that catch-up is a wake of the
+	// architect, and what the organization's per-minute cap counts is the context it reads, so the
+	// row waits its turn in the pacing's second queue as a launch does (dispatch://INFRA-5682 R1).
+	// It is CatchUpHeldAt while the row waits there, the let-out's moment once the pacer has let
+	// the row out (ReleaseHeldCatchUp), and the zero value on every other notice.
 	//
 	// The moment is kept here rather than read back from the row's next_at because the two part
 	// company: a failed attempt rewrites next_at to its backoff (RetryOutbox), while the turn the
 	// pacing gave this wake never moves. The outbox writes that wake's one line from it, on
 	// whichever attempt publishes (the daemon's wakeRan), and a ready that releases the
 	// architect's waiting notices leaves the row where it stands only while the moment is still
-	// ahead (the daemon's releaseWaiting), so a catch-up whose turn has come is released like any
-	// other notice rather than waiting out a backoff the pacing never asked for. It is the
-	// daemon's own bookkeeping, so the publish drops it (Published) as it drops ResendOf; a
-	// re-held copy keeps it for that one line alone, its next_at being the re-send delay rather
-	// than a reservation (the daemon's noticeAnswered).
+	// ahead (the daemon's releaseWaiting), so a catch-up still held stays held, and one whose turn
+	// has come is released like any other notice rather than waiting out a backoff the pacing
+	// never asked for. It is the daemon's own bookkeeping, so the publish drops it (Published) as
+	// it drops ResendOf; a re-held copy keeps it for that one line alone, its next_at being the
+	// re-send delay (the daemon's noticeAnswered).
 	PacedAt time.Time `json:"paced_at,omitzero"`
-	// PacedFrom is the moment the reservation above was made, on the clock that made it, and the
-	// two travel together: PacedAt less PacedFrom is how long the pacing held this wake, which is
-	// what the line it writes reports (the daemon's wakeRan).
-	//
-	// The wait is read from this pair rather than from PacedAt less the row's created_at, which
-	// is two clocks subtracted from each other: created_at is the database's now() at the start
-	// of the fact's transaction (store/migrations/0004_record.up.sql), while the reservation is
-	// made from the engine's clock later in that same transaction (workflow's claimReady). A
-	// catch-up the burst let straight through — PacedAt equal to PacedFrom, the first wake of a
-	// wave — would otherwise report the transaction's own duration as a wait, and under clock
-	// skew a wait the other way about.
+	// PacedFrom is the moment the engine wrote the row held, on the clock the let-out is read on,
+	// and the two travel together: PacedAt less PacedFrom is how long the pacing held this wake,
+	// which is what the line it writes reports (the daemon's wakeRan). The wait is read from this
+	// pair rather than from PacedAt less the row's created_at, which is two clocks subtracted from
+	// each other: created_at is the database's now() at the start of the fact's transaction
+	// (store/migrations/0004_record.up.sql), while the row is held from the engine's clock later
+	// in that same transaction (workflow's claimReady). A row the pacer let out at its join waited
+	// no turn, and its let-out writes PacedAt as PacedFrom (ReleaseHeldCatchUp), so the commit
+	// that came between the write and the join is not read as a wait.
 	PacedFrom time.Time `json:"paced_from,omitzero"`
+	// PacedTurns is how many turns the pacing let out between the row's join of its queue and its
+	// own let-out (wakepace.Let.Turns), which the line its wake writes names beside the queue. The
+	// let-out writes it with PacedAt (ReleaseHeldCatchUp), and it goes where PacedAt goes: dropped
+	// at the publish, kept on a re-held copy.
+	PacedTurns int `json:"paced_turns,omitempty"`
 	// ResendOf is the outbox row a re-held copy copies. The copy is published under that row's
 	// dedupe key (OutboxKey), so the listener's report of a failed forward names the original row,
 	// whichever copy failed (exceptionNotice), and the listener's role lane drops a copy that
@@ -915,20 +919,42 @@ func (Notice) OutboxKind() OutboxKind { return OutboxKindNotice }
 // bookkeeping of the row, and what the pacing did says nothing to the architect that reads the
 // notice (the daemon's wakeRan writes it to the log instead). A re-held copy carries only what
 // the publish carried: the daemon's exceptionNotice decodes the listener's report into a notice
-// and puts nothing back, and only the receipt-timeout path restores the two paced moments by
-// hand (the daemon's noticeAnswered). Both then validate the copy before queueing it
+// and puts nothing back, and only the receipt-timeout path restores the paced moments and turns
+// by hand (the daemon's noticeAnswered). Both then validate the copy before queueing it
 // (reholdNotice, through NewOutboxRow), so a field validateOutboxPayload requires for its kind,
 // as it requires CatchUp of a catch-up notice, is stripped here only together with a restore of
 // its own there, or every re-hold of that kind is refused for want of it
 // (record's TestAPublishedNoticeIsStillAValidOutboxPayload).
 func (n Notice) Published(id int64) (Notice, string) {
-	n.PacedAt, n.PacedFrom = time.Time{}, time.Time{}
+	n.PacedAt, n.PacedFrom, n.PacedTurns = time.Time{}, time.Time{}, 0
 	if n.ResendOf == 0 {
 		return n, OutboxKey(id)
 	}
 	copied := n.ResendOf
 	n.ResendOf = 0
 	return n, OutboxKey(copied)
+}
+
+// CatchUpHeldAt is the moment a catch-up the wake pacing holds is written at, in its row's
+// next_at and in its notice's PacedAt: a moment no clock of this daemon reaches, which is the row
+// having no due moment until the pacer lets it out (ReleaseHeldCatchUp). A place in the pacing's
+// queue has no moment of its own until then (dispatch://INFRA-5682 R1), and the row has to stand
+// in the outbox meanwhile, so that a restart finds it and joins it to the queue again (the
+// daemon's catchUpPacing). The outbox runs a row only once it is due, so no lane takes a held row
+// up, and a reader of a notice's due moment that meets this one (CatchUpIsHeld) reads the pacer's
+// estimate for the row's place instead (the daemon's pacedCatchUps and deliverNotice).
+var CatchUpHeldAt = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// CatchUpIsHeld is whether at, a row's next_at or a notice's PacedAt, is CatchUpHeldAt: the
+// moment of a catch-up the wake pacing still holds in its queue, which is no due moment. The
+// daemon's earlierNoticeFor, catchUpPacing.restore and pacedCatchUps, where it names a row's moment
+// in the state's wakesWaiting, test the moment with it, so none of them takes it for a deadline.
+// Two statements of the store compare next_at with CatchUpHeldAt itself (ReleaseHeldCatchUp,
+// CatchUpHeld), and the other readers rely on the held moment sorting after any now: the outbox
+// runs a row only once its next_at has come, and the daemon's releaseWaiting and pacedCatchUps
+// tell a held notice by a PacedAt still ahead of now.
+func CatchUpIsHeld(at time.Time) bool {
+	return at.Equal(CatchUpHeldAt)
 }
 
 // ControllerNotice is a Notice for the project's controller topic (notify.ControllerTopic) alone,

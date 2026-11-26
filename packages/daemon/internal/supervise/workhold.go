@@ -23,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 )
 
 // workHoldWaits is the work hold's answer to ev, and nil where it has none: a claim the hold
@@ -150,7 +149,7 @@ func (m *Machine) EndHold(ctx context.Context, task *RequestDeliver) (bool, erro
 		}
 	}
 	m.log.Info("supervise: the work hold ended; the claim it stopped starts again", "delivery", pendingID(m.claim.Pending))
-	if err := m.revive(ctx, false, time.Time{}, nil); err != nil {
+	if err := m.revive(ctx, false, nil, nil); err != nil {
 		return false, err
 	}
 	return true, nil

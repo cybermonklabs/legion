@@ -843,6 +843,10 @@ type harness struct {
 	records *logRecords
 	deps    Deps
 	m       *Machine
+	// pace is the wake pacing the harness's machines are built with (pacedHarness), which a
+	// restart builds afresh, as a restarted daemon builds its pacer anew (restart); nil for a
+	// harness that set none, or set its own.
+	pace func(*Deps)
 }
 
 func testLimits() Limits { return Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2} }
@@ -965,11 +969,17 @@ func (h *harness) start(c Claim) {
 }
 
 // restart is a daemon restart: the machine is dropped with whatever it held in memory — its
-// timers die with it — and a new one is built from what the store read back.
+// timers die with it — and a new one is built from what the store read back. The wake pacer's
+// own timer dies with them, so the pacing the harness was built with is built anew (pace), as a
+// restarted daemon builds its own: the old pacer, its pending turn gone, lets nothing more out,
+// and no place a dropped machine held is ever let out to it.
 func (h *harness) restart() {
 	h.t.Helper()
 	h.m.Wait()
 	h.clock.dropAll()
+	if h.pace != nil {
+		h.pace(&h.deps)
+	}
 	h.start(h.store.load(h.token))
 }
 
