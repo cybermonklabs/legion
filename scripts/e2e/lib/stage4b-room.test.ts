@@ -200,7 +200,9 @@ describe("run_room", () => {
       // 3.92 CPU and 15 GiB allocatable, a daemonset and an init-heavy pod on it: 1.92 CPU free.
       node("small", { cpu: "3920m", memory: "15Gi" }, general),
       // Cordoned: never counted.
-      node("cordoned", { cpu: "7910m", memory: "30Gi" }, general, { spec: { unschedulable: true } }),
+      node("cordoned", { cpu: "7910m", memory: "30Gi" }, general, {
+        spec: { unschedulable: true },
+      }),
       // Being disrupted by Karpenter: never counted.
       node(
         "disrupted",
@@ -396,7 +398,9 @@ describe("two_pods_per_node", () => {
       // Holds two by cpu but not by memory.
       node("narrow", { cpu: "7910m", memory: "15Gi" }, general),
       // Holds two, but cordoned.
-      node("cordoned", { cpu: "7910m", memory: "60Gi" }, general, { spec: { unschedulable: true } }),
+      node("cordoned", { cpu: "7910m", memory: "60Gi" }, general, {
+        spec: { unschedulable: true },
+      }),
       // Holds two; not general.
       node("large", { cpu: "7910m", memory: "60Gi" }, amd64),
     ],
