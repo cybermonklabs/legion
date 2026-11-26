@@ -87,8 +87,8 @@ func TestOpenAsksReadsTheIssuesWithAnAskOpenAndTheProjectsDefaultAssignee(t *tes
 		t.Run(name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				assertBearer(t, r)
-				if r.URL.Path != "/api/v1/asks/open" || r.URL.Query().Get("project") != "LEGION" || r.URL.Query().Get("author_session") != "" {
-					t.Errorf("request = %s, want the open asks of project LEGION", r.URL)
+				if r.Method != http.MethodGet || r.ContentLength != 0 || r.URL.Path != "/api/v1/asks/open" || r.URL.Query().Get("project") != "LEGION" || r.URL.Query().Get("author_session") != "" {
+					t.Errorf("request = %s %s (%d bytes), want a bodyless GET for the open asks of project LEGION", r.Method, r.URL, r.ContentLength)
 				}
 				body := map[string]any{"session_id": "", "as_of": "2026-11-26T09:00:00.123456Z", "opened_since": false, "count": 3, "asks": rows}
 				for key, value := range tc.body {
@@ -136,8 +136,8 @@ func TestOpenAsksReadsTheIssuesWithAnAskOpenAndTheProjectsDefaultAssignee(t *tes
 func TestIssueAsksReadsTheTurnAndThePersonEachOpenAskWaitsOn(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertBearer(t, r)
-		if r.Method != http.MethodGet || r.URL.Query().Get("state") != "open" {
-			t.Errorf("request = %s %s, want the open asks", r.Method, r.URL)
+		if r.Method != http.MethodGet || r.ContentLength != 0 || r.URL.Query().Get("state") != "open" {
+			t.Errorf("request = %s %s (%d bytes), want a bodyless GET for the open asks", r.Method, r.URL, r.ContentLength)
 		}
 		switch r.URL.Path {
 		case "/api/v1/issues/LEGION-1/asks":
