@@ -963,12 +963,13 @@ func TestAPrivateUpstreamEntryIsRefusedUnlessItIsOne(t *testing.T) {
 	}
 }
 
-// TestTheCheckOfADestinationsAddressIsTheStartsRule: PrivateUpstreamAddressRules, the address
-// check `profiles check --private-upstream` makes, is the start's own. Given the cluster ranges
-// (`--cluster-ranges`, read by ParseAirlockClusterRanges), it answers what Load answers for that
-// destination and those ranges, in the same words, and no unjudged address, for each ranges below:
+// TestTheCheckOfADestinationsAddressIsTheStartsRule: the address checks `profiles check
+// --private-upstream` makes are the start's own. Given the cluster ranges (`--cluster-ranges`, read
+// by ParseAirlockClusterRanges), it calls PrivateUpstreamDialable with them, which answers what
+// Load answers for that destination and those ranges, in the same words, for each ranges below:
 // none, the Service range, an IPv6 range that holds the NAT64 forms, and every address. Without
-// them it is the start's rule for every cluster ranges a broker can have: where it refuses, the
+// them, PrivateUpstreamRefusedOnEveryBroker is the start's rule for every cluster ranges a broker
+// can have: where it refuses, the
 // start refuses in the same words with no ranges and with ranges that hold every address; where it
 // takes a destination and judges it, the start takes it with both; and where it answers the
 // address unjudged, the start refuses that address with no ranges and takes it with ranges that
@@ -991,7 +992,7 @@ func TestTheCheckOfADestinationsAddressIsTheStartsRule(t *testing.T) {
 			t.Fatalf("ParsePrivateUpstreams(%s) = %v, %v; want one entry", url, upstreams, err)
 		}
 		upstream := upstreams[0]
-		unjudged, checked := PrivateUpstreamAddressRules(upstream, nil, false)
+		unjudged, checked := PrivateUpstreamRefusedOnEveryBroker(upstream)
 		bare, wide := PrivateUpstreamDialable(upstream, nil, nil), PrivateUpstreamDialable(upstream, nil, everything)
 		switch {
 		case checked != nil:
@@ -1012,13 +1013,13 @@ func TestTheCheckOfADestinationsAddressIsTheStartsRule(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseAirlockClusterRanges(%q): %v", text, err)
 			}
-			unjudged, checked := PrivateUpstreamAddressRules(upstream, ranges, true)
+			checked := PrivateUpstreamDialable(upstream, nil, ranges)
 			e := airlockEnv()
 			e[setting] = "dispatch.test=" + url
 			e["BROKER_AIRLOCK_CLUSTER_RANGES"] = text
 			_, started := Load(env(e))
-			if unjudged.IsValid() || (checked == nil) != (started == nil) || checked != nil && checked.Error() != started.Error() {
-				t.Errorf("%s with the ranges %q: the check answers %v (unjudged %v); Load answers %v; want Load's answer and no unjudged address", url, text, checked, unjudged, started)
+			if (checked == nil) != (started == nil) || checked != nil && checked.Error() != started.Error() {
+				t.Errorf("%s with the ranges %q: the check answers %v; Load answers %v; want Load's answer", url, text, checked, started)
 			}
 		}
 	}

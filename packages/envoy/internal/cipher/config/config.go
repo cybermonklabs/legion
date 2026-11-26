@@ -2448,7 +2448,7 @@ func portInRange(port string) bool {
 // stand-in on loopback, which a production start refuses. A name that resolves elsewhere is the
 // dial's to check, since it can resolve differently at each dial. Load runs it for each entry with
 // the broker's dial allow and cluster ranges, and `profiles check --private-upstream` through
-// PrivateUpstreamAddressRules.
+// it directly with the ranges it is given, or PrivateUpstreamRefusedOnEveryBroker without them.
 func PrivateUpstreamDialable(upstream PrivateUpstream, dialAllow []string, clusterRanges []netip.Prefix) error {
 	if upstream.URL == nil {
 		return nil
@@ -2473,24 +2473,17 @@ func PrivateUpstreamDialable(upstream PrivateUpstream, dialAllow []string, clust
 	return nil
 }
 
-// PrivateUpstreamAddressRules is the start's check of a private destination's address
-// (PrivateUpstreamDialable) as `profiles check --private-upstream` makes it: the same rule,
-// netaddr.DestinationRefusal. Given the broker's cluster ranges (rangesGiven, clusterRanges as
-// ParseAirlockClusterRanges reads BROKER_AIRLOCK_CLUSTER_RANGES, none for a blank value), it is the
-// start's whole check with those ranges, its refusals in the start's words, and it answers no
-// unjudged address. Without them it reads the part every broker holds whatever its ranges: it
+// PrivateUpstreamRefusedOnEveryBroker is the part of the start's check of a private destination's
+// address (PrivateUpstreamDialable) that every broker holds whatever its cluster ranges, which
+// `profiles check --private-upstream` makes when it is given no ranges; given them, it makes the
+// start's whole check, PrivateUpstreamDialable, with those ranges and no dial exception. It
 // refuses, in the start's words and naming the setting, a URL whose host is localhost or a name
-// under .localhost, and one whose host is an address netaddr.DestinationNever names; an address
+// under .localhost, and one whose host is an address netaddr.DestinationNever names. An address
 // outside the ranges every broker takes (netaddr.DestinationPrivate) is a destination's only on a
 // broker whose BROKER_AIRLOCK_CLUSTER_RANGES hold it, so it answers that address as unjudged, and
 // no error, for the caller to say it did not judge the ranges. A host that is a name is the dial's
-// to check at each dial, as at the start, and answers nothing. The start's one exception,
-// BROKER_AIRLOCK_TEST_DIAL_ALLOW, is the local stack's and a production start refuses it, so it is
-// no exception here.
-func PrivateUpstreamAddressRules(upstream PrivateUpstream, clusterRanges []netip.Prefix, rangesGiven bool) (unjudged netip.Addr, err error) {
-	if rangesGiven {
-		return netip.Addr{}, PrivateUpstreamDialable(upstream, nil, clusterRanges)
-	}
+// to check at each dial, as at the start, and answers nothing.
+func PrivateUpstreamRefusedOnEveryBroker(upstream PrivateUpstream) (unjudged netip.Addr, err error) {
 	addr, err := privateUpstreamAddress(upstream)
 	if err != nil || !addr.IsValid() {
 		return netip.Addr{}, err
@@ -2612,23 +2605,17 @@ func ProxyMintedRules(rules proxyrules.Rules, upstreams []PrivateUpstream) error
 
 // ResultsEntryRules is the results capability's own part of the start check, beside
 // ProxyMintedRules, which holds its block as it holds every dpop block (one exact host, a private
-// destination's, an allow list, Authorization alone, no kind on its host). Where
-// the profile oauthwire.AirlockResultsName has a proxy block, the block is of kind dpop: the broker
-// mints the results token for a CI run's result grant and holds it (requests.MintedKind), and a
-// block of another kind would carry a stored secret of that name. Result entries
-// (BROKER_EXCHANGE_RESULT_WORKFLOWS, resultWorkflows) need that profile, since each result entry's
-// run is granted a placeholder its block carries. With neither, any rules pass. Each refusal names
-// BROKER_PROFILES_FILE and the profile, and BROKER_EXCHANGE_RESULT_WORKFLOWS only when it is set.
-// cmd/cipherd runs it on every broker before ProxyMintedRules, and `profiles check` runs it with no
-// result entries.
+// destination's, an allow list, Authorization alone, no kind on its host): result entries
+// (BROKER_EXCHANGE_RESULT_WORKFLOWS, resultWorkflows) need the profile oauthwire.AirlockResultsName,
+// since each result entry's run is granted a placeholder its block carries. The refusal names
+// BROKER_PROFILES_FILE, the profile and BROKER_EXCHANGE_RESULT_WORKFLOWS. The profile's shape, a
+// name and a proxy block of kind dpop, is the profiles parser's one rule (policy.ParseProfiles),
+// which refuses any other shape before a rule is built, so no check here repeats it. cmd/cipherd
+// runs it before ProxyMintedRules.
 func ResultsEntryRules(rules proxyrules.Rules, resultWorkflows bool) error {
 	name := oauthwire.AirlockResultsName
-	entry := rules.Lookup(name)
-	switch {
-	case entry == nil && resultWorkflows:
+	if resultWorkflows && rules.Lookup(name) == nil {
 		return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the profile %s, and %s holds no profile of that name", name, profilesFileSetting)
-	case entry != nil && (entry.Inline == nil || entry.Way != proxyrules.WayDPoP):
-		return fmt.Errorf("the profile %s of %s must be of kind %s, a capability the broker mints and holds, and its way is %q", name, profilesFileSetting, proxyrules.WayDPoP, entry.Way)
 	}
 	return nil
 }
