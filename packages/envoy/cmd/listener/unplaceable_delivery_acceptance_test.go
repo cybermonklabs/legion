@@ -1039,11 +1039,13 @@ func TestAGiveUpWhoseNoticeCanNeverBePublishedIsStillTerminal(t *testing.T) {
 	const target = "ses_notice_too_large"
 	harness := newListenerDeliveryHarness(t)
 	item := listenerTestEnvelope(contracts.LegacyAgentSubject(target), "unplaceable-"+target)
-	// The payload fills the envelope to 256 bytes under the server's max payload, so the envelope
-	// itself is published and delivered, and the notice - the same payload plus the notice's own
-	// fields and a second level of JSON quoting - is past it.
+	// The payload fills the envelope to the largest the listener publishes on the target's own
+	// subject - the server's max payload less the room the relay's frame headers take
+	// (bus.RelayFrameHeaderBytes) and 64 bytes - so the envelope itself is published and
+	// delivered, and the notice - the same payload plus the notice's own fields and a second
+	// level of JSON quoting - is past the max payload.
 	bare := marshalListenerEnvelope(t, item)
-	item.Payload = strings.Repeat("p", int(harness.client.Conn.MaxPayload())-len(bare)-256)
+	item.Payload = strings.Repeat("p", int(harness.client.Conn.MaxPayload())-len(bare)-bus.RelayFrameHeaderBytes(item.Topic)-64)
 	cfg := harness.config
 	cfg.unplaceableRetryWindow = oneDeferralWindow
 	run := startEnvelopeDeliveryThrough(t, harness, jetStreamDeliveryHandler(cfg), target, item, 0)
