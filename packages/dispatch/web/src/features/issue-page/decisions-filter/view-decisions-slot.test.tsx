@@ -213,6 +213,53 @@ test("a person's write-up of an answered question, named on the Decisions view's
   }
 });
 
+// Root R20, INFRA-1196's decision 513: a decision whose `from_ask` names a question the reader
+// answered restates the answer, and the tree holds no node of it, so an address naming its block
+// on the Decisions view's address keeps the view and lands on the row of the question it
+// restates, by the rule the outline lands it by too (`pathToTarget`). The read answers a person's
+// decision on the question, as it does on every ask a person answered.
+test("a decision that restates a person's answer, named on the Decisions view's address, keeps the view, with the focus on the question's row", async () => {
+  const asks = spyOn(api, "listIssueAskThreads").mockResolvedValue([...ASKED] as never);
+  answerTree([
+    ...ASKED.map((asked) =>
+      treeNode(asked.id, "ask", KEY, {
+        made_at: asked.created_at,
+        text: asked.question,
+        ...(asked.state === "answered" ? { decision: {} } : {}),
+      })
+    ),
+    treeNode("restates", "decision", "ask-answered", {
+      ...inDocument(SPEC_DOCUMENT, 1),
+      decision: { asks: ["ask-answered"], waiting_review: true },
+      text: "Keep the answer as it was given.",
+    }),
+  ]);
+  // The messages read, which answers last: with it every read is held, and the view has told the
+  // stage whether its tree draws the node the address names.
+  const messagesOut = Promise.withResolvers<[]>();
+  spyOn(api, "listIssueMessages").mockReturnValue(messagesOut.promise);
+  try {
+    const view = drawStage("#b-restates");
+    await waitFor(() =>
+      expect(
+        focusedRow(),
+        `the address of the decision left the focus elsewhere; the stage drew ${drawnSlot(view)}`
+      ).toBe("ask-answered")
+    );
+    await act(async () => messagesOut.resolve([]));
+    expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
+    expect(focusedRow(), "the focus left the question's row").toBe("ask-answered");
+    expect(
+      view.container.querySelector(
+        `[data-node-id="${blockNodeId(SPEC_DOCUMENT.slug, "restates")}"]`
+      ),
+      "the view drew the decision that restates the answer as a row"
+    ).toBeNull();
+  } finally {
+    asks.mockRestore();
+  }
+});
+
 // Until the asks read answers, the tree holds no answer on the ask the write-up stands under, so
 // the list draws it as the node the address names. The address waits for the asks rather than
 // land on that row, which leaves the list once they answer and would take the focus with it.

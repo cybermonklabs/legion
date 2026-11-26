@@ -467,7 +467,7 @@ function compared(row: KeyedRow, field: keyof KeyedRow): unknown {
 
 /** Whether `row` of the fixture is a section that restates a person's answer: a decision the
  *  fixture draws under an answered question. */
-function restatesAnAnswer(row: KeyedRow, recorded: readonly KeyedRow[]): boolean {
+export function restatesAnAnswer(row: KeyedRow, recorded: readonly KeyedRow[]): boolean {
   return (
     row.kind.type === "decision" &&
     recorded.some(

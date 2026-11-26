@@ -25,14 +25,16 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * the decisions the outline marks as waiting and no other.
  *
  * A decision is a decision node of the tree read (`tree`), read once per answer
- * (`decision-nodes.ts`' `decisionsOfAnswer`) with no asks: they only make an answered question a
- * person's decision, which never waits for review, and an agent's decision reads none, so the
- * count is the same without them. One the reader asked to change waits on its agent and is not
- * counted, by the outline's one rule (`decisionNodeChanges`): its Change is a comment the tree
- * read hangs under its node, whether or not the comments read holds that comment yet, so the
- * count matches no quote and reads no block of a document. A Change its author deleted asks
- * nothing any more, as in the outline: `comments`, the page's comments read, says which were
- * (`deletedPostIds`), since the tree read answers a deleted comment with no mark of the delete.
+ * (`decision-nodes.ts`' `decisionsOfAnswer`) with no asks: the read answers a person's decision
+ * on every ask a person answered, which says, with no asks, which question is a person's
+ * decision, which never waits for review, and which agent's decision restates that answer and is
+ * no decision at all (`restatesAnswer`), so the count is the same without them. One the reader
+ * asked to change waits on its agent and is not counted, by the outline's one rule
+ * (`decisionNodeChanges`): its Change is a comment the tree read hangs under its node, whether or
+ * not the comments read holds that comment yet, so the count matches no quote and reads no block
+ * of a document. A Change its author deleted asks nothing any more, as in the outline:
+ * `comments`, the page's comments read, says which were (`deletedPostIds`), since the tree read
+ * answers a deleted comment with no mark of the delete.
  *
  * An overtaken decision or question, a node the tree read answers `overtaken`, counts in no
  * count of what waits (R2), as the outline marks it waiting on nobody (`draftDecision`,

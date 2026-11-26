@@ -55,7 +55,12 @@ import { type DecisionState, isReader } from "../page-words";
  * restatement of a person's answer appears anywhere in the view"): a `reading` block, which
  * stands inside the ask or the decision it reads and is drawn under it in the outline. The
  * filter's view keeps the asks and the decisions alone (`presets.ts`), so a reading is an entry
- * only where the address names it, as any other node the address names is.
+ * only where the address names it, as any other node the address names is. Nor does it draw an
+ * agent's decision whose `from_ask` names an ask a person answered, which restates that answer
+ * (`decision-nodes.ts`' `restatesAnswer`, INFRA-1196's decision 513): the tree holds no node of
+ * it (`tree-read/tree-nodes.ts`' `firstDraft`), and `decisions` no decision, so it stands in no
+ * part and no count, and an address naming it names the question it restates (`issue-address.ts`'
+ * `pathToTarget`).
  *
  * This module is pure. It holds no React and makes no request, so the body
  * (`DecisionsFilterBody.tsx`) and the unit tests read one model.

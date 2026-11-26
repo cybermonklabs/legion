@@ -287,6 +287,12 @@ function pathToNode(
  * spec's own `#b-t1`. An address naming no document - a `#b-` fragment on the issue's own
  * address - has only the block id to go on, and the first node carrying it answers. For the
  * children's address it is the chain to the first child of the outline, where the tree holds one.
+ *
+ * A block, or a `?node=` id, of a decision that restates a person's answer, which the tree holds
+ * no node of (INFRA-1196's decision 513), is the chain to the question it restates, which names
+ * it (`TreeNode.restatedBy`): so every view that lands on an address - the outline, Graph and the
+ * Decisions view among them - lands such an address on that question, and no citation of the
+ * block dangles (root R20).
  */
 export function pathToTarget(
   root: TreeNode,
@@ -295,14 +301,21 @@ export function pathToTarget(
   if (target === undefined) return undefined;
   if (target.kind === "children") return pathToNode(root, (node) => node.type === "child_issue");
   if (target.kind === "block") {
-    if (target.document !== undefined) {
-      const id = blockNodeId(target.document, target.id);
-      return pathToNode(root, (node) => node.id === id);
-    }
+    const exact =
+      target.document === undefined ? undefined : blockNodeId(target.document, target.id);
     const suffix = `#b-${target.id}`;
-    return pathToNode(root, (node) => node.id.endsWith(suffix));
+    const named = (id: string) => (exact === undefined ? id.endsWith(suffix) : id === exact);
+    return (
+      pathToNode(root, (node) => named(node.id)) ??
+      pathToNode(root, (node) => node.restatedBy?.some((one) => named(one.id)) === true)
+    );
   }
-  if (target.kind === "node") return pathToNode(root, (node) => node.readId === target.id);
+  if (target.kind === "node") {
+    return (
+      pathToNode(root, (node) => node.readId === target.id) ??
+      pathToNode(root, (node) => node.restatedBy?.some((one) => one.readId === target.id) === true)
+    );
+  }
   const byId = pathToNode(root, (node) => node.id === target.id);
   if (byId !== undefined) return byId;
   const address = `/${target.id}`;

@@ -29,6 +29,8 @@ import {
   issueAsks,
   type Lookup,
   nodeReference,
+  restatedAsks,
+  restatesAnswer,
   tieReference,
   tieTargetReference,
   tuplesByFrom,
@@ -351,6 +353,20 @@ export function treeDraftsFrom(
   for (const [draft, node] of made) {
     if (draft.parents.length === 0) draft.parents = drafting.placeOf(node);
   }
+  // Each decision that restates a person's answer, which no draft stands for (`firstDraft`), is
+  // named on the row of each question it restates, which an address naming it lands on
+  // (`issue-address.ts`' `pathToTarget`). A gone one is no node of the tree to name.
+  for (const node of walk) {
+    if (node.state === "gone") continue;
+    for (const ask of restatedAsks(node, lookup)) {
+      const question = drafts.get(idOfNode(ask));
+      if (question === undefined) continue;
+      question.restatedBy = [
+        ...(question.restatedBy ?? []),
+        { id: idOfNode(node), readId: node.id },
+      ];
+    }
+  }
   addDocumentChips(drafts, reads, drafting);
   for (const mark of treeDraftMarks) {
     for (const [draft, node] of made) mark(draft, node, answer, drafting);
@@ -370,13 +386,17 @@ function pushInto<Value>(groups: Map<string, Value[]>, key: string, value: Value
  *  nothing of how one it answers all the same - another issue's check whose `serves` still
  *  stands, a context node - is drawn, so it is kept as a node of a kind no step drafts is, whole
  *  in the answer and drawn by no row, what the read hangs under it standing under its nearest
- *  drawn ancestor (`placeOf`). */
+ *  drawn ancestor (`placeOf`). A decision that restates a person's answer (`decision-nodes.ts`'
+ *  `restatesAnswer`, INFRA-1196's decision 513) makes none either, and is kept so: the person's
+ *  decision is the question they answered, whose row draws their own words, and what the read
+ *  hangs under the decision - a reading of it, a comment on it - stands under the question the
+ *  read stands it under, its nearest drawn ancestor. */
 function firstDraft(
   node: TreeAnswerNode,
   answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
-  if (node.state === "gone") return undefined;
+  if (node.state === "gone" || restatesAnswer(node, context)) return undefined;
   for (const step of treeDraftSteps) {
     const draft = step(node, answer, context);
     if (draft !== undefined) return draft;

@@ -28,7 +28,7 @@ import { measureNearWords } from "../clamp-fixtures";
 import type { OutlineRequest } from "../IssueTree";
 import { CLEARANCE } from "../identity-block";
 import { artifactsBySlug } from "../issue-artifacts";
-import { type TreeNode, targetNaming } from "../issue-tree";
+import { buildIssueTree, type TreeNode, targetNaming } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import { NO_FAILED_READS } from "../outline-reads";
 import { OutlineRequestProvider } from "../outline-request";
@@ -49,7 +49,9 @@ import { presetView } from "../presets";
 import { blockReads, Publisher, publishedNames } from "../projection-fixture";
 import { ViewStage } from "../slots/stage";
 import { AppProviders } from "../slots/stage-fixtures";
+import { blockNodeId } from "../tree-drafts";
 import { decisionBehind, nodesInOrder } from "../tree-keys";
+import { treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import {
   outlineQuery,
   subscribeTreeFreshness,
@@ -83,7 +85,7 @@ import {
   statement,
   treeAnswer,
 } from "./decisions-fixtures";
-import type { DecisionsAsk } from "./decisions-parts";
+import { DECISIONS_PART_ORDER, type DecisionsAsk } from "./decisions-parts";
 
 /**
  * What the Decisions filter's body draws, read as a reader reads it (dispatch://INFRA-1196 R2,
@@ -2329,6 +2331,60 @@ test("an answered ask draws the person's answer as stored, and no reading", asyn
   // The agent's write-up of the answer is drawn nowhere in the filter.
   expect(view.container.querySelector(`[data-node-id="${READING.id}"]`)).toBeNull();
   expect(view.queryByText("The reader wants the rail kept.")).toBeNull();
+});
+
+// INFRA-1196's decision 513: an agent's decision whose `from_ask` names a question a person
+// answered restates the person's answer, which is the question's own entry, so the view draws no
+// entry for it in any part, and no part's count holds it. The test is the tie, not the place: a
+// decision the read stands under the same question that names no `from_ask` is an agent's
+// decision, which waits for the reader's review since its `shaped` tie names a statement. The
+// tree is the one the page builds from the read (`buildIssueTree`), and the read answers a
+// person's decision on the question, as it does on every ask a person answered.
+test("a decision that restates a person's answer is no entry, and one under that question with no from_ask tie waits for review", () => {
+  const inSpec = (position: number) => ({
+    document: { artifact_id: SPEC_DOCUMENT.id, position, slug: SPEC_DOCUMENT.slug },
+  });
+  const made = [
+    personDecision("a-answered", { text: "Does the built page work for you?" }),
+    treeNode("restates", "decision", "a-answered", {
+      ...inSpec(1),
+      decision: { asks: ["a-answered"], changed_at: "2026-11-12T12:00:00Z", waiting_review: true },
+      text: "Keep the rail, as the person answered.",
+    }),
+    treeNode("untied", "decision", "a-answered", {
+      ...inSpec(2),
+      decision: {
+        changed_at: "2026-11-12T12:00:00Z",
+        links: [shaped(specRef("s1"))],
+        waiting_review: true,
+      },
+      text: "Draw the rail 56 px wide.",
+    }),
+  ];
+  const tree = treeAnswer(
+    [treeNode("s1", "requirement", KEY, { ...inSpec(0), text: "The page draws s1." }), ...made],
+    [treeTuple("shaped", "untied", "s1")]
+  );
+  const view = renderBody({
+    children: [...buildIssueTree({ issue: issueDetails(), tree }).children],
+    made,
+  });
+
+  expect(
+    Object.fromEntries(DECISIONS_PART_ORDER.map((part) => [part, rowsOfPart(view, part)]))
+  ).toEqual({
+    agents: [],
+    named: [],
+    open_questions: [],
+    others: ["a-answered"],
+    review: [blockNodeId(SPEC_DOCUMENT.slug, "untied")],
+    yours: [],
+  });
+  expect(
+    view.container.querySelector(`[data-node-id="${blockNodeId(SPEC_DOCUMENT.slug, "restates")}"]`),
+    "the view drew the decision that restates the person's answer"
+  ).toBeNull();
+  expect(view.queryByText("Keep the rail, as the person answered.")).toBeNull();
 });
 
 // R2: a declined ask reads as a question the person declined, never as an answer: its state

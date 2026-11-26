@@ -3,7 +3,11 @@
 
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import type { IssueDetails, IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
-import { decisionNodeChanges } from "../web/src/features/issue-page/decision-review";
+import {
+  askOfNode as askRowOf,
+  restatesAnswer,
+} from "../web/src/features/issue-page/decision-nodes/decision-nodes";
+import { decisionNodeChanges, firstOfEachId } from "../web/src/features/issue-page/decision-review";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { chipName } from "../web/src/features/issue-page/issue-tree";
 import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
@@ -38,6 +42,7 @@ import {
   decisionsRows,
 } from "./issue-page-q";
 import { drawnRowReadings, fixtureSeed, keyedRows, seedKeys, steadily } from "./issue-page-t";
+import { restatesAnAnswer } from "./issue-page-t-rows";
 import {
   blocksReads,
   convertedGate,
@@ -431,9 +436,18 @@ async function readRowOne(
     ),
     requirement: (block) => blockRowId(key, answer, "requirement", block),
   });
+  // Each decision node of the Decisions view's read, but one that restates a person's answer
+  // (INFRA-1196's decision 513), which the view draws no row for, by the page's one rule
+  // (`restatesAnswer`) over that read.
+  const viewNodes = await viewNodesOf(key, "decisions");
+  const viewHeld = firstOfEachId(viewNodes);
+  const restating = { askOf: askRowOf(reads), nodeOf: (readId: string) => viewHeld.get(readId) };
   const states = Object.fromEntries(
-    (await viewNodesOf(key, "decisions")).flatMap((node) =>
-      node.supertag === "decision" && node.issue === undefined && node.role !== "context"
+    viewNodes.flatMap((node) =>
+      node.supertag === "decision" &&
+      node.issue === undefined &&
+      node.role !== "context" &&
+      !restatesAnswer(node, restating)
         ? [[decisionRowId(node), reviewWordOf(node)]]
         : []
     )
@@ -535,9 +549,29 @@ async function readRowOne(
   // the Spec column are the values row 1 expects of the seed, and the header's count is alice's
   // open questions and the review part's entries. The fixture recorded the Decisions view with
   // its foot folded, so that filter's rows are compared with the foot's left out, which (2)
-  // reads; its count counts the foot's either way.
+  // reads; its count counts the foot's either way. The fixture is part T's record of the page
+  // before INFRA-1196's decision 513, which drew a section that restates a person's answer - a
+  // decision the fixture draws under an answered question (T's `restatesAnAnswer`) - as a row,
+  // where this page draws none: each such row of the fixture is left out of the row ids
+  // compared, and out of the count of each filter that counts it, Decisions alone, which counts
+  // the asks and the decisions (`presets.ts`' `COUNTED_KINDS`).
   const slugs = (reads.issue.artifacts ?? []).map((artifact) => artifact.slug);
   const foot = new Set(parts.find((part) => part.part === "agents")?.rows ?? []);
+  const recorded = fixtureSeed(name);
+  const restated = new Set(
+    recorded.rows.flatMap((row) => (restatesAnAnswer(row, recorded.rows) ? [row.key] : []))
+  );
+  const recordedNow = Object.fromEntries(
+    Object.entries(recorded.filters).map(([filter, held]) => [
+      filter,
+      held === undefined
+        ? held
+        : {
+            count: held.count - (filter === "decisions" ? restated.size : 0),
+            rows: held.rows.filter((key) => !restated.has(key)),
+          },
+    ])
+  );
   expect(
     recordedFilters(
       {
@@ -551,8 +585,8 @@ async function readRowOne(
       },
       seedKeys(seeded, slugs)
     ),
-    "each filter's row ids and count equal the rows fixture for the seed, the Decisions view's foot left out"
-  ).toEqual(fixtureSeed(name).filters);
+    "each filter's row ids and count equal the rows fixture for the seed, the Decisions view's foot and each section that restates a person's answer left out"
+  ).toEqual(recordedNow);
   const { departure } = wanted;
   if (departure === null) return;
   expect(
@@ -597,14 +631,15 @@ function rowOneSeed<S extends SeededIssue>(
     );
 }
 
-/** Row 1's two seeds. On `seedDecisionsFilter` the parts are the ones the Decisions view's first
- *  row asserts (review `[D(5), D(0)]`, yours `[D(4), declined, optioned, answered]`, and the foot
- *  `[D(1), D(2), D(3), D(6)]`), and the Spec column is the one the Spec column's row asserts on
- *  the same decisions. The second decision, `D(1)`, settles the answered ask (`from_ask`), which
- *  the tree places it under, and no `shaped` tie of it names a statement: by root R2 it stands at
- *  the agents' foot, beside no statement in the Spec column, and in no count of what waits for
- *  review. On `seedReviewList` the parts are the ones the Decisions view's review-list row
- *  asserts. */
+/** Row 1's two seeds. On `seedDecisionsFilter` the review list and alice's own part are the ones
+ *  the Decisions view's first row asserts (review `[D(5), D(0)]`, yours `[D(4), declined,
+ *  optioned, answered]`), the foot is `[D(2), D(3), D(6)]`, and the Spec column is the one the
+ *  Spec column's row asserts on the same decisions, less the second decision's entry. That
+ *  decision, `D(1)`, settles the answered ask (`from_ask`), which the tree places it under: it is
+ *  the old decisions document's section that restates the person's answer, and the person's
+ *  decision is the answered ask itself (INFRA-1196's decision 513), so the page draws no row for
+ *  it, and it stands in no part, in no count and in no entry of the Spec column. On
+ *  `seedReviewList` the parts are the ones the Decisions view's review-list row asserts. */
 const ROW_ONE_SEEDS = [
   rowOneSeed("seedDecisionsFilter", seedDecisionsFilter, (seeded, names) => {
     const block = (index: number) => seeded.decisions[index] ?? "";
@@ -623,20 +658,15 @@ const ROW_ONE_SEEDS = [
             statements: [r(3), r(4), r(5)],
           },
           { decision: "decision 0", names: decision(0), statements: [r(1), r(2)] },
-          {
-            decision: "decision 1, which settles the person's question",
-            names: decision(1),
-            statements: [],
-          },
           { decision: "decision 4", names: decision(4), statements: [r(4)] },
           { decision: "decision 5", names: decision(5), statements: [r(5)] },
           { decision: "the replaced decision", names: decision(6), statements: [] },
         ],
-        counts: { agents: "4", open_questions: "1", review: "2", yours: "4" },
+        counts: { agents: "3", open_questions: "1", review: "2", yours: "4" },
       },
       kept: names.decision(seeded.keptBlock),
       parts: {
-        agents: [D(1), D(2), D(3), D(6)],
+        agents: [D(2), D(3), D(6)],
         open_questions: names.openAsks,
         review: [D(5), D(0)],
         yours: [D(4), declined, names.ask(seeded.optionedAskId), answered],

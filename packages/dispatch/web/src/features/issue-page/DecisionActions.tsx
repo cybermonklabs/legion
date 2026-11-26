@@ -171,9 +171,11 @@ export function DecisionActions({
 }): ReactNode {
   const issueKey = document?.issue_key ?? "";
   // The decisions of the outline read are read once per answer for every node of the page
-  // (`decisionsOfAnswer`), with no asks: they only make an answered question a person's
-  // decision, and these controls are drawn only on a decision waiting for review, which is an
-  // agent's, so the decision its address finds is the same without them.
+  // (`decisionsOfAnswer`), with no asks: the read answers a person's decision on every ask a
+  // person answered, which is what says a question is a person's decision and an agent's
+  // decision restates it (`restatesAnswer`), and these controls are drawn only on a decision
+  // waiting for review, which is an agent's, so the decision its address finds is the same
+  // without them.
   const tree = useOutlineAnswer(issueKey);
   const decision =
     tree === undefined || nodeReference === undefined

@@ -25,7 +25,10 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-re
  * person's decision on the answered ask's own `decision` too (`issue_tree_read.go`'s
  * `readDecisions`), and where it does, its members are read there; where it answers none, they
  * are the ones today's decisions read gives a person's decision (`api/decisions.go`'s
- * `readDecisions`).
+ * `readDecisions`). A node of supertag `decision` whose `from_ask` names an ask a person answered
+ * is no decision (`restatesAnswer`, INFRA-1196's decision 513): it is the old decisions
+ * document's section that restates the person's answer, and the person's decision is the answered
+ * ask itself, in their own words (INFRA-1150), so no reader of a decision draws it or counts it.
  *
  * Beside the answer this reads the issue's key, which a node of this issue is addressed in, its
  * documents and its open asks, and the asks read: the answer holds no ask's answer, and it names
@@ -83,12 +86,12 @@ export interface Lookup {
 
 /**
  * Every decision of `answer`, in the answer's own order: one for each node of supertag `decision`
- * that carries the model's decision, and one for each answered question that carries `shaped`
- * ties, and none for any other node. A decision node that carries no `decision` is no decision,
- * and neither is one the read places in no document: it has no address (`referenceOf`), which is
- * how every reader finds a decision, and no document Keep could be written against. `lookup` is
- * the answer and `reads` looked up by the read's own ids (`lookupOf`), which a caller that holds
- * them already passes.
+ * that carries the model's decision and restates no person's answer (`restatesAnswer`), and one
+ * for each answered question that carries `shaped` ties, and none for any other node. A decision
+ * node that carries no `decision` is no decision, and neither is one the read places in no
+ * document: it has no address (`referenceOf`), which is how every reader finds a decision, and no
+ * document Keep could be written against. `lookup` is the answer and `reads` looked up by the
+ * read's own ids (`lookupOf`), which a caller that holds them already passes.
  */
 export function decisionNodes(
   answer: TreeAnswer,
@@ -114,9 +117,12 @@ const decisionsByAnswer = new WeakMap<TreeAnswer, Map<string, ReadonlyMap<string
  * The decisions of `answer` of issue `key` (`decisionNodes`), each by its address, the first
  * where two share one, in the order `decisionNodes` gives: read once per answer and issue, so
  * every Keep and Change control on the page and the header's count read one answer in one pass.
- * It reads no asks, which only make an answered question a person's decision: Keep and Change
- * are drawn only on a decision waiting for review, which is an agent's, and a person's decision
- * never waits for review, so neither reader finds another decision with them.
+ * It reads no asks. They say an ask is answered only where the read answers no person's decision
+ * on it, and the read answers one on every ask a person answered (`issue_tree_read.go`'s
+ * `readDecisions`), so the answer alone says which question is a person's decision and which
+ * agent's decision restates that answer (`restatesAnswer`). And Keep and Change are drawn only on
+ * a decision waiting for review, which is an agent's, and a person's decision never waits for
+ * review, so neither reader finds another decision with them.
  */
 export function decisionsOfAnswer(
   answer: TreeAnswer,
@@ -224,12 +230,14 @@ function modelMembers(decision: Decision): ModelMembers {
 /**
  * A decision node, with the members of the model's decision the read answers on it (its
  * `decision`) as they are. A decision node that carries none is no decision: no reader could say
- * how it stands or what it shaped, and a Keep would carry no sum.
+ * how it stands or what it shaped, and a Keep would carry no sum. Nor is one that restates a
+ * person's answer (`restatesAnswer`).
  */
 function fromDecision(node: TreeAnswerNode, lookup: Lookup): DecisionNode | undefined {
   const decision = node.decision;
   const ref = referenceOf(node, lookup);
   if (decision === undefined || node.document === undefined || ref === undefined) return undefined;
+  if (restatesAnswer(node, lookup)) return undefined;
   return {
     ...blockAndWords(node),
     ...modelMembers(decision),
@@ -240,9 +248,57 @@ function fromDecision(node: TreeAnswerNode, lookup: Lookup): DecisionNode | unde
 }
 
 /**
- * A person's decision: an answered ask that shaped something. Where the read answers the person's
- * decision on the ask's node (`decision`), which it does for an ask a person answered alone, the
- * ask is answered, it shaped what the decision's links name, and its members are the read's: the
+ * Whether decision node `node` restates a person's answer (INFRA-1196's decision 513): an agent's
+ * decision whose `from_ask` names an ask a person answered (`restatedAsks`). Such a block is the
+ * old decisions document's section that restates the answer, and the person's decision is the
+ * answered ask itself, in their own words (INFRA-1150: no restatement of a person's answer appears
+ * anywhere in the view), so it is no decision of `decisionNodes`, and the outline and Graph draw
+ * no row for it (`tree-read/tree-nodes.ts`' `firstDraft`): an address that names it lands on the
+ * question it restates (`issue-address.ts`' `pathToTarget`). The test is the tie alone, never the
+ * node's place: an agent's decision the read stands under an answered ask that names no such tie
+ * is drawn as an agent's decision, and waits for review where a `shaped` tie names a statement.
+ */
+export function restatesAnswer(
+  node: TreeAnswerNode,
+  lookup: Pick<Lookup, "askOf" | "nodeOf">
+): boolean {
+  return restatedAsks(node, lookup).length > 0;
+}
+
+/**
+ * The asks a person answered whose answer decision node `node` restates (`restatesAnswer`): each
+ * node of the answer an ask its `from_ask` names is, where a person answered that ask; none for a
+ * node of any other supertag. The read answers the asks a decision's `from_ask` names on its
+ * `decision` (`asks`, the decisions read's `Asks`), each by its id, which is the read id of the
+ * ask's node. The answer holds that node wherever the read stands the decision under it, as it
+ * stands a decision under the ask of its own issue it settles, and the Decisions view holds every
+ * ask; where the answer holds no node of the ask, nothing says it is answered. The ask is one a
+ * person answered by the rule a person's decision is read by (`answeredByPerson`).
+ */
+export function restatedAsks(
+  node: TreeAnswerNode,
+  lookup: Pick<Lookup, "askOf" | "nodeOf">
+): TreeAnswerNode[] {
+  if (node.supertag !== "decision") return [];
+  return (node.decision?.asks ?? []).flatMap((askId) => {
+    const ask = lookup.nodeOf(askId);
+    return ask?.supertag === "ask" && answeredByPerson(ask, lookup.askOf(ask)) ? [ask] : [];
+  });
+}
+
+/** Whether ask node `node`, the row of the issue's asks `ask` is (`askOfNode`), is one a person
+ *  answered: the read answers a person's decision on it (`decision`), which it does for an ask a
+ *  person answered alone (`issue_tree_read.go`'s `readDecisions`), else the asks read says it is
+ *  answered. The read's word stands over the asks read's, which may be older or newer than it. */
+function answeredByPerson(node: TreeAnswerNode, ask: Pick<TreeAsk, "state"> | undefined): boolean {
+  return node.decision !== undefined || ask?.state === "answered";
+}
+
+/**
+ * A person's decision: an answered ask that shaped something. The ask is answered by the rule
+ * every reader of a decision reads (`answeredByPerson`). Where the read answers the person's
+ * decision on the ask's node (`decision`), which it does for an ask a person answered alone, it
+ * shaped what the decision's links name, and its members are the read's: the
  * links are its `shaped` ties as the decisions read answers them, so a person's decision is read
  * alike from an answer that holds no `shaped` tuple from it. The Decisions view is such an answer:
  * it holds no statement, and the read sends a tuple only where the answer holds its far end
@@ -252,17 +308,15 @@ function fromDecision(node: TreeAnswerNode, lookup: Lookup): DecisionNode | unde
  * section of `decisions.md` that names the ask: of the kind `person`, naming the ask itself,
  * waiting for nobody's review, never kept nor replaced, made when it was answered and at no
  * version of a document, with no sum, since only a decision that waits is kept; and its links are
- * those tuples (`shapedLinks`). The read's word that the ask is answered stands over the asks
- * read's, which may be older or newer than it. Undefined for any other ask.
+ * those tuples (`shapedLinks`). Undefined for any other ask.
  */
 function fromAnsweredAsk(node: TreeAnswerNode, lookup: Lookup): DecisionNode | undefined {
   const ask = lookup.askOf(node);
   const ref = nodeReference(node, lookup.key, ask);
-  if (ref === undefined) return undefined;
+  if (ref === undefined || !answeredByPerson(node, ask)) return undefined;
   const shaped =
     node.decision === undefined
-      ? ask?.state === "answered" &&
-        lookup.tuplesFrom(node.id).some((tuple) => tuple.kind === "shaped")
+      ? lookup.tuplesFrom(node.id).some((tuple) => tuple.kind === "shaped")
       : (node.decision.links ?? []).length > 0;
   if (!shaped) return undefined;
   const members: ModelMembers =

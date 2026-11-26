@@ -30,6 +30,7 @@ import type {
   NodeCounts,
   NodeFact,
   NodeOption,
+  RestatingDecision,
   TreeAsk,
 } from "./issue-tree";
 import {
@@ -113,6 +114,9 @@ export interface Draft {
   readId?: string;
   reference?: string;
   replaced: boolean;
+  /** The decisions that restate this question's answer, each by its tree id and the tree read's
+   *  own id (`TreeNode.restatedBy`); absent on every other draft. */
+  restatedBy?: RestatingDecision[];
   /** The record `text` is, where the draft's read names one (`TreeNode.source`). */
   source?: TextSource;
   /** How it stands, for a type the model gives a state (`TreeNode.state`); absent on a check

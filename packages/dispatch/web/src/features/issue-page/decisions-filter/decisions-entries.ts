@@ -84,7 +84,12 @@ import { askIdOf, type DecisionsParts, decisionsParts, placements } from "./deci
  * (`tree-read/tree-nodes.ts`'s `draftReading`), which restates the person's answer, and which
  * the view draws no row for (R9), so an address naming one lands on the row of the question it
  * answers. The asks read says which ask is answered and the tree read where each reading
- * stands, so only with both can the seam tell.
+ * stands, so only with both can the seam tell. A decision that restates a person's answer is
+ * none of them: the tree holds no node of it (`decision-nodes.ts`' `restatesAnswer`, INFRA-1196's
+ * decision 513), so no part holds it and no count counts it, a reading of it stands under the
+ * question it restates and is a write-up of that question, and an address naming the decision
+ * lands on that question by the rule every view lands an address by (`issue-address.ts`'
+ * `pathToTarget`).
  *
  * The hook is the module's one export but `changesOf`, which the parts' tests read the Changes
  * by, and its answer's type is its own, so the read that replaces this module has one name to
