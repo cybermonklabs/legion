@@ -242,9 +242,7 @@ func startingReadHeld(t *testing.T, left time.Duration) (rig *intakeRig, daemon 
 	if c := cursorOf(t, rig.database, "INFRA"); c.lastSeq != nil || c.stateID != nil || c.readOwed || c.readHolder != nil {
 		t.Fatalf("INFRA's cursor after a write of its own URL that found no holder is %s, want it reset: no sequence, no store, nothing owed and no holder", c)
 	}
-	rig.waitFor(5*time.Second, func() bool { return rig.clock.deferredCalls() >= 1 }, func() string {
-		return "the wake of the write of INFRA's own URL deferred no call: it found the starting read due, or held"
-	})
+	rig.awaitDeferredCalls(1, "the wake of the write of INFRA's own URL")
 	if deferred := rig.clock.deferredCalls(); deferred != 1 {
 		t.Fatalf("the intake deferred %d calls by the write of INFRA's own URL, want the one call of its wake: the take-over found the starting read due", deferred)
 	}

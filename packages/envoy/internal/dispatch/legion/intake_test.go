@@ -282,6 +282,15 @@ func (r *intakeRig) consumerInfo() *natsgo.ConsumerInfo {
 	return info
 }
 
+// awaitDeferredCalls waits up to 5 s for the intake's clock to have deferred at least want calls,
+// and fails the test with why, the step that should have deferred one, if it has not.
+func (r *intakeRig) awaitDeferredCalls(want int, why string) {
+	r.t.Helper()
+	r.waitFor(5*time.Second, func() bool { return r.clock.deferredCalls() >= want }, func() string {
+		return fmt.Sprintf("%s deferred %d calls within 5 s, want at least %d", why, r.clock.deferredCalls(), want)
+	})
+}
+
 // awaitWholeReads waits for want whole reads of any project to be recorded.
 func (r *intakeRig) awaitWholeReads(want int) {
 	r.t.Helper()
