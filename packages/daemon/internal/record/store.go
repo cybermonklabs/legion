@@ -1754,10 +1754,13 @@ const (
 // forgetKept runs forget in tx over what the clear owes it, before the clear deletes the gates
 // forget's rule reads: the decisions tree keeps on issue, or on any of its issues when issue is
 // "", whoever claims or holds them, as one KeptDecisions, and the changes requests the outbox
-// holds on the same issues (queuedChanges). Only the cleared issues' are handed over: a decision
-// is asked of the gates of the issue it was made on, and every other issue keeps its gates. The
-// set carries no kept approval: the forget deletes none (workflow.ForgetSuperseded). A nil forget
-// is refused before anything is read or written, so a clear handed no forget clears nothing.
+// holds on the same issues (queuedChanges). Only the cleared issues' are handed over: a kept
+// decision is asked of the gates of the issue it was made on, and a queued changes request of its
+// row's issue's, which for the root's copy of a basis-changes-requested notice is the root and not
+// the ancestor whose document the person reviewed, so that copy stands (workflow.RefSuperseded).
+// Every other issue keeps its gates. The set carries no kept approval: the forget deletes none
+// (workflow.ForgetSuperseded). A nil forget is refused before anything is read or written, so a
+// clear handed no forget clears nothing.
 func (s *Postgres) forgetKept(ctx context.Context, tx pgx.Tx, tree, issue string, forget KeptForget, describe string) error {
 	if forget == nil {
 		return fmt.Errorf("%s: no forget to run over the decisions kept on it, which the clear must run before it deletes the gates the forget's rule reads", describe)

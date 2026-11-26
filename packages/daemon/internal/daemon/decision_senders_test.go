@@ -148,12 +148,14 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // keyed by the ancestor, where the daemon records the ancestor in a live tree, names the
 // ancestor's own document, so it is a sender's under R2: tellBasisChanges asks the predicate of
 // the ancestor's gates before it queues it (workflow.NoticeSuperseded), and the delivery and the
-// clear of a generation ask it again, which
-// TestTheAncestorsCopyOfABasisChangesRequestIsToldOnlyWhileItStands drives. The copy keyed by the
-// root stays outside R2: its Ref is the ancestor's step reference, so workflow.RefSuperseded,
-// asked of the root's gates, finds no step of the root in another issue's reference (refStep) and
-// answers that the request stands. The walk cannot tell the two copies apart, since one literal
-// writes both: what holds the ask to the ancestor's copy, and not to the root's, is that behavior.
+// clear of a generation ask it again. TestTheAncestorsCopyOfABasisChangesRequestIsToldOnlyWhileItStands
+// drives the queue and the delivery; the clear asks through the same rule (record.ChangesRequest,
+// whose rows record's TestTheClearsSelectOfChangesRequestsNamesTheRowsChangesRequestAccepts holds
+// the clear's select to). The copy keyed by the root stays outside R2: its Ref is the ancestor's
+// step reference, so workflow.RefSuperseded, asked of the root's gates, finds no step of the root
+// in another issue's reference (refStep) and answers that the request stands. The walk cannot tell
+// the two copies apart, since one literal writes both: what holds the ask to the ancestor's copy,
+// and not to the root's, is that behavior.
 //
 // A sender passes when it reaches the predicate: it calls it, or calls a function of the three
 // packages that reaches it, however many calls down. The walk type-checks the three packages
