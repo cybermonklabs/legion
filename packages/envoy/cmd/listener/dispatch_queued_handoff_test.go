@@ -79,7 +79,7 @@ func TestDispatchsQueuedCopyForAStoppedLegionAgentIsHandedToItsDaemonAtTheGiveUp
 	wakes := subscribeWakes(t, harness.client.Conn)
 	run := startEnvelopeDeliveryThrough(t, harness, jetStreamDeliveryHandler(cfg), target, item, 0)
 
-	waitFor(t, 20*time.Second, "the queued copy to be handed to "+target+"'s daemon", func() bool {
+	waitFor(t, "the queued copy to be handed to "+target+"'s daemon", func() bool {
 		count, _ := handoffs(t, harness.client, target)
 		return count == 1
 	})
