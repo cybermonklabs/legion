@@ -12,6 +12,13 @@ import (
 // and it waits for that process's heartbeat to lapse (processes.Register).
 const registryRefusalLine = "a live server process refuses this one's signing keys; waiting for its heartbeat to lapse"
 
+// restartProcessHeartbeat is the registry pace of both processes of the row below
+// (DISPATCH_TEST_PROCESS_HEARTBEAT), in place of production's five seconds. It is twice
+// quickProcessHeartbeat, because this row drives the registry from the outside while the restart's
+// wait runs: the wait is a live window and a heartbeat from the restart's first refusal, 8 s here,
+// and every step the test takes inside it is one read of the restart's output and one statement.
+const restartProcessHeartbeat = 2 * quickProcessHeartbeat
+
 // A dev sign-in server signs its cookies with a key it mints for its own process
 // (sessionSigningKey), so a restart carries a key set the process before it never held. Killed
 // (SIGKILL, as Playwright stops packages/dispatch/e2e/run-server.sh's server), that process never
@@ -20,12 +27,13 @@ const registryRefusalLine = "a live server process refuses this one's signing ke
 // row, waits for it to lapse (processes.Register) rather than refusing to start beside a process
 // that no longer runs, and serves.
 //
-// Both processes keep the registry at quickProcessHeartbeat's pace, a live window of three
-// seconds. So that the restart meets a live dead row however long its boot and its wait for a
-// process slot take, the row's heartbeat is set an hour ahead once the kill lands; once the restart
-// says it was refused, the row is given the heartbeat of a process killed one beat ago, so it lapses
-// two beats later, two beats before the restart's wait (a live window and a beat from its first
-// refusal) would give up.
+// Both processes keep the registry at restartProcessHeartbeat's pace, so the restart's wait for the
+// dead row is a live window and a heartbeat, 8 s, and not production's 20 s. Two steps keep the
+// test off either edge of that wait, so that it is the product's order it reads and not the
+// runner's load. The row's heartbeat is set an hour ahead once the kill lands, so the restart
+// meets a live dead row however long its boot and its wait for a process slot take; and once the
+// restart has logged that it was refused, the row is given a heartbeat an hour old, so it has
+// lapsed by the restart's next try, one heartbeat later, with the rest of the 8 s to spare.
 func TestADevSignInServerRestartedAfterAKillStarts(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -38,7 +46,7 @@ func TestADevSignInServerRestartedAfterAKillStarts(t *testing.T) {
 		// The dev sign-in fence takes a loopback dashboard origin only; /healthz, all this test
 		// asks, is served whatever Host a request names.
 		"DISPATCH_SERVER_URL":             "http://127.0.0.1",
-		"DISPATCH_TEST_PROCESS_HEARTBEAT": quickProcessHeartbeat.String(),
+		"DISPATCH_TEST_PROCESS_HEARTBEAT": restartProcessHeartbeat.String(),
 	}}
 	first := startDispatchProcessWith(t, database.Pool.Config().ConnString(), options)
 	first.waitHealthy(t)
@@ -53,9 +61,8 @@ func TestADevSignInServerRestartedAfterAKillStarts(t *testing.T) {
 
 	second := startDispatchProcessWith(t, database.Pool.Config().ConnString(), options)
 	second.waitForLog(t, 30*time.Second, registryRefusalLine)
-	if _, err := database.Pool.Exec(ctx, `update server_processes set heartbeat_at = clock_timestamp() - make_interval(secs => $1)`,
-		quickProcessHeartbeat.Seconds()); err != nil {
-		t.Fatalf("give the killed server's row the heartbeat of a process killed a beat ago: %v", err)
+	if _, err := database.Pool.Exec(ctx, `update server_processes set heartbeat_at = now() - interval '1 hour'`); err != nil {
+		t.Fatalf("lapse the killed server's row: %v", err)
 	}
 	second.waitHealthy(t)
 }

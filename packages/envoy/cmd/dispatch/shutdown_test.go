@@ -112,18 +112,26 @@ func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing
 	process.checkSettledAtShutdown(t, database, artifactID)
 }
 
+// heldSettleDelay is the settle delay (DISPATCH_TEST_SETTLE_DELAY) of the row below, longer than
+// the row runs: the edit's own settlement timer never fires, so the settlement the document
+// service runs at shutdown is the only one that can commit the document, and no step of the row
+// races that timer. With the service's own two seconds, an edit whose timer fired before the test
+// had taken the issue's lock settled the document before the signal, and the row then failed with
+// nothing owed at shutdown.
+const heldSettleDelay = time.Minute
+
 // A request in flight can hold the HTTP drain for its whole share of the budget, here a title change
 // queued behind another writer's lock on the issue. The document service starts once that share
 // ends, so the settlement owed by the edit before the signal still runs and commits. Settlement waits
-// on the same lock: the edit's own timer starts one two seconds in, during the drain, and Shutdown
-// starts another. The lock is released once Shutdown's is queued behind it too, or two seconds after
-// the document service started, which is ample for it to read what is owed; a release before that
-// read could let the timer's settlement commit first. The drain is quickHTTPDrain.
+// on the same lock: Shutdown's settlement queues behind the title change, and the lock is released
+// once it is there, or two seconds after the document service started, which is ample for it to
+// read what is owed. The drain is quickHTTPDrain and the settle delay heldSettleDelay.
 func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
-		Env: map[string]string{"DISPATCH_TEST_HTTP_DRAIN": quickHTTPDrain.String()},
+		SettleDelay: heldSettleDelay,
+		Env:         map[string]string{"DISPATCH_TEST_HTTP_DRAIN": quickHTTPDrain.String()},
 	})
 	process.waitHealthy(t)
 	key, artifactID := process.createIssue(t)
@@ -134,8 +142,8 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 		// Its answer is not this test's.
 		_, _ = process.renameIssue(key, "Renamed")
 	}()
-	// The edit's settlement queues behind the same lock two seconds in, so a count of waiters
-	// could pass with the title change still on its way: watch the title change's own backend.
+	// A count of waiters could pass with the title change still on its way: watch the title
+	// change's own backend.
 	if pid := waitForRenameBehind(t, database, holder, 10*time.Second); pid == 0 {
 		t.Fatalf("the title change never queued behind the issue lock:\n%s", process.Output.String())
 	}
@@ -144,8 +152,9 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 	process.WaitForOutput(t, `msg="dispatch: settle documents with requests still in flight"`)
 	t.Logf("the document service started with the request in flight %v after SIGTERM", time.Since(signalled))
 	// A reading, not a wait for a fact: the lock is released once Shutdown's settlement queues
-	// behind it too (three waiters) or two seconds after the document service started, as the
-	// comment above says, and the count is only logged; the settled document below is the verdict.
+	// behind the title change (two waiters) or two seconds after the document service started, as
+	// the comment above says, and the count is only logged; the settled document below is the
+	// verdict.
 	waiting := 0
 	testwait.Holds(2*time.Second, 10*time.Millisecond, func() bool {
 		count, err := storetest.LockWaiters(context.Background(), holder)
@@ -153,7 +162,7 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 			t.Fatal(err)
 		}
 		waiting = count
-		return count >= 3
+		return count >= 2
 	})
 	if err := holder.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the issue lock: %v", err)
@@ -1028,9 +1037,9 @@ func TestSIGTERMWithAnEditorConnectedSettlesItsDocumentBeforeExit(t *testing.T) 
 // A database that stops answering - a failover, a partition - holds every connection waiting on it,
 // and closing the pool waits for every connection in use. Here that is an issue create's: it waits
 // in Postgres on another writer's lock on its project's row when the relay stops forwarding, so
-// whatever Postgres answers it never arrives. HTTP shutdown waits for that request, so the document
-// service starts the HTTP drain (quickHTTPDrain here) after the signal, with no document to settle:
-// the issue it would create has none yet. Dispatch then gives up on the connection when
+// whatever Postgres answers it never arrives. HTTP shutdown waits for that request, so the
+// document service starts one HTTP drain (quickHTTPDrain here) after the signal, with no document
+// to settle: the issue it would create has none yet. Dispatch then gives up on the connection when
 // silentProbes health probes in a row have failed with no connection taken back meanwhile, so it
 // exits well inside a runtime's grace period instead of being killed, and says why.
 func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testing.T) {

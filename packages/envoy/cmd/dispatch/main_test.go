@@ -2376,26 +2376,32 @@ func TestAProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T) {
 		Env:        map[string]string{"DISPATCH_TEST_PROCESS_HEARTBEAT": quickProcessHeartbeat.String()},
 	})
 	process.waitForLog(t, 30*time.Second, registryRefusalLine)
-	refused := time.Now()
+	observed := time.Now()
 	// The process's live window and its whole wait (processes.Register), at its own pace.
 	liveWindow, wait := 3*quickProcessHeartbeat, 4*quickProcessHeartbeat
 	// The test reads the database every 250 ms until the process exits, so it sees each moment of
 	// the wait in which a fill could take the hold and write.
-	stillRunning := refused.Add(wait + 30*time.Second)
+	stillRunning := observed.Add(wait + 30*time.Second)
 	for waiting := true; waiting; {
-		requireNoKeywordFillWrite(t, database, fmt.Sprintf("%v into the wait for admission", time.Since(refused).Round(time.Millisecond)))
+		requireNoKeywordFillWrite(t, database, fmt.Sprintf("%v into the wait for admission", time.Since(observed).Round(time.Millisecond)))
 		select {
 		case <-process.Exited:
 			waiting = false
 		case <-time.After(250 * time.Millisecond):
 			if time.Now().After(stillRunning) {
-				t.Fatalf("the refused process still runs %v after its first refusal:\n%s", time.Since(refused).Round(time.Millisecond), process.Output.String())
+				t.Fatalf("the refused process still runs %v after the test read its first refusal:\n%s", time.Since(observed).Round(time.Millisecond), process.Output.String())
 			}
 		}
 	}
-	if waited := time.Since(refused); waited < liveWindow {
-		t.Fatalf("the refused process exited %v after its first refusal; the test needs the whole wait of %v:\n%s",
-			waited.Round(time.Millisecond), wait, process.Output.String())
+	// How long the process waited, by its own clock: the moment it logged its first refusal and
+	// the moment it logged the refusal it gave up on. The test's own reads of the output are a
+	// hang guard above and no part of this reading, since a loaded runner stretches them either
+	// way: late, a whole wait would read as a short one, and a stalled read would let an exit
+	// after one heartbeat read as a whole wait.
+	gaveUpAt := process.loggedAt(t, `msg="dispatch: register this server process"`, "signing key set does not match a live server process")
+	if waited := gaveUpAt.Sub(process.loggedAt(t, registryRefusalLine)); waited < liveWindow {
+		t.Fatalf("the refused process gave up %v after its first refusal; the wait is a live window and a heartbeat, %v, and the test needs at least the window, %v:\n%s",
+			waited.Round(time.Millisecond), wait, liveWindow, process.Output.String())
 	}
 
 	if code := process.Cmd.ProcessState.ExitCode(); code != 1 ||
