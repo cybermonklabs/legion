@@ -385,6 +385,7 @@ func sortedKeys(set map[string]bool) []string {
 func (h *signInHolds) load(file string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.file = file // MUTANT E: saves go to the record before what it holds is decided
 	data, err := os.ReadFile(file)
 	if err != nil {
 		h.pending, h.pendingErr = file, fmt.Errorf("read %s: %w", SignInBoxesNamed, redact.File(err))
