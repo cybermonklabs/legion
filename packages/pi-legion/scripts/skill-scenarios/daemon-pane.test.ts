@@ -230,22 +230,105 @@ test.skipIf(skip)(
   600_000
 );
 
-// The rig's stand-in daemon serves a phase worker's routes alone, none of a tree architect's (its
-// design gate's among them), so the rig builds no pane prompt for one; `composeRolePrompt` below
-// composes that architect's prompt for a reader of it.
+// The panes the daemon gives the other claims that a role's `legion` tool serves: a tree's root
+// architect, a child's architect (whose tree is its root's) and the daemon's own controller, which
+// has no issue, no tree and no workspace. Each pane's system prompt is the claim's own, written to
+// its prompt file.
+const promptOf = (token: string) =>
+  readFileSync(path.join(rig, "state", "secrets", `${token}-system-prompt.md`), "utf8");
+
 test.skipIf(skip)(
-  "refuses the pane prompt of a tree architect",
-  () => {
-    expect(() =>
+  "gives a root architect, a child architect and the headless controller their panes and prompt files",
+  async () => {
+    const launch = { rig, port: 13399, profile: "rig-profile" };
+    const source = { daemonModule: DAEMON_MODULE, systemPrompt: true };
+    const project = "skillsrig";
+
+    const root = await workerPane(
+      launch,
+      inherited,
+      { project, issue: "LWEVAL-1", role: "architect" },
+      source
+    );
+    expect(root.env).toMatchObject({
+      LEGION_ISSUE: "LWEVAL-1",
+      LEGION_TREE: "LWEVAL-1",
+      LEGION_ROLE: "architect",
+    });
+    expect(root.systemPromptArgument).toContain(
+      "legion-skillsrig-lweval-1-architect-system-prompt.md"
+    );
+    expect(promptOf("legion-skillsrig-lweval-1-architect")).toMatch(
+      /\n\nLegion addressing: [^\n]* Design gate steps: [^\n]+ Production check: tester\.$/
+    );
+
+    const child = await workerPane(
+      launch,
+      inherited,
+      { project, issue: "LWEVAL-2", tree: "LWEVAL-1", role: "architect" },
+      source
+    );
+    expect(child.env).toMatchObject({
+      LEGION_ISSUE: "LWEVAL-2",
+      LEGION_TREE: "LWEVAL-1",
+      LEGION_ROLE: "architect",
+    });
+    const childPrompt = promptOf("legion-skillsrig-lweval-2-architect");
+    expect(childPrompt).toContain(
+      "the architect above you is `notifications.role.legion-skillsrig-lweval-1-architect`"
+    );
+    expect(childPrompt).not.toContain("Design gate steps: ");
+    expect(childPrompt).toMatch(/ Production check: tester\.$/);
+
+    const controller = await workerPane(
+      launch,
+      inherited,
+      { project, issue: "", role: "controller", controller: "headless" },
+      source
+    );
+    expect(controller.env).toMatchObject({ LEGION_CONTROLLER: "1", LEGION_ROLE: "controller" });
+    for (const name of ["LEGION_ISSUE", "LEGION_TREE", "LEGION_WORKSPACE"]) {
+      expect(controller.env).not.toHaveProperty(name);
+    }
+    expect(promptOf("legion-skillsrig-controller")).toContain(
+      promptPart("go/controller-headless.md")
+    );
+  },
+  600_000
+);
+
+// The interactive controller runs in the operator's terminal under `legion controller start`,
+// whose environment is its own, so the rig builds no pane for it; and a backend that does not run
+// a role is refused as the daemon refuses it.
+test.skipIf(skip)(
+  "refuses the pane of the interactive controller and a backend that does not run the role",
+  async () => {
+    const launch = { rig, port: 13399, profile: "rig-profile" };
+    const source = { daemonModule: DAEMON_MODULE, systemPrompt: true };
+    await expect(
       workerPane(
-        { rig, port: 13399, profile: "rig-profile" },
+        launch,
+        inherited,
+        { project: "skillsrig", issue: "", role: "controller", controller: "interactive" },
+        source
+      )
+    ).rejects.toThrow("the interactive controller runs in the operator's terminal");
+    await expect(
+      workerPane(
+        launch,
         inherited,
         { project: "skillsrig", issue: "LWEVAL-1", role: "architect" },
-        { daemonModule: DAEMON_MODULE, systemPrompt: true }
+        { ...source, backend: "claude" }
       )
-    ).toThrow(
-      "a tree architect is also told its design gate policy, which the rig does not stand in for"
-    );
+    ).rejects.toThrow("the Claude Code backend does not run the architect");
+    await expect(
+      workerPane(
+        launch,
+        inherited,
+        { project: "skillsrig", issue: "", role: "controller", controller: "headless" },
+        { ...source, backend: "claude" }
+      )
+    ).rejects.toThrow("the Claude Code backend does not run the controller");
   },
   600_000
 );
@@ -254,6 +337,25 @@ test.skipIf(skip)(
 // order, so every part but the last ends with its own newline, which this drops.
 const promptPart = (name: string) =>
   readFileSync(path.join(DAEMON_MODULE, "internal", "prompts", name), "utf8").trimEnd();
+
+// The role prompt files a launch concatenates, as the daemon writes them: each file whole, in
+// order, and the newlines that end the last one dropped (runtime.ComposePrompt).
+const concatenated = (...names: string[]) =>
+  names
+    .map((name) => readFileSync(path.join(DAEMON_MODULE, "internal", "prompts", name), "utf8"))
+    .join("")
+    .trimEnd();
+
+// The parts of a phase worker's launch: the core and the role's own, the headless mechanics, the
+// role's part, then the daemon's two (prompts.Composer.Compose).
+const workerParts = (role: string) => [
+  "roles/core/common.md",
+  `roles/core/${role}.md`,
+  "roles/mechanics/headless.md",
+  `roles/${role}.md`,
+  `go/${role}.md`,
+  "go/worker-common.md",
+];
 
 // rig.sh's assignments, read once. rigWorld gives the value rig.sh sets for the tester-proof world:
 // `worker_repo`, the repository its fixture's pull request is on, or `worker_default_branch`, the
@@ -269,26 +371,123 @@ const rigWorld = (name: string) => rigAssignment(name).slice(name.length + 1);
 test.skipIf(skip)(
   "composes the prompt a launch of a role starts with: its parts, its addressing, and a root architect's design gate",
   () => {
-    const root = composeRolePrompt(DAEMON_MODULE, "architect", true);
+    const root = composeRolePrompt(DAEMON_MODULE, "architect", "root");
     expect(root.startsWith(promptPart("roles/architect-root.md"))).toBe(true);
     expect(root).toContain(promptPart("go/architect-root.md"));
     expect(root).toMatch(
       /\n\nLegion addressing: your role topic is [^\n]* Design gate steps: [^\n]+\.$/
     );
 
-    const child = composeRolePrompt(DAEMON_MODULE, "architect", false);
+    const child = composeRolePrompt(DAEMON_MODULE, "architect", "child");
     expect(child.startsWith(promptPart("roles/architect.md"))).toBe(true);
     expect(child).toContain(promptPart("go/architect.md"));
     expect(child).not.toContain(promptPart("roles/architect-root.md"));
     expect(child).not.toContain("Design gate steps: ");
 
-    const reviewer = composeRolePrompt(DAEMON_MODULE, "reviewer", false);
+    const reviewer = composeRolePrompt(DAEMON_MODULE, "reviewer", "child");
     expect(reviewer).toContain(promptPart("go/reviewer.md"));
-    for (const prompt of [child, reviewer]) {
-      expect(prompt).toMatch(/\n\nLegion addressing: your role topic is [^\n]*\.$/);
-    }
+    expect(reviewer).toMatch(/\n\nLegion addressing: your role topic is [^\n]*\.$/);
     const repository = `Your issue's repository is ${rigWorld("worker_repo")} (default branch ${rigWorld("worker_default_branch")}); `;
     for (const prompt of [root, child, reviewer]) expect(prompt).toContain(repository);
+  },
+  600_000
+);
+
+// One row for each launch the daemon makes: its prompt is its parts concatenated in the order the
+// daemon's composition gives them, then its addressing.
+test.skipIf(skip)(
+  "composes a root architect's prompt: its three parts, its addressing, the design gate and the production check",
+  () => {
+    const prompt = composeRolePrompt(DAEMON_MODULE, "architect", "root");
+    const parts = concatenated(
+      "roles/architect-root.md",
+      "go/architect-root.md",
+      "go/architect-common.md"
+    );
+    expect(prompt.startsWith(`${parts}\n\nLegion addressing: your role topic is `)).toBe(true);
+    expect(prompt).toMatch(
+      / the architect that owns your issue is [^\n]* Design gate steps: `spec`\.[^\n]* Production check: tester\.$/
+    );
+  },
+  600_000
+);
+
+test.skipIf(skip)(
+  "composes a child architect's prompt: its three parts, the architect above it, no design gate and the production check",
+  () => {
+    const prompt = composeRolePrompt(DAEMON_MODULE, "architect", "child");
+    const parts = concatenated("roles/architect.md", "go/architect.md", "go/architect-common.md");
+    expect(prompt.startsWith(`${parts}\n\nLegion addressing: your role topic is `)).toBe(true);
+    expect(prompt).toContain("; the architect above you is `");
+    expect(prompt).not.toContain("Design gate steps: ");
+    expect(prompt).toMatch(/ Production check: tester\.$/);
+  },
+  600_000
+);
+
+test.skipIf(skip)(
+  "composes the headless and the interactive controller's prompts: its role part, its launch's part, the design gate and its reach, no addressing line",
+  () => {
+    const reach =
+      /\n\nDesign gate steps: `spec`\.[^\n]* Your role's GitHub App is installed on the owner example, and its token reaches every repository of that owner\.$/;
+    for (const launch of ["headless", "interactive"] as const) {
+      const prompt = composeRolePrompt(DAEMON_MODULE, "controller", launch);
+      const parts = concatenated("roles/controller-root.md", `go/controller-${launch}.md`);
+      expect(prompt.startsWith(`${parts}\n\nDesign gate steps: `)).toBe(true);
+      expect(prompt).toMatch(reach);
+      expect(prompt).not.toContain("Legion addressing: ");
+      expect(prompt).not.toContain("Production check:");
+    }
+    expect(composeRolePrompt(DAEMON_MODULE, "controller", "headless")).not.toContain(
+      promptPart("go/controller-interactive.md")
+    );
+  },
+  600_000
+);
+
+test.skipIf(skip)(
+  "composes the merger's prompt: the headless mechanics, its part, the daemon's two and its addressing",
+  () => {
+    const prompt = composeRolePrompt(DAEMON_MODULE, "merger", "child");
+    const parts = concatenated(
+      "roles/mechanics/headless.md",
+      "roles/merger.md",
+      "go/merger.md",
+      "go/worker-common.md"
+    );
+    expect(prompt.startsWith(`${parts}\n\nLegion addressing: your role topic is `)).toBe(true);
+    expect(prompt).toMatch(/ Your issue's repository is [^\n]*\.$/);
+    expect(prompt).not.toContain("Production check: ");
+  },
+  600_000
+);
+
+// The claude backend's own part follows the worker's parts (runtime.Backends): it is told no more
+// to Oh My Pi, and the backend runs the phase workers alone.
+test.skipIf(skip)(
+  "composes a worker's prompt for the claude backend: the claude mechanics part after the worker parts",
+  () => {
+    const omp = composeRolePrompt(DAEMON_MODULE, "reviewer", "child", "omp");
+    const claude = composeRolePrompt(DAEMON_MODULE, "reviewer", "child", "claude");
+    const parts = concatenated(...workerParts("reviewer"), "go/claude-mechanics.md");
+    expect(claude.startsWith(`${parts}\n\nLegion addressing: your role topic is `)).toBe(true);
+    expect(omp).not.toContain(promptPart("go/claude-mechanics.md"));
+    expect(
+      omp.startsWith(`${concatenated(...workerParts("reviewer"))}\n\nLegion addressing: `)
+    ).toBe(true);
+    // The backend's part changes nothing after the parts: the addressing is the same.
+    const addressing = (prompt: string) => prompt.slice(prompt.indexOf("\n\nLegion addressing: "));
+    expect(addressing(claude)).toBe(addressing(omp));
+    for (const role of ["architect", "controller"] as const) {
+      expect(() =>
+        composeRolePrompt(
+          DAEMON_MODULE,
+          role,
+          role === "controller" ? "headless" : "root",
+          "claude"
+        )
+      ).toThrow(`the Claude Code backend does not run the ${role}`);
+    }
   },
   600_000
 );

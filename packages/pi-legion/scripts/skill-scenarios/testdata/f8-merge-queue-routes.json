@@ -1,0 +1,167 @@
+{
+  "routes": [
+    {
+      "match": "^gh api graphql .*isInMergeQueue",
+      "stdout": {
+        "data": {
+          "repository": {
+            "pullRequest": {
+              "state": "OPEN",
+              "mergedAt": null,
+              "isInMergeQueue": false,
+              "mergeStateStatus": "CLEAN",
+              "headRefOid": "c9fd01e13d79d5c8ba66b3f3280ee5893a01ec6f",
+              "mergeQueueEntry": null
+            }
+          }
+        }
+      }
+    },
+    {
+      "match": "^gh api graphql .*ADDED_TO_MERGE_QUEUE_EVENT",
+      "stdout": {
+        "data": {
+          "repository": {
+            "pullRequest": {
+              "timelineItems": {
+                "nodes": []
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "match": "^gh api graphql .*enqueuePullRequest",
+      "stdout": {
+        "data": {
+          "enqueuePullRequest": {
+            "mergeQueueEntry": {
+              "position": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "match": "^gh api graphql .*dequeuePullRequest",
+      "stdout": {
+        "data": {
+          "dequeuePullRequest": {
+            "mergeQueueEntry": {
+              "position": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "match": "^gh pr view .*--json id\\b",
+      "stdout": {
+        "id": "PR_kwDORFy7ds8AAAABSFTGIw"
+      }
+    },
+    {
+      "match": "^gh api .*repos/[^/ ]+/[^/ ]+/rules/branches/",
+      "stdout": [
+        {
+          "type": "deletion",
+          "ruleset_source_type": "Repository",
+          "ruleset_source": "cybermonklabs/legion",
+          "ruleset_id": 12331919
+        },
+        {
+          "type": "non_fast_forward",
+          "ruleset_source_type": "Repository",
+          "ruleset_source": "cybermonklabs/legion",
+          "ruleset_id": 12331919
+        },
+        {
+          "type": "required_linear_history",
+          "ruleset_source_type": "Repository",
+          "ruleset_source": "cybermonklabs/legion",
+          "ruleset_id": 12331919
+        },
+        {
+          "type": "pull_request",
+          "parameters": {
+            "required_approving_review_count": 1,
+            "dismiss_stale_reviews_on_push": false,
+            "required_reviewers": [],
+            "require_code_owner_review": true,
+            "dismissal_restriction": {
+              "enabled": false,
+              "allowed_actors": []
+            },
+            "require_last_push_approval": false,
+            "required_review_thread_resolution": false,
+            "require_extra_approval_for_unattributed_changes": true,
+            "allowed_merge_methods": ["squash"]
+          },
+          "ruleset_source_type": "Repository",
+          "ruleset_source": "cybermonklabs/legion",
+          "ruleset_id": 12331919
+        },
+        {
+          "type": "required_status_checks",
+          "parameters": {
+            "strict_required_status_checks_policy": false,
+            "do_not_enforce_on_create": false,
+            "required_status_checks": [
+              {
+                "context": "ci-ok",
+                "integration_id": 15368
+              },
+              {
+                "context": "pr-title",
+                "integration_id": 15368
+              }
+            ]
+          },
+          "ruleset_source_type": "Repository",
+          "ruleset_source": "cybermonklabs/legion",
+          "ruleset_id": 12331919
+        },
+        {
+          "type": "merge_queue",
+          "parameters": {
+            "merge_method": "SQUASH",
+            "max_entries_to_build": 10,
+            "min_entries_to_merge": 1,
+            "max_entries_to_merge": 4,
+            "min_entries_to_merge_wait_minutes": 0,
+            "grouping_strategy": "ALLGREEN",
+            "check_response_timeout_minutes": 180
+          },
+          "ruleset_source_type": "Repository",
+          "ruleset_source": "cybermonklabs/legion",
+          "ruleset_id": 12331919
+        },
+        {
+          "type": "code_scanning",
+          "parameters": {
+            "code_scanning_tools": [
+              {
+                "tool": "CodeQL",
+                "security_alerts_threshold": "high_or_higher",
+                "alerts_threshold": "none"
+              }
+            ]
+          },
+          "ruleset_source_type": "Repository",
+          "ruleset_source": "cybermonklabs/legion",
+          "ruleset_id": 12331919
+        }
+      ]
+    },
+    {
+      "match": "^gh api repos/[^/ ]+/[^/ ]+ --jq",
+      "stdout": {
+        "allow_merge_commit": false,
+        "default_branch": "main",
+        "squash_merge_commit_message": "BLANK",
+        "squash_merge_commit_title": "PR_TITLE"
+      }
+    }
+  ]
+}

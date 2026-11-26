@@ -3,11 +3,12 @@
  * inside a checkout's daemon module, which is how it reaches the daemon's internal packages. The
  * rig asks it rather than restating the daemon: a change to the daemon reaches the rig by
  * construction. The exceptions are `daemon-pane.go`'s own copies of the daemon's table of the
- * handoff words, its resolution of the real gh, and its join and write of a system prompt, which
- * the program carries because one program runs against each label's checkout of the daemon module,
- * and an older one names them otherwise or lacks them; each one's comment says so. `workerPane`
- * builds a phase worker's whole pane environment over it, and `composeRolePrompt` the prompt a
- * launch of any role starts with.
+ * handoff words, its resolution of the real gh, its join and write of a system prompt and the
+ * architect's `production_check` sentence, which the program carries because one program runs
+ * against each label's checkout of the daemon module, and an older one names them otherwise or
+ * lacks them; each one's comment says so. `workerPane` builds a pane's whole environment over it
+ * (a phase worker's, an architect's or the daemon-launched controller's), and `composeRolePrompt`
+ * the prompt a launch of any role starts with, the interactive controller's included.
  */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -47,16 +48,39 @@ export function runDaemonPane(module: string, args: readonly string[], input?: s
   }
 }
 
+/** A role the daemon launches: a phase worker's or an architect's, or the project's controller. */
+export type LaunchRole = LegionRole | "controller";
+
+/** Where a launch's claim stands: on the root issue of the rig's tree (`root`) or on a child issue
+ * under that root (`child`), for every role but the controller; for the controller, how its launch
+ * starts, the daemon's own under `controller: daemon` (`headless`) or `legion controller start`'s
+ * (`interactive`). */
+export type PromptPosition = "root" | "child" | "headless" | "interactive";
+
+/** The backend a role runs on (daemon `runtime.Backends`): Oh My Pi, or Claude Code, which runs the
+ * phase workers alone and is told its own prompt part after the role's parts. */
+export type PromptBackend = "omp" | "claude";
+
 /** The prompt a launch of `role` starts with, as the daemon in `module` composes it (daemon-pane.go
- * `prompt`): the role's parts, a blank line, then its addressing, and for the architect of a tree's
- * root (`root`) the design gate steps after that, byte for byte as the daemon writes the prompt
- * file. The claim is the rig's: its issue is the root of its tree, or a child under that root. */
-export function composeRolePrompt(module: string, role: LegionRole, root: boolean): string {
-  return runDaemonPane(module, ["prompt", role, root ? "root" : "child"]);
+ * `prompt`): the role's parts, the backend's part (`backend`, Oh My Pi by default, which has
+ * none), a blank line, then its addressing: a worker's and an architect's for the rig's repository,
+ * after which the architect of a tree's root is told the design gate steps and every architect the
+ * `production_check` line; the controller's is the design gate steps and its reach. Byte for byte
+ * as the daemon writes the prompt file. The claim is the rig's: its issue is the root of its tree,
+ * or a child under that root. */
+export function composeRolePrompt(
+  module: string,
+  role: LaunchRole,
+  position: PromptPosition,
+  backend: PromptBackend = "omp"
+): string {
+  return runDaemonPane(module, ["prompt", role, position, backend]);
 }
 
 /** The claim a pane is launched for and the rig's stand-ins for what the daemon knows at boot
- * (daemon-pane.go's paneRequest). `ghToken` stands in for the claim's GitHub App token: it is
+ * (daemon-pane.go's paneRequest). `tree` is the root of the tree a child's issue is in (omitted: the
+ * issue is a root); the controller's claim names no issue and no tree and says how its launch
+ * starts in `controller`. `ghToken` stands in for the claim's GitHub App token: it is
  * rendered into the claim's gh bundle under `<stateDir>/secrets/<claim>-gh`, the pane's
  * `LEGION_GH_OWNERS_DIR`, whose one owner's directory is its `GH_CONFIG_DIR`, and its
  * `LEGION_GH_PATH` is `ghPath` when the rig names one (its recording stand-in), else the real gh as
@@ -65,7 +89,10 @@ export function composeRolePrompt(module: string, role: LegionRole, root: boolea
 interface PaneRequest {
   readonly project: string;
   readonly issue: string;
+  readonly tree?: string;
   readonly role: string;
+  readonly controller?: "headless" | "interactive";
+  readonly backend?: PromptBackend;
   readonly stateDir: string;
   readonly workspace: string;
   readonly daemonUrl: string;
@@ -99,24 +126,32 @@ export interface WorkerLaunch {
   readonly profile: string;
 }
 
-/** The claim a worker pane is launched for: its project, issue and role. */
+/** The claim a pane is launched for: its project, issue and role; `tree`, the root of the tree a
+ * child's issue is in (omitted: a claim on a root); and for the controller, whose claim names no
+ * issue (`issue: ""`) and no tree, how its launch starts (`controller`). The interactive
+ * controller has no pane: `workerPane` refuses it, and `composeRolePrompt` composes its prompt. */
 export interface WorkerClaim {
   readonly project: string;
   readonly issue: string;
-  readonly role: LegionRole;
+  readonly tree?: string;
+  readonly role: LaunchRole;
+  readonly controller?: "headless" | "interactive";
 }
 
 /** Where a pane's daemon is read from: a checkout's daemon module (`DAEMON_MODULE` for this one),
- * whose embedded role prompts compose the pane's system prompt when `systemPrompt` is set. */
+ * whose embedded role prompts compose the pane's system prompt when `systemPrompt` is set, for the
+ * backend the role runs on (`backend`, Oh My Pi by default). */
 export interface PaneSource {
   readonly daemonModule: string;
   readonly systemPrompt?: boolean;
+  readonly backend?: PromptBackend;
   /** The real gh the pane is told, as an operator names one with `LEGION_GH_PATH`: the rig's
    * recording stand-in. Omitted, the daemon's own resolution on the inherited PATH. */
   readonly ghPath?: string;
 }
 
-/** The pane the Legion daemon's tmux runtime gives a phase worker for `claim`, pointed at the
+/** The pane the Legion daemon's tmux runtime gives a phase worker, an architect or the daemon's own
+ * controller (`claim.controller` `headless`) for `claim`, pointed at the
  * scratch state directory and the stand-in daemon, over the caller's own environment. Everything
  * the daemon tells the pane comes from the daemon's own functions in `source`'s module
  * (`daemon-pane.go`): the claim's identity, the daemon URL, the state directory and workspace,
@@ -177,6 +212,7 @@ export async function workerPane(
     path: env.PATH ?? "",
     systemPrompt: source.systemPrompt,
     ghPath: source.ghPath,
+    backend: source.backend,
   };
   const pane = JSON.parse(
     runDaemonPane(source.daemonModule, ["pane"], JSON.stringify(request))
