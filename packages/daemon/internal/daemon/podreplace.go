@@ -183,14 +183,6 @@ func tellingRecord(records []store.PodReplacement) (at int, read recordedRead) {
 	return at, read
 }
 
-// tellingRead is the read the notice of one act tells, of every record the act's finish took (took,
-// oldest first, store.PodReplacementFinish.Took), by tellingRecord's rule; tells is false where no
-// record tells.
-func tellingRead(took []store.PodReplacement) (read recordedRead, tells bool) {
-	at, read := tellingRecord(took)
-	return read, at >= 0
-}
-
 // movedRead is the record onto, a launch's record of the act that took the pod a round's call
 // found taken, once the call's own record yields to it (store.Store.FinishPodReplacement). both is
 // the two records, oldest first, as the store holds them. The two are of one act, so the one record
@@ -219,7 +211,7 @@ func movedRead(onto store.PodReplacement, both []store.PodReplacement) ([]byte, 
 }
 
 // launchMessage is the notice of a launch's own replacement, taken (launchTakenMessage), over the
-// read the notice tells (tellingRead) in place of the launch's own.
+// read the notice tells (tellingRecord) in place of the launch's own.
 func launchMessage(taken runtime.TakenPod) func(recordedRead) string {
 	return func(read recordedRead) string {
 		taken.Work, taken.Err = read.work, read.err
@@ -284,7 +276,7 @@ func (s *supervision) forgetReplacement(ctx context.Context, recorded store.PodR
 // record's act takes, store.PodReplacement.Targets), and, in the same transaction, queues the
 // issue's architect's workspace-taken notice where the read it tells found work or failed
 // (store.Store.FinishPodReplacement). The notice is message, the caller's words of the act, over
-// the read of every record the finish took that tells most (tellingRead), so one act is told from
+// the read of every record the finish took that tells most (tellingRecord), so one act is told from
 // the one read that says most of what it took, whichever of its records the caller finishes. yield
 // is a round's call that took nothing, which yields to the record of a launch's act that took the
 // pod with its Sandbox's volume: in the same transaction this record's read moves onto that record
@@ -303,8 +295,8 @@ func (s *supervision) finishReplacement(ctx context.Context, operation, issue, p
 	attrs = append([]any{"issue", issue, "pod", pod, "operation", operation}, attrs...)
 	noticed := false
 	notice := func(took []store.PodReplacement) (*store.IdleReleaseRow, error) {
-		read, tells := tellingRead(took)
-		if !tells {
+		at, read := tellingRecord(took)
+		if at < 0 {
 			return nil, nil
 		}
 		row, err := record.NewOutboxRow(issue, record.Notice{Kind: record.WorkspaceTakenNotice, Role: claim.RoleArchitect, Reason: message(read)}, s.plan.clock.Now())
@@ -497,7 +489,7 @@ func (s *supervision) endTakenRound(ctx context.Context, group []supervise.Claim
 // one notice, in the deciding record's words, from the read of all the records it took that tells
 // most: a read that found work that no branch or tag on origin holds over one that failed, a read
 // that failed over one that found nothing, and of reads that weigh the same the newest
-// (tellingRead; the Legion reviewer's item 2 on #5285 at 69e00593). The newest record is not
+// (tellingRecord; the Legion reviewer's item 2 on #5285 at 69e00593). The newest record is not
 // always the last read before the take: a replacement by issue reads outside the pod's launch turn
 // and records before it waits for that turn, so its record, over a read that failed, can be newer
 // than a launch's whose read named commits. A later record of a target this sweep has decided is

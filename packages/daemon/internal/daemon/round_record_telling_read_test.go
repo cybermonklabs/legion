@@ -6,7 +6,7 @@ package daemon
 // waits for that turn, so its record, over a read that failed, can be newer than a launch's whose
 // read through a launcher of the pod named commits. The one notice of the act tells the read that
 // says most of what it took: a read that found work over one that failed, a read that failed over
-// one that found nothing, and of reads that weigh the same the newest (tellingRead).
+// one that found nothing, and of reads that weigh the same the newest (tellingRecord).
 
 import (
 	"testing"

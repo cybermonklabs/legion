@@ -240,7 +240,7 @@ func TestAReplacementThroughAProcessThatALaunchOvertookTellsTheLaunchsRead(t *te
 // sweep, each written over a read of its own before the act that took the pod. The sweep finishes
 // the target once: the round ends once, on one "the round is over" line, and the architect is told
 // once, from the newer read: both reads found work, and of reads that weigh the same the newest
-// tells (tellingRead).
+// tells (tellingRecord).
 func TestTwoRecordsOfOneTargetAtOneSweepEndTheRoundOnceFromTheNewerRead(t *testing.T) {
 	t.Parallel()
 	rig := podlessBreakingRound(t)

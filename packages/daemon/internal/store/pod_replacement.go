@@ -141,10 +141,10 @@ type PodReplacementFinish struct {
 //
 // notice, where it is not nil, is asked for the act's notice in the same transaction, with every
 // record the finish took (PodReplacementFinish.Took), so the notice is built from the reads of all
-// of them and not only of the record the caller finishes (internal/daemon's tellingRead; the Legion
-// reviewer's item 2 on #5285 at 69e00593). It answers nil where the act owes nobody a notice: every
-// read it took found nothing that origin does not hold. Its error is the finish's, which then
-// takes nothing. The notice is queued exactly when the records go, so a store that refuses either
+// of them and not only of the record the caller finishes (internal/daemon's tellingRecord; the
+// Legion reviewer's item 2 on #5285 at 69e00593). It answers nil where the act owes nobody a
+// notice: every read it took found nothing that origin does not hold. Its error is the finish's,
+// which then takes nothing. The notice is queued exactly when the records go, so a store that refuses either
 // keeps them all as they were, and a later finish of any of those records finds nothing and asks
 // for no notice. A notice of an issue of another project than project is queued by no daemon of
 // this one, so the records go with no row queued, and Told says so.

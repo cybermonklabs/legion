@@ -1393,7 +1393,7 @@ func (s *supervision) overtakenByLaunch(ctx context.Context, recorded store.PodR
 // word or the launch read of the round's end under the pod's launch turn), since the replacement
 // is made by then, finishes the replacement's record, recorded, telling the issue's architect what
 // the replacement took where the read that tells most of the records the finish takes found work or
-// failed (finishReplacement, tellingRead), and only then logs the replacement's line and ends the
+// failed (finishReplacement, tellingRecord), and only then logs the replacement's line and ends the
 // round on the claims of members (endPodUpdates). A store that refuses the finish
 // leaves the round open with its record (the Legion reviewer's point D on fa9deb04): the notice
 // names what the round's claims record — the members that had not answered, and whether the kept

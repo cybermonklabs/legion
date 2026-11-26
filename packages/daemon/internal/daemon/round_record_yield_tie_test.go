@@ -2,7 +2,7 @@ package daemon
 
 // The Legion reviewer's finding on podreplace.go:191 on #5285 at aae2c628: a round's call that
 // yields to a launch's record moves its read onto that record by the one rule every notice of an
-// act is told by (tellingRead): a read that found work over one that failed, a read that failed
+// act is told by (tellingRecord): a read that found work over one that failed, a read that failed
 // over one that found nothing, and of two reads of one weight the read of the newest record. So, of
 // these two records, the one notice of the act names the same commits whichever commits first, the
 // yield or the launch's finish; with a third record of the act, a tie can go to another read of the
