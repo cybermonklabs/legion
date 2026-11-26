@@ -4093,7 +4093,7 @@ test("Cancel reply in the Conversation's docked composer, once the message whose
 
     await user.click(within(composer).getByRole("button", { name: "Cancel reply" }));
     expect(within(composer).queryByRole("button", { name: "Cancel reply" })).toBeNull();
-    expect(within(composer).getByRole("textbox", { exact: true, name: "Comment" })).toHaveFocus();
+    expect(within(composer).getByRole("textbox", { name: "Comment" })).toHaveFocus();
   } finally {
     view.unmount();
     stub.restore();
