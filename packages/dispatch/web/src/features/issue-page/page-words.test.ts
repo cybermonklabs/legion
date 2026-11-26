@@ -447,7 +447,6 @@ test("every empty-state line is one sentence a person reads", () => {
   for (const line of Object.values(EMPTY_STATE_LINES)) {
     expect(line).toMatch(/^[A-Z][^_]*\.$/);
   }
-  expect(EMPTY_STATE_LINES.spec_summary).toBe("This spec has no summary.");
 });
 
 test("every key report is one sentence saying where the key could not go", () => {

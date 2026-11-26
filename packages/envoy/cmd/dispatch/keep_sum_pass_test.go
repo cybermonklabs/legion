@@ -31,6 +31,11 @@ import (
 // (processes.Register).
 const keepSumSigningKey = "keep-sum-key"
 
+// keepSumAgentSession is the agent's session that writes the test's decisions through the agent
+// bearer, so that each decision's decided_by names a session and D2, whose Keep no longer
+// matches, waits for review, as a decision a person decided never does (bbafafe421e).
+const keepSumAgentSession = "ses_keep_sum_agent"
+
 // keepSumPassMatch is the Keep pass's line (graphcensus.KeepPassLine) as a reader of the process's
 // output matches it, and keepSumRewrote the count of Keeps it names as rewritten.
 var (
@@ -141,13 +146,14 @@ func keepSumCensus(t *testing.T, databaseURL string) int64 {
 // which this build leaves out of them (R32 of the issue-tree spec): the check
 // c-keep-sum-pass.
 //
-// A process of this build writes, as alice, an issue whose spec holds requirement r1 and decisions
-// D1 and D2, writes the shaped attribute of each through the edit route's retype, keeps both
-// through the Keep route, and then changes D2's words, so D2's Keep no longer matches. With the
-// process stopped, the test writes each Keep's sum by SQL as the release before summed it, over the
-// words with shaped: over D1's current words, and over D2's words before alice's change, into the
-// decision_keeps row and as the node's kept_text_sum. The store census then reads 1 for the kind
-// keep_shaped_sum, D1's Keep.
+// A process of this build writes, as alice, an issue whose spec holds requirement r1; the agent's
+// session writes decisions D1 and D2 into that spec through the edit route; alice writes the
+// shaped attribute of each through the edit route's retype, keeps both through the Keep route,
+// and then changes D2's words, so D2's Keep no longer matches. With the process stopped, the test
+// writes each Keep's sum by SQL as the release before summed it, over the words with shaped: over
+// D1's current words, and over D2's words before alice's change, into the decision_keeps row and
+// as the node's kept_text_sum. The store census then reads 1 for the kind keep_shaped_sum, D1's
+// Keep.
 //
 // A second process over the same database logs the Keep pass's line naming 1 Keep rewritten
 // before its boot backfill's done line. D1's row and its kept_text_sum then hold the text_sha256
@@ -192,8 +198,18 @@ func TestTheBootBackfillRecomputesTheKeepSumsOfShapedDecisions(t *testing.T) {
 
 	first := start()
 	first.call(t, http.MethodPost, "/api/v1/projects", `{"key":"KEEP","name":"Keep sums"}`, http.StatusCreated)
-	key, spec := first.createIssueIn(t, "KEEP", "Kept decisions", ":::requirement{#r1}\nThe store keeps every decision.\n:::\n\n"+
-		":::decision{#d1}\nWe keep the node store.\n:::\n\n:::decision{#d2}\nWe shard the log.\n:::\n")
+	key, spec := first.createIssueIn(t, "KEEP", "Kept decisions", ":::requirement{#r1}\nThe store keeps every decision.\n:::\n")
+	inserted, err := json.Marshal(map[string]any{
+		"ops": []map[string]any{{"op": "insert", "after": "end",
+			"markdown": ":::decision{#d1}\nWe keep the node store.\n:::\n\n:::decision{#d2}\nWe shard the log.\n:::\n"}},
+		"actor": map[string]string{"kind": "session", "id": keepSumAgentSession},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer := first.send(t, http.MethodPost, "/api/v1/artifacts/"+spec+"/edits", string(inserted), agentBearer()); answer.status != http.StatusOK {
+		t.Fatalf("the agent's decisions D1 and D2: %s, want %d", answer, http.StatusOK)
+	}
 	pointer := []string{"dispatch://" + key + "/spec#b-r1"}
 	keepSumEdit(t, first, key,
 		map[string]any{"op": "retype", "block": "d1", "type": "decision", "attributes": map[string]any{"shaped": pointer}},

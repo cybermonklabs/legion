@@ -535,6 +535,46 @@ func TestARebuildFromSuppliedMarkdownIsWeighedAsANewDocument(t *testing.T) {
 	}
 }
 
+// A rebuild from supplied markdown writes a version only where the latest version does not hold
+// its rendering. A latest version another renderer version wrote holds it in that renderer's
+// spelling where its markdown reads as the rendering, so a rebuild from the document's own
+// markdown writes no version and an approval of that version still reads approved; markdown that
+// changes the document still writes one.
+func TestARebuildFromMarkdownTheLatestVersionHoldsInAnotherSpellingWritesNoVersion(t *testing.T) {
+	database := storetest.Open(t)
+	same := createDocument(t, database, looseList)
+	approved := respellLatestVersion(t, database, same, respelledLooseList)
+	approveStoredVersion(t, database, same, approved, "alice")
+	changed := createDocument(t, database, looseList)
+	stored := respellLatestVersion(t, database, changed, respelledLooseList)
+	persist := &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}
+	service := New(Deps{Store: database, Persistence: persist})
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
+
+	markdown := looseList
+	_, written, err := rebuildDocument(t, service, same, &markdown)
+	if err != nil {
+		t.Fatalf("rebuild from the document's own markdown: %v", err)
+	}
+	if persist.rebuilds != 1 {
+		t.Fatalf("the rebuild replaced the history %d times, want once", persist.rebuilds)
+	}
+	if written.Wrote || written.Version.Number != approved {
+		t.Fatalf("rebuild = version %d wrote=%t, want version %d without a write: it holds the same tree in another renderer version's spelling", written.Version.Number, written.Wrote, approved)
+	}
+	requireApprovedAt(t, service, same, approved)
+
+	persist.invalid = true
+	edited := looseList + "\nAfter the list.\n"
+	_, written, err = rebuildDocument(t, service, changed, &edited)
+	if err != nil {
+		t.Fatalf("rebuild from markdown that changes the document: %v", err)
+	}
+	if !written.Wrote || written.Version.Number != stored+1 {
+		t.Fatalf("rebuild from markdown that changes the document = version %d wrote=%t, want version %d written", written.Version.Number, written.Wrote, stored+1)
+	}
+}
+
 // An ask whose question is empty and whose options follow is kept where the document service
 // already holds it and refused where a caller writes it: the live tree stores it, since a person's
 // edit can empty a question and this package repairs such a block through its question

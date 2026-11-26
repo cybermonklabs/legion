@@ -21,6 +21,10 @@
 #   C  not converted (created while a server_processes row that lists no issue_room is live, which
 #      the driver writes and takes back through DATABASE_URL, as the Go tests' holdIssuesUnconverted
 #      does): a requirement set proposed and a check set overtaken through the /state route.
+#   D  born converted: a paragraph, then requirements o2 and o1 alice wrote into its spec in that
+#      order, so o2 holds the lower rank against the order of their ids; a comment alice wrote and
+#      then an ask the agent opened; and o3, alice's, whose From: line names that comment, so it
+#      stands under the comment.
 # What it asserts, section by section, is the check's text in its order; each section's comment
 # names what it reads. A failure names the node, the tuple or the route it found wrong.
 #
@@ -629,17 +633,19 @@ readonly later_comment
 tree_read_views_get comments agent "/api/v1/issues/$key/tree" "$work/a.json"
 tree_read_views_expect "$work/a.json" comments "the comment anchored inside d1's paragraph by its block stands under the decision" \
   "\"$decision_node\"" --arg c "$anchored" '[.nodes[] | select(.kind == "comment" and .id == $c) | .parent.id][0]'
+# The conversation stands before the issue's ranked children, in the order it was written (R8 at
+# spec v246); a memo callout, which stands first, is no ranked child this asks of.
 order="$(jq -r --arg k "$key" --arg a "$earlier_comment" --arg b "$later_comment" '
   (.nodes | to_entries | map(select(.value.parent != null and .value.parent.kind == "issue" and .value.parent.id == $k))) as $children
-  | ([$children[] | select(.value.rank != null) | .key] | max // -1) as $ranked
+  | ([$children[] | select(.value.rank != null and .value.supertag != "callout")] | min_by(.key) // null) as $ranked
   | ([$children[] | select(.value.kind == "comment" and .value.id == $a) | .key][0] // -1) as $first
   | ([$children[] | select(.value.kind == "comment" and .value.id == $b) | .key][0] // -1) as $second
   | if $first < 0 or $second < 0 then "missing: the comment \($a) at \($first) or \($b) at \($second)"
     elif $first > $second then "the comments \($b) and \($a) come back in the reverse of the order they were written"
-    elif $first < $ranked then "the comment \($a) stands before a ranked child of the issue"
+    elif $ranked != null and $second > $ranked.key then "the comment \($b) stands at \($second), after the ranked child \($ranked.value.kind):\($ranked.value.id) of the issue at \($ranked.key)"
     else "" end' "$work/a.json")"
-[[ -z "$order" ]] || fail comments "the read answers the two comments after the issue's ranked children, in the order they were written" "$order"
-pass comments "the read answers $earlier_comment and then $later_comment, after the issue's ranked children, in the order they were written"
+[[ -z "$order" ]] || fail comments "the read answers the two comments before the issue's ranked children, in the order they were written" "$order"
+pass comments "the read answers $earlier_comment and then $later_comment, before the issue's ranked children, in the order they were written"
 tree_read_views_get comments agent "/api/v1/issues/$key/tree?view=decisions" "$work/a-decisions.json"
 state="$(jq -c --arg d "$decision_node" '[.nodes[] | select(.id == $d) | .decision | {waiting_review, kept, replaced}][0]' "$work/a-decisions.json")"
 [[ "$state" != null ]] || fail comments "?view=decisions answers d1 with its review state" "it answers no decision $decision_node"
@@ -952,5 +958,57 @@ tree_read_views_expect "$work/b-spec.json" child "the child's ?view=spec answers
   --arg w "$design_words" '[.nodes[] | select((.text // "" | sub("\\s+$"; "")) == $w) | .role]'
 tree_read_views_expect "$work/b-spec.json" child "the child's ?view=spec answers the ancestor's requirement its check serves as context" \
   "$(jq -cn --arg k "$key" '[["context", $k]]')" --arg r "$requirement_node" '[.nodes[] | select(.id == $r) | [.role, .issue]]'
+
+# --- the order of an issue's children ---------------------------------------------------------------
+
+# D's top-level children in the order the read answers them (R8 at spec v246): its comment and its
+# ask first, in the order they were written, then its ranked requirements by rank - o2 before o1,
+# whose id sorts first - and o3, whose From: line names the comment, under that comment. A person
+# writes the requirements, as she writes r1 of A. A failure names the first node out of that order.
+tree_read_views_section order
+printf 'The order of the list, as its issue states it.\n' >"$work/spec-d.md"
+tree_read_views_create order "The order of an issue's children" "$work/spec-d.md"
+readonly order_key="$corpus_key" order_spec="$corpus_spec"
+tree_read_views_edit_person order "$login writes o2 and then o1 into the spec of $order_key" "$order_spec" "$(jq -cn \
+  '[{op: "insert", after: "end", markdown: ":::requirement{#o2}\nThe list shows the urgent asks first.\n:::\n\n:::requirement{#o1}\nThe list shows the urgency of each ask.\n:::"}]')"
+corpus_comment person order "$order_key" "Which asks does the list show first?"
+readonly order_comment="$corpus_item"
+corpus_ask order "$order_key" "Does urgency come before age?"
+readonly order_ask="$corpus_item"
+tree_read_views_edit_person order "$login writes o3, whose From: line names the comment $order_comment" "$order_spec" "$(jq -cn \
+  --arg c "dispatch://$order_key/comment/$order_comment" \
+  '[{op: "insert", after: "end", markdown: (":::requirement{#o3}\nThe list answers the question of the comment.\n\nFrom: " + $c + "\n:::")}]')"
+corpus_wait_settled order
+tree_read_views_get order agent "/api/v1/issues/$order_key/tree" "$work/d.json"
+tree_read_views_node order "$work/d.json" o2
+readonly order_first="$node_kind:$node_id" order_first_id="$node_id"
+tree_read_views_node order "$work/d.json" o1
+readonly order_second="$node_kind:$node_id" order_second_id="$node_id"
+tree_read_views_node order "$work/d.json" o3
+readonly order_from="$node_id"
+held="$(jq -r --arg a "$order_first_id" --arg b "$order_second_id" '
+  [([.nodes[] | select(.id == $a) | .rank][0]), ([.nodes[] | select(.id == $b) | .rank][0])]
+  | if .[0] != null and .[1] != null and .[0] < .[1] and $a > $b then ""
+    else "o2 (\($a)) holds the rank \(.[0]) and o1 (\($b)) the rank \(.[1])" end' "$work/d.json")"
+[[ -z "$held" ]] ||
+  fail order "o2 holds a lower rank than o1, whose id sorts first, so the order by rank is not the order by id" "$held"
+order="$(jq -r --arg k "$order_key" --argjson want "$(jq -cn --arg c "comment:$order_comment" --arg a "ask:$order_ask" \
+  --arg f "$order_first" --arg s "$order_second" '[$c, $a, $f, $s]')" '
+  [.nodes[] | select(.parent != null and .parent.kind == "issue" and .parent.id == $k) | "\(.kind):\(.id)"] as $children
+  | [$children[] | select(. as $c | $want | index($c) != null)] as $got
+  | ([range(0; $want | length) | select($got[.] != $want[.])] | first) as $at
+  | if $children[0:2] != $want[0:2] then
+      "\($children[0] // "nothing") stands first among the issue'"'"'s children, where its comment \($want[0]) and then its ask \($want[1]) belong: the read answers \($children | join(", "))"
+    elif $at != null then "\($got[$at] // "nothing") stands where \($want[$at]) belongs: the read answers \($got | join(", "))"
+    else "" end' "$work/d.json")"
+[[ -z "$order" ]] ||
+  fail order "the read answers $order_key's comment and its ask first, in the order they were written, then its ranked requirements by rank" "$order"
+pass order "the read answers $order_key's comment $order_comment, then its ask $order_ask, then o2 and o1 by rank"
+tree_read_views_expect "$work/d.json" order "o3, whose From: line names the comment $order_comment, stands under that comment, after it" \
+  "$(jq -cn --arg c "$order_comment" '["comment", $c, true]')" --arg c "$order_comment" --arg r "$order_from" \
+  '(.nodes | to_entries) as $all
+   | ([$all[] | select(.value.id == $r)][0]) as $o3
+   | ([$all[] | select(.value.kind == "comment" and .value.id == $c) | .key][0]) as $at
+   | [$o3.value.parent.kind, $o3.value.parent.id, ($at != null and $at < $o3.key)]'
 
 printf 'PASS: %s complete %d sections\n' "$driver" "$sections"

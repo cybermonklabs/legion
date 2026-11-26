@@ -3,8 +3,8 @@
 
 import type { Page } from "@playwright/test";
 
+import { firstLineOf } from "../web/src/features/issue-page/first-line";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
-import { firstLineOf } from "../web/src/features/issue-page/issue-tree";
 import { CONTROL_LABELS, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
 import { buildIssuePath } from "../web/src/features/refs/routes";
 import { createComment } from "./api";

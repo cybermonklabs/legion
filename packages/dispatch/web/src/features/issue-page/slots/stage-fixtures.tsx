@@ -157,13 +157,13 @@ export function drawAtBrowserEntry(
 }
 
 /** Which slot the stage drew, by each slot's own mark: a view's body - the Decisions view's, the
- *  Plan view's or the Verification view's - or a case's stand-in view (`data-stand-in-view`), or
- *  the body that draws the outline or a line in its place. */
+ *  Plan view's, the Spec view's or the Verification view's - or a case's stand-in view
+ *  (`data-stand-in-view`), or the body that draws the outline or a line in its place. */
 export function drawnSlot(view: RenderResult): string {
   const { container } = view;
   if (container.querySelector("[data-issue-body]") !== null) return "the body";
   const drawn = container.querySelector(
-    "[data-decisions-body], [data-plan-body], [data-verification-body], [data-stand-in-view]"
+    "[data-decisions-body], [data-plan-body], [data-spec-body], [data-verification-body], [data-stand-in-view]"
   );
   return drawn === null ? "nothing" : "the view";
 }

@@ -72,6 +72,7 @@ func wantPodDisks(t *testing.T, s *Store, issue, when string, want []string, oth
 // another issue of the project whose volume was made in the same second. No later write clears a
 // mark: not a later start in a marked pod.
 func TestEachPodOfAKeptVolumeIsMarkedWhereAnEarlierPodOfTheIssueMountedIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := keptPodStore(t)
 	if _, err := s.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
@@ -119,6 +120,7 @@ func TestEachPodOfAKeptVolumeIsMarkedWhereAnEarlierPodOfTheIssueMountedIt(t *tes
 // nothing to write the record by and is refused, writing nothing: a zero creation would name no
 // volume.
 func TestAKeptPodIsRecordedOnlyForAnIssueItsProjectRecords(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := keptPodStore(t)
 	if _, err := s.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
@@ -161,6 +163,7 @@ func TestAKeptPodIsRecordedOnlyForAnIssueItsProjectRecords(t *testing.T) {
 // (DeleteIssuePodDisks, which the outbox's forgetIdleRelease runs), and a delete that finds nothing
 // finishes.
 func TestTheDisksOfAnIssuesPodsStayRecordedUntilTheIssuesWorkIsOver(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := keptPodStore(t)
 	seedRunningRoot(t, s, 1)

@@ -84,31 +84,40 @@ func CICheckRule(check CheckAttributes) string {
 // artifactID, breaks, read as a check carrying `ci_check` (CarriesCICheck), and "" when it breaks
 // none: the three of CICheckRule, then that no result is recorded against it, read through q
 // (the pool, or the transaction of the write that asks) only when the other three leave that to
-// decide. Every reader of the rules that has no results loaded comes here: a document write's
-// refusal (refuseCICheckBlocks), settlement's repair of what a browser leaves
-// (reconcileCICheckBlocks) and the refusal of a result against a check CI proves. artifactID is
-// the document that holds the check, or the issue room a settlement reads, whose documents'
-// results are the room's: block ids are unique across a room. A result's row is keyed by the
-// artifact its check's block row is keyed by, the room's tree artifact for a document of an issue
-// room and the document itself otherwise (check_results.check_artifact_id), and a row an earlier
-// release wrote is keyed by the document; so a document's results are read through its room
-// (refs.CheckResultsOfDocumentSQL), and a room's are its own rows and its documents'.
+// decide (ciCheckRecorded). Settlement's repair of what a browser leaves (reconcileCICheckBlocks)
+// and the refusal of a result against a check CI proves come here; a document write's refusal
+// makes the three rules apart, before any check that reads the database (refuseCICheckText), and
+// reads the fourth afterwards (refuseCICheckBlocks). artifactID is the document that holds the
+// check, or the issue room a settlement reads, whose documents' results are the room's: block ids
+// are unique across a room. A result's row is keyed by the artifact its check's block row is
+// keyed by, the room's tree artifact for a document of an issue room and the document itself
+// otherwise (check_results.check_artifact_id), and a row an earlier release wrote is keyed by the
+// document; so a document's results are read through its room (refs.CheckResultsOfDocumentSQL),
+// and a room's are its own rows and its documents'.
 func CICheckRuleIn(ctx context.Context, q Queryer, artifactID, blockID string, check CheckAttributes) (string, error) {
 	if rule := CICheckRule(check); rule != "" {
 		return rule, nil
 	}
+	recorded, err := ciCheckRecorded(ctx, q, artifactID, blockID)
+	if err != nil || !recorded {
+		return "", err
+	}
+	return ciCheckRuleRecorded, nil
+}
+
+// ciCheckRecorded reports whether a result is recorded against the check block blockID of the
+// document artifactID, read through q: the fourth rule of a check CI proves, the one the database
+// holds.
+func ciCheckRecorded(ctx context.Context, q Queryer, artifactID, blockID string) (bool, error) {
 	var recorded bool
 	if err := q.QueryRow(ctx, `
 		select exists(select 1 from check_results result
 			where result.check_block_id = $2 and (`+refs.CheckResultsOfDocumentSQL("result", "$1::uuid")+`
 				or result.check_artifact_id in (select moved.artifact_id from document_rooms moved where moved.room = $1::uuid)))
 	`, artifactID, blockID).Scan(&recorded); err != nil {
-		return "", fmt.Errorf("read whether check %s of document %s holds a result: %w", blockID, artifactID, err)
+		return false, fmt.Errorf("read whether check %s of document %s holds a result: %w", blockID, artifactID, err)
 	}
-	if recorded {
-		return ciCheckRuleRecorded, nil
-	}
-	return "", nil
+	return recorded, nil
 }
 
 // ErrInvalidCICheck refuses a write that leaves a check block carrying `ci_check` that breaks one
@@ -164,18 +173,22 @@ func CheckBlockOf(node *pmdoc.Node) model.CheckBlock {
 	return check
 }
 
-// refuseCICheckBlocks refuses tree, the tree an agent's or API write to artifactID leaves, when a
-// check block the write introduces carries `ci_check` and breaks one of the four rules, naming the
-// first such block in document order (ErrInvalidCICheck). A block is introduced when prior, the
-// tree before the write, holds no check block under its id, or one whose `ci_check`, run, `when`
-// or negative control differ; a nil prior (a new document, or one outside the schema) holds none.
-// So an edit elsewhere in the document never meets a block another writer left broken. Whether a
-// result is recorded against the block is read in the write's transaction, and only for a block
-// that keeps the other three rules. A browser's write never comes here: settlement repairs what
-// it leaves.
-func refuseCICheckBlocks(ctx context.Context, tx pgx.Tx, artifactID string, tree, prior *pmdoc.Node) error {
-	// held is read from prior at the first block carrying ci_check, so a write that leaves none
-	// walks prior not at all.
+// introducedCICheck is a check block carrying `ci_check` that a write introduces: its id and its
+// attributes as the rules read them.
+type introducedCICheck struct {
+	blockID string
+	check   CheckAttributes
+}
+
+// introducedCIChecks is every check block of tree carrying `ci_check` that a write leaving tree
+// introduces, in document order: a block is introduced when prior, the tree before the write,
+// holds no check block under its id, or one whose `ci_check`, run, `when` or negative control
+// differ; a nil prior (a new document, or one outside the schema) holds none. So an edit elsewhere
+// in the document never meets a block another writer left broken: a browser's write never comes
+// to the rules, and settlement repairs what it leaves. prior is walked only once tree holds a
+// block carrying `ci_check`.
+func introducedCIChecks(tree, prior *pmdoc.Node) []introducedCICheck {
+	var introduced []introducedCICheck
 	var held map[string]CheckAttributes
 	for _, node := range checkBlockNodes(tree) {
 		block := CheckBlockOf(node)
@@ -193,12 +206,41 @@ func refuseCICheckBlocks(ctx context.Context, tx pgx.Tx, artifactID string, tree
 		if before, ok := held[block.BlockID]; ok && before == check {
 			continue
 		}
-		rule, err := CICheckRuleIn(ctx, tx, artifactID, block.BlockID, check)
+		introduced = append(introduced, introducedCICheck{blockID: block.BlockID, check: check})
+	}
+	return introduced
+}
+
+// refuseCICheckText refuses a write whose introduced check blocks (introducedCIChecks: those it
+// introduces carrying `ci_check`, over the tree before it) hold one that breaks one of the three
+// rules that read its attributes alone (CICheckRule), naming the first such block in document
+// order (ErrInvalidCICheck). It reads nothing but those blocks, so every write runs it among its
+// checks of the text alone, before any check that reads the database: a new document's seed in
+// seedRendering, which a markdown round trip asked for a new document's refusals shares, and
+// applyLive and a rebuild from markdown ahead of refuseBlockPointers. A write finds its introduced
+// blocks once, for this and for refuseCICheckBlocks.
+func refuseCICheckText(introduced []introducedCICheck) error {
+	for _, block := range introduced {
+		if rule := CICheckRule(block.check); rule != "" {
+			return &ErrInvalidCICheck{BlockID: block.blockID, CICheck: block.check.CICheck, Rule: rule}
+		}
+	}
+	return nil
+}
+
+// refuseCICheckBlocks refuses a write to artifactID whose introduced check blocks
+// (introducedCIChecks) hold one with a recorded result, the fourth rule of a check CI proves,
+// naming the first such block in document order (ErrInvalidCICheck). The other three were held
+// already, before every check that reads the database (refuseCICheckText). Whether a result is
+// recorded is read in the write's transaction.
+func refuseCICheckBlocks(ctx context.Context, tx pgx.Tx, artifactID string, introduced []introducedCICheck) error {
+	for _, block := range introduced {
+		recorded, err := ciCheckRecorded(ctx, tx, artifactID, block.blockID)
 		if err != nil {
 			return err
 		}
-		if rule != "" {
-			return &ErrInvalidCICheck{BlockID: block.BlockID, CICheck: check.CICheck, Rule: rule}
+		if recorded {
+			return &ErrInvalidCICheck{BlockID: block.blockID, CICheck: block.check.CICheck, Rule: ciCheckRuleRecorded}
 		}
 	}
 	return nil

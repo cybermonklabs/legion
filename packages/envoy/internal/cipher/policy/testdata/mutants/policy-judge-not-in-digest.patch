@@ -1,0 +1,20 @@
+# policy-judge-not-in-digest: a profile behind the proxy is served with a fingerprint that leaves
+# out its source's judge tag, so a judge tag added, changed or taken off its source ends none of
+# its live grants: a grant the judge decided under one bound goes on releasing under another, as an
+# edit of a proxy block's judge never let it. Applied with patch -p1 from a copy.
+# must fail: TestAProfileBehindTheProxyCarriesItsSourcesJudgeInItsDigest
+
+--- a/packages/envoy/internal/cipher/policy/profiles.go
++++ b/packages/envoy/internal/cipher/policy/profiles.go
+@@ -863,10 +863,8 @@
+ 		Allow     *[]proxyrules.Allow `json:"allow,omitempty"`
+ 		KindAllow json.RawMessage     `json:"kindAllow,omitempty"`
+ 	}{Profile: profile, Narrowed: served.narrowed}
+ 	var judge *uint32
+-	if served.judge != 0 {
+-		judge = &served.judge
+-	}
++	// MUTANT: the source's judge seconds are left out of the fingerprint.
+ 	switch {
+ 	case profile.Proxy != nil:
+ 		form.Proxy = &digestProxy{ProxyBlock: *profile.Proxy, Judge: judge}

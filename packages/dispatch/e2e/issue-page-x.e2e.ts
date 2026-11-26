@@ -45,7 +45,7 @@ import {
   rowGaps,
   treeText,
 } from "./issue-page-i";
-import { contentsEntries } from "./issue-page-j";
+import { drawnContentsEntries } from "./issue-page-j";
 import { planChart, planChartRows, planView } from "./issue-page-k";
 import { withIssuePage } from "./issue-page-option";
 import { waitingCount } from "./issue-page-p";
@@ -1520,7 +1520,7 @@ async function expectQuestionInContents(page: Page, read: SeededPage): Promise<v
   const both = [openId, overtakenId];
   await drawnRowId(page, overtaken, "the overtaken question");
   const outline = (await treeItemsDrawn(page)).map((item) => item.id);
-  const listed = await contentsEntries(pane).evaluateAll((rows) =>
+  const listed = await drawnContentsEntries(pane).evaluateAll((rows) =>
     rows.map((row) => row.getAttribute("data-contents-entry") ?? "")
   );
   expect(

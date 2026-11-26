@@ -99,20 +99,22 @@ async function primarySlug(key: string): Promise<string> {
 }
 
 /** `seedPlanOrder`'s places by node id: its four steps, the chart's rows (the cycle as
- *  `"cycle"`) and the steps' rows, each in the order the page draws them. Each task stands after
- *  every task in its needs, which is not the order the plan is written in: the document holds
- *  `T.first`, `T.second`, `T.third`, and the first needs the second and the second the third.
- *  The two that need each other stand where the order puts them; the task whose need names no
- *  task the plan holds waits on nothing. */
+ *  `"cycle"`) and the steps' rows, each in the order the page draws them, which is the order the
+ *  Plan view's read answers (each task's `plan.position`). Each task stands after every task in
+ *  its needs, which is not the order the plan is written in: the document holds `T.first`,
+ *  `T.second`, `T.third`, and the first needs the second and the second the third. The task
+ *  whose need names no task the plan holds waits on nothing, and the read places it after that
+ *  chain. The two that need each other get no place in the read's order, and nothing waits on
+ *  them, so the page draws their line after every step. */
 async function planOrderPlaces(seeded: PlanOrderSeed) {
   const planSlug = (await getArtifact(seeded.planArtifactId)).slug;
   const step = (blockId: string) => blockNodeId(planSlug, blockId);
   const T = PLAN_ORDER_TASKS;
   return {
     bars: [step(T.third), step(T.second), step(T.first), step(T.loose)],
-    charted: [step(T.third), step(T.second), step(T.first), "cycle", step(T.loose)],
+    charted: [step(T.third), step(T.second), step(T.first), step(T.loose), "cycle"],
     step,
-    stepped: [T.third, T.second, T.first, T.knotA, T.knotB, T.loose].map(step),
+    stepped: [T.third, T.second, T.first, T.loose, T.knotA, T.knotB].map(step),
   };
 }
 
@@ -351,14 +353,16 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
 }
 
 // c-rows (1): the Plan view opens on the chart of time, and one control switches to the ordered
-// steps. The order and each bar's place are the page's own, worked out from the `needs` the plan
-// document holds (`web/src/features/issue-page/plan-filter/plan-order.ts`), because no read
-// gives them. Not read here, since no read gives them either: each task's position and size - so
-// every bar is one unit long and its row says "No size" - a parent's Plan view drawing its
-// children's tasks, and a step's state. Read here too: each task is drawn once, and after every
-// task it needs. Beyond the check: the head row's three columns, the box's place, the treeitem's
-// name and the switch's group, a press on the edge of a statement chip, the breakpoints at 760,
-// 761, 1240 and 1241 px and 1000 px, and the words filter, which keeps the whole plan's places.
+// steps. The order is the one the Plan view's read answers (each task's `plan.position`), which
+// the page draws, with the line of the tasks that need each other where the page places it
+// (`web/src/features/issue-page/plan-filter/plan-order.ts`): after every step, since none waits
+// on it. Each bar's place is the page's own, worked out from the `needs` the plan document holds.
+// Not read here: each task's size - the plan holds none, so every bar is one unit long and its
+// row says "No size" - a parent's Plan view drawing its children's tasks, and a step's state.
+// Read here too: each task is drawn once, and after every task it needs. Beyond the check: the
+// head row's three columns, the box's place, the treeitem's name and the switch's group, a press
+// on the edge of a statement chip, the breakpoints at 760, 761, 1240 and 1241 px and 1000 px, and
+// the words filter, which keeps the whole plan's places.
 // The plan is `seedPlanOrder` (e2e/issue-layout-seed.ts), whose second write deletes the gone
 // task by its block id, which leaves the loose task's need pointing at no task the plan holds.
 // SLOW(>=2s): a seeded plan read at seven widths, under both drawings and at a second address.
@@ -756,7 +760,8 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
       })
       .toBe(true);
 
-    // The arrows reach the bars in order, past the cycle's row, and so do the outline's keys.
+    // The arrows reach the bars in order, and so do the outline's keys; End reaches the last bar,
+    // past the cycle's row after it.
     for (const next of [T.second, T.first, T.loose]) await reach("ArrowDown", step(next));
     await reach("k", step(T.first), "k");
     await reach("Home", step(T.third), "Home");
@@ -900,7 +905,8 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
     ).toBeFocused();
 
     // An address naming a task of a cycle puts the focus on the cycle's row, which stands for
-    // that task, and the arrow goes on to the step after it.
+    // that task, and the up arrow goes on to the step before it, since the cycle's row is the
+    // chart's last.
     await gotoIssue(page, planPath(seeded.key, `#b-${T.knotA}`));
     await expectOpeningLanded(page);
     await expect(
@@ -912,7 +918,7 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
         message: `the cycle's row does not stand for ${T.knotA}, which the address names`,
       })
       .toBe(step(T.knotA));
-    await reach("ArrowDown", step(T.loose));
+    await reach("ArrowUp", step(T.loose));
 
     // An address naming a node the view draws no row for - a comment, a statement - draws the
     // outline in the view's place, which lands on that node's row. The view tells the stage so
@@ -1217,7 +1223,7 @@ test("on a phone the Plan chart is one card for each step @phone @phone-only", a
     ).toHaveCount(bars.length);
     await expect
       .poll(() => chartOrder(page), {
-        message: "the cards are not t3, t2, t1 and t6, with the cycle's line between t1 and t6",
+        message: "the cards are not t3, t2, t1 and t6, with the cycle's line after t6",
       })
       .toEqual(charted);
     await expect(

@@ -184,6 +184,8 @@ var readsWithoutAViewer = map[string]string{
 	"BlockChanges":         nodeDetail,
 	"BlockEmbeddingStates": nodeDetail,
 	"BlockIndexing.Cited":  serverWork + " - a version write reads the blocks that cite the blocks its index changes, to count what it moves",
+	"BlockIndexing.KeepRespelled": serverWork + " - a version write's read phase reads the texts recorded for the blocks its index plan names as candidates, " +
+		"to decide which keep their changed version across another renderer version's spelling",
 	"BlockRefKinds": serverWork + " - a version write's block index reads the names of the block[] attributes the " +
 		"store's type nodes declare, which only a migration writes, to bind them as a parameter of its own read of the store's tuples",
 	"BlockTargets": serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
@@ -233,8 +235,8 @@ var readsWithoutAViewer = map[string]string{
 		"see answers what an address nobody holds answers",
 	"NextExcerptRetry": serverWork,
 	"OwedItemBlocks":   serverWork,
-	"OwedQueue.Count": serverWork + " - the forms drain counts the rows a queue of owed reference forms holds, for its " +
-		"tick's report, and the count names no node",
+	"OwedQueue.Count": serverWork + " - each pass of the forms drain counts the rows its queue of owed reference forms " +
+		"still holds, for its log line and to end the bootstrap queue's drain, and the count names no node",
 	"PartOfChains": serverWork + " - the block index climbs the part_of chain of each block an authored node may hang under, " +
 		"to keep a cycle out of where it places that node (placeAuthored), and the chain reaches no reader",
 	"PendingDocument.Scope": serverWork + " - the document a source whose row is only queued belongs to, which the index-time " +

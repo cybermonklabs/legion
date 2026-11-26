@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { expect, type Locator, type Page, type Route, test } from "@playwright/test";
 
 import type { IssueDecisions, IssueTreeRead } from "../web/src/api/types";
@@ -543,31 +544,36 @@ export function decisionsViewGate(requests: readonly ApiRequest[], key: string):
   };
 }
 
-/** What `decisionNodesGate` and `partUGate` read where they are not met: the seed's decisions,
- *  written as decision blocks of the spec, are no nodes of the tree read this base answers. */
-const DECISIONS_ARE_NO_NODES =
-  "the seed's decisions are no nodes of the tree read this base answers";
-
 /** The decisions work that makes each decision a node of the tree read (`decisionsAreNodes`). */
 export function decisionNodesGate(answer: IssueTreeRead, read: DecisionsRead | undefined): Gate {
   return {
     met: decisionsAreNodes(answer, read),
     owed:
-      "owed until decisions are nodes of the tree read on this branch's base: " +
-      `${DECISIONS_ARE_NO_NODES}; ${OWED_BY}`,
+      "owed until decisions are nodes of the tree read on this branch's base: the seed's " +
+      `decisions are no nodes of the tree read this base answers; ${OWED_BY}`,
   };
 }
 
-/** The page drawing the decisions from the tree read's nodes, which waits on the decisions work
- *  that makes them nodes reaching this branch's base (`decisionsAreNodes`). */
-export function partUGate(answer: IssueTreeRead, read: DecisionsRead | undefined): Gate {
-  return {
-    met: decisionsAreNodes(answer, read),
-    owed:
-      "owed until the page draws the decisions from the tree read's nodes, once decisions are " +
-      `nodes of the tree read on this branch's base: ${DECISIONS_ARE_NO_NODES}; ${OWED_BY}`,
-  };
-}
+/** The module of the page's work that draws the decisions from the tree read's nodes, by its
+ *  path in this package. */
+const DECISION_NODES_MODULE = "web/src/features/issue-page/decision-nodes/decision-nodes.ts";
+
+/** That module in the tree this process runs from, which the build is made from. */
+const decisionNodesModule = new URL(`../${DECISION_NODES_MODULE}`, import.meta.url);
+
+/** The page drawing the decisions from the tree read's nodes: the tree under test holds
+ *  `DECISION_NODES_MODULE`, and it exports `restatesAnswer`, the page's rule that a section
+ *  restating a person's answer is no decision. It reads the files the build is made from, as
+ *  `dashboardPartGate` reads a list the page's code exports, since the model's answer says
+ *  nothing of whether the page draws it so. */
+export const partUGate: Gate = {
+  met:
+    existsSync(decisionNodesModule) &&
+    /^export function restatesAnswer\(/m.test(readFileSync(decisionNodesModule, "utf8")),
+  owed:
+    "owed until the page's drawing of the decisions from the tree read's nodes is on this " +
+    `branch: ${DECISION_NODES_MODULE} exports no restatesAnswer here; ${OWED_BY}`,
+};
 
 /** The model storing a decision that settles a question under that question, which waits on
  *  the model: the tree read answers the decision block `decision` with the ask `ask` as its

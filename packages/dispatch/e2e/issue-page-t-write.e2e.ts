@@ -18,12 +18,12 @@ import {
   stateWordOf,
 } from "./issue-page-t-rows";
 import {
+  decisionNodesGate,
   decisionsReadOf,
   footLineGate,
   headerStatus,
   heldAnswer,
   owedUnless,
-  partUGate,
   treeAnswerOf,
   treeReadGate,
   treeReads,
@@ -126,11 +126,10 @@ test("a write is drawn without a reload", async ({ browser }) => {
 });
 
 // c-fresh's Keep clause, owed until the server serves the Decisions view
-// (`decisionsViewServedGate`), and on the page drawing the decisions from
-// the tree read's nodes (`partUGate`), which records it once decisions are nodes on this
-// branch's base. The load sends no decisions read, so the decisions read that gate reads is
-// `heldDecisionsRead`'s: the one the page received, and where it received none the Decisions
-// view the row reads itself.
+// (`decisionsViewServedGate`), and on decisions being nodes of the tree read on this branch's
+// base (`decisionNodesGate`). The load sends no decisions read, so the decisions read that gate
+// reads is `heldDecisionsRead`'s: the one the page received, and where it received none the
+// Decisions view the row reads itself.
 // SLOW(>=2s): a seeded issue, its load waited out, a Keep in the outline waited for, Decisions
 // pressed and a second Keep there waited for.
 test("a write is drawn without a reload, and Keep is drawn kept in the outline and in the Decisions view @owed", async ({
@@ -145,7 +144,7 @@ test("a write is drawn without a reload, and Keep is drawn kept in the outline a
     const traffic = watchApiRequests(page);
     await firstLoad(page, traffic, seeded.key);
     owedUnless(
-      partUGate(
+      decisionNodesGate(
         await heldAnswer(tree, "the tree read"),
         await heldDecisionsRead(seeded.key, decisions)
       )

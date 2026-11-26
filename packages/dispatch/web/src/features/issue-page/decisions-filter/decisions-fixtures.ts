@@ -31,10 +31,11 @@ import type { DecisionsAsk } from "./decisions-parts";
  * The addresses are the ones this issue would answer with: a statement is a block of the spec,
  * an agent's decision a `decision` block of the spec, addressed as the tree read addresses a
  * typed block of a document (`decision-nodes.ts`), a person's decision the answered ask itself,
- * named by the ask's own address, and an ask its own id, so a tie resolves through the page's
- * own rule for addressing a node (`tree-drafts.ts`'s `treeContext`) and not through a rule
- * written here. The tree read's nodes are built as the route sends them, by the tree read's one
- * fixture builder (`tree-read/tree-fixtures.ts`).
+ * named by the ask's own address, or a `decision` block whose `decided_by` names the person, and
+ * an ask its own id, so a tie resolves through the page's own rule for addressing a node
+ * (`tree-drafts.ts`'s `treeContext`) and not through a rule written here. The tree read's nodes
+ * are built as the route sends them, by the tree read's one fixture builder
+ * (`tree-read/tree-fixtures.ts`).
  */
 
 export const KEY = TREE_KEY;
