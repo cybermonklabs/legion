@@ -491,7 +491,7 @@ func (w *workflowRuntime) runningPod(issue string) string {
 // deployment that sees it every tick past a linger's end or a look's bound is seeing a close that
 // is stuck.
 //
-// The second rule's other three — IdleHoldUnownedClaimProcess, IdleHoldUnownedOperatorSuspended
+// The second rule's other three — IdleHoldUnownedClaimProcess, IdleHoldUnownedSuspensionHolds
 // and IdleHoldUnownedDelivery — are recorded for the same reason, and it is the sharpest one
 // here: each names a pod that stands, past the quiet period, with no live claim in it, and such
 // a pod holds its reservation (2 CPU and 8 GiB at the defaults) for as long as it stands. A

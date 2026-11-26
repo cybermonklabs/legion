@@ -408,7 +408,7 @@ func TestAResumeByOhMyPisOwnLookupThatDoesNotRegisterIsForgottenAtTheNextTry(t *
 				}
 				from := len(r.rt.Calls())
 
-				r.must(RequestResume{Claim: testToken})
+				r.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
 
 				if tc.newer {
 					r.wantResumedThroughTheLauncher(from)

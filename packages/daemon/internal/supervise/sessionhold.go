@@ -324,7 +324,7 @@ func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 
 // refuseCarried is a release refused because the secrets broker still carries something for some
 // of the names it would free, names of them: logged at Warn, and answered as a RefusedError, which
-// the operator's route answers 409 (operatorFailure).
+// the operator's route answers 409 (operationFailure).
 func (m *Machine) refuseCarried(refusal *NamesCarriedError, names int) error {
 	m.log.Warn("supervise: refused a release of a claim's names: the secrets broker still carries some of them",
 		"names", names, "carried", len(refusal.Carried), "error", refusal.Error())
@@ -721,7 +721,9 @@ func IsSessionHeldElsewhere(err error) bool {
 //
 // The lookup is one bounded call (Timeouts.RPC) inside the decision, on a claim with no process,
 // so nothing else of this claim waits behind it but whoever asked: an operator's forget or
-// retry, the controller keeper's retry, or a workflow start row's (review round 16 of #4220, #66).
+// retry, the controller keeper's retry, a workflow start row's (review round 16 of #4220, #66),
+// or the project controller's own launch, whose replacement of a failing or an old session asks
+// it once (replaceEndedSession, else replaceAgedSession, dispatch://INFRA-2045 R1 and R3).
 func (m *Machine) mayForget(ctx context.Context, request string) error {
 	session := m.claim.Session
 	if session == "" {
@@ -767,7 +769,7 @@ func (m *Machine) mayForget(ctx context.Context, request string) error {
 		// A holder that is suspended, retired or failed runs no process under the session, so
 		// its suspend changes nothing: the process under it may be this claim's own, which only
 		// the wait ends (review round 16 of #4220, #61).
-		stop = fmt.Sprintf("first stop %s's process, through the daemon, if it runs (`legion claims suspend --claim %s`; a pod or pane stopped by hand is relaunched under the same id); if %s is suspended, retired or failed, no process of it runs under %s, and the process under it may be this claim's own, which the wait below ends", held.holder, held.holder, held.holder, session)
+		stop = fmt.Sprintf("first stop %s's process, through the daemon, if it runs (the operator's `legion claims suspend --claim %s`, or the `suspend` of the controller's `legion` tool; a pod or pane stopped by hand is relaunched under the same id); if %s is suspended, retired or failed, no process of it runs under %s, and the process under it may be this claim's own, which the wait below ends", held.holder, held.holder, held.holder, session)
 	}
 	return &RefusedError{State: m.claim.State, Request: request, Err: forgetWait{fmt.Errorf(
 		"%s records session %s, which it does not hold (%v), and the Envoy listener names %s (%s) as the holder of its role, so with the session cleared the role's messages would reach %s: %s; then ask again once GET /v1/roles/%s answers 404 with no holder (reason unclaimed) or names another session, at most %s after that process's last registration (ten minutes with the defaults, about 65 minutes where the session bucket keeps records past the gone horizon), longer across a listener restart or a reaper read that fails",

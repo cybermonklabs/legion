@@ -189,6 +189,78 @@ func TestAgentDeliveryReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 	}
 }
 
+// A delivery whose read of its target's session record did not answer within its bound
+// (deliverySessionReadTimeout) is logged at WARN at that delivery (agentSubjectDelivery), naming
+// the session, the event, the bound and the read's error, beside the line unreadAgentDelivery
+// logs once for the message. A read that answered writes no line: a target the cache holds is
+// read from the cache, here while every bucket read fails, and a target the bucket holds no record
+// of is gone.
+func TestAnAgentDeliveryLogsAtWarnASessionReadThatDidNotAnswer(t *testing.T) {
+	t.Parallel()
+	const (
+		unreadLine = "listener agent delivery could not read the session's record within its bound"
+		cached     = "ses_delivery_warn_cached"
+		gone       = "ses_delivery_warn_gone"
+		unread     = "ses_delivery_warn_unread"
+	)
+	harness := newListenerDeliveryHarness(t)
+	if err := harness.sessions.Put(cached, session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/" + cached}); err != nil {
+		t.Fatalf("register %s: %v", cached, err)
+	}
+	if _, state := harness.sessions.Lookup(cached); !notGone(state) {
+		t.Fatalf("the session cache answers %s as %v: its delivery would read the bucket", cached, state)
+	}
+	// The cache follows nothing from here, so a target it does not hold is read from the bucket.
+	harness.sessions.StopWatch()
+	for _, target := range []string{gone, unread} {
+		if _, err := harness.sessions.Get(target); !errors.Is(err, natsgo.ErrKeyNotFound) {
+			t.Fatalf("the session cache answers %s with %v, want %v: its delivery would read no bucket", target, err, natsgo.ErrKeyNotFound)
+		}
+	}
+	deliver := func(t *testing.T, target string) contracts.Envelope {
+		t.Helper()
+		item := listenerTestEnvelope(contracts.LegacyAgentSubject(target), target+"-warn")
+		harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
+		return item
+	}
+	unreadLines := func(target string) []map[string]any {
+		return linesIn(harness.logs.String(), unreadLine, map[string]any{"session_id": target})
+	}
+
+	t.Run("control: the bucket holds no record of the target", func(t *testing.T) {
+		deliver(t, gone)
+		if lines := unreadLines(gone); len(lines) != 0 {
+			t.Fatalf("the delivery to %s logged %v, want no line: the bucket answered that it holds no record", gone, lines)
+		}
+	})
+
+	failure := errors.New("the session bucket's read did not answer")
+	swapSessionBucket(t, harness.sessions, func(kv natsgo.KeyValue) natsgo.KeyValue {
+		return bucketThatFails{KeyValue: kv, err: failure}
+	})
+
+	t.Run("control: the cache holds the target", func(t *testing.T) {
+		deliver(t, cached)
+		if lines := unreadLines(cached); len(lines) != 0 {
+			t.Fatalf("the delivery to %s logged %v, want no line: the cache answered with no read", cached, lines)
+		}
+	})
+
+	t.Run("case: the bucket does not answer the read", func(t *testing.T) {
+		item := deliver(t, unread)
+		lines := unreadLines(unread)
+		if len(lines) != 1 {
+			t.Fatalf("the delivery to %s logged %d lines %q, want 1:\n%s", unread, len(lines), unreadLine, harness.logs.String())
+		}
+		assertRecordFields(t, lines[0], map[string]any{
+			"level":    "WARN",
+			"event_id": item.EventID,
+			"bound":    float64(deliverySessionReadTimeout),
+		})
+		assertRecordErrorCarries(t, lines[0], failure.Error())
+	})
+}
+
 // unplaceableDeliveryRun is one envelope driven through the listener's own
 // jetStreamDeliveryHandler over a real durable consumer. The package's other delivery tests hand
 // the handler a synthetic &natsgo.Msg{Data: data}, which carries no JetStream metadata: the

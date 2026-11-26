@@ -71,7 +71,7 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 // DispatchPriority. The four issues.memory_* columns are no part of it: what a unit was drawn is
 // an assignment row of its own (AssignmentsOf, AssignmentsFor), and nothing this release's daemon
 // runs reads the columns but the back-fill of 20261111045636_experiment_assignments.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, coalesce(view_of, ''), children_wait_start, children_wait_task, children_wait_reason, children_wait_since, nullif(children_wait_children, '{}'), children_waited_at, members_owed, priority`
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, coalesce(view_of, ''), children_wait_start, children_wait_task, children_wait_reason, children_wait_since, nullif(children_wait_children, '{}'), children_waited_at, members_owed, priority, resolved_known, resolved_priority, priority_from`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -296,14 +296,20 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// record's like every column above it, written whole by both halves, so a registration that
 	// finds no ancestor to be a view on writes the view away. The priority is written as
 	// Dispatch's own level, the record's Priority.Level, null for NoPriority, as issueColumns
-	// reads it back.
+	// reads it back, and the resolved priority beside it the same way, with resolved_known and
+	// priority_from: its level is null wherever Dispatch sent none, as the column's check holds it.
+	var resolvedLevel *int
+	if issue.Resolved.Known {
+		resolvedLevel = issue.Resolved.Priority.Level()
+	}
 	tag, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, hold_reason, dispatch_status, repo, default_branch, github_repo,
 		awaiting_ask, awaiting_gate_version, awaiting_artifact, awaiting_answered_at, awaiting_answered_by, awaiting_answered_detail, awaiting_since_seq, awaiting_since,
 		ancestry, handed_over_from, told_parent, view_of,
-		children_wait_start, children_wait_task, children_wait_reason, children_wait_since, children_wait_children, children_waited_at, priority)
+		children_wait_start, children_wait_task, children_wait_reason, children_wait_since, children_wait_children, children_waited_at, priority,
+		resolved_known, resolved_priority, priority_from)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, nullif($15::text, ''), $16, $17, $18, $19, $20, $21, $22, $23, nullif($24::text, ''), nullif($25::text, ''), $26, $27,
 		coalesce($28::text[], '{}'), $29, nullif($30::text, ''), nullif($31::text, ''),
-		$32, $33, $34, $35, nullif($36::text[], '{}'), $37, $38)
+		$32, $33, $34, $35, nullif($36::text[], '{}'), $37, $38, $39, $40, $41)
 		on conflict (key) do update set tree = excluded.tree, project = excluded.project, title = excluded.title,
 		parent = excluded.parent, phase = excluded.phase, generation = excluded.generation,
 		status = excluded.status, rank = excluded.rank, handed_over = excluded.handed_over, taken_back = excluded.taken_back,
@@ -320,14 +326,15 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		children_wait_start = excluded.children_wait_start, children_wait_task = excluded.children_wait_task,
 		children_wait_reason = excluded.children_wait_reason, children_wait_since = excluded.children_wait_since,
 		children_wait_children = excluded.children_wait_children, children_waited_at = excluded.children_waited_at,
-		priority = excluded.priority
+		priority = excluded.priority, resolved_known = excluded.resolved_known, resolved_priority = excluded.resolved_priority,
+		priority_from = excluded.priority_from
 		where issues.repo = excluded.repo and issues.default_branch = excluded.default_branch and issues.github_repo = excluded.github_repo`,
 		issue.Key, issue.Tree, issue.Project, issue.Title, issue.Parent, string(issue.Phase), int64(issue.Generation), issue.Status,
 		issue.Rank, issue.HandedOver, issue.TakenBack, issue.LingerUntil, heldFrom, issue.LastDispatchSeq, string(holdReason), issue.DispatchStatus,
 		issue.Repo, issue.DefaultBranch, issue.GitHubRepo, awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, string(answeredBy), answeredDetail,
 		sinceSeq, since, issue.Ancestry, issue.HandedOverFrom, issue.ToldParent, issue.ViewOf,
 		childrenWaitStart, childrenWaitTask, childrenWaitReason, childrenWaitSince, childrenWaitChildren, issue.ChildrenWaitedAt,
-		issue.Priority.Level(),
+		issue.Priority.Level(), issue.Resolved.Known, resolvedLevel, issue.Resolved.From,
 	)
 	if err != nil {
 		return fmt.Errorf("put issue %s: %w", issue.Key, err)
@@ -542,18 +549,20 @@ func scanIssue(row scanner) (*Issue, error) {
 	var since, declaredAt, treeStalledToldAt, releasedForWaitAt, childrenWaitSince, childrenWaitedAt *time.Time
 	var childrenWaitStart, childrenWaitTask, childrenWaitReason *string
 	var childrenWaitChildren []string
-	var priority *int
+	var priority, resolvedPriority *int
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
 		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt,
 		&issue.ViewOf, &childrenWaitStart, &childrenWaitTask, &childrenWaitReason, &childrenWaitSince, &childrenWaitChildren,
-		&childrenWaitedAt, &issue.MembersOwed, &priority); err != nil {
+		&childrenWaitedAt, &issue.MembersOwed, &priority, &issue.Resolved.Known, &resolvedPriority, &issue.Resolved.From); err != nil {
 		return nil, err
 	}
-	// The column's check holds it to Dispatch's 0 to 3 or null, each of which DispatchPriority reads.
+	// The columns' checks hold both to Dispatch's 0 to 3 or null, each of which DispatchPriority
+	// reads, and the resolved one to null wherever Dispatch sent none.
 	issue.Priority, _ = DispatchPriority(priority)
+	issue.Resolved.Priority, _ = DispatchPriority(resolvedPriority)
 	if declaredAt != nil {
 		issue.DeclaredAt = declaredAt.UTC()
 	}
@@ -3688,12 +3697,13 @@ var (
 // none (PauseHeldRow). project is the project token and role the payload's `role`. A start, a
 // phase-ended message, a hook's words, an update ask and a merge forward's message name the role of
 // the row's own issue, as the executors read it (the daemon's roleToken); the merge-queue message
-// goes to the issue's merger; a role message names the claim's token itself
-// (record.RoleMessage.Role).
+// and the message that the project's merge holds changed go to the issue's merger, whose token
+// their executors build (the daemon's mergeQueueRemoval and mergeHoldsChanged); a role message
+// names the claim's token itself (record.RoleMessage.Role).
 func pauseHeldClaim(project string, row OutboxRow, role string) claim.Token {
 	switch row.Kind {
 	case OutboxKindSupervise, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeForward:
-	case OutboxKindMergeQueueRemoval:
+	case OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged:
 		role = string(claim.RoleMerger)
 	case OutboxKindRoleMessage:
 		if _, ok := claim.Token(role).Role(); ok {

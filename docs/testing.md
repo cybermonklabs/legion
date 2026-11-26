@@ -84,6 +84,21 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   The package documentation is the whole list and the rule each check holds.
   It does not check what a command does with its arguments, its other exit codes or the shape of its tree, which each conversion's own tests hold, and it builds no binary: the caller hands it one.
 
+## A test database's teardown waits for its binary
+
+`packages/daemon/internal/testpg/testdb.Drop` retries PostgreSQL's 42501
+(`insufficient_privilege`) and 55006 (`object_in_use`) refusals until its context ends. A test
+that creates one database (`testdb.PlainDatabase` and `internal/store`'s `emptyStore`) takes
+`testwait.TeardownContext(t)` in its cleanup, bounded to stay before go test's alarm and finite
+under `-timeout 0`. A clone teardown after `testpg.Main` takes `testwait.TeardownDeadline`: the
+binary's parsed `-timeout` plus its post-test grace, because Go stops its own alarm when `m.Run`
+returns.
+
+Never give `Drop` `context.Background()`. A correct backend can take longer than an arbitrary
+retry span to exit under load. When the binary's bound does end, the error names the database and
+the backends still attached from `pg_stat_activity`; clear those backends rather than retrying the
+test.
+
 
 ## Bun tests
 
@@ -151,6 +166,17 @@ itself, whose tests import its sources by relative path.
   spawns, and the names the test deleted stay deleted in the real environment. Under `--parallel`,
   which implies `--isolate`, the next file gets a fresh `process` and never sees the swap, so the
   damage shows only where it is hardest to read.
+
+- Hand a child whose `HOME` the test replaces, and a stand-in that runs the real program, the
+  program itself: `realHostTool(name)` (`@legion/test-fixtures/host-tools`), read once at module
+  scope, before any directory of the test's own goes first on `PATH`, never `name` from `PATH`. On
+  a machine where `name` on `PATH` is a mise shim, the shim reads its configuration from the
+  child's `HOME` and from the directories above the child's working directory. Under a `HOME` of
+  the test's own it refuses the real home's config as untrusted, or finds no version, and exits 1
+  before the program runs; behind a stand-in of the same name first on `PATH` it falls back to the
+  stand-in, which runs the shim again, and mise stops with "shim fallback recursion detected".
+  `realHostTool` takes what `mise which` names for a shim, or the program the shim would fall back
+  to, and skips the directory a stand-in lives in when it is given one.
 
 - `mock.module` at module scope outlives the file that wrote it: a filtered run that selects no row
   of the file still applies it, Bun 1.4.4 has no API that takes a module mock off again, and every
@@ -239,6 +265,23 @@ itself, whose tests import its sources by relative path.
   container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`). Remove it with `docker rm -f
   -v`, and give it the CPU and memory limits "Containers a test starts" below requires.
 
+- A server a suite or a rig script starts never binds a port the caller found free and let go of:
+  any other program on the machine can take that port first, and the server then fails to start
+  or another program answers in its place. The server binds port 0 and the caller reads the port
+  from what the server reports (natsd's `-p -1 -m -1`, the listener's `PORT=0`, a broker's
+  `*_LISTEN_ADDR` of `127.0.0.1:0`, `moto_server -p 0`, `python3 -u -m http.server 0`,
+  `Bun.serve({ port: 0 })`), or takes a socket the caller holds (`start_held` in
+  `scripts/e2e/lib/rig.sh`), or listens on a unix socket in a directory of the run's own and on no
+  TCP port, as the Dispatch e2e harness's Postgres does in both providers
+  (`packages/dispatch/e2e/harness-postgres.ts`). A URL a server must hold before it binds names a
+  front bound first and pointed at the port the server reports (`dev-airlock-stands front`, as
+  `packages/envoy/scripts/dev-broker.sh` and `lib/project-access-stack.sh` run it). A port a
+  process names as closed for its whole life is held bound and never listening (`holdRefusedPort`
+  in `@legion/test-fixtures/refused-port`, which the outside-path-reach tests' `closedPort` takes),
+  and a broker that must refuse and later answer at one address is a listener the row holds from
+  its start, which drops each connection until it relays to the broker (`heldBrokerAddress` in
+  `packages/claude-envoy/tests/channel-nats.test.ts`).
+
 - Give a Bun process the test starts under a HOME of its own `BUN_RUNTIME_TRANSPILER_CACHE_PATH=0`,
   unless the row tests that cache. Where neither that variable nor `XDG_CACHE_HOME` names another
   place, Bun keeps its transpiler cache under HOME, so a child in an empty HOME writes a file and a
@@ -249,7 +292,7 @@ itself, whose tests import its sources by relative path.
   `packages/claude-envoy/tests/transpiler-cache.ts`).
 
 - Two caches stay where their tool puts them, under the user's cache directory, and this is the one
-  rule here that holds only under a condition. Oh My Pi's native modules, about 124 MiB a pin, are
+  rule here that holds only under a condition. Oh My Pi's native modules, about 125 MiB a pin, are
   hardlinked into each test's fresh HOME from one copy per binary at
   `$XDG_CACHE_HOME/legion/test-omp-natives`, or `$HOME/.cache/legion/test-omp-natives` where
   `XDG_CACHE_HOME` is unset (`nativesCacheRoot` in `packages/pi-shared/test/omp-natives.ts`);
@@ -393,6 +436,22 @@ printed an act message, naming each message with its component and the frames th
   the row. Under a lane's load that is rare, and the file alone does not show it:
   `web/src/features/conversation/ConversationTab.test.tsx`'s row "a scroll event measures the
   reader position in O(1) rect reads" failed 1 run in 20 that way.
+
+- A row whose tree can still hold a real timer when its body ends, such as the 150 ms debounce of
+  a composer's draft pills (`useSettled`), ends its body by unmounting inside `act`: `cleanup()` in
+  a `finally` around the body, as `web/src/features/delivery/DeliveryPage.test.tsx` and
+  `web/src/features/inbox/ThreadBody.test.tsx` wrap their rows. Bun gives the event loop a turn
+  between a row's body and its `afterEach`, so a timer due then fires with the act environment on
+  and no act scope open, and an `afterEach` that unmounts comes after that turn. Only a loaded run
+  ends the body before the timer: `ThreadBody.test.tsx`'s row "an Agent card whose thread moves on
+  under a refused reply says what its box can do" failed 1 run in 20 that way. A row that reads
+  what the timer does lets it run out inside `act` instead (`settleRefPickerSearch` in
+  `web/src/features/refs/ref-picker-fixture.ts`).
+
+- Bun drops the frame of an arrow whose whole body is the call that sets the state, as in
+  `setTimeout(() => setValue(next), ms)`: JavaScriptCore runs that call as a tail call. The act
+  rule then names the component and no frame of `web/src`, so look in that component's own hooks
+  for a timer or a promise that ends in such a call.
 
 - `web/src/__tests__/act-warnings.test.ts` runs the act rule's six fixtures,
   `web/src/__tests__/act-rule*.fixture.tsx`. Four draw React's act messages.
@@ -659,6 +718,38 @@ comment names. A test that asserts which deadline a wait meets sets a `clocktest
 runtime's clock (`g.r.clock = fc`) and moves it one recheck at a time (`step`), and runs beside the
 others. A new test with neither the call nor the comment runs alone for no reason, as 25 tests did
 by 2026-11-25.
+
+## A test in Dispatch's smaller packages runs beside the others
+
+Every top-level test of these 19 packages of `packages/envoy` calls `t.Parallel()` as its first
+statement, or says on its first line, in a `// Not parallel:` comment, why it cannot:
+
+- `internal/dispatch/architecture`, `internal/dispatch/architecture/notes`,
+  `internal/dispatch/duty`, `internal/dispatch/events`, `internal/dispatch/files`,
+  `internal/dispatch/horizontest`, `internal/dispatch/processes`, `internal/dispatch/redeliver`,
+  `internal/dispatch/routes`, `internal/dispatch/sessionanswers`, `internal/dispatch/startup`;
+- `internal/cmdtest`, `internal/contracts`, `internal/integration`, `internal/pglisten`,
+  `internal/testport`, `internal/textcheck`;
+- `natsversion`, `natsversion/cmd/natsfloor`.
+
+The ten of them whose tests open a database (architecture, duty, events, files, processes,
+redeliver, routes, sessionanswers, startup and pglisten) run 4 at once: each `TestMain` calls
+`storetest.SetDefaultParallel` before `storetest.Main` or `storetest.Run`, and
+`storetest.DefaultParallel` says why it is 4. Each test has a database of its own
+(`storetest.Open`), a NATS account of its own (`testnats`, in redeliver), or nothing it shares.
+
+A test stays serial when it, or a helper it calls, changes something the whole test process
+shares: the environment (`t.Setenv`, and the S3 helpers `filestest.ServeS3` and `tests3.Start`
+through it), the default logger or the log package's output (`logtest.SetDefault`), or a package
+variable (`fixJitter`'s `duty.JitterN`, `redeliver.FixJitter`, processes' `HeartbeatInterval`,
+`PruneInterval` and `LiveWindow` through `setInterval` and `quickRegistry`, architecture's
+`syncTimeout`, contracts' `githubEventKinds`). It also stays serial when it holds a wall-clock
+bound, a quiet window or a step a sleep orders, which the parallel tests' load could make it miss
+on a correct product or pass with the defect present; the comment names the span. A wait for an
+event takes `testwait` (`Receive`, `Until`, `Context`), bounded only by the test binary's deadline,
+and a product bound the test does not mean to race takes `testwait.PastTheRun`. Nothing checks the
+marker in these packages: a new test with neither the call nor the comment runs alone for no
+reason.
 
 ## Go's package deadline
 

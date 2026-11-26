@@ -880,6 +880,19 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	// record past the gone horizon (notGone). Any other error is a read that did not answer: it
 	// says nothing about the session, so it is neither a record nor the lack of one.
 	_, _, readErr := liveSessionEntry(context.Background(), cfg.sessions, sessionID, deliverySessionReadTimeout, notGone, cfg.sessions.Refresh)
+	// A read that did not answer is logged here at WARN, at each delivery that made it, with the
+	// bound it was given and its error: the message's own line of it (unreadAgentDelivery) is
+	// logged once however many deliveries the failing read spans, and a message another
+	// listener's row names writes none. The cache answers a session it holds with no read and a
+	// session the bucket holds no record of is no record, so the line is a read that did not
+	// answer within its bound, never one a healthy bus writes per message.
+	if readErr != nil && !errors.Is(readErr, nats.ErrKeyNotFound) {
+		cfg.logger.Warn("listener agent delivery could not read the session's record within its bound",
+			slog.String("session_id", sessionID),
+			slog.String("event_id", item.EventID),
+			slog.Duration("bound", deliverySessionReadTimeout),
+			slog.String("error", readErr.Error()))
+	}
 	cfg.attemptCache.Record(item.DedupeKey, sessionID)
 	deliveryTimer := metrics.NewTimer()
 	switch session.HandleAgentMessage(cfg.machineID, interestPtr, readErr) {

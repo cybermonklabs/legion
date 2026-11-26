@@ -1009,6 +1009,7 @@
       }
     },
     "admission_cap": 4,
+    "admission_p0_bound": 4,
     "daemon_url": "http://legion-daemon.internal.example:13370",
     "worker_stream_port": 13371,
     "omp_launch_prefix": [],
@@ -1101,6 +1102,8 @@
     "pod_update_rounds_per_minute": 2,
     "review_round_cap": 4,
     "controller": "daemon",
+    "controller_turn_bound_minutes": 90,
+    "controller_session_max_age_hours": 72,
     "capabilities": {
       "decided": {
         "pool-capacity": "the pool is sized by hand for the admission cap"

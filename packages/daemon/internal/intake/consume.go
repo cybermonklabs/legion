@@ -304,9 +304,10 @@ type Consumers struct {
 //
 // A NATS server that can skip a message on a consumer filtering on a wildcard and a literal at the
 // same token is refused before any consumer is opened, naming its version and the fixed releases
-// (envoy's natsversion.ConnectedRefusal, the rule the listener refuses one by): the stream is the
-// listener's, whose session consumers filter so and need such a server. The daemon's boot ends on
-// the error.
+// (envoy's natsversion.ConnectedRefusal, the rule the listener refuses one by): the Dispatch
+// consumer filters on the issue family beside this project's merge holds document
+// (mergeHoldsSubject), and the stream is the listener's, whose session consumers filter so and
+// need such a server too. The daemon's boot ends on the error.
 // The version is decided on one the connection reports: a connection reconnecting or draining when
 // the boot reaches this is looked at again, within ctx (the boot attempt's 30 s bootTimeout, the
 // bound the stream lookup after this has), and is never read as a server of no version.
@@ -327,9 +328,14 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool store.TxPoo
 	}
 
 	remade := &remadeFailures{}
+	// The Dispatch durable hears every issue event and every event of the project's merge holds
+	// document (mergeHoldsSubject). A durable an earlier daemon created with other filters takes
+	// the whole list here and keeps its position (openConsumer): JetStream keeps the stream
+	// sequence it delivers next, so an event of the document at or past that sequence is delivered
+	// to it, and one it has passed is not.
 	dispatch, err := openConsumer(ctx, js, stream, pool, spec, remade, jetstream.ConsumerConfig{
 		Durable:        dispatchConsumerName(spec.Project),
-		FilterSubjects: []string{"notifications.dispatch.issue.>"},
+		FilterSubjects: []string{"notifications.dispatch.issue.>", mergeHoldsSubject(spec.Project)},
 		AckPolicy:      jetstream.AckExplicitPolicy,
 		AckWait:        spec.AckWait,
 	})

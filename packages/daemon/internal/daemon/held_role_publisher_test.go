@@ -189,7 +189,7 @@ func TestAForgetWaitsUntilTheListenerNoLongerNamesTheSharedSession(t *testing.T)
 		}
 	}
 
-	forgot := m.Handle(ctx, supervise.RequestForgetSession{Claim: contained, Session: shared})
+	forgot := m.Handle(ctx, supervise.RequestForgetSession{Claim: contained, Session: shared, By: supervise.SuspendedByOperator})
 	for _, id := range []int64{90, 91, 90, 91} {
 		message(id)
 	}
@@ -206,7 +206,7 @@ func TestAForgetWaitsUntilTheListenerNoLongerNamesTheSharedSession(t *testing.T)
 	}
 
 	listener.free(string(contained))
-	if err := m.Handle(ctx, supervise.RequestForgetSession{Claim: contained, Session: shared}); err != nil {
+	if err := m.Handle(ctx, supervise.RequestForgetSession{Claim: contained, Session: shared, By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("the forget once the listener names no holder of the role = %v, want it admitted", err)
 	}
 	message(92)
