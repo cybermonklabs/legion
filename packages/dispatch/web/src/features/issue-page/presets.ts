@@ -164,6 +164,9 @@ const NO_LINES: ReadonlyMap<string, readonly PresetLine[]> = new Map();
 /** No block named by the view: a view read off the outline's tree. */
 const NO_READINGS: ReadonlyMap<string, ReferenceNameReading> = new Map();
 
+/** No node of another issue drawn as a row of a view: every view's but Verification's. */
+const NO_BORROWED_ROWS: ReadonlySet<TreeAnswerNode> = new Set();
+
 /** The kind a filter reads `node` as: its type, but for a requirement that is no statement
  *  (`isStatement`) and a check that is no check (`isCheck`), which are blocks of a document that
  *  does not play that part and nothing more, so no filter draws or counts either as its kind;
@@ -493,8 +496,10 @@ function filterView(
  * and each issue's tasks in the order its document writes them (`document.position`), which is
  * the written order the plan's walk starts from (`plan-filter/plan-order.ts`). Each of its rows
  * carries what the read answers of the task beside the node: its size and the issue it is
- * another issue's task of (`planFactsOf`). No other view takes a node of another issue as a
- * row.
+ * another issue's task of (`planFactsOf`). Verification draws as rows, beside the issue's own
+ * checks, each check of an issue under it that serves a statement it draws, and that check's
+ * results, which its read answers as context too (`borrowedRows`). No other view takes a node of
+ * another issue as a row.
  */
 function heldFilterView(
   root: TreeNode,
@@ -608,11 +613,14 @@ function heldFilterView(
   }
   const kinds: readonly string[] = ROW_KINDS[filter];
   const contextKinds: readonly string[] = CONTEXT_KINDS[filter];
-  const rows = nodes.filter(
-    (node) =>
-      treeOf.has(node) &&
-      (viewRow(node, filter, root.id) ? kinds : contextKinds).includes(node.supertag)
-  );
+  // Verification draws a check of an issue under this one, and its results, as its own rows
+  // where the check serves a statement it draws (`borrowedRows`).
+  const borrowed =
+    filter === "verification" ? borrowedRows(answer, treeOf, root.id) : NO_BORROWED_ROWS;
+  const rows = nodes.filter((node) => {
+    const own = viewRow(node, filter, root.id) || borrowed.has(node);
+    return treeOf.has(node) && (own ? kinds : contextKinds).includes(node.supertag);
+  });
   if (filter === "plan") {
     const issues = new Map<string, number>();
     for (const node of nodes) {
@@ -749,7 +757,7 @@ function heldFilterView(
     const inner = new Set([...above, tree.id]);
     const lifted = liftedAt.get(tree) ?? liftedOf.get(tree.id);
     const parts = amongView(below.get(tree.id) ?? [], lifted, (child) => draw(child, tree, inner));
-    const row = viewRow(node, filter, root.id);
+    const row = viewRow(node, filter, root.id) || borrowed.has(node);
     const own = named.has(tree.id) || (row && holds(tree, wanted));
     const placing =
       !own &&
@@ -810,6 +818,46 @@ function heldFilterView(
  *  its issue. The row kinds (`ROW_KINDS`) still choose which of them are rows. */
 function viewRow(node: TreeAnswerNode, filter: TreeFilter, key: string): boolean {
   return node.role === "query" || (filter === "plan" && isForeign(node, key));
+}
+
+/**
+ * The nodes of an issue under `key`, the issue the page is of, that the Verification view draws
+ * as its own rows from its read (`answer`), which answers them as context, as it answers the
+ * statements: each check whose `serves` tuple names a statement the view draws, and each result
+ * the read places under such a check. A check that serves none of them is drawn nowhere, as the
+ * outline draws none (`model-rows/model-drafts.ts`). Each is a row only where the tree's node
+ * drawn for it (`treeOf`) is the node of its full read id: the tree draws a node of another
+ * issue by its bare block id, which a node of this issue can share.
+ */
+function borrowedRows(
+  answer: TreeAnswer,
+  treeOf: ReadonlyMap<TreeAnswerNode, TreeNode>,
+  key: string
+): ReadonlySet<TreeAnswerNode> {
+  const nodes = answer.nodes ?? [];
+  const statements = new Set(
+    nodes.flatMap((node) => {
+      const tree = treeOf.get(node);
+      return node.role !== "query" && tree !== undefined && isStatement(tree) ? [node.id] : [];
+    })
+  );
+  const serving = new Set(
+    (answer.tuples ?? []).flatMap((tuple) =>
+      tuple.kind === "serves" && statements.has(tuple.to.id) ? [tuple.from.id] : []
+    )
+  );
+  const rows = new Set<TreeAnswerNode>();
+  const checks = new Set<string>();
+  for (const node of nodes) {
+    if (!isForeign(node, key) || treeOf.get(node)?.readId !== node.id) continue;
+    if (node.supertag === "check" && serving.has(node.id)) {
+      rows.add(node);
+      checks.add(node.id);
+    } else if (node.supertag === "result" && node.parent !== null && checks.has(node.parent.id)) {
+      rows.add(node);
+    }
+  }
+  return rows;
 }
 
 /**

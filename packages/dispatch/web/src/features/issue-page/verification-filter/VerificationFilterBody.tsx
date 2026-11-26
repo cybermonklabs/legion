@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { Link } from "react-router-dom";
 
 import type { Actor, Artifact, CheckBlock, IssueCoverage } from "../../../api/types";
 import {
@@ -39,7 +40,7 @@ import {
   type PublishedReferences,
   useKnownReferences,
 } from "../../refs/reference-names";
-import { parseNodeReference } from "../../refs/routes";
+import { parseNodeReference, referenceHref } from "../../refs/routes";
 import { appKeymap } from "../../shell/keymap";
 import { agentRoleWord } from "../agent-role";
 import { useDocumentStage } from "../document-stage";
@@ -1617,6 +1618,10 @@ function Check({
   }, [editing, leave]);
   const node = check.node;
   const surface = node.facts.find((fact) => fact.name === "surface")?.value ?? "";
+  // A check of an issue under this one names that issue by its key, a link to its own page, as
+  // the outline's row of it does (`NodeRow`'s `data-node-issue`).
+  const issueHref =
+    check.issue === undefined ? undefined : referenceHref({ key: check.issue, kind: "issue" });
   const opened = pressed ?? focusInside;
   // The Facts control's press: the facts opened where they are shut and shut where they are
   // open, by what was drawn as the pointer went down (`markPress`), and on the keyboard, which
@@ -1672,6 +1677,18 @@ function Check({
             <RowWords editing={editing} node={node} />
           </div>
         </div>
+        {issueHref === undefined ? null : (
+          <p className="mt-1 min-w-0 text-xs leading-[18px] [overflow-wrap:anywhere]">
+            <Link
+              className={`dispatch-inline-link font-semibold underline decoration-page-hair underline-offset-[3px] ${pageQuietText}`}
+              data-node-issue=""
+              to={issueHref}
+              {...authorText}
+            >
+              {check.issue}
+            </Link>
+          </p>
+        )}
         {surface === "" ? null : (
           <p
             className={`mt-0.5 text-xs leading-[18px] font-semibold ${pageKindTag.check}`}

@@ -3518,6 +3518,130 @@ test("a row drawn from a view's own tree names its other parent by that parent's
   }
 });
 
+// Decision 523: the Verification view's read answers a check of an issue under this one, and its
+// result, as context under the statement the check serves. The view draws both there as rows of
+// its own: the check stands as the facts that read holds of the node of its full read id say, and
+// names its issue by its key, a link to that issue. The child's check shares its block id with
+// this issue's check, whose results read and whose own result node fail; the child's reads neither
+// and passes, as its own result says. The summary names this issue's commit, though the child's
+// result is newer and ran at another commit.
+test("a child's check is drawn under the statement it serves, read by its own read id", async () => {
+  const stubs = stubReads();
+  const base = issueDetails();
+  const verification = artifact("artifact-verification", VERIFICATION_SLUG);
+  const issue: IssueDetails = {
+    ...base,
+    artifacts: [...(base.artifacts ?? []), verification],
+    verification_artifact_id: verification.id,
+  };
+  const words = "sum-of-the-words-now";
+  const own = `${ISSUE_KEY}/${VERIFICATION_SLUG}#c1`;
+  const borrowed = `CORE-2/${VERIFICATION_SLUG}#c1`;
+  const viewAnswer = treeOf(
+    [
+      treeNode("r1", "requirement", ISSUE_KEY, {
+        ...inDocument(SPEC_DOCUMENT, 0),
+        role: "context",
+      }),
+      treeNode("r2", "requirement", ISSUE_KEY, {
+        ...inDocument(SPEC_DOCUMENT, 1),
+        role: "context",
+      }),
+      treeNode("c1", "check", "r1", {
+        ...inDocument(verification),
+        check: { changed_version: 1, text_sha256: words },
+        role: "query",
+      }),
+      treeNode("res-own", "result", own, {
+        result: { check_sha256: words, check_version: 1, verdict: "fail" },
+        role: "query",
+      }),
+      treeNode("c1", "check", "r2", {
+        check: { changed_version: 1, text_sha256: words },
+        document: {
+          artifact_id: "artifact-core-2-verification",
+          position: 0,
+          slug: VERIFICATION_SLUG,
+        },
+        issue: "CORE-2",
+        role: "context",
+        text: "The child's check proves the second statement.",
+      }),
+      treeNode("res-child", "result", borrowed, {
+        attributes: { commit: OTHER_COMMIT },
+        issue: "CORE-2",
+        made_at: "2026-11-15T00:00:00Z",
+        result: { check_sha256: words, check_version: 1, verdict: "pass" },
+        role: "context",
+        text: "1 passed",
+      }),
+    ],
+    [treeTuple("serves", own, "r1"), treeTuple("serves", borrowed, "r2")]
+  );
+  spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    const asked = query as { readonly view?: string };
+    if (asked.view === undefined) return treeAnswer([treeNode(ISSUE_KEY, "issue", null)]);
+    return asked.view === "verification" ? viewAnswer : Promise.withResolvers<never>().promise;
+  });
+  spyOn(api, "getIssueCoverage").mockResolvedValue({
+    gaps: [],
+    has_plan: false,
+    issue: ISSUE_KEY,
+    requirements: ["r1", "r2"].map((block) => ({
+      block_id: block,
+      checks: 1,
+      gaps: [],
+      plan_tasks: 0,
+      ref: specRef(block),
+      text: "",
+    })),
+    spec_artifact_id: SPEC_DOCUMENT.id,
+  });
+  spyOn(api, "getIssueResults").mockResolvedValue({
+    checks: [
+      check({
+        block_id: "c1",
+        pass_stands: { answer: "no" },
+        results: [result({ check_block_id: "c1", failed: 1, id: "res-own", verdict: "fail" })],
+      }),
+    ],
+    issue: ISSUE_KEY,
+    verification_artifact_id: verification.id,
+  });
+  const view = drawStage("", { issue, preset: "verification" });
+  const checkUnder = (statement: string, id: string) =>
+    view.container.querySelector<HTMLElement>(
+      `[data-verification-card][data-node-id="${blockNodeId(SPEC_SLUG, statement)}"] [data-verification-check][data-node-id="${id}"]`
+    );
+  try {
+    await waitFor(() =>
+      expect(
+        checkUnder("r2", "c1"),
+        "the view drew no row of the child's check under the statement it serves"
+      ).not.toBeNull()
+    );
+    const child = checkUnder("r2", "c1");
+    const ownRow = checkUnder("r1", blockNodeId(VERIFICATION_SLUG, "c1"));
+    expect(
+      [ownRow?.dataset.nodeState, child?.dataset.nodeState],
+      "a check reads another's facts"
+    ).toEqual(["failed", "passed"]);
+    const link = child?.querySelector("[data-node-issue]");
+    expect(link?.textContent).toBe("CORE-2");
+    expect(link?.getAttribute("href")).toBe("/issues/CORE-2");
+    expect(ownRow?.querySelector("[data-node-issue]")).toBeNull();
+    const drawn = child?.querySelector("[data-verification-result]");
+    expect(drawn?.getAttribute("data-node-id")).toBe("res-child");
+    expect(drawn?.hasAttribute("data-result-stands")).toBe(true);
+    expect(textsOf(view, "[data-verification-commit]")).toEqual([
+      `${VERIFICATION_WORDS.commit} ${shortCommit(COMMIT)}`,
+    ]);
+  } finally {
+    view.unmount();
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
 // The summary counts the issue's statements from the coverage read, which answers every statement
 // of the issue's spec, and never the statements of the view read's loaded pages. The server ends
 // a page of the view at a bound of bytes as well as of nodes, so a node written before the cut

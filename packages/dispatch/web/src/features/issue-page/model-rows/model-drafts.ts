@@ -15,7 +15,8 @@ import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
  *   `serves` - stands under each statement of this issue it serves, in the order its tuples name
  *   them, and never under the child issue's node; one that serves none of this issue's
  *   statements is drawn nowhere (R4). A borrowed check stands as F's one reading of a check reads
- *   it (`checkStanding`), over the result nodes the read answers under it (`borrowedStanding`).
+ *   it (`checkStanding`), over the result nodes the read answers under it (`borrowedStanding`). A
+ *   borrowed plan task the Plan view's read answers with its place in the plan is T's to draft.
  * - **A borrowed result** stands under the borrowed check it was recorded against, with who
  *   recorded it and when.
  *
@@ -57,11 +58,14 @@ export function modelDraftSteps({
   /** A check or a plan task of another issue: under each statement of this issue its `serves`
    *  tuples name, in their order, with its address in its own issue (`draftOf`) and no author or
    *  time, as this issue's own checks draw none; none where it serves no statement of this
-   *  issue. A check stands as its result nodes say (`borrowedStanding`). */
+   *  issue. A check stands as its result nodes say (`borrowedStanding`). A plan task the read
+   *  answers its place in the plan for (`plan`), which only the Plan view's read does, is T's
+   *  step's (`draftServing`), which drafts its order and its needs. */
   const draftBorrowed: TreeDraftStep = (node, answer, context) => {
     if (
       (node.supertag !== "check" && node.supertag !== "plan_task") ||
-      !isForeign(node, context.key)
+      !isForeign(node, context.key) ||
+      (node.supertag === "plan_task" && node.plan !== undefined)
     ) {
       return undefined;
     }
@@ -131,10 +135,8 @@ function resultsUnder(answer: TreeAnswer, parentId: string): readonly TreeAnswer
 }
 
 /**
- * How a borrowed check stands: F's one reading of a check (`checkStanding`) over the result
- * nodes the read answers under it, each read as a `CheckResult` (`resultOf`), with the server's
- * `pass_stands` answered `yes` where a pass nobody withdrew was recorded against the check's
- * words as they stand, else `no`. So the newest result nobody withdrew over the check's current
+ * How a borrowed check stands: F's one reading of a check (`checkStanding`) over what the read
+ * answers of it (`borrowedReads`). So the newest result nobody withdrew over the check's current
  * words decides, a pass passed and a fail failed; where none is, the newest over moved words
  * reads out of date, every result withdrawn retracted, and no result no-result. A pass at a
  * commit the child's check no longer compares with still reads passed, since no basis is read
@@ -145,6 +147,23 @@ function resultsUnder(answer: TreeAnswer, parentId: string): readonly TreeAnswer
  * must not read as current.
  */
 function borrowedStanding(check: TreeAnswerNode, answer: TreeAnswer): CheckState | undefined {
+  const reads = borrowedReads(check, answer);
+  return reads === undefined ? undefined : checkStanding(reads).state;
+}
+
+/**
+ * What `answer` says of the borrowed check `check` as the results read says it of a check
+ * (`CheckStateReads`): the result nodes the read answers under it, each read as a `CheckResult`
+ * (`resultOf`), and the server's `pass_stands` answered `yes` where a pass nobody withdrew was
+ * recorded against the check's words as they stand, else `no`. The Verification view's body
+ * reads a borrowed check's results from it (`verification-filter/statement-state.ts`), as the
+ * row's standing is read from it (`borrowedStanding`). Undefined where the read answers no words'
+ * sum on the check or no `result` on one of its result nodes.
+ */
+export function borrowedReads(
+  check: TreeAnswerNode,
+  answer: TreeAnswer
+): CheckStateReads | undefined {
   const words = check.check?.text_sha256;
   if (words === undefined) return undefined;
   const results: CheckResult[] = [];
@@ -159,8 +178,7 @@ function borrowedStanding(check: TreeAnswerNode, answer: TreeAnswer): CheckState
       result.retracted === undefined &&
       result.check_words_moved !== true
   );
-  const reads: CheckStateReads = { pass_stands: { answer: passStands ? "yes" : "no" }, results };
-  return checkStanding(reads).state;
+  return { pass_stands: { answer: passStands ? "yes" : "no" }, results };
 }
 
 /** A count the read answers as a result node's value, as the text the store states it in. */
