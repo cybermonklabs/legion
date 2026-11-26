@@ -25,6 +25,7 @@ const droppedDuplicateLine = "an intake fact was delivered again and dropped as 
 // dedupe key is TestARedeliveredGitHubDeliveryIsAppliedOnceByItsDedupeKey's claim (dedupe_test.go),
 // so nothing here reads processed_events or counts a handler's writes.
 func TestTheIntakeSaysSoWhenItDropsAFactDeliveredAgain(t *testing.T) {
+	t.Parallel()
 	const reviewSubject = "notifications.github.sjawhar.legion.pr.42.review"
 	t.Run("a delivery of a fact applied already", func(t *testing.T) {
 		pool := migratedPool(t)

@@ -76,6 +76,7 @@ func expectSteps(t *testing.T, got []string, want ...string) {
 // two gh files of the App of the role it launches as, hosts.yml parsing back to that token — then
 // sets it Running. The returned locator addresses only the requested process in the shared pod.
 func TestSpawnCreatesTheIssueSandboxAndRoleLocator(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
@@ -130,6 +131,7 @@ func TestSpawnCreatesTheIssueSandboxAndRoleLocator(t *testing.T) {
 // controller acts as the review App (appauth.AppRoleFor), so its launch mints a credential and its
 // pod projects it at a gh volume like a workflow role's.
 func TestTheControllersSecretHoldsTheReviewAppsGhFilesBesideTheLauncherToken(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.spawn(controllerSpec(t))
 	name := SandboxName(controllerToken)
@@ -150,6 +152,7 @@ func TestTheControllersSecretHoldsTheReviewAppsGhFilesBesideTheLauncherToken(t *
 }
 
 func TestRoleStartsShareOneIssuePodAndDoNotReinitializeIt(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	root := g.spawn(rootSpec(t))
 	writes := len(g.writes())
@@ -177,6 +180,7 @@ func TestRoleStartsShareOneIssuePodAndDoNotReinitializeIt(t *testing.T) {
 // volume claim template, the shape this runtime makes for an issue: one of the release before the
 // pod-owned disk is replaced instead of kept (TestALaunchReplacesTheIssueSandboxOfTheSupersededDiskShape).
 func TestSpawnOverAnExistingSandbox(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	labels := claimLabels(claim.RoleTester)
 	t.Run("suspended", func(t *testing.T) {
@@ -238,6 +242,7 @@ func TestSpawnOverAnExistingSandbox(t *testing.T) {
 // be relabelled here and then replaced by the same launch, Sandbox and claim together
 // (TestALaunchReplacesTheIssueSandboxOfTheSupersededDiskShape).
 func TestAnOrphanRootKeepsTheSandboxItsOldTreeLeft(t *testing.T) {
+	t.Parallel()
 	orphan := claim.Token("legion-legion-legion-209-architect")
 	name := SandboxName(orphan)
 	oldTree := map[string]string{labelProject: testProject, labelTree: labelValue(testTree), labelIssue: labelValue("LEGION-209")}
@@ -328,6 +333,7 @@ func TestAnOrphanRootKeepsTheSandboxItsOldTreeLeft(t *testing.T) {
 // must carry that name, or each of those roles reads as having died on its own and is charged a
 // death for the daemon's own replacement.
 func TestALaunchReplacesTheIssueSandboxOfTheSupersededDiskShape(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	g := supersededIssue(t)
 	loc := g.spawn(workerSpec(t))
@@ -410,6 +416,7 @@ func supersededIssue(t *testing.T, options ...rigOption) *rig {
 // replacement ended as displaced, so the roles of that pod are resumed uncharged, and the
 // replacement logs its reason.
 func TestALaunchReplacesASandboxOfTheOtherDiskShape(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	labels := claimLabels(claim.RoleTester)
 	// logged is the configuration edits make, with the runtime logging at info and above to log.
@@ -643,6 +650,7 @@ func TestALaunchReplacesASandboxOfTheOtherDiskShape(t *testing.T) {
 // that confirms the delete, once the Sandbox store has lost the old Sandbox too, so neither the
 // store's copy nor the confirming read has anything to name the pod with.
 func TestASiblingReadBetweenAMigratingLaunchsDeleteAndCreateIsDisplaced(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	sibling := sandboxLocator(otherToken, "uid-pod-old")
 	var deleting, probed atomic.Bool
@@ -666,7 +674,7 @@ func TestASiblingReadBetweenAMigratingLaunchsDeleteAndCreateIsDisplaced(t *testi
 			// The launch has seen the delete through and has yet to send its create. The probe's own
 			// confirming read comes through this hook too, so it is marked first.
 			probed.Store(true)
-			storeHeldIt = !testwait.Holds(time.Second, 5*time.Millisecond, func() bool {
+			storeHeldIt = !testwait.Holds(testwait.Remaining(t), testwait.Poll, func() bool {
 				s, _ := g.r.storedSandbox(name)
 				return s == nil
 			})
@@ -698,6 +706,7 @@ func TestASiblingReadBetweenAMigratingLaunchsDeleteAndCreateIsDisplaced(t *testi
 // relaunch.go's strand states; without the uid comparison in evaluate the whole package stays
 // green, which is why this is here.
 func TestAGapReadOfARoleOfAnotherPodThanTheReplacementEndedIsNotDisplaced(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	older := sandboxLocator(otherToken, "uid-pod-older")
 	var deleting, probed atomic.Bool
@@ -719,7 +728,7 @@ func TestAGapReadOfARoleOfAnotherPodThanTheReplacementEndedIsNotDisplaced(t *tes
 				return
 			}
 			probed.Store(true)
-			storeHeldIt = !testwait.Holds(time.Second, 5*time.Millisecond, func() bool {
+			storeHeldIt = !testwait.Holds(testwait.Remaining(t), testwait.Poll, func() bool {
 				s, _ := g.r.storedSandbox(name)
 				return s == nil
 			})
@@ -755,6 +764,7 @@ func TestAGapReadOfARoleOfAnotherPodThanTheReplacementEndedIsNotDisplaced(t *tes
 // record moved while the read was out, so the observation is Uncertain, and the next one, with the
 // record settled, reads the displacement.
 func TestAConfirmingReadTheReplacementsDeleteOvertakesIsUncertain(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	sibling := sandboxLocator(otherToken, "uid-pod-old")
 	g := newRig(t, []k8sruntime.Object{
@@ -806,6 +816,7 @@ func TestAConfirmingReadTheReplacementsDeleteOvertakesIsUncertain(t *testing.T) 
 // a successful Create would have taken, and the Sandbox that next launch creates carries the name,
 // so from then the durable record answers.
 func TestAReplacementWhoseCreateFailsKeepsTheReplacedPodsRolesDisplaced(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	sibling := sandboxLocator(otherToken, "uid-pod-old")
 	g := supersededIssue(t)
@@ -851,6 +862,7 @@ func TestAReplacementWhoseCreateFailsKeepsTheReplacedPodsRolesDisplaced(t *testi
 // again, the Sandbox made afresh names no pod at all: the one the migration replaced was never
 // that Sandbox's, and a name kept past the replacement's Create would be written onto it.
 func TestTheNameAReplacementKeptForItsGapGoesOnceTheReplacementCarriesIt(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	g := supersededIssue(t)
 	loc := g.spawn(workerSpec(t))
@@ -892,6 +904,7 @@ func TestTheNameAReplacementKeptForItsGapGoesOnceTheReplacementCarriesIt(t *test
 // told the new generation's boot token and resumes the recorded session, which the session database
 // kept: nothing of it was on the failed pod's disk.
 func TestResumeAfterAFailedPod(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	labels := claimLabels(claim.RoleTester)
 	oldSecret := &corev1.Secret{
@@ -949,6 +962,7 @@ const nextImage = "ghcr.io/cybermonklabs/legion-worker@sha256:2e2e2e2e0000000000
 // shape). A Sandbox that is not live — here one suspended under the running pod — is replaced by
 // its next start as it always was, and every container of the new pod runs the configured image.
 func TestRelaunchKeepsADriftedPodAndReplacesASuspendedSandboxs(t *testing.T) {
+	t.Parallel()
 	olderInit := func(pod *corev1.Pod) {
 		for i := range pod.Spec.InitContainers {
 			if pod.Spec.InitContainers[i].Name == initContainer {
@@ -1045,6 +1059,7 @@ func suspendSandbox(t *testing.T, g *rig, r *Runtime, name string) {
 // configured image, which the boot gate already holds to the daemon's contract, so nothing here
 // is installed into it.
 func TestASuspendedSandboxsInstallingResumeReplacesAndInstallsNothing(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	labels := claimLabels(claim.RoleTester)
 	g := newRig(t, []k8sruntime.Object{sandboxObject(t, name, "uid-sandbox-kept", modeSuspended, labels)})
@@ -1081,6 +1096,7 @@ func TestASuspendedSandboxsInstallingResumeReplacesAndInstallsNothing(t *testing
 // relaunch Gone the moment it started, until the claim's launch budget ran out and the resident
 // role never came back.
 func TestAReplacementGenerationOutlivesTheKilledInstancesTerminatedStatus(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	name := SandboxName(workerToken)
 	killed := g.spawn(workerSpec(t))
@@ -1128,6 +1144,7 @@ func TestAReplacementGenerationOutlivesTheKilledInstancesTerminatedStatus(t *tes
 // Running again (decision 6). The repository cache the first launch makes is set Running too, by
 // its own lifecycle (repocache_test.go); only the issue Sandbox's patches are counted here.
 func TestTheSecretsHoldTheLaunchsCredentialsWhenRunningIsPatched(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	var mu sync.Mutex
 	var atRunning []string
@@ -1185,6 +1202,7 @@ func TestTheSecretsHoldTheLaunchsCredentialsWhenRunningIsPatched(t *testing.T) {
 // A Secret left by an earlier Sandbox of the same name — one released while its garbage was still
 // being collected — is replaced, never updated, so the collector cannot delete the new one.
 func TestASecretOwnedByAnEarlierSandboxIsReplaced(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	g := newRig(t, []k8sruntime.Object{&corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: secretName(name), Namespace: testNamespace, UID: "uid-secret-old", OwnerReferences: []metav1.OwnerReference{{
@@ -1202,6 +1220,7 @@ func TestASecretOwnedByAnEarlierSandboxIsReplaced(t *testing.T) {
 // on another pod of its tree: a child issue's pod is set Running while the root's is still in
 // workspace-init.
 func TestAPodOfATreeLaunchesWhileAnotherIsStillInitializing(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.autoStart.Store(false)
 	g.spawn(rootSpec(t))
@@ -1212,13 +1231,10 @@ func TestAPodOfATreeLaunchesWhileAnotherIsStillInitializing(t *testing.T) {
 		_, err := g.r.Spawn(g.ctx, childSpec(t))
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the child issue's launch waited on the root's workspace-init")
+	// A child launch that waited on the root's workspace-init would end at its own boot timeout with
+	// an error, the root's pod never leaving it: its answer is the verdict, whenever it comes.
+	if err := testwait.Receive(t, "the child issue's launch", done); err != nil {
+		t.Fatalf("the child issue's launch: %v; it may have waited on the root's workspace-init", err)
 	}
 	if pod := g.pod(root); pod == nil || pod.Status.Phase != corev1.PodPending {
 		t.Fatalf("the root's pod is %+v, want it still Pending in workspace-init", pod)
@@ -1238,6 +1254,7 @@ func TestAPodOfATreeLaunchesWhileAnotherIsStillInitializing(t *testing.T) {
 // receiving runs on into the slack this bound holds over what its fetch actually waited and
 // checked. Pinned to a literal, 280 minutes, since no test can wait the real bound out.
 func TestProvisionBoundIsTheFetchsWholeBudgetTheClonesBoundAndTheCheckouts(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	if got, want := g.r.ProvisionBound(), workspace.CacheWaitTimeout+2*workspace.FetchTimeout+workspace.CloneTimeout+workspace.CheckoutTimeout; got != 280*time.Minute || got != want {
 		t.Fatalf("ProvisionBound = %s, want %s: the cache wait, the verification's bound, the delta's own, the shared clone's, and the checkout's", got, want)
@@ -1247,6 +1264,7 @@ func TestProvisionBoundIsTheFetchsWholeBudgetTheClonesBoundAndTheCheckouts(t *te
 // A launch whose Sandbox was replaced between reading it and writing it is refused rather than
 // written: every Sandbox patch tests the uid it was read at.
 func TestAPatchIsFencedToTheSandboxItRead(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.spawn(workerSpec(t))
 	name := SandboxName(workerToken)
@@ -1277,6 +1295,7 @@ func TestAPatchIsFencedToTheSandboxItRead(t *testing.T) {
 // store then replaces with the relaunch's Suspended patch — and a Suspend that found the pod gone
 // would read that as already Suspended and write nothing.
 func TestALaunchReturnsOnlyOnceTheSandboxStoreHoldsItsRunningPatch(t *testing.T) {
+	t.Parallel()
 	for _, launches := range []int{1, 2} {
 		t.Run(fmt.Sprintf("launch %d", launches), func(t *testing.T) {
 			g := newRig(t, nil, withLaggingSandboxInformer(300*time.Millisecond))
@@ -1317,6 +1336,7 @@ func TestALaunchReturnsOnlyOnceTheSandboxStoreHoldsItsRunningPatch(t *testing.T)
 // the claim is a launch failure now, and a pod the controller created later would run a valid
 // token for a claim nothing supervises.
 func TestALaunchThatFailsAfterRunningLeavesItsSandboxSuspended(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(func(o *Options) { o.BootTimeout = 300 * time.Millisecond }))
 	g.hold.Store(true)
 	if _, err := g.r.Spawn(g.ctx, workerSpec(t)); err == nil || !strings.Contains(err.Error(), "wait for its new pod") {
@@ -1334,6 +1354,9 @@ func TestALaunchThatFailsAfterRunningLeavesItsSandboxSuspended(t *testing.T) {
 // probe path already reads it. The timeout carries it too, so the operator reads one line instead
 // of going to the cluster for the condition the daemon had in its store all along.
 func TestALaunchThatWaitsOutItsPodSaysWhatTheSandboxReports(t *testing.T) {
+	// Not parallel: the error reads the controller's condition from the runtime's store when the
+	// boot timeout runs out (waitedOut), so the store must catch up with the patch inside that
+	// span, which other tests' load would move.
 	blocked := metav1.Condition{
 		Type: conditionReady, Status: metav1.ConditionFalse, Reason: "PodSchedulingBlocked",
 		Message: "0/3 nodes are available: 3 Insufficient cpu.",
@@ -1384,6 +1407,7 @@ func TestALaunchThatWaitsOutItsPodSaysWhatTheSandboxReports(t *testing.T) {
 // a refused watch itself without ever calling that handler, so a runtime that trusted it could
 // boot with two stores nothing was feeding.
 func TestBootRefusesWhenTheAPIServerRefusesTheConnection(t *testing.T) {
+	t.Parallel()
 	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	address := dead.URL
 	dead.Close()
@@ -1415,6 +1439,7 @@ func (d *deadlineTokens) Token(ctx context.Context, repo ghrepo.Repository) (str
 // other API call: a stalled GitHub connection must not hold the pod's turn for good. So is the
 // repository cache's, which the issue's first launch makes.
 func TestTheProvisioningTokenMintIsBounded(t *testing.T) {
+	t.Parallel()
 	tokens := &deadlineTokens{}
 	g := newRig(t, nil, withOptions(func(o *Options) { o.Tokens = tokens }))
 	g.spawn(workerSpec(t))
@@ -1429,6 +1454,7 @@ func TestTheProvisioningTokenMintIsBounded(t *testing.T) {
 // returns it, never panics, gives the pod's launch turn back, and the pod's next launch, once the
 // failure passes, launches.
 func TestAFailedStepOfAnIssuePodsProvisioningReleasesThePodsTurn(t *testing.T) {
+	t.Parallel()
 	failure := errors.New("the step failed")
 	for name, tc := range map[string]struct {
 		// fail arms the failure for the next launch only; the spec it returns is that launch's.
@@ -1491,20 +1517,18 @@ func TestAFailedStepOfAnIssuePodsProvisioningReleasesThePodsTurn(t *testing.T) {
 	}
 }
 
-// failedLaunch is a launch of spec expected to fail within a second, its panic turned into the
-// test's failure, so a launch that panics fails its own subtest by name rather than the binary.
+// failedLaunch is a launch of spec expected to fail, its panic turned into the test's failure, so a
+// launch that panics fails its own subtest by name rather than the binary. Its one bound is the
+// test binary's deadline (testwait.Context): a loaded machine may take a launch longer than any
+// fixed span to reach the failure its row plants, and a bound of its own that ran out first would
+// end the launch with that bound's error instead of the row's.
 func failedLaunch(t *testing.T, g *rig, spec runtime.SpawnSpec) error {
 	t.Helper()
-	launching, cancel := context.WithTimeout(g.ctx, time.Second)
-	defer cancel()
-	return failedLaunchOn(t, g, launching, spec)
+	return failedLaunchOn(t, g, testwait.Context(t), spec)
 }
 
-// failedLaunchOn is failedLaunch for a row whose launch no wall clock bounds: it runs on
-// launching, the context the row cancels once what it waits on has happened, and turns a panic
-// into the test's failure the same way. A launch whose failure lies past the waits of a replacing
-// try — a suspend, a wait for the previous pod, provision, the wait for the new pod — takes a
-// loaded machine longer than failedLaunch's second, and is this helper's rather than its.
+// failedLaunchOn is failedLaunch on launching, a context of the row's own, turning a panic into the
+// test's failure the same way.
 func failedLaunchOn(t *testing.T, g *rig, launching context.Context, spec runtime.SpawnSpec) error {
 	t.Helper()
 	defer func() {
@@ -1534,6 +1558,7 @@ func (o *outageTokens) Token(ctx context.Context, repo ghrepo.Repository) (strin
 // already in the pod; the role's next start goes into the same pod. A read the API server answers
 // overloaded is sent again (resend), so that start goes into the same pod at once.
 func TestOnlyAPodsUnboundLaunchersReplaceItNotAFailedRead(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		// unbind is what happens to the reviewer's launcher Secret before the reviewer starts, with
 		// fail armed to have the next read of it fail with failure.
@@ -1635,6 +1660,7 @@ func editSecret(g *rig, name string, edit func(*corev1.Secret)) {
 // generation 1 must already be stopped by then; neither a failed claim nor the runtime's forgotten
 // watch may leave it acting.
 func TestAFailedLauncherBindingReadNeverLeavesASupervisedRoleChildRunning(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	machine, store, _ := supervisedSandboxMachine(t, g, spec)
@@ -1677,6 +1703,7 @@ func TestAFailedLauncherBindingReadNeverLeavesASupervisedRoleChildRunning(t *tes
 // patch again while the throttle lasted, so a server that stays overloaded fails the claim rather
 // than holding its launch for ever.
 func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		// bootTimeout is the rig's boot timeout, 0 for the rig's own.
 		bootTimeout time.Duration
@@ -1766,6 +1793,7 @@ func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T)
 // the Machine retries to Failed. The refusal is one prepare makes before relaunch otherwise
 // forgets the role: a role prompt file that is not on disk.
 func TestAPrepareRefusalOnResumeNeverLeavesASupervisedRoleChildRunning(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		sessionFile string
 		mutate      func(*runtime.SpawnSpec)
@@ -1816,6 +1844,7 @@ func TestAPrepareRefusalOnResumeNeverLeavesASupervisedRoleChildRunning(t *testin
 // before relaunch's cleanup. Machine itself must stop the previous role process before it reports
 // the launch failure; otherwise the same cleared locator leaves that generation watched and running.
 func TestASpecBuilderRefusalOnResumeNeverLeavesASupervisedRoleChildRunning(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	machine, store, specs := supervisedSandboxMachine(t, g, spec)
@@ -1848,6 +1877,7 @@ func TestASpecBuilderRefusalOnResumeNeverLeavesASupervisedRoleChildRunning(t *te
 // runtime cannot know it: retried to Failed, no child of the role is left running and nothing is
 // watched.
 func TestASpawnRefusalForAnUnregisteredClaimNeverLeavesItsChildRunning(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	machine, store, _ := supervisedSandboxMachine(t, g, spec)
@@ -1929,6 +1959,7 @@ func startSupervisedSandboxRole(
 // holds both where Resume has no previous locator and where its previous locator names the same
 // pod: the Stop names the issued generation, never the previous one, which is the caller's.
 func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t *testing.T) {
+	t.Parallel()
 	for name, previous := range map[string]bool{
 		"without a previous locator":              false,
 		"on the same pod as its previous locator": true,
@@ -1976,6 +2007,7 @@ func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t
 // nothing can be running, so relaunch reads the Start's outcome as unknown and stops the issued
 // generation, as for an unanswered Start: the launcher here did begin it.
 func TestAnOKStartAnswerNamingAnotherGenerationIsStoppedNotTakenAsARefusal(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	first := g.spawn(spec)
@@ -2230,6 +2262,7 @@ func (s *supervisedSandboxStore) PutClaimStep(_ context.Context, token claim.Tok
 // ambiguous as a pod that never came: the launch sets its Sandbox Suspended before returning. The
 // repository cache the launch makes first is answered as usual.
 func TestALaunchWhoseRunningPatchTimesOutAfterApplyingLeavesItsSandboxSuspended(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.hold.Store(true)
 	applyThenTimeOut := k8stesting.ObjectReaction(g.dyn.Tracker())
@@ -2256,6 +2289,7 @@ func TestALaunchWhoseRunningPatchTimesOutAfterApplyingLeavesItsSandboxSuspended(
 // predecessor the garbage collector has not reaped — reports nothing but Pending, and the event is
 // the whole of the reason (INFRA-80). A pod past Pending carries none: its phase is the answer.
 func TestALaunchThatWaitedOutAPendingPodReportsItsEvents(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))
 	name := loc.Sandbox.Name

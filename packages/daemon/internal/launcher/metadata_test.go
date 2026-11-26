@@ -345,6 +345,7 @@ func oneLineJSON(t *testing.T, v any) string {
 // holds as text, as the JSON of that text (jsonForm). Refusals, the redirects and the unknown
 // paths are GKE's own, `identity` among them.
 func TestMetadataAnswersEveryPathAsGKEsServerAnswersIt(t *testing.T) {
+	t.Parallel()
 	g := newMetadataRig(t)
 	unserved := map[string][]string{
 		"instance-dir":          {"attributes/", "gke/", "hostname", "id", "name", "zone"},
@@ -460,6 +461,7 @@ func servedToken(t *testing.T, g *metadataRig, want recordedAnswer, body string)
 // the security token service for the pool's audience (the fake checks every exchange), reading
 // the token file at each exchange, so a token the kubelet has rotated is the one sent next.
 func TestMetadataExchangesWhatTheTokenFileHoldsAtEachExchange(t *testing.T) {
+	t.Parallel()
 	g := newMetadataRig(t)
 	// A token with less than five minutes left is exchanged again at the next request.
 	g.sts.setExpiresIn(299)
@@ -483,6 +485,7 @@ func TestMetadataExchangesWhatTheTokenFileHoldsAtEachExchange(t *testing.T) {
 // expires_in is the seconds the token handed out has left, read against the clock, so it falls as
 // the token ages while the endpoint hands out the one it holds.
 func TestMetadataExpiresInIsTheSecondsTheCachedTokenHasLeft(t *testing.T) {
+	t.Parallel()
 	g := newMetadataRig(t)
 	first := g.token(t, "")
 	g.advance(10 * time.Minute)
@@ -509,6 +512,7 @@ func TestMetadataExpiresInIsTheSecondsTheCachedTokenHasLeft(t *testing.T) {
 // again, one with less than five is not. The oauth2 library's own margin, ten seconds, would hand
 // out the latter.
 func TestMetadataRefreshesATokenBeforeItsLastFiveMinutes(t *testing.T) {
+	t.Parallel()
 	g := newMetadataRig(t)
 	g.sts.setExpiresIn(360)
 	first := g.token(t, "")
@@ -533,6 +537,7 @@ func TestMetadataRefreshesATokenBeforeItsLastFiveMinutes(t *testing.T) {
 // `?scopes=` is the scope the service is asked for, one token source per scope set whatever the
 // order the request names them in, and cloud-platform for a request that names none.
 func TestMetadataAsksTheServiceForTheScopesARequestNames(t *testing.T) {
+	t.Parallel()
 	g := newMetadataRig(t)
 	const storage = "https://www.googleapis.com/auth/devstorage.read_only"
 	two := g.token(t, "?scopes="+userinfoEmailScope+","+cloudPlatformScope)
@@ -553,6 +558,7 @@ func TestMetadataAsksTheServiceForTheScopesARequestNames(t *testing.T) {
 // At most sixteen token sources are kept, one per scope set, so a client naming ever new scope
 // sets cannot grow the launcher's memory.
 func TestMetadataKeepsAtMostSixteenTokenSources(t *testing.T) {
+	t.Parallel()
 	g := newMetadataRig(t)
 	for i := range 20 {
 		g.token(t, "?scopes=https://www.googleapis.com/auth/example-"+strconv.Itoa(i))
@@ -571,6 +577,7 @@ func TestMetadataKeepsAtMostSixteenTokenSources(t *testing.T) {
 // A token request without `Metadata-Flavor: Google`, or one with X-Forwarded-For, is refused as
 // GKE's server refuses it and before any exchange, so a request a proxy forwards gets no token.
 func TestMetadataRefusesARequestWithoutTheFlavorOrForwardedBeforeAnyExchange(t *testing.T) {
+	t.Parallel()
 	g := newMetadataRig(t)
 	for _, tc := range []struct {
 		name    string
@@ -596,6 +603,7 @@ func TestMetadataRefusesARequestWithoutTheFlavorOrForwardedBeforeAnyExchange(t *
 // token nor any access token, and quotes the service's answer cut to 256 bytes at a character's
 // start, so one long answer cannot flood the log.
 func TestMetadataAnswersAFailedExchangeWith500AndLogsItOnceAMinute(t *testing.T) {
+	t.Parallel()
 	g := newMetadataRig(t)
 	g.sts.refuse()
 	failed := func() {
@@ -642,6 +650,7 @@ func TestMetadataAnswersAFailedExchangeWith500AndLogsItOnceAMinute(t *testing.T)
 // so the container's log names every path a tool asked for in vain; the paths remembered are
 // bounded, so a client cannot grow the launcher's memory with ever new ones.
 func TestMetadataLogsEachPathItDoesNotServeOnce(t *testing.T) {
+	t.Parallel()
 	g := newMetadataRig(t)
 	for _, tc := range []struct{ path, logged string }{
 		{metadataPrefix + "instance/service-accounts/default/identity?audience=https://example.com", metadataPrefix + "instance/service-accounts/default/identity"},
@@ -680,6 +689,7 @@ func TestMetadataLogsEachPathItDoesNotServeOnce(t *testing.T) {
 // roles container and a microVM controller pod's single role each serve it; either form without
 // --microvm, or with the endpoint named in part, is refused.
 func TestMetadataIsRefusedOutsideAMicroVMPodOrNamedInPart(t *testing.T) {
+	t.Parallel()
 	issuePod := func() Config {
 		return Config{
 			Connect: "tcp://127.0.0.1:1", Sandbox: "legion-legion-legion-208", PodUID: "pod-1", RolesDir: "/roles", Roles: []string{"tester"},
@@ -729,6 +739,7 @@ func TestMetadataIsRefusedOutsideAMicroVMPodOrNamedInPart(t *testing.T) {
 // launcher would serve (Config.servedMetadata) without listening: that one listens on
 // MetadataAddress, which no test holds.
 func TestTheControllersLauncherServesTheMetadataEndpoint(t *testing.T) {
+	// Not parallel: it unsets environment variables of the whole process (holdMetadataVariables).
 	named := func() *MetadataConfig {
 		return &MetadataConfig{WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider}
 	}
@@ -784,6 +795,7 @@ func TestTheControllersLauncherServesTheMetadataEndpoint(t *testing.T) {
 // metadataEnv names the endpoint's address over whatever a generation's environment carried where
 // its launcher serves it, and leaves that environment exactly as it is where it does not.
 func TestMetadataEnvNamesTheAddressOnlyWhereItsLauncherServes(t *testing.T) {
+	t.Parallel()
 	const address = "127.0.0.1:40001"
 	carried := []string{"PATH=/bin", MetadataHostVariable + "=169.254.169.254", MetadataIPVariable + "=169.254.169.254"}
 	served := metadataEnv(slices.Clone(carried), address)
@@ -805,6 +817,7 @@ func TestMetadataEnvNamesTheAddressOnlyWhereItsLauncherServes(t *testing.T) {
 // A pod's endpoint listens at MetadataAddress, the one its launcher's configuration names when it
 // names none; only a test names an address of its own, so no test holds the pod's port.
 func TestMetadataListensAtTheConstantAddressUnlessATestNamesItsOwn(t *testing.T) {
+	t.Parallel()
 	if got := (MetadataConfig{WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider}).listenAddress(); got != MetadataAddress {
 		t.Errorf("a pod's endpoint listens at %q, want %q", got, MetadataAddress)
 	}
@@ -817,6 +830,7 @@ func TestMetadataListensAtTheConstantAddressUnlessATestNamesItsOwn(t *testing.T)
 // request, its headers and any body, and a connection the client keeps a minute to send its next
 // one. Only a test names bounds of its own, short enough to wait out (the two tests below).
 func TestMetadataGivesARequestTenSecondsAndAKeptConnectionAMinute(t *testing.T) {
+	t.Parallel()
 	server := (MetadataConfig{WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider}).httpServer(nil)
 	if server.ReadHeaderTimeout != 10*time.Second || server.ReadTimeout != 10*time.Second || server.IdleTimeout != time.Minute {
 		t.Errorf("a pod's endpoint gives a request's headers %s, the request %s and a kept connection %s, want 10s, 10s and 1m0s",
@@ -876,6 +890,7 @@ func sendMetadata(t *testing.T, address, sent string) net.Conn {
 // server answers the first as a bad request and the second not at all), and one whose request
 // names a body it never sends is answered, since the endpoint reads no body, and closed.
 func TestMetadataClosesAConnectionWhoseRequestDoesNotArriveInTime(t *testing.T) {
+	// Not parallel: it unsets environment variables of the whole process (serveBoundedMetadata).
 	address := serveBoundedMetadata(t, 200*time.Millisecond, 0)
 	const projectID = metadataPrefix + "project/project-id"
 	for _, tc := range []struct{ name, sent, served string }{
@@ -904,6 +919,7 @@ func TestMetadataClosesAConnectionWhoseRequestDoesNotArriveInTime(t *testing.T) 
 // endpoint's idle bound, which is not the bound of a request: that one is a pod's own ten seconds
 // here, longer than the test waits.
 func TestMetadataClosesAKeptConnectionThatSendsNoNextRequest(t *testing.T) {
+	// Not parallel: it unsets environment variables of the whole process (serveBoundedMetadata).
 	address := serveBoundedMetadata(t, 0, 200*time.Millisecond)
 	conn := sendMetadata(t, address, "GET "+metadataPrefix+"project/project-id HTTP/1.1\r\nHost: metadata\r\nMetadata-Flavor: Google\r\n\r\n")
 	reader := bufio.NewReader(conn)
@@ -994,6 +1010,7 @@ func (f *fleet) toldMetadata(generation uint64, env []string) string {
 // environment, over whatever the container's environment carried, so its own Google clients (the
 // session database's proxy) read it too; and the endpoint answers there for the pool it was named.
 func TestMetadataLauncherServesAtItsAddressAndNamesItInItsOwnEnvironment(t *testing.T) {
+	// Not parallel: it unsets environment variables of the whole process (newMetadataFleet).
 	newMetadataFleet(t, "169.254.169.254", "127.0.0.1:0")
 	address := servedMetadataAddress(t)
 	if got := os.Getenv(MetadataIPVariable); got != address {
@@ -1009,6 +1026,7 @@ func TestMetadataLauncherServesAtItsAddressAndNamesItInItsOwnEnvironment(t *test
 // variables, over whatever the daemon's start command carried, so a role is told only the address
 // its own launcher serves.
 func TestEveryGenerationIsToldTheMetadataAddressItsLauncherServes(t *testing.T) {
+	// Not parallel: it unsets environment variables of the whole process (newMetadataFleet).
 	requireRoleNamespaces(t)
 	f := newMetadataFleet(t, "", "127.0.0.1:0")
 	address := servedMetadataAddress(t)
@@ -1025,6 +1043,7 @@ func TestEveryGenerationIsToldTheMetadataAddressItsLauncherServes(t *testing.T) 
 // A launcher that serves no endpoint, a gVisor pod's, leaves each generation's environment as it
 // is: a value its start command carried reaches it, and none is added.
 func TestEveryGenerationIsToldTheMetadataAddressOfNoLauncherThatServesNone(t *testing.T) {
+	// Not parallel: it unsets environment variables of the whole process (holdMetadataVariables).
 	holdMetadataVariables(t, "")
 	none := newSessionRig(t, Config{})
 	const expansion = "${" + MetadataHostVariable + "-unset}|${" + MetadataIPVariable + "-unset}"
@@ -1041,6 +1060,7 @@ func TestEveryGenerationIsToldTheMetadataAddressOfNoLauncherThatServesNone(t *te
 // in one line and names the address nowhere: not in its own environment, and (below) not to any
 // generation.
 func TestMetadataThatCannotListenIsOffAndNamedNowhere(t *testing.T) {
+	// Not parallel: it unsets environment variables of the whole process (newMetadataFleet).
 	f := newMetadataFleet(t, "", takeAPort(t))
 	if !strings.Contains(f.stderr.String(), "launcher: metadata: off reason=") {
 		t.Errorf("the launcher's log holds no off line: %s", f.stderr.String())
@@ -1055,6 +1075,7 @@ func TestMetadataThatCannotListenIsOffAndNamedNowhere(t *testing.T) {
 // Every generation of a launcher whose endpoint could not listen is told what its start command
 // carried and nothing more, as a launcher that serves none tells it.
 func TestEveryGenerationIsToldTheMetadataAddressOnlyByALauncherThatListens(t *testing.T) {
+	// Not parallel: it unsets environment variables of the whole process (newMetadataFleet).
 	requireRoleNamespaces(t)
 	f := newMetadataFleet(t, "", takeAPort(t))
 	carried := []string{MetadataHostVariable + "=169.254.169.254", MetadataIPVariable + "=169.254.169.254"}

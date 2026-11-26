@@ -11,7 +11,7 @@ import {
   getArtifactVersion,
 } from "./api";
 import { connectedDot, documentEditor } from "./editor";
-import { ONE_PIXEL_PNG } from "./sends";
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
 import { sessionIds } from "./session-ids";
 import { expect, type Locator, type Page, test } from "./test";
 

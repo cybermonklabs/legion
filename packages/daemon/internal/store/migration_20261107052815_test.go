@@ -19,6 +19,7 @@ import (
 // written as the released daemon left them, at the migration before this one, and read after this
 // one ran.
 func TestTheStepRecordArrivesEmptyForEveryClaimTheUpgradeFinds(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 20261105022045)

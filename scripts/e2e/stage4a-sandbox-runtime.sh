@@ -276,7 +276,10 @@ git -C "$root" merge-base --is-ancestor "$previous_base" HEAD ||
 if git -C "$root" cat-file -e "$previous_base:packages/daemon/internal/runtime/sandbox/one_container_test.go" 2>/dev/null; then
   fail "LEGION_E2E_PREVIOUS_IMAGE $previous_image was built from $previous_base, which already runs issue pods of one container"
 fi
-previous_contract=$(git -C "$root" show "$previous_base:packages/daemon/internal/api/version.go" | sed -n 's/^const DaemonAPIVersion = \([0-9]*\)$/\1/p')
+# The commit's own contract as scripts/daemon-contract.sh prints it for a commit: a commit of 37 or
+# 38 declares it in version.go's `const DaemonAPIVersion`, which the script reads there.
+previous_contract=$(cd "$root" && bash scripts/daemon-contract.sh "$previous_base") ||
+  fail "scripts/daemon-contract.sh could not read the daemon API contract of $previous_base, which LEGION_E2E_PREVIOUS_IMAGE $previous_image was built from"
 case "$previous_contract" in
 37 | 38) ;;
 *) fail "LEGION_E2E_PREVIOUS_IMAGE $previous_image was built from $previous_base, at daemon API contract ${previous_contract:-unknown}: previous-layout needs a main build at contract 37 or 38, the two whose harness records the claim's session and whose issue pods run six role containers" ;;

@@ -74,16 +74,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -258,19 +254,13 @@ func (r *rolePromptRuleLive) token(issue string, role claim.Role) claim.Token {
 	return token
 }
 
-// overrides is the daemon this proof boots: the local runtime over the real worker stream, the API
-// listener the fixture holds, and the workflow's App tokens stood in for. The clock is the real
-// one, since nothing here is measured against a wait.
+// overrides is the daemon this proof boots: the local runtime's own wiring (daemonOverrides), and
+// the workflow's App tokens stood in for. The clock is the real one, since nothing here is measured
+// against a wait.
 func (r *rolePromptRuleLive) overrides() overrides {
-	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
-			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
-			r.rt.conns, r.rt.stream = listener, address
-			return r.rt, nil
-		},
-		listen:         heldListen,
-		workflowTokens: &workflowTokenRecorder{},
-	}
+	o := r.rt.daemonOverrides(r.rt)
+	o.workflowTokens = &workflowTokenRecorder{}
+	return o
 }
 
 // seed records the tree as the daemon would hold it at the moment its roles began: a root handed

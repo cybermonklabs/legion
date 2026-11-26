@@ -2,13 +2,19 @@ import { expect, test } from "bun:test"
 import { readFile } from "node:fs/promises"
 import { resolve } from "node:path"
 import type { LegionStepRole } from "@legion/contracts"
+import { daemonContract } from "@legion/contracts/daemon-contract"
 import type { LegionPhase } from "@legion/contracts/legion-api"
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import { type ClaimCapability, PHASE_OP_SENTENCES } from "@legion/pi-shared/legion-phase-ops"
 import { stateAtPhase } from "@legion/pi-shared/test/daemon-state"
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest"
-import { legion, name, version } from "../package.json" with { type: "json" }
+import pkg, { name, version } from "../package.json" with { type: "json" }
+import * as legionTool from "../src/legion-tool"
 import { executeLegionTool, legionToolDefinition } from "../src/legion-tool"
+
+/** The contract this build speaks, as `legion-tool.ts` reads it (`daemonContract`): this
+ * checkout's. */
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir)
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
 async function daemonFixture(name: string): Promise<unknown> {
@@ -117,6 +123,7 @@ async function daemon(
         },
       })
     }
+    if (path === "/legion/v1/claims/ready-for-update") return new Response(null, { status: 204 })
     // One issue's record, as the daemon answers it, and its 404 for an issue it records
     // nothing of (dispatch://INFRA-2694).
     const named = /^\/legion\/v1\/issues\/([^/]+)\/record$/.exec(path)
@@ -133,7 +140,7 @@ async function daemon(
   }) as typeof fetch
   return {
     client: createLegionDaemonClient("http://daemon.test", {
-      pluginContract: legion.daemonApiVersion,
+      pluginContract: PLUGIN_CONTRACT,
       fetch: stub,
     }),
     requests,
@@ -165,6 +172,70 @@ const grantRequest = {
     issue: "LEGION-208",
   },
 }
+
+test("answerLegionTool closes only a step and answers an update without closing a look", async () => {
+  const { client } = await daemon({ state: stateAtPhase("testing") })
+  const calls: string[] = []
+  const runtime = {
+    daemon: client,
+    claim: () => implementer,
+    handoffReport: async () => ({ commit: "c0ffee" }),
+    branchHead: async () => "",
+  }
+  const hook = {
+    phaseClosed: () => {
+      calls.push("closed")
+    },
+    updateAnswered: () => {
+      calls.push("update")
+    },
+  }
+  await legionTool.answerLegionTool(
+    runtime,
+    {
+      op: "handoff_complete",
+      summary: "looked",
+      verdict: "pass",
+      check_opened_at: "2026-10-19T06:00:00.123456Z",
+    },
+    hook,
+  )
+  expect(calls).toEqual([])
+  await legionTool.answerLegionTool(
+    runtime,
+    { op: "handoff_complete", summary: "tested", verdict: "pass" },
+    hook,
+  )
+  expect(calls).toEqual(["closed"])
+  await legionTool.answerLegionTool(runtime, { op: "ready_for_update", round: "update-1" }, hook)
+  expect(calls).toEqual(["closed", "update"])
+})
+
+test("a named look of a running issue reaches the daemon through executeLegionTool", async () => {
+  const { client, requests } = await daemon({ state: stateAtPhase("implementing") })
+  const runtime = {
+    daemon: client,
+    claim: () => ({ ...implementer, role: "tester" as const }),
+    handoffReport: async (): Promise<never> => {
+      throw new Error("look reads no handoff")
+    },
+    branchHead: noBranchHead,
+  }
+  await expect(
+    executeLegionTool(runtime, {
+      op: "handoff_complete",
+      summary: "checking",
+      verdict: "pending",
+      wake_at: "2026-10-19T09:00:00Z",
+      check_opened_at: "2026-10-19T06:00:00.123456Z",
+    }),
+  ).resolves.toEqual({})
+  expect(requests.map(({ path }) => path)).toEqual([
+    "/legion/v1/grants",
+    "/legion/v1/handoff/complete",
+  ])
+  expect(requests.at(-1)?.body).toMatchObject({ checkOpenedAt: "2026-10-19T06:00:00.123456Z" })
+})
 
 test("declares the six phase-worker operations under one op, and names the Envoy publish tool as Claude Code shows it", () => {
   const definition = legionToolDefinition()
@@ -300,9 +371,9 @@ test("a tester's fail sends return_to as returnTo", async () => {
   })
 })
 
-// A role of the deployment runs on Claude Code as on Oh My Pi (contract 297): its claim reaches
-// the same phase ops, and its completion of the step it works carries its verdict and the commit
-// its workspace stands on, with no handoff record.
+// A role of the deployment runs on Claude Code as on Oh My Pi (the deployment roles' contract
+// entry): its claim reaches the same phase ops, and its completion of the step it works carries its
+// verdict and the commit its workspace stands on, with no handoff record.
 test("a role of the deployment's handoff_complete sends its verdict and commit", async () => {
   const { client, requests } = await daemon({
     state: stateAtPhase("step", { stepRole: "checker" }),
@@ -377,7 +448,7 @@ test("the MCP request's cancellation ends a handoff_complete waiting out a daemo
     executeLegionTool(
       {
         daemon: createLegionDaemonClient("http://daemon.test", {
-          pluginContract: legion.daemonApiVersion,
+          pluginContract: PLUGIN_CONTRACT,
           fetch: refusing,
         }),
         claim: () => implementer,
@@ -477,7 +548,7 @@ test("read_release_records posts the claim's own credential and counts the windo
   ).rejects.toThrow("read_release_records' since is an RFC 3339 time, as 2026-11-02T09:00:00Z is")
   expect(requests).toHaveLength(1)
   const refusing = createLegionDaemonClient("http://daemon.test", {
-    pluginContract: legion.daemonApiVersion,
+    pluginContract: PLUGIN_CONTRACT,
     fetch: (async (_input, _init) =>
       Response.json(
         { error: "the daemon keeps no release records" },
@@ -534,13 +605,13 @@ test("read_build answers the package and version this process loaded, both contr
   const atImagePath = {
     name,
     version: "0.0.0-image",
-    legion: { daemonApiVersion: legion.daemonApiVersion - 1 },
+    legion: { daemonApiVersion: PLUGIN_CONTRACT - 1 },
   }
   await withImageManifest("/opt/legion/claude-envoy/package.json", atImagePath, async () => {
     const { executeLegionTool: executeFreshLegionTool } = (await import(
       LEGION_TOOL_LOADED_UNDER_THE_IMAGE_MOCK
     )) as { readonly executeLegionTool: typeof executeLegionTool }
-    const { client, requests } = await daemon({ daemonContract: legion.daemonApiVersion + 1 })
+    const { client, requests } = await daemon({ daemonContract: PLUGIN_CONTRACT + 1 })
     const runtime = {
       daemon: client,
       claim: () => implementer,
@@ -553,8 +624,8 @@ test("read_build answers the package and version this process loaded, both contr
     await expect(executeFreshLegionTool(runtime, { op: "read_build" })).resolves.toEqual({
       plugin: name,
       version,
-      pluginContract: legion.daemonApiVersion,
-      daemonContract: legion.daemonApiVersion + 1,
+      pluginContract: PLUGIN_CONTRACT,
+      daemonContract: PLUGIN_CONTRACT + 1,
       daemonContractNote: null,
     })
     // The health route alone, read for its header: no project state is asked for.
@@ -574,7 +645,7 @@ test("read_build says so where the daemon states no contract, and takes no field
   }
 
   await expect(executeLegionTool(runtime, { op: "read_build" })).resolves.toMatchObject({
-    pluginContract: legion.daemonApiVersion,
+    pluginContract: PLUGIN_CONTRACT,
     daemonContract: null,
     daemonContractNote: "the daemon stated no contract",
   })

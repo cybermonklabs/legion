@@ -196,7 +196,7 @@ func newIdleRig(t *testing.T) *idleRig {
 	// (ScriptWorkspaceWork), so the release's check lets it go on.
 	rt := &releaseRuntime{Runtime: fake.NewRuntime(), onImage: true}
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.Runtime, sup.deps.Store, sup.deps.PluginContract = rt, st, api.DaemonAPIVersion
+	sup.deps.Runtime, sup.deps.Store, sup.deps.PluginContract = rt, st, api.DaemonAPIVersion()
 	// The teardown records the release through the supervisor's store, as the daemon's does.
 	sup.store = st
 
@@ -214,7 +214,7 @@ func newIdleRig(t *testing.T) *idleRig {
 	stored := supervise.Claim{Token: token, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
 		Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
 		State: supervise.StateIdle, Locator: &locator, Session: "ses-implementer",
-		SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion, Pending: &pending}
+		SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion(), Pending: &pending}
 	if err := st.PutClaimAndDelivery(ctx, stored, pending); err != nil {
 		t.Fatalf("seed the idle implementer: %v", err)
 	}
@@ -397,7 +397,7 @@ func (r *idleRig) releasedArchitect(t *testing.T) *supervise.Machine {
 	stored := supervise.Claim{Token: token, Project: "legion", Tree: r.issue.Tree, Issue: r.issue.Key,
 		Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
 		State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
-		Session: "ses-architect", SessionFile: "/tmp/architect.jsonl", PluginContract: api.DaemonAPIVersion}
+		Session: "ses-architect", SessionFile: "/tmp/architect.jsonl", PluginContract: api.DaemonAPIVersion()}
 	if err := r.st.PutClaim(ctx, stored); err != nil {
 		t.Fatalf("seed the architect an earlier release left released: %v", err)
 	}
@@ -961,7 +961,7 @@ func (r *idleRig) implementerOfAnotherAgent(t *testing.T, agent claim.Agent, sta
 	}
 	stored := supervise.Claim{Token: token, Project: "legion", Tree: r.issue.Tree, Issue: r.issue.Key,
 		Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, ServingGeneration: 1, State: state, SuspendedBy: by,
-		Session: "ses-" + string(agent), SessionFile: "/tmp/" + string(agent) + ".jsonl", PluginContract: api.DaemonAPIVersion}
+		Session: "ses-" + string(agent), SessionFile: "/tmp/" + string(agent) + ".jsonl", PluginContract: api.DaemonAPIVersion()}
 	if state == supervise.StateIdle {
 		locator, err := r.rt.Spawn(ctx, runtime.SpawnSpec{Claim: token, Role: claim.RoleImplementer})
 		if err != nil {

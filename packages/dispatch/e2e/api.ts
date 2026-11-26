@@ -20,6 +20,7 @@ import {
 import type { Actor, GatedStep } from "../web/src/api/types";
 import { harnessPorts } from "./harness-ports";
 import { type DispatchProcess, pinnedTo } from "./harness-processes";
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
 
 /** The Dispatch server a process of `env`'s stack addresses: the deployed server `env` names,
  *  else the harness server of that stack, whose port e2e/global-setup.ts writes into the
@@ -532,7 +533,8 @@ export function listPriorities(
 }
 
 /** `POST /api/v1/priorities`: writes one, last in the order; the server derives its id from the
- *  title and refuses a second write of that id with 409 PRIORITY_EXISTS. */
+ *  title, as the title's slug cut to `PRIORITY_ID_MAX` (200) characters at the end of a word when
+ *  it is longer, and refuses a second write of that id with 409 PRIORITY_EXISTS. */
 export function createPriority(
   input: Body<"/api/v1/priorities", "post">,
   options: ApiOptions = {}
@@ -682,26 +684,59 @@ export function createIssueArtifact(
   return post("/api/v1/issues/{key}/artifacts", { body: input, params: { key: issue } }, options);
 }
 
-/** Uploads bytes as an issue artifact through the multipart form the file picker posts. The JSON
- *  body `createIssueArtifact` sends carries text only, so an image can only be seeded this way,
- *  and `request` sends JSON alone, so the form goes out as its own fetch. */
-export async function uploadIssueFile(
-  issue: string,
-  input: { bytes: Uint8Array<ArrayBuffer>; contentType: string; name: string },
-  login = "alice"
-): Promise<Result<"/api/v1/issues/{key}/artifacts", "post">> {
+/** A file as the dashboard's file picker and paste send it. */
+interface FileUpload {
+  bytes: Uint8Array<ArrayBuffer>;
+  contentType: string;
+  name: string;
+}
+
+/** Posts `input` to the route `pattern` names, as `login`, as the multipart form the dashboard
+ *  sends a file in. The route's path parameters and its answer are the generated document's, as
+ *  `post`'s are; `request` sends JSON alone, so the form goes out as its own fetch. */
+async function postFile<P extends PathsOf<"post">>(
+  pattern: P,
+  params: PathParams<Op<P, "post">> & object,
+  input: FileUpload,
+  login: string
+): Promise<Result<P, "post">> {
+  const address = routeUrl(pattern, params);
   const form = new FormData();
   form.append("name", input.name);
   form.append("file", new Blob([input.bytes], { type: input.contentType }), input.name);
-  const response = await fetch(
-    new URL(routeUrl("/api/v1/issues/{key}/artifacts", { key: issue }), baseUrl),
-    { body: form, headers: await userHeaders(login), method: "POST" }
-  );
+  const response = await fetch(new URL(address, baseUrl), {
+    body: form,
+    headers: await userHeaders(login),
+    method: "POST",
+  });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`upload ${input.name} to ${issue} failed: ${response.status} ${text}`);
+    throw new Error(`upload ${input.name} to ${address} failed: ${response.status} ${text}`);
   }
-  return (await response.json()) as Result<"/api/v1/issues/{key}/artifacts", "post">;
+  return (await response.json()) as Result<P, "post">;
+}
+
+/** Uploads bytes as an issue artifact through the multipart form the file picker posts. The JSON
+ *  body `createIssueArtifact` sends carries text only, so an image can only be seeded this way. */
+export function uploadIssueFile(issue: string, input: FileUpload, login = "alice") {
+  return postFile("/api/v1/issues/{key}/artifacts", { key: issue }, input, login);
+}
+
+/** Uploads bytes to an agent session's conversation through the multipart form a paste on the
+ *  Agents page posts; answers the server's upload answer. */
+export function uploadAgentFile(sessionID: string, input: FileUpload, login = "alice") {
+  return postFile("/api/v1/agents/{session_id}/artifacts", { session_id: sessionID }, input, login);
+}
+
+/** Uploads `ONE_PIXEL_PNG` to an agent session's conversation as alice, named `name`, as a paste
+ *  on the Agents page does; answers its slug. */
+export async function uploadAgentPicture(sessionID: string, name: string): Promise<string> {
+  const uploaded = await uploadAgentFile(sessionID, {
+    bytes: new Uint8Array(Buffer.from(ONE_PIXEL_PNG, "base64")),
+    contentType: "image/png",
+    name,
+  });
+  return uploaded.artifact.slug;
 }
 
 /** `GET /api/v1/issues/{key}/artifacts`: every artifact the issue holds, as the Documents tab's
@@ -911,6 +946,17 @@ export async function documentBase(
 /** The blocks of the document's current version, each with the span of markdown it covers. */
 export function getArtifactBlocks(id: string, options: ApiOptions = {}) {
   return get("/api/v1/artifacts/{id}/blocks", { params: { id } }, options);
+}
+
+/** `GET /api/v1/references/questions` for a document's own text: each question block the
+ *  document's latest version declares, with the ask the server settled for it and that ask's
+ *  address, which is what a `#id` in a text of that document's scope names. */
+export function getDocumentQuestions(artifactID: string, options: ApiOptions = {}) {
+  return get(
+    "/api/v1/references/questions",
+    { query: { id: artifactID, kind: "artifact" } },
+    options
+  );
 }
 
 /** The same markdown by the slug route, `GET /api/v1/issues/{key}/artifacts/{slug}/text`. */

@@ -68,7 +68,7 @@ func TestTheTokenFileVerifiesAgainstTheIssuerAndIsRewrittenBeforeItLapses(t *tes
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
 	go func() {
-		done <- serve(ctx, []tokenSpec{{audience: testAudience, account: testAccount, file: file}}, codeFlow{}, lifetime, &stderr)
+		done <- serve(ctx, []tokenSpec{{audience: testAudience, account: testAccount, file: file}}, nil, codeFlow{}, lifetime, &stderr)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -167,6 +167,14 @@ var noRedirects = &http.Client{CheckRedirect: func(*http.Request, []*http.Reques
 // startRun runs the command on args until the test ends, and answers the URL it logs.
 func startRun(t *testing.T, args ...string) string {
 	t.Helper()
+	url, _ := startRunLogging(t, args...)
+	return url
+}
+
+// startRunLogging is startRun that answers the command's stderr too, which the test reads while
+// the command still writes it.
+func startRunLogging(t *testing.T, args ...string) (string, *lockedBuffer) {
+	t.Helper()
 	var stderr lockedBuffer
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
@@ -177,7 +185,7 @@ func startRun(t *testing.T, args ...string) string {
 			t.Errorf("run returned %d after its context ended, want 0\n%s", code, stderr.String())
 		}
 	})
-	return awaitListening(t, &stderr)
+	return awaitListening(t, &stderr), &stderr
 }
 
 // discoveryEndpoints reads the issuer's discovery document and answers the authorization and
@@ -731,5 +739,207 @@ func TestTheDeviceApprovalControlRefusesACallerOffLoopback(t *testing.T) {
 		url.Values{"grant_type": {deviceCodeGrant}, "device_code": {authorization.DeviceCode}})
 	if status != http.StatusBadRequest || !strings.Contains(string(body), "authorization_pending") {
 		t.Fatalf("the poll after a refused approval: status %d, body %s, want 400 authorization_pending", status, body)
+	}
+}
+
+const (
+	testRepository = "example-org/example-repo"
+	testOwner      = "example-org"
+	testWorkflow   = ".github/workflows/example-job.yaml"
+	testRef        = "refs/heads/main"
+	// testRun is the run's workflow as GitHub names it in workflow_ref and job_workflow_ref.
+	testRun = testRepository + "/" + testWorkflow + "@" + testRef
+	// testGitHubAudience is the audience a job asks for, BROKER_EXCHANGE_GITHUB_AUDIENCE's value.
+	testGitHubAudience = "legion-broker-github"
+)
+
+// actionsLine is the line the issuer logs for each --actions-token: the request token's file,
+// the run, and the request URL a job's ACTIONS_ID_TOKEN_REQUEST_URL takes.
+var actionsLine = regexp.MustCompile(`dev-oidc-issuer: (\S+) holds the request token of (\S+)'s Actions run \(request URL (\S+)\)`)
+
+// askActions asks requestURL for a run's token as a job's client asks GitHub: GET, with audience
+// added to the URL's own query ("" for none) and bearer as the request token ("" for no
+// Authorization header at all). It answers the status, the content type and the body.
+func askActions(t *testing.T, requestURL, audience, bearer string) (int, string, []byte) {
+	t.Helper()
+	target := requestURL
+	if audience != "" {
+		target += "&audience=" + url.QueryEscape(audience)
+	}
+	request, err := http.NewRequest(http.MethodGet, target, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bearer != "" {
+		request.Header.Set("Authorization", "bearer "+bearer)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response.StatusCode, response.Header.Get("Content-Type"), body
+}
+
+// TestTheActionsTokenRequestAnswersInGitHubsShapes runs the issuer with --actions-token, as
+// dev-broker.sh does, and asks the request URL it logs before its own URL the way a job's client
+// asks GitHub's (packages/envoy/internal/cipherclient/testdata/github-actions-token.json). With
+// the request token the file holds, the answer is 200 application/json whose one key is value: a
+// token the issuer's own keys verify for the audience asked for, carrying the claims the broker's
+// exchange reads of a workflow run, a new jti at each request and an exp ten minutes on. With no
+// audience the token is for https://github.com/<owner>, as GitHub's is. With another bearer, or
+// none, the answer is GitHub's 401 shape, with this issuer as its source, and holds no token.
+func TestTheActionsTokenRequestAnswersInGitHubsShapes(t *testing.T) {
+	ctx := context.Background()
+	file := filepath.Join(t.TempDir(), "actions-request-token")
+	issuerURL, stderr := startRunLogging(t, "--actions-token", testRepository+"="+testWorkflow+"="+testRef+"="+file)
+
+	logged := stderr.String()
+	match := actionsLine.FindStringSubmatch(logged)
+	if match == nil || match[1] != file || match[2] != testRun || strings.Index(logged, match[0]) > strings.Index(logged, "issuer listening") {
+		t.Fatalf("the issuer logged %q, want %s's request token file %s and its request URL named before its own URL", logged, testRun, file)
+	}
+	requestURL := match[3]
+	parsed, err := url.Parse(requestURL)
+	if err != nil || !strings.HasPrefix(requestURL, issuerURL+"/_actions/token/") || parsed.Query().Get("api-version") != "2.0" {
+		t.Fatalf("the request URL %s (%v) is not the issuer's /_actions/token/<n>?api-version=2.0", requestURL, err)
+	}
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("read the request token file the issuer reported written: %v", err)
+	}
+	requestToken := strings.TrimSpace(string(raw))
+	info, err := os.Stat(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestToken == "" || info.Mode().Perm() != 0o600 {
+		t.Fatalf("the request token file holds %q with mode %v, want a token readable by its owner alone", requestToken, info.Mode().Perm())
+	}
+
+	// minted asks for audience with the request token and answers the claims of the token the
+	// answer's value holds, once that token verifies against the issuer for that audience.
+	minted := func(audience, verifiedFor string) map[string]any {
+		t.Helper()
+		status, contentType, body := askActions(t, requestURL, audience, requestToken)
+		var answer map[string]any
+		if err := json.Unmarshal(body, &answer); status != http.StatusOK || contentType != "application/json" || err != nil {
+			t.Fatalf("the token request for %q: status %d, %s, body %s, want 200 application/json", audience, status, contentType, body)
+		}
+		value, isString := answer["value"].(string)
+		if len(answer) != 1 || !isString || value == "" {
+			t.Fatalf("the token request for %q answered %s, want the key value alone, holding a token", audience, body)
+		}
+		verifier, err := oidc.New(ctx, issuerURL, verifiedFor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := verifier.Verify(ctx, value); err != nil {
+			t.Fatalf("the token asked for %q does not verify against the issuer for %s: %v", audience, verifiedFor, err)
+		}
+		return idTokenClaims(t, value)
+	}
+
+	before := time.Now()
+	first := minted(testGitHubAudience, testGitHubAudience)
+	after := time.Now()
+	for claim, want := range map[string]any{
+		"iss": issuerURL, "aud": testGitHubAudience, "sub": "repo:" + testRepository + ":ref:" + testRef,
+		"repository": testRepository, "repository_owner": testOwner,
+		"workflow_ref": testRun, "job_workflow_ref": testRun, "ref": testRef,
+	} {
+		if first[claim] != want {
+			t.Errorf("the token's %s is %#v, want %#v", claim, first[claim], want)
+		}
+	}
+	exp, _ := first["exp"].(float64)
+	if expiry := time.Unix(int64(exp), 0); expiry.Before(before.Add(10*time.Minute-time.Second)) || expiry.After(after.Add(10*time.Minute)) {
+		t.Errorf("the token expires at %v, want ten minutes after it was asked for, between %v and %v", expiry, before.Add(10*time.Minute), after.Add(10*time.Minute))
+	}
+	firstID, _ := first["jti"].(string)
+	second := minted(testGitHubAudience, testGitHubAudience)
+	if firstID == "" || second["jti"] == firstID {
+		t.Errorf("two requests minted jti %q and %#v, want a new one each time: the broker takes each GitHub token once", firstID, second["jti"])
+	}
+
+	ownerAudience := "https://github.com/" + testOwner
+	if unasked := minted("", ownerAudience); unasked["aud"] != ownerAudience {
+		t.Errorf("a request with no audience minted aud %#v, want %s, as GitHub's does", unasked["aud"], ownerAudience)
+	}
+
+	for _, bearer := range []string{"not-the-request-token", ""} {
+		status, contentType, body := askActions(t, requestURL, testGitHubAudience, bearer)
+		var refusal map[string]any
+		err := json.Unmarshal(body, &refusal)
+		message, _ := refusal["errorMessage"].(string)
+		if status != http.StatusUnauthorized || contentType != "application/json" || err != nil || len(refusal) != 3 ||
+			refusal["source"] != "dev-oidc-issuer" || refusal["statusCode"] != float64(http.StatusUnauthorized) || message == "" {
+			t.Errorf("the token request with bearer %q: status %d, %s, body %s, want 401 application/json {source, statusCode, errorMessage} as GitHub answers", bearer, status, contentType, body)
+		}
+		if strings.Contains(string(body), requestToken) {
+			t.Errorf("the refusal of bearer %q holds the request token: %s", bearer, body)
+		}
+	}
+}
+
+// TestTheActionsTokenRequestRefusesACallerOffLoopback sends the token request, with the run's
+// request token, from an address that is not loopback: it is refused 403 and holds no token, as
+// the control routes refuse such a caller, while the same request from loopback is answered one.
+func TestTheActionsTokenRequestRefusesACallerOffLoopback(t *testing.T) {
+	issuer := oidctest.New(t)
+	var stderr lockedBuffer
+	spec := actionsSpec{repository: testRepository, workflow: testWorkflow, ref: testRef, requestToken: "the-request-token"}
+	handler := actionsTokenHandler(issuer, issuer.PublishKey(t, "signing-key"), &process{stderr: &stderr}, spec)
+	for _, caller := range []struct {
+		remote string
+		want   int
+	}{
+		{"192.0.2.1:40000", http.StatusForbidden},
+		{"127.0.0.1:40000", http.StatusOK},
+	} {
+		request := httptest.NewRequest(http.MethodGet, "/_actions/token/1?api-version=2.0&audience="+testGitHubAudience, nil)
+		request.RemoteAddr = caller.remote
+		request.Header.Set("Authorization", "bearer "+spec.requestToken)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != caller.want {
+			t.Errorf("the token request from %s: status %d (%s), want %d", caller.remote, recorder.Code, recorder.Body.String(), caller.want)
+		}
+		if caller.want != http.StatusOK && strings.Contains(recorder.Body.String(), `"value"`) {
+			t.Errorf("the refusal of %s holds a token: %s", caller.remote, recorder.Body.String())
+		}
+	}
+}
+
+// TestRunRefusesAnActionsTokenItCannotServe pins the usage refusals of --actions-token, each exit
+// 2 naming what is wrong before any issuer runs: a value with a part missing or empty, a
+// repository that is not <owner>/<name>, a workflow path that is not a file under
+// .github/workflows/, where GitHub runs every workflow from, and a ref that is not
+// refs/<kind>/<name>. Each would mint a token no exchange entry can name.
+func TestRunRefusesAnActionsTokenItCannotServe(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "actions-request-token")
+	for _, tc := range []struct{ value, says string }{
+		{testRepository + "=" + testWorkflow + "=" + testRef, "want <repository>=<workflow path>=<ref>=<request token file>"},
+		{testRepository + "==" + testRef + "=" + file, "want <repository>=<workflow path>=<ref>=<request token file>"},
+		{"example-repo=" + testWorkflow + "=" + testRef + "=" + file, `repository "example-repo" is not <owner>/<name>`},
+		{"example-org/example-repo/extra=" + testWorkflow + "=" + testRef + "=" + file, `repository "example-org/example-repo/extra" is not <owner>/<name>`},
+		{testRepository + "=example-job.yaml=" + testRef + "=" + file, `workflow path "example-job.yaml" is not a file under .github/workflows/`},
+		{testRepository + "=.github/workflows/=" + testRef + "=" + file, `workflow path ".github/workflows/" is not a file under .github/workflows/`},
+		{testRepository + "=" + testWorkflow + "=main=" + file, `ref "main" is not refs/<kind>/<name>`},
+		{testRepository + "=" + testWorkflow + "=refs/heads/=" + file, `ref "refs/heads/" is not refs/<kind>/<name>`},
+	} {
+		// A value the command wrongly takes starts an issuer that serves until its context ends:
+		// the deadline makes that an exit 0 this case reports, rather than a hang.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		var stderr lockedBuffer
+		code := run(ctx, []string{"--actions-token", tc.value}, &stderr)
+		cancel()
+		if code != exitUsageError || !strings.Contains(stderr.String(), tc.says) {
+			t.Errorf("--actions-token %s: exit %d, stderr %q; want %d saying %q", tc.value, code, stderr.String(), exitUsageError, tc.says)
+		}
 	}
 }

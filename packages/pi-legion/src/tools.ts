@@ -27,6 +27,7 @@ import {
   legionToolDescription,
   mintClaimGrant,
   PHASE_OP_SENTENCES,
+  phaseInputAfter,
   phaseOpParameters,
   pluginBuildOf,
   readBuild,
@@ -40,8 +41,8 @@ import pkg from "../package.json";
  * process loaded, never a path on the image. A relaunch installs the plugin pair fresh under
  * the state home of its claim's agent, the same whatever role the agent's step is on, and loads
  * it with `--extension`, so `/opt/legion/pi-legion` is another build on every pod made from an
- * older image. */
-const BUILD = pluginBuildOf(pkg);
+ * older image. Its contract is `daemonContract`'s, read as the module loads. */
+const BUILD = pluginBuildOf(pkg, import.meta.dir);
 
 export type LegionToolRole = "architect" | "phase-worker" | "controller";
 
@@ -356,15 +357,16 @@ function stateSummary(state: LegionState): string {
     // show, the one rule the pause's line names a claim by too (`pausedClaimName`).
     const claims: Array<readonly [string, SummaryClaim, string]> = [];
     if (issue.architect !== undefined) claims.push(["architect", issue.architect, ""]);
-    // Each worker of the issue's map: Legion's six in the order of the default steps, then each role of the
-    // deployment (contract 297) in the map's order.
+    // Each worker of the issue's map: Legion's six in the order of the default steps, then each
+    // role of the deployment (the deployment roles' contract entry) in the map's order.
     const deployed = Object.keys(issue.workers ?? {}).filter((role) => !isLegionRole(role));
     for (const role of [...LEGION_ROLES, ...deployed]) {
       const claim = issue.workers?.[role]?.claim;
       if (claim !== undefined) claims.push([role, claim, ""]);
     }
-    // Each other claim of the issue, with the role it holds (contract 298): two claims of one
-    // issue can hold one role, and `workers` shows one of them, so the other is listed after the
+    // Each other claim of the issue, with the role it holds (the stranded token's contract
+    // entry): two claims of one issue can hold one role, and `workers` shows one of them, so the
+    // other is listed after the
     // workers, marked as another claim of its role, with its token: issue and role reach only the
     // claim `workers` shows, and fresh_session and compact reach this one by its token (`claim`).
     for (const other of issue.otherClaims ?? []) {
@@ -468,6 +470,7 @@ function toolSchema(pi: PiApi): unknown {
     summary: phaseOp.summary,
     verdict: phaseOp.verdict,
     wake_at: phaseOp.wake_at,
+    check_opened_at: phaseOp.check_opened_at,
     plan_rating: phaseOp.plan_rating,
     plan_reason: phaseOp.plan_reason,
     return_to: phaseOp.return_to,
@@ -475,15 +478,16 @@ function toolSchema(pi: PiApi): unknown {
     status: z.enum(ISSUE_STATUSES).optional(),
     phase: z.enum([...LEGION_PHASES]).optional(),
     settings: z.boolean().optional(),
-    // A claim's role, one of Legion's six or a role of the deployment (contract 297): the role
-    // grammar of Dispatch's step record. The operation's own check (`isStepRole`) also refuses the
-    // controller, whose claim holds no issue.
+    // A claim's role, one of Legion's six or a role of the deployment (the deployment roles'
+    // contract entry): the role grammar of Dispatch's step record. The operation's own check
+    // (`isStepRole`) also refuses the controller, whose claim holds no issue.
     role: z
       .string()
       .regex(/^[a-z][a-z0-9-]{0,31}$/)
       .optional(),
-    // A claim's token (contract 298), for fresh_session and compact: two claims of one issue can
-    // hold one role, and issue and role reach the one that works the role's step that started last.
+    // A claim's token (the stranded token's contract entry), for fresh_session and compact: two
+    // claims of one issue can hold one role, and issue and role reach the one that works the
+    // role's step that started last.
     claim: z
       .string()
       .describe(
@@ -585,7 +589,7 @@ export function createLegionTool(deps: {
   readonly session: (context: SessionContext) => LegionToolSession;
   /** Mints the controller's grant, authenticated by its registration's secret. */
   readonly controllerGrant: (sessionId: string) => Promise<LegionGrant>;
-  /** Told of each `handoff_complete` that succeeded: the session's phase is complete. */
+  /** Told of each successful step completion or backward move, never a look's report. */
   readonly onPhaseCompleted: (context: SessionContext) => void;
   /** Told of each `ready_for_update` that succeeded: the session has answered the daemon's
    * update message on its pod, and its phase stays open. */
@@ -829,15 +833,17 @@ export function createLegionTool(deps: {
             { daemon: daemon(), claim: active, build: BUILD, handoffReport, branchHead, restart },
             parameters
           );
-          // A call that returned without throwing: a completion, and a backward move, which hands
-          // the issue to an earlier step of its task. Either way this session's phase is no longer open.
+          // A successful phase completion or backward move closes phase input: a backward move hands
+          // the issue to an earlier step of its task. A report with check_opened_at leaves it open
+          // for this session's phase work.
           // `ready_for_update` ends no phase: it answers the pod's update message, and the worker
           // then waits for its process to be replaced rather than working, so the turn it ends
           // after answering earns no reminder (the `update-answered` input of
           // `@legion/pi-shared/phase-stall`).
-          if (operation === "handoff_complete" || operation === "request_backward_move") {
+          const effect = phaseInputAfter(operation, parameters);
+          if (effect === "phase-closed") {
             onPhaseCompleted(context);
-          } else if (operation === "ready_for_update") {
+          } else if (effect === "update-answered") {
             onUpdateAnswered(context);
           }
           return jsonSuccess(answer);
@@ -889,8 +895,8 @@ export function createLegionTool(deps: {
                 `${operation} requires role ${LEGION_ROLES.join(", ")} or a role of the deployment`
               );
             }
-            // A claim the controller names by its token (contract 298) is sent only when named,
-            // since a daemon below 298 refuses the member as unknown.
+            // A claim the controller names by its token (the stranded token's contract entry) is
+            // sent only when named, since a daemon below that entry refuses the member as unknown.
             const named = parameters.claim;
             if (named !== undefined && (typeof named !== "string" || named.trim() === "")) {
               throw new Error(`${operation}'s claim is a claim token, as a notice names it`);

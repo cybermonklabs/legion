@@ -5,7 +5,7 @@
 -- an issue, whatever its role (PUT /api/v1/issues/{key}/role-holders, api/issue_role_holders.go),
 -- and the check 20261116163813 put on issue_role_holders.role names the six alone, so the route
 -- refused the whole set of an issue with a live claim of such a role, and the daemon dropped it.
--- The route now takes a role of the role grammar but the controller's (legionagents.IsRole), and
+-- The route now takes a role of the role grammar but the controller's (legionrole.IsRole), and
 -- this check takes the same names: `^[a-z][a-z0-9-]{0,31}$`, other than `controller`, which is the
 -- project's role and no issue's.
 --

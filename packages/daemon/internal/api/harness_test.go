@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -257,6 +258,13 @@ func newHarnessUnrelaunchable(t *testing.T) *harness {
 // (DaemonAPIVersion): the stale-plugin trigger lives in internal/supervise, exercised by its own
 // tests.
 func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
+	return newHarnessIn(t, relaunchable, plan.Deployment{})
+}
+
+// newHarnessIn is newHarnessDeps for a deployment that defines the roles of deployment beside
+// Legion's own (Options.Deployment); the zero deployment is Legion's own roles alone, as
+// newHarness has it.
+func newHarnessIn(t *testing.T, relaunchable bool, deployment plan.Deployment) *harness {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -272,7 +280,7 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 			Timeouts: supervise.Timeouts{
 				Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 30 * time.Second, Stop: 10 * time.Second, LaunchBackoff: time.Millisecond,
 			},
-			PluginContract:     DaemonAPIVersion,
+			PluginContract:     DaemonAPIVersion(),
 			PluginRelaunchable: relaunchable,
 			RefreshGate:        supervise.NewRefreshGate(0),
 			// The daemon's own wiring: a tree a workflow issue backs does not close here.
@@ -312,10 +320,10 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 		Supervisor: sup, BootTokens: tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: st,
 		Log:  slog.New(slog.NewTextHandler(serverLog, nil)),
 		Pool: st.Pool(), Record: record.NewStore(), Releaser: rt, Trees: st, ReleaseRecords: st, ClaimActivity: st,
-		PluginRelaunchable: relaunchable,
-		ClaimReady:         func(c supervise.Claim) { *readied = append(*readied, c) },
-		PromptAgents:       testPromptAgents,
-		PodUpdateRounds:    func() PodUpdateRounds { return *rounds },
+		PluginRelaunchable: relaunchable, Deployment: deployment,
+		ClaimReady:      func(c supervise.Claim) { *readied = append(*readied, c) },
+		PromptAgents:    testPromptAgents,
+		PodUpdateRounds: func() PodUpdateRounds { return *rounds },
 		CapabilityReported: func(ctx context.Context, _ supervise.Claim, report capabilities.Report) {
 			*reported = append(*reported, report)
 			*reportedContextErr = append(*reportedContextErr, ctx.Err())
@@ -457,7 +465,7 @@ func (h *harness) register(bootToken, session string) *httptest.ResponseRecorder
 	h.t.Helper()
 	return h.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: bootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: "agent-" + session, PluginContract: DaemonAPIVersion,
+		AgentID: "agent-" + session, PluginContract: DaemonAPIVersion(),
 	}, nil)
 }
 
@@ -500,7 +508,7 @@ func (h *harness) registerContract(bootToken, session string, contract int, rela
 		AgentID: "agent-" + session, PluginContract: contract,
 	}, nil)
 	want := http.StatusOK
-	if contract != DaemonAPIVersion && relaunchable {
+	if contract != DaemonAPIVersion() && relaunchable {
 		want = http.StatusConflict
 	}
 	if recorder.Code != want {

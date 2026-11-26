@@ -54,15 +54,15 @@ var burstableLiveCases = []struct {
 		name: "burstable", project: "BURST", qos: corev1.PodQOSBurstable,
 		resources: "    resources:\n      issue: {memory: 32Gi, memory_request: 8Gi}\n",
 		issue: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3"), corev1.ResourceMemory: resource.MustParse("8Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("6Gi")},
-			Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3"), corev1.ResourceMemory: resource.MustParse("32Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("80Gi")},
+			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("8Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("6Gi")},
+			Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("32Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("80Gi")},
 		},
 	},
 	{
 		name: "guaranteed", project: "GUARD", qos: corev1.PodQOSGuaranteed,
 		issue: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3"), corev1.ResourceMemory: resource.MustParse("19Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("6Gi")},
-			Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3"), corev1.ResourceMemory: resource.MustParse("19Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("80Gi")},
+			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("8Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("6Gi")},
+			Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("8Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("80Gi")},
 		},
 	},
 }
@@ -121,10 +121,11 @@ runtime:
 // sandboxOptions over the loaded configuration on the cluster client rc and the worker stream
 // listener, with the proof's stand-ins: the store answers as the daemon's does for an issue's
 // first launch, the provisioning token is one a public repository never needs, every role's gh
-// files hold a placeholder token, the agent is a sleep stub, and the cache set names
-// burstableLiveRepository alone, so the repository cache an issue pod's launch makes is that
-// repository's. It returns the issue pod's reservation as sandboxOptions translated it.
-func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Config, listener *stream.Listener, log *slog.Logger) (*sandbox.Runtime, corev1.ResourceRequirements, error) {
+// files hold a placeholder token, the agent is a sleep stub, and the cache set names cache alone,
+// the public repository the proof launches on, so the repository cache an issue pod's launch
+// makes is that repository's. It returns the issue pod's reservation as sandboxOptions translated
+// it.
+func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Config, listener *stream.Listener, log *slog.Logger, cache ghrepo.Repository) (*sandbox.Runtime, corev1.ResourceRequirements, error) {
 	k := *cfg.Runtime.Kubernetes
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -147,10 +148,10 @@ func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Confi
 	}
 	// The controller's own bundle, which its launch and its refresh both ask for by owner
 	// (sandbox.Options.ControllerCredential, appauth.ControllerCredential): the review App's, over
-	// the proof's one owner, since the project serves burstableLiveRepository alone.
+	// the proof's one owner, since the project serves cache alone.
 	opts.ControllerCredential = func(_ context.Context, defaultOwner string) (ghconfig.Bundle, error) {
 		rendered := ghconfig.Render("ghs_placeholder", string(appauth.Review), time.Now().Add(time.Hour))
-		owner := strings.ToLower(burstableLiveRepository.Owner())
+		owner := strings.ToLower(cache.Owner())
 		if defaultOwner != "" {
 			owner = defaultOwner
 		}
@@ -160,7 +161,7 @@ func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Confi
 	// serves none of its own: every pod it makes projects what it was launched with, and no pod
 	// has drifted from a directory the daemon serves (sandbox's movedGhDirs).
 	opts.GitHubDirs = func(ghrepo.Repository, []appauth.AppRole) []string { return nil }
-	opts.CacheRepositories = func() []ghrepo.Repository { return []ghrepo.Repository{burstableLiveRepository} }
+	opts.CacheRepositories = func() []ghrepo.Repository { return []ghrepo.Repository{cache} }
 	opts.Agent = burstableLiveStub
 	rt, err := sandbox.New(ctx, rc, opts)
 	if err != nil {
@@ -173,10 +174,16 @@ func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Confi
 // burstableLiveSpec is the root architect's launch of issue as the proof makes it, on
 // burstableLiveRepository, with prompt as its role prompt.
 func burstableLiveSpec(project, issue string, token claim.Token, bootToken, prompt string) runtime.SpawnSpec {
+	return liveRootSpec(project, issue, token, bootToken, prompt, burstableLiveRepository, "master")
+}
+
+// liveRootSpec is the root architect's launch of issue on repo, whose default branch is
+// defaultBranch, with prompt as its role prompt: burstableLiveSpec on another public repository.
+func liveRootSpec(project, issue string, token claim.Token, bootToken, prompt string, repo ghrepo.Repository, defaultBranch string) runtime.SpawnSpec {
 	return runtime.SpawnSpec{
 		Claim: token, Project: project, Tree: issue, Issue: issue, Role: claim.RoleArchitect, Generation: 1, BootToken: bootToken,
 		Secrets: map[string]string{"ENVOY_TOKEN": "placeholder-envoy-token"},
-		Prompt:  runtime.PromptParts{RolePromptPaths: []string{prompt}}, Repository: burstableLiveRepository, DefaultBranch: "master",
+		Prompt:  runtime.PromptParts{RolePromptPaths: []string{prompt}}, Repository: repo, DefaultBranch: defaultBranch,
 	}
 }
 
@@ -237,7 +244,7 @@ func TestTheBurstableKindProofBuildsItsRuntimesFromItsConfigurations(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, reservation, err := burstableLiveRuntime(ctx, cfg, rc, listener, quietLogger())
+			_, reservation, err := burstableLiveRuntime(ctx, cfg, rc, listener, quietLogger(), burstableLiveRepository)
 			if err != nil {
 				t.Fatalf("the proof's runtime: %v", err)
 			}

@@ -69,6 +69,7 @@ func oomKilledDeath(role claim.Role) string {
 // notice now names both of the things the supervisor knows. The negative control is the code at
 // the merge base, where this path writes a kind, a role and a phase and no reason at all.
 func TestATreeArchitectsFailedClaimNamesWhatEndedIt(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U"})
@@ -95,6 +96,7 @@ func TestATreeArchitectsFailedClaimNamesWhatEndedIt(t *testing.T) {
 // failed. The negative control is deathReason answering "" for a fact with no pod end, which left
 // this notice saying nothing at all.
 func TestATreeArchitectsFailedClaimNamesTheSentenceWithNoPodEnd(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U"})
@@ -120,6 +122,7 @@ func TestATreeArchitectsFailedClaimNamesTheSentenceWithNoPodEnd(t *testing.T) {
 // the phase is held for its architect to decide, and the worker-died beside that hold now names
 // what ended the worker. The negative control is the same code at the merge base.
 func TestAHeldPhasesWorkerDiedNamesWhatEndedIt(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"})
@@ -153,6 +156,7 @@ func TestAHeldPhasesWorkerDiedNamesWhatEndedIt(t *testing.T) {
 // daemon kept one, replayed at a boot — carries no failure record at all, so its reason is the
 // sentence, quoted, as the tree architect's is.
 func TestAHeldPhasesWorkerDiedNamesTheSentenceOnceWithNoPodEnd(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		cause      supervise.FailureCause
@@ -196,6 +200,7 @@ func TestAHeldPhasesWorkerDiedNamesTheSentenceOnceWithNoPodEnd(t *testing.T) {
 // not repeat that either. The negative control is deathReason putting the sentence before the
 // pod end whatever the notice carried beside it, which named the sentence twice.
 func TestAHeldPhasesWorkerDiedNamesTheSentenceOnceWithAPodEnd(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"})
@@ -237,6 +242,7 @@ func TestAHeldPhasesWorkerDiedNamesTheSentenceOnceWithAPodEnd(t *testing.T) {
 // left the reason the sentence alone, and deathReason writing "the process was last found
 // gone: " before the account, which read `gone: gone:`.
 func TestAWorkerDiedWithNoFailureRecordNamesTheLastObservedDeath(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U"})
@@ -273,6 +279,7 @@ func TestAWorkerDiedWithNoFailureRecordNamesTheLastObservedDeath(t *testing.T) {
 // death whatever the fact's cause, as it did at b7085e21: each row's reason then ends with the
 // eviction.
 func TestAWorkerDiedNamesNoDeathItsClaimDidNotFailOf(t *testing.T) {
+	t.Parallel()
 	const sentence = "a provider error that cannot clear ended this claim's turn: 400 bad request"
 	type row struct {
 		name  string
@@ -321,6 +328,7 @@ func TestAWorkerDiedNamesNoDeathItsClaimDidNotFailOf(t *testing.T) {
 // on the claim. The negative control is deathReason writing the death whole after "the process
 // was last found ", which put the role's line in the reason as a line of its own.
 func TestAWorkerDiedsReasonCarriesNoLineTheRoleWrote(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U"})
@@ -361,6 +369,7 @@ func TestAWorkerDiedsReasonCarriesNoLineTheRoleWrote(t *testing.T) {
 // unquoted, as it did at 8a30be78, where nothing showed where the provider's text ended and the
 // mark began.
 func TestAWorkerDiedsReasonCarriesTheSentenceOnOneBoundedLine(t *testing.T) {
+	t.Parallel()
 	const head = "the provider refused 3 turns in a row: request rejected"
 	const forged = "forged: the role is fine"
 	sentence := head + "\n" + forged + " " + strings.Repeat("y", 2000)
@@ -426,6 +435,7 @@ func TestAWorkerDiedsReasonCarriesTheSentenceOnOneBoundedLine(t *testing.T) {
 // 100 runes of the three sentences, and the three-byte one's ended in the first byte of a
 // character.
 func TestAWorkerDiedsReasonCutsTheSentenceBetweenCharacters(t *testing.T) {
+	t.Parallel()
 	keep := runtime.PodEndRunes - utf8.RuneCountInString(deathReasonCut)
 	for _, char := range []string{"é", "€", "𝄞"} {
 		t.Run(fmt.Sprintf("%d bytes a character", len(char)), func(t *testing.T) {
@@ -469,6 +479,7 @@ func TestAWorkerDiedsReasonCutsTheSentenceBetweenCharacters(t *testing.T) {
 // The negative control is deathReason writing the sentence unquoted, as it did at 8a30be78: the
 // reason carried the raw tab and escape and ended in the forged clause.
 func TestAWorkerDiedsReasonQuotesTheSentenceSoNothingInItReadsAsTheDaemons(t *testing.T) {
+	t.Parallel()
 	const forgedEnd = "; the pod ended: " + evictedPodEnd
 	sentence := "the provider refused 3 turns in a row: \x1b[31mrequest rejected\x1b[0m\tby policy" + forgedEnd
 	for _, tc := range []struct {
@@ -522,6 +533,7 @@ func TestAWorkerDiedsReasonQuotesTheSentenceSoNothingInItReadsAsTheDaemons(t *te
 // quote. The negative control is deathReason quoting the first line whole, as it did at
 // 8a30be78: the reason ran to 4705 runes, all forty events in it.
 func TestAWorkerDiedsReasonCutsALongDeathLineAtTheBound(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U"})
@@ -559,6 +571,7 @@ func TestAWorkerDiedsReasonCutsALongDeathLineAtTheBound(t *testing.T) {
 // control is deathReason naming the death whatever the pod end held, which put the message in
 // the reason twice and the pod end after the log.
 func TestAWorkerDiedWithNoFailureRecordNamesAnEvictionOnce(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		role  claim.Role
@@ -603,6 +616,7 @@ func TestAWorkerDiedWithNoFailureRecordNamesAnEvictionOnce(t *testing.T) {
 // displaces it. What that reason says is what the architect must act on, and it is more than
 // either of those facts is.
 func TestARoleThatWorksNoPhaseKeepsTheReasonItsPathBuilds(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"})
@@ -628,8 +642,11 @@ func TestARoleThatWorksNoPhaseKeepsTheReasonItsPathBuilds(t *testing.T) {
 // role's own plugin posts, of up to a mebibyte over any number of lines. The case fails the tester
 // of a closed child whose look is open, with a sentence of two lines and two thousand bytes. The
 // negative control is the path at dd846980, which wrote the sentence whole after "production
-// check look 1 lost its tester: ".
+// check look 1 lost its tester: ". After the sentence the reason names the cause and the look
+// that retries the claim (checkRoleFailedReason), words of the daemon's own of a bounded length,
+// so the bound is held on what comes before them.
 func TestAProductionCheckLooksWorkerDiedReasonIsOneBoundedLine(t *testing.T) {
+	t.Parallel()
 	const forged = "forged: the role is fine"
 	sentence := "the provider refused 3 turns in a row: request rejected\n" + forged + " " + strings.Repeat("y", 2000)
 	rig := childCheckRig(t)
@@ -647,7 +664,14 @@ func TestAProductionCheckLooksWorkerDiedReasonIsOneBoundedLine(t *testing.T) {
 	if strings.Contains(reason, "\n") {
 		t.Errorf("the look's worker-died reads over %d lines, want one: %.200q", strings.Count(reason, "\n")+1, reason)
 	}
-	if limit := len([]rune("production check look 1 lost its tester: ")) + runtime.PodEndRunes + len([]rune(deathReasonCut)) + 2; len([]rune(reason)) > limit {
-		t.Errorf("the look's worker-died is %d runes, want no more than %d: the sentence and its cut mark, quoted", len([]rune(reason)), limit)
+	head, tail, ok := strings.Cut(reason, "; its cause is provider_error; look 2 retries the claim at ")
+	if !ok {
+		t.Fatalf("the look's worker-died reads %q, want the cause and the next look after the sentence", reason)
+	}
+	if limit := len([]rune("production check look 1 lost its tester: ")) + runtime.PodEndRunes + len([]rune(deathReasonCut)) + 2; len([]rune(head)) > limit {
+		t.Errorf("the look's worker-died is %d runes before its cause, want no more than %d: the sentence and its cut mark, quoted", len([]rune(head)), limit)
+	}
+	if len([]rune(tail)) > 200 {
+		t.Errorf("the look's worker-died's next look reads %d runes, want a bounded sentence of the daemon's own: %q", len([]rune(tail)), tail)
 	}
 }

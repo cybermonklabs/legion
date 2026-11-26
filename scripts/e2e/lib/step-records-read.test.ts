@@ -11,10 +11,12 @@ import { changed, fakeDispatchRead } from "./fake-dispatch-command";
 // its plan) against the fake `dispatch` of lib/fake-dispatch-command.ts, first on PATH, which
 // prints a warning on stderr where a case gives one, as the real command prints its
 // `dispatch: <warning>` lines before its answer. The step answers below are the lines `dispatch
-// steps` prints (packages/envoy-client/src/dispatch-commands/steps.ts): a header, then one run per
-// line. The plan answers are what `dispatch plans` (dispatch-commands/plans.ts) prints of typed
-// finished issues, rendered by that command itself, so a plan line the command prints and the
-// script cannot read fails here.
+// steps` prints (packages/envoy-client/src/dispatch-commands/steps.ts): a header; where the
+// records of the issue's newest run name an experiment, the line
+// `Experiment <experiment>: variant <variant>.`, and no such line where they name none; then one
+// run per line. The plan answers are what `dispatch plans` (dispatch-commands/plans.ts) prints of
+// typed finished issues, rendered by that command itself, so a plan line the command prints and
+// the script cannot read fails here.
 const script = join(import.meta.dir, "..", "step-records-read.sh");
 const dir = temporaryDirectory("step-records-read-test");
 
@@ -76,6 +78,8 @@ function finished(issue: string, tasks: string[][] | null): FinishedIssue {
     ended_at: null,
     duration_seconds: null,
     failed_steps: 1,
+    experiment: null,
+    variant: null,
   };
 }
 
@@ -142,6 +146,29 @@ describe("step-records-read.sh", () => {
     expect(stdout).toContain(`PASS: ${key}: 10 records`);
     expect(stderr).toContain(warning.trim());
     expect(code).toBe(0);
+  });
+
+  test("the line of the issue's experiment right after the header is no fault: the read passes", () => {
+    const variant = "Experiment planning: variant b.";
+    const { code, stdout } = read(`${[whole[0], variant, ...whole.slice(1)].join("\n")}\n`);
+    expect(stdout).toContain(`${whole[0]}\n${variant}\n`);
+    expect(stdout).toContain(`PASS: ${key}: 10 records`);
+    expect(stdout).not.toContain("UNKNOWN");
+    expect(code).toBe(0);
+  });
+
+  test("the same line anywhere but right after the header is no run: UNKNOWN, exit 2", () => {
+    const variant = "Experiment planning: variant b.";
+    for (const lines of [
+      [...whole, variant],
+      [whole[0], whole[1], variant, ...whole.slice(2)],
+      [whole[0], variant, variant, ...whole.slice(1)],
+    ]) {
+      const { code, stdout } = read(`${lines.join("\n")}\n`);
+      expect(stdout).toContain(`UNKNOWN: the line is no run: ${variant}`);
+      expect(stdout).not.toContain("PASS");
+      expect(code).toBe(2);
+    }
   });
 
   test("an answer with the merge record missing fails, exit 1, naming it", () => {

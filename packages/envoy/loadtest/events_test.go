@@ -655,7 +655,7 @@ func TestLoopStatusRepliesAndResolves(t *testing.T) {
 
 // TestLoopStatusReopensAResolvedThread: the 1.2% form is the reply alone, in a thread Dispatch
 // holds resolved, which reopens it in the reply's own transaction
-// (internal/dispatch/api/comment_create.go:737-760); it sends no resolve.
+// (createCommentFor in internal/dispatch/api/comment_create.go); it sends no resolve.
 func TestLoopStatusReopensAResolvedThread(t *testing.T) {
 	ls := loopTestSeed(t)
 	stub := newLoopWriteStub(t)

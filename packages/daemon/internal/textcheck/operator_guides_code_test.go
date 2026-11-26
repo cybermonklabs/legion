@@ -169,11 +169,16 @@ func TestTheOperatorGuidesSayWhatTheCodeDoes(t *testing.T) {
 			texts: []text{{
 				path: runningLegion,
 				want: []string{
-					"The daemon refuses to boot when an agent's role has no model, or its model's key does not work.",
+					"The task agents Legion's prompts dispatch take the models of `review`, `oracle`, `deep`, `smol` and `slow`.",
+					"The daemon refuses to boot when one of those roles has no model, or its model's key does not work.",
 					"`smol` and `slow` left unset take the `default` role's model, which the daemon accepts.",
-					"Nothing refuses a missing `default`: an Oh My Pi session whose role names no model then starts, silently, on one of Oh My Pi's built-in models.",
+					"Nothing refuses a missing `default`. An Oh My Pi session whose role names no model then starts, silently, on one of Oh My Pi's built-in models.",
 				},
-				gone: []string{"and the rest the example names): the daemon refuses to boot when an agent's role has no model"},
+				gone: []string{
+					"and the rest the example names): the daemon refuses to boot when an agent's role has no model",
+					"The daemon refuses to boot when an agent's role has no model",
+					"Nothing refuses a missing `default`: an",
+				},
 			}},
 		},
 		{
