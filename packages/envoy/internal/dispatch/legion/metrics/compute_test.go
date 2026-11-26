@@ -471,10 +471,12 @@ func TestTheFallbackTimelineFollowsTheStepsOfTheIssuesPlan(t *testing.T) {
 	}
 }
 
-// TestTheNoRoleBarHoldsAwaitingPersonAndHeldAlone: "A seventh bar, 'no role', holds the phases no
-// role works: `awaiting_person` and `held`", and the spec's "Phase boundaries before
-// observations" holds it to those two. Every other hour of the work time is on a role's bar.
-func TestTheNoRoleBarHoldsAwaitingPersonAndHeldAlone(t *testing.T) {
+// TestTheNoRoleBarHoldsAwaitingPersonAndHeld: "A seventh bar, 'no role', holds the phases no role
+// works: `awaiting_person` and `held`", and the spec's "Phase boundaries before observations"
+// holds it to the phases no role works, of which dispatch://INFRA-3320 adds a third
+// (TestTheNoRoleBarHoldsAParentsWaitOnItsChildren). Every other hour of the work time is on a
+// role's bar.
+func TestTheNoRoleBarHoldsAwaitingPersonAndHeld(t *testing.T) {
 	issue := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(6)).
 		observeString(legion.FieldPhase, hour(0), "implementing").
 		observeString(legion.FieldPhase, hour(1), "awaiting_person").
@@ -493,6 +495,30 @@ func TestTheNoRoleBarHoldsAwaitingPersonAndHeldAlone(t *testing.T) {
 	}
 	if hours := barOf(t, report, "implementer").Hours; hours != 4 {
 		t.Fatalf("the implementer bar = %g hours, want the four hours of implementing", hours)
+	}
+}
+
+// TestTheNoRoleBarHoldsAParentsWaitOnItsChildren: `awaiting_children`, the phase a parent waits
+// in while a Dispatch child of it is open (dispatch://INFRA-3320, R11), is a phase no role works,
+// so its hours are on the "no role" bar, and the seven bars of a parent that waited add up to its
+// work time. The parent below implements for an hour, waits on its children for two, and comes
+// back to the testing start it held for three.
+func TestTheNoRoleBarHoldsAParentsWaitOnItsChildren(t *testing.T) {
+	issue := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(6)).
+		observeString(legion.FieldPhase, hour(0), "implementing").
+		observeString(legion.FieldPhase, hour(1), "awaiting_children").
+		observeString(legion.FieldPhase, hour(3), "testing").
+		observeString(legion.FieldPhase, hour(6), "done")
+	partitionsItsWorkTime(t, issue)
+	report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
+	if hours := barOf(t, report, barNoRole).Hours; hours != 2 {
+		t.Fatalf("the no-role bar = %g hours, want the two hours the parent waited on its children", hours)
+	}
+	if hours := barOf(t, report, "implementer").Hours; hours != 1 {
+		t.Fatalf("the implementer bar = %g hours, want the one hour of implementing", hours)
+	}
+	if hours := barOf(t, report, "tester").Hours; hours != 3 {
+		t.Fatalf("the tester bar = %g hours, want the three hours of testing after the wait", hours)
 	}
 }
 

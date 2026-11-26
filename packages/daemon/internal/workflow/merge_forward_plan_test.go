@@ -321,7 +321,7 @@ func sentAgain(ask record.MergeForwardMessage, launch uint64) record.MergeForwar
 // the merge comes next asks nothing at a conflicting head (classify.MergeComesNext). A parent whose
 // last step is the implementer's is held before its retro while an issue beneath it is still in
 // the workflow (holdBeforeRetro). Neither the hold nor its release into the retro once that issue
-// leaves (startHeldRetro) asks the merge forward again, and neither tells the architect a
+// leaves (StartHeldRetro) asks the merge forward again, and neither tells the architect a
 // checks-red notice: the ask of implementing stays on the record. So the parent reaches merging as
 // a parent that moved into its retro at once does: the move into merging asks the merger to merge
 // the base forward (record.ConflictMergeNext), asks the implementer nothing and holds no merger,
@@ -361,7 +361,7 @@ func TestAHeldParentReleasedIntoItsRetroLeavesTheMergeToTheMerger(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := plannedConflictIssue(t, phase.Implementing, settledGreen("lint"), "implementer")
-			// The release starts the retro only in a tree that runs (startHeldRetro, record.TreeRunning).
+			// The release starts the retro only in a tree that runs (StartHeldRetro, record.TreeRunning).
 			seedTreeLifecycle(t, pool, "LEGION-208")
 			if tc.child {
 				stepChild(t, pool, heldParentChild, phase.Implementing, nil)
@@ -370,7 +370,7 @@ func TestAHeldParentReleasedIntoItsRetroLeavesTheMergeToTheMerger(t *testing.T) 
 			completesImplementingAt(t, pool)
 			want := []record.MergeForwardMessage{inImplementing}
 			if tc.child {
-				// The hold and its release make no move's call (holdBeforeRetro, startHeldRetro), so
+				// The hold and its release make no move's call (holdBeforeRetro, StartHeldRetro), so
 				// the implementer is told of the merger at the move into merging.
 				asksNothingAgain(t, pool, "the implementer's completion", phase.Held, want)
 				childLeavesDone(t, pool, readsAfter(3*time.Minute))

@@ -424,6 +424,10 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // head the merge names is final and no push from it is code on its way (classify.CodeOnItsWay). A
 // merge that names no head leaves the recorded head and its pushes.
 //
+// A merge during a parent's wait on its children leaves the held start where it stands: the
+// return from that wait reads the merge and keeps the path of a merged pull request, back to the
+// very start it held (ReturnFromChildren, dispatch://INFRA-3320 R12).
+//
 // In reviewing, after the architect's notice, the merge settles the review round (settleRound):
 // an approval that stands on the head the pull request merged at ends the round and moves the
 // issue to its task's next step (accepting, in the default steps), since a merged pull request
@@ -470,7 +474,7 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 // has taken it (record.StatusNotTakenYet).
 func waitingForTree(issue string, number int, waiting []string) string {
 	return fmt.Sprintf("pull request #%d merged, and %s's close is waiting for %s, still in the workflow. %s closes once the last of them leaves the workflow.",
-		number, issue, strings.Join(waiting, ", "), issue) + " " + record.StatusNotTakenYet + " " + record.EndChildRule
+		number, issue, strings.Join(waiting, ", "), issue) + " " + endChildWords
 }
 
 // closeMergedTelling closes issue on its merged pull request (closeMerged) and, when the close
