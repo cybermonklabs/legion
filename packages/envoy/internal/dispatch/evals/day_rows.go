@@ -97,13 +97,13 @@ func (s *Store) writeProjectDay(ctx context.Context, family dayFamily, day Proje
 // transaction widens the one change it logs of an eval, so the days a page writes log one change of
 // each eval they moved, and a view of the rows is sent one delta of them. Where figures is set, as
 // the refresher's write of days outside a walk sets it, the same transaction folds again, once for
-// each project, the stored figures of the span of its days whose rows it moved, where builtBy
-// writes them (foldFiguresInTx); a walk's day leaves them to the end of its batch
-// (refresh.foldWalked). It writes the rows, then the members, then the figures, the order every
-// writer of the three takes (writeDayRowsIn, writeDayMembersIn, foldFiguresInTx), which a page
-// whose days move other days takes in its one commit too (spanWrite). Where a rebuild is building,
-// the triggers of eval_days and eval_day_members queue the days for it to build again (migration
-// 20261117100021).
+// each project, the stored figures of its days whose rows it moved, each run of them apart and no
+// day between two runs, where builtBy writes them (foldFiguresInTx); a walk's day leaves them to
+// the end of its batch (refresh.foldWalked). It writes the rows, then the members, then the
+// figures, the order every writer of the three takes (writeDayRowsIn, writeDayMembersIn,
+// foldFiguresInTx), which a page whose days move other days takes in its one commit too
+// (spanWrite). Where a rebuild is building, the triggers of eval_days and eval_day_members queue
+// the days for it to build again (migration 20261117100021).
 func (s *Store) writeProjectDays(ctx context.Context, family dayFamily, days []ProjectDay, builtBy string, figures bool) error {
 	return s.writeDays(ctx, family, days, builtBy, figures, nil)
 }
@@ -129,15 +129,14 @@ func (s *Store) writeDays(ctx context.Context, family dayFamily, days []ProjectD
 			return err
 		}
 		if figures {
-			written := map[string]daySpan{}
+			written := writtenSpans{}
 			for _, day := range days {
-				written[day.Project] = written[day.Project].widen(measures.Midnight(day.Day))
+				date := measures.Midnight(day.Day)
+				for _, slug := range family.slugs {
+					written.add(day.Project, EvalID(day.Project, slug), date, date)
+				}
 			}
-			spans := make(map[string]map[string]daySpan, len(written))
-			for project, span := range written {
-				spans[project] = slugSpans(project, family.slugs, span)
-			}
-			if err := foldFiguresInTx(ctx, tx, builtBy, spans); err != nil {
+			if err := foldFiguresInTx(ctx, tx, builtBy, written.sets()...); err != nil {
 				return err
 			}
 		}
@@ -150,16 +149,6 @@ func (s *Store) writeDays(ctx context.Context, family dayFamily, days []ProjectD
 	}
 	s.drainChanges(ctx)
 	return nil
-}
-
-// slugSpans is span as the span of each of slugs' evals of project, by eval id: the days whose
-// stored figures a write of those evals' rows folds again (foldFiguresInTx).
-func slugSpans(project string, slugs []string, span daySpan) map[string]daySpan {
-	spans := make(map[string]daySpan, len(slugs))
-	for _, slug := range slugs {
-		spans[EvalID(project, slug)] = span
-	}
-	return spans
 }
 
 // daysNamed names days in an error: the one day's project and date, or how many days of how many

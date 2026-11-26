@@ -645,6 +645,80 @@ func (s daySpan) widen(day time.Time) daySpan {
 	return s
 }
 
+// daySpans is, by eval id, the days a write wrote of each eval, or may have moved, as runs of days
+// (daySpan) in day order, no two runs of one eval overlapping or touching (add). A write of a
+// months-old day and of today holds those two days, where one span from the first to the last
+// would have its fold read the stamps and the stored rows of every day between, in the write's
+// transaction (movedFigureDays; check k29 of dispatch://INFRA-2916).
+type daySpans map[string][]daySpan
+
+// add adds the days first to last of evalID to s, joined with each run of them they overlap or
+// touch.
+func (s daySpans) add(evalID string, first, last time.Time) {
+	runs := s[evalID]
+	before, after := first.AddDate(0, 0, -1), last.AddDate(0, 0, 1)
+	// The runs from the first that ends on or after the day before first, to the first that
+	// begins after the day after last, are those the days join.
+	from := sort.Search(len(runs), func(k int) bool { return !runs[k].last.Before(before) })
+	to := from
+	for to < len(runs) && !runs[to].first.After(after) {
+		to++
+	}
+	joined := daySpan{first: first, last: last}
+	if from < to {
+		if runs[from].first.Before(first) {
+			joined.first = runs[from].first
+		}
+		if runs[to-1].last.After(last) {
+			joined.last = runs[to-1].last
+		}
+	}
+	s[evalID] = slices.Replace(runs, from, to, joined)
+}
+
+// sets is s as the sets of spans movedFigureDays takes, each one span of each eval it names
+// (spansOf): the k-th holds the k-th run of each eval that has more than k.
+func (s daySpans) sets() []map[string]daySpan {
+	var sets []map[string]daySpan
+	for evalID, runs := range s {
+		for k, run := range runs {
+			if k == len(sets) {
+				sets = append(sets, map[string]daySpan{})
+			}
+			sets[k][evalID] = run
+		}
+	}
+	return sets
+}
+
+// writtenSpans is what a write wrote of the day rows whose stored figures it folds again in its
+// own transaction (foldFiguresInTx): by the key whose rows it wrote (a project, or an owner key),
+// the days of each of that key's evals (daySpans).
+type writtenSpans map[string]daySpans
+
+// add adds the days first to last of key's eval evalID to w (daySpans.add).
+func (w writtenSpans) add(key, evalID string, first, last time.Time) {
+	if w[key] == nil {
+		w[key] = daySpans{}
+	}
+	w[key].add(evalID, first, last)
+}
+
+// sets is w as the sets of spans foldFiguresInTx takes, by key: the k-th holds each key's k-th set
+// (daySpans.sets).
+func (w writtenSpans) sets() []map[string]map[string]daySpan {
+	var sets []map[string]map[string]daySpan
+	for key, spans := range w {
+		for k, set := range spans.sets() {
+			if k == len(sets) {
+				sets = append(sets, map[string]map[string]daySpan{})
+			}
+			sets[k][key] = set
+		}
+	}
+	return sets
+}
+
 // figureCut is one fold a read of a project's stored figures looks up: its rows of repo, the empty
 // string for the project's own rows (repo "") and a repository's name for the rows a read that
 // names that one repository folds (cutOf), of one deploy repository ("" for the evals no deploy
@@ -1397,43 +1471,49 @@ func foldWorkersIn(ctx context.Context) int {
 }
 
 // foldFiguresInTx is the stored figures' part of a write of day rows by build, in tx, the write's
-// own transaction, made after its rows: written is, by the key whose rows the write wrote (a
-// project, or an owner key), the spans of the days it wrote, by that key's eval ids. An owner key's
-// rows (owners.go) have no figures of their own: they are folded into the figures of each project
-// whose read folds them (readersOf, one read of every owner key written), each over the same days
-// of its eval of the same slug (asReader). Each project is then folded once, whatever number of
-// the keys it reads the write wrote (refoldProject): where any of its figures are folded, the
-// figures of the days whose rows moved of every span its own write and those keys' name, and of
-// every range that holds one. The spans are kept as they were written (spansOf): their hull would
-// fold the days between two of them, which no write named. Folds of the same rows in one
-// transaction answer alike, so one fold over every span stores what a fold after each write of them
-// would, and the folds after the first found nothing moved.
-func foldFiguresInTx(ctx context.Context, tx pgx.Tx, build string, written map[string]map[string]daySpan) error {
-	var owners []string
-	for key, spans := range written {
-		if isOwner(key) && len(spans) > 0 {
-			owners = append(owners, key)
+// own transaction, made after its rows: each of written is, by the key whose rows the write wrote
+// (a project, or an owner key), the spans of the days it wrote, by that key's eval ids, one span
+// each, so a write of days that do not touch passes a set for each run of them (writtenSpans.sets).
+// An owner key's rows (owners.go) have no figures of their own: they are folded into the figures of
+// each project whose read folds them (readersOf, one read of every owner key written), each over
+// the same days of its eval of the same slug (asReader). Each project is then folded once,
+// whatever number of the keys it reads the write wrote (refoldProject): where any of its figures
+// are folded, the figures of the days whose rows moved of every span its own write and those keys'
+// name, and of every range that holds one. The spans are kept as they were written (spansOf):
+// their hull would read the stamps and the stored rows of the days between two of them, which no
+// write named, and a write of a months-old day and of today would read every day between in its
+// transaction. Folds of the same rows in one transaction answer alike, so one fold over every span
+// stores what a fold after each write of them would, and the folds after the first found nothing
+// moved.
+func foldFiguresInTx(ctx context.Context, tx pgx.Tx, build string, written ...map[string]map[string]daySpan) error {
+	owned := map[string]bool{}
+	for _, set := range written {
+		for key, spans := range set {
+			if isOwner(key) && len(spans) > 0 {
+				owned[key] = true
+			}
 		}
 	}
-	slices.Sort(owners)
-	readers, err := readersOf(ctx, tx, owners)
+	readers, err := readersOf(ctx, tx, slices.Sorted(maps.Keys(owned)))
 	if err != nil {
 		return err
 	}
 	folds := map[string][]map[string]daySpan{}
-	for _, key := range slices.Sorted(maps.Keys(written)) {
-		spans := written[key]
-		switch {
-		case len(spans) == 0:
-		case !isOwner(key):
-			folds[key] = append(folds[key], spans)
-		default:
-			for _, reader := range readers[key] {
-				moved := make(map[string]daySpan, len(spans))
-				for evalID, span := range spans {
-					moved[asReader(key, reader, evalID)] = span
+	for _, set := range written {
+		for _, key := range slices.Sorted(maps.Keys(set)) {
+			spans := set[key]
+			switch {
+			case len(spans) == 0:
+			case !isOwner(key):
+				folds[key] = append(folds[key], spans)
+			default:
+				for _, reader := range readers[key] {
+					moved := make(map[string]daySpan, len(spans))
+					for evalID, span := range spans {
+						moved[asReader(key, reader, evalID)] = span
+					}
+					folds[reader] = append(folds[reader], moved)
 				}
-				folds[reader] = append(folds[reader], moved)
 			}
 		}
 	}

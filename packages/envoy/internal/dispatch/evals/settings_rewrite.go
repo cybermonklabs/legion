@@ -538,10 +538,10 @@ func keepPushRuns(stored map[memberKey]memberAt, deploys map[string]delivery.Run
 //     members of families of those repositories whose day, repository or shipping run moved, or
 //     that are new, upserted, and those of the days written that the days no longer hold deleted,
 //     and no other member sent, once the last chunk is built; the stored figures of every day whose
-//     rows moved folded again, over each eval's span of the days whose rows moved or went
-//     (foldFiguresInTx, whose quantiles read each rank across the days' sorted samples,
-//     measures.SortedSamples); and the settings recorded as the ones the rows stand built under,
-//     the repositories they stand built for left as they are (syncKept's).
+//     rows moved folded again, over each eval's runs of the days whose rows moved or went and no
+//     day between two runs (foldFiguresInTx, whose quantiles read each rank across the days'
+//     sorted samples, measures.SortedSamples); and the settings recorded as the ones the rows stand
+//     built under, the repositories they stand built for left as they are (syncKept's).
 //     Its eval_days changes are one per eval, as every transaction's are (migration
 //     20261117100014), each under the project that reads the eval (an owner key's under each
 //     project that reads the key), so the evals views of each project whose rows moved hear of the
@@ -874,14 +874,12 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	// zeros is each project's zero rows of a day of no input under the new settings
 	// (ZeroDeliveryDay), of today: a day's are the same rows on that day (zeroRowsOn).
 	zeros := map[string][]DayRow{}
-	// moved is, by project and eval, the span of the days whose rows moved or went: what the stored
-	// figures are folded again over.
-	moved := map[string]map[string]daySpan{}
+	// moved is, by project and eval, the days whose rows moved or went, each run of them apart:
+	// what the stored figures are folded again over.
+	moved := writtenSpans{}
 	note := func(row *DayRow) {
-		if moved[row.ProjectKey] == nil {
-			moved[row.ProjectKey] = map[string]daySpan{}
-		}
-		moved[row.ProjectKey][row.EvalID] = moved[row.ProjectKey][row.EvalID].widen(measures.Midnight(row.Day))
+		day := measures.Midnight(row.Day)
+		moved.add(row.ProjectKey, row.EvalID, day, day)
 	}
 
 	tx, err := pool.Begin(ctx)
@@ -1059,7 +1057,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	times.memberWrites = times.lap()
 	// The rewrite folds on as many goroutines as it builds days on: the views that wait for its
 	// commit wait for its fold, and no view reads beside it what the fold takes CPUs from.
-	if err := foldFiguresInTx(withFoldWorkers(withFigureTimes(ctx, &times.figures), rewriteWorkers), tx, r.build, moved); err != nil {
+	if err := foldFiguresInTx(withFoldWorkers(withFigureTimes(ctx, &times.figures), rewriteWorkers), tx, r.build, moved.sets()...); err != nil {
 		return err
 	}
 	times.figureScope = times.lap() - times.figures.moved - times.figures.plan - times.figures.fold

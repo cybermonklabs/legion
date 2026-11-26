@@ -100,10 +100,11 @@ func addSpan(spans map[string]daySpan, evalID string, first, last time.Time) {
 
 // figureChanges is the figures' read of the change log, page after page until one comes back
 // short: every eval_days change after the figures' cursor, whichever build's write logged it, and
-// every eval_versions change, each by project and eval. For each project it folds again, in a
-// transaction of its own, the figures of every day the eval_days changes span whose rows moved
-// since they were folded (refoldChanged): none where a build's write folded them in its own
-// transaction, which costs the two short reads of the moved-day test; and the days of a build that
+// every eval_versions change, each by project and eval. For each project it folds again the
+// figures of every day the eval_days changes span whose rows moved since they were folded
+// (refoldChanged), each change's span apart and those that overlap or touch joined (daySpans.add):
+// none where a build's write folded them in its own transaction, which costs the read of the
+// moved-day test over the change's span, outside any transaction; and the days of a build that
 // writes no figures. Of the evals of the eval_versions changes, each a new version a register write
 // or the seed wrote, it then marks stale each cut whose stored rows a moved fold key left folded
 // under another (markMovedKeys), which the refold folds again in batches (refoldStaleCuts), where a
@@ -150,7 +151,7 @@ func (r *refresh) figureChanges(ctx context.Context, limit int) error {
 		if err != nil {
 			return fmt.Errorf("read the delivery changes after %d: %w", cursor.Seq, err)
 		}
-		spans, versioned := map[string]map[string]daySpan{}, map[string][]string{}
+		spans, versioned := writtenSpans{}, map[string][]string{}
 		for _, change := range changes {
 			if change.Kind != delivery.ChangeKindEvalDays && change.Kind != delivery.ChangeKindEvalVersions {
 				continue
@@ -164,16 +165,13 @@ func (r *refresh) figureChanges(ctx context.Context, limit int) error {
 			switch {
 			case !known:
 			case change.Kind == delivery.ChangeKindEvalDays && change.TOld != nil && change.TNew != nil:
-				if spans[change.Repo] == nil {
-					spans[change.Repo] = map[string]daySpan{}
-				}
-				addSpan(spans[change.Repo], change.Ref, measures.Midnight(*change.TOld), measures.Midnight(*change.TNew))
+				spans.add(change.Repo, change.Ref, measures.Midnight(*change.TOld), measures.Midnight(*change.TNew))
 			case change.Kind == delivery.ChangeKindEvalVersions:
 				versioned[change.Repo] = append(versioned[change.Repo], change.Ref)
 			}
 		}
 		for _, project := range slices.Sorted(maps.Keys(spans)) {
-			if err := r.refoldChanged(ctx, project, spans[project]); err != nil {
+			if err := r.refoldChanged(ctx, project, spans[project].sets()...); err != nil {
 				return err
 			}
 		}
@@ -228,28 +226,51 @@ func (r *refresh) moveFigureCursor(ctx context.Context, cursor delivery.ChangeCu
 	return nil
 }
 
-// refoldChanged folds again project's figures of the days of spans (by eval id) whose rows moved,
-// in one transaction, under the locks of its logged evals among them (lockLogged), which every
-// readings write, zero fill and register write of one takes too, so none of them writes a row of
-// theirs between the read of the rows and the write of their figures.
-func (r *refresh) refoldChanged(ctx context.Context, project string, spans map[string]daySpan) error {
-	tx, err := r.store.database.Pool.Begin(ctx)
+// refoldChanged folds again project's figures of the days of spans (sets of spans by eval id, each
+// change's span apart: figureChanges) whose rows moved. It reads which days moved first, on the
+// pool and in no transaction (movedFigureDays): every day of each change's span, which the change
+// log records from the first of a transaction's days of the eval to the last (migration
+// 20261117100014), under no lock a writer of day rows or readings waits on. Where none moved, as
+// where the write folded its days in its own transaction, it is done. Otherwise it folds those
+// days alone, in one transaction, under the locks of its logged evals among them (lockLogged),
+// which every readings write, zero fill and register write of one takes too, so none of them
+// writes a row of theirs between the read of the rows and the write of their figures: under the
+// locks it reads those days' stamps again and the rows it folds (refoldFigures), so a day a write
+// folded since the first read is found folded and one it moved is folded from the rows as they
+// stand. A write that moves another day of the eval after the first read folds it in its own
+// transaction, or logs a change of its own that a later read of the change log folds; one that
+// committed before the first read is seen by it. The scope (readFigureScope) is read once, before
+// the locks: only the refresher's own passes move it, one at a time.
+func (r *refresh) refoldChanged(ctx context.Context, project string, spans ...map[string]daySpan) error {
+	pool := r.store.database.Pool
+	entries, err := readEntries(ctx, pool, project, spannedEvals(spans))
+	if err != nil {
+		return err
+	}
+	scope, ok, err := readFigureScope(ctx, pool, r.build, project)
+	if err != nil || !ok {
+		return err
+	}
+	byID := entriesByID(entries)
+	moved, err := movedFigureDays(ctx, pool, scope, byID, spans...)
+	if err != nil || len(moved) == 0 {
+		return err
+	}
+	days := daySpans{}
+	for group, held := range moved {
+		for day := range held {
+			days.add(group.eval, day, day)
+		}
+	}
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin the stored figures of %s: %w", project, err)
 	}
 	defer tx.Rollback(ctx)
-	entries, err := readEntries(ctx, tx, project, slices.Sorted(maps.Keys(spans)))
-	if err != nil {
-		return err
-	}
 	if _, err := lockLogged(ctx, tx, entries); err != nil {
 		return err
 	}
-	scope, ok, err := readFigureScope(ctx, tx, r.build, project)
-	if err != nil || !ok {
-		return err
-	}
-	if err := refoldFigures(ctx, tx, scope, entriesByID(entries), spans); err != nil {
+	if err := refoldFigures(ctx, tx, scope, byID, days.sets()...); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -389,7 +410,8 @@ func (r *refresh) noteWalked(family, project string, day time.Time) {
 // the change log folds them (figureChanges).
 //
 // An owner key's walked days (owners.go) are folded into the figures of each project whose read
-// folds its rows (readersOf, one read of every owner key walked), with that project's own.
+// folds its rows (readersOf, one read of every owner key walked), with that project's own, each
+// walk's span apart from the others' (daySpans.add).
 func (r *refresh) foldWalked(ctx context.Context) error {
 	walked := r.walked
 	r.walked = nil
@@ -404,7 +426,7 @@ func (r *refresh) foldWalked(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	byProject := map[string]map[string]daySpan{}
+	byProject := writtenSpans{}
 	for key, span := range walked {
 		slugs := legionDaySlugs
 		if key.family == walkDelivery {
@@ -415,11 +437,8 @@ func (r *refresh) foldWalked(ctx context.Context) error {
 			projects = readers[key.project]
 		}
 		for _, project := range projects {
-			if byProject[project] == nil {
-				byProject[project] = map[string]daySpan{}
-			}
 			for _, slug := range slugs {
-				addSpan(byProject[project], EvalID(project, slug), span.first, span.last)
+				byProject.add(project, EvalID(project, slug), span.first, span.last)
 			}
 		}
 	}
@@ -444,7 +463,7 @@ func (r *refresh) foldWalked(ctx context.Context) error {
 // logs a change only where the day's own rows moved, and a view recomputed between two earlier
 // commits of the batch would still answer figures the last commit then moved. A fold that moves
 // no figure logs nothing.
-func (s *Store) foldFiguresOfDays(ctx context.Context, build, project string, spans map[string]daySpan) error {
+func (s *Store) foldFiguresOfDays(ctx context.Context, build, project string, spans daySpans) error {
 	if len(spans) == 0 {
 		return nil
 	}
@@ -453,7 +472,7 @@ func (s *Store) foldFiguresOfDays(ctx context.Context, build, project string, sp
 		return fmt.Errorf("begin the stored figures of %s: %w", project, err)
 	}
 	defer tx.Rollback(ctx)
-	folded, ok, err := refoldProject(ctx, tx, build, project, spans)
+	folded, ok, err := refoldProject(ctx, tx, build, project, spans.sets()...)
 	if err != nil || !ok {
 		return err
 	}
