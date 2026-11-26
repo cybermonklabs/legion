@@ -1,26 +1,20 @@
 import type {
   Advised,
-  BasisLearnedAt,
-  CheckBasis,
-  CheckBlock,
-  CheckCI,
-  CheckPassStands,
-  CheckResult,
   CheckResultRecorded,
   ClaimedIssue,
   DuplicateCandidate,
   Issue,
-  IssueCheckResults,
   IssueComponents,
   IssueComponentsInput,
   IssueDetails,
   IssueRouteStatus,
+  SearchResultKind,
 } from "@legion/contracts";
-import { DEFAULT_ISSUE_PAGE_LIMIT } from "@legion/contracts";
+import { DEFAULT_ISSUE_PAGE_LIMIT, issueStatusOptionsOf } from "@legion/contracts";
 import { actorText } from "../actor-text";
+import { commandLine, fieldFlag } from "../dispatch-command";
 import {
   type DispatchClient,
-  DispatchGatewayError,
   DispatchServiceError,
   DispatchWriteLandedError,
   DispatchWriteUnsettledError,
@@ -44,10 +38,19 @@ import {
   optionalStringArray,
   stringArg,
 } from "./context";
-import { dispatchAnswered, refusalWithCode, withAccount, writeMayHaveLanded } from "./failures";
+import {
+  type ClosingNote,
+  closeAccount,
+  dispatchAnswered,
+  refusalWithCode,
+  withAccount,
+  writeMayHaveLanded,
+} from "./failures";
 import { linkFor } from "./links";
 import { claimText, holdsSession, liveAgents, progressText, routeText } from "./render-issue";
+import { formatCheckResults } from "./render-results";
 import { notSubscribed } from "./results";
+import { issuesBeforeStatusChange, statusChangeCommand } from "./status-change";
 
 /** The change line after a components write: what the issue's own attachment became. */
 function componentsChange(input: IssueComponentsInput, after: IssueComponents): string {
@@ -67,10 +70,10 @@ const architectureComponentsAction =
   'Review the `dispatch` skill, "Architecture components", to attach it to the parts it changes or mark it as non-architectural with a reason.';
 
 /** What both claim results say when the server answers `legion_managed_status`: on an issue
- *  Legion runs, only its daemon writes the status. One copy, since the claim and the release
+ *  Legion runs, its daemon owns the status. One copy, since the claim and the release
  *  must say the same thing. */
 const LEGION_OWNS_STATUS =
-  "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — a status written here is undone.";
+  "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — where Dispatch runs with DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status written here from a credential without the person or legion-status scope (403 LEGION_STATUS_SCOPE_REQUIRED), but for done, backlog, icebox or triage from an architect of an issue above with its own broker token, and otherwise the daemon undoes it.";
 
 /**
  * Guidance only: creation already succeeded, so an unavailable source lookup must not turn this
@@ -131,17 +134,25 @@ function refuseUnsavedRepository(
   );
 }
 
-/** The revision a whole-set write of `advances` carries: the one the caller named, which answers
- *  a 409 ADVANCES_REVISION, else the one the read answered. A Dispatch server from before
- *  priorities answers no revision and refuses a write naming `advances`, so whichever revision
- *  was named the call says so and sends nothing, the closing reason included. */
-function advancesRevisionToSend(issue: IssueDetails, named: number | undefined): number {
-  if (issue.advances_revision === undefined) {
-    throw new Error(
-      `Dispatch read ${issue.key} without its advances: this Dispatch server predates priorities, so nothing was sent; upgrade the server`
-    );
-  }
-  return named ?? issue.advances_revision;
+/** A Dispatch server from before priorities answers a read without `advances_revision` and
+ *  refuses a write naming `advances`, so a call that names `advances` says so and sends nothing,
+ *  the closing reason included. */
+function refuseServerWithoutAdvances(issue: IssueDetails): void {
+  if (issue.advances_revision !== undefined) return;
+  throw new Error(
+    `Dispatch read ${issue.key} without its advances: this Dispatch server predates priorities, so nothing was sent; upgrade the server`
+  );
+}
+
+/** The clause a 409 ADVANCES_REVISION adds to the refusal: how the caller answers it, since the
+ *  server's sentence speaks of the API's field and not of this command's flags. In both of the
+ *  server's sentences (`refuseAdvancesRevision`, internal/dispatch/api/issue_advances.go) the
+ *  last number is the revision the issue holds, and no other field of the answer carries it, so
+ *  the clause takes that number. Every other error adds nothing, so it reads as it did. */
+function advancesRevisionAnswer(issueKey: string, error: unknown): string {
+  if (!dispatchAnswered(error, 409) || error.code !== "ADVANCES_REVISION") return "";
+  const held = /(\d+)\D*$/.exec(error.message)?.[1] ?? "<the revision named above>";
+  return `read the issue with ${commandLine("dispatch_read", { issue: issueKey })}, then send the whole set you mean with ${fieldFlag("dispatch_issue_update", "advances_revision")} ${held}`;
 }
 
 /** `dispatch issue`: open an issue, or report the one an external reference already holds. */
@@ -245,7 +256,9 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
   }
 }
 
-/** `dispatch issue-update`: change one issue's fields, posting a closing reason first. */
+/** `dispatch issue-update`: change one issue's fields, posting a closing reason first. `--labels-add`
+ *  adds labels to those the issue holds, inside Dispatch's write, where `--label` replaces them.
+ *  With an option of the status change, it sends that route in place of the PATCH. */
 export async function issueUpdateCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, issue } = context;
   const issueKey = issue();
@@ -261,26 +274,33 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   const priority = optionalPriority(args, "priority");
   const assignee = optionalNullableString(args, "assignee");
   const labels = Array.isArray(args.labels) ? (args.labels as string[]) : undefined;
+  const labelsAdd = optionalStringArray(args, "labels_add");
   const blockedBy = Array.isArray(args.blocked_by) ? (args.blocked_by as string[]) : undefined;
   const advances = optionalStringArray(args, "advances");
   const advancesRevision = optionalNumber(args, "advances_revision");
   const requestedLinks = Array.isArray(args.external_links)
     ? [...new Set(args.external_links as string[])]
     : undefined;
+  // The schema refused an option beside any field but status and reason, include_children beside
+  // unlink_children, and include_children with done.
+  const options = issueStatusOptionsOf(args);
   let before: IssueDetails;
   try {
     before = await client.getIssue(issueKey);
   } catch (error) {
     throw refusalWithCode(error);
   }
-  // The command replaces the issue's own set, so the write carries a revision: with none the
-  // server takes one act alone and refuses a write that moves two relations
-  // (409 ADVANCES_REVISION). The caller's own revision answers that refusal against the
-  // revision it named; with none, the read above is the read this write answers.
+  if (advances !== undefined) refuseServerWithoutAdvances(before);
+  // The command replaces the issue's own set. The revision it carries is the caller's alone: a
+  // revision says which read the whole set answers, and only a read the caller saw can be that
+  // read. The revision of this command's own read would let the set retract a relation another
+  // writer added after the caller last read the issue. With none, the server takes the write one
+  // relation at a time and refuses one that moves two or more (409 ADVANCES_REVISION), naming the
+  // revision it holds, and the catch below says how to answer that refusal.
   const advancesWrite =
     advances === undefined
       ? undefined
-      : { advances, advances_revision: advancesRevisionToSend(before, advancesRevision) };
+      : { advances, ...defined("advances_revision", advancesRevision) };
   // The schema admits reason only beside status done. The reason is posted first, so the
   // close carries its note and an issue that cannot take the note stays open. Dispatch takes
   // messages on a closed issue (though not asks or artifacts) and answers a second close with
@@ -292,7 +312,9 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       `${issueKey} closed at ${before.closed_at}, so the reason was not posted and the close was not sent`
     );
   }
-  let closingNote: { readonly id: string; readonly ref: string } | undefined;
+  const issuesBefore =
+    options.length === 0 ? undefined : await issuesBeforeStatusChange(client, before, options);
+  let closingNote: ClosingNote | undefined;
   if (reason !== undefined) {
     try {
       const message = await client.message(issueKey, { body: reason, actor });
@@ -315,6 +337,9 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       if (error instanceof DispatchServiceError) throw refusalWithCode(error, told);
       throw withAccount(error, told);
     }
+  }
+  if (issuesBefore !== undefined) {
+    return statusChangeCommand(context, before, options, issuesBefore, closingNote);
   }
   // The server replaces the whole link set. The common call is "link the pull request I just
   // opened", so a non-empty list merges by URL and keeps every existing link (and its kind).
@@ -345,6 +370,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       ...(status === undefined ? {} : { status }),
       ...(title === undefined ? {} : { title }),
       ...(labels === undefined ? {} : { labels }),
+      ...(labelsAdd === undefined ? {} : { labels_add: labelsAdd }),
       ...(priority === undefined ? {} : { priority }),
       ...(assignee === undefined ? {} : { assignee }),
       ...(route === undefined ? {} : { route }),
@@ -371,24 +397,19 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       dispatchAnswered(answered, 500) && newLinks.length > 0
         ? `one of ${newLinks.join(", ")} may already be linked from another issue (a URL links exactly one issue)`
         : "";
+    const revisionClause = advancesRevisionAnswer(issueKey, error);
     if (closingNote === undefined) {
       if (taken !== "" && !(error instanceof DispatchServiceError)) {
         throw withAccount(error, taken);
       }
-      throw refusalWithCode(error, taken);
+      throw refusalWithCode(error, taken, revisionClause);
     }
     // The reason is on the issue, so a blind retry would post it a second time: the error
-    // says where the first one is, and whether the close may have landed anyway. A gateway's
-    // timeout or rate limit refused nothing there is to fix.
-    const posted = `the reason already landed as message ${closingNote.id} (${closingNote.ref})`;
-    const fix =
-      error instanceof DispatchGatewayError && error.transient
-        ? ""
-        : "fix what refused the close, then ";
-    const landed = writeMayHaveLanded(error)
-      ? `${posted}, and the close may or may not have taken effect. Read the issue's status before retrying: done means it closed; otherwise retry with a reason that points at message ${closingNote.id}, since retrying this call posts its reason again`
-      : `${posted} but the issue did not close. Retrying this call posts its reason again, so ${fix}retry with a reason that points at message ${closingNote.id}`;
-    if (error instanceof DispatchServiceError) throw refusalWithCode(error, taken, landed);
+    // says where the first one is, and whether the close may have landed anyway.
+    const landed = closeAccount(error, closingNote);
+    if (error instanceof DispatchServiceError) {
+      throw refusalWithCode(error, taken, revisionClause, landed);
+    }
     throw withAccount(error, [taken, landed].filter((clause) => clause !== "").join("; "));
   }
   refuseUnsavedRepository("updated", after, repo);
@@ -405,12 +426,14 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       : [`reason posted as message ${closingNote.id} (${closingNote.ref})`]),
     ...(status === undefined ? [] : [`status ${before.status} -> ${after.status}`]),
     ...(title === undefined ? [] : [`title "${after.title}"`]),
-    ...(labels === undefined
+    ...(labels === undefined && labelsAdd === undefined
       ? []
       : [
-          (after.labels ?? []).length === 0
-            ? "labels cleared"
-            : `labels ${(after.labels ?? []).join(", ")}`,
+          (after.labels ?? []).length > 0
+            ? `labels ${(after.labels ?? []).join(", ")}`
+            : labels === undefined
+              ? "labels none"
+              : "labels cleared",
         ]),
     ...(priority === undefined
       ? []
@@ -494,8 +517,8 @@ export async function claimCommand(context: CommandContext): Promise<DispatchToo
     throw refusalWithCode(error);
   }
   const held = after.claim;
-  // On an issue Legion runs, only its daemon writes the status: a status this session sets
-  // is undone, so the result says who owns it rather than asking for a move.
+  // On an issue Legion runs, the result says who owns the status (LEGION_OWNS_STATUS) rather
+  // than asking for a move.
   // An absent field (an older Dispatch, or a failed label walk) reads as not managed.
   const legionManaged = after.legion_managed_status === true;
   // A release answers with the claim cleared or it does not answer at all: the server
@@ -536,10 +559,14 @@ export async function searchCommand(context: CommandContext): Promise<DispatchTo
   const project = optionalString(args, "project");
   const limit = optionalNumber(args, "limit");
   const offset = optionalNumber(args, "offset");
+  // The schema holds the vocabulary (`SEARCH_KINDS`), and Dispatch refuses a kind outside it,
+  // so the values are passed on as they were written rather than checked twice.
+  const kind = optionalStringArray(args, "kind") as SearchResultKind[] | undefined;
   const search = await client.search(query, {
     ...(project === undefined ? {} : { project }),
     ...(limit === undefined ? {} : { limit }),
     ...(offset === undefined ? {} : { offset }),
+    ...(kind === undefined ? {} : { kind }),
   });
   return searchAnswer(search, query, offset, linkBase);
 }
@@ -568,9 +595,18 @@ export async function relatedCommand(context: CommandContext): Promise<DispatchT
   };
 }
 
-/** `dispatch issues`: one project's issues, filtered and paged as the arguments ask. */
+/** Whether the whole output of a call is one JSON object a program reads: `dispatch issues
+ *  --json`. The CLI prints such an output whole, also on a host that cuts long output, since a cut
+ *  object is no JSON object, and prints its own notes on standard error. */
+export function printsJson(tool: string, args: Readonly<Record<string, unknown>>): boolean {
+  const { json } = args;
+  return tool === "dispatch_issues" && json === true;
+}
+
+/** `dispatch issues`: one project's issues, filtered and paged as the arguments ask, as lines or,
+ *  with `--json`, as one JSON object. */
 export async function issuesCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client } = context;
+  const { args, client, input } = context;
   const project = stringArg(args, "project");
   const status = optionalString(args, "status");
   const parent = optionalString(args, "parent");
@@ -621,6 +657,10 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
     updated_at: row.updated_at,
     progress: row.progress,
   }));
+  const listing = { issues: rows, total, offset, limit };
+  if (printsJson(input.tool, args)) {
+    return { text: JSON.stringify(listing), details: listing };
+  }
   const agents = await liveAgents(
     client,
     rows.some((row) => holdsSession(row.claim))
@@ -655,206 +695,19 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
               );
             }),
           ].join("\n"),
-    details: { issues: rows, total, offset, limit },
+    details: listing,
   };
-}
-
-/** How many characters of a reading `--brief` keeps. R2 of the spec sets the number: a reader
- *  who wants the gate alone on an issue holding hundreds of results reads this much of a reading
- *  that stands at none of the compared commits, and the whole of every other one. */
-const BRIEF_READING_CHARACTERS = 200;
-
-/** The three reasons a check compared its results with nothing, and the two a result's commit
- *  cannot be placed, in words a reader acts on. A check takes all three and a result all but
- *  no_pull_request_or_branch, so the check's set types this map and answers both. */
-const COMPARISON_REASONS: Readonly<Record<NonNullable<CheckBlock["compared_nothing"]>, string>> = {
-  no_pull_request_or_branch: "the issue has no pull request and no branch to compare with",
-  repository_unreadable: "Dispatch cannot read the repository",
-  read_failed: "a read Dispatch made did not answer",
-};
-
-/** When Dispatch learned a pull request's head, and which time that is: `read_at` is Dispatch's
- *  own read of the pull request, `updated_at` is GitHub's update time as a webhook carried it. */
-function learnedText(learned: BasisLearnedAt): string {
-  if (learned.kind === "read_at") return `Dispatch read it ${learned.at}`;
-  return `GitHub updated it ${learned.at}`;
-}
-
-/** One thing a check compared its results with, as the head line names it. */
-function basisText(basis: CheckBasis): string {
-  const learned = basis.learned_at === undefined ? "" : ` (${learnedText(basis.learned_at)})`;
-  if (basis.kind === "pull_request") {
-    const number = basis.pull_request === undefined ? "" : `#${basis.pull_request} `;
-    return `the head of pull request ${number}at ${basis.commit ?? "an unnamed commit"}${learned}`;
-  }
-  if (basis.kind === "branch") return `branch ${basis.branch ?? "unnamed"}${learned}`;
-  return `the commit you named, ${basis.commit ?? ""}${learned}`;
-}
-
-/** Where a result's commit stands, as the basis it matched names that place. The head line has
- *  already printed each basis whole, so this names it short. */
-function basisPlace(basis: CheckBasis): string {
-  if (basis.kind === "pull_request") {
-    return basis.pull_request === undefined
-      ? "the head of a pull request"
-      : `the head of pull request #${basis.pull_request}`;
-  }
-  if (basis.kind === "branch") return `on branch ${basis.branch ?? "unnamed"}`;
-  return "the commit you named";
-}
-
-/** The first of R4's two facts: where one result's commit stands against what its check compared
- *  with. A Dispatch server that does not answer it says so rather than reading as another
- *  commit. */
-function commitStandsText(stands: CheckResult["commit_stands"]): string {
-  if (stands === undefined) {
-    return "Where that commit stands is not known: this Dispatch server does not say";
-  }
-  if (stands.answer === "at_basis") {
-    return stands.basis === undefined
-      ? "That commit is one of the compared commits"
-      : `That commit is ${basisPlace(stands.basis)}`;
-  }
-  if (stands.answer === "other_commit") return "That commit is none of the compared commits";
-  // The reason is the server's to give and may be absent, so the answer stands on its own
-  // where there is none.
-  return stands.reason === undefined
-    ? "Where that commit stands is not known"
-    : `Where that commit stands is not known: ${COMPARISON_REASONS[stands.reason]}`;
-}
-
-/** R4's other fact: whether the check's words moved after the result was recorded. Both versions
- *  are named either way, because they are the handles a reader reads the two wordings with. */
-function checkWordsText(check: CheckBlock, result: CheckResult): string {
-  const versions = `result version ${result.check_version}, check version ${check.version}`;
-  if (result.check_words_moved === undefined) {
-    return `Whether the check's words moved is not known (${versions})`;
-  }
-  return result.check_words_moved
-    ? `The check's words moved after this result (${versions})`
-    : `The check's words did not move after this result (${versions})`;
-}
-
-/** R5 for one check: whether a pass of it stands, and from which roles. */
-function passStandsText(pass: CheckPassStands | undefined): string {
-  if (pass === undefined)
-    return "Whether a pass stands is not known: this Dispatch server does not say";
-  if (pass.answer === "yes") {
-    const roles = pass.roles ?? [];
-    return roles.length === 0
-      ? "A pass stands: yes"
-      : `A pass stands: yes, from ${roles.join(", ")}`;
-  }
-  if (pass.answer === "no") return "A pass stands: no";
-  return "A pass stands: not known";
-}
-
-/** The reading one role recorded, under the line of its result at `indent`. `brief` cuts a reading
- *  whose result stands at none of the compared commits, and leaves every other reading whole: the
- *  reading is the record, and a reader who asked for the gate alone still reads the whole of what
- *  stands. */
-function readingLines(result: CheckResult, brief: boolean, indent = "    "): string[] {
-  const observed = result.observed;
-  if (observed === "") return [`${indent}The role recorded no reading.`];
-  const cut = brief && result.commit_stands?.answer !== "at_basis";
-  if (cut && observed.length > BRIEF_READING_CHARACTERS) {
-    return [
-      `${indent}Reading: ${observed.slice(0, BRIEF_READING_CHARACTERS)}… (result ${result.id})`,
-    ];
-  }
-  return [`${indent}Reading: ${observed}`];
-}
-
-/** One result, in the order the API served it: the verdict, the role, the whole commit, R4's two
- *  facts, the time, the id, the retraction that stands against it, and the reading. */
-function resultLines(check: CheckBlock, result: CheckResult, brief: boolean): string[] {
-  const lines = [
-    `  - ${result.verdict} by ${result.role} at ${result.commit_sha}. ${commitStandsText(result.commit_stands)}. ${checkWordsText(check, result)}. Recorded ${result.created_at}. Result ${result.id}.`,
-  ];
-  const retracted = result.retracted;
-  if (retracted !== undefined) {
-    lines.push(
-      `    Retracted by ${actorText(retracted.actor)} at ${retracted.created_at}. The reason: ${retracted.reason}`
-    );
-  }
-  return [...lines, ...readingLines(result, brief)];
-}
-
-/** A check CI proves, which Dispatch marks with `ci`: no role records its result, so the check and
- *  its one result read as one line. A derived result names its verdict, its commit, the producer
- *  `ci`, the run and the conclusion that decided it, and where that commit stands, as a recorded
- *  result's line says it; a check the run did not decide says why, in the sentence Dispatch wrote.
- *  The check's words end the line. Whether a pass stands follows, from the same `pass_stands` and
- *  in the same words as a recorded check's head line, so the gate reads both kinds alike. The
- *  pull-request body line Dispatch wrote for the check follows, which the implementer copies, and
- *  then the run's reading: its conclusion, output and URL. */
-function ciCheckLines(check: CheckBlock, ci: CheckCI, brief: boolean): string[] {
-  const passStandsLine = `  ${passStandsText(check.pass_stands)}.`;
-  const pullRequestLine = `  Pull request line: ${ci.line}`;
-  const derived = check.results?.[0];
-  if (derived === undefined) {
-    return [
-      `- ${check.block_id} (${check.when}): no result: ${ci.detail} ${check.text}`,
-      passStandsLine,
-      pullRequestLine,
-    ];
-  }
-  const stands = commitStandsText(derived.commit_stands);
-  return [
-    `- ${check.block_id} (${check.when}): ${derived.verdict} at ${derived.commit_sha} by ${derived.role} (CI run ${ci.run}, ${ci.case}), ${stands.charAt(0).toLowerCase()}${stands.slice(1)}. ${check.text}`,
-    passStandsLine,
-    pullRequestLine,
-    ...readingLines(derived, brief, "  "),
-  ];
-}
-
-/** One check: a head line naming what it compared with and whether a pass of it stands, the
- *  check's own words once, then every result recorded against it. */
-function checkLines(check: CheckBlock, brief: boolean): string[] {
-  if (check.ci !== undefined) return ciCheckLines(check, check.ci, brief);
-  const bases = check.compared_with ?? [];
-  const reason = check.compared_nothing;
-  const compared =
-    bases.length > 0
-      ? `Compared with ${bases.map(basisText).join(", ")}`
-      : reason === undefined
-        ? "Compared with nothing, and this Dispatch server does not say why"
-        : `Compared with nothing: ${COMPARISON_REASONS[reason]}`;
-  const results = check.results ?? [];
-  return [
-    `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check.pass_stands)}.`,
-    `  The check's words: ${check.text}`,
-    ...(results.length === 0
-      ? ["  No result is recorded for this check."]
-      : results.flatMap((result) => resultLines(check, result, brief))),
-  ];
-}
-
-/** What `dispatch results` prints: each check of the issue's Verification document, what Dispatch
- *  compared its results with, whether a pass of it stands, its own words once, and every result
- *  recorded against it in the order the API serves them. A check CI proves prints its derived
- *  result, or why it has none, as one line, then whether a pass of it stands (`ciCheckLines`). A
- *  check with no result says so, and an issue with no Verification document says that instead of
- *  printing an empty list: Dispatch answers `verification_artifact_id` "" for such an issue, never
- *  null, so that is what is compared. */
-function formatCheckResults(results: IssueCheckResults, brief = false): string {
-  if (results.verification_artifact_id === "") {
-    return `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`;
-  }
-  const checks = results.checks ?? [];
-  if (checks.length === 0) {
-    return `${results.issue}'s Verification document holds no check blocks.`;
-  }
-  const blocks = checks.map((check) => checkLines(check, brief).join("\n"));
-  return [`Checks of ${results.issue}:`, ...blocks].join("\n\n");
 }
 
 /** Whether the CLI's `--dry-run` of a call asks Dispatch what the call's write would answer: a
  *  `dispatch result` record, whose dry run prints the pull-request body line the record would
  *  print, since that line is Dispatch's to write and a copy written here would be a second
- *  grammar. Every other dry run, a retraction's included, prints the arguments and sends nothing. */
+ *  grammar. Every other dry run, a retraction's included, prints the arguments and writes nothing;
+ *  one whose call asks Dispatch something before it writes asks that too, through its step in the
+ *  command table (`DispatchCommand.dryRun`): `dispatch artifact`, how Dispatch would store its text. */
 export function dryRunAsksDispatch(tool: string, args: Readonly<Record<string, unknown>>): boolean {
-  return tool === "dispatch_result" && args["retract"] === undefined;
+  const { retract } = args;
+  return tool === "dispatch_result" && retract === undefined;
 }
 
 /** `dispatch result`: record one result of one check of an issue's Verification document, or, as

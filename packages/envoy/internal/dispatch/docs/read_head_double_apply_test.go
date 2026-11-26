@@ -29,6 +29,7 @@ import (
 // client the stored document knows nothing of, is new content, so it renders differently. Were a
 // second apply to duplicate what the first integrated, it would read like that control.
 func TestApplyingACommittedUpdateTwiceOntoAStoredDocumentChangesNothing(t *testing.T) {
+	t.Parallel()
 	stored := documentOf(t, "First.\n\nSecond.\n\nThird.\n")
 	storedState := crdt.EncodeStateAsUpdateV1(stored, nil)
 

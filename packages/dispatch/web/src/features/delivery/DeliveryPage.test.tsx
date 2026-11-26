@@ -5,6 +5,15 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { drawnSize } from "../../__tests__/control-size";
+import { pickIn } from "../../__tests__/issue-picks";
+import {
+  optionNames as listOptionNames,
+  panelOf,
+  pickNamed,
+  rows,
+  textBoxes,
+} from "../../__tests__/list-picks";
 import {
   errorFrame,
   type FakeLiveSocket,
@@ -17,6 +26,7 @@ import type {
   DeliveryLiveView,
   DeliveryMeasuresResponse,
   DeliveryPR,
+  DeliverySessionGroup,
   DeliverySettings,
   DeliveryTimelineWithMeasures,
   LiveServerFrame,
@@ -156,9 +166,33 @@ const emptyTimeline: DeliveryTimelineWithMeasures = {
   window: { from: "2024-06-01T00:00:00Z", to: "2024-06-02T00:00:00Z" },
 };
 
-/** The router's query string, where a test reads what the page wrote to the URL. */
+/** A session group of two sessions, as the page's answer lists it. */
+const RELEASE_CREW: DeliverySessionGroup = {
+  created_at: "2026-10-11T00:00:00Z",
+  created_by: { id: "alice@example.com", kind: "user" },
+  id: "g1",
+  name: "Release crew",
+  sessions: ["s1", "s2"],
+  updated_at: "2026-10-11T00:00:00Z",
+  updated_by: { id: "alice@example.com", kind: "user" },
+};
+
+/** How many pull requests each of `RELEASE_CREW`'s two sessions and one session outside it have,
+ *  and their titles, as the page's answer counts and names them. */
+const RELEASE_CREW_SESSIONS = {
+  session_pr_counts: { s1: 2, s2: 1, s3: 1 },
+  session_titles: { s1: "Planner one", s2: "Planner two", s3: "Reviewer" },
+};
+
+/** The router's query string, where a test reads what the page wrote to the URL, and the key of
+ *  its location, which every write of the address makes anew, even one of the same query. */
 function LocationProbe() {
-  return <output data-testid="location">{useLocation().search}</output>;
+  const location = useLocation();
+  return (
+    <output data-key={location.key} data-testid="location">
+      {location.search}
+    </output>
+  );
 }
 
 /** The unit DOM lays nothing out, so the box the list's rows scroll in reports a height and
@@ -184,7 +218,9 @@ function measureList(): () => void {
   };
 }
 
-function renderPage(url = DELIVERY_URL) {
+/** Renders the page at `url`, in a box of its own at the end of the document, else in
+ *  `container`. */
+function renderPage(url = DELIVERY_URL, { container }: { container?: HTMLElement } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   restoreLayout = measureList();
   render(
@@ -195,7 +231,8 @@ function renderPage(url = DELIVERY_URL) {
           <LocationProbe />
         </KeymapProvider>
       </QueryClientProvider>
-    </MemoryRouter>
+    </MemoryRouter>,
+    container === undefined ? {} : { container }
   );
   return queryClient;
 }
@@ -522,16 +559,17 @@ test("the facet column offers each value with its count, subscribes a pick and k
   await user.click(screen.getByRole("button", { name: "Filter Issue" }));
   expect(screen.getByRole("option", { name: /ACME-1 — Ship widgets/ })).toBeDefined();
 
-  const colorBy = screen.getByLabelText("Color merges by") as HTMLSelectElement;
-  expect([...colorBy.options].map((option) => option.textContent)).toEqual([
-    "Repository",
+  const colorBy = screen.getByLabelText("Color merges by");
+  await user.click(colorBy);
+  expect(rows(panelOf(colorBy))).toEqual([
+    "✓Repository",
     "Author",
     "Priority",
     "Component",
     "Parent agent",
   ]);
-  await user.selectOptions(colorBy, "component");
-  expect(colorBy.value).toBe("component");
+  await user.click(within(panelOf(colorBy)).getByRole("option", { name: "Component" }));
+  expect(colorBy).toHaveAccessibleName("Color merges by Component");
   // The list's dot follows the colour-by facet, and the row reads its issue with its priority.
   expect(screen.getByText("ACME-1 · P0")).toBeDefined();
 });
@@ -764,17 +802,7 @@ test("colouring by Parent agent offers the values to give their own colour and l
       ...emptyTimeline.color_counts,
       parent_agent: { "group:g1": 3, Reviewer: 2, __no_session__: 1 },
     },
-    session_groups: [
-      {
-        created_at: "2026-10-11T00:00:00Z",
-        created_by: { id: "alice@example.com", kind: "user" },
-        id: "g1",
-        name: "Release crew",
-        sessions: ["s1", "s2"],
-        updated_at: "2026-10-11T00:00:00Z",
-        updated_by: { id: "alice@example.com", kind: "user" },
-      },
-    ],
+    session_groups: [RELEASE_CREW],
   });
 
   const trigger = await screen.findByRole("button", { name: "Own colour and lane: 1 chosen" });
@@ -786,14 +814,87 @@ test("colouring by Parent agent offers the values to give their own colour and l
   await user.click(listbox.getByRole("option", { name: /^Reviewer/ }));
   await waitFor(() => expect(currentSearch().getAll("agents")).toEqual(["group:g1", "Reviewer"]));
 
-  await user.selectOptions(screen.getByLabelText("Color merges by"), "repo");
+  const colorBy = screen.getByLabelText("Color merges by");
+  await pickIn(user, () => colorBy, "Repository");
   expect(screen.queryByRole("button", { name: /^Own colour and lane/ })).not.toBeInTheDocument();
+});
+
+// R3: every list of options a reader picks from holds a text box that narrows the options. Color
+// merges by is the shared list's single pick of its choices: pressed, it opens with one text box,
+// a typed word leaves the choices it matches, and Enter on the one left colours the merges by it,
+// kept in the URL, as the select's pick did.
+test("the Color merges by list opens with a text box, a typed word narrows the choices, and a pick colours by it", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await answered(emptyTimeline);
+  const colorBy = await screen.findByRole("button", { name: pickNamed("Color merges by") });
+  expect(colorBy).toHaveAccessibleName("Color merges by Repository");
+  const boxes = textBoxes().length;
+  await user.click(colorBy);
+  const panel = panelOf(colorBy);
+  expect(textBoxes().length).toBe(boxes + 1);
+  expect(within(panel).getByRole("combobox", { name: "Search color choices" })).toHaveFocus();
+  await user.keyboard("agent");
+  expect(rows(panel)).toEqual(["Parent agent"]);
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(currentSearch().get("colorBy")).toBe("parentAgent"));
+  expect(colorBy).toHaveAccessibleName("Color merges by Parent agent");
+  expect(colorBy).toHaveFocus();
+  // Parent agent offers its values their own colour and lane.
+  expect(screen.getByRole("button", { name: /^Own colour and lane/ })).toBeDefined();
+});
+
+// A `<select>` set to the value it holds fires no change when that value is picked again. The
+// list opens on the choice it shows, so Enter at once picks that choice, and the page writes
+// nothing to the address: the router's location keeps its key (`LocationProbe`).
+test("a pick of the choice Color merges by shows writes nothing to the address", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await answered(emptyTimeline);
+  const colorBy = await screen.findByRole("button", { name: pickNamed("Color merges by") });
+  const location = screen.getByTestId("location");
+  const before = location.getAttribute("data-key");
+  await user.click(colorBy);
+  await user.keyboard("{Enter}");
+  expect(screen.queryByRole("listbox")).toBeNull();
+  expect(colorBy).toHaveAccessibleName("Color merges by Repository");
+  expect(colorBy).toHaveFocus();
+  expect(location.getAttribute("data-key")).toBe(before);
+});
+
+// R2: each control takes its size from the page, comfortable or compact, as a value the page
+// passes. The Delivery page is compact, as its search box and its Filter trigger are, so its
+// Window, Color merges by, Own colour and lane and each facet in its Filter panel draw the
+// compact size's room (`controlPadding.compact`), rather than room of their own.
+test("R2: the Window, Color merges by, Own colour and lane and the Filter panel's facets draw the Delivery page's compact size", async () => {
+  const user = userEvent.setup();
+  renderPage(`${DELIVERY_URL}&colorBy=parentAgent`);
+  await answered({
+    ...emptyTimeline,
+    color_counts: { ...emptyTimeline.color_counts, parent_agent: { Reviewer: 2 } },
+    facet_counts: { ...emptyCounts, repo: { "acme/widgets": 1 } },
+  });
+  const window = await screen.findByLabelText("Window");
+  const colorBy = await screen.findByRole("button", { name: pickNamed("Color merges by") });
+  const ownColour = await screen.findByRole("button", { name: /^Own colour and lane/ });
+  const repository = await panelFacet(user, "Repository");
+  expect({
+    colorBy: drawnSize(colorBy),
+    ownColour: drawnSize(ownColour),
+    repository: drawnSize(repository),
+    window: drawnSize(window),
+  }).toEqual({
+    colorBy: "compact",
+    ownColour: "compact",
+    repository: "compact",
+    window: "compact",
+  });
 });
 
 test("a malformed custom window falls back to the 28-day preset and removes its bad parameters", async () => {
   renderPage("/delivery?mode=list&from=not-a-date&to=also-not-a-date");
   const window = await screen.findByLabelText("Window");
-  expect((window as HTMLSelectElement).value).toBe("28d");
+  expect(window).toHaveAccessibleName("Window Last 28 days");
   await waitFor(() => {
     expect(currentSearch().has("from")).toBe(false);
     expect(currentSearch().has("to")).toBe(false);
@@ -849,6 +950,22 @@ test("a facet pick leaves the window rolling: it writes no from or to, and subsc
   });
 });
 
+// The search is asked for once the typing rests (`useSettled`): the URL keeps every keystroke, and
+// the page subscribes the text the typing rested on, never a text it passed through on the way.
+test("the search subscribes the text the typing rested on, once", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  const socket = await answered(emptyTimeline);
+  await user.type(screen.getByLabelText("Search pull requests"), "widget");
+  expect(currentSearch().get("q")).toBe("widget");
+  await subscriptionTo(socket, { kind: "timeline", window: URL_WINDOW, query: "q=widget" });
+  expect(
+    socket
+      .subscribes()
+      .flatMap((frame) => (frame.view.kind === "timeline" ? [frame.view.query] : []))
+  ).toEqual(["", "q=widget"]);
+});
+
 test("the window control: a preset rolls and clears the brush, a custom range writes its days", async () => {
   const user = userEvent.setup();
   renderPage(
@@ -857,7 +974,8 @@ test("the window control: a preset rolls and clears the brush, a custom range wr
   const socket = await openSocket();
   const brushed = await subscription(socket, "measures");
 
-  await user.selectOptions(await screen.findByLabelText("Window"), "7d");
+  const windowList = await screen.findByLabelText("Window");
+  await pickIn(user, () => windowList, "Last 7 days");
   await waitFor(() => expect(currentSearch().get("window")).toBe("7d"));
   expect(currentSearch().has("ws")).toBe(false);
   expect(currentSearch().has("we")).toBe(false);
@@ -865,7 +983,7 @@ test("the window control: a preset rolls and clears the brush, a custom range wr
   await subscriptionTo(socket, { kind: "timeline", window: { preset: 7 }, query: "" });
   expect(socket.sent).toContainEqual({ type: "unsubscribe", sub: brushed.sub });
 
-  await user.selectOptions(screen.getByLabelText("Window"), "custom");
+  await pickIn(user, () => windowList, "Custom range…");
   await user.click(screen.getByLabelText("From"));
   await user.paste("2026-01-01");
   await user.click(screen.getByLabelText("To"));
@@ -882,26 +1000,29 @@ test("the window control: a preset rolls and clears the brush, a custom range wr
 });
 
 // A press that takes its own control away hands the focus on, never to the page's body (ruling
-// ff1a60f5). A preset picked on the Window select leaves that select, the same element, holding
-// the focus: the control stays mounted across a change of the window.
-test("a preset picked on the Window select keeps that select, and the focus on it", async () => {
+// ff1a60f5). A preset picked from the Window list leaves the list's trigger, the same element,
+// holding the focus: the control stays mounted across a change of the window.
+test("a preset picked from the Window list keeps its trigger, and the focus on it", async () => {
   const user = userEvent.setup();
   renderPage();
-  const select = await screen.findByLabelText("Window");
-  select.focus();
-  await user.selectOptions(select, "84d");
+  const trigger = await screen.findByLabelText("Window");
+  act(() => trigger.focus());
+  await pickIn(user, () => trigger, "Last 84 days");
   await waitFor(() => expect(currentSearch().get("window")).toBe("84d"));
-  expect(screen.getByLabelText("Window")).toBe(select);
-  expect(select).toHaveFocus();
+  expect(screen.getByLabelText("Window")).toBe(trigger);
+  expect(trigger).toHaveFocus();
 });
 
-// Clear brush window goes with the brush it clears, and its focus goes to the Window select: the
-// line it sits in holds no other control.
-test("clear brush window hands its focus to the Window select", async () => {
+/** The page over `DELIVERY_URL`'s window with a brush window set in it, as a drag along the
+ *  chart's time axis sets one, so the header draws clear brush window. */
+const BRUSHED_URL = `${DELIVERY_URL}&ws=${encodeURIComponent("2024-06-01T06:00:00.000Z")}&we=${encodeURIComponent("2024-06-01T12:00:00.000Z")}`;
+
+// Clear brush window goes with the brush it clears, and its focus goes to the Window list's
+// trigger, in the reader's sight as happy-dom draws every box: the line it sits in holds no other
+// control.
+test("clear brush window hands its focus to the Window list's trigger", async () => {
   const user = userEvent.setup();
-  renderPage(
-    `${DELIVERY_URL}&ws=${encodeURIComponent("2024-06-01T06:00:00.000Z")}&we=${encodeURIComponent("2024-06-01T12:00:00.000Z")}`
-  );
+  renderPage(BRUSHED_URL);
   const socket = await openSocket();
   const timeline = await subscription(socket, "timeline");
   serve(socket, snapshotFrame(timeline.sub, emptyTimeline));
@@ -910,7 +1031,40 @@ test("clear brush window hands its focus to the Window select", async () => {
   await user.keyboard("{Enter}");
   await waitFor(() => expect(currentSearch().has("ws")).toBe(false));
   expect(screen.queryByRole("button", { name: "clear brush window" })).toBeNull();
-  expect(screen.getByLabelText("Window")).toHaveFocus();
+  expect(screen.getByRole("button", { name: pickNamed("Window") })).toHaveFocus();
+});
+
+// With the page scrolled below the Window list's trigger, so that the trigger stands wholly above
+// the window, clear brush window's focus goes to no control out of the reader's sight: the trigger
+// is passed over, and the main content around the page takes the focus at its own stop, with no
+// scroll, so the reader stays where they scrolled to.
+test("clear brush window with the Window list's trigger scrolled out of sight hands its focus to the main content's own stop, scrolling nothing", async () => {
+  const user = userEvent.setup();
+  const main = document.createElement("main");
+  document.body.append(main);
+  renderPage(BRUSHED_URL, { container: main });
+  const socket = await openSocket();
+  const timeline = await subscription(socket, "timeline");
+  serve(socket, snapshotFrame(timeline.sub, emptyTimeline));
+  const clear = await screen.findByRole("button", { name: "clear brush window" });
+  const trigger = screen.getByLabelText("Window");
+  // Wholly above the window's top edge, where the reader's scroll left it: happy-dom lays
+  // nothing out.
+  trigger.getBoundingClientRect = () => new DOMRect(0, -60, 120, 32);
+  clear.focus();
+  const focuses = spyOn(HTMLElement.prototype, "focus");
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(currentSearch().has("ws")).toBe(false));
+    expect(screen.queryByRole("button", { name: "clear brush window" })).toBeNull();
+    expect(main).toHaveFocus();
+    expect(focuses.mock.calls).toEqual([[{ preventScroll: true }]]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    focuses.mockRestore();
+    scrolls.mockRestore();
+  }
 });
 
 test("the freshness row says Live with the last change while the socket is open, and Reconnecting once it drops", async () => {
@@ -1065,19 +1219,8 @@ test("a group's Parent agent value reads as its name, and Edit groups opens the 
     ...emptyTimeline,
     facet_counts: { ...emptyCounts, parent_agent: { "group:g1": 3, Reviewer: 1 } },
     prs: [listedPR],
-    session_groups: [
-      {
-        created_at: "2026-10-11T00:00:00Z",
-        created_by: { id: "alice@example.com", kind: "user" },
-        id: "g1",
-        name: "Release crew",
-        sessions: ["s1", "s2"],
-        updated_at: "2026-10-11T00:00:00Z",
-        updated_by: { id: "alice@example.com", kind: "user" },
-      },
-    ],
-    session_pr_counts: { s1: 2, s2: 1, s3: 1 },
-    session_titles: { s1: "Planner one", s2: "Planner two", s3: "Reviewer" },
+    session_groups: [RELEASE_CREW],
+    ...RELEASE_CREW_SESSIONS,
   });
 
   await user.click(screen.getByRole("button", { name: "Filter Parent agent" }));
@@ -1379,22 +1522,129 @@ test("after a first read that failed the row still draws the link's chips", asyn
   expect(rowControls()).toEqual(["Filter · 1", "Remove Author: octocat filter"]);
 });
 
-// `?rework=` and `?deployed=` each name a closed set: a value outside it is dropped, as an unknown
-// `?sort=` id is. `constructor` is a key every object inherits, and none of the labels' own.
-test("a rework or deployed value the page has no label for reaches neither the subscription nor a chip, and a known one beside it does", async () => {
-  renderPage(`${DELIVERY_URL}&rework=constructor&rework=rework&deployed=waiting&deployed=bogus`);
+/** Each option of the list `trigger` opens, named `listbox`, by the name it is read out as
+ *  (`listOptionNames`). Escape closes the list again, so the next read opens its own. */
+async function openedOptionNames(
+  user: UserEvent,
+  trigger: HTMLElement,
+  listbox: string
+): Promise<string[]> {
+  await user.click(trigger);
+  const names = listOptionNames(screen.getByRole("listbox", { name: listbox }));
+  await user.keyboard("{Escape}");
+  return names;
+}
+
+/** Each option of the panel's `facet` (`openedOptionNames`). */
+async function facetOptionNames(user: UserEvent, facet: string): Promise<string[]> {
+  return openedOptionNames(user, await panelFacet(user, facet), `${facet} options`);
+}
+
+// INFRA-3135, round 25 (the tester's), by the architect's ruling of 2026-11-24 08:07Z: a count
+// beside a value is drawn only once the data it counts has answered. Before the timeline's first
+// answer the Timeline's panel offered every verdict of Rework and Deployed at "0 PRs", and a value
+// the address picks at 0 too, though nothing had counted them.
+test("on the Timeline the Filter panel draws no count beside a value before the first answer, and the answer's counts once it is in", async () => {
+  const user = userEvent.setup();
+  const restoreCanvas = stubCanvasContext();
+  try {
+    renderPage(`${TIMELINE_URL}&author=octocat`);
+    const socket = await openSocket();
+    const { sub } = await subscription(socket, "timeline");
+    expect(await screen.findByText("Loading delivery timeline…")).toBeDefined();
+    expect(await facetOptionNames(user, "Rework")).toEqual(["value", "rework"]);
+    expect(await facetOptionNames(user, "Deployed")).toEqual([
+      "deployed",
+      "waiting",
+      "not tracked",
+    ]);
+    expect(await facetOptionNames(user, "Author")).toEqual(["\u2713octocat"]);
+
+    serve(socket, snapshotFrame(sub, everyFacet));
+    await screen.findByRole("img", { name: /^Delivery timeline/ });
+    expect(await facetOptionNames(user, "Rework")).toEqual(["value, 1 PR", "rework, 0 PRs"]);
+    expect(await facetOptionNames(user, "Deployed")).toEqual([
+      "deployed, 0 PRs",
+      "waiting, 1 PR",
+      "not tracked, 0 PRs",
+    ]);
+    expect(await facetOptionNames(user, "Author")).toEqual(["octocat, 1 PR"]);
+  } finally {
+    cleanup();
+    restoreCanvas();
+  }
+});
+
+test("after a first read that failed the Filter panel offers every verdict with no count beside it", async () => {
+  const user = userEvent.setup();
+  renderPage(TIMELINE_URL);
+  const socket = await openSocket();
+  const { sub } = await subscription(socket, "timeline");
+  serve(socket, errorFrame(sub, "INTERNAL", "the timeline is down"));
+  expect(await screen.findByText("Couldn't load the delivery timeline.")).toBeDefined();
+  expect(await facetOptionNames(user, "Rework")).toEqual(["value", "rework"]);
+  expect(await facetOptionNames(user, "Deployed")).toEqual(["deployed", "waiting", "not tracked"]);
+});
+
+// INFRA-3135's R5: every address a reader can write selects the rows it selected at the merge
+// base. A facet value the page knows no label for - `constructor`, a key every object inherits
+// and none of the labels' own, `bogus`, `P9` - is sent to Dispatch as it was there, which selects
+// no row by it, and the page draws it as a chip by its own word, so the reader can take it off.
+// Alone it lists nothing, as it did; beside a known value it lists what the known one does.
+for (const [facet, query, chip] of [
+  ["priority", "priority=P9", "Remove Priority: P9 filter"],
+  ["rework", "rework=constructor", "Remove Rework: constructor filter"],
+  ["deployed", "deployed=bogus", "Remove Deployed: bogus filter"],
+] as const) {
+  test(`an unknown ${facet} value alone reaches the subscription and draws its chip`, async () => {
+    renderPage(`${DELIVERY_URL}&${query}`);
+    const socket = await openSocket();
+    const { sub } = await subscriptionTo(socket, { kind: "timeline", window: URL_WINDOW, query });
+    serve(socket, snapshotFrame(sub, everyFacet));
+    expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+    expect(rowControls()).toEqual(["Filter · 1", chip]);
+  });
+}
+
+// A word every object inherits names no count: the Filter panel's Priority list draws
+// `constructor` with a count of 0, where a plain read of the answer's counts drew Object's own
+// function there.
+test("an address value every object inherits draws no inherited count in the Filter panel", async () => {
+  const user = userEvent.setup();
+  renderPage(`${DELIVERY_URL}&priority=constructor`);
   const socket = await openSocket();
   const { sub } = await subscriptionTo(socket, {
     kind: "timeline",
     window: URL_WINDOW,
-    query: "rework=rework&deployed=waiting",
+    query: "priority=constructor",
+  });
+  serve(socket, snapshotFrame(sub, everyFacet));
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  const names = await facetOptionNames(user, "Priority");
+  expect(names.filter((name) => name.startsWith("constructor"))).toEqual(["constructor, 0 PRs"]);
+});
+
+test("an unknown facet value beside a known one reaches the subscription with it, and each draws its chip", async () => {
+  renderPage(
+    `${DELIVERY_URL}&priority=P9&priority=P0&rework=constructor&rework=rework&deployed=waiting&deployed=bogus`
+  );
+  const socket = await openSocket();
+  const { sub } = await subscriptionTo(socket, {
+    kind: "timeline",
+    window: URL_WINDOW,
+    query:
+      "priority=P9&priority=P0&rework=constructor&rework=rework&deployed=waiting&deployed=bogus",
   });
   serve(socket, snapshotFrame(sub, everyFacet));
   expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
   expect(rowControls()).toEqual([
-    "Filter · 2",
+    "Filter · 6",
+    "Remove Priority: P9 filter",
+    "Remove Priority: P0 filter",
+    "Remove Rework: constructor filter",
     "Remove Rework: rework filter",
     "Remove Deployed: waiting filter",
+    "Remove Deployed: bogus filter",
   ]);
 });
 
@@ -1424,6 +1674,201 @@ test("the count says it is counting while a new filter's read is out, and shows 
 
   serve(socket, snapshotFrame(sub, { ...everyFacet, prs: [] }));
   expect(await screen.findByText("0 PRs in current filter/window")).toBeDefined();
+});
+
+// INFRA-3135, round 26, by the ruling of 2026-11-24 08:07Z: a count beside a value is drawn only
+// once the data it counts has answered. After the first answer a pick in one facet sends a new
+// read, and while it is out the previous answer stays on screen (`keepPreviousData`): every other
+// facet in the open panel drew that answer's counts as the new filter's. Its values are drawn with
+// no count until the pick's read answers, as the header's count waits.
+test("while a pick's read is out the Filter panel's other facets draw no count beside a value, and the answer's counts once it is in", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  const socket = await answered(everyFacet);
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await facetOptionNames(user, "Priority")).toEqual(["P0, 1 PR"]);
+
+  await user.click(await panelFacet(user, "Repository"));
+  await user.click(
+    within(screen.getByRole("listbox", { name: "Repository options" })).getByRole("option", {
+      name: /^acme\/widgets/,
+    })
+  );
+  const { sub } = await subscriptionTo(socket, {
+    kind: "timeline",
+    window: URL_WINDOW,
+    query: "repo=acme%2Fwidgets",
+  });
+  // The first answer is still on screen while the pick's read is out.
+  await screen.findByText("Counting PRs in current filter/window…");
+  expect(await facetOptionNames(user, "Priority")).toEqual(["P0"]);
+
+  serve(
+    socket,
+    snapshotFrame(sub, {
+      ...everyFacet,
+      facet_counts: { ...everyFacet.facet_counts, priority: { P0: 1, P1: 2 } },
+    })
+  );
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await facetOptionNames(user, "Priority")).toEqual(["P1, 2 PRs", "P0, 1 PR"]);
+});
+
+/** Each value a List column's header filter offers (`openedOptionNames`). */
+function columnOptionNames(user: UserEvent, column: string): Promise<string[]> {
+  return openedOptionNames(
+    user,
+    screen.getByRole("button", { name: new RegExp(`^Filter ${column}`) }),
+    `${column} options`
+  );
+}
+
+// The same for the List view's column filters, which count each value from the same answer: while
+// a pick's read was out, a header's filter drew the previous filter's count beside each value.
+test("while a pick's read is out a List column's filter draws no count beside a value, and the answer's counts once it is in", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  const socket = await answered(everyFacet);
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await columnOptionNames(user, "Author")).toEqual(["octocat, 1 PR"]);
+
+  await user.click(screen.getByRole("button", { name: "Filter Issue" }));
+  await user.click(
+    within(screen.getByRole("listbox", { name: "Issue options" })).getByRole("option", {
+      name: /^ACME-1/,
+    })
+  );
+  const { sub } = await subscriptionTo(socket, {
+    kind: "timeline",
+    window: URL_WINDOW,
+    query: "issue=ACME-1",
+  });
+  await user.keyboard("{Escape}");
+  // The first answer is still on screen while the pick's read is out.
+  await screen.findByText("Counting PRs in current filter/window…");
+  expect(await columnOptionNames(user, "Author")).toEqual(["octocat"]);
+
+  serve(
+    socket,
+    snapshotFrame(sub, {
+      ...everyFacet,
+      facet_counts: { ...everyFacet.facet_counts, author: { hubot: 2, octocat: 1 } },
+    })
+  );
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await columnOptionNames(user, "Author")).toEqual(["hubot, 2 PRs", "octocat, 1 PR"]);
+});
+
+/** Each agent the Own colour list offers (`openedOptionNames`). */
+function ownColourNames(user: UserEvent): Promise<string[]> {
+  return openedOptionNames(
+    user,
+    screen.getByRole("button", { name: /^Own colour and lane: / }),
+    "Own colour and lane options"
+  );
+}
+
+// The same, for the Own colour list, which counts each agent from the same answer: while a new
+// filter's read was out it drew the previous filter's "N PRs" beside each agent.
+test("while a new filter's read is out the Own colour list draws no count beside an agent, and the answer's counts once it is in", async () => {
+  const user = userEvent.setup();
+  const colouredByAgent: DeliveryTimelineWithMeasures = {
+    ...everyFacet,
+    color_counts: { ...emptyTimeline.color_counts, parent_agent: { "group:g1": 3, Reviewer: 2 } },
+    session_groups: [RELEASE_CREW],
+  };
+  renderPage(`${DELIVERY_URL}&colorBy=parentAgent`);
+  const socket = await answered(colouredByAgent);
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await ownColourNames(user)).toEqual(["Release crew, 3 PRs", "Reviewer, 2 PRs"]);
+
+  await user.click(screen.getByRole("button", { name: "Filter Author" }));
+  await user.click(
+    within(screen.getByRole("listbox", { name: "Author options" })).getByRole("option", {
+      name: /^octocat/,
+    })
+  );
+  const { sub } = await subscriptionTo(socket, {
+    kind: "timeline",
+    window: URL_WINDOW,
+    query: "author=octocat",
+  });
+  await user.keyboard("{Escape}");
+  // The first answer is still on screen while the filter's read is out.
+  await screen.findByText("Counting PRs in current filter/window…");
+  expect(await ownColourNames(user)).toEqual(["Release crew", "Reviewer"]);
+
+  serve(socket, snapshotFrame(sub, colouredByAgent));
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await ownColourNames(user)).toEqual(["Release crew, 3 PRs", "Reviewer, 2 PRs"]);
+});
+
+/** Each session the session-groups editor lists under "Sessions in this window", by its text,
+ *  read from the editor the Filter panel's **Edit groups** opens, which is closed again so the
+ *  next read opens its own. */
+async function editorSessions(user: UserEvent): Promise<string[]> {
+  await openFilterPanel(user);
+  await user.click(screen.getByRole("button", { name: "Edit groups" }));
+  const editor = within(screen.getByRole("dialog", { name: "Session groups" }));
+  const sessions = within(editor.getByRole("list", { name: "Sessions in this window" }))
+    .getAllByRole("listitem")
+    .map((row) => (row.textContent ?? "").replace(/\s+/gu, " ").trim());
+  await user.click(editor.getByRole("button", { name: "Close session groups" }));
+  return sessions;
+}
+
+// INFRA-3135, round 27 (the tester's row 359d0ed7): the editor lists the sessions of the answer
+// on screen with how many pull requests of the window each is first on. While a new window's read
+// was out the previous window's answer stayed on screen (`keepPreviousData`), and the editor drew
+// that window's counts as this one's. It lists those sessions with their groups and no count until
+// the new window answers, then that window's own sessions and counts.
+test("while a new window's read is out the session-groups editor draws no count beside a session, and the new window's sessions and counts once it is in", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  const socket = await answered({
+    ...emptyTimeline,
+    prs: [listedPR],
+    session_groups: [RELEASE_CREW],
+    ...RELEASE_CREW_SESSIONS,
+  });
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await editorSessions(user)).toEqual([
+    expect.stringMatching(/^Planner one\b.*\b2 PRs · Release crew$/u),
+    expect.stringMatching(/^Planner two\b.*\b1 PR · Release crew$/u),
+    expect.stringMatching(/^Reviewer\b.*\b1 PR$/u),
+  ]);
+
+  await pickIn(user, () => screen.getByLabelText("Window"), "Last 7 days");
+  const { sub } = await subscriptionTo(socket, {
+    kind: "timeline",
+    window: { preset: 7 },
+    query: "",
+  });
+  // The first window's answer is still on screen while the new window's read is out.
+  await screen.findByText("Counting PRs in current filter/window…");
+  const held = await editorSessions(user);
+  expect(held).toEqual([
+    expect.stringMatching(/^Planner one\b.*\bRelease crew$/u),
+    expect.stringMatching(/^Planner two\b.*\bRelease crew$/u),
+    expect.stringMatching(/^Reviewer\b/u),
+  ]);
+  expect(held.filter((session) => /\b\d+ PRs?\b/u.test(session))).toEqual([]);
+
+  serve(
+    socket,
+    snapshotFrame(sub, {
+      ...emptyTimeline,
+      prs: [listedPR],
+      session_groups: [RELEASE_CREW],
+      session_pr_counts: { s1: 1, s4: 3 },
+      session_titles: { s1: "Planner one", s4: "Builder" },
+    })
+  );
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await editorSessions(user)).toEqual([
+    expect.stringMatching(/^Builder\b.*\b3 PRs$/u),
+    expect.stringMatching(/^Planner one\b.*\b1 PR · Release crew$/u),
+  ]);
 });
 
 // F2 item 4: `?ws=x&we=y` was kept as written, `Date.parse` gave NaN and every pull request was

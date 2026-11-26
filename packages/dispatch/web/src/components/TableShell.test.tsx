@@ -12,15 +12,18 @@ import {
 } from "./TableShell";
 
 /**
- * Tailwind's own definitions of the utilities the sticky head and the two densities are written
- * in. happy-dom applies a stylesheet it is given but loads none of the application's generated
- * CSS, so what the shell draws is read from the computed style with these in the document: a head
- * that stopped sticking, or a density that stopped being the tighter one, computes something else
- * here whatever class it carries.
+ * Tailwind's own definitions of the utilities the sticky head, the densities' cells and the tight
+ * box's border are written in; `.border` carries the solid style Tailwind's base layer gives every
+ * element. happy-dom applies a stylesheet it is given but loads none of the application's
+ * generated CSS, so what the shell draws is read from the computed style with these in the
+ * document: a head that stopped sticking, or a density that stopped being the tighter one,
+ * computes something else here whatever class it carries.
  */
 const SHELL_CSS =
   ".sticky{position:sticky}.py-3{padding-top:0.75rem;padding-bottom:0.75rem}" +
-  ".py-1{padding-top:0.25rem;padding-bottom:0.25rem}";
+  ".py-1{padding-top:0.25rem;padding-bottom:0.25rem}" +
+  ".py-0\\.5{padding-top:0.125rem;padding-bottom:0.125rem}" +
+  ".border{border-style:solid;border-width:1px}.rounded{border-radius:0.25rem}";
 
 function withStylesheet(body: () => void): void {
   const style = document.createElement("style");
@@ -204,6 +207,36 @@ test("the compact density draws a shorter cell than the comfortable one", () => 
       } finally {
         view.unmount();
       }
+    }
+  });
+});
+
+test("the tight density pads a cell half as much as the compact one, in a box with a rounded border", () => {
+  withStylesheet(() => {
+    const view = render(
+      <TableShell label="Per day" size="tight" stickyHead>
+        <TableHead>
+          <TableHeadCell>Day</TableHeadCell>
+        </TableHead>
+        <TableBody>
+          <TableRow>
+            <TableCell>2026-09-05</TableCell>
+          </TableRow>
+        </TableBody>
+      </TableShell>
+    );
+    try {
+      // happy-dom reports the computed length in pixels: 0.125rem at the 16px root.
+      const cell = getComputedStyle(screen.getByRole("cell", { name: "2026-09-05" }));
+      expect([cell.paddingTop, cell.paddingBottom]).toEqual(["2px", "2px"]);
+      const box = getComputedStyle(shell());
+      expect([box.borderTopStyle, box.borderTopWidth, box.borderTopLeftRadius]).toEqual([
+        "solid",
+        "1px",
+        "4px",
+      ]);
+    } finally {
+      view.unmount();
     }
   });
 });

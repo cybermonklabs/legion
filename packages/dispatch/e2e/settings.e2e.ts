@@ -8,12 +8,12 @@ import {
   getIssue,
   listProjectDefaultAssignees,
   putProjectDefaultAssignee,
-  putRepoProject,
+  putProjectDefaultRepository,
   userHeaders,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { listTrigger } from "./filters";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
 /** The open list named `label`. It is portalled out of the page's sections, so it is found by
@@ -44,174 +44,183 @@ function offered(page: Page, label: string): Promise<string[]> {
     );
 }
 
-test("a repository mapping added in Settings assigns a new external issue to its selected project", async ({
+/** Whether `request` writes CORE's default repository: a set or a clear. */
+function writesCoreDefaultRepository(request: Request): boolean {
+  return (
+    request.method() === "PUT" &&
+    new URL(request.url()).pathname === "/api/v1/projects/CORE/default-repository"
+  );
+}
+
+// SLOW(>=2s): three page loads - Settings, the new issue's page and Settings again - and two
+// writes of the default, each read back from the server.
+test("a person sets a project's default repository in Settings, a new issue of the project resolves to it, and Clear puts it back to None", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
+  const pinned = await createIssue({ project: "CORE", repo: "acme/gadgets", title: "Pinned" });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
+  const box = page.getByRole("textbox", { exact: true, name: "Default repository of CORE" });
+  const save = page.getByRole("button", {
+    exact: true,
+    name: "Save the default repository of CORE",
+  });
+  const clear = page.getByRole("button", {
+    exact: true,
+    name: "Clear the default repository of CORE",
+  });
+  // Every write of CORE's default repository the page sends, by its body.
+  const writes: unknown[] = [];
+  page.on("request", (request) => {
+    if (writesCoreDefaultRepository(request)) {
+      writes.push(request.postDataJSON());
+    }
+  });
 
   try {
     await page.goto("/settings");
-    await expect(page.getByRole("heading", { name: "Repositories → Projects" })).toBeVisible();
-    const repository = page.getByLabel("Repository", { exact: true });
-    // The browser compiles `pattern` with the `v` flag and ignores one that does not compile, so a
-    // refusal here says `ownerRepoPattern` compiles as the browser reads it.
-    await repository.fill("a/b/c");
-    expect(
-      await repository.evaluate((input: HTMLInputElement) => input.validity.patternMismatch)
-    ).toBe(true);
-    await repository.fill("Owner/Repo.git");
-    await pick(page, "Project", "CORE · Core");
-    const mappingSaved = page.waitForResponse(
-      (response) =>
-        response.request().method() === "PUT" &&
-        response.url().endsWith("/api/v1/settings/repo-projects/owner/repo") &&
-        response.ok()
-    );
-    await page.getByRole("button", { name: "Add mapping" }).click();
-    await mappingSaved;
-    await expect(page.getByRole("cell", { exact: true, name: "owner/repo" })).toBeVisible();
+    await expect(
+      page.locator("main").getByRole("heading", { exact: true, name: "Projects" })
+    ).toBeVisible();
+    await expect(
+      page.getByRole("columnheader", { exact: true, name: "Default repository" })
+    ).toBeVisible();
+    // The project has no default: the box is empty and reads None, and there is nothing to clear.
+    await expect(box).toHaveValue("");
+    await expect(box).toHaveAttribute("placeholder", "None");
+    await expect(clear).toHaveCount(0);
+    // The Settings page has no "Repositories → Projects" section (C4).
+    await expect(page.getByRole("heading", { name: "Repositories → Projects" })).toHaveCount(0);
 
-    const issue = await createIssue({ external: "owner/repo#1" });
-    expect(issue.key).toBe("CORE-1");
-    await page.screenshot({
-      path: testInfo.outputPath("repository-project-settings.png"),
-      fullPage: true,
-    });
-  } finally {
-    await context.close();
-  }
-});
+    // A value that is not owner/name is refused at the box, with what was typed still in it,
+    // and nothing is sent.
+    await box.fill("acme");
+    await save.click();
+    await expect(
+      page.getByRole("alert").filter({ hasText: "Write the repository as owner/name." })
+    ).toBeVisible();
+    await expect(box).toHaveValue("acme");
+    await expect(box).toHaveAttribute("aria-invalid", "true");
+    expect(writes).toEqual([]);
 
-test("a project's default repository moves with its Default radio, and a mapping an issue names is deleted", async ({
-  browser,
-}, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await putRepoProject("acme/widgets", { default: true, project: "CORE" });
-  await putRepoProject("acme/gadgets", { project: "CORE" });
-  const pinned = await createIssue({ project: "CORE", repo: "acme/widgets", title: "Pinned" });
-  const inheriting = await createIssue({ force: true, project: "CORE", title: "Inheriting" });
-  expect(inheriting.resolved_repo).toBe("acme/widgets");
-  const context = await asUser(browser, "alice");
-  const page = await context.newPage();
-  const radio = (repo: string) =>
-    page.getByRole("radio", { name: `Default repository of CORE: ${repo}` });
-
-  try {
-    await page.goto("/settings");
-    // Exact: the Projects table above carries a "Default assignee" header of its own.
-    await expect(page.getByRole("columnheader", { exact: true, name: "Default" })).toBeVisible();
-    await expect(radio("acme/widgets")).toBeChecked();
-    await expect(radio("acme/gadgets")).not.toBeChecked();
-
-    const saved = page.waitForRequest(
-      (request) =>
-        request.method() === "PUT" &&
-        new URL(request.url()).pathname === "/api/v1/settings/repo-projects/acme/gadgets"
-    );
-    await radio("acme/gadgets").click();
-    expect((await saved).postDataJSON()).toEqual({ default: true, project: "CORE" });
-    await expect(radio("acme/gadgets")).toBeChecked();
-    await expect(radio("acme/widgets")).not.toBeChecked();
-    // An issue with no repository of its own resolves to the new default; one with its own keeps it.
-    await expect
-      .poll(() => getIssue(inheriting.key))
-      .toMatchObject({ resolved_repo: "acme/gadgets" });
-    expect(await getIssue(pinned.key)).toMatchObject({
-      repo: "acme/widgets",
-      resolved_repo: "acme/widgets",
-    });
-    await page.reload();
-    await expect(radio("acme/gadgets")).toBeChecked();
-
-    // The pinned issue names acme/widgets, and that mapping is deleted like any other: nothing
-    // refuses it, the row goes, and the issue keeps the repository it named, which no project
-    // maps now.
-    const deleted = page.waitForResponse(
-      (response) =>
-        response.request().method() === "DELETE" &&
-        new URL(response.url()).pathname === "/api/v1/settings/repo-projects/acme/widgets"
-    );
-    await page.getByRole("button", { name: "Delete mapping for acme/widgets" }).click();
-    expect((await deleted).status()).toBe(204);
-    await expect(page.getByRole("cell", { exact: true, name: "acme/widgets" })).toHaveCount(0);
-    await expect(page.getByRole("alert")).toHaveCount(0);
-    expect(await getIssue(pinned.key)).toMatchObject({
-      repo: "acme/widgets",
-      resolved_repo: "acme/widgets",
-    });
+    const set = page.waitForResponse((response) => writesCoreDefaultRepository(response.request()));
+    await box.fill("acme/widgets");
+    await save.click();
+    const setAnswer = await set;
+    expect(setAnswer.request().postDataJSON()).toEqual({ repo: "acme/widgets" });
+    expect(await setAnswer.json()).toEqual({ project: "CORE", repo: "acme/widgets" });
+    await expect(box).toHaveValue("acme/widgets");
+    await expect(clear).toBeVisible();
     const shot = testInfo.outputPath(`repository-default-${testInfo.project.name}.png`);
     await page.screenshot({ fullPage: true, path: shot });
     await testInfo.attach(`repository default (${testInfo.project.name})`, {
       contentType: "image/png",
       path: shot,
     });
+
+    // A new issue of the project that names no repository resolves to the default, and its page
+    // shows it as the issue's repository. An issue with a repository of its own keeps it.
+    const inheriting = await createIssue({ force: true, project: "CORE", title: "Inheriting" });
+    expect(inheriting).toMatchObject({ repo: null, resolved_repo: "acme/widgets" });
+    expect(await getIssue(pinned.key)).toMatchObject({
+      repo: "acme/gadgets",
+      resolved_repo: "acme/gadgets",
+    });
+    await page.goto(`/issues/${inheriting.key}`);
+    // The issue page's Repository list names the default after its label, as the repository the
+    // issue inherits.
+    await expect(page.getByLabel(`Repository of ${inheriting.key}`)).toHaveAccessibleName(
+      `Repository of ${inheriting.key} acme/widgets, inherited or the project's default`
+    );
+
+    // The page read again from the server holds the default. Clear sends null: the box is empty
+    // and reads None again, and the issue that took the default resolves to no repository.
+    await page.goto("/settings");
+    await expect(box).toHaveValue("acme/widgets");
+    const cleared = page.waitForResponse((response) =>
+      writesCoreDefaultRepository(response.request())
+    );
+    await clear.click();
+    const clearAnswer = await cleared;
+    expect(clearAnswer.request().postDataJSON()).toEqual({ repo: null });
+    expect(await clearAnswer.json()).toEqual({ project: "CORE", repo: null });
+    await expect(box).toHaveValue("");
+    await expect(box).toHaveAttribute("placeholder", "None");
+    await expect(clear).toHaveCount(0);
+    await expect
+      .poll(() => getIssue(inheriting.key))
+      .toMatchObject({ repo: null, resolved_repo: null });
+    expect(await getIssue(pinned.key)).toMatchObject({
+      repo: "acme/gadgets",
+      resolved_repo: "acme/gadgets",
+    });
+    expect(writes).toEqual([{ repo: "acme/widgets" }, { repo: null }]);
   } finally {
     await context.close();
   }
 });
 
-// A mapping write's answer describes one row, not the project's mappings when it arrives. Here the
-// server saves the pick of acme/gadgets at once, another browser makes acme/widgets the default
-// again (which this page hears and shows), and only then does the first answer reach the page: the
-// page reads the mappings again rather than put acme/gadgets back.
-// @pr: A two-context race: a late answer to this page's pick must not undo the default another browser set since.
-test("a late answer to a Default pick does not undo a default another browser set since @pr", async ({
+// A save's answer describes the default when the server wrote it, not when the answer arrives.
+// Here the server saves this page's acme/gadgets at once, another browser sets acme/widgets again
+// (which this page hears: it reads the project list again), and only then does the first answer
+// reach the page: the page reads the project list again rather than keep acme/gadgets.
+// @pr: A two-context race: a late answer to this page's save must not undo the default another browser set since.
+test("a late answer to a default repository save does not undo a default another browser set since @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
-  await putRepoProject("acme/widgets", { default: true, project: "CORE" });
-  await putRepoProject("acme/gadgets", { project: "CORE" });
+  await putProjectDefaultRepository("CORE", "acme/widgets");
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  const radio = (repo: string) =>
-    page.getByRole("radio", { name: `Default repository of CORE: ${repo}` });
+  const box = page.getByRole("textbox", { exact: true, name: "Default repository of CORE" });
 
   try {
-    let answer: () => void = () => {};
-    const answerHeld = new Promise<void>((resolve) => {
-      answer = resolve;
-    });
-    let saved: () => void = () => {};
-    const savedOnServer = new Promise<void>((resolve) => {
-      saved = resolve;
-    });
-    await page.route("**/api/v1/settings/repo-projects/acme/gadgets", async (route) => {
-      if (route.request().method() !== "PUT") {
-        await route.continue();
-        return;
-      }
+    const held = Promise.withResolvers<void>();
+    const savedOnServer = Promise.withResolvers<void>();
+    await page.route("**/api/v1/projects/CORE/default-repository", async (route) => {
+      if (route.request().method() !== "PUT") return route.fallback();
       const response = await route.fetch();
-      saved();
-      await answerHeld;
-      await route.fulfill({ response });
+      savedOnServer.resolve();
+      await held.promise;
+      return route.fulfill({ response });
     });
     await page.goto("/settings");
-    await expect(radio("acme/widgets")).toBeChecked();
+    await expect(box).toHaveValue("acme/widgets");
 
-    await radio("acme/gadgets").click();
-    await savedOnServer;
-    await putRepoProject("acme/widgets", { default: true, project: "CORE" });
-    await expect(radio("acme/widgets")).toBeChecked();
+    await box.fill("acme/gadgets");
+    await page
+      .getByRole("button", { exact: true, name: "Save the default repository of CORE" })
+      .click();
+    await savedOnServer.promise;
+    // The page hears the other browser's write: it reads the project list again, and the read
+    // answers acme/widgets. The box still shows the pick whose save is out.
+    const heard = page.waitForResponse(
+      async (response) =>
+        response.request().method() === "GET" &&
+        new URL(response.url()).pathname === "/api/v1/projects" &&
+        ((await response.json()) as { default_repo?: string; key: string }[]).some(
+          (project) => project.key === "CORE" && project.default_repo === "acme/widgets"
+        )
+    );
+    await putProjectDefaultRepository("CORE", "acme/widgets");
+    await heard;
+    await expect(box).toHaveValue("acme/gadgets");
 
-    const answered = page.waitForResponse(
-      (response) =>
-        response.url().endsWith("/api/v1/settings/repo-projects/acme/gadgets") &&
-        response.request().method() === "PUT"
+    const answered = page.waitForResponse((response) =>
+      writesCoreDefaultRepository(response.request())
     );
     const readAgain = answered.then(() =>
       page.waitForResponse(
         (response) =>
-          new URL(response.url()).pathname === "/api/v1/settings/repo-projects" &&
-          response.request().method() === "GET"
+          response.request().method() === "GET" &&
+          new URL(response.url()).pathname === "/api/v1/projects"
       )
     );
-    answer();
+    held.resolve();
     await answered;
     await readAgain;
-    await expect(radio("acme/widgets")).toBeChecked();
-    await expect(radio("acme/gadgets")).not.toBeChecked();
+    await expect(box).toHaveValue("acme/widgets");
   } finally {
     await context.close();
   }
@@ -237,9 +246,10 @@ test("a human creates a project from Settings and immediately creates an issue u
     await expect(defaultAssignee).toHaveText("alice");
     await page.getByRole("button", { name: "New project" }).click();
     await expect(page.getByRole("cell", { exact: true, name: "QA" })).toBeVisible();
-    await listTrigger(page, "Project").click();
+    // The architecture sources form offers the new project at once.
+    await listTrigger(page, "Source project").click();
     await expect(
-      listOf(page, "Project").getByRole("option", { exact: true, name: "QA · Quality" })
+      listOf(page, "Source project").getByRole("option", { exact: true, name: "QA · Quality" })
     ).toHaveCount(1);
     await page.keyboard.press("Escape");
     // The project names her from the moment it exists, and the row says so.
@@ -443,9 +453,10 @@ test("a person sets and changes a project's default assignee, and no write clear
     const core = listTrigger(page, "Default assignee of CORE");
     const ops = listTrigger(page, "Default assignee of OPS");
     await expect(core).toBeVisible();
-    // The sentence beside the control: an issue from an unmapped repository lands in the default
-    // project, so that project's default assignee catches all of them.
-    await expect(page.getByText("no project mapping")).toBeVisible();
+    // The sentence under the table: every project names somebody, and no write clears it.
+    await expect(
+      page.getByText("Every project names a default assignee, and it cannot be cleared")
+    ).toBeVisible();
     // Each project names the person who created it until somebody moves it.
     await expect(core).toHaveText("alice");
     await expect(ops).toBeEnabled();

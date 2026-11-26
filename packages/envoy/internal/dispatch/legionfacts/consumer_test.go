@@ -2,15 +2,19 @@ package legionfacts
 
 import (
 	"context"
+	"log/slog"
 	"math"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // testBuild is the build every test's loop runs under: one string for one process, as a build
@@ -64,9 +68,9 @@ func (c *consumer) restart() {
 // It awaits the event log's safe horizon first, so the pass reads every event written before it,
 // as the server's pass reads the event whose commit woke it. A pass reads the horizon once and
 // waits on nothing (pass), so a pass straight after a write can read a horizon that stands below
-// it, and asks for another a gap on to read it (events.Horizon.HeldBack), which the server's loop
-// runs and a rig would have to run itself. With the horizon awaited no event stands above what the
-// pass reads, and attempt holds the pass to asking for none.
+// it, and says so for its loop to ask for another soon (events.Horizon.HeldBack, runPass), which
+// the server's loop runs and a rig would have to run itself. With the horizon awaited no event
+// stands above what the pass reads, and attempt holds the pass to saying none did.
 func (c *consumer) pass(t *testing.T) []string {
 	t.Helper()
 	changed, err := c.attempt(t)
@@ -82,12 +86,12 @@ func (c *consumer) attempt(t *testing.T) ([]string, error) {
 	if _, err := c.deps.Horizon.Await(t.Context()); err != nil {
 		t.Fatalf("await the event log's safe horizon: %v", err)
 	}
-	changed, next, err := pass(t.Context(), c.deps, c.sched)
+	changed, heldBack, err := pass(t.Context(), c.deps, c.sched)
 	if err != nil {
 		return nil, err
 	}
-	if !next.IsZero() {
-		t.Errorf("a pass that read every event written before it asks for another at %s, want none", next.UTC())
+	if heldBack {
+		t.Errorf("a pass that read every event written before it says its safe horizon held one back")
 	}
 	slices.Sort(changed)
 	return changed, nil
@@ -583,11 +587,12 @@ func (c *consumer) refuseRowWrites(t *testing.T) string {
 	return `drop trigger refuse_issue_facts on issue_facts`
 }
 
-// TestAFailedPassAsksForAnotherAGapOn: a pass that fails leaves its cursors where they were, so
+// TestAFailedPassAsksForAnotherARetryOn: a pass that fails leaves its cursors where they were, so
 // the event whose wake started it is still unread, and the pass as the loop runs it (runPass)
-// asks for the next one PassGap on rather than leave that event to an unrelated wake. Once the
-// write is accepted again, that pass reads the event and writes its row.
-func TestAFailedPassAsksForAnotherAGapOn(t *testing.T) {
+// asks for the next one PassRetry on, by the wall clock the loop's timer runs on, rather than
+// leave that event to an unrelated wake. Once the write is accepted again, that pass reads the
+// event and writes its row.
+func TestAFailedPassAsksForAnotherARetryOn(t *testing.T) {
 	run := newConsumer(t, 2)
 	run.pass(t)
 	open := run.fixture.Open[0]
@@ -598,31 +603,34 @@ func TestAFailedPassAsksForAnotherAGapOn(t *testing.T) {
 		t.Fatalf("await the event log's safe horizon: %v", err)
 	}
 
-	due := runPass(t.Context(), run.deps, run.sched)
-	if want := run.at.Add(PassGap); !due.Equal(want) {
-		t.Errorf("the loop's pass over a table that refuses every write asks for its next at %s, want %s, PassGap on",
-			due.UTC(), want.UTC())
+	asked := time.Now()
+	due := runPass(t.Context(), run.deps, run.sched, &duty.Backoff{First: horizonRetry, Max: PassRetry})
+	answered := time.Now()
+	if due.Before(asked.Add(PassRetry)) || due.After(answered.Add(PassRetry)) {
+		t.Errorf("the loop's pass over a table that refuses every write asks for its next %s after it was asked for, want PassRetry (%s) after it answered",
+			due.Sub(asked), PassRetry)
 	}
 
 	run.exec(t, "accept every write of a row again", accept)
-	run.at = due
+	run.at = run.at.Add(PassRetry)
 	retried := run.pass(t)
 	if !slices.Contains(retried, open) {
 		t.Errorf("the pass the failed one asked for changed %v, which does not hold %s, whose event the failed pass left unread", retried, open)
 	}
-	t.Logf("a failed pass asked for its next at %s, PassGap on, and that pass changed %d rows, %s among them",
-		due.UTC(), len(retried), open)
+	t.Logf("a failed pass asked for its next %s after it began, PassRetry on, and that pass changed %d rows, %s among them",
+		due.Sub(asked).Round(time.Millisecond), len(retried), open)
 }
 
-// TestAPassBelowAnOpenWriteWaitsForNothingAndAsksForAnotherAGapOn: a pass reads the event log up
-// to the safe horizon it reads once (pass), and an event that committed while a write holding a
+// TestAPassBelowAnOpenWriteWaitsForNothingAndAsksForAnotherSoon: a pass reads the event log up to
+// the safe horizon it reads once (pass), and an event that committed while a write holding a
 // lower event id is still open stands above it. The pass returns at once rather than wait for the
 // lower write, so the lease it runs under is not held for as long as that write stays open: here
 // a deadline stands in for the lease's other process, and a pass that waited would fail on it.
-// The pass leaves the event unread and its issue's row as it was, and asks for its next pass
-// PassGap on, since the end of the lower write wakes nothing. Once that write commits, the pass it
-// asked for reads the event.
-func TestAPassBelowAnOpenWriteWaitsForNothingAndAsksForAnotherAGapOn(t *testing.T) {
+// The pass leaves the event unread and its issue's row as it was, and says its horizon held an
+// event back, since the end of the lower write wakes nothing. The pass as the loop runs it
+// (runPass) asks for the next horizonRetry on, and the one after that, still below the open
+// write, twice that on. Once that write commits, the next pass reads the event.
+func TestAPassBelowAnOpenWriteWaitsForNothingAndAsksForAnotherSoon(t *testing.T) {
 	run := newConsumer(t, 2)
 	ctx := t.Context()
 	run.pass(t)
@@ -664,7 +672,7 @@ func TestAPassBelowAnOpenWriteWaitsForNothingAndAsksForAnotherAGapOn(t *testing.
 	bounded, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	started := time.Now()
-	changed, next, err := pass(bounded, run.deps, run.sched)
+	changed, heldBack, err := pass(bounded, run.deps, run.sched)
 	took := time.Since(started)
 	if err != nil {
 		t.Fatalf("the pass below the open write failed after %s, so it waited for the write: %v", took.Round(time.Millisecond), err)
@@ -675,21 +683,31 @@ func TestAPassBelowAnOpenWriteWaitsForNothingAndAsksForAnotherAGapOn(t *testing.
 	if slices.Contains(changed, open) || !sameRow(run.rows(t)[open], before) {
 		t.Errorf("the pass below the open write changed %v and %s's row, so it read past its safe horizon", changed, open)
 	}
-	if want := run.at.Add(PassGap); !next.Equal(want) {
-		t.Errorf("the pass that left event %d above its safe horizon asks for its next at %s, want %s, PassGap on",
-			event, next.UTC(), want.UTC())
+	if !heldBack {
+		t.Errorf("the pass that left event %d above its safe horizon says its horizon held none back", event)
+	}
+	retry := &duty.Backoff{First: horizonRetry, Max: PassRetry}
+	waits := []time.Duration{}
+	for i, want := range []time.Duration{horizonRetry, 2 * horizonRetry} {
+		asked := time.Now()
+		due := runPass(bounded, run.deps, run.sched, retry)
+		answered := time.Now()
+		waits = append(waits, due.Sub(answered))
+		if due.Before(asked.Add(want)) || due.After(answered.Add(want)) {
+			t.Errorf("pass %d below the open write, as the loop runs it, asks for its next %s after it answered, want %s",
+				i+1, due.Sub(answered), want)
+		}
 	}
 
 	if err := lower.Commit(ctx); err != nil {
 		t.Fatalf("commit the lower write: %v", err)
 	}
-	run.at = next
 	after := run.pass(t)
 	if !slices.Contains(after, open) {
 		t.Errorf("the pass after the lower write committed changed %v, which does not hold %s", after, open)
 	}
-	t.Logf("the pass below the open write (id %d) returned in %s, left event %d unread and asked for its next at %s; the next pass changed %d rows, %s among them",
-		held, took.Round(time.Millisecond), event, next.UTC(), len(after), open)
+	t.Logf("the pass below the open write (id %d) returned in %s and left event %d unread; the loop asked for the next %v on; the pass after the commit changed %d rows, %s among them",
+		held, took.Round(time.Millisecond), event, waits, len(after), open)
 }
 
 // TestTheSetOfRowsOneChangeTouches: the set a change touches is the issues named, the issues
@@ -754,11 +772,93 @@ func TestCursorAgeAnswersTheOldestCursor(t *testing.T) {
 	t.Logf("the cursors' age: none before a pass, %s five minutes after one", age)
 }
 
+// loopLatencyBound is how long after an event's commit the loop may take to store the row the
+// event moves: half of R14's 2 s from a write to every view, which the day-row refresher and the
+// views' own wake and recompute share.
+const loopLatencyBound = time.Second
+
+// TestAnEventAfterTheBootPassMovesItsRowAtOnce: the loop as the server runs it (run, under its
+// lease), woken by hand as the hub wakes it. An event of an open issue written one second after
+// the boot pass ended wakes the pass that moves the issue's row within loopLatencyBound of the
+// event's commit, since nothing holds one pass back from the next. Before, the loop's MinGap held
+// that pass to 10 s after the boot pass began.
+func TestAnEventAfterTheBootPassMovesItsRowAtOnce(t *testing.T) {
+	c := newConsumer(t, 2)
+	c.at = c.at.Add(10 * time.Minute)
+	open := c.fixture.Open[0]
+	recorder := &logtest.Recorder{}
+	logtest.SetDefault(t, recorder)
+	wake := make(chan struct{}, 1)
+	deps := c.deps
+	deps.Leases = storetest.Leases(t, c.database.Pool)
+	deps.Events = wake
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		run(ctx, deps, c.sched)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	// ran is how many passes have run: duty.Exclusive logs each one that ran under the lease, as
+	// it ends.
+	ran := func() int {
+		n := 0
+		for _, record := range recorder.Records() {
+			if record.Message != "dispatch duty: leased pass ran" {
+				continue
+			}
+			record.Attrs(func(attr slog.Attr) bool {
+				if attr.Key == "lease" && attr.Value.String() == Lease {
+					n++
+					return false
+				}
+				return true
+			})
+		}
+		return n
+	}
+	for deadline := time.Now().Add(time.Minute); ran() < 1; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the loop's boot pass had not ended within a minute")
+		}
+	}
+	booted := time.Now()
+	time.Sleep(time.Second)
+
+	before := c.rows(t)[open]
+	c.writeEvent(t, open, "implementer", "issue.updated", `{"status":"in_progress"}`, c.at.Add(-time.Minute))
+	committed := time.Now()
+	select {
+	case wake <- struct{}{}:
+	default:
+	}
+	var moved time.Time
+	for deadline := committed.Add(15 * time.Second); moved.IsZero(); time.Sleep(10 * time.Millisecond) {
+		if !sameRow(c.rows(t)[open], before) {
+			moved = time.Now()
+		} else if time.Now().After(deadline) {
+			t.Fatalf("the event of %s committed %s after the boot pass ended had not moved its row 15 s later", open, committed.Sub(booted))
+		}
+	}
+	latency := moved.Sub(committed)
+	if latency > loopLatencyBound {
+		t.Errorf("the event of %s, committed %s after the boot pass ended, moved its row %s after its commit, want within %s",
+			open, committed.Sub(booted).Round(time.Millisecond), latency.Round(time.Millisecond), loopLatencyBound)
+	}
+	t.Logf("the event of %s, committed %s after the boot pass ended, moved its row %s after its commit (bound %s), in the loop's pass %d",
+		open, committed.Sub(booted).Round(time.Millisecond), latency.Round(time.Millisecond), loopLatencyBound, ran())
+}
+
 // TestAPassHoldsTheFreshnessRequirement: a stored row stands no more than Freshness behind the
 // event that changed it, at the rig's own population and at four times it. No pass runs on a
-// timer: a commit wakes the loop, whose next pass starts at most PassGap after the one before it,
-// and a process that finds the lease held tries again PassGap later and up to a tenth again. A
-// pass therefore has Freshness less one gap and one retry, 39 s, to run in.
+// timer and none is held back from the one before it: a commit wakes the loop, whose next pass
+// starts as soon as the pass running when the event committed ends, and a process that finds the
+// lease held tries again PassRetry later and up to a tenth again. The pass the event waits behind
+// and its own pass therefore share Freshness less one retry, 49 s, and the longest such pair is a
+// whole read and the pass after an event.
 //
 // Each size takes two lengths and two reads: one whole read of the project (ComputeProject and
 // WriteProject), which a new build makes once per project; one pass that reads one event of one
@@ -771,7 +871,7 @@ func TestCursorAgeAnswersTheOldestCursor(t *testing.T) {
 // INFRA at twice its size and leaves room above that: a reader sees how the costs grow with the
 // population rather than one number at one size.
 func TestAPassHoldsTheFreshnessRequirement(t *testing.T) {
-	budget := Freshness - PassGap - (PassGap + PassGap/10)
+	budget := Freshness - (PassRetry + PassRetry/10)
 	for _, size := range []struct {
 		what  string
 		trees int
@@ -813,16 +913,16 @@ func TestAPassHoldsTheFreshnessRequirement(t *testing.T) {
 			for _, length := range []struct {
 				what string
 				took time.Duration
-			}{{"one whole read", whole}, {"one pass after an event", woken}} {
+			}{{"one whole read", whole}, {"one pass after an event", woken}, {"a whole read and then the pass after an event", whole + woken}} {
 				if length.took >= budget {
-					t.Errorf("at %d issues %s takes %s, above the %s a pass has to run in",
+					t.Errorf("at %d issues %s takes %s, above the %s the pass an event waits behind and its own pass share",
 						len(run.fixture.Keys), length.what, length.took.Round(time.Millisecond), budget)
 				}
 			}
 			if stored := len(run.rows(t)); rolledRows != stored {
 				t.Errorf("with every row of %s written by another build the read answered %d rows, want the %d stored", project, rolledRows, stored)
 			}
-			t.Logf("over %d issues, %d of them with Legion phase work: one whole read took %s and wrote %d rows; one pass after an event took %s and changed %d rows; against the %s a pass has",
+			t.Logf("over %d issues, %d of them with Legion phase work: one whole read took %s and wrote %d rows; one pass after an event took %s and changed %d rows; against the %s the pass an event waits behind and its own pass share",
 				len(run.fixture.Keys), len(run.fixture.PhaseWork), whole.Round(time.Millisecond), len(written),
 				woken.Round(time.Millisecond), len(changed), budget)
 			t.Logf("the read of the rows another build wrote took %s finding %d rows, and %s finding %d with every row of the project written by another build",

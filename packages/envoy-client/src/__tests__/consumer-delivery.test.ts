@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { decode } from "@toon-format/toon";
 import {
   type ConsumerDeliveryOptions,
   type ConsumerDeliverySnapshot,
@@ -9,15 +10,15 @@ import {
   decodeRelayFrame,
   deliverSubject,
   FOLLOW_CLOCK_ALLOWANCE_MS,
-  inboundUnavailable,
   RELAY_PROGRESS_INTERVAL_MS,
   RelayHeader,
   type RelayMessage,
   type RelayReply,
-  registerWithRelay,
 } from "../consumer-delivery";
+import { INBOUND_CARD_MAX_BYTES, renderInbound } from "../delivery";
 import { createDeliveryLedger, type DeliveryLedger, type LedgerSnapshot } from "../delivery-ledger";
 import type { DeliveryAnswer } from "../transport";
+import { objectChainPastTheEncoder } from "./deep-json";
 
 const SESSION = "ses_a";
 const AGENT = "notifications.agent.ses_a";
@@ -486,6 +487,30 @@ describe("replies", () => {
     expect(delivery.resumePoint()).toEqual({ stream_id: STREAM, seq: 0 });
   });
 
+  // A frame whose JSON spells half a surrogate pair alone made the card's TOON encoder throw, in
+  // the host's render and in the give-up's alike, so the frame went back to the stream on every
+  // delivery and nobody was ever told of it. The renderer reads the half as U+FFFD
+  // (`parseFrameJSON`), so a host that renders the frame as every host does takes it at once.
+  test("a frame whose text spells half a surrogate pair is taken, not sent again for ever", async () => {
+    const { delivery, replies, state, settled } = setup();
+    state.deliver = (frame) => {
+      renderInbound(frame.data, SESSION, frame.subject);
+      frame.done();
+    };
+    const payload = String.raw`{"event_id":"evt-1","source":"agent","payload":"\ud800"}`;
+    const answers: Array<RelayReply | undefined> = [];
+
+    for (const delivered of [1, 2, 3, 4]) {
+      const reply = `_INBOX.half-${delivered}`;
+      delivery.receive(relay({ seq: 1, delivered, reply, payload }));
+      await settled();
+      answers.push(repliesTo(replies, reply).at(-1));
+      if (answers.at(-1) === "done") break;
+    }
+
+    expect(answers).toEqual(["done"]);
+  });
+
   // A ledger of this repository never rejects, and a host may pass one of its own: a notice this
   // client cannot get an answer out of is no proof that anybody was told, so the frame stays.
   test("a give-up whose ledger rejects goes back to the stream", async () => {
@@ -540,6 +565,122 @@ describe("replies", () => {
     // One notice for the episode, and not one per lap, and no line for the laps after it.
     expect(failed).toEqual([{ session: SESSION, eventID: "evt-1" }]);
     expect(logs).toHaveLength(afterTheEpisode);
+  });
+
+  // A host that renders each frame as every host does and takes it, handed one frame up to six
+  // times until the frame is answered done: each delivery's last answer, what the consumer
+  // logged, and each card the host rendered.
+  const takeUntilDone = async (payload: string, replyPrefix: string) => {
+    const { delivery, logs, replies, state, settled } = setup();
+    const shown: string[] = [];
+    state.deliver = (frame) => {
+      shown.push(renderInbound(frame.data, SESSION, frame.subject).content);
+      frame.done();
+    };
+    const answers: Array<RelayReply | undefined> = [];
+    for (const delivered of [1, 2, 3, 4, 5, 6]) {
+      const reply = `${replyPrefix}-${delivered}`;
+      delivery.receive(relay({ seq: 1, delivered, reply, payload }));
+      await settled();
+      answers.push(repliesTo(replies, reply).at(-1));
+      if (answers.at(-1) === "done") break;
+    }
+    return { answers, logs, shown };
+  };
+
+  // A peer's message whose JSON payload is an object chain 9,999 levels deep made the card's TOON
+  // encoder overflow the stack, in the host's render and in the give-up's alike, so the frame went
+  // back to the stream on every delivery and nobody was ever told of it. The card shows such a
+  // payload as the text its sender sent, so a host that renders the frame as every host does
+  // takes it at once.
+  test("a frame whose payload is nested 9,999 deep is shown as its text and taken, not sent again for ever", async () => {
+    const nested = `${'{"a":'.repeat(9_999)}1${"}".repeat(9_999)}`;
+    const payload = JSON.stringify({ event_id: "evt-deep", source: "agent", payload: nested });
+    const { answers, logs, shown } = await takeUntilDone(payload, "_INBOX.deep");
+
+    expect({ answers, logs, shown: shown.length }).toEqual({
+      answers: ["done"],
+      logs: [],
+      shown: 1,
+    });
+    const card = decode(shown[0] ?? "") as { envoy: { id: string; message: unknown } };
+    expect(card.envoy).toMatchObject({ id: "evt-deep", message: nested });
+  });
+
+  // An array chain 9,999 levels deep, a 20 KB frame, the encoder reaches the bottom of: its
+  // layout indents every line below each level, and made a card of 100,060,107 bytes in the
+  // session of every recipient. The card shows it as its text, under the bound, and is taken.
+  test("a frame whose payload is an array chain 9,999 deep is taken, its card under the bound", async () => {
+    const { delivery, logs, replies, state, settled } = setup();
+    const shown: string[] = [];
+    state.deliver = (frame) => {
+      shown.push(renderInbound(frame.data, SESSION, frame.subject).content);
+      frame.done();
+    };
+    const arrays = `${"[".repeat(9_999)}${"]".repeat(9_999)}`;
+    const payload = JSON.stringify({ event_id: "evt-wide", source: "agent", payload: arrays });
+
+    delivery.receive(relay({ seq: 1, reply: "_INBOX.wide", payload }));
+    await settled();
+
+    expect({ answers: repliesTo(replies, "_INBOX.wide"), logs, shown: shown.length }).toEqual({
+      answers: ["received", "done"],
+      logs: [],
+      shown: 1,
+    });
+    expect(Buffer.byteLength(shown[0] ?? "")).toBeLessThanOrEqual(INBOUND_CARD_MAX_BYTES);
+    const card = decode(shown[0] ?? "") as { envoy: { id: string; message: unknown } };
+    expect(card.envoy).toMatchObject({ id: "evt-wide", message: arrays });
+  });
+
+  // The two fixes meet here. The card cannot lay out a payload nested 9,999 deep, so it shows the
+  // payload as the text its sender sent; that text held half a surrogate pair alone, on which the
+  // encoder throws as well, so the text fallback itself threw and the frame went back to the
+  // stream for ever. The renderer reads the frame's text with each lone half as U+FFFD
+  // (`parseFrameJSON`), so the text the fallback shows encodes and the frame is taken.
+  test("a frame whose payload is nested 9,999 deep and holds half a surrogate pair alone is taken, shown as its text", async () => {
+    const nested = `${'{"a":'.repeat(9_999)}"\ud800"${"}".repeat(9_999)}`;
+    const payload = JSON.stringify({ event_id: "evt-deep-half", source: "agent", payload: nested });
+    const { answers, logs, shown } = await takeUntilDone(payload, "_INBOX.deep-half");
+
+    expect({ answers, logs, shown: shown.length }).toEqual({
+      answers: ["done"],
+      logs: [],
+      shown: 1,
+    });
+    const card = decode(shown[0] ?? "") as { envoy: { id: string; message: unknown } };
+    expect(card.envoy).toMatchObject({
+      id: "evt-deep-half",
+      message: nested.replace("\ud800", "\ufffd"),
+    });
+  });
+
+  // A Dispatch event's actor carries whatever keys its sender put beside `kind` and `id`
+  // (DispatchEventSchema passes them through). A card that cannot lay the event out shows it by
+  // its owner, its type and the actor's `kind` and `id` (and `act`, which this actor has none of),
+  // so an actor holding an object chain 100,000 deep, past the encoder's recursion and
+  // JSON.stringify's, neither throws out of the render nor sends the frame back to the stream.
+  test("a Dispatch frame whose actor is an object chain 100,000 deep is taken, its card holding the owner and the type", async () => {
+    const event = `{"issue_key":"PRIV-1","type":"comment.created","actor":{"kind":"user","id":"alice","x":${objectChainPastTheEncoder}},"payload":{}}`;
+    const payload = JSON.stringify({
+      event_id: "evt-deep-actor",
+      source: "dispatch",
+      payload: event,
+    });
+    const { answers, logs, shown } = await takeUntilDone(payload, "_INBOX.deep-actor");
+
+    expect({ answers, logs, shown: shown.length }).toEqual({
+      answers: ["done"],
+      logs: [],
+      shown: 1,
+    });
+    const card = decode(shown[0] ?? "") as { envoy: { dispatch: Record<string, unknown> } };
+    expect(card.envoy.dispatch).toMatchObject({
+      owner: "PRIV-1",
+      type: "comment.created",
+      actor: { kind: "user", id: "alice" },
+    });
+    expect(card.envoy.dispatch.actor).not.toHaveProperty("x");
   });
 
   test("closing the session answers nak for every unsettled frame and any later one", () => {
@@ -1135,91 +1276,5 @@ describe("persisting the snapshot", () => {
     delivery.setFollowed([AGENT, ISSUE_TOPIC]);
 
     expect(delivery.snapshot().follows).toEqual({ [ISSUE_TOPIC]: T0 });
-  });
-});
-
-describe("one registration", () => {
-  const UNCAPTURED = "notifications.team";
-  const TEAM = "notifications.team.deploys";
-
-  /** A relay that records what a registration stamped on it. */
-  function fakeRelay() {
-    const followed: string[][] = [];
-    return {
-      followed,
-      setFollowed: (topics: Iterable<string>) => followed.push([...topics]),
-      registration: () => ({ consumer: true, epoch: "epoch-1" }) as const,
-    };
-  }
-
-  test("carries the topics the listener will store, and takes the answer", async () => {
-    const relay = fakeRelay();
-    const told: string[] = [];
-    const answers: string[] = [];
-    const sent: { topics: readonly string[]; epoch: string }[] = [];
-
-    const result = await registerWithRelay({
-      relay,
-      ownAgentSubject: AGENT,
-      // The bare base a stored row or a transcript brings back: the listener stores it for no
-      // session and warns about it, so it never goes out (INFRA-771 review).
-      followed: [TEAM, UNCAPTURED, "notifications.agent.ses_b"],
-      outage: inboundUnavailable((why) => told.push(why)),
-      send: (topics, delivery) => {
-        sent.push({ topics, epoch: delivery.epoch });
-        return Promise.resolve("registered");
-      },
-      answered: (answer) => answers.push(answer),
-    });
-
-    expect(sent).toEqual([{ topics: [AGENT, TEAM], epoch: "epoch-1" }]);
-    expect(relay.followed).toEqual([[AGENT, TEAM]]);
-    expect([result, answers, told]).toEqual(["registered", ["registered"], []]);
-  });
-
-  test("a session holding no relay subject registers nothing and is told once", async () => {
-    const told: string[] = [];
-    const outage = inboundUnavailable((why) => told.push(why));
-    const sent: unknown[] = [];
-    const register = () =>
-      registerWithRelay({
-        relay: undefined,
-        ownAgentSubject: AGENT,
-        followed: [TEAM],
-        outage,
-        send: (topics) => {
-          sent.push(topics);
-          return Promise.resolve("registered");
-        },
-        answered: () => undefined,
-      });
-
-    await expect(register()).rejects.toThrow("holds no relay subject");
-    // The second outage tick says nothing more: the session was told once.
-    await expect(register()).rejects.toThrow("holds no relay subject");
-    expect(sent).toEqual([]);
-    expect(told).toEqual([
-      "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing",
-    ]);
-  });
-
-  test("a refused registration tells the session once and takes no answer", async () => {
-    const relay = fakeRelay();
-    const told: string[] = [];
-    const answers: string[] = [];
-
-    await expect(
-      registerWithRelay({
-        relay,
-        ownAgentSubject: AGENT,
-        followed: [TEAM],
-        outage: inboundUnavailable((why) => told.push(why)),
-        send: () => Promise.reject(new Error("no_grant")),
-        answered: (answer: string) => answers.push(answer),
-      })
-    ).rejects.toThrow("no_grant");
-
-    expect(relay.followed).toEqual([[AGENT, TEAM]]);
-    expect([answers, told]).toEqual([[], ["no_grant"]]);
   });
 });

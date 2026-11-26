@@ -1,6 +1,6 @@
 /**
- * Raising the upstream pin is the six-step procedure in `packages/proof-editor/AGENTS.md`, whose
- * second step deletes the tarball the old pin packed. Nothing makes that step happen: the
+ * Raising the upstream pin is the six-step procedure in `packages/proof-editor/docs/upstream.md`,
+ * whose second step deletes the tarball the old pin packed. Nothing makes that step happen: the
  * `.gitignore` line tracking the archive is a glob, `!packages/proof-editor/proof-sdk-*.tgz`,
  * written as one, like every other path that names the tarball, so none needs an edit when the
  * pin moves, and a glob tracks a forgotten tarball as readily as the live one. A

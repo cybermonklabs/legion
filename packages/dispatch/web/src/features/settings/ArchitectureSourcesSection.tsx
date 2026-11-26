@@ -1,8 +1,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
-import { api, apiErrorMessage } from "../../api/client";
+import { api, apiErrorMessage, isSourceNotFound, removedEvenIfGone } from "../../api/client";
 import { architectureSourcesQuery, projectsQuery } from "../../api/queries";
+import { heldField, heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
   TableBody,
@@ -26,7 +27,12 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import {
+  refusedNote,
+  stoppedNote,
+  useKeyedWrite,
+  useRefusalOfSubject,
+} from "../writes/useKeyedWrite";
 import {
   ownerRepoPattern,
   settingsFieldLabel,
@@ -39,6 +45,11 @@ import { NoProjectPicked, ProjectSelect } from "./ProjectSelect";
 interface SourceKey {
   readonly project: string;
   readonly repo: string;
+}
+
+/** `source` as the section's sentences name it: `the architecture source acme/web for CORE`. */
+function sourceName(source: SourceKey): string {
+  return `the architecture source ${source.repo} for ${source.project}`;
 }
 
 /** A project's architecture sources, one row per repository: the branch its architecture
@@ -61,6 +72,7 @@ export function ArchitectureSourcesSection(): ReactNode {
     inline: true,
     label: (input: { project: string; repo: string; branch: string }) =>
       `${input.project}'s architecture source ${input.repo}`,
+    method: "PUT",
     write: (input, bounds) =>
       api.putArchitectureSource(input.project, input.repo, { branch: input.branch }, bounds),
     onSettled: () => submitGuard.release(),
@@ -74,7 +86,14 @@ export function ArchitectureSourcesSection(): ReactNode {
   });
   const deleteSource = useKeyedWrite({
     label: (source: SourceKey) => `${source.project}'s architecture source ${source.repo} removed`,
-    write: (source, bounds) => api.deleteArchitectureSource(source.project, source.repo, bounds),
+    // A removal made again after one that landed finds no source (`404 SOURCE_NOT_FOUND`), which
+    // is the removal done (`removedEvenIfGone`).
+    method: "DELETE",
+    write: (source, bounds) =>
+      removedEvenIfGone(
+        api.deleteArchitectureSource(source.project, source.repo, bounds),
+        isSourceNotFound
+      ),
     onSuccess: () =>
       void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey }),
   });
@@ -84,12 +103,18 @@ export function ArchitectureSourcesSection(): ReactNode {
   const refreshSource = useKeyedWrite({
     label: (source: SourceKey) =>
       `Refresh of ${source.project}'s architecture source ${source.repo}`,
+    method: "POST",
     write: (source, bounds) => api.syncArchitectureSource(source.project, source.repo, bounds),
     onSettled: () =>
       void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey }),
   });
+  // Add source is held while a save or a removal is out, by `aria-disabled`, and a submit sends
+  // nothing then. The repository and the branch are held while a save is out, `aria-disabled` and
+  // read-only. So the control the reader submitted from keeps the focus.
+  const formHeld = saveSource.isPending || deleteSource.isPending;
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (formHeld) return;
     // The project list is a button, which no `required` holds: an empty one files nothing here.
     if (project === "") {
       setProjectMissing(true);
@@ -97,6 +122,18 @@ export function ArchitectureSourcesSection(): ReactNode {
     }
     submitGuard.guard(() => saveSource.mutate({ branch, project, repo: repository }));
   };
+  // A removal's and a refresh's refusals sit under the table, each one line for every row, so each
+  // names the source it was about, and goes once that source leaves the list - removed in another
+  // tab, or by another person - rather than stand under sources it was never about.
+  const listed = (source: SourceKey) =>
+    sources.data?.some((row) => row.project === source.project && row.repo === source.repo) ===
+    true;
+  const deleteRefused = useRefusalOfSubject(deleteSource, listed)
+    ? deleteSource.variables
+    : undefined;
+  const refreshRefused = useRefusalOfSubject(refreshSource, listed)
+    ? refreshSource.variables
+    : undefined;
 
   return (
     <section aria-labelledby="architecture-sources-heading">
@@ -181,16 +218,17 @@ export function ArchitectureSourcesSection(): ReactNode {
                         "Access verified"
                       )}
                     </TableCell>
+                    {/* A row's Refresh and Delete are held while a write of the section is out
+                        (`heldPress`), not disabled, so the one the reader pressed keeps the focus
+                        and a press of either then sends nothing. */}
                     <TableCell align="right">
                       <button
                         aria-label={`Refresh architecture source ${source.repo} for ${source.project}`}
-                        className={`mr-4 font-medium disabled:cursor-not-allowed disabled:opacity-50 ${linkText} ${linkHoverText}`}
-                        disabled={
-                          refreshSource.isPending || deleteSource.isPending || saveSource.isPending
-                        }
-                        onClick={() =>
-                          refreshSource.mutate({ project: source.project, repo: source.repo })
-                        }
+                        className={`mr-4 font-medium refused:cursor-not-allowed refused:opacity-50 ${linkText} ${linkHoverText}`}
+                        {...heldPress(
+                          refreshSource.isPending || deleteSource.isPending || saveSource.isPending,
+                          () => refreshSource.mutate({ project: source.project, repo: source.repo })
+                        )}
                         type="button"
                       >
                         {refreshSource.isPending &&
@@ -201,11 +239,10 @@ export function ArchitectureSourcesSection(): ReactNode {
                       </button>
                       <button
                         aria-label={`Delete architecture source ${source.repo} for ${source.project}`}
-                        className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
-                        disabled={deleteSource.isPending || saveSource.isPending}
-                        onClick={() =>
+                        className={`font-medium refused:cursor-not-allowed refused:opacity-50 ${dangerText} ${dangerHoverText}`}
+                        {...heldPress(deleteSource.isPending || saveSource.isPending, () =>
                           deleteSource.mutate({ project: source.project, repo: source.repo })
-                        }
+                        )}
                         type="button"
                       >
                         Delete
@@ -234,8 +271,8 @@ export function ArchitectureSourcesSection(): ReactNode {
             <label className={settingsFieldLabel} htmlFor="architecture-source-repository">
               Source repository
               <input
+                {...heldField(saveSource.isPending)}
                 className={settingsMonoInput}
-                disabled={saveSource.isPending}
                 id="architecture-source-repository"
                 onChange={(event) => setRepository(event.target.value)}
                 pattern={ownerRepoPattern}
@@ -247,8 +284,8 @@ export function ArchitectureSourcesSection(): ReactNode {
             <label className={settingsFieldLabel} htmlFor="architecture-source-branch">
               Branch
               <input
+                {...heldField(saveSource.isPending)}
                 className={settingsMonoInput}
-                disabled={saveSource.isPending}
                 id="architecture-source-branch"
                 onChange={(event) => setBranch(event.target.value)}
                 required
@@ -256,8 +293,8 @@ export function ArchitectureSourcesSection(): ReactNode {
               />
             </label>
             <button
+              aria-disabled={formHeld || undefined}
               className={settingsSubmitButton}
-              disabled={saveSource.isPending || deleteSource.isPending}
               type="submit"
             >
               Add source
@@ -267,36 +304,45 @@ export function ArchitectureSourcesSection(): ReactNode {
           {saveSource.isError ? (
             <div className="mt-4">
               <QueryError
-                message={apiErrorMessage(
-                  saveSource.error,
-                  "Couldn't save the architecture source."
-                )}
+                message={
+                  stoppedNote(saveSource, "the architecture source", "saved") ??
+                  apiErrorMessage(saveSource.error, "Couldn't save the architecture source.")
+                }
                 onRetry={() => submitGuard.retryLast(saveSource)}
                 retrying={saveSource.isPending}
               />
             </div>
           ) : null}
-          {deleteSource.isError ? (
+          {deleteRefused === undefined ? null : (
             <div className="mt-4">
               <QueryError
-                message="Couldn't delete the architecture source."
-                onRetry={() => deleteSource.mutate(deleteSource.variables)}
+                message={
+                  stoppedNote(
+                    deleteSource,
+                    `the removal of ${sourceName(deleteRefused)}`,
+                    "made"
+                  ) ?? `Couldn't delete ${sourceName(deleteRefused)}.`
+                }
+                onRetry={deleteSource.retry}
                 retrying={deleteSource.isPending}
               />
             </div>
-          ) : null}
-          {refreshSource.isError ? (
+          )}
+          {refreshRefused === undefined ? null : (
             <div className="mt-4">
               <QueryError
-                message={apiErrorMessage(
-                  refreshSource.error,
-                  "Couldn't refresh the architecture source."
-                )}
-                onRetry={() => refreshSource.mutate(refreshSource.variables)}
+                message={
+                  stoppedNote(
+                    refreshSource,
+                    `the refresh of ${sourceName(refreshRefused)}`,
+                    "made"
+                  ) ?? refusedNote(`refresh ${sourceName(refreshRefused)}`, refreshSource.error)
+                }
+                onRetry={refreshSource.retry}
                 retrying={refreshSource.isPending}
               />
             </div>
-          ) : null}
+          )}
         </>
       ) : null}
     </section>

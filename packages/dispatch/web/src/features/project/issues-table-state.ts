@@ -29,6 +29,7 @@ import {
   ISSUE_ROW_ATTRIBUTE,
   type Item,
   matchesSearch,
+  NOBODY_FACET,
   UNCLAIMED_FACET,
   type View,
 } from "./issues-table-model";
@@ -58,15 +59,6 @@ const ISSUE_TABLE_NAMES: DataTableNames = {
   },
   linkAttribute: ISSUE_LINK_ATTRIBUTE,
   rowAttribute: ISSUE_ROW_ATTRIBUTE,
-};
-
-/** The same words for an issue table a page draws beside its main table over the same keys - the
- *  priorities page's fault lists, and the work under an opened priority - whose `j` and `k` walk
- *  it only from one of its own rows (`moveFrom: "row"`), so they never take those keys from the
- *  main table. */
-const ISSUE_TABLE_BESIDE_NAMES: DataTableNames = {
-  ...ISSUE_TABLE_NAMES,
-  keymap: { ...ISSUE_TABLE_NAMES.keymap, moveFrom: "row" },
 };
 
 /** What a column filter of `filters` picks, as strings; none where it has no such filter. */
@@ -146,6 +138,17 @@ export interface IssueTableState {
   readonly panel: FilterPanel;
   /** What each value of the open column filter would list (`facetCounts`). */
   readonly openFacets: ReadonlyMap<string, number>;
+  /** Whether a header filter draws the count of `value` of the column `column`: once every read
+   *  it counts has answered, and a read it does not count never hides it. Every count counts the
+   *  rows the table waits on (`counted`), as the `only=` chip does: never the open issues alone
+   *  while the closed ones it asked for are out. While a Nobody-or-lapsed narrowing is on and the
+   *  agent registry's first read is out, the listed rows can still change when it answers, so no
+   *  column draws a count. Once the registry answers or settles on its error (where the page
+   *  shows `unclaimed-unchecked` and counts every claim as held), each count the registry does
+   *  not decide draws: every other column, and Claimed by's Nobody. Every other Claimed by value
+   *  - Nobody or lapsed, and each holder - still waits until the registry's latest read has
+   *  succeeded (`known`), since only it decides which claims have lapsed (`claimIsTakeable`). */
+  readonly filterCounted: (column: string, value: string) => boolean;
   /** Starts `keys` next, over the rows the table holds now (`IssueTableActions.startNext`). */
   readonly startNext: (keys: readonly string[], confirmFirst?: boolean) => void;
   /** Finishes the action a tab left behind, and clears this table's selection once it has. */
@@ -173,7 +176,6 @@ export function useIssueTable({
   listingIn,
   loaded,
   mode,
-  moveFrom,
   onBoard,
   panel,
   serverRowCount,
@@ -193,8 +195,6 @@ export function useIssueTable({
   listingIn: boolean;
   loaded: boolean;
   mode: IssueTableMode;
-  /** Where its `j` and `k` walk its rows from (`RowKeymap.moveFrom`). */
-  moveFrom: "page" | "row";
   onBoard: boolean;
   panel: FilterPanel;
   /** The count of every row of a server's page of rows, which the table pages by. */
@@ -273,7 +273,7 @@ export function useIssueTable({
 
   const columns = useIssueTableColumns(
     userState,
-    layout.boxWidth < 640,
+    layout.responsive.compact,
     recordMark,
     columnsLayout,
     sorting,
@@ -289,7 +289,7 @@ export function useIssueTable({
     columns,
     getRowId: (item) => item.issue.key,
     layout,
-    names: moveFrom === "row" ? ISSUE_TABLE_BESIDE_NAMES : ISSUE_TABLE_NAMES,
+    names: ISSUE_TABLE_NAMES,
     // The Board's own keys answer while it shows, and its help lists no key of the table it hides.
     keys: !onBoard,
     state: {
@@ -370,6 +370,14 @@ export function useIssueTable({
     () => (openFilter ? facetCounts(items, openFilter, filters, search) : EMPTY_FACETS),
     [items, openFilter, filters, search]
   );
+  const registryPending =
+    picksOf(filters, "claim").includes(UNCLAIMED_FACET) &&
+    !panel.registry.known &&
+    !panel.registry.isError;
+  const filterCounted = (column: string, value: string) =>
+    counted &&
+    !registryPending &&
+    (column !== "claim" || value === NOBODY_FACET || panel.registry.known);
 
   return {
     model,
@@ -379,6 +387,7 @@ export function useIssueTable({
     pickedChip,
     panel,
     openFacets,
+    filterCounted,
     startNext: (keys, confirmFirst) =>
       actions.startNext(keys, { items: allItems, clearSelection }, confirmFirst),
     finish: () => actions.finish(clearSelection),

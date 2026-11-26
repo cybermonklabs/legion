@@ -17,6 +17,7 @@ import (
 // is started with (newDeleterReplies). The negative control is the read with no bound
 // (ReadString), which kept the whole of the long line and answered it as the refusal.
 func TestADeletersReplyIsKeptToItsBoundAndTheNextReplyIsReadWhole(t *testing.T) {
+	t.Parallel()
 	long := strings.Repeat("x", 64*volumeDeleteReplyBytes)
 	replies := "failed " + strconv.Quote(long) + "\nfailed " + strconv.Quote("the second refusal") + "\nremoved\n"
 	dir := &sweepDir{}
@@ -45,6 +46,7 @@ func TestADeletersReplyIsKeptToItsBoundAndTheNextReplyIsReadWhole(t *testing.T) 
 // answer it still quoted, with the cut mark after a refusal nothing was cut from; the case above
 // reads only a reply far past the bound and one far within it, so it cannot tell the two apart.
 func TestADeletersReplyAtItsBoundIsKeptWholeAndOneByteMoreIsCut(t *testing.T) {
+	t.Parallel()
 	for _, size := range []int{volumeDeleteReplyBytes, volumeDeleteReplyBytes + 1} {
 		refusal := strings.Repeat("x", size-len("failed ")-len(`""`))
 		reply := "failed " + strconv.Quote(refusal)
@@ -74,6 +76,7 @@ func TestADeletersReplyAtItsBoundIsKeptWholeAndOneByteMoreIsCut(t *testing.T) {
 // stands at, quoted: a shard is a name a role chose under the build cache, and a name holding a
 // newline would otherwise begin a line of its own in the pod's log.
 func TestARemovalAskedOfADirectoryTheListingDidNotOpenNamesItQuoted(t *testing.T) {
+	t.Parallel()
 	const shard = "0f\nthe sweep is fine"
 	dir := &sweepDir{root: ReclaimableRoot{Path: "/legion/go/build"}, shard: shard}
 	remover := &containedRemover{requests: discardRequests{}, replies: newDeleterReplies(strings.NewReader("")),
@@ -98,6 +101,7 @@ func TestARemovalAskedOfADirectoryTheListingDidNotOpenNamesItQuoted(t *testing.T
 // and the default branch each returned as a plain error, which the sweep took for a removal that
 // failed and went on to the next entry.
 func TestADeleterThatAnswersNothingOrOutsideTheProtocolIsGone(t *testing.T) {
+	t.Parallel()
 	for name, replies := range map[string]string{
 		"an empty reply stream":                  "",
 		"a reply of no answer this protocol has": "bogus\n",
@@ -131,6 +135,7 @@ func TestADeleterThatAnswersNothingOrOutsideTheProtocolIsGone(t *testing.T) {
 // pipe. The negative control is the buffer that kept everything, which put all 256 KiB the child
 // wrote into the error.
 func TestTheDeletersStandardErrorIsKeptToItsBound(t *testing.T) {
+	t.Parallel()
 	said := &saidBuffer{}
 	const first = "volume-trim-delete: the error that says why"
 	long := strings.Repeat("y", 64*volumeDeleteSaidBytes)
@@ -168,6 +173,7 @@ func TestTheDeletersStandardErrorIsKeptToItsBound(t *testing.T) {
 // out, 4096 bytes, the bound a reply of the deleter is kept to (volumeDeleteReplyBytes), rather
 // than read off volumeDeleteSaidBytes, which a case staged from would move with.
 func TestTheDeletersStandardErrorAtItsBoundIsKeptWholeAndOneByteMoreIsCut(t *testing.T) {
+	t.Parallel()
 	const bound = 4096
 	for _, size := range []int{bound, bound + 1} {
 		said := &saidBuffer{}
@@ -185,6 +191,58 @@ func TestTheDeletersStandardErrorAtItsBoundIsKeptWholeAndOneByteMoreIsCut(t *tes
 			t.Errorf("what the child said in %d bytes is carried as %d bytes ending %q, want %d bytes ending %q", size, len(got), got[max(0, len(got)-60):], len(want), want[max(0, len(want)-60):])
 		}
 	}
+}
+
+// What the deleter said and a reply of it longer than its bound reach the sweep's error through
+// redact.Read, so a cut that falls inside a URL's user name keeps no part of it: the bound of the
+// standard error, a read of the standard error taken while the child is still writing it (ended
+// can read it then, so trailing gives Read every text as cut), and the bound of a reply. The
+// deleter writes paths and its own errors, which hold no "://"; the URL here stands for a text no
+// rule of the deleter's own keeps out. The negative controls are trailing and readReply each
+// without redact.Read, which carried "legion-rea".
+func TestTheDeletersCutTextsKeepNoPartOfAURLTheirCutFallsInside(t *testing.T) {
+	t.Parallel()
+	const url = " https://legion-reader@h.example/p?token=planted-query-token-12 and more"
+	const atTheCut = " https://legion-rea"
+	assertNoPart := func(t *testing.T, what, text string) {
+		t.Helper()
+		for _, part := range []string{"legion-rea", "reader@", "planted"} {
+			if strings.Contains(text, part) {
+				t.Errorf("%s holds %q, a part of the URL's user name or query: …%q", what, part, text[max(0, len(text)-80):])
+			}
+		}
+	}
+	t.Run("the standard error at its bound", func(t *testing.T) {
+		said := &saidBuffer{}
+		filler := strings.Repeat("y", volumeDeleteSaidBytes-len(atTheCut))
+		_, _ = said.Write([]byte(filler + url))
+		got := said.trailing()
+		if !strings.HasPrefix(got, " ("+filler) {
+			t.Fatalf("what the child said is carried as %.80q…, want it to start with what came before the URL", got)
+		}
+		assertNoPart(t, "what the child said", got)
+	})
+	t.Run("the standard error read while the child still writes", func(t *testing.T) {
+		said := &saidBuffer{}
+		_, _ = said.Write([]byte("volume-trim-delete: failed at" + atTheCut))
+		got := said.trailing()
+		if !strings.Contains(got, "volume-trim-delete: failed at") {
+			t.Fatalf("what the child said is carried as %q, want its words before the URL", got)
+		}
+		assertNoPart(t, "what the child said", got)
+	})
+	t.Run("a reply at its bound", func(t *testing.T) {
+		filler := strings.Repeat("x", volumeDeleteReplyBytes-len(`failed "`)-len(atTheCut))
+		reply := "failed " + strconv.Quote(filler+url)
+		dir := &sweepDir{}
+		remover := &containedRemover{requests: discardRequests{}, replies: newDeleterReplies(strings.NewReader(reply + "\nremoved\n")),
+			at: map[*sweepDir]int{dir: 0}, said: &saidBuffer{}}
+		got := remover.removeAll(dir, "entry")
+		if got == nil || errors.Is(got, errRemoverGone) || !strings.HasSuffix(got.Error(), volumeDeleteReplyCut) {
+			t.Fatalf("the reply was answered %.120v, want a refusal of that entry with the mark %q", got, volumeDeleteReplyCut)
+		}
+		assertNoPart(t, "the refusal", got.Error())
+	})
 }
 
 // discardRequests is a deleter's request pipe that goes nowhere, for a case that writes its

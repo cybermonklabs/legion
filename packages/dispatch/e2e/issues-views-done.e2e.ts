@@ -1,3 +1,6 @@
+/** Done's reads are the server's own pages and windows of the list route and the items route as
+ *  the facts consumer and the eval refresher leave them, read request by request with the board
+ *  over the live socket, and the list route's sort is read straight from the server. */
 // Done and the reads behind it (dispatch://INFRA-3221, Verification k6 and k9): what a fresh
 // load of Done reads, with and without a saved view, a saved view of done issues and its counts,
 // Done's pages and its Closed window, the reads of every view that lists done issues, the items

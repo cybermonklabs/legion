@@ -27,7 +27,8 @@ type adoption struct {
 // adoptChildren applies an architect's release of children recorded outside its tree: each root
 // that queued in admission before a person made it a child of fact.Tree joins that tree with every
 // record of its own (workflow's Engine.Adopt), under the Dispatch parent the release read, and the
-// line is promoted as after any other fact; it reports the slots that promotion's roots returned.
+// line is promoted by the pass rule (Apply), as after any other fact; it reports the slots that
+// promotion's roots returned.
 // A child already recorded in fact.Tree needs nothing, and a member of another child's queued tree
 // joins with that child.
 //
@@ -124,7 +125,7 @@ func (a *Admission) adoptChildren(ctx context.Context, tx pgx.Tx, fact intake.Ch
 			return nil, nil, fmt.Errorf("adopt %s into the tree of %s: %w", child.issue.Key, fact.Tree, err)
 		}
 	}
-	_, returned, err := a.promote(ctx, tx)
+	_, returned, err := a.promoteWritten(ctx, tx)
 	return returned, nil, err
 }
 
@@ -180,7 +181,7 @@ func (a *Admission) adoptQueuedRoots(ctx context.Context, tx pgx.Tx, respectHold
 		var queued []record.Issue
 		var unread []string
 		for _, issue := range issues {
-			if issue.Project != a.project || !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Status != "todo" || issue.Parent == nil {
+			if !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Status != "todo" || issue.Parent == nil {
 				continue
 			}
 			queued = append(queued, issue)

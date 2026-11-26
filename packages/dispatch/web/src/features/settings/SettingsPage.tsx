@@ -1,196 +1,30 @@
-import { canonicalRepo } from "@legion/contracts/repo";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 
-import { api, apiErrorMessage } from "../../api/client";
-import { projectsQuery } from "../../api/queries";
-import type { RepoProject } from "../../api/types";
-import { QueryError } from "../../components/QueryError";
-import {
-  TableBody,
-  TableCell,
-  TableEmpty,
-  TableHead,
-  TableHeadCell,
-  TableRow,
-  TableShell,
-} from "../../components/TableShell";
-import {
-  borderDefault,
-  dangerHoverText,
-  dangerText,
-  textMutedOnCanvas,
-  textPrimaryOnCanvas,
-  textSecondaryOnCanvas,
-} from "../../theme/classes";
+import { textPrimaryOnCanvas, textSecondaryOnCanvas } from "../../theme/classes";
 import { GrantsSection } from "../credentials/GrantsSection";
 import { credentialPendingQuery } from "../credentials/pending";
 import { SignInsSection } from "../credentials/SignInsSection";
 import { DeliverySettingsForm } from "../delivery/DeliverySettingsForm";
 import { IssuePagePreference } from "../issue-page/IssuePagePreference";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentTokensSection } from "./AgentTokensSection";
 import { ArchitectureSourcesSection } from "./ArchitectureSourcesSection";
-import {
-  ownerRepoPattern,
-  settingsFieldLabel,
-  settingsMonoInput,
-  settingsSectionGap,
-  settingsSubmitButton,
-} from "./classes";
+import { settingsSectionGap } from "./classes";
 import { LegionDaemonsSection } from "./LegionDaemonsSection";
-import { NoProjectPicked, ProjectSelect } from "./ProjectSelect";
 import { ProjectsSection } from "./ProjectsSection";
-
-interface MappingInput {
-  readonly repo: string;
-  readonly project: string;
-  readonly default?: boolean;
-}
-
-/** A mapping write the server refused or never answered, with what the page says about it: the
- *  server's reason when it gave one (a mapping issues still name, say), else a generic line. */
-type FailedAction =
-  | ({ readonly kind: "put"; readonly message: string } & MappingInput)
-  | { readonly kind: "delete"; readonly message: string; readonly repo: string };
-
-/** The mappings with `mapping` in place of its row, and, when it is its project's default, every
- *  other mapping of that project no longer the default: a project has at most one. */
-function withMapping(current: RepoProject[], mapping: RepoProject): RepoProject[] {
-  return [
-    ...current
-      .filter((candidate) => candidate.repo !== mapping.repo)
-      .map((candidate) =>
-        mapping.default && candidate.project === mapping.project && candidate.default
-          ? { ...candidate, default: false }
-          : candidate
-      ),
-    mapping,
-  ];
-}
 
 export function SettingsPage(): ReactNode {
   useDocumentTitle("Settings · Dispatch");
-  const queryClient = useQueryClient();
-  const [repository, setRepository] = useState("");
-  const [project, setProject] = useState("");
-  // The form was submitted with no project picked, and says so until one is.
-  const [projectMissing, setProjectMissing] = useState(false);
-  const [failedAction, setFailedAction] = useState<FailedAction>();
-  const mappings = useQuery({ queryKey: ["repo-projects"], queryFn: () => api.listRepoProjects() });
-  const projects = useQuery(projectsQuery());
   // `null` is a Dispatch with no secrets broker, where Live grants has nothing to list.
   const credentialsAvailable = useQuery(credentialPendingQuery());
-  // Both mapping writes show their refusal on the row they changed.
-  const putMapping = useKeyedWrite<
-    RepoProject,
-    MappingInput,
-    { previous: RepoProject[] | undefined }
-  >({
-    write: ({ repo, ...input }, bounds) => api.putRepoProject(repo, input, bounds),
-    inline: true,
-    label: ({ repo, project: mapped }) => `${repo} mapped to ${mapped}`,
-    onError: (error, variables, context) => {
-      queryClient.setQueryData(["repo-projects"], context?.previous);
-      setFailedAction({
-        kind: "put",
-        message: apiErrorMessage(error, `Couldn't save ${variables.repo}.`),
-        ...variables,
-      });
-    },
-    onMutate: async (variables) => {
-      await queryClient.cancelQueries({ queryKey: ["repo-projects"] });
-      const previous = queryClient.getQueryData<RepoProject[]>(["repo-projects"]);
-      const existing = previous?.find((mapping) => mapping.repo === variables.repo);
-      queryClient.setQueryData<RepoProject[]>(["repo-projects"], (current = []) =>
-        withMapping(current, {
-          created_at: new Date().toISOString(),
-          created_by: { id: "you", kind: "user" },
-          // As the server decides it: the body's default, else the mapping's own while its
-          // project is unchanged, else not the default.
-          default:
-            variables.default ??
-            (existing?.project === variables.project ? existing.default : false),
-          project: variables.project,
-          // This page's write names no rename, so the stored one stands (`putRepoProject`).
-          renamed_to: existing?.renamed_to ?? null,
-          repo: variables.repo,
-        })
-      );
-      return { previous };
-    },
-    // A landing with no answer keeps the optimistic row; `onSettled` reads them all again.
-    onSuccess: (mapping, variables) => {
-      if (mapping !== null) {
-        queryClient.setQueryData<RepoProject[]>(["repo-projects"], (current = []) =>
-          withMapping(current, mapping)
-        );
-      }
-      setFailedAction(undefined);
-      if (variables.default === undefined) {
-        setRepository("");
-        setProject("");
-      }
-    },
-    // A write's answer is one row as the server saved it, not the project's mappings when the
-    // answer arrives: another write (another browser's default pick, read through a mapping event
-    // while this one was on the way) may have changed them since. Reading them again once the
-    // write settles leaves the page on the server's state, as issueFieldWrite does an issue's once
-    // no newer live write of the field is left.
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ["repo-projects"] }),
-  });
-  const deleteMapping = useKeyedWrite<void, string, { previous: RepoProject[] | undefined }>({
-    write: (repo: string, bounds) => api.deleteRepoProject(repo, bounds),
-    inline: true,
-    label: (repo) => `${repo}'s mapping removed`,
-    onError: (error, repo, context) => {
-      queryClient.setQueryData(["repo-projects"], context?.previous);
-      setFailedAction({
-        kind: "delete",
-        message: apiErrorMessage(error, `Couldn't delete ${repo}.`),
-        repo,
-      });
-    },
-    onMutate: async (repo) => {
-      await queryClient.cancelQueries({ queryKey: ["repo-projects"] });
-      const previous = queryClient.getQueryData<RepoProject[]>(["repo-projects"]);
-      queryClient.setQueryData<RepoProject[]>(["repo-projects"], (current = []) =>
-        current.filter((mapping) => mapping.repo !== repo)
-      );
-      return { previous };
-    },
-    onSuccess: () => setFailedAction(undefined),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ["repo-projects"] }),
-  });
-
-  const retry = () => {
-    if (failedAction?.kind === "put") {
-      const { kind: _kind, message: _message, ...variables } = failedAction;
-      putMapping.mutate(variables);
-      return;
-    }
-    if (failedAction?.kind === "delete") {
-      deleteMapping.mutate(failedAction.repo);
-    }
-  };
-  const submit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    // The project list is a button, which no `required` holds: an empty one files nothing here.
-    if (project === "") {
-      setProjectMissing(true);
-      return;
-    }
-    const [owner, repo] = repository.split("/", 2);
-    putMapping.mutate({ project, repo: canonicalRepo(owner ?? "", repo ?? "") });
-  };
 
   return (
     <section className="max-w-4xl">
       <header className="mb-6">
         <h1 className={`text-2xl font-semibold ${textPrimaryOnCanvas}`}>Settings</h1>
         <p className={`mt-1 ${textSecondaryOnCanvas}`}>
-          Control where external repository issues appear in Dispatch.
+          Manage the projects, the agent tokens and the settings of this Dispatch.
         </p>
       </header>
       <div className={settingsSectionGap}>
@@ -202,141 +36,6 @@ export function SettingsPage(): ReactNode {
             <SignInsSection />
           </>
         )}
-        <section aria-labelledby="repository-projects-heading">
-          <h2
-            className={`text-xl font-semibold ${textPrimaryOnCanvas}`}
-            id="repository-projects-heading"
-          >
-            Repositories → Projects
-          </h2>
-          <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
-            An issue's repository is any owner/name. An issue with none of its own or on its parent
-            chain takes its project's Default. External issues use these mappings before falling
-            back to the default project.
-          </p>
-
-          {mappings.isPending || projects.isPending ? (
-            <p className={`mt-6 ${textMutedOnCanvas}`}>Loading settings…</p>
-          ) : null}
-          {mappings.isError ? (
-            <div className="mt-6">
-              <QueryError
-                message="Couldn't load repository mappings."
-                onRetry={() => void mappings.refetch()}
-                retrying={mappings.isFetching}
-              />
-            </div>
-          ) : null}
-          {projects.isError ? (
-            <div className="mt-6">
-              <QueryError
-                message="Couldn't load projects."
-                onRetry={() => void projects.refetch()}
-                retrying={projects.isFetching}
-              />
-            </div>
-          ) : null}
-          {mappings.isSuccess && projects.isSuccess ? (
-            <>
-              <TableShell className="mt-6" label="Repository mappings">
-                <TableHead>
-                  <TableHeadCell>Repository</TableHeadCell>
-                  <TableHeadCell>Project</TableHeadCell>
-                  <TableHeadCell>Default</TableHeadCell>
-                  <TableHeadCell>
-                    <span className="sr-only">Actions</span>
-                  </TableHeadCell>
-                </TableHead>
-                <TableBody>
-                  {mappings.data.length === 0 ? (
-                    <TableEmpty colSpan={4}>No repository mappings yet.</TableEmpty>
-                  ) : (
-                    mappings.data.map((mapping) => (
-                      <TableRow key={mapping.repo}>
-                        <TableCell mono tone="primary">
-                          {mapping.repo}
-                        </TableCell>
-                        <TableCell tone="secondary">{mapping.project}</TableCell>
-                        <TableCell>
-                          <input
-                            aria-label={`Default repository of ${mapping.project}: ${mapping.repo}`}
-                            checked={mapping.default}
-                            className="size-4 cursor-pointer disabled:cursor-not-allowed"
-                            disabled={deleteMapping.isPending || putMapping.isPending}
-                            name={`default-repository-${mapping.project}`}
-                            onChange={() =>
-                              putMapping.mutate({
-                                default: true,
-                                project: mapping.project,
-                                repo: mapping.repo,
-                              })
-                            }
-                            type="radio"
-                          />
-                        </TableCell>
-                        <TableCell align="right">
-                          <button
-                            aria-label={`Delete mapping for ${mapping.repo}`}
-                            className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
-                            disabled={deleteMapping.isPending || putMapping.isPending}
-                            onClick={() => deleteMapping.mutate(mapping.repo)}
-                            type="button"
-                          >
-                            Delete
-                          </button>
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </TableShell>
-
-              <form
-                className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end ${borderDefault}`}
-                onSubmit={submit}
-              >
-                <label className={settingsFieldLabel} htmlFor="repository">
-                  Repository
-                  <input
-                    className={settingsMonoInput}
-                    id="repository"
-                    onChange={(event) => setRepository(event.target.value)}
-                    pattern={ownerRepoPattern}
-                    placeholder="owner/repo"
-                    required
-                    value={repository}
-                  />
-                </label>
-                <ProjectSelect
-                  label="Project"
-                  onChange={(picked) => {
-                    setProject(picked);
-                    setProjectMissing(false);
-                  }}
-                  projects={projects.data}
-                  value={project}
-                />
-                <button
-                  className={settingsSubmitButton}
-                  disabled={putMapping.isPending || deleteMapping.isPending}
-                  type="submit"
-                >
-                  Add mapping
-                </button>
-              </form>
-              {projectMissing ? <NoProjectPicked /> : null}
-              {failedAction !== undefined ? (
-                <div className="mt-4">
-                  <QueryError
-                    message={failedAction.message}
-                    onRetry={retry}
-                    retrying={putMapping.isPending || deleteMapping.isPending}
-                  />
-                </div>
-              ) : null}
-            </>
-          ) : null}
-        </section>
         <ArchitectureSourcesSection />
         <section aria-labelledby="delivery-timeline-heading">
           <h2

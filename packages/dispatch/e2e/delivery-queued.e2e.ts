@@ -13,6 +13,8 @@ import {
   setSessionStopped,
 } from "./agents";
 import { createIssue, createMessage, createProject, queuedEnvelopesOf } from "./api";
+import { listTrigger, pickFromList } from "./filters";
+import { pickReference } from "./ref-picker";
 import { sessionIds } from "./session-ids";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -124,11 +126,10 @@ test("a mention of a stopped but known session is queued for it, and the listene
     const page = await alice.newPage();
     await page.goto(`/issues/${issue}/conversation`);
     const field = page.getByRole("form", { name: "Comment composer" }).getByLabel("Comment");
-    await field.fill("/btw @");
-    await page
-      .getByRole("listbox", { name: "Mention suggestions" })
-      .getByRole("option", { name: "Planner" })
-      .click();
+    // The one picker every box opens lists the live session under its
+    // name, and the pick writes the mention into the draft after the typed command.
+    await pickReference(field, "/btw @", /^Planner/);
+    await expect(field).toHaveValue(`/btw [@Planner](dispatch://agent/${planner.session_id})`);
     // The composer offered the mention off the live list, and the session stops between that
     // read and the send: the listener still knows it, so the mention is stored for it.
     await setSessionStopped(planner.session_id, true);
@@ -162,7 +163,7 @@ test("a broadcast keeps a session that stopped after it was ticked, and queues f
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
     const composer = page.getByRole("region", { name: "Broadcast" });
-    await composer.getByRole("combobox", { name: "Delivery mode" }).selectOption("steer");
+    await pickFromList(listTrigger(composer, "Delivery mode"), "Send");
     await composer.getByRole("textbox", { name: "Broadcast message" }).fill("Report status.");
 
     // The Observer stops. The composer does not leave a session out for having left the live
@@ -220,7 +221,7 @@ test("the broadcast strip counts a queued copy rather than calling the broadcast
       for (const title of ["Planner", "Observer"]) {
         await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
       }
-      await composer.getByRole("combobox", { name: "Delivery mode" }).selectOption("steer");
+      await pickFromList(listTrigger(composer, "Delivery mode"), "Send");
     };
 
     // One refused send first, which stays in the strip: with a second row the page keeps the

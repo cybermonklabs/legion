@@ -1,5 +1,8 @@
 package main
 
+//ci:reads packages/envoy/infra/README.md graceMarginDocs lists it, and TestDocumentedGraceMarginIsTheListenerGraceMargin reads it through ../../infra
+//ci:reads packages/envoy/infra/docs/nats-hub.md graceMarginDocs lists it, and TestDocumentedGraceMarginIsTheListenerGraceMargin reads it through ../../infra
+
 import (
 	"os"
 	"path/filepath"
@@ -35,13 +38,13 @@ var graceMarginWhitespace = regexp.MustCompile(`\s+`)
 // TestDocumentedGraceMarginIsTheListenerGraceMargin holds every sentence that states the
 // listener pod's grace margin to listenerGraceMargin, which nothing else does. Each sentence
 // cites the constant by name, and a citation is not a check: a reader who moves
-// listenerGraceMargin and reads the documents afterwards finds four sentences that still name the
+// listenerGraceMargin and reads the documents afterwards finds three sentences that still name the
 // constant they now contradict, each looking right on its own. Only something that reads both
 // sides at once can tell them apart, and this is that.
 //
-// What is compared: the number each sentence states, in packages/envoy/infra/README.md (twice),
-// packages/envoy/infra/docs/nats-hub.md and packages/envoy/AGENTS.md, against
-// int(listenerGraceMargin.Seconds()). Nothing else of the sentence is read.
+// What is compared: the number each sentence states, in packages/envoy/infra/README.md (twice)
+// and packages/envoy/infra/docs/nats-hub.md, against int(listenerGraceMargin.Seconds()). Nothing
+// else of the sentence is read.
 //
 // What this cannot see: it does not read a sentence's meaning, so a sentence whose number is
 // right while the prose around it is stale, wrong, or describes some other pod's stop passes
@@ -54,6 +57,7 @@ var graceMarginWhitespace = regexp.MustCompile(`\s+`)
 // The subtests stay serial: files and sentences are written inside them and compared after the
 // loop, so a t.Parallel() added to one would make the counts fail rather than pass wrongly.
 func TestDocumentedGraceMarginIsTheListenerGraceMargin(t *testing.T) {
+	t.Parallel()
 	margin := int(listenerGraceMargin.Seconds())
 	files, sentences := 0, 0
 	for _, doc := range graceMarginDocs {

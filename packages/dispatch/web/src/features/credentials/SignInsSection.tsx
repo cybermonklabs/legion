@@ -5,8 +5,8 @@ import { api } from "../../api/client";
 import type { PersonSignInResp } from "../../api/types";
 import { textSecondaryOnSurface } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
+import { shortThumbprint, signInsQuery } from "./logic/signins";
 import { type RevocableColumn, RevocableList } from "./RevocableList";
-import { shortThumbprint, signInsQuery } from "./signins";
 
 const columns: readonly RevocableColumn<PersonSignInResp>[] = [
   {
@@ -59,8 +59,8 @@ export function SignInsSection(): ReactNode {
       onRevoked={() => void queryClient.invalidateQueries({ queryKey: signInsQuery().queryKey })}
       query={signIns}
       revoke={(signIn, bounds) => api.revokeSignIn(signIn.signin_id, bounds)}
-      revokeError="Could not revoke this sign-in."
       rowKey={(signIn) => signIn.signin_id}
+      rowName={(signIn) => `your sign-in on ${signIn.machine}`}
     />
   );
 }

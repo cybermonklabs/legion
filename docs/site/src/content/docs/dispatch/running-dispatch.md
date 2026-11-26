@@ -262,8 +262,10 @@ with Docker, Bun, and Go installed:
    It runs a container named `dispatch-pg` on `127.0.0.1:55432` from a pinned image, pgvector on
    PostgreSQL 18 (Dispatch's migrations need its `vector` extension, and 18 is the version
    Dispatch's tests and dev databases run), and starts or reuses that container when it is already
-   there. A `dispatch-pg` made from another image or PostgreSQL major is refused, with the commands
-   that dump its databases and restore them into a new container on the right one.
+   there. The migrations also need `btree_gin`, a contrib extension that PostgreSQL includes, and a
+   migration creates each of the two extensions. A `dispatch-pg` made from another image or
+   PostgreSQL major is refused, with the commands that dump its databases and restore them into a
+   new container on the right one.
 
 2. Build the web app:
 
@@ -306,14 +308,17 @@ either, the server logs that meaning search is unavailable and serves everything
 Sign in, then open **Settings**:
 
 - **Projects**: create your first project, with a key such as `CORE` and a name.
-- **Repositories → Projects**: choose which project issues from each GitHub repository land in.
-  `DISPATCH_DEFAULT_PROJECT` catches repositories with no mapping; that project must already exist.
 - **Projects → Default assignee**: name the person each project's unowned work lands on, in the
   projects table's own column. An issue created with no assignee, by an agent on the shared token
   and under no parent that names one, goes to that person, and so does every question on an issue
   nobody holds. Every project names one, so the page moves a default from one person to another
   and clears none. A person moves it here, and an agent names a project's first one in the call
   that creates the project.
+- **Projects → Default repository**: name the repository each project's work is done in, in the
+  projects table's own column, as `owner/name`. An issue that names no repository, under no parent
+  that names one, takes it. **Save** sets it, **Clear** removes it, and a project with none reads
+  **None**. An import of a GitHub issue names its project, since Dispatch chooses no project from
+  a repository.
 - **Architecture sources**: add each repository branch holding part of a project's architecture
   model. A project can have several, one per repository, and its model is all of their components
   together. Saving checks that the GitHub App can read the repository.
@@ -437,7 +442,7 @@ The second kind is a part of its read that a loop gives up:
   redelivery request, or a rate limit stops the sweep.
 - The CI reconcile: a repository it reads that it cannot read (it gets no token for it, GitHub does
   not answer for it or gives it a name that is not `owner/name`, or its open pull requests cannot
-  be listed), a repository a project maps that the App is not installed on, a pull request head it
+  be listed), a project's default repository that the App is not installed on, a pull request head it
   cannot read (an answer too large included), a failed read of a head's commit statuses, or a
   rate limit that ends the pass, also one already in force when the pass starts. A read that the
   pass's own time limit cut short is not one of these.
@@ -570,8 +575,9 @@ one. Three things have to be true first; Dispatch checks the first for you.
   database while it lasts.
 
 A second server also costs connections, and Postgres counts them per server. Each server opens up
-to 64 connections for requests, up to 24 for the work it runs once across the servers and the
-delivery intakes' holds, up to 8 for saving what people type in documents, up to 4 for loading
+to 64 connections for requests, up to 29 for the work it runs once across the servers, the
+delivery intakes' holds and the keyword fill's hold,
+up to 8 for saving what people type in documents, up to 4 for loading
 documents, up to 2 for compacting documents, up to 2 for the background fill of documents'
 display trees, one for the health check, two for publishing
 notifications, up to 2 for reading where the event log is safe to stream from (the event horizon),
@@ -583,7 +589,7 @@ background work when the rows that work reads change included. The other servers
 database find each server by the name of that shared connection. The fifth sends the cursors of
 the server's document sessions and its questions and answers to the other servers about a
 document. It opens the first time the server has one to send. A document edit's own notification
-goes out in the transaction that writes the edit, and needs no connection of its own. That is 115
+goes out in the transaction that writes the edit, and needs no connection of its own. That is 120
 connections for one server at its ceiling, and twice that for two, past a default Postgres's
 limit of 100. Check the database's connection limit before you start the second server: a limit
 sized for one server, with whatever else uses that database counted in, is the thing that runs
@@ -636,6 +642,14 @@ What a reader sees while two servers are serving:
   that cannot store them does not start, and the roll keeps the servers it would have replaced. A
   version older than the first that stores them stores nothing, so a roll away from one of those
   versions can still leave a page asking for files no server has.
+- A document that a server of the earlier version removes or makes again during the rollout can
+  leave this version's record of it out of step: `envoy-dispatch census --store` then names it
+  `orphaned` or `gone`. Once the rollout is done, run `envoy-dispatch backfill-graph-store` for
+  `gone`; an `orphaned` line says `no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone`.
+- A comment that a server of the earlier version writes during the rollout, and a document block
+  it indexes then, can keep a record that names no project: `envoy-dispatch census --store` then
+  names it `unscoped`. Once every server runs this version, run
+  `envoy-dispatch backfill-graph-store` again, which gives it its project.
 - The dashboard's **A new version is available** notice waits until every server runs one
   version: while two versions are serving, nobody is told to reload. A page that fails to load one
   of its files reloads itself, at most three times in five minutes.
@@ -721,13 +735,19 @@ server ignores a write's `Idempotency-Key`, so while both run a write whose answ
 run once by each: the page and the `dispatch` command both retry such a write, and its retry can
 reach the other version. At one replica the Deployment's `Recreate` already stops the old pod
 first; above one replica, scale to zero before the new version starts. Releases after it roll
-again. Rolling it back brings the hazard back the other way: a tab still open, and a `dispatch`
-client that saw this version keep keys in the last five minutes, retry a write whose answer was
-lost against the earlier server, which runs it again. So fix it forward, as above; if you must roll
-back, stop this version first, knowing a write in flight at that moment may land twice. Once a
-later release has dropped the broadcast send's old key table (migration `0141`), rolling back past
-this version also stops broadcasts: the earlier version's broadcast send reads and writes that
-table, so every broadcast send fails while the rest of that version keeps working. A tab opened
+again. Rolling it back brings the hazard back the other way: a tab still open, and every
+`dispatch` client, which sends a failed write again under its key and asks nothing first, retry a
+write whose answer was lost against the earlier server, which runs it again. So fix it forward,
+as above; if you must roll back, stop this version first, knowing a write in flight at that
+moment may land twice. Rolling back to a build whose keyed layer passes a caller it cannot
+resolve on to the handler, rather than answering that caller itself, brings the double write back
+too, for as long as that build serves: a `dispatch` command that sends a failed write again
+without reading `/healthz` can have that build run it once with no key and again under its key.
+Once your sessions run such a command, do not roll Dispatch back past `b1c42d1d7d` (the first
+build whose keyed layer answers that caller itself, cybermonklabs/legion#4350); fix forward instead.
+Once a later release has dropped the broadcast send's old key table (migration `0141`),
+rolling back past this version also stops broadcasts: the earlier version's broadcast send reads and
+writes that table, so every broadcast send fails while the rest of that version keeps working. A tab opened
 before the deploy needs a reload: its event route is gone and it shows
 **Live updates unavailable**, and its broadcast body still carries a field the new server refuses.
 

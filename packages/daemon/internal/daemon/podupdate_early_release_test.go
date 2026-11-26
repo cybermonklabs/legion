@@ -2,9 +2,9 @@ package daemon
 
 // The early release (dispatch://INFRA-2981 R5, R9, verification's c-early-release): an answer a
 // role gives stands for its round through any turn after it, an answered claim is handed no task
-// until the round ends, and an answer brings the round's end forward while silence delays nothing
-// past the bound. These cases drive the pod-update rig of podupdate_test.go, with the bound of
-// podupdate_bound_test.go.
+// until the round ends, and an answer brings the round's end forward once no turn and no claim's
+// activity report holds it (roundEnd.holding), while silence delays nothing past the bound. These
+// cases drive the pod-update rig of podupdate_test.go, with the bound of podupdate_bound_test.go.
 
 import (
 	"testing"
@@ -24,6 +24,7 @@ import (
 // starts: the round then waits for an answer nobody is asked for again, the pod waits to the
 // bound, and the replacement here comes at the bound rather than before it.
 func TestPodUpdateEarlyReleaseAnAnswerStandsThroughATurnTheDaemonDidNotPrompt(t *testing.T) {
+	t.Parallel()
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	clocks := rig.replacementClocks()
@@ -75,6 +76,7 @@ func TestPodUpdateEarlyReleaseAnAnswerStandsThroughATurnTheDaemonDidNotPrompt(t 
 // The negative control is the hold dropped: the task is then prompted into the worker at once,
 // and the first assertion fails.
 func TestPodUpdateEarlyReleaseAnAnsweredClaimIsHandedNoTaskUntilTheRoundEnds(t *testing.T) {
+	t.Parallel()
 	const task = "review the pull request"
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
@@ -114,10 +116,12 @@ func TestPodUpdateEarlyReleaseAnAnsweredClaimIsHandedNoTaskUntilTheRoundEnds(t *
 }
 
 // A claim that answers brings the round's end forward, and a claim that says nothing delays
-// nothing past the bound. Two claims, neither in a turn: where both answer ten minutes in, the pod
-// is replaced then; where one says nothing, the pod waits for it a minute before the bound and is
-// replaced at the bound.
+// nothing past the bound. Two claims, neither in a turn and neither reporting background work
+// (the rig's answers report none): where both answer ten minutes in, the pod is replaced then;
+// where one says nothing, the pod waits for it a minute before the bound and is replaced at the
+// bound.
 func TestPodUpdateEarlyReleaseAnAnswerReleasesTheRoundAndSilenceDelaysNothingPastTheBound(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		answers []claim.Role

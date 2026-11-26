@@ -62,10 +62,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/stream"
 )
 
 // localStopGrace is how long a stop waits for a child to end after the shutdown frame and then
@@ -111,8 +115,11 @@ type localRuntime struct {
 	// (role_config_files) in production; this proof routes each claim to a stand-in of its own, and
 	// two claims of the proof share a role, so the choice is per claim here.
 	overlays func(claim.Token) []string
-	conns    runtime.Conns
-	stream   string
+	// environment is what a proof gives its panes beyond what a pane is told: the model key of a
+	// proof whose panes call a real model, which reaches the pane's process and nothing else.
+	environment []string
+	conns       runtime.Conns
+	stream      string
 	// paneLogs is the directory each worker's stdout and stderr is written under, one file per
 	// launch, kept for the run's evidence.
 	paneLogs string
@@ -150,6 +157,25 @@ func newLocalRuntime(t *testing.T, stateDir, legion, omp, home, profile string) 
 	}
 	t.Cleanup(r.killEverything)
 	return r
+}
+
+// daemonOverrides is the daemon a proof boots over this runtime, and the one place that wiring is
+// written. Its runtime factory hands the daemon's worker stream to this runtime and answers rt,
+// which is this runtime or a proof's wrapper around it (sessionsRuntime). The API listener is the
+// one the fixture holds (heldListen). The scripts of the panes' launcher directory exec this
+// runtime's legion (paneLegion). Without it the boot writes its own executable there, this test
+// binary. A pane's `jj`, where the boot writes one, then runs the package's tests. A proof adds
+// what else its daemon needs to the overrides this answers.
+func (r *localRuntime) daemonOverrides(rt runtime.Runtime) overrides {
+	return overrides{
+		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
+			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
+			r.conns, r.stream = listener, address
+			return rt, nil
+		},
+		listen:     heldListen,
+		paneLegion: r.legion,
+	}
 }
 
 // localHoldDetail is what this runtime answers a read of a claim a step holds: a detail of its
@@ -364,6 +390,10 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = workDir
 	cmd.Env = r.paneEnvironment(variables, workDir)
+	// A resume is held to its session as every runtime holds it (runtime.SessionExclusiveVariable).
+	if spec.ResumeSessionFile != "" {
+		cmd.Env = append(cmd.Env, runtime.SessionExclusiveVariable+"="+runtime.SessionExclusiveValue)
+	}
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	// Its own process group: one signal ends the shim, Oh My Pi and whatever Oh My Pi started.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -411,10 +441,10 @@ func (r *localRuntime) workDir(issue string) string {
 // paneEnvironment is the child's whole environment: the variables a pane is told, the PATH a pane
 // is told (the daemon's launcher directory first, as workerbin.Path puts it), the HOME and
 // OMP_PROFILE that select the run's own Oh My Pi profile — which under tmux reach a pane from the
-// daemon's own environment through the tmux server — and TMPDIR. Nothing of the test process's own
-// environment rides through: this test runs inside a Legion pod, whose environment names that
-// pod's workspace, daemon and credentials, and a pane that inherited them would register with the
-// wrong daemon.
+// daemon's own environment through the tmux server — TMPDIR, and what the proof gives its panes
+// itself (environment). Nothing of the test process's own environment rides through: this test
+// runs inside a Legion pod, whose environment names that pod's workspace, daemon and credentials,
+// and a pane that inherited them would register with the wrong daemon.
 func (r *localRuntime) paneEnvironment(variables []string, workDir string) []string {
 	env := []string{
 		"PATH=" + workerbin.Path(os.Getenv("PATH"), r.stateDir),
@@ -424,7 +454,7 @@ func (r *localRuntime) paneEnvironment(variables []string, workDir string) []str
 		"LANG=C.UTF-8",
 	}
 	_ = os.MkdirAll(filepath.Join(workDir, "tmp"), 0o700)
-	return append(env, variables...)
+	return append(append(env, r.environment...), variables...)
 }
 
 func (r *localRuntime) Suspend(ctx context.Context, loc runtime.Locator) error {

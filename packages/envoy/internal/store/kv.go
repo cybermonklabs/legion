@@ -9,6 +9,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
@@ -22,9 +23,15 @@ type Registry struct {
 	openedAt              time.Time
 	restoredRoleRevisions map[string]uint64
 	mu                    sync.RWMutex
-	// cache is the copy of the interest bucket: its interests, revision fence, marks and read epoch
-	// (kvwatch.Copy, newInterestCopy), which every write site reaches through.
-	cache kvwatch.Copy[Interest]
+	// cache is the copy of the interest bucket: its interests with the layout each is stored in,
+	// its revision fence, marks and read epoch (kvwatch.Copy, newInterestCopy), which every write
+	// site reaches through.
+	cache kvwatch.Copy[storedRow]
+	// chunks is the copy of the interest bucket's chunks (kvchunk.Prefix), fed and swept by the
+	// same reads as cache (interestCache): the cache joins a chunked record's row from it
+	// (decodeStoredLocked), and the reaper collects from it the chunks no row names
+	// (collectInterestChunks).
+	chunks *kvchunk.Chunks
 	// index indexes the cached interests' topic patterns by subject token (subjectIndex), which is
 	// what Match walks rather than every cached interest. The copy's own hooks keep it
 	// in step (indexInterestLocked, unindexInterestLocked), so a recreated bucket's read takes its
@@ -68,6 +75,9 @@ type openOpts struct {
 	log            *slog.Logger
 	roleWatch      []kvwatch.Option
 	legacySubjects LegacySubjectCounter
+	// roleScan is the role claim scan's test seams (roleScanSeams), all off unless this package's
+	// tests set them.
+	roleScan roleScanSeams
 }
 
 // WithLogger sets the logger the registry and its cache watcher write through. The listener passes
@@ -108,9 +118,10 @@ func WithRoleClaimWatch(options ...kvwatch.Option) OpenOption {
 
 // LegacySubjectCounter counts each name a caller gave in its old form, under a kind label: an
 // interest a registration names (LegacyTopicWarnings) or a stored row holds when it is read into a
-// session's consumer filter (CountStoredLegacyTopics), or a role a claim names (ClaimedRole). The
+// session's consumer filter (CountStoredLegacyTopics), a role a claim names (ClaimedRole), or a
+// role a publish to its lane, a message on the role lane or a holder lookup names (ReadRole). The
 // listener passes its envoy_listener_legacy_subjects_total counter, whose movement is what tells
-// an operator a reader of the old form is still about.
+// an operator a reader or a writer of the old form is still about.
 type LegacySubjectCounter interface {
 	Inc(labels ...[2]string)
 }
@@ -123,7 +134,13 @@ func WithLegacySubjectCounter(counter LegacySubjectCounter) OpenOption {
 }
 
 // Open opens the interest and role claim buckets on conn, creating or raising each to the
-// registry's copies (bus.EnsureKeyValue) for as long as ctx lasts, and restores the role claims.
+// registry's copies (bus.EnsureKeyValue) for as long as ctx lasts, and restores the role claims:
+// the role claim scan (scanRoleClaims) reads the revision of each claim, which a restored holder's
+// grace is read from. A run of the scan during which conn reconnects is made again, from an empty
+// result, up to four runs in all, and that path ends 70 s after the first run started
+// (roleClaimScanDeadline); a run that meets no reconnect on a connection that stays connected keeps
+// only the scan's idle bound (kvwatch.ScanIdleTimeout), however long it lasts. A scan that keeps no
+// run fails Open with an error that names the role claim scan, which fails the listener's start.
 func Open(ctx context.Context, conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 	opts := openOpts{replicas: 1, now: time.Now, log: slog.Default()}
 	for _, o := range options {
@@ -141,7 +158,7 @@ func Open(ctx context.Context, conn *nats.Conn, options ...OpenOption) (*Registr
 	if err != nil {
 		return nil, err
 	}
-	restoredRoleRevisions, err := roleRevisions(roleKV, kvwatch.ScanIdleTimeout, opts.log)
+	restoredRoleRevisions, err := scanRoleClaims(conn, roleKV, kvwatch.ScanIdleTimeout, opts.log, opts.roleScan)
 	if err != nil {
 		return nil, err
 	}
@@ -155,6 +172,7 @@ func Open(ctx context.Context, conn *nats.Conn, options ...OpenOption) (*Registr
 		legacySubjects:        opts.legacySubjects,
 	}
 	r.cache = newInterestCopy(r)
+	r.chunks = kvchunk.NewChunks(r.now)
 	r.roleHolders = newRoleHolderCopy(r)
 	r.watcher = kvwatch.New("interest registry", kv, interestCache{r}, kvwatch.WithLogger(opts.log))
 	r.roleWatcher = r.newRoleWatcher(roleKV, opts.roleWatch...)

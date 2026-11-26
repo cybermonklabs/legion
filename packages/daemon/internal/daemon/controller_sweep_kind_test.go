@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 )
@@ -26,7 +27,7 @@ import (
 // runtime's options fails this package's tests, not the live proof the next time a kind cluster
 // runs it.
 
-// controllerSweepKindProject is the proof's project. Dispatch maps it no repository.
+// controllerSweepKindProject is the proof's project. No record of it names a repository.
 const controllerSweepKindProject = "CSWEEP"
 
 // controllerSweepKindStub is the agent the controller's shim wraps: it sleeps, so the pod stays up
@@ -86,7 +87,7 @@ runtime:
 // (kubeClient), sandboxOptions over the loaded configuration, then boot's own factory
 // (sandboxRuntime) on listener and st, which also registers the runtime's launcher acceptor. What
 // the proof stands in for: the agent is a sleep stub, the App tokens are placeholders
-// (outboxTokens), and no repository is mapped, so the controller's gh files name no owner.
+// (outboxTokens), and no repository is served, so the controller's gh files name no owner.
 func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener *stream.Listener, st *store.Store, log *slog.Logger) (runtime.Runtime, error) {
 	k := *cfg.Runtime.Kubernetes
 	project, err := claim.ProjectToken(cfg.Project)
@@ -97,19 +98,18 @@ func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener
 	if err != nil {
 		return nil, err
 	}
-	opts, err := sandboxOptions(cfg, k, project, "placeholder-dispatch-token", lookup(nil), log)
+	opts, err := sandboxOptions(cfg, k, project, sandbox.DispatchCredential{Bearer: "placeholder-dispatch-token"}, lookup(nil), log)
 	if err != nil {
 		return nil, fmt.Errorf("sandboxOptions: %w", err)
 	}
 	opts.Agent = controllerSweepKindStub
-	repos := func() []ghrepo.Repository { return nil }
-	// The proof maps no repository and configures no rename, so the mapping's rule
+	// The proof has prepared no repository and configures no rename, so the rename rule
 	// (repositories.serving) answers every provisioning token's repository as it is recorded.
-	serving := newRepositories(cfg.Project, ghrepo.Renames{}).serving
+	repos := newRepositories(cfg.Project, ghrepo.Renames{})
 	// The proof applies no fact of a pod's volume and no memory guard kill, so the trimmer's
 	// reports and the guard's reach holders nothing filled, which drop them
 	// (volumeTrimReports.report, memoryGuardKills.killed).
-	return sandboxRuntime(rc, opts, repos, serving, ghrepo.Renames{}, appauth.NewInstalled(), appauth.NewLeftOut(), "", &memoryGuardKills{}, &volumeTrimReports{})(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories)
+	return sandboxRuntime(rc, opts, repos.servesRepository, repos.serving, ghrepo.Renames{}, appauth.NewInstalled(), appauth.NewLeftOut(), "", &memoryGuardKills{}, &volumeTrimReports{})(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories)
 }
 
 // controllerSweepKindSpec is the project controller's launch as the proof makes it: the
@@ -128,6 +128,7 @@ func controllerSweepKindSpec(project, bootToken, prompt string) runtime.SpawnSpe
 // standing in for the kind cluster, and its controller launch passes the spawn-spec checks. Every
 // step is the one the driver takes before it reaches the cluster.
 func TestTheControllerSweepKindProofBuildsItsRuntimeFromItsConfiguration(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	server := httptest.NewServer(newIssueSandboxAPI())
 	t.Cleanup(func() { cancel(); server.Close() })

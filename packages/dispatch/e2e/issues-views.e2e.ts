@@ -1,3 +1,6 @@
+/** The views' rows, tabs and counts are read against the server's own listing and board route,
+ *  saved views are read by a second login signed in on the same context and on its own, and the
+ *  Board's frames come over the live socket. */
 // The Issues tab's views (dispatch://INFRA-3221, Verification k3, k4, k10 and k12): the two
 // built-in views and the older view addresses, their rows, headers and widths; the views a reader
 // saves, per login and per project; the page's words, tooltips and counts; and the Title column's

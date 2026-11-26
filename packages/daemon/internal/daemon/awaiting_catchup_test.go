@@ -2,10 +2,13 @@ package daemon
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -142,10 +145,16 @@ func catchUpRig(t *testing.T, client dispatch.Client, cap int) (*store.Pool, *wo
 func catchUpRigLogging(t *testing.T, client dispatch.Client, cap int, log *slog.Logger) (*store.Pool, *workflowRuntime) {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
+	return pool, catchUpRigOn(t, pool, client, cap, log)
+}
+
+// catchUpRigOn is catchUpRigLogging's runtime on pool, a store the test opened itself.
+func catchUpRigOn(t *testing.T, pool *store.Pool, client dispatch.Client, cap int, log *slog.Logger) *workflowRuntime {
+	t.Helper()
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Clock: catchUpClock}, log)
 	admission := admit.New(records, engine, cap, "CAPTURE", log)
-	return pool, &workflowRuntime{pool: pool, records: records, dispatch: client, dispatchProject: "CAPTURE", engine: engine, admission: admission,
+	return &workflowRuntime{pool: pool, records: records, dispatch: client, dispatchProject: "CAPTURE", engine: engine, admission: admission,
 		gatedSteps: config.DesignGateRootIssues.Steps(),
 		handlers:   []intake.Handler{engine, admission}, log: log, bootID: "boot-1", catchUpRetryDelay: time.Millisecond}
 }
@@ -154,7 +163,7 @@ func catchUpRigLogging(t *testing.T, client dispatch.Client, cap int, log *slog.
 // reconcile's transaction (holdForCatchUp), then caught up (catchUpAwaiting).
 func bootCatchUp(t *testing.T, w *workflowRuntime) error {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), w.pool, func(tx pgx.Tx) error { return w.holdForCatchUp(context.Background(), tx) }); err != nil {
+	if err := store.Transact(context.Background(), w.pool, func(ctx context.Context, tx pgx.Tx) error { return w.holdForCatchUp(context.Background(), tx) }); err != nil {
 		t.Fatalf("hold the roots to catch up: %v", err)
 	}
 	return w.catchUpAwaiting(context.Background())
@@ -164,7 +173,7 @@ func bootCatchUp(t *testing.T, w *workflowRuntime) error {
 func seedCatchUp(t *testing.T, pool *store.Pool, put func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return put(ctx, tx, record.NewStore()) }); err != nil {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error { return put(ctx, tx, record.NewStore()) }); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 }
@@ -221,6 +230,7 @@ func catchUpAwaitingRoot(t *testing.T, waiting record.Awaiting, gate *record.Des
 // architect opened is mirrored and declared as the live event would have left it, and the cursor
 // moves to the sequence the read went through.
 func TestCatchUpReadsAnAdmittedRootsAsksFromItsLastHandout(t *testing.T) {
+	t.Parallel()
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 9}, events: []json.RawMessage{askOpened(9, "ask-q")}}
 	pool, w := catchUpRig(t, client, 0)
 	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
@@ -318,6 +328,7 @@ func answeredIn(key string, seq int64) json.RawMessage {
 // is read again a bounded number of times, a credential refusal (401, 403) not at all, and the root
 // is then skipped and released, so the next root is caught up and the catch-up finishes.
 func TestCatchUpSkipsARootDispatchKeepsRefusing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		status int
 		reads  int
@@ -353,6 +364,7 @@ func TestCatchUpSkipsARootDispatchKeepsRefusing(t *testing.T) {
 // state, and a person's reply handing the open approval request to the agent. Every one is read
 // from the root's event log, with its own sequence.
 func TestCatchUpAwaitingAppliesAPersonsAnswerMissedAtBoot(t *testing.T) {
+	t.Parallel()
 	gate := &record.DesignGate{ArtifactID: "artifact-root", LatestVersion: 3}
 	for _, tc := range []struct {
 		name     string
@@ -401,6 +413,7 @@ func TestCatchUpAwaitingAppliesAPersonsAnswerMissedAtBoot(t *testing.T) {
 // request that answered an earlier wait, and an act Dispatch recorded before the wait began. The
 // log is read once, from the root's last handout, which takes in the wait's start.
 func TestCatchUpAwaitingLeavesARootNoPersonAnswered(t *testing.T) {
+	t.Parallel()
 	gate := &record.DesignGate{ArtifactID: "artifact-root", LatestVersion: 3}
 	for _, tc := range []struct {
 		name     string
@@ -442,15 +455,60 @@ func TestCatchUpAwaitingLeavesARootNoPersonAnswered(t *testing.T) {
 	}
 }
 
+// deletedReply is the reply askReplied makes, at seq in ask's thread by actor leaving the turn
+// waitingOn, deleted since: Dispatch's event log serves its comment.created with deleted_at and
+// deleted_by in place of its body (Dispatch's attachPostMarks).
+func deletedReply(seq int64, ask, waitingOn string, actor dispatch.Actor) json.RawMessage {
+	return askEvent(seq, "comment.created", actor, map[string]any{"id": "comment-reply", "ask_id": ask, "ask_state": "open",
+		"ask_waiting_on": waitingOn, "deleted_at": "2026-10-23T17:30:00Z", "deleted_by": map[string]any{"kind": actor.Kind, "id": actor.ID}})
+}
+
+// postCorrections are the four corrections an author makes of its posts, by actor at seq and the
+// three sequences after it: the edit and the delete of its reply in ask's thread, which carry the
+// ask's id and no turn, and the edit and the delete of a message of the issue.
+func postCorrections(seq int64, ask string, actor dispatch.Actor) []json.RawMessage {
+	const at = "2026-10-23T17:30:00Z"
+	by := map[string]any{"kind": actor.Kind, "id": actor.ID}
+	return []json.RawMessage{
+		askEvent(seq, "comment.edited", actor, map[string]any{"id": "comment-reply", "ask_id": ask, "body": "Go ahead once the rollback is named.", "edited_at": at}),
+		askEvent(seq+1, "comment.deleted", actor, map[string]any{"id": "comment-reply", "ask_id": ask, "body": "", "deleted_at": at, "deleted_by": by}),
+		askEvent(seq+2, "message.edited", actor, map[string]any{"id": "message-note", "body": "The staging run is green again.", "edited_at": at}),
+		askEvent(seq+3, "message.deleted", actor, map[string]any{"id": "message-note", "body": "", "deleted_at": at, "deleted_by": by}),
+	}
+}
+
+// A person's reply deleted since the daemon went down is read from the event log masked, with no
+// body, and still hands the ask's turn as its live event would have: Dispatch keeps a deleted
+// reply's turn, so the root waiting on that ask is answered. The corrections of a post - the edit
+// and the delete of that reply, which carry the ask's id, and of a message - move no turn, so a
+// window that holds them alone leaves the root waiting on the person.
+func TestCatchUpAppliesADeletedReplysTurnAndPassesOverTheCorrections(t *testing.T) {
+	t.Parallel()
+	t.Run("a deleted reply handing the open ask to the agent", func(t *testing.T) {
+		events := append([]json.RawMessage{deletedReply(9, "ask-root", "agent", alice)}, postCorrections(10, "ask-root", alice)...)
+		got := catchUpAwaitingRoot(t, record.Awaiting{Ask: "ask-root"}, nil, &awaitingDispatch{events: events})
+		if got == nil || !got.Answered() {
+			t.Fatalf("caught-up root = %#v, want it answered by the deleted reply", got)
+		}
+	})
+	t.Run("the corrections alone", func(t *testing.T) {
+		got := catchUpAwaitingRoot(t, record.Awaiting{Ask: "ask-root"}, nil, &awaitingDispatch{events: postCorrections(9, "ask-root", alice)})
+		if got == nil || !got.AwaitingPerson() || got.Answered() {
+			t.Fatalf("root after the catch-up = %#v, want it still waiting on the person", got)
+		}
+	})
+}
+
 type unreachableEvents struct{ awaitingDispatch }
 
 func (*unreachableEvents) EventsAfter(context.Context, string, int64) ([]json.RawMessage, error) {
 	return nil, &dispatch.TransientError{Err: context.DeadlineExceeded}
 }
 
-// Dispatch being unreachable is the one error the boot's catch-up returns, so its readiness retry
-// waits the outage out, and the root it could not read stays held meanwhile.
+// Dispatch being unreachable is an error the boot's catch-up returns for its readiness retry to
+// wait out, and the root it could not read stays held meanwhile.
 func TestCatchUpAwaitingFailsWhileDispatchIsDown(t *testing.T) {
+	t.Parallel()
 	client := &unreachableEvents{awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-2", LastSeq: 9}}}
 	pool, w := catchUpRig(t, client, 0)
 	waitingRoots(t, pool, "CAPTURE-2")
@@ -459,6 +517,80 @@ func TestCatchUpAwaitingFailsWhileDispatchIsDown(t *testing.T) {
 	}
 	if held := w.admission.CatchUpHeld(); !slices.Equal(held, []string{"CAPTURE-2"}) {
 		t.Fatalf("roots still held = %v, want the root it could not read", held)
+	}
+}
+
+// refusingEvents is a Dispatch whose event log read fails with refusal, wrapped as the real client
+// wraps a failure of its transport on the call, and whose approval read fails with approval, when
+// that is set.
+type refusingEvents struct {
+	awaitingDispatch
+	refusal  error
+	approval error
+}
+
+func (d *refusingEvents) EventsAfter(_ context.Context, key string, _ int64) ([]json.RawMessage, error) {
+	return nil, fmt.Errorf("call Dispatch GET /api/v1/issues/%s/events: %w", key, d.refusal)
+}
+
+func (d *refusingEvents) Approval(ctx context.Context, artifactID string) (dispatch.Approval, error) {
+	if d.approval != nil {
+		return dispatch.Approval{}, d.approval
+	}
+	return d.awaitingDispatch.Approval(ctx, artifactID)
+}
+
+// A TLS failure of Dispatch's transport is an answer no wait fixes, so the boot's catch-up returns
+// it rather than skip the root, and the boot's readiness attempt refuses the start on it, as every
+// other boot read of Dispatch does, rather than wait. The root it could not read stays held, so no
+// admission pass decides it on a mirror of its asks the catch-up never brought up to date. The
+// refusal wins over another read of the root it is joined with (catchUpRoot joins the gate's
+// approval read and the event log's), one Dispatch did not answer or one it refused, so the start
+// stops on it rather than wait or skip the root.
+func TestCatchUpAwaitingStopsTheStartOnATLSFailureOfDispatch(t *testing.T) {
+	t.Parallel()
+	// The alert as crypto/tls returns one over TCP (crypto/tls/conn.go): a *net.OpError naming no
+	// network.
+	alert := &net.OpError{Op: "remote error", Err: errors.New("tls: protocol version not supported")}
+	for _, tc := range []struct {
+		name    string
+		refusal error
+		// approval, when set, is the failure of the approval read of a gate the root holds.
+		approval error
+	}{
+		{name: "a TLS alert", refusal: alert},
+		{name: "a certificate the daemon cannot verify", refusal: &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}},
+		{name: "an https URL on a plain-HTTP port", refusal: http.ErrSchemeMismatch},
+		{name: "an https URL on a port that answers in neither TLS nor HTTP", refusal: tls.RecordHeaderError{Msg: "first record does not look like a TLS handshake"}},
+		{name: "a TLS alert joined with an approval read Dispatch never answered", refusal: alert,
+			approval: fmt.Errorf("call Dispatch GET /api/v1/artifacts/artifact-root: %w", &dispatch.TransientError{Err: context.DeadlineExceeded})},
+		{name: "a TLS alert joined with an approval read Dispatch refused with a 503", refusal: alert,
+			approval: fmt.Errorf("call Dispatch GET /api/v1/artifacts/artifact-root: %w", &dispatch.Error{Status: http.StatusServiceUnavailable, Message: "unavailable"})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &refusingEvents{awaitingDispatch: awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-2", LastSeq: 9}}, refusal: tc.refusal, approval: tc.approval}
+			var logs syncBuffer
+			pool, w := catchUpRigLogging(t, client, 0, slog.New(slog.NewJSONHandler(&logs, nil)))
+			waitingRoots(t, pool, "CAPTURE-2")
+			if tc.approval != nil {
+				seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
+					return records.PutGate(ctx, tx, record.DesignGate{Issue: "CAPTURE-2", ArtifactID: "artifact-root", LatestVersion: 2})
+				})
+			}
+			err := bootCatchUp(t, w)
+			if err == nil || !errors.Is(err, tc.refusal) || dispatch.Unreachable(err) {
+				t.Fatalf("catch up with a TLS failure of Dispatch = %v, want the catch-up's error %v, which the boot refuses rather than wait out", err, tc.refusal)
+			}
+			if tc.approval != nil && !errors.Is(err, tc.approval) {
+				t.Fatalf("catch up with a TLS failure of Dispatch = %v, want the approval read's failure %v joined in it", err, tc.approval)
+			}
+			if held := w.admission.CatchUpHeld(); !slices.Equal(held, []string{"CAPTURE-2"}) {
+				t.Fatalf("roots still held = %v, want the root it could not read", held)
+			}
+			if strings.Contains(logs.String(), "skipped a root") {
+				t.Fatalf("the catch-up logged a skip, want none:\n%s", logs.String())
+			}
+		})
 	}
 }
 
@@ -497,6 +629,7 @@ func (d *slowFirstRoot) EventsAfter(ctx context.Context, key string, after int64
 // without reading again the roots it finished. A root whose gate request read fails for good still
 // has its event log replayed, so a person's answer there is caught up.
 func TestCatchUpAwaitingBoundsEachRootAndResumesAfterTheRootsItFinished(t *testing.T) {
+	t.Parallel()
 	client := &slowFirstRoot{awaitingDispatch: awaitingDispatch{events: []json.RawMessage{answeredIn("CAPTURE-2", 9)}}}
 	pool, w := catchUpRig(t, client, 0)
 	// The bound is the stalled root's only wait; the others apply their facts well inside it, each
@@ -530,6 +663,7 @@ func TestCatchUpAwaitingBoundsEachRootAndResumesAfterTheRootsItFinished(t *testi
 // and each boot reads only the events after the cursor the last one left. A boot with no new act
 // answers nothing.
 func TestCatchUpAwaitingRecoversSuccessiveReviewsAtOneVersion(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		reasons []string
@@ -597,6 +731,7 @@ func TestCatchUpAwaitingRecoversSuccessiveReviewsAtOneVersion(t *testing.T) {
 // so a person who resolves the approval request, or answers another ask of the root, while the
 // daemon is down has answered the wait as surely as a review would have.
 func TestCatchUpAnswersWithAPersonsActOnAnyAskOfTheRoot(t *testing.T) {
+	t.Parallel()
 	gate := &record.DesignGate{ArtifactID: "artifact-root", LatestVersion: 3}
 	for _, tc := range []struct {
 		name   string
@@ -619,6 +754,7 @@ func TestCatchUpAnswersWithAPersonsActOnAnyAskOfTheRoot(t *testing.T) {
 // resumed only once its whole window is applied: it resumes with its gate open, never with a task
 // telling it to revise a spec the person has already approved.
 func TestCatchUpAppliesTheApprovalOfANewerVersion(t *testing.T) {
+	t.Parallel()
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 20}, events: []json.RawMessage{specVersion(19, 4), specApproved(20, 4)}}
 	pool, w := catchUpRig(t, client, 1)
 	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
@@ -795,6 +931,7 @@ func assertCaptureKeptItsSlot(t *testing.T, pool *store.Pool) *record.Issue {
 // architect, put the root in awaiting_person, resume it with a stale task and tell a changes request again. The
 // boot only sets the cursor to the issue's latest sequence; the next boot reads from there.
 func TestTheFirstBootAfterTheUpgradeReplaysNothing(t *testing.T) {
+	t.Parallel()
 	gate := &record.DesignGate{Issue: "CAPTURE-100", ArtifactID: "artifact-root", LatestVersion: 3}
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 9}, approval: dispatch.Approval{State: "changes_requested",
 		LatestVersion: 3, Version: new(3), Reason: new("name the rollback path"), Seq: 9},
@@ -839,6 +976,7 @@ func TestTheFirstBootAfterTheUpgradeReplaysNothing(t *testing.T) {
 // it out of admission for a window that can decide nothing, and replay, for the root that never
 // ran, history older than the handout its own admission will be.
 func TestTheCatchUpReadsNoRootWhoseArchitectDoesNotHoldTheWork(t *testing.T) {
+	t.Parallel()
 	cursor := catchUpHandout
 	opened := &record.DesignGate{Issue: "CAPTURE-100", ArtifactID: "artifact-root", LatestVersion: 4, ApprovedVersion: new(3),
 		ApprovedMark: record.EventMark{Seq: 5}, EverOpened: true}
@@ -869,6 +1007,7 @@ func TestTheCatchUpReadsNoRootWhoseArchitectDoesNotHoldTheWork(t *testing.T) {
 // window could decide nothing, and the hold would keep the root out of the admission pass that
 // is there to take its slot back.
 func TestTheCatchUpReadsNoRootThatLeftTheWorkflow(t *testing.T) {
+	t.Parallel()
 	cursor := catchUpHandout
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 9},
 		events: []json.RawMessage{askOpened(7, "ask-q1")}}
@@ -893,6 +1032,7 @@ func TestTheCatchUpReadsNoRootThatLeftTheWorkflow(t *testing.T) {
 // which had the answer through Dispatch already, receives no new task and keeps its slot. A window
 // that leaves a second question with the person is decided once, on that question.
 func TestAnOutageWindowIsDecidedOnceAfterItsCatchUp(t *testing.T) {
+	t.Parallel()
 	cursor := catchUpHandout
 	t.Run("answered within the window", func(t *testing.T) {
 		client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 9},
@@ -934,6 +1074,7 @@ func TestAnOutageWindowIsDecidedOnceAfterItsCatchUp(t *testing.T) {
 // agent's turn hands nothing back. Either way the root keeps its row, and the root waiting in
 // line behind it takes none.
 func TestARootWaitingOnItsGateAtDeployKeepsItsRow(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		waitingOn string
@@ -996,6 +1137,7 @@ func slotHeld(t *testing.T, pool *store.Pool, key string) bool {
 // that version strands nothing: the gate keeps the review, no wait starts, and the gate seed and
 // the boot catch-up that re-read the same review leave the root where it is, with its slot.
 func TestADelayedRegistrationDoesNotStrandARootAcrossASeedAndABoot(t *testing.T) {
+	t.Parallel()
 	client := &awaitingDispatch{
 		issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 11},
 		approval: dispatch.Approval{State: "changes_requested", LatestVersion: 4, Version: new(4),
@@ -1016,7 +1158,7 @@ func TestADelayedRegistrationDoesNotStrandARootAcrossASeedAndABoot(t *testing.T)
 		return records.PutGate(ctx, tx, record.DesignGate{Issue: "CAPTURE-100", ArtifactID: "artifact-root", LatestVersion: 3})
 	})
 	ctx := context.Background()
-	runner := &outbox{pool: pool, dispatch: client, handlers: w.handlers}
+	runner := &outbox{pool: pool, records: w.records, dispatch: client, handlers: w.handlers}
 	// A version-3 seed queued earlier reads the version-4 review before the registration's own,
 	// older read applies.
 	if err := runner.seedGate(ctx, record.OutboxRow{Issue: "CAPTURE-100"}, record.GateSeed{ArtifactID: "artifact-root", Version: 3, Generation: 1}); err != nil {
@@ -1047,6 +1189,7 @@ func TestADelayedRegistrationDoesNotStrandARootAcrossASeedAndABoot(t *testing.T)
 // read answers a root waiting on its gate, and one showing the request still with the person moves
 // the wait to that version and answers nothing.
 func TestAGateSeedAnswersAGateWaitOnlyWhenTheRequestIsWithTheAgent(t *testing.T) {
+	t.Parallel()
 	client := &awaitingDispatch{approval: dispatch.Approval{State: "awaiting", LatestVersion: 5, AskID: "ask-approval", WaitingOn: "human"}}
 	pool, w := catchUpRig(t, client, 0)
 	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
@@ -1055,7 +1198,7 @@ func TestAGateSeedAnswersAGateWaitOnlyWhenTheRequestIsWithTheAgent(t *testing.T)
 		}
 		return records.PutGate(ctx, tx, record.DesignGate{Issue: "CAPTURE-100", ArtifactID: "artifact-root", LatestVersion: 4})
 	})
-	runner := &outbox{pool: pool, dispatch: client, handlers: w.handlers}
+	runner := &outbox{pool: pool, records: w.records, dispatch: client, handlers: w.handlers}
 	seed := func() {
 		t.Helper()
 		if err := runner.seedGate(context.Background(), record.OutboxRow{Issue: "CAPTURE-100"}, record.GateSeed{ArtifactID: "artifact-root", Version: 4, Generation: 1}); err != nil {
@@ -1095,6 +1238,7 @@ func applyLive(t *testing.T, w *workflowRuntime, events ...json.RawMessage) {
 // the daemon was down is applied with the root held and decided once, and the durable consumer's
 // redelivery of the same window after the catch-up suspends nothing and gives no slot away.
 func TestARootRecordedBeforeTheCursorGetsOneAtItsFirstHandout(t *testing.T) {
+	t.Parallel()
 	window := []json.RawMessage{askOpened(7, "ask-q1"), askClosed(9, "answered", "ask-q1", "question", alice)}
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 9}, events: window}
 	pool, w := catchUpRig(t, client, 1)
@@ -1139,6 +1283,7 @@ func TestARootRecordedBeforeTheCursorGetsOneAtItsFirstHandout(t *testing.T) {
 // gave in the old generation is not told to the new one's architect, whose processed marker is
 // per generation.
 func TestAReadmittedRootsCatchUpReadsFromItsReadmission(t *testing.T) {
+	t.Parallel()
 	const readmittedAt int64 = 50
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: readmittedAt + 1},
 		events: []json.RawMessage{specChanges(20, 3, "name the rollback path")}}
@@ -1187,6 +1332,7 @@ func TestAReadmittedRootsCatchUpReadsFromItsReadmission(t *testing.T) {
 // record held, not proof that every event below it arrived, so an event below the handout the
 // durable stream had not delivered (ask-late at 7) is applied at the boot, with the root held.
 func TestACatchUpReadsFromACursorBelowTheLastHandout(t *testing.T) {
+	t.Parallel()
 	const cursor, handout int64 = 4, 8
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 9},
 		events: []json.RawMessage{askOpened(7, "ask-late"), askReplied(9, "ask-late", "agent", alice)}}
@@ -1242,6 +1388,7 @@ func (f failingFact) Apply(_ context.Context, _ pgx.Tx, fact intake.Fact) (intak
 // the event does not stop that root's catch-up. The cursor stays below it, so the next boot reads
 // it again, as the durable consumer retries it live.
 func TestAnEventThatFailsToApplyDoesNotStopTheCatchUp(t *testing.T) {
+	t.Parallel()
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 11},
 		events: []json.RawMessage{askOpened(7, "ask-broken"), askOpened(9, "ask-q"), askClosed(11, "answered", "ask-q", "question", alice)}}
 	pool, w := catchUpRig(t, client, 1)
@@ -1272,6 +1419,7 @@ func TestAnEventThatFailsToApplyDoesNotStopTheCatchUp(t *testing.T) {
 // lost to one transient failure. The events after it are applied at the first boot all the same,
 // and the second boot drops them as processed.
 func TestAnEventThatFailedOnceIsAppliedAtTheNextBoot(t *testing.T) {
+	t.Parallel()
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 11},
 		events: []json.RawMessage{askOpened(7, "ask-lost"), askOpened(9, "ask-q"), askClosed(11, "answered", "ask-q", "question", alice)}}
 	pool, w := catchUpRig(t, client, 1)
@@ -1310,6 +1458,7 @@ func TestAnEventThatFailedOnceIsAppliedAtTheNextBoot(t *testing.T) {
 // cursor between them would pass the first over for good once an outage outlasts the stream's
 // retention. The next boot applies both.
 func TestTwoEventsThatFailInOneWindowStopTheCursorBelowTheFirst(t *testing.T) {
+	t.Parallel()
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 11},
 		events: []json.RawMessage{askOpened(7, "ask-a"), askOpened(9, "ask-b"), askOpened(11, "ask-c")}}
 	pool, w := catchUpRig(t, client, 1)
@@ -1369,6 +1518,7 @@ func (c *catchUpApplies) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQuer
 // transaction each: the boot's work on the root stays one apply, however many events follow the
 // failed one, and never outgrows the root's deadline.
 func TestAnEventThatFailsAtEveryBootLeavesTheNextBootOnlyItsOwnApply(t *testing.T) {
+	t.Parallel()
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: 11},
 		events: []json.RawMessage{askOpened(7, "ask-broken"), askOpened(9, "ask-q"), askClosed(11, "answered", "ask-q", "question", alice)}}
 	pool, w := catchUpRig(t, client, 1)

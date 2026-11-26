@@ -186,7 +186,9 @@ export function ProjectPage(): ReactNode {
         role="tabpanel"
       >
         {activeTab === "issues" ? (
-          // The Issues tab's views, in the table or the Board, with their controls.
+          // The Issues tab's views, in the table or the Board, with their controls. Keyed by the
+          // project: the Board holds what became of its last move, and a refusal of one project's
+          // move names that project's issue, so another project's Board is drawn with none of it.
           <IssuesTable key={route.project} project={route.project} />
         ) : null}
       </div>

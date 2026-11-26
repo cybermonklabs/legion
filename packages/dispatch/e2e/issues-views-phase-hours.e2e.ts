@@ -1,3 +1,6 @@
+/** Time per phase is read against the board route's hours as the facts consumer writes them from
+ *  role events, phase observations and an ask, with every board frame of the live socket
+ *  rewritten in flight. */
 // Time per phase on the Issues tab (dispatch://INFRA-3221, Verification k8): its two modes, the
 // tooltip that names each phase's hours and share, where that tooltip opens near the window's
 // edges, each phase's fixed fill in both colour schemes, and the bars and totals of Hours on

@@ -5,7 +5,7 @@
  *
  *  Every row here reads what the page draws over one answer - which rows are left, what the
  *  counts say, where the focus is and what the address holds - so each runs against a recording
- *  rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer"). The one row
+ *  rather than against a harness (packages/dispatch/README.md, "The stubbed layer"). The one row
  *  of the family that holds a write open and lets it through stayed in `inbox-search.e2e.ts`.
  *
  *  Two seeds: the file's own eight questions, and the three the last row needs, which must have
@@ -459,11 +459,11 @@ test.describe("inbox search", () => {
     await expect(inboxRow(page, scene.retryAskId)).toBeVisible();
     await expect(inboxSearchBox(page)).toHaveValue("lease");
 
-    const clear = page.getByRole("link", { name: "Clear agent filter" });
-    await expect(clear).toHaveText("Asks from Morning auditor · clear");
+    const clear = page.getByRole("button", { name: "Clear agent filter" });
+    await expect(clear).toHaveText("Asks from Morning auditor×");
     await clear.click();
 
-    await expect(page.getByRole("link", { name: "Clear agent filter" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Clear agent filter" })).toHaveCount(0);
     await expect(inboxSearchBox(page)).toHaveValue("lease");
     await expect(rows(page)).toHaveCount(2);
     await expect(inboxRow(page, scene.retryAskId)).toBeVisible();
@@ -625,10 +625,10 @@ stepped.describe("inbox search", () => {
 });
 
 test.describe("inbox search without a reading column", () => {
-  // Below 1280 px the Inbox is the list of cards it has always been, and the box is the same
-  // control doing the same thing to it: the header wraps, the cards narrow, and nothing else
-  // about the narrowing changes with the width.
-  test("the box narrows the card list at 1024 px and at 390 px @pr", async ({ page, scene }) => {
+  // Below 1280 px the Inbox lists the short rows it lists beside the column, with no row open
+  // and no pane, and the box is the same control doing the same thing to them: the header wraps,
+  // the rows narrow, and nothing else about the narrowing changes with the width.
+  test("the box narrows the short rows at 1024 px and at 390 px @pr", async ({ page, scene }) => {
     for (const size of [
       { height: 900, width: 1024 },
       { height: 844, width: 390 },
@@ -641,9 +641,9 @@ test.describe("inbox search without a reading column", () => {
       await searchInbox(page, "ledger lease");
       await expect(rows(page)).toHaveCount(1);
       await expect(inboxRow(page, scene.retryAskId)).toBeVisible();
-      // The row is the whole card here, so what the narrowing keeps is the question itself.
+      // What the narrowing keeps is the question itself, on its row's first line.
       await expect(
-        page.getByTestId(`ask-${scene.retryAskId}`).getByText("How many attempts before the lease")
+        inboxRow(page, scene.retryAskId).getByText("How many attempts before the lease")
       ).toBeVisible();
       expect(new URL(page.url()).searchParams.get("q")).toBe("ledger lease");
 

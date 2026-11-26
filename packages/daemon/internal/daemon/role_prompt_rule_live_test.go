@@ -15,12 +15,10 @@
 // scripts/e2e/role-prompt-rule.sh builds this driver with `-tags e2e` and owns the nats-server
 // and the PostgreSQL it runs against.
 //
-// What this proof reads, and why it reads it there. Unit tests already hold the pod memory rule
-// in each composed prompt and in the one part per tree it comes from
-// (packages/daemon/internal/prompts/prompts_test.go and
-// packages/daemon/internal/prompts/roles_test.go), and the planner's rule in the planner's own
-// part alone (roles_test.go's TestEveryFileBackedRoleHandoffNamesTheHeadItWasDoneAgainst).
-// Neither file starts anything, so neither says that a role process was ever launched with that
+// What this proof reads, and why it reads it there. The prompts package's unit tests hold which
+// parts each role's prompt is composed of (packages/daemon/internal/prompts/prompts_test.go's
+// composition table and common_part_test.go's planted markers).
+// None of them starts anything, so none says that a role process was ever launched with that
 // text. This driver reads the text from what the process itself was started with: the Oh My Pi
 // process's own command line, /proc/<pid>/cmdline, and the file its one `--append-system-prompt`
 // word names. The pid the claim's locator carries is the
@@ -80,16 +78,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -159,12 +153,10 @@ const (
 
 // completionAfterWorkForPlanner is the rule the planner's own part carries about its completion
 // (packages/daemon/internal/prompts/roles/planner.md, "Plan handoff"): the completion reports
-// work already done, at a named head. Three needles hold it. The first two are the pair the unit
-// test pins (packages/daemon/internal/prompts/roles_test.go's
-// TestEveryFileBackedRoleHandoffNamesTheHeadItWasDoneAgainst): the `head` field as the handoff
-// body names it, with the one thing its value is, and the clause that carries that head to the
-// daemon, which names the planner's own phase word. The third is the paragraph's order sentence,
-// copied from planner.md byte for byte: the record written with `dispatch handoff-write` under
+// work already done, at a named head. Three needles hold it. The first two are the `head` field as
+// the handoff body names it, with the one thing its value is, and the clause that carries that
+// head to the daemon, which names the planner's own phase word. The third is the paragraph's order
+// sentence, copied from planner.md byte for byte: the record written with `dispatch handoff-write` under
 // the planner's own phase word `plan`, then the completion, which is what makes the completion a
 // report of work already recorded rather than of work still to come. The three are short and sit
 // inside the paragraph, so a rewording of the prose around them stands, and the field's removal
@@ -242,7 +234,6 @@ func newRolePromptRuleLive(t *testing.T) *rolePromptRuleLive {
 	if omp == "" {
 		t.Skipf("%s is unset, so there is no Oh My Pi for a pane to run; scripts/e2e/role-prompt-rule.sh requires it", liveOmpPathEnv)
 	}
-	takeOwnDatabase(t)
 	proof := newLiveProof(t, "scripts/e2e/role-prompt-rule.sh")
 	r := &rolePromptRuleLive{
 		liveAgentProof: liveAgentProof{liveProof: proof, omp: omp},
@@ -304,19 +295,13 @@ func (r *rolePromptRuleLive) token(issue string, role claim.Role) claim.Token {
 	return token
 }
 
-// overrides is the daemon this proof boots: the local runtime over the real worker stream, the API
-// listener the fixture holds, and the workflow's App tokens stood in for. The clock is the real
-// one, since nothing here is measured against a wait.
+// overrides is the daemon this proof boots: the local runtime's own wiring (daemonOverrides), and
+// the workflow's App tokens stood in for. The clock is the real one, since nothing here is measured
+// against a wait.
 func (r *rolePromptRuleLive) overrides() overrides {
-	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
-			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
-			r.rt.conns, r.rt.stream = listener, address
-			return r.rt, nil
-		},
-		listen:         heldListen,
-		workflowTokens: &workflowTokenRecorder{},
-	}
+	o := r.rt.daemonOverrides(r.rt)
+	o.workflowTokens = &workflowTokenRecorder{}
+	return o
 }
 
 // seed records the tree as the daemon would hold it at the moment its roles began: a root handed
@@ -338,7 +323,7 @@ func (r *rolePromptRuleLive) seed() {
 	ctx := context.Background()
 	r.board.show(r.issue, "in_progress")
 	r.board.place(r.child, "in_progress", r.issue, false)
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: r.issue, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.issue,
 			Project: r.cfg.Project, Title: "the issue whose architect and planner this proof reads the command line of",

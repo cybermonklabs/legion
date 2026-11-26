@@ -15,16 +15,17 @@ import (
 // GET /api/v1/delivery/pipeline) show figures the delivery evals state, computed from the
 // deployment's population rather than read from one project's day rows. They judge them by those
 // evals' targets and rank the Pipeline's slowest jobs by pr-ci's min_n as a person sets them (R5):
-// the evals of the project the deploy repository is mapped to (DeployRepoEvals), each figure judged
-// by the one rule an eval read judges by (VerdictOf), so a delivery answer's verdict of a figure is
-// its eval's verdict of the same figure. Each answer states every target with its eval's direction
-// and the statistics that verdict judges (JudgesOf), so its reader names the figure a verdict is
-// of rather than a statistic of its own choosing.
+// the evals of the project whose default repository is the deploy repository (DeployRepoEvals),
+// each figure judged by the one rule an eval read judges by (VerdictOf), so a delivery answer's
+// verdict of a figure is its eval's verdict of the same figure. Each answer states every target
+// with its eval's direction and the statistics that verdict judges (JudgesOf), so its reader names
+// the figure a verdict is of rather than a statistic of its own choosing.
 
 // DeliveryTargetSlugs are the evals whose targets the measures answer judges its KPIs by and
 // states, and PipelineSlugs the evals the Pipeline answer reads: the same six, whose targets it
 // states and two of which judge its lead-time cards, and pr-ci, whose job series' min_n ranks its
 // slowest jobs (PipelineMinN).
+// Targets of cards outside these six are judged on the Evals tab, which shows every card.
 var (
 	DeliveryTargetSlugs = []string{SlugDeployFrequency, SlugChangeFailRate, SlugMergeToProduction, SlugPROpenToMerge, SlugDeployRunSuccess, SlugUnownedP0}
 	PipelineSlugs       = append(slices.Clone(DeliveryTargetSlugs), SlugPRCI)
@@ -165,19 +166,33 @@ var deliveryJudges = func() map[string][]string {
 	return judges
 }()
 
-// DeployRepoEvals reads the current definition and series of each of slugs in the project
-// deployRepo is mapped to, by the rule a CI run's project is (repoProjects.of), by slug, in one
-// snapshot. Where no mapping names deployRepo, or that project holds no version of a slug yet, the
-// slug's catalogue entry stands in: the definition and series the seed writes, whose target is
-// main's (measures.DefaultTargets). A slug neither holds is absent.
+// DeployRepoEvals reads the current definition and series of each of slugs in the project of
+// deployRepo, by slug, in one snapshot. The deployment-wide answers count every project's rows, so
+// no row names their project; the one a repository names is the project whose published default
+// repository it is (eval_project_repos, the record the refresher's page commit moves in the
+// commit that makes the figures folded under it visible; owners.go), compared without case, so
+// the delivery routes and the Evals tab judge by one state and
+// a person's write of a default repository moves neither until that commit. Where no project
+// publishes deployRepo, or more than one does, no project is named, and where the project holds no
+// version of a slug yet, the slug's catalogue entry stands in: the definition and series the seed
+// writes, whose target is main's (measures.DefaultTargets). A slug neither holds is absent.
 func (s *Store) DeployRepoEvals(ctx context.Context, deployRepo string, slugs []string) (map[string]Entry, error) {
-	mapped, err := readRepoProjects(ctx, s)
+	tx, err := s.BeginSnapshot(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("begin the read of %s's evals %v: %w", deployRepo, slugs, err)
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, `select project_key from eval_project_repos where lower(repo) = lower($1) order by project_key limit 2`, deployRepo)
+	if err != nil {
+		return nil, fmt.Errorf("read the project whose published default repository is %s: %w", deployRepo, err)
+	}
+	projects, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the project whose published default repository is %s: %w", deployRepo, err)
 	}
 	entries := make(map[string]Entry, len(slugs))
-	if project := mapped.of(deployRepo); project != "" {
-		if entries, err = s.projectEntries(ctx, project, slugs); err != nil {
+	if len(projects) == 1 {
+		if entries, err = projectEntries(ctx, tx, projects[0], slugs); err != nil {
 			return nil, err
 		}
 	}
@@ -192,19 +207,14 @@ func (s *Store) DeployRepoEvals(ctx context.Context, deployRepo string, slugs []
 	return entries, nil
 }
 
-// projectEntries reads each of slugs project holds as Eval reads one, by slug: its newest
+// projectEntries reads each of slugs project holds as Eval reads one, by slug, in tx: its newest
 // definition and the newest version of each of its series, the primary series first, then by
-// name, all in one snapshot.
-func (s *Store) projectEntries(ctx context.Context, project string, slugs []string) (map[string]Entry, error) {
+// name.
+func projectEntries(ctx context.Context, tx pgx.Tx, project string, slugs []string) (map[string]Entry, error) {
 	ids := make([]string, len(slugs))
 	for index, slug := range slugs {
 		ids[index] = EvalID(project, slug)
 	}
-	tx, err := s.beginSnapshot(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("begin the read of %s's evals %v: %w", project, slugs, err)
-	}
-	defer tx.Rollback(ctx)
 	rows, err := tx.Query(ctx, `select `+definitionColumns+` from evals_current where eval_id = any($1)`, ids)
 	if err != nil {
 		return nil, fmt.Errorf("read %s's evals %v: %w", project, slugs, err)
@@ -239,7 +249,7 @@ func (s *Store) projectEntries(ctx context.Context, project string, slugs []stri
 }
 
 // PipelineMinN is the fewest timed results a PR-checks job needs to be ranked among the Pipeline's
-// slowest, from prCI, the pr-ci eval of the project the deploy repository is mapped to
+// slowest, from prCI, the pr-ci eval of the deploy repository's project
 // (DeployRepoEvals): SlowestJobsMinN of its job series' min_n, so the Pipeline and that project's
 // items sorted by median rank by one min_n, and measures.SlowestMinResults, the min_n the
 // catalogue seeds, where it holds no job series.

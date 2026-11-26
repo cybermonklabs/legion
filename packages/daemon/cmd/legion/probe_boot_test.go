@@ -11,10 +11,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/testport"
 )
 
 // probe-boot names its configuration only by --config: an argument is refused as start refuses it.
 func TestProbeBootRefusesAnArgument(t *testing.T) {
+	t.Parallel()
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "probe-boot", "legion.yaml"}, &out, &errb)
 	if code != 2 || !strings.Contains(errb.String(), `unexpected argument "legion.yaml"`) {
@@ -26,6 +29,7 @@ func TestProbeBootRefusesAnArgument(t *testing.T) {
 // reading the configuration without running either App's private_key_command; it only reads the
 // cluster, and prints no OK line.
 func TestProbeBootRefusesAClusterWithoutAgentSandboxAndRunsNoKeyCommand(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
 	var mu sync.Mutex
 	var requested []string
@@ -76,5 +80,37 @@ func TestProbeBootRefusesAClusterWithoutAgentSandboxAndRunsNoKeyCommand(t *testi
 		if !strings.HasPrefix(request, "GET ") {
 			t.Errorf("probe-boot sent %s; its cluster check may only read", request)
 		}
+	}
+}
+
+// A cluster read that never reaches the API server fails with a *url.Error, whose text keeps the
+// server URL's user name (Go's client masks only a password). probe-boot writes its refusal to
+// stderr through the URL rule (redact.URLCredentials): the refusal names the CRD and the server's
+// address, and no part of the URL's userinfo. The address is one the test holds bound and never
+// listening (testport.Refused), so no other program on the machine can take it and answer the read.
+func TestProbeBootWritesARefusalWithNoUserNameOfTheURLItFailedToRead(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
+	legionState(t)
+	address := testport.Refused(t)
+	config := kubernetesCheckConfig(t, "")
+	const user = "legion-reader"
+	kubeconfig := "apiVersion: v1\nkind: Config\n" +
+		"clusters: [{name: example, cluster: {server: \"http://" + user + "@" + address + "\"}}]\n" +
+		"users: [{name: legion-daemon, user: {token: placeholder}}]\n" +
+		"contexts: [{name: legion-daemon, context: {cluster: example, user: legion-daemon, namespace: legion}}]\n" +
+		"current-context: legion-daemon\n"
+	if err := os.WriteFile(filepath.Join(filepath.Dir(config), "kubeconfig"), []byte(kubeconfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "probe-boot", "--config", config}, &out, &errb)
+
+	if code != 1 || out.Len() != 0 || !strings.HasPrefix(errb.String(), "legion probe-boot: ") ||
+		!strings.Contains(errb.String(), "sandboxes.agents.x-k8s.io") || !strings.Contains(errb.String(), address) {
+		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, no OK line, and a refusal naming the Sandbox CRD and %s", code, out.String(), errb.String(), address)
+	}
+	if strings.Contains(errb.String(), user) {
+		t.Fatalf("stderr = %q, want no part of the API server URL's user name %q", errb.String(), user)
 	}
 }

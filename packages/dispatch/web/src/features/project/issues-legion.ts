@@ -46,6 +46,7 @@ export const LEGION_PHASES = [
   { id: "accepting", title: "Accepting" },
   { id: "retro", title: "Retro" },
   { id: "merging", title: "Merging" },
+  { id: "awaiting_children", title: "Waiting on children" },
   { id: "awaiting_person", title: "Waiting on a person" },
   { id: "held", title: "Held" },
 ] as const satisfies readonly { readonly id: LegionBoardColumn["id"]; readonly title: string }[];
@@ -92,12 +93,17 @@ export function legionPhaseTitle(phase: string): string {
 /** The part of `hours_by_phase` that no phase took (`breakdownOther` on #3578). */
 export const OTHER_PHASE = "other";
 
-/** Time per phase's phases, in the board's order and Other last: today's Legion phases from
- *  Design to Held, since Queue never has hours, each with its fixed colour. A key of
- *  `hours_by_phase` that is none of these, such as a phase a newer server adds, has no colour of
- *  its own: its hours count as Other's. */
+/** The Legion phases Time per phase has no fixed colour for: Queue, which never has hours, and
+ *  Waiting on children, the route's twelfth column, which the spec's Time per phase does not
+ *  list. Their hours count as Other's. */
+const UNCOLOURED_PHASES: readonly string[] = ["queue", "awaiting_children"];
+
+/** Time per phase's phases, in the board's order and Other last: the Legion phases from Design to
+ *  Held that have a fixed colour (`legionPhaseFill`). A key of `hours_by_phase` that is none of
+ *  these, such as a phase a newer server adds or Waiting on children, has no colour of its own:
+ *  its hours count as Other's. */
 export const WORK_PHASES: readonly string[] = [
-  ...LEGION_PHASES.flatMap((phase) => (phase.id === "queue" ? [] : [phase.id])),
+  ...LEGION_PHASES.flatMap((phase) => (UNCOLOURED_PHASES.includes(phase.id) ? [] : [phase.id])),
   OTHER_PHASE,
 ];
 

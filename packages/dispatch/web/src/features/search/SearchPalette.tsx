@@ -13,7 +13,7 @@ import {
 import { useNavigate } from "react-router-dom";
 
 import { projectsQuery, whoAmIQuery } from "../../api/queries";
-import type { Project, SearchResult, SearchResultKind } from "../../api/types";
+import type { Project, SearchResult } from "../../api/types";
 import { ControlRow } from "../../components/ControlRow";
 import { filterChips } from "../../components/filter-chips";
 import { MultiSelect } from "../../components/MultiSelect";
@@ -21,6 +21,7 @@ import { PanelTrigger } from "../../components/PanelTrigger";
 import { QueryError } from "../../components/QueryError";
 import { SearchBox } from "../../components/SearchBox";
 import { useNestedPanels } from "../../components/useNestedPanels";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   backdrop50,
   badgeLow,
@@ -41,14 +42,19 @@ import {
   textSecondaryOnSurfaceMuted,
 } from "../../theme/classes";
 import { issueStatuses, statusText } from "../project/board-model";
+import { RefKindIcon } from "../refs/kind-icons";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { DeletedBody, EditedMark } from "../refs/PostMarks";
+import { postDeletion } from "../refs/post-marks";
 import { referenceTriggerProps } from "../refs/RefPreview";
+import { ReferenceHostIs } from "../refs/reference-host";
 import {
   buildIssuePath,
   buildProjectPath,
   type DispatchReferenceRoute,
   nodeRouteFromHref,
 } from "../refs/routes";
+import { textSourceKind, textSourceOf } from "../refs/text-references";
 import { appKeymap, DIALOG_SCOPE, type KeymapAction, useKeymap } from "../shell/keymap";
 import { KeyHints } from "../shell/ShortcutHelp";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
@@ -112,63 +118,6 @@ interface RecentRow {
  *  back into the offer to run it. */
 type PaletteRow = ActionRow | OfferRow | ProjectRow | RecentRow | ResultRow;
 
-function SearchResultIcon({ kind }: { kind: SearchResultKind }): ReactNode {
-  const common = {
-    "aria-hidden": true,
-    className: "size-4 shrink-0",
-    fill: "none",
-    stroke: "currentColor",
-    strokeLinecap: "round" as const,
-    strokeLinejoin: "round" as const,
-    strokeWidth: 1.75,
-    viewBox: "0 0 24 24",
-  };
-
-  if (kind === "issue") {
-    return (
-      <svg {...common}>
-        <title>Issue result</title>
-        <circle cx="12" cy="12" r="8" />
-        <path d="M12 8v4l2.5 2" />
-      </svg>
-    );
-  }
-  if (kind === "document") {
-    return (
-      <svg {...common}>
-        <title>Document result</title>
-        <path d="M7 3h7l3 3v15H7z" />
-        <path d="M14 3v4h4M10 12h4M10 16h4" />
-      </svg>
-    );
-  }
-  if (kind === "comment") {
-    return (
-      <svg {...common}>
-        <title>Comment result</title>
-        <path d="M5 6.5h14v10H9l-4 3z" />
-        <path d="M9 10h6M9 13h4" />
-      </svg>
-    );
-  }
-  if (kind === "ask") {
-    return (
-      <svg {...common}>
-        <title>Ask result</title>
-        <circle cx="12" cy="12" r="8" />
-        <path d="M9.8 9.5a2.3 2.3 0 1 1 3.3 2.1c-.9.5-1.1.9-1.1 1.9M12 16h.01" />
-      </svg>
-    );
-  }
-  return (
-    <svg {...common}>
-      <title>Message result</title>
-      <path d="M5 6.5h14v10H9l-4 3z" />
-      <path d="M9 10h6M9 13h6" />
-    </svg>
-  );
-}
-
 /** One row of the listbox, a hit or a command: the selected outline and fill, and a click, Enter
  *  or Space selecting it. `layout` arranges the row's own content. */
 function PaletteOption({
@@ -187,32 +136,36 @@ function PaletteOption({
   /** A hit's target, which makes the row a `RefPreview` trigger. */
   reference?: DispatchReferenceRoute;
 }): ReactNode {
+  // A row is one button in all but its tag: a click or Enter anywhere in it opens what it
+  // found, so nothing drawn inside it is a link of its own.
   return (
-    <div
-      aria-selected={active}
-      className={`relative isolate min-h-11 cursor-pointer border-b px-3 py-2 last:border-b-0 ${layout} ${borderDefault} ${
-        active ? selectedCardBorder : ""
-      }`}
-      id={id}
-      onClick={onSelect}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onSelect();
-        }
-      }}
-      role="option"
-      tabIndex={-1}
-      {...(reference === undefined ? undefined : referenceTriggerProps(reference))}
-    >
-      {active ? (
-        <div
-          aria-hidden="true"
-          className={`pointer-events-none absolute inset-0 -z-10 ${selectedCardBg}`}
-        />
-      ) : null}
-      {children}
-    </div>
+    <ReferenceHostIs host="control">
+      <div
+        aria-selected={active}
+        className={`relative isolate min-h-11 cursor-pointer border-b px-3 py-2 last:border-b-0 ${layout} ${borderDefault} ${
+          active ? selectedCardBorder : ""
+        }`}
+        id={id}
+        onClick={onSelect}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onSelect();
+          }
+        }}
+        role="option"
+        tabIndex={-1}
+        {...(reference === undefined ? undefined : referenceTriggerProps(reference))}
+      >
+        {active ? (
+          <div
+            aria-hidden="true"
+            className={`pointer-events-none absolute inset-0 -z-10 ${selectedCardBg}`}
+          />
+        ) : null}
+        {children}
+      </div>
+    </ReferenceHostIs>
   );
 }
 
@@ -239,6 +192,20 @@ function ResultOption({
   // The route table carries the kind as a plain string; a kind this build has no icon or label
   // for keeps its own word and draws no icon, rather than borrowing another kind's.
   const kind = searchResultKind(result.kind);
+  // The hit's snippet is the record's own text, cut: the row names the record (`result.id`), the
+  // kind it was indexed under, which is what a `#id` in it resolves against, and the issue it is
+  // on, its owner. A kind that names no reference source - a project, an agent - answers none
+  // (`textSourceKind`).
+  const record = textSourceOf(
+    textSourceKind(result.kind),
+    result.id,
+    result.owner.kind === "issue" ? result.owner.key : undefined
+  );
+  // A delete takes the post's windows with its body, so a deleted post is no hit once the
+  // delete commits. The mark is the backstop for a hit of one all the same, whose snippet is
+  // empty: the deleted line stands where the snippet would, as it does in the referenced-by
+  // list.
+  const deleted = postDeletion(result);
 
   return (
     <PaletteOption
@@ -252,22 +219,32 @@ function ResultOption({
           muted ? textMutedOnSelectedCard : textSecondaryOnSurface
         }`}
       >
-        {kind === undefined ? null : <SearchResultIcon kind={kind} />}
+        {kind === undefined ? null : <RefKindIcon kind={kind} />}
         <span className={`rounded-full px-2 py-0.5 font-medium ${badgeLow.bg} ${badgeLow.text}`}>
           {kind === undefined ? result.kind : kindLabel(kind)}
         </span>
         {result.artifact === undefined ? null : (
           <span className="truncate">{result.artifact.name}</span>
         )}
+        {/* A comment or a message its author edited says so, as its byline does. */}
+        <EditedMark at={result.edited_at} className="shrink-0" deleted={deleted} />
       </div>
-      <MarkdownPreview
-        className={`mt-1 text-sm ${muted ? textMutedOnSelectedCard : textPrimaryOnSurface}`}
-        highlightClassName={`rounded px-0.5 ${searchHitBg} ${searchHitText}`}
-        lines={2}
-        markdown={source}
-        tree={result.snippet_tree}
-      />
-      {result.ask === undefined ? null : <AskHitStatus ask={result.ask} muted={muted} />}
+      {deleted === null ? (
+        <MarkdownPreview
+          className={`mt-1 text-sm ${muted ? textMutedOnSelectedCard : textPrimaryOnSurface}`}
+          highlightClassName={`rounded px-0.5 ${searchHitBg} ${searchHitText}`}
+          lines={2}
+          markdown={source}
+          source={record}
+          surface="search-result"
+          tree={result.snippet_tree}
+        />
+      ) : (
+        <DeletedBody className="mt-1 block text-sm" deleted={deleted} />
+      )}
+      {result.ask === undefined ? null : (
+        <AskHitStatus ask={result.ask} muted={muted} source={record} />
+      )}
     </PaletteOption>
   );
 }
@@ -472,8 +449,9 @@ function SearchNarrowing({
               onBlur={takeAuthor}
               onChange={setAuthor}
               onKeyDown={(event) => {
-                // An Enter that ends or moves an input method's composition is the composition's.
-                if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                // An Enter that ends or moves an input method's composition is the composition's
+                // (`inputMethodKey`).
+                if (event.key === "Enter" && !inputMethodKey(event.nativeEvent)) {
                   event.preventDefault();
                   takeAuthor();
                 }
@@ -491,12 +469,19 @@ function SearchNarrowing({
               <input
                 className={`min-h-11 rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
                 onChange={(event) => {
-                  if (event.target.value !== "") {
-                    set({ updatedSince: event.target.value });
+                  // A date the reader types is taken once its year is whole: an engine reports a
+                  // valid date from the year's first digit (Chromium reads `2` as the year 0002),
+                  // and taking that would narrow to a year the reader is still typing and draw
+                  // the box away from under their next keys. The box holds no `value` of its
+                  // own: React puts a controlled empty value back after every change it hands
+                  // here, so Chromium's date would be emptied at each digit before its year is
+                  // whole.
+                  const { value } = event.target;
+                  if (Number(value.slice(0, 4)) >= 1000) {
+                    set({ updatedSince: value });
                   }
                 }}
                 type="date"
-                value=""
               />
             </label>
           ) : null}
@@ -836,9 +821,10 @@ function PaletteDialog({
   const firstMore = rows.length - footRows;
   const walkable = searchOut && activeIndex < firstMore ? firstMore : rows.length;
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    // A key that is part of an input method's composition is the composition's, and its default
-    // stays the browser's: it moves no highlight, moves no chip (Tab, Backspace) and picks no row.
-    if (event.nativeEvent.isComposing) {
+    // A key that is part of an input method's composition, or the one that ends it
+    // (`inputMethodKey`), is the composition's, and its default stays the browser's: it moves no
+    // highlight, moves no chip (Tab, Backspace) and picks no row.
+    if (inputMethodKey(event.nativeEvent)) {
       return;
     }
     if (scope.handleKey(event)) {
@@ -923,7 +909,7 @@ function PaletteDialog({
           {/* What the words themselves can do, between the controls and the hits: the three
               operator forms. The line saying that meaning search did not run is NOT here: it
               arrives with an answer, so a narrowing that degraded the search would push every
-              hit down the dialog, which R1 of dispatch://INFRA-3135 forbids. It is drawn with
+              hit down the dialog, and a search's answer moves no hit. It is drawn with
               the other notes about the answer, under the hits. */}
           <div className={`shrink-0 border-b ${borderDefault}`}>
             <SearchOperators inUse={operators} />

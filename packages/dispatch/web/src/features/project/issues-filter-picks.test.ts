@@ -119,6 +119,7 @@ test("Legion phase's picks are the board's column ids in its order, Retro betwee
     "accepting",
     "retro",
     "merging",
+    "awaiting_children",
     "awaiting_person",
     "held",
     "none",

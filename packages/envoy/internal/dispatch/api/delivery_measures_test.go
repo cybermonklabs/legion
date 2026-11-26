@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/envoy/internal/dispatch/delivery/measures/testdata/dora-fixture.json seedMeasuresFixture
+
 import (
 	"encoding/json"
 	"math"
@@ -220,6 +222,7 @@ func seedMeasuresSettings(t *testing.T, database *store.Store) {
 }
 
 func TestGetDeliveryMeasuresWithoutSettingsIs404(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/delivery/measures", nil, "alice")
 	if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), `"code":"DELIVERY_NOT_CONFIGURED"`) {
@@ -228,6 +231,7 @@ func TestGetDeliveryMeasuresWithoutSettingsIs404(t *testing.T) {
 }
 
 func TestGetDeliveryMeasuresRejectsMalformedWindow(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedMeasuresSettings(t, database)
 	for _, target := range []string{
@@ -245,30 +249,40 @@ func TestGetDeliveryMeasuresRejectsMalformedWindow(t *testing.T) {
 
 // TestADeliveryWindowOutsideTheYearsAReadAnswersIsRefused: the delivery routes read their window
 // with the parser the eval reads share (parseOptionalRFC3339), so a from, a to or the Pipeline's
-// at whose UTC year is after 9999 or before 1 is refused 400 INVALID_QUERY, as any other malformed
-// window is, rather than answered with an empty 200 (R18). A window ending in the year 9999's last
-// hour is answered, as is a Pipeline at in it. The Pipeline's window is at alone, so it is read by
-// at and the others by from and to.
+// at whose UTC year is after 9999 or before 1 is refused 400 INVALID_QUERY naming that parameter,
+// as any other malformed window is, rather than answered with an empty 200 (R18): a to past the
+// year 9999, a to of the year 0, and a from of the year 0 before a to of the year 1, whose year
+// only the from's check reads. A window ending in the year 9999's last hour is answered, as is a
+// Pipeline at in it. The Pipeline's window is at alone, so it is read by at and the others by from
+// and to.
 func TestADeliveryWindowOutsideTheYearsAReadAnswersIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedMeasuresSettings(t, database)
 	routes := []string{"/api/v1/delivery/timeline", "/api/v1/delivery/measures"}
-	var refused []string
+	type refusedRead struct{ target, names string }
+	var refused []refusedRead
 	for _, route := range routes {
-		for _, window := range []url.Values{
-			{"from": {"9999-12-30T00:00:00Z"}, "to": {"9999-12-31T23:00:00-14:00"}},
-			{"from": {"0000-01-01T00:00:00+01:00"}, "to": {"0000-01-03T00:00:00Z"}},
+		for _, window := range []struct {
+			query url.Values
+			names string
+		}{
+			{url.Values{"from": {"9999-12-30T00:00:00Z"}, "to": {"9999-12-31T23:00:00-14:00"}}, "to"},
+			{url.Values{"from": {"0000-01-01T00:00:00+01:00"}, "to": {"0000-01-03T00:00:00Z"}}, "to"},
+			{url.Values{"from": {"0000-12-31T00:00:00Z"}, "to": {"0001-01-02T00:00:00Z"}}, "from"},
 		} {
-			refused = append(refused, route+"?"+window.Encode())
+			refused = append(refused, refusedRead{route + "?" + window.query.Encode(), window.names})
 		}
 	}
 	for _, at := range []string{"9999-12-31T23:00:00-14:00", "0000-01-01T00:00:00+01:00"} {
-		refused = append(refused, "/api/v1/delivery/pipeline?"+url.Values{"at": {at}}.Encode())
+		refused = append(refused, refusedRead{"/api/v1/delivery/pipeline?" + url.Values{"at": {at}}.Encode(), "at"})
 	}
-	for _, target := range refused {
-		response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
-		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_QUERY"`) {
-			t.Errorf("GET %s: status = %d, body = %.200s, want 400 INVALID_QUERY", target, response.Code, response.Body.String())
+	for _, read := range refused {
+		response := dispatchRequest(t, handler, http.MethodGet, read.target, nil, "alice")
+		var refusal evalRefusal
+		if response.Code != http.StatusBadRequest || json.Unmarshal(response.Body.Bytes(), &refusal) != nil || refusal.Code != "INVALID_QUERY" ||
+			!strings.HasPrefix(refusal.Error, read.names+" must be a moment of the UTC years 1 to 9999") {
+			t.Errorf("GET %s: status = %d, body = %.200s, want 400 INVALID_QUERY saying %s must be a moment of the UTC years 1 to 9999", read.target, response.Code, response.Body.String(), read.names)
 		}
 	}
 	answered := []string{"/api/v1/delivery/pipeline?" + url.Values{"at": {"9999-12-31T23:00:00Z"}}.Encode()}
@@ -290,6 +304,7 @@ func TestADeliveryWindowOutsideTheYearsAReadAnswersIsRefused(t *testing.T) {
 // derived and that it is to less the default window; a to with an offset is held to the UTC year
 // as a named from is. The first to whose default window starts in the year 1 is answered.
 func TestAWindowWhoseDefaultFromFallsBeforeYearOneIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedMeasuresSettings(t, database)
 	createTestProject(t, handler, "EVL")
@@ -327,6 +342,7 @@ func TestAWindowWhoseDefaultFromFallsBeforeYearOneIsRefused(t *testing.T) {
 // (dispatch://INFRA-2916, the testing round of 2026-11-17 at 5e24362a). The first at whose days
 // all lie in the year 1 is answered.
 func TestAPipelineWhoseShownDaysStartBeforeYearOneIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedMeasuresSettings(t, database)
 	for _, at := range []string{"0001-01-01T12:00:00Z", "0001-01-06T23:59:59Z"} {
@@ -345,6 +361,7 @@ func TestAPipelineWhoseShownDaysStartBeforeYearOneIsRefused(t *testing.T) {
 // TestGetDeliveryMeasuresIsAgentReadable: an agent optimizing against the measures reads them
 // with its bearer, as a person's browser does; an anonymous caller reads nothing.
 func TestGetDeliveryMeasuresIsAgentReadable(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedMeasuresSettings(t, database)
 	target := "/api/v1/delivery/measures?" + measuresFixtureWindow
@@ -361,6 +378,7 @@ func TestGetDeliveryMeasuresIsAgentReadable(t *testing.T) {
 // facets, so the Delivery page reads the population once when no brush narrows the measures.
 // Only computed_at, the moment each answer was computed, may differ.
 func TestGetDeliveryTimelineCarriesTheMeasuresOfItsWindow(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedMeasuresFixture(t, database)
 	for _, query := range []string{
@@ -402,6 +420,7 @@ func TestGetDeliveryTimelineCarriesTheMeasuresOfItsWindow(t *testing.T) {
 // derives from the stored rows; measures_test.go's TestComputeOnStoredContainment holds the same
 // set.
 func TestGetDeliveryMeasuresComputesTheFixture(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	fixture := seedMeasuresFixture(t, database)
 

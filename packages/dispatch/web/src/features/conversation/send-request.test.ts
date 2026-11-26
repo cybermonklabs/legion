@@ -1,14 +1,21 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 
-import { ApiError } from "../../api/client";
+import { ApiError, api } from "../../api/client";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendInterruptedError, SendStoppedError } from "../writes/keyed-write";
-import { requestFor, type SentRequest } from "./send-request";
+import { requestFor, type SentRequest, sendAttempt } from "./send-request";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** A message to the Planner's session, as Send froze it, under key `send-1`. */
 const refused: SentRequest = {
   anchor: undefined,
   ask: { multiple: false, options: [], urgency: "med" },
-  draft: { body: "Status please", mentions: [], replacement: "" },
+  draft: { body: "Status please", replacement: "" },
   edit: undefined,
   kind: "comment",
   owner: { kind: "session", sessionId: "planner-session" },
@@ -35,15 +42,13 @@ test("an unedited Retry after Stop trying or an interrupted reload is the refuse
   }
 });
 
-// After Stop trying, an edit that leaves the message on the wire what it was - here a mention the
-// session message never carries - is still that one write, under its key; an edit of the words
-// is another message, under a key of its own.
+// After Stop trying, an edit that leaves the message on the wire what it was - here a
+// suggestion's replacement, which a session message never carries - is still that one write,
+// under its key; an edit of the words is another message, under a key of its own.
 test("an edited Retry after Stop trying keeps the key only while the wire message is the same", () => {
   const stopped = new SendStoppedError();
   const sameWire = requestFor(refused, stopped, {
-    ...shown({
-      mentions: [{ end: 8, start: 0, target: "session:planner-session", text: "Planner" }],
-    }),
+    ...shown({ replacement: "The replacement it would suggest" }),
     pickedDelivery: "aside",
   });
   expect(sameWire.sendKey).toBe("send-1");
@@ -79,4 +84,32 @@ test("a comment's Retry after Dispatch's refusal is the request the composer sho
   expect(retried.plainDelivery).toBe("aside");
   expect(retried.sendKey).not.toBe("send-1");
   expect(requestFor(undefined, undefined, next).sendKey).not.toBe("send-1");
+});
+
+// A reply under an ask is a comment that names the ask by `ask_id`, the field Dispatch reads for
+// it, and carries no `reply_to`, which Dispatch reads as a comment's id alone. A reply to a
+// comment still names that comment by `reply_to`.
+test("a reply under an ask names the ask by ask_id and no reply_to, and a reply to a comment names reply_to", async () => {
+  const createComment = spyOn(api, "createComment").mockResolvedValue(undefined as never);
+  try {
+    const reply = (parentKind: "ask" | "comment"): SentRequest => ({
+      ...refused,
+      owner: { issueKey: "CORE-1", kind: "issue" },
+      pickedDelivery: undefined,
+      replyTo: {
+        actor: { id: "alice", kind: "user" },
+        excerpt: "",
+        id: `${parentKind}-1`,
+        parentKind,
+      },
+    });
+    await sendAttempt(reply("ask"))({ key: "send-ask" });
+    await sendAttempt(reply("comment"))({ key: "send-comment" });
+    expect(createComment.mock.calls.map(([issueKey, input]) => [issueKey, input])).toStrictEqual([
+      ["CORE-1", { ask_id: "ask-1", body: "Status please" }],
+      ["CORE-1", { body: "Status please", reply_to: "comment-1" }],
+    ]);
+  } finally {
+    createComment.mockRestore();
+  }
 });

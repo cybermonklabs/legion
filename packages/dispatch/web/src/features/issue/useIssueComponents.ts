@@ -8,11 +8,14 @@ import type {
   IssueComponentsInput,
   IssueDetails,
 } from "../../api/types";
-import { predictTree } from "../architecture/architecture-model";
+import { componentsWritten } from "../../api/write-events";
+import { predictTree } from "../architecture/logic/architecture-model";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 export interface IssueComponentsWrite {
-  /** The failed save's message, until the next attempt starts. */
+  /** The failed save's message, or what a save the reader stopped may have done and what a new
+   *  save does, until the next attempt starts. */
   error: string | null;
   pending: boolean;
   /** Saves the attachment; resolves `true` once the server accepted it. */
@@ -57,6 +60,12 @@ export function useIssueComponents(
   const detailKey = ["issue", issue.key] as const;
   const treeKey = ["architecture", issue.project] as const;
   const mutation = useKeyedWrite({
+    // A read of the issue or the tree asked while the save is out waits until Dispatch has taken
+    // it - its answer, or the viewer's `issue.updated` that changed its components - for at most
+    // `SEND_DEADLINE_MS`: Dispatch can answer it before, with the components from before the
+    // press. Only those two queries, by their exact keys: the issue's other reads under its key
+    // (coverage, results, steps) are none of this write's.
+    holds: () => ({ endsOn: componentsWritten(issue.key), keys: [detailKey, treeKey] }),
     // The components line says why a save was refused, beside the picker it came from.
     inline: true,
     label: () => `Components of ${issue.key}`,
@@ -64,9 +73,11 @@ export function useIssueComponents(
     target: () => `issue:${issue.key}`,
     request: (input: IssueComponentsInput) => issuePatchRequest(issue.key, { components: input }),
     onMutate: async (input): Promise<Snapshot> => {
+      // The two queries the save writes, by their exact keys, as the hold names them: a coverage,
+      // results or steps read under the issue's key is none of the save's.
       await Promise.all([
-        queryClient.cancelQueries({ queryKey: detailKey }),
-        queryClient.cancelQueries({ queryKey: treeKey }),
+        queryClient.cancelQueries({ exact: true, queryKey: detailKey }),
+        queryClient.cancelQueries({ exact: true, queryKey: treeKey }),
       ]);
       const snapshot: Snapshot = {
         details: queryClient.getQueryData<IssueDetails>(detailKey),
@@ -101,7 +112,16 @@ export function useIssueComponents(
     },
   });
   return {
-    error: mutation.error === null ? null : mutation.error.message,
+    // A save the reader stopped may have been made, and nothing here makes it again: the next
+    // save is a press of its own. The error's own words are a composer's, of a message.
+    error:
+      mutation.error === null
+        ? null
+        : mutation.error instanceof SendStoppedError
+          ? stoppedWriteNote(`the components of ${issue.key}`, "saved", {
+              anew: "They are read again from Dispatch, and saving them again sends a new write.",
+            })
+          : mutation.error.message,
     pending: mutation.isPending,
     submit: async (input) => {
       try {

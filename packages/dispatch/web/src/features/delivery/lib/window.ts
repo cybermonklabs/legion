@@ -34,7 +34,9 @@ export const PRESET_LABELS: Record<WindowPreset, string> = {
   "84d": "Last 84 days",
 };
 
-function isPreset(value: string | null): value is WindowPreset {
+/** Whether `value` names one of the presets (`WINDOW_PRESETS`): read from the address, and from
+ *  the Window list's options (`WindowControl`). */
+export function isPreset(value: string | null): value is WindowPreset {
   return WINDOW_PRESETS.some((preset) => preset === value);
 }
 

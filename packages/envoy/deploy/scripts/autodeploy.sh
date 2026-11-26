@@ -9,7 +9,6 @@ COMPOSE_DIR="${COMPOSE_DIR:-$REPO/packages/envoy/deploy/compose}"
 BACKUPS="${BACKUPS:-/home/ubuntu/tmp/dispatch-backups}"
 IMAGE="${IMAGE:-ghcr.io/cybermonklabs/legion/envoy}"
 COMPOSE_FILE="$COMPOSE_DIR/dispatch.compose.yml"
-COMPOSE_ENV="$COMPOSE_DIR/.env"
 # pg_dump N dumps servers <= N; the production database is Aurora PostgreSQL 16.
 PG_DUMP_IMAGE="${PG_DUMP_IMAGE:-postgres:16.11-alpine}"
 # SCHEMA_READ_DEADLINE is how long schema_applied polls the migration advisory key before it
@@ -36,6 +35,27 @@ esac
 
 mkdir -p "$BACKUPS"
 
+# The env file owns the deployed tag: the deployer writes it there (env_file set) and reads it back
+# through Compose (deployed_tag), where a value in its own environment would win over the file's and
+# never change, so every poll would deploy the same image again. One it inherits is ignored.
+unset ENVOY_IMAGE_TAG
+
+# env_stage is the staging file a write of the env file holds while it runs (env_file set): it
+# holds the file's settings, secrets among them, so the EXIT trap removes it when the deployer
+# exits. A SIGKILL, which no trap sees, can leave it: its name is git-ignored
+# (packages/envoy/.gitignore), and a later start removes it (env_file sweep, below).
+env_stage=
+trap 'rm -f -- "${env_stage:-}"' EXIT
+
+# File descriptor 3 is the deployer's own standard output. A reader that runs inside a command
+# substitution logs its failure there, so the line reaches the log beside every other line rather
+# than the value its caller reads.
+exec 3>&1
+
+# compose_refusal, the one formatter of a Compose refusal both deploy scripts share.
+# shellcheck source=SCRIPTDIR/compose-refusal.sh
+. "$(dirname "${BASH_SOURCE[0]}")/compose-refusal.sh"
+
 log() {
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
 }
@@ -53,19 +73,191 @@ compose_with_tag() {
   env ENVOY_IMAGE_TAG="$tag" timeout "$duration" docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" "$@"
 }
 
-env_value() {
-  sed -nE "s/^$1=(.*)$/\1/p" "$COMPOSE_ENV"
-}
+# The deployer reads the compose env file only through Compose's own resolution, and only through
+# `docker compose config --format json`, which Compose has had since before 2.12.2, the oldest
+# release it was measured on (`config --environment` needs Compose 2.28): compose_values
+# below for the variables Compose interpolates with (ENVOY_IMAGE_TAG, and ENVOY_IMAGE_SCHEMA, the
+# deployer's own record), resolved_settings for the dispatch service's environment. It writes the
+# file only through env_file, the one function that names its path. autodeploy_test.sh holds the
+# script to that (its static check, and a behavioural row).
 
-deployed_tag() {
-  env_value ENVOY_IMAGE_TAG
-}
-
-set_env_value() {
-  if grep -q "^$1=" "$COMPOSE_ENV"; then
-    sed -i -E "s|^$1=.*|$1=$2|" "$COMPOSE_ENV"
+# config_failed STATUS ERRFILE COMMAND WHAT logs why a `docker compose config` ended with STATUS: a
+# timeout by name; any other failure as Compose that cannot run, by name, when `docker compose
+# version` fails too, else by compose_refusal's reason from ERRFILE, with COMMAND, the one an
+# operator runs to read Compose's own message; WHAT ends the line ("not deploying <sha>"). Compose
+# is probed here, after a read failed, and not before every read: each `docker compose` starts the
+# docker CLI and the Compose plugin twice, and a pass that deploys reads the configuration twice.
+# Its line goes to file descriptor 3, as the readers that call it run inside a command substitution.
+config_failed() {
+  if (($1 == 124)); then
+    log "docker compose config did not answer within 60 s; run \`$3\` to see why; $4" >&3
+  elif ! docker compose version >/dev/null 2>&1; then
+    log "docker compose cannot run (docker compose version failed); the deployer reads Dispatch's settings through Compose's own configuration; $4" >&3
   else
-    printf '%s=%s\n' "$1" "$2" >>"$COMPOSE_ENV"
+    log "Compose refused $COMPOSE_FILE with the env file in $COMPOSE_DIR: $(compose_refusal "$2" "$1" "$3"); $4" >&3
+  fi
+}
+
+# environment_values SERVICE WHAT NAME... reads Compose's JSON (`config --format json`) on its
+# standard input and prints the environment value of each NAME in SERVICE, one a line, each after
+# a `=` so that no line is empty (the caller strips it): a `$` Compose prints doubled is halved
+# back, and a name the service does not set is empty. It names what it could not read, never a
+# value - one of its own three causes, or python3's exit status - and fails; WHAT ends that line.
+environment_values() {
+  local service=$1 what=$2 err status why values
+  shift 2
+  err=$(mktemp)
+  values=$(python3 -c '
+import json, sys
+service = sys.argv[1]
+try:
+    environment = json.load(sys.stdin)["services"][service].get("environment") or {}
+except ValueError:
+    sys.exit("its answer is not JSON")
+except (KeyError, TypeError, AttributeError):
+    sys.exit("its answer holds no " + service + " service")
+for name in sys.argv[2:]:
+    value = (environment.get(name) or "").replace("$$", "$")
+    if "\n" in value:
+        sys.exit("the value of " + name + " holds a line break")
+    print("=" + value)
+' "$service" "$@" 2>"$err") || {
+    status=$?
+    why=$(tail -n 1 "$err")
+    case $why in
+      "its answer is not JSON" | "its answer holds no $service service" | "the value of "[A-Z_]*" holds a line break") ;;
+      *) why="python3 exited $status" ;;
+    esac
+    rm -f "$err"
+    log "could not read the $service service's environment from docker compose config: $why; $what" >&3
+    return 1
+  }
+  rm -f "$err"
+  printf '%s\n' "$values"
+}
+
+# compose_values WHAT NAME... prints, one a line after a `=`, each NAME as Compose interpolates it
+# from the env file and the deployer's own environment (which holds no ENVOY_IMAGE_TAG: unset at
+# start): `docker compose config --format json` over a document of the deployer's own on its
+# standard input, a service that is never started whose environment names each as `${NAME:-}`,
+# with COMPOSE_DIR as the project directory, so Compose reads the env file it reads for
+# dispatch.compose.yml. On a failure it logs why, by name and with no text of Compose's or of the
+# file, ending the line with WHAT, and fails, printing nothing.
+compose_values() {
+  local what=$1 err status answer document name command
+  shift
+  command="docker compose -p $COMPOSE_PROJECT -f $COMPOSE_FILE config"
+  document=$'services:\n  read:\n    image: scratch\n    environment:'
+  for name in "$@"; do
+    document+=$'\n'"      $name: \${$name:-}"
+  done
+  err=$(mktemp)
+  answer=$(printf '%s\n' "$document" |
+    timeout 60 docker compose --project-directory "$COMPOSE_DIR" -p "$COMPOSE_PROJECT-read" -f - config --format json 2>"$err") || {
+    status=$?
+    config_failed "$status" "$err" "$command" "$what"
+    rm -f "$err"
+    return 1
+  }
+  rm -f "$err"
+  environment_values read "$what" "$@" <<<"$answer"
+}
+
+# deployed_tag prints the tag the env file names, ENVOY_IMAGE_TAG as Compose interpolates it, the
+# image that serves now; WHAT ends the line it logs when it cannot read it, and it then fails.
+deployed_tag() {
+  local value
+  value=$(compose_values "$1" ENVOY_IMAGE_TAG) || return 1
+  printf '%s' "${value#=}"
+}
+
+# env_file is the one function that names the compose env file's path.
+#
+# `env_file sweep` removes every regular file the deployer's user owns in COMPOSE_DIR whose name
+# begins `.env.stage.` and is older than one minute: a staging file a deployer killed by a signal
+# no trap sees left, but never a staging file a concurrent writer just opened. Nothing else in the
+# directory is touched.
+#
+# `env_file set NAME VALUE` makes VALUE the value Compose reads for NAME from the env file: every
+# `NAME=` line, with blanks before it or around `=` or an `export` prefix, is removed and
+# `NAME=VALUE` appended (a `NAME: value` line, which Compose also reads, is kept, and loses to the
+# appended line, which Compose reads last). VALUE is one of the deployer's own, a tag or a schema
+# record, which needs no quoting. The new file is written to a staging file beside the env file,
+# `.env.stage.XXXXXX`, mode 0600 (mktemp's), which env_stage names so the EXIT trap above removes
+# it, and renamed over the env file, which on one filesystem cannot fail for a reason the write did
+# not already meet; the env file then gets back the target's mode, following an env-file symlink
+# before the rename replaces that link.
+env_file() {
+  local env_path="$COMPOSE_DIR/.env" stage_prefix=".env.stage." mode status=0
+  case $1 in
+    sweep)
+      find "$COMPOSE_DIR" -maxdepth 1 -type f -user "$(id -u)" -name "$stage_prefix*" -mmin +1 -delete
+      ;;
+    set)
+      # Follow a symlink so the replacement receives the target's private mode, not the link's 777.
+      mode=$(stat -L -c %a "$env_path") || return 1
+      if env_stage=$(mktemp "$COMPOSE_DIR/${stage_prefix}XXXXXX"); then
+        grep -vE "^[[:space:]]*(export[[:space:]]+)?$2[[:space:]]*=" "$env_path" >"$env_stage" || status=$?
+        if ((status > 1)) || ! printf '%s=%s\n' "$2" "$3" >>"$env_stage" || ! mv -f "$env_stage" "$env_path"; then
+          rm -f -- "$env_stage"
+          status=2
+        fi
+      else
+        status=2
+      fi
+      env_stage=
+      ((status < 2)) || return 1
+      chmod "$mode" "$env_path" || log "wrote $2 to the env file in $COMPOSE_DIR, and could not give it back its mode $mode; it is 0600"
+      ;;
+    *)
+      log "env_file: no action '$1'"
+      return 2
+      ;;
+  esac
+}
+
+# resolved_settings SHA reads the five settings deploy() checks, as Compose resolves them with the
+# candidate SHA's tag (`docker compose config --format json` over the checked-out compose file and
+# the env file, the dispatch service's environment), into the associative array `resolved`. The
+# JSON, which holds DATABASE_URL with its password, goes from Compose into a shell variable and to
+# python3 on its standard input, never into a process argument or the log. It refuses, logging why
+# and no text of Compose's or of the file: when `docker compose` cannot run or python3 is not on
+# PATH, by name; when Compose does not answer within 60 s; when Compose refuses the configuration
+# (compose_refusal); and when python3 cannot read the dispatch service's environment from the
+# answer (environment_values).
+declare -A resolved=()
+resolved_settings() {
+  local sha=$1 err answer values value i=0 status command
+  local -a names=(DISPATCH_SERVER_URL ENVOY_ACCOUNT_GOOGLE_AUDIENCE ENVOY_ACCOUNT_TOKEN_FILE DATABASE_URL DISPATCH_PORT)
+  command="ENVOY_IMAGE_TAG=$sha docker compose -p $COMPOSE_PROJECT -f $COMPOSE_FILE config"
+  err=$(mktemp)
+  answer=$(compose_with_tag "$sha" 60 config --format json 2>"$err") || {
+    status=$?
+    config_failed "$status" "$err" "$command" "not deploying $sha"
+    rm -f "$err"
+    return 1
+  }
+  rm -f "$err"
+  values=$(environment_values dispatch "not deploying $sha" "${names[@]}" <<<"$answer") || return 1
+  resolved=()
+  while IFS= read -r value; do
+    resolved[${names[i]}]=${value#=}
+    i=$((i + 1))
+  done <<<"$values"
+  ((i == ${#names[@]})) || {
+    log "read $i of the dispatch service's ${#names[@]} settings from docker compose config; not deploying $sha"
+    return 1
+  }
+  return 0
+}
+
+# python3_ready WHAT says whether the deployer can read Compose's configuration with python3,
+# refused by name with WHAT ending the line. That `docker compose` runs at all is asked only once a
+# read of the configuration fails (config_failed).
+python3_ready() {
+  if ! command -v python3 >/dev/null; then
+    log "python3 is not on PATH; the deployer reads Dispatch's settings from docker compose config with it; $1"
+    return 1
   fi
 }
 
@@ -312,7 +504,8 @@ wait_for_health() {
 rollback() {
   local previous="$1"
   local dispatchPort="$2"
-  sed -i -E "s|^ENVOY_IMAGE_TAG=.*|ENVOY_IMAGE_TAG=$previous|" "$COMPOSE_ENV"
+  env_file set ENVOY_IMAGE_TAG "$previous" ||
+    log "could not write ENVOY_IMAGE_TAG=$previous to the env file in $COMPOSE_DIR; rolling back with the tag Compose resolves there"
   if ! compose 300 up -d --no-deps dispatch; then
     log "rollback compose failed for $previous"
     return 1
@@ -383,23 +576,48 @@ deploy() {
   local redirect
   local expected
 
-  previous=$(deployed_tag)
-  origin=$(env_value DISPATCH_SERVER_URL)
+  # The tag that serves now, as Compose resolves it, which a failed deploy rolls back to: read by
+  # run_once, which refuses by name a read that fails, so an empty one here is a file naming none.
+  previous=$2
+  # The settings below are read from Compose's own resolution of the checked-out compose file and
+  # .env with the candidate's tag (resolved_settings), the configuration `up` then starts, never from
+  # the .env's text: Compose expands `${...}`, unquotes, takes an `export` prefix and the shell's
+  # value over the file's, and only its reading is what the container gets.
+  resolved_settings "$sha" || return 1
+  origin=${resolved[DISPATCH_SERVER_URL]}
   if [[ -z "$origin" ]]; then
-    log "DISPATCH_SERVER_URL is missing from $COMPOSE_ENV; not deploying $sha"
+    log "Compose resolves DISPATCH_SERVER_URL empty from the env file in $COMPOSE_DIR; not deploying $sha"
     return 1
   fi
-  databaseUrl=$(env_value DATABASE_URL)
+  # Dispatch starts only with its identity at the Envoy listener (dispatch.compose.yml's entrypoint),
+  # and a container that refuses restart-loops under `restart: unless-stopped`, as the previous
+  # image's rollback under the same file would: a .env Compose reads neither setting from is refused
+  # here, before the backup, and the image that serves keeps serving.
+  if [[ -z "${resolved[ENVOY_ACCOUNT_GOOGLE_AUDIENCE]}${resolved[ENVOY_ACCOUNT_TOKEN_FILE]}" ]]; then
+    log "Compose resolves neither ENVOY_ACCOUNT_GOOGLE_AUDIENCE nor ENVOY_ACCOUNT_TOKEN_FILE from the env file in $COMPOSE_DIR, and Dispatch refuses to start without its identity at the Envoy listener (see packages/envoy/deploy/README.md, \"Dispatch's identity at the Envoy listener\"); not deploying $sha"
+    return 1
+  fi
+  databaseUrl=${resolved[DATABASE_URL]}
   if [[ -z "$databaseUrl" ]]; then
-    log "DATABASE_URL is missing from $COMPOSE_ENV; not deploying $sha"
+    log "Compose resolves DATABASE_URL empty from the env file in $COMPOSE_DIR; not deploying $sha"
     return 1
   fi
   if ! database_url_split "$databaseUrl"; then
-    log "DATABASE_URL in $COMPOSE_ENV is not in the one form the deployer accepts, the only one in which it can keep the password off its database clients' process arguments; see packages/envoy/deploy/README.md, \"Auto-deployer\", for the form; not deploying $sha"
+    log "DATABASE_URL in the env file in $COMPOSE_DIR is not in the one form the deployer accepts, the only one in which it can keep the password off its database clients' process arguments; see packages/envoy/deploy/README.md, \"Auto-deployer\", for the form; not deploying $sha"
     return 1
   fi
-  dispatchPort=$(env_value DISPATCH_PORT)
-  dispatchPort="${dispatchPort:-8766}"
+  # The port the health and login checks dial, as Compose resolves it for the container (its default
+  # 8766 included), so `DISPATCH_PORT="8766"` or `DISPATCH_PORT=${PORT}` dials the port Dispatch
+  # listens on and a good deploy is not rolled back.
+  dispatchPort=${resolved[DISPATCH_PORT]}
+  if [[ ! "$dispatchPort" =~ ^[0-9]{1,5}$ ]]; then
+    log "Compose resolves DISPATCH_PORT to '$dispatchPort' from the env file in $COMPOSE_DIR, which is no port; not deploying $sha"
+    return 1
+  fi
+  if [[ -z "$previous" ]]; then
+    log "Compose resolves no ENVOY_IMAGE_TAG from the env file in $COMPOSE_DIR, the image that serves now and the one a failed deploy rolls back to; not deploying $sha"
+    return 1
+  fi
   before=$(schema_applied) || {
     status=$?
     log "could not read the schema version (status $status); not deploying $sha"
@@ -409,17 +627,18 @@ deploy() {
   # deployed tag was running against when the deployer first tried to replace it (schema_applied,
   # above). Kept while that tag stays deployed, it is what a rollback to it needs: a retry after a
   # failed deploy that migrated starts from the moved schema. A value the deployer before this one
-  # wrote is a bare max(version), which roll_back_or_stop compares the old way.
-  recorded=$(env_value ENVOY_IMAGE_SCHEMA)
+  # wrote is a bare max(version), which roll_back_or_stop compares the old way. run_once read it,
+  # in the one read of the env file that also gave the deployed tag.
+  recorded=$3
   if [[ -n "$recorded" && "${recorded%:*}" == "$previous" ]]; then
     baseline="${recorded##*:}"
     if [[ ! "$baseline" =~ ^[0-9]+-[0-9]+-[0-9a-f]{64}$ && ! "$baseline" =~ ^[0-9]+$ ]]; then
-      log "ENVOY_IMAGE_SCHEMA in $COMPOSE_ENV is '$recorded', not <tag>:<max>-<count>-<digest>; not deploying $sha"
+      log "ENVOY_IMAGE_SCHEMA in the env file in $COMPOSE_DIR is '$recorded', not <tag>:<max>-<count>-<digest>; not deploying $sha"
       return 1
     fi
   else
     baseline="$before"
-    if ! set_env_value ENVOY_IMAGE_SCHEMA "$previous:$baseline"; then
+    if ! env_file set ENVOY_IMAGE_SCHEMA "$previous:$baseline"; then
       log "could not record the schema version $previous runs against; not deploying $sha"
       return 1
     fi
@@ -453,7 +672,7 @@ deploy() {
     roll_back_or_stop "$sha" "$previous" "$baseline" "$dispatchPort"
     return 1
   fi
-  if ! sed -i -E "s|^ENVOY_IMAGE_TAG=.*|ENVOY_IMAGE_TAG=$sha|" "$COMPOSE_ENV"; then
+  if ! env_file set ENVOY_IMAGE_TAG "$sha"; then
     log "could not persist deployed tag $sha"
     roll_back_or_stop "$sha" "$previous" "$baseline" "$dispatchPort"
     return 1
@@ -462,23 +681,36 @@ deploy() {
 }
 
 run_once() {
-  local sha
+  local sha deployed recorded values
   if sha=$(newest_published_main); then
-    if [[ "$sha" != "$(deployed_tag)" ]]; then
-      log "main has a newer published image: $sha (deployed $(deployed_tag))"
-      deploy "$sha"
+    python3_ready "not deploying $sha" || return 1
+    # A tag that cannot be read is refused by name, never taken for "no tag". The schema record
+    # deploy compares comes from the same read of the env file, which no step before it writes.
+    values=$(compose_values "could not read the deployed ENVOY_IMAGE_TAG; not deploying $sha" ENVOY_IMAGE_TAG ENVOY_IMAGE_SCHEMA) || return 1
+    { IFS= read -r deployed && IFS= read -r recorded; } <<<"$values"
+    deployed=${deployed#=}
+    if [[ "$sha" != "$deployed" ]]; then
+      log "main has a newer published image: $sha (deployed $deployed)"
+      deploy "$sha" "$deployed" "${recorded#=}"
     fi
   else
     log "no published image among the last 30 main commits"
   fi
 }
 
+# A staging file a killed deployer left holds the env file's secrets: remove it before anything else.
+env_file sweep || log "could not remove a staging file a stopped deployer left in $COMPOSE_DIR"
+
 if [[ "$once" == true ]]; then
   run_once
   exit 0
 fi
 
-log "autodeploy started; deployed=$(deployed_tag)"
+if python3_ready "the deployer starts all the same"; then
+  log "autodeploy started; deployed=$(deployed_tag "the deployer starts all the same" || printf 'unread')"
+else
+  log "autodeploy started"
+fi
 while true; do
   run_once
   sleep "$POLL"

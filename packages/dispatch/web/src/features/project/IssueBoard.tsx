@@ -15,6 +15,7 @@ import {
   type CSSProperties,
   memo,
   type ReactNode,
+  type RefObject,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -23,7 +24,7 @@ import {
 } from "react";
 import { Link } from "react-router-dom";
 
-import type { UserState } from "../../api/types";
+import type { StatusChangeAnswer, UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { Chip } from "../../components/Chip";
 import { ControlRow } from "../../components/ControlRow";
@@ -53,13 +54,14 @@ import {
 } from "../../theme/classes";
 import { ClaimChip } from "../issue/ClaimChip";
 import { issuePriority } from "../issue/issue-priority";
-import { PriorityControl } from "../issue/PriorityControl";
+import { PRIORITY_TRIGGER_SELECTOR, PriorityControl } from "../issue/PriorityControl";
 import { ProgressChips } from "../issue/ProgressChips";
+import { ParentStatusDialog } from "../issue/parent-status/ParentStatusDialog";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import { closeRefPreview, referenceTriggerProps } from "../refs/RefPreview";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
-import { closestMatching } from "../shell/roving";
+import { closestMatching, focusOnDocument } from "../shell/roving";
 import { useUserPreference } from "../shell/userPreference";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
 import {
@@ -74,8 +76,10 @@ import {
 import {
   type BoardBy,
   type BoardCell,
+  type BoardChange,
   type BoardColumn,
   type BoardLine,
+  type BoardPlace,
   boardLines,
   cardDropId,
   cardIn,
@@ -724,10 +728,36 @@ interface MoveFollow {
   readonly laneId: string | null;
   /** The live region still has to read where the view's sort put the card. */
   announce: boolean;
+  /** The element the focus stood on in the card the press moved, or the one the rule's question
+   *  took it from, while the focus is to follow the card; `undefined` where it is not. */
+  from: Element | undefined;
   /** The node the follow focused last; `undefined` until the move is drawn. */
   focused: HTMLElement | null | undefined;
   /** The move's write and the listings' reads after it are done. */
   settled: boolean;
+}
+
+/** Where the rank puts a card in its cell once a move has placed it, or undefined where the view's
+ *  sort does (`MovePlan`). */
+type MovePosition = Extract<MovePlan, { kind: "move" }>["position"];
+
+/**
+ * Draws nothing. While the rule's question is open, `tookFocusFrom` holds the element the question
+ * took the focus from as it opened, which the question gives the focus back to as it closes
+ * (`useDialog`). Once the question has closed, it holds `null`. The Board draws this just before
+ * the question, in one fragment with it. A commit runs the layout effects of siblings in their
+ * order, so this effect reads the focus before the question's own effect takes it. A development
+ * build's StrictMode runs the effects of a new subtree a second time, the whole fragment at once:
+ * the question has given the focus back by then, so the second read finds the same element.
+ */
+function QuestionOpening({ tookFocusFrom }: { tookFocusFrom: RefObject<Element | null> }): null {
+  useLayoutEffect(() => {
+    tookFocusFrom.current = document.activeElement;
+    return () => {
+      tookFocusFrom.current = null;
+    };
+  }, [tookFocusFrom]);
+  return null;
 }
 
 /**
@@ -741,7 +771,9 @@ interface MoveFollow {
  * the rank only where the rank decides where the card lands, which is while the view sorts by
  * Place, first to last (`rankRefusal`); by Legion phase the daemon sets each card's column, and
  * the one move taken is one within Queue. A refused move says why over the Board and in its live
- * region, where every key move is read out too, with the place the card lands.
+ * region, where every key move is read out too, with the place the card lands. A move of the
+ * status of a card with a parent or an open child asks Dispatch's rule first, and the Board draws
+ * the rule's question where the rule would refuse it (`useBoardMoves`).
  *
  * A live change to one issue draws that issue's card alone: the cards are memoised on what they
  * draw (`sameCard`), the sensors' options are made once, and a card compares the time texts it
@@ -783,7 +815,7 @@ export function IssueBoard({
    *  the reader's own move, which the anchor leaves alone, as a table does (`useDataTable`). */
   viewKey: string;
 }): ReactNode {
-  const { error, move } = useBoardMoves(project);
+  const { error, move, question } = useBoardMoves(project);
   const sensors = useSensors(
     useSensor(MouseSensor, MOUSE_OPTIONS),
     useSensor(TouchSensor, TOUCH_OPTIONS)
@@ -873,36 +905,101 @@ export function IssueBoard({
       })
     );
   };
-  /** Takes a planned move: a refusal says why, and a move is written. A move answers once its
-   *  write and the listings' reads after it are done. */
-  const take = (plan: MovePlan | undefined): Promise<void> | undefined => {
+  /** The Board as the last draw has it. A move the rule's question holds is planned again after
+   *  a confirmed status change (`take`), and reads the rows as they stand then. */
+  const latest = useRef({ columns, rows, rules });
+  useLayoutEffect(() => {
+    latest.current = { columns, rows, rules };
+  });
+  /** A refused move says why, over the Board and in its live region. */
+  const refuse = (text: string) => {
+    setRefusal(text);
+    setAnnouncement(text);
+  };
+  /** Takes a planned move to `to`: a refusal says why, and a move is written. `placed` is told
+   *  each time the move places its card, with the place the rank gives it in its cell, or
+   *  undefined where the view's sort puts it. A move answers once its write and the listings'
+   *  reads after it are done. */
+  const take = (
+    plan: MovePlan | undefined,
+    to: BoardPlace,
+    placed?: (position: MovePosition) => void
+  ): Promise<void> | undefined => {
     if (plan === undefined) return;
     if (plan.kind === "refused") {
-      setRefusal(plan.text);
-      setAnnouncement(plan.text);
+      refuse(plan.text);
       return;
     }
     setRefusal(undefined);
-    return move(plan.key, plan.change);
+    const { key } = plan;
+    let { position } = plan;
+    // A status change that moves other issues with the card - its open children - moves them into
+    // cells of the Board, so the move is planned again with those issues there: the rank then
+    // names a neighbour Dispatch holds, and the place the card lands counts them.
+    const planAgain = (answer: StatusChangeAnswer | null): BoardChange | undefined => {
+      const now = latest.current;
+      const others = new Map(
+        (answer?.changed ?? []).filter((entry) => entry.key !== key).map((e) => [e.key, e])
+      );
+      const items =
+        others.size === 0
+          ? now.rows
+          : now.rows.map((item) => {
+              const entry = others.get(item.issue.key);
+              return entry === undefined
+                ? item
+                : { ...item, issue: { ...item.issue, parent: entry.parent, status: entry.status } };
+            });
+      const again = planMove(
+        boardLines(items, now.columns, now.rules.by, now.rules.lanes),
+        now.rules,
+        key,
+        to
+      );
+      if (again?.kind !== "move") return undefined;
+      position = again.position;
+      return again.change;
+    };
+    return move(key, planAgain, placed === undefined ? undefined : () => placed(position));
   };
   const onDragEnd = ({ active, over }: DragEndEvent) => {
     landCard();
     if (over === null) return;
     const key = String(active.id);
     const place = dropPlace(lines, key, String(over.id));
-    if (place !== undefined) void take(planMove(lines, rules, key, place));
+    if (place !== undefined) void take(planMove(lines, rules, key, place), place);
   };
 
   // The card the focus follows once a key move has been drawn: a move into another column draws
   // the card again under it, so the old node cannot keep the focus, and a card moved into a rail,
-  // or out of the view, has no node, so the focus lands on the column or rail. Where the view's
-  // sort puts the card (`announce`), the live region reads its place once the move is drawn.
-  // The follow holds until the write and the reads after it are done (`settled`). A view that
-  // lists done issues reads its open and its done issues apart, so a card moved out of Done can
-  // leave the page with one read and come back with the next. While the follow holds, a card
-  // drawn again takes back the focus that its old node left on the page's body, or that the
-  // follow put on its column while the card was not drawn.
+  // or out of the view, has no node, so the focus lands on the column or rail. A move sets it
+  // only once it has placed the card (its `onPlaced`), and has the focus follow the card only
+  // while the focus then stands in the card the press moved (`pressed`): on the card itself, or
+  // on a control inside it, such as the card's link that a Tab reaches while the move's dry run is
+  // out. The move draws the card in its new column, which takes that control away with the card,
+  // so the focus goes with the card. A move has it follow too where the rule's question took the
+  // focus from that card or from a control inside it (`questionTookFocusFrom`). The question's
+  // choice places the card, and the question gives the focus back where it took it from as it
+  // closes (`useDialog`). The follow's `from` is the element the focus stood on in that card, or
+  // the one the question took it from. Another dialog gives a move no focus, and nor does a
+  // question that took the focus from the body or from another control. The move reads this as it
+  // places the card, before the Board draws the card in its new place and so takes the focus off
+  // that card. So a move that ends without placing the card takes no focus later, and nor does a
+  // move the rule's dry run checks first, placed once the dry run answers, where the reader has
+  // moved the focus out of the card by then - a key to another card, a Tab out of the card, a
+  // click, a click on a blank spot that leaves the focus on the body too. The effect moves the
+  // focus only while the focus still stands on the follow's `from`, or on the body where that
+  // element's going with the card left it, or where the question's hand-back left it once that
+  // element had gone. Where the view's sort puts the card (`announce`), the live region reads its
+  // place once the move is drawn. The follow holds until the write and the reads after it are
+  // done (`settled`). A view that lists done issues reads its open and its done issues apart, so
+  // a card moved out of Done can leave the page with one read and come back with the next. While
+  // the follow holds, a card drawn again takes back the focus that its old node left on the
+  // page's body, or that the follow put on its column while the card was not drawn.
   const afterMove = useRef<MoveFollow | null>(null);
+  /** The element the rule's question took the focus from as it opened, while the question is
+   *  open, else `null` (`QuestionOpening`). */
+  const questionTookFocusFrom = useRef<Element | null>(null);
   const boardNode = (selector: string) => boardRef.current?.querySelector<HTMLElement>(selector);
   /** The `data-board-column` selector for `column`, scoped to `laneId` (`null` outside a
    *  swimlane). */
@@ -936,18 +1033,29 @@ export function IssueBoard({
         )
       );
     }
-    const target =
-      boardNode(`[data-board-card="${pending.key}"]`) ??
-      boardNode(columnSelector(pending.column, pending.laneId)) ??
-      null;
-    const active = document.activeElement;
-    if (
-      pending.focused === undefined ||
-      (target !== pending.focused &&
-        (active === null || active === document.body || active === pending.focused))
-    ) {
-      target?.focus();
-      pending.focused = target;
+    const { from } = pending;
+    if (from !== undefined) {
+      const target =
+        boardNode(`[data-board-card="${pending.key}"]`) ??
+        boardNode(columnSelector(pending.column, pending.laneId)) ??
+        null;
+      const active = document.activeElement;
+      if (pending.focused === undefined) {
+        // The first draw: the focus goes with the card only while it still stands where the
+        // press left it, or on the body where that element's going with the card left it.
+        if (active === from || (!from.isConnected && focusOnDocument())) {
+          target?.focus();
+          pending.focused = target;
+        } else {
+          pending.from = undefined;
+        }
+      } else if (
+        target !== pending.focused &&
+        (active === null || active === document.body || active === pending.focused)
+      ) {
+        target?.focus();
+        pending.focused = target;
+      }
     }
     if (pending.settled) afterMove.current = null;
   });
@@ -1003,8 +1111,10 @@ export function IssueBoard({
     )?.focus();
   };
   const moveFocused = (direction: MoveDirection) => {
-    const key = cardAround(document.activeElement)?.dataset.boardCard;
-    if (key === undefined) return;
+    // The card the press moves: the focus stands on it, or on a control inside it.
+    const pressed = cardAround(document.activeElement);
+    const key = pressed?.dataset.boardCard;
+    if (pressed === null || key === undefined) return;
     const laneId = currentLaneId();
     const line = lineOf(laneId);
     const found = line === undefined ? undefined : cardIn(line.cells, key);
@@ -1018,36 +1128,48 @@ export function IssueBoard({
       direction === "down" || direction === "up" ? "within" : "across"
     );
     if (refused !== undefined) {
-      take({ kind: "refused", text: refused });
+      refuse(refused);
       return;
     }
     const target = keyboardMove(keyColumns(line), { column: cell.column.id, index }, direction);
     if (target === undefined) return;
-    const plan = planMove(lines, rules, key, {
-      column: target.column,
-      lane: cell.lane,
-      index: target.index,
+    const to: BoardPlace = { column: target.column, lane: cell.lane, index: target.index };
+    // The move tells `placed` once it has placed the card in the listings: in the call itself,
+    // before its request goes out, or, for a move the rule's question checks first, after the dry
+    // run or a choice of the question. So where the rank decides the place the card lands, the
+    // live region reads it at once, from the listings the move has just written - after a choice,
+    // with each other issue it moved already in its cell, so the count holds them - and elsewhere
+    // the view's sort puts the card, which the drawn move tells (`announce`). A move that ends
+    // without placing the card (kept, cancelled or refused) says nothing and takes no focus.
+    let follow: MoveFollow | undefined;
+    const moved = take(planMove(lines, rules, key, to), to, (position) => {
+      if (position !== undefined)
+        setAnnouncement(
+          announceMove(key, target.column, columnTitle(columns, target.column), position)
+        );
+      // Read now, before the Board draws the move: the draw that follows takes the focus off the
+      // press's card, so after it a focus on the body cannot tell that draw from a reader's
+      // click. A choice of the question places the card while the question is still open, so
+      // `questionTookFocusFrom` still holds what the question took the focus from.
+      const active = document.activeElement;
+      const stood = pressed.contains(active) ? active : questionTookFocusFrom.current;
+      const from = stood !== null && pressed.contains(stood) ? stood : undefined;
+      // A move that takes no focus and has its place told leaves the follow of an earlier move
+      // as it is: the effect checks that follow against its own press.
+      if (position !== undefined && from === undefined) return;
+      follow = {
+        announce: position === undefined,
+        column: target.column,
+        focused: undefined,
+        from,
+        key,
+        laneId,
+        settled: false,
+      };
+      afterMove.current = follow;
     });
-    const moved = take(plan);
-    if (plan?.kind !== "move") return;
-    // The move writes the listing at once, so where the rank decides the place the card lands
-    // is known now; elsewhere the view's sort puts it, which the drawn move tells.
-    const { position } = plan;
-    if (position !== undefined)
-      setAnnouncement(
-        announceMove(key, target.column, columnTitle(columns, target.column), position)
-      );
-    const follow: MoveFollow = {
-      key,
-      column: target.column,
-      laneId,
-      announce: position === undefined,
-      focused: undefined,
-      settled: false,
-    };
-    afterMove.current = follow;
     void moved?.then(() => {
-      follow.settled = true;
+      if (follow !== undefined) follow.settled = true;
     });
   };
   const focusedCard = () => cardAround(document.activeElement) !== null;
@@ -1142,7 +1264,10 @@ export function IssueBoard({
       id: "priority",
       keys: "p",
       label: "Focus the card's priority",
-      run: () => cardAround(document.activeElement)?.querySelector("select")?.focus(),
+      run: () =>
+        cardAround(document.activeElement)
+          ?.querySelector<HTMLElement>(PRIORITY_TRIGGER_SELECTOR)
+          ?.focus(),
       when: focusedCard,
     },
     {
@@ -1180,78 +1305,91 @@ export function IssueBoard({
   ]);
 
   return (
-    <section aria-label="Project board" className="min-w-0" data-board-by={by} ref={boardRef}>
-      {error === undefined ? null : (
-        <div
-          aria-live="assertive"
-          className={`mb-4 rounded-xl border px-4 py-3 text-sm ${card} ${textPrimaryOnSurface}`}
-          role="alert"
-        >
-          {error}
-        </div>
+    <>
+      {/* The question belongs to the Board's moves (`useBoardMoves`), not to the listing's read:
+          it is drawn whatever the listing's read shows, so a read that fails while it is open
+          leaves it to be answered, and its answer ends the move that holds every later read of
+          the listing. `QuestionOpening` comes first, so it reads what the question takes the
+          focus from (`afterMove`). */}
+      {question === undefined ? null : (
+        <>
+          <QuestionOpening tookFocusFrom={questionTookFocusFrom} />
+          <ParentStatusDialog question={question} />
+        </>
       )}
-      {/* A refusal is read out in the live region below, so this line is for the eye alone. */}
-      {refusal === undefined ? null : (
-        <p
-          className={`mb-4 rounded-xl border px-4 py-3 text-sm ${card} ${textPrimaryOnSurface}`}
-          data-testid="board-refusal"
-        >
-          {refusal}
+      <section aria-label="Project board" className="min-w-0" data-board-by={by} ref={boardRef}>
+        {error === undefined ? null : (
+          <div
+            aria-live="assertive"
+            className={`mb-4 rounded-xl border px-4 py-3 text-sm ${card} ${textPrimaryOnSurface}`}
+            role="alert"
+          >
+            {error}
+          </div>
+        )}
+        {/* A refusal is read out in the live region below, so this line is for the eye alone. */}
+        {refusal === undefined ? null : (
+          <p
+            className={`mb-4 rounded-xl border px-4 py-3 text-sm ${card} ${textPrimaryOnSurface}`}
+            data-testid="board-refusal"
+          >
+            {refusal}
+          </p>
+        )}
+        <p aria-label="Board announcements" aria-live="polite" className="sr-only" role="status">
+          <span key={announcement.count}>{announcement.text}</span>
         </p>
-      )}
-      <p aria-label="Board announcements" aria-live="polite" className="sr-only" role="status">
-        <span key={announcement.count}>{announcement.text}</span>
-      </p>
-      <DndContext
-        accessibility={BOARD_ACCESSIBILITY}
-        collisionDetection={boardCollisionDetection}
-        onDragCancel={landCard}
-        onDragEnd={onDragEnd}
-        onDragStart={liftCard}
-        sensors={sensors}
-      >
-        {/* The reader's place (R11): a card is a row and its column or lane its group. */}
-        <ViewportAnchor
-          enabled={() => !inFlight.current && drawnView.current === viewKey}
-          group="data-board-place"
-          holdAtTop
-          item="data-board-card"
+        <DndContext
+          accessibility={BOARD_ACCESSIBILITY}
+          collisionDetection={boardCollisionDetection}
+          onDragCancel={landCard}
+          onDragEnd={onDragEnd}
+          onDragStart={liftCard}
+          sensors={sensors}
         >
-          {lanes ? (
-            <div className="flex flex-col gap-6" data-testid="board-lanes-container">
-              {lines.map((line) => {
-                const lane = line.lane ?? null;
-                const count = line.cells.reduce((total, cell) => total + cell.items.length, 0);
-                return (
-                  <section aria-label={`${laneLabel(lane)} lane`} key={laneKey(lane)}>
-                    <h2
-                      className={`mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide ${textSecondaryOnSurface}`}
-                    >
-                      {laneLabel(lane)}
-                      <Pill>{count}</Pill>
-                    </h2>
-                    <BoardLineView
-                      by={by}
-                      dragging={dragging}
-                      line={line}
-                      testId="board-lane-scroll-container"
-                      userState={userState}
-                    />
-                  </section>
-                );
-              })}
-            </div>
-          ) : lines[0] === undefined ? null : (
-            <BoardLineView
-              by={by}
-              dragging={dragging}
-              line={lines[0]}
-              testId="board-scroll-container"
-              userState={userState}
-            />
-          )}
-        </ViewportAnchor>
-      </DndContext>
-    </section>
+          {/* The reader's place (R11): a card is a row and its column or lane its group. */}
+          <ViewportAnchor
+            enabled={() => !inFlight.current && drawnView.current === viewKey}
+            group="data-board-place"
+            holdAtTop
+            item="data-board-card"
+          >
+            {lanes ? (
+              <div className="flex flex-col gap-6" data-testid="board-lanes-container">
+                {lines.map((line) => {
+                  const lane = line.lane ?? null;
+                  const count = line.cells.reduce((total, cell) => total + cell.items.length, 0);
+                  return (
+                    <section aria-label={`${laneLabel(lane)} lane`} key={laneKey(lane)}>
+                      <h2
+                        className={`mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide ${textSecondaryOnSurface}`}
+                      >
+                        {laneLabel(lane)}
+                        <Pill>{count}</Pill>
+                      </h2>
+                      <BoardLineView
+                        by={by}
+                        dragging={dragging}
+                        line={line}
+                        testId="board-lane-scroll-container"
+                        userState={userState}
+                      />
+                    </section>
+                  );
+                })}
+              </div>
+            ) : lines[0] === undefined ? null : (
+              <BoardLineView
+                by={by}
+                dragging={dragging}
+                line={lines[0]}
+                testId="board-scroll-container"
+                userState={userState}
+              />
+            )}
+          </ViewportAnchor>
+        </DndContext>
+      </section>
+    </>
   );
 }

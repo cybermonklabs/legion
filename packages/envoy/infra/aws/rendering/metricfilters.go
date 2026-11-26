@@ -147,9 +147,9 @@ var ListenerLogSignals = []LogSignal{
 			"circuit breaker rolls the deployment back and the apply fails. Read the line's `error` in " +
 			"%s: a durable carrying an idle heartbeat or an ack policy other than explicit, which NATS " +
 			"cannot change in place, is recreated by the recipe in cybermonklabs/legion " +
-			"packages/envoy/AGENTS.md (Operational notes), which keeps its cursor; `bus: NATS denied " +
-			"the publish to \"<subject>\"` is the listener's NATS grant refusing the durable's read, " +
-			"create or update, which the grant must allow.",
+			"packages/envoy/deploy/README.md (Recreating a listener's durable), which keeps its cursor; " +
+			"`bus: NATS denied the publish to \"<subject>\"` is the listener's NATS grant refusing the " +
+			"durable's read, create or update, which the grant must allow.",
 	},
 	{
 		// A start that gave up binding its durable subscription and exits (cmd/listener/main.go,

@@ -652,6 +652,7 @@ test("each card column picks what the rows' cards hold, in the board's words and
     "Accepting",
     "Retro",
     "Merging",
+    "Waiting on children",
     "Waiting on a person",
     "Held",
     "None",

@@ -28,8 +28,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
@@ -42,14 +44,14 @@ import (
 const controllerSecretVariable = "LEGION_CONTROLLER_SECRET"
 
 // controllerPersonTradeVar is the TypeScript broker client's setting that turns its person trade
-// off (PERSON_TRADE_VAR, packages/broker-client/src/signins.ts), which controllerEnvironment sets
+// off (PERSON_TRADE_VAR, packages/cipher-client/src/signins.ts), which controllerEnvironment sets
 // to "off" under every configuration. That client trades the controller's own Dispatch credential
 // under `dispatch_token_broker`, and its Envoy credential wherever no bearer names one, and on a
 // machine where the operator ran `agent-secrets login` it would trade that person's sign-in, which
 // the controller finds under the operator's HOME, the HOME it keeps: the controller would write
 // Dispatch and speak on Envoy in its operator's name. agent-secrets neither reads this variable
 // nor strips it (its name lies outside the AGENT_SECRETS_ prefix that the exec form drops from
-// its child: sessionIdentityVars and buildChildEnv, packages/envoy/cmd/agent-secrets/main.go), so
+// its child: sessionIdentityVars and buildChildEnv, packages/envoy/cmd/cipher/main.go), so
 // the controller's own agent-secrets reads are signed exactly as they are without it, and a
 // `dispatch` command it runs under `agent-secrets NAME --` keeps the setting.
 const controllerPersonTradeVar = "PERSON_SIGNIN_TRADE"
@@ -57,8 +59,10 @@ const controllerPersonTradeVar = "PERSON_SIGNIN_TRADE"
 // stdinIsTerminal says whether this process's stdin is a terminal; a test replaces it.
 var stdinIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
 
-// newControllerStartCommand is `legion controller start` (controllerStart).
-func newControllerStartCommand(stderr io.Writer) *cobra.Command {
+// newControllerStartCommand is `legion controller start` (controllerStart). stderr takes the
+// command's own lines, through the URL rule (newRoot), and attempts is the process's stderr as it
+// is, which the Oh My Pi probe hands each foreground attempt as that child's own.
+func newControllerStartCommand(stderr, attempts io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "start --config <controller.yaml>",
 		Short: "start the operator's controller from controller.yaml",
@@ -70,7 +74,7 @@ func newControllerStartCommand(stderr io.Writer) *cobra.Command {
 		if *configPath == "" {
 			return refuse(cmd, "--config is required")
 		}
-		code, err := controllerStart(ctx, *configPath, *daemonURL, stderr)
+		code, err := controllerStart(ctx, *configPath, *daemonURL, stderr, attempts)
 		if err != nil {
 			fmt.Fprintf(stderr, "legion controller start: %v\n", err)
 			return 1
@@ -118,8 +122,9 @@ func newControllerStartCommand(stderr io.Writer) *cobra.Command {
 // daemon.ControllerStartMessage as LEGION_CONTROLLER_START_MESSAGE in its environment for that
 // pi-legion command to send as the first turn — in the foreground with the same environment, and
 // answer its exit code. A refusal before the secret is written removes the directories made for
-// the probe, so the state directory is as it was.
-func controllerStart(ctx context.Context, configPath, daemonURL string, stderr io.Writer) (int, error) {
+// the probe, so the state directory is as it was. attempts is the stderr each foreground attempt
+// of the probe writes to as its own (newControllerStartCommand).
+func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, attempts io.Writer) (int, error) {
 	absolute, err := filepath.EvalSymlinks(configPath)
 	if err == nil {
 		absolute, err = filepath.Abs(absolute)
@@ -204,12 +209,17 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	// the daemon's own NATS seed, which an operator shell that also runs a daemon may export, is
 	// dropped by value and by pointer; its pane seed pointer is the controller's set's. A pane's boot
 	// token, which a start from inside a Legion pane inherits, is dropped too: the plugin takes a
-	// controller carrying one for a controller the daemon launched (`controller: daemon`). So are
-	// the Slack channels the daemon tells its own controller (LEGION_SLACK_CHANNELS): only that
+	// controller carrying one for a controller the daemon launched (`controller: daemon`). So is the
+	// table of every role's identity such a start inherits (runtime.RoleIdentitiesVariable): a
+	// controller pushes nothing, and its process has no table, as the daemon's controller has none.
+	// So are the Slack channels the daemon tells its own controller (LEGION_SLACK_CHANNELS): only that
 	// controller hears a project's mentions, and an inherited list is no project's word for this
-	// one. A machine that holds its Dispatch credential at the broker drops the operator's own
-	// Dispatch bearer and pointer as well: either would be presented in place of the traded token
-	// as a bearer Dispatch refuses (controllerDispatchBroker). The drop is not the whole of it — the
+	// one. So is OMP_SESSION_EXCLUSIVE (runtime.SessionExclusiveVariable), which a resumed pane is
+	// told: this controller resumes no recorded session, and an inherited value would stop it where
+	// Oh My Pi would otherwise move a held session to a new id. A machine that holds its Dispatch
+	// credential at the broker drops the operator's own Dispatch bearer and pointer as well: either
+	// would be presented in place of the traded token as a bearer Dispatch refuses
+	// (controllerDispatchBroker). The drop is not the whole of it — the
 	// operator's HOME is the controller's, and the envoy.json there holds that person's
 	// `dispatch.token`, which no delete here reaches — so the controller's set carries
 	// DISPATCH_TOKEN_BROKER, the session's word that its Dispatch credential is this machine's
@@ -227,7 +237,9 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	delete(env, natsauth.DaemonSeedFileVariable)
 	delete(env, "LEGION_BOOT_TOKEN")
 	delete(env, "LEGION_BOOT_TOKEN_FILE")
+	delete(env, runtime.RoleIdentitiesVariable)
 	delete(env, "LEGION_SLACK_CHANNELS")
+	delete(env, runtime.SessionExclusiveVariable)
 	if cfg.DispatchTokenBroker {
 		delete(env, "DISPATCH_TOKEN")
 		delete(env, "DISPATCH_TOKEN_FILE")
@@ -239,10 +251,10 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	if err != nil {
 		return 0, err
 	}
-	// The project's repository mapping (GET /legion/v1/state, unauthenticated) is read and
+	// The state's repositories block (GET /legion/v1/state, unauthenticated) is read and
 	// validated before the capability mint: the mint revokes the incumbent controller's
-	// registration and grants (api.controllerSecret), so a repository-mapping failure found here
-	// must never cut a running controller off for a replacement that will not start.
+	// registration and grants (api.controllerSecret), so an unusable block found here must never
+	// cut a running controller off for a replacement that will not start.
 	if err := checkControllerRepositories(ctx, cfg.DaemonURL); err != nil {
 		removeDirs(created)
 		return 0, err
@@ -250,8 +262,8 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	fmt.Fprintf(stderr, "[legion] checking the controller's Oh My Pi (%s) in %s before the daemon mints a capability\n",
 		omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation), controllerDir)
 	secret, designSteps, err := probeAndMint(ctx, cfg.DaemonURL, daemon.ControllerProbe{
-		Omp: invocation, Prefix: cfg.OmpLaunchPrefix, Env: env, WorkDir: controllerDir, Stdin: os.Stdin, Stderr: stderr,
-		Contract: api.DaemonAPIVersion, Log: slog.New(slog.NewTextHandler(stderr, nil)),
+		Omp: invocation, Prefix: cfg.OmpLaunchPrefix, Env: env, WorkDir: controllerDir, Stdin: os.Stdin, Stderr: attempts,
+		Contract: api.DaemonAPIVersion(), Log: slog.New(slog.NewTextHandler(stderr, redact.HandlerOptions(nil))),
 	}, operatorToken)
 	if err != nil {
 		removeDirs(created)
@@ -298,11 +310,11 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	// daemon has just answered with the controller's gh bundle (controllerStartGitHubCredential,
 	// controllerReach): the accounts it read the review App installed on, less any whose
 	// directory the bundle does not hold, and none where the daemon has no GitHub App to act as.
-	// They are not the owners of the repositories the project is mapped
-	// (api.RepositoriesView.Owners): the mapping bounds no token's reach (INFRA-2543), so those
-	// name too few owners where the review App is installed on an account the project maps
-	// nothing of, and no owner at all where the daemon refuses every mapped repository while the
-	// controller's gh still holds its directories (daemon.RepositoriesClause). It is the sentence
+	// They are not the owners of the repositories the state lists (api.RepositoriesView.Live):
+	// the repositories the live records name bound no token's reach (INFRA-2543), so those name
+	// too few owners where the review App is installed on an account no live record names a
+	// repository of, and no owner at all where no record is live while the controller's gh still
+	// holds its directories (daemon.RepositoriesClause). It is the sentence
 	// a daemon that launches its own controller writes from its own read of the installations
 	// (daemon.RepositoriesSentence), so the one controller prompt quotes one sentence.
 	// The start message travels as LEGION_CONTROLLER_START_MESSAGE (controllerEnvironment) and the
@@ -471,27 +483,29 @@ func probeAndMint(ctx context.Context, daemonURL string, probe daemon.Controller
 	return fetchControllerSecret(ctx, daemonURL, operatorToken, probe.Contract)
 }
 
-// checkControllerRepositories refuses a daemon whose repository mapping cannot be read, and
-// answers nil for one that can: it reads the one unauthenticated route that serves the mapping
-// (GET /legion/v1/state's `repositories` field, the bytes `legion state --json` prints).
-// controllerStart runs it before the capability mint, so a daemon that does not answer as a
-// conforming one does is found before the mint revokes a running controller for a replacement
+// checkControllerRepositories refuses a daemon whose repositories block cannot be read, and
+// answers nil for one that can: it reads the one unauthenticated route that serves the block
+// (GET /legion/v1/state's `repositories` field, the bytes `legion state --json` prints), which
+// this command, a caller the daemon places in no pod, is served in the shape this contract
+// writes. controllerStart runs it before the capability mint, so a daemon that does not answer as
+// a conforming one does is found before the mint revokes a running controller for a replacement
 // that will not start. Bounded by requestTimeout, as every other CLI read of the daemon's API is
 // (main.go's get).
 //
-// The mapping decides nothing of the controller's addressing, which names the owners of the gh
+// The block decides nothing of the controller's addressing, which names the owners of the gh
 // bundle the daemon answers after the mint (controllerStartGitHubCredential): the review App's
-// installation, and not the mapping, bounds what the controller's gh reaches (INFRA-2543).
+// installation, and not the repositories the live records name, bounds what the controller's gh
+// reaches (INFRA-2543).
 //
-// An empty or all-refused mapping is never a refusal: this route cannot tell a daemon with no
-// workflow (which always serves that shape) from a workflow whose mapping a refresh emptied, and
-// refusing either would block the operator action that recovers the project (admitting work,
-// docs/site/src/content/docs/legion/concepts.md, "Admission and the `legion` label"). It refuses
-// only an unusable read: a body without a `repositories` object
-// (absent or null, a shape no conforming daemon serves) and a mapped entry that is not
+// An empty `live`, or one whose every repository a role App is missing from, is never a refusal:
+// this route cannot tell a daemon with no workflow (which always serves that shape) from a
+// project with no live record, and refusing either would block the operator action that recovers
+// the project (admitting work, docs/site/src/content/docs/legion/concepts.md, "Admission and the
+// `legion` label"). It refuses only an unusable read: a body without a `repositories` object
+// (absent or null, a shape no conforming daemon serves) and a `live` entry whose `repo` is not
 // `owner/name`.
 func checkControllerRepositories(ctx context.Context, daemonURL string) error {
-	timed, cancel := context.WithTimeout(ctx, requestTimeout)
+	timed, cancel := context.WithTimeout(ctx, programbound.Of(&requestTimeout))
 	defer cancel()
 	status, body, err := operator{base: daemonURL}.do(timed, http.MethodGet, "/legion/v1/state", nil)
 	if err != nil {
@@ -509,9 +523,9 @@ func checkControllerRepositories(ctx context.Context, daemonURL string) error {
 	if state.Repositories == nil {
 		return fmt.Errorf("%s/legion/v1/state's body names no repositories field (null or absent): not a shape a conforming daemon ever serves", daemonURL)
 	}
-	for _, mapped := range state.Repositories.Mapped {
-		if _, err := ghrepo.Parse("repositories.mapped", mapped.Repo); err != nil {
-			return fmt.Errorf("%s/legion/v1/state names an invalid mapped repository %q: %w", daemonURL, mapped.Repo, err)
+	for _, live := range state.Repositories.Live {
+		if _, err := ghrepo.Parse("repositories.live", live.Repo); err != nil {
+			return fmt.Errorf("%s/legion/v1/state names an invalid live repository %q: %w", daemonURL, live.Repo, err)
 		}
 	}
 	return nil

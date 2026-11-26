@@ -1,11 +1,11 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { DISPATCH_BLOCK_UNITS } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import type { Window as HappyDOMWindow } from "happy-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { displayTree } from "../../__tests__/display-trees";
+import { countEngineParses, displayTree } from "../../__tests__/display-trees";
 import { ApiError, api } from "../../api/client";
 import type {
   AskRead,
@@ -16,6 +16,12 @@ import type {
 } from "../../api/types";
 import { warmMarkdownRenderer } from "./markdown-engine";
 import { Unfurl } from "./Unfurl";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** The test DOM is happy-dom's window (`__tests__/setup.ts` registers it), which TypeScript
  *  knows only as the DOM's; a dashboard address is read against the page's own origin, so the
@@ -302,6 +308,57 @@ test("Unfurl unfurls a dispatch comment reference with its own words, reading no
   }
 });
 
+// A title reads none of the references in the text it is cut from, since a name inside a name
+// resolves nothing, so a `dispatch://` one reads as its short form for good, written bare or as
+// its own link's words: no name will ever take its place, and a title never shows the scheme.
+// It reads so from the tree the server sends under `Dispatch-Trees: 1` and from the body alone,
+// which is what a server older than the trees sends and the page parses.
+test("a comment card's title reads each dispatch:// reference in it as its short form, bare or as its own link's words", async () => {
+  await warmMarkdownRenderer();
+  const body = "Blocked on dispatch://CORE-2/ask/a1 and [dispatch://CORE-3](dispatch://CORE-3).";
+  const comment: CommentRead["comment"] = {
+    id: "comment-1",
+    issue_key: "CORE-1",
+    author: { id: "alice", kind: "user" },
+    body,
+    anchor: null,
+    reply_to: null,
+    ask_id: null,
+    turn: null,
+    resolved: false,
+    resolved_by: null,
+    resolved_at: null,
+    edited_at: null,
+    suggestion: null,
+    created_at: "2026-09-09T00:00:00Z",
+    ...commentDeliveryFields(),
+  };
+  const getComment = spyOn(api, "getComment");
+  try {
+    for (const { answer, read } of [
+      { answer: "the server's tree", read: { ...comment, body_tree: displayTree(body) } },
+      { answer: "the body alone", read: comment },
+    ]) {
+      getComment.mockResolvedValue({ comment: read, replies: [] });
+      const view = renderUnfurl("dispatch://CORE-1/comment/comment-1");
+      try {
+        const card = await within(view.container).findByRole("link");
+        // Each check names the answer it read, so a failure says which of the two it was.
+        await waitFor(() =>
+          expect({ answer, title: card.textContent }).toEqual({
+            answer,
+            title: "Blocked on CORE-2 ask and CORE-3.",
+          })
+        );
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
+    getComment.mockRestore();
+  }
+});
+
 /** The question map the route answers for the body's source: `#q1` is the question block of
  *  CORE-1's spec, settled into `ask-1`. */
 const specQuestions: ReferenceQuestions = {
@@ -373,7 +430,7 @@ test("Unfurl cards a reference that ends in the punctuation the grammar trims", 
   const getAsk = spyOn(api, "getAsk").mockResolvedValue(blockAskRead);
   const address = renderUnfurl("dispatch://CORE-1.");
   const key = renderUnfurl("CORE-1,");
-  const question = renderUnfurl("#q1.", { id: "message-1", kind: "message" });
+  const question = renderUnfurl("#q1.", { id: "message-1", issue: "CORE-1", kind: "message" });
 
   try {
     expect(
@@ -416,7 +473,7 @@ test("Unfurl cards a #id against the document the body's text belongs to", async
     specQuestions
   );
   const getAsk = spyOn(api, "getAsk").mockResolvedValue(blockAskRead);
-  const view = renderUnfurl("#q1", { id: "message-1", kind: "message" });
+  const view = renderUnfurl("#q1", { id: "message-1", issue: "CORE-1", kind: "message" });
 
   try {
     const card = await within(view.container).findByRole("link", {
@@ -605,4 +662,160 @@ test("Unfurl renders a GitHub issue's body formatted, on one run of text, with n
     githubRest.mockRestore();
     view.unmount();
   }
+});
+
+// A card is a link to what its reference opens, and nothing shows a person (R5): a body that
+// is one person's mention shows no card, where before it drew one whose href was the empty
+// path, so a click on it reloaded the page.
+test("a body that is only a person's mention shows no card", async () => {
+  const view = renderUnfurl("dispatch://person/alice@example.com");
+  try {
+    await waitFor(() => expect(view.container.querySelector("a")).toBeNull());
+    expect(view.container.textContent).toBe("");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A reference a code context holds is the author's own text and is linked nowhere, so it is no
+// card either: an indented line is a code block, whatever it holds.
+test("a reference inside code shows no card", async () => {
+  const view = renderUnfurl("    dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551");
+  try {
+    await waitFor(() => expect(view.container.querySelector("a")).toBeNull());
+    expect(view.container.textContent).toBe("");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A card whose target has no title - a role nobody holds and no record's collaborators name -
+// names it by the reference as the body wrote it: one address, which holds no markdown, drawn as
+// the characters it is, so nothing on the page is parsed for it (the reading list's
+// `reference-card-words`).
+test("a card for a target with no title shows the reference as written and parses nothing", async () => {
+  await warmMarkdownRenderer();
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const parses = countEngineParses();
+  const view = renderUnfurl("dispatch://role/surveyor");
+  try {
+    const card = await within(view.container).findByRole("link", {
+      name: "dispatch://role/surveyor",
+    });
+    expect(card).toHaveAttribute("href", "/agents?role=surveyor");
+    expect(parses.count()).toBe(0);
+  } finally {
+    parses.restore();
+    view.unmount();
+    listAgents.mockRestore();
+  }
+});
+
+test("Unfurl says a referenced comment was deleted and gives no part of its body", async () => {
+  const commentRead: CommentRead = {
+    comment: {
+      id: "comment-1",
+      issue_key: "CORE-1",
+      author: { id: "alice", kind: "user" },
+      body: "",
+      anchor: null,
+      reply_to: null,
+      ask_id: null,
+      turn: null,
+      resolved: false,
+      resolved_by: null,
+      resolved_at: null,
+      edited_at: null,
+      suggestion: null,
+      created_at: "2026-09-09T00:00:00Z",
+      ...commentDeliveryFields(),
+      deleted_at: "2026-09-09T01:00:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+    },
+    replies: [],
+  };
+  const getComment = spyOn(api, "getComment").mockResolvedValue(commentRead);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <Unfurl body="dispatch://CORE-1/comment/comment-1" />
+    </QueryClientProvider>
+  );
+
+  try {
+    await within(view.container).findByText(/Deleted by/);
+  } finally {
+    getComment.mockRestore();
+    view.unmount();
+  }
+});
+
+// A card for a post prints the post, so an edited one carries ` · edited` after its title, as
+// its byline does, and one nobody edited carries none. A deleted one has no title left: the
+// deleted line is its title, and the card never falls back to the reference the body wrote.
+test("Unfurl marks an edited comment, and a deleted one's title is the deleted line, not the body's words", async () => {
+  const read = (overrides: Partial<CommentRead["comment"]>): CommentRead => ({
+    comment: {
+      id: "comment-1",
+      issue_key: "CORE-1",
+      author: { id: "alice", kind: "user" },
+      body: "Looks good.",
+      anchor: null,
+      reply_to: null,
+      ask_id: null,
+      turn: null,
+      resolved: false,
+      resolved_by: null,
+      resolved_at: null,
+      edited_at: null,
+      suggestion: null,
+      created_at: "2026-09-09T00:00:00Z",
+      ...commentDeliveryFields(),
+      ...overrides,
+    },
+    replies: [],
+  });
+  const card = async (answer: CommentRead, settled: string) => {
+    const getComment = spyOn(api, "getComment").mockResolvedValue(answer);
+    const view = renderUnfurl("dispatch://CORE-1/comment/comment-1");
+    try {
+      const link = await waitFor(() => {
+        const found = view.container.querySelector("a");
+        if (found?.textContent?.includes(settled) !== true) throw new Error("not read yet");
+        return found;
+      });
+      return link.textContent;
+    } finally {
+      view.unmount();
+      getComment.mockRestore();
+    }
+  };
+  /** The read with no `body` key: the one answer whose card has no title, so it falls back to
+   *  the reference the body wrote. */
+  const bodiless = (overrides: Partial<CommentRead["comment"]>): CommentRead => {
+    const { body: _body, ...comment } = read(overrides).comment;
+    return { comment, replies: [] } as unknown as CommentRead;
+  };
+
+  expect(await card(read({ edited_at: "2026-09-09T01:00:00Z" }), "Looks good.")).toBe(
+    "Looks good. · edited"
+  );
+  expect(await card(read({}), "Looks good.")).toBe("Looks good.");
+  // The positive control of the last two lines: that answer of a comment that stands, with no
+  // body and an edit, settles on the reference the body wrote and ` · edited`.
+  const edit = { edited_at: "2026-09-09T01:00:00Z" };
+  expect(await card(bodiless(edit), "· edited")).toBe(
+    "dispatch://CORE-1/comment/comment-1 · edited"
+  );
+  const deleted = await card(
+    bodiless({
+      ...edit,
+      deleted_at: "2026-09-09T02:00:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+    }),
+    "Deleted by alice"
+  );
+  expect(deleted).not.toContain("dispatch://");
+  expect(deleted).not.toContain("edited");
 });

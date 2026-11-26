@@ -18,6 +18,7 @@ import (
 // ties the two, and holds every delivery eval of the catalogue to one of them, so a direction
 // renamed or added here fails here rather than on a page that judges a day the wrong way.
 func TestTheTargetsDirectionEnumIsTheEvalsDirections(t *testing.T) {
+	t.Parallel()
 	field, _ := reflect.TypeFor[measures.Target]().FieldByName("Direction")
 	directions := []string{DirectionHigherBetter, DirectionLowerBetter}
 	if tag := field.Tag.Get("enum"); tag != strings.Join(directions, ",") {
@@ -43,6 +44,7 @@ func TestTheTargetsDirectionEnumIsTheEvalsDirections(t *testing.T) {
 // (JudgesOf), to the enum, so a judge added or renamed here fails here, and the contract made from
 // the tag fails the page's compile until the page names it.
 func TestTheTargetsJudgesEnumIsEveryDeliveryJudge(t *testing.T) {
+	t.Parallel()
 	field, _ := reflect.TypeFor[measures.Target]().FieldByName("Judges")
 	every := map[string]bool{}
 	for _, judges := range deliveryJudges {
@@ -80,6 +82,7 @@ func TestTheTargetsJudgesEnumIsEveryDeliveryJudge(t *testing.T) {
 // delivery answer could judge it: a judge the eval route judged while a delivery answer left it
 // null would be a target written and then ignored there.
 func TestEveryJudgeADeliveryTargetTakesIsStatedByTheDeliveryAnswers(t *testing.T) {
+	t.Parallel()
 	spread := measures.Spread{MedianMinutes: new(30.0), P90Minutes: new(50.0), MaxMinutes: new(70.0)}
 	result := measures.Result{
 		DeployFrequency: measures.DeployFrequency{SuccessfulDeploys: 14, DeploysWithPRs: 7, PerDay: 2, WithPRsPerDay: 1},
@@ -109,6 +112,9 @@ func TestEveryJudgeADeliveryTargetTakesIsStatedByTheDeliveryAnswers(t *testing.T
 				judge := series.Series + "." + stat
 				err := validateRegistration(Registration{Slug: slug, TargetJudges: Set([]string{judge})})
 				if err != nil {
+					if answer[slug][series.Series][stat] != nil {
+						t.Errorf("%s judged by %s: the measures answer states it, but the register write refused it: %v", slug, judge, err)
+					}
 					var refusal *Error
 					if !errors.As(err, &refusal) || refusal.Code != CodeFieldInvalid || refusal.Field != "target_judges[0]" {
 						t.Errorf("%s judged by %s: the register write answers %v, want it taken or refused %s naming target_judges[0]", slug, judge, err, CodeFieldInvalid)
@@ -131,4 +137,49 @@ func TestEveryJudgeADeliveryTargetTakesIsStatedByTheDeliveryAnswers(t *testing.T
 		t.Fatal("no judge of the six delivery targets was taken, so this test examined nothing")
 	}
 	t.Logf("%d judges of the six delivery targets taken and stated by the delivery answers, %d refused", taken, refused)
+}
+
+func TestVerdictAtInsideAndPastTheTarget(t *testing.T) {
+	t.Parallel()
+	for _, direction := range []struct {
+		name         string
+		inside, past float64
+	}{{DirectionHigherBetter, 11, 9}, {DirectionLowerBetter, 9, 11}} {
+		for _, inclusive := range []bool{true, false} {
+			for _, test := range []struct {
+				name  string
+				value *float64
+				met   *bool
+			}{{"at", new(10.0), &inclusive}, {"inside", &direction.inside, new(true)}, {"past", &direction.past, new(false)}, {"no value", nil, nil}} {
+				entry := Entry{
+					Definition: Definition{Direction: direction.name, Target: new(10.0), TargetInclusive: inclusive, TargetJudges: []string{"runs.sum"}},
+					Series:     []Series{{Series: "runs", SeriesComputation: SeriesComputation{Listed: true}}},
+				}
+				got := VerdictOf(entry, map[string]Statistics{"runs": {"sum": test.value}})
+				want := &Verdict{Target: 10, Direction: direction.name, Inclusive: inclusive, Met: test.met,
+					Judges: []Judge{{Judge: "runs.sum", Value: test.value, Met: test.met}}}
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("%s inclusive=%t %s: verdict = %#v, want met=%v", direction.name, inclusive, test.name, got, want.Met)
+				}
+			}
+		}
+	}
+}
+
+func TestChangeFailureRateWithNoInputHasNoCounts(t *testing.T) {
+	t.Parallel()
+	for _, parts := range [][]measures.DayPart{
+		nil,
+		{{Series: measures.SeriesPerDeploy}, {Series: measures.SeriesPerPR}, {Series: measures.SeriesUpperBound}},
+	} {
+		got := changeFailureRateOf(measures.FoldChangeFailureRate(parts))
+		want := map[string]Statistics{
+			"per_deploy":  {"rate": nil, "confirmed": nil, "pending": nil, "rejected": nil, "total": nil},
+			"per_pr":      {"rate": nil, "confirmed": nil, "pending": nil, "rejected": nil, "reverts": nil, "total": nil},
+			"upper_bound": {"rate": nil, "confirmed_or_pending": nil},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("change failure rate over %d empty parts = %v, want no values", len(parts), got)
+		}
+	}
 }

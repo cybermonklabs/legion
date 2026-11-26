@@ -10,6 +10,7 @@ import (
 )
 
 func TestProductionApplies(t *testing.T) {
+	t.Parallel()
 	const jobName = "widgets-release / widgets-release"
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
@@ -46,6 +47,7 @@ func TestProductionApplies(t *testing.T) {
 // beside a skipped `staging-apply`. It is decoded and mapped exactly as reconcileRun stores a run's
 // jobs.
 func TestProductionAppliesSetsApartOnlyARunWithNoProductionJob(t *testing.T) {
+	t.Parallel()
 	const jobName = "production-apply / production-apply"
 	data, err := os.ReadFile("testdata/dev-only-run-jobs.json")
 	if err != nil {
@@ -130,6 +132,7 @@ func TestProductionAppliesSetsApartOnlyARunWithNoProductionJob(t *testing.T) {
 // TestProductionAppliesMatchesEveryListedName proves a renamed production job's old and new
 // names both count while an unmatched run and a skipped caller keep their existing safeguards.
 func TestProductionAppliesMatchesEveryListedName(t *testing.T) {
+	t.Parallel()
 	const oldName, newName = "production-apply / production-apply", "production / production-apply"
 	production := Production{JobNames: []string{newName, oldName}}
 	base := time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)
@@ -165,6 +168,7 @@ func TestProductionAppliesMatchesEveryListedName(t *testing.T) {
 // successful listed job demonstrates its name is real, even when Production.Job selects another
 // listed job as the run's deploy.
 func TestProductionAppliesDoesNotSetApartASkippedCallerOfEverySuccessfulListedName(t *testing.T) {
+	t.Parallel()
 	const selectedName, otherName = "production / deploy", "production-apply / deploy"
 	base := time.Date(2026, 10, 15, 3, 0, 0, 0, time.UTC)
 	success := DeliveryRunConclusionSuccess
@@ -194,6 +198,7 @@ func TestProductionAppliesDoesNotSetApartASkippedCallerOfEverySuccessfulListedNa
 // TestProductionAppliesCountsOnlyAJobThatApplied proves the optional apply-step rule distinguishes
 // a stored historical job from a stood-down job and names a configured step that is absent.
 func TestProductionAppliesCountsOnlyAJobThatApplied(t *testing.T) {
+	t.Parallel()
 	const name, step = "production / production-apply", "Run ./.github/actions/apply"
 	production := Production{JobNames: []string{name}, ApplyStep: new(step)}
 	base := time.Date(2026, 10, 15, 2, 0, 0, 0, time.UTC)
@@ -236,6 +241,7 @@ func TestProductionAppliesCountsOnlyAJobThatApplied(t *testing.T) {
 // back to its first listed job by when each started (a job that never started last, then by name),
 // in every order its jobs are listed in.
 func TestARunsProductionJobIsTheSameInEveryListingOrder(t *testing.T) {
+	t.Parallel()
 	const first, second = "production / deploy", "production-apply / deploy"
 	production := Production{JobNames: []string{second, first}}
 	base := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
@@ -282,6 +288,7 @@ func TestARunsProductionJobIsTheSameInEveryListingOrder(t *testing.T) {
 }
 
 func TestFirstShippingApply(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	mergedAt := base
 
@@ -327,12 +334,43 @@ func TestFirstShippingApply(t *testing.T) {
 	})
 }
 
+// TestAShippingIndexShipsEveryPullRequestAsContainingRunDoes: over applies created and completing
+// in the same few seconds, in a shuffled order, so creations and completions tie with each other
+// and with the merges, the index answers for every merge from before the first creation to after
+// the last the apply ContainingRun answers, and nothing for a pull request of another repository
+// or one not merged.
+func TestAShippingIndexShipsEveryPullRequestAsContainingRunDoes(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	second := func(n int) time.Time { return base.Add(time.Duration(n) * time.Second) }
+	var applies []Apply
+	for id := range 40 {
+		created := (id * 7) % 13
+		applies = append(applies, Apply{RunID: int64(100 + (id*11)%40), CreatedAt: second(created), CompletedAt: second(created + (id*5)%9)})
+	}
+	index := NewShippingIndex(applies)
+	const repo = "acme/widgets"
+	for merged := -1; merged <= 14; merged++ {
+		pr := DeliveryPullRequest{Repo: repo, Number: merged + 2, MergedAt: new(second(merged))}
+		want, got := ContainingRun(pr, repo, applies), index.Containing(pr, repo)
+		if (want == nil) != (got == nil) || (want != nil && *want != *got) {
+			t.Errorf("a pull request merged at second %d ships with %+v, want %+v", merged, got, want)
+		}
+		if other := index.Containing(pr, "acme/elsewhere"); other != nil {
+			t.Errorf("a pull request of another repository ships with %+v, want none", other)
+		}
+	}
+	if got := index.Containing(DeliveryPullRequest{Repo: repo, Number: 1}, repo); got != nil {
+		t.Errorf("a pull request not merged ships with %+v, want none", got)
+	}
+}
+
 // TestAppliesCompletingTogetherShipTheSameInEveryOrder: two production applies whose jobs completed
 // in the same second are ordered by run id, and the lower run id ships a pull request both could,
 // in every order the runs are listed in and every order the applies are handed over in. The live
 // hub narrows the runs it read as a preset window slides, so the input changes length and order
 // with no stored row changed; a pull request's deploy_run and a run's prs must not change with it.
 func TestAppliesCompletingTogetherShipTheSameInEveryOrder(t *testing.T) {
+	t.Parallel()
 	const jobName = "production / production-apply"
 	merged := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
 	completed := merged.Add(30 * time.Minute)
@@ -387,6 +425,7 @@ func TestAppliesCompletingTogetherShipTheSameInEveryOrder(t *testing.T) {
 // it ships the pull request the old head-commit rule handed to run 2. Run 3 is a re-run whose
 // start moved past the merge while its creation, and its head, came before it.
 func TestProductionAppliesReadsTheRunsCreation(t *testing.T) {
+	t.Parallel()
 	const jobName = "widgets-release / widgets-release"
 	merged := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	success := DeliveryRunConclusionSuccess
@@ -413,6 +452,7 @@ func TestProductionAppliesReadsTheRunsCreation(t *testing.T) {
 }
 
 func TestContainingRun(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	mergedAt := base
 	applies := []Apply{
@@ -437,6 +477,7 @@ func TestContainingRun(t *testing.T) {
 }
 
 func TestComputeDeployedStatus(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	apply := &Apply{RunID: 1, CompletedAt: base, CreatedAt: base}
 

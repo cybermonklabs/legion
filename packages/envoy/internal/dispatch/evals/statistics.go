@@ -1,6 +1,7 @@
 package evals
 
 import (
+	"cmp"
 	"maps"
 	"math"
 	"slices"
@@ -13,15 +14,16 @@ import (
 
 // An eval read states each listed series' statistics for a range of days: the figures a card
 // shows and a target judges, a judge naming one as `<series>.<stat>`. They are folded from the
-// stored day rows of the range (DayWindow), never from the population again (R12):
+// stored day rows of the range (DayWindowIn), never from the population again (R12):
 //
 //   - a computed eval through the one fold its source names (computedSources), which is the fold
 //     the delivery and Legion routes answer through too (R7), so one rule has one statement;
 //   - a logged eval through each series' own fold, its agg (aggStatistics), since no function
 //     computes it.
 //
-// computedSources is the one table keyed by a computed source: its fold and its headline. Every
-// eval of the seeded catalogue names a source it holds, with both, which init checks when the
+// computedSources is keyed by computed source and holds the fold and headline.
+// The items route has its own source table for the rows it lists (api.evalComputedItems).
+// Every seeded eval names a source with both, which init checks when the
 // package starts, so a computed eval whose fold or headline is missing fails every binary and
 // every test that links this package rather than reading "no data" on a page.
 
@@ -52,11 +54,9 @@ var computedSources = map[string]computedSource{
 	SourceFoldChangeFailureRate: {changeFailureRateStatistics, stated("rate")},
 	SourceFoldTimeToRestore:     {oneSeries(measures.SeriesMinutes, timeToRestoreStatistics), stated("median")},
 	SourceFoldTiming:            {oneSeries(measures.SeriesMinutes, timingStatistics), stated("median")},
-	// unowned-p0's day row is the count at the day's last refresh, which delivery.CountUnownedP0
-	// counts by delivery.ListUnownedP0's rule; a window reads its newest day's, the `last` fold.
-	SourceListUnownedP0: {oneSeries(SeriesUnownedP0, func(parts []measures.DayPart, _ Range) Statistics {
-		return aggStatistics(AggLast, parts, SeriesUnownedP0)
-	}), stated("value")},
+	// unowned-p0's day rows are the counts at the day's last refresh, the project's and each
+	// repository's (WriteUnownedP0Day); a window reads its newest day's, the sum of that day's rows.
+	SourceListUnownedP0: {oneSeries(SeriesUnownedP0, unownedP0Statistics), stated("value")},
 	SourceFoldWorkTime:  {byCut(metrics.FoldWorkTime, workTimeStatistics), stated("median")},
 	SourceFoldPhaseTime: {byCut(metrics.FoldPhaseTime, phaseTimeStatistics), stated("median_per_issue")},
 	SourceFoldIdleTime:  {byCut(metrics.FoldIdleTime, idleTimeStatistics), stated("median")},
@@ -157,21 +157,19 @@ type DayPoint struct {
 }
 
 // SeriesValuesOf is each listed series of entry with its values over rows, the eval's day rows of
-// window and of compare, the compare range, nil for none (DayWindow), and firsts, each series'
-// first day (FirstDays). A range that starts before a series' first day, or a series with no first
+// window and of compare, the compare range, nil for none (DayWindowIn), and firsts, each series'
+// first day (FirstDaysIn). A range that starts before a series' first day, or a series with no first
 // day at all, reads "no data": every statistic of that range null, whatever rows the range holds;
 // the per-day array still answers each day that holds a row (R12).
+//
+// It folds the rows in the one order every fold of them takes (sortWindowRows), which it sorts rows
+// into in place, as the stored figures are folded (figures.go, newFigureGroup), so a fold whose
+// sums depend on the order of its parts answers the stored figures' bits whatever order the read's
+// plan answered its rows in, and a read of the stored figures (StoredFigures.SeriesValues) answers
+// what this does, bit for bit.
 func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, window Range, compare *Range) []SeriesValues {
-	var listed, headline []Series
-	for _, series := range entry.Series {
-		if !series.Listed {
-			continue
-		}
-		listed = append(listed, series)
-		if series.Role == RoleHeadline {
-			headline = append(headline, series)
-		}
-	}
+	listed, headline := listedAndHeadline(entry)
+	sortWindowRows(rows)
 	var windowParts, compareParts []measures.DayPart
 	byDay := map[time.Time][]measures.DayPart{}
 	via := map[string]int{}
@@ -193,10 +191,65 @@ func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, 
 	}
 	// Each day of the window folded alone, by the same fold, for the headline series' arrays.
 	days := slices.SortedFunc(maps.Keys(byDay), func(a, b time.Time) int { return a.Compare(b) })
-	perDay := make([]map[string]Statistics, len(days))
+	daily := make([]dayFold, len(days))
 	for index, day := range days {
-		perDay[index] = FoldStatistics(definition, headline, byDay[day], Range{From: day, To: day.AddDate(0, 0, 1)})
+		daily[index] = dayFold{day: day, folded: foldDay(definition, headline, byDay[day], day)}
 	}
+	return valuesOf(listed, windowed, via, compared, daily, firsts, window, compare)
+}
+
+// sortWindowRows sorts rows in place into the one order a read of the day rows (SeriesValuesOf),
+// the stored figures (newFigureGroup) and a rebuild's overlay of staged rows (readOverlayGroups)
+// all fold them in: by day, and within a day by the key each row is stored under (WindowRow.owner),
+// then by its repository (WindowRow.repo) and then by its series. A day of one series can hold
+// several rows: a project's own row and an owner key's (owners.go), and in the cut of the project's
+// default repository its own row of the repository and its own row stored under
+// legionfacts.DefaultRepo (repoCut). No two rows of one eval and range share all four, so the order
+// is total, and a sum of floats, whose bits depend on the order of its parts (1e16, -1e16 and 1 sum
+// to 1 in that order and to 0 in another), answers the same bits whatever order the database
+// answered the rows in.
+func sortWindowRows(rows []WindowRow) {
+	slices.SortFunc(rows, func(a, b WindowRow) int {
+		if order := a.Part.Day.Compare(b.Part.Day); order != 0 {
+			return order
+		}
+		return cmp.Or(strings.Compare(a.owner, b.owner), strings.Compare(a.repo, b.repo), strings.Compare(a.Part.Series, b.Part.Series))
+	})
+}
+
+// foldDay is the fold of parts, one day's parts of definition's eval, of each of headline, its
+// headline series, that holds a part that day, over that day alone: a day of a headline series'
+// per-day array, which a read of the day rows (SeriesValuesOf) and the stored figures
+// (figureGroup.dayFigure) both answer through it. With no headline series it is empty.
+func foldDay(definition Definition, headline []Series, parts []measures.DayPart, day time.Time) map[string]Statistics {
+	kept := map[string]Statistics{}
+	if len(headline) == 0 {
+		return kept
+	}
+	folded := FoldStatistics(definition, headline, parts, Range{From: day, To: day.AddDate(0, 0, 1)})
+	for _, series := range headline {
+		if holds(parts, series.Series) {
+			kept[series.Series] = folded[series.Series]
+		}
+	}
+	return kept
+}
+
+// dayFold is one day of a window that holds a row of the eval: the fold of that day's rows alone of
+// each headline series that holds a row that day (foldDay).
+type dayFold struct {
+	day    time.Time
+	folded map[string]Statistics
+}
+
+// valuesOf is each of listed, an eval's listed series, with its values: windowed and compared, the
+// folds of the window's rows and the compare range's (nil with no compare range), via, the
+// via-repository counts of the window's rows, and daily, the window's days that hold a row of the
+// eval, in day order; read against firsts, each series' first day, as SeriesValuesOf says. It is
+// the statement both reads make of their folds, SeriesValuesOf's of the day rows and
+// StoredFigures.SeriesValues' of the stored figures.
+func valuesOf(listed []Series, windowed map[string]Statistics, via map[string]int, compared map[string]Statistics, daily []dayFold,
+	firsts map[string]time.Time, window Range, compare *Range) []SeriesValues {
 	values := make([]SeriesValues, len(listed))
 	for index, series := range listed {
 		first, held := firsts[series.Series]
@@ -215,9 +268,9 @@ func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, 
 			value.Change = changeOf(value.Window, value.Compare)
 		}
 		if series.Role == RoleHeadline {
-			for dayIndex, day := range days {
-				if slices.ContainsFunc(byDay[day], func(part measures.DayPart) bool { return part.Series == series.Series }) {
-					value.Days = append(value.Days, DayPoint{Day: day.Format(time.DateOnly), Statistics: perDay[dayIndex][series.Series]})
+			for _, day := range daily {
+				if stats, found := day.folded[series.Series]; found {
+					value.Days = append(value.Days, DayPoint{Day: day.day.Format(time.DateOnly), Statistics: stats})
 				}
 			}
 		}
@@ -244,6 +297,41 @@ func changeOf(window, compare Statistics) Statistics {
 		}
 	}
 	return change
+}
+
+// Withhold is values, the listed series of definition's eval with their values over window and
+// compare (nil for none) as SeriesValuesOf or StoredFigures.SeriesValues states them, under b's
+// rule (Built), changed in place: a range that holds a day before b's today that the stored rows
+// of the eval's family are not whole through answers no value, every statistic null as a range
+// that starts before its series' first day answers, and the change from the compare range with it;
+// each day's own value (the per-day array), data_since and the via-repository count stand. Today is
+// none of those days: at each UTC midnight the pass the midnight starts writes the new day's rows,
+// and a read in the moments before it answers the days before it. An eval no walk builds the rows
+// of (builtWalk) is answered as it is. Every read that states an eval's values over a range states
+// them through it, whether from the day rows or from the stored figures: the list read, the one
+// eval's read, the read across projects and the evals live view (api's evalValues.items).
+func (b Built) Withhold(definition Definition, values []SeriesValues, window Range, compare *Range) []SeriesValues {
+	key, walked := builtWalk(definition)
+	if !walked {
+		return values
+	}
+	windowed, compared := b.unbuilt(key, window), compare != nil && b.unbuilt(key, *compare)
+	if !windowed && !compared {
+		return values
+	}
+	for index := range values {
+		value := &values[index]
+		if windowed {
+			value.Window = noData(value.Window)
+		}
+		if compare != nil {
+			if compared {
+				value.Compare = noData(value.Compare)
+			}
+			value.Change = changeOf(value.Window, value.Compare)
+		}
+	}
+	return values
 }
 
 // WindowStatistics is each of series' statistics over the window, by series name: what the eval's
@@ -407,8 +495,8 @@ func changeFailureRateStatistics(parts []measures.DayPart, _ Range, names []stri
 }
 
 // changeFailureRateOf is change-fail-rate's three shares' statistics of a folded failure rate, by
-// series, every figure nil where folded is the zero ChangeFailureRate (no part was folded: no
-// failure source), whose counts of 0 counted nothing.
+// series. If no part measured anything, the fold is the zero ChangeFailureRate, even when it
+// read zero parts from stored days: every figure is nil, including the counts.
 func changeFailureRateOf(folded measures.ChangeFailureRate) map[string]Statistics {
 	perDeploy := blank("rate", "confirmed", "pending", "rejected", "total")
 	perPR := blank("rate", "confirmed", "pending", "rejected", "reverts", "total")
@@ -571,7 +659,7 @@ func splittingStatistics(fold *metrics.SplittingFold, base string) Statistics {
 }
 
 // readsSamples reports whether the fold of series, one of definition's eval, reads its day rows'
-// sample lists, so a window read sends them only where it does (DayWindow). A computed eval's fold
+// sample lists, so a window read sends them only where it does (DayWindowIn). A computed eval's fold
 // reads what its builders store, and they store a sample list only for a series whose fold merges
 // one; a logged series' agg reads them for a quantile alone (aggStatistics), though the readings
 // write keeps every value whatever the agg, so a later change of agg still folds every day.
@@ -645,8 +733,8 @@ func aggStatistics(agg string, parts []measures.DayPart, series string) Statisti
 		}
 	case AggQuantile:
 		stats["sum"], stats["max"] = new(folded.Sum), largest
-		if samples := measures.MergedSamples(parts, series); len(samples) > 0 {
-			stats["median"], stats["p90"] = new(measures.Quantile(samples, 0.5)), new(measures.Quantile(samples, 0.9))
+		if samples := measures.MergedSamples(parts, series); samples.Len() > 0 {
+			stats["median"], stats["p90"] = new(samples.Quantile(0.5)), new(samples.Quantile(0.9))
 		}
 	case AggMax:
 		stats["max"] = largest

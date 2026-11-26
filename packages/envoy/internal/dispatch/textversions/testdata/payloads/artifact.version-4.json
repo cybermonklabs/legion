@@ -1,0 +1,65 @@
+{
+  "id": 1748,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 4,
+  "type": "artifact.version",
+  "actor": {
+    "kind": "session",
+    "id": "01a13bcd-3e9f-7770-b0f4-88fa364eb58e",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum d",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor",
+      "tmux": "lorem i",
+      "pane": "lo",
+      "session_title": "lorem ipsum dolor sit "
+    }
+  },
+  "notify": false,
+  "created_at": "2026-10-17T17:35:40.991499Z",
+  "payload": {
+    "name": "lorem i",
+    "version": {
+      "size": 12846,
+      "named": false,
+      "number": 2,
+      "authors": [
+        {
+          "id": "01a13bcd-3e9f-7770-b0f4-88fa364eb58e",
+          "kind": "session",
+          "origin": {
+            "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor",
+            "host": "lor",
+            "pane": "lo",
+            "tmux": "lorem i",
+            "machine": "lorem ipsum d",
+            "session_title": "lorem ipsum dolor sit "
+          }
+        }
+      ],
+      "summary": null,
+      "created_at": "2026-10-17T17:35:40.991499Z"
+    },
+    "artifact_id": "d75fcca2-f465-417f-b539-aadad0303dcb",
+    "references_changed": [
+      {
+        "id": "ACME-2",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-3",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-4",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-5",
+        "kind": "issue"
+      }
+    ]
+  }
+}

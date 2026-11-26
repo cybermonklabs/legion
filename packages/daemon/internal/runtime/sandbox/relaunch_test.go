@@ -9,8 +9,6 @@ import (
 	"log/slog"
 	"maps"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -28,12 +26,15 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
+	"github.com/sjawhar/legion/daemon/internal/testport"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -75,6 +76,7 @@ func expectSteps(t *testing.T, got []string, want ...string) {
 // hosts.yml parsing back to that token — then sets it Running. The returned locator addresses only
 // the requested role process in the shared pod.
 func TestSpawnCreatesTheIssueSandboxAndRoleLocator(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
@@ -129,6 +131,7 @@ func TestSpawnCreatesTheIssueSandboxAndRoleLocator(t *testing.T) {
 // controller acts as the review App (appauth.AppRoleFor), so its launch mints a credential and its
 // pod projects it at a gh volume like a workflow role's.
 func TestTheControllersSecretHoldsTheReviewAppsGhFilesBesideTheLauncherToken(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.spawn(controllerSpec(t))
 	name := SandboxName(controllerToken)
@@ -149,6 +152,7 @@ func TestTheControllersSecretHoldsTheReviewAppsGhFilesBesideTheLauncherToken(t *
 }
 
 func TestRoleStartsShareOneIssuePodAndDoNotReinitializeIt(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	root := g.spawn(rootSpec(t))
 	writes := len(g.writes())
@@ -176,6 +180,7 @@ func TestRoleStartsShareOneIssuePodAndDoNotReinitializeIt(t *testing.T) {
 // volume claim template, the shape this runtime makes for an issue: one of the release before the
 // pod-owned disk is replaced instead of kept (TestALaunchReplacesTheIssueSandboxOfTheSupersededDiskShape).
 func TestSpawnOverAnExistingSandbox(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	labels := claimLabels(claim.RoleTester)
 	t.Run("suspended", func(t *testing.T) {
@@ -237,6 +242,7 @@ func TestSpawnOverAnExistingSandbox(t *testing.T) {
 // be relabelled here and then replaced by the same launch, Sandbox and claim together
 // (TestALaunchReplacesTheIssueSandboxOfTheSupersededDiskShape).
 func TestAnOrphanRootKeepsTheSandboxItsOldTreeLeft(t *testing.T) {
+	t.Parallel()
 	orphan := claim.Token("legion-legion-legion-209-architect")
 	name := SandboxName(orphan)
 	oldTree := map[string]string{labelProject: testProject, labelTree: labelValue(testTree), labelIssue: labelValue("LEGION-209")}
@@ -327,6 +333,7 @@ func TestAnOrphanRootKeepsTheSandboxItsOldTreeLeft(t *testing.T) {
 // must carry that name, or each of those roles reads as having died on its own and is charged a
 // death for the daemon's own replacement.
 func TestALaunchReplacesTheIssueSandboxOfTheSupersededDiskShape(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	g := supersededIssue(t)
 	loc := g.spawn(workerSpec(t))
@@ -396,6 +403,251 @@ func supersededIssue(t *testing.T, options ...rigOption) *rig {
 	return g
 }
 
+// An issue's disk has one of two shapes, and keptVolume decides which: an ephemeral volume of its
+// own pod, its Sandbox owning no claim template, or, where its microVM pod keeps its volume, the
+// one `issue` template its Sandbox owns, labelled kept. spec.volumeClaimTemplates is immutable in
+// the CRD, so a launch into a Sandbox of the other shape deletes it, and the volume it owns with
+// it, and creates one of the shape the launch renders. It does so wherever it replaces the pod:
+// after the round has ended the pod (ReplacePod), or for a reason of its own, a moved address. A
+// live pod whose shape record drifted is its round's to end, once each role in it has pushed its
+// work, so a launch into it keeps the pod and the Sandbox and starts its role there. A Sandbox
+// that already has the shape the launch renders keeps its uid and its volume, also where the
+// launch replaces its pod. Each Sandbox a launch creates in place of another names the pod the
+// replacement ended as displaced, so the roles of that pod are resumed uncharged, and the
+// replacement logs its reason.
+func TestALaunchReplacesASandboxOfTheOtherDiskShape(t *testing.T) {
+	t.Parallel()
+	name := SandboxName(workerToken)
+	labels := claimLabels(claim.RoleTester)
+	// logged is the configuration edits make, with the runtime logging at info and above to log.
+	logged := func(log *logBuffer, edits ...func(*Options)) func(*Options) {
+		return func(o *Options) {
+			for _, edit := range edits {
+				edit(o)
+			}
+			o.Log = slog.New(slog.NewTextHandler(log, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		}
+	}
+	// mountsKept fails the test unless the pod of the issue mounts the claim of its kept volume.
+	mountsKept := func(t *testing.T, g *rig) {
+		t.Helper()
+		if source := podDiskSource(t, g.pod(name).Spec).PersistentVolumeClaim; source == nil || source.ClaimName != IssueClaimName(workerToken) {
+			t.Fatalf("the issue's pod mounts its disk from %+v, want the claim %s of its kept volume", source, IssueClaimName(workerToken))
+		}
+	}
+	// remade fails the test unless the launch that answered next deleted the issue's Sandbox, uid
+	// old, and then created one of the shape the launch renders, in place of the pod oldPod: the
+	// kept `issue` template on the microvm block's class where kept, whose claim the new pod mounts,
+	// and otherwise no template and an ephemeral disk of the pod's own. The new Sandbox names oldPod
+	// as displaced, and the one line the replacement logged names the issue, the old Sandbox, its
+	// claim and reason.
+	remade := func(t *testing.T, g *rig, next runtime.Locator, old types.UID, oldPod string, kept bool, log *logBuffer, reason sandboxReplacement) {
+		t.Helper()
+		if made := sandboxRemakes(g, name); !slices.Equal(made, []string{"delete", "create"}) {
+			t.Fatalf("the launch wrote %v of the issue's Sandbox, want it deleted and then created", made)
+		}
+		s := g.sandbox(name)
+		if s == nil || s.UID == old {
+			t.Fatalf("the issue's Sandbox = %+v, want one the launch created in place of %s", s, old)
+		}
+		pod := g.pod(name)
+		if pod == nil || string(pod.UID) != next.Sandbox.PodUID || next.Sandbox.PodUID == oldPod {
+			t.Fatalf("pod %+v, locator %+v; want the new pod of the Sandbox the launch created, not %s", pod, next, oldPod)
+		}
+		if kept {
+			templates := s.Spec.VolumeClaimTemplates
+			if !ownsKeptVolume(s) || len(templates) != 1 || templates[0].Spec.StorageClassName == nil || *templates[0].Spec.StorageClassName != testMicroVMStorageClass {
+				t.Fatalf("the Sandbox the launch created owns %+v, want the one kept `issue` template on %s", templates, testMicroVMStorageClass)
+			}
+			mountsKept(t, g)
+		} else {
+			if len(s.Spec.VolumeClaimTemplates) != 0 {
+				t.Fatalf("the Sandbox the launch created owns %+v, want no claim template", s.Spec.VolumeClaimTemplates)
+			}
+			podDisk(t, pod.Spec)
+		}
+		if named := s.Annotations[displacedAnnotation]; named != oldPod {
+			t.Fatalf("the Sandbox the launch created names %q as the pod the daemon replaced, want %s", named, oldPod)
+		}
+		lines := linesHolding(log.String(), "replacing the issue's Sandbox")
+		if len(lines) != 1 {
+			t.Fatalf("the launch logged %d replacements of the issue's Sandbox, want one: %q", len(lines), log.String())
+		}
+		for _, want := range []string{"issue=" + testTree, "sandbox=" + name, "uid=" + string(old), "claim=" + IssueClaimName(workerToken), fmt.Sprintf("reason=%q", reason)} {
+			if !strings.Contains(lines[0], want) {
+				t.Errorf("the replacement logged %q, want it to name %s", lines[0], want)
+			}
+		}
+	}
+	// roundOver ends loc's pod as its update round does once every role in it has answered. The
+	// round's wait for the pod to go runs on a fake clock the test never moves, so it ends once the
+	// controller stand-in has ended the pod, however long a loaded runner takes it to: on the boot
+	// timeout's 2 s of wall clock, a runner busy migrating the package's database template for 27 s
+	// ran the wait out first (`wait out its pod: timed out after 2s`).
+	roundOver := func(t *testing.T, g *rig, r *Runtime, loc runtime.Locator) {
+		t.Helper()
+		was := r.clock
+		r.clock = clocktest.New(rigNow)
+		defer func() { r.clock = was }()
+		if err := r.ReplacePod(g.ctx, runtime.Known{Claim: workerToken, Locator: &loc}, stillDue); err != nil {
+			t.Fatalf("ReplacePod: %v", err)
+		}
+	}
+
+	t.Run("a: the round took the pod, and the launch now keeps a volume", func(t *testing.T) {
+		log := &logBuffer{}
+		g := newRig(t, nil, withOptions(sandboxBlock(SandboxMicroVM)))
+		loc := g.spawn(workerSpec(t))
+		s := g.sandbox(name)
+		if len(s.Spec.VolumeClaimTemplates) != 0 {
+			t.Fatalf("the Sandbox built with keep_volume off owns %+v, or this case proves nothing", s.Spec.VolumeClaimTemplates)
+		}
+		r2 := restartedOver(t, g, loc, logged(log, keptVolumes(SandboxMicroVM)))
+		roundOver(t, g, r2, loc)
+		g.clearActions()
+		remade(t, g, resumeTester(t, g, r2, loc), s.UID, loc.Sandbox.PodUID, true, log, replacedToKeepVolume)
+	})
+
+	t.Run("b: the round took the pod, and the launch now keeps none", func(t *testing.T) {
+		log := &logBuffer{}
+		g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)))
+		loc := g.spawn(workerSpec(t))
+		s := g.sandbox(name)
+		if !ownsKeptVolume(s) {
+			t.Fatalf("the Sandbox built with keep_volume on owns %+v, or this case proves nothing", s.Spec.VolumeClaimTemplates)
+		}
+		r2 := restartedOver(t, g, loc, logged(log, sandboxBlock(SandboxMicroVM)))
+		roundOver(t, g, r2, loc)
+		g.clearActions()
+		remade(t, g, resumeTester(t, g, r2, loc), s.UID, loc.Sandbox.PodUID, false, log, replacedToKeepNone)
+	})
+
+	for row, tc := range map[string]struct {
+		template func(*testing.T, *unstructured.Unstructured) *unstructured.Unstructured
+		reason   sandboxReplacement
+	}{
+		"c: the round took the pod, and its template is the release's before the pod-owned disk on the same class": {
+			func(t *testing.T, u *unstructured.Unstructured) *unstructured.Unstructured {
+				return withKeptTemplate(t, u, false)
+			},
+			replacedFromPreviousRelease,
+		},
+		"c: the round took the pod, and its kept template names another class": {
+			func(t *testing.T, u *unstructured.Unstructured) *unstructured.Unstructured {
+				return withKeptTemplate(t, u, true, func(spec *corev1.PersistentVolumeClaimSpec) {
+					class := "example-other-rwo"
+					spec.StorageClassName = &class
+				})
+			},
+			replacedForVolumeChange,
+		},
+	} {
+		t.Run(row, func(t *testing.T) {
+			log := &logBuffer{}
+			g := newRig(t, []k8sruntime.Object{
+				tc.template(t, sandboxObject(t, name, "uid-sandbox-other", modeRunning, labels)),
+				podObject(name, "uid-pod-old", "uid-sandbox-other", labels, runningStatus()),
+			}, withOptions(logged(log, keptVolumes(SandboxMicroVM))))
+			g.suspendDelay.Store(int64(50 * time.Millisecond))
+			roundOver(t, g, g.r, sandboxLocator(workerToken, "uid-pod-old"))
+			g.clearActions()
+			remade(t, g, g.spawn(workerSpec(t)), "uid-sandbox-other", "uid-pod-old", true, log, tc.reason)
+		})
+	}
+
+	for row, tc := range map[string]struct{ built, now func(*Options) }{
+		"d: a live pod of its own disk whose shape drifted, and the launch now keeps a volume": {
+			sandboxBlock(SandboxMicroVM), keptVolumes(SandboxMicroVM),
+		},
+		"d: a live pod of a kept volume whose shape drifted, and the launch now keeps none": {
+			keptVolumes(SandboxMicroVM), sandboxBlock(SandboxMicroVM),
+		},
+	} {
+		t.Run(row, func(t *testing.T) {
+			g := newRig(t, nil, withOptions(tc.built))
+			loc := g.spawn(workerSpec(t))
+			old := g.sandbox(name).UID
+			r2 := restartedOver(t, g, loc, tc.now)
+			if drifted := driftOf(t, g, r2, loc); len(drifted) == 0 {
+				t.Fatal("PodDrift of the issue pod is empty, so this case proves nothing: its round is what ends it")
+			}
+			g.clearActions()
+			next := resumeTester(t, g, r2, loc)
+			if next.Sandbox.PodUID != loc.Sandbox.PodUID {
+				t.Fatalf("the launch replaced the live pod %s with %s, want it kept for its update round", loc.Sandbox.PodUID, next.Sandbox.PodUID)
+			}
+			if made := sandboxRemakes(g, name); len(made) > 0 {
+				t.Fatalf("the launch wrote %v of the issue's Sandbox, want it kept with its live pod", made)
+			}
+			if s := g.sandbox(name); s == nil || s.UID != old {
+				t.Fatalf("the issue's Sandbox = %+v, want %s kept", s, old)
+			}
+			startSent(t, g, 2)
+		})
+	}
+
+	t.Run("e: a live pod of the other disk shape, replaced for a moved address", func(t *testing.T) {
+		log := &logBuffer{}
+		g := newRig(t, nil, withOptions(sandboxBlock(SandboxMicroVM)))
+		loc := g.spawn(workerSpec(t))
+		old := g.sandbox(name).UID
+		// The worker stream moved as well: the pod's launchers dial an address this daemon does not
+		// serve, so the launch replaces the pod where it stands (movedInPod), and its Sandbox with it.
+		r2 := restartedOver(t, g, loc, logged(log, keptVolumes(SandboxMicroVM), moveStream))
+		g.clearActions()
+		remade(t, g, resumeTester(t, g, r2, loc), old, loc.Sandbox.PodUID, true, log, replacedToKeepVolume)
+	})
+
+	for row, config := range map[string]func(*Options){
+		"f: a Sandbox of a microVM project that already has the kept shape":         keptVolumes(SandboxMicroVM),
+		"f: a Sandbox of a gVisor project's canary that already has the kept shape": keptVolumes(SandboxGVisor, testTree),
+	} {
+		t.Run(row, func(t *testing.T) {
+			g := newRig(t, []k8sruntime.Object{
+				withKeptTemplate(t, sandboxObject(t, name, "uid-sandbox-kept", modeSuspended, labels), true),
+			}, withOptions(config))
+			g.spawn(workerSpec(t))
+			if made := sandboxRemakes(g, name); len(made) > 0 {
+				t.Fatalf("the launch wrote %v of the issue's Sandbox, want it kept: it has the shape the launch renders", made)
+			}
+			if s := g.sandbox(name); s == nil || s.UID != "uid-sandbox-kept" || !ownsKeptVolume(s) {
+				t.Fatalf("the issue's Sandbox = %+v, want uid-sandbox-kept kept with its kept volume", s)
+			}
+			mountsKept(t, g)
+		})
+	}
+
+	t.Run("g: a live pod of a kept volume of the wanted shape, replaced for a moved address", func(t *testing.T) {
+		g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)))
+		loc := g.spawn(workerSpec(t))
+		old := g.sandbox(name).UID
+		mountsKept(t, g)
+		r2 := restartedOver(t, g, loc, func(o *Options) {
+			keptVolumes(SandboxMicroVM)(o)
+			moveStream(o)
+		})
+		g.clearActions()
+		next := resumeTester(t, g, r2, loc)
+		if next.Sandbox.PodUID == loc.Sandbox.PodUID {
+			t.Fatalf("the launch kept the pod %s, whose launchers dial a stream this daemon does not serve", loc.Sandbox.PodUID)
+		}
+		if made := sandboxRemakes(g, name); len(made) > 0 {
+			t.Fatalf("the launch wrote %v of the issue's Sandbox, want it kept with its kept volume", made)
+		}
+		s := g.sandbox(name)
+		if s == nil || s.UID != old {
+			t.Fatalf("the issue's Sandbox = %+v, want %s kept", s, old)
+		}
+		if pod := g.pod(name); pod == nil || string(pod.UID) != next.Sandbox.PodUID {
+			t.Fatalf("pod %+v, locator %+v; want the launch's new pod", pod, next)
+		}
+		mountsKept(t, g)
+		if named := s.Annotations[displacedAnnotation]; named != loc.Sandbox.PodUID {
+			t.Fatalf("the Sandbox names %q as the pod the daemon replaced, want %s", named, loc.Sandbox.PodUID)
+		}
+	})
+}
+
 // A sibling role of the pod a migrating launch replaces may be evaluated while that launch is
 // between deleting the Sandbox of the superseded disk shape and creating its replacement, when
 // the API server holds no Sandbox of the issue's name at all: the observer takes no launch turn.
@@ -405,6 +657,7 @@ func supersededIssue(t *testing.T, options ...rigOption) *rig {
 // that confirms the delete, once the Sandbox store has lost the old Sandbox too, so neither the
 // store's copy nor the confirming read has anything to name the pod with.
 func TestASiblingReadBetweenAMigratingLaunchsDeleteAndCreateIsDisplaced(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	sibling := sandboxLocator(otherToken, "uid-pod-old")
 	var deleting, probed atomic.Bool
@@ -428,12 +681,10 @@ func TestASiblingReadBetweenAMigratingLaunchsDeleteAndCreateIsDisplaced(t *testi
 			// The launch has seen the delete through and has yet to send its create. The probe's own
 			// confirming read comes through this hook too, so it is marked first.
 			probed.Store(true)
-			for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-				if s, _ := g.r.storedSandbox(name); s == nil {
-					storeHeldIt = false
-					break
-				}
-			}
+			storeHeldIt = !testwait.Holds(testwait.Remaining(t), testwait.Poll, func() bool {
+				s, _ := g.r.storedSandbox(name)
+				return s == nil
+			})
 			inGap, gapErr = g.r.Probe(g.ctx, sibling)
 		},
 	}
@@ -462,6 +713,7 @@ func TestASiblingReadBetweenAMigratingLaunchsDeleteAndCreateIsDisplaced(t *testi
 // relaunch.go's strand states; without the uid comparison in evaluate the whole package stays
 // green, which is why this is here.
 func TestAGapReadOfARoleOfAnotherPodThanTheReplacementEndedIsNotDisplaced(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	older := sandboxLocator(otherToken, "uid-pod-older")
 	var deleting, probed atomic.Bool
@@ -483,12 +735,10 @@ func TestAGapReadOfARoleOfAnotherPodThanTheReplacementEndedIsNotDisplaced(t *tes
 				return
 			}
 			probed.Store(true)
-			for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-				if s, _ := g.r.storedSandbox(name); s == nil {
-					storeHeldIt = false
-					break
-				}
-			}
+			storeHeldIt = !testwait.Holds(testwait.Remaining(t), testwait.Poll, func() bool {
+				s, _ := g.r.storedSandbox(name)
+				return s == nil
+			})
 			inGap, gapErr = g.r.Probe(g.ctx, older)
 		},
 	}
@@ -521,6 +771,7 @@ func TestAGapReadOfARoleOfAnotherPodThanTheReplacementEndedIsNotDisplaced(t *tes
 // record moved while the read was out, so the observation is Uncertain, and the next one, with the
 // record settled, reads the displacement.
 func TestAConfirmingReadTheReplacementsDeleteOvertakesIsUncertain(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	sibling := sandboxLocator(otherToken, "uid-pod-old")
 	g := newRig(t, []k8sruntime.Object{
@@ -572,6 +823,7 @@ func TestAConfirmingReadTheReplacementsDeleteOvertakesIsUncertain(t *testing.T) 
 // a successful Create would have taken, and the Sandbox that next launch creates carries the name,
 // so from then the durable record answers.
 func TestAReplacementWhoseCreateFailsKeepsTheReplacedPodsRolesDisplaced(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	sibling := sandboxLocator(otherToken, "uid-pod-old")
 	g := supersededIssue(t)
@@ -617,6 +869,7 @@ func TestAReplacementWhoseCreateFailsKeepsTheReplacedPodsRolesDisplaced(t *testi
 // again, the Sandbox made afresh names no pod at all: the one the migration replaced was never
 // that Sandbox's, and a name kept past the replacement's Create would be written onto it.
 func TestTheNameAReplacementKeptForItsGapGoesOnceTheReplacementCarriesIt(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	g := supersededIssue(t)
 	loc := g.spawn(workerSpec(t))
@@ -658,6 +911,7 @@ func TestTheNameAReplacementKeptForItsGapGoesOnceTheReplacementCarriesIt(t *test
 // told the new generation's boot token and resumes the recorded session, which the session database
 // kept: nothing of it was on the failed pod's disk.
 func TestResumeAfterAFailedPod(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	labels := claimLabels(claim.RoleTester)
 	oldSecret := &corev1.Secret{
@@ -707,13 +961,15 @@ const nextImage = "ghcr.io/cybermonklabs/legion-worker@sha256:2e2e2e2e0000000000
 // for a route it no longer serves or a variable it no longer sets. It has drifted, and a live
 // drifted pod a round covers is kept by every launch into it (INFRA-484, roundCovers): replacing
 // it there would end every role's turn in it and delete the issue's disk with everything unpushed
-// on it, so the pod is left to its update round, which first has every worker in it push its work.
+// on it, so the pod is left to its update round, which first has every worker in it do the steps
+// of its update message (supervise.UpdateTask).
 // The controller's pod is covered by no round — nobody in it holds an issue workspace, so there is
 // nobody to task — and is replaced by its next launch as it always was
 // (TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted holds that for every key of a pod's
 // shape). A Sandbox that is not live — here one suspended under the running pod — is replaced by
 // its next start as it always was, and every container of the new pod runs the configured image.
 func TestRelaunchKeepsADriftedPodAndReplacesASuspendedSandboxs(t *testing.T) {
+	t.Parallel()
 	olderInit := func(pod *corev1.Pod) {
 		for i := range pod.Spec.InitContainers {
 			if pod.Spec.InitContainers[i].Name == initContainer {
@@ -810,6 +1066,7 @@ func suspendSandbox(t *testing.T, g *rig, r *Runtime, name string) {
 // configured image, which the boot gate already holds to the daemon's contract, so nothing here
 // is installed into it.
 func TestASuspendedSandboxsInstallingResumeReplacesAndInstallsNothing(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	labels := claimLabels(claim.RoleTester)
 	g := newRig(t, []k8sruntime.Object{sandboxObject(t, name, "uid-sandbox-kept", modeSuspended, labels)})
@@ -846,6 +1103,7 @@ func TestASuspendedSandboxsInstallingResumeReplacesAndInstallsNothing(t *testing
 // relaunch Gone the moment it started, until the claim's launch budget ran out and the resident
 // role never came back.
 func TestAReplacementGenerationOutlivesTheKilledInstancesTerminatedStatus(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	name := SandboxName(workerToken)
 	killed := g.spawn(workerSpec(t))
@@ -893,6 +1151,7 @@ func TestAReplacementGenerationOutlivesTheKilledInstancesTerminatedStatus(t *tes
 // Running again (decision 6). The repository cache the first launch makes is set Running too, by
 // its own lifecycle (repocache_test.go); only the issue Sandbox's patches are counted here.
 func TestTheSecretsHoldTheLaunchsCredentialsWhenRunningIsPatched(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	var mu sync.Mutex
 	var atRunning []string
@@ -950,6 +1209,7 @@ func TestTheSecretsHoldTheLaunchsCredentialsWhenRunningIsPatched(t *testing.T) {
 // A Secret left by an earlier Sandbox of the same name — one released while its garbage was still
 // being collected — is replaced, never updated, so the collector cannot delete the new one.
 func TestASecretOwnedByAnEarlierSandboxIsReplaced(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	g := newRig(t, []k8sruntime.Object{&corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: secretName(name), Namespace: testNamespace, UID: "uid-secret-old", OwnerReferences: []metav1.OwnerReference{{
@@ -967,6 +1227,7 @@ func TestASecretOwnedByAnEarlierSandboxIsReplaced(t *testing.T) {
 // on another pod of its tree: a child issue's pod is set Running while the root's is still in
 // workspace-init.
 func TestAPodOfATreeLaunchesWhileAnotherIsStillInitializing(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.autoStart.Store(false)
 	g.spawn(rootSpec(t))
@@ -977,13 +1238,10 @@ func TestAPodOfATreeLaunchesWhileAnotherIsStillInitializing(t *testing.T) {
 		_, err := g.r.Spawn(g.ctx, childSpec(t))
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the child issue's launch waited on the root's workspace-init")
+	// A child launch that waited on the root's workspace-init would end at its own boot timeout with
+	// an error, the root's pod never leaving it: its answer is the verdict, whenever it comes.
+	if err := testwait.Receive(t, "the child issue's launch", done); err != nil {
+		t.Fatalf("the child issue's launch: %v; it may have waited on the root's workspace-init", err)
 	}
 	if pod := g.pod(root); pod == nil || pod.Status.Phase != corev1.PodPending {
 		t.Fatalf("the root's pod is %+v, want it still Pending in workspace-init", pod)
@@ -1003,6 +1261,7 @@ func TestAPodOfATreeLaunchesWhileAnotherIsStillInitializing(t *testing.T) {
 // receiving runs on into the slack this bound holds over what its fetch actually waited and
 // checked. Pinned to a literal, 280 minutes, since no test can wait the real bound out.
 func TestProvisionBoundIsTheFetchsWholeBudgetTheClonesBoundAndTheCheckouts(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	if got, want := g.r.ProvisionBound(), workspace.CacheWaitTimeout+2*workspace.FetchTimeout+workspace.CloneTimeout+workspace.CheckoutTimeout; got != 280*time.Minute || got != want {
 		t.Fatalf("ProvisionBound = %s, want %s: the cache wait, the verification's bound, the delta's own, the shared clone's, and the checkout's", got, want)
@@ -1012,6 +1271,7 @@ func TestProvisionBoundIsTheFetchsWholeBudgetTheClonesBoundAndTheCheckouts(t *te
 // A launch whose Sandbox was replaced between reading it and writing it is refused rather than
 // written: every Sandbox patch tests the uid it was read at.
 func TestAPatchIsFencedToTheSandboxItRead(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.spawn(workerSpec(t))
 	name := SandboxName(workerToken)
@@ -1042,6 +1302,7 @@ func TestAPatchIsFencedToTheSandboxItRead(t *testing.T) {
 // store then replaces with the relaunch's Suspended patch — and a Suspend that found the pod gone
 // would read that as already Suspended and write nothing.
 func TestALaunchReturnsOnlyOnceTheSandboxStoreHoldsItsRunningPatch(t *testing.T) {
+	t.Parallel()
 	for _, launches := range []int{1, 2} {
 		t.Run(fmt.Sprintf("launch %d", launches), func(t *testing.T) {
 			g := newRig(t, nil, withLaggingSandboxInformer(300*time.Millisecond))
@@ -1082,8 +1343,9 @@ func TestALaunchReturnsOnlyOnceTheSandboxStoreHoldsItsRunningPatch(t *testing.T)
 // the claim is a launch failure now, and a pod the controller created later would run a valid
 // token for a claim nothing supervises.
 func TestALaunchThatFailsAfterRunningLeavesItsSandboxSuspended(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(func(o *Options) { o.BootTimeout = 300 * time.Millisecond }))
-	g.hold.Store(true)
+	g.setHold(true)
 	if _, err := g.r.Spawn(g.ctx, workerSpec(t)); err == nil || !strings.Contains(err.Error(), "wait for its new pod") {
 		t.Fatalf("Spawn: %v, want the new pod's timeout", err)
 	}
@@ -1099,12 +1361,18 @@ func TestALaunchThatFailsAfterRunningLeavesItsSandboxSuspended(t *testing.T) {
 // probe path already reads it. The timeout carries it too, so the operator reads one line instead
 // of going to the cluster for the condition the daemon had in its store all along.
 func TestALaunchThatWaitsOutItsPodSaysWhatTheSandboxReports(t *testing.T) {
+	t.Parallel()
 	blocked := metav1.Condition{
 		Type: conditionReady, Status: metav1.ConditionFalse, Reason: "PodSchedulingBlocked",
 		Message: "0/3 nodes are available: 3 Insufficient cpu.",
 	}
+	// The error reads the controller's condition from the runtime's store when the wait for the
+	// new pod runs out (waitedOut), so the launch's waits run on the rig's fake clock, moved past
+	// that wait's boot timeout only once the store holds the condition.
+	fc := clocktest.New(rigNow)
 	g := newRig(t, nil, withOptions(func(o *Options) { o.BootTimeout = 300 * time.Millisecond }))
-	g.hold.Store(true)
+	g.r.clock = fc
+	g.setHold(true)
 	// The controller reports on the generation it observed, and a condition of an earlier one is
 	// not read as this launch's, so the rig writes it as the controller would: after the Running
 	// patch, against the generation that patch produced.
@@ -1131,7 +1399,21 @@ func TestALaunchThatWaitsOutItsPodSaysWhatTheSandboxReports(t *testing.T) {
 		return true, patched, g.dyn.Tracker().Update(sandboxGVR, patched, testNamespace)
 	})
 
-	_, err := g.r.Spawn(g.ctx, workerSpec(t))
+	result := make(chan error, 1)
+	go func() { _, err := g.r.Spawn(g.ctx, workerSpec(t)); result <- err }()
+	name := SandboxName(workerToken)
+	g.eventually("the store to hold the controller's condition", func() bool {
+		u, err := g.r.storedObject(name)
+		if err != nil || u == nil {
+			return false
+		}
+		conditions, _, _ := unstructured.NestedSlice(u.Object, "status", "conditions")
+		return len(conditions) > 0
+	})
+	awaitArmedAt(t, fc, "the launch's wait for its new pod", fc.Now().Add(g.r.bootTimeout), nil)
+	fc.Advance(g.r.bootTimeout)
+
+	err := testwait.Receive(t, "the launch", result)
 
 	if err == nil {
 		t.Fatal("Spawn returned no error though its pod never came")
@@ -1149,9 +1431,9 @@ func TestALaunchThatWaitsOutItsPodSaysWhatTheSandboxReports(t *testing.T) {
 // a refused watch itself without ever calling that handler, so a runtime that trusted it could
 // boot with two stores nothing was feeding.
 func TestBootRefusesWhenTheAPIServerRefusesTheConnection(t *testing.T) {
-	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	address := dead.URL
-	dead.Close()
+	t.Parallel()
+	// An API server at a port the test holds and nothing listens on: every dial is refused.
+	address := "http://" + testport.Refused(t)
 	boot, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -1180,6 +1462,7 @@ func (d *deadlineTokens) Token(ctx context.Context, repo ghrepo.Repository) (str
 // other API call: a stalled GitHub connection must not hold the pod's turn for good. So is the
 // repository cache's, which the issue's first launch makes.
 func TestTheProvisioningTokenMintIsBounded(t *testing.T) {
+	t.Parallel()
 	tokens := &deadlineTokens{}
 	g := newRig(t, nil, withOptions(func(o *Options) { o.Tokens = tokens }))
 	g.spawn(workerSpec(t))
@@ -1194,6 +1477,7 @@ func TestTheProvisioningTokenMintIsBounded(t *testing.T) {
 // returns it, never panics, gives the pod's launch turn back, and the pod's next launch, once the
 // failure passes, launches.
 func TestAFailedStepOfAnIssuePodsProvisioningReleasesThePodsTurn(t *testing.T) {
+	t.Parallel()
 	failure := errors.New("the step failed")
 	for name, tc := range map[string]struct {
 		// fail arms the failure for the next launch only; the spec it returns is that launch's.
@@ -1256,20 +1540,18 @@ func TestAFailedStepOfAnIssuePodsProvisioningReleasesThePodsTurn(t *testing.T) {
 	}
 }
 
-// failedLaunch is a launch of spec expected to fail within a second, its panic turned into the
-// test's failure, so a launch that panics fails its own subtest by name rather than the binary.
+// failedLaunch is a launch of spec expected to fail, its panic turned into the test's failure, so a
+// launch that panics fails its own subtest by name rather than the binary. Its one bound is the
+// test binary's deadline (testwait.Context): a loaded machine may take a launch longer than any
+// fixed span to reach the failure its row plants, and a bound of its own that ran out first would
+// end the launch with that bound's error instead of the row's.
 func failedLaunch(t *testing.T, g *rig, spec runtime.SpawnSpec) error {
 	t.Helper()
-	launching, cancel := context.WithTimeout(g.ctx, time.Second)
-	defer cancel()
-	return failedLaunchOn(t, g, launching, spec)
+	return failedLaunchOn(t, g, testwait.Context(t), spec)
 }
 
-// failedLaunchOn is failedLaunch for a row whose launch no wall clock bounds: it runs on
-// launching, the context the row cancels once what it waits on has happened, and turns a panic
-// into the test's failure the same way. A launch whose failure lies past the waits of a replacing
-// try — a suspend, a wait for the previous pod, provision, the wait for the new pod — takes a
-// loaded machine longer than failedLaunch's second, and is this helper's rather than its.
+// failedLaunchOn is failedLaunch on launching, a context of the row's own, turning a panic into the
+// test's failure the same way.
 func failedLaunchOn(t *testing.T, g *rig, launching context.Context, spec runtime.SpawnSpec) error {
 	t.Helper()
 	defer func() {
@@ -1299,6 +1581,7 @@ func (o *outageTokens) Token(ctx context.Context, repo ghrepo.Repository) (strin
 // already in the pod; the role's next start goes into the same pod. A read the API server answers
 // overloaded is sent again (resend), so that start goes into the same pod at once.
 func TestOnlyAPodsUnboundLaunchersReplaceItNotAFailedRead(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		// unbind is what happens to the reviewer's launcher Secret before the reviewer starts, with
 		// fail armed to have the next read of it fail with failure.
@@ -1400,6 +1683,7 @@ func editSecret(g *rig, name string, edit func(*corev1.Secret)) {
 // generation 1 must already be stopped by then; neither a failed claim nor the runtime's forgotten
 // watch may leave it acting.
 func TestAFailedLauncherBindingReadNeverLeavesASupervisedRoleChildRunning(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	machine, store, _ := supervisedSandboxMachine(t, g, spec)
@@ -1440,11 +1724,13 @@ func TestAFailedLauncherBindingReadNeverLeavesASupervisedRoleChildRunning(t *tes
 // refusal of the record, RBAC's 403, charged on each try, the third failing the claim; and a
 // throttle that outlasts the launch's own deadline, charged once per try after each has sent the
 // patch again while the throttle lasted, so a server that stays overloaded fails the claim rather
-// than holding its launch for ever.
+// than holding its launch for ever. Every row runs at the rig's boot timeout: a row that shortened
+// it to 300 ms, to end its tries sooner, put its setup's wait for the role launcher under that
+// bound too, and on a loaded runner the wait ran out, or the setup's launch failed once and left
+// the claim a generation ahead of the setup's events.
 func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
-		// bootTimeout is the rig's boot timeout, 0 for the rig's own.
-		bootTimeout time.Duration
 		// answer is the server's answer to an address record after refused refusals, nil to apply it.
 		answer func(refused int32) error
 		// err is what the relaunch fails with, "" for a relaunch that launches uncharged; one that
@@ -1475,18 +1761,13 @@ func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T)
 			refused: func(n int32) bool { return n == 3 }, want: "3, once per charged try",
 		},
 		"a throttle past the launch's deadline, charged once per try": {
-			bootTimeout: 300 * time.Millisecond,
-			answer:      func(int32) error { return apierrors.NewInternalError(errors.New(etcdThrottle)) },
-			err:         "etcdserver: throttle: too many requests",
-			refused:     func(n int32) bool { return n > 3 }, want: "more than 3, each try sending it again while the throttle lasted",
+			answer:  func(int32) error { return apierrors.NewInternalError(errors.New(etcdThrottle)) },
+			err:     "etcdserver: throttle: too many requests",
+			refused: func(n int32) bool { return n > 3 }, want: "more than 3, each try sending it again while the throttle lasted",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			var options []rigOption
-			if tc.bootTimeout != 0 {
-				options = append(options, withOptions(func(o *Options) { o.BootTimeout = tc.bootTimeout }))
-			}
-			g := newRig(t, nil, options...)
+			g := newRig(t, nil)
 			spec := workerSpec(t)
 			machine, _, _ := supervisedSandboxMachine(t, g, spec)
 			first := startSupervisedSandboxRole(t, g, machine, spec, resumeSession)
@@ -1531,6 +1812,7 @@ func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T)
 // the Machine retries to Failed. The refusal is one prepare makes before relaunch otherwise
 // forgets the role: a role prompt file that is not on disk.
 func TestAPrepareRefusalOnResumeNeverLeavesASupervisedRoleChildRunning(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		sessionFile string
 		mutate      func(*runtime.SpawnSpec)
@@ -1581,6 +1863,7 @@ func TestAPrepareRefusalOnResumeNeverLeavesASupervisedRoleChildRunning(t *testin
 // before relaunch's cleanup. Machine itself must stop the previous role process before it reports
 // the launch failure; otherwise the same cleared locator leaves that generation watched and running.
 func TestASpecBuilderRefusalOnResumeNeverLeavesASupervisedRoleChildRunning(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	machine, store, specs := supervisedSandboxMachine(t, g, spec)
@@ -1613,6 +1896,7 @@ func TestASpecBuilderRefusalOnResumeNeverLeavesASupervisedRoleChildRunning(t *te
 // runtime cannot know it: retried to Failed, no child of the role is left running and nothing is
 // watched.
 func TestASpawnRefusalForAnUnregisteredClaimNeverLeavesItsChildRunning(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	machine, store, _ := supervisedSandboxMachine(t, g, spec)
@@ -1692,16 +1976,22 @@ func startSupervisedSandboxRole(
 // That start may have begun the new generation even though start returns an error, so relaunch,
 // which owns the child it started, sends a Stop for the issued generation before returning. This
 // holds both where Resume has no previous locator and where its previous locator names the same
-// pod: the Stop names the issued generation, never the previous one, which is the caller's.
+// pod: the Stop names the issued generation, never the previous one, which is the caller's. The
+// start deadline runs on the rig's fake clock (g.r.clock), which the test moves past it only once
+// the launcher holds the Start: on the wall clock's one second, a loaded CI runner once got the
+// deadline's error without the launcher ever receiving the Start (run 45723523570). The waits that
+// stay on the wall clock, the first spawn's and the issued generation's Stop (stopIssuedChild), run
+// under a boot timeout as long as the test binary's deadline allows (withWaitsToTheDeadline): under
+// the one second they had, a Stop whose write a loaded machine held past it failed, the runtime
+// closed the launcher's connection, and the launcher never received the Stop this test is about.
 func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t *testing.T) {
+	t.Parallel()
 	for name, previous := range map[string]bool{
 		"without a previous locator":              false,
 		"on the same pod as its previous locator": true,
 	} {
 		t.Run(name, func(t *testing.T) {
-			g := newRig(t, nil, withOptions(func(o *Options) {
-				o.BootTimeout, o.TerminationGrace = time.Second, 50*time.Millisecond
-			}))
+			g := newRig(t, nil, withWaitsToTheDeadline())
 			spec := workerSpec(t)
 			first := g.spawn(spec)
 			delayed := g.scriptedStartLauncher(spec.Claim, 1, func(shimwire.LauncherStart) *shimwire.LauncherStartResult { return nil })
@@ -1710,11 +2000,25 @@ func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t
 			if previous {
 				prev = &first
 			}
-			if _, err := g.r.Resume(g.ctx, prev, spec); err == nil || !strings.Contains(err.Error(), "start through its authenticated launcher") {
-				t.Fatalf("Resume = %v, want the delayed Start's deadline", err)
-			}
+			// The launch's wait for its role launcher reads the launcher ready only once the
+			// runtime holds the launcher's first state, which wakes no wait: on the fake clock no
+			// recheck follows a first check that came before it, so Resume starts after it.
+			g.eventually("the runtime to hold the scripted launcher's first state", func() bool {
+				_, ready := g.r.launchers.state(spec.Claim, first.Sandbox.PodUID)
+				return ready
+			})
+			fc := clocktest.New(rigNow)
+			g.r.clock = fc
+			resumed := make(chan error, 1)
+			go func() { _, err := g.r.Resume(g.ctx, prev, spec); resumed <- err }()
 			if start := delayed.start(t, 2); start.Generation != 2 {
 				t.Fatalf("Start = generation %d, want generation 2", start.Generation)
+			}
+			// The start deadline is the launcher wait's, the boot timeout from the wait's start at
+			// the fake clock's moment, plus the termination grace.
+			fc.Advance(g.opts.BootTimeout + g.opts.TerminationGrace)
+			if err := testwait.Receive(t, "the Resume", resumed); err == nil || !strings.Contains(err.Error(), "start through its authenticated launcher") {
+				t.Fatalf("Resume = %v, want the delayed Start's deadline", err)
 			}
 			if stop := delayed.stop(t, 2); stop.Generation != 2 {
 				t.Fatalf("Stop = generation %d, want the Start's generation 2", stop.Generation)
@@ -1741,6 +2045,7 @@ func TestAStartWhoseAnswerIsDelayedPastItsDeadlineIsStoppedBeforeResumeReturns(t
 // nothing can be running, so relaunch reads the Start's outcome as unknown and stops the issued
 // generation, as for an unanswered Start: the launcher here did begin it.
 func TestAnOKStartAnswerNamingAnotherGenerationIsStoppedNotTakenAsARefusal(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	first := g.spawn(spec)
@@ -1774,14 +2079,26 @@ func TestAnOKStartAnswerNamingAnotherGenerationIsStoppedNotTakenAsARefusal(t *te
 // scriptedStartLauncher is a launcher that starts its child at each Start it receives and answers it
 // as answer says: nil withholds the Start result and state until the runtime's cleanup sends Stop.
 // The Stop runs after the Start on the same connection, so the child it reports ended is exactly
-// the Start's generation.
+// the Start's generation. Its hello says of looking a session up by its id what the rig's own fake
+// launchers' do (withResumesBySession).
 type scriptedStartLauncher struct {
-	starts chan shimwire.LauncherStart
-	stops  chan shimwire.LauncherStop
+	session *launcherSession
+	starts  chan shimwire.LauncherStart
+	stops   chan shimwire.LauncherStop
 }
 
 func (g *rig) scriptedStartLauncher(
 	token claim.Token, running uint64, answer func(shimwire.LauncherStart) *shimwire.LauncherStartResult,
+) *scriptedStartLauncher {
+	g.t.Helper()
+	return g.scriptedStartLauncherOver(token, running, answer, nil)
+}
+
+// scriptedStartLauncherOver is scriptedStartLauncher with the daemon's end of the connection
+// handed to the runtime through wrap, when wrap is not nil: the connection the runtime writes its
+// requests to and reads the launcher's frames from.
+func (g *rig) scriptedStartLauncherOver(
+	token claim.Token, running uint64, answer func(shimwire.LauncherStart) *shimwire.LauncherStartResult, wrap func(net.Conn) net.Conn,
 ) *scriptedStartLauncher {
 	g.t.Helper()
 	g.r.launchers.mu.Lock()
@@ -1791,12 +2108,18 @@ func (g *rig) scriptedStartLauncher(
 		old.close()
 	}
 	server, client := net.Pipe()
+	if wrap != nil {
+		server = wrap(server)
+	}
 	pod := g.pod(SandboxName(token))
-	session := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, shimwire.LauncherHello{LauncherID: "scripted-" + string(token), PodUID: string(pod.UID)})
+	session := g.r.launchers.accept(token, launcherIssue(token), g.keptSince(token), shimwire.LauncherHello{
+		LauncherID: "scripted-" + string(token), PodUID: string(pod.UID), ResumesBySession: g.resumesBySession,
+	})
 	g.t.Cleanup(func() { _ = client.Close() })
 	scripted := &scriptedStartLauncher{
-		starts: make(chan shimwire.LauncherStart, 2),
-		stops:  make(chan shimwire.LauncherStop, 4),
+		session: session,
+		starts:  make(chan shimwire.LauncherStart, 2),
+		stops:   make(chan shimwire.LauncherStop, 4),
 	}
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
 	go func() {
@@ -1834,30 +2157,36 @@ func (g *rig) scriptedStartLauncher(
 	return scripted
 }
 
+// start is the scripted launcher's first Start of generation, failing the test when none comes
+// before the test binary's deadline (testwait.Context).
 func (d *scriptedStartLauncher) start(t *testing.T, generation uint64) shimwire.LauncherStart {
 	t.Helper()
+	ended := testwait.Context(t)
 	for {
 		select {
 		case command := <-d.starts:
 			if command.Generation == generation {
 				return command
 			}
-		case <-time.After(time.Second):
-			t.Fatalf("no generation-%d Start", generation)
+		case <-ended.Done():
+			t.Fatalf("no generation-%d Start before the test binary's deadline", generation)
 		}
 	}
 }
 
+// stop is the scripted launcher's first Stop of generation, failing the test when none comes
+// before the test binary's deadline (testwait.Context).
 func (d *scriptedStartLauncher) stop(t *testing.T, generation uint64) shimwire.LauncherStop {
 	t.Helper()
+	ended := testwait.Context(t)
 	for {
 		select {
 		case command := <-d.stops:
 			if command.Generation == generation {
 				return command
 			}
-		case <-time.After(time.Second):
-			t.Fatalf("no generation-%d Stop", generation)
+		case <-ended.Done():
+			t.Fatalf("no generation-%d Stop before the test binary's deadline", generation)
 		}
 	}
 }
@@ -1931,6 +2260,10 @@ func (sandboxMachineClock) AfterFunc(time.Duration, func()) supervise.Cancel {
 	return sandboxMachineCancel{}
 }
 
+func (sandboxMachineClock) At(time.Time, func()) supervise.Cancel {
+	return sandboxMachineCancel{}
+}
+
 func (sandboxMachineClock) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 type sandboxMachineCancel struct{}
@@ -1988,8 +2321,9 @@ func (s *supervisedSandboxStore) PutClaimStep(_ context.Context, token claim.Tok
 // ambiguous as a pod that never came: the launch sets its Sandbox Suspended before returning. The
 // repository cache the launch makes first is answered as usual.
 func TestALaunchWhoseRunningPatchTimesOutAfterApplyingLeavesItsSandboxSuspended(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
-	g.hold.Store(true)
+	g.setHold(true)
 	applyThenTimeOut := k8stesting.ObjectReaction(g.dyn.Tracker())
 	g.dyn.PrependReactor("patch", "sandboxes", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {
 		patch := a.(k8stesting.PatchAction)
@@ -2014,6 +2348,7 @@ func TestALaunchWhoseRunningPatchTimesOutAfterApplyingLeavesItsSandboxSuspended(
 // predecessor the garbage collector has not reaped — reports nothing but Pending, and the event is
 // the whole of the reason (INFRA-80). A pod past Pending carries none: its phase is the answer.
 func TestALaunchThatWaitedOutAPendingPodReportsItsEvents(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))
 	name := loc.Sandbox.Name

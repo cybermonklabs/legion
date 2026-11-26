@@ -23,9 +23,9 @@ const CALLERS: Record<string, { label: string; meaning: string }> = {
  *  the source, `model.ScopePerson` and `model.ScopeApprove`). */
 const SCOPES: Record<string, string> = {
   person:
-    "this credential acts as its person. A browser sign-in holds it, and so does a personal token unless its owner took it away.",
+    "this credential acts as its person. A browser sign-in holds it, so does a personal token unless its owner took it away, and so does a token the secrets broker issued that acts for its person.",
   approve:
-    "beside `person`, this credential may do what settles work or controls a credential: a document review, the answer of an ask of kind `approval`, a machine-login decision, a credential-grant or machine-login revoke, and minting, changing or revoking a personal token. No credential holds `approve` without `person`.",
+    "beside `person`, this credential may do what settles work or controls a credential: a document review, keeping a decision, the answer of an ask of kind `approval`, a machine-login decision, a credential-grant, machine-login or sign-in revoke, and minting, changing or revoking a personal token. A browser sign-in holds it, and so does a personal token its owner gave it; no token the secrets broker issued holds it, and no credential holds `approve` without `person`.",
 };
 
 interface Route {
@@ -84,7 +84,7 @@ function render(routes: Route[]): string {
     "",
     ...Object.entries(SCOPES).map(([scope, meaning]) => `- \`${scope}\`: ${meaning}`),
     "",
-    "A read-only token the secrets broker issued holds neither scope. Dispatch serves it only on the routes `readScopeRoutes` in the source lists, and refuses it `403 READ_ONLY_TOKEN` on every other route, with no challenge header, before it reads the route's scopes. The route index does not carry that list, so this page does not mark those routes.",
+    "A read-only token is any token that holds `read`: one the secrets broker minted from a read entry or narrowed because its trade asked for `read`, or a personal token minted with `read`. It holds `person` at most, never `approve`. Dispatch serves it only on the GET routes it classes as reads (`readClasses` in the source), and refuses it `403 READ_ONLY_TOKEN` on every other route, with no challenge header, before it reads the route's scopes. It refuses a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but `GET /api/v1/whoami`. The route index does not carry the read class, so this page does not mark those routes.",
     "",
     "Path parameters are the `{name}` segments of a path.",
     "",

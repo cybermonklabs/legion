@@ -1,4 +1,4 @@
-import { createProject, mintAgentToken, putRepoProject, registerEval } from "./api";
+import { createProject, mintAgentToken, putProjectDefaultRepository, registerEval } from "./api";
 import { PIPELINE_AT, seedPipelineFixture } from "./delivery-seed";
 import { sql } from "./psql";
 import { expect, test } from "./test";
@@ -96,13 +96,14 @@ test("the Pipeline page stacks its cards in one column on a phone @phone @phone-
 });
 
 // The slowest-jobs table ranks a job once it holds the min_n a person set on the pr-ci eval of the
-// project the deploy repository maps to, and its sentence names that number (INFRA-2916, spec R5).
+// deploy repository's project, the one whose default repository it is, and its sentence names that
+// number (INFRA-2916, spec R5).
 // With no min_n set the threshold is 50 and build / unit, the fixture's one job with 50 timed
 // results or more, is ranked alone; at min_n 1, lint, with three timed results, is ranked too.
 test("the Pipeline's slowest jobs follow the min_n a person set on pr-ci", async ({ browser }) => {
   await seedPipelineFixture();
   await createProject({ key: "PIPE", name: "Pipeline" });
-  await putRepoProject("acme/widgets", { default: true, project: "PIPE" });
+  await putProjectDefaultRepository("PIPE", "acme/widgets");
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const slowest = page.locator('[data-section="slowest-jobs"]');

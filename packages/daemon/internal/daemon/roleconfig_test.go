@@ -10,12 +10,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
 // role_config_files reaches the runtime that launches each role, under either runtime, as the file
 // settled it: the tmux runtime's Options and the Sandbox runtime's, which tell each role its own
 // overlays and hand the image probe every role's.
 func TestRoleConfigFilesReachEitherRuntime(t *testing.T) {
+	t.Parallel()
 	files := map[claim.Role][]string{
 		claim.RoleImplementer: {"/etc/legion-operator/fallback.yml"},
 		claim.RoleController:  {"/etc/legion-operator/fallback.yml", "/etc/legion-operator/controller.yml"},
@@ -26,7 +29,7 @@ func TestRoleConfigFilesReachEitherRuntime(t *testing.T) {
 	}
 	k := kubernetesConfig(t, "https://127.0.0.1:1")
 	k.RoleConfigFiles = files
-	opts, err := sandboxOptions(k, *k.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(k, *k.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}
@@ -40,12 +43,13 @@ func TestRoleConfigFilesReachEitherRuntime(t *testing.T) {
 // the boot, naming the role, the file and Oh My Pi's error line, rather than failing each launch of
 // that role; a role file Oh My Pi starts on, or no key at all, passes.
 func TestTheTmuxBootGateRefusesARoleOverlayOhMyPiCannotParse(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	omp := filepath.Join(dir, "omp")
 	script := "#!/bin/sh\nIFS=:\nfor f in $PI_CONFIG_FILES; do case \"$f\" in *malformed*)\n" +
 		"  echo \"error: Failed to parse config overlay $f: SyntaxError\" >&2; exit 1;; esac; done\n" +
 		"echo '{\"value\": false}'\n"
-	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
+	if err := execfile.Write(omp, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	operator, good, malformed := filepath.Join(dir, "operator.yml"), filepath.Join(dir, "fallback.yml"), filepath.Join(dir, "malformed.yml")
@@ -80,13 +84,14 @@ func TestTheTmuxBootGateRefusesARoleOverlayOhMyPiCannotParse(t *testing.T) {
 // The gate boot builds for a tmux daemon (prepare) refuses a role file Oh My Pi cannot parse,
 // before the plugin gate's load probes run, naming the role and the file.
 func TestTheTmuxBootRefusesARoleOverlayOhMyPiCannotParse(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	t.Setenv("LEGION_TEST_PG_DSN", "postgres://legion:legion@127.0.0.1:1/legion?sslmode=disable&connect_timeout=1")
 	dir := t.TempDir()
 	omp := filepath.Join(dir, "omp")
 	script := "#!/bin/sh\nIFS=:\nfor f in $PI_CONFIG_FILES; do case \"$f\" in *malformed*)\n" +
 		"  echo \"error: Failed to parse config overlay $f: SyntaxError\" >&2; exit 1;; esac; done\n" +
 		"echo '{\"value\": false}'\n"
-	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
+	if err := execfile.Write(omp, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	malformed := filepath.Join(dir, "malformed.yml")

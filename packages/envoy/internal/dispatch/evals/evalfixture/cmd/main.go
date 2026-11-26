@@ -1,8 +1,8 @@
 // Command evalfixture loads the histories the eval registry's checks read (dispatch://INFRA-2916,
-// k6, k12, k14, k15 and k17) into a database that already holds Dispatch's schema, and prints, as
-// JSON, what each mode wrote: the project, the counts, the times a check reads its windows from,
-// for -attribution each row with the projects it counts for, and the seed where -delivery, the
-// one seeded mode, ran.
+// k6, k12 and k15, and the base whose first paint k8's and k13's negative controls read) into a
+// database that already holds Dispatch's schema, and prints, as JSON, what each mode wrote: the
+// project, the counts, the times a check reads its windows from, for -attribution each row with
+// the projects it counts for, and the seed where -delivery, the one seeded mode, ran.
 //
 //	go run ./internal/dispatch/evals/evalfixture/cmd -database <url> -project LEGK \
 //	  -legion -issues 240 -now 2026-11-13T12:00:00Z
@@ -11,14 +11,18 @@
 //	go run ./internal/dispatch/evals/evalfixture/cmd -database <url> \
 //	  -merge-pr acme/api#12 -now 2026-11-13T13:00:00Z
 //
-// The modes add to one project and write its projects row only where it has none, so they
-// combine; after them the project's next issue number is moved past every issue it holds. Every
-// mode but -merge-pr writes into -project, which it requires; -merge-pr names its pull request by
-// repository and number and writes no project's rows, so it needs none:
+// -legion adds to one project and writes its projects row only where it has none, so it combines
+// with the other modes but -base, which writes the same history alone, into a database of the
+// base. -delivery adds to one project too, beside deliverytest's second project; -attribution
+// writes three projects, -project, -project+"B" and -project+"C"; and each of the two replaces the
+// one delivery_settings row. After them each project's next issue number is moved past every issue
+// it holds. Every mode but -merge-pr writes into -project, which it requires; -merge-pr names its
+// pull request by repository and number and writes no project's rows, so it needs none:
 //
 //	-legion       legiontest's Legion history, at least -issues finished issues, observed from
 //	              partway through, and the project's legion_settings row (this head's schema)
-//	-base         the same history into a database of the base head 02a7b3c6 (k14); alone
+//	-base         the same history into a database of the base, main at the commit this head
+//	              merges (the base evalbench measures); alone
 //	-attribution  k15's case under -project, -project+"B" and -project+"C"; not with -delivery,
 //	              since both write the one delivery_settings row
 //	-delivery     -days days of deliverytest's delivery history, seeded by -seed
@@ -72,7 +76,7 @@ func main() {
 	flag.StringVar(&o.database, "database", "", "the Postgres URL to write into; it must hold Dispatch's schema")
 	flag.StringVar(&o.project, "project", "", "the project every mode writes into; required by every mode but -merge-pr, which writes no project's rows")
 	flag.BoolVar(&o.legion, "legion", false, "write the Legion history and the project's legion_settings row")
-	flag.BoolVar(&o.base, "base", false, "write the Legion history into a database of the base head 02a7b3c6")
+	flag.BoolVar(&o.base, "base", false, "write the Legion history into a database of the base: main at the commit this head merges (git merge-base <head> origin/main)")
 	flag.BoolVar(&o.attribution, "attribution", false, "write k15's attribution case")
 	flag.BoolVar(&o.delivery, "delivery", false, "write -days days of delivery rows for the project")
 	flag.StringVar(&o.mergePR, "merge-pr", "", "merge the pull request <owner>/<repo>#<n> at -now")
@@ -178,7 +182,7 @@ func check(o options) error {
 	case !o.legion && !o.base && !o.attribution && !o.delivery && o.mergePR == "":
 		return errors.New("name at least one mode: -legion, -base, -attribution, -delivery or -merge-pr")
 	case o.base && (o.legion || o.attribution || o.delivery || o.mergePR != ""):
-		return errors.New("-base writes the Legion history alone, into a database of the base head")
+		return errors.New("-base writes the Legion history alone, into a database of the base")
 	case o.attribution && o.delivery:
 		return errors.New("-attribution and -delivery each write the one delivery_settings row: load them into two databases")
 	}

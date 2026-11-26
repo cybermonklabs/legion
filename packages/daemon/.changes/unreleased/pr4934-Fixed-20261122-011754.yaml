@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+    A role starts when the container's `/tmp` (or `/var/tmp`, `/run/lock`, `/var/lock`, `/dev/shm`)
+    lists a mount that another mount hides. role-init carried every mount the mount table listed
+    under such a directory, found a hidden one at no path, and failed the role's start with
+    `hold <path> aside: stat <path>: no such file or directory`. It now carries only the mounts a
+    path reaches, decided from each mount's chain of parents and not from the table's order, so a
+    hidden mount listed after the mount that hides it, as gVisor can list one, is not carried
+    either, and the role does not see the container's own directory at a hidden mount's path. Of a
+    mount inside another carried mount, role-init binds back only the outer one, whose recursive
+    bind brings the inner one, so it no longer follows a path inside a volume every role may write.
+time: 2026-11-22T01:17:54Z
+custom:
+    Issue: pr4934

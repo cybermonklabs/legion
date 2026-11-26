@@ -1,8 +1,18 @@
 package sandbox
 
-import "github.com/sjawhar/legion/daemon/internal/runtime"
+import (
+	"time"
 
-var _ runtime.IssuePodReader = (*Runtime)(nil)
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+)
+
+var (
+	_ runtime.IssuePodReader    = (*Runtime)(nil)
+	_ runtime.IssueVolumeReader = (*Runtime)(nil)
+)
 
 // IssuePodRunsConfiguredImage says whether the pod of issue's Sandbox is running the image the
 // daemon's configuration names (r.image), read from the pod the runtime's store holds: the pod
@@ -37,11 +47,34 @@ func (r *Runtime) IssuePodRunsConfiguredImage(issue string) bool {
 // IssueSandbox says whether the runtime still holds the Sandbox of issue, and what that Sandbox
 // is called: the one name the six role claims of the issue share, which its pod carries too
 // (SandboxName, through issueSandboxName), read from the Sandbox the runtime's store holds. The
-// name is built from the issue key and never read off the object, so presence is the whole of
-// what the store is asked, and the object is taken as the informer holds it (storedObject):
-// decoding a whole Sandbox to answer it would cost tens of kilobytes and hundreds of
-// allocations, once per pod per tick. A release that takes the pod down records the name it
-// took.
+// name is built from the issue key and never read off the object, and the object is taken as the
+// informer holds it (storedObject), never decoded: decoding a whole Sandbox to answer it would
+// cost tens of kilobytes and hundreds of allocations, once per pod per tick. A release that takes
+// the pod down records the name it took.
+//
+// A kept Sandbox an earlier release already released answers absent too (releasedKept): Suspended,
+// owning the issue's kept volume and carrying the release's record that its Secrets are deleted
+// (secretsReleasedAnnotation, with the Sandbox's own uid), read in place. A release keeps such a
+// Sandbox for the issue's next pod (ReleaseIssue), and it runs no pod and owns no Secret, so
+// nothing of it is the release's to take. The release of a pod no claim owns changes no claim, so
+// it reads such an issue again at every pass: answered present, it would be released again at
+// every pass. Answered absent, it is held as unowned_sandbox_gone, and no release row is written
+// for it. A Suspended kept Sandbox that carries no record may still own its Secrets: a launch that
+// failed after it wrote them leaves it so (suspendFailedLaunch). It answers present, so the
+// release of a pod no claim owns releases it once. That release deletes its Secrets, keeps it and
+// writes the record, and the next pass holds it. The release writes the record only after its
+// deletes succeed, so the record is never on a Sandbox that still owns a Secret.
+//
+// A Sandbox that is going, or that a release of this runtime's has just kept, answers absent as
+// well: a stored object that carries a deletionTimestamp, which the API server sets at a delete
+// and keeps until the Sandbox's finalizers have run (a foreground delete's among them), and an
+// object of which the runtime keeps one of its own writes the store does not show yet (taken) —
+// its delete, or its release's record on a kept Sandbox. The API answers a write before the watch
+// carries it to the store, and what the runtime keeps of the write answers for the store until it
+// does. What is kept names the object by uid: a Sandbox made again under the same name answers
+// present. The store and what is kept are read under one hold of mu (storedTaken), which notify
+// holds while it drops what the store has caught up with, so no read pairs a store that has moved
+// on with an entry about to go.
 //
 // It is the informer's store and never an API call: the idle pass asks this of every pod of the
 // project on every tick, and a read per pod against the API server would cost the apiserver a
@@ -55,11 +88,97 @@ func (r *Runtime) IssueSandbox(issue string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	u, err := r.storedObject(name)
+	u, took, kept, err := r.storedTaken(name)
 	if err != nil || u == nil {
 		return "", false
 	}
+	// The deletion mark is read in place, as the object is: GetDeletionTimestamp parses it into a
+	// metav1.Time it returns by pointer, and this read runs once per pod per tick.
+	deleting, _, _ := unstructured.NestedFieldNoCopy(u.Object, "metadata", "deletionTimestamp")
+	if deleting != nil || kept && took.uid == u.GetUID() || releasedKept(u) {
+		return "", false
+	}
 	return name, true
+}
+
+// releasedKept is whether u is a kept Sandbox an earlier release already released: Suspended,
+// owning the issue's kept volume (storedOwnsKeptVolume) and carrying that release's record with its
+// own uid (recordsRelease). It runs no pod and owns no Secret, so nothing of it is a release's to
+// take: IssueSandbox answers it absent, and a release finds nothing of it to release (endIssuePod).
+// It reads u in place, with no decode.
+func releasedKept(u *unstructured.Unstructured) bool {
+	mode, _, _ := unstructured.NestedString(u.Object, "spec", "operatingMode")
+	return mode == modeSuspended && recordsRelease(u, u.GetUID()) && storedOwnsKeptVolume(u)
+}
+
+// IssueKeepsVolume satisfies runtime.IssueVolumeReader: whether the issue's next launch keeps the
+// kept volume of the Sandbox of issue that the runtime's store holds, and that volume is older than
+// since. The daemon asks it with the time an update round opened, when the round's pod went before
+// the round was over, and with the present time in the rename pass's live-pod rules, at each boot
+// and each pod end. It is true where the Sandbox owns the issue's kept volume
+// (storedOwnsKeptVolume), was made before since, carries no reset mark (volumeResetAnnotation), and
+// has the disk shape that the configuration now renders for its issue (diskShapeChange over
+// IssueDisks.templates, as the boot census compares it). A Sandbox made at or after since, by a
+// reset or a launch into another disk shape (replaceSupersededSandbox), holds a new volume, which
+// holds nothing of the round's pod. The next launch deletes a Sandbox that carries the mark
+// (volumeReset) or that has another disk shape (supersededDisk), with its volume: a change of
+// keep_volume, the issue's sandbox, the microVM block's storage class or issue_volume moves the
+// shape, and each of them is also a reason for the round itself. It reads the object as the
+// informer holds it, without a decode, as IssueSandbox does, and it decodes only the claim
+// templates, at the end, for the shape. The daemon asks it only at those three moments, and at the
+// release of a pod no claim owns only for a pod that release would otherwise take with a read of its
+// disk (internal/daemon's unowned pass, R6 of #5285), never at every tick of the
+// idle pass, so that decode is rare. Anything that leaves the Sandbox unread answers
+// false, and the issue of a round is then told what the issue of a pod on an ephemeral disk is
+// told: the work its roles did not push is lost.
+//
+// The API server records a creation time to the second, and since has a finer resolution. So the
+// comparison cuts since to the second too, and a Sandbox made in the second the round opened
+// answers false, made before or after since in that second. The comparison errs toward a new
+// volume: a Sandbox made after since never reads as made before it.
+func (r *Runtime) IssueKeepsVolume(issue string, since time.Time) bool {
+	name, err := issueSandboxName(r.project, issue)
+	if err != nil {
+		return false
+	}
+	u, err := r.storedObject(name)
+	if err != nil || u == nil {
+		return false
+	}
+	if !storedOwnsKeptVolume(u) || !u.GetCreationTimestamp().Time.Before(since.Truncate(time.Second)) {
+		return false
+	}
+	if mark, _, _ := unstructured.NestedString(u.Object, "metadata", "annotations", volumeResetAnnotation); mark != "" {
+		return false
+	}
+	held, readable := storedClaimTemplates(u)
+	if !readable {
+		return false
+	}
+	label, _, _ := unstructured.NestedString(u.Object, "metadata", "labels", labelIssue)
+	want := IssueDisks{Sandbox: r.sandboxConfig, StorageClass: r.storageClass, Volume: r.volumeSize}.templates(r.project, label)
+	return diskShapeChange(held, want) == ""
+}
+
+// storedClaimTemplates are the claim templates of a Sandbox as the API server or the informer holds
+// it, each decoded in place without a copy of the object, and false where one of them cannot be
+// read.
+func storedClaimTemplates(u *unstructured.Unstructured) ([]volumeClaimTemplate, bool) {
+	field, _, _ := unstructured.NestedFieldNoCopy(u.Object, "spec", "volumeClaimTemplates")
+	stored, _ := field.([]any)
+	templates := make([]volumeClaimTemplate, 0, len(stored))
+	for _, item := range stored {
+		object, ok := item.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		var template volumeClaimTemplate
+		if err := k8sruntime.DefaultUnstructuredConverter.FromUnstructured(object, &template); err != nil {
+			return nil, false
+		}
+		templates = append(templates, template)
+	}
+	return templates, true
 }
 
 // IssuePod satisfies runtime.IssuePodReader: the uid of the pod issue's Sandbox holds now, ""

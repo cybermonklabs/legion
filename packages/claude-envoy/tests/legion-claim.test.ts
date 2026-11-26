@@ -1,22 +1,33 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, setDefaultTimeout, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { SESSION_HEARTBEAT_MS, SESSION_LIVE_WINDOW_MS } from "@legion/contracts"
+import { daemonContract } from "@legion/contracts/daemon-contract"
 import type { SetRoleInput, SetRoleResult } from "@legion/envoy-client/transport"
 import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
-import { legion } from "../package.json" with { type: "json" }
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard"
+import pkg from "../package.json" with { type: "json" }
 import type { RoleRegainHook } from "../src/envoy-channel-server"
 import {
   type LegionClaim,
   legionPane,
+  paneDaemonClient,
   ROLE_CLAIM_RETRY_MS,
   ROLE_CLAIM_WAIT_MS,
   SAVED_MARKER_SUFFIX,
   startLegionClaim,
   waitForTranscript,
 } from "../src/legion-claim"
+
+/** The contract this build speaks, as `legion-claim.ts` reads it (`daemonContract`): this
+ * checkout's. */
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir)
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS)
 
 const SESSION = "0b9c2f4e-2d3a-4c55-9a1e-6f7d8e9a0b1c"
 /** The channel server's client instance, which the pane's claim names as its process. */
@@ -66,9 +77,9 @@ function daemonAnswering(answer: (path: string) => Response): {
   return { posted, fetch: stub }
 }
 
-test("a session with no boot token is no Legion pane", () => {
-  expect(legionPane({ LEGION_DAEMON_URL: "http://daemon.test" })).toBeUndefined()
-  expect(legionPane({ LEGION_BOOT_TOKEN: " " })).toBeUndefined()
+test("a session with no boot token is no Legion pane", async () => {
+  expect(await legionPane({ LEGION_DAEMON_URL: "http://daemon.test" })).toBeUndefined()
+  expect(await legionPane({ LEGION_BOOT_TOKEN: " " })).toBeUndefined()
 })
 
 test("a Legion pane reads its boot token from the file the daemon named, and needs its address and directory", async () => {
@@ -77,7 +88,7 @@ test("a Legion pane reads its boot token from the file the daemon named, and nee
   const bootToken = fixtureSecret("boot")
   await writeFile(tokenFile, `${bootToken}\n`)
   expect(
-    legionPane({
+    await legionPane({
       LEGION_BOOT_TOKEN_FILE: tokenFile,
       LEGION_BOOT_TOKEN: "ignored",
       LEGION_DAEMON_URL: "http://daemon.test",
@@ -89,19 +100,19 @@ test("a Legion pane reads its boot token from the file the daemon named, and nee
     configDir: dir,
     launcherSaves: false,
   })
-  expect(() => legionPane({ LEGION_BOOT_TOKEN: "t", CLAUDE_CONFIG_DIR: dir })).toThrow(
+  await expect(legionPane({ LEGION_BOOT_TOKEN: "t", CLAUDE_CONFIG_DIR: dir })).rejects.toThrow(
     "LEGION_DAEMON_URL is required for Legion",
   )
-  expect(() =>
+  await expect(
     legionPane({ LEGION_BOOT_TOKEN: "t", LEGION_DAEMON_URL: "http://daemon.test" }),
-  ).toThrow("CLAUDE_CONFIG_DIR is required for Legion")
-  expect(() =>
+  ).rejects.toThrow("CLAUDE_CONFIG_DIR is required for Legion")
+  await expect(
     legionPane({
       LEGION_BOOT_TOKEN_FILE: join(dir, "missing"),
       LEGION_DAEMON_URL: "http://daemon.test",
       CLAUDE_CONFIG_DIR: dir,
     }),
-  ).toThrow("LEGION_BOOT_TOKEN_FILE")
+  ).rejects.toThrow("LEGION_BOOT_TOKEN_FILE")
 })
 
 test("the transcript wait answers the file Claude Code wrote under any project, and stops when aborted", async () => {
@@ -135,7 +146,10 @@ test("registers once the transcript exists, claims the claim token's role soft, 
   const claim = startLegionClaim({
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
-    daemon: createLegionDaemonClient("http://daemon.test", fetch),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: PLUGIN_CONTRACT,
+      fetch,
+    }),
     clientInstanceID: INSTANCE,
     client: {
       setRole: async (input): Promise<SetRoleResult> => {
@@ -184,7 +198,7 @@ test("registers once the transcript exists, claims the claim token's role soft, 
         sessionId: SESSION,
         ompSessionFile: transcript,
         agentId: SESSION,
-        pluginContract: legion.daemonApiVersion,
+        pluginContract: PLUGIN_CONTRACT,
       },
     },
     { path: "/legion/v1/claims/ready", body: ready },
@@ -234,7 +248,10 @@ test("a registration the daemon refuses logs the refusal, stops the pane, and cl
   const claim = startLegionClaim({
     pane: { daemonUrl: "http://daemon.test", bootToken: "spent", configDir, launcherSaves: false },
     sessionID: SESSION,
-    daemon: createLegionDaemonClient("http://daemon.test", fetch),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: PLUGIN_CONTRACT,
+      fetch,
+    }),
     clientInstanceID: INSTANCE,
     client: {
       setRole: async (input) => {
@@ -272,7 +289,10 @@ test("a role another live session holds stops the pane after it has said it is r
   const claim = startLegionClaim({
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
-    daemon: createLegionDaemonClient("http://daemon.test", fetch),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: PLUGIN_CONTRACT,
+      fetch,
+    }),
     clientInstanceID: INSTANCE,
     client: { setRole: async () => ({ claimed: false, holder: "ses_other" }) },
     session: { rememberRole: async () => undefined, onRoleRegained: () => undefined },
@@ -319,7 +339,10 @@ test("a claim refused by a standing claim under this session's own id is asked a
   const claim = startLegionClaim({
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
-    daemon: createLegionDaemonClient("http://daemon.test", fetch),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: PLUGIN_CONTRACT,
+      fetch,
+    }),
     clientInstanceID: INSTANCE,
     client: {
       setRole: async (input): Promise<SetRoleResult> => {
@@ -400,7 +423,10 @@ test("the wait asks on its own interval until the live window passes, and the gr
   const claim = startLegionClaim({
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
-    daemon: createLegionDaemonClient("http://daemon.test", fetch),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: PLUGIN_CONTRACT,
+      fetch,
+    }),
     clientInstanceID: INSTANCE,
     client: {
       setRole: async (input): Promise<SetRoleResult> => {
@@ -469,7 +495,10 @@ test("a claim under this session's own id that is never granted stops the pane o
   const claim = startLegionClaim({
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
-    daemon: createLegionDaemonClient("http://daemon.test", fetch),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: PLUGIN_CONTRACT,
+      fetch,
+    }),
     clientInstanceID: INSTANCE,
     client: {
       setRole: async (input) => {
@@ -514,7 +543,10 @@ test("a registration the daemon failed (5xx) is logged and leaves the pane to th
   const claim = startLegionClaim({
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
-    daemon: createLegionDaemonClient("http://daemon.test", fetch),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: PLUGIN_CONTRACT,
+      fetch,
+    }),
     clientInstanceID: INSTANCE,
     client: { setRole: async () => ({ claimed: false, holder: "x" }) },
     session: { rememberRole: async () => undefined, onRoleRegained: () => undefined },
@@ -543,7 +575,7 @@ async function bootOn(env: Record<string, string>): Promise<{
   readonly booted: Promise<void>
 }> {
   const configDir = await tempDir()
-  const pane = legionPane({
+  const pane = await legionPane({
     LEGION_BOOT_TOKEN: "boot-1",
     LEGION_DAEMON_URL: "http://daemon.test",
     CLAUDE_CONFIG_DIR: configDir,
@@ -562,7 +594,10 @@ async function bootOn(env: Record<string, string>): Promise<{
   const claim = startLegionClaim({
     pane,
     sessionID: SESSION,
-    daemon: createLegionDaemonClient("http://daemon.test", fetch),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: PLUGIN_CONTRACT,
+      fetch,
+    }),
     clientInstanceID: INSTANCE,
     client: {
       setRole: async (): Promise<SetRoleResult> => ({
@@ -641,7 +676,10 @@ async function registeredPane(options: {
   const claim = startLegionClaim({
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
-    daemon: createLegionDaemonClient("http://daemon.test", fetch),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: PLUGIN_CONTRACT,
+      fetch,
+    }),
     clientInstanceID: INSTANCE,
     client: {
       setRole: async (input): Promise<SetRoleResult> => {
@@ -748,4 +786,26 @@ test("a bound this pane's environment states badly is warned about on the pane's
     'warn: legion: LEGION_CLAIM_FIRST_TURN_BOUND_MS is not an integer of 0 or more; using 30000 {"value":"soon"}',
   ])
   expect(pane.remembered).toEqual([String(registeredClaim["claimToken"])])
+})
+
+// dispatch://INFRA-2694: the daemon serves each caller the shape that caller's own contract
+// describes, and reads that contract from a request header. The client the channel server makes
+// for a Legion pane (`paneDaemonClient`) states this build's own manifest number on every
+// request it makes, a GET included.
+test("the pane's daemon client states this build's own daemon API contract on every request", async () => {
+  const stated: (string | null)[] = []
+  const live = globalThis.fetch
+  globalThis.fetch = (async (_input, init) => {
+    stated.push(new Headers(init?.headers).get("Legion-Plugin-Contract"))
+    return Response.json({ status: "ok", project: "legion" })
+  }) as typeof fetch
+  try {
+    const client = paneDaemonClient("http://daemon.test")
+    await client.health()
+    await client.daemonContract()
+  } finally {
+    globalThis.fetch = live
+  }
+
+  expect(stated).toEqual([String(PLUGIN_CONTRACT), String(PLUGIN_CONTRACT)])
 })

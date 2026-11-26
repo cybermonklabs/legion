@@ -1,3 +1,6 @@
+/** Every change is another reader's write through the server, which reaches the open pages over
+ *  the live socket, and the Work time a facts write or a close moves is the facts consumer's row
+ *  and the items route's. */
 // The Issues tab and the pages beside it hold still while another reader writes (dispatch://
 // INFRA-3221, Verification k13's browser parts): each write of context B shows in context A with
 // no reload; Open and Done open at their top with their first row whole; a row or a card the

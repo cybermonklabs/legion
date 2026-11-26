@@ -272,8 +272,8 @@ func TestComputeOnStoredContainment(t *testing.T) {
 // flags) the change failure rate is still the object a page of an earlier build reads, every
 // count 0 and every rate nil, which no target can judge, and time to restore holds no median;
 // with a source that holds no flag (an empty list) the rate is a measured 0 over the window's pull
-// requests and deploys, and over a window with neither, where each denominator is 0, still a
-// measured 0 rather than no value.
+// requests and deploys, while a rate over none, a denominator of 0, reads no value: a window with
+// no deploy measured no per-deploy rate, and a 0 there would be judged met.
 func TestComputeWithNoFailureSourceReadsNoFailureRateAndNoRestoreTime(t *testing.T) {
 	prs, runs, window := loadFixture(t)
 	result := Compute(prs, runs, nil, window)
@@ -294,24 +294,31 @@ func TestComputeWithNoFailureSourceReadsNoFailureRateAndNoRestoreTime(t *testing
 	}
 
 	for _, measured := range []struct {
-		name       string
-		got        ChangeFailureRate
-		wantCounts ChangeFailureRate
+		name                         string
+		got                          ChangeFailureRate
+		wantCounts                   ChangeFailureRate
+		perPR, perDeploy, upperBound *float64
 	}{
 		{"a source with no flag", Compute(prs, runs, []Flag{}, window).ChangeFailureRate,
-			ChangeFailureRate{PerPR: FlagCounts{Total: 14}, PerDeploy: DeployFlagCounts{FlagCounts: FlagCounts{Total: 5}}}},
-		// Neither a pull request nor a run: every day's parts hold a zero denominator, which the
-		// source measured, so each rate is 0.
-		{"a source with no flag, pull request or run", Compute(nil, nil, []Flag{}, window).ChangeFailureRate, ChangeFailureRate{}},
+			ChangeFailureRate{PerPR: FlagCounts{Total: 14}, PerDeploy: DeployFlagCounts{FlagCounts: FlagCounts{Total: 5}}},
+			new(0.0), new(0.0), new(0.0)},
+		// Pull requests and no run: the per-PR rate is a measured 0, and the two over the deploys,
+		// of which there is none, read no value.
+		{"a source with no flag or run", Compute(prs, nil, []Flag{}, window).ChangeFailureRate,
+			ChangeFailureRate{PerPR: FlagCounts{Total: 14}}, new(0.0), nil, nil},
+		// Neither a pull request nor a run: every day's parts hold a zero denominator, so no rate
+		// was measured.
+		{"a source with no flag, pull request or run", Compute(nil, nil, []Flag{}, window).ChangeFailureRate,
+			ChangeFailureRate{}, nil, nil, nil},
 	} {
 		counts := measured.got
 		counts.PerPR.Rate, counts.PerDeploy.Rate, counts.PerDeploy.UpperBoundRate = nil, nil, nil
 		if counts != measured.wantCounts {
 			t.Errorf("%s: counts = %+v, want %+v", measured.name, counts, measured.wantCounts)
 		}
-		assertOptional(t, measured.name+": per_pr.rate", measured.got.PerPR.Rate, new(0.0))
-		assertOptional(t, measured.name+": per_deploy.rate", measured.got.PerDeploy.Rate, new(0.0))
-		assertOptional(t, measured.name+": per_deploy.upper_bound_rate", measured.got.PerDeploy.UpperBoundRate, new(0.0))
+		assertOptional(t, measured.name+": per_pr.rate", measured.got.PerPR.Rate, measured.perPR)
+		assertOptional(t, measured.name+": per_deploy.rate", measured.got.PerDeploy.Rate, measured.perDeploy)
+		assertOptional(t, measured.name+": per_deploy.upper_bound_rate", measured.got.PerDeploy.UpperBoundRate, measured.upperBound)
 	}
 }
 

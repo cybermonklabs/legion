@@ -108,12 +108,25 @@ export async function pickIn(
   await user.click(await within(panelOf(trigger())).findByRole("option", { name }));
 }
 
-/** Picks `repo` from the Repository list `trigger` opens, which writes it; `""` is an Inherit
- *  pick, the list's Inherit row. */
+/** Picks `repo` from the Repository list `trigger` opens, which writes it, opening the list
+ *  unless it stands open. Where the list offers `repo` as a row, that row is picked; `""` is an
+ *  Inherit pick, the list's Inherit row. The list suggests only the project's default repository
+ *  and the issue's own, so any other `repo` is typed into the list's text box and given by the row
+ *  that takes it, `Use "<repo>"`, as a reader gives it. A row whose suggestion arrives with a read
+ *  waits for that read before it calls this. */
 export async function pickRepo(
   user: UserEvent,
   trigger: () => HTMLElement,
   repo: string
 ): Promise<void> {
-  await pickIn(user, trigger, repo === "" ? "Inherit" : repo);
+  if (trigger().getAttribute("aria-expanded") !== "true") await user.click(trigger());
+  const panel = within(panelOf(trigger()));
+  const row = panel.queryByRole("option", { name: repo === "" ? "Inherit" : repo });
+  if (row !== null) {
+    await user.click(row);
+    return;
+  }
+  await user.click(panel.getByRole("combobox"));
+  await user.paste(repo);
+  await user.click(panel.getByRole("option", { name: `Use "${repo}"` }));
 }

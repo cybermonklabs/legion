@@ -22,6 +22,7 @@ import (
 // neither carries a worker event or a handoff. The top issue carries no card, and both readers put
 // the child in its tree rather than making the child a root of its own.
 func TestAnIssueThatLeftTheDaemonsStateStaysTheTopOfItsTree(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
@@ -60,6 +61,7 @@ func TestAnIssueThatLeftTheDaemonsStateStaysTheTopOfItsTree(t *testing.T) {
 // it hangs under a tracking issue that carries no Legion work, which the metrics' population
 // holds and the daemon never reported.
 func TestTheBoardAndTheMetricsPutAnIssueInTheSameTree(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
@@ -112,6 +114,7 @@ func seedLegionHandoff(t *testing.T, database *store.Store, issue, phase string,
 // titled `Legion <role> · <its key>`. Such an issue is an input to the walk and nothing else: it
 // gets no card, and the board names no issue it did not name before.
 func TestTheBoardClimbsThroughAnIssueWithOnlyPhaseWork(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
@@ -187,6 +190,7 @@ func TestTheBoardClimbsThroughAnIssueWithOnlyPhaseWork(t *testing.T) {
 // not put in either; and a top the daemon reports.
 // Both readers answer the bottom its own root, and the top roots nothing below the gap.
 func TestTheBoardAndTheMetricsStopBelowAnIssueThatIsNoLegionIssue(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
@@ -253,6 +257,7 @@ func TestTheBoardAndTheMetricsStopBelowAnIssueThatIsNoLegionIssue(t *testing.T) 
 // own card, and the unstarted child below that is counted on it rather than on the root the
 // board shows nothing of.
 func TestAnUnstartedChildIsCountedOnTheNearestCardAndNeverLosesItsOwn(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
@@ -306,6 +311,7 @@ func TestAnUnstartedChildIsCountedOnTheNearestCardAndNeverLosesItsOwn(t *testing
 // Legion work is a handoff and a role session's event, and the card issue stands in its
 // ancestor's tree in the facts' read as on the board.
 func TestTheMetricsClimbThroughPhaseWorkWhereNothingClosed(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
@@ -361,6 +367,7 @@ func TestTheMetricsClimbThroughPhaseWorkWhereNothingClosed(t *testing.T) {
 // so its read must still take the session's title from everything the session wrote, and put the
 // issue below in the same tree as the metrics do.
 func TestTheBoardReadsPhaseWorkAsTheOneReadDoesAfterARename(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
@@ -412,6 +419,7 @@ func TestTheBoardReadsPhaseWorkAsTheOneReadDoesAfterARename(t *testing.T) {
 // written on alone, and the session's title is on an event of another issue, so its read must
 // take that title from everything the session wrote.
 func TestATitlelessEventOfARoleSessionGivesItsIssuePhaseWork(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
@@ -452,6 +460,7 @@ func TestATitlelessEventOfARoleSessionGivesItsIssuePhaseWork(t *testing.T) {
 // failed would cancel the feed and try again, and while it failed no Delivery view of any
 // deployment, with a Legion setting or without one, would hear an event.
 func TestAFailedLegionReadLeavesTheDeliveryFeedRunning(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedLegionProjects(t, rig.handler, "INFRA")
 	nameLegionDaemon(t, rig.handler, "INFRA", "http://legion-infra.internal:13370")

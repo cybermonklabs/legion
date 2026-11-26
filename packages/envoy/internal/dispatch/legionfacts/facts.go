@@ -176,23 +176,33 @@ func filingsOf(population *metrics.Population, project string) []Filing {
 	return filings
 }
 
+// DefaultRepo is the repository ReadRepos answers for an issue whose own chain names none: the
+// project's default repository, whichever it is. The evals' reads take it as the project's
+// published default (evals.DayWindowIn and the items route), so a write of a project's default
+// repository rewrites no stored row and no Legion day row: only the cut of the issues that reach a
+// repository through the default moves, at read time (dispatch://INFRA-2916, plan D1 (vi)). No
+// repository name starts with ':'.
+const DefaultRepo = ":default"
+
 // reposStatement resolves the repository of every issue its one argument names, by the server's
-// one rule (refs.IssueRepoTerms), which the issue page reads a page of issues by. The text is
-// built once, at start, as refs builds its own statement over the same terms.
+// one walk of an issue's chain (refs.IssueRepoTerms), which the issue page reads a page of issues
+// by, and answers the nearest one the chain names, else DefaultRepo. The text is built once, at
+// start, as refs builds its own statement over the same terms.
 var reposStatement = `
 	with recursive subjects as (select unnest($1::text[]) as key), ` + refs.IssueRepoTerms + `
-	select i.key, ` + refs.IssueRepoResolved + `, ` + refs.IssueRepoTooDeep + `
+	select i.key, coalesce(repo.owned, '` + DefaultRepo + `'), ` + refs.IssueRepoTooDeep + `
 	from issues i ` + refs.IssueRepoJoin + `
 	where i.key = any($1::text[])`
 
-// ReadRepos is the repository each of the keys resolves to, by key, and no entry for an issue
-// none resolves for: the repository a pass stores in a row of issue_facts, and the one the Legion
-// evals' day rows cut an issue and a filing by (evals.ReadLegionDay) and the eval items route
-// shows and filters an issue by, each resolved when it is read. A parent chain the walk could not
-// finish names no answer either: the issue page refuses such an issue rather than answer its
-// project's default, which would be a wrong one, and a refusal here would stop every pass of the
-// project's facts for good. The row holds no repository for it, which is the answer a chain that
-// names none gets.
+// ReadRepos is the repository each of the keys resolves to, by key: the nearest repository its
+// own chain names (the issue's, or an ancestor's), else DefaultRepo, which stands for its
+// project's default repository; no entry for a key that is no issue. It is the repository a pass
+// stores in a row of issue_facts, and the one the Legion evals' day rows cut an issue and a filing
+// by (evals.ReadLegionDay) and the eval items route filters an issue by, each resolved when it is
+// read. A parent chain the walk could not finish names no answer either: the issue page refuses
+// such an issue rather than answer its project's default, which would be a wrong one, and a
+// refusal here would stop every pass of the project's facts for good. The row holds no repository
+// for it, which is the answer a chain that names none got before the default stood for it.
 func ReadRepos(ctx context.Context, q Querier, keys []string) (map[string]string, error) {
 	repos := map[string]string{}
 	if len(keys) == 0 {
@@ -218,53 +228,6 @@ func ReadRepos(ctx context.Context, q Querier, keys []string) (map[string]string
 		return nil, fmt.Errorf("resolve the repositories of %d issues: %w", len(keys), err)
 	}
 	return repos, nil
-}
-
-// reresolveRepos resolves the repository of every stored row again by the rule that filled it
-// (ReadRepos) and rewrites the repo of each row whose repository moved, in tx, answering their
-// keys. It is what a change of a repository's mapping owes the stored rows (readChangePage): the
-// rule falls back to the project's default mapping, so a mapping change moves the repository of
-// rows whose issue no feed names. No read shows the stored repo; a pass's write compares it with
-// the repository the pass resolved (upsert), so a later move of the issue's repository is a
-// change of its row, which makes the day-row refresher rebuild the issue's day. A stored repo left
-// behind by a mapping would make a move back to it no change at all. The rows' other columns and
-// their updated_at stand, since nothing they were computed from moved. It reads every stored row
-// and resolves them all in one statement: a mapping is an operator's setting, written rarely
-// beside every other change this loop reads.
-func reresolveRepos(ctx context.Context, tx pgx.Tx) ([]string, error) {
-	rows, err := tx.Query(ctx, `select project_key, issue_key, coalesce(repo, '') from issue_facts order by project_key, issue_key`)
-	if err != nil {
-		return nil, fmt.Errorf("read the stored rows' repositories: %w", err)
-	}
-	var projects, keys, repos []string
-	var project, key, repo string
-	if _, err := pgx.ForEachRow(rows, []any{&project, &key, &repo}, func() error {
-		projects, keys, repos = append(projects, project), append(keys, key), append(repos, repo)
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("read the stored rows' repositories: %w", err)
-	}
-	resolved, err := ReadRepos(ctx, tx, keys)
-	if err != nil {
-		return nil, err
-	}
-	var movedProjects, moved, movedRepos []string
-	for i, key := range keys {
-		if resolved[key] != repos[i] {
-			movedProjects, moved, movedRepos = append(movedProjects, projects[i]), append(moved, key), append(movedRepos, resolved[key])
-		}
-	}
-	if len(moved) == 0 {
-		return nil, nil
-	}
-	if _, err := tx.Exec(ctx, `
-		update issue_facts facts set repo = nullif(given.repo, '')
-		from unnest($1::text[], $2::text[], $3::text[]) as given(project, issue, repo)
-		where facts.project_key = given.project and facts.issue_key = given.issue
-	`, movedProjects, moved, movedRepos); err != nil {
-		return nil, fmt.Errorf("rewrite the repositories of %d stored rows: %w", len(moved), err)
-	}
-	return moved, nil
 }
 
 // lineIssue is what the waiting line reads of one issue the daemon reports (legion.LineIssue):

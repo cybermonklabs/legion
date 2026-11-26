@@ -38,6 +38,7 @@ import {
   type DeployedFacet,
   FACET_PARAMS,
   type FacetKey,
+  ownEntry,
   PLACEHOLDER_LABELS,
   REWORK_LABELS,
   type ReworkFacet,
@@ -53,7 +54,7 @@ import {
 } from "./lib/prList";
 
 /** The facets that are columns of this table, so in the List view each is filtered on its own
- *  header rather than from the page's panel (INFRA-3135, R2). The page maps them to and from the
+ *  header rather than from the page's panel. The page maps them to and from the
  *  column filters and keeps writing its own parameters: the table filters nothing itself,
  *  because what it draws is the answer Dispatch already filtered (`serverFiltered` below). */
 export const COLUMN_FACETS = [
@@ -79,7 +80,9 @@ export const FIXED_FACET_VALUES: Partial<Record<ColumnFacet, readonly string[]>>
 };
 
 /** What a column facet's value reads as - the issue's title, a session group's name, a
- *  placeholder in words - on its header's filter and wherever else the page names it. */
+ *  placeholder in words - on its header's filter and wherever else the page names it. Every
+ *  table is read by its own keys alone (`ownEntry`), since the value can be any word the address
+ *  names. */
 export function columnFacetValue(
   key: ColumnFacet,
   value: string,
@@ -93,15 +96,18 @@ export function columnFacetValue(
 ): string {
   switch (key) {
     case "issue":
-      return PLACEHOLDER_LABELS[value] ?? `${value} \u2014 ${issueTitles[value] ?? ""}`;
+      return (
+        ownEntry(PLACEHOLDER_LABELS, value) ??
+        `${value} \u2014 ${ownEntry(issueTitles, value) ?? ""}`
+      );
     case "parentAgent":
-      return PLACEHOLDER_LABELS[value] ?? parentAgentLabel(value, sessionGroups);
+      return parentAgentLabel(value, sessionGroups);
     case "author":
-      return PLACEHOLDER_LABELS[value] ?? value;
+      return ownEntry(PLACEHOLDER_LABELS, value) ?? value;
     case "rework":
-      return REWORK_LABELS[value as ReworkFacet] ?? value;
+      return ownEntry(REWORK_LABELS, value) ?? value;
     case "deployed":
-      return DEPLOYED_LABELS[value as DeployedFacet] ?? value;
+      return ownEntry(DEPLOYED_LABELS, value) ?? value;
   }
 }
 
@@ -127,7 +133,7 @@ type ColumnId =
   | "rework";
 
 /** Every column, in the order the table opens with, at the width the list drew it before the
- *  shared table (INFRA-3135, R8): each fits its longest usual content at `text-xs`, "deployed
+ *  shared table: each fits its longest usual content at `text-xs`, "deployed
  *  Sep 26, 10:48 PM", "ACME-1028 · No priority", a parent agent's title, and a sortable header's
  *  label with its arrow. Title is the one the table fills its box with (`fillColumn`): never
  *  narrower than its 128 px, it takes whatever the box has over the others, so the columns come
@@ -347,7 +353,7 @@ function usePRColumns(inputs: PRCellInputs): ColumnDef<PRListRow>[] {
       title: {
         accessorFn: (row) => row.pr.title,
         sortingFn: byText,
-        // Plain text, as the list drew it before the shared table (INFRA-3135, R8), and what `o`
+        // Plain text, as the list drew it before the shared table, and what `o`
         // and Enter press for the row in hand: the core's keymap clicks `PR_OPEN_ATTRIBUTE`. It
         // is no control and no stop for the focus; the press goes up to the row's own, which
         // opens the details as a pointer press anywhere on the row does.
@@ -472,6 +478,7 @@ export function PRList({
   colorBy,
   colorScale,
   columnFilters,
+  counted,
   facetCounts,
   issueTitles,
   onColumnFiltersChange,
@@ -489,6 +496,10 @@ export function PRList({
   colorScale: Map<string, string>;
   /** The picked values of the five facets that are columns, as TanStack holds them. */
   columnFilters: ColumnFiltersState;
+  /** Whether `facetCounts` is the answer for the window, filters and search the address names
+   *  (`DeliveryPage`'s `counted`): while it is not, a header's filter draws no count beside a
+   *  value, since the counts on screen are the previous filter's. */
+  counted: boolean;
   /** Every facet's counts as Dispatch answered them, by the server's own facet name. */
   facetCounts: Readonly<Record<string, Readonly<Record<string, number>>>>;
   issueTitles: Readonly<Record<string, string>>;
@@ -592,6 +603,7 @@ export function PRList({
     <DataTable
       empty="No PRs in the current filter/window."
       fillColumn="title"
+      filterCounted={counted}
       filterCounts={counts}
       label="Merged pull requests"
       model={model}
@@ -610,6 +622,7 @@ export function PRList({
         />
       )}
       scrollTestId="delivery-pr-list"
+      size="compact"
       stackColumns={STACKED_HEADERS}
     />
   );

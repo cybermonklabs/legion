@@ -56,7 +56,7 @@ export interface NeedsYou {
 }
 
 /** What the Inbox's own needs-you control is named and titled by: how many things wait for the
- *  viewer, and how long the oldest of them has waited (INFRA-3135, R7); its name alone while a
+ *  viewer, and how long the oldest of them has waited; its name alone while a
  *  read it counts has not answered (`undefined`), which no number is drawn from. */
 export function blockedOnYouText(needs: NeedsYou | undefined): string {
   if (needs === undefined) return "Blocked on you";

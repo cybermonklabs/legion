@@ -17,6 +17,7 @@ import {
   slowWrites,
   userHeaders,
 } from "./api";
+import { listTrigger, pickFromList } from "./filters";
 import {
   cutFirstAnswerBody,
   dropFirstAnswer,
@@ -30,7 +31,7 @@ import {
 } from "./keyed-writes";
 import { httpsTarget, plainHttpSkipReason } from "./plain-http-origin";
 import { sql } from "./psql";
-import { expect, type Page, test } from "./test";
+import { expect, type Locator, type Page, test } from "./test";
 import { asPlainHttpUser, asUser } from "./users";
 
 // Every write the page makes goes under an `Idempotency-Key` minted for the person's one action,
@@ -85,6 +86,12 @@ async function outage(page: Page, pattern: string, method: string): Promise<{ en
   };
 }
 
+/** The issue header's Status: the shared list's single pick, named `Status` and then the status
+ *  it shows (`listTrigger`). */
+function headerStatus(page: Page): Locator {
+  return listTrigger(page.getByTestId("issue-header"), "Status");
+}
+
 /** Holds `page`'s status changes to `issue` at the network - each goes out and is never answered -
  *  and lets every other request through; then picks `backlog` and adds `label` behind it, which
  *  waits its turn on the issue's line, never sent. */
@@ -95,7 +102,7 @@ async function queueBehindAHeldStatus(page: Page, issue: string, label: string):
     return route.fallback();
   });
   await page.bringToFront();
-  await page.getByLabel("Status").selectOption("backlog");
+  await pickFromList(headerStatus(page), "Backlog");
   await expect(pendingWrites(page).getByRole("status")).toHaveText("Saving 1 change…");
   const editLabels = page.getByRole("button", { name: "Edit labels" });
   await editLabels.click();
@@ -244,7 +251,7 @@ test("a write whose key has expired stops and offers a new write @webkit @firefo
     await outage(page, `**${path}/comments`, "POST");
     await page.clock.install();
     await page.goto(`/issues/${issue.key}/conversation`);
-    await page.getByLabel("Status").selectOption("todo");
+    await pickFromList(headerStatus(page), "Todo");
     const composer = page.getByRole("form", { name: "Comment composer" }).last();
     await composer.getByLabel("Comment").fill("Older than its key");
     await composer.getByRole("button", { exact: true, name: "Send" }).click();
@@ -308,7 +315,7 @@ test("a status change whose answer is lost survives a reload, lands once, and th
     const reached = dropFirstAnswer(page, `**${path}`, "PATCH", reloaded.promise);
     const resumed = replayed(page, "PATCH", path);
     await page.goto(`/issues/${issue.key}`);
-    await page.getByLabel("Status").selectOption("todo");
+    await pickFromList(headerStatus(page), "Todo");
     expect(await reached).toBe(200);
     const indicator = pendingWrites(page);
     await expect(indicator.getByRole("status")).toHaveText("Saving 1 change…");
@@ -321,7 +328,7 @@ test("a status change whose answer is lost survives a reload, lands once, and th
     expect(patches[0]).toEqual({ input: { status: "todo" }, key: expect.any(String) });
     expect(patches[1]).toEqual(patches[0]);
     await expect(indicator).toHaveCount(0);
-    await expect(page.getByLabel("Status")).toHaveValue("todo");
+    await expect(headerStatus(page)).toHaveAccessibleName("Status Todo");
     expect(await getIssue(issue.key)).toMatchObject({ status: "todo" });
     expect(await statusEvents(issue.key, "todo")).toHaveLength(1);
     // A landed write leaves the tab's queue, so the next load resumes nothing.
@@ -750,7 +757,7 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
     // whose success it actually held back - an open it matched by name but whose handler it
     // never caught counts for nothing - and the row asserts that count at its end, where no
     // wait of its own can close a window: a selector that cannot fail is no guard
-    // (`packages/dispatch/AGENTS.md`, "Two rules keep an assertion honest").
+    // (`packages/dispatch/README.md`, "End-to-end tests").
     await page.addInitScript(() => {
       let held = 0;
       Object.defineProperty(window, "keptFilesOpensHeld", { get: () => held });
@@ -1006,7 +1013,7 @@ for (const landed of [false, true]) {
       await signingOut.goto("/");
 
       await holding.bringToFront();
-      await holding.getByLabel("Status").selectOption("backlog");
+      await pickFromList(headerStatus(holding), "Backlog");
       await expect(pendingWrites(holding).getByRole("status")).toHaveText("Saving 1 change…");
       await signingOut.bringToFront();
       await signingOut.getByRole("button", { name: "Sign out" }).click();
@@ -1230,7 +1237,7 @@ test("a write pending for alice is dropped when bob signs in from another tab, a
     });
     const network = await outage(page, `**${path}`, "PATCH");
     await page.goto(`/issues/${issue.key}`);
-    await page.getByLabel("Status").selectOption("todo");
+    await pickFromList(headerStatus(page), "Todo");
     await expect(pendingWrites(page).getByRole("status")).toHaveText("Saving 1 change…");
     await expect.poll(() => keptWrites(page)).toBe(1);
 

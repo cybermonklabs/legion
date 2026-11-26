@@ -24,6 +24,7 @@ import (
 // decision on the reworded question and opens its own ask at that settlement; a document holding
 // the block of an ask the boot left as it was owes none.
 func TestDispatchBootRestoresADecidedAskAnEarlierReleaseReworded(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	const (
@@ -162,10 +163,11 @@ Ship on Tuesday?
 		}
 	}
 	// The boot also seeds CORE's evals (the eval day-row refresher's pass seeds every project it
-	// finds unseeded), and the seed creates the project's `evals-md` document, which owes a
-	// settlement of its own like every document write. The document and the row that owes its
-	// settlement commit in the seed's one transaction, so once the document exists the owed set is
-	// exact: the spec, the record copy and that document.
+	// finds unseeded), and the seed creates the project's `evals-md` document. Its tree holds no
+	// block a settlement writes into (no ask block, no check carrying ci_check, every block given
+	// its id by the parse), so its create records no settlement owed (docs.CreateDocument). The
+	// seed commits in one transaction, so once the document exists the owed set is exact: the spec
+	// and the record copy, and not that document.
 	var evalsDocument string
 	if !testwait.Holds(time.Minute, 50*time.Millisecond, func() bool {
 		if err := database.Pool.QueryRow(ctx, `
@@ -191,10 +193,10 @@ Ship on Tuesday?
 		owed = append(owed, document)
 	}
 	rows.Close()
-	want := []string{spec, record, evalsDocument}
+	want := []string{spec, record}
 	slices.Sort(want)
 	if !slices.Equal(owed, want) {
-		t.Errorf("the documents owing a settlement after the boot are %v, want the spec %s, the record copy %s and CORE's evals-md %s", owed, spec, record, evalsDocument)
+		t.Errorf("the documents owing a settlement after the boot are %v, want the spec %s and the record copy %s, and not CORE's evals-md %s", owed, spec, record, evalsDocument)
 	}
 	if t.Failed() {
 		t.Logf("Dispatch's output:\n%s", output)

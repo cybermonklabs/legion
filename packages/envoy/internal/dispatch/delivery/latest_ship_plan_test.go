@@ -8,7 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// TestTheLatestShipBeforeReadIsBoundedByItsMoment: readLatestShipBefore's statement (and
+// TestTheLatestShipBeforeReadIsBoundedByItsMoment: ReadLatestShipBefore's statement (and
 // ListPullRequestsWaitingAt, which embeds it) reads delivery_runs through
 // delivery_runs_kind_created with the run's creation bounded above by the moment it is asked of,
 // under the generic plan pgx's cached statement settles on: a run whose job succeeded before that

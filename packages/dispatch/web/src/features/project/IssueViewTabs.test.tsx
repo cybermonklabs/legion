@@ -148,11 +148,13 @@ test("a failed daemon setting read names its error, with a Retry that reads it a
   await user.click(screen.getByRole("button", { name: "Retry reading the Legion daemon setting" }));
   expect(retry).toHaveBeenCalledTimes(1);
   cleanup();
-  // While the read is out again, Retry waits for it.
+  // While the read is out again, Retry waits for it: QueryError holds the press
+  // (`heldPress`, aria-disabled) and keeps the button in the Tab order.
   tabs({ daemonFailure: { message: "The store did not answer.", retry, retrying: true } });
-  expect(
-    screen.getByRole("button", { name: "Retry reading the Legion daemon setting" })
-  ).toBeDisabled();
+  const held = screen.getByRole("button", { name: "Retry reading the Legion daemon setting" });
+  expect(held).toHaveAttribute("aria-disabled", "true");
+  await user.click(held);
+  expect(retry).toHaveBeenCalledTimes(1);
 });
 
 test("a failed daemon read names its whole error on a line of its own", () => {

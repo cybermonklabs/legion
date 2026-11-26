@@ -1,13 +1,9 @@
 kind: Changed
 body: |-
-  Three reads of the Delivery page take their own keys instead of scanning: a session's title is
-  stored in `session_titles` (written by a trigger on `events` and filled at boot) and read by
-  primary key, a run-jobs read names the jobs it reads, and the open-P0 partial index
-  `issues_open_p0` serves the unowned-P0 count and the live hub's read of open P0 issues. The
-  timeline reads each deploy run's production jobs by name and its failed jobs through the new
-  partial index `delivery_run_jobs_failed`, rather than every job of every run. The lease pool
-  holds two more connections, one for the per-issue Legion facts and one for the day-row
+  The Delivery timeline reads each deploy run's production jobs by name and its failed jobs
+  through the new partial index `delivery_run_jobs_failed`, rather than every job of every run. The
+  lease pool holds two more connections, one for the per-issue Legion facts and one for the day-row
   refresher, whose first pass in a process also seeds every project's evals
-  (`store.LeasePoolSize` 24), so a process opens 115 connections at most. `infra/gcp` no longer holds
-  its own copy of that count (`dispatchConnectionsPerPod` and the test that compared it are gone):
-  its comments name the server's `store.ConnectionsPerProcess`, which they size the database by.
+  (`store.LeasePoolSize` 29, with the keyword fill's two, the CI verify loop's one, the boot's
+  parent status fix's one and the reference forms drain's one), so a process opens 120
+  connections at most, and `infra/gcp`'s `dispatchConnectionsPerPod` is 120.

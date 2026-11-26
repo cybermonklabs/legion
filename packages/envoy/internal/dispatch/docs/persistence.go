@@ -87,6 +87,11 @@ type PgVersioned struct {
 	// NewPgVersioned sets it to maxUpdateItems, whose comment states the rule; a test lowers it
 	// (shrinkPendingItems) to make a log that does not fold out of a few dozen items.
 	maxPendingItems int
+	// closeMargin is how long after an issue's close this store's append gate still takes a
+	// browser update the room observed as one made while the issue was open (observedBeforeClose).
+	// NewPgVersioned sets it to the package's closeMargin; New sets Deps.CloseMargin where a test
+	// gave one.
+	closeMargin time.Duration
 	// noteStored is the note of the Service that took this store last (New), which each append
 	// gives the version it committed and each load the head it read (noteStoredUpdates), so the
 	// Service's compaction queue checks the room. Nil for a store no Service took.
@@ -119,6 +124,7 @@ func NewPgVersioned(database *store.Store) *PgVersioned {
 		store:           database,
 		foldSlots:       make(chan struct{}, bufferedFolds),
 		maxPendingItems: maxUpdateItems,
+		closeMargin:     closeMargin,
 	}
 }
 
@@ -222,7 +228,8 @@ func (p *PgVersioned) AppendParkedUpdate(ctx context.Context, room string, updat
 }
 
 // AppendUpdateTx appends an already validated V1 update inside tx, recording whether it changes
-// the document's content: settlement versions a document only past a content update.
+// the document's content: settlement versions a document only past a content update. The append
+// marks the document owing a settlement, unless ctx marks it as owing none (withUnowedAppend).
 //
 // Every caller hands it an update this process encoded moments before - a new document's whole
 // tree (encodeDocumentTree), the transactions of one write's fork (mergeUpdates), a settlement's
@@ -237,7 +244,26 @@ func (p *PgVersioned) AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string
 	if err := refuseUpdateItemCap(update); err != nil {
 		return 0, err
 	}
-	return p.appendUpdateTxClass(ctx, tx, room, update, contentChanged, appendDerived)
+	return p.appendUpdateTxClass(ctx, tx, room, update, contentChanged, appendDerived, !isUnowedAppend(ctx))
+}
+
+// unowedAppendContextKey marks an append that leaves its document owing no settlement
+// (withUnowedAppend).
+type unowedAppendContextKey struct{}
+
+// withUnowedAppend marks the append made with ctx (AppendUpdateTx) as one that leaves its document
+// owing no settlement: the seed of a document CreateDocument creates whose tree needs none
+// (SeedText). Such an append writes no pending-settlement row, as a room's parked bytes write none
+// (AppendParkedUpdate). The mark travels on ctx rather than as a parameter so that every store
+// standing in for PgVersioned sees the seed's append through AppendUpdateTx, as it sees any other.
+func withUnowedAppend(ctx context.Context) context.Context {
+	return context.WithValue(ctx, unowedAppendContextKey{}, true)
+}
+
+// isUnowedAppend is whether ctx marks its append as owing no settlement (withUnowedAppend).
+func isUnowedAppend(ctx context.Context) bool {
+	unowed, _ := ctx.Value(unowedAppendContextKey{}).(bool)
+	return unowed
 }
 
 // lockDocumentRoom serializes every durable mutation of one document, which holds because one
@@ -411,6 +437,14 @@ const clearSettlementPendingStatement = `
 		on conflict (artifact_id) do update set last_actor = excluded.last_actor
 	)
 	delete from doc_closed_edit_sources where artifact_id = $1::uuid and $2::jsonb is null`
+
+// clearSettlementPendingRow is clearSettlementPending for a closed issue's settlement that saved
+// nothing (settlement.savedNothing): it deletes the document's pending row alone and leaves the
+// closed edit source the settlement before it kept, in the settlement's write phase as
+// clearSettlementPending does.
+func clearSettlementPendingRow(ctx context.Context, tx pgx.Tx, room string) error {
+	return writeExec(ctx, tx, "clear the document's pending settlement", `delete from doc_settlements_pending where artifact_id = $1::uuid`, room)
+}
 
 // settlementPending reports whether room owes a settlement. Shutdown's drain uses this to skip
 // settling a document that already has none owed, rather than spending its budget repeating work

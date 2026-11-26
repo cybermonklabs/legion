@@ -11,6 +11,13 @@ import (
 	"time"
 )
 
+// agentBusyMessage is the message Oh My Pi refuses a prompt with when the agent is busy: the
+// default of its AgentBusyError (packages/agent/src/agent.ts of cybermonklabs/oh-my-pi at the
+// pinned tag), which it throws for a prompt sent with no streamingBehavior while a turn streams,
+// and which its own test of the refusal expects the error to start with
+// (packages/coding-agent/test/rpc-prompt-busy-code.test.ts there).
+const agentBusyMessage = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
+
 // Every frame the shim and the daemon exchange, as the shipped TypeScript writes it on the wire
 // (worker-rpc.ts:420, 430, 452, 475, 490, 493-496; worker-shim.ts:332, 356-366;
 // worker-stream-listener.ts:14; fake-omp-rpc.ts:24-79). A frame decodes to its Go type and
@@ -45,6 +52,14 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			Response{ID: "r2", Command: TypePrompt, Success: false, Error: "busy"},
 		},
 		{
+			// Oh My Pi's refusal of a prompt sent while a turn streams: its error response carries
+			// `code` at the top level, right after `error`, and the member survives the round
+			// trip (Response.Code).
+			"busy refusal response",
+			`{"type":"response","id":"r2","command":"prompt","success":false,"error":"` + agentBusyMessage + `","code":"session_busy"}`,
+			Response{ID: "r2", Command: TypePrompt, Success: false, Error: agentBusyMessage, Code: "session_busy"},
+		},
+		{
 			"get_state response",
 			`{"type":"response","id":"r3","command":"get_state","success":true,"data":{"isStreaming":true}}`,
 			Response{
@@ -56,28 +71,35 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 		},
 		{"get_state", `{"type":"get_state","id":"r3"}`, GetState{ID: "r3"}},
 		{
-			// The compaction the daemon asks Oh My Pi for. Its instructions are what make the
-			// summary text rather than snapcompact's images (Compact).
-			"compact",
-			`{"type":"compact","id":"r9","customInstructions":"Write the summary as text."}`,
-			Compact{ID: "r9", CustomInstructions: "Write the summary as text."},
+			// The handoff the daemon asks Oh My Pi for where it once asked for a compaction. Its
+			// instructions are what keep the reviewer's entry in the document (Handoff).
+			"handoff",
+			`{"type":"handoff","id":"r9","customInstructions":"Write the summary as text."}`,
+			Handoff{ID: "r9", CustomInstructions: "Write the summary as text."},
 		},
 		{
-			"compact response",
-			`{"type":"response","id":"r9","command":"compact","success":true,"data":{"summary":"what the turn did"}}`,
+			// What Oh My Pi answers a handoff it committed: its RPC writes the result's one
+			// member, which a handoff the daemon asked for leaves out.
+			"handoff response",
+			`{"type":"response","id":"r9","command":"handoff","success":true,"data":{}}`,
 			Response{
 				ID:      "r9",
-				Command: TypeCompact,
+				Command: TypeHandoff,
 				Success: true,
-				Data:    json.RawMessage(`{"summary":"what the turn did"}`),
+				Data:    json.RawMessage(`{}`),
 			},
 		},
 		{
-			// What Oh My Pi answers a compaction it skipped: its ManualCompactionNoOpError
-			// reaches the daemon as this refusal, in those words.
-			"skipped compact response",
-			`{"type":"response","id":"r9","command":"compact","success":false,"error":"Nothing to compact (session too small)"}`,
-			Response{ID: "r9", Command: TypeCompact, Success: false, Error: "Nothing to compact (session too small)"},
+			// What Oh My Pi answers a handoff that made no document: success, and no result.
+			"handoff response with no handoff",
+			`{"type":"response","id":"r9","command":"handoff","success":true,"data":null}`,
+			Response{ID: "r9", Command: TypeHandoff, Success: true, Data: json.RawMessage(`null`)},
+		},
+		{
+			// What Oh My Pi answers a handoff asked for while a turn runs, in those words.
+			"refused handoff response",
+			`{"type":"response","id":"r9","command":"handoff","success":false,"error":"Cannot hand off while a response is in progress"}`,
+			Response{ID: "r9", Command: TypeHandoff, Success: false, Error: "Cannot hand off while a response is in progress"},
 		},
 		{"agent_start", `{"type":"agent_start"}`, AgentStart{}},
 		{"replayed agent_start", `{"type":"agent_start","deliveryId":"d1"}`, AgentStart{DeliveryID: "d1"}},
@@ -104,10 +126,19 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 		},
 		{
 			// A prompt Oh My Pi failed outright, which it writes with the two members its fail()
-			// fills and no provider at all.
+			// fills for a failure it gives no code, and no provider at all.
 			"prompt_result of a prompt that ran no turn",
 			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":false,"error":{"message":"no model","retryable":false}}`,
 			PromptResult{ID: "d1.XYZ", AgentInvoked: false, Error: &PromptError{Message: "no model"}},
+		},
+		{
+			// The prompt_result of a prompt Oh My Pi refused because the agent was busy: its
+			// error carries Oh My Pi's class of the failure, which survives the round trip
+			// (PromptError.Code).
+			"prompt_result of a prompt refused because the agent was busy",
+			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":false,` +
+				`"error":{"message":"` + agentBusyMessage + `","retryable":false,"code":"session_busy"}}`,
+			PromptResult{ID: "d1.XYZ", AgentInvoked: false, Error: &PromptError{Message: agentBusyMessage, Code: "session_busy"}},
 		},
 		{"shutdown", `{"type":"shutdown"}`, Shutdown{}},
 		{
@@ -190,6 +221,13 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			LauncherStart{ID: "start-1", Generation: 7, Argv: []string{"omp", "--mode", "rpc"}, Env: []string{"A=B"}, Files: map[string]string{"LEGION_BOOT_TOKEN": "boot-7"}, ResumeFile: "/sessions/test.jsonl"},
 		},
 		{
+			// An Oh My Pi launch wrapped in the deployment's setup: the agent's executable is not
+			// the first word of Argv, so the start names it.
+			"launcher_start of an Oh My Pi launch",
+			`{"type":"launcher_start","id":"start-2","generation":8,"argv":["/bin/sh","-c","exec \"$@\"","legion-start","/opt/omp/bin/omp"],"env":["A=B"],"agentExecutable":"/opt/omp/bin/omp"}`,
+			LauncherStart{ID: "start-2", Generation: 8, Argv: []string{"/bin/sh", "-c", `exec "$@"`, "legion-start", "/opt/omp/bin/omp"}, Env: []string{"A=B"}, AgentExecutable: "/opt/omp/bin/omp"},
+		},
+		{
 			"launcher_start_result",
 			`{"type":"launcher_start_result","id":"start-1","ok":true,"runningGeneration":7}`,
 			LauncherStartResult{ID: "start-1", OK: true, RunningGeneration: 7},
@@ -254,13 +292,14 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 	}
 }
 
-// The prompt_result lines the pinned Oh My Pi actually writes, members and order as its own
-// schema declares them (`PromptResultEvent { type, id?, agentInvoked, status, error?:
-// PromptError, sessionSettled }`, `PromptError { message, provider?, model?, httpStatus?,
-// retryable }`, read out of /opt/omp/bin/omp). The daemon reads three of those members, so the
-// decode must take the rest without being handed them and without refusing them: a frame it
-// refuses is a prompt whose end the daemon never learns, and a claim that waits for that end
-// forever.
+// The prompt_result lines the pinned Oh My Pi actually writes, with the members, and except where
+// a case says otherwise their order, as its own schema declares them (`PromptResultEvent { type,
+// id?, agentInvoked, status, error?: PromptError, sessionSettled }`, `PromptError { message,
+// provider?, model?, httpStatus?, retryable, code? }`, read in
+// packages/coding-agent/src/modes/rpc/wire/frames.ts of cybermonklabs/oh-my-pi at the pinned tag).
+// The daemon reads three of those members, so the decode must take the rest without being handed
+// them and without refusing them: a frame it refuses is a prompt whose end the daemon never
+// learns, and a claim that waits for that end forever.
 func TestAPromptResultDecodesTheBinarysOwnLineWhole(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -286,11 +325,23 @@ func TestAPromptResultDecodesTheBinarysOwnLineWhole(t *testing.T) {
 		},
 		{
 			// Oh My Pi's fail(): the prompt never reached a turn, and the error carries only the
-			// two members that path fills.
+			// two members that path fills for a failure it gives no code.
 			"a prompt that failed before any turn",
 			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":false,"status":"error",` +
 				`"error":{"message":"no model","retryable":false},"sessionSettled":true}`,
 			PromptResult{ID: "d1.XYZ", AgentInvoked: false, Error: &PromptError{Message: "no model"}},
+		},
+		{
+			// Oh My Pi's refusal of a prompt sent with no streamingBehavior while a turn streams,
+			// with its members in the order Oh My Pi writes them rather than the schema's:
+			// `#report` writes `sessionSettled` before the `error` it adds last, and `fail`
+			// writes `message`, `retryable`, then the `code` rpcBusyCode gave
+			// (packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts at the pinned tag). A
+			// turn still streams, so the session has not settled.
+			"a prompt refused because the agent was busy",
+			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":false,"status":"error","sessionSettled":false,` +
+				`"error":{"message":"` + agentBusyMessage + `","retryable":false,"code":"session_busy"}}`,
+			PromptResult{ID: "d1.XYZ", AgentInvoked: false, Error: &PromptError{Message: agentBusyMessage, Code: "session_busy"}},
 		},
 		{
 			// A refusal of the provider's content filter: Oh My Pi sets retryable for its own
@@ -302,6 +353,33 @@ func TestAPromptResultDecodesTheBinarysOwnLineWhole(t *testing.T) {
 				`"sessionSettled":true}`,
 			PromptResult{ID: "d1.XYZ", AgentInvoked: true, Error: &PromptError{
 				Message: "Output blocked by content filtering policy", Provider: "anthropic", Model: "claude-opus-4-5",
+			}},
+		},
+		{
+			// OpenAI's cyber-policy refusal, relayed by a gateway as a 503: the status alone reads
+			// as "not now", and only the code says that sending it again is refused again. Oh My
+			// Pi's promptError builds the object in this order: it marks the failure not
+			// retryable and adds the code, then adds the status last; `#report` writes the error
+			// after `sessionSettled` (packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts at
+			// the pinned tag). Synthetic refusal text, as Oh My Pi's own test of it uses.
+			"a turn OpenAI refused for cyber policy, relayed as a 503",
+			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":true,"status":"error","sessionSettled":true,` +
+				`"error":{"message":"503 cyber_policy: This content was flagged for possible cybersecurity risk.","provider":"openai","model":"gpt-5.5","retryable":false,"code":"cyber_policy","httpStatus":503}}`,
+			PromptResult{ID: "d1.XYZ", AgentInvoked: true, Error: &PromptError{
+				Message: "503 cyber_policy: This content was flagged for possible cybersecurity risk.", Provider: "openai",
+				Model: "gpt-5.5", HTTPStatus: 503, Code: "cyber_policy",
+			}},
+		},
+		{
+			// A request Oh My Pi's cost gate refused once the session reached `session.maxCost`:
+			// no request went out, so the error names no provider, model or status, only the code
+			// (`#costCapOutcome` there).
+			"a turn the session's cost cap stopped",
+			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":true,"status":"error","sessionSettled":true,` +
+				`"error":{"message":"Cost cap reached: this session spent $5.01 of its $5.00 cap (--max-cost / session.maxCost), so the next model request was not sent.","retryable":false,"code":"cost_cap"}}`,
+			PromptResult{ID: "d1.XYZ", AgentInvoked: true, Error: &PromptError{
+				Message: "Cost cap reached: this session spent $5.01 of its $5.00 cap (--max-cost / session.maxCost), so the next model request was not sent.",
+				Code:    "cost_cap",
 			}},
 		},
 		{
@@ -329,8 +407,8 @@ func TestAPromptResultDecodesTheBinarysOwnLineWhole(t *testing.T) {
 				t.Fatalf("Reason() = %q, want %q", result.Reason(), reason)
 			}
 			// Each member of the error object by itself: the daemon decides what a failed turn
-			// means from the four beside the message, so one dropped here is a failure it reads
-			// as something else.
+			// means from the members beside the message, the status and the code among them, so
+			// one dropped here is a failure it reads as something else.
 			if want := tc.want.Error; want != nil {
 				got := result.Error
 				if got == nil {
@@ -345,6 +423,7 @@ func TestAPromptResultDecodesTheBinarysOwnLineWhole(t *testing.T) {
 					{"model", got.Model, want.Model},
 					{"httpStatus", got.HTTPStatus, want.HTTPStatus},
 					{"retryable", got.Retryable, want.Retryable},
+					{"code", got.Code, want.Code},
 				} {
 					if member.got != member.want {
 						t.Errorf("error %s = %v, want %v", member.name, member.got, member.want)
@@ -469,17 +548,17 @@ func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T)
 			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame", tc.name, err)
 		}
 	}
-	// A compaction with no instructions is the one Oh My Pi would answer with snapcompact's
-	// images, which a resumed worker needs a vision model to read, so the daemon never sends it.
-	if err := (Compact{ID: "r9", CustomInstructions: "Write the summary as text."}).Validate(); err != nil {
-		t.Fatalf("Compact.Validate: %v", err)
+	// A handoff with no instructions writes a document that need not keep the reviewer's entry,
+	// so the daemon never sends it.
+	if err := (Handoff{ID: "r9", CustomInstructions: "Write the summary as text."}).Validate(); err != nil {
+		t.Fatalf("Handoff.Validate: %v", err)
 	}
 	for _, tc := range []struct {
 		name  string
-		frame Compact
+		frame Handoff
 	}{
-		{"no id", Compact{CustomInstructions: "Write the summary as text."}},
-		{"no instructions", Compact{ID: "r9"}},
+		{"no id", Handoff{CustomInstructions: "Write the summary as text."}},
+		{"no instructions", Handoff{ID: "r9"}},
 	} {
 		if err := tc.frame.Validate(); !errors.Is(err, ErrMalformedFrame) {
 			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame", tc.name, err)
@@ -535,6 +614,46 @@ func TestAVolumeReportOverAListCapIsRefused(t *testing.T) {
 			err := report.Validate()
 			if !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), tc.list+" holds") {
 				t.Fatalf("a report holding one entry past the cap of %s validated as %v, want ErrMalformedFrame naming the list", tc.list, err)
+			}
+		})
+	}
+}
+
+// A start that names a session by its id alone (resumeSession) is the launcher's to look up, and
+// the launcher resumes what it finds by replacing the argv's one `--resume=<id>` with the found
+// file's path: a start that also names a file names two sessions, and one whose argv does not
+// hold exactly one `--resume=<id>` of that session leaves the launcher no element to replace, or
+// two. The sandbox runtime is the frame's only sender, so each is a bug to name. The negative
+// control is the round-trip table's start naming its session by id in place of its file, with the
+// one element, which validates.
+func TestALauncherStartNamingASessionMustNameOneResumeOfIt(t *testing.T) {
+	const session = "01a1f5de-4835-7667-b005-e99e3e17edd3"
+	byID := LauncherStart{ID: "start-1", Generation: 7, Argv: []string{"omp", "--mode", "rpc", "--resume=" + session},
+		Env: []string{"A=B"}, Files: map[string]string{"LEGION_BOOT_TOKEN": "boot-7"}, ResumeSession: session}
+	if err := byID.Validate(); err != nil {
+		t.Fatalf("a start naming its session by id with one --resume of it was refused: %v", err)
+	}
+	for name, change := range map[string]func(*LauncherStart){
+		"a session file as well": func(s *LauncherStart) { s.ResumeFile = "/sessions/test.jsonl" },
+		"no --resume of the session": func(s *LauncherStart) {
+			s.Argv = []string{"omp", "--mode", "rpc"}
+		},
+		"two --resume of the session": func(s *LauncherStart) {
+			s.Argv = []string{"omp", "--resume=" + session, "--mode", "rpc", "--resume=" + session}
+		},
+		"a --resume of another session": func(s *LauncherStart) {
+			s.Argv = []string{"omp", "--mode", "rpc", "--resume=01a1f5de-4835-7667-b005-e99e3e28aa01"}
+		},
+		"the session as an element of its own": func(s *LauncherStart) {
+			s.Argv = []string{"omp", "--mode", "rpc", "--resume", session}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			start := byID
+			change(&start)
+			err := start.Validate()
+			if !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), "resumeSession") {
+				t.Fatalf("a start naming session %s with %s validated as %v, want ErrMalformedFrame naming resumeSession", session, name, err)
 			}
 		})
 	}
@@ -759,8 +878,8 @@ func TestMemoryGuardTheAcknowledgementBytesDecode(t *testing.T) {
 }
 
 // Each number of the settings is refused one below its minimum and one above its maximum, by a
-// refusal that names the member and its range, and taken at either bound. The defaults are inside
-// every range.
+// refusal that names the member and its range, and taken at either bound. The defaults, the
+// controller pod's wait among them, are inside every range.
 func TestMemoryGuardSettingsValidateRefusesEachSideOfEachBound(t *testing.T) {
 	defaults := LauncherMemoryGuard{
 		ActPercent: MemoryGuardActDefault, FloorPercent: MemoryGuardFloorDefault,
@@ -768,6 +887,11 @@ func TestMemoryGuardSettingsValidateRefusesEachSideOfEachBound(t *testing.T) {
 	}
 	if err := defaults.Validate(); err != nil {
 		t.Fatalf("the defaults are refused: %v", err)
+	}
+	controller := defaults
+	controller.WaitSeconds = MemoryGuardControllerWaitDefault
+	if err := controller.Validate(); err != nil {
+		t.Fatalf("the controller pod's defaults are refused: %v", err)
 	}
 	for _, tc := range []struct {
 		member string

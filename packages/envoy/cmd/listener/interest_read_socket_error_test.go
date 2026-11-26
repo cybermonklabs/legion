@@ -21,10 +21,10 @@ import (
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// brokenPipeReadKV is an interest bucket whose reads fail with the raw socket error nats.go v1.50.0
-// returns when a request fills its 32 KiB write buffer on a broken connection: natsWriter.flush
-// passes the socket's own *net.OpError through (nats.go:2118-2119, 2143-2145), and so do publish
-// and requestWithContext (nats.go:4406, context.go:60-62). Every other call goes to the real bucket.
+// brokenPipeReadKV is an interest bucket whose reads fail with a raw socket error. nats.go v1.55.0
+// reconnects after a partial write, but a caller can still receive an unwrapped *net.OpError from
+// another write failure. This double holds the listener's classification of that error. Every
+// other call goes to the real bucket.
 type brokenPipeReadKV struct {
 	nats.KeyValue
 }
@@ -73,6 +73,7 @@ func breakInterestReads(t *testing.T, registry *store.Registry) {
 // per-key read of it reaches the bucket. The negative control is both requests asked before the
 // reads break: each answers 200 naming the session.
 func TestAnInterestReadFailingWithARawSocketErrorIsTheBusNotAnswering(t *testing.T) {
+	t.Parallel()
 	const missed = "ses_interest_read_broken_pipe"
 	registry, sessions := setupSessionsTest(t, nil, []string{missed})
 	state := &listenerDeps{registry: registry, sessions: sessions}
@@ -81,7 +82,7 @@ func TestAnInterestReadFailingWithARawSocketErrorIsTheBusNotAnswering(t *testing
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
 		return recorder
 	}
-	list := sessionsHandler(registry, sessions)
+	list := sessionsHandler(registry, sessions, nil)
 	entry := sessionEntryHandler(state)
 	for _, route := range []struct {
 		path    string

@@ -1,4 +1,6 @@
+import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { type ReactNode, useState } from "react";
+import { controlPadding } from "../../components/control-names";
 import {
   borderDefault,
   focusVisibleRing,
@@ -7,6 +9,11 @@ import {
   textPrimaryOnCanvas,
 } from "../../theme/classes";
 import { usePriorityWrites } from "./priority-writes";
+
+/** Each button here, at the size of the toolbar it stands in (`controlPadding`'s `toolbar`), so
+ *  each is the size of the controls it stands beside: from 1280 px up the one height of a
+ *  toolbar's controls. */
+const BUTTON = `rounded-lg border text-sm ${controlPadding.toolbar} ${borderDefault} ${surfaceMutedHoverBg}`;
 
 /**
  * The way a priority is added: a button that opens a one-line form for its title. It stands in
@@ -23,11 +30,7 @@ export function NewPriority(): ReactNode {
   if (!canWrite) return null;
   return (
     <>
-      <button
-        className={`rounded-lg border px-3 py-1.5 text-sm ${borderDefault} ${surfaceMutedHoverBg}`}
-        onClick={() => setAdding((was) => !was)}
-        type="button"
-      >
+      <button className={BUTTON} onClick={() => setAdding((was) => !was)} type="button">
         New priority
       </button>
       {adding ? (
@@ -45,20 +48,21 @@ export function NewPriority(): ReactNode {
         >
           <input
             aria-label="Title of the new priority"
-            className={`min-w-64 flex-1 rounded-lg border px-3 py-1.5 text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
+            className={`w-full min-w-0 flex-none rounded-lg border text-sm sm:w-auto sm:min-w-64 sm:flex-1 ${controlPadding.toolbar} ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
+            maxLength={ISSUE_TITLE_MAX}
             onChange={(event) => setTitle(event.target.value)}
             placeholder="What the new priority is"
             value={title}
           />
           <button
-            className={`min-h-11 rounded-lg border px-3 text-sm disabled:opacity-40 ${borderDefault} ${surfaceMutedHoverBg} ${focusVisibleRing}`}
+            className={`${BUTTON} disabled:opacity-40 ${focusVisibleRing}`}
             disabled={title.trim() === ""}
             type="submit"
           >
             Add priority
           </button>
           <button
-            className={`min-h-11 rounded-lg border px-3 text-sm ${borderDefault} ${surfaceMutedHoverBg}`}
+            className={BUTTON}
             onClick={() => {
               setAdding(false);
               setTitle("");

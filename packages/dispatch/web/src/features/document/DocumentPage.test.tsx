@@ -1,18 +1,30 @@
-import { afterAll, expect, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
+import type { ReactNode } from "react";
+import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { realClock } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { pickNamed } from "../../__tests__/list-picks";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { Artifact, GraphEdge, Subscriber } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { DocumentPage } from "./DocumentPage";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const getReferences = spyOn(api, "getReferences").mockResolvedValue({
   edges: [],
@@ -52,7 +64,9 @@ const artifact: Artifact = {
   ],
 };
 
-function renderDocumentPage() {
+/** The document page at `design-notes`, with `beside` drawn next to its routes: a way to another
+ *  address, for a case that moves the page while it stays mounted. */
+function renderDocumentPage(beside: ReactNode = null) {
   const runtime = fakeDocumentRuntime({ text: "# Design notes" });
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -63,6 +77,7 @@ function renderDocumentPage() {
       <QueryClientProvider client={queryClient}>
         <DocumentRuntime.Provider value={runtime.runtime}>
           <MarginProvider>
+            {beside}
             <Routes>
               <Route element={<DocumentPage />} path="/projects/:key/documents/:slug" />
             </Routes>
@@ -71,7 +86,7 @@ function renderDocumentPage() {
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return { runtime, view };
+  return { queryClient, runtime, view };
 }
 
 test("renders the header, the document, versions, and Referenced by for an unlinked document", async () => {
@@ -107,6 +122,16 @@ test("renders the header, the document, versions, and Referenced by for an unlin
       ref: "dispatch://CORE/artifact/design-notes",
     }),
   });
+  // The citing comment's excerpt is the head of its body, which the renderer draws, so the
+  // reference in it reads the document's summary for its name.
+  const getProjectDocumentSummary = spyOn(api, "getProjectDocumentSummary").mockResolvedValue({
+    id: "artifact-1",
+    kind: "doc",
+    latest_version: 1,
+    name: "design-notes",
+    project: "CORE",
+    slug: "design-notes",
+  });
   const { runtime, view } = renderDocumentPage();
 
   try {
@@ -131,6 +156,7 @@ test("renders the header, the document, versions, and Referenced by for an unlin
     );
   } finally {
     view.unmount();
+    getProjectDocumentSummary.mockRestore();
     getArtifactText.mockRestore();
     getArtifactSubscribers.mockRestore();
     getArtifact.mockRestore();
@@ -303,5 +329,183 @@ test("shows Subscribed agents and unsubscribes after confirming the dialog", asy
     getArtifactText.mockRestore();
     getArtifact.mockRestore();
     getProjectArtifact.mockRestore();
+  }
+});
+
+/** The page with one removable subscriber, its unsubscribe answered by `unsubscribe`, which is
+ *  handed the subscribers the list reads so it can empty them. Presses Unsubscribe and answers
+ *  the dialog's Confirm button, for the case to press. */
+async function unsubscribing(unsubscribe: (subscribers: Subscriber[]) => Promise<void>) {
+  const subscribers: Subscriber[] = [
+    {
+      last_seen: 1,
+      live: true,
+      removable: true,
+      session_id: "0123456789abcdef",
+      title: "Planner (live)",
+      topics: [],
+    },
+  ];
+  const mocks = [
+    spyOn(api, "getProjectArtifact").mockResolvedValue(artifact),
+    spyOn(api, "getArtifact").mockResolvedValue(artifact),
+    spyOn(api, "getArtifactText").mockResolvedValue({
+      markdown: "# Design notes",
+      version: 1,
+      token: "sha256:design-notes",
+    }),
+    spyOn(api, "getArtifactSubscribers").mockImplementation(async () => [...subscribers]),
+    spyOn(api, "unsubscribeArtifactSession").mockImplementation(() => unsubscribe(subscribers)),
+    spyOn(api, "listAgents").mockResolvedValue([]),
+  ];
+  const { queryClient, runtime, view } = renderDocumentPage();
+  await screen.findByTestId("artifact-header");
+  await waitFor(() => expect(runtime.connections).toHaveLength(1));
+  runtime.sync();
+  const subscribed = await screen.findByRole("region", { name: "Subscribed agents" });
+  await userEvent
+    .setup()
+    .click(await within(subscribed).findByRole("button", { name: "Unsubscribe" }));
+  const confirm = within(await screen.findByRole("dialog")).getByRole("button", {
+    name: "Confirm",
+  });
+  return {
+    confirm,
+    queryClient,
+    restore: () => {
+      view.unmount();
+      queryClient.clear();
+      for (const mock of mocks) mock.mockRestore();
+    },
+  };
+}
+
+// An unsubscribe the reader stopped may have been made: the page says so, and that its Retry
+// sends the same `DELETE` again, which is the same however often it is made.
+test("an unsubscribe the reader stopped says Retry sends it again, not that it failed", async () => {
+  const page = await unsubscribing(() =>
+    Promise.reject(new NetworkError("/api/v1/artifacts/artifact-1", new TypeError("Failed")))
+  );
+  try {
+    jest.useFakeTimers();
+    await userOnFakeClock().click(page.confirm);
+    await stopTheLateWrite(page.queryClient);
+    // The alert's paragraph, without its Retry button's name.
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("this agent's unsubscribe from “Design notes”", "made", {
+        method: "DELETE",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+    page.restore();
+  }
+});
+
+// A `DELETE` sends no key, so one made again after an unsubscribe that landed finds the session
+// unsubscribed already and is answered `404 SUBSCRIBER_NOT_FOUND`: the unsubscribe done, which
+// the page takes as it takes a `204`, not as a refusal.
+test("an unsubscribe answered SUBSCRIBER_NOT_FOUND is the unsubscribe done, not a refusal", async () => {
+  const page = await unsubscribing(async (subscribers) => {
+    subscribers.splice(0);
+    throw new ApiError(404, { code: "SUBSCRIBER_NOT_FOUND", error: "session is not subscribed" });
+  });
+  try {
+    await userEvent.setup().click(page.confirm);
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "Subscribed agents" })).not.toBeInTheDocument()
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    page.restore();
+  }
+});
+
+/** A second document of the project, which the reader moves to from the first by a link. */
+const releaseNotes: Artifact = {
+  ...artifact,
+  id: "artifact-2",
+  name: "Release notes",
+  ref_key: "CORE/release-notes",
+  slug: "release-notes",
+};
+
+/** Presses Unsubscribe on the page's one subscribed agent and confirms it in the dialog. */
+async function confirmUnsubscribe(user: UserEvent): Promise<void> {
+  const subscribed = await screen.findByRole("region", { name: "Subscribed agents" });
+  await user.click(await within(subscribed).findByRole("button", { name: "Unsubscribe" }));
+  await user.click(
+    within(await screen.findByRole("dialog")).getByRole("button", { name: "Confirm" })
+  );
+}
+
+// The page stays mounted as the reader follows a link to another document, and an unsubscribe
+// belongs to the document it was made on: its refusal, and the Retry beside it. The reader who
+// moves on is shown none of it, and the Retry of a refusal on the next document's page
+// unsubscribes from that document alone: a Retry of the first document's unsubscribe there would
+// take the agent off a document the reader is no longer reading.
+test("after a refused unsubscribe, the next document's page shows no refusal and its Retry stays with that document", async () => {
+  const unsubscribeArtifactSession = spyOn(api, "unsubscribeArtifactSession").mockRejectedValue(
+    new ApiError(403, { code: "FORBIDDEN", error: "not allowed to unsubscribe this session" })
+  );
+  const mocks = [
+    spyOn(api, "getProjectArtifact").mockImplementation(async (_project, slug) =>
+      slug === releaseNotes.slug ? releaseNotes : artifact
+    ),
+    spyOn(api, "getArtifact").mockImplementation(async (id) =>
+      id === releaseNotes.id ? releaseNotes : artifact
+    ),
+    spyOn(api, "getArtifactText").mockResolvedValue({
+      markdown: "# Design notes",
+      version: 1,
+      token: "sha256:design-notes",
+    }),
+    spyOn(api, "getArtifactSubscribers").mockResolvedValue([
+      {
+        last_seen: 1,
+        live: true,
+        removable: true,
+        session_id: "0123456789abcdef",
+        title: "Planner (live)",
+        topics: [],
+      },
+    ]),
+    spyOn(api, "listAgents").mockResolvedValue([]),
+    unsubscribeArtifactSession,
+  ];
+  const user = userEvent.setup();
+  const { queryClient, runtime, view } = renderDocumentPage(
+    <Link to="/projects/CORE/documents/release-notes">Release notes</Link>
+  );
+
+  try {
+    await screen.findByTestId("artifact-header");
+    await waitFor(() => expect(runtime.connections).toHaveLength(1));
+    runtime.sync();
+    await confirmUnsubscribe(user);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not unsubscribe this agent.");
+
+    await user.click(screen.getByRole("link", { name: "Release notes" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("artifact-header")).toHaveTextContent("Release notes")
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    await confirmUnsubscribe(user);
+    const refusal = await screen.findByRole("alert");
+    unsubscribeArtifactSession.mockResolvedValue(undefined);
+    await user.click(within(refusal).getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(unsubscribeArtifactSession).toHaveBeenCalledTimes(3));
+    expect(unsubscribeArtifactSession.mock.calls.map(([id, session]) => [id, session])).toEqual([
+      ["artifact-1", "0123456789abcdef"],
+      ["artifact-2", "0123456789abcdef"],
+      ["artifact-2", "0123456789abcdef"],
+    ]);
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    for (const mock of mocks) mock.mockRestore();
   }
 });

@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
@@ -11,7 +11,8 @@ import {
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
-import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
+import { displayTree } from "../../__tests__/display-trees";
+import { afterFrameAndTasks } from "../../__tests__/frames";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
@@ -21,9 +22,14 @@ import type {
   ArchitectureTreeIssue,
   ArchitectureTreeSource,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { writesOf } from "../writes/write-store";
 import { ArchitecturePage } from "./ArchitecturePage";
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function component(
   overrides: Partial<ArchitectureTreeComponent> & { id: string }
@@ -147,12 +153,12 @@ function LocationProbe() {
   return <output data-testid="location">{location.search}</output>;
 }
 
-/** The page on `tree` at `search`; `rescued` draws it in the shell's main content with the page's
- *  focus rescue mounted on it (`RescuedMain`), as the app shell mounts it. */
+/** The page on `tree` at `search`; `inMain` draws it in the shell's main content, as the app
+ *  shell draws it. */
 function renderPane(
   tree: ArchitectureTree,
   search = "",
-  { rescued = false }: { rescued?: boolean } = {}
+  { inMain = false }: { inMain?: boolean } = {}
 ) {
   const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue(tree);
   const syncArchitectureSource = spyOn(api, "syncArchitectureSource");
@@ -164,7 +170,7 @@ function renderPane(
     <MemoryRouter initialEntries={[`/projects/CORE/architecture${search}`]}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
-          {rescued ? <RescuedMain>{page}</RescuedMain> : page}
+          {inMain ? <main>{page}</main> : page}
           <LocationProbe />
         </KeymapProvider>
       </QueryClientProvider>
@@ -299,14 +305,14 @@ test("j/k rove the rows, l/h descend and ascend, Enter opens a parent's children
 });
 
 // An Architecture row is a row of its list. A refetch that takes the row holding the focus away -
-// a sync that dropped its component - is a loss the reader did not cause, so the app shell's
-// focus rescue, mounted here on the page's main content as the shell mounts it, hands the focus
-// into no other row: the reader's next key acts on no component they did not pick.
+// a sync that dropped its component - is a loss the reader did not cause, so with the page in the
+// shell's main content, as the shell draws it, the focus goes into no other row: the reader's next
+// key acts on no component they did not pick.
 test("a row a refetch takes away from under the focus hands it to no other row", async () => {
   const roots = ["Alpha", "Bravo", "Charlie"].map((title) =>
     component({ id: title.toLowerCase(), title })
   );
-  const pane = renderPane(fixture({ components: roots }), "", { rescued: true });
+  const pane = renderPane(fixture({ components: roots }), "", { inMain: true });
   try {
     const list = await screen.findByRole("list", { name: "Components" });
     const title = within(rowFor("Bravo")).getByRole("link", { name: "Bravo" });
@@ -319,7 +325,7 @@ test("a row a refetch takes away from under the focus hands it to no other row",
       await pane.queryClient.refetchQueries();
     });
     await waitFor(() => expect(title).not.toBeInTheDocument());
-    await afterRescue();
+    await afterFrameAndTasks();
 
     expect(document.activeElement?.closest("[data-component-row]") ?? null).toBeNull();
     expect(within(list).getByRole("article", { name: /^Charlie,/ })).toBeInTheDocument();
@@ -764,7 +770,9 @@ test("Not architectural lists each reason, names the ancestor of an inherited ro
   const pane = renderPane(fixture(), "?view=none");
   try {
     const list = await screen.findByTestId("not-architectural-list");
-    expect(within(list).getAllByText("hiring, not code")).toHaveLength(2);
+    // Each reason draws through the one renderer, whose engine loads on the first body of the
+    // page, so the words may arrive a commit after the list.
+    expect(await within(list).findAllByText("hiring, not code")).toHaveLength(2);
     const inherited = within(list).getByTestId("attachment-CORE-9");
     expect(within(inherited).getByRole("link", { name: "CORE-8" })).toHaveAttribute(
       "href",
@@ -784,6 +792,37 @@ test("Not architectural lists each reason, names the ancestor of an inherited ro
         keyedAttempt
       )
     );
+  } finally {
+    pane.restore();
+  }
+});
+
+// A row's reason is a stored text its writer typed in a box with the reference picker, and the
+// architecture read sends the reading the server made of it (`reason_tree`): the row draws that
+// tree rather than a parse of the markdown. The tree reads differently from the markdown beside
+// it, so a row drawn from a parse would read `hiring, not code` alone.
+test("a Not architectural row's reason is drawn from the tree the architecture read sends", async () => {
+  const pane = renderPane(
+    fixture({
+      not_architectural: [
+        {
+          inherited_from: null,
+          key: "CORE-8",
+          reason: "hiring, **not** code",
+          reason_tree: displayTree("hiring, **not** code, for now"),
+          status: "todo",
+          title: "Hire",
+        },
+      ],
+    }),
+    "?view=none"
+  );
+  try {
+    const row = within(await screen.findByTestId("not-architectural-list")).getByTestId(
+      "attachment-CORE-8"
+    );
+    await waitFor(() => expect(row).toHaveTextContent("hiring, not code, for now"));
+    expect(within(row).getByText("not").tagName).toBe("STRONG");
   } finally {
     pane.restore();
   }

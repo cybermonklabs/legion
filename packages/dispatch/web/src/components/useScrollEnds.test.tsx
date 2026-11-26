@@ -28,7 +28,7 @@ afterEach(() => {
 /** A strip laid out before the hook first measures it, as a browser lays out before the layout
  *  effect runs. */
 function Strip({ box }: { box: ScrollBox }) {
-  const { fade, ref } = useScrollEnds({ ends: "trailing" });
+  const { fade, ref } = useScrollEnds();
   const sized = useCallback(
     (element: HTMLDivElement | null) => {
       if (element !== null) {

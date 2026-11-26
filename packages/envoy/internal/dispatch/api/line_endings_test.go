@@ -19,6 +19,7 @@ import (
 // written with line feeds stores, so the browser editor, which reads both line endings as a line
 // feed, reads it the same way.
 func TestWrittenTextReachesTheDocumentWithLineFeeds(t *testing.T) {
+	t.Parallel()
 	handler, _ := blockAskHandler(t)
 	projects := 0
 	issue := func(t *testing.T, spec string) (key, artifactID string) {
@@ -48,8 +49,9 @@ func TestWrittenTextReachesTheDocumentWithLineFeeds(t *testing.T) {
 				Artifact model.Artifact `json:"artifact"`
 			}
 			for _, content := range []string{"First.\n", document} {
-				response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", map[string]string{
+				response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", map[string]any{
 					"name": "notes.md", "content": eol(content),
+					"precondition": uploadBaseNamed(t, handler, "/api/v1/issues/"+key+"/artifacts", "notes.md"),
 				}, "alice")
 				ok(t, response, "upload")
 				uploaded = decodeBody[struct {
@@ -159,10 +161,11 @@ var answeredAt = regexp.MustCompile(`answered_at="[^"]*"`)
 // document: a person or an agent writing through a Windows client sends CRLF, and a lone carriage
 // return reaches the store the same way. Each body is markdown a reader is shown, and the display
 // read is held to the line endings a stored text carries
-// (pmdoc's TestReadForDisplayEndsAnUnknownBlocksLinesAtEveryLineEnding), so the write normalises
-// what it stores (pmdoc.LineFeeds in validateCreateMessage and createCommentFor) and every
-// reader of one body is shown one text.
+// (pmdoc's TestReadForDisplayEndsAnUnknownBlocksLinesAtEveryLineEnding), so every write
+// normalises what it stores (pmdoc.LineFeeds in validateCreateMessage, createCommentFor,
+// editComment and editMessage) and every reader of one body is shown one text.
 func TestAMessageAndACommentBodyAreStoredWithLineFeeds(t *testing.T) {
+	t.Parallel()
 	handler, _ := blockAskHandler(t)
 	projects := 0
 	issueKey := func(t *testing.T) string {
@@ -225,6 +228,23 @@ func TestAMessageAndACommentBodyAreStoredWithLineFeeds(t *testing.T) {
 				t.Fatalf("the issue lists %d comments, want the one written", len(comments))
 			}
 			return comments[0].Body
+		}},
+		{"an edited message's body", func(t *testing.T, sent string) string {
+			key := issueKey(t)
+			posted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/messages", map[string]any{"body": "Before the edit.\n"}, "alice")
+			if posted.Code != http.StatusCreated {
+				t.Fatalf("create message: status=%d body=%s", posted.Code, posted.Body.String())
+			}
+			created := decodeBody[model.Message](t, posted)
+			edited := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/messages/"+created.ID, map[string]any{"body": sent}, "alice")
+			if edited.Code != http.StatusOK {
+				t.Fatalf("edit message: status=%d body=%s", edited.Code, edited.Body.String())
+			}
+			rows := issueMessageRows(t, handler, key)
+			if len(rows) != 1 {
+				t.Fatalf("the issue lists %d messages, want the one sent", len(rows))
+			}
+			return rows[0].Message.Body
 		}},
 	} {
 		t.Run(entry.name, func(t *testing.T) {

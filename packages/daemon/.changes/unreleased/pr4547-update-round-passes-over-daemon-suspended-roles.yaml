@@ -1,0 +1,23 @@
+kind: Fixed
+body: |-
+    A pod update round no longer holds a pod until its bound for a role that the daemon itself
+    suspended (by its own rule, by a root's exit, by an idle release or by an unknown source). The
+    round asks and waits for the same roles (one predicate), and it does not ask, wake or resume
+    such a role: an ask queued before the suspension now ends without a publish. An operator's
+    suspension still holds the round past its bound, and a role that the project pause stopped
+    stays the pause's while the pause still owes that role a launch. The shim gains the frame
+    `workspace-work`, which reads whether the issue workspace holds work that no branch or tag at
+    origin holds; an update round makes that read before every replacement, and what it does with
+    the read is #5285's (its own entry, pr5285-r7-round-keeps-unread-disk).
+    A round whose pod has no role process in it is replaced by issue where nothing holds the pod,
+    and a launch into such a pod reads the round's bound when it runs and replaces the pod first,
+    so the role starts once. Before the round's bound, a pod is kept while a project's pause still
+    owes a launch to a role it stopped there and that role has not answered the round, read for
+    each role: the sweep and every launch into the pod keep it, whether or not another role's
+    process runs in the pod, after a daemon restart too, and where the launch forgets the role's
+    lost session.
+    The sweep decides the end of a round once while the end reaches the roles' machines, and a pod
+    the runtime cannot read is told to the controller once past the round's bound.
+time: 2026-11-20T03:45:16Z
+custom:
+    Issue: pr4547

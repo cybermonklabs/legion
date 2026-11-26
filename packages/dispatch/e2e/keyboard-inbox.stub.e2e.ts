@@ -4,12 +4,13 @@
  *
  *  None of them writes and reads that write back: a bulk snooze whose answer this layer would
  *  have to invent, and the thread walk whose `e` dismisses a row, stayed in `keyboard-inbox.e2e.ts`
- *  with the rest (packages/dispatch/AGENTS.md, "The stubbed layer"). Every refusal below is the
+ *  with the rest (packages/dispatch/README.md, "The stubbed layer"). Every refusal below is the
  *  row's own `page.route`, which replays as readily as it ran.
  */
 import { expect } from "@playwright/test";
 
 import { createAsk, createIssue, createProject, patchIssue } from "./api";
+import { listTrigger, pickFromList } from "./filters";
 import {
   assigneeFilter,
   assigneeOptions,
@@ -17,7 +18,7 @@ import {
   openAssigneeFilter,
   pickAssignee,
 } from "./inbox-filter";
-import { hasReadingPane, inboxPane, paneScroller, selectedRow } from "./inbox-pane";
+import { inboxPane, paneScroller, selectedRow } from "./inbox-pane";
 import {
   askIdOf,
   goToRow,
@@ -30,6 +31,7 @@ import {
   seedPane,
   session,
 } from "./keyboard-inbox";
+import { hasReadingPane } from "./reading-pane";
 import { stubbed } from "./stub/stub-test";
 
 /** The three asks the marks are made on. */
@@ -140,7 +142,7 @@ test.describe("inbox selection", () => {
 
     await markFromKeyboard(page, 2);
     const bar = page.getByRole("toolbar", { name: "Selected rows" });
-    await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("tomorrow");
+    await pickFromList(listTrigger(bar, "Snooze selected asks"), "Tomorrow");
 
     await expect(bar).toContainText(
       "Could not snooze 2 of 2: snoozed_until must be a moment, and 1 other reason."
@@ -165,7 +167,7 @@ test.describe("inbox selection", () => {
     // `h` from the box the reader just ticked is the flow the pointer leaves them in: it
     // reaches the bulk picker with no roving in between.
     await page.keyboard.press("h");
-    const picker = bar.getByRole("combobox", { name: "Snooze selected asks" });
+    const picker = listTrigger(bar, "Snooze selected asks");
     await expect(picker).toBeFocused();
     await page.keyboard.press("Escape");
 
@@ -207,7 +209,7 @@ test.describe("inbox selection", () => {
     const bar = page.getByRole("toolbar", { name: "Selected rows" });
     await expect(bar).toContainText("1 selected");
     await page.keyboard.press("h");
-    const picker = bar.getByRole("combobox", { name: "Snooze selected asks" });
+    const picker = listTrigger(bar, "Snooze selected asks");
     await expect(picker).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(rows.nth(1)).toBeFocused();
@@ -274,11 +276,10 @@ test.describe("inbox selection", () => {
     ]);
     expect(new Set(checkboxes).size).toBe(checkboxes.length);
 
-    // Snooze is named from the same place, so the two controls of a row agree. Without the
-    // reading column every row carries its own Snooze, so the names tell the twins apart by
-    // their position exactly as the checkboxes do. With the column one Snooze is on the page
-    // - the head's, for the row the column is showing - so it names that question without
-    // the position, which is only there to tell two controls on one page apart.
+    // Snooze is named from the same place, so the two controls of a row agree. One Snooze is on
+    // the page - the head's, for the row the pane is showing, beside the list or in place of it
+    // - so it names that question without the position, which is only there to tell two
+    // controls on one page apart.
     const pickers: string[] = [];
     await expect(rows).toHaveCount(scene.rows);
     // The count above waited for every row of the scene, so the loop walks each of them.
@@ -286,21 +287,18 @@ test.describe("inbox selection", () => {
       items.map((item) => item.getAttribute("data-inbox-row") ?? "")
     )) {
       const picker = await rowSnooze(page, askId);
-      pickers.push((await picker.getAttribute("aria-label")) ?? "none");
-    }
-    if (hasReadingPane(page)) {
-      expect(pickers).toEqual(
-        checkboxes.map((name) =>
-          name.replace(/^Select /, "Snooze ").replace(/, ask \d+ of \d+/, "")
+      // The shared list's single pick is named by the element its `aria-labelledby` names first.
+      pickers.push(
+        await picker.evaluate(
+          (node) =>
+            document.getElementById(node.getAttribute("aria-labelledby")?.split(" ")[0] ?? "")
+              ?.textContent ?? "none"
         )
       );
-    } else {
-      expect(pickers).toContain("Snooze CORE-2: Ship it?");
-      expect(new Set(pickers).size).toBe(pickers.length);
-      expect(pickers.map((name) => name.replace(/^Snooze /, "")).sort()).toEqual(
-        checkboxes.map((name) => name.replace(/^Select /, "")).sort()
-      );
     }
+    expect(pickers).toEqual(
+      checkboxes.map((name) => name.replace(/^Select /, "Snooze ").replace(/, ask \d+ of \d+/, ""))
+    );
   });
 
   // The bar speaks for the rows this list holds. A mark made with the filter cleared must not
@@ -346,8 +344,7 @@ test.describe("inbox selection", () => {
   );
 
   // The `?agent=` chip narrows the list the same way the assignee filter does, and the Inbox
-  // stays mounted across it: the chip's clear link and the browser's own Back are client-side
-  // moves.
+  // stays mounted across it: the chip's press and the browser's own Back are client-side moves.
   agentFilterTest(
     "a mark made outside the agent filter does not count inside it @pr",
     async ({ page, scene }) => {
@@ -357,7 +354,7 @@ test.describe("inbox selection", () => {
       await expect(rows).toHaveCount(1);
       await expect(rows.nth(0)).toHaveAttribute("data-inbox-row", scene.fromOtherAskId);
 
-      await page.getByRole("link", { name: "Clear agent filter" }).click();
+      await page.getByRole("button", { name: "Clear agent filter" }).click();
       await expect(rows).toHaveCount(2);
       await page
         .locator(`[data-inbox-row="${scene.fromSessionAskId}"]`)
@@ -395,7 +392,7 @@ test.describe("inbox selection", () => {
 
     await markFromKeyboard(page, 2);
     const bar = page.getByRole("toolbar", { name: "Selected rows" });
-    await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("tomorrow");
+    await pickFromList(listTrigger(bar, "Snooze selected asks"), "Tomorrow");
     await expect(bar).toContainText("Could not snooze 2 of 2");
 
     const rows = page.locator("[data-inbox-row]");
@@ -423,7 +420,7 @@ test.describe("inbox selection", () => {
       await expect(hold).toBeFocused();
       await page.keyboard.press("h");
       await expect(hold).toBeFocused();
-      await expect(bar.getByRole("combobox", { name: "Snooze selected asks" })).not.toBeFocused();
+      await expect(listTrigger(bar, "Snooze selected asks")).not.toBeFocused();
     }
   );
 
@@ -447,7 +444,7 @@ test.describe("inbox selection", () => {
     await rows.nth(2).getByRole("checkbox").check();
     await expect(bar).toContainText("1 selected");
 
-    await bar.getByRole("combobox", { name: "Snooze selected asks" }).focus();
+    await listTrigger(bar, "Snooze selected asks").focus();
     await page.keyboard.press("Escape");
     await expect(rows.nth(2)).toBeFocused();
   });
@@ -486,8 +483,8 @@ paneTest(
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(`${error.name}: ${error.message}`));
 
-    // One pixel below the pane's width the Inbox is the list of cards it has always been: no
-    // pane, no scroller, and nothing for `l` to step into.
+    // One pixel below the pane's width, with no row open, the Inbox draws no pane: no scroller,
+    // and nothing for `l` to step into.
     await page.setViewportSize({ height: 900, width: 1279 });
     await page.goto("/?assignee=everyone");
     const rows = page.locator("[data-inbox-row]");

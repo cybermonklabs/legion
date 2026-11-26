@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The rig of .github/workflows/ci.yaml's `tool-fallback` and `tool-fallback-arm` jobs, the live
+# The rig of `.github/workflows/ci.yaml#tool-fallback` and `.github/workflows/ci.yaml#tool-fallback-arm` jobs, the live
 # proof that every tool install of this repository reads the second source .github/ci-tools.yaml
 # names when the first source does not serve the bytes, and that no unverified byte is ever
 # installed (dispatch://INFRA-1873).
@@ -22,10 +22,10 @@
 #       $GITHUB_OUTPUT, the four base URLs a case hands .github/scripts/ci-tools.sh through its
 #       CI_TOOLS_GITHUB_BASE, CI_TOOLS_GHCR_BASE, CI_TOOLS_NPM_BASE and CI_TOOLS_URL_BASE seams.
 #       The origin serves the four routes those seams reach — a release asset, a ghcr blob with
-#       the pull token before it, an npm tarball, and the address a `pypi` or `pulumi-releases`
-#       side of a row writes, whose scheme and host that last seam replaces — from the payload
-#       `stage` wrote, and it decides for every request, from the control file `corrupt` writes,
-#       whether to serve the row whole or with one byte changed.
+#       the pull token before it, an npm tarball, and the address a `pypi`, `pulumi-releases` or
+#       `helm-releases` side of a row writes, whose scheme and host that last seam replaces —
+#       from the payload `stage` wrote, and it decides for every request, from the control file
+#       `corrupt` writes, whether to serve the row whole or with one byte changed.
 #       It logs every path it serves, the row it belongs to and whether it corrupted it.
 #
 #   stage
@@ -84,7 +84,7 @@
 #   stop-fault
 #       The same four proxy variables, emptied in $GITHUB_ENV and printed. The steps after it
 #       must not go through a proxy that stops with the job: the ci-ok-report step every job
-#       ends with uploads an artifact.
+#       ends with can call GitHub's API with gh.
 #       The two bypass lists stay as `start-fault` wrote them, because with no proxy set
 #       nothing reads them.
 #
@@ -142,7 +142,7 @@
 #       which is ci.yaml's lint, test, ci-caches and docs-site jobs and
 #       .github/workflows/dispatch-browser.yaml.
 #       `installed-bun` takes the same reading, so the arm64 job takes it from there; the x64
-#       job, which reads its four faulted head installs tool by tool with `version-answers`,
+#       job, which reads its faulted head installs tool by tool with `version-answers`,
 #       runs this verb.
 #
 #   corrupt [row…]
@@ -190,7 +190,7 @@
 #       The seconds no timed install may reach, printed and nothing else.
 #       INSTALL_BOUND below is the one place that number is written, and the `tool-fallback`
 #       job's control over its eight installs with nowhere to go reads it through this verb, so
-#       the bound the rig holds the sixteen corrupted cases to and the bound that step holds
+#       the bound the rig holds the eighteen corrupted cases to and the bound that step holds
 #       those eight installs to cannot drift apart.
 #
 #   report <case> --outcome <the step's outcome> --row <row>
@@ -239,9 +239,9 @@
 # A composite action writes its refusal to the job's log, and no later step can read that log, so
 # the source a refusal named is read from what the origin served instead.
 # Each route is one source: /github/ is `github-release`, /ghcr/ is `ghcr-mirror`, /npm/ is
-# `npm`, and /url/ is `pypi` and `pulumi-releases` alike — one seam for both, and the row says
-# which of the two words its own address is written in — and the origin's log says which route
-# served this case's row.
+# `npm`, and /url/ is `pypi`, `pulumi-releases` and `helm-releases` alike — one seam for all
+# three, and the row says which of the three words its own address is written in — and the
+# origin's log says which route served this case's row.
 # A case whose primary is the faulted real host asks the origin's github route for nothing, so
 # `--expect-source github-release` is read as the same statement the other way round: the origin
 # served this row on none of its other three routes, so the bytes the step refused came from the
@@ -277,22 +277,26 @@ stand_in="$stand_in_bin/curl"
 # The two other bun rows are the same binary for another runner (.github/ci-tools.yaml says so),
 # and no case installs them, so nothing would serve their payload. The -aarch64 rows are the
 # `tool-fallback-arm` job's, whose installs read their real sources and no origin of this rig's.
-STAGED_ROWS="crane changie mise jj bun-linux-x64 elan uv pulumi-docker pulumi-cli"
+STAGED_ROWS="crane changie mise jj bun-linux-x64 elan uv pulumi-docker pulumi-cli helm"
 
 # The hosts both jobs fault, written here and in no step of .github/workflows/ci.yaml:
-# github.com, where a release download starts, and the two githubusercontent.com hosts it ends
-# at, rather than the whole githubusercontent.com domain.
+# github.com, where a release download starts, the two githubusercontent.com hosts it ends at,
+# rather than the whole githubusercontent.com domain, and get.helm.sh, the one host that
+# publishes helm's release tarball and the helm row's primary.
 # Measured on 2026-11-08: a release asset redirects to release-assets.githubusercontent.com and
 # a ghcr.io blob redirects to pkg-containers.githubusercontent.com, so faulting the domain takes
 # the second source down with the first and the proof reads nothing (run 42484733737, where
 # crane's copy answered curl exit 22 behind that fault). objects.githubusercontent.com is the
 # host release downloads ended at before, and the issue's own check names it.
+# get.helm.sh is faulted where get.pulumi.com is not: get.pulumi.com is the second source of the
+# docker provider plugin row, and get.helm.sh is no row's second source. The ci-images job fills
+# the helm copy from get.helm.sh, and that job runs no step of this rig.
 # A release host that moves again is one edit here. What catches the move is the second-source
 # cases of the `tool-fallback` job: each of them fails when the origin served nothing for its
 # row, which is what a primary that answered after all leaves behind.
-FAULT_HOSTS="github.com,release-assets.githubusercontent.com,objects.githubusercontent.com"
+FAULT_HOSTS="github.com,release-assets.githubusercontent.com,objects.githubusercontent.com,get.helm.sh"
 
-# The address .github/workflows/ci.yaml's `tool-fallback` job writes at every seam and every
+# The address `.github/workflows/ci.yaml#tool-fallback` job writes at every seam and every
 # dead proxy that stands for a second source that cannot be reached: the CI_TOOLS_GHCR_BASE,
 # CI_TOOLS_NPM_BASE and CI_TOOLS_URL_BASE of its controls, and the http_proxy and https_proxy
 # of its base-pulumi control, each of them `http://127.0.0.1:1`.
@@ -323,13 +327,12 @@ LADDER_CEILING=150
 
 # How many fetches of one run may carry CI_TOOLS_PROOF_FULL_LADDER, read by `ladder-report`
 # over the log the stand-in wrote.
-# That variable is set at exactly one step's `env:` in
-# .github/workflows/ci-job-tool-fallback.yaml, the head's install-crane step, so one install
+# That variable is set at exactly one step, `.github/workflows/ci-job-tool-fallback.yaml#CI_TOOLS_PROOF_FULL_LADDER: crane-head`, the head's install-crane step, so one install
 # keeps the pinned ladder. That one install makes four fetches through the stand-in: the
 # release asset behind the fault, which ci_tools__fetch_release reads
-# (.github/scripts/ci-tools.sh:1152), and then the pull token, the blob request to the package
+# (`.github/scripts/ci-tools.sh#ci_tools__fetch_release`), and then the pull token, the blob request to the package
 # and the read of the store that request's redirect points at, which ci_tools__fetch_ghcr makes
-# one after the other (.github/scripts/ci-tools.sh:758, 922-923, 940). ghcr.io answers a blob's GET
+# one after the other (`.github/scripts/ci-tools.sh#ci_tools__fetch_ghcr`). ghcr.io answers a blob's GET
 # with a 307 to pkg-containers.githubusercontent.com (measured 2026-11-17), and a request that
 # carries the bearer follows no redirect, so that store is read in a curl call of its own.
 # Merge_group run 42975857631, job 130374882879 (`tool-fallback`, success, head 9300f28b1c), read
@@ -337,7 +340,7 @@ LADDER_CEILING=150
 # followed that redirect inside its own call.
 # A retry adds no record, because ci_tools_curl is one curl process with `--retry 7` and the
 # stand-in writes one line for each time it is called; a redirect ci_tools_curl follows is
-# followed inside that same process, so it adds none either. Of the five second-source words only
+# followed inside that same process, so it adds none either. Of the six second-source words only
 # `ghcr-mirror` costs more than one request, so another second source for that row can only
 # lower this count, and a primary that answers after all lowers it to one.
 # What moves this number is a change in this tree: a ghcr path that reads a manifest before it
@@ -361,7 +364,7 @@ RESERVED_SUFFIX=".invalid"
 PROBE_BOUND=15
 
 # The seconds no timed install may reach, read by `report` over the mark `corrupt` wrote. The
-# twenty-four installs whose control accepts a failure are the timed ones; the head's own eight,
+# twenty-six installs whose control accepts a failure are the timed ones; the head's own nine,
 # which no control lets fail, are not checked against it.
 # Every install of a case carries `continue-on-error: true` and `timeout-minutes: 11`, and a
 # step the runner ends at that bound leaves `outcome=failure` behind it, which is the outcome
@@ -457,7 +460,7 @@ CHUNK = 64 * 1024
 # at ci_tools__source_fetch in .github/scripts/ci-tools.sh, these two sets among them, and a
 # new word moves all of them together.
 GITHUB_WORDS = {"github-release"}
-URL_WORDS = {"pypi", "pulumi-releases"}
+URL_WORDS = {"pypi", "pulumi-releases", "helm-releases"}
 
 
 def base_name(url):
@@ -483,15 +486,18 @@ def served_names(row, words):
 def github_names(row):
     """The names the /github/ route serves this row under, which is the CI_TOOLS_GITHUB_BASE
     seam's: whichever of its two addresses is written `github-release`, and its `mirror_from`,
-    the release asset .github/scripts/mirror-ci-tools.sh fills a ghcr-mirror row's copy from."""
+    the address .github/scripts/mirror-ci-tools.sh fills a ghcr-mirror row's copy from. That is
+    a release asset for every row but helm, whose `mirror_from` is its primary at get.helm.sh:
+    the helper reads that address as written and not through this seam, so no helm case asks
+    this route for it."""
     return served_names(row, GITHUB_WORDS) | ({base_name(row.get("mirror_from"))} - {""})
 
 
 def url_names(row):
     """The names the /url/ route serves this row under, which is the CI_TOOLS_URL_BASE seam's:
-    whichever of its two addresses is written `pypi` or `pulumi-releases`. That seam keeps a
-    URL's path and replaces its scheme and host, so what arrives here is the file name at the
-    end of that path."""
+    whichever of its two addresses is written `pypi`, `pulumi-releases` or `helm-releases`. That
+    seam keeps a URL's path and replaces its scheme and host, so what arrives here is the file
+    name at the end of that path."""
     return served_names(row, URL_WORDS)
 
 
@@ -679,7 +685,7 @@ payload_names() {
   primary=$(ci_tools_field "$row" primary)
   # The word and the refusal of one no fetch of that side answers to are both the helper's:
   # ci_tools_source_name reads the row's `second_source` through the same list the fetch reads
-  # it through and refuses it in its own `::error::ci-tools:` line, which names the five. The
+  # it through and refuses it in its own `::error::ci-tools:` line, which names the six. The
   # refusal is made here rather than inside the pipeline below, where an exit would end a
   # subshell alone, and `stage` reads these names into a variable for the same reason.
   second=$(ci_tools_source_name "$row" second) ||
@@ -948,7 +954,7 @@ esac
 [ -n "$host" ] || host=none
 
 # faulted <host>: the fault proxy's own rule for a host it holds, which is exact or dot-suffix
-# (.github/scripts/ci-fault-proxy.py lines 64 to 67 hold that same rule): github.com holds
+# (`.github/scripts/ci-fault-proxy.py#faults` holds that same rule): github.com holds
 # github.com and x.github.com, and it does not hold github.com.invalid, the reserved control
 # name the probe verb asks for.
 faulted() {
@@ -1085,8 +1091,8 @@ start_fault() {
 
 # stop_fault: the four proxy variables emptied, which is where a job stops going through the
 # fault. The proxy process itself ends with the job; what must end before that is every later
-# step reading it, since the ci-ok-report step each job ends with uploads an artifact and a
-# proxy about to go would carry that upload.
+# step reading it, since the ci-ok-report step each job ends with can call GitHub's API with gh and a
+# proxy about to go would carry those calls.
 stop_fault() {
   [ "$#" -eq 0 ] || die "stop-fault takes no argument, and this call gave $#"
   note "no later step of this job goes through the fault proxy:"
@@ -1194,8 +1200,7 @@ probe() {
 # that pins it. The job runs it once per installed tool, before the corrupted cases and again
 # after them.
 # A fork's binary prints the version upstream released, where the row's version is the fork's
-# own tag with a suffix on it (docs/solutions/daemon/omp-pin-bump-behavioral-proof.md:79
-# measures that for the Oh My Pi fork this repository pins the same way), so a reading is held
+# own tag with a suffix on it (`docs/solutions/daemon/omp-pin-bump-behavioral-proof.md#the -sami suffix is the tag` measures that for the Oh My Pi fork this repository pins the same way), so a reading is held
 # to the row's version or to the part of it before that suffix.
 version_answers() {
   [ "$#" -eq 2 ] ||
@@ -1564,8 +1569,8 @@ route_of() {
     github-release) printf '/github/\n' ;;
     ghcr-mirror) printf '/ghcr/\n' ;;
     npm) printf '/npm/\n' ;;
-    pypi | pulumi-releases) printf '/url/\n' ;;
-    *) die "$2: '$1' is no source this rig serves (github-release, ghcr-mirror, npm, pypi or pulumi-releases)" ;;
+    pypi | pulumi-releases | helm-releases) printf '/url/\n' ;;
+    *) die "$2: '$1' is no source this rig serves (github-release, ghcr-mirror, npm, pypi, pulumi-releases or helm-releases)" ;;
   esac
 }
 

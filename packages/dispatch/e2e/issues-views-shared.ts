@@ -212,8 +212,8 @@ export function queueSorted(issues: readonly IssueSummary[], board: Board): Issu
   const cards = cardsOf(board);
   const place = (issue: IssueSummary) => cards.get(issue.key)?.card.waiting_place ?? undefined;
   return [...issues].sort((a, b) => {
-    const left = place(a);
-    const right = place(b);
+    // Both places come from the board snapshot in hand, never from the page, so they hold still.
+    const [left, right] = [place(a), place(b)];
     if (left !== undefined && right !== undefined) return left - right;
     if (left !== undefined) return -1;
     if (right !== undefined) return 1;

@@ -16,8 +16,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -90,6 +92,55 @@ var stepPlaces = map[phase.Phase]record.StepPlace{
 	phase.Merging:      {Task: "default", Kind: "merge", Place: 0},
 }
 
+// standsAt is the place of the step issue stands in, as the end rule states it (workflow's
+// standingStep): the step of the phase it stands in (record.StandsAt) on the task default, and none
+// for an issue its plan holds, a stopped task's or a parent held for its children, or for a phase
+// that runs no step.
+func standsAt(issue record.Issue) (record.StepPlace, bool) {
+	if issue.Hold != nil && (issue.Hold.Reason == record.HoldTaskStopped || issue.Hold.Reason == record.HoldForChildren) {
+		return record.StepPlace{}, false
+	}
+	place, ok := stepPlaces[record.StandsAt(issue)]
+	return place, ok
+}
+
+// runsTheDefaultTask writes the plan rows key holds as an issue of this release whose owner gave no
+// plan (workflow's defaultRows, written at its first step): the task default of today's steps,
+// running at the step of the phase key stands in.
+func runsTheDefaultTask(key string) func(*testing.T, *pgxpool.Pool, *Admission, intake.Handler) {
+	return func(t *testing.T, pool *pgxpool.Pool, _ *Admission, _ intake.Handler) {
+		t.Helper()
+		inTx(t, pool, func(tx pgx.Tx) {
+			ctx, records := context.Background(), record.NewStore()
+			stored, err := records.Issue(ctx, tx, key)
+			if err != nil || stored == nil {
+				t.Fatalf("read %s: %v", key, err)
+			}
+			at, ok := standsAt(*stored)
+			if !ok {
+				t.Fatalf("%s stands in %s, which runs no step", key, record.StandsAt(*stored))
+			}
+			roles := plan.BuiltinRoles()
+			var steps []record.PlanStep
+			for i, step := range (config.Project{}).RunsByDefault() {
+				steps = append(steps, record.PlanStep{Issue: key, Generation: stored.Generation, Task: "default", Position: i + 1, Role: step.Role,
+					AgentKey: step.Key, Type: roles[step.Role].Type})
+			}
+			v := record.PlanVersion{Issue: key, Generation: stored.Generation, Source: record.PlanSourceDefault, GivenAt: fixedNow}
+			task := record.PlanTask{Issue: key, Generation: stored.Generation, Task: "default", BlockText: "The project's default steps.",
+				StepsByDefault: true, State: record.TaskWaiting}
+			for _, put := range []error{
+				records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps),
+				records.MoveTask(ctx, tx, key, stored.Generation, "default", record.TaskPlace{Kind: record.PlaceStep, Position: at.Place}, record.TaskRunning),
+			} {
+				if put != nil {
+					t.Fatalf("write the task default of %s: %v", key, put)
+				}
+			}
+		})
+	}
+}
+
 // assertNoRunOpenWhereItsIssueNoLongerStands fails, naming what, for each run the store holds open
 // that is over: its issue stands at another place or in another generation, or its tree's run is
 // over — the root lingers — and the run is not a merge that can still land in that tree (the
@@ -133,7 +184,7 @@ func assertNoRunOpenWhereItsIssueNoLongerStands(t *testing.T, pool *pgxpool.Pool
 				continue
 			}
 			at := record.StandsAt(*stands)
-			if place, ok := stepPlaces[at]; !ok || place != run.place || strconv.FormatUint(stands.Generation, 10) != run.generation {
+			if place, ok := standsAt(*stands); !ok || place != run.place || strconv.FormatUint(stands.Generation, 10) != run.generation {
 				t.Errorf("%s: the run of %s at %+v of generation %s is open, and the issue stands in %s at generation %d",
 					what, run.issue, run.place, run.generation, at, stands.Generation)
 				continue
@@ -288,7 +339,19 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 		},
 		"BackwardMove": {{name: "the implementer moves its retro back", arrange: none,
 			fact: intake.BackwardMove{Issue: inRetro, Requester: claim.RoleImplementer, To: phase.Implementing, Reason: "redo"}, leaves: inRetro}},
-		"SignOff": {{name: "the architect accepts a child", arrange: none, fact: intake.SignOff{Issue: inAccepting}, leaves: inAccepting}},
+		// The route builds each architect's request with its owner and the run it read (api's
+		// signOff): here the tree's root architect, and the run the start counted.
+		"SignOff": {{name: "the architect accepts a child", arrange: none, fact: intake.SignOff{Issue: inAccepting, By: ownersArchitect(t, finishedRoot), Generation: 1,
+			Entry: record.StepEntry{Place: stepPlaces[phase.Accepting], Starts: 1}}, leaves: inAccepting}},
+		// A first plan is taken only before the issue's work (workflow's planGiven), so a plan of a
+		// child whose step runs is refused, and the child keeps its step. The stop of the task a
+		// child of this release runs, the task default its first step wrote, holds the child for
+		// the stopped task, which stands in no step.
+		"PlanGiven": {{name: "an owner's plan of a child whose work started is refused and keeps its step", arrange: none,
+			fact: intake.PlanGiven{Issue: planning, Generation: 1, GivenBy: ownersArchitect(t, finishedRoot), Plan: plan.Plan{ArtifactID: "plan-artifact", Version: 1,
+				Tasks: []plan.Task{{ID: "a", Steps: []plan.Step{{Role: "implementer"}}, Text: "Build the widget."}}}}, keeps: planning}},
+		"TaskStopped": {{name: "the owner stops the task of a child in planning", arrange: runsTheDefaultTask(planning),
+			fact: intake.TaskStopped{Issue: planning, Task: "default", By: ownersArchitect(t, finishedRoot), Generation: 1}, leaves: planning}},
 		"PullRequestMerged": {{name: "a member's merge lands while its tree lingers", arrange: func(t *testing.T, pool *pgxpool.Pool, admission *Admission, engine intake.Handler) {
 			seedAwaitingPullRequest(t, pool)
 			parked(t, pool, admission, engine)
@@ -315,6 +378,14 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 					t.Fatalf("%s's pull request holds first read %+v and merge forward %+v, want the first read released and nothing asked", awaiting, pr.ConflictRead, pr.MergeForward)
 				}
 			}}},
+		"ControllerTick": {
+			{name: "applied to the running tree", arrange: none, fact: intake.ControllerTick{}},
+			// A Dispatch child opened under a member in the middle of its phase holds it: the pass
+			// moves it to awaiting_children, which runs no step (dispatch://INFRA-3320 R9).
+			{name: "an open child stops a member in the middle of its phase", arrange: func(t *testing.T, pool *pgxpool.Pool, _ *Admission, _ intake.Handler) {
+				spMirror(t, pool, "LEGION-777", "todo", planning, 1)
+			}, source: "controller", fact: intake.ControllerTick{}, leaves: planning},
+		},
 	}
 	kinds := appliedFactKinds(t)
 	for _, kind := range kinds {
@@ -348,7 +419,7 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 				}
 				if tc.leaves != "" {
 					after := issue(t, pool, tc.leaves)
-					if stepPlaces[record.StandsAt(after)] == stepPlaces[record.StandsAt(before)] && after.Generation == before.Generation {
+					if at, _ := standsAt(after); at == stepPlaces[record.StandsAt(before)] && after.Generation == before.Generation {
 						t.Fatalf("%s left %s in %s at generation %d, want it out of the step it stood in", kind, tc.leaves, record.StandsAt(after), after.Generation)
 					}
 				}
@@ -401,13 +472,15 @@ func zeroFact(t *testing.T, kind string) intake.Fact {
 		intake.DispatchApprovalMoved{}, intake.DispatchAskRestored{}, intake.HandoffComplete{}, intake.PullRequestOpened{},
 		intake.PullRequestSynchronized{}, intake.Push{}, intake.BasePush{}, intake.PullRequestChecks{},
 		intake.PullRequestMergeability{}, intake.PullRequestReview{}, intake.PullRequestClosed{}, intake.PullRequestDequeued{},
+		intake.PullRequestReviewRequests{}, intake.PullRequestMergeStateUnread{},
 		intake.MergeQueueReadDone{}, intake.PullRequestMissing{}, intake.ClaimReady{}, intake.ClaimFailed{},
 		intake.SessionLost{}, intake.SessionStoreFault{}, intake.MemoryGuardKill{}, intake.VolumeNearFull{}, intake.RetryOrEscalate{},
 		intake.RestartPhase{}, intake.SignOff{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{},
 		intake.CheckReport{}, intake.CheckLookEnded{}, intake.CheckWakeDue{}, intake.CheckBound{},
 		intake.ListenerWake{}, intake.PodBackstopDue{}, intake.WorkerSilent{}, intake.WorkerBackgroundStalled{},
 		intake.ControllerTick{}, intake.ChildAdoption{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{},
-		intake.Handover{}, intake.CloseRoot{},
+		intake.Handover{}, intake.CloseRoot{}, intake.ControllerMemoryGuardKill{}, intake.PendingBasisRead{},
+		intake.BasisChangesRead{}, intake.ReparentRead{},
 	} {
 		if name := factName(fact); name == kind {
 			return fact

@@ -4,6 +4,8 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
+import { invalidateWaitingForPaused } from "../../api/query-client";
+import { useReadBound } from "../../api/read-bound";
 import type { CredentialPendingRow } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { LabelPill } from "../../components/Pill";
@@ -18,12 +20,13 @@ import {
 } from "../../theme/classes";
 import { useAgents } from "../conversation/useAgents";
 import { Timestamp } from "../refs/Timestamp";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { brokerPage } from "./brokerPage";
 import { CredentialSessionLines } from "./CredentialSessionLines";
-import { useMachineCodePage } from "./capabilities";
+import { brokerPage } from "./logic/brokerPage";
+import { useMachineCodePage } from "./logic/capabilities";
+import { credentialSessionNamesAnyone } from "./logic/session";
 import { type CredentialRequests, credentialPendingQuery } from "./pending";
-import { credentialSessionNamesAnyone } from "./session";
 
 const rowLineClass = "flex flex-wrap items-center gap-2 text-sm";
 const rowLinkClass = `${rowLineClass} rounded-lg outline-none focus-visible:ring-2 ${focusVisibleRing} ${linkText} ${linkHoverText}`;
@@ -82,6 +85,10 @@ function PendingRowLine({ row }: { row: CredentialPendingRow }): ReactNode {
   );
 }
 
+/** What the section says when its list failed to load, and what an expired row says before why
+ *  the list read after its dismissal has not settled. */
+const CREDENTIAL_REQUESTS_NOT_LOADED = "Couldn't load credential requests.";
+
 /** One expired request's lines: the summary a pending row shows, marked "Expired", with a Dismiss
  *  button, and when its deadline passed (the line says only that it passed when the broker names
  *  no deadline). Nobody decided it before that deadline, and every decision of it is refused now,
@@ -92,25 +99,34 @@ function PendingRowLine({ row }: { row: CredentialPendingRow }): ReactNode {
  *  `RevocableList` does for a revoke; a dismissal that lands and one refused both read the list
  *  again, since either answer says what the broker now holds. Dismiss is held (`heldPress`), not
  *  disabled, while its write is out and through the read that takes the row away, so it keeps the
- *  focus and the press is still the cause of the row's going (`causedByReader`); the submit guard
- *  drops a second press that lands before the hold is drawn. */
+ *  focus until the row goes; the submit guard drops a second press that lands before the hold is
+ *  drawn. */
 function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
+  const [unsettled, holdThrough] = useReadBound();
   const label =
     `Dismiss expired ${requestKindLabel(row).toLowerCase()} ${requestIdentifiers(row)}`.trimEnd();
-  // The row shows a refused dismissal itself, under its own line.
-  const dismiss = useKeyedWrite<void>({
+  // The row shows a refused dismissal itself, under its own line. The press carries the request
+  // it dismisses and the name it shows by, so a Retry and the words it ends with are of that
+  // request whatever this row is drawn for by then.
+  const dismiss = useKeyedWrite({
     inline: true,
-    label: () => label,
+    label: (press: { readonly label: string; readonly recordId: string }) => press.label,
     onError: () => {
       void queryClient.invalidateQueries({ queryKey: credentialPendingQuery().queryKey });
     },
     onSettled: () => submitGuard.release(),
     // Pending, and Dismiss held, through the read of the list that takes the row away. That read
-    // settles either way, and a failed one lets the button go.
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: credentialPendingQuery().queryKey }),
-    write: (_variables, bounds) => api.dismissCredentialRequest(row.record_id, bounds),
+    // settles either way, and a failed one lets the button go. A read that has not settled by the
+    // request deadline (`REQUEST_DEADLINE_MS`) - one paused while the browser is offline - lets
+    // it go then, and the row says why the list is not read yet (`useReadBound`).
+    // The read waits on a fetch the network had already paused, which that deadline ends too
+    // (`invalidateWaitingForPaused`).
+    onSuccess: () =>
+      holdThrough(invalidateWaitingForPaused(queryClient, credentialPendingQuery().queryKey)),
+    method: "POST",
+    write: ({ recordId }, bounds) => api.dismissCredentialRequest(recordId, bounds),
   });
 
   return (
@@ -121,7 +137,9 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
         <button
           aria-label={label}
           className={secondaryButtonCompact}
-          {...heldPress(dismiss.isPending, () => submitGuard.guard(() => dismiss.mutate()))}
+          {...heldPress(dismiss.isPending, () =>
+            submitGuard.guard(() => dismiss.mutate({ label, recordId: row.record_id }))
+          )}
           type="button"
         >
           Dismiss
@@ -136,9 +154,22 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
           </>
         )}
       </p>
+      {/* A dismissal the reader stopped may have been made, and Dismiss is a press of its own,
+          under a key of its own: it never makes the stopped dismissal again. */}
       {dismiss.isError ? (
         <p className={`mt-0.5 text-xs ${dangerText}`}>
-          {apiErrorMessage(dismiss.error, "Could not dismiss this request.")}
+          {dismiss.error instanceof SendStoppedError
+            ? stoppedWriteNote("the dismissal of this request", "made", {
+                anew: "Pressing Dismiss again sends a new dismissal.",
+              })
+            : apiErrorMessage(dismiss.error, "Could not dismiss this request.")}
+        </p>
+      ) : null}
+      {/* A list read that has not settled is said as the section says a list that failed to
+          load, in the same line. */}
+      {!dismiss.isError && unsettled !== undefined ? (
+        <p className={dangerText}>
+          {CREDENTIAL_REQUESTS_NOT_LOADED} {unsettled}.
         </p>
       ) : null}
     </>
@@ -167,7 +198,7 @@ export function CredentialRequestsSection({
     true
   );
   if (status === "failed") {
-    return <p className={dangerText}>Couldn't load credential requests.</p>;
+    return <p className={dangerText}>{CREDENTIAL_REQUESTS_NOT_LOADED}</p>;
   }
   if (requests.length === 0) {
     return null;

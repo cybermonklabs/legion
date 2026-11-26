@@ -1,4 +1,4 @@
-import type { ColumnDef, ColumnFiltersState } from "@tanstack/react-table";
+import type { ColumnDef, ColumnFiltersState, VisibilityState } from "@tanstack/react-table";
 import { fold } from "../../components/MultiSelect";
 import type { LayoutColumns } from "../../components/table-layout";
 
@@ -8,8 +8,9 @@ import type { LayoutColumns } from "../../components/table-layout";
  * a cell lives here, as `COLUMNS` in `features/project/issues-table-model.ts` holds it for the
  * issues table, so a column cannot filter by one value and group by another.
  *
- * A column filters either by typed text (`text`) or by picked values (`values`); every column
- * of these tables does one or the other, since the page carries a filter on every column.
+ * A column filters either by typed text (`text`) or by picked values (`values`), or not at all
+ * where it declares neither: a count is no value a reader picks rows by, and a header with no
+ * filter control needs only its words' width (`hasFilter`).
  */
 export interface TableColumn<Row> {
   readonly id: string;
@@ -17,15 +18,19 @@ export interface TableColumn<Row> {
    *  control and the group-by, which read it as text. */
   readonly header: string;
   readonly size: number;
-  /** The narrowest the column is drawn at: its header whole with its filter button, or what its
-   *  cell holds, with the sort mark too unless `markOutsideMin` leaves it out. */
+  /** The narrowest the column is drawn at, sorted or not: what its header's words, its sort
+   *  arrow and its filter control need, or what its cell holds. */
   readonly min: number;
-  /** Its minimum holds its header without the sort mark, so the column is drawn wider by the
-   *  mark (`SORT_MARK_WIDTH`) only while the table is sorted by it. */
-  readonly markOutsideMin?: true;
   /** Kept at the left edge while the table scrolls sideways. */
   readonly pinned?: boolean;
+  /** Opens hidden, until the reader shows it under Columns. */
+  readonly hidden?: boolean;
   readonly sortable?: boolean;
+  /** A count: its numbers and its header's words stand at the column's right edge, and the
+   *  words wrap onto a second line in a column as narrow as its numbers. */
+  readonly numeric?: boolean;
+  /** A header whose words wrap onto a second line in a column narrower than they are. */
+  readonly wrap?: boolean;
   /** The text a typed filter matches, where this column filters by typing. */
   readonly text?: (row: Row) => string;
   /** The values a picked filter offers, where this column filters by picking. */
@@ -44,6 +49,10 @@ export interface TableColumn<Row> {
 export const columnsById = <Row>(
   columns: readonly TableColumn<Row>[]
 ): ReadonlyMap<string, TableColumn<Row>> => new Map(columns.map((column) => [column.id, column]));
+
+/** Whether a column has a filter: a typed one or a picked one. */
+export const hasFilter = <Row>(column: TableColumn<Row>): boolean =>
+  column.text !== undefined || column.values !== undefined;
 
 /** Whether `row` passes every filter but `except`, which is the column whose own panel is
  *  counting what it would leave. */
@@ -122,10 +131,10 @@ export function headingOf<Row>(
 }
 
 /** The layout rules `useTableLayout` takes for these columns: each at its own width, never
- *  below its minimum, nor, while the table is sorted by it, below one that holds its sort mark
- *  too, with the pinned ones kept at the left edge and the first of them that may narrow giving
- *  up width so the rest fit. `rowAttribute` is the attribute the table's rows carry, which the
- *  box measures its first rows by. */
+ *  below its minimum, sorted or not, with the pinned ones kept at the left edge and the first of
+ *  them that may narrow giving up width so the rest fit. On a phone the pinned ones take the
+ *  whole of the box, and they are all the table draws there (`phoneHidden`). `rowAttribute` is
+ *  the attribute the table's rows carry, which the box measures its first rows by. */
 export function tableLayout<Row>(
   columns: readonly TableColumn<Row>[],
   flexible: string,
@@ -133,31 +142,43 @@ export function tableLayout<Row>(
 ): LayoutColumns {
   const pinned = columns.filter((column) => column.pinned).map(({ id }) => id);
   const minimums = Object.fromEntries(columns.map((column) => [column.id, column.min]));
+  // A header whose words wrap (`wrap`) is drawn no narrower than it needs, sorted or not.
+  const wrapped = columns.filter((column) => column.wrap === true).map(({ id }) => id);
   return {
     ids: columns.map((column) => column.id),
     rowAttribute,
+    hiddenByDefault: Object.fromEntries(
+      columns.filter((column) => column.hidden).map(({ id }) => [id, false])
+    ),
     sizes: Object.fromEntries(columns.map((column) => [column.id, column.size])),
     minimums,
-    sortedMinimums: Object.fromEntries(
-      columns.flatMap((column) => (column.markOutsideMin ? [] : [[column.id, column.min]]))
-    ),
+    // A sort adds no fixed width for its mark (`SORT_MARK_WIDTH`): each minimum already holds
+    // the sort arrow (`min`), and a header that wraps is measured as drawn (`wrappedHeaders`).
+    sortedMinimums: minimums,
     pins: {
       wide: { columns: pinned, share: 0.6 },
-      phone: {
-        columns: pinned,
-        share: 0.85,
-        widths: {},
-        flexibleMin: minimums[flexible] ?? 0,
-      },
+      phone: { columns: pinned, share: 1, widths: {}, flexibleMin: minimums[flexible] ?? 0 },
       flexible,
     },
+    ...(wrapped.length === 0 ? {} : { wrappedHeaders: wrapped }),
   };
+}
+
+/** What a phone's box hides of these columns, whatever the reader shows: every one but the
+ *  pinned, which take the whole of the box there (`tableLayout`), so the table draws no column
+ *  past its edge and does not scroll sideways. The flexible column's cell names what the hidden
+ *  ones hold. It is laid over the reader's own visibility, which stays theirs, and a desktop's
+ *  box draws what they chose. */
+export function phoneHidden<Row>(columns: readonly TableColumn<Row>[]): VisibilityState {
+  return Object.fromEntries(
+    columns.filter((column) => !column.pinned).map(({ id }) => [id, false])
+  );
 }
 
 /**
  * The TanStack definitions of these columns: what each one is, from its declaration, and how it
- * draws, from `rendering`. Every column sorts and filters, because the page carries a filter on
- * every column; a column that declares `group` can also be grouped by.
+ * draws, from `rendering`. Every column sorts; a column that declares a filter (`hasFilter`)
+ * filters, and one that declares `group` can also be grouped by.
  */
 export function columnDefs<Row>(
   columns: readonly TableColumn<Row>[],
@@ -172,13 +193,15 @@ export function columnDefs<Row>(
     minSize: column.min,
     enableResizing: true,
     enableSorting: column.sortable !== false,
-    enableColumnFilter: true,
+    enableColumnFilter: hasFilter(column),
     enableGrouping: column.group !== undefined,
     ...(column.group === undefined ? {} : { getGroupingValue: column.group }),
     filterFn: (row, id, value: unknown) =>
       matchesFilters(row.original, byId, [{ id, value }] as ColumnFiltersState),
     meta: {
       ...(column.text === undefined ? {} : { text: true }),
+      ...(column.numeric === true ? { numeric: true } : {}),
+      ...(column.wrap === true ? { wrap: true } : {}),
       ...(column.order === undefined ? {} : { order: column.order }),
       ...(column.show === undefined ? {} : { show: column.show }),
       ...(column.always === undefined ? {} : { always: column.always }),

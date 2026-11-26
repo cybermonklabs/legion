@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
 
 // WaitDelay is the one value Configure sets: how long Wait keeps waiting, once the command's own
@@ -36,6 +38,32 @@ import (
 // needs no margin for slow work, only enough to not block on one indefinitely; one second serves a
 // probe and a git clone alike.
 const WaitDelay = time.Second
+
+// WaitDelayBound is WaitDelay as Configure reads it, through programbound (WaitDelayNow): a variable
+// so that cmd/legion's tests, whose commands copy their stand-ins' output on a loaded machine, can
+// give it their own deadline, since a copy a loaded machine left unscheduled past WaitDelay after
+// the command's exit loses what the command printed.
+var WaitDelayBound = WaitDelay
+
+// StopGraceBound is StopGrace as the grace reads it, through programbound (StopGraceNow): a
+// variable so that cmd/legion's tests, whose stand-ins answer a stop's SIGTERM on a loaded machine,
+// can give it their own deadline, since a stand-in a loaded machine left unscheduled past StopGrace
+// after its SIGTERM is SIGKILLed and its own answer lost. StopGrace stays the constant the rows of
+// internal/workspace bound their stops by.
+var StopGraceBound = StopGrace
+
+func init() {
+	programbound.Register(&WaitDelayBound, &StopGraceBound)
+}
+
+// WaitDelayNow is the WaitDelay a command configured now gets: WaitDelay in a legion binary, and in
+// cmd/legion's tests what is left of the test binary's deadline (programbound).
+func WaitDelayNow() time.Duration { return programbound.Of(&WaitDelayBound) }
+
+// StopGraceNow is the grace a group stopped now gets between its SIGTERM and its SIGKILL:
+// StopGrace in a legion binary, and in cmd/legion's tests what is left of the test binary's
+// deadline (programbound).
+func StopGraceNow() time.Duration { return programbound.Of(&StopGraceBound) }
 
 // StopGrace is how long Cancel gives the group between its SIGTERM and its SIGKILL: the time a
 // command that handles SIGTERM has to clean up after itself. git removes its own lock files from
@@ -120,7 +148,7 @@ func Configure(cmd *exec.Cmd) (killed func() bool) {
 		}
 		return err
 	}
-	cmd.WaitDelay = WaitDelay
+	cmd.WaitDelay = WaitDelayNow()
 	return KilledByContext(cmd)
 }
 
@@ -132,7 +160,7 @@ func Configure(cmd *exec.Cmd) (killed func() bool) {
 // last question and the caller's SIGKILL is the one a cancel that kills unconditionally has too,
 // so the poll can only send fewer signals than the kill alone did.
 func groupOutlivedGrace(group int) bool {
-	for deadline := time.Now().Add(StopGrace); ; time.Sleep(stopPoll) {
+	for deadline := time.Now().Add(StopGraceNow()); ; time.Sleep(stopPoll) {
 		if errors.Is(syscall.Kill(group, 0), syscall.ESRCH) {
 			return false
 		}
@@ -243,11 +271,13 @@ func Said(err error, output string) error {
 // exited child it does not hold, so it passes one that holds the child out of that reaper until
 // its own wait has read the exit (internal/launcher's pidGuard): a child that reaper took first
 // fails its own wait with `waitid: no child processes`, or under gVisor at times `wait: no child
-// processes` or `waitid: no such process`. Every other process passes NoReaper. There is no
-// default: every caller names the one it runs under, so code the launcher reaches cannot start a
-// child through one it did not choose (internal/launcher's
-// TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt reads every start that process
-// reaches).
+// processes` or `waitid: no such process`. `legion worker-shim` passes its subreaper.Guard's
+// (internal/subreaper) for the same reason: under --reap-orphans it reaps every exited child it
+// does not hold. Every other process passes NoReaper. There is no default: every caller names the
+// one it runs under, so code the launcher or the shim reaches cannot start a child through one it
+// did not choose (internal/launcher's
+// TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt and internal/shim's
+// TestEveryChildTheShimWaitsForStartsThroughItsGuard read every start each process reaches).
 type Starter func(cmd *exec.Cmd) (done func(), err error)
 
 // NoReaper is the Starter of a process that reaps no child it did not start itself: cmd.Start,

@@ -16,17 +16,23 @@ import {
   api,
   apiErrorCodeIn,
   apiErrorMessage,
+  isSubscriberNotFound,
   issuePatchRequest,
+  removedEvenIfGone,
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import { projectsQuery, userStateQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { focusOnMount } from "../../components/focus-place";
+import { heldPress } from "../../components/held-press";
+import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useScrollEnds } from "../../components/useScrollEnds";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   badgePrimary,
   bgTransparent,
@@ -40,6 +46,7 @@ import {
   dangerText,
   focusBorder,
   focusVisibleRing,
+  hasFocusVisibleRing,
   inputClasses,
   linkHoverText,
   linkText,
@@ -59,22 +66,26 @@ import {
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
-import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
+import { issueStatuses, openIssueStatuses, statusText } from "../project/board-model";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath, sessionOfAddress } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { ApprovalSteps } from "./ApprovalSteps";
 import { AssigneeControl } from "./AssigneeControl";
 import { ClaimChip } from "./ClaimChip";
 import { GitHubLink } from "./GitHubLink";
-import { gatedStepEntries } from "./gated-steps";
+import { gatedStepEntries, isProjectRoot } from "./gated-steps";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueLabels } from "./IssueLabels";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
+import { IssueStatusNotes } from "./parent-status/IssueStatusNotes";
+import { useIssueStatusMove } from "./parent-status/useIssueStatusMove";
 import { stateForIssue } from "./pins";
 import { RepoControl } from "./RepoControl";
 import {
@@ -90,6 +101,19 @@ const routeHint =
   "New asks, comments, and messages on this issue wake this agent or role; replies inside a thread reach their participants directly. It is where messages go, not who is working the issue — that is the claim.";
 
 const titleRefusals = new Set(["CAP_EXCEEDED", "ISSUE_CLOSED"]);
+
+/** The Status list's trigger carries this attribute, valued with the status it shows (`Todo`
+ *  shows `todo`): the issue page's `s` and Escape find the trigger by it, since the shared list
+ *  hands out no element of its own, and a reader outside the page (the docs' screenshots) reads
+ *  the status off it as it read a select's value. */
+const STATUS_TRIGGER_ATTRIBUTE = "data-issue-status";
+/** The Status list's trigger (`STATUS_TRIGGER_ATTRIBUTE`). */
+export const STATUS_TRIGGER_SELECTOR = `[${STATUS_TRIGGER_ATTRIBUTE}]`;
+
+/** The Status list's marks: its trigger's attribute, valued with the status it shows. */
+function statusMarks(shown: string): ListMarks {
+  return { trigger: { [STATUS_TRIGGER_ATTRIBUTE]: shown } };
+}
 
 /** Whether `input` is the Status pill's pick alone: that control shows its write in the shell's
  *  indicator and rolls back on a refusal, where every other header field holds its draft and
@@ -139,7 +163,7 @@ export function IssueHeader({
     }
   }, [parentEditing]);
   // The details rail's trailing fade, worn while the rail has anywhere left to scroll.
-  const railFade = useScrollEnds({ ends: "trailing" });
+  const railFade = useScrollEnds();
   const [subscribersOpen, setSubscribersOpen] = useState(false);
   const [referencesOpen, setReferencesOpen] = useState(false);
   const agentText = useAgentText();
@@ -150,10 +174,17 @@ export function IssueHeader({
   const subscriberList = subscribers.isError ? [] : (subscribers.data ?? []);
   // The count is a claim about who is subscribed, so only a read that answered makes it.
   const subscribersCounted = !subscribers.isError && subscribers.data !== undefined;
-  // Every write here names `write` first: its answer and its variables are what the callbacks
-  // below read.
+  // Every write here names `write` before its callbacks: its answer and its variables are what
+  // the callbacks below read.
   const unsubscribe = useKeyedWrite({
-    write: (sessionId: string, bounds) => api.unsubscribeIssueSession(issue.key, sessionId, bounds),
+    // An unsubscribe made again after one that landed finds the session no longer subscribed
+    // (`404 SUBSCRIBER_NOT_FOUND`), which is the unsubscribe done (`removedEvenIfGone`).
+    method: "DELETE",
+    write: (sessionId: string, bounds) =>
+      removedEvenIfGone(
+        api.unsubscribeIssueSession(issue.key, sessionId, bounds),
+        isSubscriberNotFound
+      ),
     inline: true,
     label: (sessionId) =>
       `${agentText.sessionText(sessionId, subscriberList.find((row) => row.session_id === sessionId)?.title)} unsubscribed from ${issue.key}`,
@@ -162,6 +193,9 @@ export function IssueHeader({
     },
   });
   const releaseClaim = useKeyedWrite({
+    // A release made again after one that landed needs no `removedEvenIfGone`: Dispatch answers a
+    // release of an issue nobody holds with the issue, as it answers the first.
+    method: "DELETE",
     write: (_variables, bounds) => api.releaseIssueClaim(issue.key, bounds),
     inline: true,
     label: () => `Claim on ${issue.key} released`,
@@ -170,6 +204,11 @@ export function IssueHeader({
       void queryClient.invalidateQueries({ queryKey: ["issues"] });
     },
   });
+  // Every status write of the header - the Status pick, Close, Reopen and the palette's rows - goes
+  // through the rule's question (`useIssueStatusMove`): a dry run first for an issue with a
+  // parent or an open child, then the write below, or the question where Dispatch's rule would
+  // refuse it.
+  const statusMove = useIssueStatusMove(issue);
   // A title, route, parent or close the header shows refused itself, beside its draft; a status
   // pick is a control, so its refusal is the shell's (`PendingWritesIndicator`), and the pick
   // rolls back. Every field write goes in the issue's line (`issue:<key>`), so an older one still
@@ -180,6 +219,11 @@ export function IssueHeader({
     label: (input) => issueUpdateLabel(issue.key, input),
     target: () => `issue:${issue.key}`,
     request: (input: IssueUpdateInput) => issuePatchRequest(issue.key, input),
+    // A status the page took for one the rule could not refuse, which Dispatch refused under it
+    // all the same, asks as a refused dry run does (`statusMove.onError`).
+    onError: (error, input) => {
+      statusMove.onError(error, issue.key, input);
+    },
     onSettled: (_data, error) => {
       drafts.onIssueSettled(error);
     },
@@ -203,6 +247,12 @@ export function IssueHeader({
     },
   });
   const drafts = useIssueDrafts(issue, updateIssue);
+  const requestStatus = (status: string) => {
+    statusMove.move(status, () => drafts.requestStatusSubmit(status));
+  };
+  // A write of the header's fields is out - its status, title, route or parent - or the rule's
+  // question is checking or asking about a status: no second status write can start.
+  const statusBusy = updateIssue.isPending || statusMove.pending !== undefined;
   // Palette-only: closing and reopening an issue are too consequential for a single key, so they
   // are reachable from `$mod+k` alone, through the same handlers and the same guards as the
   // Close and Reopen buttons below. `IssuePage` pushes the `issue` scope these are offered under.
@@ -211,17 +261,18 @@ export function IssueHeader({
       id: "close",
       keys: [],
       label: "Close issue",
-      run: () => drafts.requestStatusSubmit("done"),
-      // `disabled={updateIssue.isPending}` on the button, and `isClosed` decides whether it is
-      // rendered at all; a row offered while the write is in flight would submit a second one.
-      when: () => !isClosed && !updateIssue.isPending,
+      run: () => requestStatus("done"),
+      // The button is held (`heldPress`) while a write of the header's fields or the rule's
+      // question is out (`statusBusy`), and `isClosed` decides whether it is rendered at all; a
+      // row offered while a status write is in flight would submit a second one.
+      when: () => !isClosed && !statusBusy,
     },
     {
       id: "reopen",
       keys: [],
       label: "Reopen issue",
-      run: () => drafts.requestStatusSubmit("backlog"),
-      when: () => isClosed && !updateIssue.isPending,
+      run: () => requestStatus("backlog"),
+      when: () => isClosed && !statusBusy,
     },
     ...([0, 1, 2, 3] as const).map((level) => ({
       id: `set-p${level}`,
@@ -232,9 +283,23 @@ export function IssueHeader({
       when: () => !(isClosed || updateIssue.isPending),
     })),
   ]);
-  const statusSaving = updateIssue.isPending && updateIssue.variables?.status !== undefined;
-  const pendingStatus = statusSaving ? updateIssue.variables?.status : undefined;
+  // The status the Status pick and the closed line show while it is out: the one the rule's question
+  // is checking or asking about, else the one the write is saving.
+  const checkingStatus = statusMove.pending;
+  const statusSaving =
+    checkingStatus !== undefined ||
+    (updateIssue.isPending && updateIssue.variables?.status !== undefined);
+  const pendingStatus =
+    checkingStatus ?? (statusSaving ? updateIssue.variables?.status : undefined);
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
+  // The status the Status shows: `pendingStatus`, else the issue's.
+  const shownStatus = pendingStatus ?? issue.status;
+  const [statusOpen, setStatusOpen] = useState(false);
+  // A closed issue's Status takes no pick, and while a write of the header's fields is out, or the
+  // rule's question is checking or asking about a status (`statusBusy`), it takes no second one.
+  // Either way it is held (`aria-disabled`), never disabled: it keeps the focus the reader's pick
+  // handed back to it, and a press of it opens nothing.
+  const statusHeld = isClosed || statusBusy;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
@@ -247,15 +312,30 @@ export function IssueHeader({
       : waitingForHuman.length > 0
         ? `Waiting on you (${waitingForHuman.length})`
         : `Waiting on agents (${waitingOnAgents})`;
+  // The priorities the issue advances, each the chip of its place in the order, and the picker's
+  // "+". From 768 px up they stand in the state row right after the P0-P3 tag: that row wraps,
+  // where the details row scrolls sideways and is long enough without them. Below it the state
+  // row has no room left on its first line, so there they stand first in the details row, in view
+  // before it is scrolled: a line of their own in the state row would push the page down under
+  // every sheet and pill a phone pins to the screen's foot. One line is drawn, in one place.
+  const phone = useMediaQuery(PHONE_VIEWPORT_QUERY);
+  const priorityLine = (
+    <IssuePriorityLine
+      className={phone ? "shrink-0" : undefined}
+      disabled={isClosed}
+      issue={issue}
+    />
+  );
   const approvalRequestOpen = openAsks.some((ask) => ask.kind === "approval");
   // The one shared read of the projects, under the key the shell's sidebar and the search
   // palette already hold, so the daemon's `project.updated` publish refreshes these steps with
   // no reload and the header makes no second, per-issue read. While that read is pending or
   // failed there is no row, so the steps are empty and the header draws its one chip below
-  // rather than claiming a gate it has not read. Only a root issue has steps at all
-  // (`gatedStepEntries`), so a child issue does not ask for the list: a disabled query still
-  // reads whatever the shared cache holds, and a child draws the single chip either way.
-  const projects = useQuery({ ...projectsQuery(), enabled: issue.parent === null });
+  // rather than claiming a gate it has not read. Only a root of the issue's project has steps at
+  // all (`isProjectRoot`: no parent, or a parent of another project), so a child issue does not
+  // ask for the list: a disabled query still reads whatever the shared cache holds, and a child
+  // draws the single chip either way.
+  const projects = useQuery({ ...projectsQuery(), enabled: isProjectRoot(issue) });
   const projectRow = projects.data?.find((candidate) => candidate.key === issue.project);
   const entries = gatedStepEntries(projectRow, issue);
   // Which document a step reviews is `gated-steps.ts`'s to say, so the chip asks the drawn
@@ -269,7 +349,12 @@ export function IssueHeader({
     (documentArtifact.approval.state !== "draft" || approvalRequestOpen);
   const pinGuard = useSubmitGuard();
   const updateState = useKeyedWrite({
+    // A read of the state asked while the pin is out could be answered before Dispatch takes it,
+    // with the pin as it was: it waits for the answer, for at most `SEND_DEADLINE_MS`. The state
+    // is the viewer's alone, so the wait keeps back nobody else's change.
+    holds: () => ({ keys: [userStateQuery().queryKey] }),
     label: (pinned: boolean) => `${issue.key} ${pinned ? "pinned" : "unpinned"}`,
+    method: "PUT",
     write: (pinned: boolean, bounds) => api.putIssueState(issue.key, { pinned }, bounds),
     onSettled: () => {
       pinGuard.release();
@@ -295,7 +380,8 @@ export function IssueHeader({
     },
     onSuccess: (next) => {
       if (next === null) return;
-      queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) => ({
+      // Over any read of the state still out, asked before the answer (`replaceQueryData`).
+      replaceQueryData<UserState>(queryClient, userStateQuery().queryKey, (current) => ({
         ...current,
         [issue.key]: next,
       }));
@@ -319,9 +405,16 @@ export function IssueHeader({
     }
   };
   // A refused parent save (PARENT_INPUT, ISSUE_CLOSED) renders the server's reason inline,
-  // like a route validation error, instead of the generic update failure line.
+  // like a route validation error, instead of the generic update failure line. One the reader
+  // stopped may have been saved; the editor has closed, and saving it again is a press of its own
+  // (`requestParentSubmit`).
   const parentSaveFailed = updateIssue.isError && updateIssue.variables?.parent !== undefined;
-  const parentError = apiErrorMessage(updateIssue.error, "Could not save parent.");
+  const parentError =
+    updateIssue.error instanceof SendStoppedError
+      ? stoppedWriteNote("the new parent", "saved", {
+          anew: "Saving it again sends it as a new write.",
+        })
+      : apiErrorMessage(updateIssue.error, "Could not save parent.");
   // A title Dispatch refused (CAP_EXCEEDED past ISSUE_TITLE_MAX, ISSUE_CLOSED) shows its reason
   // with no Retry, since the same title is refused every time; any other failure keeps the generic
   // line and its Retry.
@@ -355,6 +448,7 @@ export function IssueHeader({
   );
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   const referencesPanelId = useId();
+  const titleId = useId();
   const externalLinks = issue.external_links ?? [];
   // The title slot has one flex-basis whether it shows the heading or the editor: below 2xl the
   // title always takes its own row (basis-full) and the state controls and details line share
@@ -381,8 +475,10 @@ export function IssueHeader({
           <button
             aria-label="Reopen issue"
             className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-            disabled={updateIssue.isPending}
-            onClick={() => drafts.requestStatusSubmit("backlog")}
+            // Held, not disabled, while a write of the header's fields or the rule's question is
+            // out (`statusBusy`): the pressed Reopen keeps the keyboard focus, and a second press
+            // sends nothing.
+            {...heldPress(statusBusy, () => requestStatus("backlog"))}
             title="Reopen into Backlog"
             type="button"
           >
@@ -417,9 +513,11 @@ export function IssueHeader({
                 }}
                 onChange={(event) => drafts.writeTitle(event.target.value)}
                 onKeyDown={(event) => {
-                  // An Enter or an Escape that ends or moves an input method's composition is the
-                  // composition's: it saves nothing, discards nothing and keeps the editor open.
-                  if (event.nativeEvent.isComposing) return;
+                  // A key that ends an input method's composition - the Enter that takes the word
+                  // composed, the Escape that drops it - is no key of the reader's: it neither
+                  // writes the title nor closes its editor. Safari sends it after its
+                  // compositionend, with `isComposing` false and keyCode 229 (`inputMethodKey`).
+                  if (inputMethodKey(event.nativeEvent)) return;
                   if (event.key === "Escape") {
                     drafts.discardTitle();
                     setEditingTitle(false);
@@ -431,29 +529,34 @@ export function IssueHeader({
                 value={drafts.title}
               />
             ) : (
-              // The heading opens its editor when the reader activates it - a click, Enter or
-              // Space - and never as it takes the focus: an editor that opens on focus changes
-              // the page on focus (WCAG 2.2, 3.2.1 On Focus), and the heading can take the focus
-              // with no act of the reader's, from the page's focus rescue.
-              <h1
-                className={`min-w-0 flex-1 break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface} ${
-                  isClosed ? "" : `cursor-text ${borderStrongHover}`
-                }`}
-                onClick={() => {
-                  if (!isClosed) {
-                    setEditingTitle(true);
-                  }
-                }}
-                onKeyDown={(event) => {
-                  if (!isClosed && (event.key === "Enter" || event.key === " ")) {
-                    event.preventDefault();
-                    setEditingTitle(true);
-                  }
-                }}
-                tabIndex={isClosed ? -1 : 0}
-              >
-                {drafts.title}
-              </h1>
+              // The heading holds the title and takes no Tab stop and no press. The Edit title
+              // button laid over the heading's box is the control: a screen reader reads it as
+              // "Edit title, button", with the title as its description. The button shows no text
+              // of its own, since a button that showed the title under the name "Edit title" would
+              // leave its visible words out of its name (WCAG 2.5.3, Label in Name). It stands
+              // beside the heading and not inside it, since a heading's name is computed from
+              // what it holds, a button's `aria-label` included. It opens the editor when the
+              // reader activates it - a click, Enter or Space - and never as it takes the focus:
+              // an editor that opens on focus changes the page on focus (WCAG 2.2, 3.2.1 On
+              // Focus), and a focus can come to the button with no act of the reader's. A closed
+              // issue's title edits nothing, so it is the heading alone.
+              <div className="relative min-w-0 flex-1">
+                <h1
+                  className={`break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface}`}
+                  id={titleId}
+                >
+                  {drafts.title}
+                </h1>
+                {isClosed ? null : (
+                  <button
+                    aria-describedby={titleId}
+                    aria-label="Edit title"
+                    className={`absolute inset-0 cursor-text rounded-lg border outline-none focus-visible:ring-2 ${borderTransparent} ${borderStrongHover} ${focusVisibleRing}`}
+                    onClick={() => setEditingTitle(true)}
+                    type="button"
+                  />
+                )}
+              </div>
             )}
             <PinButton
               disabled={updateState.isPending}
@@ -467,32 +570,49 @@ export function IssueHeader({
           className="flex w-full min-w-0 flex-wrap items-center gap-2 md:w-auto"
           data-testid="issue-state-actions"
         >
-          <label
-            className={`flex min-h-11 shrink-0 items-center gap-2 rounded-full border px-2 text-sm font-semibold uppercase tracking-wide sm:px-3 md:min-h-8 xl:px-2 ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
+          {/* The Status is the shared list's single pick, whose text box narrows the statuses
+              as the reader types. Its trigger fills the pill, which draws the keyboard focus
+              ring round it as `badge-select.ts`'s wrappers do. A pick goes through the rule's
+              question (`requestStatus`) and then writes through `updateIssueGuard`
+              (`requestStatusSubmit`), and a pick of the status it shows writes nothing, as a
+              select set to the value it holds fires nothing. A list that stood open as the hold
+              began picks nothing. */}
+          <span
+            className={`flex min-h-11 shrink-0 items-center rounded-full border text-sm font-semibold uppercase tracking-wide md:min-h-8 has-focus-visible:ring-2 ${hasFocusVisibleRing} ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
           >
-            <span
-              aria-hidden="true"
-              className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
-            />
-            <select
-              aria-label="Status"
-              className={`min-w-0 appearance-none font-inherit outline-none disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${statusPill.text}`}
-              disabled={isClosed || updateIssue.isPending}
-              onChange={(event) => drafts.requestStatusSubmit(event.target.value)}
-              value={pendingStatus ?? issue.status}
+            <MultiSelect
+              ariaDisabled={statusHeld}
+              chevron={false}
+              emptyMessage="No status matches that."
+              label="Status"
+              marks={statusMarks(shownStatus)}
+              mode="single"
+              onOpenChange={(next) => setStatusOpen(next && !statusHeld)}
+              onPick={(picked) => {
+                if (!statusHeld && picked !== shownStatus) requestStatus(picked);
+              }}
+              open={statusOpen}
+              optionLabel={statusText}
+              options={selectableStatuses}
+              searchLabel="Search statuses"
+              triggerClassName="flex cursor-pointer items-center self-stretch rounded-full px-2 outline-none sm:px-3 xl:px-2 refused:cursor-not-allowed refused:opacity-50"
+              value={shownStatus}
             >
-              {selectableStatuses.map((status) => (
-                <option key={status} value={status}>
-                  {statusLabel(status)}
-                </option>
-              ))}
-            </select>
-          </label>
+              <span className="flex items-center gap-2">
+                <span
+                  aria-hidden="true"
+                  className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
+                />
+                {statusText(shownStatus)}
+              </span>
+            </MultiSelect>
+          </span>
           <PriorityEditor
             disabled={isClosed || updateIssue.isPending}
             issueKey={issue.key}
             write={priorityWrite}
           />
+          {phone ? null : priorityLine}
           <AssigneeControl
             assignee={issue.assignee}
             disabled={isClosed || updateIssue.isPending}
@@ -563,8 +683,10 @@ export function IssueHeader({
             <button
               aria-label="Close issue"
               className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-              disabled={updateIssue.isPending}
-              onClick={() => drafts.requestStatusSubmit("done")}
+              // Held, not disabled, while a write of the header's fields or the rule's question is
+              // out (`statusBusy`): the pressed Close keeps the keyboard focus, and a second press
+              // sends nothing.
+              {...heldPress(statusBusy, () => requestStatus("done"))}
               type="button"
             >
               {pendingStatus === "done" ? (
@@ -587,6 +709,7 @@ export function IssueHeader({
           data-testid="issue-metadata-rail"
           ref={railFade.ref}
         >
+          {phone ? priorityLine : null}
           {whoseTurn === null ? null : (
             <span
               className={`inline-flex shrink-0 items-center rounded-full border px-3 py-1 text-xs font-semibold ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
@@ -595,7 +718,6 @@ export function IssueHeader({
               {whoseTurn}
             </span>
           )}
-          <IssuePriorityLine disabled={isClosed} issue={issue} />
           {issue.created_by == null ? null : (
             <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
               <span className="font-medium">Opened by:</span>
@@ -679,7 +801,8 @@ export function IssueHeader({
           {/* The repository is where the work goes, like the parent, so it sits in this rail,
               which scrolls rather than wrapping: a repository name can be long, and the state
               row above must keep every control on one row at a phone width. Every issue has an
-              item here, since every issue takes a repository whatever its project maps. */}
+              item here: an issue resolves to its own repository, an ancestor's, or its
+              project's default repository, and any issue can take a repository of its own. */}
           <RepoControl
             disabled={isClosed || updateIssue.isPending}
             issueKey={issue.key}
@@ -730,8 +853,9 @@ export function IssueHeader({
             id="issue-route"
             onChange={(event) => drafts.writeRoute(event.target.value)}
             onKeyDown={(event) => {
-              // An Escape that ends an input method's composition is the composition's.
-              if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+              // An Escape that ends an input method's composition is the composition's
+              // (`inputMethodKey`).
+              if (event.key === "Escape" && !inputMethodKey(event.nativeEvent)) {
                 drafts.discardRoute();
                 setRouteEditing(false);
               }
@@ -780,8 +904,9 @@ export function IssueHeader({
             id="issue-parent"
             onChange={(event) => drafts.writeParent(event.target.value)}
             onKeyDown={(event) => {
-              // An Escape that ends an input method's composition is the composition's.
-              if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+              // An Escape that ends an input method's composition is the composition's
+              // (`inputMethodKey`).
+              if (event.key === "Escape" && !inputMethodKey(event.nativeEvent)) {
                 drafts.discardParent();
                 setParentEditing(false);
               }
@@ -808,7 +933,8 @@ export function IssueHeader({
             Cancel
           </button>
           <span className="sr-only" id="issue-parent-help">
-            Parent issue key in {issue.project}; leave empty to clear the parent.
+            Parent issue key, in {issue.project} or another project; leave empty to clear the
+            parent.
           </span>
         </form>
       ) : null}
@@ -826,6 +952,11 @@ export function IssueHeader({
               : "Saving…"}
         </span>
       ) : null}
+      <IssueStatusNotes
+        issueKey={issue.key}
+        noteClassName={`mt-1 text-sm ${dangerText}`}
+        statusMove={statusMove}
+      />
       {subscribersOpen ? (
         <SubscribedAgents
           onUnsubscribe={(sessionId) => unsubscribe.mutate(sessionId)}
@@ -843,22 +974,30 @@ export function IssueHeader({
       ) : null}
       {updateState.isError ? (
         <QueryError
-          message="Could not save pin status."
+          message={
+            stoppedNote(updateState, "the pin status", "saved") ?? "Could not save pin status."
+          }
           onRetry={() => pinGuard.retryLast(updateState)}
           retrying={updateState.isPending}
         />
       ) : null}
       {unsubscribe.isError ? (
         <QueryError
-          message="Could not unsubscribe this agent."
-          onRetry={() => unsubscribe.mutate(unsubscribe.variables as string)}
+          message={
+            stoppedNote(unsubscribe, "this agent's unsubscribe", "made") ??
+            "Could not unsubscribe this agent."
+          }
+          onRetry={unsubscribe.retry}
           retrying={unsubscribe.isPending}
         />
       ) : null}
       {releaseClaim.isError ? (
         <QueryError
-          message="Could not release this claim."
-          onRetry={() => releaseClaim.mutate()}
+          message={
+            stoppedNote(releaseClaim, "the release of this claim", "made") ??
+            "Could not release this claim."
+          }
+          onRetry={releaseClaim.retry}
           retrying={releaseClaim.isPending}
         />
       ) : null}
@@ -872,8 +1011,17 @@ export function IssueHeader({
             {titleRefusal}
           </p>
         ) : (
+          // A title or a route save. Its Retry is the field's own submit (`drafts.retry`): a press
+          // of its own, of what the field holds now, so a stopped save is never made again under
+          // its key from here.
           <QueryError
-            message="Could not update this issue."
+            message={
+              updateIssue.error instanceof SendStoppedError
+                ? stoppedWriteNote("this change to the issue", "saved", {
+                    anew: "Retry sends what the field holds now as a new write.",
+                  })
+                : "Could not update this issue."
+            }
             onRetry={drafts.retry}
             retrying={updateIssue.isPending}
           />

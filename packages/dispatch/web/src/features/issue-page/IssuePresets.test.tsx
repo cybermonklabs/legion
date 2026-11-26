@@ -1,17 +1,24 @@
-import { expect, spyOn, test } from "bun:test";
-import { render, screen } from "@testing-library/react";
+import { beforeAll, expect, spyOn, test } from "bun:test";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
-import { stubMatchMedia } from "../margin/margin-fixture";
+import { DESKTOP_WIDTH, PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymap } from "../shell/keymap";
 import { useDialog } from "../shell/useDialog";
 import { IssuePresets } from "./IssuePresets";
 import { presetPath } from "./issue-address";
-import { PRESET_NAMES, type Preset } from "./page-words";
+import { PRESET_NAMES, PRESET_ORDER, type Preset } from "./page-words";
 import type { PresetSignal } from "./presets";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const SIGNALS: Readonly<Record<Preset, PresetSignal>> = {
   conversation: { count: 0 },
@@ -34,7 +41,7 @@ function menuItem(preset: Preset): HTMLElement {
 // button, so the keys are WAI-ARIA's menu button's (the tester's reading of part V at 390 px).
 test("the one control is a menu button: Enter, Space, Down and Up open it on the view that is on, the arrows, Home and End move in it, Escape gives the focus back, and Tab leaves it", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(true);
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
   const view = render(
     <MemoryRouter initialEntries={[presetPath("CORE-1", "spec")]}>
       <IssuePresets active="spec" issueKey="CORE-1" signals={SIGNALS} />
@@ -99,7 +106,7 @@ test("the one control is a menu button: Enter, Space, Down and Up open it on the
 // address that names a node (`#b-`) the press would end elsewhere and do nothing.
 test("a press on a view control leaves the focus where it is, and moves to the view's address", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1#b-r1"]}>
       <button type="button">a row of the outline</button>
@@ -128,7 +135,7 @@ test("a press on a view control leaves the focus where it is, and moves to the v
 // its own activation would focus the button at the click.
 test("a press on a view control's count leaves the focus where it is, and moves to the view's address", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1#b-r1"]}>
       <button type="button">a row of the outline</button>
@@ -158,7 +165,7 @@ test("a press on a view control's count leaves the focus where it is, and moves 
 // and takes it (decision 93), so the outline keeps its row open under the pointer.
 test("a press on the one control leaves the focus where it is, then opens its menu on the view that is on", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(true);
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
   const view = render(
     <MemoryRouter initialEntries={[presetPath("CORE-1", "spec")]}>
       <button type="button">a row of the outline</button>
@@ -194,18 +201,21 @@ function DialogOverTheRow(): ReactNode {
   const dialog = useDialog<HTMLDivElement>({ onClose: () => setOpen(false), open });
   return open ? (
     <div aria-label="Over the row" ref={dialog.containerRef} role="dialog">
+      <p>Words of the dialog</p>
       <button type="button">in the dialog</button>
     </div>
   ) : null;
 }
 
-// Escape closes the innermost layer. A dialog open over the menu takes it even before its focus
-// has moved in, the frame after it opens. Whether a dialog is open is `useDialog`'s registry's
-// answer (`dialogOpen()`, decision 318), the one that decides which dialog the key closes and
-// that Details' drawer asks too, so a dialog's markup does not change it.
-test("below 1280 px, Escape with a dialog open over the menu closes the dialog alone, the focus outside it", async () => {
+// Escape closes the innermost layer. A dialog open over the menu takes it wherever the focus is:
+// on the dialog itself in its first frame, or on the page after a press on the dialog's text.
+// In the second case the key's target is outside the dialog, and only whether a dialog is open
+// tells the menu to leave the key to it. That is `useDialog`'s registry's answer (`dialogOpen()`,
+// decision 318), the one that decides which dialog the key closes and that Details' drawer asks
+// too, so a dialog's markup does not change it.
+test("below 1280 px, Escape with a dialog open over the menu closes the dialog alone, wherever the focus is", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(true);
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
   const view = render(
     <MemoryRouter initialEntries={[presetPath("CORE-1", "spec")]}>
       <KeymapProvider>
@@ -223,20 +233,39 @@ test("below 1280 px, Escape with a dialog open over the menu closes the dialog a
     );
     const dialog = () => screen.queryByRole("dialog", { name: "Over the row" });
 
-    // The dialog moves the focus into itself a frame after it opens; with that frame held, the
-    // Escape lands on the menu's item.
+    // The dialog holds the focus itself until its control takes it a frame after it opens; with
+    // that frame held, the Escape lands on the dialog, not on the menu's item.
     const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
     try {
       await user.keyboard("?");
       expect(dialog(), "? drew no dialog").not.toBeNull();
-      expect(document.activeElement, "the dialog took the focus in its first frame").toBe(
-        menuItem("spec")
+      expect(document.activeElement, "the dialog left the focus behind it as it opened").toBe(
+        dialog()
       );
       await user.keyboard("{Escape}");
     } finally {
       frames.mockRestore();
     }
-    expect(dialog(), "Escape before the dialog took the focus left it open").toBeNull();
+    expect(dialog(), "Escape in the dialog's first frame left it open").toBeNull();
+    expect(
+      screen.queryByRole("menu"),
+      "that Escape closed the menu under the dialog"
+    ).not.toBeNull();
+
+    // Once its frame has given the focus to its control, a press on the dialog's text puts the
+    // focus on the page, and the Escape's target is no part of the dialog.
+    await user.keyboard("?");
+    await waitFor(() =>
+      expect(document.activeElement, "the dialog's frame gave its control no focus").toBe(
+        screen.getByRole("button", { name: "in the dialog" })
+      )
+    );
+    await user.click(screen.getByText("Words of the dialog"));
+    expect(document.activeElement, "a press on the dialog's text kept the focus off the page").toBe(
+      document.body
+    );
+    await user.keyboard("{Escape}");
+    expect(dialog(), "Escape with the focus on the page left the dialog open").toBeNull();
     expect(
       screen.queryByRole("menu"),
       "that Escape closed the menu under the dialog"
@@ -245,6 +274,86 @@ test("below 1280 px, Escape with a dialog open over the menu closes the dialog a
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu"), "the next Escape left the menu open").toBeNull();
     expect(document.activeElement, "that Escape left the focus off the control").toBe(chooser);
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});
+
+/** The ids an `aria-describedby` or `aria-labelledby` under `within` names that no element of
+ *  the document carries. */
+function missingReferences(within: HTMLElement): string[] {
+  return [...within.querySelectorAll("[aria-describedby], [aria-labelledby]")].flatMap((element) =>
+    ["aria-describedby", "aria-labelledby"]
+      .flatMap((attribute) => (element.getAttribute(attribute) ?? "").split(/\s+/))
+      .filter((id) => id !== "" && document.getElementById(id) === null)
+  );
+}
+
+// The view row has no signals to give while the reads its counts come from are out
+// (`slots/view-row.tsx`), since a count drawn then reads as the real one. The row is drawn all
+// the same, each control with its name alone, and no control points at a signal that is not
+// there. The case draws it at 1440 px (`DESKTOP_WIDTH`), from 1280 px up, where the row is the
+// row of five.
+test("with no signals the row of five draws every view's control with its name alone, and no description names a missing element", () => {
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const view = render(
+    <MemoryRouter initialEntries={[presetPath("CORE-1", "spec")]}>
+      <IssuePresets active="spec" issueKey="CORE-1" />
+    </MemoryRouter>
+  );
+  try {
+    for (const preset of PRESET_ORDER) {
+      expect(
+        screen.getByRole("button", { name: PRESET_NAMES[preset], pressed: preset === "spec" }),
+        `${PRESET_NAMES[preset]} drew no control`
+      ).toBeInTheDocument();
+    }
+    expect(
+      view.container.querySelector("[data-preset-count]"),
+      "a control drew a count with no signals"
+    ).toBeNull();
+    expect(
+      screen.getByRole("toolbar").textContent,
+      "a control drew more than its name with no signals"
+    ).toBe(PRESET_ORDER.map((preset) => PRESET_NAMES[preset]).join(""));
+    expect(
+      missingReferences(view.container),
+      "a control points at an element that is not drawn"
+    ).toEqual([]);
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});
+
+// The same below 1280 px, where the one control and each item of its menu are named by their
+// signal beside their name: with no signals, each is named by its name alone. The case draws it
+// at 390 px (`PHONE_WIDTH`), where the row is the one control.
+test("with no signals the one control and its menu draw every view named alone, and no name points at a missing element", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
+  const view = render(
+    <MemoryRouter initialEntries={[presetPath("CORE-1", "spec")]}>
+      <IssuePresets active="spec" issueKey="CORE-1" />
+    </MemoryRouter>
+  );
+  try {
+    await user.click(screen.getByRole("button", { name: PRESET_NAMES.spec }));
+    for (const preset of PRESET_ORDER) {
+      expect(
+        screen.getByRole("menuitemradio", { name: PRESET_NAMES[preset] }),
+        `the menu drew no item for ${PRESET_NAMES[preset]}`
+      ).toBeInTheDocument();
+    }
+    expect(
+      view.container.querySelector("[data-preset-count]"),
+      "the one control or its menu drew a count with no signals"
+    ).toBeNull();
+    expect(
+      missingReferences(view.container),
+      "the one control or an item of its menu points at an element that is not drawn"
+    ).toEqual([]);
   } finally {
     view.unmount();
     restoreMatchMedia();

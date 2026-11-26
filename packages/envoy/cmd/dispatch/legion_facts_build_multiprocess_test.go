@@ -43,7 +43,7 @@ const (
 // factsSeedTrees is how many trees the seeded project holds. It is small because this row reads
 // which build the consumer recorded rather than what a whole read costs, and a whole read of
 // three trees takes milliseconds: the cost is measured over populations of its own in
-// legionfacts (PassGap, TestAPassHoldsTheFreshnessRequirement).
+// legionfacts (PassRetry, TestAPassHoldsTheFreshnessRequirement).
 const factsSeedTrees = 3
 
 // factsRecordWait is how long each process is given to record its own build against the project.

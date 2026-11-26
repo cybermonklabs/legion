@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -118,6 +119,7 @@ func stepOf(t *testing.T, handler http.Handler, issue, id string) model.StepReco
 // one record holding the start's fields and the end's, and its attempt. The end's answer is the
 // record as the read lists it.
 func TestTheDaemonWritesAStepAndAReaderReadsIt(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	id := uuid.NewString()
@@ -158,6 +160,7 @@ func TestTheDaemonWritesAStepAndAReaderReadsIt(t *testing.T) {
 // write's answers and the read carry that pair, the report in its canonical spelling and
 // generation 2, beside its attempt 1 and the place it returned to.
 func TestARunsSessionReportAndGenerationComeBackAsWritten(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	id, report := uuid.NewString(), uuid.NewString()
@@ -197,6 +200,7 @@ func TestARunsSessionReportAndGenerationComeBackAsWritten(t *testing.T) {
 // A second run of one step answers attempt 2, on its start and on its end, and the end's answer is
 // the record as the read lists it; the first run still reads attempt 1.
 func TestASecondRunOfAStepAnswersAttemptTwo(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSessionOf("LEG")
@@ -227,6 +231,7 @@ func TestASecondRunOfAStepAnswersAttemptTwo(t *testing.T) {
 // The read answers each task once, in the order of its first step, with its steps in the order
 // they ran.
 func TestTheReadListsTasksInTheOrderOfTheirFirstStep(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSessionOf("LEG")
@@ -258,6 +263,7 @@ func TestTheReadListsTasksInTheOrderOfTheirFirstStep(t *testing.T) {
 // Only the session of the issue's project's daemon writes a record: a person, the daemon of
 // another project and an agent's session are each refused, and that daemon's write lands.
 func TestAWriteThatNamesAnotherSessionIsRefused(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	path := "/api/v1/issues/" + issue + "/steps/"
@@ -282,6 +288,7 @@ func TestAWriteThatNamesAnotherSessionIsRefused(t *testing.T) {
 // A closed issue takes the record of the merge that closed it, where a handoff, which a running
 // role writes, is refused there.
 func TestAClosedIssueTakesItsMergeRecord(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	closeIssue(t, handler, issue)
@@ -304,6 +311,7 @@ func TestAClosedIssueTakesItsMergeRecord(t *testing.T) {
 // daemon tells from the 404 of a Dispatch that does not serve the route: that answer carries no
 // such code.
 func TestAnUnknownIssueIsIssueNotFound(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createTestIssue(t, handler, "LEG", "A run of steps")
 
@@ -321,6 +329,7 @@ func TestAnUnknownIssueIsIssueNotFound(t *testing.T) {
 // handler's, not the router's "no route" of a Dispatch older than the route. An issue Dispatch
 // holds that no step ran on still reads 200 and no task.
 func TestAnUnknownIssueReadsAsTheIssueRead(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "An issue Legion never ran")
 
@@ -344,6 +353,7 @@ func TestAnUnknownIssueReadsAsTheIssueRead(t *testing.T) {
 
 // A step write appends no event to its issue, whose activity a handoff moves.
 func TestAStepWriteAppendsNoEvent(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	before := issueEventTypes(t, handler, issue)
@@ -366,6 +376,7 @@ func TestAStepWriteAppendsNoEvent(t *testing.T) {
 // Each value outside its form is refused 400 with its field named, and a body Dispatch cannot
 // decode is the package's own 400; none is a 500, and none writes a record.
 func TestAStepWriteRefusesItsBadValues(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSessionOf("LEG")
@@ -437,6 +448,7 @@ func TestAStepWriteRefusesItsBadValues(t *testing.T) {
 
 // Normalizing an offset must keep a moment readable at either end of the JSON timestamp range.
 func TestAStepMomentAtTheUTCYearBoundsIsReadable(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	for _, row := range []struct{ input, want string }{
@@ -457,6 +469,7 @@ func TestAStepMomentAtTheUTCYearBoundsIsReadable(t *testing.T) {
 // The start and the end of one new run, sent at once, both land, and the record holds the fields
 // of each: the second write waits for the first and reads what it wrote.
 func TestTwoPutsOfOneStepAtOneTimeKeepBoth(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSessionOf("LEG")
@@ -515,6 +528,7 @@ func TestTwoPutsOfOneStepAtOneTimeKeepBoth(t *testing.T) {
 
 // A second end of one run lands and changes nothing: the run keeps its first end.
 func TestAnEndPutTwiceKeepsItsFirstEnd(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	id := uuid.NewString()
@@ -530,9 +544,114 @@ func TestAnEndPutTwiceKeepsItsFirstEnd(t *testing.T) {
 	}
 }
 
+// putExperiment writes body as the experiment and the variant of the run id of issue, over the
+// credential the deployment configured for its daemon.
+func putExperiment(t *testing.T, handler http.Handler, issue, id string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	return sessionRequest(t, handler, http.MethodPut, "/api/v1/issues/"+issue+"/steps/"+id+"/experiment", body)
+}
+
+// The experiment a draw put an issue in and the variant it drew reach a run's record on a route of
+// their own, which takes the step write's body with the two, both required: decodeJSON ignores a
+// member a route does not declare, so the step route drops the pair, and a Dispatch older than the
+// experiment route answers it its router's NOT_FOUND rather than a 200 that loses them. The write
+// makes the record where the run's start has not landed, sets each field once, and the read of the
+// issue answers both on the run, a start that lands after it included. A body naming neither, or a
+// name outside the daemon's rule for the names its settings declare, is 400 STEP_INPUT and writes
+// nothing; a second variant leaves the first.
+func TestTheExperimentRouteWritesTheVariantOfARun(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of an experiment")
+	daemon := daemonSessionOf("LEG")
+	id := uuid.NewString()
+	variant := func(step model.StepRecord) string {
+		if step.Experiment == nil || step.Variant == nil {
+			return fmt.Sprintf("%v/%v", step.Experiment, step.Variant)
+		}
+		return *step.Experiment + "/" + *step.Variant
+	}
+
+	written := putExperiment(t, handler, issue, id, withFields(stepIdentity(daemon), map[string]any{"experiment": "planning", "variant": "b"}))
+	if written.Code != http.StatusOK {
+		t.Fatalf("write the variant of %s: status=%d body=%s, want 200", id, written.Code, written.Body.String())
+	}
+	if got := variant(decodeBody[model.StepRecord](t, written)); got != "planning/b" {
+		t.Fatalf("the write answers the variant %s, want planning/b", got)
+	}
+	putStepOK(t, handler, issue, id, implementerStart(daemon))
+	if step := stepOf(t, handler, issue, id); variant(step) != "planning/b" || step.StartedAt == nil {
+		t.Fatalf("the read lists %s, want the run started with the variant planning/b", asJSON(t, step))
+	}
+
+	dropped := uuid.NewString()
+	putStepOK(t, handler, issue, dropped, withFields(implementerStart(daemon), map[string]any{"experiment": "planning", "variant": "b"}))
+	if step := stepOf(t, handler, issue, dropped); step.Experiment != nil || step.Variant != nil {
+		t.Fatalf("the step route wrote the variant %s, want it dropped as a member the route does not declare", variant(step))
+	}
+
+	neither := putExperiment(t, handler, issue, uuid.NewString(), stepIdentity(daemon))
+	expectRefusal(t, "a variant's write naming neither", neither, http.StatusBadRequest, codeStepInput,
+		"experiment and variant are required")
+	alone := putExperiment(t, handler, issue, uuid.NewString(), withFields(stepIdentity(daemon), map[string]any{"experiment": "planning"}))
+	expectRefusal(t, "a variant's write naming the experiment alone", alone, http.StatusBadRequest, codeStepInput,
+		"stated together or not at all")
+	bad := putExperiment(t, handler, issue, uuid.NewString(), withFields(stepIdentity(daemon), map[string]any{"experiment": "Bad", "variant": "b"}))
+	expectRefusal(t, "a variant's write naming the experiment Bad", bad, http.StatusBadRequest, codeStepInput,
+		`experiment "Bad" must match`)
+
+	again := putExperiment(t, handler, issue, id, withFields(stepIdentity(daemon), map[string]any{"experiment": "planning", "variant": "a"}))
+	if again.Code != http.StatusOK {
+		t.Fatalf("write a second variant of %s: status=%d body=%s, want 200", id, again.Code, again.Body.String())
+	}
+	if step := stepOf(t, handler, issue, id); variant(step) != "planning/b" {
+		t.Fatalf("after a second variant the read lists %s, want the first, planning/b", variant(step))
+	}
+	if steps := stepsOf(t, handler, issue); len(steps) != 2 {
+		t.Fatalf("the read lists %d records, want the two the taken writes made", len(steps))
+	}
+}
+
+// Only the daemon of the issue's project writes the experiment and the variant of a run, as only
+// it writes the run's record: the route checks its writer in its own handler, as the step route and
+// the rating route do. A person, an agent's session and the daemon of another project, each
+// sending the pair the daemon's own write lands with, are refused 403 STEP_WRITER, whether the
+// run's record exists or not, and the run the daemon recorded names no variant; the daemon's write
+// of the pair lands, which is the control.
+func TestAVariantIsTheDaemonsAlone(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of an experiment")
+	run := uuid.NewString()
+	putStepOK(t, handler, issue, run, implementerStart(daemonSessionOf("LEG")))
+	pair := map[string]any{"experiment": "planning", "variant": "b"}
+
+	for _, id := range []string{run, uuid.NewString()} {
+		path := "/api/v1/issues/" + issue + "/steps/" + id + "/experiment"
+		person := dispatchRequest(t, handler, http.MethodPut, path, withFields(stepIdentity(nil), pair), "alice")
+		expectRefusal(t, "a person's variant of "+id, person, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+		for _, session := range []string{legionDaemonSessionPrefix + "OTHER", "ses_agent"} {
+			refused := putExperiment(t, handler, issue, id, withFields(stepIdentity(map[string]any{"kind": "session", "id": session}), pair))
+			expectRefusal(t, "a variant of "+id+" as "+session, refused, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+		}
+	}
+	if steps := stepsOf(t, handler, issue); len(steps) != 1 || steps[0].ID != run || steps[0].Experiment != nil || steps[0].Variant != nil {
+		t.Fatalf("the refused variants left %s, want the one run %s, with no variant", asJSON(t, steps), run)
+	}
+
+	written := putExperiment(t, handler, issue, run, withFields(stepIdentity(daemonSessionOf("LEG")), pair))
+	if written.Code != http.StatusOK {
+		t.Fatalf("the daemon's variant of %s: status=%d body=%s, want 200", run, written.Code, written.Body.String())
+	}
+	if step := stepOf(t, handler, issue, run); step.Experiment == nil || *step.Experiment != "planning" || step.Variant == nil || *step.Variant != "b" {
+		t.Fatalf("after the daemon's write the read lists %s, want the run with the variant planning/b", asJSON(t, step))
+	}
+}
+
 // A backward move to the retro returns to place 0, not to no place. Both delivery orders and a
 // later end keep that first return destination in the write's answer and in the issue's read.
 func TestAStepReturnedToRetroKeepsPlaceZero(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	for _, endFirst := range []bool{false, true} {
@@ -570,6 +689,7 @@ func TestAStepReturnedToRetroKeepsPlaceZero(t *testing.T) {
 
 // An id the record of one issue holds is refused to a write that names another issue.
 func TestAStepOfAnotherIssueIsRefused(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issues := []string{
 		createTestIssue(t, handler, "LEG", "A run of steps"),
@@ -591,6 +711,7 @@ func TestAStepOfAnotherIssueIsRefused(t *testing.T) {
 // A credential scoped to one project writes the records of that project's issues and no other's,
 // though it proves the session of that project's daemon.
 func TestAProjectCredentialWritesOnlyItsProject(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-daemon-token-of-one-project"

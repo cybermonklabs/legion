@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"reflect"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -100,7 +99,7 @@ func listenerDurableRefusal(consumer string, config nats.ConsumerConfig) error {
 	return fmt.Errorf("%w: durable consumer %s has %s, which the listener's consumer policy forbids and NATS cannot change in place; "+
 		"deleting it lets the listener recreate it at deliver policy all, which replays every retained message, "+
 		"so to keep its cursor recreate it from its own config without %s, at deliver policy by_start_sequence "+
-		"with opt_start_seq one past its ack_floor.stream_seq (packages/envoy/AGENTS.md, Operational notes)",
+		"with opt_start_seq one past its ack_floor.stream_seq (packages/envoy/deploy/README.md, Recreating a listener's durable)",
 		errListenerDurableRefused, consumer, strings.Join(settings, " and "), without)
 }
 
@@ -140,10 +139,12 @@ func startListenerSubscription(client *bus.Client, consumer string, handler nats
 		// The deliver subject is a random inbox, not a derivable name: on a
 		// shared NATS account a predictable subject would let any client
 		// hold interest on it — shadow-reading deliveries and making the
-		// consumer look push-bound so the listener could never attach.
+		// consumer look push-bound so the listener could never attach. It is
+		// the connection's own inbox, under the connection's inbox prefix, which
+		// an edge listener's grant subscribes in place of every reply inbox.
 		config := nats.ConsumerConfig{
 			Durable:        consumer,
-			DeliverSubject: nats.NewInbox(),
+			DeliverSubject: client.Connection().NewInbox(),
 		}
 		applyListenerConsumerPolicy(&config, subjects)
 		if _, err := client.JS().AddConsumer(bus.Stream, &config); err != nil {
@@ -370,21 +371,6 @@ func waitUnlessDone(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// waitWithin waits for wg within ctx and reports whether wg finished before ctx ended.
-func waitWithin(ctx context.Context, wg *sync.WaitGroup) bool {
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return true
-	case <-ctx.Done():
-		return false
-	}
-}
-
 // durableNeedsDelivery reports whether the stored message on subject, stored at stream sequence
 // storedSeq, may need this listener's durable path, read from the subject alone, and when it does
 // not, how many sessions of this machine hold it in a consumer of their own
@@ -395,7 +381,10 @@ func waitWithin(ctx context.Context, wg *sync.WaitGroup) bool {
 // consumer holds it or the session is another listener's (agentSubjectNeedsDelivery). Any other
 // subject does when it matches a topic of an interest of this machine (the registry's subject
 // index) whose session's consumer does not hold it; with none, the fan-out would deliver it to
-// nobody and report nothing.
+// nobody and report nothing. An interest that matches subject only through a topic its session's
+// consumer filter leaves out is no recipient at all, an earlier build's row, and is skipped with
+// its WARN line (skipLeftOutInterest): were it read as a consumer that holds the message, the
+// message would be acknowledged here, before the fan-out could see it, with no word.
 func durableNeedsDelivery(cfg listenerDeliveryHandlerConfig, subject string, storedSeq uint64) (needed bool, skipped int) {
 	if strings.HasPrefix(subject, contracts.RoleTopicPrefix) {
 		return true, 0
@@ -404,6 +393,9 @@ func durableNeedsDelivery(cfg listenerDeliveryHandlerConfig, subject string, sto
 		return agentSubjectNeedsDelivery(cfg, agentSubjectSession(subject), storedSeq)
 	}
 	for _, interest := range cfg.registry.Match(cfg.machineID, subject) {
+		if skipLeftOutInterest(cfg.logger, interest, subject) {
+			continue
+		}
 		entry, err := cfg.sessions.Get(interest.SessionID)
 		if err != nil || !entry.ConsumerHoldsStored(storedSeq) {
 			return true, 0

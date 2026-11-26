@@ -1,9 +1,6 @@
 package measures
 
-import (
-	"slices"
-	"time"
-)
+import "time"
 
 // Every delivery and CI number is one rule split in two (dispatch://INFRA-2916, R7 and R12): a day
 // builder (the functions named <Measure>Day) turns the rows of one UTC day into that day's parts,
@@ -15,10 +12,10 @@ import (
 //
 // A fold reads the parts of its own series and passes over the rest, so it can be handed every
 // part of its eval. A count or a sum adds Sum; a share is the summed Num over the summed Den, never
-// the mean of the days' shares; a quantile merges the days' Samples and reads Quantile over the
-// sorted merge, which is the quantile of every value of those days, never the mean of the days'
-// quantiles. A set that holds no part of a fold's series reads no value (nil), never 0; a part
-// built for a day with no rows is a zero part, and reads as zero counts.
+// the mean of the days' shares; a quantile reads Quantile over every sample of the days in
+// ascending order (MergedSamples), which is the quantile of every value of those days, never the
+// mean of the days' quantiles. A set that holds no part of a fold's series reads no value (nil),
+// never 0; a part built for a day with no rows is a zero part, and reads as zero counts.
 
 // DayPart is one series' part of one UTC day: what one eval_days row holds except its key's
 // project, eval and repository and its bookkeeping (listed, built_by, updated_at), so a fold
@@ -152,18 +149,6 @@ func (f Folded) share() *float64 {
 		return nil
 	}
 	return new(f.Num / f.Den)
-}
-
-// MergedSamples is every sample of series among parts, sorted: the one list a quantile reads.
-func MergedSamples(parts []DayPart, series string) []float64 {
-	var merged []float64
-	for _, part := range parts {
-		if part.Series == series {
-			merged = append(merged, part.Samples...)
-		}
-	}
-	slices.Sort(merged)
-	return merged
 }
 
 // partsByDay is parts by the UTC day each is of, YYYY-MM-DD.

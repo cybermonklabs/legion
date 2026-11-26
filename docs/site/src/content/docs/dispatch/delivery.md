@@ -109,11 +109,11 @@ contains it, whenever that pull request merged and whatever the filters.
 
 ## The targets
 
-Each target is the target of an eval of the project the deploy repository is mapped to
-(**Settings → Repositories → Projects**), so a change to that eval's target, to whether the
-target itself counts as met, or to the statistics it judges moves the card's verdict and its
-label. Until someone changes one, and where the deploy repository is mapped to no project or the
-project has no such eval yet, the targets are these:
+Each target is the target of an eval of the project whose default repository is the deploy
+repository (**Settings → Projects → Default repository**), so a change to that eval's target, to
+whether the target itself counts as met, or to the statistics it judges moves the card's verdict
+and its label. Until someone changes one, and where no project or more than one has the deploy
+repository as its default, or the project has no such eval yet, the targets are these:
 
 | Figure | Eval | Target |
 | --- | --- | --- |
@@ -146,10 +146,11 @@ judged by that day's value only for a rate or a median, 90th percentile or longe
 over the window, such as the concluded runs or the deploys, is judged by the window's total, so its
 figure on the card takes the colour and no day does. The dashed target line is drawn exactly where
 the bars can take a colour. With the target off, nothing takes a colour and no line is drawn.
-A coloured figure takes more decimals where its usual ones would put it on the other side of the
-target from its own value (on the target where the value is not, or past it), so it always reads
-on the side its colour says (4.96% under a 5% target, never 5.0%, while a rate of exactly 5% keeps
-5.0%), and a label writes its target exactly as it was set.
+A coloured figure, and the value a coloured bar writes in its hover title, takes more decimals
+where its usual ones would put it on the other side of the target from its own value (on the
+target where the value is not, or past it), so it always reads on the side its colour says (4.96%
+under a 5% target, never 5.0%, while a rate of exactly 5% keeps 5.0%), and a label writes its
+target exactly as it was set.
 
 ## For agents
 
@@ -198,7 +199,8 @@ without `from` and `to` (`compare_from` and `compare_to`, `repo`, `kind`, `limit
 delivery view may resume with `{"seq":"…","revs":{…}}`. An event-feed view is
 `{"kind":"events"}` and resumes with `{"since":"<event id>"}`. An agent view is
 `{"kind":"agent","session_id":"<uuid>"}` and never has a resume. A resume of the wrong shape, or
-any unknown member, is an `INVALID_FRAME` error.
+a resume that carries a member its view does not take, is an `INVALID_FRAME` error. Any other
+member a frame does not declare is ignored, so a page of a newer build can reach this build.
 
 Dispatch answers a delivery view with:
 
@@ -360,17 +362,19 @@ when the eval's target judges the statistic it shows, by its own value, the targ
 included where the eval counts it as met; today's figures and the bars are a day's, so under a
 target of the count of pull requests only the seven days' count takes a colour. The dashed line
 marks the target exactly where a bar can take a colour.
-A coloured figure takes more decimals where its usual ones would put it on the other side of the
-target from its own value (on the target where the value is not, or past it), so it always reads
-on the side its colour says (59.9m under 60 minutes, never 60m, while a median of exactly 60
-minutes keeps 60m), and the card writes its target exactly as it was set.
+A coloured figure, and the value a coloured bar writes in its hover title, takes more decimals
+where its usual ones would put it on the other side of the target from its own value (on the
+target where the value is not, or past it), so it always reads on the side its colour says (59.9m
+under 60 minutes, never 60m, while a median of exactly 60 minutes keeps 60m), and the card writes
+its target exactly as it was set.
 
 **PR CI: slowest jobs** ranks the checks workflow's jobs by their seven-day median, slowest first,
 and shows five. A job needs a number of timed results in the seven days to be ranked, so a rarely
 run job cannot top the table on a handful of results: the `min_n` of the `job:*` series of the
-`pr-ci` eval in the project the deploy repository is mapped to (**Settings → Repositories →
-Projects**), which is 50 until someone changes it, and 50 where the deploy repository is mapped
-to no project or that project has no `pr-ci` eval yet. The page says the number it ranked by. The
+`pr-ci` eval in the project whose default repository is the deploy repository (**Settings →
+Projects → Default repository**), which is 50 until someone changes it, and 50 where no project
+or more than one has that default, or that project has no `pr-ci` eval yet. The page says the
+number it ranked by. The
 `pr-ci` eval's items sorted by median list every job ranked the same way. Only jobs of runs that
 ended in success or failure are counted.
 

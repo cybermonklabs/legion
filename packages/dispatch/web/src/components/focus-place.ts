@@ -1,43 +1,82 @@
-import { type FocusEvent, type RefObject, useEffect, useLayoutEffect, useRef } from "react";
+import { type FocusEvent, type SyntheticEvent, useLayoutEffect, useRef } from "react";
 
+import { REQUEST_DEADLINE_MS } from "../api/client";
 import { commitsOnBlur, PANEL_ATTRIBUTE, takesText } from "../features/shell/keymap";
 import { focusOnDocument } from "../features/shell/roving";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
+import { inputMethodKey } from "../lib/input-method-key";
 import { CONTROL } from "./control-names";
 import { ROW_SELECTOR } from "./row-marker";
 
 /**
- * The page's focus hand-offs: `useFocusPlace`, a component's own hand-off for a control a press
- * takes out of it, and `useFocusRescue`, the page's one rescue, mounted once in the app shell,
- * for every loss of the focus no component's hand-off answered. A row is `row-marker.ts`'s one
- * rule, `ROW_SELECTOR`. A loss is the reader's while a press of theirs is still live on the lost
- * control, inside any row around it, or inside the dialog, panel or selection bar it was lost from
- * (`causedByReader`). A loss the reader caused lands on what their press drew in the control's
- * place, else on the same control in the row that moved up into that place, else on that row's
- * first control, else on the control now at its place or the nearest one before it. A loss they
- * did not cause leaves the focus on the body, as the page did before it had a rescue, and scrolls
- * nothing; only an open modal dialog takes the focus then, as its own stop (`leaveUncaused`). The
- * one such loss the focus leaves the body for outside a modal is a control the page disabled or
- * hid that is drawn and enabled again within the rescue's wait, while the focus is still on the
- * body: that control gets it back. A loss of a control the reader had scrolled out of their sight
- * scrolls nothing and focuses no control (`outOfSight`): the focus stays on the body, except in a
- * dialog or a panel, which takes it itself, for a loss the reader caused, and in an open modal
- * dialog, whose own stop takes it, for one they did not (`leaveUnseen`).
+ * The page's focus hand-offs: a component's own hand-off for a control a press takes out of it
+ * (`useFocusPlace`), and the press that arms it (`armHandOff`). A row is `row-marker.ts`'s one
+ * rule, `ROW_SELECTOR`. Every component that hands its focus off arms the hand-off with its own
+ * press, at its root (`armOnPress`), and a loss is the reader's only while a press that armed it
+ * is still live there (`causedByReader`, `pressOnRowMark`): on the lost control, inside any row
+ * around it, or inside the dialog, panel or selection bar it was lost from. Some hand-offs work
+ * from a record of their own instead, and ask none of this, among them ControlRow's chips
+ * hand-off, which keeps the last click inside a chip's box or on **Clear filters**, whether or
+ * not it took anything off (`ControlRow`'s `handOff`), until what was clicked has left the page,
+ * and the Agents page's follow of a row the reader's own pin moved (`AgentsPage`'s
+ * `focusAfterPin`), which keeps a pin made from the row holding the focus until the commit that
+ * draws it. A hold on what answers the press keeps it live (`holdHandOff`),
+ * and so does its control's own hold, up to the write deadline and only until a hold on what
+ * answers the press has begun: a control still held once that hold has ended says only that
+ * there is nothing left to do. Where no hold on what answers the press begins - a step of
+ * `StepButton` or `Pager` that leaves its control held with no page to go to - its control's own
+ * hold keeps the press live up to the write deadline. A Tab that moves the focus inside the region
+ * a press was made in, while that press's own write is out, leaves the press live, since the
+ * region's later going is that press's own doing. Nothing armed, a loss is answered as the page
+ * answered it before it had any hand-off: the focus stays on the body, and nothing scrolls.
+ *
+ * A loss the reader caused lands on the control now at the lost control's place in the
+ * component's container - one that moved there from the lost control's own row, card or toolbar,
+ * and not one that only took its index in the Tab order (`atPlaceOf`) - or the nearest one before
+ * it, else on the fallback the component names, else on the region's own stop. Where neither the
+ * container nor the fallback offers a control, the hand-off walks back the same way over the
+ * region its container was in (`walkBackInRegion`). A component's hand-off answers only for its
+ * own controls: a focus in a dialog, a panel or a selection bar drawn inside its container is
+ * that region's, and in a selection bar the bar's own hand-off answers a loss the reader caused
+ * (`SelectionBar`). Each walk back passes over every control that takes typed text (`takesText`)
+ * and every control the reader cannot see now (`inSightNow`). It lands a control with `land`,
+ * which scrolls a control partly in sight to its nearest edge and one wholly in sight not at all,
+ * as it lands and again once the commit it landed in is done. A region's own stop takes the focus
+ * with no scroll (`focusOwnStop`). A loss of a control the reader had scrolled out of their sight,
+ * read against what the reader could see while the press was armed, scrolls nothing and focuses
+ * no control (`outOfSight`).
  */
 
 /** The form controls: the focus reaches one only while it is not `disabled` (`FOCUSABLE`), and a
  *  row holds one as a control either way (`ROW_CONTROL`). */
 const FORM_FIELDS = ["button", "textarea", "input", "select"];
 
-/** An element given a Tab stop of its own: any `tabindex` but -1. */
-const TAB_STOP = '[tabindex]:not([tabindex="-1"])';
+/** A link, a disclosure's summary or a form control the page has not taken out of the Tab order:
+ *  `tabindex="-1"` is a page's word that the keyboard does not stop there - a tab of a tab list
+ *  other than the selected one, and a control of a row of the issue page's outline while that row
+ *  holds no Tab stops (`tabStops`), since the keys move the focus between those rows. A hand-off
+ *  that counted them would land where no key could have taken the reader: at 390 px in Chromium,
+ *  "66 more rows below" on the outline drew its rows in its place, a hand-off landed on the first
+ *  one's "more · 106 words", and that row, holding the focus, opened its body and drew its words
+ *  whole. */
+const IN_TAB_ORDER = ':not([tabindex="-1"])';
 
-/** What the keyboard focus can reach: a link, a form control that is not `disabled`, or anything
- *  given a Tab stop of its own. A control refused with `aria-disabled` is one, since it keeps its
- *  Tab stop. */
-const FOCUSABLE = ["a[href]", ...FORM_FIELDS.map((tag) => `${tag}:not(:disabled)`), TAB_STOP].join(
-  ", "
-);
+/** An element given a Tab stop of its own: any `tabindex` but -1. */
+const TAB_STOP = `[tabindex]${IN_TAB_ORDER}`;
+
+/** A disclosure's summary: the first `<summary>` of a `<details>`, which the keyboard reaches as
+ *  it reaches a button, to open and close its disclosure. */
+const SUMMARY = "details > summary:first-of-type";
+
+/** What the keyboard focus can reach: a link, a disclosure's summary, a form control that is not
+ *  `disabled`, each left in the Tab order (`IN_TAB_ORDER`), or anything given a Tab stop of its
+ *  own. A control refused with `aria-disabled` is one, since it keeps its Tab stop. */
+const FOCUSABLE = [
+  `a[href]${IN_TAB_ORDER}`,
+  `${SUMMARY}${IN_TAB_ORDER}`,
+  ...FORM_FIELDS.map((tag) => `${tag}:not(:disabled)${IN_TAB_ORDER}`),
+  TAB_STOP,
+].join(", ");
 
 /** The controls the focus can reach inside `container`, in order. One under a `hidden` ancestor -
  *  a composer kept mounted, out of sight, for a send it has out - takes no focus, so it is never
@@ -50,21 +89,50 @@ export function focusableIn(container: Element): HTMLElement[] {
 
 /** A ref that focuses its element once, as it enters the page: React calls a ref callback again
  *  only when the callback itself is a new one, so this single function never pulls the focus back
- *  on a later render, after the reader has moved it on (AskCard's **Ask back instead**, the issue
- *  title's editor). */
+ *  on a later render, after the reader has moved it on (the issue title's editor). */
 export function focusOnMount(element: HTMLElement | null): void {
   element?.focus();
 }
 
 /** Where a hand-off sends the focus a control took away with it, nearest first: the control now
- *  at `index` in `controls`, then each control before that place, walking back. However many
- *  controls went together, the focus lands where they were, and by the same walk in every engine
- *  whether the loss was counted while they were still in the page (Chromium's `focusout`) or
- *  after they went (the removal Firefox and WebKit report alone). */
-function placesFrom(controls: readonly HTMLElement[], index: number): HTMLElement[] {
+ *  at `index` in `controls` where it stands at the lost control's place (`atPlace`), then each
+ *  control before that place, walking back. `index` is the lost control's place among `controls`
+ *  as they stand now: how many of them come before the point it left. A component's hand-off
+ *  counts the place of a control taken away off the spot it went from, once it has gone
+ *  (`placeLeft`), so however many controls went together, the walk starts where they were. */
+function placesFrom(
+  controls: readonly HTMLElement[],
+  index: number,
+  atPlace: (control: Element) => boolean
+): HTMLElement[] {
   const before = controls.slice(0, Math.min(index, controls.length)).reverse();
   const at = controls[index];
-  return at === undefined ? before : [at, ...before];
+  return at === undefined || !atPlace(at) ? before : [at, ...before];
+}
+
+/** Whether `element` stands in a row (`ROW_SELECTOR`) inside `within` other than `within` itself. */
+function inRowWithin(element: Element, within: Element): boolean {
+  const row = element.closest(ROW_SELECTOR);
+  return row !== null && row !== within && within.contains(row);
+}
+
+/** The rule that tells whether a control now at a lost control's index in the order of `within`,
+ *  its region or its container, stands at the lost control's place. Such a control moved into the
+ *  place by the same change from inside the lost control's own row, card or toolbar, as Blocked on
+ *  you moves into the place Mark all read leaves, and as a row's Expand drawn outside its card
+ *  moves into the place the card's Answer leaves. `rows` are the rows the lost control stood in
+ *  inside `within`, nearest first. Where it stood in one, the control must stand in one of them
+ *  that is still in the page: rows nest, and an ask card in an Inbox row is the lost control's row
+ *  as much as the `<li>` around it. Where it stood in none, the control must stand in no row of
+ *  `within` either. A control that only takes the lost control's index in the Tab order, from
+ *  another row or item, is at no place of its, so the walk goes back before the place and the lost
+ *  control's own row or card comes first: a project List row's Start next, which the list read
+ *  after its write takes away, hands the focus to a control of its own row, not to the control of
+ *  another row that took its index. */
+function atPlaceOf(rows: readonly Element[], within: Element): (control: Element) => boolean {
+  if (rows.length === 0) return (control) => !inRowWithin(control, within);
+  const own = rows.filter((row) => row.isConnected && within.contains(row));
+  return (control) => own.some((row) => row.contains(control));
 }
 
 /** `element`'s place among the controls the focus can reach in `container` (`focusableIn`'s
@@ -82,38 +150,123 @@ function placeIn(container: Element, element: Element): { index: number; counted
   return { counted: false, index };
 }
 
-/** Where the keyboard focus sat: the element, the container it is counted in, and its place
- *  among that container's focusable controls. */
+/** Where the keyboard focus sat: the element, the container it is counted in, its place among
+ *  that container's focusable controls, and where it stood in that container (`spotsOf`), which
+ *  also say the rows it stood in there (`rowsIn`): the place and the spots are read as it takes
+ *  the focus and again after each commit while it holds it. The same is read of the region the
+ *  container is in (`around`). */
 interface Place {
+  /** Where the element stood in the region its container is in (`RegionPlace`), else null where
+   *  no region holds it. */
+  readonly around: RegionPlace | null;
   readonly container: Element;
   readonly element: Element;
   index: number;
+  spots: readonly Spot[];
+}
+
+/** Where a component's focused control stood in the region its container is in
+ *  (`handOffRegionAround`): the region, the control's place among the controls the focus can
+ *  reach there (`placeIn`), and where it stood in it (`spotsOf`). Read as the control takes the
+ *  focus, since a container that went has no ancestors left to say its region, and again after
+ *  each commit while it holds the focus, for the hand-off's own walk back over the region
+ *  (`walkBackInRegion`) and for the region whose own stop takes the focus once that container
+ *  has gone (`handOffRegionOf`). */
+interface RegionPlace {
+  index: number;
+  readonly region: HTMLElement;
+  spots: readonly Spot[];
+}
+
+/** Where `element`, a control of `container`, stands in the region `container` is in
+ *  (`RegionPlace`); null where no region holds the element. */
+function regionPlaceOf(container: Element, element: Element): RegionPlace | null {
+  const region = handOffRegionAround(container);
+  if (region === null || !region.contains(element)) return null;
+  return { index: placeIn(region, element).index, region, spots: spotsOf(element, region) };
+}
+
+/** The walk back a component's hand-off makes over the region its container was in where its
+ *  container offers no control: among the controls the region draws that are its own
+ *  (`drawnIn`), from the place `element` left there (`placeLeft`), to the control now at that
+ *  place where it moved there from the element's own row, or from no row where the element stood
+ *  in none (`atPlaceOf`), else to the nearest one before it, passing over every control that
+ *  takes typed text (`walkBack`) and every control the reader cannot see now (`inSightNow`), and
+ *  landed with `land`. Where none of them takes the focus, the region's own stop takes it with
+ *  no scroll (`focusOwnStop`). A region no longer in the page and drawn (`present`) moves
+ *  nothing. */
+function walkBackInRegion(element: Element, around: RegionPlace): void {
+  const { region, spots } = around;
+  if (!present(region)) return;
+  const drawn = drawnIn(region);
+  const back = walkBack(
+    drawn,
+    placeLeft({ ...around, element }, region, drawn),
+    atPlaceOf(rowsIn(spots), region)
+  );
+  if (!landFirstInSight(back)) focusOwnStop(region);
 }
 
 /**
  * Keeps the keyboard focus off the page's body when a press takes away the element holding it
  * while the component around it stays - a page control that removes itself, a menu's trigger
  * that goes once its value is picked. The focus goes to the control now at that element's place
- * in its container, else to the nearest one before it, else to what `fallback` names for that
- * container (a table row's fallback is the row itself, and a row that has left the page names none).
+ * in its container where that control moved there from the element's own row, or from no row
+ * where the element stood in none (`atPlaceOf`), else to the nearest one before that place,
+ * passing over every control that takes typed text (`walkBack`): the reader never chose such a
+ * field, and their next key would be typed into it. Where no other control stands there, the
+ * focus goes to what `fallback` names for that container (a table row's fallback is the row
+ * itself, and a row that has left the page names none). A fallback that takes typed text, as a
+ * search box does, is passed over by the same rule, so it names no control.
+ *
+ * The hand-off keeps a sight rule as well. It passes over each of those controls, the fallback
+ * included, that the reader cannot see now (`inSightNow`), and lands the first one in sight that
+ * takes the focus with `land`. A control partly in sight is scrolled to its nearest edge, the
+ * least distance that shows it whole, as it lands and again once the commit is done: a layout
+ * effect after this one in that commit can scroll the page back under it, as the Inbox list's
+ * `ViewportAnchor` does. A control wholly in sight scrolls nothing. The browser's own scroll of a
+ * focused control would pull the page back to one out of sight: the Delivery page's **clear brush
+ * window**, with the Window control scrolled out above the window, scrolled the page 46 to 147 px
+ * back to that control. Where no control in sight takes the focus, the focus goes with no scroll
+ * to the own stop (`focusOwnStop`) of the region the container is in (`handOffRegionOf`): the
+ * dialog or panel holding it, else the shell's main content. A container that has left the page
+ * has no ancestors left to say its region, so for one it is the region noted as the element took
+ * the focus (`Place`'s `around`): the search bar's dialog a slot of its control row stood in, not
+ * the page's main content behind it. Where that region is not in the page and drawn, nothing
+ * moves. Where neither the walk nor `fallback` names any control - the container gone, as the
+ * project List's head goes with the table when a column filter's pick sends the List to read its
+ * issues, or holding none the focus can reach, as the Agents page's header with its select-all
+ * disabled - the hand-off walks back over the region the container was in as the element took the
+ * focus, from the place the element left there (`walkBackInRegion`).
  *
  * The component puts the handler this returns on its root as `onFocus`, which every focus inside
  * it bubbles to, from a portal too, since React bubbles through its own tree. `containerOf` names
  * the container a focused element is counted in, or null for one outside every container, whose
- * going moves nothing. An element React bubbled up from a portal is no control of the container,
- * so it is counted at the place of the one counted before it there, and not at all without one:
- * a nested panel's input is counted where the trigger that opened that panel is.
+ * going moves nothing. A focus in a dialog, a panel or a selection bar drawn inside the container
+ * (`inRegionWithin`) is no focus on a control of the component either, so its going moves nothing
+ * here, and the hand-off never walks out of that region to the component's controls; in a
+ * selection bar, the bar's own hand-off (`SelectionBar`) answers a loss the reader caused. An
+ * element React bubbled up from a portal is no control of the container, so it is counted at the
+ * place of the one counted before it there, in that one's spots, and not at all without one: a
+ * nested panel's input is counted where the trigger that opened that panel is.
+ *
+ * The place is counted again once the element has gone, off the spot it went from in the
+ * container (`placeLeft`): its place counted while it stood there takes in every control before
+ * it that went with it - a link taken away with the button after it, in the one parent the
+ * press takes away - and the walk would start at the control after them. Where no spot of it went
+ * from a parent still in the container, the place counted while it stood there is used.
  *
  * The check runs after every commit of the component, so after the one that took the element
  * away, and moves the focus only when the element has left the page and the focus is on the
  * body. An element still in the page that no longer holds the focus is one the reader moved off,
  * so it is forgotten, and its going later moves nothing. Nor does the going of an element the
- * reader had scrolled out of their sight (`outOfSight`), the page's rescue's rule read from the
- * rescue's own record: a live update taking a control out of a row drawn beyond the view, or
- * Mark all read going while the reader is scrolled away, pulls neither a list nor the page back
- * to the control at its place. Nor does a going the reader did not cause (`causedByReader`): the
- * hand-off moves the focus to a row only for a loss the reader caused, and the page's rescue
- * leaves an uncaused one on the body, or on an open modal dialog's own stop, with no scroll.
+ * reader had scrolled out of their sight (`outOfSight`), read from the armed press's record: a
+ * live update taking a control out of a row drawn beyond the view, or Mark all read going while
+ * the reader is scrolled away, pulls neither a list nor the page back to the control at its
+ * place. Nor does a going the reader did not cause (`causedByReader`): a loss is the reader's
+ * only while a press that armed the hand-off is live (`armHandOff`), which is why the component
+ * puts `armOnPress` on the same root as this handler, and any other loss leaves the focus on the
+ * body with no scroll.
  */
 export function useFocusPlace(
   containerOf: (element: Element) => Element | null,
@@ -129,62 +282,75 @@ export function useFocusPlace(
       if (held.container.contains(held.element)) {
         const { counted, index } = placeIn(held.container, held.element);
         if (counted) held.index = index;
+        held.spots = spotsOf(held.element, held.container);
+        const { around } = held;
+        if (around?.region.contains(held.element)) {
+          around.index = placeIn(around.region, held.element).index;
+          around.spots = spotsOf(held.element, around.region);
+        }
       }
       return;
     }
     place.current = null;
     if (held.element.isConnected || !focusOnDocument() || outOfSight(held.element)) return;
     if (!causedByReader(held.element)) return;
-    const placed = held.container.isConnected
-      ? placesFrom(focusableIn(held.container), held.index)[0]
-      : undefined;
-    (placed ?? fallback(held.container))?.focus();
+    let walked: HTMLElement[] = [];
+    if (held.container.isConnected) {
+      const controls = focusableIn(held.container);
+      walked = walkBack(
+        controls,
+        placeLeft(held, held.container, controls),
+        atPlaceOf(rowsIn(held.spots), held.container)
+      );
+    }
+    const fallbackControl = fallback(held.container);
+    const candidates =
+      fallbackControl === null || takesText(fallbackControl)
+        ? walked
+        : [...walked, fallbackControl];
+    if (candidates.length === 0) {
+      if (held.around !== null) walkBackInRegion(held.element, held.around);
+      return;
+    }
+    if (landFirstInSight(candidates)) return;
+    const region = handOffRegionOf(held);
+    if (region !== null) focusOwnStop(region);
   });
   return (event) => {
     const element = event.target;
     const container = containerOf(element);
-    if (container === null) {
+    if (container === null || inRegionWithin(container, element)) {
       place.current = null;
       return;
     }
     const before = place.current;
-    const carried = before?.container === container ? before.index : null;
+    const carried = before?.container === container ? before : null;
     if (!container.contains(element)) {
       // A portal's element: at the place of the control counted before it, or nowhere.
-      place.current = carried === null ? null : { container, element, index: carried };
+      place.current = carried === null ? null : { ...carried, element };
       return;
     }
     const { counted, index } = placeIn(container, element);
-    place.current = { container, element, index: counted ? index : (carried ?? -1) };
+    place.current = {
+      around: regionPlaceOf(container, element),
+      container,
+      element,
+      index: counted ? index : (carried?.index ?? -1),
+      spots: spotsOf(element, container),
+    };
   };
 }
 
-/** A dialog, modal or not - the search bar, the Inbox drawer, every `useDialog` dialog, and the
- *  panel a `PanelTrigger` opens - or any other panel an `AnchoredPanel` draws, which carries the
- *  keymap's `PANEL_ATTRIBUTE`: a `MultiSelect` list's, which has no role of its own. Each is a
- *  region of its own, and a press inside it is a press in it. Once it has gone with the element
- *  the press landed on, the press reads as one on the control it was opened from as well
- *  (`pressedOn`), since the focus goes back to its opener when it goes. */
+/** An element of role `dialog`, modal or not - the search bar, the Inbox drawer, every `useDialog`
+ *  dialog, the panel a `PanelTrigger` opens, a popover such as `ContextRing`'s - or any other
+ *  panel an `AnchoredPanel` draws, which carries the keymap's `PANEL_ATTRIBUTE`: a `MultiSelect`
+ *  list's, which has no role of its own. Each is a region of its own, and a press inside it is a
+ *  press in it (`PRESS_REGION`). */
 const DIALOG = `[role="dialog"], [${PANEL_ATTRIBUTE}]`;
-
-/** An open modal dialog: a `<dialog>` shown modally (`:modal`, the picture lightbox), or an
- *  element named a dialog that says it is modal (`aria-modal="true"`) - every `useDialog` dialog
- *  that does, the Inbox drawer, the phone's navigation drawer, and the issue page's margin and
- *  contents while the phone draws them as sheets. The page behind one is not the reader's to
- *  reach, so a loss the reader did not cause leaves the focus on its own stop rather than on the
- *  body (`leaveUncaused`). */
-const MODAL = 'dialog:modal, [role="dialog"][aria-modal="true"]';
-
-/** Whether `element` is a row of a table or list or inside one: whether it or an element around
- *  it is a row by `row-marker.ts`'s one rule, `ROW_SELECTOR`: a press on a row's mark is read by
- *  it (`pressOnRowMark`). */
-function inRow(element: Element): boolean {
-  return element.closest(ROW_SELECTOR) !== null;
-}
 
 /** Every row around `element` by `row-marker.ts`'s one rule (`ROW_SELECTOR`), itself included,
  *  nearest first: rows nest, as an ask card's `<article>` in an Inbox row's `<li>`, and a loss
- *  is read against each of them (`pressPlaces`, `rowPlacesOf`). */
+ *  is read against each of them (`pressPlaces`). */
 function rowsAround(element: Element): Element[] {
   const rows: Element[] = [];
   for (
@@ -201,36 +367,31 @@ function rowsAround(element: Element): Element[] {
  *  mark): the reader empties a selection from a row by it, from the bar itself otherwise. */
 const MARK = 'input[type="checkbox"]';
 
-/** The region a press that empties a selection could land in and still be the reader's own: a
- *  dialog or a panel (`DIALOG`), or the selection bar. */
-const PRESS_REGION = `${DIALOG}, [data-control="${CONTROL.selectionBar}"]`;
+/** Whether `element` is a row's mark: the one checkbox a row draws (`MARK`), inside a row by
+ *  `row-marker.ts`'s one rule (`ROW_SELECTOR`). A press on one is read apart (`pressOnRowMark`),
+ *  and the selection bar arms the hand-off for one (`SelectionBar`). */
+export function isRowMark(element: Element): boolean {
+  return element.matches(MARK) && element.closest(ROW_SELECTOR) !== null;
+}
 
-/** How long the rescue waits for a control disabled under the focus - by a press, or by an update
- *  the reader did not cause - to be enabled again before it hands the focus on as if that control
- *  had gone: the app's write deadline, past which a write is late and a composer lets go of what
- *  it holds the reader to. A slow send never ends the wait before its composer's own take-back,
- *  and a control enabled again after the wait gets the focus back no more. */
-const RESCUE_WAIT_MS = SEND_DEADLINE_MS;
+/** The regions of their own a focus can sit in: a dialog or a panel (`DIALOG`), or the selection
+ *  bar. A press that empties a selection could land in one and still be the reader's own, and a
+ *  focus in one drawn inside a component's container is that region's (`inRegionWithin`). */
+const PRESS_REGION = `${DIALOG}, [data-control="${CONTROL.selectionBar}"]`;
 
 /** Whether the page draws `element`: under no `hidden` ancestor, and given a box. */
 function rendered(element: Element): boolean {
   return element.closest("[hidden]") === null && element.getClientRects().length > 0;
 }
 
-/** The region a control is counted in: the dialog or panel holding it (`DIALOG`), modal or not,
- *  else the shell's main content (`main`), else the document. */
-function regionOf(element: Element, main: HTMLElement | null): Element {
-  return element.closest(DIALOG) ?? (main?.contains(element) ? main : document.body);
-}
-
 /** The controls the focus can reach in `region` that the page draws and that are the region's
- *  own - none of a dialog inside it, and, for the document, none of the main content's either -
- *  since a loss is answered inside the region it was lost in. The rescue counts places among
- *  these and lands only on these, so a control drawn at one width alone - `md:hidden`, say -
- *  neither holds a place nor is handed a focus it cannot show. */
-function drawnIn(region: Element, main: HTMLElement | null): HTMLElement[] {
+ *  own - none of a dialog or a panel inside it (`DIALOG`) - since a loss is answered inside the
+ *  region it was lost in. A hand-off's walk back over a region counts places among these and
+ *  lands only on these (`walkBackInRegion`), so a control drawn at one width alone - `md:hidden`,
+ *  say - neither holds a place nor is handed a focus it cannot show. */
+function drawnIn(region: Element): HTMLElement[] {
   return focusableIn(region).filter(
-    (control) => regionOf(control, main) === region && rendered(control)
+    (control) => (control.closest(DIALOG) ?? region) === region && rendered(control)
   );
 }
 
@@ -241,11 +402,34 @@ function present(region: Element): boolean {
   return region.isConnected && rendered(region);
 }
 
-/** Whether `element` stands as a control the reader can use: not disabled, and drawn. A focus
- *  lost from one that does not was taken from the reader (`taken`); the reader leaves one that
- *  still does (`left`). */
-function stands(element: Element): boolean {
-  return !element.matches(":disabled") && rendered(element);
+/** The region a component's container is in: the dialog or panel holding `container`
+ *  (`DIALOG`), else the shell's main content - the `main` element around `container`, else the
+ *  page's - else null. */
+function handOffRegionAround(container: Element): HTMLElement | null {
+  const region =
+    container.closest(DIALOG) ?? container.closest("main") ?? document.querySelector("main");
+  return region instanceof HTMLElement ? region : null;
+}
+
+/** The region whose own stop takes the focus where a component's hand-off finds no control in
+ *  sight to land on (`useFocusPlace`), while that region is in the page and drawn (`present`),
+ *  else null: the one `held`'s container is in (`handOffRegionAround`), and for a container that
+ *  has left the page the one noted as the element took the focus (`around`). The region around a
+ *  container that has gone is read off nothing: it has no `closest` dialog or `main` of its own,
+ *  and the page's main content would take the focus out of the dialog it stood in. */
+function handOffRegionOf({ around, container }: Place): HTMLElement | null {
+  const region = container.isConnected ? handOffRegionAround(container) : (around?.region ?? null);
+  return region !== null && present(region) ? region : null;
+}
+
+/** Whether `element` sits in a region of its own (`PRESS_REGION`) that `container` holds and is
+ *  not: a dialog, a panel or a selection bar a page draws inside a component's container, as the
+ *  Delivery page draws its Session groups dialog in its control row's slot. Such a focus is the
+ *  region's, so a component's hand-off notes it nowhere (`useFocusPlace`). A region around
+ *  `container`, as the search bar's dialog is around its control row, is none of these. */
+function inRegionWithin(container: Element, element: Element): boolean {
+  const region = element.closest(PRESS_REGION);
+  return region !== null && region !== container && container.contains(region);
 }
 
 /** How many of `controls` come before `node` in the page. */
@@ -264,46 +448,227 @@ function countBefore(controls: readonly Element[], node: Node): number {
 }
 
 /** Whether the keyboard focus is lost: on the body, or still on an element that has left the
- *  page. WebKit and Firefox move the focus off a removed element only at the next rendering
- *  update (the HTML spec's focus fixup), so until then the document still names it. The one
- *  check for a removed focus: the rescue below asks it, and so does a list closing over its own
- *  text box (`MultiSelect`). */
+ *  page. Chromium, Firefox and WebKit, as Playwright runs them, name the body at once when the
+ *  focused element or a parent of it is removed (measured: read at once, in a microtask, a task and
+ *  a frame); an element hidden or disabled under the focus stays named until the task after the
+ *  next frame. The element that has left the page is checked as well, so an engine that names it
+ *  until its focus fixup is read the same way. A list (`MultiSelect`), as it closes over its own
+ *  text box and after a press on one of its rows, and the Inbox's hand-off of a focus its reading
+ *  column's question took with it (`Inbox.tsx`) ask it. A component's hand-off (`useFocusPlace`),
+ *  ControlRow's chips hand-off and the selection bar's (`SelectionBar`), among others, ask
+ *  `focusOnDocument()` instead, the body alone, which agrees with this after a removal, since
+ *  every engine names the body at once then (measured above). */
 export function focusLost(): boolean {
   const focused = document.activeElement;
   return focused === null || focused === document.body || !focused.isConnected;
 }
 
-/** Focuses `element` and, once it holds the focus, scrolls it into view: WebKit scrolls a focused
- *  control into view only a frame later, by when a list's own scroll keeping may have moved the
- *  page again. Answers whether it took the focus. */
-function land(element: HTMLElement): boolean {
-  element.focus();
-  if (document.activeElement !== element) return false;
-  element.scrollIntoView({ block: "nearest", inline: "nearest" });
+/** Focuses `element` with no scroll of the engine's own and runs the caller's scroll once it
+ *  holds the focus. A later layout effect can undo that scroll: the Inbox's `ViewportAnchor`
+ *  puts the row it holds back where the commit found it. Run the scroll rule again after the
+ *  commit, while the element still holds the focus. The engine's own focus scroll can centre
+ *  a cut control or scroll a frame later; neither gets to move this landing. */
+function land(element: HTMLElement, show: () => void): boolean {
+  if (!focusNoScroll(element)) return false;
+  show();
+  queueMicrotask(() => {
+    if (document.activeElement === element) show();
+  });
   return true;
+}
+
+/** Shows a generic component hand-off at its nearest edge. A control wholly in sight scrolls
+ *  nothing, as does one wholly out of sight when the hand-off only shows cut controls. */
+function showWhole(element: HTMLElement, clips: Map<Element, boolean>, onlyCut: boolean): void {
+  const sight = sightOf(clippingBoxes(element, clips));
+  const drawn = boxOf(element);
+  if (liesWithin(drawn, sight) || (onlyCut && !meets(drawn, sight))) return;
+  element.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+/** Lands the first of `candidates`, in their order, that the reader can see now (`inSightNow`)
+ *  and that takes the focus (`land`): a component's hand-off lands so (`useFocusPlace`,
+ *  `walkBackInRegion`). Answers whether one took it. */
+function landFirstInSight(candidates: readonly HTMLElement[]): boolean {
+  // One read of each box's style for the whole hand-off (`clippingBoxes`).
+  const clips = new Map<Element, boolean>();
+  return candidates.some(
+    (candidate) =>
+      inSightNow(candidate, clips) && land(candidate, () => showWhole(candidate, clips, true))
+  );
+}
+
+/** Lands a component's named control and shows it at its nearest edge even if it starts
+ *  wholly out of sight. ControlRow's chips use this after the Inbox's `ViewportAnchor` has put
+ *  the control row back where the commit found it. */
+export function landWhole(element: HTMLElement): boolean {
+  const clips = new Map<Element, boolean>();
+  return land(element, () => showWhole(element, clips, false));
+}
+
+/** Scrolls every clipping box around `element` and the window the least distance that shows
+ *  `element` whole, below `head` if given, ignoring CSS scroll padding. When `origin` is given,
+ *  its box moves to the closest position to `origin.top` that still fits `element`, rather than
+ *  anchoring to an approximate virtual jump. */
+export function scrollToNearest(
+  element: Element,
+  head: Element | null = null,
+  origin?: { readonly box: HTMLElement; readonly top: number }
+): void {
+  const boxes = clippingBoxes(element);
+  const headBox = head === null ? undefined : boxes.find((box) => box.contains(head));
+  for (const box of boxes) {
+    const sight = belowHead(scrollportOf(box), box === headBox ? head : null);
+    const drawn = boxOf(element);
+    const from = box === origin?.box ? origin.top - box.scrollTop : 0;
+    scrollNearestIn(box, drawn, sight, from);
+  }
+  scrollNearestIn(
+    window,
+    boxOf(element),
+    belowHead(viewport(), headBox === undefined ? head : null)
+  );
+}
+
+/** Lands the selection bar's target at its nearest visible edge, ignoring CSS scroll padding.
+ *  The table can supply the scroll position before it had to draw a virtual row: show the
+ *  measured checkbox at the closest position to that starting point, not to the draw's jump. */
+export function landNearest(
+  element: HTMLElement,
+  head: Element | null = null,
+  origin?: { readonly box: HTMLElement; readonly top: number }
+): boolean {
+  let firstOrigin = origin;
+  return land(element, () => {
+    scrollToNearest(element, head, firstOrigin);
+    firstOrigin = undefined;
+  });
+}
+
+/** Scrolls only the axes where the target needs to move. */
+function scrollNearestIn(scroller: Element | Window, drawn: Edges, sight: Edges, from = 0): void {
+  const top = nearestDelta(drawn.top, drawn.bottom, sight.top, sight.bottom, from);
+  const left = nearestDelta(drawn.left, drawn.right, sight.left, sight.right);
+  if (left !== 0) scroller.scrollBy(top === 0 ? { left } : { left, top });
+  else if (top !== 0) scroller.scrollBy({ top });
+}
+
+/** The closest scroll delta to `from` that fits the target between the two visible edges.
+ *  Round toward the edge where needed so an engine rounding scroll offsets cannot leave a cut.
+ *  If the target spans both edges and cannot fit, leave it where it is. */
+function nearestDelta(start: number, end: number, low: number, high: number, from = 0): number {
+  const min = Math.ceil(end - high);
+  const max = Math.floor(start - low);
+  if (min <= max) return Math.max(min, Math.min(from, max));
+  if (start < low && end > high) return 0;
+  return Math.abs(from - min) <= Math.abs(from - max) ? min : max;
+}
+
+/** A box's edges, in pixels from the viewport's top left corner. */
+interface Edges {
+  readonly bottom: number;
+  readonly left: number;
+  readonly right: number;
+  readonly top: number;
+}
+
+/** The box of `element`, where it stands now. */
+function boxOf(element: Element): Edges {
+  const { bottom, left, right, top } = element.getBoundingClientRect();
+  return { bottom, left, right, top };
+}
+
+/** The window's visible edges, without space reserved for a sheet by CSS scroll padding. */
+function viewport(): Edges {
+  return { bottom: window.innerHeight, left: 0, right: window.innerWidth, top: 0 };
+}
+
+/** The inside of a clipping box's border and scrollbars, in window coordinates. */
+function scrollportOf(box: Element): Edges {
+  const drawn = boxOf(box);
+  const top = drawn.top + box.clientTop;
+  const left = drawn.left + box.clientLeft;
+  // Without client dimensions, use the measured bounds (happy-dom's layout stubs).
+  return {
+    bottom: box.clientHeight ? top + box.clientHeight : drawn.bottom,
+    left,
+    right: box.clientWidth ? left + box.clientWidth : drawn.right,
+    top,
+  };
+}
+
+/** The part of `edges` below a list's sticky head. */
+function belowHead(edges: Edges, head: Element | null): Edges {
+  return head === null
+    ? edges
+    : { ...edges, top: Math.max(edges.top, head.getBoundingClientRect().bottom) };
+}
+
+/** What is in the reader's sight through the boxes around an element that can hide it. */
+function sightOf(boxes: Iterable<Element>, edgesOf = boxOf): Edges {
+  let { bottom, left, right, top } = viewport();
+  for (const box of boxes) {
+    const edges = edgesOf(box);
+    top = Math.max(top, edges.top);
+    left = Math.max(left, edges.left);
+    bottom = Math.min(bottom, edges.bottom);
+    right = Math.min(right, edges.right);
+  }
+  return { bottom, left, right, top };
+}
+
+/** A point in the visible part of a selection mark, or null if its edge only touches the view
+ *  or it is entirely outside it. The sticky head clips the mark even though it is not one of
+ *  the mark's ancestors. */
+export function visibleMarkPoint(
+  mark: HTMLElement,
+  clips: Map<Element, boolean>,
+  head: Element | null
+): { x: number; y: number } | null {
+  const sight = belowHead(sightOf(clippingBoxes(mark, clips), scrollportOf), head);
+  const drawn = boxOf(mark);
+  const left = Math.max(drawn.left, sight.left);
+  const right = Math.min(drawn.right, sight.right);
+  const top = Math.max(drawn.top, sight.top);
+  const bottom = Math.min(drawn.bottom, sight.bottom);
+  if (left < right && top < bottom) return { x: (left + right) / 2, y: (top + bottom) / 2 };
+  // happy-dom's unmeasured mark is a point, not a laid-out rectangle.
+  if (drawn.top === drawn.bottom && drawn.left === drawn.right && liesWithin(drawn, sight)) {
+    return { x: drawn.left, y: drawn.top };
+  }
+  return null;
+}
+
+/** Whether `drawn` meets `sight`: a box whose edge only touches the edge of what is in sight
+ *  counts as meeting it. */
+function meets(drawn: Edges, sight: Edges): boolean {
+  return (
+    drawn.bottom >= sight.top &&
+    drawn.top <= sight.bottom &&
+    drawn.right >= sight.left &&
+    drawn.left <= sight.right
+  );
+}
+
+/** Whether `drawn` lies wholly within `sight`. */
+function liesWithin(drawn: Edges, sight: Edges): boolean {
+  return (
+    drawn.top >= sight.top &&
+    drawn.bottom <= sight.bottom &&
+    drawn.left >= sight.left &&
+    drawn.right <= sight.right
+  );
 }
 
 /** Whether any part of `element` is in the reader's sight: its box meets the viewport and every
  *  box in `boxes`, the boxes around it that can hide it (`Sight`). An element whose edge only
  *  touches the edge of what is in sight counts as in sight. */
 function inSight(element: Element, boxes: Iterable<Element>): boolean {
-  let top = 0;
-  let left = 0;
-  let bottom = window.innerHeight;
-  let right = window.innerWidth;
-  for (const box of boxes) {
-    const edges = box.getBoundingClientRect();
-    top = Math.max(top, edges.top);
-    left = Math.max(left, edges.left);
-    bottom = Math.min(bottom, edges.bottom);
-    right = Math.min(right, edges.right);
-  }
-  const drawn = element.getBoundingClientRect();
-  return drawn.bottom >= top && drawn.top <= bottom && drawn.right >= left && drawn.left <= right;
+  return meets(boxOf(element), sightOf(boxes));
 }
 
 /** The overflow values that clip what overflows a box. */
-const CLIPPING_OVERFLOW: Record<string, true> = {
+export const CLIPPING_OVERFLOW: Record<string, true> = {
   auto: true,
   clip: true,
   hidden: true,
@@ -312,31 +677,37 @@ const CLIPPING_OVERFLOW: Record<string, true> = {
 
 /** The boxes around `element` that clip what overflows them, nearest first: every ancestor whose
  *  overflow clips (`CLIPPING_OVERFLOW`), short of the body and the root, whose overflow is the
- *  viewport's. */
-function clippingBoxes(element: Element): Element[] {
+ *  viewport's. `clips` keeps whether each ancestor read clips, so a walk that measures many
+ *  controls of one list reads each box's style once. */
+function clippingBoxes(element: Element, clips?: Map<Element, boolean>): Element[] {
   const boxes: Element[] = [];
   for (
     let box = element.parentElement;
     box !== null && box !== document.body && box !== document.documentElement;
     box = box.parentElement
   ) {
-    const { overflowX, overflowY } = getComputedStyle(box);
-    if (CLIPPING_OVERFLOW[overflowX] || CLIPPING_OVERFLOW[overflowY]) boxes.push(box);
+    let clipping = clips?.get(box);
+    if (clipping === undefined) {
+      const { overflowX, overflowY } = getComputedStyle(box);
+      clipping = CLIPPING_OVERFLOW[overflowX] === true || CLIPPING_OVERFLOW[overflowY] === true;
+      clips?.set(box, clipping);
+    }
+    if (clipping) boxes.push(box);
   }
   return boxes;
 }
 
-/** The element the focus was last noted on, and whether the reader can still see it: read off
- *  every scroll that can move it - the page's, or a box's around it, which `boxes` keeps - and
- *  every resize of the window, against every box around it that clips it, which `boxes` keeps
- *  from then on, while it is in the page and drawn. The rescue reads it when it answers a loss
- *  of that element, which may have gone by then, so it holds what the last read before that saw. */
+/** The element the focus was last noted on while a press is armed, and whether the reader can
+ *  still see it: read at every animation frame while the press is armed (`armPress`), against
+ *  every box around it that clips it, which `boxes` keeps, while it is in the page and drawn. A
+ *  hand-off reads it when it answers a loss of that element, which may have gone by then, so it
+ *  holds what the last read before that saw (`outOfSight`). */
 interface Sight {
-  readonly boxes: Set<Element>;
+  readonly boxes: readonly Element[];
   readonly element: HTMLElement;
   seen: boolean;
   /** Whether a read since the element took the focus has found it in sight: the read at the
-   *  focus itself, or one at a scroll or a resize after it (`readSight`). */
+   *  focus itself, or one at a frame after it (`readSight`). */
   shown: boolean;
 }
 
@@ -354,125 +725,59 @@ function readSight(watched: Sight): void {
   watched.seen = now || !watched.shown;
 }
 
-/** The page's one record of what the reader can see of the element the focus was last noted on,
- *  which the page's rescue keeps (`useFocusRescue`), mounted once in the app shell: null while no
- *  rescue is mounted. Two component hand-offs read it too (`useFocusPlace`, `SelectionBar`), so
- *  one record decides for them and for the rescue. */
-let sight: Sight | null = null;
-
-/** Whether the reader had scrolled `element` out of their sight, as the page's rescue last read
- *  it: false for an element the rescue has not noted, and wherever no rescue is mounted. The
- *  rescue asks this of a loss's element before it answers the loss, and the two component
- *  hand-offs that read it (`useFocusPlace`, `SelectionBar`) ask it before they move the focus, so
- *  none of them pulls a list or the page back to a place the reader scrolled away from. */
+/** Whether the reader had scrolled `element` out of their sight, as the armed press last read it
+ *  (`ArmedPress`'s `sight`): false for an element it has not noted, and with nothing armed. The
+ *  two component hand-offs (`useFocusPlace`, `SelectionBar`) ask it before they move the focus,
+ *  so neither pulls a list or the page back to a place the reader scrolled away from. A read at
+ *  the loss would be wrong, since an element that has left the page has the viewport's top-left
+ *  corner for its box, which counts as in sight. */
 export function outOfSight(element: Element): boolean {
-  return sight?.element === element && !sight.seen;
+  const watched = armed?.sight ?? null;
+  return watched?.element === element && !watched.seen;
 }
 
-/** Whether a focus rescue is mounted, so the page is recording the reader's presses. Where none
- *  is - a component read in a unit test without the shell - every loss keeps the base hand-off,
- *  as it did before this rule. */
-let rescueMounted = false;
+/** Whether the reader had scrolled the element the armed press last noted the focus on out of
+ *  their sight, as the press last read it (`ArmedPress`'s `sight`), whatever element that is:
+ *  false with nothing armed or nothing noted. The selection bar asks it as it goes after a press
+ *  on a control outside it that its press holds took the focus from it (`repeatTookFocusFrom`):
+ *  the element that press focused can have left the page, and the focus with it, before the bar
+ *  can read its own going (`SelectionBar`). */
+export function focusedOutOfSight(): boolean {
+  const watched = armed?.sight ?? null;
+  return watched !== null && !watched.seen;
+}
 
 /** A control that cannot be pressed now: held while its write is out (`aria-disabled`,
  *  `held-press.ts`), or disabled, itself or through the fieldset around it. */
 const HELD = '[aria-disabled="true"], :disabled';
 
-/** The reader's latest press (`isPress`) - a pointer press, a key that acts rather than edits a
- *  field's text, or a pick - which tells a loss the reader caused from one an update made under
- *  them: where it landed, the dialog or panel it landed in (`DIALOG`) and the loss that region was
- *  opened from (`openedFrom`), the elements it can read as (`pressedOn`) that were already held
- *  when it was made (`heldBefore`, `heldAt`), its own release while that is still to come
- *  (`Release`; none for a pick's `change` or `input`), whether it can still be the cause of a loss
- *  (`live`, `answerPress`), and what stops the timers and the watch that end it. */
-interface Press {
-  readonly heldBefore: ReadonlySet<Element>;
-  live: boolean;
-  readonly opener: Loss | null;
-  readonly region: Element | null;
-  release: Release | null;
-  stop: () => void;
-  readonly target: Element;
-}
-
-/** The release a press waits for: the event that releases it (`pointerup`, `keyup`) from the
- *  pointer or the key that made the press (`by`, `pressedBy`), so that another pointer or key let
- *  go while the press is down - Space let go on a control Enter is still pressing - is not taken
- *  for it. */
-interface Release {
-  readonly by: number | string | null;
-  readonly type: "keyup" | "pointerup";
-}
-
-/** The reader's latest press, kept by the page's rescue while it is mounted, else null. */
-let lastPress: Press | null = null;
-
-/** The event that releases a press made by each event the rescue notes a press by. */
-const RELEASE: Readonly<Record<string, "keyup" | "pointerup">> = {
-  keydown: "keyup",
-  pointerdown: "pointerup",
-};
-
-/** What made `event`: its pointer (`pointerId`), or its key (`code`), else null. */
-function pressedBy(event: Event): number | string | null {
-  if (event instanceof PointerEvent) return event.pointerId;
-  return event instanceof KeyboardEvent ? event.code : null;
-}
-
-/** The `<input>` types the reader picks a value in rather than types one into: each fires its
- *  `input` at the pick, as a `<select>` does (`picksValue`). The rest are the text-entry types,
- *  whose `input` is typing, and the button family and hidden, which fire none. */
-const PICK_INPUT_TYPES: Record<string, true> = {
-  checkbox: true,
-  color: true,
-  date: true,
-  "datetime-local": true,
-  file: true,
-  month: true,
-  radio: true,
-  range: true,
-  time: true,
-  week: true,
-};
-
-/** Whether `element` takes its value by the reader's pick: a `<select>`, or an `<input>` of a
- *  pick type (`PICK_INPUT_TYPES`). */
-function picksValue(element: Element): boolean {
-  if (element instanceof HTMLSelectElement) return true;
-  return element instanceof HTMLInputElement && PICK_INPUT_TYPES[element.type] === true;
-}
-
-/** Whether `event` is a press of the reader's (`Press`), the act that can make a loss in its row,
- *  dialog or panel theirs (`causedByReader`). A pointer press is one, and so is any key on a
- *  control that takes no typed text - Enter, Space, Escape, the arrows, a page key. In a field
- *  that takes typed text (`takesText`) a character typed is none, whatever it is typed with, and
- *  only a key that acts on the page rather than on the text is one: Escape, Tab, Enter in a
- *  single-line `<input>`, which commits it, as the issue title's editor does, and a key held
- *  with Ctrl, Meta or Alt that types no character (`typesCharacter`), a shortcut such as
+/** Whether `event` is a press of the reader's: what arms a component's hand-off at its root
+ *  (`armOnPress`), and what ends an armed press (`armHandOff`). A pointer press is one, and so is
+ *  any key on a control that takes no typed text - Enter, Space, Escape, the arrows, a page key.
+ *  In a field that takes typed text (`takesText`) a character typed is none, whatever it is
+ *  typed with, and only a key that acts on the page rather than on the text is one: Escape, Tab,
+ *  Enter in a single-line `<input>`, which commits it, as the issue title's editor does, and a
+ *  key held with Ctrl, Meta or Alt that types no character (`typesCharacter`), a shortcut such as
  *  Ctrl+Enter or Meta+Enter that sends. A character or editing key there - a printable key, one
  *  held with AltGr or Option, Space, Backspace, Delete, the arrows, Home and End, Enter in a
  *  `<textarea>` or a content-editable element, which inserts a line - only edits the field. A
- *  `change` is one where the control fires it at the reader's pick, which Playwright and
- *  assistive tech make without a key or a pointer: a `<select>`, a checkbox, a radio, a file,
- *  range or color input, and a date, time, datetime-local, month or week box, which fires it from
- *  its picker or with the key that completes the value, though it takes typed text. A `change` is
- *  none on a field whose value is typed text alone (`commitsOnBlur`) - an `<input>` of type text,
- *  search, email, url, tel, password or number, a `<textarea>`, a content-editable element -
- *  where it is the field's commit on blur, which Chromium fires as an update takes the focused
- *  field away. An `input` is one on the controls that take their value by a pick (`picksValue`):
- *  a `<select>`, and an `<input>` of type checkbox, radio, file, range, color, date, time,
- *  datetime-local, month or week. Firefox fires `input` alone as the digit that completes a date
- *  is typed, and a value set without keys, as Playwright's `fill()` and assistive tech set it,
- *  fires `input` and then a `change` the page may already have taken the control away from at
- *  that `input`. An `input` is none on a text-entry field - an `<input>` of type text, search,
- *  email, url, tel, password or number, a `<textarea>`, a content-editable element - where it is
- *  typing, and none on any other element. */
+ *  `change` or an `input` is one on every control but a field whose value is typed text alone
+ *  (`commitsOnBlur`), where a `change` is the field's commit on blur, which Chromium fires as an
+ *  update takes the focused field away, and an `input` is typing: elsewhere each comes at the
+ *  reader's pick, which Playwright and assistive tech make without a key or a pointer. Firefox
+ *  fires `input` alone as the digit that completes a date is typed, and a value set without keys
+ *  fires `input` and then a `change` the page may already have taken the control away from at that
+ *  `input`. Why a walk-back passes over a date or time box all the same is `takesText`'s. An
+ *  input method's key (`inputMethodKey`) is none anywhere: a key pressed in a composition, or the
+ *  Enter or Escape that ends one, which Safari sends after the composition's end with keyCode 229,
+ *  commits or cancels what the reader was composing and acts on nothing of the page's. */
 function isPress(event: Event): event is Event & { readonly target: Element } {
   const { target } = event;
   if (!(target instanceof Element)) return false;
-  if (event.type === "change") return !commitsOnBlur(target);
-  if (event.type === "input") return picksValue(target);
-  if (!(event instanceof KeyboardEvent) || !takesText(target)) return true;
+  if (event.type === "change" || event.type === "input") return !commitsOnBlur(target);
+  if (!(event instanceof KeyboardEvent)) return true;
+  if (inputMethodKey(event)) return false;
+  if (!takesText(target)) return true;
   const { key } = event;
   return (
     key === "Escape" ||
@@ -493,14 +798,6 @@ function typesCharacter(event: KeyboardEvent): boolean {
   );
 }
 
-/** The nearest of `opener` and the openers before it whose region is still in the page and drawn
- *  (`present`), else null: where a focus lost from a region that has gone goes back to. */
-function drawnOpener(opener: Loss | null): Loss | null {
-  let from = opener;
-  while (from !== null && !present(from.region)) from = from.opener;
-  return from;
-}
-
 /** The control `element` is held through while it is in the page: the nearest of itself and the
  *  elements around it that cannot be pressed now (`HELD`) - the button a span or an icon of it is
  *  drawn in - else null. */
@@ -513,210 +810,521 @@ function isHeld(element: Element): boolean {
   return heldControl(element) !== null;
 }
 
-/** The elements a press on `target` can read as (`pressedOn`) - `target`, and the control each
- *  region around it was opened from, `opener` and each opener before it - that are held now
- *  (`isHeld`). Read as the press is made, before what it does: a control held then takes the
- *  press without a write, so its hold is no doing of the press (`answerPress`). */
-function heldAt(target: Element, opener: Loss | null): ReadonlySet<Element> {
-  const held = new Set<Element>();
-  if (isHeld(target)) held.add(target);
-  for (let from = opener; from !== null; from = from.opener) {
-    if (isHeld(from.element)) held.add(from.element);
+/** The longest an armed press's action keeps it live, counted from the arm (`armHandOff`): the
+ *  app's write deadline (`SEND_DEADLINE_MS`), the longest its control's hold keeps it live, and
+ *  then the request deadline (`REQUEST_DEADLINE_MS`), which bounds the hold through the re-read
+ *  that answers the write (`useReadBound`). It is the longest one write that lands within its
+ *  deadline, and then its re-read, can take, and it bounds every hold over the press the same
+ *  way, counted from the same arm: an action of several writes, as the List's Start next, too. */
+const ACTION_BOUND_MS = SEND_DEADLINE_MS + REQUEST_DEADLINE_MS;
+
+/** The keys that only modify another key: one pressed alone acts on nothing, so it leaves an
+ *  armed press armed (`armHandOff`), and the selection bar's hand-off owes its landing through it
+ *  (`SelectionBar`'s `useLastMarkedPlace`). */
+export const LONE_MODIFIERS: Readonly<Record<string, true>> = {
+  Alt: true,
+  Control: true,
+  Meta: true,
+  Shift: true,
+};
+
+/** The press that armed the component hand-offs (`armHandOff`): what tells a loss the reader
+ *  caused from one an update made under them (`causedByReader`, `pressOnRowMark`), and what the
+ *  reader could see of the focused element while it was armed (`outOfSight`). */
+interface ArmedPress {
+  /** Adds `root` to the roots the press was armed at (`roots`), and, where no root already added
+   *  holds it in the page, the controls held in it now (`HELD`) to those held before the press
+   *  (`holds`): the same press heard at a component's root inside another's is armed at both. */
+  readonly addRoot: (root: Element) => void;
+  /** The holds on what answers the press, begun while it is armed, that are still on
+   *  (`holdHandOff`). */
+  readonly answers: Set<object>;
+  /** Reads again whether anything still keeps the press armed; nothing once it has ended. */
+  changed: () => void;
+  /** The control the press landed on: the nearest of the element it landed on and the elements
+   *  around it that a row holds as a control by markup (`ROW_CONTROL`) - the button a span or an
+   *  icon of it is drawn in - else that element. */
+  readonly control: Element;
+  /** Ends the press now: its timers, its watch, its listeners and its frame loop stop. */
+  readonly end: () => void;
+  /** Whether `pressed` is, or is inside, a control the press holds now by a hold that began after
+   *  it (`HELD`): its own control, held where it was not as the press was made, or a control in a
+   *  root it was armed at that was not held when the press first read a root around it
+   *  (`addRoot`) - the Inbox bar's Snooze selected asks, held while the snooze its pick in the
+   *  open list sent is out. A press there takes nothing but the hold, and leaves this press the
+   *  cause (`armHandOff`). It needs neither the press's control nor the list it was made in still
+   *  in the page: the pick takes both away. */
+  readonly holds: (pressed: Element) => boolean;
+  /** The focused element and the dialog, panel or selection bar around it (`PRESS_REGION`), read
+   *  at the arm and at every focus while the press is armed, which `pressRegionOf` reads for an
+   *  element that has left the page. */
+  note: { readonly element: Element; readonly region: Element | null } | null;
+  /** The roots the press was armed at (`armOnPress`): the root of each component that hands its
+   *  focus off whose React tree the press bubbled through. A press in a portal - a pick in a list
+   *  a control of the component opened, which the page draws outside it - is a press inside that
+   *  component all the same, as React reads it, so a place that holds one of these holds the
+   *  press (`causedByReader`): the bulk Snooze picked in the Inbox bar's list is a press in the
+   *  bar, whose going after the write lands is the reader's. */
+  readonly roots: ReadonlySet<Element>;
+  /** What the reader can see of the focused element (`Sight`), read at the arm and at every
+   *  animation frame while the press is armed, while that element is in the page and drawn; null
+   *  while no element has held the focus since the arm. */
+  sight: Sight | null;
+  /** The element that held the focus when the reader's first press on a control the press holds
+   *  outside its own control (`holds`) came, or when the focus first moved onto such a control:
+   *  a click or a tap on a marked row's held Start next while the selection bar's Take out of
+   *  epic has its writes out. Null where the focus was then on the body or on an element that has
+   *  left the page, and while no such press or move has come. A later press of that kind keeps
+   *  it, as the second click of a double click does. A move of the focus onto any other element
+   *  forgets it, save the move the pointer's press itself makes (`onFocus`): onto the pressed
+   *  control, or onto an element around it where the control takes no focus from a pointer, as a
+   *  button takes none in WebKit. A press that drops the focus onto the body fires no `focusin`,
+   *  and keeps it. */
+  takenFrom: Element | null;
+}
+
+/** The armed press while one is (`armHandOff`), else null. */
+let armed: ArmedPress | null = null;
+
+/**
+ * Arms the component hand-offs for the reader's press on `pressed`: a loss counts as the reader's
+ * only while a press that armed them is live, and with nothing armed a loss is answered as the
+ * page answered it before it had any hand-off, on the body with nothing scrolled
+ * (`causedByReader`). A component calls it at its own root through `armOnPress`, which hands it
+ * that root (`root`); the selection bar also arms it for a press on a row's mark
+ * (`SelectionBar`), with no root.
+ *
+ * The press records the control it landed on (`ArmedPress`'s `control`), the root of the
+ * component it was armed at (`roots`) with the controls already held in it, the region it was
+ * made in (`madeIn`: the dialog, panel or selection bar around that control, `PRESS_REGION`, else
+ * the main element holding it, else none), whether that control was already held (`heldBefore`),
+ * and the focused element with the region around it (`note`). A second press while one is armed
+ * ends the one before it, save two, which add only the root they are armed at. A press on the
+ * armed control again - a checkbox's `click` and then its `change`, or the same click heard at a
+ * component's root inside another's - restarts nothing. Nor does a press on a control the armed
+ * press holds now by a hold that began after it, or on anything inside that control (`holds`):
+ * its own control, or a control of a root it was armed at that was not held as it was armed. A
+ * double click or a repeated Enter on a held control takes the press without a write, so the
+ * first press stays the cause, with its bounds as they were: a second Enter on the Inbox bar's
+ * Snooze selected asks, held while the snooze picked in its list is out, though that pick took
+ * the list's text box it was made in away. A press on a control held before the arm is the
+ * reader's next act, and arms anew. A press on a control the armed press holds outside its own
+ * control notes where it took the focus from (`takenFrom`), which the selection bar reads as it
+ * goes (`repeatTookFocusFrom`).
+ *
+ * The press is live from the arm until a frame and a task after the last of what keeps it live
+ * ends (`afterComponents`), so the commit that draws its answer and the effects after it are
+ * still its own. A press that holds nothing ends a frame and a task after the arm. A hold on what
+ * answers it, begun while it is live (`holdHandOff`), keeps it live until the hold ends. Its
+ * control held by a hold that began after the arm keeps it live too, up to the app's write
+ * deadline (`SEND_DEADLINE_MS`) from the arm, and only until a hold on what answers it has begun:
+ * once every such hold has ended its action is answered, and a control still held after that -
+ * the project List's Move, which its own press leaves with no epic to move to - says only that
+ * there is nothing to do, which keeps no press live. The control's hold is watched rather than
+ * polled, with a watch on the page's `aria-disabled`, `disabled` and children, so the control
+ * going, its fieldset enabled again or its write refused ends that hold. Nothing pulls the focus
+ * back to a control a refused write lets go. At `ACTION_BOUND_MS` from the arm the press stops
+ * counting whatever is still on and ends a frame and a task later.
+ *
+ * The reader's next act disarms it, read by listeners on the document installed only while a
+ * press is armed: a pointer press anywhere outside the armed control and the controls it holds
+ * (`holds`), and any key that is a press of theirs (`isPress`) and no modifier pressed alone,
+ * other than a key on one of those. Tab, with Shift or without, moves the focus off that control
+ * to another, so it disarms the press as well, save while the press's write is out - a hold on
+ * what answers it on, or its control held as above - where it waits for the focus to land
+ * (`focusin`, or the Tab's own `keyup`): a landing inside the region the press was made in keeps
+ * it live, since that region's later going is the press's own doing, as the project List's
+ * selection bar goes once the writes of its Take out of epic land and the list read after them
+ * settles, and a landing anywhere else disarms it. Escape arms nothing at a component's root
+ * (`armOnPress`): a control it takes away is the reader leaving it. The selection bar alone arms
+ * on it (`SelectionBar`), whose hand-off counts Escape from a control inside it as the reader's.
+ *
+ * While armed, the press reads at every animation frame what the reader can see of the focused
+ * element (`readSight`): an element never yet in sight is not counted as scrolled away, since
+ * WebKit scrolls a focused control into view a frame after the focus. The read stops while that
+ * element is not in the page and drawn, so what the last read before it went saw stands, and the
+ * loop stops with the press.
+ */
+export function armHandOff(pressed: Element, root?: Element): void {
+  const control = pressed.closest(ROW_CONTROL) ?? pressed;
+  const before = armed;
+  if (before !== null && (before.control === control || before.holds(pressed))) {
+    if (root !== undefined) before.addRoot(root);
+    return;
   }
-  return held;
+  before?.end();
+  armed = armPress(control, root);
 }
 
-/** The elements `press` reads as now: the one it landed on, and - once that element has left the
- *  page with the dialog or panel it landed in (`present`) - the control that region was opened
- *  from too, else the nearest opener before it whose region is still drawn (`drawnOpener`). A
- *  list's pick or a dialog's confirm takes its region away and hands the focus back to the
- *  trigger that opened it; a write the press made that takes that trigger, or the row around it,
- *  away only once the server answers is still the press's doing while the trigger is held. The
- *  element it landed on still counts, for a loss inside the region that went with it. A press in
- *  no dialog or panel, or in one opened from the body, is read as it landed. */
-function pressedOn(press: Press): Element[] {
-  const { opener, region, target } = press;
-  if (target.isConnected || region === null || present(region)) return [target];
-  const from = drawnOpener(opener);
-  return from === null ? [target] : [target, from.element];
+/** The React handler a component that hands its focus off puts on its root, the one that carries
+ *  its `useFocusPlace` handler, as `onClickCapture`, `onChangeCapture` and `onKeyDownCapture`
+ *  (`ARM_ON_PRESS`): it arms the hand-off for the element a press landed on (`armHandOff`), at
+ *  that root, before the press's own handler runs. A pick fires `change`, and Enter and Space on
+ *  a button fire `click`; a `change` that is no press - the `input` React reports as a text
+ *  field's change, at every character typed - arms nothing (`isPress`). A key arms where it is a
+ *  press of a control that acts at the key itself rather than at a `click`: Enter on any element,
+ *  as a list's text box picks its active row at Enter's `keydown` (`MultiSelect`), and Space on
+ *  one that takes no typed text (`takesText`), where it presses rather than types; any other key
+ *  arms nothing, and Escape none either, since a control it takes away is the reader leaving it.
+ *  An input method's key (`inputMethodKey`) arms nothing, Enter included: the Enter that ends a
+ *  composition, which Safari sends after its end with keyCode 229, commits what the reader was
+ *  composing into the text box and presses nothing (`isPress`). So a keyboard reader arms what a
+ *  pointer reader arms. It makes nothing interactive. */
+export function armOnPress(event: SyntheticEvent): void {
+  const pressed = event.nativeEvent;
+  if (pressed instanceof KeyboardEvent) {
+    const { key, target } = pressed;
+    if (!(target instanceof Element) || inputMethodKey(pressed)) return;
+    if (key === "Enter" || (key === " " && !takesText(target))) {
+      armHandOff(target, event.currentTarget);
+    }
+    return;
+  }
+  if (isPress(pressed)) armHandOff(pressed.target, event.currentTarget);
 }
 
-/** Whether a press on `target` lands on a control `press` holds: one `press` reads as
- *  (`pressedOn`), held now by a hold that began after `press` (not in `heldBefore`), with `target`
- *  that control or inside it. The controls are compared, not the nodes the presses landed on, so
- *  a press on a span or an icon of the button counts, and so does a press on the button after
- *  one on a span of it. */
-function onHeldControl(press: Press, target: Element): boolean {
-  return pressedOn(press).some(
-    (each) => !press.heldBefore.has(each) && heldControl(each)?.contains(target) === true
-  );
-}
+/** What a component that hands its focus off spreads onto its root, the one that carries its
+ *  `useFocusPlace` handler: `armOnPress` as `onChangeCapture`, `onClickCapture` and
+ *  `onKeyDownCapture`, so no root arms for one kind of press and not another. */
+export const ARM_ON_PRESS = {
+  onChangeCapture: armOnPress,
+  onClickCapture: armOnPress,
+  onKeyDownCapture: armOnPress,
+} as const;
 
-/** Keeps `press` live while the update that answers it is still to run: a press is the cause only
- *  of the change it leads to. That is a frame and a task from now (`afterComponents`) - from the
- *  press, and again from its own release, which a click answers (`noteRelease`) - by when React
- *  has committed what the press did and run its effects, and longer only while a control it reads
- *  as (`pressedOn`) is held (`HELD`) by any hold that began after the press - its write out, or
- *  what the press did to its own control, as a pager's Next is held on the last page it led to -
- *  and then until a frame and a task after that hold ends: the control taken away, or its
- *  `aria-disabled` or `disabled` gone. A control already held when the press was made
- *  (`heldBefore`) - the pager's Next on its last page, a select or a trigger held while an
- *  earlier write is out - took the press without a write, so its hold keeps the press live no
- *  longer than a press on a control held by nothing. The hold's end is watched rather than
- *  polled, since a write's latency is the server's, and the watch ends at the write deadline
- *  (`RESCUE_WAIT_MS`) counted from the press's release - from the press itself for a pick's
- *  `change` or `input`, which has none - as the rescue's own wait does, so a hold that never ends
- *  keeps no watch over the page and no press live past it. A press past that is no cause, so an
- *  update after it - a live update taking the row away, a refetch emptying the selection bar - is
- *  a loss the reader did not cause. */
-function answerPress(press: Press): void {
-  press.stop();
-  press.live = true;
-  // Once the press's target and its region have left the page, which they never come back to,
-  // what the press reads as is kept rather than walked again at every change the watch sees.
-  let kept: Element[] | null = null;
-  const pressed = (): Element[] => {
-    if (kept !== null) return kept;
-    const now = pressedOn(press);
-    const { region, target } = press;
-    if (!target.isConnected && (region === null || !region.isConnected)) kept = now;
-    return now;
+/** Begins a hold on what answers the armed press (`armHandOff`): begun while that press is live,
+ *  it keeps the press live until the function it answers runs, up to `ACTION_BOUND_MS` from the
+ *  arm, and from its start the press's control's own hold counts no longer. Begun while nothing is
+ *  armed, it does nothing. Every hold on what answers a write begins one: the control held while
+ *  the write is out and through the commit after its answer (`useHeldThroughAnswer`), through the
+ *  re-read that draws what the write changed (`useReadBound`), until the update that carries the
+ *  write is drawn (`useHoldUntilDrawn`), and through the whole run of a project List action
+ *  (`issues-table-actions.ts`'s `perform`). So the row or the form that what answers the write
+ *  takes away is still the press's doing (`causedByReader`). A refusal answers a press as a write
+ *  does: a project List action refused with no write begins one and ends it at once with the
+ *  refusal (`issues-table-actions.ts`'s `moveTo`), so the press's control, which its press leaves
+ *  held with nothing to do, keeps it live no longer. Answers what ends the hold; ending it again
+ *  does nothing. */
+export function holdHandOff(): () => void {
+  const press = armed;
+  if (press === null) return () => undefined;
+  const hold = {};
+  press.answers.add(hold);
+  press.changed();
+  return () => {
+    if (press.answers.delete(hold)) press.changed();
   };
-  const held = () => pressed().some((each) => !press.heldBefore.has(each) && isHeld(each));
-  press.stop = afterComponents(() => {
-    if (!held()) {
-      press.live = false;
+}
+
+/** A new record of what the reader can see of `element` (`Sight`), read now against every box
+ *  around it that clips it (`clippingBoxes`): seen, and shown where any of it is in sight now. */
+function sightOfFocused(element: HTMLElement): Sight {
+  const boxes = clippingBoxes(element);
+  return { boxes, element, seen: true, shown: inSight(element, boxes) };
+}
+
+/** Arms a press on `control`, armed at `root` where a component's root armed it (`armHandOff`):
+ *  starts its timers, its watch, its listeners and its frame loop, and answers it. */
+function armPress(control: Element, root: Element | undefined): ArmedPress {
+  /** Whether `control` was already held (`HELD`) as the press was made: that hold took the press
+   *  without a write, so it keeps the press armed no longer than a press on a control held by
+   *  nothing. */
+  const heldBefore = isHeld(control);
+  const madeIn = control.closest(PRESS_REGION) ?? control.closest("main");
+  const roots = new Set<Element>();
+  /** The controls of `roots` already held as each root was added (`addRoot`): their holds began
+   *  before the press, so a press on one is the reader's next act (`holds`). A root that a root
+   *  already added holds in the page adds none: within the press that armed both, the outer
+   *  root's read already took what is held in it, and a root first heard after the arm - the
+   *  project List's table body, reached by a press on its Start next that the selection bar's
+   *  Take out of epic holds - would count a control held since the arm as held before it. A
+   *  portal's root first heard after the arm, which no root added holds in the page, still adds
+   *  the controls held in it as it is heard. */
+  const heldAtArm = new Set<Element>();
+  const addRoot = (added: Element) => {
+    if (roots.has(added)) return;
+    let covered = false;
+    for (const each of roots) covered ||= each.contains(added);
+    roots.add(added);
+    if (!covered) for (const held of added.querySelectorAll(HELD)) heldAtArm.add(held);
+  };
+  if (root !== undefined) addRoot(root);
+  const holds = (pressed: Element) => {
+    if (!heldBefore && heldControl(control)?.contains(pressed) === true) return true;
+    const held = heldControl(pressed);
+    if (held === null || heldAtArm.has(held)) return false;
+    for (const each of roots) {
+      if (each.contains(held)) return true;
+    }
+    return false;
+  };
+  /** What cancels the press's end, from the moment nothing keeps it live until the end runs. */
+  let ending: (() => void) | null = null;
+  /** Whether the write deadline has passed: from then on the control's hold counts no longer. */
+  let late = false;
+  /** Whether a hold on what answers the press has begun (`holdHandOff`): from then on the
+   *  control's hold counts no longer either, so once every such hold has ended the press ends as
+   *  one that holds nothing does. */
+  let answerBegun = false;
+  /** Whether a Tab of the reader's is still to land while the press's write is out. */
+  let tabbing = false;
+  /** What the reader's pointer pressed last on a control the press holds outside its own control,
+   *  from that `pointerdown` until the first focus or key after it: the focus that pointer press
+   *  moves is its own, and keeps `takenFrom` (`onFocus`). */
+  let pointed: Element | null = null;
+  /** The animation frame the next read of what the reader can see waits for, else 0. */
+  let frame = 0;
+  /** Whether the press has ended: from then on none of its timers, watches or listeners acts. */
+  let over = false;
+  let watching = false;
+  const watcher = new MutationObserver(() => press.changed());
+  /** Whether the press's write is out: a hold on what answers it is on, or, up to the write
+   *  deadline and until such a hold has begun, its control is held by a hold that began after the
+   *  arm. */
+  const writeOut = () =>
+    press.answers.size > 0 || (!late && !answerBegun && !heldBefore && isHeld(control));
+  const read = () => {
+    if (press.answers.size > 0) answerBegun = true;
+    // The watch on the control's hold runs only while that hold alone can keep the press live
+    // (`writeOut`): never for a control already held at the arm, and not once a hold on what
+    // answers the press has begun or the write deadline has passed.
+    if (answerBegun || late || heldBefore) {
+      watcher.disconnect();
+      watching = false;
+    } else if (!watching) {
+      watching = true;
+      watcher.observe(document.body, {
+        attributeFilter: ["aria-disabled", "disabled"],
+        childList: true,
+        subtree: true,
+      });
+    }
+    if (writeOut()) {
+      ending?.();
+      ending = null;
       return;
     }
-    const end = () => {
-      watcher.disconnect();
-      window.clearTimeout(bound);
-      press.stop = afterComponents(() => {
-        press.live = false;
-      });
-    };
-    // The whole document is watched, so that the control going with a parent of it, a fieldset
-    // around it enabled again, or the region the press landed in going, ends the hold too.
-    const watcher = new MutationObserver(() => {
-      if (!held()) end();
-    });
-    const bound = window.setTimeout(end, RESCUE_WAIT_MS);
-    watcher.observe(document.body, {
-      attributeFilter: ["aria-disabled", "disabled"],
-      childList: true,
-      subtree: true,
-    });
-    press.stop = () => {
-      watcher.disconnect();
-      window.clearTimeout(bound);
-    };
-  });
+    ending ??= afterComponents(end);
+  };
+  const look = () => {
+    frame = 0;
+    const watched = press.sight;
+    if (over || watched === null || !watched.element.isConnected || !rendered(watched.element)) {
+      return;
+    }
+    readSight(watched);
+    frame = window.requestAnimationFrame(look);
+  };
+  const noteFocused = (element: Element) => {
+    press.note = { element, region: element.closest(PRESS_REGION) };
+    if (!(element instanceof HTMLElement) || press.sight?.element === element) return;
+    press.sight = sightOfFocused(element);
+    if (frame === 0) frame = window.requestAnimationFrame(look);
+  };
+  const settleTab = (landing: Element | null) => {
+    if (!tabbing) return;
+    tabbing = false;
+    if (landing === null || madeIn?.contains(landing) !== true) end();
+  };
+  /** Notes `from`, the element that held the focus, as where a press on a control the press holds
+   *  outside its own control, or a move of the focus onto one, took the focus from (`takenFrom`),
+   *  unless an earlier one did. The body, or an element that has left the page, notes nothing. */
+  const takeFocusFrom = (from: EventTarget | null) => {
+    if (press.takenFrom !== null || !(from instanceof Element)) return;
+    if (from !== document.body && from.isConnected) press.takenFrom = from;
+  };
+  const onPointer = ({ target }: PointerEvent) => {
+    if (!(target instanceof Element && (control.contains(target) || holds(target)))) {
+      end();
+    } else if (control.contains(target)) {
+      pointed = null;
+    } else {
+      pointed = target;
+      takeFocusFrom(document.activeElement);
+    }
+  };
+  const onKey = (event: KeyboardEvent) => {
+    pointed = null;
+    if (!isPress(event) || LONE_MODIFIERS[event.key] === true) return;
+    const { key, target } = event;
+    if (key === "Tab") {
+      if (madeIn !== null && writeOut()) tabbing = true;
+      else end();
+    } else if (!control.contains(target) && !holds(target)) {
+      end();
+    }
+  };
+  const onKeyUp = (event: KeyboardEvent) => {
+    if (event.key === "Tab") settleTab(document.activeElement);
+  };
+  const onFocus = (event: globalThis.FocusEvent) => {
+    const { relatedTarget, target } = event;
+    if (!(target instanceof Element)) return;
+    settleTab(target);
+    if (armed !== press) return;
+    noteFocused(target);
+    // The focus a pointer's press on a held control moves is that press's own: onto the control,
+    // or onto an element around it where the control takes no focus from a pointer.
+    const pressed = pointed;
+    pointed = null;
+    if (pressed !== null && target.contains(pressed)) return;
+    if (!control.contains(target) && holds(target)) takeFocusFrom(relatedTarget);
+    else press.takenFrom = null;
+  };
+  const end = () => {
+    if (over) return;
+    over = true;
+    press.changed = () => undefined;
+    watcher.disconnect();
+    window.clearTimeout(deadline);
+    window.clearTimeout(bound);
+    ending?.();
+    window.cancelAnimationFrame(frame);
+    document.removeEventListener("pointerdown", onPointer, true);
+    document.removeEventListener("keydown", onKey, true);
+    document.removeEventListener("keyup", onKeyUp, true);
+    document.removeEventListener("focusin", onFocus, true);
+    if (armed === press) armed = null;
+  };
+  const press: ArmedPress = {
+    addRoot,
+    answers: new Set(),
+    changed: () => read(),
+    control,
+    end,
+    holds,
+    note: null,
+    roots,
+    sight: null,
+    takenFrom: null,
+  };
+  const deadline = window.setTimeout(() => {
+    late = true;
+    press.changed();
+  }, SEND_DEADLINE_MS);
+  const bound = window.setTimeout(() => {
+    if (over) return;
+    press.changed = () => undefined;
+    watcher.disconnect();
+    ending?.();
+    ending = afterComponents(end);
+  }, ACTION_BOUND_MS);
+  document.addEventListener("pointerdown", onPointer, true);
+  document.addEventListener("keydown", onKey, true);
+  document.addEventListener("keyup", onKeyUp, true);
+  document.addEventListener("focusin", onFocus, true);
+  const focused = document.activeElement;
+  if (focused !== null && focused !== document.body) noteFocused(focused);
+  read();
+  return press;
 }
 
-/** The reader's latest press while it can still be the cause of a loss (`answerPress`). */
-function recentPress(): Press | null {
-  return lastPress?.live ? lastPress : null;
+/** The dialog, panel or selection bar (`PRESS_REGION`) `element`'s focus was lost from: the one
+ *  around it while it is in the page, and for one that has left the page the one the armed press
+ *  noted around it as it took the focus (`ArmedPress`'s `note`), since the region around an
+ *  element that has gone has gone from it unless it went with it. So the going a component's
+ *  hand-off reads after its commit (`useFocusPlace`, `SelectionBar`) is read in the region the
+ *  element was in. */
+function pressRegionOf(element: Element): Element | null {
+  const note = armed?.note ?? null;
+  if (!element.isConnected && note?.element === element) return note.region;
+  return element.closest(PRESS_REGION);
 }
 
 /** The places a press could have taken `element`'s focus from and still be the reader's own doing:
- *  the element itself, every row around it (`rowsAround`, by the rule `inRow` reads), and the
- *  dialog, panel or selection bar it was lost from. Every row counts, not the nearest alone: a
- *  press in an Inbox row outside the ask card it holds is a press in that row, so a loss inside
- *  the card is the reader's own. A press in a list's panel is in that panel, so a pick that takes
- *  the panel away is the reader's own, and the focus goes back to the trigger that opened it. */
+ *  the element itself, every row around it (`rowsAround`, by `ROW_SELECTOR`), and the
+ *  dialog, panel or selection bar it was lost from (`pressRegionOf`). Every row counts, not the
+ *  nearest alone: a press in an Inbox row outside the ask card it holds is a press in that row, so
+ *  a loss inside the card is the reader's own. A press in a list's panel is in that panel, so a
+ *  pick that takes the panel away is the reader's own, and the focus goes back to the trigger
+ *  that opened it. */
 function pressPlaces(element: Element): Element[] {
   const places: Element[] = [element, ...rowsAround(element)];
-  const region = element.closest(PRESS_REGION);
+  const region = pressRegionOf(element);
   if (region !== null) places.push(region);
   return places;
 }
 
 /**
- * Whether the reader caused the loss of `element`'s focus: their latest press (`isPress`) - a
- * pointer press, a key that acts rather than edits a field's text, or a pick - is still live, its
- * answer not yet run (`answerPress`), and landed on the element, inside any row it was in, or
- * inside the dialog, panel or selection bar it was lost from (`pressPlaces`), read at every element
- * the press reads as now (`pressedOn`): a pick in a list, a confirm in a dialog, that has gone
- * counts as a press on the trigger the list or the dialog was opened from as well. A loss the
- * reader caused keeps the hand-off that pulls the focus to the control now at the lost one's place;
- * one they did not - a live update taking a row away, a refetch emptying a bar - leaves the focus
- * on the body, or on an open modal dialog's own stop, and scrolls nothing (`leaveUncaused`). The
- * rescue and every component hand-off that can move the focus to another row read this one rule;
- * a hand-off to the lost control's own row, as AskCard's is, is no move to another row.
+ * Whether the reader caused the loss of `element`'s focus: the armed press (`armHandOff`) is
+ * still live, and one of `element`'s places (`pressPlaces`) - the element, any row it was in, or
+ * the dialog, panel or selection bar it was lost from - holds the press (`pressMadeIn`), as a pick
+ * in a list portalled out of the selection bar is a press in the bar. A loss the reader caused
+ * keeps the hand-off that pulls the focus to the control now at the lost one's place; one they did
+ * not - a live update taking a row away, a refetch emptying a bar - and every loss with nothing
+ * armed leaves the focus on the body, and scrolls nothing. A component hand-off that can move the
+ * focus to another row reads this one rule unless it answers its own press without it, as these
+ * do, for example: the Agents page's follow of a row the reader's own pin moved (`AgentsPage`'s
+ * `focusAfterPin`), which runs only in the commit after that pin, from its own record of it, and
+ * hands a focused control of the moved row the reader cannot see whole to the row now at that
+ * row's place (`controlsLikeRow`); and the issue page's Unpin (`IssuePins`), which hands the
+ * focus to the next pin's link, else the one before, else the section's heading, in the press
+ * itself, before its row goes. A hand-off to the lost control's own row, as AskCard's is, is no
+ * move to another row.
  */
 export function causedByReader(element: Element): boolean {
-  if (!rescueMounted) return true;
-  const press = recentPress();
+  return armed !== null && pressPlaces(element).some((place) => pressMadeIn(place));
+}
+
+/** Whether the armed press (`armHandOff`) is live and was made inside `place`: `place` is the
+ *  press's control or holds it, or holds a root the press was armed at (`ArmedPress`'s `roots`).
+ *  It reads `place` alone, never the places around it: where no focused element says where a
+ *  press was - WebKit leaves the focus on the body after a click on a button - a component asks
+ *  it of its own element, as the Inbox's anchor does of the page's control row
+ *  (`ViewportAnchor`'s `pressedRow`). */
+export function pressMadeIn(place: Element): boolean {
+  const press = armed;
   if (press === null) return false;
-  const pressed = pressedOn(press);
-  return pressPlaces(element).some((place) =>
-    pressed.some((each) => place === each || place.contains(each))
+  if (place.contains(press.control)) return true;
+  for (const root of press.roots) {
+    if (place.contains(root)) return true;
+  }
+  return false;
+}
+
+/** Whether a press is armed (`armHandOff`): with none, no place holds a press (`pressMadeIn`),
+ *  so a component asks this before it searches the page for the place to ask that of
+ *  (`ViewportAnchor`'s `pressedRow`). */
+export function pressArmed(): boolean {
+  return armed !== null;
+}
+
+/** Whether the reader's press on a control the armed press (`armHandOff`) holds outside its own
+ *  control, or a move of the focus onto such a control, took the focus from inside `place`, and
+ *  the focus has stayed since where such presses put it (`ArmedPress`'s `takenFrom`): false with
+ *  nothing armed. Such a press takes nothing but its hold and leaves the armed press the cause.
+ *  So the selection bar hands on as its own the focus that a click or a tap on a marked row's
+ *  held Start next took from it while Take out of epic's writes are out (`SelectionBar`). The
+ *  press's own events say it, never a later read of where the focus is: that press can put the
+ *  focus on the body or on the row around the Start next, from which a render of the bar cannot
+ *  tell where it came from. */
+export function repeatTookFocusFrom(place: Element): boolean {
+  const from = armed?.takenFrom ?? null;
+  return from !== null && place.contains(from);
+}
+
+/** Whether a press on `target` is one the armed press (`armHandOff`) counts as its own rather
+ *  than the reader's next act: on its own control, or on a control it holds (`ArmedPress`'s
+ *  `holds`) - the second press on a control the press's write holds, as a double click on a
+ *  marked row's held Start next while Take out of epic's writes are out is. False with nothing
+ *  armed. The armed press ends on every other press (`onPointer`, `onKey`), and the selection
+ *  bar's hand-off ends what it owes on this same test (`SelectionBar`'s `useLastMarkedPlace`). */
+export function pressIsArmedOwn(target: EventTarget | null): boolean {
+  return (
+    armed !== null &&
+    target instanceof Element &&
+    (armed.control.contains(target) || armed.holds(target))
   );
 }
 
-/** Whether the reader's latest press, while it is still live (`answerPress`), was on a row's mark,
- *  read at every element the press reads as now (`pressedOn`): the selection bar reads this beside
- *  `causedByReader`, since unticking the last row by its mark empties the bar while the focus may
- *  rest in it (a checkbox a click leaves unfocused, as WebKit does). */
+/** Whether the armed press (`armHandOff`) was on a row's mark, while that mark is still in the
+ *  page: the selection bar reads this beside `causedByReader`, since unticking the last row by
+ *  its mark empties the bar while the focus may rest in it (a checkbox a click leaves unfocused,
+ *  as WebKit does). The bar arms the hand-off for a press on a row's mark itself (`SelectionBar`):
+ *  unticking a mark leaves its row where it was, and a mark gone from the page with its row is no
+ *  mark the reader can have just pressed. */
 export function pressOnRowMark(): boolean {
-  const press = recentPress();
-  return press !== null && pressedOn(press).some((each) => inRow(each) && each.matches(MARK));
-}
-
-/** The open modal dialog (`MODAL`) a loss in `region` is answered in, else null: of the ones in
- *  the page and drawn (`present`), the one that holds `region`, the region the loss was in, else
- *  the last in the page's order, drawn over the ones before it. */
-function openModal(region: Element): HTMLElement | null {
-  const open = [...document.querySelectorAll<HTMLElement>(MODAL)].filter(present);
-  return open.find((modal) => modal.contains(region)) ?? open.at(-1) ?? null;
-}
-
-/** Focuses `dialog`, an open modal dialog, as its own stop, with no scroll. One with no Tab stop
- *  of its own is given `tabindex="-1"` for the focus and has it taken off again once the focus
- *  leaves, so the engine's own Tab order is left as it was. */
-function landOnDialog(dialog: HTMLElement): void {
-  const needsStop = !dialog.hasAttribute("tabindex");
-  if (needsStop) dialog.tabIndex = -1;
-  const took = focusNoScroll(dialog);
-  if (!needsStop) return;
-  if (took) {
-    dialog.addEventListener("blur", () => dialog.removeAttribute("tabindex"), { once: true });
-  } else {
-    dialog.removeAttribute("tabindex");
-  }
-}
-
-/** Answers a loss the reader did not cause (`causedByReader`), lost in `region`, as the page did
- *  before it had a rescue: the focus stays on the body, where the loss left it, and nothing
- *  scrolls. Whatever control stands near the lost place, the page chose it and the reader did
- *  not, and their next key would act on it or be typed into it. The one exception is an open
- *  modal dialog (`openModal`), which takes the focus itself as its own stop (`landOnDialog`),
- *  since a focus that leaves an open modal reaches the page behind it. Outside a modal, the one
- *  loss the reader did not cause that the focus leaves the body for is a control the page
- *  disabled or hid and then drew and enabled again, which gets the focus back while it is still
- *  on the body and within the rescue's wait (`useFocusRescue`'s `check` and `wait`): the very
- *  control that held it, back where it was. */
-function leaveUncaused(region: Element): void {
-  const modal = openModal(region);
-  if (modal !== null) landOnDialog(modal);
-}
-
-/** Answers a loss the reader can no longer see, in a region still in the page: nothing scrolls,
- *  and the focus goes to no control the reader did not pick. For a loss the reader caused it
- *  stays where it is, on the body, except in a dialog or a panel (`DIALOG`), which takes the
- *  focus itself so that the page behind a modal one is never reached - given `tabindex="-1"` for
- *  it where it has no Tab stop of its own, as when it loses every control. A loss they did not
- *  cause is answered as every such loss is (`leaveUncaused`): on the body, or on an open modal
- *  dialog's own stop, and never on a panel that is no modal. */
-function leaveUnseen(loss: Loss): void {
-  const { caused, region } = loss;
-  if (!caused) {
-    leaveUncaused(region);
-    return;
-  }
-  if (!(region instanceof HTMLElement) || !region.matches(DIALOG)) return;
-  if (!region.hasAttribute("tabindex")) region.tabIndex = -1;
-  region.focus({ preventScroll: true });
+  return armed?.control.isConnected === true && isRowMark(armed.control);
 }
 
 /** Where a node stood in the page while it was there: the parent holding it and the siblings
@@ -728,185 +1336,106 @@ interface Spot {
   readonly previous: Node | null;
 }
 
-/** Where `element` stands in `region`, and where each parent of it up to the region's own
- *  children stands, nearest first: read while the element is still in the page, so that the spot
- *  a press later takes it, or a parent of it, away from is known (`controlsInPlace`), and so are
- *  the spots of the rows around it (`controlsOfRowMovedUp`). */
-function spotsOf(element: Element, region: Element): Spot[] {
+/** Where `element` stands in `within` - a component's container, or the region it is in - and
+ *  where each parent of it up to `within`'s own children stands, nearest first: read while the
+ *  element is still in the page, so that the spot a press later takes it, or a parent of it,
+ *  away from is known (the place counted off it in `placeLeft`), and so are the rows around it
+ *  (`rowsIn`). */
+function spotsOf(element: Element, within: Element): Spot[] {
   const spots: Spot[] = [];
   let node: Node = element;
-  for (let parent = node.parentNode; parent !== null && node !== region; parent = node.parentNode) {
+  for (let parent = node.parentNode; parent !== null && node !== within; parent = node.parentNode) {
     spots.push({ next: node.nextSibling, node, parent, previous: node.previousSibling });
     node = parent;
   }
   return spots;
 }
 
-/** Whether `spot`'s node has left the page while the parent it stood in is still in `region`. */
-function goneFrom(spot: Spot, region: Element): boolean {
-  return !spot.node.isConnected && spot.parent.isConnected && region.contains(spot.parent);
+/** The rows (`ROW_SELECTOR`) the element `spots` were read for stood in, nearest first: those of
+ *  the spots' own nodes that are rows. Read from the spots rather than from the page, since a
+ *  control taken away on its own has no row around it by the time its loss is answered, while
+ *  the spots hold the parent chain as it stood while it was still there (`atPlaceOf`). */
+function rowsIn(spots: readonly Spot[]): Element[] {
+  const rows: Element[] = [];
+  for (const { node } of spots) {
+    if (node instanceof Element && node.matches(ROW_SELECTOR)) rows.push(node);
+  }
+  return rows;
+}
+
+/** Whether `spot`'s node has left the page while the parent it stood in is still in `within`: a
+ *  component's container, or the region it is in (`placeLeft`). */
+function goneFrom(spot: Spot, within: Element): boolean {
+  return !spot.node.isConnected && spot.parent.isConnected && within.contains(spot.parent);
 }
 
 /** What a row holds as its controls, by markup alone: what the focus can reach (`FOCUSABLE`), and
- *  a button or form field disabled now as well, since a press can disable its own control before
- *  its row goes - the loss is noted at the disable's `focusout` then - and that control keeps its
- *  place in the row. */
-const ROW_CONTROL = ["a[href]", ...FORM_FIELDS, TAB_STOP].join(", ");
+ *  a button or form field disabled now as well, which keeps its place in the row (`rowControls`).
+ *  The control a press landed on is the nearest of these around it (`armHandOff`). */
+const ROW_CONTROL = [
+  ...["a[href]", SUMMARY, ...FORM_FIELDS].map((tag) => `${tag}${IN_TAB_ORDER}`),
+  TAB_STOP,
+].join(", ");
 
 /** The controls `row` holds, in order, by markup alone (`ROW_CONTROL`): the row itself first
- *  where it is one, then each inside it. Counted by markup and not by what the page draws, so a
- *  row counts the same whether it is still in the page, as at Chromium's `focusout`, or has left
- *  it, as when Firefox and WebKit report its removal alone, where nothing is drawn. */
+ *  where it is one, then each inside it. Counted by markup and not by what the page draws, so
+ *  the same place in two rows names the same control whatever either draws (`controlsLikeRow`). */
 function rowControls(row: Element): Element[] {
   const inside = [...row.querySelectorAll(ROW_CONTROL)];
   return row.matches(ROW_CONTROL) ? [row, ...inside] : inside;
 }
 
-/** Where a control stood in a row around it: the row - an element around it, itself included,
- *  that `ROW_SELECTOR` names, inside the control's region - and the control's place among that
- *  row's controls (`rowControls`), -1 where it is none of them. */
-interface RowPlace {
-  readonly index: number;
-  readonly row: Element;
-}
-
-/** Where `element` stands in each row around it inside `region` (`RowPlace`), nearest first;
- *  none where no row inside the region holds it. Every row is kept, not the nearest alone, since
- *  rows nest and a press can take an outer row away with the inner one in it: an Inbox row with
- *  the ask card it holds. Read as its loss is noted, while the rows still hold it: in the page,
- *  at Chromium's `focusout`, or off the removal Firefox and WebKit report alone, once a row has
- *  left the page with the element still in it, when the rows around it are that row and those
- *  inside it. The element has gone by the time the loss is answered, so its places are kept. */
-function rowPlacesOf(element: Element, region: Element): RowPlace[] {
-  const places: RowPlace[] = [];
-  for (const row of rowsAround(element)) {
-    // A row around the region holds every control of it, and so does each row around that one.
-    if (row.contains(region)) break;
-    places.push({ index: rowControls(row).indexOf(element), row });
-  }
-  return places;
-}
-
-/** A focus an element lost: the element, the region it was counted in, its place there among
- *  the controls the page draws, the path of the page it was focused on, whether the page took it
- *  from the reader (`taken`: the element was disabled, hidden or taken away) rather than the
- *  reader moving off it, whether the reader left it (`left`), and - in a dialog - the loss the
- *  dialog was opened from (`opener`): the place the focus left for it, or null for a dialog the
- *  focus entered from the body. A loss kept only as a dialog's opener holds no spots, no arrivals
- *  and no row places: the hand-off reads only its element, region, place, path and opener. */
-interface Loss {
-  /** The elements the page added from the moment the element went until the loss is answered,
-   *  noted into it while its check or its wait is out - none the page only moved, which stood in
-   *  the page before (`noteArrivals`): what can now stand where it stood (`standingAt`). */
-  readonly arrived: Set<Node>;
-  readonly caused: boolean;
-  readonly element: HTMLElement;
-  readonly index: number;
-  /** Whether the reader left the element (`record`): the focus went to nothing from it while it
-   *  was enabled and drawn, and it still stood in the page so once the event that moved the focus
-   *  had run. Set in a microtask after the loss, long before its check, which then does nothing. */
-  left: boolean;
-  readonly opener: Loss | null;
-  readonly path: string;
-  readonly region: Element;
-  /** Where the element stood in each row around it, nearest first, read as the loss is noted
-   *  (`rowPlacesOf`), and none where it stood in no row: each row, and the element's place among
-   *  its controls, by which the row that moves up into the place of the row that left offers the
-   *  focus (`controlsOfRowMovedUp`). */
-  readonly rowPlaces: readonly RowPlace[];
-  /** Where the element stood, and where each parent of it up to the region stood, nearest first
-   *  (`controlsInPlace`, `controlsOfRowMovedUp`): read at its `focusout` while it is still in the
-   *  page, or, for an element taken away with no `focusout`, off the last record that took it
-   *  (`removalOf`), ahead of the spots read when it took the focus. */
-  readonly spots: readonly Spot[];
-  readonly taken: boolean;
-}
-
-/** The longest the rescue waits for an animation frame before it goes on without one. WebKit can
- *  hold a page's frames back while nothing on it is drawn - measured in headless WebKit, a check
- *  waited 775 ms for its frame, and another had none in 2 s while the page's timers ran - and a
- *  keyboard reader is not to sit on the body for that. React has committed and run its passive
- *  effects well inside this. */
+/** The longest an armed press waits for an animation frame before it goes on without one
+ *  (`afterComponents`). WebKit can hold a page's frames back while nothing on it is drawn -
+ *  measured in headless WebKit, one wait for a frame lasted 775 ms, and another had none in 2 s
+ *  while the page's timers ran - and a press is not to stay live that long past its answer. */
 const FRAME_WAIT_MS = 100;
 
-/** Runs `then` once the components have had their turn with a loss of focus: a frame, or
- *  `FRAME_WAIT_MS` where no frame comes, and then a task later, after React has committed and run
- *  its passive effects. Answers what cancels it. */
+/** Runs `then` once the components have had their turn with what a press did: a frame, or
+ *  `FRAME_WAIT_MS` where no frame comes, and then a task later. Answers what cancels it.
+ *
+ *  That is after the commit a press of the reader's makes and after its effects: React commits
+ *  an update made in an event of theirs before the next paint and runs its passive effects at
+ *  the end of that commit. A commit at normal priority - one an update outside any event makes,
+ *  as a write's answer or a read's own bound does - runs its passive effects in a task of
+ *  React's scheduler, which can come after this. A component whose hand-off must run in such a
+ *  commit commits it synchronously, so the hand-off runs with it: the project List's bar goes
+ *  that way (`features/project/issues-table-actions.ts`). Once cancelled it does nothing, even
+ *  where a timer it set fires after all: a cancel made under another clock than the one the
+ *  timer was set on - a unit test's fake clock, installed or put back between the two - leaves
+ *  that timer set, and a zero-delay timer set on the fake clock and left there holds up every
+ *  zero-delay timer after the real clock is back. An armed press can outlive the test that made
+ *  it (`armHandOff`), so its end is cancelled under the next test's clock. */
 function afterComponents(then: () => void): () => void {
   let task: number | undefined;
+  let cancelled = false;
   const go = () => {
-    if (task !== undefined) return;
+    if (task !== undefined || cancelled) return;
     window.cancelAnimationFrame(frame);
     window.clearTimeout(late);
-    task = window.setTimeout(then, 0);
+    task = window.setTimeout(() => {
+      if (!cancelled) then();
+    }, 0);
   };
   const frame = window.requestAnimationFrame(go);
   const late = window.setTimeout(go, FRAME_WAIT_MS);
   return () => {
+    cancelled = true;
     window.cancelAnimationFrame(frame);
     window.clearTimeout(late);
     window.clearTimeout(task);
   };
 }
 
-/** A removal `records` tell of: where the node the record took stood (`spot`), and which of the
- *  records took the lost element out of the page (`at`), so that what the page added from there on
- *  can be told from what it held before. */
-interface Removal {
-  readonly at: number;
-  readonly spot: Spot;
-}
-
-/** The last of `records` that took `node` away, itself or with a parent: its index (`at`), the
- *  record, and the node it removed that holds `node` (`taken`). The last, since a node the batch
- *  moved - a removal and an addition of it - and then took away left the page from the place the
- *  last record names, not the one the move took it from. */
-function recordTaking(
-  records: readonly MutationRecord[],
-  node: Node
-): { at: number; record: MutationRecord; taken: Node } | undefined {
-  let found: { at: number; record: MutationRecord; taken: Node } | undefined;
-  for (const [at, record] of records.entries()) {
-    for (const taken of record.removedNodes) {
-      if (taken.contains(node)) found = { at, record, taken };
-    }
-  }
-  return found;
-}
-
-/** The removal in `records` that took `element` away, itself or with a parent, read off the last
- *  record that took it (`recordTaking`) at a point still in the page: where the parent it was
- *  taken from went too, later in the same batch, the last record that took that parent. */
-function removalOf(records: readonly MutationRecord[], element: Element): Removal | undefined {
-  let node: Node = element;
-  let removal: Removal | undefined;
-  for (;;) {
-    const found = recordTaking(records, node);
-    if (found === undefined) return removal;
-    const { at, record, taken } = found;
-    removal = {
-      at: removal?.at ?? at,
-      spot: {
-        next: record.nextSibling,
-        node: taken,
-        parent: record.target,
-        previous: record.previousSibling,
-      },
-    };
-    if (record.target.isConnected) return removal;
-    node = record.target;
-  }
-}
-
-/** The place of a control taken away from `spot`, itself or with a parent, among the controls
- *  `region` draws: how many of them come before the point it was taken from - before the sibling
- *  after it while that is still in the page, else up to and through the sibling before it, else
- *  through the parent it was taken from. */
-function placeOfRemoval(region: Element, spot: Spot, main: HTMLElement | null): number {
+/** The place of a control taken away from `spot`, itself or with a parent, among `controls`: how
+ *  many of them come before the point it was taken from - before the sibling after it while that
+ *  is still in the page, else up to and through the sibling before it, else through the parent it
+ *  was taken from. */
+function placeOfRemoval(controls: readonly Element[], spot: Spot): number {
   const next = spot.next?.isConnected ? spot.next : null;
   const through = spot.previous?.isConnected ? spot.previous : spot.parent;
   let index = 0;
-  for (const control of drawnIn(region, main)) {
+  for (const control of controls) {
     const before =
       next === null
         ? through.contains(control) ||
@@ -918,657 +1447,97 @@ function placeOfRemoval(region: Element, spot: Spot, main: HTMLElement | null): 
   return index;
 }
 
-/** What now stands at `spot`: the elements its parent holds between the siblings its node stood
- *  between that the page added since the loss (`arrived`). A sibling no longer in that parent
- *  bounds nothing, so the parent's start or end bounds that side instead; only what arrived
- *  counts, so an element that stood in the parent before the loss is never taken for what stands
- *  there, and a block taken away with nothing drawn in its place leaves nothing standing. */
-function standingAt(spot: Spot, arrived: ReadonlySet<Node>): Element[] {
-  const { parent } = spot;
-  const previous = spot.previous?.parentNode === parent ? spot.previous : null;
-  const next = spot.next?.parentNode === parent ? spot.next : null;
-  const standing: Element[] = [];
-  for (
-    let node = previous === null ? parent.firstChild : previous.nextSibling;
-    node !== null && node !== next;
-    node = node.nextSibling
-  ) {
-    if (node instanceof Element && arrived.has(node)) standing.push(node);
-  }
-  return standing;
-}
-
-/** The first `<form>` among `elements`, itself one of them or inside one, else null. */
-function formIn(elements: readonly Element[]): Element | null {
-  for (const element of elements) {
-    const form = element.matches("form") ? element : element.querySelector("form");
-    if (form !== null) return form;
-  }
-  return null;
-}
-
-/** The controls of what now stands where `loss`'s element left the page, among `drawn`, in the
- *  order the focus is offered them: those of a `<form>` there first - the editor a press opened in
- *  the control's place, as Change answer and Add a priority open theirs - so that a header the new
- *  content repeats above the form is not taken for the place, then the rest. None where nothing
- *  new stands there (`standingAt`). The place is the nearest of the loss's spots whose node has
- *  gone while the parent it stood in is still in the region: the element's own spot, or that of
- *  the parent it went with. There is none while the element and every parent of it are still in
- *  the page - a control disabled, hidden or moved. Only what arrived counts: a row that moved up
- *  into the place of a row taken away stood in the page before the loss, so it is nothing new
- *  there, and `controlsOfRowMovedUp` answers for it instead. */
-function controlsInPlace(loss: Loss, drawn: readonly HTMLElement[]): HTMLElement[] {
-  const spot = loss.spots.find((each) => goneFrom(each, loss.region));
-  if (spot === undefined) return [];
-  const standing = standingAt(spot, loss.arrived);
-  if (standing.length === 0) return [];
-  const controls = drawn.filter((control) => standing.some((each) => each.contains(control)));
-  const form = formIn(standing);
-  if (form === null) return controls;
-  return [
-    ...controls.filter((control) => form.contains(control)),
-    ...controls.filter((control) => !form.contains(control)),
-  ];
-}
-
-/** The first element among `node` and the siblings after it, else null. */
-function elementFrom(node: Node | null): Element | null {
-  for (let each = node; each !== null; each = each.nextSibling) {
-    if (each instanceof Element) return each;
-  }
-  return null;
-}
-
-/** The controls of the row that now stands where a row around `loss`'s element stood, among
- *  `drawn`, in the order the focus is offered them: the same control as the lost one, so the
- *  reader can go on - unpinning, as Dismiss goes on to the next item - then that row's first
- *  control. The row that left is the one of the rows around the element (`rowPlaces`) whose own
- *  spot's node has left the page while the parent it stood in is still in the region
- *  (`goneFrom`): with rows nested, the outermost one that went, as an Inbox row a press takes
- *  away with the ask card in it, since each row inside it went with a parent of its own. The row
- *  now at its place is the element that stood right after it in that parent, still there and a
- *  row (`ROW_SELECTOR`) - the row that moved up, the same element. The same control is the one at
- *  the lost control's place among that row's controls (`rowControls`), of the same tag and role,
- *  and drawn: read by markup in both rows, so every engine finds the same one. None where the
- *  element stood in no row, where each row around it is still in the page or went with a parent
- *  of its own, where no row stood after the one that left, or where that row draws no control. */
-function controlsOfRowMovedUp(loss: Loss, drawn: readonly HTMLElement[]): HTMLElement[] {
-  const { element, region, rowPlaces, spots } = loss;
-  let left: { readonly index: number; readonly spot: Spot } | null = null;
-  for (const { index, row } of rowPlaces) {
-    const spot = spots.find(({ node }) => node === row);
-    if (spot !== undefined && goneFrom(spot, region)) {
-      left = { index, spot };
-      break;
-    }
-  }
-  if (left === null) return [];
-  const { index, spot } = left;
-  const moved = elementFrom(spot.next);
-  if (moved === null || moved.parentNode !== spot.parent || !moved.matches(ROW_SELECTOR)) {
-    return [];
-  }
-  const controls = drawn.filter((control) => moved.contains(control));
+/** The controls the row now standing at a moved row's place offers the focus that `control`, a
+ *  control of the moved row `from`, holds, in the order the focus is offered them: the same
+ *  control - the one at `control`'s place among the row's controls (`rowControls`), of its tag
+ *  and role, so the reader can go on - and then that row's first control. Only controls `row`
+ *  draws are offered, and none at all where it draws none. Read by markup in both rows, so every
+ *  engine finds the same one. The Agents page hands the focus on this way where a pin's move
+ *  leaves it on a control the reader cannot see whole (`AgentsPage`'s `focusAfterPin`). */
+export function controlsLikeRow(row: Element, control: Element, from: Element): HTMLElement[] {
+  const controls = focusableIn(row).filter(rendered);
   const first = controls[0];
   if (first === undefined) return [];
-  const same = rowControls(moved)[index];
+  const same = rowControls(row)[rowControls(from).indexOf(control)];
   const alike =
     same instanceof HTMLElement &&
     same !== first &&
     controls.includes(same) &&
-    same.tagName === element.tagName &&
-    same.getAttribute("role") === element.getAttribute("role");
+    same.tagName === control.tagName &&
+    same.getAttribute("role") === control.getAttribute("role");
   return alike ? [same, first] : [first];
 }
 
-/** Focuses `target` without a scroll: what a press drew where its control stood, which stands
- *  where the reader was, a control given back, and a modal dialog's own stop. Answers whether it
- *  took the focus. */
-function focusNoScroll(target: HTMLElement): boolean {
+/** Focuses `target` without a scroll: a hand-off's landing (`land`), a region's own stop
+ *  (`focusOwnStop`), the mark the selection bar's hand-off parks the focus on while its row is
+ *  leaving (`SelectionBar`'s `park`), and
+ *  the control the Agents page hands a pin's moved focus to (`controlsLikeRow`).
+ *  Answers whether it took the focus. */
+export function focusNoScroll(target: HTMLElement): boolean {
   target.focus({ preventScroll: true });
   return document.activeElement === target;
 }
 
-/** Hands on the focus `loss`'s element took with it when it went. A loss the reader did not
- *  cause - an update of the server's, which can draw a form of its own where the control stood,
- *  or take a row away - is handed nowhere (`leaveUncaused`): whatever stands there now, whatever
- *  row moved up and whatever control is near, the page chose it and the reader did not, so the
- *  focus stays on the body, or on the stop of an open modal dialog, and nothing scrolls. A loss
- *  the reader caused is answered inside the region it was lost in while that region is still in
- *  the page and drawn (`present`). Where something now stands where the element stood - what
- *  their press drew in its place - the focus lands on that first: on the first control of a
- *  `<form>` there, the editor the press opened in the control's place, else on the first control
- *  of what stands there (`controlsInPlace`), focused with no scroll, since it stands where the
- *  reader was. Where nothing new stands there and the press took away a row the element was in,
- *  the focus lands on the same control in the row that now stands at that row's place - the row
- *  that stood right after it, moved up - so the reader can go on, else on that row's first control
- *  (`controlsOfRowMovedUp`), and that control is scrolled into view (`land`). Only where no row
- *  stands there, or that row draws no control to take it, does the focus walk back: to the
- *  control the region now draws at its place, else the nearest one before it however many went
- *  together (`placesFrom`), else the region itself, which is every region but the document, and
- *  that control is scrolled into view (`land`). From a region that has gone - a dialog or a
- *  panel that closed, or one hidden while it stays mounted - the focus goes only back to the
- *  place it was opened from (its `opener`, or that region's own opener where it has gone too):
- *  that element, the control that opened it - a list's trigger - if it can still take the focus,
- *  else the control now at its place, else the nearest one before it. A dialog opened from the
- *  body hands the focus nowhere: the body is where the reader was. */
-function handOn(loss: Loss, main: HTMLElement | null): void {
-  const { caused, region } = loss;
-  if (!caused) {
-    leaveUncaused(region);
-    return;
-  }
-  let candidates: HTMLElement[] = [];
-  if (present(region)) {
-    const drawn = drawnIn(region, main);
-    for (const control of controlsInPlace(loss, drawn)) {
-      if (focusNoScroll(control)) return;
-    }
-    for (const control of controlsOfRowMovedUp(loss, drawn)) {
-      if (land(control)) return;
-    }
-    candidates = placesFrom(drawn, loss.index);
-  } else {
-    const opener = drawnOpener(loss.opener);
-    if (opener !== null && opener.path === loss.path) {
-      candidates = [opener.element, ...placesFrom(drawnIn(opener.region, main), opener.index)];
-    }
-  }
-  for (const candidate of candidates) {
-    if (!candidate.isConnected || !rendered(candidate)) continue;
-    if (land(candidate)) return;
-  }
-  if (!present(region) || region === document.body || !(region instanceof HTMLElement)) return;
+/** Focuses `region` at its own stop without a scroll. A region with no Tab stop of its own is
+ *  given `tabindex="-1"` for it. A component's hand-off ends there where no control in sight
+ *  takes the focus (`useFocusPlace`, `walkBackInRegion`), and so does the selection bar's
+ *  hand-off in a list (`focusListStop`). */
+export function focusOwnStop(region: HTMLElement): void {
   if (!region.hasAttribute("tabindex")) region.tabIndex = -1;
-  land(region);
+  focusNoScroll(region);
 }
 
-/**
- * The page's one focus rescue, mounted once in the app shell: after a loss of the focus to the
- * body - a press, or an update that takes the focused control away - it answers a focus the
- * element holding it took with it when it was disabled, hidden, taken away or drawn again under a
- * new key, since a keyboard reader left on the body starts again from the page's first link, a
- * walk through everything above the control they were using. It leaves the focus on the body
- * where that is where the reader put it or left the control (below): a dialog opened from the
- * body that closes, the reader's Escape, their click on the page or their Enter that commits a
- * field, and a control they had scrolled out of their sight; and for every loss they did not
- * cause (`leaveUncaused`), as the page did before it had a rescue, save in an open modal dialog,
- * whose own stop takes the focus, and save a control the page disabled or hid that is drawn and
- * enabled again within the rescue's wait, which gets the focus back.
- *
- * Every element that takes the focus is noted as it does (`focusin`), with its region - the
- * dialog or panel holding it (`DIALOG`), modal or not, else the shell's main content (`main`),
- * else the document - and the path of the page it was focused on, which a navigation does not
- * change before the old page goes. A dialog or panel the focus enters for the first time notes
- * where it came from: the loss of the element that handed it over - a list's trigger, for the
- * list's text box - or none when it came from the body. A loss is seen two ways.
- * A control disabled, hidden or left by the reader fires a `focusout` in every engine, while it is
- * still in the page. A control taken away, itself or with a parent, is seen by watching the page
- * (a MutationObserver over the document) in every engine, since Firefox and WebKit fire no
- * `focusout` for it; Chromium fires one as well, and whichever comes first is the loss recorded.
- * Each loss holds its element, its region, its place among the controls the region draws, the
- * path, whether the page took the element (`taken`), whether the reader caused the loss
- * (`causedByReader`), and its dialog's opener. The reader caused it when a press of theirs
- * (`isPress`) is still live in its row, dialog or panel; a key, a `change` or an `input` that is
- * no press neither starts a press nor ends the live one (`notePress`). It holds where the element
- * stood in the page too: the parent it stood in and the siblings either side of it, and the same
- * for each parent of it up to the region (`spotsOf`). For a `focusout` they are read there and
- * then, while the element is still in the page; for a control taken away with no `focusout`, the
- * last record that took it - its parent and its siblings at that moment, since a control the batch
- * moved first was taken from there - is that spot, with the spots read as the element took the
- * focus behind it for a record whose parent has gone too. It holds each row around the element,
- * and the element's place among that row's controls (`rowPlacesOf`), read then too, since
- * the element has gone by the time the loss is answered. From the loss on, while its check or its
- * wait is out, the page's watcher notes every element the page adds (`arrived`), but none it only
- * moves - a keyed node React moves with `insertBefore`, which one batch reports as its removal and
- * its addition, stood in the page before; for a loss read off a removal, the batch that took the
- * element counts from that last record on. The focus moving from one control to another in the
- * same region is no loss. Nor is the reader leaving a control: their Enter that commits a field
- * with the page's own `blur()`, or their click on the page's text, sends the focus to nothing
- * from a control still enabled and drawn, and the focus stays where that left it. Such a loss is
- * marked left (`left`) when the control still stands so in a microtask queued from its
- * `focusout`, once the event that moved the focus has run, and nothing answers it, even when a
- * commit after that takes the control away - the issue title's editor, whose save draws the
- * heading in its place. A control a commit takes away fires Chromium's `focusout` during the
- * removal itself, while it is still in the page, so by that microtask it has gone, and its loss
- * is answered. A new loss cancels whatever is still out for the one before it.
- *
- * The check runs a frame and a task after the loss, once React has committed and run its passive
- * effects, so every component's own hand-off has had its turn first: every `useFocusPlace`
- * hand-off (ControlRow, DataTable, PanelTrigger and the pages' own), SelectionBar's
- * `returnFocus`, AskCard's, `useDialog`'s return to the opener, the Agents composer's take-back.
- * Each knows its own target better than a place counted in the page does - the row marked last,
- * the opener, the composer's box - so the rescue answers only a loss none of them answered, and
- * acts only while the focus is still lost. It leaves alone a loss the reader left (above), and a
- * loss on a page the reader has since left, since the new page owns its focus. A taken element
- * that is back by then gets the focus back, whoever caused its loss.
- *
- * An element that went - taken away, hidden, no longer drawn, or replaced under a new key - hands
- * the focus on (`handOn`). For a loss the reader caused (`causedByReader`), it is answered inside
- * the region it was lost in, and what their press drew where the element stood takes it first:
- * the elements the page added since the loss between the siblings either side of the element, or
- * of the parent it went with, in the parent it was taken from, which is still in the region
- * (`standingAt`). Where that holds a `<form>` - an editor the press opened in the control's
- * place, as Change answer and Add a priority do - the form's first control takes the focus, so
- * that a header the new content repeats above the form is not taken for the place; else the
- * first control of what stands there does. It is focused with no scroll, since it stands where
- * the reader was. Where nothing new stands there and the press took away a row the element was in -
- * with rows nested, the outermost that went, as an Inbox row with the ask card it holds - the row
- * that stood right after that row has moved up into its place, the same element, so nothing new
- * there, and the same control in it takes the focus, at the lost one's place among the row's
- * controls and of its tag and role, else that row's first control (`controlsOfRowMovedUp`), so the
- * reader can go on, unpinning as Dismiss goes on to the next item. Only where no row stands
- * there - a block taken away with nothing in its place, or the last row - or that row draws no
- * control does the focus walk back, as `handOn` states; that walk stays inside the region, so the
- * page behind a modal dialog is never reached. A loss the reader did not cause - an update of the
- * server's, which can draw a form of its own where the control stood, as a withdrawn question's
- * answer form gives way to a Reply form, or a live update taking a row away - is handed nowhere
- * (`leaveUncaused`): the focus stays on the body, as it did before the page had a rescue, and
- * nothing scrolls, since the page, not the reader, chose whatever stands near the lost place, and
- * their next key would act on it or be typed into it. Only an open modal dialog takes the focus
- * then, as its own stop, since a focus that leaves an open modal reaches the page behind it. Only
- * a region that has gone hands the focus out of it, and only for a loss the reader caused: from a
- * dialog or a panel that closed it goes only back to the place it was opened from - a list a pick
- * takes away to its trigger; a dialog opened from the body - a single-key shortcut with nothing
- * focused - leaves the focus on the body, where the reader was, and never puts it in a text box
- * whose next key would be typed. An element disabled under the focus, itself or through the
- * fieldset around it, gets the focus back when it is enabled again, watched rather than polled,
- * since its write's latency is the server's; if it goes instead, or is still disabled after
- * `RESCUE_WAIT_MS`, the focus is handed on as from an element that went. So it is for a control
- * disabled by an update the reader did not cause, the one such loss the focus leaves the body for
- * outside a modal: the very control that held the focus, back where it was, is no guess. It gets
- * the focus back only while the focus is still on the body, and only within that wait, never
- * after it. That settle too waits a frame and a task, so a component that watches the same
- * control - the Agents composer, giving its box the focus back - acts on the change first. A
- * pointer press anywhere while a check or a wait is out is the reader moving on - onto a control,
- * or onto the page itself - and ends it, so a control enabled again later never pulls back a
- * focus the reader left on the page. The reader's Escape ends no check or wait already out; what
- * it does is mark the loss it causes in its own task as the reader leaving the control
- * (`leaving`): a control it takes away or leaves - the issue title's editor, which it closes - is
- * not answered, and the focus stays where Escape left it rather than going to what is drawn in
- * its place, as the Inbox's and the Board's own Escape leave it on the page.
- * The control a loss the reader caused lands on in the row that moved up, or walks back to, is
- * scrolled into view (`land`); what stands where the element stood after a loss they caused, a
- * control given back, and a modal dialog's own stop are focused with no scroll.
- *
- * A loss the reader can no longer see is not answered: the element was scrolled out of their
- * sight - out of the viewport, or out of a scroll box around it - before it went, or before the
- * control a wait is on came back, and its region is still in the page. Every scroll that can move
- * the noted element, the page's or a box's around it, reads whether any of it is still in sight
- * (`Sight`), while a loss of it could still be answered; the document's capture listener hears a
- * box's scroll before the box's own listeners, so a virtual list that takes the row away in its
- * listener has it read while it is still in the page. So does every resize of the window, which
- * can move the element with nothing scrolled - a box sized to the window shrinks under its row,
- * which the virtual list may then stop drawing - read against every box around it that clips
- * it, since none of them has to have scrolled. An element no longer drawn is read no more: what
- * the last read before it went saw stands. Nothing scrolls and no control the reader did not
- * pick takes the focus, so neither a list nor the page is pulled back to a row the reader
- * scrolled away from - a live update taking that row away, say - and their next key acts on
- * nothing they did not choose. The focus stays on the body (`leaveUnseen`), except, for a loss
- * the reader caused, in a dialog or a panel (`DIALOG`), which takes it itself without a scroll,
- * and, for one they did not, in an open modal dialog, whose own stop takes it (`leaveUncaused`),
- * so the page behind a modal one is never reached. The record is the page's one (`outOfSight`),
- * which two component hand-offs read too (`useFocusPlace`, `SelectionBar`), so neither answers
- * such a loss before the rescue's check. Only an element a read has found in sight since it took
- * the focus can be read out of it (`readSight`): one focused below the fold, which a scroll the
- * page made before the engine's own left there, was never in the reader's sight.
- */
-export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
-  useEffect(() => {
-    rescueMounted = true;
-    /** The element holding the focus, its region, the path it was focused on and where it stood
-     *  as it took the focus (`spotsOf`), until it loses the focus by a `focusout`; one still noted
-     *  here once it has left the page went with no `focusout` at all. */
-    let focused: Pick<Loss, "element" | "path" | "region" | "spots"> | null = null;
-    /** The loss each dialog or panel (`DIALOG`) the focus has entered was opened from, or null for
-     *  one it entered from the body. */
-    const openedFrom = new Map<Element, Loss | null>();
-    /** Where a `focusout` is handing the focus, and the loss it leaves in another region. */
-    let moving: { from: Loss | null; to: Element } | null = null;
-    /** The check or the wait still out for the latest loss: what cancels it, and the set the
-     *  page's watcher adds the page's new elements to while it is out (that loss's `arrived`). */
-    let pending: { readonly arrived: Set<Node>; readonly cancel: () => void } | null = null;
-    /** The arrivals of a loss kept only as a dialog's opener, which is never checked: none. */
-    const noArrivals = new Set<Node>();
-    /** Notes into `arrived` each element `records` added to the page from the record at `from`
-     *  on, as one a loss's place may now hold. A node an earlier record of the same batch removed,
-     *  and that had not arrived, is one the page moved - React moves a keyed node with
-     *  `insertBefore`, which the batch reports as its removal and then its addition - so it stood
-     *  in the page before the loss, and it is not noted. */
-    const noteArrivals = (records: readonly MutationRecord[], arrived: Set<Node>, from = 0) => {
-      const removed = new Set<Node>();
-      for (const [at, each] of records.entries()) {
-        if (at >= from) {
-          for (const node of each.addedNodes) {
-            if (node instanceof Element && !removed.has(node)) arrived.add(node);
-          }
-        }
-        for (const node of each.removedNodes) {
-          if (!arrived.has(node)) removed.add(node);
-        }
-      }
-    };
-    /** Whether the reader had scrolled `loss`'s element out of their sight before it went, in a
-     *  region still in the page. */
-    const unseen = (loss: Loss) => outOfSight(loss.element) && present(loss.region);
+/** The controls a loss the reader caused walks back to, nearest first: the control now at `index`
+ *  in `controls`, then each control before that place (`placesFrom`), save every control that
+ *  takes typed text (`takesText`). The reader never chose such a field, and their next key would
+ *  be typed into it. A column filter's pick that sends the project List off to read its issues
+ *  takes its table away, and the List's walk back over the main content reaches the toolbar's
+ *  Clear filters first: the toolbar draws its Search issues box first and Clear filters last,
+ *  after the chips (`ControlRow`), and the walk leaves that box out. Where only such fields stand
+ *  there, it offers nothing: a component's hand-off then tries its `fallback`, else walks back
+ *  over its region, else lands on that region's own stop (`useFocusPlace`). A component's hand-off
+ *  also passes over every control the walk offers that the reader cannot see now (`inSightNow`),
+ *  as it reaches it: a landing scrolls its control into view (`land`), and the nearest control
+ *  before the lost place can lie far from where the reader is. */
+function walkBack(
+  controls: readonly HTMLElement[],
+  index: number,
+  atPlace: (control: Element) => boolean
+): HTMLElement[] {
+  return placesFrom(controls, index, atPlace).filter((control) => !takesText(control));
+}
 
-    /** Waits for `loss`'s element, disabled under the focus by the reader's press or by an update,
-     *  to be enabled again or to go, for `RESCUE_WAIT_MS` at most: the wait settles then, and a
-     *  control enabled again after that gets nothing back. Only `check` begins it, so a loss the
-     *  reader left (`left`) never has one. */
-    const wait = (loss: Loss): (() => void) => {
-      const { element } = loss;
-      /** Cancels the settle once it is scheduled. */
-      let settling: (() => void) | undefined;
-      const settle = () => {
-        pending = null;
-        if (!focusLost() || window.location.pathname !== loss.path) return;
-        if (unseen(loss)) {
-          leaveUnseen(loss);
-          return;
-        }
-        // The very control back, whoever caused the loss, and for a loss the reader did not cause
-        // the one answer outside a modal that is not the body. Still disabled as the wait runs
-        // out, it takes no focus, and the loss is handed on as from a control that went.
-        if (element.isConnected && rendered(element)) {
-          if (loss.caused ? land(element) : focusNoScroll(element)) return;
-        }
-        handOn(loss, main.current);
-      };
-      // The element enabled again, gone, or the wait run out: settled a frame and a task later,
-      // as the first check is, so a component answering the same change - its own watcher,
-      // started after this one, such as the Agents composer's take-back, or an effect - moves
-      // the focus first. The first change of a burst schedules it, and the watching ends there.
-      const later = () => {
-        if (settling !== undefined) return;
-        watcher.disconnect();
-        window.clearTimeout(bound);
-        settling = afterComponents(settle);
-      };
-      // The whole document is watched, not only the element's own `disabled` and its
-      // ancestors', so that the element going - with its dialog, say - ends the wait too.
-      const watcher = new MutationObserver(() => {
-        const held =
-          element.isConnected &&
-          element.matches(":disabled") &&
-          element.closest("[hidden]") === null;
-        if (!held) later();
-      });
-      const bound = window.setTimeout(later, RESCUE_WAIT_MS);
-      watcher.observe(document.body, {
-        attributeFilter: ["disabled", "hidden"],
-        childList: true,
-        subtree: true,
-      });
-      return () => {
-        watcher.disconnect();
-        window.clearTimeout(bound);
-        settling?.();
-      };
-    };
+/** Whether the reader can see any part of `element` now: its box meets the viewport and every box
+ *  around it that clips it (`clippingBoxes`, which reads each box's style once in `clips`). A
+ *  component's hand-off (`useFocusPlace`) reads it of each control its walk back reaches, as it
+ *  reaches it, and of its fallback too. */
+export function inSightNow(element: Element, clips: Map<Element, boolean>): boolean {
+  return inSight(element, clippingBoxes(element, clips));
+}
 
-    /** Answers `loss` a frame and a task after it, while the focus is still lost on the page it
-     *  was lost on; a loss the reader left (`left`) it leaves where the reader put the focus. A
-     *  control taken and back by then - hidden and drawn again, disabled and enabled again - gets
-     *  the focus back, whoever caused the loss: for a loss the reader did not cause, the one
-     *  answer outside a modal that is not the body (`leaveUncaused`). */
-    const check = (loss: Loss) => {
-      pending = null;
-      if (loss.left || window.location.pathname !== loss.path || !focusLost()) return;
-      const { element } = loss;
-      if (unseen(loss)) {
-        leaveUnseen(loss);
-      } else if (!element.isConnected || !rendered(element)) {
-        handOn(loss, main.current);
-      } else if (element.matches(":disabled")) {
-        pending = { arrived: loss.arrived, cancel: wait(loss) };
-      } else if (loss.taken) {
-        if (loss.caused) land(element);
-        else focusNoScroll(element);
-      }
-    };
+/** Whether the reader can see the whole of `element` now: its box lies within the viewport and
+ *  within every box around it that clips it (`clippingBoxes`, which reads each box's style once
+ *  in `clips`). A landing partly in sight and not wholly in it is scrolled to its nearest edge
+ *  (`land`); one wholly in sight scrolls nothing, and the Agents page reads it of the control a
+ *  pin's move left the focus on. */
+export function inSightWhole(element: Element, clips: Map<Element, boolean>): boolean {
+  return liesWithin(boxOf(element), sightOf(clippingBoxes(element, clips)));
+}
 
-    const noteFocus = (event: globalThis.FocusEvent) => {
-      const element = event.target;
-      if (!(element instanceof HTMLElement)) return;
-      const region = regionOf(element, main.current);
-      if (region.matches(DIALOG) && !openedFrom.has(region)) {
-        for (const dialog of openedFrom.keys()) {
-          if (!dialog.isConnected) openedFrom.delete(dialog);
-        }
-        openedFrom.set(region, moving?.to === element ? moving.from : null);
-      }
-      moving = null;
-      focused = {
-        element,
-        path: window.location.pathname,
-        region,
-        spots: spotsOf(element, region),
-      };
-      // The same element taking the focus again - the window given back the focus - keeps what
-      // the scrolls since it was first noted saw. A new one is read where it took the focus,
-      // before the engine has scrolled it into view.
-      if (sight?.element !== element) {
-        const boxes = new Set<Element>();
-        sight = { boxes, element, seen: true, shown: inSight(element, boxes) };
-      }
-    };
-
-    const record = (event: globalThis.FocusEvent) => {
-      const element = event.target;
-      if (!(element instanceof HTMLElement)) return;
-      const path = focused?.element === element ? focused.path : window.location.pathname;
-      focused = null;
-      pending?.cancel();
-      pending = null;
-      const region = regionOf(element, main.current);
-      const next = event.relatedTarget;
-      if (leaving && !(next instanceof Element)) return;
-      // A move from one control to another in the same region - j and k, the arrows - is no
-      // loss, and counts nothing.
-      if (next instanceof Element && regionOf(next, main.current) === region) {
-        moving = { from: null, to: next };
-        return;
-      }
-      const fields = {
-        caused: causedByReader(element),
-        element,
-        index: countBefore(drawnIn(region, main.current), element),
-        left: false,
-        opener: openedFrom.get(region) ?? null,
-        path,
-        region,
-        taken: !stands(element),
-      };
-      // A focus going straight to another region is kept only as the place it left: the opener
-      // of the dialog it is entering, whose spots, arrivals and row places the hand-off never
-      // reads.
-      if (next instanceof Element) {
-        moving = { from: { ...fields, arrived: noArrivals, rowPlaces: [], spots: [] }, to: next };
-        return;
-      }
-      // What the page changed before this loss is none of what a press draws in its place: those
-      // records are dropped unread, and only the ones after it are noted as arrivals.
-      watcher.takeRecords();
-      const loss: Loss = {
-        ...fields,
-        arrived: new Set<Node>(),
-        rowPlaces: rowPlacesOf(element, region),
-        spots: spotsOf(element, region),
-      };
-      pending = { arrived: loss.arrived, cancel: afterComponents(() => check(loss)) };
-      // The reader leaving the control - their Enter that commits it with the page's own
-      // `blur()`, their click on the page's text - is no loss: the control still stands in the
-      // page, enabled and drawn, once the event that moved the focus has run, and is marked left
-      // then. A control a commit takes away fires Chromium's `focusout` during the removal
-      // itself, so by this microtask it has gone, and its loss stays one to answer.
-      if (!loss.taken) {
-        queueMicrotask(() => {
-          loss.left = element.isConnected && stands(element);
-        });
-      }
-    };
-
-    // A focused element taken away with no `focusout` - Firefox's and WebKit's way, for the
-    // element or a parent of it - is read off the last mutation that took it, at the place it was
-    // taken from, or at the region's end where no record of this batch names it. Every batch
-    // that comes while a loss's check or wait is out is noted first as that loss's arrivals.
-    const watcher = new MutationObserver((records) => {
-      if (pending !== null) noteArrivals(records, pending.arrived);
-      const held = focused;
-      if (held === null || held.element.isConnected) return;
-      focused = null;
-      if (leaving || !focusLost()) return;
-      const removal = removalOf(records, held.element);
-      const index =
-        removal === undefined || !held.region.isConnected
-          ? drawnIn(held.region, main.current).length
-          : placeOfRemoval(held.region, removal.spot, main.current);
-      pending?.cancel();
-      // What this batch added from the last record that took the element on is what can stand in
-      // its place; what it added before that record is not.
-      const arrived = new Set<Node>();
-      noteArrivals(records, arrived, removal?.at ?? 0);
-      const loss: Loss = {
-        arrived,
-        caused: causedByReader(held.element),
-        ...held,
-        index,
-        left: false,
-        opener: openedFrom.get(held.region) ?? null,
-        rowPlaces: rowPlacesOf(held.element, held.region),
-        spots: removal === undefined ? held.spots : [removal.spot, ...held.spots],
-        taken: true,
-      };
-      pending = { arrived, cancel: afterComponents(() => check(loss)) };
-    });
-    watcher.observe(document.body, { childList: true, subtree: true });
-    /** The record a scroll or a resize reads into: the noted element's, while a loss of it could
-     *  still be answered - it holds the focus, or a check or a wait is out - and while the page
-     *  still draws it. A hidden element's box is the viewport's top-left corner, which would read
-     *  as in sight, so what the last read before it went saw stands. */
-    const readable = (): Sight | null => {
-      const watched = sight;
-      if (watched === null || (focused === null && pending === null)) return null;
-      return watched.element.isConnected && rendered(watched.element) ? watched : null;
-    };
-    // A scroll that can move the noted element reads whether the reader can still see it. A box's
-    // `scroll` does not bubble; the document hears it in its capture phase, before the box's own
-    // listeners.
-    const noteScroll = (event: Event) => {
-      const watched = readable();
-      if (watched === null) return;
-      const { target } = event;
-      if (target instanceof Element) {
-        if (!target.contains(watched.element)) return;
-        watched.boxes.add(target);
-      }
-      readSight(watched);
-    };
-    // A resize moves the noted element with nothing scrolled - a shorter window, a zoom, a box
-    // sized to the window shrinking under it - so it reads against every box around it that clips
-    // it, none of which has to have scrolled, and keeps those boxes for the scrolls after it.
-    const noteResize = () => {
-      const watched = readable();
-      if (watched === null) return;
-      for (const box of clippingBoxes(watched.element)) watched.boxes.add(box);
-      readSight(watched);
-    };
-    /** Records the reader's own act, a press (`isPress`) - a pointer press, a key that acts rather
-     *  than edits a field's text, or a pick, which Playwright and assistive tech make with an
-     *  `input` and a `change` alone - so a loss while it is live can be told from one an update
-     *  made under them (`causedByReader`), with the dialog or panel it landed in and the loss that
-     *  region was opened from, read now, while the region is still in the page, for when a pick or
-     *  a confirm takes it away (`pressedOn`), the controls it can read as that are already held
-     *  (`heldAt`), read before the act runs, and the release it waits for (`Release`). A key, a
-     *  `change` or an `input` that is no press - a character typed in a field, the field's commit
-     *  on blur, the `input` of its typing - neither starts an act nor ends the live one. A newer
-     *  act ends the one before it, and the watch on that one's hold with it, except an act on a
-     *  control the live act holds by a hold that began after it, or on anything inside that
-     *  control (`onHeldControl`) - a double click, a repeated Enter, any other key or pointer press
-     *  on that control or on a span or an icon of it: the held control takes the act without a
-     *  write, so the act before it stays the cause, with its release and its write deadline as
-     *  they were (`noteRelease`). Tab, with Shift or without, is the one key the rescue reads as a
-     *  new act on a held control: it moves the focus off that control to another, and an act is
-     *  the cause only of the loss of its own control and of what it takes away, so the Tab ends
-     *  the act before it and is noted as a new act, and a loss of the control it moved the focus
-     *  to is judged on its own. Other keys that move the focus away, such as the Inbox's j and k,
-     *  are passed over like any other key on the held control. */
-    const notePress = (event: Event) => {
-      if (!isPress(event)) return;
-      const movesOff = event instanceof KeyboardEvent && event.key === "Tab";
-      if (!movesOff && lastPress?.live === true && onHeldControl(lastPress, event.target)) return;
-      lastPress?.stop();
-      const region = event.target.closest(DIALOG);
-      const opener = region === null ? null : (openedFrom.get(region) ?? null);
-      const release = RELEASE[event.type];
-      lastPress = {
-        heldBefore: heldAt(event.target, opener),
-        live: true,
-        opener,
-        region,
-        release: release === undefined ? null : { by: pressedBy(event), type: release },
-        stop: () => undefined,
-        target: event.target,
-      };
-      answerPress(lastPress);
-    };
-    /** The release of the reader's latest press - the `pointerup` of the pointer it was made by,
-     *  the `keyup` of its key (`Release`) - which is what a click answers: a control pressed by the
-     *  pointer, or by Space, acts on the release, however long the reader held it down. The press
-     *  is live again from there, as if made then, on the control it was made on, and from that
-     *  release alone, once: the release is spent then, so an act on the control the press holds,
-     *  which the rescue does not note (`notePress`), and that act's release leave the press's
-     *  watch and its write deadline as they were. */
-    const noteRelease = (event: Event) => {
-      const press = lastPress;
-      if (press?.release?.type !== event.type || press.release.by !== pressedBy(event)) return;
-      press.release = null;
-      answerPress(press);
-    };
-    const readerMoved = (event: Event) => {
-      notePress(event);
-      pending?.cancel();
-      pending = null;
-    };
-    /** Whether the reader's Escape is being answered: set by its `keydown` until the next task,
-     *  by when the commit it caused has run. */
-    let leaving = false;
-    const noteKey = (event: KeyboardEvent) => {
-      notePress(event);
-      if (event.key !== "Escape") return;
-      leaving = true;
-      window.setTimeout(() => {
-        leaving = false;
-      }, 0);
-    };
-    document.addEventListener("focusin", noteFocus, true);
-    document.addEventListener("focusout", record, true);
-    document.addEventListener("pointerdown", readerMoved, true);
-    document.addEventListener("pointerup", noteRelease, true);
-    document.addEventListener("keydown", noteKey, true);
-    document.addEventListener("keyup", noteRelease, true);
-    document.addEventListener("change", notePress, true);
-    document.addEventListener("input", notePress, true);
-    document.addEventListener("scroll", noteScroll, { capture: true, passive: true });
-    window.addEventListener("resize", noteResize);
-    return () => {
-      watcher.disconnect();
-      document.removeEventListener("focusin", noteFocus, true);
-      document.removeEventListener("focusout", record, true);
-      document.removeEventListener("pointerdown", readerMoved, true);
-      document.removeEventListener("pointerup", noteRelease, true);
-      document.removeEventListener("keydown", noteKey, true);
-      document.removeEventListener("keyup", noteRelease, true);
-      document.removeEventListener("change", notePress, true);
-      document.removeEventListener("input", notePress, true);
-      document.removeEventListener("scroll", noteScroll, true);
-      window.removeEventListener("resize", noteResize);
-      pending?.cancel();
-      sight = null;
-      rescueMounted = false;
-      lastPress?.stop();
-      lastPress = null;
-    };
-  }, [main]);
+/** The place among `controls`, the controls the focus can reach in `within` now, that `lost`
+ *  left: a component's control in its container, or in the region its container is in
+ *  (`useFocusPlace`, `walkBackInRegion`). It is where the control still stands, for one hidden
+ *  rather than taken away (`countBefore`), else off the spot it went from, the nearest of its
+ *  spots whose node has gone from a parent still in `within` (`goneFrom`, `placeOfRemoval`), else
+ *  the place counted while it stood there. That count was made while the control still stood in
+ *  the page, so it takes in every control before it that went or was hidden with it since: a link
+ *  taken away with the button after it, in the one parent a press takes away. */
+function placeLeft(
+  lost: { readonly element: Element; readonly index: number; readonly spots: readonly Spot[] },
+  within: Element,
+  controls: readonly Element[]
+): number {
+  if (lost.element.isConnected) return countBefore(controls, lost.element);
+  const spot = lost.spots.find((each) => goneFrom(each, within));
+  return spot === undefined ? lost.index : placeOfRemoval(controls, spot);
 }

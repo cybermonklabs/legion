@@ -75,6 +75,7 @@ func readPage(t *testing.T, handler http.Handler, query string) (model.IssueSumm
 }
 
 func TestListIssuesCarriesCreatorAndCreationTime(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	keys := createListedIssues(t, handler, "TEST", 1)
 	detail := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+keys[0], nil, "alice"))
@@ -115,6 +116,7 @@ func TestListIssuesCarriesCreatorAndCreationTime(t *testing.T) {
 // A caller that asks the listing for a page gets that page and how many issues the filters
 // matched, rather than every issue (LEGION-406).
 func TestListIssuesServesTheRequestedPage(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	keys := createListedIssues(t, handler, "TEST", 7)
 	createListedIssues(t, handler, "OTHER", 2)
@@ -157,6 +159,7 @@ func TestListIssuesServesTheRequestedPage(t *testing.T) {
 // label in SQL and by route_status after the query, so the page must be cut after both. The
 // rows share one rank and creation time, so only the key orders them.
 func TestListIssuePagesCoverAFilteredListingOnce(t *testing.T) {
+	t.Parallel()
 	roster := &fakeRoster{}
 	handler, database := routeStatusServer(t, roster)
 	keys := createListedIssues(t, handler, "TEST", 10)
@@ -215,6 +218,7 @@ func TestListIssuePagesCoverAFilteredListingOnce(t *testing.T) {
 // unpaged and on each page, with total counting what the filter kept. A sort it cannot serve is
 // refused there as on any listing, paged or not, though the filter runs after the read.
 func TestARouteStatusListingTakesTheSort(t *testing.T) {
+	t.Parallel()
 	roster := &fakeRoster{}
 	handler, _ := routeStatusServer(t, roster)
 	keys := createListedIssues(t, handler, "TEST", 4)
@@ -271,6 +275,7 @@ func TestARouteStatusListingTakesTheSort(t *testing.T) {
 // one can tell a page in that order from one in the route's own. The route_status page, which Go
 // cuts after the read rather than SQL, names it as the SQL-cut page does.
 func TestAPageNamesTheSortItApplied(t *testing.T) {
+	t.Parallel()
 	roster := &fakeRoster{}
 	handler, _ := routeStatusServer(t, roster)
 	keys := createListedIssues(t, handler, "TEST", 2)
@@ -314,6 +319,7 @@ func TestAPageNamesTheSortItApplied(t *testing.T) {
 // a tie among other rows in an order of its own making, and a write anywhere in the listing can
 // reshuffle it between two pages of one walk.
 func TestListIssuesOrdersTiesByKeyAmongOtherIssues(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	tied := []string{}
 	for _, project := range []string{"ALPHA", "BRAVO", "CHARLIE", "DELTA", "ECHO", "FOXTROT", "GOLF", "HOTEL", "INDIA", "JULIET", "KILO", "LIMA"} {
@@ -339,6 +345,7 @@ func TestListIssuesOrdersTiesByKeyAmongOtherIssues(t *testing.T) {
 
 // Without limit or offset the listing is what it was: every matching issue, as a bare array.
 func TestListIssuesWithoutPagingAnswersEveryIssue(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	test := createListedIssues(t, handler, "TEST", 3)
 	other := createListedIssues(t, handler, "OTHER", 1)
@@ -356,6 +363,7 @@ func TestListIssuesWithoutPagingAnswersEveryIssue(t *testing.T) {
 
 // The nine filters narrow the listing as before, paged or not.
 func TestListIssuesFiltersStillApplyBesidePaging(t *testing.T) {
+	t.Parallel()
 	roster := &fakeRoster{}
 	handler, database := routeStatusServer(t, roster)
 	test := createListedIssues(t, handler, "TEST", 4)
@@ -419,6 +427,7 @@ func TestListIssuesFiltersStillApplyBesidePaging(t *testing.T) {
 // cannot serve, blank, repeated or naming another order, is refused the same way, paged or not,
 // rather than answered in the listing's own order.
 func TestListIssuesRefusesAPageItCannotServe(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createListedIssues(t, handler, "TEST", 2)
 	for _, test := range []struct{ query, parameter string }{

@@ -53,6 +53,12 @@ func (i *Issue) handedOff(word string, at time.Time) *Issue {
 	return i
 }
 
+// ran records the plan of a run made at made, whose one task's steps are the roles steps.
+func (i *Issue) ran(made time.Time, steps ...string) *Issue {
+	i.Plans = append(i.Plans, RunPlan{Made: made, Steps: steps})
+	return i
+}
+
 // statusAt records a status snapshot.
 func (i *Issue) statusAt(at time.Time, status string) *Issue {
 	i.StatusMarks = append(i.StatusMarks, Mark{At: at, Value: status})

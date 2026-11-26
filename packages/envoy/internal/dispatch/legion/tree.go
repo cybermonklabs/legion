@@ -29,11 +29,13 @@ package legion
 // in TreeChain's own words.
 //
 // Both halves are facts of the project and not of any window, so neither reader reads them for a
-// window: the daemon's half is ReadCurrent's, and the phase work the metrics read in one read of
-// every handoff and every Legion role session's event (PhaseWorkKeys), and the board only for the
-// issues its walk can climb onto that the daemon reports nothing of, from all of those issues' own
-// rows (PhaseWorkOf), which is the whole log's answer for each of them. A window narrows which
-// issues a metric measures, never which issues are Legion's.
+// window: the daemon's half is ReadCurrent's, and the phase work the metrics' whole read of a
+// project reads in one read of every handoff and every Legion role session's event
+// (PhaseWorkKeys), while their narrow read of some issues reads it only for the issues its
+// computation can place, and the board only for the issues its walk can climb onto that the
+// daemon reports nothing of, each from all of those issues' own rows (PhaseWorkOf), which is the
+// whole log's answer for each of them. A window narrows which issues a metric measures, never
+// which issues are Legion's.
 type TreeNode struct {
 	Tree   string
 	Parent string

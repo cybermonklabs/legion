@@ -3,22 +3,25 @@ package evals
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestATargetChangeWritesANewVersionAndCopiesEveryOtherFieldForward: a register write that sets
 // the target alone writes version 2, which holds that target and every field version 1 held; a
 // write that changes nothing writes no version; and the versions read newest first.
 func TestATargetChangeWritesANewVersionAndCopiesEveryOtherFieldForward(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	first, err := r.registry.Register(t.Context(), Registration{
 		Project: r.project, Slug: "review-rounds", Caller: alice,
@@ -55,8 +58,8 @@ func TestATargetChangeWritesANewVersionAndCopiesEveryOtherFieldForward(t *testin
 	copied := v1
 	copied.Version, copied.Target, copied.WrittenBy, copied.CreatedAt = v2.Version, v2.Target, v2.WrittenBy, v2.CreatedAt
 	copied.SetByPerson = v2.SetByPerson
-	if !sameDefinition(copied, v2) || v2.WrittenVia != ViaRegister || v2.WrittenBy.ID != implementer.ID {
-		t.Errorf("version 2 is %+v, want version 1's fields with the target set, written by the implementer through the register write", v2)
+	if !reflect.DeepEqual(copied, v2) || v2.WrittenVia != ViaRegister || v2.WrittenBy.ID != implementer.ID {
+		t.Errorf("version 2 is %+v, want version 1's fields with the target set, written by the implementer through the register write, %+v", v2, copied)
 	}
 	// Each version records the fields a person's write named, whether or not it moved their
 	// value, and carries the record before it forward (Definition.SetByPerson): version 1 named
@@ -74,6 +77,7 @@ func TestATargetChangeWritesANewVersionAndCopiesEveryOtherFieldForward(t *testin
 // connections at once, both succeed, as versions 2 and 3, and version 3 holds both writes'
 // fields. The test holds the eval's lock until both writes wait for it.
 func TestTwoRegisterWritesAtOnceLandAsTheNextTwoVersions(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	first, err := r.registry.Register(t.Context(), Registration{Project: r.project, Slug: "queue-depth", Caller: alice, Name: Set("Queue depth")})
 	if err != nil {
@@ -92,21 +96,20 @@ func TestTwoRegisterWritesAtOnceLandAsTheNextTwoVersions(t *testing.T) {
 		{Project: r.project, Slug: "queue-depth", Caller: alice, Target: Set(&target)},
 		{Project: r.project, Slug: "queue-depth", Caller: alice, Unit: Set("issues")},
 	}
-	failures := make([]error, len(changes))
-	var writers sync.WaitGroup
-	for index, change := range changes {
-		writers.Go(func() { _, failures[index] = r.registry.Register(t.Context(), change) })
+	answers := make(chan error, len(changes))
+	for _, change := range changes {
+		go func() {
+			_, err := r.registry.Register(t.Context(), change)
+			answers <- err
+		}()
 	}
-	if waiting := storetest.WaitForLockWaiters(t, holder, 2, time.Minute); waiting < 2 {
-		t.Fatalf("%d register writes wait for the eval's lock, want both", waiting)
-	}
+	storetest.WaitForLockWaiters(t, holder, 2)
 	if err := holder.Commit(t.Context()); err != nil {
 		t.Fatalf("release the eval's lock: %v", err)
 	}
-	writers.Wait()
-	for index, err := range failures {
-		if err != nil {
-			t.Errorf("register write %d: %v", index, err)
+	for range changes {
+		if err := testwait.Receive(t, "a register write's answer once the eval's lock is let go", answers); err != nil {
+			t.Errorf("a register write: %v", err)
 		}
 	}
 	versions := r.versionsOf(t, first.Definition.EvalID)
@@ -124,6 +127,7 @@ func TestTwoRegisterWritesAtOnceLandAsTheNextTwoVersions(t *testing.T) {
 // block; a second doc_text replaces the block, whose id the next version names, and the first
 // block and its text are gone, under the one heading of the eval.
 func TestDocTextReplacesTheSectionsMethodAndNamesTheNewBlock(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	firstText := "Counts each pull request's review rounds.\n\n- A round is one review that requests changes."
 	first, err := r.registry.Register(t.Context(), Registration{Project: r.project, Slug: "rework", Caller: alice, DocText: Set(firstText)})
@@ -161,6 +165,7 @@ func TestDocTextReplacesTheSectionsMethodAndNamesTheNewBlock(t *testing.T) {
 // writes no version of the eval, keeps its method block and writes no version of evals-md; a
 // doc_text that differs writes the next version, naming a new block.
 func TestARegisterWriteOfTheMethodTheSectionHoldsWritesNothing(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	method := "Counts the rounds after the first review.\n\n:::callout{title=\"Why\"}\nThe first review always happens.\n:::"
 	register := func(text string) Registered {
@@ -196,44 +201,48 @@ func TestARegisterWriteOfTheMethodTheSectionHoldsWritesNothing(t *testing.T) {
 }
 
 // TestARegisterWriteThatChangesASeriesAloneWritesAVersion: a register write that changes one
-// series of an eval and no field of its definition stores the series' next version, answers that
-// it wrote, and logs one eval_versions change of the eval, so a live view of the eval wakes; the
-// same write again stores nothing, answers so, and logs nothing.
+// series of an eval and no field of its definition stores the series' next version, holding the
+// change, answers that it wrote, and logs one eval_versions change of the eval, pending in the
+// change log's outbox or drained into the log, so a live view of the eval wakes; the same write
+// again stores nothing, answers so, and logs nothing.
 func TestARegisterWriteThatChangesASeriesAloneWritesAVersion(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	minutes := []SeriesChange{{Series: "minutes", Agg: Set(AggQuantile)}}
 	if _, err := r.registry.Register(t.Context(), Registration{Project: r.project, Slug: "review-time", Caller: alice, Name: Set("Review time"), Series: minutes}); err != nil {
 		t.Fatalf("register the eval: %v", err)
 	}
 	evalID := EvalID(r.project, "review-time")
-	head := func() int64 {
-		t.Helper()
-		cursor, err := delivery.ChangesHead(t.Context(), r.database.Pool)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return cursor.Seq
-	}
-	versionChanges := func(after int64) int {
-		return r.count(t, `select count(*) from delivery_changes where seq > $1 and kind = 'eval_versions' and repo = $2 and ref = $3`, after, r.project, evalID)
+	versionChanges := func(heads [2]int) int {
+		return r.count(t, `
+			select (select count(*) from delivery_changes_pending where id > $1 and kind = 'eval_versions' and repo = $3 and ref = $4)
+			     + (select count(*) from delivery_changes where seq > $2 and kind = 'eval_versions' and repo = $3 and ref = $4)`,
+			heads[0], heads[1], r.project, evalID)
 	}
 	for _, write := range []struct {
 		what    string
 		wrote   bool
 		changes int
 	}{{"unit set", true, 1}, {"unit set again", false, 0}} {
-		seq := head()
+		heads := r.changeHeads(t)
 		registered, err := r.registry.Register(t.Context(), Registration{Project: r.project, Slug: "review-time", Caller: alice,
 			Series: []SeriesChange{{Series: "minutes", Unit: Set("minutes")}}})
 		if err != nil {
 			t.Fatalf("%s: %v", write.what, err)
 		}
-		logged := versionChanges(seq)
+		logged := versionChanges(heads)
 		if registered.Wrote != write.wrote || logged != write.changes || registered.Definition.Version != 1 {
 			t.Errorf("%s answered wrote %t and logged %d eval_versions changes, the definition at version %d; want wrote %t, %d changes, version 1",
 				write.what, registered.Wrote, logged, registered.Definition.Version, write.wrote, write.changes)
 		}
-		t.Logf("%s: wrote %t, the series at version %d, %d eval_versions changes", write.what, registered.Wrote, registered.Series[0].Version, logged)
+		_, series := r.currentOf(t, "review-time")
+		stored := series["minutes"]
+		versions := r.count(t, `select count(*) from eval_series where eval_id = $1 and series = 'minutes'`, evalID)
+		if stored.Version != 2 || stored.Unit != "minutes" || stored.Agg != AggQuantile || versions != 2 {
+			t.Errorf("%s left minutes at version %d of %d stored, unit %q and agg %s; want version 2 of 2, unit minutes, agg %s",
+				write.what, stored.Version, versions, stored.Unit, stored.Agg, AggQuantile)
+		}
+		t.Logf("%s: wrote %t, the series at version %d, %d eval_versions changes", write.what, registered.Wrote, stored.Version, logged)
 	}
 }
 
@@ -241,10 +250,12 @@ func TestARegisterWriteThatChangesASeriesAloneWritesAVersion(t *testing.T) {
 // its code (R5). A register write of deploy frequency that names a field of its computation, each
 // in a write of its own beside a target, is refused EVAL_FIELD_COMPUTED naming that field as the
 // body spells it, and stores nothing: no version and no series version. One write of every field
-// a person sets on it is stored: its target, inclusiveness and judges, the owner role, person,
-// issue, links and state, and its method; and the min_n of pr-ci's job series, the one series min_n
-// is taken on (TestAMinNIsTakenOnlyOnTheSeriesAReadRanksBy). A logged eval takes every field.
+// a person sets on it is stored, each field read back from the store: its target, inclusiveness
+// and judges, the owner role, person, issue, links and state, and its method; and the min_n of
+// pr-ci's job series, the one series min_n is taken on
+// (TestAMinNIsTakenOnlyOnTheSeriesAReadRanksBy). A logged eval takes every field, each read back.
 func TestARegisterWriteOfAComputedEvalNamingItsComputationIsRefused(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
@@ -299,14 +310,19 @@ func TestARegisterWriteOfAComputedEvalNamingItsComputationIsRefused(t *testing.T
 		Project: r.project, Slug: SlugDeployFrequency, Caller: alice,
 		Target: Set(&target), TargetInclusive: Set(true), TargetJudges: Set([]string{deploys + ".per_day"}),
 		OwnerRole: Set("implementer"), Person: Set("alice"), IssueKey: Set("EVAL-1"), Links: Set(link),
-		State: Set(StateActive), DocText: Set("Alice's method: count the deploys."),
+		State: Set(StateStopped), DocText: Set("Alice's method: count the deploys."),
 	})
 	if err != nil {
 		t.Fatalf("a write of the fields a person sets on %s: %v", evalID, err)
 	}
-	if definition := person.Definition; !person.Wrote || definition.Target == nil || *definition.Target != target || !definition.TargetInclusive ||
-		definition.Person != "alice" || definition.IssueKey != "EVAL-1" || len(definition.Links) != 1 {
-		t.Errorf("the write of a person's fields left %+v, want alice's target, owner, issue and link", definition)
+	definition, _ := r.currentOf(t, SlugDeployFrequency)
+	if !person.Wrote || definition.Version != person.Definition.Version || definition.Target == nil || *definition.Target != target || !definition.TargetInclusive ||
+		!slices.Equal(definition.TargetJudges, []string{deploys + ".per_day"}) || definition.OwnerRole != "implementer" || definition.Person != "alice" ||
+		definition.IssueKey != "EVAL-1" || len(definition.Links) != 1 || definition.Links[0].Href != link[0].Href || definition.State != StateStopped {
+		t.Errorf("the write of a person's fields left %+v, want alice's target, inclusiveness, judges, owner role, person, issue, link and state", definition)
+	}
+	if method, found, err := r.registry.Method(ctx, r.project, definition.DocBlock); err != nil || !found || method != "Alice's method: count the deploys." {
+		t.Errorf("the write of a person's method left the method %q (found %t, %v), want alice's", method, found, err)
 	}
 	ranked, err := r.registry.Register(ctx, Registration{Project: r.project, Slug: SlugPRCI, Caller: alice,
 		Series: []SeriesChange{{Series: SeriesJobs, MinN: Set(&minN)}}})
@@ -320,10 +336,24 @@ func TestARegisterWriteOfAComputedEvalNamingItsComputationIsRefused(t *testing.T
 	if _, err := r.registry.Register(ctx, Registration{
 		Project: r.project, Slug: "review-load", Caller: alice, Name: Set("Review load"), Question: Set("How many reviews wait?"),
 		NumberRule: Set("Count the open reviews."), Decision: Set("Whether to add a reviewer."), Unit: Set("reviews"),
-		Direction: Set(DirectionLowerBetter), Kind: Set(KindExperiment), Source: Set(SourceLogged),
-		Series: []SeriesChange{{Series: "reviews", Unit: Set("reviews"), Agg: Set(AggMax), Listed: Set(true), Links: Set(link)}},
+		FailureModes: Set([]FailureMode{{Mode: "A mode.", Guard: "A guard."}}),
+		Direction:    Set(DirectionLowerBetter), Kind: Set(KindCI), Source: Set(SourceLogged),
+		Series: []SeriesChange{{Series: "reviews", Unit: Set("reviews"), Role: Set(RoleControl), IsPrimary: Set(false), Agg: Set(AggMax), Listed: Set(false), Links: Set(link)}},
 	}); err != nil {
-		t.Errorf("a logged eval's register write of every field: %v", err)
+		t.Fatalf("a logged eval's register write of every field: %v", err)
+	}
+	logged, series := r.currentOf(t, "review-load")
+	want := Computation{
+		Name: "Review load", Question: "How many reviews wait?", NumberRule: "Count the open reviews.", Decision: "Whether to add a reviewer.",
+		FailureModes: []FailureMode{{Mode: "A mode.", Guard: "A guard."}}, Unit: "reviews", Direction: DirectionLowerBetter, Kind: KindCI, Source: SourceLogged,
+	}
+	if !logged.Computation.same(want) {
+		t.Errorf("the logged eval's write of every field of its computation left %+v, want %+v", logged.Computation, want)
+	}
+	reviews := series["reviews"]
+	if reviews.Unit != "reviews" || reviews.Role != RoleControl || reviews.IsPrimary || reviews.Listed || reviews.Agg != AggMax ||
+		len(reviews.Links) != 1 || reviews.Links[0].Href != link[0].Href {
+		t.Errorf("the logged eval's write of every field of its series left %+v, want an unlisted control series of reviews, folded by max, with its link", reviews)
 	}
 }
 
@@ -334,6 +364,7 @@ func TestARegisterWriteOfAComputedEvalNamingItsComputationIsRefused(t *testing.T
 // naming its row and its link, and an eval's and a series', naming the field. A refused write
 // stores nothing; an https URL written in capitals is one, and is stored.
 func TestALinkWhoseHrefIsNoHTTPURLIsRefused(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	stored := func() (int, int) {
@@ -391,8 +422,9 @@ func TestALinkWhoseHrefIsNoHTTPURLIsRefused(t *testing.T) {
 // before it is ranked among pr-ci's slowest jobs (R5), and no other read ranks a series by it. A
 // register write of a min_n on any other series, of a computed eval or of a logged one, is refused
 // EVAL_FIELD_INVALID naming that series' min_n, and stores nothing; the one of pr-ci's job series
-// is stored, and the readers of it read it.
+// is stored and read back.
 func TestAMinNIsTakenOnlyOnTheSeriesAReadRanksBy(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
@@ -432,7 +464,8 @@ func TestAMinNIsTakenOnlyOnTheSeriesAReadRanksBy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a min_n on pr-ci's job series: %v", err)
 	}
-	jobs := ranked.Series[slices.IndexFunc(ranked.Series, func(one Series) bool { return one.Series == SeriesJobs })]
+	_, stored := r.currentOf(t, SlugPRCI)
+	jobs := stored[SeriesJobs]
 	if !ranked.Wrote || jobs.MinN == nil || *jobs.MinN != minN {
 		t.Errorf("a min_n of %d on pr-ci's job series wrote %t and left min_n %s, want it stored", minN, ranked.Wrote, showMinN(jobs.MinN))
 	}
@@ -444,6 +477,7 @@ func TestAMinNIsTakenOnlyOnTheSeriesAReadRanksBy(t *testing.T) {
 // and stores nothing, so no logged eval is made computed and left reading "no data" for good. A
 // write of source logged is taken.
 func TestARegisterWriteMakesNoEvalComputed(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	r.write(t, "build-minutes", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "value": 4, "measured_at": at(4, 9, 0)}))
@@ -478,6 +512,7 @@ func TestARegisterWriteMakesNoEvalComputed(t *testing.T) {
 // holds, the project's and a repository's, in its own transaction, so a window that spans the
 // change folds every day of it, not only those written after; unlisting it again unlists them all.
 func TestAListingChangeOfALoggedSeriesMovesItsStoredDayRows(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	slug := "queue-depth"
@@ -495,11 +530,15 @@ func TestAListingChangeOfALoggedSeriesMovesItsStoredDayRows(t *testing.T) {
 	}
 	list(false)
 	r.write(t, slug, alice, reading("a", 4), reading("b", 5))
+	if rows, listed := r.count(t, `select count(*) from eval_days where eval_id = $1`, evalID),
+		r.count(t, `select count(*) from eval_days where eval_id = $1 and listed`, evalID); rows < 4 || listed != 0 {
+		t.Fatalf("an unlisted series' readings left %d day rows with %d listed, want at least 4 (the 4th and 5th, project and repository) and none listed", rows, listed)
+	}
 	list(true)
 	r.write(t, slug, alice, reading("c", 6))
 	window := Range{From: at(4, 0, 0), To: at(7, 0, 0)}
 	for _, repos := range [][]string{nil, {"acme/web"}} {
-		days, err := r.registry.DayWindow(ctx, []string{r.project}, r.entries(t, evalID), repos, window, nil)
+		days, err := DayWindowIn(ctx, r.database.Pool, []string{r.project}, r.entries(t, evalID), "", repos, window, nil)
 		if err != nil {
 			t.Fatalf("read the window of %v: %v", repos, err)
 		}
@@ -514,13 +553,128 @@ func TestAListingChangeOfALoggedSeriesMovesItsStoredDayRows(t *testing.T) {
 	}
 }
 
+// TestAListedSeriesIsReadAtOnceAndFoldedAgainInBatches: over a logged eval's history built whole,
+// EVAL's review-latency (seedLoggedQuantile: readings of minutes on the three days before today, of
+// the project and of acme/web), whose series depth, registered unlisted, holds readings ten to
+// eight days before today, of the project and of acme/web too, a register write lists depth. Right
+// after it, before any pass of the refresher, the eval list's read of each cut over the week from
+// depth's first day, which no row of minutes reaches, states depth's values, the fold of the day
+// rows that stand, as does every read of a first paint of either cut; each reads the day rows, its
+// cut marked stale naming the eval (markMovedKey). One pass, in batches of two end days, then folds
+// the eval's stored figures again under its new fold key: each of its transactions wrote the stored
+// ranges of a first paint alone or of two end days at most, no mark is left, every one of those
+// reads states the same values from the stored figures, and the stored figures are the fold of the
+// rows that stand. Red where the register write marks no cut: the week reads as holding no data of
+// depth until the pass, whose read of the change the listing logs (relistDays) then folds every day
+// of the eval in one transaction; and where that read folds the days the refold of a mark whose
+// first paint is owed folds again (leaveToRefolds): it folds them in one transaction too.
+func TestAListedSeriesIsReadAtOnceAndFoldedAgainInBatches(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	ctx := t.Context()
+	r.seedLoggedQuantile(t)
+	const slug = "review-latency"
+	evalID := EvalID(r.project, slug)
+	list := func(listed bool) {
+		t.Helper()
+		if _, err := r.registry.Register(ctx, Registration{Project: r.project, Slug: slug, Caller: alice,
+			Series: []SeriesChange{{Series: "depth", Listed: Set(listed)}}}); err != nil {
+			t.Fatalf("list depth %t: %v", listed, err)
+		}
+	}
+	list(false)
+	var rows []json.RawMessage
+	for index, value := range []float64{4, 9, 6, 2, 7, 5} {
+		fields := map[string]any{"series": "depth", "row_kind": "queue", "row_key": fmt.Sprint(index), "value": value,
+			"measured_at": refresherToday.AddDate(0, 0, -10+index%3).Add(time.Duration(index+1) * time.Hour)}
+		if index%2 == 0 {
+			fields["attributes"] = map[string]any{"repo": "acme/web"}
+		}
+		rows = append(rows, row(t, fields))
+	}
+	if _, err := r.registry.WriteReadings(ctx, Batch{Project: r.project, Slug: slug, Rows: rows, Caller: alice, BuiltBy: r.build}); err != nil {
+		t.Fatalf("log depth's readings: %v", err)
+	}
+	r.settle(t)
+	through := r.figuresFolded(t)[r.project]
+	week := paintRead{name: "the week from depth's first day", window: rangeOf(7, refresherToday.AddDate(0, 0, -3))}
+	reads := append(firstPaintReads(through), week)
+	ranges := make([]Range, 0, 2*len(reads))
+	for _, read := range reads {
+		ranges = append(ranges, read.window)
+		if read.compare != nil {
+			ranges = append(ranges, *read.compare)
+		}
+	}
+	// answers is each read's statement of the eval, by cut and read, and checks each is the fold of
+	// its day rows, stated from the stored figures where stored is set, and that the week states
+	// depth's values.
+	answers := func(what string, stored bool) map[string]string {
+		t.Helper()
+		answered := map[string]string{}
+		for _, repos := range [][]string{nil, {"acme/web"}} {
+			state := r.readListState(t, r.project, repos, ranges...)
+			for _, read := range reads {
+				stated, folded, fromFigures := state.values(t, read.window, read.compare)
+				if stated[evalID] != folded[evalID] {
+					t.Errorf("%s: the read of %v over %s states %s's values in %d bytes that differ from the fold of its day rows' %d at byte %d",
+						what, repos, read.name, evalID, len(stated[evalID]), len(folded[evalID]), firstDiffering(stated[evalID], folded[evalID]))
+				}
+				if fromFigures[evalID] != stored {
+					t.Errorf("%s: the read of %v over %s states %s from the stored figures %t, want %t", what, repos, read.name, evalID, fromFigures[evalID], stored)
+				}
+				answered[fmt.Sprintf("%v %s", repos, read.name)] = stated[evalID]
+			}
+			var values []SeriesValues
+			if err := json.Unmarshal([]byte(answered[fmt.Sprintf("%v %s", repos, week.name)]), &values); err != nil {
+				t.Fatalf("%s: decode the values of %s over the week: %v", what, evalID, err)
+			}
+			if !slices.ContainsFunc(values, func(one SeriesValues) bool {
+				return one.Series.Series == "depth" && slices.ContainsFunc(slices.Collect(maps.Values(one.Window)), func(value *float64) bool { return value != nil })
+			}) {
+				t.Errorf("%s: the read of %v over %s states %s with no value of depth: %s", what, repos, week.name, evalID, answered[fmt.Sprintf("%v %s", repos, week.name)])
+			}
+		}
+		return answered
+	}
+	before := r.storedFigures(t)
+	list(true)
+	listed := answers("right after the register write that lists depth", false)
+	r.batch = 2
+	r.pass(t)
+	paint := firstPaintOf(through)
+	for xmin, byCut := range endsWritten(t, before, r.storedFigures(t)) {
+		for cut, days := range byCut {
+			painted := true
+			for day := range days {
+				painted = painted && paint.holds(day)
+			}
+			if !painted && len(days) > r.batch {
+				t.Errorf("the pass after the listing wrote, in transaction %s, the stored ranges of %s's cut %q ending on %d end days (%s), neither its first paint's nor a batch's %d at most",
+					xmin, cut.project, cut.repo, len(days), endDaysText(days), r.batch)
+			}
+		}
+	}
+	if marks := r.staleMarks(t); len(marks) != 0 {
+		t.Errorf("the pass after the listing left the cuts %v marked, want its refold done", marks)
+	}
+	folded := answers("after the pass", true)
+	for _, read := range slices.Sorted(maps.Keys(listed)) {
+		if folded[read] != listed[read] {
+			t.Errorf("the read of %s states %s in %d bytes after the pass that differ at byte %d from the %d it stated before", read, evalID, len(folded[read]), firstDiffering(folded[read], listed[read]), len(listed[read]))
+		}
+	}
+	expectTruth(t, "after the pass after the listing", r.storedFigures(t), r.truthFigures(t))
+}
+
 // TestEveryFieldAPersonSetsIsRecordedAsSetByOne: the seed fills a field of the catalogue only
 // where no version records a person setting it, so a field a person may set that the write does
 // not record would be a write the next boot could undo, which is the defect this record closes
 // (R5). Every field of a register write that is a person's to set, each Field of Registration
 // and of SeriesChange outside the computation, is named by personFields, and setting it alone
-// names it alone. A field added to either and missed there fails here.
+// records its own body name alone. A field added to either, missed or misnamed fails here.
 func TestEveryFieldAPersonSetsIsRecordedAsSetByOne(t *testing.T) {
+	t.Parallel()
 	for _, change := range []struct {
 		what     string
 		value    reflect.Value
@@ -545,9 +699,10 @@ func TestEveryFieldAPersonSetsIsRecordedAsSetByOne(t *testing.T) {
 			}
 			one := reflect.New(change.value.Type()).Elem()
 			one.Field(index).FieldByName("Set").SetBool(true)
+			want := snakeCase(field.Name)
 			recorded := change.recorded(one)
-			if len(recorded) != 1 {
-				t.Errorf("%s setting %s alone records %v as set by a person, want that one field", change.what, field.Name, recorded)
+			if !slices.Equal(recorded, []string{want}) {
+				t.Errorf("%s setting %s alone records %v as set by a person, want [%q]", change.what, field.Name, recorded, want)
 				continue
 			}
 			counted++
@@ -562,6 +717,210 @@ func TestEveryFieldAPersonSetsIsRecordedAsSetByOne(t *testing.T) {
 	}
 }
 
+// snakeCase turns a Go field name of words (TargetJudges, MinN) into the body's snake_case name
+// (target_judges, min_n).
+func snakeCase(name string) string {
+	var out strings.Builder
+	for index, r := range name {
+		if index > 0 && r >= 'A' && r <= 'Z' {
+			out.WriteByte('_')
+		}
+		if r >= 'A' && r <= 'Z' {
+			r += 'a' - 'A'
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
+}
+
+// TestAVersionPastItsBoundIsRefusedNamingItsLargestField: a version of an eval's definition, or of
+// one of its series, takes at most MaxVersionBytes as JSON, judged once the fields a write leaves
+// out are copied forward, and a write that would store a larger one is refused
+// EVAL_VERSION_TOO_LARGE naming the version's largest field, its message within errorTextBytes,
+// and stores nothing:
+//   - a register write whose question alone passes the bound, naming question;
+//   - two register writes each within it, a question and then a decision of about half the bound
+//     each: the first is stored, and the second, whose version would hold both, is refused naming
+//     decision, its largest field;
+//   - a register write whose second series carries a unit, or links, past the bound, naming
+//     series[1].unit or series[1].links, and storing neither series;
+//   - a readings write whose second row would register its series under a unit past the bound,
+//     refused at that row naming unit; the same rows with a short unit are stored;
+//   - a first reading of a slug no eval holds by a session whose actor, which the eval's first
+//     version records as its writer, passes the bound, naming actor.
+func TestAVersionPastItsBoundIsRefusedNamingItsLargestField(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := t.Context()
+	const slug = "wordy"
+	text := func(bytes int) string { return strings.Repeat("w", bytes) }
+	stored := func() [3]int {
+		pattern := r.project + "/" + slug + "%"
+		return [3]int{
+			r.count(t, `select count(*) from eval_versions where eval_id like $1`, pattern),
+			r.count(t, `select count(*) from eval_series where eval_id like $1`, pattern),
+			r.count(t, `select count(*) from eval_readings where eval_id like $1`, pattern),
+		}
+	}
+	// check fails unless err refuses the write CodeVersionTooLarge naming field, at the row of
+	// index where it is a readings write's row (-1 for a refusal of the whole write).
+	check := func(what string, err error, field string, index int) {
+		t.Helper()
+		var refusal *Error
+		if !errors.As(err, &refusal) || refusal.Code != CodeVersionTooLarge {
+			t.Errorf("%s was answered %v, want %s", what, err, CodeVersionTooLarge)
+			return
+		}
+		named, message := refusal.Field, refusal.Message
+		if index >= 0 {
+			if len(refusal.Rows) != 1 || refusal.Rows[0].Index != index || refusal.Rows[0].Code != CodeVersionTooLarge {
+				t.Errorf("%s was refused for the rows %+v, want row %d alone, %s", what, refusal.Rows, index, CodeVersionTooLarge)
+				return
+			}
+			named, message = refusal.Rows[0].Field, refusal.Rows[0].Message
+		}
+		if named != field || len(message) > errorTextBytes || !strings.Contains(message, fmt.Sprint(MaxVersionBytes)) {
+			t.Errorf("%s was refused naming %q: %s; want %s named, and the bound, within %d bytes", what, named, message, field, errorTextBytes)
+		}
+		t.Logf("%s: %s %s: %s", what, CodeVersionTooLarge, named, message)
+	}
+	register := func(change Registration) error {
+		change.Project, change.Slug, change.Caller = r.project, slug, alice
+		_, err := r.registry.Register(ctx, change)
+		return err
+	}
+
+	none := stored()
+	check("a question of the bound's bytes", register(Registration{ComputationChange: ComputationChange{Question: Set(text(MaxVersionBytes))}}), "question", -1)
+	if after := stored(); after != none {
+		t.Errorf("the refused register write left %v versions, series and readings, want %v", after, none)
+	}
+	if err := register(Registration{ComputationChange: ComputationChange{Question: Set(text(MaxVersionBytes / 2))}}); err != nil {
+		t.Fatalf("a question of half the bound: %v", err)
+	}
+	held := stored()
+	check("a decision of half the bound beside the question copied forward",
+		register(Registration{ComputationChange: ComputationChange{Decision: Set(text(MaxVersionBytes/2 + 100))}}), "decision", -1)
+	links := make([]Link, 400)
+	for index := range links {
+		links[index] = Link{Rel: "via", Href: fmt.Sprintf("https://ci.example/runs/%d", index), Label: fmt.Sprintf("run %d", index)}
+	}
+	for _, write := range []struct {
+		field  string
+		series SeriesChange
+	}{
+		{"series[1].unit", SeriesChange{Series: "minutes", SeriesComputationChange: SeriesComputationChange{Unit: Set(text(MaxVersionBytes))}}},
+		{"series[1].links", SeriesChange{Series: "minutes", SeriesComputationChange: SeriesComputationChange{Links: Set(links)}}},
+	} {
+		check("a series whose "+write.field+" passes the bound", register(Registration{Series: []SeriesChange{{Series: "count"}, write.series}}), write.field, -1)
+	}
+	rows := func(unit string) []json.RawMessage {
+		return []json.RawMessage{
+			row(t, map[string]any{"series": "count", "row_kind": "run", "value": 1, "measured_at": at(3, 9, 0)}),
+			row(t, map[string]any{"series": "minutes", "row_kind": "run", "value": 1, "unit": unit, "measured_at": at(3, 10, 0)}),
+		}
+	}
+	_, err := r.registry.WriteReadings(ctx, Batch{Project: r.project, Slug: slug, Caller: alice, BuiltBy: testBuild, Rows: rows(text(MaxVersionBytes))})
+	check("a reading registering its series under a unit of the bound's bytes", err, "unit", 1)
+	writer := model.Actor{Kind: "session", ID: "session-wordy", Origin: &model.ActorOrigin{Cwd: "/" + text(MaxVersionBytes)}}
+	_, err = r.registry.WriteReadings(ctx, Batch{Project: r.project, Slug: slug + "-writer", Caller: writer, BuiltBy: testBuild, Rows: []json.RawMessage{good(t)}})
+	check("a first reading by a session whose actor passes the bound", err, "actor", -1)
+	if after := stored(); after != held {
+		t.Errorf("the refused writes left %v versions, series and readings, want %v", after, held)
+	}
+	if written := r.write(t, slug, alice, rows("minutes")...); len(written.Readings) != 2 {
+		t.Errorf("the rows with a short unit stored %d readings, want 2", len(written.Readings))
+	}
+	if _, series := r.currentOf(t, slug); len(series) != 2 {
+		t.Errorf("the rows with a short unit registered %d series, want 2", len(series))
+	}
+}
+
+// TestARegisterWriteNamingASeriesTwiceIsRefused: a register write naming one series twice is
+// refused EVAL_SERIES_INVALID naming the second entry's series field, and stores nothing: no
+// version of the eval and no version of any series. Before, each entry stored a version, relisted
+// the series' day rows and logged a change row in the one transaction that held the eval's lock.
+func TestARegisterWriteNamingASeriesTwiceIsRefused(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := t.Context()
+	const slug = "repeated-series"
+	evalID := EvalID(r.project, slug)
+	if _, err := r.registry.Register(ctx, Registration{Project: r.project, Slug: slug, Caller: alice,
+		Series: []SeriesChange{{Series: "minutes", Unit: Set("minutes")}}}); err != nil {
+		t.Fatalf("register %s: %v", slug, err)
+	}
+	stored := func() [2]int {
+		return [2]int{
+			r.count(t, `select count(*) from eval_versions where eval_id = $1`, evalID),
+			r.count(t, `select count(*) from eval_series where eval_id = $1`, evalID),
+		}
+	}
+	before := stored()
+	_, err := r.registry.Register(ctx, Registration{Project: r.project, Slug: slug, Caller: alice, Series: []SeriesChange{
+		{Series: "minutes", Listed: Set(false)},
+		{Series: "other", Unit: Set("count")},
+		{Series: "minutes", Listed: Set(true)},
+	}})
+	var refused *Error
+	if !errors.As(err, &refused) || refused.Code != CodeSeriesInvalid || refused.Field != "series[2].series" {
+		t.Fatalf("naming minutes twice was answered %v (%+v), want %s naming series[2].series", err, refused, CodeSeriesInvalid)
+	}
+	if after := stored(); after != before {
+		t.Errorf("the refused write moved %s from %v versions and series to %v", evalID, before, after)
+	}
+	t.Logf("refused %s on %s: %s", refused.Code, refused.Field, refused.Message)
+}
+
+// TestADocBlockThatNamesNoBlockIsRefused: a register write setting doc_block to an empty string or
+// an id no block of the project's evals-md holds is refused EVAL_FIELD_INVALID naming doc_block,
+// and stores nothing: on a project with no evals-md yet, on a logged eval, and on a seeded
+// computed eval. Setting doc_block to a block evals-md holds is stored, and the next seed keeps
+// it rather than writing a new section (R5). Before, a missing doc_block was accepted and the
+// next boot's seed replaced it.
+func TestADocBlockThatNamesNoBlockIsRefused(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := t.Context()
+	check := func(what, slug, block string) {
+		t.Helper()
+		evalID := EvalID(r.project, slug)
+		before := r.count(t, `select count(*) from eval_versions where eval_id = $1`, evalID)
+		_, err := r.registry.Register(ctx, Registration{Project: r.project, Slug: slug, Caller: alice, DocBlock: Set(block)})
+		var refused *Error
+		if !errors.As(err, &refused) || refused.Code != CodeFieldInvalid || refused.Field != "doc_block" {
+			t.Fatalf("%s was answered %v (%+v), want %s naming doc_block", what, err, refused, CodeFieldInvalid)
+		}
+		if after := r.count(t, `select count(*) from eval_versions where eval_id = $1`, evalID); after != before {
+			t.Errorf("%s moved %s from %d versions to %d", what, evalID, before, after)
+		}
+		t.Logf("%s: refused %s on %s: %s", what, refused.Code, refused.Field, refused.Message)
+	}
+	check("a doc_block on a project with no evals-md", "no-doc", "missing-block")
+	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
+		t.Fatalf("seed %s: %v", r.project, err)
+	}
+	check("an empty doc_block on a seeded eval", SlugDeployFrequency, "")
+	check("a missing doc_block on a seeded eval", SlugDeployFrequency, "no-such-block")
+	check("a missing doc_block on a new logged eval", "logged-eval", "no-such-block")
+	other, _ := r.currentOf(t, SlugPRCI)
+	stored, err := r.registry.Register(ctx, Registration{Project: r.project, Slug: SlugDeployFrequency, Caller: alice, DocBlock: Set(other.DocBlock)})
+	if err != nil {
+		t.Fatalf("set doc_block to a block evals-md holds: %v", err)
+	}
+	if !stored.Wrote || stored.Definition.DocBlock != other.DocBlock {
+		t.Fatalf("setting doc_block to %s left %+v", other.DocBlock, stored.Definition)
+	}
+	seeded, err := r.registry.Ensure(ctx, r.project)
+	if err != nil {
+		t.Fatalf("seed %s after doc_block: %v", r.project, err)
+	}
+	after, _ := r.currentOf(t, SlugDeployFrequency)
+	if seeded.Versions != 0 || after.DocBlock != other.DocBlock {
+		t.Errorf("the next seed wrote %+v and left doc_block %q, want nothing written and %q kept", seeded, after.DocBlock, other.DocBlock)
+	}
+}
+
 func versionNumbers(versions []Definition) []int {
 	numbers := make([]int, len(versions))
 	for index, version := range versions {
@@ -570,11 +929,16 @@ func versionNumbers(versions []Definition) []int {
 	return numbers
 }
 
-// versionsOf is every version of evalID, newest first: one page of EvalVersions that holds them
-// all, failing the test where the eval holds more than the page or none.
+// versionsOf is every version of evalID, newest first: one page of EvalVersionsIn, in a snapshot of
+// its own, that holds them all, failing the test where the eval holds more than the page or none.
 func (r rig) versionsOf(t *testing.T, evalID string) []Definition {
 	t.Helper()
-	_, versions, found, err := r.registry.EvalVersions(t.Context(), evalID, 200, 0)
+	tx, err := r.registry.BeginSnapshot(t.Context())
+	if err != nil {
+		t.Fatalf("begin the read of the versions of %s: %v", evalID, err)
+	}
+	defer tx.Rollback(t.Context())
+	_, versions, found, err := EvalVersionsIn(t.Context(), tx, evalID, 200, 0)
 	if err != nil || !found || versions.Total != len(versions.Items) {
 		t.Fatalf("read the versions of %s: found %t, %d of %d, %v", evalID, found, len(versions.Items), versions.Total, err)
 	}

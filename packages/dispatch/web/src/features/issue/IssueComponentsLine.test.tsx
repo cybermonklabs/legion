@@ -1,13 +1,28 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+import { countEngineParses, displayTree } from "../../__tests__/display-trees";
+import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { ApiError, api } from "../../api/client";
-import type { ArchitectureSource, ArchitectureTree, IssueComponents } from "../../api/types";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
+import type {
+  ArchitectureSource,
+  ArchitectureTree,
+  DisplayTree,
+  IssueComponents,
+} from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { IssueComponentsLine } from "./IssueComponentsLine";
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const tree: ArchitectureTree = {
   components: [
@@ -103,8 +118,12 @@ const source: ArchitectureSource = {
 // one document, and a sibling file's un-unmounted render would otherwise leak
 // its links into a `screen`-wide role query.
 /** `architecture` is the project's tree, or `undefined` for a project without a source (its
- *  source list is empty). */
-function renderLine(components: IssueComponents, architecture: ArchitectureTree | undefined) {
+ *  source list is empty). `reasonTree` is the tree the issue read sends of a `none` reason. */
+function renderLine(
+  components: IssueComponents,
+  architecture: ArchitectureTree | undefined,
+  reasonTree?: DisplayTree
+) {
   const listProjectArchitectureSources = spyOn(api, "listProjectArchitectureSources");
   const getArchitecture = spyOn(api, "getArchitecture");
   if (architecture === undefined) {
@@ -123,7 +142,14 @@ function renderLine(components: IssueComponents, architecture: ArchitectureTree 
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <IssueComponentsLine
-          issue={{ components, key: "CORE-7", project: "CORE", status: "todo", title: "Ship" }}
+          issue={{
+            components,
+            key: "CORE-7",
+            project: "CORE",
+            status: "todo",
+            title: "Ship",
+            ...(reasonTree === undefined ? {} : { components_reason_tree: reasonTree }),
+          }}
         />
       </QueryClientProvider>
     </MemoryRouter>
@@ -134,6 +160,7 @@ function renderLine(components: IssueComponents, architecture: ArchitectureTree 
     listProjectArchitectureSources,
     patchIssue,
     q: within(view.container),
+    queryClient,
     unmountAll: () => {
       view.unmount();
       getArchitecture.mockRestore();
@@ -189,17 +216,48 @@ test("IssueComponentsLine lists an explicit set as chips, marks retired ids, and
   }
 });
 
-test("IssueComponentsLine shows a none attachment with its reason", () => {
+test("IssueComponentsLine shows a none attachment with its reason, drawn as the markdown it is", async () => {
   const view = renderLine(
-    { mode: "none", ids: [], unknown: [], reason: "hiring, not code", inherited_from: null },
+    { mode: "none", ids: [], unknown: [], reason: "hiring, **not** code", inherited_from: null },
     undefined
   );
   try {
-    expect(view.q.getByTestId("issue-components").textContent).toBe(
-      "Components:None — hiring, not code"
+    // The reason draws through the one renderer, which loads its engine on the first body of the
+    // page, so the words arrive a commit after the line.
+    await waitFor(() =>
+      expect(view.q.getByTestId("issue-components").textContent).toBe(
+        "Components:None — hiring, not code"
+      )
     );
+    expect(within(view.q.getByTestId("issue-components")).getByText("not").tagName).toBe("STRONG");
     expect(view.q.queryByRole("link")).not.toBeInTheDocument();
   } finally {
+    view.unmountAll();
+  }
+});
+
+// The reason is a stored text its writer typed in a box with the reference picker, and the issue
+// read sends the reading the server made of it (`components_reason_tree`): the line draws that
+// tree and parses nothing on the page's thread. The tree reads differently from the markdown
+// beside it, so a line drawn from a parse of the markdown would end `not code` and count a parse.
+test("IssueComponentsLine draws a none attachment's reason from the tree the issue read sends", async () => {
+  const reasonTree = displayTree("hiring, **not** code, for now");
+  const parses = countEngineParses();
+  const view = renderLine(
+    { mode: "none", ids: [], unknown: [], reason: "hiring, **not** code", inherited_from: null },
+    undefined,
+    reasonTree
+  );
+  try {
+    await waitFor(() =>
+      expect(view.q.getByTestId("issue-components").textContent).toBe(
+        "Components:None — hiring, not code, for now"
+      )
+    );
+    expect(within(view.q.getByTestId("issue-components")).getByText("not").tagName).toBe("STRONG");
+    expect(parses.count()).toBe(0);
+  } finally {
+    parses.restore();
     view.unmountAll();
   }
 });
@@ -264,5 +322,38 @@ test("an explicit set naming components of two sources shows each as a bare id c
     );
   } finally {
     view.unmountAll();
+  }
+});
+
+// A save the reader stopped may have been made: the line says so, and that a new save is a press
+// of its own, rather than the stopped write's own words, which are a composer's, of a message.
+test("components the reader stopped say they may have been saved, not a message's words", async () => {
+  const view = renderLine(
+    { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+    tree
+  );
+  try {
+    view.patchIssue.mockRejectedValue(
+      new NetworkError("/api/v1/issues/CORE-7", new TypeError("Failed to fetch"))
+    );
+    await userEvent
+      .setup()
+      .click(await view.q.findByRole("button", { name: "Edit components of CORE-7" }));
+    const option = await screen.findByRole("option", { name: "dispatch-server · Dispatch server" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(option);
+    screen.getByRole("combobox", { name: "Search components" }).focus();
+    await user.keyboard("{Escape}");
+    await stopTheLateWrite(view.queryClient);
+    expect(view.q.getByRole("alert").textContent).toBe(
+      stoppedWriteNote("the components of CORE-7", "saved", {
+        anew: "They are read again from Dispatch, and saving them again sends a new write.",
+      })
+    );
+  } finally {
+    realClock();
+    view.unmountAll();
+    view.queryClient.clear();
   }
 });

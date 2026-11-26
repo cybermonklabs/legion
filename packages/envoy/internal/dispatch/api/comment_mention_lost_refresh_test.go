@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A claim refresh whose statement commits and whose answer is lost - the connection drops after
@@ -27,6 +28,7 @@ import (
 // database are the real ones; its connections run through lossyConns, which drops the one that
 // carries the refresh's UPDATE once the server has committed it. The control row's answer arrives.
 func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		lose bool
@@ -62,7 +64,7 @@ func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t
 			// parks under the claim its first try took, its timer left to the test.
 			issue := createInteractionIssue(t, handler, "TEST", "A refresh whose answer is lost", "before")
 			comment := postMentionOfS1(t, handler, issue.Key, "the parked one")
-			<-timers
+			testwait.Receive(t, "the parked send's timer", timers)
 			key := mentionKey{comment: comment, target: "session:s1", attempt: 1}
 			recorded := func() time.Time {
 				sender.mu.Lock()
@@ -114,6 +116,7 @@ func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t
 // never trust a claim its row does not carry. The server, its statements and its database are the
 // real ones, its connections running through lossyConns; each control row's answer arrives.
 func TestALostRefreshNeverRevivesALapsedClaim(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// outage fails a refresh before it commits, and its re-read, before the claim ages.
@@ -168,7 +171,7 @@ func TestALostRefreshNeverRevivesALapsedClaim(t *testing.T) {
 			// parks under the claim its first try took, its timer left to the test.
 			issue := createInteractionIssue(t, handler, "TEST", "A lost refresh after a lapse", "before")
 			parkedOne := postMentionOfS1(t, handler, issue.Key, "the parked one")
-			unpark := <-timers
+			unpark := testwait.Receive(t, "the parked send's timer", timers)
 			key := mentionKey{comment: parkedOne, target: "session:s1", attempt: 1}
 			if tc.outage {
 				down.Store(true)
@@ -246,24 +249,31 @@ func (l *lossyConns) dial(ctx context.Context, network, address string) (net.Con
 // is sent once the statement has committed, and it then closes the connection with none of the
 // held answer read; one that does not - the round trip that prepares the statement - is handed
 // on, and it waits for the execution's.
+//
+// Write and Read run on different goroutines: pgx writes on the caller's, and its background
+// reader (pgconn's bgreader, which a write still in flight after a moment starts) reads while that
+// write goes on. So dropping, which Write sets and Read reads, is atomic; every other field is
+// Read's alone, and pgx hands reading from one goroutine to the other only under the background
+// reader's lock.
 type lossyConn struct {
 	net.Conn
-	lossy                     *lossyConns
-	dropping, answersAnUpdate bool
-	in, out, held             []byte
+	lossy           *lossyConns
+	dropping        atomic.Bool
+	answersAnUpdate bool
+	in, out, held   []byte
 }
 
 var errLostAfterCommit = errors.New("the connection dropped after the statement committed")
 
 func (c *lossyConn) Write(p []byte) (int, error) {
-	if !c.dropping && bytes.Contains(p, lossyRefreshSQL) && c.lossy.armed.CompareAndSwap(true, false) {
-		c.dropping = true
+	if !c.dropping.Load() && bytes.Contains(p, lossyRefreshSQL) && c.lossy.armed.CompareAndSwap(true, false) {
+		c.dropping.Store(true)
 	}
 	return c.Conn.Write(p)
 }
 
 func (c *lossyConn) Read(p []byte) (int, error) {
-	if !c.dropping && len(c.out) == 0 {
+	if !c.dropping.Load() && len(c.out) == 0 {
 		return c.Conn.Read(p)
 	}
 	for len(c.out) == 0 {

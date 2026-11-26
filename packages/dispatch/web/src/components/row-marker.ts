@@ -1,5 +1,5 @@
 /**
- * What a row of a table or list is, for the page's focus rescue (`ROW_SELECTOR`): an item of a
+ * What a row of a table or list is, for the page's focus hand-offs (`ROW_SELECTOR`): an item of a
  * list or a table by its markup - an `<li>`, a `<tr>`, an `<article>`, an element of role `row`
  * or `listitem` - or an element that carries the shared marker below. HTML defines an
  * `<article>` as a self-contained composition - a post, a comment, a card - so a list of cards
@@ -24,12 +24,12 @@
  * comment's prose is a table too, so its `<tr>`s are rows, and the `<article>` a document is drawn
  * in (`ProofDocument`, `VersionView`) is a row around every control of the document.
  *
- * The rescue reads a row for a loss the reader caused alone (`focus-place.ts`): a press of theirs
- * inside the row of the control that lost the focus makes the loss theirs, a press on the one
- * checkbox a row draws is a press on its mark, and the same control in the row that moves up into
- * the place of the row a press took away takes the focus. A loss the reader did not cause leaves
- * the focus on the body, or on an open modal dialog's own stop, whatever rows stand near it, so
- * the rescue reads no row for it.
+ * The hand-offs read rows (`focus-place.ts`) to tell whether the reader caused a loss - a press of
+ * theirs inside the row of the control that lost the focus makes the loss theirs, and a press on
+ * the one checkbox a row draws is a press on its mark - and a hand-off's walk back takes a control
+ * now at the lost control's place only where it moved there from that control's own row. A loss
+ * the reader did not cause leaves the focus on the body, whatever rows stand near it, so no row
+ * decides where it lands.
  */
 export const ROW_MARKER_ATTRIBUTE = "data-row-marker";
 

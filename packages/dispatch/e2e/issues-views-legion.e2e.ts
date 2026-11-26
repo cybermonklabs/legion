@@ -1,3 +1,6 @@
+/** The Legion columns, cards, filters and alerts are read against the board route and the items
+ *  route as the sampler, the facts consumer and the eval refresher leave them, over the live
+ *  socket; Start next's writes are read back through the API. */
 // The Issues tab against the Legion board route (dispatch://INFRA-3221, Verification k2, k5 and
 // k19): Open's Queue filter and its Board by Legion phase against the board's columns, each card's
 // Legion fields, the (i) hint and the alerts of the daemon's reads; every Legion cell against its
@@ -74,7 +77,7 @@ import { expandedState } from "./settled";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
-/** The board's eleven columns, in the order the route sends them, with their labels. */
+/** The board's twelve columns, in the order the route sends them, with their labels. */
 const BOARD_COLUMNS: readonly (readonly [string, string])[] = [
   ["queue", "Queue"],
   ["design", "Design"],
@@ -85,6 +88,7 @@ const BOARD_COLUMNS: readonly (readonly [string, string])[] = [
   ["accepting", "Accepting"],
   ["retro", "Retro"],
   ["merging", "Merging"],
+  ["awaiting_children", "Waiting on children"],
   ["awaiting_person", "Waiting on a person"],
   ["held", "Held"],
 ];
@@ -431,16 +435,16 @@ async function columnsMenuNames(page: Page): Promise<string[]> {
   return names;
 }
 
-/** k2's twelfth column, which a newer server adds after Held, by its id and its label. */
+/** k2's thirteenth column, which a newer server adds after Held, by its id and its label. */
 const X_PHASE = { id: "x_phase", label: "X phase" } as const;
 
-/** The hours k2 gives the issue in the twelfth column under that column's own key. */
+/** The hours k2 gives the issue in the thirteenth column under that column's own key. */
 const X_PHASE_HOURS = 2;
 
-/** Adds the twelfth column after Held to a board snapshot, holding the card of `key`, with the
+/** Adds the thirteenth column after Held to a board snapshot, holding the card of `key`, with the
  *  column's hours in that issue's facts: what a newer server sends for an issue in a phase this
  *  build does not know. The route's last column is Held, which the row asserts. */
-function addTwelfthColumn(board: Board, key: string): void {
+function addThirteenthColumn(board: Board, key: string): void {
   const card: Card = {
     blocked_by: null,
     children: 0,
@@ -461,7 +465,7 @@ function addTwelfthColumn(board: Board, key: string): void {
   };
   board.columns = [
     ...(board.columns ?? []),
-    // The generated column ids name today's eleven: a newer server's column is none of them.
+    // The generated column ids name today's twelve: a newer server's column is none of them.
     { id: X_PHASE.id as string as Column["id"], label: X_PHASE.label, cards: [card] },
   ];
   const now = new Date().toISOString();
@@ -488,8 +492,8 @@ function addTwelfthColumn(board: Board, key: string): void {
 
 // SLOW(>=2s): ACME seeded with two more issues through later reads, then Open read in the table
 // with the Queue filter and on the Board by Legion phase, then a third issue and Open read again
-// under one board frame that adds a twelfth column.
-test("Open's Legion queue lists the Queue column's cards in the board's order, and its Board by Legion phase draws the board's eleven columns and a twelfth one a newer server adds", async ({
+// under one board frame that adds a thirteenth column.
+test("Open's Legion queue lists the Queue column's cards in the board's order, and its Board by Legion phase draws the board's twelve columns and a thirteenth one a newer server adds", async ({
   browser,
 }) => {
   const daemon = await seedAcme();
@@ -553,16 +557,16 @@ test("Open's Legion queue lists the Queue column's cards in the board's order, a
     }
     expect(await columnCount(page, "queue")).toBe(board.header.queue_length);
 
-    // One board frame, the snapshot, with a twelfth column after Held that holds the card of C,
+    // One board frame, the snapshot, with a thirteenth column after Held that holds the card of C,
     // an open issue with hours under that column's key; no later frame reaches the page. The
     // Board draws it as a column, the table names it in C's cell and in the Legion phase filter,
     // and Time per phase, which has no colour for it, counts its hours as Other.
-    const c = (await createIssue({ project: ACME, title: "Worked in a twelfth column" })).key;
+    const c = (await createIssue({ project: ACME, title: "Worked in a thirteenth column" })).key;
     const routed = await context.newPage();
     await routeLive(routed, {
       hold: true,
       edit: (frame) => {
-        if (frame.body !== undefined) addTwelfthColumn(frame.body, c);
+        if (frame.body !== undefined) addThirteenthColumn(frame.body, c);
       },
     });
     await routed.setViewportSize({ height: 1600, width: 1440 });
@@ -594,7 +598,7 @@ test("Open's Legion queue lists the Queue column's cards in the board's order, a
     ).toEqual([...BOARD_COLUMNS.map(([, label]) => label), X_PHASE.label, "None"]);
     expect(phasePicks.find(([words]) => words === X_PHASE.label)?.[1]).toBe(1);
 
-    // C's Time per phase: its hours under the twelfth column's key are Other's, with no line of
+    // C's Time per phase: its hours under the thirteenth column's key are Other's, with no line of
     // their own.
     const cHours = routedTable.locator(`tr[data-issue-row="${c}"] [data-phase-hours]`);
     await expect(cHours).toHaveAttribute(
@@ -615,7 +619,7 @@ test("Open's Legion queue lists the Queue column's cards in the board's order, a
     await routed.mouse.move(5, 5);
     await expect(routed.getByRole("tooltip")).toHaveCount(0);
 
-    // Time per phase's filter offers no pick for the twelfth column, and its Other pick lists C.
+    // Time per phase's filter offers no pick for the thirteenth column, and its Other pick lists C.
     const hourPicks = (await readFilter(routed, "Time per phase")).options.map(([words]) => words);
     expect(hourPicks).toContain("Other");
     expect(hourPicks).not.toContain(X_PHASE.label);

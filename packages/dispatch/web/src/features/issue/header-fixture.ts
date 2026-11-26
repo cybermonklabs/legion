@@ -10,19 +10,16 @@ export const idlePriorityWrite: IssuePriorityWrite = {
   pending: false,
   retry: () => undefined,
   shown: null,
+  stopped: undefined,
   submit: () => undefined,
 };
 
-/** Answers with nothing the two reads the header makes at once, so neither reaches the network:
- *  the project's repository mappings, read for an issue that resolves to no repository - a
- *  project that maps none still shows the repository item, with nothing to suggest - and its
- *  architecture sources, which the components line reads the same way and which, with none,
- *  offer no picker. Answers what restores both. */
+/** Answers with nothing the one read the header makes at once that the unit suite's network does
+ *  not answer, so it does not reach the network: the project's architecture sources, which the
+ *  components line reads at once and which, with none, offer no picker. The repository list reads
+ *  the project list, which that network answers (`__tests__/network.ts`). Answers what restores
+ *  it. */
 export function mockHeaderReads(): () => void {
-  const mappings = spyOn(api, "listRepoProjects").mockResolvedValue([]);
   const architectureSources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]);
-  return () => {
-    mappings.mockRestore();
-    architectureSources.mockRestore();
-  };
+  return () => architectureSources.mockRestore();
 }

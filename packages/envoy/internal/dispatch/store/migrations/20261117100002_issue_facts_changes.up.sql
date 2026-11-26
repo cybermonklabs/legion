@@ -29,6 +29,15 @@
 -- refresher rewrites exactly the days the two name (evals' refresher_work.go), and reads no row to
 -- find them.
 --
+-- A Legion day also cuts the issue's filing by the repository the issue resolves to, on the day
+-- it was filed, which can be another day than its close day. So an update that moves the row's
+-- repo also logs an issue_filings change for the issue's filing, if it has one, naming its filing
+-- day before and after, as that table's own trigger logs a change of the filing
+-- (20261117100019): the boot's rename pass and the facts consumer's write of a moved repository
+-- move the filing's cut with the close day's. The function reads issue_filings, which a later
+-- migration creates (20261117100007); a plpgsql body names a table only when it runs, and no row
+-- of issue_facts is written before that migration.
+--
 -- As the delivery tables' triggers do, it writes no change row when nothing a reader cares about
 -- moved: updated_at is ignored, so a write that moved a row's time alone logs nothing.
 --
@@ -43,6 +52,10 @@ begin
     perform delivery_change_log_pending('issue_facts', null, old.project_key, old.issue_key, old.closed_at, null);
   elsif (to_jsonb(old) - ignored) is distinct from (to_jsonb(new) - ignored) then
     perform delivery_change_log_pending('issue_facts', null, new.project_key, new.issue_key, old.closed_at, new.closed_at);
+    if old.repo is distinct from new.repo then
+      perform delivery_change_log_pending('issue_filings', null, filing.project_key, filing.issue_key, filing.filed_at, filing.filed_at)
+      from issue_filings filing where filing.issue_key = new.issue_key;
+    end if;
   end if;
   return null;
 end $$;

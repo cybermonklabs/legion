@@ -13,6 +13,7 @@ import (
 // trigger is given the same reason here, so a trigger that passed it through would post it. The
 // control is the guard removed, which makes every other trigger here post a sentence.
 func TestOnlyTheBackwardMovePostsAReasonOnTheIssue(t *testing.T) {
+	t.Parallel()
 	const given = "the review's whole body, which must not reach the issue a second time"
 	for _, trigger := range allWorkflowTriggers {
 		got := moveReason(trigger, phase.Testing, phase.Implementing, given)
@@ -33,6 +34,7 @@ func TestOnlyTheBackwardMovePostsAReasonOnTheIssue(t *testing.T) {
 // role's words as they end, with one full stop added where they end in none; words that are only
 // space read as none.
 func TestABackwardMoveNamesWhoAskedAndGivesTheirWords(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		from, to phase.Phase
 		reason   string

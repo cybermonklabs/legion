@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, type RefObject, useLayoutEffect, useRef, useState } from "react";
 
 import type { ArtifactApproval } from "../api/types";
 import {
@@ -52,20 +52,71 @@ export function pillToneClassName(tone: PillTone): string {
   return pillTones[tone];
 }
 
-/** `pillShapeClassName` inside `NoTooltips` (the new issue page), where a pill can hold a value
- *  (a label, a claim's holder) and every value wraps: it keeps `max-w-full` and breaks anywhere,
- *  and the pill neither keeps its width nor holds its line. */
-const pagePillShapeClassName =
-  "inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere]";
-
 /** The pill's full class string, for a host that must stay one interactive element (a parent
  *  link with a border) while looking identical - a border on a wrapper around a `Pill` would
  *  outline a bigger shape than the fill. `onPage` is a host's inside `NoTooltips`, which draws
- *  the tone in the new issue page's colours, in the shape that wraps. */
-export function pillClassName(tone: PillTone, onPage = false): string {
-  return onPage
-    ? `${pagePillShapeClassName} ${pagePillTones[tone]}`
-    : `${pillShapeClassName} ${pillToneClassName(tone)}`;
+ *  the tone in the new issue page's colours, in the shape that wraps; `wraps` draws that shape
+ *  in either set of colours.
+ *
+ *  The shape that wraps is `pillShapeClassName` for a pill that holds a value which must be read
+ *  whole (a label, a claim's holder): it keeps `max-w-full`, wraps and breaks anywhere, and
+ *  neither keeps its width nor holds its line. Every pill inside `NoTooltips` (the new issue
+ *  page) is drawn so, and so is a claim in a table that wraps its titles (`ClaimChip`'s
+ *  `wraps`). On one line it is a pill, its corners the full radius; on more than one (`wrapped`,
+ *  `usePillWrapped`) its corners are 8 px (`rounded-lg`), since the full radius of a box several
+ *  lines tall draws an oval, which leaves the words of its first and last lines outside its
+ *  fill. */
+export function pillClassName(
+  tone: PillTone,
+  onPage = false,
+  wraps = onPage,
+  wrapped = false
+): string {
+  const shape = wraps
+    ? `inline-flex min-w-0 max-w-full flex-wrap items-center ${wrapped ? "rounded-lg" : "rounded-full"} px-2 py-1 text-xs font-medium [overflow-wrap:anywhere]`
+    : pillShapeClassName;
+  return `${shape} ${onPage ? pagePillTones[tone] : pillToneClassName(tone)}`;
+}
+
+/**
+ * Whether a pill drawn in the shape that wraps (`pillClassName`'s `wraps`) takes more than one
+ * line, for its corners, read off the drawn pill (`ref`): no CSS reads how many lines an
+ * element's own words take, so its content box's height is read against one of its lines, and
+ * more than one and a half lines is more than one. Read before the first paint, and again each
+ * time the pill's size changes - its column narrowed or widened, a name or an age arrived - in
+ * the render that change schedules, batched with the page's own rather than forced inside the
+ * frame: forcing it would draw, in that frame, every other update the page has waiting too. A
+ * pill not in that shape (`wraps` false) is on one line, and so is one where nothing is laid
+ * out: happy-dom, which has no `ResizeObserver` either.
+ */
+export function usePillWrapped(wraps: boolean): {
+  readonly ref: RefObject<HTMLSpanElement | null>;
+  readonly wrapped: boolean;
+} {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [wrapped, setWrapped] = useState(false);
+  useLayoutEffect(() => {
+    const pill = ref.current;
+    if (!wraps || pill === null) return;
+    const measure = () => {
+      const style = getComputedStyle(pill);
+      const edges = [
+        style.paddingTop,
+        style.paddingBottom,
+        style.borderTopWidth,
+        style.borderBottomWidth,
+      ].reduce((sum, value) => sum + (Number.parseFloat(value) || 0), 0);
+      setWrapped(
+        pill.getBoundingClientRect().height - edges > Number.parseFloat(style.lineHeight) * 1.5
+      );
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const sizes = new ResizeObserver(measure);
+    sizes.observe(pill);
+    return () => sizes.disconnect();
+  }, [wraps]);
+  return { ref, wrapped: wraps && wrapped };
 }
 
 export function Pill({
@@ -78,8 +129,14 @@ export function Pill({
   tone?: PillTone;
 }): ReactNode {
   const page = usePageWords();
+  const { ref, wrapped } = usePillWrapped(page !== null);
   return (
-    <span className={`${pillClassName(tone, page !== null)} ${className ?? ""}`}>{children}</span>
+    <span
+      className={`${pillClassName(tone, page !== null, page !== null, wrapped)} ${className ?? ""}`}
+      ref={ref}
+    >
+      {children}
+    </span>
   );
 }
 

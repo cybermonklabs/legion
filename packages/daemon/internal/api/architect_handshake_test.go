@@ -88,7 +88,7 @@ func entryTimesServed(t *testing.T, body []byte) map[string]struct {
 func TestTheStateRouteServesARootsArchitectHandshake(t *testing.T) {
 	queued := time.Date(2026, 11, 12, 9, 15, 0, 0, time.UTC)
 	confirmed := queued.Add(41 * time.Second)
-	body := stateFrom(t, architectHandshakeState(queued, confirmed), "10.1.24.9:4100", podClaims(DaemonAPIVersion))
+	body := stateFrom(t, architectHandshakeState(queued, confirmed), "10.1.24.9:4100", podClaims(DaemonAPIVersion()))
 
 	entries := phaseEntriesServed(t, body)
 	times := entryTimesServed(t, body)
@@ -156,8 +156,8 @@ func TestTheArchitectHandshakeTimesDowngradeBelowTheirContract(t *testing.T) {
 // A root's `architectStalls` arrived with the two times, at contract 146, and leaves with them: a
 // caller at that contract is served the arms the daemon names for the root, and one below it is
 // served none. The state here carries no time at all, so the arms alone are what the strip must
-// see as something of that contract to take away (carriesEntryTimes); a strip that looked for
-// the times alone would serve the key to the strict reader that refuses it.
+// see as something of that contract to take away (the bool withoutEntryTimes returns); a strip
+// that looked for the times alone would serve the key to the strict reader that refuses it.
 func TestTheArchitectStallArmsDowngradeWithTheEntryTimes(t *testing.T) {
 	state := State{Issues: map[string]Issue{
 		"LEGION-50": {Key: "LEGION-50", Phase: phase.Admitted, Status: "in_progress", Tree: "LEGION-50",
@@ -183,8 +183,8 @@ func TestTheArchitectHandshakeTimesContractIsTheOneThatAddedThem(t *testing.T) {
 		t.Fatalf("entryTimesContract = %d, want %d, the contract whose entry in version.go added the issues' entry queued and confirmed times",
 			entryTimesContract, addedEntryTimes)
 	}
-	if entryTimesContract > DaemonAPIVersion {
+	if entryTimesContract > DaemonAPIVersion() {
 		t.Fatalf("entryTimesContract = %d, above DaemonAPIVersion %d: no caller could be served the two times",
-			entryTimesContract, DaemonAPIVersion)
+			entryTimesContract, DaemonAPIVersion())
 	}
 }

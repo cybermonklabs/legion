@@ -70,6 +70,7 @@ func workflowBranchGitHub(t *testing.T, answer func() (int, string)) *branchGitH
 // one a helper of the machine sent to a reused port: a read of its metadata server's identity
 // token. The daemon's own credential, sent last, is served and counted, so each count can move.
 func TestAStandInAnswersARequestWithoutTheDaemonsCredential404(t *testing.T) {
+	t.Parallel()
 	var reached atomic.Int64
 	board := dispatchBoard(t, func(http.ResponseWriter, *http.Request) { reached.Add(1) })
 	github := newDequeueGitHub(t)

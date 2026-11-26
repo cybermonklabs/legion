@@ -32,7 +32,11 @@ import { type BoardToggles, IssuesTabBoard } from "./issues-tab-board";
 import { type HeldDoneRead, useHeldDone, useTabCounts } from "./issues-tab-counts";
 import { useTabTableLayout } from "./issues-tab-layout";
 import { useTabReads } from "./issues-tab-reads";
-import { type IssueTableActions, useIssueTableActions } from "./issues-table-actions";
+import {
+  ISSUES_NOT_LOADED,
+  type IssueTableActions,
+  useIssueTableActions,
+} from "./issues-table-actions";
 import { countStatuses, IssueStatusBar } from "./issues-table-bar";
 import { type OwnNarrowings, ownNarrowings } from "./issues-table-chips";
 import { IssueTableFrame, ListingNotices, ReadStates } from "./issues-table-frame";
@@ -330,7 +334,6 @@ function IssuesTabView({
     listingIn: reads.listingIn,
     loaded: reads.loaded,
     mode: { kind: "tab", hasLegion, phases },
-    moveFrom: "page",
     onBoard,
     panel,
     serverRowCount: doneTotal,
@@ -434,7 +437,7 @@ function IssuesTabView({
       failure={
         reads.failed
           ? {
-              text: reads.unsorted ? UNSORTED_DONE_PAGE : "Could not load issues.",
+              text: reads.unsorted ? UNSORTED_DONE_PAGE : ISSUES_NOT_LOADED,
               retry: () => {
                 if (readsOpen) void issues.refetch();
                 else void doneRead.refetch();
@@ -522,7 +525,7 @@ function IssuesTabView({
       controls={
         <>
           {layoutSwitch}
-          <ColumnsMenu columns={table.getAllLeafColumns()} size="compact" />
+          <ColumnsMenu columns={table.getAllLeafColumns()} size="toolbar" />
           {viewControls}
         </>
       }
@@ -535,6 +538,7 @@ function IssuesTabView({
       onClear={narrowed ? clearView : undefined}
       own={own}
       readStates={readStates}
+      rowActions
       state={state}
       strip={bar}
     />

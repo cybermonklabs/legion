@@ -159,10 +159,11 @@ export const focusVisibleRing = "focus-visible:ring-sky-600 dark:focus-visible:r
 export const hasFocusVisibleRing =
   "has-focus-visible:ring-sky-600 dark:has-focus-visible:ring-sky-400";
 export const cardHoverBorder = "hover:border-sky-400 dark:hover:border-sky-300";
-/** The `cardHoverBorder` accent, scoped to `enabled:` so it doesn't apply while a button is
- * `disabled` (paired with `disabled:opacity-50`-style buttons). */
+/** The `cardHoverBorder` accent while the button can be pressed: `not-refused:` (`styles.css`)
+ *  skips a `disabled` button and one held with `aria-disabled` alike (paired with
+ *  `refused:opacity-50`-style buttons). */
 export const enabledCardHoverBorder =
-  "enabled:hover:border-sky-400 dark:enabled:hover:border-sky-300";
+  "not-refused:hover:border-sky-400 dark:not-refused:hover:border-sky-300";
 export const controlHoverBorder = "hover:border-sky-500 dark:hover:border-sky-400";
 
 registerText("focus ring on canvas", FOCUS_ACCENT, CANVAS, 3);
@@ -378,6 +379,14 @@ registerText("link on callout-info", LINK, CALLOUT_INFO_BG);
 registerText("primary text on selected card", TEXT_PRIMARY, SELECTED_CARD_BG);
 registerText("option description text on selected card", TEXT_OPTION_DESCRIPTION, SELECTED_CARD_BG);
 registerText("link text on selected card", LINK, SELECTED_CARD_BG);
+/** The reference picker's rows wear it on the list's own recessed surface as well as on the
+ *  fill of the highlighted row (`RefPickerList`), so the detail line reads the same either
+ *  way. */
+registerText(
+  "option description text on surface-recessed",
+  TEXT_OPTION_DESCRIPTION,
+  SURFACE_RECESSED
+);
 
 // ---------------------------------------------------------------------------------------------
 // Architecture tree: component fill bars and the trust outline
@@ -557,8 +566,8 @@ registerText("decision pill: med", BADGE_MED_TEXT, ASK_BLOCK_PILL_MED_BG);
 registerText("danger text on danger callout", DANGER_TEXT, CALLOUT_DANGER_BG);
 registerText("danger text on warning callout", DANGER_TEXT, CALLOUT_WARNING_BG);
 registerText("danger text on surface-recessed", DANGER_TEXT, SURFACE_RECESSED);
-/** The issue-status select is a neutral control: its solid dot carries the state signal while
- * its label remains readable without requiring users to distinguish hues. */
+/** The issue header's Status pick is a neutral control: its solid dot carries the state signal
+ * while its label remains readable without requiring users to distinguish hues. */
 export const STATUS_PILL_BG = pair(P.SLATE_100, P.SLATE_800);
 export const STATUS_PILL_TEXT = pair(P.SLATE_800, P.SLATE_200);
 export const statusPill = {
@@ -687,6 +696,14 @@ export const secondaryButtonHoverBorder =
   "not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400";
 /** A secondary button that cannot be pressed, `disabled` or refused (`refused:`, `styles.css`). */
 export const secondaryButtonDisabledText = "refused:text-slate-400 dark:refused:text-slate-600";
+/** `secondaryButtonHoverBorder` and `secondaryButtonDisabledText` for a box a button draws inside
+ *  itself, as the priorities' trigger draws its "+" square inside its hit area: keyed to the
+ *  button, which carries `group`, since `refused:` tests the element it is on and the box is
+ *  never `disabled` or refused itself. */
+export const secondaryButtonGroupHoverBorder =
+  "group-not-refused:group-hover:border-sky-500 dark:group-not-refused:group-hover:border-sky-400";
+export const secondaryButtonGroupDisabledText =
+  "group-refused:text-slate-400 dark:group-refused:text-slate-600";
 
 /** An input/select/textarea's resting border and background, plus its focus border. Pass
  * `recessed: true` when the control sits inside a `SURFACE` card (its dark background needs to
@@ -1021,6 +1038,8 @@ for (const ground of ["page-paper", "page-pane"] as const) {
 }
 registerText("page-paper text on page-ink", pageColor("page-paper"), pageColor("page-ink"));
 registerText("page-ink text on page-mark", pageColor("page-ink"), pageColor("page-mark"));
+// A check's command in a node's body: the muted grey on the mark grey (`NodeFacts.tsx`).
+registerText("page-muted text on page-mark", pageColor("page-muted"), pageColor("page-mark"));
 // A row's twisty is a control's shape on the marked row's ground (WCAG 1.4.11).
 registerText("page-quiet twisty on page-mark", pageColor("page-quiet"), pageColor("page-mark"), 3);
 // Each kind's colour as the words of its tag on the paper, and on the tint drawn behind it.
@@ -1243,20 +1262,6 @@ export const canvasText = "bg-slate-50 dark:bg-slate-950 text-slate-900 dark:tex
  */
 export const scrollFadeTrailing =
   "[mask-image:linear-gradient(to_right,#000_calc(100%-32px),#0000)]";
-
-/**
- * The 48 px fades at the ends of a control row's chips strip (`components/ControlRow.tsx`), one at
- * each end that has a chip out of view beyond it: `leading` while the strip is scrolled away from
- * its start, `trailing` while there is more to the right, `both` while both are true. The row's
- * round scroll button laid over that end then sits over faded chips rather than over the opaque
- * end of one. 48 px is the width the strip's scroll padding keeps clear, so a chip brought into
- * view is never under a fade. Masks, not colours, like `scrollFadeTrailing`.
- */
-export const chipStripFade: Record<"both" | "leading" | "trailing", string> = {
-  both: "[mask-image:linear-gradient(to_right,#0000,#000_48px,#000_calc(100%-48px),#0000)]",
-  leading: "[mask-image:linear-gradient(to_right,#0000,#000_48px)]",
-  trailing: "[mask-image:linear-gradient(to_right,#000_calc(100%-48px),#0000)]",
-};
 
 /**
  * The width of `scrollFadeTrailing`, for code that keeps an item clear of the fade. Tailwind needs

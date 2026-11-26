@@ -23,11 +23,12 @@
 //     a field a daemon does not send is a field the board has no observation of. Nothing takes a
 //     slot holder for a root: a card's tree is the daemon's own `tree` where a read carried one
 //     (dispatch://INFRA-980 adds it) and the parent chain otherwise.
-//   - The columns are the spec's, in one ordered list (legionBoardColumnOrder), and a phase maps
-//     to exactly one of them (legion.PhaseColumns), so the view and metric 2's "no role" bar
-//     agree on where `awaiting_person` and `held` go (the plan's D11). The ids and that table are
-//     the legion package's, since the per-issue facts read them with no card to hand; the labels
-//     here are the view's.
+//   - The columns are the spec's, with Waiting on children for the phase dispatch://INFRA-3320
+//     added, in one ordered list (legionBoardColumnOrder), and a phase maps to exactly one of them
+//     (legion.PhaseColumns), so the view and metric 2's "no role" bar agree on where
+//     `awaiting_children`, `awaiting_person` and `held` go (the plan's D11). The ids and that
+//     table are the legion package's, since the per-issue facts read them with no card to hand;
+//     the labels here are the view's.
 package api
 
 import (
@@ -60,6 +61,7 @@ var legionBoardColumnOrder = []struct{ id, label string }{
 	{legion.ColumnAccepting, "Accepting"},
 	{legion.ColumnRetro, "Retro"},
 	{legion.ColumnMerging, "Merging"},
+	{legion.ColumnAwaitingChildren, "Waiting on children"},
 	{legion.ColumnAwaiting, "Waiting on a person"},
 	{legion.ColumnHeld, "Held"},
 }
@@ -210,10 +212,10 @@ type legionBoardHeader struct {
 }
 
 // legionBoardColumn is one column: its id, the label the view shows, and its cards in the order
-// the view draws them. ID is one of the eleven columns, in the order legionBoardColumnOrder draws
+// the view draws them. ID is one of the twelve columns, in the order legionBoardColumnOrder draws
 // them; the enum is what makes the generated type carry that set rather than a bare string.
 type legionBoardColumn struct {
-	ID    string            `json:"id" enum:"queue,design,planning,implementing,testing,reviewing,accepting,retro,merging,awaiting_person,held"`
+	ID    string            `json:"id" enum:"queue,design,planning,implementing,testing,reviewing,accepting,retro,merging,awaiting_children,awaiting_person,held"`
 	Label string            `json:"label"`
 	Cards []legionBoardCard `json:"cards"`
 }
@@ -222,10 +224,11 @@ type legionBoardColumn struct {
 // issues table, joined on the daemon's key (the plan's D13; the daemon's state carries none of the
 // three). Phase, PhaseSince, Slot, Roles and WaitingOn are the newest observations of that issue,
 // PhaseSince being when the phase it is in was first recorded — the time in the phase the card
-// shows. BlockedBy names the issues a blocker link holds it on, and Children counts the issues of
-// its tree that its tree has not started, which are on no card of their own. The card carries no
-// CI verdict: the daemon's state has none since cybermonklabs/legion#2539, and a verdict row a
-// read wrote before then is read by nothing.
+// shows. BlockedBy names the issues a blocker link holds it on; for a parent in
+// `awaiting_children` it names the open children the daemon lists it as blocked on, not blocker
+// links. Children counts the issues of its tree that its tree has not started, which are on no
+// card of their own. The card carries no CI verdict: the daemon's state has none since
+// cybermonklabs/legion#2539, and a verdict row a read wrote before then is read by nothing.
 type legionBoardCard struct {
 	Key        string     `json:"key"`
 	Title      string     `json:"title"`
@@ -237,7 +240,9 @@ type legionBoardCard struct {
 	// slot belongs to the tree's root, and a child works under it. Null for a root, an issue
 	// holding its own slot, and a tree whose root holds none.
 	TreeSlot *int `json:"tree_slot"`
-	// SlotSince is when the issue was admitted to its own slot; null with no slot of its own.
+	// SlotSince is when Dispatch first recorded the slot the issue holds of its own, which is the
+	// admission only where the sampler was reading the daemon then (observe); null with no slot of
+	// its own.
 	SlotSince *time.Time `json:"slot_since"`
 	// WaitingPlace is the issue's place in the daemon's waiting line, from 1; null for an issue
 	// the line does not name.
@@ -360,17 +365,13 @@ type legionBoardDaemonRead struct {
 // sampler records, and the title, priority and parent Dispatch holds for the same key.
 type legionBoardIssue struct {
 	key string
-	// phase and phaseSince are the newest phase observation and when it was recorded, which is
-	// when the issue entered that phase (a row is written only where the value moved).
-	phase      string
-	phaseSince time.Time
-	slot       *int
-	// slotSince is when the newest slot observation was recorded, which is when the issue was
-	// admitted to that slot.
+	// state is the issue's newest observations, read through the one per-issue rule an issue's
+	// own read takes them through (legion.IssueState), so a card and that read agree on the
+	// issue's phase, its slot and the roles in a turn.
+	state legion.IssueState
+	// slotSince is when the newest slot observation was recorded: the first read of the daemon
+	// that carried that slot, which need not be the admission (observe).
 	slotSince time.Time
-	waitingOn *legion.Wait
-	// roles are the roles of the issue whose claim state is `working`, sorted.
-	roles []string
 	// title and priority are Dispatch's, empty for an issue Dispatch does not hold; the parent
 	// Dispatch records is p.parents, which holds every issue of the project and not only the
 	// ones the daemon reports, and the daemon's `tree` is p.reported's.
@@ -384,8 +385,9 @@ type legionBoardIssue struct {
 //
 // The stored facts are those of every open issue and of every issue the board shows, and of no
 // other (R22): the issue of each card and every issue of a tree a card stands in. They are read
-// once the cards are placed, by key through the primary key, by tree root through
-// issue_facts_root and as the project's open rows through issue_facts_closed, and never as the
+// once the cards are placed, in three index reads that share no row: the project's open rows
+// through issue_facts_closed, the closed rows of the trees by root through issue_facts_root, and
+// the closed rows of the cards outside those trees by key through the primary key, never as the
 // project's rows filtered after the read (legionfacts.Read, whose plan its test records), so the
 // read and the body follow the open work and what the daemon runs rather than the project's
 // history. Nothing here computes a fact: no metrics function is called and no population is held
@@ -452,17 +454,22 @@ func (p *legionBoardPopulation) readSampled(ctx context.Context, pool *store.Poo
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if err := p.readDaemonRead(ctx, tx); err != nil {
+	read, err := readDaemonRead(ctx, tx, p.project)
+	if err != nil {
 		return err
 	}
+	p.read = read
 	if err := p.readCurrent(ctx, tx); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
 }
 
-// readDaemonRead reads the newest read of the project's daemon, the freshness the header shows.
-func (p *legionBoardPopulation) readDaemonRead(ctx context.Context, tx pgx.Tx) error {
+// readDaemonRead is the newest read of project's daemon, the freshness the board's header and an
+// issue's Legion read show, or nil for a project whose daemon was never read. It reads on the
+// caller's transaction, so the read answers the moment that caller's other reads of what the
+// sampler writes answer, and both callers take the read through this one statement.
+func readDaemonRead(ctx context.Context, tx pgx.Tx, project string) (*legionBoardDaemonRead, error) {
 	var read legionBoardDaemonRead
 	err := tx.QueryRow(ctx, `
 		select read_at, ok, error
@@ -470,15 +477,14 @@ func (p *legionBoardPopulation) readDaemonRead(ctx context.Context, tx pgx.Tx) e
 		where project = $1
 		order by read_at desc, id desc
 		limit 1
-	`, p.project).Scan(&read.at, &read.ok, &read.failure)
+	`, project).Scan(&read.at, &read.ok, &read.failure)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-	p.read = &read
-	return nil
+	return &read, nil
 }
 
 // readCurrent reads the project's legion_current through legion.ReadCurrent inside readSampled's
@@ -511,42 +517,23 @@ func (p *legionBoardPopulation) readCurrent(ctx context.Context, tx pgx.Tx) erro
 func (p *legionBoardPopulation) observeProject(field string, value []byte) {
 	switch field {
 	case legion.FieldAdmission:
-		if admission, read := legion.ParseAdmission(value); read {
-			p.admission = admission
-		}
+		p.admission = legion.AdmissionOf(value)
 	case legion.FieldSettings:
 		_ = json.Unmarshal(value, &p.settings)
 	}
 }
 
-// observe takes one newest observation into the issue. A value that is not the shape the field is
-// read as leaves the field as it stands: the daemon owns the wire shape, and a reader of one names
-// what it expects rather than trusting it. The slot and the wait are decoded by the rules'
-// package (legion.ParseSlot, legion.ParseWait), which the stored per-issue facts decode by too, as
-// they decode the admission block (legion.ParseAdmission, observeProject).
+// observe takes one newest observation into the issue: its state, by the one per-issue rule
+// (legion.IssueState.Observe), and for its slot also when that slot was recorded. A row is written
+// only where the value moved, so that is the first read of the daemon that carried the slot: the
+// admission when the sampler was already reading the daemon then, and otherwise a later read, such
+// as the first one after the project's daemon is configured. A card shows that moment only beside
+// a slot the issue holds (card), so a slot value of another shape, which the state reads as no
+// slot, shows none.
 func (issue *legionBoardIssue) observe(field string, value []byte, at time.Time) {
-	switch {
-	case field == legion.FieldPhase:
-		issue.phase, issue.phaseSince = legion.JSONString(value), at
-	case field == legion.FieldSlot:
-		if slot, read := legion.ParseSlot(value); read {
-			issue.slot, issue.slotSince = slot, at
-		}
-	case field == legion.FieldWaitingOn:
-		if wait, read := legion.ParseWait(value); read {
-			issue.waitingOn = wait
-		}
-	case strings.HasPrefix(field, legion.ClaimFieldPrefix):
-		role := strings.TrimPrefix(field, legion.ClaimFieldPrefix)
-		working := legion.JSONString(value) == "working"
-		held := slices.Contains(issue.roles, role)
-		switch {
-		case working && !held:
-			issue.roles = append(issue.roles, role)
-			slices.Sort(issue.roles)
-		case !working && held:
-			issue.roles = slices.DeleteFunc(issue.roles, func(r string) bool { return r == role })
-		}
+	issue.state.Observe(field, value, at)
+	if field == legion.FieldSlot {
+		issue.slotSince = at
 	}
 }
 
@@ -624,15 +611,15 @@ func (p *legionBoardPopulation) readPhaseWork(ctx context.Context, pool *store.P
 	return nil
 }
 
-// issueKeys is every issue the board's answer names — the issues the daemon reported and the
-// issues whose stored facts the answer carries — which is what the live hub marks its view dirty
-// by (delivery_live_hub_intake.go's dirtyIssueLocked). A facts write of an issue on no card
-// still moves the answer, because the entry of it in the issues map moves.
+// issueKeys is every issue the daemon reported, the issues the board may draw a card of, which is
+// what the live hub marks its view dirty by on an issue's event (delivery_live_hub_intake.go's
+// dirtyIssueLocked). The issues the answer carries only a stored row of are not among them: an
+// event on such an issue moves the answer through the stored rows the facts consumer writes
+// after it, its own and those of the issues whose tree it moved, and the change of each marks the
+// board of its project at once (touchedBy's issue_facts arm), so a mark of the event itself would
+// recompute a board whose answer had not moved yet.
 func (p *legionBoardPopulation) issueKeys() map[string]struct{} {
-	keys := make(map[string]struct{}, len(p.issues)+len(p.facts))
-	for key := range p.facts {
-		keys[key] = struct{}{}
-	}
+	keys := make(map[string]struct{}, len(p.issues))
 	for key := range p.issues {
 		keys[key] = struct{}{}
 	}
@@ -670,7 +657,7 @@ func (p *legionBoardPopulation) lineIssue(key string) (legion.LineIssue, bool) {
 	if issue == nil {
 		return legion.LineIssue{}, false
 	}
-	return legion.LineIssue{Phase: issue.phase, Slot: issue.slot}, true
+	return legion.LineIssue{Phase: issue.state.Phase, Slot: issue.state.Slot}, true
 }
 
 // placeCards places every issue the daemon reports on the board, by column id: the cards the
@@ -682,9 +669,13 @@ func (p *legionBoardPopulation) lineIssue(key string) (legion.LineIssue, bool) {
 // which the view does not re-sort (the spec's "Rule details": that order puts answered roots
 // first, then follows Dispatch's rank); the issues a blocker link holds, after them in the Queue
 // column — of both lists only the issues that have not started work, since an issue that has
-// started keeps the column of its phase and carries its place in the line on its card; and
-// otherwise the column its phase falls in. An issue the daemon reports in `admitted` that holds
-// no slot and that neither list names is a child its tree has not started: it is on no card, and
+// started keeps the column of its phase and carries its place in the line on its card, and never
+// a parent in `awaiting_children`; and otherwise the column its phase falls in. The daemon lists
+// such a parent as blocked on its open children while one is open (dispatch://INFRA-3320, R11),
+// but it waits on them and not on a slot: its card is in Waiting on children for the whole wait,
+// naming its open children while the daemon lists them, and stays there after its last child
+// closes until the pass that returns it. An issue the daemon reports in `admitted` that holds no
+// slot and that neither list names is a child its tree has not started: it is on no card, and
 // the nearest card above it in its tree counts it. Where no issue above it carries a card — its
 // tree climbs through issues the daemon reports nothing of, or through issues whose phase is on
 // no column — it is a card of its own, since a count on an issue the board shows nothing of is a
@@ -819,7 +810,7 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 		header.SlotsInUse = len(p.admission.Active)
 	} else {
 		for _, issue := range p.issues {
-			if issue.slot != nil {
+			if issue.state.Slot != nil {
 				header.SlotsInUse++
 			}
 		}
@@ -883,37 +874,39 @@ func legionFactTime(at *time.Time) *time.Time {
 	return &utc
 }
 
-// card is one issue's card, with the issues holding it and the children of its tree that are on no
-// card of their own.
+// card is one issue's card, with the issues holding it, as the admission block names them for it
+// (the waiting line's BlockedBy, which takes them by legion.Admission.Blockers' rule, the one an
+// issue's own read names them by), and the children of its tree that are on no card of their own.
 func (p *legionBoardPopulation) card(issue *legionBoardIssue, blockedBy []string, children int) legionBoardCard {
 	card := legionBoardCard{
-		Key: issue.key, Title: issue.title, Priority: issue.priority, Phase: issue.phase,
-		Slot: issue.slot, Roles: issue.roles, BlockedBy: blockedBy,
-		Tree: p.treeRoot(issue.key), Children: children, wait: issue.waitingOn,
+		Key: issue.key, Title: issue.title, Priority: issue.priority, Phase: issue.state.Phase,
+		Slot: issue.state.Slot, Roles: issue.state.Working(), BlockedBy: blockedBy,
+		Tree: p.treeRoot(issue.key), Children: children,
 	}
-	// The wait the sampler recorded is decoded once, into the rule's own shape (legion.Wait);
-	// the body carries it in the shape the view reads, which is this one mapping. The card keeps
-	// the decoded value as well, which is what the waiting rule reads (cardWaiting).
-	if wait := issue.waitingOn; wait != nil {
+	// The wait the sampler recorded is the daemon's object as the issue's state holds it, which an
+	// issue's own read carries whole. It is decoded once, by the one decode of the field
+	// (legion.ParseWait), into the rule's own shape, and nil where it names no kind or is not the
+	// shape it is read as; the body carries the three fields a card shows in the shape the view
+	// reads, which is this one mapping. The card keeps the decoded value as well, which is what
+	// the waiting rule reads (cardWaiting).
+	if wait, read := legion.ParseWait(issue.state.WaitingOn); read {
+		card.wait = wait
 		card.WaitingOn = &legionBoardWait{Kind: wait.Kind, Since: wait.Since, AnsweredAt: wait.AnsweredAt}
 	}
 	if card.Slot == nil && card.Tree != issue.key {
-		if root := p.issues[card.Tree]; root != nil && root.slot != nil {
-			slot := *root.slot
+		if root := p.issues[card.Tree]; root != nil && root.state.Slot != nil {
+			slot := *root.state.Slot
 			card.TreeSlot = &slot
 		}
-	}
-	if card.Roles == nil {
-		card.Roles = []string{}
 	}
 	if card.BlockedBy == nil {
 		card.BlockedBy = []string{}
 	}
-	if !issue.phaseSince.IsZero() {
-		since := issue.phaseSince.UTC()
+	if !issue.state.PhaseSince.IsZero() {
+		since := issue.state.PhaseSince.UTC()
 		card.PhaseSince = &since
 	}
-	if issue.slot != nil && !issue.slotSince.IsZero() {
+	if issue.state.Slot != nil && !issue.slotSince.IsZero() {
 		since := issue.slotSince.UTC()
 		card.SlotSince = &since
 	}

@@ -4,18 +4,26 @@
 #
 #   e2e/visual-run.sh                      # compare every baseline
 #   e2e/visual-run.sh --update-snapshots   # take them again
-#   DISPATCH_E2E_VISUAL_ORDER=reverse e2e/visual-run.sh   # compare them with the rows reversed
 #
 # Every argument it is given is passed on to Playwright, so the update path is the same command
 # with one more flag: a baseline a person takes and a baseline CI compares come out of the same
 # run of the same binaries in the same image, which is the whole point of the layer.
 #
-# WHY A SECOND ORDER. One seed serves the whole run, so a page that writes state as it draws
-# changes what every row after it compares. The review seed writes each such mark before any row
-# runs (`seedReviewRoutes`, e2e/review-seed.ts), and CI's visual job runs the rows a second time
-# with `DISPATCH_E2E_VISUAL_ORDER=reverse` (e2e/visual-order.ts): the phone rows first, and each
-# project's rows last first. A row that reads another row's write then fails one of the two runs
-# by its own name. The variable reaches the container through the `DISPATCH_E2E_` sweep below.
+# A baseline comes from this command alone. A machine with no container, an issue pod among
+# them, takes one from the full lane's run in CI instead:
+#
+#   1. gh run download <failed full-lane run id> --repo <owner>/<repo> \
+#        --name dispatch-browser-visual-<attempt>
+#   2. A failed row's -actual.png is under the results directory this script names on a failed
+#      run, at the same path inside the download.
+#   3. Copy it over e2e/__screenshots__/<project>/<route>-<scheme>.png only if every pixel that
+#      moved was meant to and a second run gave the same bytes (else the page is not settled),
+#      and say why in the commit message.
+#
+# ONE SEED, NO WRITES. One seed serves the whole run, so a page that writes state as it draws
+# would change what every row after it compares. The review seed writes each read mark a page of
+# the shot set writes before any row runs (`seedReviewRoutes`, e2e/review-seed.ts), and every
+# other write a row's page tries is stopped and fails that row by name (e2e/visual-guard.ts).
 #
 # WHY THE SEED RUNS ON THE HOST AND THE SHOTS IN THE CONTAINER. `e2e/psql.ts` spawns the `psql`
 # binary, and both `resetDatabase()` (e2e/seed.ts) and the delivery fixtures
@@ -95,7 +103,10 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-mkfifo "$exports_fifo"
+# The fifo carries the stack's variables, DATABASE_URL among them with any password it holds, so it
+# is made for this user alone: under a umask of 022 a plain mkfifo would make it prw-r--r--, and any
+# user of the machine could open it and read those lines.
+mkfifo -m 600 "$exports_fifo"
 bun e2e/harness-up.ts > "$exports_fifo" &
 harness=$!
 # Opened for the rest of the script, not for the loop alone: the harness writes nothing on
@@ -171,5 +182,81 @@ docker run --rm --network host --ipc=host --user "$(id -u):$(id -g)" \
   ghcr.io/cybermonklabs/legion/ci@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f \
   node node_modules/@playwright/test/cli.js test --config e2e/playwright.config.ts \
   --project=visual --project=visual-phone "$@" || status=$?
+
+# A failed run says where a failed row's shots go, as what holds if a row ran and failed: the
+# script cannot tell that a row ran.
+# Playwright refuses an argument it cannot read (`-uG`, or an option it does not know) before it
+# runs a row, and exits 1 as a failed row does, and a run that clears its results directory may
+# still run no row (a `--grep` that matches none), so neither the status nor the directory says
+# so; Playwright's own output above the lines does.
+# Playwright writes a failed row's `-actual.png`, `-expected.png` and `-diff.png` under the run's
+# output directory: `e2e/test-results` (e2e/playwright.config.ts's `outputDir`) unless `--output`
+# names another. It is relative to this package, where the run works, so the line names it from
+# the repository root, as a CI log's reader and the job's upload do
+# (`packages/dispatch/e2e/test-results`); an absolute `--output` is printed as given.
+# The loop reads the arguments as Playwright's `test` command does: `--output=DIR` and `--output
+# DIR`, the last one wins, an empty value names nothing, arguments after `--` are no options, and
+# the word after an option that takes a value is that value, whatever it looks like - so
+# `--grep-invert --output=x` names no output directory, as Playwright reads it. The two lists are
+# the options of `playwright test` at the version the run uses (@playwright/test 1.64.1, the
+# package.json pin; the image runs this tree's node_modules), copied from its own help (`bun
+# node_modules/@playwright/test/cli.js test --help`): those written with `<value>`, which take the
+# next word always, and those written with `[value]`, which take it only when it starts with no
+# dash, so never an `--output`, and which end a cluster of short options. A short option that
+# takes a value takes the rest of its cluster where there is one (`-Gx`), else the next word.
+# e2e/__tests__/visual-run.test.ts reads both lists against that help and fails when they differ.
+# The status stays the container's however the lines go: a write to a closed stderr fails and is
+# ignored, and a write to a pipe whose reader has gone would raise SIGPIPE and end this shell
+# before the EXIT trap stopped the stack, so the signal is ignored from here on - after `docker`
+# has returned, so neither the container nor the stack inherits that.
+playwright_value_options=" --add-reporter --browser -c --config -g --grep -G --grep-invert --global-timeout -j --workers --last-failed-file --max-failures --output --project --repeat-each --reporter --retries --run-agents --shard --test-list --test-list-invert --timeout --trace --tsconfig --ui-host --ui-port --update-source-method "
+playwright_optional_options=" --debug --only-changed --shuffle -u --update-snapshots "
+if [ "$status" -ne 0 ]; then
+  trap '' PIPE
+  output=""
+  next=""
+  for arg in "$@"; do
+    case $next in
+      output) output=$arg ;;
+    esac
+    if [ -n "$next" ]; then
+      next=""
+      continue
+    fi
+    case $arg in
+      --) break ;;
+      --output=*) output=${arg#--output=} ;;
+      --output) next=output ;;
+      --*=*) ;;
+      --*)
+        case $playwright_value_options in
+          *" $arg "*) next=value ;;
+        esac
+        ;;
+      -?*)
+        cluster=${arg#-}
+        while [ -n "$cluster" ]; do
+          letter=${cluster%"${cluster#?}"}
+          cluster=${cluster#?}
+          case $playwright_value_options in
+            *" -$letter "*)
+              [ -n "$cluster" ] || next=value
+              break
+              ;;
+          esac
+          case $playwright_optional_options in
+            *" -$letter "*) break ;;
+          esac
+        done
+        ;;
+    esac
+  done
+  case $output in
+    "") output=packages/dispatch/e2e/test-results ;;
+    /*) ;;
+    *) output=packages/dispatch/${output#./} ;;
+  esac
+  printf '%s\n' "e2e/visual-run.sh: the run failed. If a row ran and failed, its shots (-actual.png, -expected.png, -diff.png) are under ${output%/}/. Playwright's own output above says whether any row ran." >&2 || :
+fi
 
 exit "$status"

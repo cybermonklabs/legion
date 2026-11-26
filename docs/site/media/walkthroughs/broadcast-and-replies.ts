@@ -3,6 +3,7 @@
 // narration line was written to its measured clip and starts at the cue it names.
 import type { Page } from "@playwright/test";
 
+import { listOf, listTrigger } from "../../../../packages/dispatch/e2e/filters";
 import { sessionIds } from "../../../../packages/dispatch/e2e/session-ids";
 import { type DispatchWorkspace, dispatchApi, expect, seedDispatchWorkspace } from "../harness";
 import { linger, pointTo, type Walkthrough } from "../recording";
@@ -131,10 +132,16 @@ const broadcastAndReplies: Walkthrough<Seeded> = {
         cue("select");
         await expect(page.getByText("3 of 3 matching selected", { exact: true })).toBeVisible();
         const composer = page.getByRole("region", { name: "Broadcast" });
-        const mode = composer.getByRole("combobox", { name: "Delivery mode" });
+        // The mode is the shared list's single pick: its trigger opens the list, and Send is the
+        // steer option in it.
+        const mode = listTrigger(composer, "Delivery mode");
         await linger(page, 1.65);
         await pointTo(page, mode);
-        await mode.selectOption("steer");
+        await mode.click();
+        const steer = listOf(mode).getByRole("option", { exact: true, name: "Send" });
+        await pointTo(page, steer);
+        await steer.click();
+        await expect(mode).toHaveAccessibleName("Delivery mode Send");
         cue("mode");
         await linger(page, 1.6);
         const message = composer.getByRole("textbox", { name: "Broadcast message" });

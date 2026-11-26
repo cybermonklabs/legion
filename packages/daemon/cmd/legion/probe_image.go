@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +26,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 )
 
@@ -63,14 +67,24 @@ var digits = regexp.MustCompile(`^[0-9]+$`)
 // whether the image's Oh My Pi falls back to another model (capabilities.ReadModelFallback): a
 // failure to read it is not a refusal — the probe writes the failure to stderr and carries on
 // with the mark bootprobe.ModelFallbackUnread, so the deployment's capability report shows that
-// row open rather than the probe's own line going missing. When every check passes, it prints
-// bootprobe.OKLine with the capabilities and model-fallback marks; a failed capability is the
-// probe's message, exit 1, so a broken image never publishes. Unlike the
-// TypeScript command, the contract is always checked:
-// with none named, against this binary's own DaemonAPIVersion, which the plugin packed from the
-// same commit must declare. The load probe also holds every task agent the
-// prompts dispatch to its own model; the OK line says so (agent-models=resolved), or that the
-// build's probe, which has no operator model configuration, skipped it (--skip-agent-models).
+// row open rather than the probe's own line going missing. It then reads the image's Oh My Pi's
+// version and whether its help lists --session-id (capabilities.ReadOmpVersion and
+// ReadSessionIDFlag) onto the OK line's omp-version and omp-session-id marks, each `unread` with
+// the failure on stderr when its read fails before the deadline, since only a daemon that sets an
+// exchange audience needs the flag and refuses the image without it; a read the deadline cut has
+// no verdict, like every other check. When every check passes, it prints
+// bootprobe.OKLine with the capabilities, model-fallback, omp-version and omp-session-id marks; a
+// failed capability is the probe's message, exit 1, so a broken image never publishes. Each check
+// is judged as it returns, by the deadline --probe-budget sets: what it saw fail before the
+// deadline is exit 1, while a check the deadline cut, a capability row among them
+// (capabilities.StatusUnanswered), has no verdict, which ends nothing, so the later checks still
+// run. Where nothing failed and something has no verdict, it prints bootprobe.NoVerdictLine, naming
+// each, to stderr and exits bootprobe.NoVerdictExit, which asks the daemon's probe Sandbox for
+// another attempt rather than refusing the image. Unlike the TypeScript command, the contract is
+// always checked: with none named, against this binary's own DaemonAPIVersion, which the plugin
+// packed from the same commit must declare. The load probe also holds every task agent the prompts
+// dispatch to its own model; the OK line says so (agent-models=resolved), or that the build's
+// probe, which has no operator model configuration, skipped it (--skip-agent-models).
 // With --skip-browser, the build of an image for a deployment that turns Oh My Pi's browser off
 // (`browser.enabled: false`), which carries no Chromium, the capability check leaves the browser
 // row unchecked, and the OK line's capabilities mark says so (capabilities=browser-skipped, which
@@ -105,7 +119,7 @@ func newProbeImageCommand(stdout, stderr io.Writer) *cobra.Command {
 	flags := cmd.Flags()
 	f := &probeImageFlags{}
 	flags.StringVar(&f.omp, "omp", "", "the OMP executable to probe (default: $LEGION_OMP_PATH)")
-	flags.StringVar(&f.contract, "daemon-api-version", strconv.Itoa(api.DaemonAPIVersion),
+	flags.StringVar(&f.contract, "daemon-api-version", strconv.Itoa(api.DaemonAPIVersion()),
 		"the daemon API contract the image's pi-legion must declare (the daemon's probe Sandbox passes its own)")
 	flags.StringVar(&f.pluginRoot, "plugin-root", "", "the Legion plugin directory a pod loads as an explicit extension, which the load probe loads the same way (required)")
 	flags.StringVar(&f.envoyPluginRoot, "envoy-plugin-root", "", "the Envoy plugin directory a pod loads as its other explicit extension, which the load probe loads the same way (required)")
@@ -192,14 +206,18 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 		}
 		references = decoded
 	}
-	invocation := f.omp
-	if invocation == "" {
-		invocation = os.Getenv("LEGION_OMP_PATH")
+	// --omp and LEGION_OMP_PATH each name the OMP executable, a path, as LEGION_OMP_PATH is for the
+	// daemon (omplaunch.ResolveInvocation). Every launch below is shell text, so the path goes in as
+	// one shell word: a path holding a space or a glob character still names the one file.
+	omp := f.omp
+	if omp == "" {
+		omp = os.Getenv("LEGION_OMP_PATH")
 	}
-	if invocation == "" {
+	if omp == "" {
 		fmt.Fprintln(stderr, "legion probe-image: set LEGION_OMP_PATH (or pass --omp) to the OMP executable to probe")
 		return 1
 	}
+	invocation := shellprefix.Word(omp)
 	expected, err := strconv.Atoi(f.contract)
 	if !digits.MatchString(f.contract) || err != nil || expected < 1 {
 		fmt.Fprintf(stderr, "legion probe-image: --daemon-api-version must be a positive integer (got %q)\n", f.contract)
@@ -241,13 +259,22 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 			env[name] = value
 		}
 	}
+	// From here on each step is judged as it returns: a failure it saw while ctx was alive ends
+	// the probe with exit 1, and what the probe's deadline (--probe-budget) cut has no verdict,
+	// which ends nothing, so the later steps still run and a failure they see still fails. noVerdict
+	// names each step with no verdict; where nothing failed, they make the exit
+	// bootprobe.NoVerdictExit.
+	var noVerdict []string
 	err = daemon.ProbeImage(ctx, daemon.ImageProbe{
 		Omp: invocation, Contract: expected, Env: env, WorkDir: workDir, PluginRoot: f.pluginRoot, EnvoyPluginRoot: f.envoyPluginRoot,
 		ClaudeRoot: f.claudeRoot, ClaudeCodePin: f.claudeCodePin,
 		RoleReferences: references, SkipAgentModels: f.skipAgentModels,
-		Log: slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		Log: slog.New(slog.NewTextHandler(stderr, redact.HandlerOptions(&slog.HandlerOptions{Level: slog.LevelWarn}))),
 	})
-	if err != nil {
+	switch {
+	case err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) && errors.Is(err, context.DeadlineExceeded):
+		noVerdict = append(noVerdict, "launch probes: "+err.Error())
+	case err != nil:
 		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
 		return 1
 	}
@@ -271,39 +298,54 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
 		return 1
 	}
-	if err := newTLSPositiveControls(ctx, environ); err != nil {
-		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
-		return 1
-	}
-	fmt.Fprintln(stdout, tlsPositiveControlsLine(compromisedTLSSites()))
-	tlsStateDir, removeTLSStateDir, err := newTLSStateDir()
-	if err != nil {
-		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
-		return 1
-	}
-	defer removeTLSStateDir()
-	observations, err := probeTLSClients(ctx, newImageTLSClients(invocation, environ, tlsStateDir))
-	for _, observation := range observations {
-		fmt.Fprintf(stdout, "probe-image: TLS client %s %s: %s (%s)\n",
-			observation.client, observation.site.name, observation.status, observation.detail)
-	}
-	if err != nil {
-		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
-		return 1
+	for _, line := range lines {
+		if line.Status == capabilities.StatusUnanswered {
+			noVerdict = append(noVerdict, "capability "+string(line.Name)+": not checked")
+		}
 	}
 	modelFallback, err := capabilities.ReadModelFallback(ctx, img)
 	if err != nil {
 		fmt.Fprintf(stderr, "legion probe-image: model-fallback not read; the deployment's capability report shows the row open: %v\n", err)
 		modelFallback = bootprobe.ModelFallbackUnread
 	}
+	// Which Oh My Pi the image carries, and whether it takes the --session-id a daemon under an
+	// exchange audience starts each new role with. A read that fails before the deadline refuses
+	// nothing: its mark says unread, with the failure on stderr, and the daemon that reads the
+	// marks decides. A read that failed once ctx ended has no verdict, as checkRoleOverlays judges
+	// a role's read: the deadline stops the read's process group, so the failure may be its own
+	// doing, and an omp-session-id=unread it would leave is a mark a daemon under an exchange
+	// audience refuses for good. A read that answered keeps its answer, whenever it returned.
+	ompVersion, err := capabilities.ReadOmpVersion(ctx, img)
+	switch {
+	case err != nil && ctx.Err() != nil:
+		noVerdict = append(noVerdict, "omp-version: "+err.Error())
+	case err != nil:
+		fmt.Fprintf(stderr, "legion probe-image: Oh My Pi's version not read; the OK line says omp-version=%s: %v\n", bootprobe.OmpVersionUnread, err)
+		ompVersion = bootprobe.OmpVersionUnread
+	}
+	sessionIDFlag, err := capabilities.ReadSessionIDFlag(ctx, img)
+	switch {
+	case err != nil && ctx.Err() != nil:
+		noVerdict = append(noVerdict, "omp-session-id: "+err.Error())
+	case err != nil:
+		fmt.Fprintf(stderr, "legion probe-image: whether Oh My Pi takes --session-id not read; the OK line says omp-session-id=%s, which a daemon that sets runtime.kubernetes.agent_secrets.exchange_audience refuses: %v\n",
+			bootprobe.SessionIDFlagUnread, err)
+		sessionIDFlag = bootprobe.SessionIDFlagUnread
+	}
 	// Each role's own overlays, read as that role's Oh My Pi will start on them, after the table so
 	// the log still reads as the declared list first.
 	roleImage := capabilities.Image{Launch: invocation, Env: environ, WorkDir: workDir}
-	if code := checkRoleOverlays(f.roleOverlays, func(value, alone []string) (string, error) {
+	code, overlaysNoVerdict := checkRoleOverlays(ctx, f.roleOverlays, func(value, alone []string) (string, error) {
 		overlays := append(capabilities.OverlayEntries(envValue(environ, "PI_CONFIG_FILES")), value...)
 		return capabilities.CheckOverlays(ctx, roleImage, overlays, alone)
-	}, stderr); code != 0 {
+	}, stderr)
+	if code != 0 {
 		return code
+	}
+	noVerdict = append(noVerdict, overlaysNoVerdict...)
+	if len(noVerdict) > 0 {
+		fmt.Fprintln(stderr, bootprobe.NoVerdictLine(noVerdict))
+		return bootprobe.NoVerdictExit
 	}
 	agentModels := bootprobe.AgentModelsResolved
 	if f.skipAgentModels {
@@ -316,7 +358,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	if natsUser != "" {
 		fmt.Fprintln(stdout, bootprobe.NATSUserLine(natsUser))
 	}
-	fmt.Fprintln(stdout, bootprobe.OKLine(invocation, expected, agentModels, checked, modelFallback))
+	fmt.Fprintln(stdout, bootprobe.OKLine(omp, expected, agentModels, checked, modelFallback, ompVersion, sessionIDFlag))
 	return 0
 }
 
@@ -365,14 +407,20 @@ func (f *roleConfigFilesFlag) Set(value string) error {
 	return nil
 }
 
-// envValue is the value environ gives name, "" when it gives none.
-func envValue(environ []string, name string) string {
-	value := ""
-	for _, pair := range environ {
+// envLookup is the value environ gives name and whether it gives one, the last entry winning where
+// a name is set twice, as os/exec builds a child's environment from such a list.
+func envLookup(environ []string, name string) (string, bool) {
+	for _, pair := range slices.Backward(environ) {
 		if found, v, _ := strings.Cut(pair, "="); found == name {
-			value = v
+			return v, true
 		}
 	}
+	return "", false
+}
+
+// envValue is the value environ gives name, "" when it gives none (envLookup).
+func envValue(environ []string, name string) string {
+	value, _ := envLookup(environ, name)
 	return value
 }
 
@@ -381,6 +429,13 @@ func envValue(environ []string, name string) string {
 // refuses, else 0. A run check reports as unanswered (a timeout) is printed and does not stop
 // that value's verdict: a refusal found after it still refuses.
 //
+// Each call of check is judged by ctx, the probe's, as it returns. One that returned after ctx
+// ended has no verdict, whether it answered a refusal or left a run unanswered, since a refusal
+// read then may be the deadline's own doing: the end of ctx stops the read's process group with a
+// SIGTERM (procgroup), and an Oh My Pi that then exits on its own with a non-zero status reads as
+// refusing (capabilities.CheckOverlays). noVerdict names each such call, "role overlays: <role>:
+// <the refusal or the error>", for the next attempt to read again; it fails nothing.
+//
 // check takes the whole value and, beside it, the overlays of that value to read on their own.
 // Each distinct value is read once and each distinct overlay is read alone once, over every
 // entry (capabilities.OverlayReads, which the boot gate's own read holds too): a role's own
@@ -388,7 +443,7 @@ func envValue(environ []string, name string) string {
 // same answer whichever value it stands in, so a deployment that declares arms would otherwise
 // pay for the thing it added at every probe. The refusal still names the first role holding the
 // refused value, since the loop reaches it before any other role of it.
-func checkRoleOverlays(entries []roleOverlays, check func(value, alone []string) (string, error), stderr io.Writer) int {
+func checkRoleOverlays(ctx context.Context, entries []roleOverlays, check func(value, alone []string) (string, error), stderr io.Writer) (code int, noVerdict []string) {
 	reads := capabilities.OverlayReads{}
 	for _, entry := range entries {
 		unread, first := reads.Unread(entry.files)
@@ -396,13 +451,22 @@ func checkRoleOverlays(entries []roleOverlays, check func(value, alone []string)
 			continue
 		}
 		why, err := check(entry.files, unread)
+		if ctx.Err() != nil {
+			if why == "" && err != nil {
+				why = err.Error()
+			}
+			if why != "" {
+				noVerdict = append(noVerdict, "role overlays: "+entry.role+": "+why)
+			}
+			continue
+		}
 		if err != nil {
 			fmt.Fprintf(stderr, "legion probe-image: role %s's overlays were read but Oh My Pi did not answer on some of them: %v\n", entry.role, err)
 		}
 		if why != "" {
 			fmt.Fprintln(stderr, bootprobe.RoleOverlaysRefusedLine(entry.role, why))
-			return 1
+			return 1, noVerdict
 		}
 	}
-	return 0
+	return 0, noVerdict
 }

@@ -35,9 +35,8 @@ import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { ProgressChips } from "../issue/ProgressChips";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
-import { priorityPath } from "../priorities/priority-routes";
+import { PriorityChip } from "../priorities/PriorityChip";
 import { AgentName } from "../refs/AgentName";
-import { ReferenceLink } from "../refs/ReferenceLink";
 import { referenceTriggerProps } from "../refs/RefPreview";
 import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
@@ -105,6 +104,12 @@ declare module "@tanstack/react-table" {
     /** A control of the column's own that its header draws beside the filter: Time per
      *  phase's Share and Hours. */
     headerControl?: ReactNode;
+    /** A column of counts: its header's words stand at its right edge, over its numbers, and
+     *  wrap rather than be cut (`DataTable`'s header). */
+    numeric?: boolean;
+    /** A header whose words wrap onto a second line rather than be cut, in a column narrower
+     *  than its words on one line. */
+    wrap?: boolean;
     /** The types for the declaration's own parameters, which it does not otherwise use. */
     value?: [TData, TValue];
   }
@@ -292,19 +297,23 @@ function Author({ issue, clamp }: { issue: IssueSummary; clamp: boolean }): Reac
   );
 }
 
-/** How each column renders and sorts on the Issues tab, for the reader `userState` describes.
- *  Keyed by the registry's own ids, so a typo or a column with no rendering fails to compile.
- *  Everything else about a column — whether it filters, what a row files under, what it groups
- *  by, how wide it starts and how narrow it may go — comes from `COLUMNS` in the model, so the
- *  two never disagree. A row's own checkbox tells `onMark` the row it marks. A column whose rows
- *  can have no value sorts those rows last whichever way the table sorts it (`descending`), and
- *  by the next sort key among themselves (`emptyLast`).
+/** How each column renders and sorts on the Issues tab, for the reader `userState` describes,
+ *  with each title in eight lines at most where the table wraps its titles (`wrapTitles`),
+ *  ending in '…' with the whole of it in its tooltip where it runs longer, and in two lines that
+ *  end in '…' otherwise, and each claim whole there too, its holder's name wrapping rather than
+ *  cut (`ClaimChip`'s `wraps`). Keyed by the registry's own ids, so a typo or a column with no
+ *  rendering fails to compile. Everything else about a column — whether it filters, what a row
+ *  files under, what it groups by, how wide it starts and how narrow it may go — comes from
+ *  `COLUMNS` in the model, so the two never disagree. A row's own checkbox tells `onMark` the
+ *  row it marks. A column whose rows can have no value sorts those rows last whichever way the
+ *  table sorts it (`descending`), and by the next sort key among themselves (`emptyLast`).
  *  Time per phase draws in the reader's mode (`usePhaseHoursMode`), which its header's control
  *  switches. Legion phase sorts in the order of `phaseOrder`, the board's columns.
  */
 const renderings = (
   userState: UserState | undefined,
   onMark: (key: string) => void,
+  wrapTitles: boolean,
   phaseMode: PhaseHoursMode,
   setPhaseMode: (mode: PhaseHoursMode) => void,
   descending: SortsDescending,
@@ -401,7 +410,10 @@ const renderings = (
           to={buildIssuePath({ key: row.original.issue.key, kind: "issue" })}
           {...referenceTriggerProps({ key: row.original.issue.key, kind: "issue" })}
         >
-          <span className={`line-clamp-2 min-w-0 flex-1 break-words ${textPrimaryOnCanvas}`}>
+          <span
+            className={`${wrapTitles ? "line-clamp-8" : "line-clamp-2"} min-w-0 flex-1 break-words ${textPrimaryOnCanvas}`}
+            title={wrapTitles ? row.original.issue.title : undefined}
+          >
             {row.original.issue.title}
           </span>
         </Link>
@@ -475,7 +487,7 @@ const renderings = (
   claim: {
     header: "Claimed by",
     accessorFn: (item) => item.claimedBy,
-    cell: ({ row }) => <ClaimChip claim={row.original.issue.claim} />,
+    cell: ({ row }) => <ClaimChip claim={row.original.issue.claim} wraps={wrapTitles} />,
   },
   asks: {
     header: "Open asks",
@@ -710,9 +722,9 @@ const embeddedRenderings = (
 });
 
 /** The columns only some listings have a use for: which project a row is in, which priorities
- *  it advances, when it was moved into backlog or icebox and by whom, and why. A table has each
- *  only where its listing gives the cell something true to say (`listingColumns`). */
-export type ListingColumnId = "project" | "advances" | "moved" | "reason";
+ *  it advances, and when it was moved into backlog or icebox and by whom. A table has each only
+ *  where its listing gives the cell something true to say (`listingColumns`). */
+export type ListingColumnId = "project" | "advances" | "moved";
 
 /**
  * The listing columns a table of `listing`, the work of every project that advances a priority,
@@ -724,23 +736,21 @@ export type ListingColumnId = "project" | "advances" | "moved" | "reason";
  *   and without them the column could name each priority only by its id.
  * - Moved there, on a listing that asks for the move (`moved`): no other listing is answered with
  *   one, so its every cell would be empty, whatever the record holds.
- * - Reason, on that same listing and no other: why the work was moved there. Nothing records a
- *   reason yet, and every cell says so, naming the work that records one (R6).
  */
 export function listingColumns(listing: AdvancesListing, titled: boolean): ListingColumnId[] {
   return [
     "project",
     ...(titled ? (["advances"] as const) : []),
-    ...(listing.moved === true ? (["moved", "reason"] as const) : []),
+    ...(listing.moved === true ? (["moved"] as const) : []),
   ];
 }
 
-/** The work that records why an issue was moved into backlog or icebox. Until it lands no move
- *  carries a reason, and the Reason cell names it. */
-const MOVE_REASON_WORK = "dispatch://INFRA-2934";
+/** What the Advances column knows of one priority by its id: its place in the one order and its
+ *  title, each absent for a priority the priorities read does not hold (`PriorityChip`). */
+type PriorityOf = (id: string) => { place: number | undefined; title: string | undefined };
 
 /**
- * The four listing columns. They name what R6 asks each fault row to name, and none of them
+ * The three listing columns. They name what R6 asks each fault row to name, and none of them
  * sorts, filters or groups - deliberately: the table's view in the address reads only the
  * columns `features/project/issues-table-model.ts` registers (`readUrl` drops any other id), and
  * these are the cells' own, kept out of that registry. Every registered column still sorts,
@@ -751,7 +761,7 @@ const LISTING_COLUMNS: readonly {
   readonly id: ListingColumnId;
   readonly size: number;
   readonly min: number;
-  readonly rendering: (titleOf: (id: string) => string) => Partial<ColumnDef<Item>>;
+  readonly rendering: (priorityOf: PriorityOf) => Partial<ColumnDef<Item>>;
 }[] = [
   {
     id: "project",
@@ -767,17 +777,19 @@ const LISTING_COLUMNS: readonly {
   },
   {
     id: "advances",
-    size: 220,
-    min: 140,
-    rendering: (titleOf) => ({
+    // Each priority is its chip and its title after it, wrapped whole: the cell is where a fault
+    // row says which priority it stands under, and a phone has no tooltip to read a title in. A
+    // layout names its own width where its other columns leave this one more or less room.
+    size: 200,
+    min: 160,
+    rendering: (priorityOf) => ({
       header: "Advances",
-      accessorFn: (item) => (item.issue.advances ?? []).map(({ id }) => titleOf(id)).join(", "),
+      accessorFn: (item) =>
+        (item.issue.advances ?? []).map(({ id }) => priorityOf(id).title ?? id).join(", "),
       cell: ({ row }) => (
-        <span className="flex flex-wrap gap-x-2">
-          {(row.original.issue.advances ?? []).map(({ id }) => (
-            <Link className={`${linkText} ${linkHoverText}`} key={id} to={priorityPath(id)}>
-              {titleOf(id)}
-            </Link>
+        <span className="flex flex-col gap-1">
+          {(row.original.issue.advances ?? []).map(({ id, inherited }) => (
+            <PriorityChip id={id} inherited={inherited} key={id} titled {...priorityOf(id)} />
           ))}
         </span>
       ),
@@ -804,66 +816,123 @@ const LISTING_COLUMNS: readonly {
       },
     }),
   },
-  {
-    id: "reason",
-    size: 240,
-    min: 140,
-    rendering: () => ({
-      header: "Reason",
-      accessorFn: () => "",
-      // The same words on every row, since no move carries a reason yet: the cell says the
-      // record is missing rather than drawing an empty cell a reader could take for no reason.
-      cell: () => (
-        <span className={textSecondaryOnCanvas}>
-          Not recorded until <ReferenceLink reference={MOVE_REASON_WORK} />
-        </span>
-      ),
-    }),
-  },
 ];
 
-/** The columns a caller may name among those its table opens with shown: the listing columns,
- *  and Updated, which a project's table opens with hidden and a fault list opens with shown,
- *  since R6 asks every fault row to name how long it has stood. */
-export type ShownColumnId = ListingColumnId | "updated";
+/** A column an issues table can open with shown, or give a width of its own: one of the
+ *  registry's (`ColumnId`) or a listing column (`ListingColumnId`). */
+export type IssueTableColumnId = ColumnId | ListingColumnId;
 
-/** Each layout `issueTableLayout` built, by its columns and the ones it opens with shown. */
+/** A column's width where a table's layout names one: where it starts, and the narrowest the
+ *  reader may drag it (`size`, `min`); or what it holds (`fit`): as wide as its header or its
+ *  widest cell on the page needs on one line, measured as the table draws them, and where `most`
+ *  is given no wider than that, past which its cells wrap (`LayoutColumns.fits`) - until it is
+ *  measured it stands at `most`, else its own width. Either, given `leaves`, gives Title, the
+ *  column that fills the box, room in a desktop's box: where the others would leave Title less
+ *  than that, it narrows - toward `min`, or toward the narrowest what it holds needs - to leave
+ *  it that much (`LayoutColumns.yields`), each such column in turn in the order the layout names
+ *  them. A column of set width that does so draws its header's words wrapped beside its filter
+ *  once it is narrower than they are on one line (`DataTable`'s `wrap`), and is never narrower
+ *  than its header needs as drawn, sorted or not (`LayoutColumns.wrappedHeaders`). */
+export type IssueTableColumnWidth =
+  | { readonly size: number; readonly min: number; readonly leaves?: number }
+  | { readonly fit: true; readonly most?: number; readonly leaves?: number };
+
+/** The widths a table's layout names, by column: each over the registry's or the listing
+ *  column's own. */
+export type IssueTableWidths = Readonly<Partial<Record<IssueTableColumnId, IssueTableColumnWidth>>>;
+
+/** The width an issues table draws after its columns, for a row's actions, where its listing can
+ *  hold a row they act on (`listsQueued`) and its layout does not leave them out (`rowActions`,
+ *  `ListingTable`). The Issues tab always draws them. */
+export const ROW_ACTIONS_WIDTH = 104;
+
+/** The one column no reader can hide or show (`enableHiding: false`): the row's checkbox, which
+ *  `x` selects with. A layout that names what it opens with keeps it whatever it names. */
+const ALWAYS_SHOWN: ColumnId = "select";
+
+/** Each layout `issueTableLayout` built, by its listing columns, the columns it opens with (or
+ *  none, for today's opening set), the widths it names, the row's actions' width and the
+ *  columns it pins. */
 const layouts = new Map<string, LayoutColumns>();
 
 /**
  * The layout of an issues table another page draws, with the listing columns `columns`
- * (`listingColumns`), that opens with `shown` shown: today's (`ISSUE_TABLE_COLUMNS`), with those
- * listing columns at their widths, and every column today's layout opens hidden or a listing
- * column not in `shown` hidden until the reader shows it. Each fault list of the priorities page
- * names its own. Built once for each pair and kept, since the stored layout is read again
- * whenever this object changes (`useTableLayout`).
+ * (`listingColumns`): today's (`ISSUE_TABLE_COLUMNS`), with those listing columns at their
+ * widths. With no `opens` it opens as such a table always has: today's opening set, Updated and
+ * Closed hidden, and every listing column hidden until the reader shows it. With `opens`, it
+ * opens with exactly those columns shown, registry and listing columns alike, and every other
+ * one hidden until the reader shows it from the column control; the row's checkbox stays
+ * (`ALWAYS_SHOWN`), and Title fills a desktop box (`fills`, `useTableLayout`): it takes the
+ * width the other shown columns and the row's actions (`actions`, none where the table draws
+ * none) leave.
+ * `widths` puts a column's starting width and minimum in place of the registry's or the listing
+ * column's, with the room it leaves Title where it names one (`yields`), or makes the column as
+ * wide as what it holds (`fits`); and `pins` the columns pinned at the left of a desktop's box in
+ * place of the registry's (`LayoutPins.wide`), where the registry's would count a column the
+ * table opens hidden. A table that names none of them opens as it always has; each fault list of
+ * the priorities page and a priority's work table name their own. Built once for each set and
+ * kept, since the stored layout is read again whenever this object changes (`useTableLayout`).
  */
 export function issueTableLayout(
   columns: readonly ListingColumnId[],
-  shown: readonly ShownColumnId[] = []
+  opens?: readonly IssueTableColumnId[],
+  widths: IssueTableWidths = {},
+  actions = ROW_ACTIONS_WIDTH,
+  pins?: readonly IssueTableColumnId[]
 ): LayoutColumns {
-  const name = `${columns.join(" ")}|${shown.join(" ")}`;
+  const name = `${columns.join(" ")}|${opens === undefined ? "*" : opens.join(" ")}|${JSON.stringify(widths)}|${actions}|${pins === undefined ? "*" : pins.join(" ")}`;
   const built = layouts.get(name);
   if (built !== undefined) return built;
   const listing = LISTING_COLUMNS.filter(({ id }) => columns.includes(id));
-  const hidden = {
-    ...ISSUE_TABLE_COLUMNS.hiddenByDefault,
-    ...Object.fromEntries(listing.map(({ id }) => [id, false])),
-  };
+  const ids = [...ISSUE_TABLE_COLUMNS.ids, ...listing.map(({ id }) => id)];
+  const shown = new Set<string>(opens);
+  const named = Object.entries(widths).flatMap(([id, width]) =>
+    width === undefined ? [] : [[id, width] as const]
+  );
+  const set = named.flatMap(([id, width]) => ("fit" in width ? [] : [[id, width] as const]));
+  const fitted = named.flatMap(([id, width]) => ("fit" in width ? [[id, width] as const] : []));
+  const yielding = named.flatMap(([id, { leaves }]) =>
+    leaves === undefined ? [] : [[id, leaves] as const]
+  );
+  // A column of set width that gives way can narrow below its header's words on one line, so its
+  // header's words wrap there, and the column is never narrower than its header needs as drawn.
+  const wrapped = set.flatMap(([id, { leaves }]) => (leaves === undefined ? [] : [id]));
+  const registryPins = ISSUE_TABLE_COLUMNS.pins;
   const layout: LayoutColumns = {
     ...ISSUE_TABLE_COLUMNS,
-    ids: [...ISSUE_TABLE_COLUMNS.ids, ...listing.map(({ id }) => id)],
-    hiddenByDefault: Object.fromEntries(
-      Object.entries(hidden).filter(([id]) => !shown.includes(id as ShownColumnId))
-    ),
+    ids,
+    hiddenByDefault:
+      opens === undefined
+        ? {
+            ...ISSUE_TABLE_COLUMNS.hiddenByDefault,
+            ...Object.fromEntries(listing.map(({ id }) => [id, false])),
+          }
+        : Object.fromEntries(
+            ids.filter((id) => id !== ALWAYS_SHOWN && !shown.has(id)).map((id) => [id, false])
+          ),
     sizes: {
       ...ISSUE_TABLE_COLUMNS.sizes,
       ...Object.fromEntries(listing.map(({ id, size }) => [id, size])),
+      ...Object.fromEntries(set.map(([id, { size }]) => [id, size])),
+      ...Object.fromEntries(
+        fitted.flatMap(([id, { most }]) => (most === undefined ? [] : [[id, most]]))
+      ),
     },
+    // A column as wide as what it holds is never narrower than that (`useTableLayout`), and no
+    // minimum of its own holds it wider.
     minimums: {
       ...ISSUE_TABLE_COLUMNS.minimums,
       ...Object.fromEntries(listing.map(({ id, min }) => [id, min])),
+      ...Object.fromEntries(set.map(([id, { min }]) => [id, min])),
+      ...Object.fromEntries(fitted.map(([id]) => [id, 0])),
     },
+    ...(fitted.length === 0 ? {} : { fits: Object.fromEntries(fitted) }),
+    ...(yielding.length === 0 ? {} : { yields: Object.fromEntries(yielding) }),
+    ...(wrapped.length === 0 ? {} : { wrappedHeaders: wrapped }),
+    ...(pins === undefined || registryPins === undefined
+      ? {}
+      : { pins: { ...registryPins, wide: { ...registryPins.wide, columns: pins } } }),
+    ...(opens === undefined ? {} : { fills: "title", trailing: actions }),
   };
   layouts.set(name, layout);
   return layout;
@@ -877,9 +946,14 @@ export function issueTableLayout(
 export type IssueTableMode =
   | {
       readonly kind: "embedded";
-      /** Each priority's title by its id, which the Advances column names a priority by; one
-       *  this map does not hold, a priority deleted since it was read, is named by its id. */
+      /** Each priority's title by its id, in the order the priorities read answers them, which
+       *  is the one order: the Advances column names each priority by its place in this map
+       *  (`#3`) with its title. One this map does not hold, a priority deleted since it was
+       *  read, is named by its id. */
       readonly priorityTitles?: ReadonlyMap<string, string>;
+      /** Whether each title wraps onto up to eight lines, with the whole of it in its tooltip,
+       *  rather than two (`ListingTable`'s `wrapTitles`). */
+      readonly wrapTitles?: boolean;
     }
   | {
       readonly kind: "tab";
@@ -903,7 +977,8 @@ export function useIssueTableColumns(
   userState: UserState | undefined,
   compact: boolean,
   onMark: (key: string) => void,
-  /** The table's layout: which columns it has, their widths and their minimums. */
+  /** The table's layout (`viewLayoutColumns`, `issueTableLayout`): which columns it has, their
+   *  widths, and the narrowest each column may be drawn at, a layout's `widths` included. */
   layout: LayoutColumns,
   /** The sorting state the table is given, which the table sorts its rows by. */
   sorting: SortingState,
@@ -914,6 +989,7 @@ export function useIssueTableColumns(
   sorted.current = sorting;
   const embedded = mode.kind === "embedded";
   const priorityTitles = mode.kind === "embedded" ? mode.priorityTitles : undefined;
+  const wrapTitles = mode.kind === "embedded" && mode.wrapTitles === true;
   // A board-fed column of a project with no Legion daemon has nothing to draw.
   const noLegion = mode.kind === "tab" && !mode.hasLegion;
   // A table another page draws has no Legion phase column: today's phases stand in.
@@ -924,13 +1000,18 @@ export function useIssueTableColumns(
     const rendering = renderings(
       userState,
       onMark,
+      wrapTitles,
       phaseMode,
       setPhaseMode,
       descending,
       phasePicks
     );
     const phaseFilter = legionPhaseFilter(phases, phasePicks);
-    const titleOf = (id: string) => priorityTitles?.get(id) ?? id;
+    const places = new Map([...(priorityTitles?.keys() ?? [])].map((id, at) => [id, at + 1]));
+    const priorityOf: PriorityOf = (id) => ({
+      place: places.get(id),
+      title: priorityTitles?.get(id),
+    });
     const embeddedRendering = embedded ? embeddedRenderings(descending) : undefined;
     const registered = layout.ids.flatMap((id): ColumnDef<Item>[] => {
       const column = columnSpec.get(id);
@@ -947,9 +1028,11 @@ export function useIssueTableColumns(
             ? undefined
             : picks?.show;
       const describe = MEASURE_METHODS[column.id];
+      // On a phone, a column of a table another page draws keeps the width its registry names
+      // for a phone, else the minimum its layout names, else today's.
       const minSize = compact
         ? embedded
-          ? embeddedPhoneMin(column.id)
+          ? embeddedPhoneMin(column.id, layout.minimums?.[column.id])
           : phoneMin(column.id)
         : (layout.minimums?.[column.id] ?? column.min);
       const drawn = embeddedRendering?.[column.id] ?? rendering[column.id];
@@ -974,16 +1057,21 @@ export function useIssueTableColumns(
             ...(show === undefined ? {} : { show }),
             ...(picks?.always === undefined ? {} : { always: picks.always }),
             ...(describe === undefined ? {} : { describe }),
+            // A column of set width that gives Title its room may narrow below its header's words
+            // on one line, so they wrap there beside the filter rather than be cut, the column no
+            // narrower than they need (`wrappedHeaders`); where the column is as wide as one line,
+            // they stand on one.
+            ...(layout.wrappedHeaders?.includes(column.id) === true ? { wrap: true } : {}),
           },
         },
       ];
     });
     const listing = LISTING_COLUMNS.filter(({ id }) => layout.ids.includes(id)).map(
       (column): ColumnDef<Item> => ({
-        ...column.rendering(titleOf),
+        ...column.rendering(priorityOf),
         id: column.id,
         size: column.size,
-        minSize: column.min,
+        minSize: layout.minimums?.[column.id] ?? column.min,
         enableResizing: true,
         enableSorting: false,
         enableColumnFilter: false,
@@ -1000,6 +1088,7 @@ export function useIssueTableColumns(
     onMark,
     layout,
     priorityTitles,
+    wrapTitles,
     embedded,
     noLegion,
     phases,

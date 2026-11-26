@@ -2,24 +2,38 @@ import type { ReactNode } from "react";
 import type { FilterChip } from "../../components/filter-chips";
 import { useTableLayout } from "../../components/table-layout";
 import { useAddressUpdate } from "../../lib/page-address";
-import { useIssueTableActions } from "./issues-table-actions";
+import { ISSUES_NOT_LOADED, useIssueTableActions } from "./issues-table-actions";
 import { LISTING_OWN } from "./issues-table-chips";
-import { issueTableLayout, listingColumns, type ShownColumnId } from "./issues-table-columns";
+import {
+  type IssueTableColumnId,
+  type IssueTableWidths,
+  issueTableLayout,
+  listingColumns,
+  ROW_ACTIONS_WIDTH,
+} from "./issues-table-columns";
 import {
   type AdvancesListing,
   answeredWhole,
   listingsOf,
+  listsQueued,
   useAdvancesTableItems,
 } from "./issues-table-data";
 import { IssueTableFrame, ListingNotices, ReadStates } from "./issues-table-frame";
-import { defaultView, readUrl, tableStorageKey, writeUrl } from "./issues-table-model";
+import {
+  defaultView,
+  narrowsNothing,
+  readUrl,
+  tableStorageKey,
+  writeUrl,
+} from "./issues-table-model";
 import { IssueTableStatus } from "./issues-table-page";
 import { picksOf, useIssueTable, useIssueTableReads } from "./issues-table-state";
 import { useTableView } from "./issues-table-view";
 
-/** The one layout key of every table scoped to a priority: the work advancing a priority is
- *  one table, drawn under an opened row of the priorities page and on the priority's own page,
- *  so the columns a reader drags there are dragged once rather than once per priority. */
+/** The one layout key of every table scoped to a priority that names no layout of its own: the
+ *  work advancing a priority is one table wherever it is drawn, so the columns a reader drags
+ *  there are dragged once rather than once per priority. A priority's own page names its own
+ *  layout (`priorities/PriorityPage.tsx`). */
 const SCOPED_LAYOUT_KEY = "priority-work";
 
 /** A listing table leaves out no tree: `exclude_tree` is a narrowing of the Issues tab alone. */
@@ -28,47 +42,83 @@ const NO_CHIPS: readonly FilterChip[] = [];
 
 /**
  * The issue table a priority page draws over a listing of the issues that advance a priority,
- * which belong to no project (`AdvancesListing`), as the List was drawn before the views: today's
- * columns at today's widths, its view under its own prefix in the address (`stateKey`), its
- * status strip over it, and no view tabs, no Legion column and no Board. It reads its open
- * issues, and its whole listing once the reader lets closed issues through.
+ * which belong to no project (`AdvancesListing`), as the List was drawn before the views: its
+ * view under its own prefix in the address (`stateKey`), its status strip over it, and no view
+ * tabs, no Legion column and no Board. It reads its open issues, and its whole listing once the
+ * reader lets closed issues through.
  */
 export function ListingTable({
+  empty,
   label,
   layout: ownLayout,
   listing,
-  moveFrom = "page",
   priorityTitles,
   stateKey,
 }: {
+  /** What the table says when it lists no row and the reader narrowed it by nothing - no filter
+   *  but the statuses it opens with, no search, no issues picked (`narrowsNothing`), and neither
+   *  Needs you nor Unread: that its listing holds no issue, in its caller's words. Unset, or once
+   *  the reader narrowed it, it says no issues match these filters. */
+  empty?: string;
   /** What this list is called, for a reader who cannot see where it sits; "Priority issues"
    *  where unset. */
   label?: string;
-  /** The layout this table keeps, under its own key, where it is not every priority's one, and
-   *  the columns it opens with shown: each fault list of the priorities page shows its listing
-   *  columns and Updated, which a table opens with hidden (`issueTableLayout`). */
-  layout?: { readonly key: string; readonly shown: readonly ShownColumnId[] };
+  /** The layout this table keeps, under its own key, where it is not every priority's one: the
+   *  whole set of columns it opens with shown (`opens`), registry and listing columns alike,
+   *  every other one opening hidden for the reader to show, the widths it gives any column in
+   *  place of its own, or the columns it makes as wide as what they hold (`widths`), and the
+   *  columns it pins at the left of a desktop's box in place of the registry's (`pins`,
+   *  `issueTableLayout`). Given one, Title fills a desktop box: it takes what the other shown
+   *  columns and the row's actions leave (`fills`). `rowActions: false` draws no row's actions
+   *  after the columns, no cell for a row's Start next, and keeps no width for them, as on a
+   *  listing that holds no issue in Legion's queue (`listsQueued`): Title takes that width too,
+   *  and the selection's bar keeps Start next. `wrapTitles: true` wraps each row's title onto as
+   *  many as eight lines, ending in '…' with the whole title in its tooltip where it runs
+   *  longer, where a table clamps it to two lines that end in '…': a table read by its titles,
+   *  as each fault list of the priorities page and a priority's work table are.
+   *  `statusLegend: true` draws each segment of the status bar as its count alone where the
+   *  segments with their names are wider than the bar, and the names in a legend under it
+   *  (`IssueTableStatus`), so no name is cut at the bar's edge: each of those tables stands in a
+   *  box narrower than a project's, whose bar keeps its names and scrolls sideways on a phone.
+   *  Each of those gives its own; unset, the table opens as today's. */
+  layout?: {
+    readonly key: string;
+    readonly opens: readonly IssueTableColumnId[];
+    readonly widths?: IssueTableWidths;
+    readonly rowActions?: boolean;
+    readonly pins?: readonly IssueTableColumnId[];
+    readonly wrapTitles?: boolean;
+    readonly statusLegend?: boolean;
+  };
   listing: AdvancesListing;
-  /** Where its `j` and `k` walk its rows from (`RowKeymap.moveFrom`): anywhere on the page the
-   *  focus is in no other table, for the page's one table or its main one (the default); or only
-   *  from one of its own rows, for a table drawn beside the page's main one. */
-  moveFrom?: "page" | "row";
-  /** Each priority's title by its id. Given, the table has the Advances column, which names each
-   *  priority a row advances by its title; unset, it has none (`listingColumns`). */
+  /** Each priority's title by its id, in the one order the priorities read answers them in.
+   *  Given, the table has the Advances column, which names each priority a row advances by its
+   *  place in that order and its title (`#3`, `PriorityChip`); unset, it has none
+   *  (`listingColumns`). */
   priorityTitles?: ReadonlyMap<string, string>;
   /** The prefix this table's own view takes in the address: `<stateKey>.sort` and the rest. */
   stateKey: string;
 }): ReactNode {
   const address = useTableView(stateKey);
   const { params, view } = address;
-  // The listing columns this table has: the ones its listing gives a use (`listingColumns`).
+  // Whether the table draws a row's actions after its columns - the cell for its Start next -
+  // and the width it draws them at: where the listing can hold a row a reader starts next
+  // (`listsQueued`) and its layout does not leave them out (`rowActions`). A fault list of the
+  // priorities page holds no such row and a priority's work table leaves them out, so neither
+  // draws them.
+  const rowActions = listsQueued(listing) && ownLayout?.rowActions !== false;
+  // The columns this table has - the listing columns its listing gives a use (`listingColumns`)
+  // beside the registry's - which it opens with and at which widths.
   const columnsLayout = issueTableLayout(
     listingColumns(listing, priorityTitles !== undefined),
-    ownLayout?.shown
+    ownLayout?.opens,
+    ownLayout?.widths,
+    rowActions ? ROW_ACTIONS_WIDTH : 0,
+    ownLayout?.pins
   );
-  // One stored layout for every scoped table: the work advancing a priority is one table drawn
-  // in two places, so a reader who drags a column there drags it for the priorities page and the
-  // priority's own page alike, and not once per priority.
+  // One stored layout per layout a caller names, and one for every other scoped table: the work
+  // advancing any priority is one table, so a reader who drags a column on it drags it for every
+  // priority, and not once per priority.
   const layout = useTableLayout(
     tableStorageKey(ownLayout?.key ?? SCOPED_LAYOUT_KEY),
     columnsLayout,
@@ -98,8 +148,7 @@ export function ListingTable({
     listingIn: issues.data !== undefined && closedIn,
     loaded,
     // A listing table draws today's cells at today's widths (`useIssueTableColumns`).
-    mode: { kind: "embedded", priorityTitles },
-    moveFrom,
+    mode: { kind: "embedded", priorityTitles, wrapTitles: ownLayout?.wrapTitles },
     onBoard: false,
     panel,
     serverRowCount: undefined,
@@ -131,6 +180,11 @@ export function ListingTable({
     <IssueTableFrame
       actions={actions}
       closedUnloaded={!whole && !wholeIn}
+      empty={
+        empty !== undefined && narrowsNothing(view) && !flags.needsYou && !flags.unread
+          ? empty
+          : undefined
+      }
       legionQueue={false}
       loaded={loaded}
       name={label ?? "Priority issues"}
@@ -151,7 +205,7 @@ export function ListingTable({
           failure={
             failed
               ? {
-                  text: "Could not load issues.",
+                  text: ISSUES_NOT_LOADED,
                   retry: () => {
                     void issues.refetch();
                     void userState.refetch();
@@ -162,10 +216,19 @@ export function ListingTable({
           loading={loading}
         />
       }
+      rowActions={rowActions}
       state={state}
       // Its strip of every status the table holds, a press showing only that status and a second
       // press every status.
-      strip={loaded ? <IssueTableStatus items={rows.allItems} table={state.table} /> : null}
+      strip={
+        loaded ? (
+          <IssueTableStatus
+            items={rows.allItems}
+            legend={ownLayout?.statusLegend}
+            table={state.table}
+          />
+        ) : null
+      }
     />
   );
 }

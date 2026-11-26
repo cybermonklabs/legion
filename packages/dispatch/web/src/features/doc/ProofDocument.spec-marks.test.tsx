@@ -1,6 +1,6 @@
-import { expect, jest, spyOn, test } from "bun:test";
-import { cleanup, waitFor, within } from "@testing-library/react";
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
+import { act, cleanup, waitFor, within } from "@testing-library/react";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import {
   answerTextReadsWithTheSeededText,
@@ -19,7 +19,14 @@ import type {
   Version,
 } from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { STALE_BLOCK_TITLE } from "./spec-marks";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 answerTextReadsWithTheSeededText();
 
@@ -230,6 +237,70 @@ test("with no read version the Spec tab shows no line and marks no changed block
       ])
     );
     expect(screen.queryByText(/Changed since you last read/)).not.toBeInTheDocument();
+  } finally {
+    cleanup();
+    reads.restore();
+  }
+});
+
+// A read of the person's read mark asked before the Spec tab's mark lands answers the version they
+// read before this visit. Landing after the mark's answer, it would put that version back, and the
+// next visit would mark every block changed since it again, though the person has read the latest.
+test("a read of the read mark asked before the mark landed does not bring back the version read before", async () => {
+  const reads = stubReads(2);
+  const before = Promise.withResolvers<DocumentRead>();
+  // Version 2 as the visit opens, then the read held while the mark is out; after that, the
+  // server holds the version the mark recorded.
+  reads.getDocumentRead
+    .mockResolvedValue(readOf(4))
+    .mockResolvedValueOnce(readOf(2))
+    .mockReturnValueOnce(before.promise);
+  const marked = Promise.withResolvers<DocumentRead>();
+  reads.putRead.mockImplementationOnce(() => marked.promise);
+  const queryClient = createQueryClient();
+  const first = renderProofDocument({ document: spec, queryClient });
+
+  try {
+    await first.sync();
+    await waitFor(() => expect(reads.putRead).toHaveBeenCalledTimes(1));
+    // A refresh of the read mark, asked while the mark is out and still out itself.
+    await act(async () => {
+      void queryClient.invalidateQueries({ exact: true, queryKey: ["document-read", spec.id] });
+      await settle();
+    });
+    expect(reads.getDocumentRead).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      marked.resolve(readOf(4));
+      await settle();
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryData<DocumentRead>(["document-read", spec.id])).toEqual(readOf(4))
+    );
+
+    // The read answers the version the person had read before this visit.
+    await act(async () => {
+      before.resolve(readOf(2));
+      await settle();
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryState(["document-read", spec.id])?.fetchStatus).toBe("idle")
+    );
+    first.view.unmount();
+
+    // The next visit opens on the version the mark recorded, the latest: nothing changed since.
+    const next = renderProofDocument({ document: spec, queryClient });
+    await next.sync();
+    await waitFor(() => expect(next.editors).toHaveLength(1));
+    const editor = next.editors[0];
+    if (editor === undefined) throw new Error("editor missing");
+    await waitFor(() =>
+      expect(editor.blockMarks.at(-1)).toEqual([
+        { blockId: "p-plan", className: staleBlockMark, title: STALE_BLOCK_TITLE },
+      ])
+    );
+    expect(
+      within(next.view.container).queryByText(/Changed since you last read/)
+    ).not.toBeInTheDocument();
   } finally {
     cleanup();
     reads.restore();

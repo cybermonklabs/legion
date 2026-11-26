@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -113,10 +114,21 @@ func findDocument(ctx context.Context, w *writeTx) (evalsDocument, bool, error) 
 
 // createDocument creates the project's `evals-md` as actor, its text the paragraph that says what
 // the document is and then sections, and queues its `artifact.created` event, as an upload of a
-// new project document does (docs.CreateDocument). The sections are in the seeded text rather
-// than added by an edit after it: an edit reads a document no room holds from the store (docs'
-// coldFork), where a document whose insert this transaction has only queued is not yet. The
-// caller holds the project's documents' lock and found no `evals-md` under it (lockDocument).
+// new project document does (docs.CreateDocument). Under that event it states what the
+// document's node write and its block index left waiting for it (docs.WrittenText's Node and
+// Blocks), so the document has its node in its project, as every document an upload creates has.
+// The sections are in the seeded text rather than added by an edit after it: an edit reads a
+// document no room holds from the store (docs' coldFork), where a document whose insert this
+// transaction has only queued is not yet. The caller holds the project's documents' lock and
+// found no `evals-md` under it (lockDocument).
+//
+// The document's settlement is scheduled only where its seed owes one (docs.WrittenText's
+// OwesSettlement), as it does where a method holds an ask block or a check carrying `ci_check`.
+// The text this writes otherwise - a heading, a paragraph, and a heading and a callout per eval,
+// each block given its id by the parse - leaves a settlement nothing to write but the delete of
+// the row that said one was owed, so such a create records nothing owed and no settlement loads
+// the document's room for it, on a project create (api's createProject, through EnsureTx) and on
+// a first registration alike.
 func (s *Store) createDocument(ctx context.Context, w *writeTx, sections string, actor model.Actor) error {
 	artifact, written, err := docs.CreateDocument(ctx, s.documents, docs.NewArtifact{
 		Project: &w.project, RefPrefix: w.project, Slug: DocumentSlug, Name: DocumentName, CreatedBy: actor,
@@ -127,27 +139,37 @@ func (s *Store) createDocument(ctx context.Context, w *writeTx, sections string,
 	if err := s.queueDocumentEvent(w, artifact.ID, model.Event{
 		ArtifactID: &artifact.ID, Type: "artifact.created", Actor: actor,
 		Payload: docs.ArtifactCreatedEventPayload(artifact, written.Changes),
-	}); err != nil {
+	}, written.Blocks, written.Node); err != nil {
 		return err
 	}
-	w.owesSettlement(artifact.ID)
+	if written.OwesSettlement {
+		w.owesSettlement(artifact.ID)
+	}
 	return nil
 }
 
 // queueDocumentEvent queues event, an event of the document artifactID, on w's ledger: its append
 // (events.Broker.QueueAppend) and, in the same step, the stamp of the document's new reference
 // edges with its id (refs.QueueStamp), after the append so stamping never touches sequence
-// allocation, as api's queueStampedEvent queues a route's. The append takes the document's owner
-// lock again, which the write holds from its read phase (lockDocument), and the owner's row, in
-// the write phase. The event is filled in once the ledger's Commit has run that phase, and
-// published once the transaction has committed (committed).
-func (s *Store) queueDocumentEvent(w *writeTx, artifactID string, event model.Event) error {
+// allocation, as api's queueStampedEvent queues a route's. Right after them it appends what the
+// version's block index stated in the node and tuple store, and, for the creation of the
+// document, what its node write stated (caused), under that event
+// (graphstore.QueueCaused over graphstore.LatestEvent), as api's storeArtifact and
+// commitArtifactVersionEvent do for an upload and an edit: the index ran in the read phase,
+// before the event existed, and no tuple may be updated once it is appended. The append takes the
+// document's owner lock again, which the write holds from its read phase (lockDocument), and the
+// owner's row, in the write phase. The event is filled in once the ledger's Commit has run that
+// phase, and published once the transaction has committed (committed).
+func (s *Store) queueDocumentEvent(w *writeTx, artifactID string, event model.Event, caused ...graphstore.Uncaused) error {
 	appended := new(model.Event)
 	if err := w.ledger.Queue(func(b *store.WriteBatch) error {
 		if err := s.events.QueueAppend(b, event, func(written model.Event) { *appended = written }); err != nil {
 			return err
 		}
 		refs.QueueStamp(b, "artifact", artifactID)
+		for _, stated := range caused {
+			graphstore.QueueCaused(b, stated, graphstore.LatestEvent)
+		}
 		return nil
 	}); err != nil {
 		return err
@@ -164,8 +186,8 @@ func documentIntroduction(project, name string) string {
 		"The heading of a section is the eval's slug, and the block under it is the eval's method: what the number counts, " +
 		"how, and what can make it wrong. Dispatch adds a section when an eval is registered, and a register write that " +
 		"carries `doc_text` replaces the method of its eval. On a computed eval a register write sets only how the number " +
-		"is judged and who answers for it: its target, the `min_n` of pr-ci's job series, its owner, its links, its state and " +
-		"its method. The code its source names defines the rest.\n"
+		"is judged and who answers for it: its target, the `min_n` of pr-ci's job series, its owner role and person, its issue, " +
+		"its links, its state and what replaced it, and its method. The code its source names defines the rest.\n"
 }
 
 // writeMethod makes method, as actor writes it, the method block of the eval slug names, under
@@ -282,11 +304,11 @@ func (s *Store) editDocument(ctx context.Context, w *writeTx, document evalsDocu
 	return s.queueDocumentEvent(w, document.id, model.Event{
 		ArtifactID: &document.id, Type: "artifact.version", Actor: actor,
 		Payload: docs.ArtifactVersionEventPayload(document.id, document.name, written.Version, nil, written.Changes),
-	})
+	}, written.Blocks)
 }
 
-// owesSettlement records that the transaction wrote artifactID, whose settlement is scheduled
-// once it commits.
+// owesSettlement records that the transaction wrote artifactID and left it owing a settlement,
+// which is scheduled once it commits (committed).
 func (w *writeTx) owesSettlement(artifactID string) {
 	if !slices.Contains(w.settle, artifactID) {
 		w.settle = append(w.settle, artifactID)

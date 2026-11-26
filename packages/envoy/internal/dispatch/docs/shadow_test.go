@@ -78,6 +78,7 @@ func storedContentChanges(t *testing.T, database *store.Store, artifactID string
 // drops and releases the shadow between its window copy and its measure (beforeFlushMeasure). The
 // update is stored as the room measured it, and credits nobody.
 func TestAFlushStoresTheRoomsOwnClassWhenTheShadowIsReleasedUnderIt(t *testing.T) {
+	t.Parallel()
 	service, artifactID := storedOrderService(t)
 	if residentShadow(service, artifactID) != nil {
 		t.Fatal("a shadow is resident before the write under test, so the drop below is not its")
@@ -131,6 +132,7 @@ func TestAFlushStoresTheRoomsOwnClassWhenTheShadowIsReleasedUnderIt(t *testing.T
 // fork read, his update is stored as no change, and once the room has drained no shadow is
 // resident.
 func TestAShadowIsFreedOnceTheRoomHasStoredWhatItMeasures(t *testing.T) {
+	t.Parallel()
 	service, artifactID := storedOrderService(t)
 	var installed bool
 	service.afterLiveCommit = onFirst(artifactID, func() {
@@ -153,6 +155,7 @@ func TestAShadowIsFreedOnceTheRoomHasStoredWhatItMeasures(t *testing.T) {
 // stored after the write, it changes nothing, which the shadow the write leaves the loaded room,
 // from its first commit on, measures.
 func TestAColdWritesShadowMeasuresTheRoomThatLoadedUnderIt(t *testing.T) {
+	t.Parallel()
 	service, artifactID := storedOrderService(t)
 	closeDocumentRoom(t, service, artifactID)
 	opened := false
@@ -180,6 +183,7 @@ func TestAColdWritesShadowMeasuresTheRoomThatLoadedUnderIt(t *testing.T) {
 // is held before the store, so his update is left for the shadow after the write's publish, and
 // the failure, then its eviction's hand-over, leave no shadow on any record of the room.
 func TestAShadowIsFreedWhenItsRoomFails(t *testing.T) {
+	t.Parallel()
 	service, artifactID, entered, release := heldAppendService(t)
 	removeSecondUnderBob(t, service, artifactID, &service.afterLiveCommit)
 	awaitHeldAppend(t, entered)
@@ -228,6 +232,7 @@ func documentOf(t *testing.T, markdown string) *crdt.Doc {
 // change that the shadow measures as one takes the authors the room recorded for it, and one it
 // measures as no change writes no author.
 func TestAShadowMeasuresTheClassesInItsWindowAndCreditsWhatItMeasures(t *testing.T) {
+	t.Parallel()
 	base := documentOf(t, "First.\n")
 	fork, err := snapshotDocument(base)
 	if err != nil {

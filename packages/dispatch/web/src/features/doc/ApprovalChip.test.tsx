@@ -1,11 +1,27 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
+import { realClock, tick } from "../../__tests__/fake-clock";
+import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { Artifact, ArtifactApproval, ArtifactReview } from "../../api/types";
+import { ArtifactHeader } from "../artifacts/ArtifactHeader";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { buildIssuePath, parseIssuePath } from "../refs/routes";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { ApprovalChip } from "./ApprovalChip";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function artifact(approval: ArtifactApproval | undefined): Artifact {
   return {
@@ -179,6 +195,167 @@ test("clicking Approve posts an approved review and refreshes the issue and inbo
   }
 });
 
+// While a review the reader sent is out, the controls that would send another are held
+// (`held-press.ts`), never `disabled`, on every surface: a `disabled` control drops the focus the
+// reader's press left on it to the page's body, and the Inbox's reading column then loses the
+// place it hands that focus on from. Approve keeps the focus and sends nothing more, and Request
+// changes is held beside it. In the Request changes dialog, the reason box, Cancel and the
+// dialog's own Request changes are held while the change request is out.
+test("while its review is out, Approve, Request changes and the change request dialog's controls are held, never disabled", async () => {
+  const user = userEvent.setup();
+  const written = Promise.withResolvers<ArtifactReview>();
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockImplementation(
+    () => written.promise
+  );
+  const approving = renderChip(artifact({ latest_version: 3, state: "awaiting" }), "header");
+  try {
+    const approve = screen.getByRole("button", { name: "Approve" }) as HTMLButtonElement;
+    await pressHeld(user, approve, {
+      name: "Approve",
+      sent: () => createArtifactReview.mock.calls.length,
+    });
+    const requestChanges = screen.getByRole("button", { name: "Request changes" });
+    expect(heldNotDisabled(requestChanges as HTMLButtonElement, "Request changes")).toBe(true);
+  } finally {
+    approving.unmount();
+  }
+  const changing = renderChip(artifact({ latest_version: 3, state: "awaiting" }), "header");
+  try {
+    await user.click(screen.getByRole("button", { name: "Request changes" }));
+    const dialog = within(screen.getByRole("dialog", { name: "Request changes" }));
+    const box = dialog.getByLabelText("Reason") as HTMLTextAreaElement;
+    await user.click(box);
+    await user.paste("Needs another pass");
+    await pressHeld(user, dialog.getByRole("button", { name: "Request changes" }), {
+      name: "the dialog's Request changes",
+      sent: () => createArtifactReview.mock.calls.length - 1,
+    });
+    expect(heldNotDisabled(box, "the reason box")).toBe(true);
+    const cancel = dialog.getByRole("button", { name: "Cancel" }) as HTMLButtonElement;
+    expect(heldNotDisabled(cancel, "Cancel")).toBe(true);
+  } finally {
+    written.reject(new Error("the connection dropped"));
+    createArtifactReview.mockRestore();
+    changing.unmount();
+  }
+});
+
+// The reviewer's case, and why a press made anew never reaches a stopped press: Approve goes late
+// and the reader stops it, a change request lands, and the reader approves again. The second
+// Approve is a second action, not the first one made again - a press sent under the stopped
+// press's key would be answered by Dispatch with what that press did, and the approval the person
+// meant now would be recorded nowhere, with the chip saying it was made. So it goes out under a
+// key of its own, though it carries what the stopped press carried.
+test("approving again after a stopped approval and a change request goes under its own key", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
+    new NetworkError("/api/v1/artifacts/artifact-1/reviews", new TypeError("Failed to fetch"))
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <ApprovalChip
+        artifact={artifact({ latest_version: 3, state: "awaiting" })}
+        variant="header"
+      />
+    </QueryClientProvider>
+  );
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await stopTheLateWrite(queryClient);
+    const stoppedKey = createArtifactReview.mock.calls[0]?.[2]?.key;
+    const stopped = createArtifactReview.mock.calls.length;
+
+    // The change request lands. Its answer is held, as the next Approve's is, and given inside
+    // `act` after its press, as docs/testing.md ("The act rule of a Dispatch unit test") says.
+    const review: ArtifactReview = {
+      actor: { id: "alice", kind: "user" },
+      artifact_id: "artifact-1",
+      ask_id: null,
+      content_sha256: null,
+      content_sha256_source: null,
+      created_at: "2026-09-11T00:00:00Z",
+      id: "review-2",
+      kind: "person",
+      reason: "Needs another pass",
+      state: "changes_requested",
+      version: 3,
+    };
+    const changesAnswer = Promise.withResolvers<ArtifactReview>();
+    createArtifactReview.mockReturnValue(changesAnswer.promise);
+    await user.click(screen.getByRole("button", { name: "Request changes" }));
+    const dialog = screen.getByRole("dialog", { name: "Request changes" });
+    await user.click(within(dialog).getByLabelText("Reason"));
+    await user.paste("Needs another pass");
+    await user.click(within(dialog).getByRole("button", { name: "Request changes" }));
+    await act(async () => {
+      changesAnswer.resolve(review);
+    });
+    await tick(1_000);
+    expect(createArtifactReview).toHaveBeenCalledTimes(stopped + 1);
+
+    // Approve again: the same values the stopped press carried, and a press of its own.
+    const approvalAnswer = Promise.withResolvers<ArtifactReview>();
+    createArtifactReview.mockReturnValue(approvalAnswer.promise);
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await act(async () => {
+      approvalAnswer.resolve(review);
+    });
+    await tick(1_000);
+
+    expect(createArtifactReview).toHaveBeenCalledTimes(stopped + 2);
+    const again = createArtifactReview.mock.calls.at(-1);
+    expect(again?.[1]).toEqual({ state: "approved" });
+    expect(again?.[2].key).not.toBe(stoppedKey);
+  } finally {
+    createArtifactReview.mockRestore();
+    view.unmount();
+    realClock();
+  }
+});
+
+// A change request the reader stopped may have been made: the dialog says so, and that Request
+// changes is a press of its own, rather than a failure it cannot know of.
+test("a change request the reader stopped says it may have been made, not that it failed", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
+    new NetworkError("/api/v1/artifacts/artifact-1/reviews", new TypeError("Failed to fetch"))
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <ApprovalChip
+        artifact={artifact({ latest_version: 3, state: "awaiting" })}
+        variant="header"
+      />
+    </QueryClientProvider>
+  );
+  try {
+    await user.click(screen.getByRole("button", { name: "Request changes" }));
+    const dialog = screen.getByRole("dialog", { name: "Request changes" });
+    await user.click(within(dialog).getByLabelText("Reason"));
+    await user.paste("Needs another pass");
+    await user.click(within(dialog).getByRole("button", { name: "Request changes" }));
+    await stopTheLateWrite(queryClient);
+    expect(within(dialog).getByRole("alert").textContent).toBe(
+      stoppedWriteNote("your review", "made", { anew: "Request changes sends a new review." })
+    );
+  } finally {
+    createArtifactReview.mockRestore();
+    view.unmount();
+    queryClient.clear();
+    realClock();
+  }
+});
+
 test("Request changes requires a reason before it can submit, then posts it", async () => {
   const user = userEvent.setup();
   const createArtifactReview = spyOn(api, "createArtifactReview").mockResolvedValue({
@@ -321,8 +498,9 @@ test("clicking the chip opens a popover listing every review", async () => {
   );
   try {
     await user.click(screen.getByRole("button", { name: "Changes requested" }));
+    // The dialog is drawn at once, saying `Loading reviews…`, so its rows are waited for.
     const dialog = await screen.findByRole("dialog", { name: "Reviews" });
-    expect(within(dialog).getByText(/alice approved v2/)).not.toBeNull();
+    expect(await within(dialog).findByText(/alice approved v2/)).not.toBeNull();
     expect(within(dialog).getByText(/bob requested changes on v3/)).not.toBeNull();
     expect(
       await within(dialog).findByText((text) => text.includes("Please tighten the intro."))
@@ -359,6 +537,116 @@ test("a review the server records tells the host, once, that the document was re
     await user.click(screen.getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(reviewed).toBe(1));
     expect(createArtifactReview).toHaveBeenCalledTimes(1);
+  } finally {
+    createArtifactReview.mockRestore();
+    view.unmount();
+  }
+});
+
+/** The address of `target`'s own page on its issue. */
+function pathOf(target: Artifact): string {
+  return buildIssuePath({ key: "CORE-1", kind: "artifact", slug: target.slug });
+}
+
+/** The reader going back: the browser's Back button, or anything that calls `navigate(-1)`. */
+function GoBack(): ReactNode {
+  const navigate = useNavigate();
+  return (
+    <button onClick={() => navigate(-1)} type="button">
+      Go back
+    </button>
+  );
+}
+
+/** The header of whichever of `documents` the route names: as on an issue's page, one header is
+ *  drawn for one document after another as the route moves. */
+function HeaderOfRoute({ documents }: { readonly documents: readonly Artifact[] }): ReactNode {
+  const route = parseIssuePath(useLocation().pathname);
+  const shown =
+    route?.kind === "artifact" ? documents.find(({ slug }) => slug === route.slug) : undefined;
+  return shown === undefined ? null : (
+    <ArtifactHeader
+      artifact={shown}
+      highlight={false}
+      showVersionPicker={false}
+      version={undefined}
+    >
+      {null}
+    </ArtifactHeader>
+  );
+}
+
+// A change request belongs to the document it was made on: the dialog holds the reason typed for
+// that document and what became of its request. Here Dispatch refused the request, the dialog
+// said to try again, and the reader went back to another document of the issue with it open. The
+// header there has no dialog open, and a change request there carries the reason typed for that
+// document: the dialog left open would post the first document's reason on this one.
+test("a change request refused on one document posts none of its reason on the document the reader goes back to", async () => {
+  const user = userEvent.setup();
+  const designNotes = artifact({ latest_version: 3, state: "awaiting" });
+  const releaseNotes: Artifact = {
+    ...designNotes,
+    id: "artifact-2",
+    name: "Release notes",
+    ref_key: "CORE-1/release-notes",
+    slug: "release-notes",
+  };
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
+    new ApiError(403, { code: "FORBIDDEN", error: "not a reviewer of CORE-1" })
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <MemoryRouter initialEntries={[pathOf(releaseNotes), pathOf(designNotes)]} initialIndex={1}>
+      <QueryClientProvider client={queryClient}>
+        <HeaderOfRoute documents={[designNotes, releaseNotes]} />
+        <GoBack />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    await screen.findByRole("heading", { name: "Design notes" });
+    await user.click(screen.getByRole("button", { name: "Request changes" }));
+    const refused = screen.getByRole("dialog", { name: "Request changes" });
+    await user.click(within(refused).getByLabelText("Reason"));
+    await user.paste("The intro names the wrong service");
+    await user.click(within(refused).getByRole("button", { name: "Request changes" }));
+    expect(await within(refused).findByRole("alert")).toHaveTextContent(
+      "Could not request changes. Try again."
+    );
+
+    await user.click(screen.getByRole("button", { name: "Go back" }));
+    await screen.findByRole("heading", { name: "Release notes" });
+    expect(screen.queryByRole("dialog", { name: "Request changes" })).toBeNull();
+
+    createArtifactReview.mockResolvedValue({
+      actor: { id: "alice", kind: "user" },
+      artifact_id: "artifact-2",
+      ask_id: null,
+      content_sha256: null,
+      content_sha256_source: null,
+      created_at: "2026-09-11T00:00:00Z",
+      id: "review-1",
+      kind: "person",
+      reason: "The dates are missing",
+      state: "changes_requested",
+      version: 3,
+    });
+    await user.click(screen.getByRole("button", { name: "Request changes" }));
+    const dialog = screen.getByRole("dialog", { name: "Request changes" });
+    expect(within(dialog).getByLabelText("Reason")).toHaveValue("");
+    await user.click(within(dialog).getByLabelText("Reason"));
+    await user.paste("The dates are missing");
+    await user.click(within(dialog).getByRole("button", { name: "Request changes" }));
+
+    await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(2));
+    expect(createArtifactReview).toHaveBeenLastCalledWith(
+      "artifact-2",
+      { reason: "The dates are missing", state: "changes_requested" },
+      keyedAttempt
+    );
   } finally {
     createArtifactReview.mockRestore();
     view.unmount();

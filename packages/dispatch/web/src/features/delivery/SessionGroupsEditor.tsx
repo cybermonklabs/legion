@@ -1,9 +1,10 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
 
-import { api, apiErrorMessage, type WriteBounds } from "../../api/client";
+import { api, type WriteBounds, type WriteMethod } from "../../api/client";
 import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySessionGroup } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
@@ -18,30 +19,37 @@ import {
 } from "../../theme/classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { useDialog } from "../shell/useDialog";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { refusedNote, useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
 import { storedSessionTitle } from "./lib/sessionTitles";
 import { useHoldUntilDrawn } from "./useHoldUntilDrawn";
 
-/** One change to the groups: what it is, in the reader's words, and one attempt of it. A delete
- *  is idempotent and goes without the key. A create names what it makes (`made`), which the
- *  editor says was made when Dispatch lost its answer. */
+/** One change to the groups: what it is, as the editor's sentences name it (`the rename of the
+ *  group Crew`), the group it changes, the method of its request and one attempt of it. A delete
+ *  is idempotent and goes without the key. A create changes no group yet and names what it makes
+ *  (`made`), which the editor says was made when Dispatch lost its answer. */
 interface GroupChange {
-  readonly label: string;
+  readonly group?: DeliverySessionGroup;
   readonly made?: string;
+  readonly method: WriteMethod;
   readonly run: (bounds: WriteBounds) => Promise<unknown>;
+  readonly what: string;
 }
 
 const sectionLabel = `text-xs tracking-wide uppercase ${textMutedOnSurface}`;
 const fieldClass = `h-8 min-w-0 flex-1 rounded border px-2 text-sm ${inputClasses(true)} ${textPrimaryOnSurface}`;
 
 /** One group: its name, renamable, its members, each removable, and the window's selected
- *  sessions to add, drawn as an item of the editor's list of groups. While any group write is
- *  pending, every mutating button is disabled so a second click cannot race the one request that
- *  decides the membership. A write of this card's own that lands keeps them disabled until the
- *  live update carrying it draws the card anew - its item is keyed by `updated_at` - or takes it
- *  away (`useHoldUntilDrawn`), so the control the reader pressed goes as their press's doing; a
- *  refusal lets them go at once. */
+ *  sessions to add, drawn as an item of the editor's list of groups, keyed by the group's id.
+ *  While any group write is pending, every mutating button is held so a second click cannot race
+ *  the one request that decides the membership. A write of this card's own that lands keeps them
+ *  held until the live update carrying it brings the group's new `updated_at`, or takes the group
+ *  away (`useHoldUntilDrawn`); a refusal lets them go at once. That update fills the name again
+ *  from the stored group in place, so the card and its buttons stay the same elements. Rename
+ *  with no new name and Add selected with no session to add are held as well. Every hold is by
+ *  `aria-disabled`, not `disabled` (`heldPress`): a held button keeps its Tab stop and the focus
+ *  the reader's press left on it, and a press on it does nothing. */
 function GroupCard({
   group,
   storedTitle,
@@ -59,10 +67,20 @@ function GroupCard({
   const id = useId();
   const text = useAgentText();
   const [name, setName] = useState(group.name);
-  const [drawing, holdUntilDrawn] = useHoldUntilDrawn();
+  // A new stored group - this card's write, or anyone's that a live update brings - fills the
+  // name again. It is set during render (React's pattern for state derived from props) and not
+  // by a key on the card, so the card and the button the reader pressed stay the same elements.
+  const [filledFrom, setFilledFrom] = useState(group.updated_at);
+  if (group.updated_at !== filledFrom) {
+    setFilledFrom(group.updated_at);
+    setName(group.name);
+  }
+  const [drawing, holdUntilDrawn] = useHoldUntilDrawn(group.updated_at);
   const held = pending || drawing;
+  // The press's render hands its own `holdUntilDrawn`, so the hold is on the version pressed on.
   const send = (change: GroupChange) => write(change, holdUntilDrawn);
   const addable = selected.filter((session) => !(group.sessions ?? []).includes(session));
+  const nothingToRename = name.trim() === "" || name.trim() === group.name;
   return (
     <fieldset aria-label={group.name} className={`grid gap-2 rounded border p-3 ${borderDefault}`}>
       <div className="flex items-center gap-2">
@@ -77,14 +95,15 @@ function GroupCard({
         />
         <button
           className={secondaryButtonCompact}
-          disabled={held || name.trim() === "" || name.trim() === group.name}
-          onClick={() =>
+          {...heldPress(held || nothingToRename, () =>
             send({
-              label: `Rename of the group ${group.name}`,
+              group,
+              method: "PATCH",
               run: (bounds) =>
                 api.updateDeliverySessionGroup(group.id, { name: name.trim() }, bounds),
+              what: `the rename of the group ${group.name}`,
             })
-          }
+          )}
           type="button"
         >
           Rename
@@ -104,14 +123,15 @@ function GroupCard({
             <button
               aria-label={`Remove ${text.sessionText(session, storedTitle(session))}`}
               className={dismissButtonText}
-              disabled={held}
-              onClick={() =>
+              {...heldPress(held, () =>
                 send({
-                  label: `Removal of ${text.sessionText(session, storedTitle(session))} from ${group.name}`,
+                  group,
+                  method: "PATCH",
                   run: (bounds) =>
                     api.updateDeliverySessionGroup(group.id, { remove: [session] }, bounds),
+                  what: `the removal of ${text.sessionText(session, storedTitle(session))} from ${group.name}`,
                 })
-              }
+              )}
               type="button"
             >
               ✕
@@ -122,26 +142,28 @@ function GroupCard({
       <div className="flex gap-2">
         <button
           className={secondaryButtonCompact}
-          disabled={held || addable.length === 0}
-          onClick={() =>
+          {...heldPress(held || addable.length === 0, () =>
             send({
-              label: `Sessions added to ${group.name}`,
+              group,
+              method: "PATCH",
               run: (bounds) => api.updateDeliverySessionGroup(group.id, { add: addable }, bounds),
+              what: `the sessions added to ${group.name}`,
             })
-          }
+          )}
           type="button"
         >
           Add selected
         </button>
         <button
           className={`${secondaryButtonCompact} ${dangerText}`}
-          disabled={held}
-          onClick={() =>
+          {...heldPress(held, () =>
             send({
-              label: `Deletion of the group ${group.name}`,
+              group,
+              method: "DELETE",
               run: (bounds) => api.deleteDeliverySessionGroup(group.id, bounds),
+              what: `the deletion of the group ${group.name}`,
             })
-          }
+          )}
           type="button"
         >
           Delete group
@@ -155,19 +177,28 @@ function GroupCard({
  *  sessions with their titles, pull request counts and groups, to select and name as a new group,
  *  and every group, to rename, add the selected sessions to, remove members from, or delete. Every
  *  session is an `AgentName`; a member no pull request of the window names has no stored title, so
- *  it reads by its registry title, else its short id. A save reaches the page's live views as
- *  Dispatch's own delta, so it refreshes only the `["delivery"]` reads that are not live (an open
- *  run's drill-down), and a refusal shows as the server wrote it. A dialog (`useDialog`), at the
- *  right edge as the drill-down is, open while it is mounted. */
+ *  it reads by its registry title, else its short id. A session's count is drawn only while
+ *  `counted` holds, the page's word that the answer on screen is the one for the window, filters
+ *  and search its address names: not while a new read is out and the previous answer stays on
+ *  screen, nor while a typed search waits to be asked for. Where the address names another
+ *  window, the counts on screen are the previous window's. While `counted` does not hold, each
+ *  session is listed with its group alone. A save reaches the page's live views as Dispatch's own
+ *  delta, so it refreshes only the `["delivery"]` reads that are not live (an open run's
+ *  drill-down), and a refusal shows as the server wrote it, after the change it refused. A dialog
+ *  (`useDialog`), at the right edge as the drill-down is, open while it is mounted. */
 export function SessionGroupsEditor({
   onClose,
   groups,
   titles,
+  counted = true,
   counts,
 }: {
   onClose: () => void;
   groups: readonly DeliverySessionGroup[];
   titles: Readonly<Record<string, string>>;
+  /** Whether the answer `counts` comes from is the one for the window, filters and search the
+   *  page's address names (the page's `counted`); an editor given none counts. */
+  counted?: boolean;
   counts: Readonly<Record<string, number>>;
 }): ReactNode {
   const id = useId();
@@ -179,7 +210,7 @@ export function SessionGroupsEditor({
   // The editor shows a refusal itself, as the server wrote it.
   const save = useKeyedWrite({
     inline: true,
-    label: (change: GroupChange) => change.label,
+    label: (change: GroupChange) => `Session groups: ${change.what}`,
     onSuccess: () => {
       setSelected([]);
       void queryClient.invalidateQueries({
@@ -187,8 +218,20 @@ export function SessionGroupsEditor({
         predicate: (query) => !isLiveQuery(query),
       });
     },
+    method: (change) => change.method,
     write: (change, bounds) => change.run(bounds),
   });
+  // One refusal speaks for every group, so it names the change it refused, the group's name with
+  // it, and goes once that group is renamed or removed - from another tab, or by another person -
+  // rather than stand beside groups it was never about. A create's has no group to lose.
+  const refused = useRefusalOfSubject(
+    save,
+    ({ group: changed }) =>
+      changed === undefined ||
+      groups.some((group) => group.id === changed.id && group.name === changed.name)
+  )
+    ? save.variables
+    : undefined;
 
   const text = useAgentText();
   const storedTitle = (session: string): string | undefined => storedSessionTitle(titles, session);
@@ -208,10 +251,11 @@ export function SessionGroupsEditor({
   const create = () =>
     save.mutate(
       {
-        label: `New group ${name.trim()}`,
         made: `The group “${name.trim()}”`,
+        method: "POST",
         run: (bounds) =>
           api.createDeliverySessionGroup({ name: name.trim(), sessions: selected }, bounds),
+        what: `the new group ${name.trim()}`,
       },
       // Made either way - with no answer to give too - so the name goes and a second press
       // makes nothing.
@@ -254,6 +298,11 @@ export function SessionGroupsEditor({
           {sessions.map((session) => {
             const count = counts[session] ?? 0;
             const inGroup = groupOf.get(session);
+            // No count while the answer on screen is not the address's (`counted`): the session's
+            // group alone.
+            const detail = [counted ? `${count} PR${count === 1 ? "" : "s"}` : undefined, inGroup]
+              .filter((part) => part !== undefined)
+              .join(" · ");
             return (
               <li className="flex items-center gap-2 text-sm" key={session}>
                 {/* The checkbox's label keeps the name; the agent's live link sits beside it. */}
@@ -273,10 +322,9 @@ export function SessionGroupsEditor({
                   sessionId={session}
                   storedTitle={storedTitle(session)}
                 />
-                <span className={`shrink-0 text-xs ${textMutedOnSurface}`}>
-                  {count} PR{count === 1 ? "" : "s"}
-                  {inGroup === undefined ? "" : ` · ${inGroup}`}
-                </span>
+                {detail === "" ? null : (
+                  <span className={`shrink-0 text-xs ${textMutedOnSurface}`}>{detail}</span>
+                )}
               </li>
             );
           })}
@@ -295,10 +343,13 @@ export function SessionGroupsEditor({
             placeholder="Group name"
             value={name}
           />
+          {/* Held, as a card's Rename and Add selected are, while its write is out and while it
+              has nothing to create: no name, or no session selected. A create that lands empties
+              the name, and the button the reader pressed keeps the focus through both
+              (`heldPress`). */}
           <button
             className={secondaryButtonCompact}
-            disabled={name.trim() === "" || selected.length === 0 || save.isPending}
-            onClick={create}
+            {...heldPress(name.trim() === "" || selected.length === 0 || save.isPending, create)}
             type="button"
           >
             Create group
@@ -307,9 +358,19 @@ export function SessionGroupsEditor({
         {madeUnanswered === undefined ? null : <LandedWithoutAnswer what={madeUnanswered} />}
       </section>
 
-      {save.isError ? (
-        <QueryError message={apiErrorMessage(save.error, "Couldn't save the session groups.")} />
-      ) : null}
+      {/* A change the reader stopped may have been saved, and every button here is a press of
+          its own, under a key of its own: none makes the stopped change again. */}
+      {refused === undefined ? null : (
+        <QueryError
+          message={
+            save.error instanceof SendStoppedError
+              ? stoppedWriteNote(refused.what, "saved", {
+                  anew: "Making it again sends it as a new write.",
+                })
+              : refusedNote(`save ${refused.what}`, save.error)
+          }
+        />
+      )}
 
       {groups.length === 0 ? null : (
         <section className="grid gap-2">
@@ -318,7 +379,7 @@ export function SessionGroupsEditor({
           </h3>
           <ul aria-labelledby={`${id}-groups`} className="grid gap-2">
             {groups.map((group) => (
-              <li key={`${group.id}:${group.updated_at}`}>
+              <li key={group.id}>
                 <GroupCard
                   group={group}
                   pending={save.isPending}

@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/sjawhar/envoy/brokeraddr"
+	"github.com/sjawhar/envoy/cipheraddr"
 )
 
 // controllerBrokerToken is the access token the stub broker mints: a value no file and no
@@ -119,6 +119,7 @@ func (c *operatorMachine) provesAnIdentity(broker *stubBroker) {
 // one the session presents as a bearer and Dispatch refuses, which is the whole of the session's
 // Dispatch writing.
 func TestAControllerOnTheBrokerRouteIsHandedNoBearerPointer(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{dispatchBroker: true})
 	broker := newStubBroker(t, "")
@@ -144,7 +145,7 @@ func TestAControllerOnTheBrokerRouteIsHandedNoBearerPointer(t *testing.T) {
 		// What the client trades with, which it reads from this environment itself. The session
 		// name among them is the operator's own, for the `agent-secrets` the controller's bash
 		// runs: the controller's session acts as a session, so its Dispatch credential is traded
-		// under its own session id and under no variable (brokerclient.TradeSession).
+		// under its own session id and under no variable (cipherclient.TradeSession).
 		for name, want := range map[string]string{
 			"AGENT_SECRETS_URL":                broker.url,
 			"AGENT_SECRETS_MACHINE_IDENTITY":   "kubernetes",
@@ -211,6 +212,7 @@ func TestAControllerOnTheBrokerRouteIsHandedNoBearerPointer(t *testing.T) {
 // The operator's AGENT_SECRETS_SESSION naming that very session does not rescue it: the session
 // does not trade under that variable.
 func TestAnEntryThatFixesASessionRefusesTheControllerStart(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (operatorMachine.provesAnIdentity); it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{dispatchBroker: true})
 	c.provesAnIdentity(newStubBrokerFixingASession(t, "", "legion-demo-controller"))
@@ -231,6 +233,7 @@ func TestAnEntryThatFixesASessionRefusesTheControllerStart(t *testing.T) {
 // — DISPATCH_TOKEN_BROKER=1 — under which the client reads no bearer from any source at all and
 // turns Dispatch off rather than falling back (packages/envoy-client/src/dispatch-config.ts).
 func TestAnOperatorsWrittenTokenDoesNotShadowTheControllersBrokerRoute(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (operatorMachine.provesAnIdentity); it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{dispatchBroker: true})
 	c.provesAnIdentity(newStubBroker(t, ""))
@@ -270,6 +273,7 @@ func TestAnOperatorsWrittenTokenDoesNotShadowTheControllersBrokerRoute(t *testin
 // is a controller that can write nothing. The start says what the broker said and stops before
 // the daemon mints a capability, which would have revoked the running controller's.
 func TestABrokerThatRefusesThisMachineRefusesTheStartBeforeTheMint(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (operatorMachine.provesAnIdentity); it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{dispatchBroker: true})
 	c.provesAnIdentity(newStubBroker(t, "the fleet is listed with no session of its own, so the request names one"))
@@ -285,9 +289,10 @@ func TestABrokerThatRefusesThisMachineRefusesTheStartBeforeTheMint(t *testing.T)
 // name, a password, a query or a fragment, and `legion controller start` names the broker it
 // traded at on stderr when the trade works and in its refusal when the broker refuses or does not
 // answer. Neither stream holds any part of such a credential: each names the address as
-// brokeraddr prints it, while the trade itself still goes to the address as configured, and an
+// cipheraddr prints it, while the trade itself still goes to the address as configured, and an
 // address that carries none still prints as written.
 func TestControllerStartPrintsNoPartOfTheBrokerURLCredential(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable stdinIsTerminal (newControllerStart).
 	const user, password, query, fragment = "demouser7q", "demopass9z-not-a-secret", "demoquery4m", "demofrag8w"
 	withUser := func(base string) string {
 		return strings.Replace(base, "://", "://"+user+":"+password+"@", 1)
@@ -335,9 +340,9 @@ func TestControllerStartPrintsNoPartOfTheBrokerURLCredential(t *testing.T) {
 			if got := broker.trades.Load(); got != row.trades {
 				t.Errorf("the stub broker saw %d trades, want %d: the trade goes to the address as configured", got, row.trades)
 			}
-			shown := brokeraddr.New(address).String()
+			shown := cipheraddr.New(address).String()
 			if address == broker.url && shown != address {
-				t.Fatalf("brokeraddr prints the clean address %q as %q", address, shown)
+				t.Fatalf("cipheraddr prints the clean address %q as %q", address, shown)
 			}
 			if !strings.Contains(errb, row.named+shown) {
 				t.Errorf("stderr %q does not name the broker as %q", errb, row.named+shown)
@@ -361,6 +366,7 @@ func TestControllerStartPrintsNoPartOfTheBrokerURLCredential(t *testing.T) {
 // TestABrokerRouteWithNoBrokerRefusesTheStart: a deployment that put the controller on the broker
 // route and named no broker has a mistake in it, and nothing of the controller is started on it.
 func TestABrokerRouteWithNoBrokerRefusesTheStart(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{dispatchBroker: true})
 	c.provesAnIdentity(newStubBroker(t, ""))
@@ -374,6 +380,7 @@ func TestABrokerRouteWithNoBrokerRefusesTheStart(t *testing.T) {
 // controller's Dispatch credential is this machine's own identity, so a machine that proves none
 // is a controller that could write nothing. The refusal names the variable that would carry it.
 func TestABrokerRouteOnAMachineThatProvesNothingRefusesTheStart(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{dispatchBroker: true})
 	t.Setenv("AGENT_SECRETS_MACHINE_IDENTITY", "")
@@ -386,6 +393,7 @@ func TestABrokerRouteOnAMachineThatProvesNothingRefusesTheStart(t *testing.T) {
 // credential, since it reads no environment and only a trade proves the broker route; the start
 // is where that file is refused, naming both of the keys that would settle it.
 func TestADispatchURLWithNoCredentialRefusesTheStart(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{lines: []string{
 		"project: " + controllerProject, "daemon_url: " + d.url, "operator_token_file: ./operator-token",

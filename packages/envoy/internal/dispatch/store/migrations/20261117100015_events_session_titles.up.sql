@@ -7,12 +7,13 @@
 --
 -- A trigger rather than a write in events.Broker.Append, which is the one server path that
 -- inserts an event (api.TestOnlyTheBrokerInsertsEvents). Two other writers insert events and a
--- write in Append would reach neither: during the rolling deploy that ships this, pods of the
--- release before it append events through their own Append, which writes no title, for as long
--- as they serve; and the test-only helper packages and tests that seed events with a bare insert
--- (legion/legiontest among them) would each have to write the title row themselves. The trigger
--- runs in Postgres, so it covers every insert from the commit of this migration on, whichever
--- build sends it. The events stored before that are 20261117100016's fill.
+-- write in Append would reach neither: a process of an earlier release that runs over this
+-- schema, as the two-build test runs one beside this build, appends events through its own
+-- Append, which writes no title; and the tests that seed events with a bare insert (api's
+-- delivery_session_groups_test.go and legion_board_test.go among them) would each have to write
+-- the title row themselves. The trigger runs in Postgres, so it covers every insert from the
+-- commit of this migration on, whichever build sends it. The events stored before that are
+-- 20261117100016's fill.
 --
 -- The rule is the read it replaces, the newest title a session stamped: an event of a session
 -- actor whose origin carries a non-empty session_title (an event that carries none, as a
@@ -33,11 +34,11 @@
 -- held through everything the transaction does after it, and a write that appends one event and
 -- then locks another owner's row could deadlock with a second write of the same session that
 -- holds that owner and waits for the title row: two parallel writes of one agent, which is
--- ordinary. At the commit the transaction has taken every lock it will take, so the title row
--- is the last lock it waits for and no cycle can run through it. The row is still written in the
--- event's own transaction: a reader on another connection sees the new title exactly when it
--- sees the event. A read later in the same transaction does not, and no caller of
--- ResolveSessionTitles reads a title after appending an event in its own transaction.
+-- ordinary. At the commit every statement of the transaction has taken the locks it takes, so
+-- the title row is locked after all of them. The row is still written in the event's own
+-- transaction: a reader on another connection sees the new title exactly when it sees the event.
+-- A read later in the same transaction does not, and no caller of ResolveSessionTitles reads a
+-- title after appending an event in its own transaction.
 --
 -- A function and a trigger alone, so the pre-deploy census exempts the migration from its
 -- table-size limit (internal/pgmigrate/exempt.go): neither statement reads a row of events, the

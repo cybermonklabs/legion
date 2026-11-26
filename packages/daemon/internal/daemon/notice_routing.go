@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
@@ -71,7 +72,7 @@ type treeSnapshot struct {
 func (r *outbox) readNoticeTree(ctx context.Context, row record.OutboxRow) (record.Issue, treeSnapshot, error) {
 	var issue record.Issue
 	var tree treeSnapshot
-	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		leased, err := r.records.OutboxLeased(ctx, tx, row.ID, row.LeaseToken)
 		if err != nil {
 			return err
@@ -130,19 +131,23 @@ func (r *outbox) readNoticeRoute(ctx context.Context, tx pgx.Tx, key string, rou
 }
 
 // earlierNoticeFor is the oldest of tree's earlier notices that goes to architect as the claims
-// run now — its id and the moment it is due — or 0 and the zero moment when there is none. Each
-// earlier notice's architect is resolved again rather than recorded when it was held, since a
-// sub-architect can start or end while it waits, and by the rule its own publish follows
-// (noticeArchitect). An earlier row whose architect cannot be resolved is no architect's, so it
-// holds back no later notice; it finishes on its own attempt (notice).
+// run now — its id, the moment it is due, and whether it is a catch-up the wake pacing still
+// holds in its queue — or 0, the zero moment and false when there is none. Each earlier notice's
+// architect is resolved again rather than recorded when it was held, since a sub-architect can
+// start or end while it waits, and by the rule its own publish follows (noticeArchitect). An
+// earlier row whose architect cannot be resolved is no architect's, so it holds back no later
+// notice; it finishes on its own attempt (notice).
 //
 // The moment is what the row behind it waits for: an earlier row the wake pacing holds is due
 // minutes out — at the moment the pacing reserved for a catch-up (record.Notice.PacedAt), or, for
 // a row waiting out its architect's parked launch, at that launch's turn or parkedWakeBound on,
 // whichever comes first (parkedWait) — and the row behind it runs once, then (deliverNotice's
 // wait.Until), rather than climbing its backoff to it. So a park that ends before its turn holds
-// the row behind it for at most the bound as well.
-func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.Token) bool) (int64, time.Time) {
+// the row behind it for at most the bound as well. A catch-up the pacing still holds in its
+// queue is due at no moment until the pacer lets its place out (record.CatchUpIsHeld): held is
+// true for it and the moment is the zero time, and the row behind it waits for the pacer's
+// estimate of that place instead (deliverNotice).
+func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.Token) bool) (earlier int64, due time.Time, held bool) {
 	for _, other := range tree.earlier {
 		payload, err := record.DecodeOutboxPayload(other)
 		if err != nil {
@@ -157,10 +162,13 @@ func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.
 			continue
 		}
 		if owner, err := noticeArchitect(tree.project, tree.issues, issue, notice, runs); err == nil && owner == architect {
-			return other.ID, other.NextAt
+			if record.CatchUpIsHeld(other.NextAt) {
+				return other.ID, time.Time{}, true
+			}
+			return other.ID, other.NextAt, false
 		}
 	}
-	return 0, time.Time{}
+	return 0, time.Time{}, false
 }
 
 // noticeArchitect is the architect claim notice, of issue in tree, goes to. A catch-up goes to the

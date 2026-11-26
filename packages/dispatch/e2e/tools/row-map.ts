@@ -1,12 +1,17 @@
 /** `bun e2e/tools/row-map.ts [--write]`: the map of what moved to the stubbed layer, what stayed
- *  on the real stack and what left the pull-request lane, which `e2e/row-map.md` holds and the
- *  pull request links.
+ *  on the real stack and what left the pull-request lane. The tool prints the map, and `--write`
+ *  writes it to `e2e/row-map.md`, which git ignores.
  *
  *  dispatch://INFRA-1407's k2 asks, for every row the change moved, what it asserted before and
  *  what it asserts after, and for every row it did not move, the server behaviour its assertion
  *  depends on. At 994 declared rows the second half is hundreds of lines, and GitHub refuses a
- *  pull-request body over 65,536 characters, so the map is a committed file the body links and
- *  `e2e/__tests__/row-map.test.ts` fails when it and a fresh generation differ.
+ *  pull-request body over 65,536 characters, so the map is not in the body. A reader generates
+ *  it.
+ *
+ *  The map is generated, and git does not keep it. A map that git kept would change on each
+ *  pull request that adds a row, and two such pull requests would conflict in it.
+ *  `e2e/__tests__/row-map.test.ts` generates the map on each run and fails on each refusal of
+ *  this tool.
  *
  *  Where each half comes from:
  *
@@ -16,8 +21,11 @@
  *    mechanical claim rather than a prose one. A row where something did change says so, from
  *    `e2e/stub/moved-row-notes.ts`. The reason it may be stubbed is its file's own header
  *    comment.
- *  - **A row that stayed** carries its file's reason from `e2e/stub/real-stack-reasons.ts`, and
- *    a file the listing names that has none there fails the generation.
+ *  - **A row that stayed** carries its file's reason from `e2e/stub/real-stack-reasons.ts`. That
+ *    module holds a list of reasons, and it reads the reason of a file the list does not name
+ *    from the file's own header. A new real-stack spec file gives its reason in a `/**` comment
+ *    at the very start of the file. A file the listing names that has no reason fails the
+ *    generation.
  *  - **A row that left the pull-request lane** is a row with no `@pr` tag. It runs on the full
  *    lane, which the merge queue and the nightly run, so it still gates `main`.
  *
@@ -31,7 +39,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { listing, projectArguments } from "../__tests__/playwright-listing";
 import { clockProjectNames, rowsOfListing, stubProjectNames } from "../configurations";
-import { movedRowNotes, unchangedByTheMove } from "../stub/moved-row-notes";
+import { movedRowNotes, newInTheStubbedLayer, unchangedByTheMove } from "../stub/moved-row-notes";
 import { realStackReasons } from "../stub/real-stack-reasons";
 import {
   committedRecordings,
@@ -46,7 +54,9 @@ const suiteDirectory = fileURLToPath(new URL("..", import.meta.url));
 const mapPath = fileURLToPath(new URL("../row-map.md", import.meta.url));
 
 /** The first paragraph of a stub spec file's header comment, which says why its rows may be
- *  stubbed. A file with no header comment fails the generation: the reason is the whole point. */
+ *  stubbed. A file with no header comment fails the generation: the reason is the whole point.
+ *  `headerReasons` in e2e/stub/real-stack-reasons.ts reads a real-stack file's header by the
+ *  same rule, so a change to one is made in both. */
 function stubReason(file: string): string {
   const source = readFileSync(`${suiteDirectory}${file}`, "utf8");
   const header = /^\/\*\*([\s\S]*?)\*\//.exec(source);
@@ -113,7 +123,7 @@ const movedLines = [
       [
         `\`e2e/${row.file}\``,
         row.title,
-        movedRowNotes[noteKey(row)] ?? unchangedByTheMove,
+        movedRowNotes[noteKey(row)] ?? newInTheStubbedLayer[row.file] ?? unchangedByTheMove,
         stubReason(row.file),
       ],
     ])
@@ -130,6 +140,14 @@ if (strayNotes.length > 0) {
   throw new Error(
     "e2e/stub/moved-row-notes.ts holds a note for these rows, and the listing names no moved " +
       `row of that file and title: delete each entry, or correct its key.\n  ${strayNotes.join("\n  ")}`
+  );
+}
+const stubFiles = new Set(moved.map((row) => row.file));
+const strayFiles = Object.keys(newInTheStubbedLayer).filter((file) => !stubFiles.has(file));
+if (strayFiles.length > 0) {
+  throw new Error(
+    "e2e/stub/moved-row-notes.ts calls these files new in the stubbed layer, and the listing " +
+      `names no stubbed row in them: delete each entry.\n  ${strayFiles.join("\n  ")}`
   );
 }
 
@@ -153,7 +171,7 @@ if (strayNotes.length > 0) {
 // they own their file here, and only the run knows otherwise (`deadRecordingGuard`,
 // `e2e/stub/stub-test.ts`). A describe-level modifier whose condition is a function of a
 // worker fixture is seen by neither: the listing marks its rows `passed`, and Playwright runs
-// it before any test-scoped fixture. `packages/dispatch/AGENTS.md`, "The stubbed layer", says
+// it before any test-scoped fixture. `packages/dispatch/README.md`, "The stubbed layer", says
 // so, and every stubbed row skips inside its own body.
 const owned = new Set(
   moved.filter((row) => row.expectedStatus !== "skipped").map((row) => recordingFor(row, ".har"))
@@ -175,8 +193,9 @@ const realFiles = [...new Set(real.map((row) => row.file))].sort();
 const missing = realFiles.filter((file) => realStackReasons[file] === undefined);
 if (missing.length > 0) {
   throw new Error(
-    `These files hold real-stack rows and no reason in e2e/stub/real-stack-reasons.ts, so the ` +
-      `map would not say why their rows did not move:\n  ${missing.join("\n  ")}`
+    "These files hold real-stack rows and no reason, so the map would not say why their rows " +
+      "did not move. Write each file's reason in a `/** … */` comment at the very start of the " +
+      `file:\n  ${missing.join("\n  ")}`
   );
 }
 // And the other direction, so the list cannot keep a reason for a file that is gone or whose
@@ -185,31 +204,32 @@ if (missing.length > 0) {
 const unused = Object.keys(realStackReasons).filter((file) => !realFiles.includes(file));
 if (unused.length > 0) {
   throw new Error(
-    `e2e/stub/real-stack-reasons.ts holds a reason for these files, and the listing names no ` +
-      `real-stack row in them: delete each entry.\n  ${unused.join("\n  ")}`
+    "These files have a reason, and the listing names no real-stack row in them. A reason is a " +
+      "line of the list in e2e/stub/real-stack-reasons.ts, or the header of a file that the list " +
+      `does not name. Delete each reason:\n  ${unused.join("\n  ")}`
   );
 }
 const realLines = realFiles.map((file) => [`\`e2e/${file}\``, realStackReasons[file]]);
 
 const document = `# The row map of dispatch://INFRA-1407
 
-Generated by \`bun e2e/tools/row-map.ts --write\` from \`playwright test --list\`;
-\`e2e/__tests__/row-map.test.ts\` fails when this file and a fresh generation differ.
+Generated by \`bun e2e/tools/row-map.ts\` from \`playwright test --list\`, and git does not keep
+it. The tool prints this map, and \`--write\` writes it to \`e2e/row-map.md\`, which git ignores.
+\`e2e/__tests__/row-map.test.ts\` generates it on each run and fails on each refusal of the tool.
 
 It carries no counts, deliberately. Every tree that works on this suite adds and removes rows,
-and a map that counted them would be red on each of their pull requests and on every merge of
-one into this branch, for a change that has nothing to do with what this map says. What it
-names instead is stable under that: the rows this change moved, and the files whose rows
-stayed with the server behaviour those rows depend on, which is what k2 is read from. The
-real-stack rows the pull-request lane keeps are not listed either, for the same reason - every
-tree that tags or retitles one would move this file - and each of them carries its own
-\`// @pr: \` reason in the source, beside the tag, which is where a reviewer reads it. The
-counts a reader wants are measured rather than listed: they are in k1's recorded result and in
-the pull request's body.
+and a map that counted them would change with each of their pull requests, for a change that
+has nothing to do with what this map says. What it names instead is stable under that: the rows
+this change moved, and the files whose rows stayed with the server behaviour those rows depend
+on, which is what k2 is read from. The real-stack rows the pull-request lane keeps are not
+listed either, for the same reason - every tree that tags or retitles one would change this
+map - and each of them carries its own \`// @pr: \` reason in the source, beside the tag, which
+is where a reviewer reads it. The counts a reader wants are measured rather than listed: they
+are in k1's recorded result and in the pull request's body.
 
 A row added to a file this map already names changes nothing here. A **new spec file** does:
-its rows need a line in \`e2e/stub/real-stack-reasons.ts\` saying what the server decides for
-them, and the generation refuses to write a map without one.
+its rows need a reason saying what the server decides for them, in a \`/** … */\` comment at
+the very start of the file, and the generation refuses to write a map without one.
 
 ## The rows that moved
 
@@ -217,17 +237,18 @@ Each row's third column says what the move did to what it asserts. What a move c
 file the row lives in, the fixture it takes, the server behind it, and the \` @pr\` the title
 gained for the lane axis; usually it touches no line of what the row asserts, which is what
 makes "before and after" a mechanical claim rather than a prose one, and a row where something
-did change says so in that column. The reason a recording can answer it is its file's own
-header.
+did change says so in that column. A row of a file written in the stubbed layer from the start
+never moved, and that column says so instead. The reason a recording can answer it is its file's
+own header.
 
 ${table(["file", "row", "assertion before and after", "why a recording can answer it"], movedLines)}
 
 ## The rows that stayed, and the server behaviour they depend on
 
 One line per file, which is the granularity the reasons are written at
-(\`e2e/stub/real-stack-reasons.ts\`). Every row of these files that the last table does not name
-runs on the full lane alone: at the merge queue, which gates \`main\`, and on the nightly. What
-such a row loses is feedback on the pull request itself.
+(\`e2e/stub/real-stack-reasons.ts\`, or the file's own header). Every row of these files that
+the last table does not name runs on the full lane alone: at the merge queue, which gates
+\`main\`, and on the nightly. What such a row loses is feedback on the pull request itself.
 
 ${table(["file", "the server behaviour its rows depend on"], realLines)}
 `;

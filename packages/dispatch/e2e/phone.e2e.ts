@@ -23,7 +23,9 @@ import {
   selectEditorText,
 } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
+import { distinctKeys, watchWrites } from "./keyed-writes";
 import { expectConsecutiveLinksClear } from "./layout";
+import { refPicker } from "./ref-picker";
 import { insertExternalLink } from "./seed";
 import { navigateInApp, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
@@ -165,16 +167,6 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
       await commentBody.focus();
     }
 
-    // D12: Ctrl+K opens a real dialog; Escape dismisses only the picker, restores focus to
-    // the composer, and leaves the composer's own draft (and, on phone, the sheet) open.
-    await commentBody.press("Control+k");
-    const picker = page.getByRole("dialog", { name: "Reference picker" });
-    await expect(picker).toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect(picker).toHaveCount(0);
-    await expect(commentComposer).toBeVisible();
-    await expect(commentBody).toBeFocused();
-
     // D11: Escape on a non-empty draft shows an inline "Discard draft?" affordance (not a
     // blocking confirm()); Escape again closes it. Only the composer closes — the phone
     // sheet (if any) stays open, because the composer's own Escape handler claims it first.
@@ -206,7 +198,11 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
   }
 });
 
-test("a phone thread trap skips a held composer's disabled controls @phone", async ({
+// While the comment composer holds a send, Tab from the margin sheet's last control wraps inside
+// the sheet and never leaves it. The send holds the composer's controls by `aria-disabled` and
+// disables none of them, so each keeps its Tab stop: the held body and the held Send are in the
+// sheet's Tab cycle. Enter on the held Send sends nothing.
+test("a phone thread trap keeps Tab inside the sheet while the composer holds a send @phone", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -227,47 +223,74 @@ test("a phone thread trap skips a held composer's disabled controls @phone", asy
     const form = sheet.getByRole("form", { name: "Comment composer" });
     const body = form.getByLabel("Comment");
     const refuse = await refusePosts(page, "**/api/v1/issues/*/comments");
+    const sends = watchWrites(page, "POST", `/api/v1/issues/${issue.key}/comments`);
     await body.fill("Keep this draft");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
+    // The send holds the composer's controls: each is `aria-disabled`, which `toBeDisabled`
+    // reads, and none matches `:disabled`.
+    const send = form.getByRole("button", { exact: true, name: "Sending…" });
     await expect(body).toBeDisabled();
+    await expect(body).toHaveAttribute("aria-disabled", "true");
+    await expect(send).toHaveAttribute("aria-disabled", "true");
+    await expect(form.locator(":disabled")).toHaveCount(0);
 
-    const focused = await sheet.evaluate((container) => {
+    // The composer's hold is awaited above, so the sheet's controls are settled, and one read
+    // finds the last of them and counts them.
+    const start = await sheet.evaluate((container) => {
       const controls = [
         ...container.querySelectorAll<HTMLElement>(
           'a[href], button, textarea, input, select, [tabindex]:not([tabindex="-1"])'
         ),
-      ];
-      const last = controls.filter((control) => !control.matches(":disabled")).at(-1);
-      if (last === undefined) throw new Error("expected an enabled focus target");
+      ].filter((control) => !control.matches(":disabled"));
+      const last = controls.at(-1);
+      if (last === undefined) throw new Error("expected a focus target");
       last.focus();
-      return {
-        focused: document.activeElement === last,
-        hasDisabledControlAfter: controls
-          .slice(controls.indexOf(last) + 1)
-          .some((control) => control.matches(":disabled")),
-      };
+      return { focused: document.activeElement === last, stops: controls.length };
     });
-    expect(focused).toEqual({ focused: true, hasDisabledControlAfter: true });
-    await page.keyboard.press("Tab");
-    expect(await activeElementInside(page, '[data-testid="margin-sheet"]')).toBe(true);
+    expect(start.focused, "the sheet's last control did not take the focus").toBe(true);
+    // One Tab more than the sheet has controls takes the focus from its last control round the
+    // whole sheet. Each press records where the focus is.
+    const reached: string[] = [];
+    for (let press = 0; press <= start.stops; press += 1) {
+      await page.keyboard.press("Tab");
+      reached.push(
+        await sheet.evaluate((container) => {
+          const active = document.activeElement;
+          if (!(active instanceof HTMLElement) || !container.contains(active)) {
+            return "outside the sheet";
+          }
+          return `${active.localName} ${active.getAttribute("aria-label") ?? active.textContent?.trim() ?? ""}`;
+        })
+      );
+    }
     expect(
-      await sheet.evaluate(
-        (container) =>
-          document.activeElement instanceof HTMLElement &&
-          container.contains(document.activeElement) &&
-          !document.activeElement.matches(":disabled")
-      )
-    ).toBe(true);
+      reached.filter((stop) => stop === "outside the sheet"),
+      `Tab left the sheet: ${reached.join("; ")}`
+    ).toEqual([]);
+    expect(
+      reached,
+      `Tab did not stop on the held body and the held Send: ${reached.join("; ")}`
+    ).toEqual(expect.arrayContaining(["textarea Comment", "button Sending…"]));
+
+    // Enter on the held Send sends nothing: once the send is refused, it is still the one send.
+    await send.focus();
+    await expect(send).toBeFocused();
+    await page.keyboard.press("Enter");
     refuse();
+    await expect(form.getByText(WRITE_REFUSED_TEXT)).toBeVisible();
+    expect(distinctKeys(sends), "Enter on the held Send sent the comment again").toEqual([
+      expect.any(String),
+    ]);
+    await expect(body).toHaveValue("Keep this draft");
   } finally {
     await alice.close();
   }
 });
 
-// The wrap's other end. Shift+Tab from the sheet's first control goes to its last enabled one,
-// past the held composer's disabled controls, which a trap that read the `disabled` attribute
-// counted as the last and could not focus, leaving focus where it was.
-test("a phone sheet trap wraps Shift+Tab from its first control past a held composer @phone", async ({
+// The wrap's other end. While the comment composer holds a send, Shift+Tab from the margin
+// sheet's first control wraps to the sheet's last control. The composer keeps the draft, and
+// keeps it once the send is refused.
+test("a phone sheet trap wraps Shift+Tab from its first control to its last while the composer holds a send @phone", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -388,9 +411,9 @@ test("inline @ autocomplete has touch-sized controls and no overflow on iPhone @
     await page.goto(`/issues/${issue.key}/conversation`);
     const composer = page.getByRole("form", { name: "Comment composer" });
     await composer.getByLabel("Comment").fill("@");
-    const picker = composer.getByRole("listbox", { name: "Mention suggestions" });
+    const picker = refPicker(composer);
     await expect(picker).toBeVisible();
-    const option = picker.getByRole("option", { exact: true, name: "planner" });
+    const option = picker.getByRole("option", { name: /^planner\b/ });
     await expect(option).toBeVisible();
     // The planner option above shows the live list has drawn, and a new issue has no
     // collaborators to add a Not running option, so one read lists every control.
@@ -439,11 +462,12 @@ test("an inline link keeps its line and grows its hit box without covering its n
     { ask_id: ask.id, body: "Still measuring." },
     { actor: { id: "e2e-session", kind: "session" }, as: "agent" }
   );
-  // An open ask's question renders in full on the Inbox, so it is where a body with a wrapped
-  // link, two stacked links and two links on consecutive lines can be measured. A generous hit
-  // box would reach the words beside the first, the link below the stacked pair's upper one, and
-  // the text of the line above the last. A question reads a single newline as a space, so the
-  // last pair is split by a hard break.
+  // An open ask's question renders in full in the Inbox's card - on a phone, the card of the
+  // reading view its row opens - so it is where a body with a wrapped link, two stacked links and
+  // two links on consecutive lines can be measured. A generous hit box would reach the words
+  // beside the first, the link below the stacked pair's upper one, and the text of the line above
+  // the last. A question reads a single newline as a space, so the last pair is split by a hard
+  // break.
   const bodyAsk = await createAsk(
     issue.key,
     {
@@ -641,11 +665,13 @@ test("an inline link keeps its line and grows its hit box without covering its n
       .toBe("Upper line");
 
     await navigateInApp(page, "/");
-    const card = page.getByTestId(`ask-${bodyAsk.id}`);
+    // On a phone the Inbox lists short rows: the question's card is in the reading view its row
+    // opens, in place of the list, and the measurement reads the links there.
+    const card = await askCard(page, bodyAsk.id);
     await expect(card.getByRole("link", { name: "Second choice" })).toBeVisible();
 
-    const measured = await page.evaluate(() => {
-      const links = [...document.querySelectorAll("main a")];
+    const measured = await card.evaluate((cardElement) => {
+      const links = [...cardElement.querySelectorAll("a")];
       const named = (text: string) =>
         links.find((link) => (link.textContent ?? "").startsWith(text));
       const wrapped = named("handbook for the deployment gate");
@@ -866,9 +892,9 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
     await expect.soft(artifactLink.locator("[title]")).toHaveAttribute("title", longName);
 
     // The long name belongs to a project document, whose ask nobody holds: the cleared filter
-    // is where the Inbox lists it. From 1280 px the owner link is on the short row and again
-    // in the reading column's head (INFRA-575), so each is read where it belongs: the name on
-    // the row of the list, the author chip on the question's own card.
+    // is where the Inbox lists it. The owner link is on the short row and again in the head of
+    // the pane the row opens (INFRA-575, INFRA-5200), so each is read where it belongs: the
+    // name on the row of the list, the author chip on the question's own card.
     await navigateInApp(page, "/?assignee=everyone");
     const inboxOwner = inboxList(page).locator("[data-inbox-owner]", { hasText: longName });
     await expectEllipsis(inboxOwner);
@@ -899,11 +925,13 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
     await navigateInApp(page, `/issues/${issue.key}/conversation`);
     const composer = page.getByRole("form", { name: "Comment composer" });
     await composer.getByLabel("Comment").fill("@");
-    const roleOption = composer
-      .getByRole("listbox", { name: "Mention suggestions" })
-      .getByRole("option", { exact: true, name: "legion-implementer" });
+    const roleOption = refPicker(composer).getByRole("option", {
+      name: /^legion-implementer\b/,
+    });
     await expectEllipsis(roleOption);
-    await expectStacked(roleOption);
+    // The row's own text column: its kind's icon sits beside it rather than above its words
+    // (`RefPickerList`), so what stacks is the column the words and the detail share.
+    await expectStacked(roleOption.locator("> span"));
     const detail = roleOption.getByText(new RegExp(`^${longTitle} · /w/legion · `));
     await expect.soft(detail).toHaveAttribute("title", (await detail.textContent()) ?? "");
 

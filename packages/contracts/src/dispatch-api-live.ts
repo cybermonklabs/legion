@@ -5,6 +5,7 @@ import type {
   DeliveryTimelineWithMeasures,
   EvalListResponse,
   LegionBoardResponse,
+  LegionIssueResponse,
 } from "./dispatch-api.generated";
 import type { DispatchEvent } from "./dispatch-api-events";
 
@@ -22,16 +23,21 @@ export type DeliveryLiveWindow =
  *  without `from`/`to` (search and every facet), so the live answer and the GET answer are one. A
  *  legion view names the project whose board it shows and nothing else: the board has no window,
  *  and `project` is all `GET /api/v1/projects/{key}/legion/board` reads. Its snapshot and deltas
- *  carry a `LegionBoardResponse`. An evals view names the project whose evals it shows, its window,
- *  and the rest of what `GET /api/v1/projects/{key}/evals` would be sent as its `query`: the
- *  compare range (`compare_from`, `compare_to`), the repositories (`repo`), the kind (`kind`) and
- *  the page (`limit`, `offset`). Its snapshot and deltas carry an `EvalListResponse`, its evals
- *  sent by id. */
+ *  carry a `LegionBoardResponse`. A legion_issue view names one issue and nothing else, which is
+ *  all `GET /api/v1/issues/{key}/legion` reads, and its snapshot and deltas carry a
+ *  `LegionIssueResponse`. It is never refused for a project that names no daemon: its body says
+ *  `configured` false. Its one refusal is `NOT_FOUND`, for a key Dispatch holds no issue of. An
+ *  evals view names the project whose evals it shows, its window, and the rest of what
+ *  `GET /api/v1/projects/{key}/evals` would be sent as its `query`: the compare range
+ *  (`compare_from`, `compare_to`), the repositories (`repo`), the kind (`kind`) and the page
+ *  (`limit`, `offset`). Its snapshot and deltas carry an `EvalListResponse`, its evals sent by
+ *  id. */
 export type DeliveryLiveView =
   | { readonly kind: "timeline"; readonly window: DeliveryLiveWindow; readonly query: string }
   | { readonly kind: "measures"; readonly window: DeliveryLiveWindow; readonly query: string }
   | { readonly kind: "pipeline"; readonly at?: string }
   | { readonly kind: "legion"; readonly project: string }
+  | { readonly kind: "legion_issue"; readonly issue: string }
   | {
       readonly kind: "evals";
       readonly project: string;
@@ -140,6 +146,7 @@ export type DeliveryLiveBody =
   | DeliveryMeasuresResponse
   | DeliveryPipelineResponse
   | LegionBoardResponse
+  | LegionIssueResponse
   | EvalListResponse;
 
 export interface DeliveryLiveSnapshot {

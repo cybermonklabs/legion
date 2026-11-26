@@ -155,8 +155,8 @@ func lockSessionGroups(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-// writeSessionGroup sends, in one round trip, the change log's lock (LockChanges), then the
-// statements queue adds, then the read of group id as those statements leave it, and answers that
+// writeSessionGroup sends, in one round trip, the change log's lock (lockChangesStatement), then
+// the statements queue adds, then the read of group id as those statements leave it, and answers that
 // group. The write's group and member statements each log a change, so the first of them would
 // take the change log's lock after its row, in the middle of the transaction: the lock is taken
 // first, before any row of the group tables, their one position for it. And it is taken last of

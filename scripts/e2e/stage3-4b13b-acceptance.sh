@@ -8,10 +8,11 @@
 #   - the refused root stop naming `legion claims close` only for a tree no workflow issue backs;
 #   - the phase reminder: a planner whose turn ends with its phase open is reminded, and the
 #     tool's handoff_complete closes the phase, with no reminder after it;
-#   - park_child / rerun_child with their refusals, and the Dispatch writes' actor;
+#   - the architect's own backlog in Dispatch, set back on the root and standing on a child, and
+#     rerun_child with its refusal, and the Dispatch writes' actor;
 #   - phase-finished carrying the worker's summary and verdict;
 #   - the merger merging its own pull request, under the squash message it writes itself, and a
-#     design gate re-closed in merging holding nothing;
+#     design gate re-closed in merging holding that merge until the person approves the new version;
 #   - pr-merged / pr-closed-unmerged, and a merge the merger did not make closing the issue.
 # Nothing here merges into sjawhar/legion-smoke's main: each proof PR is retargeted to a scratch base
 # branch before any merge, and the scratch base is deleted at the end.
@@ -57,15 +58,16 @@ fi
 mkdir -p "$evidence/logs" "$evidence/transcripts"
 # Every line of the run also goes to $evidence/transcript.log (lib/transcript.sh), so the driver and
 # its cleanup, which closes the proof's pull requests, never fail on a write whoever is reading. The
-# evidence is under $work by default, and the sweeps in services-stopped and cleanup SIGKILL every
-# process whose command line names $work (run_processes, lib/rig.sh), so the tee gets the transcript
-# as fd 8, never by path. The tee keeps the copy it forked with, and the driver closes its own so
-# nothing it starts inherits it. The lib is this script's own, not ACCEPT_ROOT's.
-exec 8>>"$evidence/transcript.log"
+# lib is this script's own, not ACCEPT_ROOT's.
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$(dirname "$0")/lib/transcript.sh"
-transcript_to /dev/fd/8
-exec 8>&-
+transcript_to "$evidence/transcript.log"
+# Every program the run execs from here on carries its mark, and the sweeps in services-stopped and
+# cleanup end what carries it and nothing else (marked_processes, lib/process-tree.sh); a fork of
+# this shell that execs nothing, such as the pane_watcher or the instructor, carries none and is
+# stopped by its pid (run_marks' comment there). The transcript's tee, started above, carries none,
+# so it outlives the sweeps and writes the run's last line.
+export LEGION_E2E_RUN=$work
 ok=
 check=setup
 TZ=UTC printf -v check_started '%(%FT%TZ)T' -1 # when the current check began (lib/model-gateway-unserved.sh)
@@ -134,7 +136,7 @@ collect_transcripts() {
 }
 
 cleanup() {
-  local status=$? p
+  local status=$?
   set +e
   # Teardown is best effort, and errexit off does not turn the ERR trap off: a command that fails
   # here is a warning about the teardown, never a check's FAIL line, and the run's exit status is
@@ -164,7 +166,9 @@ cleanup() {
   stop_pid "$daemon_keeper_pid"
   stop_pid "${instructor_pid:-}"
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
+  # A lib older than lib/process-tree.sh has no sweep; require_process_tree then failed the run
+  # before it started anything, so there is nothing to sweep.
+  ! declare -F stop_marked_processes >/dev/null || stop_marked_processes "$work" || true
   collect_transcripts
   rm -rf "$work/model-gateway-cache" || true
   github_cleanup
@@ -255,7 +259,7 @@ start_dispatch() {
 # three roots hold a row each from their admission on, through the wait on the person at their
 # gates and on to their reviews, and the two children of root 1
 # run beside them at rerun-a-closed-child, where all three roots are still short of their
-# reviews: the parked child, rerun into planning, and the closed
+# reviews: the child in backlog, rerun into planning, and the closed
 # child, reopened into it. 3 + 2 = 5. A cap of three, which this lane set while a waiting root
 # gave its row back, now leaves the first child waiting at the gates checkpoint, where the three
 # roots alone fill it.
@@ -303,7 +307,7 @@ start_daemon() {
   await_start daemon "$daemon_pid" 180 "the Go daemon to answer /healthz" \
     curl -fsS --max-time 5 "http://127.0.0.1:$port_daemon/healthz"
 }
-stop_daemon() { kill -TERM "$daemon_pid" 2>/dev/null || true; stop_pid "$daemon_pid"; daemon_pid=; }
+stop_daemon() { stop_pid "$daemon_pid"; daemon_pid=; }
 
 claim_session_file() {
   local issue=$1 role=$2
@@ -314,27 +318,28 @@ claim_session_file() {
 claim_session_text() { local f; f=$(claim_session_file "$1" "$2") || return 1; cat -- "$f"; }
 workspace_jj() { local issue=$1; shift; jj -R "$state/workspaces/$repo/${issue,,}" "$@"; }
 
-omp_descendant() {
-  local queue=("$1") pid children
-  while [ "${#queue[@]}" -gt 0 ]; do
-    pid=${queue[0]}
-    queue=("${queue[@]:1}")
-    if [ "$(basename "$(tr '\0' '\n' <"/proc/$pid/cmdline" 2>/dev/null | sed -n 1p)")" = omp ]; then
-      printf '%s\n' "$pid"
-      return 0
-    fi
-    children=$(cat /proc/"$pid"/task/*/children 2>/dev/null || true)
-    for child in $children; do queue+=("$child"); done
-  done
-  return 1
-}
+# omp_descendant PANE_PID prints the pane's Oh My Pi: the one process below the pane's own process,
+# the pid the claim's locator recorded, that runs the Oh My Pi the daemon launches ($omp_exe) by the
+# kernel's record (launched, lib/process-tree.sh), whatever name it was called by. No argv[0] is
+# read: a wrapper or an argv[0] of another name cannot stand in for it or hide it.
+omp_descendant() { launched "$1" "$omp_exe"; }
+# claim_pane_pid ISSUE ROLE prints the process the role's pane was launched as, out of the claim's
+# locator: the incarnation `<pid>:<start ticks>`, and only while that pid is still the process that
+# started then (incarnation_pid, lib/process-tree.sh), never a pid the kernel has since given to
+# another.
 claim_pane_pid() {
-  daemon_state | jq -er --arg issue "$1" --arg role "$2" \
-    '(if $role == "architect" then .issues[$issue].architect else .issues[$issue].workers[$role].claim end).locator.incarnation | split(":")[0]'
+  local inc
+  inc=$(daemon_state | jq -er --arg issue "$1" --arg role "$2" \
+    '(if $role == "architect" then .issues[$issue].architect else .issues[$issue].workers[$role].claim end).locator.incarnation') || return 1
+  incarnation_pid "$inc"
 }
-pane_value() { tr '\0' '\n' <"/proc/$1/environ" | sed -n "s/^$2=//p"; }
+# endpoint_mismatch OMP_PID prints the first rig endpoint the OMP process does not carry, the
+# ANTHROPIC_API_KEY it must not carry, or that its environment could not be read, and succeeds; it
+# fails, printing nothing, only when every endpoint is the rig's and the key's absence holds on
+# env_has's status 1 (lib/process-tree.sh). An environment that could not be read, at either read,
+# is a mismatch and never a clean one.
 endpoint_mismatch() {
-  local omp=$1 name want got
+  local omp=$1 name want got status
   for name in DISPATCH_URL DISPATCH_TOKEN_FILE ENVOY_URL ENVOY_NATS_URL; do
     case "$name" in
       DISPATCH_URL) want="http://127.0.0.1:$port_dispatch" ;;
@@ -342,11 +347,41 @@ endpoint_mismatch() {
       ENVOY_URL) want="http://127.0.0.1:$port_listener" ;;
       ENVOY_NATS_URL) want="nats://127.0.0.1:$port_nats" ;;
     esac
-    got=$(pane_value "$omp" "$name")
+    status=0
+    got=$(env_of "$omp" "$name") || status=$?
+    if [ "$status" != 0 ]; then printf 'an environment that could not be read (env_of status %s)\n' "$status"; return 0; fi
     if [ "$got" != "$want" ]; then printf '%s=%s, want %s\n' "$name" "${got:-<unset>}" "$want"; return 0; fi
   done
-  if grep -qz '^ANTHROPIC_API_KEY=' "/proc/$omp/environ" 2>/dev/null; then printf 'ANTHROPIC_API_KEY set, want unset\n'; return 0; fi
-  return 1
+  status=0
+  env_has "$omp" ANTHROPIC_API_KEY || status=$?
+  case $status in
+    0) printf 'ANTHROPIC_API_KEY set, want unset\n' ;;
+    1) return 1 ;;
+    *) printf 'an environment that could not be read (env_has status %s)\n' "$status" ;;
+  esac
+  return 0
+}
+# carries_no_grant OMP_PID succeeds when the Oh My Pi's environment names neither LEGION_GRANT_FILE
+# nor LEGION_GRANT, and otherwise prints the first it names, or that the environment could not be
+# read, and fails: an absence holds only on env_has's status 1 (lib/process-tree.sh), never on a read
+# that failed or on a pipe whose reader stopped early.
+carries_no_grant() {
+  local name status
+  for name in LEGION_GRANT_FILE LEGION_GRANT; do
+    status=0
+    env_has "$1" "$name" || status=$?
+    case $status in
+      1) ;;
+      0)
+        printf 'still carries %s\n' "$name"
+        return 1
+        ;;
+      *)
+        printf 'has an environment that could not be read (env_has status %s)\n' "$status"
+        return 1
+        ;;
+    esac
+  done
 }
 assert_claim_endpoints() {
   local issue=$1 role=$2 pane_pid omp mismatch
@@ -354,15 +389,25 @@ assert_claim_endpoints() {
   omp=$(omp_descendant "$pane_pid") || fail "$role pane on $issue (pid $pane_pid) has no OMP process"
   if mismatch=$(endpoint_mismatch "$omp"); then fail "ABORT: $role pane on $issue (OMP pid $omp) has $mismatch"; fi
 }
+# pane_watcher polls every 0.2 s and checks each pane the daemon launches once its Oh My Pi runs and
+# its environment is laid out, usually before the plugin registers, though no barrier holds the pane
+# back for it. The kernel names the program an exec starts before it lays out that program's
+# environment (environ_laid_out, lib/process-tree.sh), so an Oh My Pi found inside that window is
+# read again at the next poll, never counted: a read there would find no environment. One that never
+# lays its environment out stays out of pane-endpoints-checked.txt, and the every-launched-pane wait
+# fails naming it. A mismatch it reads is recorded, the private tmux server is killed, which ends
+# every agent of the run, and the next bounded wait aborts naming the pane.
 pane_watcher() {
-  local claims inc issue role omp mismatch
+  local claims inc issue role pane omp mismatch
   trap - EXIT ERR
   set +e
   while :; do
     if claims=$("$work/legion" claims list --json --config "$work/legion.yaml" --operator-token-file "$work/operator-token" 2>/dev/null); then
       while IFS=$'\t' read -r inc issue role; do
         grep -qF "$inc " "$evidence/pane-endpoints-checked.txt" 2>/dev/null && continue
-        omp=$(omp_descendant "${inc%%:*}") || continue
+        pane=$(incarnation_pid "$inc") || continue
+        omp=$(omp_descendant "$pane") || continue
+        environ_laid_out "$omp" || continue
         if mismatch=$(endpoint_mismatch "$omp"); then
           printf '%s pane on %s (incarnation %s, OMP pid %s) has %s\n' "$role" "$issue" "$inc" "$omp" "$mismatch" >"$evidence/pane-endpoint-violation.txt"
           TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
@@ -559,6 +604,22 @@ until_true_quiet() {
   return 1
 }
 
+# require_process_tree fails, naming each function it lacks and ACCEPT_ROOT, when the lib sourced
+# from ACCEPT_ROOT has no lib/process-tree.sh: this run finds its panes' Oh My Pi and sweeps its
+# processes with that file's functions (omp_program, launched, incarnation_pid, env_of, env_has and
+# stop_marked_processes), and a lib from before it passed every other guard and then died on the
+# first call with "command not found", behind a FAIL line with no reason, its cleanup sweeping
+# nothing. It runs before the run starts anything, so there is nothing to sweep.
+require_process_tree() {
+  local name
+  local -a missing=()
+  for name in omp_program launched incarnation_pid env_of env_has stop_marked_processes; do
+    declare -F "$name" >/dev/null || missing+=("$name")
+  done
+  [ "${#missing[@]}" = 0 ] ||
+    fail "ACCEPT_ROOT's scripts/e2e/lib/rig.sh ($root) predates lib/process-tree.sh and has no ${missing[*]}: point ACCEPT_ROOT at a checkout that has it"
+}
+
 begin prerequisites
 for tool in go psql jq curl python3 tmux bun mise secrets agent-secrets gh jj hawk-token; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 # Legion's two role Apps, this deployment's own ids unless the App inputs name another's, with the
@@ -581,6 +642,11 @@ read_app_logins
 # The services serve on held ports (start_held, keep_port), which ACCEPT_ROOT's lib/rig.sh and its
 # binaries must both provide.
 declare -F start_held >/dev/null || fail "ACCEPT_ROOT's scripts/e2e/lib/rig.sh ($root) predates start_held: point ACCEPT_ROOT at a checkout that has it"
+require_process_tree
+# The pane watcher reads an Oh My Pi's environment only once it is laid out (environ_laid_out),
+# which ACCEPT_ROOT's lib/process-tree.sh must provide: without it the watcher's call would fail for
+# every pane, and no pane would be checked.
+declare -F environ_laid_out >/dev/null || fail "ACCEPT_ROOT's scripts/e2e/lib/process-tree.sh ($root) predates environ_laid_out: point ACCEPT_ROOT at a checkout that has it"
 real_gh=$(mise which gh) || fail "mise has no gh"
 # The real tmux comes after the real gh on the daemon's PATH: the tmux runtime runs tmux with the
 # pane allow-list alone, where a shimmed tmux, run from a directory under the operator's real
@@ -643,7 +709,7 @@ port_nats=$(report_port "$evidence/logs/nats.log" 'Listening for client connecti
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "4b.13b acceptance $project" '{key:$key,name:$name}')" >/dev/null
-dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project,default:true}')" >/dev/null
+dispatch_human PUT "projects/$project/default-repository" "$(jq -cn --arg repo "$repo" '{repo:$repo}')" >/dev/null
 SMOKE_REPO="$repo" SMOKE_RIG_NATS="nats://127.0.0.1:$port_nats" \
   SMOKE_UPSTREAM_NATS="$upstream_nats" \
   start_process bridge env -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" \
@@ -654,6 +720,9 @@ envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --packag
 manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion")
 pin=$(<"$root/.omp-pin")
 mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
+# The program every pane's Oh My Pi runs: the daemon starts from this environment, so
+# LEGION_OMP_PATH outranks the invocation when it is set (omp_program, lib/process-tree.sh).
+omp_exe=$(omp_program "$pin") || fail "the Oh My Pi the daemon would run for $pin is not one the kernel runs: $omp_exe"
 cat >"$work/instructions.md" <<'EOF'
 # Acceptance proof instructions
 
@@ -675,6 +744,7 @@ start_daemon
 note "project $project, profile $profile, plugins $(jq -r '.name + "@" + .version' "$envoy_manifest") and $(jq -r '.name + "@" + .version' "$manifest"), ports NATS $port_nats Dispatch $port_dispatch daemon $port_daemon listener $port_listener"
 pane_watcher &
 watcher_pid=$!
+record_start "$watcher_pid" || true
 production_baseline
 note "production Dispatch audit baseline: event ${prod_baseline}"
 pass
@@ -758,6 +828,7 @@ for issue in "$root1" "$root2" "$root3"; do wait_for_architect "$issue"; done
 printf '%s\n' "$root1" "$root2" "$root3" "$child" >"$work/instructor-issues"
 instructor &
 instructor_pid=$!
+record_start "$instructor_pid" || true
 note "the instructor watches $root1 $root2 $root3 $child"
 pass
 
@@ -856,13 +927,13 @@ wait_for_phase_at_least "$root2" implementing 900
 wait_for_phase_at_least "$root3" implementing 900
 pass
 
-# ---- 4. park_child / rerun_child ----------------------------------------------------------------------
-begin park-child
+# ---- 4. the architect's backlog / rerun_child ------------------------------------------------------------
+begin backlog-child
 child_planner_before=$(daemon_state | jq -c --arg c "$child" '.issues[$c] | {generation, phase, planner: .workers.planner.claim.state}')
-send_agent "$root1" architect "Acceptance child operations, one legion tool call at a time, reporting each result verbatim before the next. (1) Call park_child with issue $root1. (2) Call rerun_child with issue $child. (3) Now take child $child out of the workflow, with the legion operation your instructions name for that. Then wait."
+send_agent "$root1" architect "Acceptance child operations, one at a time, reporting each result verbatim before the next. (1) Write backlog on the tree root $root1 in Dispatch: dispatch issue-update --issue $root1 --status backlog. This proof expects the daemon to set it back. (2) Call rerun_child with issue $child. (3) Now take child $child out of the workflow to backlog, as your instructions say. Then wait."
 until_true 600 "$child to be backlog in Dispatch" dispatch_status_is "$child" backlog
 until_true 300 "$child to leave the workflow" issue_phase "$child" "done"
-# The park suspends the child's planner once its turn ends and names no deadline
+# The backlog suspends the child's planner once its turn ends and names no deadline
 # (packages/daemon/internal/supervise/suspend.go, holdSuspension), so the wait is the proof's turn
 # budget, phase_seconds (lib/workflow.sh); a timeout prints the planner's claim as legion claims shows it.
 child_planner_unsuspended() {
@@ -874,20 +945,25 @@ until_true "$phase_seconds" "$child's planner to be suspended" issue_worker_stat
 # shellcheck disable=SC2034
 timeout_hook=''
 until_true 300 "the child-status notice for $child" notice_delivered "$root1" architect "$(notice_needle child-status "$child")"
-state_file park-child
-dispatch_events "$child" >"$evidence/child-events-after-park.json"
+state_file backlog-child
+architect_session=$(claims list --json | jq -r --arg i "$root1" '[.claims[] | select(.issue == $i and .role == "architect") | .session // empty | select(. != "")] | last // ""')
+dispatch_events "$root1" >"$evidence/root-events-after-backlog.json"
+dispatch_events "$child" >"$evidence/child-events-after-backlog.json"
+# The root: a backlog the architect's session wrote and, after it, a status the daemon wrote that
+# is not backlog. That second write is the daemon's set-back of the first.
+jq -e --arg s "$architect_session" --arg d "legion-daemon:$project" '
+  (map(.type == "issue.updated" and .payload.status == "backlog" and .actor.id == $s) | index(true)) as $wrote
+  | $wrote != null and any(.[$wrote + 1:][]; .type == "issue.updated" and .actor.id == $d and .payload.status != "backlog")' \
+  "$evidence/root-events-after-backlog.json" >/dev/null ||
+  soft "$root1's backlog by the architect's session $architect_session was not set back by legion-daemon:$project: $(jq -c '[.[] | select(.type == "issue.updated") | {seq, actor: .actor.id, status: .payload.status}]' "$evidence/root-events-after-backlog.json")"
 f=$(root1_architect_file)
-tool_outcomes "$f" | jq -c '[.[] | select(.tool == "legion" and (.call.arguments.op | IN("park_child", "rerun_child")))]' >"$evidence/architect-child-ops.json"
-jq -e --arg r "$root1" 'any(.[]; .call.arguments.op == "park_child" and .call.arguments.issue == $r and .isError and (.text | contains("CHILD_REQUIRED") or contains("tree root")))' "$evidence/architect-child-ops.json" >/dev/null ||
-  soft "park_child on the root was not refused as CHILD_REQUIRED: $(cat "$evidence/architect-child-ops.json")"
-jq -e --arg c "$child" 'any(.[]; .call.arguments.op == "rerun_child" and .call.arguments.issue == $c and .isError and (.text | contains("CHILD_RUNNING") or contains("park_child takes it out")))' "$evidence/architect-child-ops.json" >/dev/null ||
-  soft "rerun_child on the running child was not refused as CHILD_RUNNING: $(cat "$evidence/architect-child-ops.json")"
-jq -e --arg c "$child" 'any(.[]; .call.arguments.op == "park_child" and .call.arguments.issue == $c and (.isError | not))' "$evidence/architect-child-ops.json" >/dev/null ||
-  soft "the architect did not choose park_child for 'take the child out of the workflow'"
-park_actor=$(jq -r '[.[] | select(.type == "issue.updated" and .payload.status == "backlog")] | last | .actor.id' "$evidence/child-events-after-park.json")
-[ "$park_actor" = "legion-daemon:$project" ] || soft "the backlog write's actor is $park_actor, want legion-daemon:$project"
+tool_outcomes "$f" | jq -c '[.[] | select(.tool == "legion" and .call.arguments.op == "rerun_child")]' >"$evidence/architect-child-ops.json"
+jq -e --arg c "$child" 'any(.[]; .call.arguments.op == "rerun_child" and .call.arguments.issue == $c and .isError and (.text | contains("CHILD_RUNNING")) and (.text | contains("Write backlog on \($c) first")))' "$evidence/architect-child-ops.json" >/dev/null ||
+  soft "rerun_child on the running child was not refused as CHILD_RUNNING with the text that says to write backlog first: $(cat "$evidence/architect-child-ops.json")"
+backlog_actor=$(jq -r '[.[] | select(.type == "issue.updated" and .payload.status == "backlog")] | last | .actor.id' "$evidence/child-events-after-backlog.json")
+[ "$backlog_actor" = "$architect_session" ] || soft "the backlog write's actor is $backlog_actor, want the architect's session $architect_session"
 note "architect refusals: $(jq -r '[.[] | select(.isError) | "\(.call.arguments.op) \(.call.arguments.issue): \(.text | .[0:110])"] | join(" | ")' "$evidence/architect-child-ops.json")"
-note "park: $child backlog in Dispatch by $park_actor, phase done, planner suspended (before: $child_planner_before); child-status reached $root1's architect"
+note "backlog: $child backlog in Dispatch by $backlog_actor, phase done, planner suspended (before: $child_planner_before); $root1's backlog by the same session set back by legion-daemon:$project, now $(dispatch_get "issues/$root1" | jq -r .status); child-status reached $root1's architect"
 sleep 20
 dispatch_status_is "$child" backlog >/dev/null || soft "$child's backlog was undone"
 pass
@@ -905,7 +981,7 @@ dispatch_events "$child" >"$evidence/child-events-after-rerun.json"
 rerun_actor=$(jq -r '[.[] | select(.type == "issue.updated" and .payload.status == "todo")] | last | .actor.id' "$evidence/child-events-after-rerun.json")
 [ "$rerun_actor" = "legion-daemon:$project" ] || soft "the todo write's actor is $rerun_actor, want legion-daemon:$project"
 f=$(root1_architect_file)
-tool_outcomes "$f" | jq -c '[.[] | select(.tool == "legion" and (.call.arguments.op | IN("park_child", "rerun_child")))]' >"$evidence/architect-child-ops.json"
+tool_outcomes "$f" | jq -c '[.[] | select(.tool == "legion" and .call.arguments.op == "rerun_child")]' >"$evidence/architect-child-ops.json"
 jq -e --arg c "$child" '[.[] | select(.call.arguments.op == "rerun_child" and .call.arguments.issue == $c and (.isError | not))] | length >= 1' "$evidence/architect-child-ops.json" >/dev/null ||
   soft "the architect did not choose rerun_child for 'run the child again'"
 state_file rerun-child
@@ -918,7 +994,7 @@ printf '%s\n' "$child2" >>"$work/instructor-issues"
 set_status "$child2" todo
 wait_for_phase "$child2" planning
 wait_for_worker "$child2" planner
-# The proof human closes the child: the workflow's leave parks it as the merge's close does (phase done,
+# The proof human closes the child: the workflow's leave takes it out as the merge's close does (phase done,
 # Dispatch status done), and rerun_child must reopen a closed Dispatch issue.
 set_status "$child2" "done"
 until_true 300 "$child2 to leave the workflow" issue_phase "$child2" "done"
@@ -934,13 +1010,13 @@ dispatch_events "$child2" >"$evidence/closed-child-events.json"
 rerun_actor=$(jq -r '[.[] | select(.type == "issue.updated" and .payload.status == "todo")] | last | .actor.id' "$evidence/closed-child-events.json")
 [ "$rerun_actor" = "legion-daemon:$project" ] || soft "the reopening todo write's actor is $rerun_actor, want legion-daemon:$project"
 f=$(root1_architect_file)
-tool_outcomes "$f" | jq -c '[.[] | select(.tool == "legion" and (.call.arguments.op | IN("park_child", "rerun_child")))]' >"$evidence/architect-child-ops-closed.json"
+tool_outcomes "$f" | jq -c '[.[] | select(.tool == "legion" and .call.arguments.op == "rerun_child")]' >"$evidence/architect-child-ops-closed.json"
 jq -e --arg c "$child2" 'any(.[]; .call.arguments.op == "rerun_child" and .call.arguments.issue == $c and (.isError | not))' "$evidence/architect-child-ops-closed.json" >/dev/null ||
   soft "the architect did not rerun the closed child with rerun_child"
 state_file closed-child-rerun
 note "closed $child2 (done) → child-closed → the architect's rerun_child reopened it: todo by $rerun_actor, generation $gen_before → $gen_after, planning with its planner live"
 set_status "$child2" backlog
-note "the proof human parked $child2 (backlog) so it takes no further turns"
+note "the proof human moved $child2 to backlog so it takes no further turns"
 pass
 
 # ---- 5. implementation, the closed-unmerged PR, testing ------------------------------------------------
@@ -969,7 +1045,7 @@ n=$(notice_deliveries "$child" architect "$(notice_needle pr-closed-unmerged "$c
 notice_line "$child" architect "$(notice_needle pr-closed-unmerged "$child")" | head -1 >"$evidence/notice-pr-closed-unmerged.jsonl"
 note "closed $repo#${pr_of[$child]} unmerged; $child's own architect got pr-closed-unmerged for $child $n time(s)"
 set_status "$child" backlog
-note "the proof human parked $child (backlog) so it takes no further turns"
+note "the proof human moved $child to backlog so it takes no further turns"
 pass
 
 begin testers
@@ -994,10 +1070,11 @@ note "planner notice (control): verdict line absent: $(grep -c 'verdict:' <<<"$p
 pass
 
 begin reviewers
-# A review ends when its reviewer completes it: the reviewer approves the head it has, then commits
-# and pushes its handoff, so the pull request's head moves past the approved commit before the issue
-# leaves reviewing, and the retro's handoff moves it again. Whether that approval still stands for
-# the head the round ends on is the daemon's judgement (classify.ApprovalStands), recorded on the
+# An approval ends the review round once GitHub reports the approved head one the issue may advance
+# on, whether the reviewer's completion came before it or after it; no handoff is a commit, and
+# retro commits nothing, so the head stays where the reviewer approved it unless a merge forward
+# moves it. Whether that approval still stands for the head the round ends on is the daemon's
+# judgement (classify.ApprovalStands), recorded on the
 # round as its decision; the proof checks the review App approved and the daemon ended the round on
 # that approval, which moves the issue to accepting, where no worker runs: the tree's architect
 # accepts with the legion tool's sign_off (→ retro), told here by the proof, since it acts on no
@@ -1059,11 +1136,9 @@ begin merger-pane-mints-no-grant
 # pane environment names no grant, its gh reads the role's files under GH_CONFIG_DIR, and no bash
 # command the merger has run invokes `legion`.
 merger_omp=$(omp_descendant "$(claim_pane_pid "$root1" merger)") || fail "$root1's merger pane has no OMP process"
-for absent in LEGION_GRANT_FILE LEGION_GRANT; do
-  ! tr '\0' '\n' <"/proc/$merger_omp/environ" | grep -q "^$absent=" || fail "$root1's merger pane still carries $absent"
-done
-merger_gh_dir=$(pane_value "$merger_omp" GH_CONFIG_DIR)
-[[ $merger_gh_dir == *-merger-gh/* && $(pane_value "$merger_omp" LEGION_GH_OWNERS_DIR) == "${merger_gh_dir%/*}" ]] ||
+why=$(carries_no_grant "$merger_omp") || fail "$root1's merger pane $why"
+merger_gh_dir=$(env_of "$merger_omp" GH_CONFIG_DIR)
+[[ $merger_gh_dir == *-merger-gh/* && $(env_of "$merger_omp" LEGION_GH_OWNERS_DIR) == "${merger_gh_dir%/*}" ]] ||
   fail "$root1's merger pane carries GH_CONFIG_DIR=$merger_gh_dir, want an owner's directory of its claim's gh bundle (LEGION_GH_OWNERS_DIR)"
 f=$(claim_session_file "$root1" merger)
 # A bash command invokes `legion` when a word of it is legion or ends in /legion (never a word that
@@ -1079,7 +1154,7 @@ pass
 begin merger-merges-with-its-own-squash-message
 # The early-merge section merged $root2's pull request into the scratch base, and both proof pull
 # requests branched from the same main commit, so $root1's may no longer merge there cleanly (their
-# retro learnings, for one). It merges into a base of its own, cut from that main commit.
+# changes to one file, for one). It merges into a base of its own, cut from that main commit.
 gh api "repos/$repo/git/refs" -f ref="refs/heads/$merge_base" -f sha="$main_sha" >/dev/null
 gh -R "$repo" pr edit "${pr_of[$root1]}" --base "$merge_base" >/dev/null
 note "$repo#${pr_of[$root1]} retargeted to its own base $merge_base at main $main_sha"
@@ -1110,23 +1185,71 @@ n=$(notice_deliveries "$root1" architect "$(notice_needle pr-merged "$root1")")
 note "the merger merged $repo#${pr_of[$root1]} at $merge_when_clean_commit under its own message ('$merge_message'); $root1 → done on the daemon's read of that merge, pr-merged notices $n (negative control)"
 pass
 
-# ---- 8. a design gate that re-closes in merging holds no merge -------------------------------------
-begin a-reclosed-gate-holds-no-merge
-# The design gate holds a tree's start and nothing after it: a new primary spec version while
-# $root3 is in merging closes the gate, and the merger merges all the same. $root3 merges into a
-# base of its own for the same reason $root1 did.
+# ---- 8. a design gate that re-closes in merging holds the merge until a person approves ------------
+begin a-reclosed-gate-holds-the-merge
+# The design gate holds the merge as well as the tree's start. A new primary spec version while
+# $root3 is in merging closes the gate, and its merger, told to merge, merges nothing while the
+# gate is closed: it ends its turn on a WAITING line instead (roles/merger.md, "A closed design
+# gate"). The proof human then approves that version, the opening reaches the merger, as a task
+# that names what changed or as the opened message, and the merge follows it. The new version
+# keeps the approved text and adds one section that asks for no change, so a merger that reads it
+# has no reason to move the issue back. $root3 merges into a base of its own for the same reason
+# $root1 did.
 gh api "repos/$repo/git/refs" -f ref="refs/heads/$gate_base" -f sha="$main_sha" >/dev/null
 gh -R "$repo" pr edit "${pr_of[$root3]}" --base "$gate_base" >/dev/null
+gate_artifact=${gate_artifacts[$root3]}
+# The upload replaces the spec whole, so it names the token of the version it replaces: the document
+# token the live read answers, which Dispatch checks under the write's own lock. One read answers the
+# text and its token, so the token names the version whose text the upload keeps.
+spec_read=$(dispatch_get "artifacts/$gate_artifact/text")
+spec_now=$(jq -er .markdown <<<"$spec_read")
+spec_base=$(jq -er .token <<<"$spec_read") ||
+  fail "the spec of $root3 answers no document token for the upload to name as its base"
+spec_note=$'\n\n## Proof note\n\nThe human added this section while the merger stood in merging. It asks for no change to the pull request.\n'
 dispatch_human POST "issues/$root3/artifacts" \
-  "$(jq -cn --arg name spec.md --arg content "# Acceptance smoke\n\nThe human revised this proof specification while the merger stood in merging.\n" '{name:$name,content:$content,summary:"4b.13b gate re-close"}')" >/dev/null
+  "$(jq -cn --arg name spec.md --arg content "$spec_now$spec_note" --arg base "$spec_base" '{name:$name,content:$content,summary:"4b.13b gate re-close",precondition:{document:$base}}')" >/dev/null
 until_true 180 "the new primary spec version to close $root3's gate" sh -c \
   "'$work/legion' state --json --port '$port_daemon' | jq -e --arg issue '$root3' '.issues[\$issue].designGate.currentVersion > .issues[\$issue].designGate.approvedVersion'"
-note "$root3's gate closed on a new spec version while it stood in merging, and $repo#${pr_of[$root3]} is on its own base $gate_base"
-send_agent "$root3" merger "Acceptance merge operation: merge pull request #${pr_of[$root3]} exactly as your instructions describe, then end this phase with the legion tool: op handoff_complete and a summary. Then wait."
+reclosed=$(daemon_state | jq -er --arg issue "$root3" '.issues[$issue].designGate.currentVersion')
+note "$root3's gate closed on spec version $reclosed while it stood in merging, and $repo#${pr_of[$root3]} is on its own base $gate_base"
+# The closed role message comes first: an instruction that reached the merger before it would be
+# answered as an open gate allows, and its WAITING line, if any, would be for another reason.
+closed="The design gate of $root3 closed"
+until_true 600 "the closed message of $root3's gate to reach its merger" session_contains "$root3" merger "$closed"
+marker_gate="GATED-MERGE-$stamp"
+send_agent "$root3" merger "Acceptance merge operation ($marker_gate): merge pull request #${pr_of[$root3]} exactly as your instructions describe, then end this phase with the legion tool: op handoff_complete and a summary. Where your instructions say to wait first, wait as they say: this operation still stands when the wait ends."
+# merger_waits_after MARKER: $root3's merger session holds, after the first entry carrying MARKER
+# (the instruction), an assistant turn with a line that starts WAITING and names the opening, the
+# line roles/merger.md ends each turn on while the gate is closed ("names the opening you wait
+# for"). A WAITING line that names no opening waits for something else.
+merger_waits_after() {
+  local f
+  f=$(claim_session_file "$root3" merger) || return 1
+  jq -R -s -e --arg marker "$1" '[split("\n")[] | fromjson?] as $e
+    | ([$e | to_entries[] | select(.value | tostring | contains($marker)) | .key] | first) as $at
+    | $at != null and any($e[($at + 1):][]; .type == "message" and .message.role == "assistant"
+        and any(.message.content[]?; .type == "text" and (.text | test("(^|\n)WAITING[^\n]*[Oo]pen"))))' "$f" >/dev/null
+}
+until_true 900 "$root3's merger to end its turn on a WAITING line naming the opening while the gate is closed" merger_waits_after "$marker_gate"
+# The merger's turn has ended, so nothing of that turn merges. The pull request is read after a
+# further minute, in which only the opening could release the merge, and that read is the last one
+# before the person approves, so the merge that follows is the approval's.
+sleep 60
+held=$(gh -R "$repo" pr view "${pr_of[$root3]}" --json state,autoMergeRequest,isInMergeQueue --jq '[.state, (.autoMergeRequest != null), .isInMergeQueue] | @tsv')
+[ "$held" = $'OPEN\tfalse\tfalse' ] ||
+  fail "$repo#${pr_of[$root3]} reads '$held' (state, auto-merge armed, in a merge queue) while $root3's gate is closed, want it open with nothing armed or queued"
+note "$root3's merger ended its turn on a WAITING line, and $repo#${pr_of[$root3]} stayed open with nothing armed or queued a minute later"
+dispatch_human POST "artifacts/$gate_artifact/reviews" '{"state":"approved"}' >/dev/null
+until_true 180 "the person's approval of version $reclosed to open $root3's gate" sh -c \
+  "'$work/legion' state --json --port '$port_daemon' | jq -e --arg issue '$root3' --argjson v '$reclosed' '.issues[\$issue].designGate.approvedVersion == \$v'"
+opening="The design gate of $root3 opened: a person approved version $reclosed"
+until_true 600 "the opening of version $reclosed to reach $root3's merger" session_contains "$root3" merger "$opening"
+how="a task"
+! notice_delivered "$root3" merger "$opening" || how="the opened role message"
 await_merger_merge "$repo" "${pr_of[$root3]}"
 wait_for_phase "$root3" "done" 600
 daemon_state >"$evidence/state-after-gated-merge.json" || true
-note "the closed gate held nothing: the merger merged $repo#${pr_of[$root3]} at $merge_when_clean_commit and $root3 reached done with its gate still closed"
+note "the closed gate held the merge: $repo#${pr_of[$root3]} stayed open while version $reclosed was with the person, the opening reached the merger as $how, and the merger merged at $merge_when_clean_commit; $root3 reached done"
 pass
 
 begin production-untouched
@@ -1156,8 +1279,10 @@ stop_pid "$bridge_pid"; bridge_pid=
 stop_pid "${instructor_pid:-}"; instructor_pid=
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
 stop_pid "$nats_pid"; nats_pid=
-for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
-[ -z "$(run_processes)" ] || fail "a proof process remains"
+stop_marked_processes "$work" || fail "the run's processes could not be read for their SIGKILL"
+# An unread /proc is no empty run (run_processes exits 2 for it).
+remaining=$(run_processes) || fail "the run's processes could not be read, so whether one remains is not known"
+[ -z "$remaining" ] || fail "a proof process remains: ${remaining//$'\n'/ }"
 pass
 
 begin model-turns-through-the-gateway

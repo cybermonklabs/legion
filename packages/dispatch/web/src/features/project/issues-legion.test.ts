@@ -128,6 +128,7 @@ test("the Legion phases are the board's columns, in its order, by their titles, 
     ["accepting", "Accepting"],
     ["retro", "Retro"],
     ["merging", "Merging"],
+    ["awaiting_children", "Waiting on children"],
     ["awaiting_person", "Waiting on a person"],
     ["held", "Held"],
   ]);
@@ -156,7 +157,7 @@ test("the page's Legion phases are the board route's columns in its order under 
   expect(legionPhasesOf(undefined)).toBe(LEGION_PHASES);
   const columns = [
     ...LEGION_PHASES.map(({ id, title }) => ({ id, label: title, cards: [] })),
-    // The generated column ids name today's eleven: a newer server's column is none of them.
+    // The generated column ids name today's twelve: a newer server's column is none of them.
     { id: "x_phase" as string as LegionBoardColumn["id"], label: "X phase", cards: [] },
   ];
   const phases = legionPhasesOf({ columns });

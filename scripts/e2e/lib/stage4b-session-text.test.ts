@@ -205,7 +205,7 @@ describe("session_byte_len", () => {
     const r = run(`session_byte_len '${key}'`, { [key]: "1234" });
     expect(r.code).toBe(0);
     expect(r.stdout).toBe("1234\n");
-    expect(r.sql).toContain("SELECT byte_len FROM omp_session_files WHERE path = :'path'");
+    expect(r.sql).toContain("SELECT byte_len FROM public.omp_session_files WHERE path = :'path'");
     expect(r.args.at(-1)).toBe(`path=${key}`);
   });
 
@@ -230,6 +230,39 @@ describe("session_byte_len", () => {
       `the session database ${container} could not be read for the session ${key}`
     );
   });
+});
+
+// The run's session database is written by every pod's Oh My Pi, and any login that may create in
+// it can plant a function, or a schema named for the reader, that a name the read leaves
+// unqualified resolves to, a view at a table's own name, whose fixed query no search_path
+// reaches, and a row-security policy the tables' owner attaches runs in each reader's session. So
+// every statement the harness sends goes in one read-only transaction that opens by pinning
+// search_path, turning row_security off and refusing views and foreign tables, as
+// packages/daemon's ompsessions reads, and names each table public.<table>: session_text's and
+// session_byte_len's reads and session_copy's listing and table check alike, each through
+// session_psql.
+describe("every read of the session database", () => {
+  const pin =
+    "BEGIN READ ONLY;\nSET LOCAL search_path = pg_catalog, pg_temp;\nSET LOCAL row_security = off;\n" +
+    "SET LOCAL restrict_nonsystem_relation_kind = 'view, foreign-table';\n";
+  for (const [name, body] of [
+    ["session_text", `session_text '${key}' >/dev/null`],
+    ["session_byte_len", `session_byte_len '${key}' >/dev/null`],
+    ["session_copy", `evidence="$OUT" session_copy '${sessions}/' transcripts pods >/dev/null`],
+  ] as const) {
+    test(`${name} opens with the search_path pin and row_security off, and names the tables public.<table>`, () => {
+      const r = run(body, { [key]: name === "session_byte_len" ? "1234" : transcript });
+      expect(r.code).toBe(0);
+      const statements = r.sql.split(pin);
+      expect(statements[0]).toBe("");
+      expect(statements.length).toBeGreaterThan(1);
+      for (const statement of statements.slice(1)) {
+        expect(statement.trimEnd().endsWith("COMMIT;")).toBe(true);
+        expect(statement).not.toMatch(/\bFROM omp_session_files/);
+      }
+      expect(r.sql).toContain("FROM public.omp_session_files");
+    });
+  }
 });
 
 // derived is the name session_copy gives a key whose part after the prefix is REL: each byte
@@ -353,7 +386,7 @@ describe("session_copy", () => {
     expect(existsSync(r.out)).toBe(false);
     expect(r.sql).toContain("SELECT to_regclass(:'table') IS NOT NULL;");
     expect(r.sql).not.toContain("SELECT encode(");
-    expect(r.args.at(-1)).toBe("table=omp_session_files");
+    expect(r.args.at(-1)).toBe("table=public.omp_session_files");
   });
 
   // Oh My Pi's sql storage makes the table when it starts, so once the daemon has launched role
@@ -924,7 +957,7 @@ pair_session= negative_config_pod= block_tree= pg_container=none
 shape_pid= daemon_pid= watch_pid= events_pid= leaks_pid= sampler_pid= interests_pid=
 mkdir -p "$work" "$evidence"
 exec 7>&1
-stop_tree() { :; }; stop_pid() { :; }; record_pair() { :; }; run_processes() { :; }; docker() { :; }
+stop_tree() { :; }; stop_pid() { :; }; record_pair() { :; }; stop_marked_processes() { :; }; docker() { :; }
 note() { echo "   $*"; }
 run_container_label=legion.dev/e2e-run run_container_id=session-text-run signalled=
 ${fn("remove_run_container")}

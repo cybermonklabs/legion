@@ -59,8 +59,9 @@ const shellHandlers: RequestHandler[] = [
   // shown, or in the compact navigation drawer while it is open - with no `enabled` guard
   // (`Sidebar`'s `projectsQuery` read in `features/sidebar/Sidebar.tsx`, drawn by
   // `NavigationContents` in `app.tsx`). The issue header reads the same `projectsQuery` key for
-  // every root issue, to learn which design steps are gated (`IssueHeader`'s read in
-  // `features/issue/IssueHeader.tsx`, `enabled: issue.parent === null`), and that is the reader
+  // every issue that is a root of its project, to learn which design steps are gated
+  // (`IssueHeader`'s read in `features/issue/IssueHeader.tsx`, `enabled: isProjectRoot(issue)`:
+  // no parent, or a parent of another project), and that is the reader
   // this answer exists for: without it, 36 rows of pages carrying the header fail on an unanswered
   // read, none of them about projects. `CreateIssueDialog`, `ProjectPage`, the palette's project
   // mode and three settings sections (`ArchitectureSourcesSection`, `ProjectsSection` and
@@ -77,6 +78,19 @@ const shellHandlers: RequestHandler[] = [
   http.get("/api/v1/me/replies", () => Response.json({ rows: [], total: 0, limit: 50, offset: 0 })),
   http.get("/api/v1/credential-requests", () => Response.json({ pending: [] })),
   http.get("/api/v1/me/agents/state", () => Response.json({})),
+  // The base an upload names: before it posts a markdown file, the Upload control reads the
+  // token of the document the owner already holds under that name
+  // (`features/artifacts/ArtifactUpload.tsx`'s `captureUploadBase`), so every page that can
+  // take a dropped or pasted `.md` reads this route. The owner holds no such document in a unit
+  // test's world, which is Dispatch's own `404` and what `captureUploadBase` takes as no base,
+  // so the upload it sends is the one those pages asserted before this read existed. A test
+  // about the base spies `api.ownerArtifactText` and never reaches this handler.
+  http.get("/api/v1/issues/:key/artifacts/:slug/text", () =>
+    Response.json({ code: "ARTIFACT_NOT_FOUND", error: "artifact not found" }, { status: 404 })
+  ),
+  http.get("/api/v1/projects/:key/artifacts/:slug/text", () =>
+    Response.json({ code: "ARTIFACT_NOT_FOUND", error: "artifact not found" }, { status: 404 })
+  ),
   // The navigation rail reads the two fault counts on every page it is drawn on
   // (`features/sidebar/Sidebar.tsx`, `prioritySummaryQuery`), so every test that renders the
   // rail or the shell around it makes this read without being about priorities. The answer is

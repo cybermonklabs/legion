@@ -28,6 +28,21 @@ func quiet(t *testing.T, cap int) *Admission {
 	return newAdmission(t, cap, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
+// drawSource is the random source of an admission quietDrawing builds: its engine's source, which
+// the admission draws with too (workflow.Engine's ExperimentSource). An engine takes its source
+// when it is built, so a test changes what this one reads between passes by setting next.
+type drawSource struct{ next func(uint64) (uint64, error) }
+
+func (s *drawSource) draw(bound uint64) (uint64, error) { return s.next(bound) }
+
+// quietDrawing is quiet whose engine draws every `random` experiment from the drawSource it
+// answers, which reads refusingSource until the test sets another.
+func quietDrawing(t *testing.T, cap int) (*Admission, *drawSource) {
+	t.Helper()
+	source := &drawSource{next: refusingSource(t)}
+	return newAdmissionDrawing(t, testProject, cap, config.DesignGate("").Steps(), slog.New(slog.NewTextHandler(io.Discard, nil)), source.draw), source
+}
+
 // seedMirror writes what Dispatch says of key, an issue of this package's project, as
 // seedMirrorIn writes it.
 func seedMirror(t *testing.T, pool *pgxpool.Pool, key, status string, waits ...string) {
@@ -42,20 +57,30 @@ func seedMirror(t *testing.T, pool *pgxpool.Pool, key, status string, waits ...s
 func seedMirrorIn(t *testing.T, pool *pgxpool.Pool, project, key, status string, waits ...string) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
-		row := record.DispatchIssueRow{Key: key, Project: project, Status: status, Blockers: waits, Seq: 1}
-		if err := record.NewStore().PutDispatchIssue(context.Background(), tx, row); err != nil {
+		reading := record.DispatchReading{Key: key, Project: project, Seq: 1,
+			Status: record.Carry(status), Parent: record.Carry(""), Blockers: record.Carry(waits)}
+		if err := record.NewStore().PutDispatchIssue(context.Background(), tx, reading); err != nil {
 			t.Fatalf("seed the mirror of %s: %v", key, err)
 		}
 	})
 }
 
-// applyMirrored applies fact through the daemon's own handler order (daemon/workflow.go): the
-// mirror first, so the deciders behind it read the row this very event writes.
+// applyMirrored applies a Dispatch issue fact through the daemon's own handler order
+// (applyAsTheDaemon).
 func applyMirrored(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID string, fact intake.DispatchIssue, engine intake.Handler) {
 	t.Helper()
+	applyAsTheDaemon(t, pool, admission, "dispatch", eventID, fact, engine)
+}
+
+// applyAsTheDaemon applies fact from source through the daemon's own handler order
+// (daemon/workflow.go): the mirror first, so the deciders behind it read the row this very event
+// writes, then engine and admission. It is the one helper of this package for that chain, which
+// applyMirrored and applyThroughMirror call.
+func applyAsTheDaemon(t *testing.T, pool *pgxpool.Pool, admission *Admission, source, eventID string, fact intake.Fact, engine intake.Handler) {
+	t.Helper()
 	mirror := blockers.NewMirror(record.NewStore(), testProject)
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", eventID, fact, mirror, engine, admission); err != nil {
-		t.Fatalf("ApplyFact %s: %v", eventID, err)
+	if _, err := intake.ApplyFact(context.Background(), pool, source, eventID, fact, mirror, engine, admission); err != nil {
+		t.Fatalf("ApplyFact %s/%s: %v", source, eventID, err)
 	}
 }
 

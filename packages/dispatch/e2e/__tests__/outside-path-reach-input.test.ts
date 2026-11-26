@@ -6,7 +6,9 @@
  */
 
 import { describe, expect } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 import {
@@ -22,7 +24,8 @@ import {
   withoutTools,
 } from "./outside-path-reach-fixtures";
 
-const { scratch, drive, targets, written, list, pathOf, pathWithCurl, v6Only } = reachFixtures();
+const { scratch, drive, driveEach, targets, written, list, pathOf, pathWithCurl, v6Only } =
+  reachFixtures();
 
 describe.concurrent("outside-path-reach.sh", () => {
   // Five recorded probes judged in order, through the script's classify hook, so the odd answer
@@ -65,15 +68,20 @@ describe.concurrent("outside-path-reach.sh", () => {
           ]);
         }
       }
-      for (const [rounds, want] of cases) {
-        const recorded = rounds.join("; ");
-        const run = await drive({ OUTSIDE_PATH_CLASSIFY: recorded }, { path });
-        expect({ recorded, judged: run.stdout.trimEnd(), code: run.code }).toEqual({
-          recorded,
-          judged: want,
-          code: 4,
-        });
-      }
+      const recorded = cases.map(([rounds]) => rounds.join("; "));
+      const runs = await driveEach(
+        recorded.map((each) => ({ OUTSIDE_PATH_CLASSIFY: each })),
+        { path }
+      );
+      expect(
+        runs.map((run, n) => ({
+          recorded: recorded[n],
+          judged: run.stdout.trimEnd(),
+          code: run.code,
+        }))
+      ).toEqual(
+        cases.map(([rounds, want]) => ({ recorded: rounds.join("; "), judged: want, code: 4 }))
+      );
     }
   );
   row(withoutTools)("fails naming an origin that serves a read with no credential", async () => {
@@ -91,27 +99,37 @@ describe.concurrent("outside-path-reach.sh", () => {
   row(withoutTools)(
     "is unknown when the origin's answers are not Dispatch's: a health route that fails, a read that is not refused, or a refusal that is not Dispatch's own",
     async () => {
-      for (const [health, projects, refusal] of [
+      const answers = [
         [503, 401, { code: "NO_IDENTITY" }],
         [200, 403, { code: "NO_IDENTITY" }],
         [200, 302, { code: "NO_IDENTITY" }],
         // A proxy of its own that refuses every path but a health route it answers itself.
         [200, 401, { error: "unauthorized" }],
-      ] as const) {
-        const origin = await fakeDispatch(health, projects, refusal);
-        try {
-          const where = `http://127.0.0.1:${origin.port}`;
-          const run = await drive({ OUTSIDE_ORIGIN: where, OUTSIDE_PATH_TARGETS: await list() });
-          expect({ health, projects, refusal, verdict: verdict(run), code: run.code }).toEqual({
-            health,
-            projects,
-            refusal,
-            verdict: `UNKNOWN: ${where} did not answer as Dispatch; reached nothing, so proved nothing`,
+      ] as const;
+      const origins = await Promise.all(
+        answers.map(([health, projects, refusal]) => fakeDispatch(health, projects, refusal))
+      );
+      try {
+        const wheres = origins.map((origin) => `http://127.0.0.1:${origin.port}`);
+        const runs = await driveEach(
+          await Promise.all(
+            wheres.map(async (where) => ({
+              OUTSIDE_ORIGIN: where,
+              OUTSIDE_PATH_TARGETS: await list(),
+            }))
+          )
+        );
+        expect(
+          runs.map((run, n) => ({ answer: answers[n], verdict: verdict(run), code: run.code }))
+        ).toEqual(
+          answers.map((answer, n) => ({
+            answer,
+            verdict: `UNKNOWN: ${wheres[n]} did not answer as Dispatch; reached nothing, so proved nothing`,
             code: 2,
-          });
-        } finally {
-          await origin.stop();
-        }
+          }))
+        );
+      } finally {
+        await Promise.all(origins.map((origin) => origin.stop()));
       }
     }
   );
@@ -128,11 +146,35 @@ describe.concurrent("outside-path-reach.sh", () => {
     }
   );
 
+  // A run's output can be posted where anyone reads it, such as a public CI log, so it names this
+  // device's host name nowhere: neither a HOSTNAME the environment hands bash, which bash keeps,
+  // nor the one bash reads from the system where the environment names none. Both runs stop at an
+  // origin that does not answer, after the header lines, and each must have printed them.
+  row(withoutTools)(
+    "prints the device's host name in no line, whether the environment names it or bash reads it",
+    async () => {
+      const where = `http://127.0.0.1:${await closedPort()}`;
+      const planted = `planted-host-${randomUUID()}`;
+      for (const { name, env } of [
+        { name: planted, env: { HOSTNAME: planted } },
+        { name: hostname(), env: {} },
+      ]) {
+        const run = await drive({
+          OUTSIDE_ORIGIN: where,
+          OUTSIDE_PATH_TARGETS: await list(),
+          ...env,
+        });
+        expect(run.stdout).toContain(`outside-path-reach: origin ${where}\n`);
+        expect(run.stdout.split("\n").filter((line) => line.includes(name))).toEqual([]);
+      }
+    }
+  );
+
   row(withoutTools)(
     "refuses an origin that is not an https origin alone, unless it is the local harness's with the flag set",
     async () => {
       const path = await list();
-      for (const [origin, allow] of [
+      const origins = [
         ["http://127.0.0.1:8766", ""],
         ["http://dispatch-outside.example", "1"],
         ["https://dispatch-outside.example/path", "1"],
@@ -154,17 +196,79 @@ describe.concurrent("outside-path-reach.sh", () => {
         ["https://[1.2.3.4]", "1"],
         ["https://[.::1]", "1"],
         ["ftp://dispatch-outside.example", "1"],
-      ] as const) {
-        const run = await drive({
+      ] as const;
+      const runs = await driveEach(
+        origins.map(([origin, allow]) => ({
           OUTSIDE_ORIGIN: origin,
           OUTSIDE_PATH_ALLOW_HTTP: allow,
           OUTSIDE_PATH_TARGETS: path,
-        });
-        expect({
-          origin,
+        }))
+      );
+      expect(
+        runs.map((run, n) => ({
+          origin: origins[n]?.[0],
           verdict: verdict(run).startsWith("UNKNOWN: OUTSIDE_ORIGIN "),
           code: run.code,
-        }).toEqual({ origin, verdict: true, code: 2 });
+        }))
+      ).toEqual(origins.map(([origin]) => ({ origin, verdict: true, code: 2 })));
+    }
+  );
+
+  row(withoutTools)(
+    "refuses an origin-read bound that is not a whole number of seconds from 2 to 999999, naming the setting, before going on the network",
+    async () => {
+      const origin = await fakeDispatch();
+      try {
+        const path = await list();
+        const settings = [
+          "OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS",
+          "OUTSIDE_PATH_ORIGIN_READ_SECONDS",
+        ] as const;
+        // A curl built with the synchronous resolver gives up before it resolves a name with under
+        // 1000 ms of the bound left, which a 1 s bound reaches once 1 ms has passed; curl reads 0
+        // as no bound; and curl 7.55 and later refuse a bound past 2147483 s where a long has 32
+        // bits: so 1, 0.5, 0 and 1000000 are refused, as is anything not digits.
+        const values = [
+          "abc",
+          "0",
+          "00",
+          "1",
+          "01",
+          "0.0",
+          "0.5",
+          "1.5",
+          "0.0009",
+          "1000000",
+          "99999999999999999999",
+          "-1",
+          ".5",
+          "5.",
+          "1e3",
+          "5s",
+          "1.2.3",
+          " 3",
+        ];
+        const cases = settings.flatMap((setting) => values.map((value) => ({ setting, value })));
+        const runs = await driveEach(
+          cases.map(({ setting, value }) => ({
+            OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+            OUTSIDE_PATH_TARGETS: path,
+            [setting]: value,
+          }))
+        );
+        expect(
+          runs.map((run, n) => ({ ...cases[n], verdict: verdict(run), code: run.code }))
+        ).toEqual(
+          cases.map(({ setting, value }) => ({
+            setting,
+            value,
+            verdict: `UNKNOWN: ${setting} must be a whole number of seconds from 2 to 999999, not ${value}`,
+            code: 2,
+          }))
+        );
+        expect(await origin.seen()).toEqual([]);
+      } finally {
+        await origin.stop();
       }
     }
   );
@@ -173,22 +277,15 @@ describe.concurrent("outside-path-reach.sh", () => {
     "classifies each recorded triple by whether TCP connected, and by whether the lookup did, exiting 4, never PASS's 0",
     async () => {
       const path = pathOf("bash");
-      for (const [recorded, want] of [
+      const refusals = [
         ["", "UNKNOWN: OUTSIDE_PATH_CLASSIFY is set but empty"],
         ["   ", "UNKNOWN: OUTSIDE_PATH_CLASSIFY is set but empty"],
         ["28 0.1 0.0 7", "UNKNOWN: OUTSIDE_PATH_CLASSIFY is neither"],
         ["7 0.1 0.0; 7 0.1 0.0", "UNKNOWN: OUTSIDE_PATH_CLASSIFY is neither"],
         ["7 0.1 0.0; 7 0.1 0.0; 7 0.1 0.0", "UNKNOWN: OUTSIDE_PATH_CLASSIFY is neither"],
         [Array(6).fill("7 0.1 0.0").join("; "), "UNKNOWN: OUTSIDE_PATH_CLASSIFY is neither"],
-      ] as const) {
-        const run = await drive({ OUTSIDE_PATH_CLASSIFY: recorded }, { path });
-        expect({ recorded, refused: run.stdout.startsWith(want), code: run.code }).toEqual({
-          recorded,
-          refused: true,
-          code: 2,
-        });
-      }
-      for (const [triple, want] of [
+      ] as const;
+      const classes = [
         // A resolver that never answered: the lookup timed out, so nothing was tried.
         ["28 0.000000 0.000000", "unresolved (lookup timed out)"],
         // A blackholed address: the lookup completed and the connect timed out.
@@ -217,14 +314,25 @@ describe.concurrent("outside-path-reach.sh", () => {
           "28 0.000027 0.0.0",
           "UNKNOWN (curl exit 28, time_namelookup 0.000027, time_connect 0.0.0)",
         ],
-      ] as const) {
-        const run = await drive({ OUTSIDE_PATH_CLASSIFY: triple }, { path });
-        expect({ triple, class: run.stdout.trimEnd(), code: run.code }).toEqual({
+      ] as const;
+      const runs = await driveEach(
+        [...refusals, ...classes].map(([recorded]) => ({ OUTSIDE_PATH_CLASSIFY: recorded })),
+        { path }
+      );
+      expect(
+        refusals.map(([recorded, want], n) => ({
+          recorded,
+          refused: runs[n]?.stdout.startsWith(want),
+          code: runs[n]?.code,
+        }))
+      ).toEqual(refusals.map(([recorded]) => ({ recorded, refused: true, code: 2 })));
+      expect(
+        classes.map(([triple], n) => ({
           triple,
-          class: want,
-          code: 4,
-        });
-      }
+          class: runs[refusals.length + n]?.stdout.trimEnd(),
+          code: runs[refusals.length + n]?.code,
+        }))
+      ).toEqual(classes.map(([triple, want]) => ({ triple, class: want, code: 4 })));
     }
   );
   for (const shell of ["dash", "zsh"]) {
@@ -383,7 +491,7 @@ describe.concurrent("outside-path-reach.sh", () => {
       };
       const origin = await fakeDispatch();
       try {
-        for (const [where, reason] of [
+        const refused = [
           [await list("hub 127.0.0.1"), "is not 'name host port': hub 127.0.0.1"],
           [
             await list("hub svc:envoy-hub 4222"),
@@ -440,26 +548,36 @@ describe.concurrent("outside-path-reach.sh", () => {
             await list("hub 10.0.0.1:4222 4222"),
             "target hub: 10.0.0.1:4222 is neither a host name nor an address",
           ],
-        ] as const) {
-          const run = await drive({
+        ] as const;
+        const runs = await driveEach(
+          refused.map(([where]) => ({
             OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
             OUTSIDE_PATH_TARGETS: where,
-          });
-          expect({ reason, verdict: verdict(run).startsWith("UNKNOWN: "), code: run.code }).toEqual(
-            { reason, verdict: true, code: 2 }
-          );
-          expect(verdict(run)).toContain(reason);
-        }
+          }))
+        );
+        expect(
+          runs.map((run) => ({
+            unknown: verdict(run).startsWith("UNKNOWN: "),
+            verdict: verdict(run),
+            code: run.code,
+          }))
+        ).toEqual(
+          refused.map(([, reason]) => ({
+            unknown: true,
+            verdict: expect.stringContaining(reason),
+            code: 2,
+          }))
+        );
         expect(await origin.seen()).toEqual([]);
         // A list it cannot open, or a read error, refuses with bash's own words at the end.
-        const [directory, missing] = await Promise.all(
-          [scratch, join(scratch, "no-such-list.txt")].map((where) =>
-            drive({
-              OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
-              OUTSIDE_PATH_TARGETS: where,
-            })
-          )
+        const [directory, missing] = await driveEach(
+          [scratch, join(scratch, "no-such-list.txt")].map((where) => ({
+            OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+            OUTSIDE_PATH_TARGETS: where,
+          }))
         );
+        if (directory === undefined || missing === undefined)
+          throw new Error("two runs, two results");
         expect(verdict(directory)).toMatch(
           /^UNKNOWN: OUTSIDE_PATH_TARGETS names \S+, which this device could not read whole: .*read error: 0: Is a directory$/
         );
@@ -498,29 +616,37 @@ describe.concurrent("outside-path-reach.sh", () => {
       const origin = await fakeDispatch();
       try {
         const closed = await closedPort();
-        const runs = await Promise.all(
-          separators.flatMap(([name, separator]) =>
-            locales.map(async (locale) => {
-              const where = written(
-                `closed 127.0.0.1 ${closed} # closed port${separator}hub 127.0.0.1 ${holding.port}\n`
-              );
-              const run = await drive({
-                OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
-                OUTSIDE_PATH_TARGETS: where,
-                LC_ALL: locale,
-              });
-              return { name, locale, where, said: verdict(run), code: run.code };
-            })
-          )
+        const cases = separators.flatMap(([name, separator]) =>
+          locales.map((locale) => ({
+            name,
+            locale,
+            where: written(
+              `closed 127.0.0.1 ${closed} # closed port${separator}hub 127.0.0.1 ${holding.port}\n`
+            ),
+          }))
         );
-        for (const { name, locale, where, said, code } of runs) {
-          expect({ name, locale, said, code }).toEqual({
+        const runs = await driveEach(
+          cases.map(({ locale, where }) => ({
+            OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+            OUTSIDE_PATH_TARGETS: where,
+            LC_ALL: locale,
+          }))
+        );
+        expect(
+          runs.map((run, n) => ({
+            name: cases[n]?.name,
+            locale: cases[n]?.locale,
+            said: verdict(run),
+            code: run.code,
+          }))
+        ).toEqual(
+          cases.map(({ name, locale, where }) => ({
             name,
             locale,
             said: byteRefusal(where, `closed 127.0.0.1 ${closed} # closed port`.length),
             code: 2,
-          });
-        }
+          }))
+        );
         expect(await origin.seen()).toEqual([]);
       } finally {
         holding.stop(true);
@@ -538,31 +664,32 @@ describe.concurrent("outside-path-reach.sh", () => {
       const origin = await fakeDispatch();
       try {
         const prefix = `closed 127.0.0.1 ${await closedPort()} # closed port`;
-        const runs = await Promise.all(
-          locales.map(async (locale) => {
-            const where = written(
-              Buffer.concat([
-                Buffer.from(prefix),
-                Buffer.from([0x85]),
-                Buffer.from(`hub 127.0.0.1 ${holding.port}\n`),
-              ])
-            );
-            const run = await drive({
-              OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
-              OUTSIDE_PATH_TARGETS: where,
-              LC_ALL: locale,
-            });
-            return {
-              locale,
-              said: verdict(run),
-              want: byteRefusal(where, prefix.length),
-              code: run.code,
-            };
-          })
+        const cases = locales.map((locale) => ({
+          locale,
+          where: written(
+            Buffer.concat([
+              Buffer.from(prefix),
+              Buffer.from([0x85]),
+              Buffer.from(`hub 127.0.0.1 ${holding.port}\n`),
+            ])
+          ),
+        }));
+        const runs = await driveEach(
+          cases.map(({ locale, where }) => ({
+            OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+            OUTSIDE_PATH_TARGETS: where,
+            LC_ALL: locale,
+          }))
         );
-        for (const { locale, said, want, code } of runs) {
-          expect({ locale, said, code }).toEqual({ locale, said: want, code: 2 });
-        }
+        expect(
+          runs.map((run, n) => ({ locale: cases[n]?.locale, said: verdict(run), code: run.code }))
+        ).toEqual(
+          cases.map(({ locale, where }) => ({
+            locale,
+            said: byteRefusal(where, prefix.length),
+            code: 2,
+          }))
+        );
         expect(await origin.seen()).toEqual([]);
       } finally {
         holding.stop(true);
@@ -584,34 +711,47 @@ describe.concurrent("outside-path-reach.sh", () => {
       const cases = locales.flatMap((locale) =>
         Array.from({ length: 256 }, (_, byte) => ({ locale, byte }))
       );
-      const wrong: { locale: string; byte: string; said: string }[] = [];
-      for (let at = 0; at < cases.length; at += 64) {
-        await Promise.all(
-          cases.slice(at, at + 64).map(async ({ locale, byte }) => {
-            const where = written(
+      // 64 runners at once, each running its share of the cases one after another: 64 runs at a
+      // time, from 64 children of the test process for the 768 runs. No run reaches the network:
+      // a taken byte stops at the old curl, a refused one before it.
+      const runners = 64;
+      const shares = Array.from({ length: runners }, (_, runner) =>
+        cases
+          .filter((_, index) => index % runners === runner)
+          .map(({ locale, byte }) => ({
+            locale,
+            byte,
+            where: written(
               Buffer.concat([
                 Buffer.from(prefix),
                 Buffer.from([byte]),
                 Buffer.from("hub 127.0.0.1 4222\n"),
               ])
-            );
-            const run = await drive(
-              {
-                OUTSIDE_ORIGIN: "https://dispatch-outside.example",
-                OUTSIDE_PATH_TARGETS: where,
-                LC_ALL: locale,
-              },
-              { path }
-            );
-            const allowed = byte === 0x09 || byte === 0x0a || (byte >= 0x20 && byte <= 0x7e);
-            const said = verdict(run);
-            if (said !== (allowed ? taken : byteRefusal(where, prefix.length))) {
-              wrong.push({ locale, byte: byte.toString(16).padStart(2, "0"), said });
-            }
-          })
-        );
-      }
-      expect(cases.length).toBe(256 * locales.length);
+            ),
+          }))
+      );
+      const runs = await Promise.all(
+        shares.map((share) =>
+          driveEach(
+            share.map(({ locale, where }) => ({
+              OUTSIDE_ORIGIN: "https://dispatch-outside.example",
+              OUTSIDE_PATH_TARGETS: where,
+              LC_ALL: locale,
+            })),
+            { path, together: 1 }
+          )
+        )
+      );
+      const wrong = shares.flatMap((share, runner) =>
+        share.flatMap(({ locale, byte, where }, n) => {
+          const allowed = byte === 0x09 || byte === 0x0a || (byte >= 0x20 && byte <= 0x7e);
+          const said = verdict(runs[runner]?.[n] ?? { code: -1, stdout: "", stderr: "" });
+          return said === (allowed ? taken : byteRefusal(where, prefix.length))
+            ? []
+            : [{ locale, byte: byte.toString(16).padStart(2, "0"), said }];
+        })
+      );
+      expect(shares.flat().length).toBe(256 * locales.length);
       expect(wrong).toEqual([]);
     }
   );
@@ -638,25 +778,24 @@ describe.concurrent("outside-path-reach.sh", () => {
       const origin = await fakeDispatch();
       try {
         const path = v6Only();
-        const runs = await Promise.all(
-          mapped.map(async (host) => ({
-            host,
-            run: await drive(
-              {
-                OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
-                OUTSIDE_PATH_TARGETS: await list(`hub ${host} ${holding.port}`),
-              },
-              { path }
-            ),
-          }))
+        const runs = await driveEach(
+          await Promise.all(
+            mapped.map(async (host) => ({
+              OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+              OUTSIDE_PATH_TARGETS: await list(`hub ${host} ${holding.port}`),
+            }))
+          ),
+          { path }
         );
-        for (const { host, run } of runs) {
-          expect({ host, said: verdict(run), code: run.code }).toEqual({
+        expect(
+          runs.map((run, n) => ({ host: mapped[n], said: verdict(run), code: run.code }))
+        ).toEqual(
+          mapped.map((host) => ({
             host,
             said: `UNKNOWN: target hub: ${host} is an IPv6 form of an IPv4 address; write the IPv4 address itself`,
             code: 2,
-          });
-        }
+          }))
+        );
         expect(await origin.seen()).toEqual([]);
       } finally {
         holding.stop(true);

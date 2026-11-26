@@ -119,7 +119,7 @@ func listUnrecordedShipped(ctx context.Context, pool *store.Pool, deployRepo str
 // and the attribution pass write it in statements of their own, outside any owner's lock - so a
 // read before the update could only be read again by the update itself. The update is the
 // transaction's last statement, after the append, because its change trigger takes the change
-// log's lock (delivery.LockChanges): after every row lock the transaction takes, the issue's
+// log's lock (lockChangesStatement): after every row lock the transaction takes, the issue's
 // included, and held for that statement and the commit alone. Every other writer of a
 // delivery_pull_requests row is one statement that takes the row's lock and then the change
 // log's, so the two wait on each other in one order. Of two passes that cross here, intake's and

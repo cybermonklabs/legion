@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import { AGENT_LIST_REFILLING, isAgentListRefilling } from "../api/client";
 import { dangerText, textSecondaryOnSurface } from "../theme/classes";
+import { heldPress } from "./held-press";
 
 export interface QueryErrorProps {
   /** The small line under a control row, as the Issues tab's alerts under its view tabs are
@@ -16,7 +17,8 @@ export interface QueryErrorProps {
   /** Retry's accessible name where Retry alone does not say what it reads again: a place that
    *  holds more than one Retry, as the alert line under the Issues tab's view tabs does. */
   retryLabel?: string;
-  /** Disables Retry while the retried request is in flight. */
+  /** Holds Retry while the retried request is in flight (`heldPress`): it keeps the focus and its
+   *  Tab stop, and a press of it sends nothing then. */
   retrying?: boolean;
 }
 
@@ -52,9 +54,8 @@ export function QueryError({
     onRetry === undefined ? null : (
       <button
         aria-label={retryLabel}
-        className={`${line ? "font-semibold" : "font-medium"} underline disabled:cursor-not-allowed disabled:opacity-50`}
-        disabled={retrying}
-        onClick={onRetry}
+        className={`${line ? "font-semibold" : "font-medium"} underline refused:cursor-not-allowed refused:opacity-50`}
+        {...heldPress(retrying, onRetry)}
         type="button"
       >
         Retry

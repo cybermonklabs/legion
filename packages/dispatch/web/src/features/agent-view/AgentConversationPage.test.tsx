@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import {
   type AgentStreamCommand,
   type AgentStreamFrame,
@@ -22,12 +22,14 @@ import type { ReactNode } from "react";
 import { Link, MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 
 import { jump, onFakeClock, tick } from "../../__tests__/fake-clock";
+import { heldNotDisabled } from "../../__tests__/held-press";
 import {
   errorFrame,
   type FakeLiveSocket,
   type FakeLiveSockets,
   installFakeLiveSockets,
 } from "../../__tests__/live-socket-harness";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentMessages, answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api, NetworkError } from "../../api/client";
@@ -35,13 +37,15 @@ import { liveSocketFor } from "../../api/live-socket";
 import type { Agent, Message, MessageRead, UserAgentStates } from "../../api/types";
 import { messageDeliveryFields } from "../agents/delivery-fixture";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { Sidebar } from "../sidebar/Sidebar";
 import {
   KEYED_SEND_ATTEMPT_MS,
   SEND_DEADLINE_MS,
-  SendExpiredError,
   SendStoppedError,
+  stoppedWriteNote,
 } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import {
   AgentConversationPage,
   LEFT_LIST_TEXT,
@@ -90,6 +94,7 @@ function message(id: string, body: string, overrides: Partial<Message> = {}): Me
     broadcast_id: null,
     created_at: "2026-09-27T21:16:15Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: null,
@@ -120,6 +125,14 @@ const conversation: MessageRead[] = [
 const spies: { mockRestore: () => void }[] = [];
 const clients: QueryClient[] = [];
 let sockets: FakeLiveSockets;
+
+// A held send's words and a reply are Markdown (`MarkdownBody`), drawn by the lazy Markdown
+// engine, and several rows read them as soon as their turn shows, some on the fake clock, where
+// the engine's load cannot land. The rows run in random order, so the file loads the engine
+// before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 beforeEach(() => {
   sockets = installFakeLiveSockets();
@@ -1028,9 +1041,8 @@ test("Send stays open with text while an earlier send is out or late, and each p
     await sendFromLiveView(user, "try the other branch");
     const [held] = screen.getAllByTestId("agent-send-held");
     // The pending turn names the message as the reader's own, at a glance and to a screen reader.
-    expect(
-      within(held as HTMLElement).getByText("Your message: “try the other branch”")
-    ).toBeTruthy();
+    expect(within(held as HTMLElement).getByText("Your message")).toBeTruthy();
+    expect(within(held as HTMLElement).getByText("try the other branch")).toBeTruthy();
     expect(within(held as HTMLElement).getByRole("status").textContent).toBe("Sending…");
 
     // The field cleared on the press, and the next message goes out as its own press.
@@ -2255,7 +2267,7 @@ test("while a switch waits the pickers and Send hold, and its reply and frame la
   );
   await waitFor(() => expect(held(picker("Model"))).toBe(true));
   expect(held(picker("Thinking level"))).toBe(true);
-  expect(sendButton().disabled).toBe(true);
+  expect(sendHeld()).toBe(true);
   expect(createAgentMessage).toHaveBeenCalledTimes(1);
   expect(screen.getByTestId("agent-switch-status").textContent).toBe(
     "Switching model to anthropic/model-b…"
@@ -2282,7 +2294,7 @@ test("while a switch waits the pickers and Send hold, and its reply and frame la
 
   // The frame before the reply.
   await user.selectOptions(picker("Thinking level"), "high");
-  await waitFor(() => expect(sendButton().disabled).toBe(true));
+  await waitFor(() => expect(sendHeld()).toBe(true));
   view.frame(
     settingsFrame(4, {
       model: "anthropic/model-b",
@@ -2293,7 +2305,7 @@ test("while a switch waits the pickers and Send hold, and its reply and frame la
   expect(screen.getByTestId("agent-switch-status").textContent).toBe(
     "Switching thinking level to high…"
   );
-  expect(sendButton().disabled).toBe(true);
+  expect(sendHeld()).toBe(true);
   expect(held(picker("Thinking level"))).toBe(true);
   await view.storeThread([
     { message: first, replies: [sessionReply("switch-1", "Model set to anthropic/model-b.")] },
@@ -2336,9 +2348,15 @@ test("a refused switch shows the session's reason and the header keeps its value
   expect(picker("Thinking level").value).toBe("auto");
 });
 
-// A switch tried until Dispatch has forgotten its key is sent no more: the page says so in the
-// refusal's own words - a Retry of it is a new message, delivered a second time if the first one
-// was - and the pickers are the reader's again, to send a new switch with.
+/** What the header says of a switch the reader stopped or whose key ran out: it may have reached
+ *  the session, and picking again is a switch of its own, since the header offers no Retry. */
+const stoppedSwitch = stoppedWriteNote("the switch", "sent", {
+  anew: "Picking a model or thinking level again sends a new switch.",
+});
+
+// A switch tried until Dispatch has forgotten its key is sent no more: the page says it may have
+// been sent and that picking again sends a new switch, and the pickers are the reader's again, to
+// send that new switch with.
 test("a switch whose key has run out says so, and frees the pickers", async () => {
   const createAgentMessage = answerAgentMessages().mockRejectedValue(
     new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
@@ -2355,7 +2373,38 @@ test("a switch whose key has run out says so, and frees the pickers", async () =
     // One jump crosses the key's whole life in a single round, which the shared stepping `tick`
     // would walk 500 ms at a time.
     await jump(IDEMPOTENCY_KEY_TTL_MS);
-    expect(screen.getByTestId("agent-send-error").textContent).toBe(new SendExpiredError().message);
+    expect(screen.getByTestId("agent-send-error").textContent).toBe(stoppedSwitch);
+    expect(held(picker("Model"))).toBe(false);
+  });
+});
+
+// A switch the reader stopped may have reached the session, and the header offers no Retry of it:
+// picking again sends a switch of its own, under a new key. So the page says that, and not the
+// composer's words, which promise a Retry under the same key that nothing here makes.
+test("a switch the reader stopped says picking again sends a new switch", async () => {
+  const createAgentMessage = answerAgentMessages().mockRejectedValue(
+    new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
+  );
+  spies.push(createAgentMessage);
+  const view = renderLiveView({
+    agentState: {},
+    messages: [],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    replay: [settingsFrame(1), commandsFrame(2, SWITCHES)],
+  });
+  await screen.findByRole("combobox", { name: "Model" });
+
+  await onFakeClock(async () => {
+    const user = userOnFakeClock();
+    await user.selectOptions(picker("Model"), "anthropic/model-b");
+    await jump(SEND_DEADLINE_MS);
+    const late = writesOf(view)
+      .rows()
+      .find((row) => row.label.startsWith("Switch "));
+    expect(late?.status).toBe("late");
+    act(() => writesOf(view).stop(late?.id ?? 0));
+    await jump(30 * 60_000);
+    expect(screen.getByTestId("agent-send-error").textContent).toBe(stoppedSwitch);
     expect(held(picker("Model"))).toBe(false);
   });
 });
@@ -2382,6 +2431,12 @@ function composerInput(): HTMLTextAreaElement {
 /** The composer's Send, by what it reads: "Send", or "Sending…" while a send is out. */
 function sendButton(name = "Send"): HTMLButtonElement {
   return within(composer()).getByRole("button", { name }) as HTMLButtonElement;
+}
+
+/** Whether Send is held, as a pending switch holds it: `aria-disabled`, never `disabled`, so a
+ *  Send the reader pressed keeps the focus, and a press of it sends nothing. */
+function sendHeld(): boolean {
+  return heldNotDisabled(sendButton(), "Send");
 }
 
 /** Waits for the session list to settle the delivery mode on `expected`, then returns the
@@ -2568,10 +2623,35 @@ test("a refused send keeps the message on screen and says why", async () => {
   expect((await screen.findByTestId("agent-send-error")).textContent).toBe(
     "Could not send: Dispatch refused it"
   );
-  expect(
-    within(screen.getByTestId("agent-send-held")).getByText("Your message: “try the other branch”")
-  ).toBeTruthy();
+  const held = screen.getByTestId("agent-send-held");
+  expect(within(held).getByText("Your message")).toBeTruthy();
+  expect(within(held).getByText("try the other branch")).toBeTruthy();
   expect(composerInput().value).toBe("");
+});
+
+// The held turn draws the draft by the renderer, as the message it becomes will be drawn: its
+// formatting is drawn, and a mention the picker wrote reads as the party's name. Drawn as the
+// characters typed, the turn would keep the asterisks.
+test("a held message reads as the message it becomes, never as the source typed", async () => {
+  const user = userEvent.setup();
+  spies.push(
+    spyOn(api, "createAgentMessage").mockRejectedValue(
+      new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused it" })
+    )
+  );
+  renderLiveView({
+    agentState: {},
+    messages: [],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+  });
+  const input = await modeSettled("steer");
+
+  await type(user, input, "try the **other** branch");
+  await user.click(sendButton());
+  await screen.findByTestId("agent-send-error");
+  const held = screen.getByTestId("agent-send-held");
+  await waitFor(() => expect(held.querySelector("strong")?.textContent).toBe("other"));
+  expect(held.textContent).not.toContain("**");
 });
 
 // A refusal belongs to the session that sent the message. One landing while the reader is on
@@ -2618,9 +2698,9 @@ test("a refusal that lands after switching sessions stays with the session that 
   expect((await screen.findByTestId("agent-send-error")).textContent).toBe(
     "Could not send: Dispatch refused it"
   );
-  expect(
-    within(screen.getByTestId("agent-send-held")).getByText("Your message: “hold this”")
-  ).toBeTruthy();
+  const turn = screen.getByTestId("agent-send-held");
+  expect(within(turn).getByText("Your message")).toBeTruthy();
+  expect(within(turn).getByText("hold this")).toBeTruthy();
 });
 
 // Messages to one session go out one after another, in press order: Send stays open while one is
@@ -2736,9 +2816,9 @@ test("a draft outlives the view it was written in and comes back when it wakes",
 
 // A model or thinking switch pending on a session holds that session's Send (it keeps reading
 // "Send", and the line under the box says what its placeholder says) and holds no other's; a
-// message out on another session holds nothing there either, and Enter sends nothing while a
-// switch holds. What the switch's own answer then does is the row above's
-// (`while a switch waits the pickers and Send hold`), on the one session.
+// message out on another session holds nothing there either, and neither a press of Send nor
+// Enter sends anything while a switch holds. What the switch's own answer then does is the row
+// above's (`while a switch waits the pickers and Send hold`), on the one session.
 test("a pending switch holds its own session's Send, and a send out on another holds nothing there", async () => {
   const user = userEvent.setup();
   const { createAgentMessage, held: answers } = holdSends();
@@ -2760,7 +2840,7 @@ test("a pending switch holds its own session's Send, and a send out on another h
       keyedAttempt
     )
   );
-  await waitFor(() => expect(sendButton().disabled).toBe(true));
+  await waitFor(() => expect(sendHeld()).toBe(true));
   const wait = "Waiting for the session to answer the switch…";
   const describedBy = (sendButton().getAttribute("aria-describedby") ?? "")
     .split(" ")
@@ -2769,15 +2849,17 @@ test("a pending switch holds its own session's Send, and a send out on another h
   expect(describedBy).toBe(wait);
   expect(within(composer()).queryByText("Type a message first.")).not.toBeInTheDocument();
   await type(user, composerInput(), "and then run the tests");
-  expect(sendButton().disabled).toBe(true);
+  expect(sendHeld()).toBe(true);
   expect(within(composer()).getByText(wait)).toBeTruthy();
   expect(composerHint()).toBe(wait);
-  // The press and the 50 ms it is given run on the fake clock, so the wait costs no real time and
-  // a send the Enter put out at once is counted below. That the Enter sent nothing at all is held
-  // after the switch back, where the box still holds the draft.
+  // The presses and the 50 ms they are given run on the fake clock, so the wait costs no real time
+  // and a send a press put out at once is counted below. That the presses sent nothing at all is
+  // held after the switch back, where the box still holds the draft.
   await onFakeClock(async () => {
+    const clockUser = userOnFakeClock();
     // The paste left the caret in the box: a switch holds this press, and nothing is sent.
-    await userOnFakeClock().keyboard("{Enter}");
+    await clockUser.keyboard("{Enter}");
+    await clockUser.click(sendButton());
     await jump(50);
   });
   expect(createAgentMessage).toHaveBeenCalledTimes(1);
@@ -2872,6 +2954,41 @@ for (const capabilities of [[], ["future-capability"]]) {
     expect(screen.getByTestId("agent-takes-no-messages")).toBeTruthy();
   });
 }
+
+// A corrected issue message reaches the session's own page too: its byline carries the edit,
+// and a deleted one reads as deleted where its text was.
+test("the live view marks an edited issue message and reads a deleted one as deleted", async () => {
+  renderLiveView({
+    agentState: {},
+    messages: [
+      {
+        message: message("m1", "Bob on the issue: ship it?", {
+          author: { id: "bob", kind: "user" },
+          edited_at: "2026-09-27T21:19:10Z",
+          issue_key: "CORE-1",
+        }),
+        replies: [],
+      },
+      {
+        message: message("m2", "", {
+          author: { id: "bob", kind: "user" },
+          created_at: "2026-09-27T21:20:00Z",
+          deleted_at: "2026-09-27T21:21:00Z",
+          deleted_by: { id: "bob", kind: "user" },
+          issue_key: "CORE-1",
+        }),
+        replies: [],
+      },
+    ],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+  });
+
+  const thread = await screen.findByTestId("agent-thread");
+  await within(thread).findByText("Bob on the issue: ship it?");
+  const others = within(thread).getAllByTestId("agent-message-other");
+  expect(others[0]?.textContent).toContain("edited");
+  await waitFor(() => expect(others[1]?.textContent).toContain("Deleted by bob"));
+});
 
 /** Dispatch's answer to a pin write: the session's whole state, with the time it took the pin
  *  and none once the viewer unpinned it. */
@@ -2979,7 +3096,7 @@ test("the live view's header holds the back link, the name, the live state and t
   expect(within(header).getByText("Live")).toBeTruthy();
   expect(within(header).getByRole("button", { name: "Pin Planner" })).toBeTruthy();
 
-  expect(within(header).queryAllByRole("combobox")).toEqual([]);
+  expect(within(header).queryAllByRole("combobox")).toHaveLength(0);
   expect(within(header).queryByText(agent.host)).toBeNull();
   expect(within(header).queryByText(agent.dir)).toBeNull();
   expect(screen.queryByText(/relayed while this page is open/)).toBeNull();

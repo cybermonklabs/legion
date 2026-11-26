@@ -7,18 +7,14 @@
 // share test-only code across packages), and a command can write the same history through Write.
 //
 // Write stores the rows GitHub intake and the reconcile leave behind: the one delivery_settings
-// row, two projects and the issues the pull requests name, three repositories mapped to the first
-// project in repo_projects, the pull requests merged into them, the deploy workflow's push runs on
-// main of the deploy repository, and the PR-checks workflow's pull_request runs of that same
-// repository (the one repository whose runs Dispatch reads), each run with its jobs. Every value
-// comes from one math/rand/v2 PCG source seeded by Spec.Seed and every time from Spec.Now, so one
-// spec writes the same history on every run. Each table is one statement that unnests its columns
-// as arrays, as legiontest writes its tables: a history of eighty thousand jobs written a statement
-// per row takes minutes against a real Postgres. The mappings are that one statement under a
-// mapping write's locks (WriteRepoProjects), which every fixture that maps a repository calls, so
-// a fixture and a mapping route writing one repository at once never deadlock, and their settings
-// changes reach the change log as a mapping route's do. The statement alone (InsertRepoProjects)
-// is for a load no other writer of a mapping runs beside: the eval bench's -base load.
+// row, two projects and the issues the pull requests name, the first project's default repository
+// (the deploy repository), the pull requests merged into three repositories, the deploy
+// workflow's push runs on main of the deploy repository, and the PR-checks workflow's pull_request
+// runs of that same repository (the one repository whose runs Dispatch reads), each run with its
+// jobs. Every value comes from one math/rand/v2 PCG source seeded by Spec.Seed and every time from
+// Spec.Now, so one spec writes the same history on every run. Each table is one statement that
+// unnests its columns as arrays, as legiontest writes its tables: a history of eighty thousand
+// jobs written a statement per row takes minutes against a real Postgres.
 //
 // Containment (delivery/containment.go) ships a pull request of the deploy repository with the
 // earliest-completing successful production job of a deploy run on main that GitHub created after
@@ -37,7 +33,6 @@ package deliverytest
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -48,10 +43,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -151,12 +143,14 @@ const smokeTimeout = 30 * time.Minute
 // it covers, and the seed of every random draw. A zero field takes its default: DefaultProject,
 // DefaultNow, DefaultDays; a zero Seed is a seed like any other.
 //
-// OneProject, off by default, names a new issue of the project wherever the history would name
-// one of the second project, so every pull request counts for the project, by its issue or, where
-// it names none, by its repository: the eval registry's day rows of the project then hold every
-// row the deployment-wide delivery routes count. It takes the same random draws, so the history
-// is the default one with those issues moved to the project (and the project's issues numbered
-// to match).
+// OneProject, off by default, names an issue of the project on every pull request: a new issue
+// wherever the history would name one of the second project, and one of the issues Write adds
+// after its draws (oneProjectIssues) wherever it would name none. Every pull request then counts
+// for the project, and so does every PR-checks run and every deploy that ships one: the eval
+// registry's day rows of the project then hold every row the deployment-wide delivery routes count
+// but the deploys that ship none, which count for no project (evals' attribution). It takes the
+// same random draws, so the history is the default one with those issues moved to the project and
+// added to it (and the project's issues numbered to match).
 //
 // IssueOffset, zero by default, is how many of the project's issue numbers another history took
 // already: the project's issues are numbered from IssueOffset+1, so this history can be written
@@ -192,9 +186,9 @@ func (spec Spec) withDefaults() Spec {
 type Fixture struct {
 	// Spec is the spec Write was given, with every default filled in.
 	Spec Spec
-	// Project is the project the repositories are mapped to; SecondProject is the project of the
-	// few pull requests that name an issue elsewhere, whose project a reader of a pull request's
-	// issue counts it for rather than its repository's.
+	// Project is the project whose issues most pull requests name, and whose default repository
+	// is the deploy repository; SecondProject is the project of the few pull requests that name
+	// an issue elsewhere, which count for it.
 	Project, SecondProject string
 	// DeployRepo is the repository the settings name; Repos is the three repositories, the
 	// deploy repository first.
@@ -426,8 +420,9 @@ func (s *seeding) pullRequest(repo string, merged time.Time) {
 // nameIssues gives each pull request, in creation order, the issue it names: about one in twenty
 // an issue of the second project (of the project under Spec.OneProject), a little over half an
 // issue of the project (a new one, or now and then one a recent pull request already named), and
-// the rest none. Each issue closes half an hour after the last pull request naming it merged, and
-// stays open where that falls past the history's end.
+// the rest none, or under Spec.OneProject a new issue of the project of their own, which takes no
+// draw (plainIssue). Each issue closes half an hour after the last pull request naming it merged,
+// and stays open where that falls past the history's end.
 func (s *seeding) nameIssues() {
 	elsewhere := s.fixture.SecondProject
 	if s.spec.OneProject {
@@ -448,6 +443,9 @@ func (s *seeding) nameIssues() {
 			if len(recent) > 10 {
 				recent = recent[1:]
 			}
+		}
+		if key == "" && s.spec.OneProject {
+			key = s.plainIssue(s.fixture.Project, *pr.CreatedAt)
 		}
 		short := pr.Repo[strings.LastIndex(pr.Repo, "/")+1:]
 		pr.Title = fmt.Sprintf("Change %d to %s", pr.Number, short)
@@ -470,13 +468,24 @@ func (s *seeding) newIssue(project string, before time.Time) string {
 	if !s.chance(0.25) {
 		priority = new(int16(1 + s.rng.IntN(3)))
 	}
+	return s.addIssue(project, priority, before.Add(-s.between(time.Hour, 48*time.Hour)))
+}
+
+// plainIssue writes one issue of project with no priority, opened an hour before the pull request
+// that names it, and takes no draw of the random source, so the history around it is the one the
+// same spec writes without it.
+func (s *seeding) plainIssue(project string, before time.Time) string {
+	return s.addIssue(project, nil, before.Add(-time.Hour))
+}
+
+// addIssue writes one issue of project, the next number of it, with priority, opened at opened.
+func (s *seeding) addIssue(project string, priority *int16, opened time.Time) string {
 	number := s.nextNumber(project)
 	key := fmt.Sprintf("%s-%d", project, number)
 	s.issueAt[key] = len(s.issues)
 	s.issues = append(s.issues, issue{
 		key: key, project: project, number: number, priority: priority,
-		title:  fmt.Sprintf("Work item %d of %s", number, project),
-		opened: before.Add(-s.between(time.Hour, 48*time.Hour)),
+		title: fmt.Sprintf("Work item %d of %s", number, project), opened: opened,
 	})
 	s.fixture.Issues[project] = append(s.fixture.Issues[project], key)
 	return key
@@ -741,13 +750,13 @@ func (s *seeding) judge() {
 }
 
 // write stores the history, one statement per table: the settings through delivery.PutSettings,
-// the one write of that row, the mappings through WriteRepoProjects, under a mapping write's locks,
-// and every other table as arrays unnested into one insert, so a history of eighty thousand jobs
-// costs a handful of round trips. The tables go in the order their foreign keys need: projects,
-// repositories and issues before the pull requests that name them, and the runs before their
-// jobs. A project that has a row already keeps it, so the history can join a project another
-// history made first. A project it makes names alice as its default assignee, the column every
-// project fills (store migration 20261111210103); no delivery measure reads it.
+// the one write of that row, and every other table as arrays unnested into one insert, so a
+// history of eighty thousand jobs costs a handful of round trips. The tables go in the order their
+// foreign keys need: projects and issues before the pull requests that name them, and the runs
+// before their jobs. A project that has a row already keeps it, so the history can join a project
+// another history made first, and takes the history's default repository only where it has none.
+// A project it makes names alice as its default assignee, the column every project fills (store
+// migration 20261111210103); no delivery measure reads it.
 func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 	exec := func(what, statement string, args ...any) error {
 		if _, err := pool.Exec(ctx, statement, args...); err != nil {
@@ -761,19 +770,14 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 	}
 	projects := []string{s.fixture.Project, s.fixture.SecondProject}
 	nextNumbers := []int32{s.nextNumber(s.fixture.Project), s.nextNumber(s.fixture.SecondProject)}
+	defaults := []*string{&s.fixture.DeployRepo, nil}
 	if err := exec("projects", `
-		insert into projects (key, name, default_assignee, next_number)
-		select key, key, 'alice', next from unnest($1::text[], $2::int[]) as seeded(key, next)
-		on conflict (key) do nothing`,
-		projects, nextNumbers); err != nil {
+		insert into projects (key, name, default_assignee, next_number, default_repo)
+		select key, key, 'alice', next, repo from unnest($1::text[], $2::int[], $3::text[]) as seeded(key, next, repo)
+		on conflict (key) do update set default_repo = excluded.default_repo
+		where projects.default_repo is null and excluded.default_repo is not null`,
+		projects, nextNumbers, defaults); err != nil {
 		return err
-	}
-	mappings := make([]model.RepoProject, len(s.fixture.Repos))
-	for i, repo := range s.fixture.Repos {
-		mappings[i] = model.RepoProject{Repo: repo, Project: s.fixture.Project, Default: repo == s.fixture.DeployRepo, CreatedBy: system}
-	}
-	if err := WriteRepoProjects(ctx, pool, mappings...); err != nil {
-		return fmt.Errorf("write the repositories of %s: %w", s.spec.Project, err)
 	}
 	if err := s.writeIssues(exec, actor); err != nil {
 		return err
@@ -782,66 +786,6 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 		return err
 	}
 	return s.writeRuns(exec)
-}
-
-// WriteRepoProjects stores each mapping's repository as mapped to its project, its default or not,
-// created by its CreatedBy, in one transaction that takes a mapping write's locks for each
-// repository before it inserts the rows (delivery.LockRepoProjectWrite, then InsertRepoProjects),
-// as the mapping routes do, so it and a mapping route writing the same repository wait for each
-// other in one order. Once it has committed it moves the settings changes the mappings' trigger
-// recorded in the change log's outbox into the log, as every writer of a mapping does
-// (delivery.DrainRepoProjectChange). A repository that has a mapping already refuses the whole
-// write.
-func WriteRepoProjects(ctx context.Context, pool *store.Pool, mappings ...model.RepoProject) error {
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	broker := events.NewBroker()
-	for _, mapping := range mappings {
-		if _, err := delivery.LockRepoProjectWrite(ctx, tx, broker, mapping.Repo, mapping.Project); err != nil {
-			return fmt.Errorf("lock the mapping of %s: %w", mapping.Repo, err)
-		}
-	}
-	if err := InsertRepoProjects(ctx, tx, mappings...); err != nil {
-		return err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return err
-	}
-	delivery.DrainRepoProjectChange(ctx, pool)
-	return nil
-}
-
-// Execer is what InsertRepoProjects writes through: the pool, or a transaction open on it.
-type Execer interface {
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-}
-
-// InsertRepoProjects stores each mapping's repository as mapped to its project, its default or
-// not, created by its CreatedBy, in one insert through q. It takes no lock of its own:
-// WriteRepoProjects calls it under a mapping write's locks, and a caller with no writer of the
-// mapping beside it, the eval bench's -base load, calls it alone. A repository that has a mapping
-// already refuses the whole insert.
-func InsertRepoProjects(ctx context.Context, q Execer, mappings ...model.RepoProject) error {
-	repos, projects, createdBy := make([]string, len(mappings)), make([]string, len(mappings)), make([]string, len(mappings))
-	defaults := make([]bool, len(mappings))
-	for i, mapping := range mappings {
-		author, err := json.Marshal(mapping.CreatedBy)
-		if err != nil {
-			return fmt.Errorf("encode the author of %s's mapping: %w", mapping.Repo, err)
-		}
-		repos[i], projects[i], createdBy[i], defaults[i] = mapping.Repo, mapping.Project, string(author), mapping.Default
-	}
-	if _, err := q.Exec(ctx, `
-		insert into repo_projects (repo, project, created_by, is_default)
-		select repo, project, author::jsonb, is_default
-		from unnest($1::text[], $2::text[], $3::text[], $4::bool[]) as mapped(repo, project, author, is_default)`,
-		repos, projects, createdBy, defaults); err != nil {
-		return fmt.Errorf("map the repositories: %w", err)
-	}
-	return nil
 }
 
 // writeIssues stores every issue. An issue closes half an hour after the last pull request

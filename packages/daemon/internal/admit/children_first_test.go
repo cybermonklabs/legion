@@ -29,8 +29,9 @@ const (
 func seedMirrorChild(t *testing.T, pool *pgxpool.Pool, key, status, parent string, waits ...string) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
-		row := record.DispatchIssueRow{Key: key, Project: testProject, Status: status, Blockers: waits, Seq: 1, Parent: parent}
-		if err := record.NewStore().PutDispatchIssue(context.Background(), tx, row); err != nil {
+		reading := record.DispatchReading{Key: key, Project: testProject, Seq: 1,
+			Status: record.Carry(status), Parent: record.Carry(parent), Blockers: record.Carry(waits)}
+		if err := record.NewStore().PutDispatchIssue(context.Background(), tx, reading); err != nil {
 			t.Fatalf("seed the mirror of %s: %v", key, err)
 		}
 	})
@@ -267,10 +268,10 @@ func TestARootWithNoChildrenStartsPlanningAtItsGatesOpening(t *testing.T) {
 	}
 }
 
-// A5. One children-first notice per parent per run: every fact, tick and boot runs the admission
-// pass again, and a child filed later during one wait is no second telling, while a run the tree
-// has not had yet — the one a re-admission opens, and the one a hand-over gives a sub-parent in a
-// tree of its own — is.
+// A5. One children-first notice per parent per run: every pass (the pass rule, Admission.Apply)
+// and boot runs the admission pass again, and a child filed later during one wait is no second
+// telling, while a run the tree has not had yet — the one a re-admission opens, and the one a
+// hand-over gives a sub-parent in a tree of its own — is.
 func TestTheChildrenFirstNoticeIsToldOncePerIssueAndGeneration(t *testing.T) {
 	pool := migratedPool(t)
 	admission := cfTree(t, pool, 3)
@@ -377,10 +378,7 @@ func TestTheWaitingLineLeavesOutAParentWhoseChildrenAreOpen(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read the line facts: %v", err)
 		}
-		waits, err := record.ChildWaitsOf(context.Background(), tx, record.NewStore(), testProject, issues, facts)
-		if err != nil {
-			t.Fatalf("judge the child waits: %v", err)
-		}
+		waits := record.ChildWaitsOf(facts)
 		if wait, waiting := waits[cfRoot]; !waiting || len(wait.Open) != 1 || wait.Open[0].Key != cfFirst || wait.Open[0].Status != "backlog" {
 			t.Fatalf("the judgement of %s = %+v, want it waiting on %s in backlog", cfRoot, waits[cfRoot], cfFirst)
 		}

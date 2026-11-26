@@ -1,5 +1,7 @@
 package intake
 
+//ci:reads packages/contracts/fixtures/checks-settlement/* TestDecodeChecksReadsTheNewSettlementsCheckRunsAsToday
+
 import (
 	"encoding/json"
 	"os"
@@ -26,13 +28,10 @@ func settlementPayload(runs []record.AttemptRun, failed, cancelled []string) map
 	for _, run := range runs {
 		listed = append(listed, map[string]any{"name": run.Name, "id": run.ID})
 	}
-	group := func(names []string) map[string]any {
-		return map[string]any{"count": len(names), "checks": append([]string{}, names...)}
-	}
 	return map[string]any{"kind": "checks", "repo": "sjawhar/legion", "number": "42", "sha": statusesHead,
 		"check_runs": listed, "generation": 3, "snapshot": "snapshot-3", "settled_at": 1790124840596,
-		"failed": group(failed), "cancelled": group(cancelled), "passed": group(nil), "running": group(nil),
-		"queued": group(nil), "skipped": group(nil)}
+		"failed": checkGroup(failed), "cancelled": checkGroup(cancelled), "passed": checkGroup(nil), "running": checkGroup(nil),
+		"queued": checkGroup(nil), "skipped": checkGroup(nil)}
 }
 
 // decodeSettlement decodes payload as the consumer does, through its Envoy envelope.
@@ -67,6 +66,7 @@ func settledChecks(t *testing.T, decoded decodedMessage) PullRequestChecks {
 // listener's to add. A field left out, null or empty names no status, and none of them is a list
 // the daemon could not read.
 func TestDecodeChecksReadsStatuses(t *testing.T) {
+	t.Parallel()
 	runs := []record.AttemptRun{{Name: "build", ID: 11}, {Name: "unit", ID: 12}}
 	payload := settlementPayload(runs, []string{"unit"}, []string{})
 	payload["statuses"] = []map[string]any{
@@ -139,6 +139,7 @@ func (n *fixtureName) UnmarshalJSON(data []byte) error {
 // them, and takes nothing from the rest, and the failing status named test is in no list of check
 // runs.
 func TestDecodeChecksReadsTheNewSettlementsCheckRunsAsToday(t *testing.T) {
+	t.Parallel()
 	encoded, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "checks-settlement", "listener-rules.json"))
 	if err != nil {
 		t.Fatalf("read the shared fixture: %v", err)
@@ -217,6 +218,7 @@ func TestDecodeChecksReadsTheNewSettlementsCheckRunsAsToday(t *testing.T) {
 // the listener never writes; a context named twice; an entry that is no object; a context that is
 // no string; an entry with no created_at; and a created_at that is no RFC 3339 time.
 func TestDecodeChecksKeepsTheCheckRunsOfAnUnreadableStatusList(t *testing.T) {
+	t.Parallel()
 	runs := []record.AttemptRun{{Name: "build", ID: 11}, {Name: "unit", ID: 12}}
 	want := settledChecks(t, decodeSettlement(t, settlementPayload(runs, []string{"unit"}, []string{"build"})))
 	want.StatusesUnread = true

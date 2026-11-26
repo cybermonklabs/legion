@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 
 import {
   askBlockPill,
@@ -18,9 +18,8 @@ import { TruncatedText } from "./TruncatedText";
  *  (the margin composer's Urgency row). At rest every tone is the same quiet outlined pill. */
 export type ChipTone = "neutral" | keyof typeof askBlockPill;
 
-/** A chip at rest: the quiet outlined pill every tone shares. The control row's scroll buttons
- *  wear it too (`ControlRow.tsx`), so a button over the chips reads as one of their kind. */
-export const restingChip = `${borderDefault} ${surfaceMutedBg} ${textMutedOnSurfaceMuted}`;
+/** A chip at rest: the quiet outlined pill every tone shares. */
+const restingChip = `${borderDefault} ${surfaceMutedBg} ${textMutedOnSurfaceMuted}`;
 
 const selectedChip: Record<ChipTone, string> = {
   neutral: `${borderStrong} ${surfaceMutedStrongBg} ${textSecondaryOnSurface}`,
@@ -38,21 +37,29 @@ const selectedChip: Record<ChipTone, string> = {
  * host names the action in `aria-label` (`Remove Label: docs filter`). The chip is never wider
  * than its row: text that does not fit ends in an ellipsis, and a host whose text can be that
  * long passes the whole of it as `title`. `size` buys room back in a crowded row, and gives the
- * target up only where a mouse is the pointer.
+ * target up only where a mouse is the pointer. A chip that opens a panel - the control row's
+ * `+N more` - says so (`aria-expanded`, `aria-haspopup`) and hands the panel its button as the
+ * anchor (`ref`).
  */
 export function Chip({
+  "aria-expanded": ariaExpanded,
+  "aria-haspopup": ariaHasPopup,
   "aria-label": ariaLabel,
   children,
   onClick,
+  ref,
   removable = false,
   selected,
   size = "comfortable",
   title,
   tone = "neutral",
 }: {
+  "aria-expanded"?: boolean;
+  "aria-haspopup"?: "dialog";
   "aria-label"?: string;
   children: ReactNode;
   onClick: () => void;
+  ref?: Ref<HTMLButtonElement>;
   removable?: boolean;
   selected?: boolean;
   size?: ControlSize;
@@ -61,6 +68,8 @@ export function Chip({
 }): ReactNode {
   return (
     <button
+      aria-expanded={ariaExpanded}
+      aria-haspopup={ariaHasPopup}
       aria-label={ariaLabel}
       aria-pressed={selected}
       className={`inline-flex max-w-full shrink-0 items-center gap-1 rounded-full border text-xs font-medium whitespace-nowrap ${controlPadding[size]} ${controlHoverBorder} ${
@@ -68,6 +77,7 @@ export function Chip({
       }`}
       data-control={CONTROL.chip}
       onClick={onClick}
+      ref={ref}
       type="button"
     >
       <TruncatedText title={title}>{children}</TruncatedText>

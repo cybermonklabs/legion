@@ -2,7 +2,6 @@ package tmux
 
 import (
 	"bytes"
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,11 +10,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A pane that resumes the session its claim recorded runs the model the operator's settings put
@@ -58,9 +57,7 @@ func TestTheResumedPaneRunsTheConfiguredModel(t *testing.T) {
 	environ := testbin.OMPEnviron(home)
 	run := func(command, stdin string) (stdout, stderr string, exitErr error) {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, shell, "-c", command)
+		cmd := exec.CommandContext(testwait.Context(t), shell, "-c", command)
 		cmd.Dir, cmd.Env, cmd.Stdin = work, environ, strings.NewReader(stdin)
 		var out, errOut bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &errOut
@@ -95,9 +92,11 @@ func TestTheResumedPaneRunsTheConfiguredModel(t *testing.T) {
 	host := Host{StateDir: dir}
 	promptFile := writeLaunchPrompt(t, spec, host)
 	inner, pairs, err := NewOmpLauncher(nil, shellprefix.Word(omp)).Launch(spec, host, promptFile)
-	if err != nil || pairs != nil {
-		t.Fatalf("Launch = %v, %v", pairs, err)
+	if want := []string{"-e", runtime.SessionExclusiveVariable + "=1"}; err != nil || !slices.Equal(pairs, want) {
+		t.Fatalf("Launch = %q, %v; want the resumed pane's one pair %q", pairs, err, want)
 	}
+	// Every resume below runs in the resumed pane's environment, its one pair included.
+	environ = append(environ, pairs[1])
 
 	// The control, and it runs first: the same command with the flag taken out reads the session's
 	// own pin, which at this point is the one the saving turn wrote and nothing else.

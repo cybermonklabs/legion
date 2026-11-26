@@ -12,7 +12,14 @@ import {
 } from "./api";
 import { openDisplayMenu } from "./filters";
 import { typeFilterCount } from "./inbox-filter";
-import { inboxList, inboxPane, READING_PANE_WIDTH, selectedRow, selectRow } from "./inbox-pane";
+import {
+  backToList,
+  inboxList,
+  inboxPane,
+  readingView,
+  selectedRow,
+  selectRow,
+} from "./inbox-pane";
 import {
   agentRowId,
   asSession,
@@ -25,9 +32,13 @@ import {
   THREAD_SESSION,
   unreadThreadRows,
 } from "./inbox-threads";
+import { distinctKeys, watchWrites } from "./keyed-writes";
+import { commentWithBody } from "./margin-helpers";
+import { READING_PANE_WIDTH } from "./reading-pane";
 import { refusePosts, WRITE_REFUSED } from "./sends";
 import { expandedState } from "./settled";
 import { type BrowserContext, expect, type Page, type Request, test } from "./test";
+import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
 /**
@@ -106,16 +117,11 @@ async function bandHeadings(page: Page): Promise<string[]> {
     .evaluateAll((nodes) => nodes.map((node) => (node.textContent ?? "").trim()));
 }
 
-/** Every `POST` to the dismiss route this page has made, in order, so a press that must be one
- *  request can be held to it. */
-function watchDismisses(page: Page): Request[] {
-  const posted: Request[] = [];
-  page.on("request", (request) => {
-    if (request.method() === "POST" && new URL(request.url()).pathname === DISMISS_PATH) {
-      posted.push(request);
-    }
-  });
-  return posted;
+/** Every `POST` to the dismiss route this page makes from here on, in order, as body and key. A
+ *  press is one write, under one key, however many requests it takes: the store sends it again
+ *  under the same key when an answer is dropped, so a row counts the keys (`distinctKeys`). */
+function watchDismisses(page: Page) {
+  return watchWrites(page, "POST", DISMISS_PATH);
 }
 
 /** The next `POST` to the dismiss route, as a promise to await before pressing. */
@@ -274,7 +280,60 @@ test("the row's Dismiss takes a thread out of the list, the counts and the Inbox
     // The server holds the same: one thread dismissed, one left in the Inbox.
     await expect.poll(async () => dismissedThreads()).toBe(1);
     expect(await inboxThreads()).toBe(1);
-    expect(posted).toHaveLength(1);
+    expect(distinctKeys(posted)).toEqual([expect.any(String)]);
+  } finally {
+    await alice.close();
+  }
+});
+
+// Below 1280 px the page lists short rows and reads the row a reader opens in place of the list
+// (INFRA-5200): the mark stays the short row's own checkbox, and the thread's reply box and its
+// Dismiss are the reading view's.
+// SLOW(>=2s): three rows seeded, then a mark, a thread opened, a reply and a dismiss read back
+// from the server.
+test("on a phone a thread is marked from its short row, and replied to and dismissed from the reading view its row opens @phone @phone-only", async ({
+  browser,
+}) => {
+  const seeded = await seedInbox();
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await holdReadMarks(page);
+    await page.goto("/");
+    const rows = page.locator("[data-inbox-row]");
+    const replyRow = page.locator(`[data-inbox-row="${replyRowId(seeded.reply)}"]`);
+    const agentRow = page.locator(`[data-inbox-row="${agentRowId(seeded.agent)}"]`);
+    await expect(rows).toHaveCount(3);
+
+    // The mark is the row's own: it opens nothing.
+    await agentRow.getByRole("checkbox").click();
+    await expect(page.getByRole("toolbar", { name: "Selected rows" })).toContainText("1 selected");
+    await expect(readingView(page)).toHaveCount(0);
+
+    await selectRow(page, replyRowId(seeded.reply));
+    await assertPageFits(page);
+    // The thread's own box, at the end of the thread the view draws whole.
+    const composer = readingView(page).getByRole("form", { name: "Comment composer" });
+    await composer.getByRole("textbox", { name: "Reply" }).fill("Two hours from tonight, then.");
+    await composer.getByRole("button", { name: "Send" }).click();
+    const written = await commentWithBody(
+      seeded.issueKey,
+      undefined,
+      "Two hours from tonight, then."
+    );
+    expect(written.reply_to).toBe(seeded.reply);
+    const sent = nextDismiss(page);
+    await readingView(page)
+      .locator(`[data-inbox-dismiss="${replyRowId(seeded.reply)}"]`)
+      .click();
+    expect((await sent).postDataJSON()).toMatchObject({ threads: [replyRowId(seeded.reply)] });
+    await expect.poll(async () => dismissedThreads()).toBe(1);
+
+    await backToList(page);
+    await expect(replyRow).toHaveCount(0);
+    await expect(rows).toHaveCount(2);
+    await expect(agentRow.getByRole("checkbox")).toBeChecked();
+    await assertPageFits(page);
   } finally {
     await alice.close();
   }
@@ -401,7 +460,7 @@ test("three thread rows picked with x go out together in one bulk Dismiss", asyn
     await expect(rows.first()).toHaveAttribute("data-inbox-row", drawn[3] ?? "");
     await expect.poll(async () => dismissedThreads()).toBe(3);
     expect(await inboxThreads()).toBe(1);
-    expect(posted).toHaveLength(1);
+    expect(distinctKeys(posted)).toEqual([expect.any(String)]);
   } finally {
     await alice.close();
   }
@@ -465,7 +524,7 @@ test("Select all dismisses every row of the group in one request that names each
     await expect(rows).toHaveCount(0);
     await expect.poll(async () => dismissedThreads()).toBe(THREADS);
     expect(await inboxThreads()).toBe(0);
-    expect(posted).toHaveLength(1);
+    expect(distinctKeys(posted)).toEqual([expect.any(String)]);
 
     // The Dismissed view reads them a page at a time, and **Show more** reads the next page.
     await chooseShow(page, "Dismissed");
@@ -543,7 +602,7 @@ test("Select all under a search dismisses every matching row of a band wider tha
     await expect(rows).toHaveCount(0);
     await expect.poll(async () => dismissedThreads()).toBe(MATCHING);
     expect(await inboxThreads()).toBe(OTHERS);
-    expect(posted).toHaveLength(1);
+    expect(distinctKeys(posted)).toEqual([expect.any(String)]);
 
     // What the word hid is untouched, and the Inbox draws it again once the box is empty.
     await page.getByRole("searchbox", { name: "Search asks" }).fill("");

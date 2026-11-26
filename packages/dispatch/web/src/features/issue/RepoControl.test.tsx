@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of the project's mappings, which user-event has no form for
+// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of the project list, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -14,7 +14,7 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, openList, pick, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
-import type { Issue, IssueDetails, IssueSummary, RepoProject } from "../../api/types";
+import type { Issue, IssueDetails, IssueSummary, Project } from "../../api/types";
 import { RepoControl } from "./RepoControl";
 
 const issue: Issue = {
@@ -76,32 +76,34 @@ const summary: IssueSummary = {
   created_by: issue.created_by,
   created_at: issue.created_at,
 };
-const mappings: RepoProject[] = [
+
+/** CORE's default repository is acme/widgets, and OTHER's is other/thing. */
+const projects: Project[] = [
   {
-    repo: "acme/widgets",
-    project: "CORE",
-    default: true,
-    renamed_to: null,
-    created_by: { kind: "user", id: "alice" },
     created_at: "2026-10-01T00:00:00Z",
+    default_repo: "acme/widgets",
+    gated_steps: [],
+    key: "CORE",
+    name: "Core",
+    open_asks: 0,
+    proven_sessions: false,
   },
   {
-    repo: "acme/gadgets",
-    project: "CORE",
-    default: false,
-    renamed_to: null,
-    created_by: { kind: "user", id: "alice" },
     created_at: "2026-10-01T00:00:00Z",
-  },
-  {
-    repo: "other/thing",
-    project: "OTHER",
-    default: true,
-    renamed_to: null,
-    created_by: { kind: "user", id: "alice" },
-    created_at: "2026-10-01T00:00:00Z",
+    default_repo: "other/thing",
+    gated_steps: [],
+    key: "OTHER",
+    name: "Other",
+    open_asks: 0,
+    proven_sessions: false,
   },
 ];
+
+/** The projects with CORE holding no default repository: a project with none carries no
+ *  `default_repo`. */
+const noCoreDefault: Project[] = projects.map(({ default_repo, ...project }) =>
+  project.key === "CORE" ? project : { ...project, default_repo }
+);
 
 const detailKey = ["issue", issue.key] as const;
 const listKey = ["issues", "project", issue.project] as const;
@@ -131,12 +133,12 @@ function CachedControl({ commits }: { commits: Commits<string | null> }): ReactN
 
 function renderControl(
   own: { repo: string | null; resolvedRepo: string | null },
-  mapped: RepoProject[] = mappings,
+  listed: Project[] = projects,
   { failFirstRead = false }: { failFirstRead?: boolean } = {}
 ) {
-  const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue(mapped);
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue(listed);
   if (failFirstRead) {
-    listRepoProjects.mockRejectedValueOnce(new Error("the network dropped the read"));
+    listProjects.mockRejectedValueOnce(new Error("the network dropped the read"));
   }
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -178,11 +180,11 @@ function renderControl(
   return {
     commits,
     user,
-    listRepoProjects,
+    listProjects,
     queryClient,
     unmount: () => {
       view.unmount();
-      listRepoProjects.mockRestore();
+      listProjects.mockRestore();
     },
   };
 }
@@ -221,78 +223,89 @@ async function giveTyped(user: UserEvent, repo: string): Promise<void> {
   await chooseTyped(user, repo);
 }
 
-test("RepoControl lists the project's mapped repositories, shows the resolved one, and patches repo", async () => {
+// The suggestion comes from the project list, the read the sidebar and the issue header share:
+// the control reads no route of its own.
+test("RepoControl lists the project's default repository, shows the resolved one, and patches repo", async () => {
+  // The one read is the project list, which `renderControl` answers at the api client, and the
+  // write is answered by `answerIssuePatches`, so a request that reaches the network is one the
+  // control should not make.
+  const network = spyOn(globalThis, "fetch").mockRejectedValue(
+    new Error("RepoControl sent a request")
+  );
   const patchIssue = answerIssuePatches().mockResolvedValue({
     ...issue,
-    repo: "acme/gadgets",
-    resolved_repo: "acme/gadgets",
+    repo: "acme/widgets",
+    resolved_repo: "acme/widgets",
     last_seq: 2,
   });
-  const { listRepoProjects, queryClient, unmount, user } = renderControl({
+  const { listProjects, queryClient, unmount, user } = renderControl({
     repo: null,
     resolvedRepo: "acme/widgets",
   });
   try {
-    // The badge names the repository the issue resolves to; no mapping is read until the reader
-    // reaches for the control.
+    // The badge names the repository the issue resolves to; the project list is not read until
+    // the reader reaches for the control.
     expect(screen.getByText("acme/widgets", { selector: badge })).toBeTruthy();
-    expect(listRepoProjects).not.toHaveBeenCalled();
+    expect(listProjects).not.toHaveBeenCalled();
     // A focus with no press before it: user-event has no form for a bare focus.
     fireEvent.focus(trigger());
-    await waitFor(() => expect(listRepoProjects).toHaveBeenCalled());
-    // Inherit first, then CORE's mappings sorted; OTHER's absent.
+    await waitFor(() => expect(listProjects).toHaveBeenCalled());
+    // Inherit first, then CORE's default; OTHER's is absent.
     const list = await openList(user, REPOSITORY);
-    await waitFor(() => expect(rows(list)).toEqual(["✓Inherit", "acme/gadgets", "acme/widgets"]));
-    await user.click(within(list).getByRole("option", { name: "acme/gadgets" }));
+    await waitFor(() => expect(rows(list)).toEqual(["✓Inherit", "acme/widgets"]));
+    expect(listProjects).toHaveBeenCalledTimes(1);
+    await user.click(within(list).getByRole("option", { name: "acme/widgets" }));
     await waitFor(() =>
-      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/gadgets" }, keyedAttempt)
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/widgets" }, keyedAttempt)
     );
     await waitFor(() =>
       expect(queryClient.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2)
     );
-    expect(trigger()).toHaveAccessibleName(`${REPOSITORY} acme/gadgets`);
-    expect(screen.getByText("acme/gadgets", { selector: badge })).toBeTruthy();
-    expect(queryClient.getQueryData<IssueSummary[]>(listKey)?.[0]?.repo).toBe("acme/gadgets");
+    // The default, picked, is the issue's own repository: no longer inherited.
+    expect(trigger()).toHaveAccessibleName(`${REPOSITORY} acme/widgets`);
+    expect(screen.getByText("acme/widgets", { selector: badge })).toBeTruthy();
+    expect(queryClient.getQueryData<IssueSummary[]>(listKey)?.[0]?.repo).toBe("acme/widgets");
+    expect(network).not.toHaveBeenCalled();
   } finally {
     unmount();
     patchIssue.mockRestore();
+    network.mockRestore();
   }
 });
 
 // Any `owner/name` is a repository the server takes, so the list is not held to the project's
-// mappings: one another project maps, or one no project maps, is typed and given by the row that
-// takes it, and what the reader typed is what is written.
-test("RepoControl writes an owner/name the project does not map", async () => {
+// default: another project's default, or a repository no project names, is typed and given by the
+// row that takes it, and what the reader typed is what is written.
+test("RepoControl writes an owner/name that is not the project's default", async () => {
   const patchIssue = answerIssuePatches()
     .mockResolvedValueOnce({ ...issue, repo: "other/thing", resolved_repo: "other/thing" })
-    .mockResolvedValueOnce({ ...issue, repo: "zed/unmapped", resolved_repo: "zed/unmapped" });
+    .mockResolvedValueOnce({ ...issue, repo: "zed/elsewhere", resolved_repo: "zed/elsewhere" });
   const { queryClient, unmount, user } = renderControl({
     repo: null,
     resolvedRepo: "acme/widgets",
   });
   try {
-    // OTHER maps other/thing, so CORE's list offers it only as typed text.
+    // other/thing is OTHER's default, so CORE's list offers it only as typed text.
     const list = await openList(user, REPOSITORY);
-    await waitFor(() => expect(rows(list)).toEqual(["✓Inherit", "acme/gadgets", "acme/widgets"]));
+    await waitFor(() => expect(rows(list)).toEqual(["✓Inherit", "acme/widgets"]));
     await chooseTyped(user, "other/thing");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "other/thing" }, keyedAttempt)
     );
     await waitFor(() => expect(trigger()).toHaveAccessibleName(`${REPOSITORY} other/thing`));
-    await giveTyped(user, "zed/unmapped");
+    await giveTyped(user, "zed/elsewhere");
     await waitFor(() =>
-      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "zed/unmapped" }, keyedAttempt)
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "zed/elsewhere" }, keyedAttempt)
     );
     await waitFor(() =>
-      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.repo).toBe("zed/unmapped")
+      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.repo).toBe("zed/elsewhere")
     );
-    expect(screen.getByText("zed/unmapped", { selector: badge })).toBeTruthy();
-    // The issue's own repository is in its list, though no project maps it.
+    expect(screen.getByText("zed/elsewhere", { selector: badge })).toBeTruthy();
+    // The issue's own repository is in its list, after the project's default.
     expect(rows(await openList(user, REPOSITORY))).toEqual([
       "Inherit",
-      "✓zed/unmapped",
-      "acme/gadgets",
       "acme/widgets",
+      "✓zed/elsewhere",
     ]);
   } finally {
     unmount();
@@ -310,7 +323,7 @@ test("RepoControl sends null for Inherit", async () => {
   });
   const { unmount, user } = renderControl({ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" });
   try {
-    // The issue's own repository is selectable before the mapping list has loaded.
+    // The issue's own repository is selectable before the project list has loaded.
     expect(trigger()).toHaveAccessibleName(`${REPOSITORY} acme/gadgets`);
     await pick(user, REPOSITORY, "Inherit");
     await waitFor(() =>
@@ -498,43 +511,48 @@ test("RepoControl's name goes on to the repository the issue resolves to", async
   }
 });
 
-// With nothing resolved the badge says there is no repository, and the mappings are read at once:
-// the issue with no repository is the one most likely to be given one.
-test("RepoControl says No repository when nothing resolves in a project that maps one", async () => {
-  const { listRepoProjects, unmount } = renderControl({ repo: null, resolvedRepo: null });
+// With nothing resolved the badge says there is no repository, and the project list is read at
+// once: the issue with no repository is the one most likely to be given one.
+test("RepoControl says No repository when nothing resolves", async () => {
+  const { listProjects, unmount } = renderControl(
+    { repo: null, resolvedRepo: null },
+    noCoreDefault
+  );
   try {
     expect(await screen.findByText("No repository", { selector: badge })).toBeTruthy();
     expect(screen.getByText("Repository:")).toBeTruthy();
     expect(trigger()).toHaveAccessibleName(`${REPOSITORY} No repository`);
-    await waitFor(() => expect(listRepoProjects).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(listProjects).toHaveBeenCalledTimes(1));
   } finally {
     unmount();
   }
 });
 
-// A project that maps no repository has nothing to suggest, and its issues take a repository all
-// the same, so the rail carries the item, and its list offers Inherit and a typed repository.
-test("RepoControl shows the item for an issue whose project maps no repository", async () => {
-  const others = mappings.filter((mapping) => mapping.project !== "CORE");
+// A project with no default repository has nothing to suggest, and its issues take a repository
+// all the same, so the rail carries the item, and its list offers Inherit and a typed repository.
+test("RepoControl shows the item for an issue whose project has no default repository", async () => {
   const patchIssue = answerIssuePatches().mockResolvedValue({
     ...issue,
-    repo: "zed/unmapped",
-    resolved_repo: "zed/unmapped",
+    repo: "zed/elsewhere",
+    resolved_repo: "zed/elsewhere",
   });
-  const { queryClient, unmount, user } = renderControl({ repo: null, resolvedRepo: null }, others);
+  const { queryClient, unmount, user } = renderControl(
+    { repo: null, resolvedRepo: null },
+    noCoreDefault
+  );
   try {
-    // The mappings are read at once; once they are in and React has rendered them, the list
-    // holds what they map.
+    // The project list is read at once; once it is in and React has rendered it, the list holds
+    // no default.
     await waitFor(() =>
-      expect(queryClient.getQueryData<RepoProject[]>(["repo-projects"])).toEqual(others)
+      expect(queryClient.getQueryData<Project[]>(["projects"])).toEqual(noCoreDefault)
     );
     await act(async () => {});
     expect(screen.getByText("Repository:")).toBeTruthy();
     expect(screen.getByText("No repository", { selector: badge })).toBeTruthy();
     expect(rows(await openList(user, REPOSITORY))).toEqual(["✓Inherit"]);
-    await chooseTyped(user, "zed/unmapped");
+    await chooseTyped(user, "zed/elsewhere");
     await waitFor(() =>
-      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "zed/unmapped" }, keyedAttempt)
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "zed/elsewhere" }, keyedAttempt)
     );
   } finally {
     unmount();
@@ -542,26 +560,24 @@ test("RepoControl shows the item for an issue whose project maps no repository",
   }
 });
 
-// A failed mappings read costs the reader the suggestions and nothing else: the item shows, with
-// the failure and a Retry beside its trigger, and the read is offered again.
-test("RepoControl shows a failed mappings read with a retry instead of hiding the item", async () => {
-  const { listRepoProjects, unmount, user } = renderControl(
+// A failed read of the project list costs the reader the suggestion and nothing else: the item
+// shows, with the failure and a Retry beside its trigger, and the read is offered again.
+test("RepoControl shows a failed project list read with a retry instead of hiding the item", async () => {
+  const { listProjects, unmount, user } = renderControl(
     { repo: null, resolvedRepo: null },
-    mappings,
+    projects,
     { failFirstRead: true }
   );
   try {
-    expect(await screen.findByText("Could not load the repositories mapped to CORE.")).toBeTruthy();
+    expect(await screen.findByText("Could not load projects.")).toBeTruthy();
     expect(screen.getByText("Repository:")).toBeTruthy();
     expect(screen.getByText("No repository", { selector: badge })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(listRepoProjects).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(listProjects).toHaveBeenCalledTimes(2));
     await waitFor(() =>
-      expect(
-        screen.queryByText("Could not load the repositories mapped to CORE.")
-      ).not.toBeInTheDocument()
+      expect(screen.queryByText("Could not load projects.")).not.toBeInTheDocument()
     );
-    expect(rows(await openList(user, REPOSITORY))).toHaveLength(3);
+    expect(rows(await openList(user, REPOSITORY))).toEqual(["✓Inherit", "acme/widgets"]);
     expect(screen.getByText("No repository", { selector: badge })).toBeTruthy();
   } finally {
     unmount();
@@ -569,14 +585,14 @@ test("RepoControl shows a failed mappings read with a retry instead of hiding th
 });
 
 // With a repository resolved the picker still shows it, and a failed read says so beside it.
-test("RepoControl shows a failed mappings read beside a resolved repository", async () => {
-  const { unmount } = renderControl({ repo: null, resolvedRepo: "acme/widgets" }, mappings, {
+test("RepoControl shows a failed project list read beside a resolved repository", async () => {
+  const { unmount } = renderControl({ repo: null, resolvedRepo: "acme/widgets" }, projects, {
     failFirstRead: true,
   });
   try {
     // A focus with no press before it: user-event has no form for a bare focus.
     fireEvent.focus(trigger());
-    expect(await screen.findByText("Could not load the repositories mapped to CORE.")).toBeTruthy();
+    expect(await screen.findByText("Could not load projects.")).toBeTruthy();
     expect(screen.getByText("acme/widgets", { selector: badge })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   } finally {
@@ -610,50 +626,50 @@ test("RepoControl rolls back and shows the server's refusal", async () => {
 });
 
 // INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
-// options." The issue header's Repository is such a list: its options are the repositories
-// mapped to the issue's project, which grow with the project. Opened, it holds a text box of its
-// own, a word typed into it leaves only the repositories that match, and a pick writes the
-// issue's own repository and puts the focus back on the control. Opened again it stands on the
-// value it holds, and Enter there writes nothing.
+// options." The issue header's Repository is such a list: its options are Inherit, the project's
+// default repository and the issue's own. Opened, it holds a text box of its own, a word typed
+// into it leaves only the repositories that match, and a pick writes the issue's own repository
+// and puts the focus back on the control. Opened again it stands on the value it holds, and
+// Enter there writes nothing.
 test("the issue header's Repository list holds a text box that narrows the repositories, and a pick writes the issue's own", async () => {
   const patchIssue = answerIssuePatches().mockResolvedValue({
     ...issue,
-    repo: "acme/gadgets",
-    resolved_repo: "acme/gadgets",
+    repo: "acme/widgets",
+    resolved_repo: "acme/widgets",
   });
-  const { unmount, user } = renderControl({ repo: null, resolvedRepo: "acme/widgets" });
+  const { unmount, user } = renderControl({ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" });
   try {
     const before = new Set(textBoxes());
     await user.click(screen.getByRole("button", { name: pickNamed("Repository of CORE-1") }));
-    // The mappings are read once the reader reaches for the control.
+    // The project list is read once the reader reaches for the control.
     await waitFor(() =>
-      expect(screen.queryAllByRole("option", { name: "acme/gadgets" }).length).toBeGreaterThan(0)
+      expect(screen.queryAllByRole("option", { name: "acme/widgets" }).length).toBeGreaterThan(0)
     );
     const own = textBoxes().filter((box) => !before.has(box));
     expect(own, "the Repository list holds no text box of its own").toHaveLength(1);
     const list = listOf(own[0] as HTMLElement);
-    expect(within(list).getByRole("option", { name: "Inherit" })).toHaveAttribute(
+    expect(within(list).getByRole("option", { name: "acme/gadgets" })).toHaveAttribute(
       "aria-selected",
       "true"
     );
-    await user.type(own[0] as HTMLElement, "gadg");
+    await user.type(own[0] as HTMLElement, "widg");
     await waitFor(() =>
       expect(
-        within(list).queryAllByRole("option", { name: "acme/widgets" }),
-        `"gadg" leaves acme/widgets in the Repository list`
+        within(list).queryAllByRole("option", { name: "acme/gadgets" }),
+        `"widg" leaves acme/gadgets in the Repository list`
       ).toHaveLength(0)
     );
     expect(
       within(list).queryAllByRole("option", { name: "Inherit" }),
-      `"gadg" leaves Inherit in the Repository list`
+      `"widg" leaves Inherit in the Repository list`
     ).toHaveLength(0);
-    await user.click(within(list).getByRole("option", { name: "acme/gadgets" }));
+    await user.click(within(list).getByRole("option", { name: "acme/widgets" }));
     await waitFor(() =>
-      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/gadgets" }, keyedAttempt)
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/widgets" }, keyedAttempt)
     );
     expect(screen.queryByRole("listbox", { name: "Repository of CORE-1 options" })).toBeNull();
     expect(trigger()).toHaveFocus();
-    await waitFor(() => expect(trigger()).toHaveAccessibleName(`${REPOSITORY} acme/gadgets`));
+    await waitFor(() => expect(trigger()).toHaveAccessibleName(`${REPOSITORY} acme/widgets`));
 
     await user.keyboard("{Enter}");
     await screen.findByRole("listbox", { name: "Repository of CORE-1 options" });
@@ -667,27 +683,27 @@ test("the issue header's Repository list holds a text box that narrows the repos
   }
 });
 
-// Until the mappings answer, the list says they are loading where a typed word matches no
-// option, and it takes the typed repository all the same.
+// Until the project list answers, the list says the repositories are loading where a typed word
+// matches no option, and it takes the typed repository all the same.
 test("the issue header's Repository list says the repositories are loading where a typed word matches none", async () => {
   const patchIssue = answerIssuePatches().mockResolvedValue({
     ...issue,
-    repo: "zed/unmapped",
-    resolved_repo: "zed/unmapped",
+    repo: "zed/elsewhere",
+    resolved_repo: "zed/elsewhere",
   });
-  const { listRepoProjects, unmount, user } = renderControl({
+  const { listProjects, unmount, user } = renderControl({
     repo: null,
     resolvedRepo: "acme/widgets",
   });
-  listRepoProjects.mockReturnValue(new Promise(() => {}));
+  listProjects.mockReturnValue(new Promise(() => {}));
   try {
     const list = await openList(user, REPOSITORY);
     await user.click(searchBox());
-    await user.paste("zed/unmapped");
+    await user.paste("zed/elsewhere");
     expect(within(list).getByText("Loading repositories…")).toBeTruthy();
-    await user.click(within(list).getByRole("option", { name: 'Use "zed/unmapped"' }));
+    await user.click(within(list).getByRole("option", { name: 'Use "zed/elsewhere"' }));
     await waitFor(() =>
-      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "zed/unmapped" }, keyedAttempt)
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "zed/elsewhere" }, keyedAttempt)
     );
   } finally {
     unmount();
@@ -702,26 +718,26 @@ test("the issue header's Repository list says the repositories are loading where
 test("the issue header's Repository list says the repositories could not be loaded when their read fails", async () => {
   const patchIssue = answerIssuePatches().mockResolvedValue({
     ...issue,
-    repo: "zed/unmapped",
-    resolved_repo: "zed/unmapped",
+    repo: "zed/elsewhere",
+    resolved_repo: "zed/elsewhere",
   });
-  const { unmount, user } = renderControl({ repo: null, resolvedRepo: "acme/widgets" }, mappings, {
+  const { unmount, user } = renderControl({ repo: null, resolvedRepo: "acme/widgets" }, projects, {
     failFirstRead: true,
   });
   try {
-    const failure = "Could not load the repositories mapped to CORE.";
+    const failure = "Could not load projects.";
     const list = await openList(user, REPOSITORY);
     const panel = list.parentElement as HTMLElement;
     expect(await within(panel).findByText(failure)).toBeTruthy();
     expect(rows(list)).toEqual(["✓Inherit"]);
-    await chooseTyped(user, "zed unmapped");
+    await chooseTyped(user, "zed elsewhere");
     expect(within(panel).getByText(NOT_OWNER_NAME)).toBeTruthy();
     expect(within(panel).queryByText(failure)).not.toBeInTheDocument();
     await user.clear(searchBox());
     expect(within(panel).getByText(failure)).toBeTruthy();
-    await chooseTyped(user, "zed/unmapped");
+    await chooseTyped(user, "zed/elsewhere");
     await waitFor(() =>
-      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "zed/unmapped" }, keyedAttempt)
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "zed/elsewhere" }, keyedAttempt)
     );
   } finally {
     unmount();

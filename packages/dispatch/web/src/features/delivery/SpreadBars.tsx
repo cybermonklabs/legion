@@ -1,15 +1,16 @@
 // The prototype's web/src/components/SpreadBars.tsx, ported as it is; its fills are the
-// `chartBar` tokens, since no component writes a colour utility of its own. One difference: where
+// `chartBar` tokens, since no component writes a colour utility of its own. Two differences: where
 // a lead-time eval may judge the chart (`judged`), each of a day's two bars takes its own verdict,
 // the median bar by the day's median and the p90 bar by its p90, in the target's direction and
 // inclusiveness, and none where the target does not judge that statistic (`lib/target.ts`'s
 // `ownVerdict`), and the dashed line is drawn exactly where the bars take one (`targetLine`),
 // rather than the prototype's strict "under the target" of each bar's figure, since a person may
 // make a target inclusive, turn its direction, and judge one of the two statistics and not the
-// other.
+// other; and a day's title writes each toned bar's value on its value's side of the target, by the
+// verdict that bar takes (`judgeFigure`, dispatch://INFRA-2916, R3-C1).
 import { chartBar } from "../../theme/classes";
 import { barScale } from "./lib/barScale";
-import { type Judge, ownVerdict, type Target, targetLine } from "./lib/target";
+import { type Judge, judgeFigure, type Target, targetLine, type WriteFigure } from "./lib/target";
 
 export interface SpreadBarDay {
   day: string; // YYYY-MM-DD, the tooltip's prefix
@@ -34,7 +35,10 @@ interface Props {
   // neutral under no line.
   judged?: { evalSlug: string; target: Target };
   noun: string; // what `n` counts, "runs"
-  format: (minutes: number) => string;
+  // How a day's title writes a bar's minutes: their usual digits, and the more a toned bar takes
+  // where those would put its value on the other side of the target from its verdict
+  // (`judgeFigure`).
+  write: (minutes: number) => WriteFigure;
 }
 
 const BAR = 12;
@@ -44,7 +48,7 @@ const HEIGHT = 36;
  * line marks its target where the bars take a tone, and each bar is green where its own value
  * meets the target, red where it misses it and neutral where it has no verdict, so a day's two
  * bars may differ. Today's partial day is faded. Plain SVG, like `Sparkbars`. */
-export function SpreadBars({ days, judged, noun, format }: Props) {
+export function SpreadBars({ days, judged, noun, write }: Props) {
   const line = judged === undefined ? undefined : targetLine(judged.target, SPREAD_STATISTICS);
   const y = barScale(
     1,
@@ -52,8 +56,14 @@ export function SpreadBars({ days, judged, noun, format }: Props) {
     days.map((d) => d.p90_minutes),
     HEIGHT
   );
-  const verdict = (statistic: Judge, value: number | null): boolean | null =>
-    judged === undefined ? null : ownVerdict(judged.target, statistic, "day", value);
+  // A day's value of statistic, null where it has none: its minutes, the verdict its bar takes and
+  // its title's text of them, which judgeFigure writes in the usual digits under no verdict where
+  // no eval judges the chart (a null target).
+  const figure = (statistic: Judge, minutes: number | null) => {
+    if (minutes === null) return null;
+    const target = judged?.target ?? null;
+    return { minutes, ...judgeFigure(target, statistic, "day", minutes, write(minutes)) };
+  };
   return (
     <svg
       viewBox={`0 0 ${days.length * BAR} ${HEIGHT}`}
@@ -63,19 +73,19 @@ export function SpreadBars({ days, judged, noun, format }: Props) {
       aria-label="per-day median and p90"
     >
       {days.map((d, i) => {
-        const medianMet = verdict(MEDIAN, d.median_minutes);
-        const p90Met = verdict(P90, d.p90_minutes);
+        const median = figure(MEDIAN, d.median_minutes);
+        const p90 = figure(P90, d.p90_minutes);
         return (
           <g key={d.day} opacity={d.partial ? 0.55 : 1}>
             <title>
               {`${d.day}${d.partial ? " (today so far)" : ""}: ${
-                d.median_minutes === null || d.p90_minutes === null
+                median === null || p90 === null
                   ? `no ${noun}`
-                  : `median ${format(d.median_minutes)}, p90 ${format(d.p90_minutes)}, ${d.n} ${noun}`
+                  : `median ${median.text}, p90 ${p90.text}, ${d.n} ${noun}`
               }`}
             </title>
             <rect x={i * BAR} y={0} width={BAR} height={HEIGHT} fill="transparent" />
-            {d.median_minutes === null || d.p90_minutes === null ? (
+            {median === null || p90 === null ? (
               <rect
                 x={i * BAR + 1}
                 y={HEIGHT - 1}
@@ -87,13 +97,13 @@ export function SpreadBars({ days, judged, noun, format }: Props) {
               <>
                 <rect
                   x={i * BAR + 1}
-                  y={y(d.p90_minutes)}
+                  y={y(p90.minutes)}
                   width={BAR - 2}
-                  height={Math.max(HEIGHT - y(d.p90_minutes), 1)}
+                  height={Math.max(HEIGHT - y(p90.minutes), 1)}
                   className={
-                    p90Met === null
+                    p90.met === null
                       ? chartBar.neutralFaint
-                      : p90Met
+                      : p90.met
                         ? chartBar.metFaint
                         : chartBar.missedFaint
                   }
@@ -103,13 +113,13 @@ export function SpreadBars({ days, judged, noun, format }: Props) {
                 />
                 <rect
                   x={i * BAR + 1}
-                  y={y(d.median_minutes)}
+                  y={y(median.minutes)}
                   width={BAR - 2}
-                  height={Math.max(HEIGHT - y(d.median_minutes), 1)}
+                  height={Math.max(HEIGHT - y(median.minutes), 1)}
                   className={
-                    medianMet === null
+                    median.met === null
                       ? chartBar.neutral
-                      : medianMet
+                      : median.met
                         ? chartBar.met
                         : chartBar.missed
                   }

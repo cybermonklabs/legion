@@ -116,3 +116,10 @@ export function listTrigger(scope: Locator | Page, label: string | RegExp): Loca
 export function listOf(trigger: Locator): Locator {
   return trigger.locator("xpath=id(./@aria-controls)");
 }
+
+/** Picks the option named `option` from the list `trigger` opens, as a reader does: a press of
+ *  the trigger, then of the option in the list's own panel (`listOf`). */
+export async function pickFromList(trigger: Locator, option: string | RegExp): Promise<void> {
+  await trigger.click();
+  await listOf(trigger).getByRole("option", { exact: true, name: option }).click();
+}

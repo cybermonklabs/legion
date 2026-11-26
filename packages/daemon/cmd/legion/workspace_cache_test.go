@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // cmdCacheToken is the bearer token the cache command's tests hand the cache, and the fetch's
@@ -37,6 +37,7 @@ func (v *issueVolume) cacheArgs() []string {
 // Every refusal `cache` makes happens before it runs git, listens or writes anything: its root is
 // as it was, and no one-shot credential is left in its TMPDIR.
 func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		args func(v *issueVolume) []string
@@ -60,7 +61,7 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 			// --repo is read first: the root and the token are wrong too.
 			name: "a bad --repo, before every other input",
 			args: func(*issueVolume) []string { return []string{"cache", "--repo", "acme", "--root", "cache"} },
-			env:  func(t *testing.T, _ *issueVolume) { fixtureenv.Unset(t, "LEGION_PROVISION_TOKEN_FILE") },
+			env:  func(t *testing.T, v *issueVolume) { delete(v.env, "LEGION_PROVISION_TOKEN_FILE") },
 			code: 1,
 			says: func(*issueVolume) string { return `--repo must be "owner/name" (got "acme")` },
 		},
@@ -78,27 +79,27 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 		},
 		{
 			name: "LEGION_REPOSITORY_CACHE_TOKEN_FILE unset",
-			env:  func(t *testing.T, _ *issueVolume) { fixtureenv.Unset(t, "LEGION_REPOSITORY_CACHE_TOKEN_FILE") },
+			env:  func(t *testing.T, v *issueVolume) { delete(v.env, "LEGION_REPOSITORY_CACHE_TOKEN_FILE") },
 			code: 1,
 			says: func(*issueVolume) string { return "LEGION_REPOSITORY_CACHE_TOKEN_FILE is not set" },
 		},
 		{
 			name: "a bearer token file that is blank",
-			env: func(t *testing.T, _ *issueVolume) {
-				t.Setenv("LEGION_REPOSITORY_CACHE_TOKEN_FILE", writeCacheToken(t, " \n"))
+			env: func(t *testing.T, v *issueVolume) {
+				v.env["LEGION_REPOSITORY_CACHE_TOKEN_FILE"] = writeCacheToken(t, " \n")
 			},
 			code: 1,
 			says: func(*issueVolume) string { return "LEGION_REPOSITORY_CACHE_TOKEN_FILE names " },
 		},
 		{
 			name: "LEGION_PROVISION_TOKEN_FILE unset",
-			env:  func(t *testing.T, _ *issueVolume) { fixtureenv.Unset(t, "LEGION_PROVISION_TOKEN_FILE") },
+			env:  func(t *testing.T, v *issueVolume) { delete(v.env, "LEGION_PROVISION_TOKEN_FILE") },
 			code: 1,
 			says: func(*issueVolume) string { return "LEGION_PROVISION_TOKEN_FILE is not set" },
 		},
 		{
 			name: "a provisioning token file that is absent",
-			env:  func(t *testing.T, v *issueVolume) { t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token+".absent") },
+			env:  func(t *testing.T, v *issueVolume) { v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token + ".absent" },
 			code: 1,
 			says: func(v *issueVolume) string {
 				return "LEGION_PROVISION_TOKEN_FILE names " + v.token + ".absent, which could not be read"
@@ -118,7 +119,7 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 		},
 		{
 			name: "no git on PATH",
-			env:  func(t *testing.T, _ *issueVolume) { t.Setenv("PATH", t.TempDir()) },
+			env:  func(t *testing.T, v *issueVolume) { v.env["PATH"] = t.TempDir() },
 			code: 1,
 			says: func(*issueVolume) string { return "git is not on PATH" },
 		},
@@ -137,9 +138,8 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := newIssueVolume(t).withRemote(t, "main")
-			v.setenv(t)
-			t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token)
-			t.Setenv("LEGION_REPOSITORY_CACHE_TOKEN_FILE", writeCacheToken(t, cmdCacheToken))
+			v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token
+			v.env["LEGION_REPOSITORY_CACHE_TOKEN_FILE"] = writeCacheToken(t, cmdCacheToken)
 			if tc.env != nil {
 				tc.env(t, v)
 			}
@@ -147,7 +147,7 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 			if tc.args != nil {
 				args = tc.args(v)
 			}
-			code, stdout, stderr := runWorkspaceInitHere(args)
+			code, stdout, stderr := v.run(args)
 			if code != tc.code || !strings.Contains(stderr, tc.says(v)) {
 				t.Fatalf("exit %d, stderr %q; want %d naming %q", code, stderr, tc.code, tc.says(v))
 			}
@@ -167,58 +167,89 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 	}
 }
 
+// `cache` exits 1 for every failure, a failure from GitHub too: the fetch's exit 3 for a cause
+// outside an issue's volume (workspace.InitExitOutsideVolume) is an issue pod's alone. Here GitHub
+// answers the cache's first clone with a 403, and the cache, with no clone to serve, ends.
+func TestWorkspaceInitCacheExitsOneWhenGitHubRefusesItsFirstClone(t *testing.T) {
+	t.Parallel()
+	v := newIssueVolume(t).withRemote(t, "main")
+	attempts := v.failClones(t, "remote: Write access to repository not granted.\nfatal: unable to access 'https://github.com/acme/widgets/': The requested URL returned error: 403\n")
+	v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token
+	v.env["LEGION_REPOSITORY_CACHE_TOKEN_FILE"] = writeCacheToken(t, cmdCacheToken)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var stdout, stderr lockedBuffer
+	exited := make(chan int, 1)
+	go func() {
+		exited <- v.runContext(ctx, v.cacheArgs(), &stdout, &stderr)
+	}()
+
+	select {
+	case code := <-exited:
+		if says := "The requested URL returned error: 403"; code != 1 || !strings.Contains(stderr.String(), says) {
+			t.Fatalf("cache exited %d, stderr %q; want 1 naming %q", code, stderr.String(), says)
+		}
+	case <-time.After(testwait.Bounded(t, 1<<60, 30*time.Second)):
+		t.Fatalf("cache did not end after GitHub refused its first clone, before the test binary's deadline: stdout %q, stderr %q", stdout.String(), stderr.String())
+	}
+	if got := cloneAttempts(t, attempts); got != 1 {
+		t.Fatalf("git cloned %d times, want 1", got)
+	}
+}
+
 // `cache` serves the repository's cache until its context ends: it says where it listens, clones
 // the repository onto its root with the provisioning token handed to git as a one-shot credential
 // under its TMPDIR, answers /healthz ready at the remote's head to a request carrying no token,
 // holds no token on the volume, and
 // exits 0 once stopped.
 func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
+	t.Parallel()
 	v := newIssueVolume(t).withRemote(t, "main")
-	v.setenv(t)
-	t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token)
-	t.Setenv("LEGION_REPOSITORY_CACHE_TOKEN_FILE", writeCacheToken(t, cmdCacheToken+"\n"))
+	v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token
+	v.env["LEGION_REPOSITORY_CACHE_TOKEN_FILE"] = writeCacheToken(t, cmdCacheToken+"\n")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var stdout, stderr lockedBuffer
 	exited := make(chan int, 1)
 	go func() {
-		exited <- run(ctx, append([]string{"legion", "workspace-init"}, v.cacheArgs()...), &stdout, &stderr)
+		exited <- v.runContext(ctx, v.cacheArgs(), &stdout, &stderr)
 	}()
 
 	address := ""
-	deadline := time.Now().Add(winitWait)
-	for address == "" {
+	if !testwait.Holds(testwait.Bounded(t, 1<<60, 30*time.Second), 10*time.Millisecond, func() bool {
 		for _, line := range strings.Split(stdout.String(), "\n") {
 			if found, ok := strings.CutPrefix(line, "workspace-init cache: serving acme/widgets on "); ok {
 				address = found
 			}
 		}
-		if address == "" {
-			if time.Now().After(deadline) {
-				t.Fatalf("cache never said where it serves: stdout %q, stderr %q", stdout.String(), stderr.String())
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
+		return address != ""
+	}) {
+		t.Fatalf("cache never said where it serves: stdout %q, stderr %q", stdout.String(), stderr.String())
 	}
 	var health repocache.Health
-	for !health.Ready {
-		request, err := http.NewRequest(http.MethodGet, "http://"+address+"/healthz", nil)
+	// Each read of /healthz, and the wait for one that says ready, ends when what is left of the
+	// test binary's deadline less 30 s has passed: a /healthz that takes the connection and never
+	// answers fails the row by name, where a request with no bound hung it to go test's alarm.
+	wait := testwait.Bounded(t, 1<<60, 30*time.Second)
+	readyCtx, readyCancel := context.WithTimeout(context.Background(), wait)
+	defer readyCancel()
+	if !testwait.Holds(wait, 20*time.Millisecond, func() bool {
+		request, err := http.NewRequestWithContext(readyCtx, http.MethodGet, "http://"+address+"/healthz", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		response, err := http.DefaultClient.Do(request)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("GET /healthz: %v (each read's bound ends %s before the test binary's deadline); stdout %q, stderr %q", err, 30*time.Second, stdout.String(), stderr.String())
 		}
 		err = json.NewDecoder(response.Body).Decode(&health)
 		response.Body.Close()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the cache never became ready: %+v; stdout %q, stderr %q", health, stdout.String(), stderr.String())
-		}
-		time.Sleep(20 * time.Millisecond)
+		return health.Ready
+	}) {
+		t.Fatalf("the cache never became ready: %+v; stdout %q, stderr %q", health, stdout.String(), stderr.String())
 	}
 	if want := v.git(t, "--git-dir="+v.env["WINIT_REMOTE"], "rev-parse", "main"); health.Head != want || health.Repo != winitRepo {
 		t.Fatalf("/healthz = %+v, want acme/widgets at the remote's main %s", health, want)
@@ -237,13 +268,8 @@ func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 	holdsNoToken(t, v.root, "while the cache serves")
 
 	cancel()
-	select {
-	case code := <-exited:
-		if code != 0 {
-			t.Fatalf("cache exited %d once stopped, stderr %q", code, stderr.String())
-		}
-	case <-time.After(winitWait):
-		t.Fatal("cache did not stop with its context")
+	if code := testwait.Receive(t, "the cache to stop with its context", exited); code != 0 {
+		t.Fatalf("cache exited %d once stopped, stderr %q", code, stderr.String())
 	}
 	if entries, err := os.ReadDir(v.tmp); err != nil || len(entries) != 0 {
 		t.Fatalf("TMPDIR holds %v (%v) once the cache stopped, want its credential gone", entries, err)

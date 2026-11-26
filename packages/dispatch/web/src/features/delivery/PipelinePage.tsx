@@ -52,7 +52,6 @@ import {
 import { useAddressParams } from "../../lib/page-address";
 import {
   borderDefault,
-  dangerText,
   linkText,
   surfaceBg,
   textMutedOnCanvas,
@@ -85,6 +84,13 @@ import { SPREAD_STATISTICS, SpreadBars } from "./SpreadBars";
 import { TargetBadge } from "./TargetBadge";
 
 const CARD = `flex min-w-0 flex-col gap-1.5 rounded border px-3 py-2 ${surfaceBg} ${borderDefault}`;
+
+/** A day's minutes as a chart's bar writes them in its title (`formatDuration`), with the more
+ *  decimals `SpreadBars` gives a toned bar's value where its usual ones would put it on the other
+ *  side of the target. */
+function writeMinutes(minutes: number): WriteFigure {
+  return (extra) => formatDuration(minutes, extra);
+}
 
 /** `/pipeline`: how long PR checks, the staging end-to-end gate and the two deploys take, and how
  *  often each ends in success, over the last seven UTC days. */
@@ -264,7 +270,7 @@ export function PipelineView({
                     </TableCell>
                     <TableCell align="right">{formatRate(job.total.success_rate)}</TableCell>
                     <TableCell>
-                      <SpreadBars days={job.days ?? []} format={formatDuration} noun="results" />
+                      <SpreadBars days={job.days ?? []} noun="results" write={writeMinutes} />
                     </TableCell>
                   </TableRow>
                 );
@@ -417,7 +423,7 @@ function TimingCard(props: {
           p90={timing.total.p90_minutes}
         />
       </div>
-      <SpreadBars days={timing.days ?? []} format={formatDuration} noun="runs" />
+      <SpreadBars days={timing.days ?? []} noun="runs" write={writeMinutes} />
       <div className={`text-xs ${textSecondaryOnSurface}`} data-health>
         Success today <span className="font-semibold">{formatRate(today.success_rate)}</span>
         <span className={textMutedOnSurface}>
@@ -431,13 +437,13 @@ function TimingCard(props: {
         </span>
       </div>
       <Sparkbars
-        format={(v) => `${formatRate(v)} success`}
         max={1}
         points={(timing.days ?? []).map((d) => ({
           label: d.day,
           partial: d.partial,
           value: d.success_rate,
         }))}
+        write={(v) => () => `${formatRate(v)} success`}
       />
       <div className={`text-[11px] ${textMutedOnSurface}`}>
         {timing.total.cancelled} cancelled in 7 days, not counted
@@ -515,9 +521,9 @@ function LeadTimeCard(props: {
       </div>
       <SpreadBars
         days={timing.days ?? []}
-        format={formatDuration}
         judged={{ evalSlug, target }}
         noun="PRs"
+        write={writeMinutes}
       />
       {(target === null ? [props.offJudge] : shownJudges(target)).map((judge) => {
         const todays = leadTimeValue(today, judge);

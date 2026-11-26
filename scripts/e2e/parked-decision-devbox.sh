@@ -81,6 +81,12 @@ mkdir -p "$evidence/logs" "$evidence/transcripts"
 # shellcheck source-path=SCRIPTDIR source=lib/model-endpoint.sh
 . "$root/scripts/e2e/lib/model-endpoint.sh"
 transcript_to "$evidence/transcript.log"
+# Every program the run execs from here on carries its mark, and the sweep in cleanup and
+# cleanup-is-complete's wait take what carries it and nothing else (marked_processes,
+# lib/process-tree.sh); a fork of this shell that execs nothing carries none and is stopped by its
+# pid (run_marks' comment there). The transcript's tee, started above, carries none, so it outlives
+# the sweep and writes the run's last line.
+export LEGION_E2E_RUN=$work
 ok=
 check=setup
 TZ=UTC printf -v check_started '%(%FT%TZ)T' -1 # when the current check began (lib/model-gateway-unserved.sh)
@@ -164,7 +170,7 @@ remove_run_branches() {
 }
 
 cleanup() {
-  local status=$? p
+  local status=$?
   set +e
   # Teardown is best effort: a command that fails here is a warning, never a check's FAIL line.
   trap 'printf "cleanup warning: line %s exited %s\n" "$LINENO" "$?" >&2' ERR
@@ -180,8 +186,8 @@ cleanup() {
   stop_pid "$daemon_keeper_pid"
   stop_pid "$dispatch_keeper_pid"
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
-  stop_agent_daemons
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
+  stop_agent_daemons || true
+  stop_marked_processes "$work" || true
   docker rm -f "$pg_container" "$nats_container" >/dev/null 2>&1 || true
   close_unpassed_run_pull_requests
   remove_run_branches >&2
@@ -270,12 +276,12 @@ nats_urls:
   - nats://127.0.0.1:$port_nats
 dispatch_url: http://127.0.0.1:$port_dispatch
 dispatch_token_file: $work/dispatch-token
-# The project's repository is Dispatch's mapping (the PUT in rig makes $repo its default).
+# The project's repository is no key of legion.yaml: the PUT in rig sets $repo as its default repository in Dispatch.
 projects:
   $project: {}
 gates:
   design: root-issues
-# Four: an issue holds one of the cap's slots as "Admission and the `legion` label" in
+# Four: an issue holds one of the cap's slots as "Admission and the \`legion\` label" in
 # docs/site/src/content/docs/legion/concepts.md says. The four
 # roots that wait on a person at trees-wait-on-a-person — trees 1, 2, 4 and 5 — hold a row each
 # at once, since a root in awaiting_person keeps its slot, and that is this lane's peak. It is
@@ -342,10 +348,12 @@ claim_session_text() {
 # start_controller WINDOW runs `legion controller start` in WINDOW of the run's own tmux server, with
 # the operator's Oh My Pi session's own variables unset (omp_session_unsets, lib/omp-home.sh: that
 # session, which runs this script, sets OMP_SESSION_ID) and the run's isolated profile, which holds
-# this checkout's pi-envoy and pi-legion and the model route.
+# this checkout's pi-envoy and pi-legion and the model route. The window's command records the pid
+# of the command it runs in $evidence/logs/WINDOW.pid (record_pid_sh, lib/process-tree.sh), which execs in
+# that process, so the run knows each controller start by the pid it started.
 start_controller() {
   local window=$1 command
-  command="cd '$work' && env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' LEGION_GH_PATH='$real_gh' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/logs/$window.stderr'; echo \$? >'$evidence/logs/$window.exit'; sleep 3600"
+  command="cd '$work' && sh -c '$record_pid_sh' record-pid '$evidence/logs/$window.pid' env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' LEGION_GH_PATH='$real_gh' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/logs/$window.stderr'; echo \$? >'$evidence/logs/$window.exit'; sleep 3600"
   if tm has-session 2>/dev/null; then
     tm new-window -d -n "$window" "$command"
   else
@@ -357,21 +365,24 @@ controller_token=legion-$ptoken-controller
 # in $work/controller-role.json (stage4b-sandbox-tree.sh).
 role_answer() { curl -sS --max-time 20 -o "$work/controller-role.json" -w '%{http_code}' -H "@$work/envoy-auth-header" "http://127.0.0.1:$port_listener/v1/roles/$controller_token" 2>/dev/null; }
 role_unheld() { [ "$(role_answer)" = 404 ]; }
-controller_runs() { pgrep -f -- "^$work/legion controller start --config $work/controller.yaml" >/dev/null; }
-controller_gone() { ! controller_runs; }
+# controller_runs WINDOW: the `legion controller start` WINDOW's command started still runs, by the
+# pid it recorded (recorded_pid, lib/process-tree.sh), never by a search of the machine's processes for its
+# command line.
+controller_runs() { recorded_pid "$evidence/logs/$1.pid" "$work/legion" >/dev/null; }
+controller_gone() { ! controller_runs "$1"; }
 # controller_quit WINDOW quits the controller as a person does (stage4b-sandbox-tree.sh): Ctrl-C ends
 # a turn and asks again, and Ctrl-D on the empty editor quits.
 controller_quit() {
   local window=$1
-  if controller_runs; then
+  if controller_runs "$window"; then
     for _ in 1 2 3 4 5; do
-      controller_runs || break
+      controller_runs "$window" || break
       tm send-keys -t "pd:$window" C-c
       sleep 2
     done
-    if controller_runs; then tm send-keys -t "pd:$window" C-d; fi
+    if controller_runs "$window"; then tm send-keys -t "pd:$window" C-d; fi
   fi
-  until_true 60 "legion controller start in $window to exit" controller_gone
+  until_true 60 "legion controller start in $window to exit" controller_gone "$window"
   until_true 300 "the listener to answer that the controller role $controller_token has no live holder" role_unheld
 }
 controller_session_id() { daemon_state | jq -er '.controllerLocator.sessionId // empty'; }
@@ -512,26 +523,31 @@ since() { printf '%ss' "$((SECONDS - $1))"; }
 # polling run_processes every half second, and fails naming the pids that still run. It gives up
 # only once both bounds are spent: DEADLINE_SECONDS of wall time (default 600) have passed and
 # MIN_POLLS polls (default 10) have been made. The poll floor exists because one poll's cost belongs
-# to the machine, not to the run: run_processes walks /proc with a readlink, and often a grep, per
-# process. On a devbox at load ≈370 with ≈4,300 processes one walk took about 9 s, so the first walk
-# outran the old 30 s budget, until_true made one attempt and failed the run, and the processes
-# ended four minutes later. A wait that can make a single attempt is not a wait, and a longer
-# deadline alone would only be a new wager on the machine.
+# to the machine, not to the run: run_processes walks every process of the machine's /proc. On a
+# devbox at load ≈370 with ≈4,300 processes one walk took about 9 s, so the first walk outran the
+# old 30 s budget, until_true made one attempt and failed the run, and the processes ended four
+# minutes later. A wait that can make a single attempt is not a wait, and a longer deadline alone
+# would only be a new wager on the machine.
 wait_for_run_processes() {
-  local limit=${1:-600} floor=${2:-10} polls=0 started=$SECONDS beat=$SECONDS left line
+  local limit=${1:-600} floor=${2:-10} polls=0 started=$SECONDS beat=$SECONDS left line survivors status
   note "waiting up to ${limit}s and at least $floor polls for every process of the run to end"
   while :; do
     polls=$((polls + 1))
-    # run_processes's status is that of the last thing its loop ran and means nothing.
-    left=$(run_processes || true)
+    # Status 2 is run_processes's own: it could not read the machine's processes, which is never an
+    # empty run. Any other status means nothing.
+    status=0
+    left=$(run_processes) || status=$?
+    [ "$status" != 2 ] || fail "the run's processes could not be read (run_processes exited 2), so whether every one ended is not known"
     if [ -z "$left" ]; then
       note "every process of the run ended: poll $polls, $(since "$started")"
       return 0
     fi
     if ((SECONDS - started >= limit && polls >= floor)); then
       # Each survivor's line, read before the EXIT trap's sweep kills it, so the failure names what
-      # each process was and whose session it ran in.
-      while IFS= read -r line; do note "$line"; done < <(ps -o pid,ppid,pgid,sid,lstart,args -p "${left//$'\n'/,}" 2>&1 || true)
+      # each process was and whose session it ran in (proc_describe, lib/process-tree.sh: one read
+      # of each survivor's own /proc entry, never a read of every process on the machine).
+      mapfile -t survivors <<<"$left"
+      while IFS= read -r line; do note "$line"; done < <(proc_describe "${survivors[@]}" 2>&1 || true)
       fail "timed out after $(since "$started") ($polls polls) waiting for every process of the run to end; still running: ${left//$'\n'/ }"
     fi
     if ((SECONDS - beat >= 60)); then
@@ -555,12 +571,27 @@ wait_for_run_processes() {
 # service detached, a session of its own, and ends its services and their helpers when it ends, even
 # by SIGKILL. A member is signalled only when it also carries that runtime directory in
 # OMP_DAEMON_RUNTIME_DIR or is one of the run's by run_processes's reading, so a session the kernel
-# later gave the same id is left alone. It finds nothing by working directory alone: what it misses,
-# a service whose broker did not end it among them, cleanup-is-complete's wait still names.
+# later gave the same id is left alone, and each signal goes through freeze_if, held to the start
+# time the walk read (lib/process-tree.sh), so a member that ended and whose pid another process
+# took since is never signalled. It finds nothing by working directory alone: what it misses, a
+# service whose broker did not end it among them, cleanup-is-complete's wait still names. It reads
+# `${proc_root:-/proc}`: the host's /proc, unless a test points proc_root at a proc root of the
+# processes it started (lib/proc-root.ts). It prints why and fails with 2 when the run's processes
+# could not be read (run_processes), the proc root lists no process at all, or jq, which reads each
+# broker.pid, is not on PATH, so a walk that read nothing never reads as one with nothing to stop.
 stop_agent_daemons() {
-  local file dir real leader p stat sid line env_dir i alive
-  local -a run=() targets=() environ=()
-  local -A dirs=()
+  local file dir real leader p stat sid line env_dir i alive pid start listed
+  local -a run=() targets=() environ=() fields=()
+  local -A dirs=() started=()
+  # A /proc that cannot be read has no /dev/fd either, so the broker.pid search below would read
+  # nothing and stop nothing (proc_unreadable, lib/process-tree.sh).
+  ! proc_unreadable stop_agent_daemons "no broker session was looked for" || return 2
+  # Each broker.pid is read with jq, and a file jq cannot read is not a broker's: without jq every
+  # file would be passed over and nothing stopped.
+  command -v jq >/dev/null || {
+    echo "stop_agent_daemons: jq is not on PATH, so no broker.pid was read and no broker session was stopped" >&2
+    return 2
+  }
   while IFS= read -r -d '' file; do
     leader=$(jq -r '.pid // empty' "$file" 2>/dev/null) || continue
     [[ $leader =~ ^[1-9][0-9]*$ ]] || continue
@@ -569,12 +600,24 @@ stop_agent_daemons() {
     dirs[$leader]="$dir $real"
   done < <(find "$work" -name broker.pid -type f -print0 2>/dev/null || :)
   ((${#dirs[@]} > 0)) || return 0
-  mapfile -t run < <(run_processes || true)
-  for p in /proc/[0-9]*; do
-    { read -r stat <"$p/stat"; } 2>/dev/null || continue
-    # The fields after the command, which may itself hold spaces or parentheses: state, ppid,
-    # process group, session.
-    read -r _ _ _ sid _ <<<"${stat##*\) }"
+  listed=$(run_processes) || {
+    echo "stop_agent_daemons: the run's processes could not be read (run_processes), so no broker session was stopped" >&2
+    return 2
+  }
+  mapfile -t run <<<"$listed"
+  listed=
+  for p in "${proc_root:-/proc}"/[0-9]*; do
+    [ -e "$p" ] || continue
+    listed=1
+    # Read whole (proc_stat_field's way, lib/process-tree.sh), since a process names itself and a
+    # name may hold a newline, which a read of the first line stops at.
+    stat=
+    { IFS= read -r -d '' stat <"$p/stat"; } 2>/dev/null || :
+    [ -n "$stat" ] || continue
+    # The fields after the command, which may itself hold spaces, parentheses or a newline: state,
+    # ppid, process group, session, and the start time, the 20th.
+    read -r -a fields <<<"${stat##*\) }"
+    sid=${fields[3]}
     [ -n "${dirs[$sid]+set}" ] || continue
     env_dir=
     environ=()
@@ -582,26 +625,31 @@ stop_agent_daemons() {
     for line in ${environ[@]+"${environ[@]}"}; do
       case $line in OMP_DAEMON_RUNTIME_DIR=*) env_dir=${line#*=} ;; esac
     done
-    if { [ -n "$env_dir" ] && [[ " ${dirs[$sid]} " == *" $env_dir "* ]]; } || [[ " ${run[*]} " == *" ${p#/proc/} "* ]]; then
-      targets+=("${p#/proc/}")
+    if { [ -n "$env_dir" ] && [[ " ${dirs[$sid]} " == *" $env_dir "* ]]; } || [[ " ${run[*]} " == *" ${p##*/} "* ]]; then
+      targets+=("${p##*/}")
+      started[${p##*/}]=${fields[19]}
     fi
   done
+  [ -n "$listed" ] || {
+    echo "stop_agent_daemons: ${proc_root:-/proc} lists no process, so no broker session was stopped" >&2
+    return 2
+  }
   ((${#targets[@]} > 0)) || return 0
   note "stopping ${#targets[@]} processes of ${#dirs[@]} Oh My Pi daemon broker sessions: ${targets[*]}"
-  kill -TERM "${targets[@]}" 2>/dev/null || true
+  for pid in "${targets[@]}"; do freeze_if "$pid" "${started[$pid]}" TERM || true; done
   for i in $(seq 1 50); do
     alive=
-    for p in "${targets[@]}"; do ! kill -0 "$p" 2>/dev/null || alive=1; done
+    for pid in "${targets[@]}"; do [ "$(proc_start "$pid")" != "${started[$pid]}" ] || alive=1; done
     [ -n "$alive" ] || return 0
     sleep 0.2
   done
-  kill -KILL "${targets[@]}" 2>/dev/null || true
+  for pid in "${targets[@]}"; do freeze_if "$pid" "${started[$pid]}" KILL || true; done
   return 0
 }
 
 # ---- checkpoints --------------------------------------------------------------------------------------
 begin prerequisites
-for tool in go docker jq curl python3 tmux bun mise agent-secrets gh shellcheck jj pgrep; do command -v "$tool" >/dev/null || fail "$tool is required"; done
+for tool in go docker jq curl python3 tmux bun mise agent-secrets gh shellcheck jj; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 # Legion's two role Apps, this deployment's own ids unless the App inputs name another's, with the
 # implement App's broker secret and the review App's key command behind them (--help), proved
 # against GitHub here, before the run writes anything (lib/github-apps.sh, as Stage 3 does);
@@ -695,7 +743,7 @@ until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | gre
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Parked decision proof $project" '{key:$key,name:$name}')" >/dev/null
-dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project,default:true}')" >/dev/null
+dispatch_human PUT "projects/$project/default-repository" "$(jq -cn --arg repo "$repo" '{repo:$repo}')" >/dev/null
 (cd "$root" && bun install --frozen-lockfile >/dev/null)
 pin=$(<"$root/.omp-pin")
 mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
@@ -981,7 +1029,8 @@ until_true 300 "$tree3 to be parked" parked "$tree3"
 question3=$(open_question "$tree3")
 answer_question "$question3"
 until_true 300 "the workflow to relay the person's answer on $tree3 while no controller runs" relayed_logged "$tree3" ask-answered
-controller_runs && fail "a controller runs before ctl2 starts"
+# ctl1 is the one controller the run started before ctl2.
+! controller_runs ctl1 || fail "a controller runs before ctl2 starts: ctl1's, pid $(cat "$evidence/logs/ctl1.pid")"
 start_seq=$(last_seq "$tree3")
 note "$tree3 was answered after its park; the daemon relayed the answer while no controller ran ($(since "$waited"))"
 start_controller ctl2
@@ -1040,9 +1089,10 @@ stop_pid "$daemon_keeper_pid"
 stop_pid "$dispatch_keeper_pid"
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
 # The panes are gone; what their sessions started detached is not (stop_agent_daemons).
-stop_agent_daemons
+stop_agent_daemons || fail "the run's Oh My Pi broker sessions could not be read, so they were not stopped"
+# Still running is still the process recorded at its start: a pid another process took since is not.
 for pid in $daemon_pid $dispatch_pid $listener_pid $daemon_keeper_pid $dispatch_keeper_pid; do
-  ! kill -0 "$pid" 2>/dev/null || fail "process $pid still runs"
+  [ -z "${started_at[$pid]:-}" ] || [ "$(proc_start "$pid")" != "${started_at[$pid]}" ] || fail "process $pid still runs"
 done
 docker rm -f "$pg_container" "$nats_container" >/dev/null
 for container in "$pg_container" "$nats_container"; do

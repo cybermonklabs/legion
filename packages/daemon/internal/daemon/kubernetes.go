@@ -16,10 +16,10 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/experiment"
@@ -55,12 +55,13 @@ var workerImageTools = sandbox.Tools{
 
 // imageProbeRetry is how often the daemon tries its worker image again after an attempt that said
 // nothing definitive: the daemon's backoff, bounded like `legion probe-image`'s at six attempts.
-// Its transient outcomes (a pod that never finished, a kubelet failure) can repeat for a reason no
-// wait changes, such as a memory limit too small for Oh My Pi, so an unbounded retry would hold a
-// deterministic refusal as a boot that never ends. A probe pod the pool has no room for is no such
-// outcome: it is waited on at the policy's longest interval, outside the six (bootprobe.Run,
-// Outcome.Waiting), since a full pool is the pool's state and not the image's, and the daemon
-// exiting would not make room.
+// Its transient outcomes (a pod that never finished, a kubelet failure, a probe that exited
+// bootprobe.NoVerdictExit because a check had no verdict) can repeat for a reason no wait
+// changes, such as a memory limit too small for Oh My Pi or a command that never answers, so
+// an unbounded retry would hold a deterministic refusal as a boot that never ends. A probe pod
+// the pool has no room for is no such outcome: it is waited on at the policy's longest interval,
+// outside the six (bootprobe.Run, Outcome.Waiting), since a full pool is the pool's state and not
+// the image's, and the daemon exiting would not make room.
 var imageProbeRetry = bootprobe.Image
 
 // sandboxReads is what Agent Sandbox needs that readBoot reads: the cluster's client and the
@@ -72,18 +73,20 @@ type sandboxReads struct {
 
 // readSandbox is Agent Sandbox's share of readBoot (C1's translation, C3): the cluster's client from
 // runtime.kubernetes' kubeconfig, and the Options every value of the configuration becomes, with
+// credential, the launch's Dispatch credential readBoot read (sandbox.DispatchCredential), and
 // paneNatsUser, the public key of the pane NATS nkey seed's user ("" with none), which the image
-// probe holds the providers Secret's seed to. None of the host's own agent machinery is read: no Oh
-// My Pi invocation or plugin gate (the image probe proves the image's), no Dispatch token file (a
-// pod reads its bearer from its claim's Secret), no secretsd provider keys (a pod mounts its keys
-// from the providers Secret), and no host gh, git, or jj (a pod runs the image's).
-func readSandbox(cfg config.Config, project, dispatchToken, paneNatsUser string, lookup func(string) (string, bool), log *slog.Logger) (sandboxReads, error) {
+// probe holds the providers Secret's seed to. None of the host's own agent machinery is read: no
+// Oh My Pi invocation or plugin gate (the image probe proves the image's), no Dispatch token file
+// (a launch carries its Dispatch token in its start command's Files), no secretsd provider keys
+// (a pod mounts its keys from the providers Secret), and no host gh, git, or jj (a pod runs the
+// image's).
+func readSandbox(cfg config.Config, project string, credential sandbox.DispatchCredential, paneNatsUser string, lookup func(string) (string, bool), log *slog.Logger) (sandboxReads, error) {
 	k := *cfg.Runtime.Kubernetes
 	rc, err := kubeClient(k)
 	if err != nil {
 		return sandboxReads{}, err
 	}
-	opts, err := sandboxOptions(cfg, k, project, dispatchToken, lookup, log)
+	opts, err := sandboxOptions(cfg, k, project, credential, lookup, log)
 	if err != nil {
 		return sandboxReads{}, err
 	}
@@ -116,7 +119,7 @@ func ResolvedPlugins(cfg config.Config) (*runtime.PluginInstall, string) {
 	if k.PluginsFromBinary {
 		source = PluginsFromBinary
 	}
-	return &runtime.PluginInstall{PiLegion: k.Plugins.PiLegion, PiEnvoy: k.Plugins.PiEnvoy, Contract: api.DaemonAPIVersion}, source
+	return &runtime.PluginInstall{PiLegion: k.Plugins.PiLegion, PiEnvoy: k.Plugins.PiEnvoy, Contract: api.DaemonAPIVersion()}, source
 }
 
 // probeBudgetMargin is how far the image probe's attempt budget must clear
@@ -198,7 +201,18 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	// (volumeTrimReports, daemon.Run). It hangs off the plan by pointer, so the plan's own copy
 	// carries the one holder the factory closed over, as plan.repositories does.
 	p.volumeReports = &volumeTrimReports{}
-	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left, o.githubAPI,
+	// The holder the runtime's launches read the update round over a pod through, and tell what a
+	// launch's own replacement of an issue pod took through, made here and filled once the
+	// supervision is open: openSupervision builds the runtime before the supervision exists
+	// (launchRounds, daemon.run). The runtime takes it in its Options, so the factory carries it as
+	// it carries every other option; the plan holds it by pointer, as it holds the two holders
+	// above.
+	p.launchRounds = &launchRounds{}
+	opts := reads.opts
+	opts.RoundPodEnds = p.launchRounds.ends
+	opts.LaunchTakes = p.launchRounds.takes
+	opts.LaunchTook = p.launchRounds.took
+	p.newRuntime = sandboxRuntime(reads.client, opts, p.repositories.servesRepository, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left, o.githubAPI,
 		p.memoryGuardKills, p.volumeReports)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
@@ -247,28 +261,30 @@ func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
 		if err := sandbox.CheckInstalled(checking, reads.client, agentSandbox); err != nil {
 			return err
 		}
-		return sandbox.CensusLegacyIssueSandboxes(ctx, reads.client, reads.opts.Namespace, reads.opts.Project, reads.opts.Log)
+		return sandbox.CensusLegacyIssueSandboxes(ctx, reads.client, reads.opts.Namespace, reads.opts.Project, reads.opts.IssueDisks(), reads.opts.Log)
 	}
 	return sandboxBoot{clusterCheck: clusterCheck, probe: probe}, nil
 }
 
 // probeReservation is the image probe pod's own reservation, fixed: `legion probe-image` starts
 // one Oh My Pi at a time, each briefly (pi.agents, the plugin's load, the session-storage
-// setting), runs no lane, holds its TLS clients and headless Chromium to the two compromised
-// chains and a control site, and exits. It reserves 500m so the probe ends at least 60 s inside
-// its 240 s command budget at the defaults. Five runs of `legion probe-image --skip-agent-models`
-// at 1 CPU under gVisor (2026-11-18) took 51.9–76.2 s, 19.40–35.99 s of it on CPU. Predicted at
-// 250m (CPU time × 4, plus the wall time off CPU), the worst takes 184 s, 56 s inside the budget,
-// short of the 60 s; at 500m (CPU time × 2) it takes 112 s, 128 s inside. The runs are at 1 CPU
-// because the builds namespace refuses a Job under 1 CPU, so the 500m figures are predictions.
-// Five fresh runs at 250m / 1Gi, before the probe held gcloud, bq, az, mise, wget, git, go,
-// kubectl, redis-cli and socat, took 57.68–77.43 s, so 1Gi held the probe, and the reservation
-// still fits a pool that cannot place a controller or issue pod. It has a 5Gi bound on node disk
-// and a 1Gi disk request. The probe runs at every boot, before anything is served, and a probe that
-// reserved a pod's share — the controller's 1 CPU and 4Gi, or an issue pod's 3 CPU and 19Gi —
-// could leave the daemon unable to boot on a pool full enough to place nothing that large (stage
-// 4b's daemon-controller-liveness restart, whose controller reservation no node can hold, met
-// exactly that).
+// setting), checks the image's capability rows and the roles' overlays, runs no lane, and exits.
+// Its 500m CPU was set while the command also ran a TLS check of the image's clients, the longest
+// part of its run, which it no longer makes, and every timing measured for the value came from a
+// probe that ran that check: five runs at 250m / 1Gi, before that check held gcloud, bq, az, mise,
+// wget, git, go, kubectl, redis-cli and socat, took 57.68–77.43 s, so 1Gi held the probe; five
+// runs of `legion probe-image --skip-agent-models` at 1 CPU under gVisor (2026-11-18) took
+// 51.9–76.2 s, 19.40–35.99 s of it on CPU; and runs in the worker image of 1c7c825367 in a
+// CPU-quota scope on a development host took 121.9–147.3 s at 500m (eleven runs) and
+// 73.5–104.4 s at 1 CPU (sixteen runs), with a peak of 374 MiB, against the 240 s command budget
+// of the defaults. No run without the TLS check has been measured, so the value is kept until the
+// command's other checks are audited, and a measurement of the probe as it then runs sizes it.
+// The reservation still fits a pool that cannot place a controller or issue pod. It has a 5Gi
+// bound on node disk and a 1Gi disk request. The probe runs at every boot, before anything is
+// served, and a probe that reserved a pod's share — the controller's 1 CPU and 4Gi, or an issue
+// pod's 2 CPU and 8Gi, at the defaults — could leave the daemon unable to boot on a pool full
+// enough to place nothing that large (stage 4b's daemon-controller-liveness restart, whose
+// controller reservation no node can hold, met exactly that).
 var probeReservation = config.Reservation{CPU: "500m", CPURequest: "500m", Memory: "1Gi", MemoryRequest: "1Gi", EphemeralStorage: "5Gi", EphemeralStorageRequest: "1Gi"}
 
 // imageProbe is the probe of the daemon's worker image: this daemon's contract, the role prompts
@@ -284,7 +300,7 @@ func imageProbe(cfg config.Config, references promptrefs.Names) (sandbox.ImagePr
 	}
 	budget, _ := ProbeBudget(cfg)
 	return sandbox.ImageProbe{
-		Contract: api.DaemonAPIVersion, Budget: budget, Retry: imageProbeRetry,
+		Contract: api.DaemonAPIVersion(), Budget: budget, Retry: imageProbeRetry,
 		RoleReferences: references,
 		Resources:      resources,
 	}, nil
@@ -329,7 +345,10 @@ func kubeClient(k config.Kubernetes) (*rest.Config, error) {
 // experiment of its own still declares the memory experiment and hands over its two arms, which
 // name no file where the project writes no `memory` block and so add nothing to a launch.
 // lookup is the daemon's environment, which can name the NATS nkey seed (launchSecrets).
-func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchToken string, lookup func(string) (string, bool), log *slog.Logger) (sandbox.Options, error) {
+// credential is the launch's Dispatch credential (readBoot): the bearer dispatch_token_file holds,
+// or under dispatch_token_broker the role's own trade (sandbox.DispatchCredential.Broker) and the
+// transition token.
+func sandboxOptions(cfg config.Config, k config.Kubernetes, project string, credential sandbox.DispatchCredential, lookup func(string) (string, bool), log *slog.Logger) (sandbox.Options, error) {
 	issueVolume, err := resource.ParseQuantity(k.IssueVolume)
 	if err != nil {
 		return sandbox.Options{}, fmt.Errorf("runtime.kubernetes.issue_volume: %w", err)
@@ -356,17 +375,6 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 	if err != nil {
 		return sandbox.Options{}, err
 	}
-	// The guard's settings reach an accepted issue-pod launcher on the answer to its hello
-	// (sandbox Runtime.LauncherResolver). Nil is what the launcher reads as "run no guard", so a
-	// deployment that turned runtime.kubernetes.memory_guard.issue_pods off and a daemon built
-	// before the guard write the same ack (shimwire.LauncherHelloAck.MemoryGuard, INFRA-3557).
-	var memoryGuard *shimwire.LauncherMemoryGuard
-	if g := k.MemoryGuard.IssuePods; g.Enabled {
-		memoryGuard = &shimwire.LauncherMemoryGuard{
-			ActPercent: g.ActPercent, FloorPercent: g.FloorPercent,
-			WaitSeconds: g.WaitSeconds, IntervalMilliseconds: g.IntervalMilliseconds,
-		}
-	}
 	// The trimmer's settings reach an accepted issue-pod launcher on the answer to its hello
 	// (sandbox Runtime.LauncherResolver). Nil is what the launcher reads as "no settings", on
 	// which its trimmer reads and deletes nothing, so a deployment that turned
@@ -384,7 +392,8 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		Scheduling: sandbox.Scheduling{NodeSelector: k.Scheduling.NodeSelector, Tolerations: tolerations, PriorityClass: k.Scheduling.PriorityClass},
 		Sandbox:    sandboxConfig(k.Sandbox),
 		Resources:  sandbox.PodResources{Issue: issue, Controller: controller},
-		DaemonURL:  cfg.DaemonURL, EnvoyURL: cfg.EnvoyURL, DispatchURL: cfg.DispatchURL, DispatchToken: dispatchToken,
+		DaemonURL:  cfg.DaemonURL, EnvoyURL: cfg.EnvoyURL, DispatchURL: cfg.DispatchURL,
+		Dispatch: credential,
 		NATSURLs: cfg.NatsURLs,
 		// The controller this runtime launches is told the project's channels, and is relaunched
 		// when they change (sandbox's address record).
@@ -398,20 +407,40 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		SessionStore:            k.SessionStore,
 		Setup:                   k.Setup,
 		TestPostgres:            k.TestPostgres,
-		MemoryGuard:             memoryGuard,
-		BootTimeout:             cfg.WorkerBootTimeout,
-		RegistrationIntervals:   cfg.WorkerBootRegistrationDeadlineIntervals,
-		BusyBackoff:             busyBackoffFirst,
-		TerminationGrace:        cfg.WorkerStopTimeout,
-		ProbeInterval:           cfg.ProbeInterval,
-		AdoptTimeout:            cfg.SlowCommandTimeout,
-		AgentSecrets:            agentSecrets,
-		RepositoryCache:         cache,
-		VolumeTrim:              volumeTrim,
-		Log:                     log,
+		// The guard's settings reach an accepted launcher on the answer to its hello (sandbox
+		// Runtime.LauncherResolver), each pod kind's from its own block: an issue pod's launchers
+		// runtime.kubernetes.memory_guard.issue_pods, the controller pod's launcher
+		// runtime.kubernetes.memory_guard.controller_pod. Nil is what the launcher reads as "run no
+		// guard", so a deployment that turned a kind off and a daemon built before the guard write
+		// the same ack (shimwire.LauncherHelloAck.MemoryGuard, INFRA-3557).
+		MemoryGuard:           launcherMemoryGuard(k.MemoryGuard.IssuePods),
+		ControllerMemoryGuard: launcherMemoryGuard(k.MemoryGuard.ControllerPod),
+		LeakCheckSetting:      cfg.LeakCheck,
+		BootTimeout:           cfg.WorkerBootTimeout,
+		RegistrationIntervals: cfg.WorkerBootRegistrationDeadlineIntervals,
+		BusyBackoff:           busyBackoffFirst,
+		TerminationGrace:      cfg.WorkerStopTimeout,
+		ProbeInterval:         cfg.ProbeInterval,
+		AdoptTimeout:          cfg.SlowCommandTimeout,
+		AgentSecrets:          agentSecrets,
+		RepositoryCache:       cache,
+		VolumeTrim:            volumeTrim,
+		Log:                   log,
 	}
 	opts.ExperimentVariants = experiment.DeclaredVariants(cfg.ExperimentsDeclared())
 	return opts, nil
+}
+
+// launcherMemoryGuard is one pod kind's settled memory guard as its launchers are handed it on the
+// answer to each hello, nil where the kind's block turned the guard off.
+func launcherMemoryGuard(g config.MemoryGuardPodConfig) *shimwire.LauncherMemoryGuard {
+	if !g.Enabled {
+		return nil
+	}
+	return &shimwire.LauncherMemoryGuard{
+		ActPercent: g.ActPercent, FloorPercent: g.FloorPercent,
+		WaitSeconds: g.WaitSeconds, IntervalMilliseconds: g.IntervalMilliseconds,
+	}
 }
 
 // sandboxConfig is runtime.kubernetes.sandbox as the runtime takes it: the settled block, member
@@ -419,7 +448,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 func sandboxConfig(c config.SandboxConfig) sandbox.SandboxConfig {
 	settled := sandbox.SandboxConfig{Type: sandbox.SandboxType(c.Type), CanaryIssues: c.CanaryIssues}
 	if m := c.MicroVM; m != nil {
-		settled.MicroVM = &sandbox.MicroVM{ComputeClass: m.ComputeClass, StorageClass: m.StorageClass}
+		settled.MicroVM = &sandbox.MicroVM{ComputeClass: m.ComputeClass, StorageClass: m.StorageClass, KeepVolume: m.KeepVolume}
 		if endpoint := m.Metadata; endpoint != nil {
 			settled.MicroVM.Metadata = &sandbox.MetadataEndpoint{WorkloadPool: endpoint.WorkloadPool, IdentityProvider: endpoint.IdentityProvider}
 		}
@@ -459,14 +488,14 @@ func providersSecrets(cfg config.Config, lookup func(string) (string, bool)) []s
 // client from runtime.kubernetes.agent_secrets and starts it at boot on a background context, so
 // the daemon logs in with its own projected ServiceAccount token (token_file) and keeps logging in
 // before each credential expires; no person approves any of it, a restart included. Every login
-// logs its own outcome (agentsecrets.Client.Login); one that fails is retried by the client, and
+// logs its own outcome (cipher.Client.Login); one that fails is retried by the client, and
 // pod enrollment waits for it. With the block's exchange_audience set, the same client is the
 // machines' Registrar too (newRegistrar), which registers each role's session for its pod; unset,
 // the Registrar is nil and no registration is ever made. The client itself is returned too,
 // read-only, so the state route can show the login's current status (source.State,
-// agentsecrets.Client.LoginStatus). Never part of launchSecrets, so no pod is ever handed the
+// cipher.Client.LoginStatus). Never part of launchSecrets, so no pod is ever handed the
 // daemon's key, token or credential. Nil, nil, nil without the block.
-func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, supervise.Registrar, *agentsecrets.Client) {
+func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, supervise.Registrar, *cipher.Client) {
 	k := cfg.Runtime.Kubernetes
 	if k == nil || k.AgentSecrets == nil {
 		return nil, nil, nil
@@ -480,18 +509,18 @@ func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, s
 		Timeout:       30 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	client := &agentsecrets.Client{URL: k.AgentSecrets.URL, HTTP: broker, TokenFile: k.AgentSecrets.TokenFile, Log: log}
+	client := &cipher.Client{URL: k.AgentSecrets.URL, HTTP: broker, TokenFile: k.AgentSecrets.TokenFile, Log: log}
 	go func() { _ = client.Start(context.Background()) }()
 	return brokerEnroller{client: client}, newRegistrar(*k.AgentSecrets, client), client
 }
 
-// brokerEnroller is agentsecrets.Client as supervise.Enroller; an *agentsecrets.APIError is a
+// brokerEnroller is cipher.Client as supervise.Enroller; an *cipher.APIError is a
 // PermanentError when its status says so, which is how the machine tells a refusal from an outage,
 // and an ExpiredTokenError for POD_TOKEN_EXPIRED, a stale token under a key that stands.
-type brokerEnroller struct{ client *agentsecrets.Client }
+type brokerEnroller struct{ client *cipher.Client }
 
 func (b brokerEnroller) Enroll(ctx context.Context, e supervise.PodEnrollment) (string, error) {
-	enrolled, err := b.client.Enroll(ctx, agentsecrets.PodEnrollment{
+	enrolled, err := b.client.Enroll(ctx, cipher.PodEnrollment{
 		PodUID: e.PodUID, Slot: e.Slot, Thumbprint: e.Thumbprint, PodToken: e.PodToken, Session: e.Session, Claim: e.Claim,
 	})
 	if err != nil {
@@ -563,7 +592,7 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // token source (the implement App's, minted for the repository's owner) and every tree role's gh
 // bundle (gitHubCredential, a directory for each owner the role's App is installed on, read from
 // GitHub at every bundle, and one for each owner a configured rename moved a repository away
-// from while repos holds the name it moved to), with the
+// from while served answers the name it moved to is served), with the
 // controller's own bundle beside it
 // (appauth.ControllerCredential), which a controller's launch and its refresh both ask by owner,
 // and the directory set those directories are compared with (appauth.GitHubDirs), which the
@@ -578,13 +607,12 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // its pod's own, so the implement App's refusal of an owner costs the controller's pod, which
 // runs the review App alone, nothing — with
 // serving as the rule every provisioning token's repository is read through
-// (repositories.serving, the mapping's own, so a configured rename's mint follows the owner
-// whose installation holds the repository now), with the repositories the project works as the
-// ones its repository caches follow (mapped: the mapping's and those of its live issue records,
-// workflowRuntime.cacheRepositories), with the store's own workspace bundles as what a
-// replacement pod's launcher is sent and what its restore drops, and registers its launcher
-// acceptor on the stream listener. A daemon with no GitHub Apps hands it neither tokens nor a
-// mapping, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
+// (repositories.serving, the repository state's own, so a configured rename's mint follows the
+// owner whose installation holds the repository now), with the repositories the project works as
+// the ones its repository caches follow (cached: those of its live issue records and of the
+// launches since their last read, workflowRuntime.cacheRepositories), and registers its launcher
+// acceptor on the stream listener. A daemon with no GitHub Apps hands it no
+// tokens, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
 // check (plan.clusterCheck): Agent Sandbox is installed and no Sandbox of a layout before this
 // one — per-claim pods, or issue pods on one tree volume — remains. githubAPI is GitHub's REST
 // root ("" is https://api.github.com), which the shared public leak check is read under
@@ -596,21 +624,16 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // (volumeTrimReports): it is built with this factory, before the workflow opens, and filled once
 // it has (plan.volumeReports). One that is never filled refuses every report it is given with
 // errVolumeReportsUnbound, which the launcher session logs.
-func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo.Repository,
+func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Repository) bool,
 	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed, left *appauth.LeftOut, githubAPI string, kills *memoryGuardKills,
 	reports *volumeTrimReports) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
-		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
-		opts.Conns, opts.StreamURL, opts.Store, opts.Mapped = listener, address, st, mapped
-		// The two halves of the release's saved work: an idle release puts the issue's unpushed
-		// work here (outbox's release), and the runtime hands it to the launcher of the pod that
-		// replaces the released one before any role of that pod starts. The confirmation deletes
-		// the bundle of the release the launcher's report names and no other, so a report that
-		// arrives late takes no newer release's work with it. The read is the bundle's one restore
-		// attempt: the first pod that is not the one the work came off takes it, whether the
-		// bundle is sent or that pod is refused as no newer than the save, and nothing is
-		// answered for that bundle again.
-		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
+		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
+		opts.Conns, opts.StreamURL, opts.Store, opts.CacheRepositories = listener, address, st, cached
+		// Each role's start in a pod whose Sandbox owns the issue's kept volume records that pod
+		// with its volume, which the issue's update round reads, and no role starts there until
+		// it is recorded.
+		opts.KeptPodStart = keptPodStart(st, opts.Project)
 		// The cache trimmer's own half: every report a pod's trimmer sends — of a sweep that
 		// left the volume above its low mark, or of the trimmer switching itself off — reaches
 		// the daemon through this, and the daemon turns it into the one fact that can tell the
@@ -619,13 +642,15 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// reports and filled when it does (plan.volumeReports).
 		opts.VolumeReported = reports.report
 		// The shared public leak check each pod's launcher is pushed before any role of the pod
-		// starts, read with the implement App's read lease on the check's owner (leakCheckToken);
-		// a daemon with no Apps reads none, and the runtime refuses the start of a role whose
-		// launcher names a tag with the cause that says so.
-		opts.LeakCheck = leakCheckSource(apps, githubAPI)
-		// Each process an issue pod's memory guard ends reaches the daemon through the kill
-		// holder (memoryGuardKills).
+		// starts, read from the repository the deployment names (opts.LeakCheckSetting) with the
+		// implement App's read lease on its owner (leakCheckToken). A deployment that names none
+		// is pushed none; a daemon with no Apps reads none, and the runtime refuses the start of a
+		// role whose launcher names a tag under a named check with the cause that says so.
+		opts.LeakCheck = leakCheckSource(apps, githubAPI, opts.LeakCheckSetting)
+		// Each process an issue pod's memory guard ends, and each the controller pod's ends,
+		// reaches the daemon through the kill holder (memoryGuardKills).
 		opts.MemoryGuardKilled = kills.killed
+		opts.ControllerMemoryGuardKilled = kills.controllerKilled
 		if apps != nil {
 			// Two records per project, written by the two credentials and read by the directory
 			// set for the Apps of the pod it answers for: the owners each App's last bundle read
@@ -636,10 +661,10 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 			// every launch's addressing reads its role's App's owners out of beside the drift
 			// check.
 			opts.Tokens = newImplementTokens(apps, serving)
-			opts.GitHubCredential = appauth.GitHubCredential(apps, repos, renames, installed, left, opts.Log)
-			opts.ControllerCredential = appauth.ControllerCredential(apps, repos, renames, installed, left, opts.Log)
+			opts.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, opts.Log)
+			opts.ControllerCredential = appauth.ControllerCredential(apps, served, renames, installed, left, opts.Log)
 			opts.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
-				return appauth.GitHubDirs(repos, renames, installed, left, roles, repo)
+				return appauth.GitHubDirs(served, renames, installed, left, roles, repo)
 			}
 		}
 		rt, err := sandbox.New(ctx, rc, opts)
@@ -651,13 +676,27 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 	}
 }
 
-// memoryGuardKills turns one process an issue pod's memory guard ended, as the pod's launcher
-// reported it, into the fact the workflow applies (intake.MemoryGuardKill). It is the seam between
-// the Kubernetes runtime factory (sandboxRuntime), which prepareSandbox builds before the workflow
-// opens, and the fact path, which exists only after it: prepareSandbox makes one and hands it to
-// the factory, and the boot fills it the moment the workflow is open (plan.memoryGuardKills,
-// daemon.run). A holder nobody filled refuses every report with errMemoryGuardKillsUnbound, which
-// the launcher session logs with the report it drops.
+// keptPodStart is st's record of a role's start in a pod of project whose Sandbox owns the
+// issue's kept volume, in the shape the runtime calls it (runtime.KeptPodStart). project is the
+// runtime's project token (sandbox.Options.Project). A pod is project's to record only where
+// project records its issue (store.Store.StartKeptPod): on a database shared with another
+// project's daemon, a pod of that project's issue is that daemon's. Each call for an issue that
+// project records records the pod with its kept volume, which the issue's update round reads
+// (store.Store.PodHoldsEarlierWork).
+func keptPodStart(st *store.Store, project string) runtime.KeptPodStart {
+	return func(ctx context.Context, issue, podUID string, keptSince time.Time) error {
+		return st.StartKeptPod(ctx, project, issue, podUID, keptSince)
+	}
+}
+
+// memoryGuardKills turns one process a pod's memory guard ended, as the pod's launcher reported
+// it, into the fact the workflow applies: intake.MemoryGuardKill for an issue pod's (killed) and
+// intake.ControllerMemoryGuardKill for the controller pod's (controllerKilled). It is the seam
+// between the Kubernetes runtime factory (sandboxRuntime), which prepareSandbox builds before the
+// workflow opens, and the fact path, which exists only after it: prepareSandbox makes one and
+// hands it to the factory, and the boot fills it the moment the workflow is open
+// (plan.memoryGuardKills, daemon.run). A holder nobody filled refuses every report with
+// errMemoryGuardKillsUnbound, which the launcher session logs with the report it drops.
 //
 // It is filled once, in the boot's own goroutine, before the runtime is built and so before any
 // launcher can connect: there is nothing to lock, and nothing ever replaces what was filled.
@@ -668,11 +707,11 @@ type memoryGuardKills struct {
 
 // errMemoryGuardKillsUnbound is what a holder the boot never filled answers every report with. Its
 // text names the line that fills it, since a log line is then the only place the drop shows: the
-// role whose process was ended is told nothing. An unbound holder can only be a boot bug, never a
-// daemon that runs no workflow: prepareSandbox makes the holder only under runtime: kubernetes, and
-// configuration load refuses a runtime: kubernetes file that names no dispatch_url (config's
-// checkKubernetesKeys, "the workflow is what launches every pod"), so every daemon with a holder
-// opens the workflow whose boot fills it.
+// role or the controller whose process was ended is told nothing. An unbound holder can only be a
+// boot bug, never a daemon that runs no workflow: prepareSandbox makes the holder only under
+// runtime: kubernetes, and configuration load refuses a runtime: kubernetes file that names no
+// dispatch_url (config's checkKubernetesKeys, "the workflow is what launches every pod"), so every
+// daemon with a holder opens the workflow whose boot fills it.
 var errMemoryGuardKillsUnbound = errors.New("the daemon's memory guard kill holder was never bound to the workflow " +
 	"(daemon.go, plan.memoryGuardKills.bind), so this report and every later one is dropped")
 
@@ -696,6 +735,28 @@ func (m *memoryGuardKills) bind(pool *store.Pool, handlers []intake.Handler) {
 // connection it then lost sends it again on the next, and ApplyFact applies one id once, so the
 // role is told of one kill once however often its report arrives.
 func (m *memoryGuardKills) killed(ctx context.Context, issue string, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error {
+	return m.apply(ctx, report, intake.MemoryGuardKill{Issue: issue, Token: token, PodUID: podUID, Report: report}, issue, podUID)
+}
+
+// controllerKilled applies one kill of the controller's pod as one intake fact
+// (runtime.ControllerMemoryGuardKilled), crediting it to token, the claim whose connection carried
+// the report, and to podUID, the pod that launcher runs in, both the session's and never the
+// report's. It runs where killed runs, under the same bounded context and hold mark, and answers
+// a holder nobody bound with the same errMemoryGuardKillsUnbound, for the same reason.
+//
+// The event id is the one killed applies under (memoryGuardKillEventID): the guard's id is minted
+// by each launcher process, so a kill of the controller's pod and one of an issue pod never share
+// it, and a report the controller's launcher sent again on its next connection is applied once, so
+// the controller is told of one kill once.
+func (m *memoryGuardKills) controllerKilled(ctx context.Context, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error {
+	return m.apply(ctx, report, intake.ControllerMemoryGuardKill{Token: token, PodUID: podUID, Report: report}, "the controller", podUID)
+}
+
+// apply applies fact, the intake fact of report, under the kill's own event id
+// (memoryGuardKillEventID) and a hold mark of its own (store.ForConcurrentWorker), which is what
+// killed and controllerKilled share. An apply that fails names the kill's pod in its error: owner
+// is whose pod podUID is, an issue's key or `the controller`.
+func (m *memoryGuardKills) apply(ctx context.Context, report shimwire.LauncherMemoryKill, fact intake.Fact, owner, podUID string) error {
 	if m.pool == nil || len(m.handlers) == 0 {
 		// Nothing bound the holder to the workflow, so there is no fact path to apply the report
 		// through. That is a boot that skipped plan.memoryGuardKills.bind, never a daemon that runs
@@ -705,9 +766,8 @@ func (m *memoryGuardKills) killed(ctx context.Context, issue string, token claim
 		// the report it dropped (sandbox's memoryKilled), which is what makes the drop findable.
 		return errMemoryGuardKillsUnbound
 	}
-	fact := intake.MemoryGuardKill{Issue: issue, Token: token, PodUID: podUID, Report: report}
 	if _, err := intake.ApplyFact(store.ForConcurrentWorker(ctx), m.pool, "launcher", memoryGuardKillEventID(report), fact, m.handlers...); err != nil {
-		return fmt.Errorf("apply the memory guard's kill of pid %d in %s's pod %s: %w", report.PID, issue, podUID, err)
+		return fmt.Errorf("apply the memory guard's kill of pid %d in %s's pod %s: %w", report.PID, owner, podUID, err)
 	}
 	return nil
 }
@@ -833,7 +893,7 @@ func volumeMissing(missing []shimwire.LauncherVolumeMissing) []record.VolumeMiss
 //
 // It is the one token source the Sandbox runtime's three mint sites share (runtime/sandbox's
 // provision, its gh credential refresh and its repository cache Secret), so the repository a
-// configured rename moved to another owner is mapped here, once, to the name whose installation
+// configured rename moved to another owner is turned here, once, into the name whose installation
 // holds it now (serving): nothing under runtime/sandbox knows of a rename.
 //
 // Only the token follows the rename. Every address those three sites build — the pod's feed, its
@@ -865,27 +925,30 @@ func (t *implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (st
 	return lease.Token, nil
 }
 
-// leakCheckSource is the daemon's reader of the shared public leak check, minting through apps
-// (leakCheckToken) and reading under githubAPI, GitHub's REST root ("" is
-// https://api.github.com), which the Sandbox runtime pushes to each pod's launcher before any role
-// of the pod starts (sandbox.Options.LeakCheck). Where apps drops an owner's leases
-// (appauth.Forgetter), a read GitHub answers 401 drops the lease leakCheckToken mints, so the next
-// read mints a new one. A daemon with no GitHub Apps has no reader: the answer is then
-// the nil interface, never a nil *leakguard.Source inside one, so the runtime's comparison with
-// nil reads the daemon as holding no credential.
-func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckReader {
-	if apps == nil {
+// leakCheckSource is the daemon's reader of the shared public leak check the deployment names
+// (setting, config's leak_check), minting through apps (leakCheckToken) and reading the setting's
+// repository under githubAPI, GitHub's REST root ("" is https://api.github.com), which the Sandbox
+// runtime pushes to each pod's launcher before any role of the pod starts
+// (sandbox.Options.LeakCheck). Where apps drops an owner's leases (appauth.Forgetter), a read
+// GitHub answers 401 drops the lease leakCheckToken mints, so the next read mints a new one. A
+// deployment that names no check, and a daemon with no GitHub Apps, have no reader: the answer is
+// then the nil interface, never a nil *leakguard.Source inside one. The runtime reads the first as
+// a deployment that runs no check (sandbox.Options.LeakCheckSetting) and pushes nothing, and the
+// second, under a configured setting, as the daemon holding no credential to read it with.
+func leakCheckSource(apps appauth.Tokens, githubAPI string, setting leakguard.Setting) sandbox.LeakCheckReader {
+	if apps == nil || !setting.Configured() {
 		return nil
 	}
-	source := &leakguard.Source{Token: leakCheckToken(apps), API: githubAPI}
+	repository := setting.Repository
+	source := &leakguard.Source{Repository: repository, Token: leakCheckToken(apps, repository), API: githubAPI}
 	if forgetter, ok := apps.(appauth.Forgetter); ok {
-		source.Forget = func() { forgetter.Forget(appauth.Implement, leakguard.CheckRepository.Owner()) }
+		source.Forget = func() { forgetter.Forget(appauth.Implement, repository.Owner()) }
 	}
 	return source
 }
 
 // leakCheckToken mints the token the shared public leak check is read with: the implement App's
-// read lease on the check's owner (appauth.Tokens.ReadToken, whose read permissions hold all a
+// read lease on repository's owner (appauth.Tokens.ReadToken, whose read permissions hold all a
 // tarball read needs). No request names a repository any longer (INFRA-2543), so the lease reaches
 // every repository that owner's installation holds and the reading permissions are the whole of
 // what keeps it from writing. It mints nothing else: an installation the account has not granted
@@ -897,16 +960,16 @@ func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckRea
 // told from every other failed mint, since the two are fixed in different places — what the
 // account grants the App's installation, and the App's configuration or its installation on the
 // owner.
-func leakCheckToken(apps appauth.Tokens) func(context.Context) (string, error) {
+func leakCheckToken(apps appauth.Tokens, repository ghrepo.Repository) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
-		lease, err := apps.ReadToken(ctx, appauth.Implement, leakguard.CheckRepository.Owner())
+		lease, err := apps.ReadToken(ctx, appauth.Implement, repository.Owner())
 		switch {
 		case err == nil:
 			return lease.Token, nil
 		case appauth.NarrowingRefused(err):
-			return "", fmt.Errorf("GitHub refused the daemon's implement App the reading permissions on %s, and the daemon reads %s with no wider token: %w", leakguard.CheckRepository.Owner(), leakguard.CheckSlug, err)
+			return "", fmt.Errorf("GitHub refused the daemon's implement App the reading permissions on %s, and the daemon reads %s with no wider token: %w", repository.Owner(), repository, err)
 		default:
-			return "", fmt.Errorf("the daemon could not mint its read-only token for %s: %w", leakguard.CheckSlug, err)
+			return "", fmt.Errorf("the daemon could not mint its read-only token for %s: %w", repository, err)
 		}
 	}
 }

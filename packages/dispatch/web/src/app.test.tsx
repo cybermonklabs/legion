@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -6,9 +6,11 @@ import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "./__tests__/fake-clock";
 import { graphNode } from "./__tests__/graph-fixture";
+import { keptWrites } from "./__tests__/kept-sends-harness";
 import { installFakeLiveSockets } from "./__tests__/live-socket-harness";
 import { answerIssuePatches } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
+import { wholeText } from "./__tests__/whole-text";
 import { ApiError, api, NetworkError } from "./api/client";
 import { liveSocketFor } from "./api/live-socket";
 import type { AuthenticatedUser } from "./api/types";
@@ -22,8 +24,15 @@ import "./features/answers/AnswersPage";
 import "./features/document/DocumentPage";
 import "./features/margin/Margin";
 import "./features/project/ProjectPage";
+import { warmMarkdownRenderer } from "./features/refs/markdown-engine";
 import { SendStoppedError } from "./features/writes/keyed-write";
 import { plainWrite, writesOf } from "./features/writes/write-store";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 test("signing out shows the sign-in page without a reload and ends the event feed's socket", async () => {
   const user = userEvent.setup();
@@ -68,8 +77,11 @@ test("signing out shows the sign-in page without a reload and ends the event fee
   );
 
   try {
-    await screen.findByText("Signed in as alice");
-    const socket = sockets.latest();
+    await screen.findByText(wholeText("Signed in as alice"));
+    // The shell is drawn once the draft stores have loaded for its person (`shellFor` in
+    // `AuthGate`), a render after the sign-in check answers, and the event feed opens its socket
+    // in the shell's own effect: so the socket is waited for, not read the moment the text shows.
+    const socket = await waitFor(() => sockets.latest());
     act(() => socket.open());
     const { sub } = socket.subscribed("events");
     expect(socket.closedWith).toBeUndefined();
@@ -112,6 +124,7 @@ function aliceWrite(
         detail: null,
         kind: plainWrite,
         label: refuse ? "CORE-2 set to done" : "CORE-1 set to done",
+        method: "PATCH",
         presentation: "indicator",
         write: (bounds) => {
           attempts.push(bounds.login ?? "nobody");
@@ -130,13 +143,6 @@ function aliceWrite(
       .catch((error: unknown) => error);
   });
   return pressed;
-}
-
-/** The names of the writes this tab keeps across a reload. */
-function keptWrites(): string[] {
-  return Array.from({ length: window.sessionStorage.length }, (_, index) =>
-    window.sessionStorage.key(index)
-  ).filter((name): name is string => name?.startsWith("dispatch.write:") === true);
 }
 
 // W26. Someone else signs in from another tab of this browser: the session cookie is the browser's,
@@ -183,7 +189,7 @@ test("a sign-in from another tab drops every write of the person before, stops i
   );
   const otherTab = new BroadcastChannel("dispatch-sign-in");
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const attempts: string[] = [];
     const out = aliceWrite(queryClient, attempts);
     const refused = aliceWrite(queryClient, attempts, true);
@@ -199,7 +205,7 @@ test("a sign-in from another tab drops every write of the person before, stops i
 
     login = "bob";
     act(() => otherTab.postMessage("bob"));
-    await screen.findByText("Signed in as bob");
+    await screen.findByText(wholeText("Signed in as bob"));
     await waitFor(() => expect(writesOf(queryClient).rows()).toEqual([]));
     expect(await out).toBeInstanceOf(SendStoppedError);
     expect(keptWrites()).toEqual([]);
@@ -262,7 +268,7 @@ test("a lapsed session keeps every write, and the same person's sign-in resumes 
   const rereadWhoAmI = () =>
     act(() => void queryClient.invalidateQueries({ queryKey: ["whoami"] }));
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const keys: string[] = [];
     let up = false;
     let out: Promise<{ key: string } | null> = Promise.resolve(null);
@@ -271,6 +277,7 @@ test("a lapsed session keeps every write, and the same person's sign-in resumes 
         detail: null,
         kind: plainWrite,
         label: "CORE-1 set to done",
+        method: "PATCH",
         presentation: "indicator",
         write: (bounds) => {
           keys.push(bounds.key);
@@ -313,7 +320,7 @@ test("a lapsed session keeps every write, and the same person's sign-in resumes 
     signedIn = true;
     up = true;
     await rereadWhoAmI();
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     expect(await out).toEqual({ key: "CORE-1" });
     expect(new Set(keys).size).toBe(1);
     expect(writesOf(queryClient).rows()).toMatchObject([
@@ -391,7 +398,7 @@ test("signing out asks first, then drops every write here and tells every other 
     return leaving.defaultPrevented;
   };
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const attempts: string[] = [];
     const out = aliceWrite(queryClient, attempts);
     void aliceWrite(queryClient, attempts, true);
@@ -405,7 +412,7 @@ test("signing out asks first, then drops every write here and tells every other 
       "Sign out and discard 2 unsent changes?\n\n• CORE-1 set to done\n• CORE-2 set to done",
     ]);
     expect(logout).not.toHaveBeenCalled();
-    expect(screen.getByText("Signed in as alice")).toBeTruthy();
+    expect(screen.getByText(wholeText("Signed in as alice"))).toBeTruthy();
     expect(writesOf(queryClient).rows()).toHaveLength(2);
     expect(keptWrites()).toHaveLength(2);
 
@@ -485,7 +492,7 @@ test("a sign-out in another tab drops that person's writes here", async () => {
     </MemoryRouter>
   );
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const attempts: string[] = [];
     const out = aliceWrite(queryClient, attempts);
     void aliceWrite(queryClient, attempts, true);
@@ -601,6 +608,7 @@ test("project routes render the project page and a project document route", asyn
       name: "Core",
       open_asks: 0,
       gated_steps: [],
+      proven_sessions: false,
     },
   ]);
   const listProjectArtifacts = spyOn(api, "listProjectArtifacts").mockResolvedValue([]);
@@ -1023,7 +1031,7 @@ async function renderSignedIn(whoAmI: () => Promise<AuthenticatedUser>) {
       </QueryClientProvider>
     </MemoryRouter>
   );
-  await screen.findByText("Signed in as alice");
+  await screen.findByText(wholeText("Signed in as alice"));
   return () => {
     view.unmount();
     liveSocketFor(queryClient).close();
@@ -1039,6 +1047,9 @@ test("the connection pill follows the live socket: none while it connects, Recon
     kind: "user",
     login: "alice",
   }));
+  // The shell is drawn a render after the sign-in check answers, once the draft stores have loaded
+  // (`shellFor` in `AuthGate`), and its event feed opens the socket in an effect of its own.
+  await waitFor(() => expect(sockets.sockets).toHaveLength(1));
   // Every timer the socket sets from here on runs on the test's clock.
   jest.useFakeTimers();
   const random = spyOn(Math, "random").mockReturnValue(0.5);
@@ -1092,6 +1103,7 @@ test("a live socket refused once the person is signed out takes the page to sign
     if (!signedIn) throw new ApiError(401, { error: "unauthorized" });
     return { event_head: "0", kind: "user", login: "alice" };
   });
+  await waitFor(() => expect(sockets.sockets).toHaveLength(1));
   try {
     act(() => sockets.latest().open());
     signedIn = false;

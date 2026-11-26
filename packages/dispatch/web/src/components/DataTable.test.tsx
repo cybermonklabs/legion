@@ -7,18 +7,24 @@ import type {
   SortingState,
 } from "@tanstack/react-table";
 // biome-ignore lint/style/noRestrictedImports: a column's drag and drop, which user-event has no form for.
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
+import { MOUSE_CSS, SIZE_CSS, sizeUnder } from "../__tests__/control-size";
+import { DEPLOY_NAMES, DEPLOY_NOUN } from "../__tests__/deploy-table";
+import { openList, optionNames, rows as optionsOf, pick, pickNamed } from "../__tests__/list-picks";
+import { endWindowScroll } from "../__tests__/scroll-box";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { useKeymapScope } from "../features/shell/keymap";
 import { selectedCardBg } from "../theme/classes";
+import type { ControlSize } from "./control-names";
 import {
   type ColumnFilterRenderer,
   DataTable,
   DataTableCells,
   DataTableGroupRow,
   type DataTableNames,
+  type DataTableProps,
   type RowNoun,
   useDataTable,
 } from "./DataTable";
@@ -53,35 +59,29 @@ const COLUMNS: ColumnDef<Deploy>[] = [
   },
   { accessorFn: (row) => row.region, enableColumnFilter: false, header: "Region", id: "region" },
 ];
+/** The same columns with Region and State filtered by picking their values, which the shared
+ *  filter offers with a count beside each. */
+const PICKED_COLUMNS: ColumnDef<Deploy>[] = COLUMNS.map((column) =>
+  column.id === "region" || column.id === "state"
+    ? { ...column, enableColumnFilter: true, filterFn: "arrIncludesSome" }
+    : column
+);
+/** How many of `DEPLOYS` each value of Region and State lists, by column. */
+const PICKED_COUNTS: Readonly<Record<string, ReadonlyMap<string, number>>> = {
+  region: new Map([
+    ["eu", 2],
+    ["us", 1],
+  ]),
+  state: new Map([
+    ["live", 2],
+    ["rolled back", 1],
+  ]),
+};
 /** The table's own column ids, which its stored layout keeps and no other, and the attribute
  *  its rows carry: a deploy's row, never an issue's. */
 const LAYOUT_COLUMNS: LayoutColumns = {
   ids: COLUMNS.flatMap((column) => (column.id === undefined ? [] : [column.id])),
   rowAttribute: "data-deploy-row",
-};
-
-/** The caller's own words for its deploys, which the core reads: a scope of its own, the keys
- *  of the page that draws it, and the attributes its rows and links carry. */
-const DEPLOY_NAMES: DataTableNames = {
-  groupAttribute: "data-deploy-group",
-  keymap: {
-    next: { id: "deploys-next", keys: "j", label: "Next deploy" },
-    open: { id: "deploys-open", keys: "o", label: "Open deploy" },
-    openOnEnter: { id: "deploys-open-enter", keys: "Enter", label: "Open the focused deploy" },
-    previous: { id: "deploys-previous", keys: "k", label: "Previous deploy" },
-    scope: "agents",
-    select: { id: "deploys-select", keys: "x", label: "Select or deselect the focused deploy" },
-  },
-  linkAttribute: "data-deploy-link",
-  rowAttribute: "data-deploy-row",
-};
-
-/** What the deploys table calls its rows, which its filters and its pager count in. */
-const DEPLOY_NOUN: RowNoun = {
-  group: { one: "group", many: "groups" },
-  line: { one: "row", many: "rows" },
-  many: "deploys",
-  one: "deploy",
 };
 
 /** The line under the deploys table, with the page sizes the caller offers. */
@@ -135,8 +135,11 @@ const NO_COUNTS: ReadonlyMap<string, number> = new Map();
 /** A caller of the core: it holds the view itself, as the issue table holds it in the URL. */
 function Deploys({
   columns = COLUMNS,
+  counts,
   fillColumn,
+  filterCounted,
   fixedColumns,
+  focusTarget,
   groupSlot,
   grouping: initialGrouping = [],
   groupOrder,
@@ -151,13 +154,22 @@ function Deploys({
   rowHeight,
   rows = DEPLOYS,
   serverPage,
+  size,
+  stackColumns,
   trailingWidth,
 }: {
   columns?: ColumnDef<Deploy>[];
+  /** By column id, how many deploys each of that column's values lists, which its filter counts
+   *  with while it is open. */
+  counts?: Readonly<Record<string, ReadonlyMap<string, number>>>;
   /** The column that takes what the box has over the others' widths. */
   fillColumn?: string;
+  /** Which values of the open filter's column the counts have counted. */
+  filterCounted?: DataTableProps<Deploy>["filterCounted"];
   /** The columns this caller's order keeps in their place without pinning them. */
   fixedColumns?: readonly string[];
+  /** An undrawn row whose trailing control this caller asks to show whole. */
+  focusTarget?: string;
   /** What this caller draws beside a group's heading, in place of the count of its deploys. */
   groupSlot?: ReactNode;
   grouping?: GroupingState;
@@ -179,6 +191,10 @@ function Deploys({
   rows?: Deploy[];
   /** The rows are one page a server answered, of this many rows in all. */
   serverPage?: { readonly rowCount: number };
+  /** The size the page draws its controls at, which the table hands its own. */
+  size?: ControlSize;
+  /** The columns whose headers stack their sort over their filter in a phone's box. */
+  stackColumns?: readonly string[];
   /** The width of the action cell each row draws after its columns. */
   trailingWidth?: number;
 }): ReactNode {
@@ -217,10 +233,16 @@ function Deploys({
   });
   return (
     <section aria-label={layoutKey}>
+      {focusTarget === undefined ? null : (
+        <button type="button" onClick={() => model.focusRow(focusTarget, "button", "nearest")}>
+          Return to row
+        </button>
+      )}
       <DataTable
         empty="No deploys match."
         fillColumn={fillColumn}
-        filterCounts={NO_COUNTS}
+        filterCounted={filterCounted}
+        filterCounts={counts?.[openFilter ?? ""] ?? NO_COUNTS}
         label={`Deploys ${layoutKey}`}
         model={model}
         noun={noun}
@@ -262,6 +284,8 @@ function Deploys({
           </tr>
         )}
         scrollTestId={`${layoutKey}-scroll`}
+        size={size}
+        stackColumns={stackColumns}
         trailingWidth={trailingWidth}
       />
     </section>
@@ -350,6 +374,32 @@ test("filters by the text typed into a column's filter", async () => {
   expect(screen.getByText("1 of 3 deploys")).toBeInTheDocument();
 });
 
+// A caller whose counts read something besides the rows: it says, by column and by value, which
+// counts are counted yet. The shared filter draws a count beside each value that is and none
+// beside one that is not, never a 0, and what it says of one column's values leaves another's.
+test("the shared filter draws a count beside each value its caller says is counted, in that column alone", async () => {
+  const user = userEvent.setup();
+  draw(
+    <Deploys
+      columns={PICKED_COLUMNS}
+      counts={PICKED_COUNTS}
+      filterCounted={(column, value) => column !== "region" || value === "eu"}
+    />
+  );
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  /** One header filter's options, by the name each is read out as, with its panel shut after. */
+  const options = async (header: string) => {
+    await user.click(within(table).getByRole("button", { name: `Filter ${header}` }));
+    const names = optionNames(screen.getByRole("listbox", { name: `${header} options` }));
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
+    return names;
+  };
+  expect(await options("Region")).toEqual(["eu, 2 deploys", "us"]);
+  expect(await options("State")).toEqual(["live, 2 deploys", "rolled back, 1 deploy"]);
+});
+
 test("pages its rows and moves to the next page", async () => {
   const user = userEvent.setup();
   const rows = Array.from({ length: 12 }, (_, index) => ({
@@ -426,7 +476,7 @@ test("a pager with no total draws the range, the page, its steps and the page si
   expect(within(pager).getByRole("button", { name: "Next ›" })).toBeInTheDocument();
   expect(pager.textContent).not.toMatch(/12|deploys/);
 
-  await user.selectOptions(within(pager).getByRole("combobox", { name: "Rows per page" }), "50");
+  await pick(user, "Rows per page", "All rows");
   expect(within(pager).getAllByText("All rows")).toHaveLength(2);
   expect(pager.textContent).not.toMatch(/12|deploys/);
 });
@@ -615,6 +665,29 @@ for (const boxWidth of [1400, 390]) {
   });
 }
 
+// A phone stands a header's filter under its words only in the column its caller names, as the
+// issues table names its title: another table's `title` stands on one line there.
+test("a phone stacks the header its caller names, and no other table's title", async () => {
+  draw(
+    <>
+      <Deploys
+        columns={NAMESAKE_COLUMNS}
+        layoutColumns={NAMESAKE_LAYOUT}
+        layoutKey="stacked"
+        stackColumns={["title"]}
+      />
+      <Deploys columns={NAMESAKE_COLUMNS} layoutColumns={NAMESAKE_LAYOUT} layoutKey="unstacked" />
+    </>,
+    390
+  );
+  await screen.findByRole("table", { name: "Deploys stacked" });
+  const stacked = (name: string) =>
+    within(screen.getByRole("table", { name }))
+      .getByRole("columnheader", { name: /^Service/ })
+      .firstElementChild?.classList.contains("flex-col");
+  expect([stacked("Deploys stacked"), stacked("Deploys unstacked")]).toEqual([true, false]);
+});
+
 // The reader moving the view - a sort, a filter, a page - starts the box at its top; the rows
 // changing under a view the reader kept leaves the box where the reader scrolled it.
 test("a view change scrolls the box to its top and a data change keeps it where it was", async () => {
@@ -648,7 +721,7 @@ test("a table given no pager draws none", async () => {
   const table = await screen.findByRole("table", { name: "Deploys deploys" });
   expect(listed(table)).toEqual(["d1", "d2", "d3"]);
   expect(screen.queryByTestId("deploys-pager")).toBeNull();
-  expect(screen.queryByRole("combobox", { name: "Rows per page" })).toBeNull();
+  expect(screen.queryByRole("button", { name: pickNamed("Rows per page") })).toBeNull();
   expect(screen.queryByRole("button", { name: "Next ›" })).toBeNull();
 });
 
@@ -675,17 +748,17 @@ test("walks the rows by the attribute and the keymap scope the caller gives", as
   expect(rows[0]).toHaveFocus();
 });
 
-/** The same words for a table drawn beside the page's main one, as the priorities page draws its
- *  fault lists beside the priorities: the same keys under the same ids, answered only from one of
- *  this table's own rows. */
+/** The same words for a table whose next and previous answer from its own rows alone (`moveFrom:
+ *  "row"`), for keys the page answers itself everywhere else, such as the arrows, which scroll it -
+ *  the Delivery page's pull requests are walked that way (`features/delivery/PRList.tsx`): the same
+ *  keys under the same ids, answered only while the focus stands in one of this table's rows. */
 const BESIDE_NAMES: DataTableNames = {
   ...DEPLOY_NAMES,
   keymap: { ...DEPLOY_NAMES.keymap, moveFrom: "row" },
 };
 
-// INFRA-3135's review round 1, R10: a page that draws several tables over the same keys - the
-// priorities page, whose priorities table and issue tables all take `j` and `k` - answers each
-// key from the table the focus is in. A table beside the main one walks its own rows from one of
+// INFRA-3135's review round 1, R10: a page that draws several tables over the same keys answers
+// each key from the table the focus is in. A table beside the main one walks its own rows from one of
 // them; the main one walks its rows from anywhere the focus is in no table, and from its own.
 // The keymap answers a key with the first registration whose `when` holds, so this holds in
 // either order the tables register in, with rows of the same ids under the same attribute.
@@ -1056,6 +1129,7 @@ test("a group's heading is the caller's node, with the caller's slot beside it",
 // The caller that asked for it: the evals tab counts evals over rows, the project List issues in
 // groups over rows, and each offers its own page sizes.
 test("the pager counts in the caller's nouns and offers the caller's page sizes", async () => {
+  const user = userEvent.setup();
   draw(
     <Deploys
       noun={{
@@ -1072,11 +1146,38 @@ test("the pager counts in the caller's nouns and offers the caller's page sizes"
   const pager = screen.getByTestId("deploys-pager");
   expect(within(pager).getByText("3 of 3 deploys")).toBeInTheDocument();
   expect(within(pager).getByText("Lines 1–3 of 3")).toBeInTheDocument();
-  const sizes = within(pager).getByRole("combobox", { name: "Lines per page" });
-  expect([...sizes.querySelectorAll("option")].map((option) => option.textContent)).toEqual([
-    "5 per page",
-    "20 per page",
-  ]);
+  expect(optionsOf(await openList(user, "Lines per page"))).toEqual(["5 per page", "20 per page"]);
+});
+
+// The page's size reaches the controls the table draws and nothing else: the rows keep one
+// height at every size.
+test("a table hands its size to its pager and its header's filter, and draws its cells the same at both sizes", async () => {
+  const view = draw(<Deploys size="compact" />);
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  // Read from `md` up, where the two sizes part: each control's height, and the classes of a
+  // header cell and of a body cell, with the body cell's padding.
+  const read = () => {
+    const css = `${SIZE_CSS}${MOUSE_CSS}`;
+    const cell = within(table).getByText("billing").closest("td");
+    if (cell === null) throw new Error("billing is drawn in no cell");
+    return {
+      cell: `${cell.className} | ${sizeUnder(cell, css).padding}`,
+      controls: [
+        screen.getByRole("button", { name: "Next ›" }),
+        screen.getByRole("button", { name: pickNamed("Rows per page") }),
+        within(table).getByRole("button", { name: "Filter Service" }),
+      ].map((control) => sizeUnder(control, css).minHeight),
+      header: within(table).getByRole("columnheader", { name: /^Service/ }).className,
+    };
+  };
+  const compact = read();
+  expect(compact.controls).toEqual(["32px", "32px", "32px"]);
+  expect(compact.cell).toEndWith("| 8px 8px 8px 8px");
+  view.rerender(<Deploys size="comfortable" />);
+  const comfortable = read();
+  expect(comfortable.controls).toEqual(["44px", "44px", "44px"]);
+  expect(comfortable.cell).toBe(compact.cell);
+  expect(comfortable.header).toBe(compact.header);
 });
 
 /** A row of the priorities page of dispatch://INFRA-2947: a priority, who owns it and how much
@@ -1267,11 +1368,12 @@ const LINE_PX = 40;
 /** The unit DOM lays nothing out: give every drawn line - a row or a group's heading, each
  *  carrying `data-index` - a height of `LINE_PX`, so a 600 px box draws the lines near it and
  *  no more. */
-function linesTall(): void {
+function linesTall(boxHeight?: number): void {
   const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
     configurable: true,
     get() {
+      if (boxHeight !== undefined && this.dataset.testid?.endsWith("-scroll")) return boxHeight;
       return this.dataset.index === undefined ? (descriptor?.get?.call(this) ?? 0) : LINE_PX;
     },
   });
@@ -1340,6 +1442,8 @@ test("the table counts every row of its page for a screen reader, drawn or not, 
   expect(places(flat)).toEqual(owned());
   expect(places(flat)[0]).toBe("2");
   scrollBoxTo(screen.getByTestId("flat-scroll"), 10_000);
+  // The scroll ends on the table's own timer: inside `act`, before the row reads on.
+  await endWindowScroll();
   expect(listed(flat)).toContain("d60");
   expect(places(flat)).toEqual(owned());
   expect(places(flat).at(-1)).toBe("61");
@@ -1515,4 +1619,62 @@ test("a drawn row that changes height above the box's top leaves the box to the 
   scrollBoxTo(box, 2000);
   reportHeight(line(45), LINE_PX + 20);
   expect(box.scrollTop).toBe(2020);
+});
+
+test("a nearest-edge hand-off waits for an undrawn row and places its measured control whole", async () => {
+  linesTall(600);
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    if (this.matches("[data-testid='deploys-scroll']")) return new DOMRect(0, 0, 390, 600);
+    if (this.matches("thead, th")) return new DOMRect(0, 0, 100, 60);
+    if (this.textContent === "Roll back d54" && this.matches("button")) {
+      const box = this.closest("[data-testid='deploys-scroll']");
+      return new DOMRect(10, 60 + 53 * LINE_PX + 10 - (box?.scrollTop ?? 0), 60, 13);
+    }
+    return new DOMRect();
+  });
+  restores.push(() => rect.mockRestore());
+  draw(
+    <Deploys
+      focusTarget="d54"
+      pageSize={100}
+      pager={null}
+      rowHeight={LINE_PX}
+      rows={manyDeploys(60)}
+      trailingWidth={104}
+    />
+  );
+  const box = screen.getByTestId("deploys-scroll");
+  box.style.overflowY = "auto";
+  Object.defineProperties(box, {
+    clientWidth: { value: 390 },
+    scrollHeight: { value: 60 + 60 * LINE_PX },
+  });
+  const drawRow = spyOn(box, "scrollTo").mockImplementation(() => {});
+  const correct = spyOn(box, "scrollBy").mockImplementation(
+    (options?: ScrollToOptions | number, y?: number) => {
+      box.scrollTop += (typeof options === "number" ? y : options?.top) ?? 0;
+    }
+  );
+  const focus = spyOn(HTMLElement.prototype, "focus");
+  restores.push(() => {
+    drawRow.mockRestore();
+    correct.mockRestore();
+    focus.mockRestore();
+  });
+  expect(screen.queryByRole("button", { name: "Roll back d54" })).not.toBeInTheDocument();
+  act(() => screen.getByRole("button", { name: "Return to row" }).click());
+  // Before the scroll event the virtualizer still uses the old range. Its index jump aligns the
+  // measured row as if there were no header, leaving the control below the box.
+  expect(drawRow).toHaveBeenCalledWith(expect.objectContaining({ top: 1560 }));
+  expect(screen.queryByRole("button", { name: "Roll back d54" })).not.toBeInTheDocument();
+  scrollBoxTo(box, 1560);
+  const target = screen.getByRole("button", { name: "Roll back d54" });
+  expect(target).toHaveFocus();
+  expect(focus).toHaveBeenLastCalledWith({ preventScroll: true });
+  expect<readonly unknown[]>(correct.mock.calls).toEqual([[{ top: 43 }]]);
+  expect(target.getBoundingClientRect().bottom).toBe(600);
+  await endWindowScroll();
+  expect(box.scrollTop).toBe(1603);
 });

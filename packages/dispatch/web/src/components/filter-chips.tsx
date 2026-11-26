@@ -62,7 +62,7 @@ export function columnFilterPicks(value: unknown): string[] {
  * The chip of one table column's filter: `<header>: <values>`, each value in the words the
  * header's own filter lists it in (the column's `show`), so the row and the header name one
  * narrowing alike. A column the reader hid with the columns menu keeps its filter, and this chip
- * is then the one place the reader sees it and takes it off (INFRA-3135, R1). Its press clears
+ * is then the one place the reader sees it and takes it off. Its press clears
  * the column's filter, unless the page says what taking it off leaves (`remove`).
  */
 export function columnFilterChip<TData>(

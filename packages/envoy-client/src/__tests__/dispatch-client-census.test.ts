@@ -1,12 +1,13 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_KEY_PATTERN } from "@legion/contracts";
 import { bearerCredential } from "../bearer";
-import { DISPATCH_WRITE_RETRY, DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
+import { DISPATCH_WRITE_RETRY, DispatchClient } from "../dispatch-http";
 
 // Every write the `dispatch` command makes carries one key because every request DispatchClient
 // makes goes through its one request function. This drives every method of the class through a
 // recording fetch, so a method added later that reaches Dispatch any other way - its own fetch, the
 // global one, a write without the key - fails here, as does a method the table below leaves out.
+// `UNKEYED` names the one write sent with no key, and why.
 
 /** The names of DispatchClient's methods: every function member but the injected fetch. */
 type ClientMethod = Exclude<
@@ -22,6 +23,12 @@ const actor = { kind: "session" as const, id: "session-1" };
 const file = { name: "notes.md", file: new Blob(["# Notes"], { type: "text/markdown" }), actor };
 const inline = { name: "notes.md", content: "# Notes", actor };
 
+/** The write methods whose POST or PATCH carries no `Idempotency-Key`, each with why. */
+const UNKEYED: Readonly<Partial<Record<ClientMethod, string>>> = {
+  sendRoute:
+    "dispatch api's write of the route its caller names, sent through one #send as written, so the caller decides whether to send it again",
+};
+
 /** One call of each method, with arguments of the shapes it takes; what it answers is not read. */
 const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> = {
   issue: (client) => client.issue({ project: "DSP", title: "A title", actor }),
@@ -30,7 +37,8 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   listAllIssues: (client) => client.listAllIssues({}),
   listProjectArtifacts: (client) => client.listProjectArtifacts("DSP"),
   listIssueArtifacts: (client) => client.listIssueArtifacts("DSP-1"),
-  markdownRoundTrip: (client) => client.markdownRoundTrip("# Notes\n"),
+  markdownRoundTrip: (client) => client.markdownRoundTrip("# Notes\n", true),
+  fileRoundTrip: (client) => client.fileRoundTrip(new TextEncoder().encode("# Notes\n"), true),
   projectArtifact: (client) => client.projectArtifact("DSP", inline),
   getProjectArtifact: (client) => client.getProjectArtifact("DSP", "notes"),
   agentArtifact: (client) => client.agentArtifact("session-1", file),
@@ -40,6 +48,8 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   related: (client) => client.related("DSP", { title: "A title", text: "Some text." }),
   getIssue: (client) => client.getIssue("DSP-1"),
   updateIssue: (client) => client.updateIssue("DSP-1", { status: "testing", actor }),
+  changeIssueStatus: (client) =>
+    client.changeIssueStatus("DSP-1", { status: "in_progress", include_parent: true, actor }),
   claimIssue: (client) => client.claimIssue("DSP-1", { actor }),
   releaseIssueClaim: (client) => client.releaseIssueClaim("DSP-1", { actor }),
   getIssueEvents: (client) => client.getIssueEvents("DSP-1"),
@@ -52,11 +62,15 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   listAgents: (client) => client.listAgents(),
   whoami: (client) => client.whoami(),
   limits: (client) => client.limits(),
+  readRoute: (client) => client.readRoute("/api/v1/issues/DSP-1/events?limit=200"),
+  sendRoute: (client) => client.sendRoute("POST", "/api/v1/issues/DSP-1/comments", "{}"),
   inbox: (client) => client.inbox("me"),
   myReplies: (client) => client.myReplies(),
   credentialPending: (client) => client.credentialPending(),
   createProject: (client) => client.createProject({ key: "DSP", name: "Dispatch" } as never),
   listProjects: (client) => client.listProjects(),
+  turnOnProvenSessions: (client) => client.turnOnProvenSessions("DSP", { actor }),
+  turnOffProvenSessions: (client) => client.turnOffProvenSessions("DSP"),
   listArchitectureSources: (client) => client.listArchitectureSources("DSP"),
   syncArchitectureSources: (client) => client.syncArchitectureSources("DSP"),
   syncArchitectureSource: (client) => client.syncArchitectureSource("DSP", "acme/infra"),
@@ -101,6 +115,10 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   deliveryReply: (client) => client.deliveryReply("message", "message-1", { body: "Done." }),
   getMessage: (client) => client.getMessage("DSP-1", "message-1"),
   getMessageThread: (client) => client.getMessageThread("message-1", "session-1"),
+  editMessage: (client) => client.editMessage("message-1", { body: "Corrected.", actor }),
+  deleteMessage: (client) => client.deleteMessage("message-1", actor),
+  messageHistory: (client) => client.messageHistory("message-1", "session-1"),
+  issueMessages: (client) => client.issueMessages("DSP-1"),
   messageBlocks: (client) => client.messageBlocks("message-1", "session-1"),
   acceptMessageDelivery: (client) => client.acceptMessageDelivery("message-1", 1, { actor }),
   artifact: (client) => client.artifact("DSP-1", file),
@@ -123,6 +141,9 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   getComment: (client) => client.getComment("comment-1"),
   commentBlocks: (client) => client.commentBlocks("comment-1"),
   resolveComment: (client) => client.resolveComment("comment-1", actor),
+  editComment: (client) => client.editComment("comment-1", { body: "Corrected.", actor }),
+  deleteComment: (client) => client.deleteComment("comment-1", actor),
+  commentHistory: (client) => client.commentHistory("comment-1"),
   getComments: (client) => client.getComments("DSP-1"),
   getIssueReferences: (client) => client.getIssueReferences("DSP-1"),
   getReferences: (client) => client.getReferences({ to: "DSP-1" }),
@@ -137,8 +158,6 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
       until: "2026-11-17T00:00:00Z",
     }),
 };
-
-afterEach(forgetKeyedLayerMemory);
 
 test("every DispatchClient method reaches Dispatch through its one request function, every write keyed", async () => {
   // Every method, which is every own property of the prototype that is one: `token` is an
@@ -171,7 +190,10 @@ test("every DispatchClient method reaches Dispatch through its one request funct
 
       expect({ name, requested: requests.length > 0 }).toEqual({ name, requested: true });
       for (const { method, key } of requests) {
-        if (method === "POST" || method === "PATCH") {
+        if (
+          (method === "POST" || method === "PATCH") &&
+          UNKEYED[name as ClientMethod] === undefined
+        ) {
           expect({ name, method, key }).toEqual({
             name,
             method,

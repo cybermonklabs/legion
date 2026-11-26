@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -33,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
 // askTurnEventTypes are the ask events a person's turn starts and ends with: the two that hand an
@@ -52,6 +54,15 @@ type Handoff struct {
 	Phase   string
 	Version int
 	At      time.Time
+}
+
+// RunPlan is the plan one run of the issue ran from, as Dispatch holds it (workflowstore's plan
+// node): when its node was made, which is when the run's work started, and the roles of its one
+// task's steps, in the task's order (`acceptance` for `acceptance:owner`). Steps is empty for a
+// plan whose tasks are not exactly one, which the fallback timeline reads as the default steps.
+type RunPlan struct {
+	Made  time.Time
+	Steps []string
 }
 
 // Issue is one issue of the population with every fact the rules read of it.
@@ -82,6 +93,11 @@ type Issue struct {
 
 	// StatusMarks is every status the issue's own events snapshotted, oldest first.
 	StatusMarks []Mark
+
+	// Plans is the plan of each run of the issue, oldest first: what the fallback timeline reads
+	// the order of the task's steps from (phaseLine). An issue Legion ran before it recorded
+	// plans has none.
+	Plans []RunPlan
 
 	// Observed is every value a read found changed, by legion_observations field (legion's
 	// FieldPhase, FieldSlot, ClaimFieldPrefix+role and the rest), oldest first within a field.
@@ -131,9 +147,12 @@ type Population struct {
 	// creation order: the whole history's (ReadProject) or the named filed issues' (ReadIssues).
 	Filed []Filed
 
-	// reported is legion.ReadCurrent's Reported (readReported), and phaseWork is every issue that
-	// carries Legion phase work, over the whole log of every project (legion.PhaseWorkKeys): the
-	// two halves of legion.TreeNode's rule, neither of them read for the window's keys.
+	// reported is legion.ReadCurrent's Reported (readReported), and phaseWork is the issues that
+	// carry Legion phase work among those the tree walk of this population can ask about: every
+	// issue of every project for a whole read (ReadProject, legion.PhaseWorkKeys), and the scope
+	// with each filing's chain for a narrow one (ReadIssues, placedKeys and legion.PhaseWorkOf),
+	// the whole log's answer for each issue either way. They are the two halves of
+	// legion.TreeNode's rule, neither of them read for the window's keys.
 	reported  map[string]string
 	phaseWork map[string]struct{}
 
@@ -155,12 +174,15 @@ type Population struct {
 // the per-issue facts read (factsOf). Its window runs from the beginning to now, so an open
 // issue's hours run to now, and its scope is every issue of the project. Its filings are every
 // issue a Legion session of the project ever filed (ProjectFilings), whose filers are issues of
-// the project and so inside that scope.
+// the project and so inside that scope. Its phase work is the whole log's (legion.PhaseWorkKeys):
+// it is the read a build makes once per project, and its walks may ask about any issue.
 func ReadProject(ctx context.Context, pool *store.Pool, project string, now time.Time) (*Population, error) {
 	return read(ctx, pool, project, now, func(ctx context.Context, p *Population) error {
 		return p.readFiled(ctx, pool, project, time.Time{}, now)
 	}, func(p *Population) []string {
 		return p.Keys
+	}, func(ctx context.Context, _ *Population, _ []string) (map[string]struct{}, error) {
+		return legion.PhaseWorkKeys(ctx, pool)
 	})
 }
 
@@ -175,18 +197,33 @@ func ReadProject(ctx context.Context, pool *store.Pool, project string, now time
 // Legion session of the project filed among them, and the scope holds the issue each filer was
 // working as well, because a filing's class and its filer's phase read that issue's timeline
 // (classify). The facts of the keys asked for are the same whatever the scope adds around them.
+//
+// Its phase work is read for the issues its tree walks can ask about alone (placedKeys,
+// legion.PhaseWorkOf), by the issues' own rows, and never over the whole log: a pass of the
+// facts consumer makes this read for each project it computes, and the whole log's read cost it
+// about 730 ms a call at ten times INFRA's rate (dispatch://INFRA-2916, round 15's cost design).
+// Each issue it reads carries the answer the whole log gives it (legion.PhaseWorkOf), and every
+// question the computation asks of an issue it did not read has the same answer either way
+// (placedKeys), so the facts and the filings are the ones ReadProject computes.
 func ReadIssues(ctx context.Context, pool *store.Pool, project string, keys, filed []string, now time.Time) (*Population, error) {
 	return read(ctx, pool, project, now, func(ctx context.Context, p *Population) error {
 		return p.readFiledIssues(ctx, pool, project, filed)
 	}, func(p *Population) []string {
 		return p.treeScopeKeys(slices.Concat(keys, p.filerKeys()))
+	}, func(ctx context.Context, p *Population, scope []string) (map[string]struct{}, error) {
+		return legion.PhaseWorkOf(ctx, pool, p.placedKeys(scope))
 	})
 }
 
 // read is the body the two readers share, from the beginning to `to`. filed reads the
 // population's filings, before the scope is chosen because the scope holds each filer's issue,
-// and scope names which issues the seven detail reads cover.
-func read(ctx context.Context, pool *store.Pool, project string, to time.Time, filed func(ctx context.Context, p *Population) error, scope func(*Population) []string) (*Population, error) {
+// scope names which issues the seven detail reads cover, and phaseWork reads which issues carry
+// Legion phase work, given that scope, for the tree walks (TreeNode).
+func read(ctx context.Context, pool *store.Pool, project string, to time.Time,
+	filed func(ctx context.Context, p *Population) error,
+	scope func(*Population) []string,
+	phaseWork func(ctx context.Context, p *Population, scope []string) (map[string]struct{}, error),
+) (*Population, error) {
 	population := &Population{Project: project, To: to, Issues: map[string]*Issue{}}
 	if err := population.readIssues(ctx, pool, project); err != nil {
 		return nil, err
@@ -223,19 +260,23 @@ func read(ctx context.Context, pool *store.Pool, project string, to time.Time, f
 	}
 	population.fillReportedTrees()
 	keys := scope(population)
-	// The seven reads below write disjoint fields — six take the keys above and write fields of
-	// those issues, the seventh the project's phase-work keys — so they run together rather
-	// than one after another, as the delivery population's independent reads do
-	// (api/delivery.go). store.ReadSideBySide answers the first error recorded, so which of two
-	// failing reads names the failure is no longer fixed.
+	// The eight reads below write disjoint fields — seven take the keys above and write fields of
+	// those issues, the eighth the population's phase work — so they run together rather than
+	// one after another, as the delivery population's independent reads do (api/delivery.go).
+	// store.ReadSideBySide answers the first error recorded, so which of two failing reads names
+	// the failure is no longer fixed.
 	if err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) error { return population.readRoleEvents(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readStatusMarks(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readAskTurns(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readHandoffs(ctx, pool, keys) },
+		func(ctx context.Context) error { return population.readPlans(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readSampled(ctx, tx, project, keys) },
 		func(ctx context.Context) error { return population.readMergeTimes(ctx, pool, keys) },
-		func(ctx context.Context) error { return population.readPhaseWork(ctx, pool) },
+		func(ctx context.Context) (err error) {
+			population.phaseWork, err = phaseWork(ctx, population, keys)
+			return err
+		},
 	); err != nil {
 		return nil, err
 	}
@@ -429,6 +470,46 @@ func (p *Population) treeScopeKeys(seeds []string) []string {
 	return keys
 }
 
+// placedKeys is every issue a narrow read's computation can ask the tree rule about
+// (legion.TreeChain, through TreeNode), which is every issue whose Legion phase work ReadIssues
+// reads: the scope, and each filing's filed issue with every issue above it by the one tree step
+// (legion.TreeAbove), up to the first the scope holds or the project does not.
+//
+// The scope is closed under that step both ways (treeScopeKeys), so a chain from a scope key
+// stays inside it, and the chain from an issue outside it never reaches it: an issue whose step
+// leads into the scope is in the scope. Every rule asks the walk of a scope key, the facts and the
+// waiting line of the keys asked for, and the ask turns and the class of a filing of the scope's
+// own issues, or compares a scope key's root with the root of an issue outside the scope (the
+// issue an ask's session works, keepTreeAsks; the parent a filing was filed under, classify),
+// which differ whatever that issue's chain reads. linkTrees places every issue of the project, and
+// one outside the scope lands under a root outside it whatever its chain reads, so the children of
+// a scope key are the whole read's. The one root asked of an issue outside the scope is a filed
+// issue's own (ProjectFilings' Root), since a filer of the scope may file into another tree, and
+// its chain is read here, so the root it answers is the whole read's.
+//
+// The climb takes no placement stop, as the scope's does not: it holds every issue the placement
+// walk can climb through above a filed issue, and some it stops below, which costs a key of the
+// read and not an answer.
+func (p *Population) placedKeys(scope []string) []string {
+	keys := slices.Clone(scope)
+	held := make(map[string]bool, len(scope))
+	for _, key := range scope {
+		held[key] = true
+	}
+	for _, filed := range p.Filed {
+		for key := filed.Key; !held[key]; {
+			issue := p.Issues[key]
+			if issue == nil {
+				break
+			}
+			held[key] = true
+			keys = append(keys, key)
+			key, _ = legion.TreeAbove(key, legion.TreeNode{Tree: issue.Tree, Parent: issue.Parent})
+		}
+	}
+	return keys
+}
+
 // TreeLinks is every issue of the project by the issue above it, and "" for an issue nothing
 // stands above it: the one read of a project's tree links. It is exported for the Legion facts
 // pass (legionfacts), which climbs and descends them to state which stored rows a change to an
@@ -467,17 +548,28 @@ func TreeLinks(ctx context.Context, pool *store.Pool, project string) (map[strin
 	return above, nil
 }
 
+// roleEventsStatement is readRoleEvents' statement: the first event each session wrote on each of
+// the issues $1 names. It takes those issues' rows by events' unique (issue_key, seq) first and
+// keeps the sessions' among them after, as legion's readSessionIssues does and for its reason:
+// written as one condition, `issue_key = any($1)` beside the actor's kind and id, the planner,
+// which holds no statistics on actor's fields, can take the partial index on a session's id
+// (events_session_actor_created_at_idx) for a selective one and read every session event of the
+// log to intersect it with the issues' rows. TestTheRoleEventsReadReadsTheIssuesRowsByIssue holds
+// the plan to the issues' index over a million events.
+const roleEventsStatement = `
+	with scoped as materialized (
+		select issue_key, actor, created_at from events where issue_key = any($1))
+	select issue_key, actor->>'id', min(created_at) from scoped
+	where actor->>'kind' = 'session' and actor->>'id' is not null
+	group by issue_key, actor->>'id'`
+
 // readRoleEvents reads the first event each session wrote on each of the issues, and keeps the
 // ones a session titled `Legion <role> · <that issue's key>` wrote. The first event per session is
 // all the rule needs ("each role's phase starts at the first event of a session titled …"), so
-// this reads one row per session and issue rather than every event of every issue.
+// this reads one row per session and issue rather than every event of every issue
+// (roleEventsStatement).
 func (p *Population) readRoleEvents(ctx context.Context, pool *store.Pool, keys []string) error {
-	rows, err := pool.Query(ctx, `
-		select issue_key, actor->>'id', min(created_at)
-		from events
-		where issue_key = any($1) and actor->>'kind' = 'session' and actor->>'id' is not null
-		group by issue_key, actor->>'id'
-	`, keys)
+	rows, err := pool.Query(ctx, roleEventsStatement, keys)
 	if err != nil {
 		return fmt.Errorf("read the Legion session events: %w", err)
 	}
@@ -693,6 +785,33 @@ func (p *Population) readHandoffs(ctx context.Context, pool *store.Pool, keys []
 	return nil
 }
 
+// readPlans reads the plan of each run of the issues (workflowstore.IssuesPlans), oldest first:
+// what the fallback timeline reads the order of a task's steps from (Issue.phaseLine). A plan
+// whose tasks are not exactly one keeps no steps, which reads as the default steps.
+func (p *Population) readPlans(ctx context.Context, pool *store.Pool, keys []string) error {
+	plans, err := workflowstore.IssuesPlans(ctx, pool, keys)
+	if err != nil {
+		return err
+	}
+	for key, held := range plans {
+		issue := p.Issues[key]
+		if issue == nil {
+			continue
+		}
+		for _, made := range held {
+			var steps []string
+			if len(made.Plan.Tasks) == 1 {
+				for _, step := range made.Plan.Tasks[0].Steps {
+					role, _, _ := strings.Cut(step, ":")
+					steps = append(steps, role)
+				}
+			}
+			issue.Plans = append(issue.Plans, RunPlan{Made: made.Made, Steps: steps})
+		}
+	}
+	return nil
+}
+
 // readSampled reads the scope's observations (readObservations) in the repeatable-read,
 // read-only transaction read opened for the project's reported set (readReported), and commits
 // it, so the timelines and the trees answer one moment. The reported set is read first and alone,
@@ -829,9 +948,11 @@ func (p *Population) linkTrees() {
 //
 // Both facts the walk reads are the project's and not the window's — Issue.Tree is the daemon's
 // newest `tree` for every issue of the project (fillReportedTrees), and legion.IsLegionIssue reads
-// the project's reported set (readReported) and every project's phase work (readPhaseWork) — so
-// this population answers what the Legion board answers. It holds every issue of the project,
-// Legion's and the rest. A fixture states the rule by filling the two sets, as a read does.
+// the project's reported set (readReported) and the whole log's phase work of each issue the read
+// asked about (phaseWork: every issue in a whole read, placedKeys in a narrow one) — so this
+// population answers what the Legion board answers for every issue its computation places. It
+// holds every issue of the project, Legion's and the rest. A fixture states the rule by filling
+// the two sets, as a read does.
 func (p *Population) TreeRoot(key string) string {
 	return legion.TreeRoot(key, p.TreeNode)
 }
@@ -848,19 +969,6 @@ func (p *Population) TreeNode(key string) (legion.TreeNode, bool) {
 		return legion.TreeNode{}, false
 	}
 	return legion.TreeNode{Tree: issue.Tree, Parent: issue.Parent, Legion: legion.IsLegionIssue(key, p.reported, p.phaseWork)}, true
-}
-
-// readPhaseWork reads the issues that carry Legion phase work, over the whole log of every project
-// (legion.PhaseWorkKeys); TreeRoot looks up only this project's issues in it. It places an
-// issue in a tree and nothing else: what a metric counts reads the window's own role events and
-// handoffs (hasPhaseWork).
-func (p *Population) readPhaseWork(ctx context.Context, pool *store.Pool) error {
-	work, err := legion.PhaseWorkKeys(ctx, pool)
-	if err != nil {
-		return err
-	}
-	p.phaseWork = work
-	return nil
 }
 
 // hasPhaseWork is whether this read carried Legion phase work of the issue: an event of a

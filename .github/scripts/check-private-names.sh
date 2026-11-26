@@ -24,9 +24,30 @@
 #      (packages/claude-envoy/dist/envoy-channel.js, which reaches this check on main and through
 #      packages/claude-envoy/scripts/verify-build.sh, never in a pull request's diff), and nowhere
 #      else. A namespace passes too: a name holding a capital letter, then a segment spelled
-#      exactly `Internal`, as a Lean module or function or an OCaml value path has. That is the one
-#      shape a host and a namespace share, so a host written that way passes with it. So does
-#      Lean's own option `internal.cmdlineSnapshots` under its `Lean` namespace, and no near name;
+#      exactly `Internal` and a full stop, as a Lean module or function or an OCaml value path
+#      has, one label in front included (`Std.Internal.` passes). That is the one shape a host and
+#      a namespace share, so a host written that way passes with it. So does Lean's own option
+#      `internal.cmdlineSnapshots` under its `Lean` namespace, and no near name.
+#      A run with PRIVATE_NAME_BARE_HOSTS=yes, which check-pr-text.sh asks for over a pull
+#      request's own text, also refuses a host that ends in `.internal`, as Dispatch's results
+#      line refuses it, since that text is pasted where no reader stands between. Each label of
+#      such a host starts with a letter or a digit, and `.internal` ends it when what follows is
+#      any character but a letter, a digit, a `.` or a `_` (a port's `:`, a path's `/`, a blank,
+#      a quote, a bracket, a hyphen), a full stop with no letter or digit after it, one `_` with
+#      no letter or digit after it or two or more `_` whatever follows, or the end of the line. So
+#      `nats.internal_url` passes and `db.internal__url` is refused. The namespace above passes
+#      there too, with one label in front and its full stop (`Std.Internal.`); with no full stop
+#      after it, or with two or more labels in front at a sentence's end, it is refused there.
+#      Only the GCE metadata server's and Docker's host name of that shape pass, with no label
+#      joined in front: a letter or digit then a `-` joins one, so `x-metadata.google.internal`
+#      is refused, while a `-` after no letter or digit, and any `_`, leave them whole
+#      (`-metadata.google.internal:80` and `x_metadata.google.internal` pass; no DNS name holds a
+#      `_`). A run over a tree reads no such ending: the tree holds those two names and its tests'
+#      own hosts of that shape, which name no private network. The bare reading is the CI check's
+#      alone, on purpose: this script's port, .github/private-names.toml, which runs where
+#      something names it (the port harness, release-push.sh's leak guard, and a deployment that
+#      names it as its leak guard's rule file), does not read it, since it would refuse agents'
+#      own writes;
 #   4. a Tailscale MagicDNS host — a DNS label then `.ts.net`, in any case, with no letter or
 #      digit after it. A reserved tailnet name (`example-tailnet`, under any machine name of its
 #      own in front) passes;
@@ -48,14 +69,14 @@
 #      word and a lowercase slug pass, and a key beside a "_", which a GNU "\b" would pass, is
 #      refused). `LEGION` is never such a project, so Legion's own `LEGION-<n>` keys always pass.
 #      A run that reads this rule with terms in the list and no `key:` line fails with exit 2, since
-#      it would report a clean result over no project at all;
-#   7. a Dispatch link: the link scheme Dispatch's references are written in, in any case.
+#      it would report a clean result over no project at all. A Dispatch link is no private name
+#      (the operator decided so): no rule refuses a link for being one; a name, term or issue key
+#      in it is still refused.
 #
-# Rules 6 and 7 read new text only: the tree keeps the keys and links from before them, which the
-# operator's rule ("Stop new leaks only") leaves in place. PRIVATE_NAME_RULES picks the rules a run
-# reads: `names` (the default) reads rules 1 to 5, and `keys` reads rules 6 and 7 alone, which
-# check-pr-text.sh asks for over a pull request's new text (its header says which text, and from
-# when).
+# Rule 6 reads new text only: the tree keeps the keys from before it, which the operator's rule
+# ("Stop new leaks only") leaves in place. PRIVATE_NAME_RULES picks the rules a run reads: `names`
+# (the default) reads rules 1 to 5, and `keys` reads rule 6 alone, which check-pr-text.sh asks for
+# over a pull request's new text (its header says which text, and from when).
 #
 # One matching engine reads everything: GNU grep, in the run's locale. The repository's contents
 # and a named path's are read by the same grep over the same file list, a file's path by grep -z,
@@ -65,11 +86,12 @@
 # The jobs that run this script with that secret run no dependency code: each checks out the
 # repository, or downloads what another job built, and runs this script and system tools alone.
 # With the variable unset or empty (no term left after the dropping above) the fifth rule cannot
-# run, and GITHUB_EVENT_NAME decides what follows. On a pull_request event, which GitHub runs with
-# no secret for a fork's pull request, and with no event at all (a run outside Actions), the check
-# prints a warning that only the first four rules ran and keeps their exit. On any other event (a
-# merge_group, a push, a workflow_dispatch, and a pull_request_review, which no workflow runs this
-# check on), where a job can always map the secret, it fails with exit 2 before it scans anything.
+# run, and GITHUB_EVENT_NAME decides what follows. On a pull_request or a pull_request_review event,
+# which GitHub runs with no secret for a fork's pull request, and with no event at all (a run
+# outside Actions), the check prints a warning that only the first four rules ran and keeps their
+# exit; a keys run with no `key:` line left checks nothing, and its warning and its last line say
+# so, with exit 0. On any other event (a merge_group, a push, a workflow_dispatch), where a job can
+# always map the secret, it fails with exit 2 before it scans anything.
 #
 # With no arguments it scans the repository: every file git tracks, a file under an ignored path
 # included, plus every untracked file git does not ignore (git ls-files -z), so a new file is
@@ -183,14 +205,26 @@ private_host_label='names a private internal host'
 tailnet_host_label='names a Tailscale MagicDNS host'
 term_label="names a term of the deployment's own list (PRIVATE_NAME_TERMS)"
 issue_key_label="names an issue key of the deployment's own projects (PRIVATE_NAME_TERMS key: lines)"
-link_label='holds a Dispatch link'
-# The seventh rule's link scheme, spelled in pieces so that this file holds no whole one.
-link_rule='dispatch'':''//'
 rules=${PRIVATE_NAME_RULES:-names}
 case $rules in
   names | keys) ;;
   *)
     echo "check-private-names: PRIVATE_NAME_RULES must be names or keys" >&2
+    exit 2
+    ;;
+esac
+# The third rule's reading of a pull request's own text (PRIVATE_NAME_BARE_HOSTS=yes, the header
+# says what it refuses): a host that ends in `.internal`, every label before it included, each
+# starting with a letter or a digit. Its whole matches that name no private host: the two
+# well-known names, with the trailing characters the rule may have captured. Neither is in the
+# variables .github/private-names.toml ports, which read no such text.
+bare_host_rule='([[:alnum:]][[:alnum:]-]*[.])*[[:alnum:]][[:alnum:]-]*[.]internal([^[:alnum:]._]|_+([^[:alnum:]]|$)|[.]([^[:alnum:]]|$)|$)'
+allowed_bare_host='(metadata[.]google|host[.]docker)[.]internal([^[:alnum:].]|[.][^[:alnum:]]?|_+[^[:alnum:]]?)?'
+bare_hosts=${PRIVATE_NAME_BARE_HOSTS:-no}
+case $bare_hosts in
+  yes | no) ;;
+  *)
+    echo "check-private-names: PRIVATE_NAME_BARE_HOSTS must be yes or no" >&2
     exit 2
     ;;
 esac
@@ -292,17 +326,22 @@ if [ ${#keys[@]} -gt 0 ]; then
 fi
 for i in "${!term_patterns[@]}"; do printf '%s\n' "${term_patterns[i]}" > "$pattern_dir/term.$i"; done
 # One line says how many terms and keys the run read, and never a term or a key: on a pull
-# request's own run, the proof that the job holds the list. An empty list prints the warning
-# below instead.
+# request's own run, the proof that the job holds the list. It counts a key as read only in a
+# `keys` run, the one run that checks it: a `names` run reads the `key:` lines too, since its
+# masking hides a key, but checks none, so its line says that its keys were not checked. An empty
+# list prints the warning below instead.
 if [ ${#terms[@]} -gt 0 ]; then
   printf '%s\n' "${term_patterns[@]}" > "$patterns_file"
   if [ ${#terms[@]} -eq 1 ]; then read_count="1 term"; else read_count="${#terms[@]} terms"; fi
-  if [ ${#keys[@]} -eq 1 ]; then
-    read_count+=" and 1 issue key"
-  elif [ ${#keys[@]} -gt 1 ]; then
-    read_count+=" and ${#keys[@]} issue keys"
+  if [ ${#keys[@]} -eq 1 ]; then key_count="1 issue key"; else key_count="${#keys[@]} issue keys"; fi
+  if [ ${#keys[@]} -eq 0 ]; then
+    read_count+=" read"
+  elif [ "$rules" = keys ]; then
+    read_count+=" and $key_count read"
+  else
+    read_count+=" read; $key_count not checked: rule 6 runs only with PRIVATE_NAME_RULES=keys"
   fi
-  echo "check-private-names: PRIVATE_NAME_TERMS: $read_count read"
+  echo "check-private-names: PRIVATE_NAME_TERMS: $read_count"
 fi
 
 # named_parts <part...>: the 1-based index of each part the first two rules match, one a line, by
@@ -397,9 +436,14 @@ done
 
 if [ ${#terms[@]} -eq 0 ]; then
   case ${GITHUB_EVENT_NAME:-} in
-    '' | pull_request)
-      echo "::warning::check-private-names: PRIVATE_NAME_TERMS is unset or empty, so only the" \
-        "rules this script spells ran, and no term of the deployment's own list was checked" >&2
+    '' | pull_request | pull_request_review)
+      if [ "$rules" = names ]; then
+        echo "::warning::check-private-names: PRIVATE_NAME_TERMS is unset or empty, so only the" \
+          "rules this script spells ran, and no term of the deployment's own list was checked" >&2
+      elif [ ${#keys[@]} -eq 0 ]; then
+        echo "::warning::check-private-names: PRIVATE_NAME_TERMS is unset or empty, so no issue" \
+          "key of the deployment's own projects was checked" >&2
+      fi
       ;;
     *)
       echo "::error::check-private-names: PRIVATE_NAME_TERMS is unset or empty on a" \
@@ -478,11 +522,13 @@ run() {
 }
 
 # allowed <file> <match>: whether a committed rule's whole match names no private host: a reserved
-# example host, a host under the reserved example tailnet, the NATS client's property in the
-# bundle that vendors it, or one of the two Lean names, which are read in the match's own case.
+# example host, a host under the reserved example tailnet, one of the two well-known names a
+# pull request's text may hold, the NATS client's property in the bundle that vendors it, or one of
+# the two Lean names, which are read in the match's own case.
 allowed() {
   local match=${2,,}
   [[ $match =~ ^($allowed_host)$ || $match =~ ^($allowed_tailnet_host)$ ]] && return
+  [[ $match =~ ^($allowed_bare_host)$ ]] && return
   [[ $2 =~ ^$namespace_host || $2 =~ ^$lean_option$ ]] && return
   [[ $1 == "$vendored_nats" && $match =~ ^$vendored_property$ ]]
 }
@@ -526,6 +572,9 @@ if [ "$rules" = names ]; then
   search "$company_label" committed -E -i -e "$company_rule"
   search "$company_label" committed -E -e "$proper_noun_rule"
   search "$private_host_label" committed -E -i -e "$private_host_rule"
+  if [ "$bare_hosts" = yes ]; then
+    search "$private_host_label" committed -E -i -e "$bare_host_rule"
+  fi
   search "$tailnet_host_label" committed -E -i -e "$tailnet_host_rule"
   search_paths "$repository_label" -E -i -e "$repository_rule"
   search_paths "$company_label" -E -i -e "$company_rule"
@@ -535,14 +584,11 @@ if [ "$rules" = names ]; then
     search_paths "$term_label" -E -i -f "$patterns_file"
   fi
 fi
-# Rules 6 and 7: over everything a `keys` run reads. A key or a link has no allowed form, so each
-# is a `term` search, which drops nothing.
-if [ "$rules" = keys ]; then
-  if [ -n "$key_pattern" ]; then
-    search "$issue_key_label" term -E -f "$key_file"
-    search_paths "$issue_key_label" -E -f "$key_file"
-  fi
-  search "$link_label" term -F -i -e "$link_rule"
+# Rule 6: over everything a `keys` run reads. A key has no allowed form, so it is a `term` search,
+# which drops nothing.
+if [ "$rules" = keys ] && [ -n "$key_pattern" ]; then
+  search "$issue_key_label" term -E -f "$key_file"
+  search_paths "$issue_key_label" -E -f "$key_file"
 fi
 
 # escape_data <text>: text as a workflow command's message, its %, CR and LF escaped as GitHub
@@ -596,16 +642,21 @@ if [ -s "$hits" ]; then
   echo "  - for a term of PRIVATE_NAME_TERMS, the deployment's own list, write the neutral form above"
   echo "    that fits it (\"the deployment repository\", \"the company\", a placeholder id). The list"
   echo "    is an Actions secret, so this log never prints the term: read the reported line;"
-  echo "  - for an issue key of the deployment's own projects, or a Dispatch link, write neither: a"
+  echo "  - for an issue key of the deployment's own projects write none, in a Dispatch link too: a"
   echo "    pull request's title, body, commits, comments and reviews carry no key but Legion's own"
-  echo "    LEGION-<n> and no link; the Dispatch issue links the pull request instead;"
+  echo "    LEGION-<n>; the Dispatch issue links the pull request instead;"
   echo "  - for a file or directory whose path is reported with <name> in it, rename it."
   exit 1
 fi
 
 if [ "$rules" = keys ]; then
-  echo "check-private-names: no text names an issue key of the deployment's own projects" \
-    "(${#keys[@]} keys) or holds a Dispatch link ($scanned)"
+  if [ ${#keys[@]} -eq 0 ]; then
+    echo "check-private-names: no issue key was checked: PRIVATE_NAME_TERMS is unset or empty" \
+      "($scanned)"
+  else
+    echo "check-private-names: no text names an issue key of the deployment's own projects" \
+      "(${#keys[@]} keys; $scanned)"
+  fi
   exit 0
 fi
 named="the private deployment repository or the company"

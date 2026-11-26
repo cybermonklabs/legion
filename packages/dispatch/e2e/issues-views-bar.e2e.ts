@@ -1,3 +1,6 @@
+/** The bar, the Board's columns and every key move and drop are read against the server's own
+ *  listing and board route, each write read back through the API, and a later read of the daemon
+ *  reaches the Board over the live socket. */
 // Open's status bar and the Board as a layout of the view (dispatch://INFRA-3221, Verification k7
 // and k14): the bar's segments and legend against the rows the table lists, the legend at four
 // widths, and no bar on Done or on a Board; the display menu's name and choices on every page
@@ -59,7 +62,7 @@ const STATUS_WORDS: readonly (readonly [string, string])[] = [
 const STATUS_ORDER = STATUS_WORDS.map(([status]) => status);
 const statusWord = (status: string) => STATUS_WORDS.find(([id]) => id === status)?.[1] ?? status;
 
-/** The board's eleven columns, in the order the route sends them, with their labels. */
+/** The board's twelve columns, in the order the route sends them, with their labels. */
 const LEGION_COLUMNS = [
   "Queue",
   "Design",
@@ -70,6 +73,7 @@ const LEGION_COLUMNS = [
   "Accepting",
   "Retro",
   "Merging",
+  "Waiting on children",
   "Waiting on a person",
   "Held",
 ];
@@ -571,7 +575,7 @@ test("the display menu reads Group by on the Issues tab in both layouts and on b
 });
 
 // SLOW(>=2s): the seed's later reads, then seven Boards read column by column.
-test("the Board of a view draws the table's rows in the view's sort, its status columns and rails, and by Legion phase the board's eleven columns and the None rail", async ({
+test("the Board of a view draws the table's rows in the view's sort, its status columns and rails, and by Legion phase the board's twelve columns and the None rail", async ({
   browser,
 }) => {
   test.setTimeout(150_000);
@@ -670,7 +674,7 @@ test("the Board of a view draws the table's rows in the view's sort, its status 
       ])
     );
 
-    // By Legion phase: the eleven Legion phases, empty ones too, and the None rail with the
+    // By Legion phase: the twelve Legion phases, empty ones too, and the None rail with the
     // count of Open's rows with no card; no Show Icebox and no Done rail.
     const cards = cardsOf(board);
     await page.goto(`/projects/${ACME}/issues?layout=board&group=legion_phase`);

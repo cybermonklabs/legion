@@ -23,6 +23,7 @@ const volumeNoticesVersion = 20261111090000
 // a restarted roles container's count over — and a read of the pod's newest notice whatever line
 // wrote it, which is what the hour between one pod's notices is measured from.
 func TestTheVolumeNoticeCountsArriveWith20261111090000(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, volumeNoticesVersion-1)
@@ -46,7 +47,7 @@ func TestTheVolumeNoticeCountsArriveWith20261111090000(t *testing.T) {
 	record := func(trimmer string, episode int, when time.Time) int {
 		t.Helper()
 		var notices int
-		if err := store.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, store.pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			notices, err = records.RecordVolumeNotice(ctx, tx, "LEGION-208", "pod-uid", trimmer, episode, when)
 			return err
@@ -58,7 +59,7 @@ func TestTheVolumeNoticeCountsArriveWith20261111090000(t *testing.T) {
 	read := func(trimmer string, episode int) VolumeNoticeCounts {
 		t.Helper()
 		var counts VolumeNoticeCounts
-		if err := store.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, store.pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			counts, err = records.VolumeNoticeCounts(ctx, tx, "LEGION-208", "pod-uid", trimmer, episode)
 			return err

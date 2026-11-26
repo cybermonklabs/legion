@@ -143,6 +143,9 @@ export const runningIssueStatuses: readonly IssueStatus[] = [
 /** The Claimed by value that picks the issues nobody is working: no claim at all, or a claim
  *  the server would hand over (`claimIsTakeable`). The `?unclaimed=1` link sets it. */
 export const UNCLAIMED_FACET = "Nobody or lapsed";
+/** The Claimed by value of an issue no one has claimed, and the heading its group reads under.
+ *  Which issues carry it is read off the issues alone: the agent registry never changes it. */
+export const NOBODY_FACET = "Nobody";
 
 /** How many of Finish's retries are in flight at once: the refused writes of an interrupted
  *  action, sent again (`useTableRecovery`'s `settle`). A selection is as large as the project, and
@@ -796,10 +799,11 @@ const EMBEDDED_WIDTHS: Readonly<Partial<Record<ColumnId, EmbeddedWidth>>> = {
 const EMBEDDED_IDS: readonly ColumnId[] = COLUMNS.flatMap(({ id }) =>
   EMBEDDED_WIDTHS[id] === undefined ? [] : [id]
 );
-/** A column's narrowest on a phone in a table another page draws. */
-export const embeddedPhoneMin = (id: string): number => {
+/** A column's narrowest on a phone in a table another page draws: the width the registry names
+ *  for a phone, else `named`, the minimum the table's layout names (`widths`), else today's. */
+export const embeddedPhoneMin = (id: string, named?: number): number => {
   const width = EMBEDDED_WIDTHS[id as ColumnId];
-  return width?.phone ?? width?.min ?? 0;
+  return width?.phone ?? named ?? width?.min ?? 0;
 };
 /** Today's minimums of a table another page draws. Each holds its header with the sort mark as
  *  well (measured: Open asks' 148 px holds its 83 px label and mark), so each is its column's
@@ -1025,7 +1029,7 @@ export function buildItems(
   const cards = legion === undefined ? NO_CARDS : cardsByKey(legion.board);
   return issues.map((issue) => {
     const author = issue.created_by ? label(issue.created_by) : "Unknown";
-    const claimedBy = issue.claim ? label(issue.claim.actor) : "Nobody";
+    const claimedBy = issue.claim ? label(issue.claim.actor) : NOBODY_FACET;
     // The daemon gives cards to open issues, so a done issue has none.
     const card = issue.status === "done" ? undefined : cards.get(issue.key);
     const place =
@@ -1127,7 +1131,7 @@ export function matchesFilters(
 }
 /** The headings that stand for "none of them", wherever a column has one: they read last, after
  *  every named group. */
-const EMPTY_GROUPS: readonly string[] = ["Nobody", "Unassigned"];
+const EMPTY_GROUPS: readonly string[] = [NOBODY_FACET, "Unassigned"];
 /** Which of two of column `id`'s groups comes first: the order its filter lists its values in,
  *  the drawn column's (`listed`, the board's phases for Legion phase) where it is given, else the
  *  registry's, and by name where there is none — numbers inside a name counted as numbers, so
@@ -1309,6 +1313,15 @@ export function isDefaultStatus(value: unknown): boolean {
   const picked = Array.isArray(value) ? value.map(String) : [];
   const fallback = (defaultView.filters[0]?.value ?? []) as string[];
   return sameSet(fallback, picked);
+}
+/** Whether `view` narrows the rows by nothing the reader set: no filter but the statuses the
+ *  table opens with (or none, `nofilter=1`), no search and no issues picked (`only=`). */
+export function narrowsNothing(view: View): boolean {
+  return (
+    view.search.trim() === "" &&
+    view.selection === null &&
+    view.filters.every(({ id, value }) => id === "status" && isDefaultStatus(value))
+  );
 }
 export function writeUrl(params: URLSearchParams, state: View, stateKey?: string): URLSearchParams {
   const key = (name: string) => viewKey(name, stateKey);

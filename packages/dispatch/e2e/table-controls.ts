@@ -29,7 +29,7 @@ export type SurfaceName =
 
 /** The six a recording can answer: the Agents page and the Delivery page are read on the real
  *  stack alone, because a recording freezes a session's last-seen time and the delivery
- *  window's dates (`packages/dispatch/AGENTS.md`, "The stubbed layer"). */
+ *  window's dates (`packages/dispatch/README.md`, "The stubbed layer"). */
 export const STUBBABLE_SURFACES: readonly SurfaceName[] = [
   "Inbox",
   "Inbox drawer",
@@ -416,6 +416,18 @@ export async function openIssuesTab(
   await expect(button).toHaveAttribute("aria-pressed", "true");
 }
 
+/** Shows or hides the project Board's lanes by its Lanes switch, whichever state the reader's
+ *  stored preference left them in, and waits until the switch is pressed for the state asked. */
+export async function setBoardLanes(page: Page, lanes: "hidden" | "shown"): Promise<void> {
+  const toggle = page.getByRole("button", { exact: true, name: "Lanes" });
+  const now = await settledState("the Board's lanes switch", [
+    ["shown", toggle.and(page.locator('[aria-pressed="true"]'))],
+    ["hidden", toggle.and(page.locator('[aria-pressed="false"]'))],
+  ]);
+  if (now !== lanes) await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", lanes === "shown" ? "true" : "false");
+}
+
 /** The Inbox drawer, peeked over the project List, which is the page R5 reads it over. */
 async function openInboxDrawer(page: Page, scene: SurfaceScene): Promise<Surface> {
   await openIssuesTab(page, scene.project, "Table");
@@ -551,6 +563,36 @@ async function openDeliveryPage(page: Page, scene: SurfaceScene): Promise<Surfac
       await openFilterPanel(page, root);
     },
   };
+}
+
+/**
+ * Makes a session group named `name` of the session groups fixture's "Planner, first run"
+ * (`seedSessionGroupsFixture`), in the Session groups dialog the Delivery page's filter panel
+ * opens, and waits for its create to end. The page is open on the fixture's window. Hands back
+ * the dialog (`editor`), the group's card, and the id its create answered.
+ */
+export async function createSessionGroup(
+  page: Page,
+  name: string
+): Promise<{ card: Locator; editor: Locator; id: string }> {
+  await expect(page.getByText("3 PRs in current filter/window")).toBeVisible();
+  await openFilterPanel(page);
+  await page.getByRole("button", { name: "Edit groups" }).click();
+  const editor = page.getByRole("dialog", { name: "Session groups" });
+  await editor.getByRole("checkbox", { exact: true, name: "Planner, first run" }).check();
+  await editor.getByLabel("New group name").fill(name);
+  const created = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url().endsWith("/api/v1/delivery/session-groups")
+  );
+  await editor.getByRole("button", { name: "Create group" }).click();
+  const group = (await (await created).json()) as { id: string };
+  const card = editor.getByRole("group", { name });
+  // Every button of a card is held while a write of the editor is out, and Delete group by
+  // nothing else, so its coming back is the create's end.
+  await expect(card.getByRole("button", { name: "Delete group" })).toBeEnabled();
+  return { card, editor, id: group.id };
 }
 
 /** The search bar, opened from the rail, with a query that lists hits. */

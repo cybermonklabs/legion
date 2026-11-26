@@ -21,22 +21,27 @@ import { connect } from "nats"
 import { z } from "zod"
 /** The npm package a Codex session runs, which its registrations name. */
 import { name as CODEX_PACKAGE_NAME } from "../../codex/package.json" with { type: "json" }
+import {
+  admittingMoves,
+  channelReopener,
+  closeUnstartedConnection,
+  dialChannelInbound,
+  sessionAdmission,
+} from "../channel-connection"
 import type { ChannelConnection } from "../channel-topics"
 import { configuredValue } from "../claude-session"
 import {
   type ChannelSession,
   type ChannelToolRuntime,
   channelToolDefinitions,
-  dialChannelNats,
   executeEnvoyTool,
   MCP_SERVER_INFO,
   mcpResult,
   postDispatchReply,
-  sessionAdmission,
   startChannelSession,
 } from "../envoy-channel-server"
 import { inboundOffChannelSession } from "../envoy-off"
-import { installedPluginVersion } from "../installed-build"
+import { channelConnectionName, installedPluginVersion } from "../installed-build"
 import { SessionIdentity } from "../session-identity"
 import { sessionTitle } from "../session-title"
 import { type CodexAgentStream, startCodexAgentStream } from "./codex-agent-stream"
@@ -135,7 +140,7 @@ export function callingThread(meta: unknown): string | undefined {
 export function dispatchToolDefinition() {
   return {
     description:
-      'Runs the `dispatch` command as this session, outside Codex\'s sandbox. Pass the words after `dispatch` as `args` (for example ["read", "--issue", "LEGION-3"]) and what the command would read on standard input as `stdin` (the text of a here-document given as `--body-file -`). `["--help"]` lists the commands. Answers with what the command printed and its exit code: 0 written or read, 1 refused by Dispatch, 2 a usage error.',
+      'Runs the `dispatch` command as this session, outside Codex\'s sandbox. Pass the words after `dispatch` as `args` (for example ["read", "--issue", "LEGION-3"]) and what the command would read on standard input as `stdin` (the text of a here-document given as `--body-file -`). `["--help"]` lists the commands. Answers with what the command printed and its exit code: 0 written or read, 2 a usage error, 1 any other failure: Dispatch\'s refusal, a Dispatch the command cannot reach, or `ANSWER_NOT_KEPT` for a call that wrote nothing, which you run again.',
     inputSchema: {
       properties: {
         args: {
@@ -447,7 +452,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
     RECORD_POLL_MS,
   )
   const id = new SessionIdentity(bound.session_id, bound.cwd)
-  const { dispatch, envoy, notice } = sessionSettings(configFile, process.env, {
+  const { dispatch, envoy, notice } = await sessionSettings(configFile, process.env, {
     cwd: bound.cwd,
     session: () => id.id,
   })
@@ -531,32 +536,60 @@ export async function runCodexEnvoyServer(): Promise<void> {
     if ("off" in inbound) {
       session = inboundOffChannelSession({ identity: id, stateDirectory, why: inbound.off })
     } else {
-      // Dialled as the Claude Code session's connection is (`dialChannelNats`): with a seed, no
-      // credential, or the session's broker token, which is then kept renewed and, at a `/new`,
-      // moved to the new session's (`followSession`) before that session's subjects are taken.
-      const dialled = await dialChannelNats(
-        inbound,
+      // Dialled as the Claude Code session's connection is (`dialChannelInbound`): NATS with a
+      // seed, no credential, or the session's broker token, which is then kept renewed and, at a
+      // `/new`, moved to the new session's (`followSession`) before that session's subjects are
+      // taken; or the listener's relay socket, opened again for the new session at a `/new`. A
+      // connection that closes for good is replaced as the Claude Code one is (`channelReopener`):
+      // Codex starts no plugin server again for a thread whose server lost its connection.
+      const natsName = channelConnectionName(
         `codex-envoy-channel-${id.id}`,
+        bundlePath,
+        CODEX_PACKAGE_NAME,
+      )
+      // A stop asked for while the token or the dial is awaited ends the start, and is no failure:
+      // the process ends as an asked-for stop does, as the Claude Code server's does.
+      const dialled = await dialChannelInbound(
+        inbound,
+        envoy.url,
+        () => id.id,
+        natsName,
         warn,
         connect,
         stopping.signal,
-      )
+      ).catch((error: unknown) => {
+        if (isStopping) return undefined
+        throw error
+      })
+      if (dialled === undefined) {
+        await stopped.promise
+        return
+      }
       connection = dialled.connection
       stopNatsKeeper = dialled.stop
       // Which id the connection is admitted as, where its broker token admits one session at a
       // time: the dial's, then each `/new`'s once its move lands. The live view takes a new id's
       // control subject only then (`CodexAgentStreamOptions.admitted`).
       const admission = dialled.followSession === undefined ? undefined : sessionAdmission(id.id)
-      const follow = dialled.followSession
-      const followSession =
-        follow === undefined || admission === undefined
-          ? undefined
-          : async (): Promise<void> => {
-              const forSession = id.id
-              await follow()
-              admission.admit(forSession)
-            }
-      session = await startChannelSession({
+      const admitting = admittingMoves(admission, id)
+      const followSession = admitting(dialled.followSession)
+      const reopen = channelReopener({
+        inbound,
+        listenerUrl: envoy.url,
+        session: () => id.id,
+        name: natsName,
+        signal: stopping.signal,
+        swapKeeper: (stop) => {
+          stopNatsKeeper()
+          stopNatsKeeper = stop
+        },
+        admitting,
+        useConnection: (next) => {
+          connection = next
+          stream?.useConnection(next)
+        },
+      })
+      const started = await startChannelSession({
         capabilities: () => CODEX_CAPABILITIES,
         client,
         clientInstanceID,
@@ -566,6 +599,9 @@ export async function runCodexEnvoyServer(): Promise<void> {
         heartbeatMs: envoy.heartbeatMs,
         identity: id,
         ...(followSession === undefined ? {} : { followSession }),
+        ...(dialled.reportOutagesTo === undefined
+          ? {}
+          : { reportOutagesTo: dialled.reportOutagesTo }),
         notifier: {
           notification: ({ content, eventId }) =>
             codexDelivery.deliver({ content, ...(eventId === undefined ? {} : { eventId }) }),
@@ -576,9 +612,10 @@ export async function runCodexEnvoyServer(): Promise<void> {
           createCodexUserTurnRouter({
             ask: (question) => askSideQuestion(command(), id.id, question),
             deliver: (item) => codexDelivery.deliver(item),
-            dispatch: (ms) => {
+            dispatch: async (ms) => {
               const active = activeDispatchSettings(
-                sessionDispatchSettings(configFile, process.env, { cwd: bound.cwd }).dispatch,
+                (await sessionDispatchSettings(configFile, process.env, { cwd: bound.cwd }))
+                  .dispatch,
               )
               return active === null
                 ? undefined
@@ -592,18 +629,36 @@ export async function runCodexEnvoyServer(): Promise<void> {
             state,
             warn,
           }),
+        reopen,
+        // Ends a start still flushing through its connection's redials (`flushThroughRedials`):
+        // the process is stopping.
+        startSignal: stopping.signal,
         stateDirectory,
         title,
         ...(dispatch.enabled ? { stampTitle } : {}),
+      }).catch((error: unknown) => {
+        // A stop asked for while the session was still starting ends the start, and is no
+        // failure, as above.
+        if (isStopping) return undefined
+        throw error
       })
+      if (started === undefined) {
+        await stopped.promise
+        return
+      }
+      session = started
       stream = startCodexAgentStream({
         connection,
+        liveView: dialled.liveView,
         sessionId: id.id,
         warn,
         ...(admission === undefined
           ? {}
           : { admitted: (next: string) => admission.admitted(next) }),
       })
+      // A stop that landed while the session started ran before this view existed, and stopped
+      // nothing of it.
+      if (isStopping) stream.stop()
     }
     runtime = { client, clientInstanceID, identity: id, session }
     follow(bound.transcript_path)
@@ -617,8 +672,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
     follower?.stop()
     stopNatsKeeper()
     if (session === undefined && connection !== undefined) {
-      await connection.drain().catch(() => undefined)
-      await connection.close().catch(() => undefined)
+      await closeUnstartedConnection(connection)
     }
     await server.close().catch(() => undefined)
   }

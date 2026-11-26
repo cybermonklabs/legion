@@ -1,20 +1,21 @@
-import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { graphNode } from "../../__tests__/graph-fixture";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, textBoxes } from "../../__tests__/list-picks";
+import { expectSameElements } from "../../__tests__/same-elements";
 import { answerThreadReads } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
-import { myRepliesOwnerQuery } from "../../api/queries";
+import { askThreadQuery, myRepliesOwnerQuery } from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
 import type {
   AnswerAskInput,
   Ask,
@@ -28,93 +29,22 @@ import { userPreferenceStorageKey } from "../shell/userPreference";
 import { replyRow, seedUnread } from "../threads/replies-fixture";
 import { AskCard } from "./AskCard";
 import { answerDraft } from "./answer-drafts";
+import {
+  answeredAsk,
+  firstAnswer,
+  installAskCardApiMocks,
+  renderCard,
+  thread,
+} from "./ask-card-fixture";
 import { ThreadBody } from "./ThreadBody";
 
-let whoAmI: Mock<typeof api.whoAmI>;
-let getReferences: Mock<typeof api.getReferences>;
-let getIssueSubscribers: Mock<typeof api.getIssueSubscribers>;
-
-beforeEach(() => {
-  whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
-    event_head: "0",
-    kind: "user",
-    login: "alice",
-  });
-  getReferences = spyOn(api, "getReferences").mockResolvedValue({
-    edges: [],
-    node: graphNode({ id: "ask-1", kind: "ask" }),
-  });
-  // Every card with an issue names who the ask reaches, which reads the issue's subscribers;
-  // nobody is subscribed here, so the card lists its followers alone.
-  getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
 });
 
-afterEach(() => {
-  whoAmI.mockRestore();
-  getReferences.mockRestore();
-  getIssueSubscribers.mockRestore();
-  jest.useRealTimers();
-});
-
-const firstAnswer: AskAnswer = {
-  at: "2026-10-08T01:00:00Z",
-  selected: ["Ship"],
-  text: "First note",
-  user: "alice",
-};
-
-function answeredAsk(overrides: Partial<Ask> = {}): Ask {
-  return {
-    anchor: null,
-    answer: firstAnswer,
-    artifact_id: null,
-    asked_of: null,
-    asked_of_at: null,
-    asked_of_by: null,
-    author: { id: "session-1", kind: "session" },
-    block_id: null,
-    created_at: "2026-10-08T00:00:00Z",
-    edited_at: null,
-    id: "ask-1",
-    issue_key: "CORE-1",
-    kind: "question",
-    multiple: false,
-    opened_event_id: 1,
-    options: [{ label: "Ship" }, { label: "Hold" }],
-    question: "Which release path?",
-    state: "answered",
-    urgency: "med",
-    waiting_on: "human",
-    ...overrides,
-  };
-}
-
-function thread(ask: Ask, answers: AskAnswer[] = ask.answer === null ? [] : [ask.answer]): AskRead {
-  return {
-    answers,
-    ask,
-    claimant: null,
-    edits: [],
-    followers: [],
-    replies: [],
-    route: null,
-    route_status: null,
-    route_holder: null,
-    route_status_reason: null,
-  };
-}
-
-function renderCard(node: ReactNode) {
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  const view = render(
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>{node}</QueryClientProvider>
-    </MemoryRouter>
-  );
-  return { queryClient, view };
-}
+installAskCardApiMocks();
 
 test("the answerer can change an answer and sees both answers immediately", async () => {
   const user = userEvent.setup();
@@ -175,6 +105,162 @@ test("the answerer can change an answer and sees both answers immediately", asyn
     await waitFor(() => expect(view.getByText("Show 1 earlier answer")).toBeTruthy());
   } finally {
     view.unmount();
+  }
+});
+
+// A read of the thread asked before a changed answer landed - an event's refresh of the ask, say
+// - answers the thread as it stood, with the first answer alone. Landing after the change, it
+// would take the earlier answer away from under the new one, until the change's own refresh came
+// back. On Dispatch's client that refresh waits for the running read rather than cancelling it,
+// so the row reads on that client. The change cancels that read and asks the thread again
+// (`replaceQueryData`), and its own refresh waits for that read, so two reads asked after the
+// change answer the thread as it stands now.
+test("a read of the thread asked before a changed answer landed does not put back the answers it replaced", async () => {
+  const user = userEvent.setup();
+  const before = answeredAsk();
+  const secondAnswer: AskAnswer = {
+    at: "2026-10-08T02:00:00Z",
+    selected: ["Hold"],
+    text: null,
+    user: "alice",
+  };
+  const after = answeredAsk({ answer: secondAnswer });
+  const reads: ReturnType<typeof Promise.withResolvers<AskRead>>[] = [];
+  const getAskThread = () => {
+    const read = Promise.withResolvers<AskRead>();
+    reads.push(read);
+    return read.promise;
+  };
+  const { queryClient, view } = renderCard(
+    <AskCard
+      answerAsk={async () => after}
+      ask={before}
+      getAskThread={getAskThread}
+      initialThread={thread(before)}
+    />,
+    new DispatchQueryClient({
+      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    })
+  );
+  const history = () =>
+    within(view.getByTestId("ask-ask-1")).queryByText(/earlier answer/)?.textContent;
+  try {
+    const change = await view.findByRole("button", { name: "Change answer" });
+    let asked = Promise.resolve();
+    await act(async () => {
+      asked = queryClient.refetchQueries({ queryKey: ["ask-thread", before.id] });
+    });
+    expect(reads).toHaveLength(1);
+
+    await user.click(change);
+    await user.click(await view.findByRole("radio", { name: "Hold" }));
+    await user.clear(view.getByLabelText("Your answer"));
+    await user.click(view.getByRole("button", { name: "Save answer" }));
+    await waitFor(() => expect(history()).toBe("Show 1 earlier answer"));
+
+    // The read answers as Dispatch held the thread when it was asked: the first answer alone.
+    await act(async () => {
+      reads[0]?.resolve(thread(before));
+      await asked;
+    });
+    expect(history()).toBe("Show 1 earlier answer");
+
+    // The change's read again, then its own refresh, which waits for that read: both asked after
+    // the change, so both answer the thread as it stands now.
+    const now = thread(after, [firstAnswer, secondAnswer]);
+    await waitFor(() => expect(reads).toHaveLength(2));
+    await act(async () => {
+      reads[1]?.resolve(now);
+    });
+    await waitFor(() => expect(reads).toHaveLength(3));
+    await act(async () => {
+      reads[2]?.resolve(now);
+    });
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(reads).toHaveLength(3);
+    expect(history()).toBe("Show 1 earlier answer");
+  } finally {
+    view.unmount();
+  }
+});
+
+/** Reads an ask's thread with no seed of its own, as the reading column's thread does
+ *  (`ThreadPane`). */
+function UnseededThreadRead({ id }: { id: string }): ReactNode {
+  useQuery(askThreadQuery(id));
+  return null;
+}
+
+// A read of the thread asked before the Inbox read that seeds a card - the reading column's, say,
+// which reads the thread with no seed - answers the thread as it stood then, with the ask still
+// open. TanStack puts the card's seed into that read's query, which holds no data yet, and leaves
+// the read running, so its answer would replace the newer seed with the older ask. The card keeps
+// its seed until a read asked after the seed answers.
+test("a read of the thread asked before the card's seed does not put back the ask it replaced", async () => {
+  const open = answeredAsk({ answer: null, state: "open" });
+  const secondAnswer: AskAnswer = {
+    at: "2026-10-08T02:00:00Z",
+    selected: ["Hold"],
+    text: null,
+    user: "alice",
+  };
+  const thirdAnswer: AskAnswer = {
+    at: "2026-10-08T03:00:00Z",
+    selected: ["Ship"],
+    text: "Third note",
+    user: "alice",
+  };
+  const answered = answeredAsk({ answer: secondAnswer });
+  const current = answeredAsk({ answer: thirdAnswer });
+  const reads: ReturnType<typeof Promise.withResolvers<AskRead>>[] = [];
+  const getAsk = spyOn(api, "getAsk").mockImplementation(() => {
+    const read = Promise.withResolvers<AskRead>();
+    reads.push(read);
+    return read.promise;
+  });
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const page = (card?: ReactNode) => (
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <UnseededThreadRead id={open.id} />
+        {card}
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(page());
+  const history = () =>
+    within(view.getByTestId("ask-ask-1")).queryByText(/earlier answer/)?.textContent;
+  try {
+    await waitFor(() => expect(reads).toHaveLength(1));
+    const olderRead = queryClient
+      .getQueryCache()
+      .find({ exact: true, queryKey: ["ask-thread", open.id] })?.promise;
+
+    // The card mounts from an Inbox read that answered after that read was asked: the ask is
+    // answered there, and its answer changed once.
+    view.rerender(
+      page(<AskCard ask={answered} initialThread={thread(answered, [firstAnswer, secondAnswer])} />)
+    );
+    await waitFor(() => expect(history()).toBe("Show 1 earlier answer"));
+
+    // The older read answers the ask as it stood when it was asked.
+    await act(async () => {
+      reads[0]?.resolve(thread(open, []));
+      await olderRead?.catch(() => undefined);
+    });
+    expect(history()).toBe("Show 1 earlier answer");
+
+    // A read asked after the seed answers the thread as it stands now.
+    await waitFor(() => expect(reads).toHaveLength(2));
+    await act(async () => {
+      reads[1]?.resolve(thread(current, [firstAnswer, secondAnswer, thirdAnswer]));
+    });
+    await waitFor(() => expect(history()).toBe("Show 2 earlier answers"));
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
   }
 });
 
@@ -417,7 +503,7 @@ for (const shape of ["inline", "collapsed"] as const) {
     try {
       const newest = (await card.view.findByText("Reply reply-2")).closest("li");
       if (newest === null) throw new Error("expected the newest reply's item");
-      expect(card.screen.observed()).toEqual([newest]);
+      expectSameElements(card.screen.observed(), [newest]);
       await dwellOn(card.screen, newest);
       expect(card.mark.mock.calls).toEqual([
         ["ask-1", { read_through: "2026-10-08T04:00:00.5Z" }, keyedAttempt],
@@ -431,7 +517,7 @@ for (const shape of ["inline", "collapsed"] as const) {
     const card = await renderUnreadAsk({ markRead: false, thread: shape });
     try {
       await card.view.findByText("Reply reply-2");
-      expect(card.screen.observed()).toEqual([]);
+      expect(card.screen.observed().length).toBe(0);
       expect(card.mark).not.toHaveBeenCalled();
     } finally {
       card.cleanup();
@@ -452,7 +538,7 @@ test("an answer given after every reply is what the mark watches and reads throu
   try {
     const record = await card.view.findByTestId("ask-ask-1");
     await card.view.findByText("Reply reply-2");
-    expect(card.screen.observed()).toEqual([record]);
+    expectSameElements(card.screen.observed(), [record]);
     await dwellOn(card.screen, record);
     expect(card.mark.mock.calls).toEqual([["ask-1", { read_through: answer.at }, keyedAttempt]]);
   } finally {

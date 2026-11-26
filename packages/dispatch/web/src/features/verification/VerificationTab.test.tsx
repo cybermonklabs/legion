@@ -1,11 +1,24 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
-import type { Artifact, CheckBasis, CheckBlock, CheckResult } from "../../api/types";
+import type {
+  Artifact,
+  CheckBasis,
+  CheckBlock,
+  CheckResult,
+  ResultCommitStands,
+} from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { VerificationTab } from "./VerificationTab";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const commit = "0123456789abcdef0123456789abcdef01234567";
 const otherCommit = "89abcdef0123456789abcdef0123456789abcdef";
@@ -310,6 +323,130 @@ test("a check names what the server compared its results with", async () => {
   expect(compared[1]).toBe("This issue holds no pull request and no branch.");
 });
 
+// A basis in a repository the issue links a pull request in and does not resolve to carries that
+// repository, so the tab names it: the linked pull request as GitHub names it, owner/repo#7, and a
+// branch of that repository as branch main of owner/repo, beside the issue's own repository's pull
+// request and branch of the same number and name, which name none.
+test("a basis in a linked repository names that repository", async () => {
+  const linkedHead: CheckBasis = {
+    commit,
+    kind: "pull_request",
+    pull_request: 7,
+    repo: "acme/tools",
+  };
+  const { getIssueResults, view } = renderTab(verification, [
+    check("c-linked", [result({ commit_stands: { answer: "at_basis", basis: linkedHead } })], {
+      compared_with: [{ commit: otherCommit, kind: "pull_request", pull_request: 7 }, linkedHead],
+    }),
+    check(
+      "c-branch",
+      [
+        result({
+          commit_stands: {
+            answer: "at_basis",
+            basis: { branch: "main", kind: "branch", repo: "acme/tools" },
+          },
+          id: "result-2",
+        }),
+      ],
+      { compared_with: [{ branch: "main", kind: "branch" }], when: "after_merge" }
+    ),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  await screen.findByTestId("verification-checks");
+  const compared = screen
+    .getAllByTestId("verification-check-compared-with")
+    .map((row) => row.textContent);
+  expect(compared[0]).toContain(
+    `the head of pull request 7 ${otherCommit}, the head of acme/tools#7 ${commit}`
+  );
+  expect(compared[1]).toBe("branch main");
+  const stands = screen
+    .getAllByTestId("verification-result-commit-stands")
+    .map((field) => field.textContent);
+  expect(stands).toEqual([`At the head of acme/tools#7 ${commit}`, "At branch main of acme/tools"]);
+});
+
+// A result whose commit is taken to be of a linked repository is decided by that repository, and
+// the server names it in commit_stands.repo, so the tab says which repository Dispatch could not
+// read, or whose commit the result is at, rather than reading as the issue's own repository. An
+// answer that names no repository reads as it always did.
+test("a linked result's other_commit and unknown answers name that repository", async () => {
+  const { getIssueResults, view } = renderTab(verification, [
+    check("c1", [
+      result({ commit_stands: { answer: "other_commit", repo: "acme/tools" }, id: "result-1" }),
+      result({
+        commit_stands: { answer: "unknown", reason: "repository_unreadable", repo: "acme/tools" },
+        id: "result-2",
+      }),
+      result({
+        commit_stands: { answer: "unknown", reason: "read_failed", repo: "acme/tools" },
+        id: "result-3",
+      }),
+      result({
+        commit_stands: { answer: "unknown", reason: "repository_unreadable" },
+        id: "result-4",
+      }),
+    ]),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  await screen.findByTestId("verification-checks");
+  expect(
+    screen.getAllByTestId("verification-result-commit-stands").map((field) => field.textContent)
+  ).toEqual([
+    "At another commit of acme/tools",
+    "Not known. Dispatch cannot read acme/tools.",
+    "Not known. A read Dispatch made of acme/tools did not answer.",
+    "Not known. Dispatch cannot read the repository.",
+  ]);
+});
+
+// A reason is the server's to add, so a newer Dispatch can give one this build has no words for.
+// The tab then shows that reason by its own code, for a result's commit and for a check that
+// compared with nothing alike, rather than showing "undefined" or a blank, or failing to draw;
+// and where the server names the repository the answer is about, the repository in parentheses
+// beside it, as a reason the tab words names it.
+//
+// The negative control is the code alone, which shows "Not known. rate_limited" for the result
+// whose answer names acme/tools.
+test("a reason the tab has no words for shows as the reason's own code, with its repository", async () => {
+  const later = "rate_limited" as NonNullable<ResultCommitStands["reason"]>;
+  const { getIssueResults, view } = renderTab(verification, [
+    check("c1", [
+      result({
+        commit_stands: { answer: "unknown", reason: later, repo: "acme/tools" },
+        id: "result-1",
+      }),
+      result({ commit_stands: { answer: "unknown", reason: later }, id: "result-2" }),
+    ]),
+    check("c-nothing", [], {
+      compared_nothing: later,
+      compared_with: [],
+      pass_stands: { answer: "unknown" },
+    }),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  await screen.findByTestId("verification-checks");
+  expect(
+    screen.getAllByTestId("verification-result-commit-stands").map((field) => field.textContent)
+  ).toEqual(["Not known. rate_limited (acme/tools)", "Not known. rate_limited"]);
+  expect(
+    screen.getAllByTestId("verification-check-compared-with").map((row) => row.textContent)
+  ).toEqual([`the head of pull request 7 ${commit}`, "rate_limited"]);
+});
+
 test("a result shows how it ran, what was seen, its counts, its role and its screenshots", async () => {
   const { getIssueResults, view } = renderTab(verification, [
     check("c1", [
@@ -462,6 +599,9 @@ test("an issue with no Verification document shows the command that makes one", 
   const empty = screen.getByTestId("verification-empty");
   expect(empty.textContent).toContain("CORE-1 has no Verification document.");
   expect(empty.textContent).toContain("dispatch artifact --issue CORE-1 --name verification.md");
+  // The note's words are asserted once, in `ArtifactUpload.test.tsx`, where they live: this
+  // case asks only that the tab shows the note.
+  expect(within(empty).getByTestId("replacing-upload-note")).not.toBeNull();
   // Nothing is read for an issue that has no such document.
   expect(getIssueResults).not.toHaveBeenCalled();
 });

@@ -13,8 +13,10 @@ import { api } from "../../api/client";
 import { agentMessagesQuery } from "../../api/queries";
 import type { Actor } from "../../api/types";
 import { pastDeadlineKey } from "../../hooks/useSending";
-import { SEND_DEADLINE_MS } from "../writes/keyed-write";
-import { type Shape, shape } from "../writes/write-storage";
+import { newSendKey } from "../../lib/send-key";
+import { partyMention } from "../refs/party-references";
+import { SEND_DEADLINE_MS, SendStoppedError } from "../writes/keyed-write";
+import { type Shape, shape } from "../writes/tab-storage";
 import {
   defineWriteKind,
   ofKind,
@@ -23,18 +25,22 @@ import {
   type Writes,
   writesOf,
 } from "../writes/write-store";
-import type { ReplyTarget } from "./composer-model";
+import { commentListKey, type ReplyTarget } from "./composer-model";
 import {
+  type Address,
+  type CarriedAddress,
   type CarriedBlockIds,
   requestFor,
+  SendMovedError,
   type SentDraft,
   type SentRequest,
+  sameAddress,
   saveCommentEdit,
   sendAttempt,
 } from "./send-request";
 
-/** A held send's draft as its composer restores it: the text, its accepted mentions and a
- *  suggestion's replacement, and an ask's fields. */
+/** A held send's draft as its composer restores it: the text, a suggestion's replacement, and
+ *  an ask's fields. */
 export interface HeldDraft {
   readonly ask: SentRequest["ask"];
   readonly draft: SentDraft;
@@ -48,20 +54,36 @@ export interface ComposerSend {
   readonly mutationKey: readonly string[];
   readonly request: SentRequest;
   readonly draft: HeldDraft;
+  /** The request a send the reader stopped went out as, while they have carried its draft to
+   *  another address (`HeldSends.carry`): `request` is then the draft's at that address, under a
+   *  key nothing has gone out under, and this one waits for the draft to come back, where the
+   *  send is this one again, its key with it. */
+  readonly stoppedSend?: SentRequest;
 }
 
-/** A comment edit as a send keeps it across a reload: which comment it saves, and the ids its
- *  press carried (`SentRequest.edit.carried`), since the host that gave the page its save and the
- *  blocks the editor followed are both gone with the page. A record the build before this one
- *  kept holds the comment's id alone: that build kept no ids, so its edit restores carrying
- *  none, and the server matches its blocks by their text. */
-type KeptEdit = string | { readonly carried?: CarriedBlockIds; readonly id: string };
+/** A comment edit as a send keeps it across a reload: which comment it saves, the ids its press
+ *  carried (`SentRequest.edit.carried`), and the body it was written over (`base`), since the
+ *  host that gave the page its save and the blocks the editor followed are both gone with the
+ *  page. A record the build before this one kept holds the comment's id alone: that build kept no
+ *  ids, so its edit restores carrying none, and the server matches its blocks by their text. */
+type KeptEdit =
+  | string
+  | { readonly base?: string; readonly carried?: CarriedBlockIds; readonly id: string };
 
-/** A composer's send as it is kept across a reload: an edit by what it saves, not how. */
+/** A send's request as it is kept across a reload: an edit by what it saves, not how, and its
+ *  draft as the shape an older record may still hold (`KeptDraft`). */
+type KeptSentRequest = Omit<SentRequest, "draft" | "edit"> & {
+  readonly draft: KeptDraft;
+  readonly edit: KeptEdit | null;
+};
+
+/** A composer's send as it is kept across a reload: each draft as the shape an older record may
+ *  still hold (`KeptDraft`). */
 interface KeptComposerSend {
-  readonly draft: HeldDraft;
+  readonly draft: { readonly ask: SentRequest["ask"]; readonly draft: KeptDraft };
   readonly mutationKey: readonly string[];
-  readonly request: Omit<SentRequest, "edit"> & { readonly edit: KeptEdit | null };
+  readonly request: KeptSentRequest;
+  readonly stoppedSend?: KeptSentRequest;
 }
 
 /**
@@ -110,12 +132,7 @@ function refreshAfter(client: QueryClient, { anchor, owner }: SentRequest): void
     void client.invalidateQueries({ queryKey: agentMessagesQuery(owner.sessionId).queryKey });
     return;
   }
-  void client.invalidateQueries({
-    queryKey:
-      owner.kind === "issue"
-        ? ["comments", owner.issueKey]
-        : ["artifact", owner.artifactId, "comments"],
-  });
+  void client.invalidateQueries({ queryKey: commentListKey(owner) });
   void client.invalidateQueries({ queryKey: ["inbox"] });
   if (anchor !== undefined) {
     void client.invalidateQueries({ queryKey: ["artifact", anchor.artifact, "blocks"] });
@@ -132,7 +149,10 @@ function refreshAfter(client: QueryClient, { anchor, owner }: SentRequest): void
   }
 }
 
-const keptAsk = shape.record({
+/** An ask's fields (`SentRequest.ask`). This shape and the draft's, the anchor's, the kind's, the
+ *  owner's and the reply's below are what a composer's draft and its address are kept by: here,
+ *  and in the drafts a composer keeps for a reload (`unsent-drafts.ts`). */
+export const keptAsk = shape.record({
   multiple: shape.boolean,
   options: shape.array(
     shape.record({ description: shape.optional(shape.string), label: shape.string })
@@ -140,18 +160,40 @@ const keptAsk = shape.record({
   urgency: shape.oneOf(...ASK_URGENCIES),
 });
 
-const keptDraft = shape.record({
+/** A mention as the build before this one kept it beside the draft: where its cosmetic words
+ *  stand in the body, the delivery address they stood for, and those words. */
+interface KeptMention {
+  readonly end: number;
+  readonly start: number;
+  readonly target: string;
+  readonly text: string;
+}
+
+/** A kept draft: its text, a suggestion's replacement, and the mentions a record the build
+ *  before this one kept holds beside them. */
+export interface KeptDraft extends SentDraft {
+  readonly mentions?: readonly KeptMention[];
+}
+
+/** The text of a draft and a suggestion's replacement (`SentDraft`), as it is read back. Who it
+ *  addresses is in its text (R4), so this build keeps nothing of the kind beside it; an older
+ *  record's `mentions` are read all the same, because its body holds only the cosmetic
+ *  `@Planner` its composer drew and the targets stood in that array, so dropping them would
+ *  resend the draft to nobody with nothing said about it (`restoredDraft`). */
+export const keptDraft = shape.record({
   body: shape.string,
-  mentions: shape.array(
-    shape.record({
-      end: shape.number,
-      start: shape.number,
-      target: shape.string,
-      text: shape.string,
-    })
+  mentions: shape.optional(
+    shape.array(
+      shape.record({
+        end: shape.number,
+        start: shape.number,
+        target: shape.string,
+        text: shape.string,
+      })
+    )
   ),
   replacement: shape.string,
-}) satisfies Shape<SentDraft>;
+}) satisfies Shape<KeptDraft>;
 
 const keptDelivery = shape.oneOf(...DELIVERY_CAPABILITIES);
 
@@ -183,65 +225,85 @@ const keptCarried = shape.record({
   blocks: shape.array(shape.record({ from: shape.number, id: shape.string })),
 }) satisfies Shape<CarriedBlockIds>;
 
-/** A kept edit: the comment it saves with the ids its press carried, or, from the build before
- *  those ids were kept, that comment's id alone. */
+/** A kept edit: the comment it saves with the ids its press carried and the body it was written
+ *  over, or, from the build before those ids were kept, that comment's id alone. */
 const keptEdit = shape.either(
   shape.string,
-  shape.record({ carried: shape.optional(keptCarried), id: shape.string })
+  shape.record({
+    base: shape.optional(shape.string),
+    carried: shape.optional(keptCarried),
+    id: shape.string,
+  })
 ) satisfies Shape<KeptEdit>;
+
+/** The words of a document a margin compose is about (`ComposerAnchor`): the mark the selection
+ *  bar wrote over them, or, on a closed issue's document, which takes no mark, the quote and which
+ *  reading of it the reader selected (`quoteAnchor`), where the server writes the mark. */
+export const keptAnchor = shape.either(
+  shape.record({
+    artifact: shape.string,
+    mark_id: shape.string,
+    // The words the reader had around their selection and how many readings of them their
+    // block held, which the recovery from `ANCHOR_MISSING` needs after a reload as much as
+    // the quote beside it (`ComposerAnchor.placement`).
+    placement: shape.optional(
+      shape.record({
+        blockId: shape.nullable(shape.string),
+        prefix: shape.string,
+        readings: shape.number,
+        suffix: shape.string,
+      })
+    ),
+    quote: shape.string,
+  }),
+  shape.record({ artifact: shape.string, occurrence: shape.number, quote: shape.string })
+);
+
+/** The kind a draft is written as (`ComposerKind`). */
+export const keptKind = shape.oneOf("ask", "comment", "suggestion");
+
+/** Whom a draft is written for (`ComposerOwner`). */
+export const keptOwner = shape.either(
+  shape.record({ issueKey: shape.string, kind: shape.oneOf("issue") }),
+  shape.record({
+    artifactId: shape.string,
+    kind: shape.oneOf("artifact"),
+    project: shape.string,
+  }),
+  shape.record({ kind: shape.oneOf("session"), sessionId: shape.string })
+);
+
+/** The reply a draft answers (`ReplyTarget`). */
+export const keptReplyTo = shape.record({
+  actor: keptActor,
+  excerpt: shape.string,
+  id: shape.string,
+  mentions: shape.optional(
+    shape.array(shape.record({ target: shape.string, title: shape.string }))
+  ),
+  parentKind: shape.oneOf("ask", "comment", "message"),
+  thread: shape.optional(shape.record({ delivery: keptDelivery, target: shape.string })),
+  to: shape.optional(shape.string),
+});
+
+const keptRequest = shape.record({
+  anchor: shape.optional(keptAnchor),
+  ask: keptAsk,
+  draft: keptDraft,
+  edit: shape.nullable(keptEdit),
+  kind: keptKind,
+  owner: keptOwner,
+  pickedDelivery: shape.optional(keptDelivery),
+  plainDelivery: keptDelivery,
+  replyTo: shape.nullable(keptReplyTo),
+  sendKey: shape.string,
+}) satisfies Shape<KeptSentRequest>;
 
 const keptComposerSend = shape.record({
   draft: shape.record({ ask: keptAsk, draft: keptDraft }),
   mutationKey: shape.array(shape.string),
-  request: shape.record({
-    anchor: shape.optional(
-      shape.record({
-        artifact: shape.string,
-        mark_id: shape.string,
-        // The words the reader had around their selection and how many readings of them their
-        // block held, which the recovery from `ANCHOR_MISSING` needs after a reload as much as
-        // the quote beside it (`ComposerAnchor.placement`).
-        placement: shape.optional(
-          shape.record({
-            blockId: shape.nullable(shape.string),
-            prefix: shape.string,
-            readings: shape.number,
-            suffix: shape.string,
-          })
-        ),
-        quote: shape.string,
-      })
-    ),
-    ask: keptAsk,
-    draft: keptDraft,
-    edit: shape.nullable(keptEdit),
-    kind: shape.oneOf("ask", "comment", "suggestion"),
-    owner: shape.either(
-      shape.record({ issueKey: shape.string, kind: shape.oneOf("issue") }),
-      shape.record({
-        artifactId: shape.string,
-        kind: shape.oneOf("artifact"),
-        project: shape.string,
-      }),
-      shape.record({ kind: shape.oneOf("session"), sessionId: shape.string })
-    ),
-    pickedDelivery: shape.optional(keptDelivery),
-    plainDelivery: keptDelivery,
-    replyTo: shape.nullable(
-      shape.record({
-        actor: keptActor,
-        excerpt: shape.string,
-        id: shape.string,
-        mentions: shape.optional(
-          shape.array(shape.record({ target: shape.string, title: shape.string }))
-        ),
-        parentKind: shape.oneOf("comment", "message"),
-        thread: shape.optional(shape.record({ delivery: keptDelivery, target: shape.string })),
-        to: shape.optional(shape.string),
-      })
-    ),
-    sendKey: shape.string,
-  }),
+  request: keptRequest,
+  stoppedSend: shape.optional(keptRequest),
 }) satisfies Shape<KeptComposerSend>;
 
 /** A `MutationKey` of a composer's: a send name is built of strings alone, so it is kept as it is
@@ -270,12 +332,69 @@ function hold(client: QueryClient, mutationKey: MutationKey, answer: () => Promi
 function restoredEdit(edit: KeptEdit): NonNullable<SentRequest["edit"]> {
   return typeof edit === "string"
     ? { carried: undefined, id: edit, save: saveCommentEdit }
-    : { carried: edit.carried, id: edit.id, save: saveCommentEdit };
+    : { base: edit.base, carried: edit.carried, id: edit.id, save: saveCommentEdit };
+}
+
+/** `request` as it is kept across a reload: its edit by what it saves. */
+function keptRequestOf({ edit, ...request }: SentRequest): KeptSentRequest {
+  return {
+    ...request,
+    edit: edit === undefined ? null : { base: edit.base, carried: edit.carried, id: edit.id },
+  };
+}
+
+/** A kept request as the send it belongs to makes it again (`restoredEdit`, `restoredDraft`). */
+function restoredRequest({ draft, edit, ...request }: KeptSentRequest): SentRequest {
+  return {
+    ...request,
+    draft: restoredDraft(draft),
+    edit: edit === null ? undefined : restoredEdit(edit),
+  };
+}
+
+/** A kept draft as its composer takes it up again. A record the build before this one kept
+ *  holds a `mentions` array and a body carrying only the cosmetic `@Name` that build drew, so
+ *  each of those is written back as the party's mention (`[@Name](address)`, R4), its name
+ *  written as literal words as a pick writes one (`partyLink`), which reads as the party's
+ *  current name: the draft then reads as who it addresses and resends to them, where
+ *  dropping the array would have delivered it to nobody with nothing said about it. A span is
+ *  rewritten only while it still reads as the `@Name` that build accepted - the rule that build
+ *  read its own mentions by (`survivingMentions`) - and the spans are written from the last to
+ *  the first, so each is still the one its offsets named.
+ *
+ *  What is read back is a record, not a draft this build wrote: a target is written into the
+ *  body only as the link `partyMention` makes of a delivery address (`party-references.ts`),
+ *  so a target of no route's form keeps the words it stood as rather than becoming Markdown of
+ *  its own, and offsets are rewritten only where they are a span of this text - `slice` counts
+ *  a negative one from the end, and a resumed send whose `wire` is null sends the body this
+ *  writes. Every store that keeps a draft across a reload reads it back through this: a held
+ *  send's, and the drafts a composer keeps for an address (`unsent-drafts.ts`). */
+export function restoredDraft({ body, mentions, replacement }: KeptDraft): SentDraft {
+  if (mentions === undefined) {
+    return { body, replacement };
+  }
+  const written = [...mentions]
+    .sort((one, other) => other.start - one.start)
+    .reduce((text, mention) => {
+      const { end, start } = mention;
+      // The words a mention was typed as, matched against the draft and drawn nowhere.
+      const words = `@${mention.text}`;
+      if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end > text.length) {
+        return text;
+      }
+      if (text.slice(start, end) !== words) {
+        return text;
+      }
+      const link = partyMention(mention.target, mention.text) ?? words;
+      return `${text.slice(0, start)}${link}${text.slice(end)}`;
+    }, body);
+  return { body: written, replacement };
 }
 
 /**
  * A composer's send, one write of the store per press (`Writes`), kept across a reload with its
- * name, its request and its draft. A send to one session is ordered on that session
+ * name, its request and its draft, and the request a stopped send went out as while its draft is
+ * carried elsewhere (`stoppedSend`). A send to one session is ordered on that session
  * (`session:<id>`), so two presses reach it in press order, each once. A send that lands
  * refreshes what it wrote whether or not a composer is mounted (`refreshAfter`). Each send also
  * holds its name in TanStack's mutation cache - under `pastDeadlineKey` once past its deadline -
@@ -283,24 +402,20 @@ function restoredEdit(edit: KeptEdit): NonNullable<SentRequest["edit"]> {
  * deadline.
  */
 export const composerSend = defineWriteKind<ComposerSend, KeptComposerSend>({
-  keep: ({ draft, mutationKey, request }) => {
-    const { edit, ...kept } = request;
-    return {
-      draft,
-      mutationKey,
-      request: {
-        ...kept,
-        edit: edit === undefined ? null : { carried: edit.carried, id: edit.id },
-      },
-    };
-  },
+  keep: ({ draft, mutationKey, request, stoppedSend }) => ({
+    draft,
+    mutationKey,
+    request: keptRequestOf(request),
+    stoppedSend: stoppedSend === undefined ? undefined : keptRequestOf(stoppedSend),
+  }),
   kept: keptComposerSend,
   landed: (client, write) => refreshAfter(client, write.detail.request),
   name: "composer",
-  restore: ({ draft, mutationKey, request: { edit, ...request } }) => ({
-    draft,
+  restore: ({ draft, mutationKey, request, stoppedSend }) => ({
+    draft: { ask: draft.ask, draft: restoredDraft(draft.draft) },
     mutationKey,
-    request: { ...request, edit: edit === null ? undefined : restoredEdit(edit) },
+    request: restoredRequest(request),
+    stoppedSend: stoppedSend === undefined ? undefined : restoredRequest(stoppedSend),
   }),
   resume: ({ request }, wire) =>
     wire === null ? sendAttempt(request) : (bounds) => api.send(wire, bounds),
@@ -326,7 +441,9 @@ export const composerSend = defineWriteKind<ComposerSend, KeptComposerSend>({
 
 const views = new WeakMap<Write, HeldSend>();
 
-/** `write`, a composer's send, as its composers read it: one value while the write stands. */
+/** `write`, a composer's send, as its composers read it: one value while the write stands. A
+ *  stopped send whose draft the reader has carried to another address reads as stopped there in
+ *  words of its own (`SendMovedError`): the first write may have been delivered where it went. */
 function heldSend(write: Write<ComposerSend>): HeldSend | undefined {
   let held = views.get(write);
   if (held !== undefined) return held;
@@ -351,7 +468,14 @@ function heldSend(write: Write<ComposerSend>): HeldSend | undefined {
       held = { ...base, status: "late", stopping: write.stopping };
       break;
     case "refused":
-      held = { ...base, refusal: write.refusal, status: "refused" };
+      held = {
+        ...base,
+        refusal:
+          write.detail.stoppedSend === undefined
+            ? write.refusal
+            : new SendMovedError(write.detail.stoppedSend),
+        status: "refused",
+      };
       break;
   }
   views.set(write, held);
@@ -375,6 +499,48 @@ function heldUnder(rows: readonly Write[], mutationKey: MutationKey): HeldSend |
   return heldIn(rows)
     .filter((held) => hashKey(held.mutationKey) === name)
     .at(-1);
+}
+
+/** `detail`, the record of a refused send whose refusal is `refusal`, carried to `to` by the
+ *  reader's own move (`HeldSends.carry`): the request goes there, unless the send was stopped,
+ *  whose key is used only at its own address. `at` is the words and kind of a margin compose the
+ *  reader takes the draft into (`carryInto`), which is another address of the same owner. */
+function carriedTo(
+  { stoppedSend, ...detail }: ComposerSend,
+  refusal: Error,
+  to: CarriedAddress,
+  at?: Pick<SentRequest, "anchor" | "kind">
+): ComposerSend {
+  const carried = { ...detail.request, ...to, ...at };
+  const stopped = stoppedSend ?? (refusal instanceof SendStoppedError ? detail.request : undefined);
+  if (stopped === undefined) return { ...detail, request: carried };
+  if (sameAddress(stopped, carried)) return { ...detail, request: stopped };
+  return {
+    ...detail,
+    request: { ...carried, sendKey: stoppedSend === undefined ? newSendKey() : carried.sendKey },
+    stoppedSend: stopped,
+  };
+}
+
+/** Whether the refused send `held` holds already what a keep of `draft` would write over it
+ *  (`HeldSends.keep`): the same text and replacement, and the same ask - whether it takes more
+ *  than one answer, its urgency, and each option's id, label and description, in order. Compared
+ *  by value, since a composer builds each keep afresh from its fields. */
+function holdsAlready(held: HeldSend, { ask, draft }: HeldDraft): boolean {
+  const options = held.draft.ask.options;
+  return (
+    draft.body === held.draft.draft.body &&
+    draft.replacement === held.draft.draft.replacement &&
+    ask.multiple === held.draft.ask.multiple &&
+    ask.urgency === held.draft.ask.urgency &&
+    ask.options.length === options.length &&
+    ask.options.every(
+      (option, at) =>
+        option.id === options[at]?.id &&
+        option.label === options[at]?.label &&
+        option.description === options[at]?.description
+    )
+  );
 }
 
 /**
@@ -416,10 +582,15 @@ export class HeldSends {
   /** Sends `request` under `mutationKey` and holds it until it lands - unless a send under that
    *  name is out already, which refuses this one: a composer holds one draft. A refused send's
    *  entry gives way to the new one, its Retry, which is no Discard (`Writes.supersede`): a
-   *  margin compose's mark stays in the document for it. */
+   *  margin compose's mark stays in the document for it. The refused draft lives at its send's
+   *  address, or at the one the reader carried it to (`carry`), so only a request to that address
+   *  is its Retry (`sameAddress`): one from a composer its host has moved to another - another
+   *  row's or thread's address, a Reply on a message - is refused too, and the refusal stands. */
   send(mutationKey: MutationKey, request: SentRequest): boolean {
     const held = this.get(mutationKey);
-    if (held !== undefined && held.status !== "refused") return false;
+    if (held !== undefined && (held.status !== "refused" || !sameAddress(held.request, request))) {
+      return false;
+    }
     if (held !== undefined) this.#writes.supersede(held.id);
     const { owner } = request;
     this.#writes
@@ -437,6 +608,8 @@ export class HeldSends {
           owner.kind === "session" && request.edit === undefined
             ? `session:${owner.sessionId}`
             : undefined,
+        // A comment's edit is its `PATCH`; every other send is a `POST` (`sendAttempt`).
+        method: request.edit === undefined ? "POST" : "PATCH",
         write: sendAttempt(request),
       })
       .catch(() => {});
@@ -456,12 +629,16 @@ export class HeldSends {
     return held !== undefined && this.#writes.discard(held.id);
   }
 
-  /** Keeps what the reader wrote over a refusal, as its composer unmounts. */
+  /** Keeps what the reader wrote over a refusal. Its composer keeps its draft as it unmounts, as
+   *  the page goes, and a short wait after it mounts as well as after each change, so one that
+   *  mounts over a refusal keeps the very draft the send holds. A keep of what the send holds
+   *  already writes nothing (`holdsAlready`): writing it again would only rewrite the entry and
+   *  draw everything that reads the store again, for no change. */
   keep(mutationKey: MutationKey, draft: HeldDraft): void {
     const held = this.get(mutationKey);
-    if (held?.status === "refused") {
-      this.#writes.amend(held.id, composerSend, (detail) => ({ ...detail, draft }));
-    }
+    if (held?.status !== "refused") return;
+    if (holdsAlready(held, draft)) return;
+    this.#writes.amend(held.id, composerSend, (detail) => ({ ...detail, draft }));
   }
 
   /** Re-addresses the refused send under `mutationKey`: a margin compose's kind switch after a
@@ -471,6 +648,59 @@ export class HeldSends {
     if (held?.status === "refused") {
       this.#writes.amend(held.id, composerSend, (detail) => ({ ...detail, request }));
     }
+  }
+
+  /** Carries the refused send under `mutationKey` from `from` to `to`, where the reader moved its
+   *  composer with a control of the composer's own - Cancel reply, an Agents row's issue pick: the
+   *  draft goes with that move, and its refusal with it, so its Retry and its next Send go from
+   *  there. Only a refusal whose draft lives at `from`, the address the composer showed before
+   *  the move, goes along (`sameAddress`): one the host moved the composer off stays with the
+   *  address it was written for. A refusal Dispatch gave judged the send's key, so that Retry is
+   *  a new write anyway. A send the reader stopped may have been delivered where it went, so its
+   *  key is used only there: carried away, it keeps the request it went out as (`stoppedSend`)
+   *  and the draft goes on under a key nothing has gone out under, its refusal saying the first
+   *  may have been delivered (`SendMovedError`); carried back, it is that request again, under
+   *  its own key. A move of the host's carries nothing (`send`). */
+  carry(mutationKey: MutationKey, from: Address, to: CarriedAddress): void {
+    const held = this.get(mutationKey);
+    if (held?.status !== "refused" || !sameAddress(held.request, from)) return;
+    this.#writes.amend(held.id, composerSend, (detail) => carriedTo(detail, held.refusal, to));
+  }
+
+  /** Carries the refused send under `mutationKey` to `to` as `carry` does, and into the composer
+   *  named `into`: the reader's own move ended the composer the send was made in - the phone
+   *  thread composer's Cancel reply - and `into` is the one that shows `to`, the docked composer
+   *  at the issue's own address, which has taken the send's draft into its field. A composer
+   *  takes a carried draft only while it holds no send of its own, out or refused
+   *  (`DraftIntake`), so the send carried in is the only one under `into`. The margin carries a
+   *  stopped compose set aside (`setAside`) into the newer compose that took its place this way,
+   *  at its words and in its kind (`at`), when the reader presses Use my draft there. */
+  carryInto(
+    mutationKey: MutationKey,
+    into: MutationKey,
+    to: CarriedAddress,
+    at?: Pick<SentRequest, "anchor" | "kind">
+  ): void {
+    const held = this.get(mutationKey);
+    if (held?.status !== "refused") return;
+    this.#writes.amend(held.id, composerSend, (detail) => ({
+      ...carriedTo(detail, held.refusal, to, at),
+      mutationKey: sendName(into),
+    }));
+  }
+
+  /** Moves the refused send under `mutationKey` to the name `into`, and nothing else: its
+   *  request, its key, its draft and its refusal stay as they are, since no address moves. The
+   *  margin sets a stopped compose aside this way when a newer compose on its document takes its
+   *  place, under a name no composer sends from (`marginComposeKeptKey`), and puts it back under
+   *  its compose's own name the same way once no compose is open there (`useMarginSheet`). */
+  setAside(mutationKey: MutationKey, into: MutationKey): void {
+    const held = this.get(mutationKey);
+    if (held?.status !== "refused") return;
+    this.#writes.amend(held.id, composerSend, (detail) => ({
+      ...detail,
+      mutationKey: sendName(into),
+    }));
   }
 
   /** Sends the refused send under `mutationKey` again as a press of its own. Every Retry but a

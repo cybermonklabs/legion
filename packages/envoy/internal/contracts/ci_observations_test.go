@@ -1,6 +1,9 @@
 package contracts
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -21,7 +24,7 @@ func TestGithubCIObservationsUsesCheckRunStartedAtBeforeCompletion(t *testing.T)
 		},
 	}
 
-	observations := GithubCIObservations("check_run", body)
+	observations := GithubCIObservations("check_run", body, "")
 	if len(observations) != 1 {
 		t.Fatalf("observations = %d, want 1", len(observations))
 	}
@@ -47,7 +50,7 @@ func TestGithubCIObservationsExtractCheckSuite(t *testing.T) {
 		},
 	}
 
-	observations := GithubCIObservations("check_suite", body)
+	observations := GithubCIObservations("check_suite", body, "")
 	if len(observations) != 1 {
 		t.Fatalf("observations = %d, want 1", len(observations))
 	}
@@ -61,6 +64,64 @@ func TestGithubCIObservationsExtractCheckSuite(t *testing.T) {
 	if observation.ObservedAt != "2026-09-07T03:01:00Z" {
 		t.Errorf("check suite observation timestamp = %q", observation.ObservedAt)
 	}
+}
+
+// A check_suite delivery whose action is requested or rerequested is GitHub asking the suite's App
+// to run its checks, sent to that App alone: it maps to no observation, so the CI record never
+// takes the queued suite it carries. A completed delivery maps to its suite. The two suites are
+// this repository's, each captured with
+//
+//	gh api repos/cybermonklabs/legion/check-suites/<id> --jq '{id, status, conclusion, latest_check_runs_count, head_sha, head_branch, updated_at, app: {id: .app.id}, pull_requests: [.pull_requests[] | {number}]}'
+//
+// for 120620537894 (testdata/check_suite_queued_no_runs.json: an App's suite queued with no check
+// run) and 120620605808 (testdata/check_suite_completed.json: GitHub Actions' suite completed with
+// 48 runs). The API answers each with no pull request and the branch's name as head_branch, so the
+// test wraps each in a check_suite webhook body whose suite names pull request 4464, as GitHub's
+// event names an open pull request at that head.
+func TestGithubCIObservationsLeavesOutASuiteRequestToItsApp(t *testing.T) {
+	const sha = "4198cda5fd0ae76e055089846f40f7be0d10dcf4"
+	captured := func(t *testing.T, file string) map[string]any {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join("testdata", file))
+		if err != nil {
+			t.Fatalf("read fixture: %v", err)
+		}
+		suite := map[string]any{}
+		if err := json.Unmarshal(raw, &suite); err != nil {
+			t.Fatalf("decode fixture: %v", err)
+		}
+		return suite
+	}
+	webhook := func(action string, suite map[string]any) map[string]any {
+		suite["pull_requests"] = []any{map[string]any{"number": float64(4464)}}
+		return map[string]any{
+			"action":      action,
+			"check_suite": suite,
+			"repository": map[string]any{
+				"full_name": "cybermonklabs/legion",
+				"name":      "legion",
+				"owner":     map[string]any{"login": "cybermonklabs"},
+			},
+		}
+	}
+	for _, action := range []string{"requested", "rerequested"} {
+		t.Run("a "+action+" delivery maps to nothing", func(t *testing.T) {
+			if observations := GithubCIObservations("check_suite", webhook(action, captured(t, "check_suite_queued_no_runs.json")), ""); len(observations) != 0 {
+				t.Fatalf("observations = %+v, want none", observations)
+			}
+		})
+	}
+	t.Run("a completed delivery maps to its suite", func(t *testing.T) {
+		observations := GithubCIObservations("check_suite", webhook("completed", captured(t, "check_suite_completed.json")), "")
+		want := CIObservation{
+			Owner: "cybermonklabs", Repo: "legion", Number: "4464", SHA: sha,
+			AppID: "15368", SuiteID: "120620605808", Status: "completed", Conclusion: "success",
+			ObservedAt: "2026-11-19T16:20:04Z",
+		}
+		if len(observations) != 1 || observations[0] != want {
+			t.Fatalf("observations = %+v, want only %+v", observations, want)
+		}
+	})
 }
 
 // A commit status maps from the shape GitHub's REST answer lists it in, and the reconcile maps a

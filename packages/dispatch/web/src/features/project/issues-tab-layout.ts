@@ -8,7 +8,7 @@ import {
 } from "../../components/table-layout";
 import { type TableAddress, useAddressUpdate } from "../../lib/page-address";
 import { COMPACT_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
-import { ACTION_WIDTH } from "./issues-table-frame";
+import { ROW_ACTIONS_WIDTH } from "./issues-table-columns";
 import {
   fitViewWidths,
   isBoardFedColumn,
@@ -120,7 +120,7 @@ export function useTabTableLayout(
               stored.responsive.sizing,
               stored.minimums,
               stored.boxWidth,
-              ACTION_WIDTH
+              ROW_ACTIONS_WIDTH
             ),
           },
     [ownWidths, drawn, visibility, stored.responsive, stored.minimums, stored.boxWidth]

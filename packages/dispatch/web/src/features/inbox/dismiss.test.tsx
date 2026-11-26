@@ -4,32 +4,62 @@
  * (INFRA-450).
  */
 
-import { afterEach, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
+import {
+  QueryClient,
+  QueryClientProvider,
+  useInfiniteQuery,
+  useQuery,
+} from "@tanstack/react-query";
+import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { answerInboxDismisses } from "../../__tests__/send-answers";
-import { ApiError, api } from "../../api/client";
+import { realClock, settle } from "../../__tests__/fake-clock";
+import { pickIn } from "../../__tests__/issue-picks";
+import { answerAskSnoozes, answerInboxDismisses } from "../../__tests__/send-answers";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import {
   dismissedThreadsQuery,
   inboxQuery,
   inboxThreadsQuery,
   myRepliesCountQuery,
+  myRepliesKey,
   whoAmIQuery,
 } from "../../api/queries";
-import type { InboxRow, IssueDetails, MyRepliesResponse, MyReplyRow } from "../../api/types";
+import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
+import type {
+  DispatchEvent,
+  InboxRow,
+  IssueDetails,
+  MyRepliesResponse,
+  MyReplyRow,
+} from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { Inbox } from "./Inbox";
 import { issueAsk } from "./inbox-fixture";
+import { type InboxListRow, rowId } from "./list-row";
 import {
   dismissesThread,
   dismissRefusalText,
   dismissThreadRow,
   inboxDismissBody,
+  useInboxDismiss,
 } from "./useInboxDismiss";
+import { useInboxSelection } from "./useInboxSelection";
+
+// A thread row's checkbox is named after its subject's plain-text reading (`PlainText`), which
+// reads nothing until the lazy Markdown engine has loaded, and the rows find each checkbox by that
+// name. So the file loads the engine before its first row, in whatever order the rows run.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** What a press carries for one of this file's Reply rows: the version the fixture draws them
  *  at, which every row of it shares. */
@@ -174,6 +204,92 @@ test("a refused dismiss puts the row back where it stood and says so", async () 
   expect(rowIds()).toEqual(["reply:c1", "reply:c9"]);
 });
 
+test("below 1280 px a dismiss refused from the reading view's head is said where the reader is", async () => {
+  const user = userEvent.setup();
+  const dismissed = answerInboxDismisses();
+  dismissed.mockRejectedValue(new ApiError(404, { error: "not found" }));
+  renderInbox(seeded([replyRow("c1"), replyRow("c9")]));
+
+  await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
+  await user.click(document.querySelector('[data-inbox-row="reply:c1"] time') as HTMLElement);
+  const view = await screen.findByTestId("inbox-reading-view");
+  await user.click(view.querySelector('[data-inbox-dismiss="reply:c1"]') as HTMLElement);
+
+  // The view is still open - on the row the selection moved to - and the refusal is on screen
+  // above it, not in the list's hidden header.
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toBe("Could not dismiss 1 thread: not found.");
+  expect(alert.closest("[hidden]")).toBeNull();
+  expect(screen.getByTestId("inbox-reading-view")).toBeTruthy();
+});
+
+test("below 1280 px a plain click on a thread row's title opens the row in place; a modified click follows the link", async () => {
+  const user = userEvent.setup();
+  renderInbox(seeded([replyRow("c1"), replyRow("c9")]));
+  await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
+  // What the browser would do with each click is read here and then stopped, so no click leaves
+  // the test's page.
+  const followed: boolean[] = [];
+  const record = (event: Event) => {
+    followed.push(!event.defaultPrevented);
+    event.preventDefault();
+  };
+  document.addEventListener("click", record);
+  try {
+    const title = () =>
+      document.querySelector<HTMLElement>('[data-inbox-row="reply:c9"] a[data-inbox-owner]');
+
+    await user.keyboard("{Control>}");
+    await user.click(title() as HTMLElement);
+    await user.keyboard("{/Control}");
+    expect(followed).toEqual([true]);
+    expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument();
+
+    await user.click(title() as HTMLElement);
+    expect(followed).toEqual([true, false]);
+    const view = await screen.findByTestId("inbox-reading-view");
+    expect(view.getAttribute("data-inbox-reading-row")).toBe("reply:c9");
+  } finally {
+    document.removeEventListener("click", record);
+  }
+});
+
+test("below 1280 px `o` on a focused thread row goes to the thread's own page, not the row's view", async () => {
+  const user = userEvent.setup();
+  const assign = spyOn(window.location, "assign").mockImplementation(() => undefined);
+  renderInbox(seeded([replyRow("c1"), replyRow("c9")]));
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
+    const row = document.querySelector<HTMLElement>('[data-inbox-row="reply:c9"]') as HTMLElement;
+    const title = row.querySelector<HTMLAnchorElement>("a[data-inbox-owner]") as HTMLAnchorElement;
+    row.focus();
+    await user.keyboard("o");
+    expect(assign).toHaveBeenCalledWith(title.href);
+    expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument();
+  } finally {
+    assign.mockRestore();
+  }
+});
+
+test("a short row's cut texts carry their whole text as a title: an ask's question and an Agent row's session", async () => {
+  const question =
+    "Should the sandbox tree checkpoint fence hold until the node release that follows it lands?";
+  const ask = issueAsk({ id: "ask-long", question });
+  const agent = plannerAgentRow({
+    session: { id: "planner", name: "Reviewing PR #1489 production-check screen fixes at 390px" },
+  });
+  renderInbox(seeded([agent], [ask]));
+  await waitFor(() => expect([...rowIds()].sort()).toEqual(["agent:message-1", "ask-long"]));
+
+  // Each is cut with an ellipsis where the line is too narrow, so the whole of it is the title.
+  const askRow = document.querySelector<HTMLElement>('[data-inbox-row="ask-long"]') as HTMLElement;
+  expect(askRow.querySelector(`[title="${CSS.escape(question)}"]`)?.textContent).toBe(question);
+  const owner = document
+    .querySelector<HTMLElement>('[data-inbox-row="agent:message-1"] [data-inbox-row-context]')
+    ?.querySelector<HTMLElement>(`[title="${CSS.escape(agent.session.name)}"]`);
+  expect(owner?.textContent).toBe(agent.session.name);
+});
+
 test("a row a refused dismiss put back is the reader's hand's again, held under the next read", async () => {
   const user = userEvent.setup();
   const dismissed = answerInboxDismisses();
@@ -194,6 +310,243 @@ test("a row a refused dismiss put back is the reader's hand's again, held under 
     client.setQueryData(inboxThreadsQuery().queryKey, threadsRead([replyRow("c9")]));
   });
   expect(rowIds()).toEqual(["reply:c1", "reply:c9"]);
+});
+
+// A read of the Inbox's threads, of the Dismissed view or of the count asked while a dismiss is
+// out - an event's refresh, another surface - can reach Dispatch before the dismiss does, and its
+// answer would put the dismissed thread back in the list and in the unread count while the press
+// is still out.
+test("a read of either view or the count asked while a dismiss is out waits for its answer, and never puts the thread back", async () => {
+  // What Dispatch holds, which each read answers with as it is when it is asked.
+  const server = { dismissed: [] as MyReplyRow[], inbox: [replyRow("c1"), replyRow("c9")] };
+  const listMyReplies = spyOn(api, "listMyReplies").mockImplementation(async (page) =>
+    threadsRead(page.state === "dismissed" ? server.dismissed : server.inbox)
+  );
+  restores.push(listMyReplies);
+  const dismissed = answerInboxDismisses();
+  const answer = Promise.withResolvers<{ dismissed: number }>();
+  dismissed.mockReturnValue(answer.promise);
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const { result } = renderHook(
+    () => ({
+      count: useQuery(myRepliesCountQuery()).data,
+      dismiss: useInboxDismiss(),
+      dismissedThreads: useInfiniteQuery(dismissedThreadsQuery()).data?.pages.flatMap(
+        (page) => page.rows?.map((row) => row.thread_id) ?? []
+      ),
+      inboxThreads: useQuery(inboxThreadsQuery()).data?.rows?.map((row) => row.thread_id),
+    }),
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+
+  await waitFor(() =>
+    expect(result.current).toMatchObject({
+      count: 2,
+      dismissedThreads: [],
+      inboxThreads: ["c1", "c9"],
+    })
+  );
+  act(() => result.current.dismiss.submit({ rows: [dismissThreadRow(replyRow("c1"))] }));
+  await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
+  expect(result.current).toMatchObject({ count: 1, inboxThreads: ["c9"] });
+
+  // Dispatch has not taken the dismiss, so a read that reached it now would answer c1 still in
+  // the Inbox, and counted.
+  const reads = listMyReplies.mock.calls.length;
+  await act(async () => {
+    void client.invalidateQueries({ queryKey: myRepliesKey });
+    await settle();
+  });
+  expect(listMyReplies).toHaveBeenCalledTimes(reads);
+  expect(result.current).toMatchObject({ count: 1, dismissedThreads: [], inboxThreads: ["c9"] });
+
+  // Dispatch takes it, and a reply lands on c5 meanwhile: the reads go now, and draw what it
+  // holds.
+  server.inbox = [replyRow("c9"), replyRow("c5")];
+  server.dismissed = [replyRow("c1")];
+  await act(async () => {
+    answer.resolve({ dismissed: 1 });
+    await settle();
+  });
+  await waitFor(() => expect(listMyReplies.mock.calls.length).toBeGreaterThan(reads));
+  await waitFor(() =>
+    expect(result.current).toMatchObject({
+      count: 2,
+      dismissedThreads: ["c1"],
+      inboxThreads: ["c9", "c5"],
+    })
+  );
+});
+
+/** The selection one list keeps, over one listed Reply row, `c1`, with the client that serves it:
+ *  `dismissedHere` and `forgetDismissed` are read off it. */
+function renderSelection() {
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const row: InboxListRow = { kind: "thread", thread: replyRow("c1") };
+  const id = rowId(row);
+  const { result } = renderHook(
+    () =>
+      useInboxSelection({
+        asOf: undefined,
+        candidates: [row],
+        drawnIds: new Set([id]),
+        filters: {},
+        rows: new Map([[id, row]]),
+        showDismissed: false,
+      }),
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+  return { id, result };
+}
+
+// INFRA-3135, round 29 (the architect's ruling of 2026-11-26 06:2xZ): the bar's hand-off parks the
+// focus in the row the reader marked last while its Dismiss is out, and the list's hand hold skips
+// a row named here (`dismissedHere`). A name that ended when Dispatch took the press, while a read
+// still drew the row, let that hold keep the row for the parked focus, and in WebKit the row never
+// left the page (builds Job `infra-3135-infra-3135-r30e-d70p`). So the name stands until the page
+// no longer draws the row.
+test("a Dismiss Dispatch took names its row until the page no longer draws it", async () => {
+  const dismissed = answerInboxDismisses();
+  const answer = Promise.withResolvers<{ dismissed: number }>();
+  dismissed.mockReturnValue(answer.promise);
+  const { id, result } = renderSelection();
+  act(() => result.current.dismissRows([dismissThreadRow(replyRow("c1"))]));
+  await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
+  expect(result.current.dismissedHere(id)).toBe(true);
+
+  await act(async () => {
+    answer.resolve({ dismissed: 1 });
+    await settle();
+  });
+  // Dispatch took it, and the page still draws the row: a read has not dropped it yet.
+  act(() => result.current.forgetDismissed((drawn) => drawn === id));
+  expect(result.current.dismissedHere(id)).toBe(true);
+  // The page has let the row go.
+  act(() => result.current.forgetDismissed(() => false));
+  expect(result.current.dismissedHere(id)).toBe(false);
+});
+
+// The rollback of a refused Dismiss puts the row back as an ordinary row, so nothing of the press
+// is left to wait for, and its name ends at once, whatever the page draws.
+test("a Dismiss Dispatch refused no longer names its row", async () => {
+  const dismissed = answerInboxDismisses();
+  dismissed.mockRejectedValue(new ApiError(409, { error: "conflict" }));
+  const { id, result } = renderSelection();
+  act(() => result.current.dismissRows([dismissThreadRow(replyRow("c1"))]));
+  await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(result.current.dismissedHere(id)).toBe(false));
+});
+
+/** A `user_thread_state.updated` the live feed delivers: `payload.login`'s read of the Inbox's
+ *  threads moved, of `payload.thread_id` alone or, with none, of every thread a dismiss or a
+ *  Mark all read changed. */
+function threadStateEvent(payload: { login: string; thread_id?: string }): DispatchEvent {
+  return {
+    actor: { id: payload.login, kind: "user" },
+    created_at: "2026-10-12T02:01:00Z",
+    id: 1,
+    issue_key: null,
+    notify: false,
+    payload,
+    seq: 1,
+    type: "user_thread_state.updated",
+  } as DispatchEvent;
+}
+
+// Dispatch publishes a dismiss's thread-state event, which names no thread, once it has taken the
+// threads out, so a read asked after it answers the dismiss. The hold ends on that event though
+// the dismiss's answer is still out, and a thread somebody else started meanwhile shows then
+// rather than wait for an answer that may be late. The viewer's read of one thread in another tab,
+// and another login's dismiss, are not this press's and leave the hold.
+test("a thread somebody else starts while a dismiss is out shows once the dismiss's thread-state event has come", async () => {
+  // What Dispatch holds, which each read answers with as it is when it is asked.
+  const server = { dismissed: [] as MyReplyRow[], inbox: [replyRow("c1"), replyRow("c9")] };
+  const listMyReplies = spyOn(api, "listMyReplies").mockImplementation(async (page) =>
+    threadsRead(page.state === "dismissed" ? server.dismissed : server.inbox)
+  );
+  restores.push(listMyReplies);
+  const dismissed = answerInboxDismisses();
+  const answer = Promise.withResolvers<{ dismissed: number }>();
+  dismissed.mockReturnValue(answer.promise);
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const { result } = renderHook(
+    () => ({
+      count: useQuery(myRepliesCountQuery()).data,
+      dismiss: useInboxDismiss(),
+      dismissedThreads: useInfiniteQuery(dismissedThreadsQuery()).data?.pages.flatMap(
+        (page) => page.rows?.map((row) => row.thread_id) ?? []
+      ),
+      inboxThreads: useQuery(inboxThreadsQuery()).data?.rows?.map((row) => row.thread_id),
+    }),
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+
+  await waitFor(() =>
+    expect(result.current).toMatchObject({
+      count: 2,
+      dismissedThreads: [],
+      inboxThreads: ["c1", "c9"],
+    })
+  );
+  act(() => result.current.dismiss.submit({ rows: [dismissThreadRow(replyRow("c1"))] }));
+  await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
+  expect(result.current).toMatchObject({ count: 1, inboxThreads: ["c9"] });
+
+  // Dispatch has taken the dismiss, and bob has started a thread with alice since (c5).
+  const started = replyRow("c5");
+  server.inbox = [
+    replyRow("c9"),
+    { ...started, reply: { ...started.reply, author: { id: "bob", kind: "user" } } },
+  ];
+  server.dismissed = [replyRow("c1")];
+  const reads = listMyReplies.mock.calls.length;
+  await act(async () => {
+    hearLiveEvent(client, threadStateEvent({ login: "alice", thread_id: "c9" }), "alice");
+    hearLiveEvent(client, threadStateEvent({ login: "bob" }), "alice");
+    void client.invalidateQueries({ queryKey: myRepliesKey });
+    await settle();
+  });
+  // Neither event is the dismiss's: no read has asked Dispatch.
+  expect(listMyReplies).toHaveBeenCalledTimes(reads);
+  expect(result.current).toMatchObject({ count: 1, dismissedThreads: [], inboxThreads: ["c9"] });
+
+  await act(async () => {
+    hearLiveEvent(client, threadStateEvent({ login: "alice" }), "alice");
+    void client.invalidateQueries({ queryKey: myRepliesKey });
+  });
+  // The dismiss's answer is still out, and both views and the count are what Dispatch holds: c1
+  // dismissed, and bob's thread in the Inbox and counted.
+  await waitFor(() =>
+    expect(result.current).toMatchObject({
+      count: 2,
+      dismissedThreads: ["c1"],
+      inboxThreads: ["c9", "c5"],
+    })
+  );
+  expect(listMyReplies.mock.calls.length).toBeGreaterThan(reads);
+  expect(client.isMutating()).toBe(1);
+
+  await act(async () => {
+    answer.resolve({ dismissed: 1 });
+    await settle();
+  });
+  await waitFor(() => expect(client.isMutating()).toBe(0));
+  await waitFor(() => expect(client.isFetching()).toBe(0));
 });
 
 test("`e` dismisses the thread row in hand and does nothing on an ask", async () => {
@@ -311,4 +664,157 @@ test("Select all in the paged Dismissed view sends the narrowing with that list'
     kind: ["reply", "agent"],
     restore: true,
   });
+});
+
+/** The test DOM's window, whose viewport `matchMedia` answers from: from 1280 px the Inbox draws
+ *  short rows beside a reading column, below it cards. */
+const testWindow = window as unknown as {
+  happyDOM: { setViewport(size: { width: number }): void };
+  innerWidth: number;
+};
+
+// A thread row prints its root in one line, so a root its author deleted - whose subject the
+// delete cleared - reads as the deleted line in the title and in every name the row's controls
+// carry, rather than as an empty line; an edited root carries ` · edited` after its title; and
+// a root that stands unedited carries neither. Both layouts draw the same.
+test.each([
+  ["a card, below the reading column's width", undefined],
+  ["a short row, beside the reading column", 1440],
+] as const)("a thread row drawn as %s reads a deleted root as deleted and marks an edited one", async (_layout, width) => {
+  const was = testWindow.innerWidth;
+  if (width !== undefined) testWindow.happyDOM.setViewport({ width });
+  try {
+    renderInbox(
+      seeded([
+        // The deleted root was edited first, so ` · edited` can be drawn, and only the row's own
+        // reading of the delete keeps it off.
+        replyRow("c1", {
+          deleted_at: "2026-10-12T00:40:00Z",
+          deleted_by: { id: "alice", kind: "user" },
+          edited_at: "2026-10-12T00:10:00Z",
+          subject: "",
+        }),
+        replyRow("c2", { edited_at: "2026-10-12T00:20:00Z", subject: "Edited root" }),
+        replyRow("c9", { subject: "Standing root" }),
+      ])
+    );
+    await waitFor(() => expect(rowIds().sort()).toEqual(["reply:c1", "reply:c2", "reply:c9"]));
+    const row = (id: string) =>
+      document.querySelector<HTMLElement>(`[data-inbox-row="${id}"]`) as HTMLElement;
+
+    const deleted = row("reply:c1");
+    await waitFor(() =>
+      expect(deleted.querySelector("[data-post-deleted]")?.textContent).toContain(
+        "Deleted by alice"
+      )
+    );
+    expect(deleted.querySelector('[title="Deleted by alice"]')).not.toBeNull();
+    expect(deleted.querySelector('[aria-label="Select Deleted by alice"]')).not.toBeNull();
+    expect(deleted.querySelector('[aria-label="Dismiss: Deleted by alice"]')).not.toBeNull();
+    expect(deleted.textContent).not.toContain("edited");
+
+    const edited = row("reply:c2");
+    expect(edited.textContent).toContain("Edited root · edited");
+    expect(edited.querySelector('[aria-label="Select Edited root"]')).not.toBeNull();
+
+    const standing = row("reply:c9");
+    expect(standing.textContent).toContain("Standing root");
+    expect(standing.textContent).not.toContain("edited");
+    expect(standing.querySelector("[data-post-deleted]")).toBeNull();
+  } finally {
+    testWindow.happyDOM.setViewport({ width: was });
+  }
+});
+
+// A dismissal the reader stopped may have been made: the rows come back as after a refusal, but
+// the page says Dispatch may have made it and that the next press is one of its own, rather
+// than a refusal in the stopped write's own words, which are a composer's.
+test("a dismissal the reader stopped says it may have been made, not that it was refused", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const dismissed = answerInboxDismisses();
+  dismissed.mockRejectedValue(
+    new NetworkError("/api/v1/me/inbox/dismiss", new TypeError("Failed to fetch"))
+  );
+  const client = seeded([replyRow("c1"), replyRow("c9")]);
+  renderInbox(client);
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
+    await user.click(document.querySelector('[data-inbox-dismiss="reply:c1"]') as HTMLElement);
+    await stopTheLateWrite(client);
+    expect(screen.getByRole("alert").textContent).toBe(
+      stoppedWriteNote("the dismissal of 1 thread", "made", {
+        anew: "Dismissing it again sends a new write.",
+      })
+    );
+  } finally {
+    realClock();
+    client.clear();
+  }
+});
+
+// A move back to the Inbox the reader stopped may have been made as well: the rows come back to
+// the Dismissed view, and the page says so in the words of the move, not of a dismissal.
+test("a move back to the Inbox the reader stopped says it may have been made", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const dismissed = answerInboxDismisses();
+  dismissed.mockRejectedValue(
+    new NetworkError("/api/v1/me/inbox/dismiss", new TypeError("Failed to fetch"))
+  );
+  const client = seeded([]);
+  client.setQueryData(dismissedThreadsQuery().queryKey, {
+    pageParams: [undefined],
+    pages: [threadsRead([replyRow("c1"), replyRow("c9")])],
+  });
+  renderInbox(client, "/?show=dismissed");
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
+    await user.click(document.querySelector('[data-inbox-dismiss="reply:c1"]') as HTMLElement);
+    await stopTheLateWrite(client);
+    expect(screen.getByRole("alert").textContent).toBe(
+      stoppedWriteNote("the move of 1 thread back to the Inbox", "made", {
+        anew: "Moving it back again sends a new write.",
+      })
+    );
+  } finally {
+    realClock();
+    client.clear();
+  }
+});
+
+// A bulk snooze the reader stopped may have been saved: the bar says so apart from any refusal,
+// and that the next pick is a press of its own, rather than "Could not snooze" in the stopped
+// write's own words, which are a composer's.
+test("a bulk snooze the reader stopped says it may have been saved, not that it was refused", async () => {
+  const snoozes = answerAskSnoozes().mockRejectedValue(
+    new NetworkError("/api/v1/me/asks/ask-1/snooze", new TypeError("Failed to fetch"))
+  );
+  restores.push(snoozes);
+  const ask = issueAsk({ id: "ask-1", question: "Which approach?" });
+  // The pick reads the Inbox again once its writes settle.
+  restores.push(spyOn(api, "getInbox").mockResolvedValue([ask]));
+  const client = seeded([], [ask]);
+  renderInbox(client);
+  try {
+    await screen.findByText("Which approach?");
+    const user = userEvent.setup();
+    const asksMark = [...document.querySelectorAll<HTMLElement>('input[type="checkbox"]')][0];
+    await user.click(asksMark as HTMLElement);
+    await screen.findByText("1 selected");
+    jest.useFakeTimers();
+    const picker = screen.getByLabelText("Snooze selected asks");
+    await pickIn(userOnFakeClock(), () => picker, "Tomorrow");
+    await stopTheLateWrite(client);
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toBe(
+        stoppedWriteNote("the snooze of 1 of 1", "saved", {
+          anew: "It stays marked, and the next pick snoozes it as a new write.",
+        })
+      )
+    );
+  } finally {
+    realClock();
+    client.clear();
+  }
 });

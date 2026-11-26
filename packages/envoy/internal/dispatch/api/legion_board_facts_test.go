@@ -187,7 +187,7 @@ func TestTheBoardPushedLiveIsTheBoardTheGETAnswers(t *testing.T) {
 
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("b", legionView("INFRA")))
-	pushed := conn.snapshot(t, 5*time.Second, "b").Body
+	pushed := conn.snapshot(t, "b").Body
 	answered := getBody(t, rig.handler, windowTarget(t, legionBoardView, pushed, ""))
 
 	live, served := map[string]json.RawMessage{}, map[string]json.RawMessage{}
@@ -239,8 +239,9 @@ func TestTheBoardCarriesTheFactsOfTheIssuesItShowsAndNoOther(t *testing.T) {
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	// The board seedLegionBoard draws: cards for INFRA-10, -1 and -2 (the queue), -3 (design), its
-	// child -4 (implementing), -5 (with a person) and -6 (held); INFRA-7 is done and on no card,
-	// the root of a tree no card stands in, and INFRA-8 is -3's child its tree has not started.
+	// child -4 (implementing), -5 (with a person), -6 (held), and -11 and -13 (waiting on
+	// children); INFRA-7 is done and on no card, the root of a tree no card stands in, INFRA-8 is
+	// -3's child its tree has not started, -12 is -11's, and -14 is -13's closed child.
 	seedLegionBoard(t, database, "INFRA", now)
 	closed := now.Add(-26 * time.Hour)
 	row := func(issue, root string, depth int, updated time.Duration, closedAt *time.Time) legionfacts.Row {
@@ -260,7 +261,7 @@ func TestTheBoardCarriesTheFactsOfTheIssuesItShowsAndNoOther(t *testing.T) {
 		// A child of a shown tree the daemon names on no card.
 		row("INFRA-8", "INFRA-3", 1, 2*time.Minute, nil),
 		// A child of a shown tree the daemon names nowhere: it closed before the daemon's reads.
-		row("INFRA-12", "INFRA-3", 1, 6*time.Minute, &closed),
+		row("INFRA-15", "INFRA-3", 1, 6*time.Minute, &closed),
 		// A closed issue of a tree the daemon no longer shows: done, on no card, its own root.
 		row("INFRA-7", "INFRA-7", 0, 7*time.Minute, &closed),
 		// A tree the daemon never showed, the oldest rows of the project.
@@ -275,7 +276,7 @@ func TestTheBoardCarriesTheFactsOfTheIssuesItShowsAndNoOther(t *testing.T) {
 	}
 
 	board := legionBoardOf(t, handler, "INFRA")
-	want := []string{"INFRA-12", "INFRA-3", "INFRA-30", "INFRA-4", "INFRA-6", "INFRA-8"}
+	want := []string{"INFRA-15", "INFRA-3", "INFRA-30", "INFRA-4", "INFRA-6", "INFRA-8"}
 	got := slices.Sorted(maps.Keys(board.Issues))
 	if !slices.Equal(got, want) {
 		t.Errorf("the board carries the entries of %v, want those of the open issues and the issues it shows, %v", got, want)
@@ -387,11 +388,21 @@ func legionCardHeld(board legionBoardResponse, key string) (legionBoardCard, boo
 // the card above it, so it waits for nothing, while the stored row read the fallback for an
 // issue of its own and said `ready`. One line answers both now, with a block recorded and
 // without one.
+//
+// The fifth issue is a parent in `awaiting_children` (dispatch://INFRA-3320), and the sixth its
+// open child, which its tree has not started. The daemon lists such a parent as blocked on its
+// open children, so where a block is recorded a blocker link of it names the parent, which would
+// queue any other issue that has not started its work. The parent's card stands in Waiting on
+// children all the same, with and without a block, and its stored row says the same column, its
+// hours under it, and the same reason its card waits for: held by its child where the block
+// names it, ready for the pass that returns it where no block was read. Its child is counted on
+// its card.
 func TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock(t *testing.T) {
 	// child is the key of the unstarted child, which carries no card and whose stored row must
 	// say it waits for nothing, and above is the card that counts it. They are the same two
-	// issues in both cases below, because neither admission block names either of them.
-	const child, above = "INFRA-4", "INFRA-3"
+	// issues in both cases below, because neither admission block names either of them. parent
+	// is the issue waiting on its children, whose open child the block names as what holds it.
+	const child, above, parent = "INFRA-4", "INFRA-3", "INFRA-5"
 	for _, test := range []struct {
 		what      string
 		admission string
@@ -399,13 +410,13 @@ func TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock(t 
 	}{
 		{
 			what: "no read recorded an admission block",
-			want: map[string]string{"INFRA-1": legion.WaitingReady, "INFRA-2": legion.WaitingReady, "INFRA-3": ""},
+			want: map[string]string{"INFRA-1": legion.WaitingReady, "INFRA-2": legion.WaitingReady, "INFRA-3": "", parent: legion.WaitingReady},
 		},
 		{
 			what: "a read recorded one",
 			admission: `{"cap": 2, "active": [], "waiting": ["INFRA-1"],
-				"blocked": [{"issue": "INFRA-2", "blockedBy": ["INFRA-9"]}]}`,
-			want: map[string]string{"INFRA-1": legion.WaitingReady, "INFRA-2": legion.WaitingBlocked, "INFRA-3": ""},
+				"blocked": [{"issue": "INFRA-2", "blockedBy": ["INFRA-9"]}, {"issue": "INFRA-5", "blockedBy": ["INFRA-6"]}]}`,
+			want: map[string]string{"INFRA-1": legion.WaitingReady, "INFRA-2": legion.WaitingBlocked, "INFRA-3": "", parent: legion.WaitingBlocked},
 		},
 	} {
 		t.Run(test.what, func(t *testing.T) {
@@ -417,7 +428,9 @@ func TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock(t 
 			// Three roots the daemon reports, each with a handoff, which is what gives an issue
 			// a stored row (legion/metrics/population.go's hasPhaseWork). Two wait for a slot
 			// and the third works. The fourth issue is a child of the third, which the daemon
-			// reports `admitted` with no slot of its own: its tree has not started it.
+			// reports `admitted` with no slot of its own: its tree has not started it. The fifth
+			// is a root waiting on its children, and the sixth its child, `admitted` as the
+			// fourth is.
 			for _, issue := range []struct {
 				number              int
 				rank, phase, parent string
@@ -426,6 +439,8 @@ func TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock(t 
 				{2, "b", legion.PhaseAdmitted, ""},
 				{3, "c", legion.PhaseImplementing, ""},
 				{4, "d", legion.PhaseAdmitted, "INFRA-3"},
+				{5, "e", legion.PhaseAwaitingChildren, ""},
+				{6, "f", legion.PhaseAdmitted, parent},
 			} {
 				key := seedLegionIssue(t, database, "INFRA", issue.number, "An issue in "+issue.phase, issue.rank, nil, issue.parent)
 				seedLegionObservation(t, database, "INFRA", key, legion.FieldPhase, `"`+issue.phase+`"`, hourAgo)
@@ -485,8 +500,29 @@ func TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock(t 
 			if counting.Children != 1 {
 				t.Errorf("%s counts %d unstarted children, want the one %s is", above, counting.Children, child)
 			}
-			t.Logf("%s: the card and the stored row of each of INFRA-1, INFRA-2 and INFRA-3 answer the same reason, and %s, which stands under %s's card on no card of its own, waits for nothing on both sides while %s counts %d unstarted child",
-				test.what, child, above, above, counting.Children)
+
+			// The parent waiting on its children: its card stands in Waiting on children, whether
+			// or not a blocker link of the block names it, and its stored row keeps its hours under
+			// that same column. Its reason is held to its stored row's above.
+			column := ""
+			for _, each := range board.Columns {
+				if slices.ContainsFunc(each.Cards, func(card legionBoardCard) bool { return card.Key == parent }) {
+					column = each.ID
+				}
+			}
+			if column != legion.ColumnAwaitingChildren {
+				t.Errorf("%s waits on its children and its card stands in %q, want %q", parent, column, legion.ColumnAwaitingChildren)
+			}
+			waited := board.Issues[parent].HoursByPhase
+			if waited[legion.ColumnAwaitingChildren] <= 0 {
+				t.Errorf("%s waits on its children and its stored row holds its hours as %v, want them under %q",
+					parent, waited, legion.ColumnAwaitingChildren)
+			}
+			if waiting := legionCard(t, board, parent); waiting.Children != 1 {
+				t.Errorf("%s counts %d unstarted children, want its one open child", parent, waiting.Children)
+			}
+			t.Logf("%s: the card and the stored row of each of INFRA-1, INFRA-2, INFRA-3 and %s answer the same reason, and %s, which stands under %s's card on no card of its own, waits for nothing on both sides while %s counts %d unstarted child; %s stands in %s with %v hours stored under that column",
+				test.what, parent, child, above, above, counting.Children, parent, column, waited)
 		})
 	}
 }

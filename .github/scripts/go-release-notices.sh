@@ -66,19 +66,19 @@ for arch in $(jq -r '.envoy[]' .github/go-release-targets.json); do
     # change with it: the one package cgo adds is the standard library's runtime/cgo, and
     # measured on 2026-11-17 at go1.27.3 the listener's notices are byte for byte the same with
     # CGO_ENABLED 0 and 1 for each of amd64 and arm64, while amd64's and arm64's differ. The
-    # listener itself is compiled in the release's own mode by ci.yaml's envoy-go-checks, which
+    # listener itself is compiled in the release's own mode by ci.yaml's envoy-go-build, which
     # runs on ubuntu-24.04 for that reason.
     ../../scripts/go-third-party-notices.sh "$notices/legion-envoy-$arch" ./cmd/listener
     export CGO_ENABLED=0
-    ../../scripts/go-third-party-notices.sh "$notices/agent-secrets-$arch" ./cmd/agent-secrets ./cmd/agent-secrets-helper
+    ../../scripts/go-third-party-notices.sh "$notices/agent-secrets-$arch" ./cmd/cipher ./cmd/cipher-helper
   )
 done
 for target in $(jq -r '.["agent-secrets-client"][]' .github/agent-secrets-client-targets.json); do
   (
     export CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}"
-    go -C packages/envoy build -buildvcs=false -o /dev/null ./cmd/agent-secrets
+    go -C packages/envoy build -buildvcs=false -o /dev/null ./cmd/cipher
     cd packages/envoy
-    ../../scripts/go-third-party-notices.sh "$notices/agent-secrets-${target%/*}-${target#*/}" ./cmd/agent-secrets
+    ../../scripts/go-third-party-notices.sh "$notices/agent-secrets-${target%/*}-${target#*/}" ./cmd/cipher
   )
 done
 for target in $(jq -r '.["envoy-infra"][]' .github/envoy-infra-targets.json); do

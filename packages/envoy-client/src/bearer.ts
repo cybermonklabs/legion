@@ -78,7 +78,7 @@ export interface RequestCredential {
    * does: where the token client's last trade failed in a way its retry loop trades again on and
    * nothing live is in hand, it throws `TradeRetryingError` at once. While the broker holds no
    * registration for this pod's session yet, it waits until `signal` ends and then throws
-   * `RegistrationPendingError` (both `@legion/broker-client/token-errors`), naming the session;
+   * `RegistrationPendingError` (both `@legion/cipher-client/token-errors`), naming the session;
    * the loop goes on trading in the background, so a later call takes the token once the
    * registration lands. A caller that passes none waits as long as that takes. A bearer ignores it.
    */
@@ -115,10 +115,34 @@ export interface RequestCredential {
    */
   identity?(presented: Readonly<Record<string, string>>): string | undefined;
   /**
+   * The route a review takes where this credential is a person's sign-in on this machine: a
+   * placeholder of Cipher's proxy for the person's approve capability, traded for at this call,
+   * and how to reach that proxy (`ApproveRoute`). Dispatch takes the approve power from every
+   * token a box holds, so a person approves from a box only through the proxy, which swaps a
+   * token the broker mints and keeps for the placeholder (`DispatchClient`'s `reviewArtifact`).
+   * It answers undefined where the credential trades no person, the machine's own identity, whose
+   * review Dispatch refuses as it always has. A bearer has none: a personal token holds its own
+   * scopes and goes to Dispatch directly.
+   */
+  approveRoute?(signal?: AbortSignal): Promise<ApproveRoute | undefined>;
+  /**
    * The secret this credential is presenting, which an excerpt of someone else's answer must
    * redact (`DispatchClient`'s `excerpt`), or "" while it holds none.
    */
   secret(): string;
+}
+
+/**
+ * Where a person's review goes from this machine (`RequestCredential.approveRoute`): the
+ * placeholder a request carries as `Authorization: DPoP <placeholder>` and as the proxy's
+ * password, the proxy's URL, the certificate the proxy signs its hosts' certificates with, and
+ * the hosts the approve capability reaches, one of which the Dispatch URL must name.
+ */
+export interface ApproveRoute {
+  readonly placeholder: string;
+  readonly proxyUrl: string;
+  readonly caCertificate: string;
+  readonly hosts: readonly string[];
 }
 
 /**
@@ -149,19 +173,20 @@ export function bearerCredential(token: string): RequestCredential {
 
 /**
  * Where `section`'s bearer comes from: `<SECTION>_TOKEN_FILE` (the trimmed contents of the file it
- * names, how the Legion daemon delivers it to a pane), then `<SECTION>_TOKEN`, then the bearer
- * `written` gives, which is asked for only when neither variable is set. An empty variable counts
- * as unset. Throws naming the variable whose file cannot be read or whose value is not `sendable`,
- * never falling back to the next source, and whatever `written` throws.
+ * names, how the Legion daemon delivers it to a pane, read without holding the event loop), then
+ * `<SECTION>_TOKEN`, then the bearer `written` gives, which is asked for only when neither variable
+ * is set. An empty variable counts as unset. Rejects naming the variable whose file cannot be read
+ * or whose value is not `sendable`, never falling back to the next source, and with whatever
+ * `written` throws.
  */
-export function bearerSource(
+export async function bearerSource(
   env: EnvoyConfigEnvironment,
   section: BearerSection,
   written: () => FileBearer | undefined
-): BearerSource {
+): Promise<BearerSource> {
   const pointer = nonEmpty(env[`${section}_TOKEN_FILE`]);
   if (pointer !== undefined) {
-    return { kind: "variable", token: readSecretFile(`${section}_TOKEN_FILE`, pointer) };
+    return { kind: "variable", token: await readSecretFile(`${section}_TOKEN_FILE`, pointer) };
   }
   const plain = nonEmpty(env[`${section}_TOKEN`]);
   if (plain !== undefined) {
@@ -180,15 +205,15 @@ export function bearerSource(
  * is otherwise refused naming the variables that give another server its bearer. Then a checkout's
  * `!` value is refused, an empty value is refused, and the value is read (`fileValue`, which runs a
  * chosen file's `!` command and refuses whitespace inside a value; with `commands: "kept"` it only
- * takes the outcome a run already kept). Throws naming the field and the file, never the value.
+ * takes the outcome a run already kept). Rejects naming the field and the file, never the value.
  */
-export function fileBearer(
+export async function fileBearer(
   bearer: FileBearer,
   url: string,
   section: BearerSection,
   env: EnvoyConfigEnvironment,
   commands: CommandMode = "run"
-): string {
+): Promise<string> {
   const named = httpUrl(url)?.origin;
   const paired = httpUrl(bearer.server)?.origin;
   if (named !== paired) {

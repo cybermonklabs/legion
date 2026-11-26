@@ -1,8 +1,9 @@
 import type { Table } from "@tanstack/react-table";
-import type { ReactNode, RefObject } from "react";
-import { borderDefault, surfaceBg, textSecondaryOnCanvas } from "../theme/classes";
-import { CONTROL } from "./control-names";
+import { type ReactNode, type RefObject, useState } from "react";
+import { textSecondaryOnCanvas } from "../theme/classes";
+import { CONTROL, type ControlSize } from "./control-names";
 import type { RowNoun } from "./DataTable";
+import { MultiSelect } from "./MultiSelect";
 import { StepButton } from "./StepButton";
 
 /** What a pager takes from the page it belongs to beyond what its rows are called, which a
@@ -27,6 +28,9 @@ export interface PagerProps<TData> extends PagerOptions {
   readonly table: Table<TData>;
   /** Measured by `useTableLayout`, which gives the box the room left under this line. */
   readonly pagerRef?: RefObject<HTMLDivElement | null>;
+  /** How much room the steps and the list of page sizes take (`ControlSize`): the table's own
+   *  `size`, which is the page's. */
+  readonly size?: ControlSize;
 }
 
 /** A caller's noun where a line starts with it: `rows` gives `Rows 1–25 of 40` and `Rows per
@@ -37,16 +41,23 @@ const sentence = (word: string) => `${word.charAt(0).toLocaleUpperCase()}${word.
  * The one line under a table: how much of the listing it is showing, which page of it, the
  * steps between pages and how many rows a page holds. Every word it counts in is its caller's,
  * so the same pager serves a list of issues and a list of anything else.
+ *
+ * How many rows a page holds is picked from the shared single pick (`MultiSelect`), whose text
+ * box narrows the page sizes. The list holds each size as a string, and a pick hands the table
+ * the number back. A pick of the size a page holds sets nothing, as a `<select>` set to the value
+ * it holds fires nothing.
  */
 export function Pager<TData>({
   allRows = Number.MAX_SAFE_INTEGER,
   noun,
   pageSizes,
   pagerRef,
+  size = "comfortable",
   table,
   testId,
   totals = true,
 }: PagerProps<TData>): ReactNode {
+  const [choosing, setChoosing] = useState(false);
   const { pageIndex, pageSize } = table.getState().pagination;
   const { grouping } = table.getState();
   // The rows every page holds together: the table's own count, which is the server's where the
@@ -81,27 +92,40 @@ export function Pager<TData>({
             ? `${range} of ${rowsOnPages}`
             : range}
       </span>
-      <StepButton ariaDisabled={!table.getCanPreviousPage()} onClick={() => table.previousPage()}>
+      <StepButton
+        ariaDisabled={!table.getCanPreviousPage()}
+        onClick={() => table.previousPage()}
+        size={size}
+      >
         ‹ Previous
       </StepButton>
       <span>
         Page {pageIndex + 1} of {Math.max(table.getPageCount(), 1)}
       </span>
-      <StepButton ariaDisabled={!table.getCanNextPage()} onClick={() => table.nextPage()}>
+      <StepButton
+        ariaDisabled={!table.getCanNextPage()}
+        onClick={() => table.nextPage()}
+        size={size}
+      >
         Next ›
       </StepButton>
-      <select
-        aria-label={`${sentence(line.many)} per page`}
-        className={`rounded-lg border px-2 py-1 ${borderDefault} ${surfaceBg}`}
-        onChange={(event) => table.setPageSize(Number(event.target.value))}
-        value={pageSize}
-      >
-        {pageSizes.map((size) => (
-          <option key={size} value={size}>
-            {size >= allRows ? `All ${line.many}` : `${size} per page`}
-          </option>
-        ))}
-      </select>
+      <MultiSelect
+        emptyMessage="No page size matches."
+        label={`${sentence(line.many)} per page`}
+        mode="single"
+        onOpenChange={setChoosing}
+        onPick={(picked) => {
+          if (picked !== String(pageSize)) table.setPageSize(Number(picked));
+        }}
+        open={choosing}
+        optionLabel={(value) =>
+          Number(value) >= allRows ? `All ${line.many}` : `${value} per page`
+        }
+        options={pageSizes.map(String)}
+        searchLabel="Search page sizes"
+        size={size}
+        value={String(pageSize)}
+      />
     </div>
   );
 }

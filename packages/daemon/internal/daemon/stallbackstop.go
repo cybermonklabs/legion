@@ -31,10 +31,11 @@ import (
 // never read again. A claim in no turn has no turn to end: a claim's record is never cleared, so
 // the step of a turn that ended hours ago still stands on an idle claim, and reading it would end
 // a turn nobody is in. A claim in an update round is the round's to carry: the round replaces
-// that process with its pod once every worker of the pod has answered and no turn runs, or at
-// the round's bound whatever the workers answered, and tells the controller when something holds
-// it past that bound (reconcilePodUpdates, tellUpdateStalled), so a backstop relaunch under it
-// would replace a process the round is about to replace and start its clock again.
+// that process with its pod once every worker of the pod has answered, no turn runs and no
+// claim's activity report holds it (roundEnd.holding), or at the round's bound whatever the
+// workers answered and whatever runs, and tells the controller when something holds it past that
+// bound (reconcilePodUpdates, tellUpdateStalled), so a backstop relaunch under it would replace a
+// process the round is about to replace and start its clock again.
 //
 // The stop itself is the machine's (supervise's backstopStalledTurn), which re-reads the claim's
 // own record before it acts and charges nothing. The post is made at every tick that finds the
@@ -168,7 +169,9 @@ type stallNoticeOwed struct {
 // It reports whether the owner was told: a row the store refuses is owed and told again at the
 // next sweep, as a stalled update round's is (tellUpdateStalled). The project controller's own
 // claim has no issue and so no owner to tell; the line it logs is the whole of its telling, and
-// the record is in it.
+// the record is in it. So is the line of a claim of another project's issue, which the operator's
+// spawn makes: its owner's notice would be a row keyed by that issue, which only that project's
+// daemon runs, so none is written (supervision.enqueue), and the line says so.
 func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Claim, stop supervise.StallBackstopStop) bool {
 	found := stallBackstopRecord(c, stop, s.plan.clock.Now().Sub(stop.LastStep))
 	if c.Issue == "" {
@@ -181,12 +184,18 @@ func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Clai
 			"claim", c.Token, "issue", c.Issue, "record", found)
 		return true
 	}
-	if err := s.enqueueStallNotice(ctx, c, found); err != nil {
+	written, err := s.enqueueStallNotice(ctx, c, found)
+	if err != nil {
 		if ctx.Err() == nil {
 			s.log.Error("supervise: tell the owner what the daemon's stall backstop did to a stalled turn; telling again at the next sweep",
 				"claim", c.Token, "issue", c.Issue, "error", err)
 		}
 		return false
+	}
+	if !written {
+		s.log.Warn("supervise: the daemon's stall backstop acted on a stalled turn of a claim of another project's issue, whose rows this daemon writes none of; no owner is told",
+			"claim", c.Token, "issue", c.Issue, "role", c.Role, "record", found)
+		return true
 	}
 	s.log.Warn("supervise: the daemon's stall backstop acted on a stalled turn; the owner is told",
 		"claim", c.Token, "issue", c.Issue, "role", c.Role, "record", found)
@@ -195,13 +204,13 @@ func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Clai
 
 // enqueueStallNotice writes the owner's notice rows, both in one call so a stall told to one
 // side and not the other is never told again at the next sweep (tellUpdateStalled's own reason
-// for one call). A phase worker's stall is read by the architect that owns its issue, and a
-// child's own architect's stall by the architect above that child, as each one's death is. A tree
-// architect's own stall is told to the controller as well, in a row of its own: every notice of the
-// tree that no child's own architect takes reaches that architect, and nobody inside the tree is
-// left to act on it (workflow's claimFailed, which tells a failed tree architect's death the same
-// way).
-func (s *supervision) enqueueStallNotice(ctx context.Context, c supervise.Claim, found string) error {
+// for one call), and answers whether it wrote them (supervision.enqueue). A phase worker's stall
+// is read by the architect that owns its issue, and a child's own architect's stall by the
+// architect above that child, as each one's death is. A tree architect's own stall is told to the
+// controller as well, in a row of its own: every notice of the tree that no child's own architect
+// takes reaches that architect, and nobody inside the tree is left to act on it (workflow's
+// claimFailed, which tells a failed tree architect's death the same way).
+func (s *supervision) enqueueStallNotice(ctx context.Context, c supervise.Claim, found string) (bool, error) {
 	notice := record.Notice{Kind: stallBackstopNotice, Role: c.Role, Reason: found}
 	rows := []record.OutboxPayload{notice}
 	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
@@ -353,7 +362,7 @@ func stallStopClause(words stallEndWords, stop supervise.StallBackstopStop) stri
 // ends it (supervise's endHeld, stopPrevious). stallProcessNotStopped is the end that asked
 // for no stop at all, where that room and that disk are what nothing of the daemon's has given
 // back, and where the claim goes on recording the process until the queued launch comes due
-// (supervise's reserveWake, parkWake).
+// (supervise's reserveWake, waitOnMachine).
 const (
 	stallProcessStopped    = "Its stalled process was stopped."
 	stallProcessNotStopped = "The daemon made no stop of its stalled process, and the claim records that process still, so nothing the daemon has done has taken away what that process holds."
@@ -361,10 +370,10 @@ const (
 )
 
 // stallFill fills the two values a clause of the notice names where it names them: the claim's
-// role, and the moment the launch a park queued is due to run
-// (supervise.StallBackstopStop.WakeDue). They are written into the clauses as words rather than
-// handed to a format string so that each row of stallBackstopEnds reads as the sentence the
-// owner gets, and so that a clause naming neither needs nothing of its caller.
+// role, and the moment the wake pacing estimated, when the stop was built, that it lets out the
+// launch a park queued (supervise.StallBackstopStop.WakeDue). They are written into the clauses
+// as words rather than handed to a format string so that each row of stallBackstopEnds reads as
+// the sentence the owner gets, and so that a clause naming neither needs nothing of its caller.
 func stallFill(c supervise.Claim, stop supervise.StallBackstopStop) *strings.Replacer {
 	return strings.NewReplacer(stallRoleWord, string(c.Role), stallDueWord, stallInstant(stop.WakeDue))
 }
@@ -427,7 +436,7 @@ const stallNothingCharged = "nothing was charged to the claim."
 // The stall itself charges nothing, which is the whole reason this recovery is not the death
 // path (supervise's backstopStalledTurn). The replacement made for it is another matter: a
 // start the runtime refuses inside that replacement is a launch failure like any other
-// (supervise's launchNow), and the loop tries again, so a single transient refusal reaches its
+// (supervise's launchTries), and the loop tries again, so a single transient refusal reaches its
 // owner as a relaunch that worked with one failure charged, and a refusal followed by a write
 // the store would not take as a relaunch still pending with the same. Those are the common
 // shapes, not the rare one: the end that failed the claim is every try of it refused, and it
@@ -454,16 +463,17 @@ func stallChargeClause(stop supervise.StallBackstopStop) string {
 //
 // Each row is held to one rule: it states what the daemon has already done, and names what the
 // claim waits on for anything it has not. Only the relaunched row ends in something running,
-// because only there has a process been started (supervise's launchNow records the locator the
-// runtime answered with). Where the daemon has queued work — the parked launch, the retry of a
-// launch the store refused — the row says what is queued and what can end the claim before that
-// work runs, since nothing writes this owner a second notice when it does: a suspension already
-// waiting ends the wake's turn in a stop (supervise's wakeNow, endHeld), a lifecycle recheck
-// refuses the launch and leaves the process as it stands (runWake, relaunchRefused), a tree's
-// close drops the queued launch with the process (letGo), and a retry of a launch can run the
-// claim's budget out and fail it (launchNow, fail). Where nothing is queued — suspended, failed
-// — the row says so and names what can bring the claim back or end it, rather than promising a
-// resume or a retry that may never come.
+// because only there has a process been started (supervise's launchTries records the locator the
+// runtime answered with). Where the daemon has queued work — the parked launch, the launch waiting
+// at its issue pod's start gate, the retry of a launch the store refused — the row says what is
+// queued and what can end the claim before that work runs, since nothing writes this owner a
+// second notice when it does: a suspension already waiting ends the wake's turn in a stop
+// (supervise's wakeNow, endHeld), a suspension or a close takes a launch out of the pod's gate
+// (supervise's endPodPark), a lifecycle recheck refuses the launch and leaves the process as it
+// stands (runWake, relaunchRefused), a tree's close drops the queued launch with the process
+// (letGo), and a retry of a launch can run the claim's budget out and fail it (launchTries, fail).
+// Where nothing is queued — suspended, failed — the row says so and names what can bring the
+// claim back or end it, rather than promising a resume or a retry that may never come.
 //
 // No row names the stalled process or the stalled turn — not to say the
 // process was stopped, however plainly its end let that process go, and not that the turn was
@@ -477,7 +487,7 @@ func stallChargeClause(stop supervise.StallBackstopStop) string {
 //
 // No row says what the claim was charged either, for the same reason: a start the runtime
 // refuses inside the replacement is charged like any other launch failure (supervise's
-// launchNow), and the end can still be the relaunch that worked, so a row claiming the stall
+// launchTries), and the end can still be the relaunch that worked, so a row claiming the stall
 // charged nothing would be a sentence the claim's own budgets contradict. That clause is the
 // third the daemon derives, from what the machine says this replacement charged
 // (stallChargeClause), and the charge is the third subject that property holds the rows off:
@@ -490,12 +500,18 @@ var stallBackstopEnds = map[supervise.ProcessEnd]stallEndWords{
 		process: stallProcessLetGo},
 	supervise.EndRelaunchParked: {
 		did: "and queued the replacement launch",
-		end: "the launch that replaces it is queued in the daemon's wake pacing and is due at " + stallDueWord +
-			": what the park settled is that launch queued and the claim waiting on it until then. What comes due at " + stallDueWord +
-			" may be nothing at all, or not the launch the park queued — a suspension waiting for this claim, " +
+		end: "the launch that replaces it is queued in the daemon's wake pacing, which estimated, when the daemon read it for this notice, that it lets the launch out at " + stallDueWord +
+			": a change to the pacing's queues or to its pace can move that moment earlier or later, for example a wake ahead of it in its own queue that leaves moves it earlier, and a wake that joins and is let out ahead of it moves it later. " +
+			"What the park settled is that launch queued and the claim waiting on it until the pacing lets it out. What the pacing lets out then may be nothing at all, or not the launch the park queued — a suspension waiting for this claim, " +
 			"the lifecycle recheck every launch makes refusing this one, the tree's close dropping the queued launch, a take-back the store refuses when that launch comes due, a launch whose own write or start the daemon cannot make, " +
 			"and an operator's task that runs this launch before it is due are among the things that can change it",
 		process: stallProcessKept},
+	supervise.EndRelaunchWaitsForPod: {
+		did: "and queued the replacement launch at its issue's start gate",
+		end: "the launch that replaces it waits at its issue's start gate behind the roles of the issue that start or load their sessions before it, one load at a time, " +
+			"and the replacement starts when the gate grants it its start. A suspension of this claim, a close that retires it, " +
+			"or the daemon's own shutdown, which the daemon's next start takes up, can come before that start, and a start refused until the claim's launch budget runs out leaves it failed with nothing started for it",
+		process: stallProcessLetGo},
 	supervise.EndRelaunchPending: {
 		did: "and did not get a replacement started in its place",
 		end: "the launch that replaces it has not started: either its write was refused, which the daemon tries again at its probe interval, or the daemon's own shutdown cut the launch short, which the daemon's next start takes up; " +

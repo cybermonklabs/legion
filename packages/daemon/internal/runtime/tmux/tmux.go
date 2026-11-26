@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
@@ -136,6 +137,15 @@ type Options struct {
 	// overlays a pane of that role alone names in PI_CONFIG_FILES, after PiConfigFiles, so each
 	// outranks those, by role, the controller's pane included. Nil is none.
 	RoleConfigFiles map[claim.Role][]string
+	// LeakCheckManifestSHA256 is the manifest digest of the deployment's shared public leak check
+	// (leakguard.Setting.ManifestSHA256, config's leak_check), which every pane is told as
+	// leakguard.CheckerVar (panePairs): it is the sign that the deployment runs a check, under
+	// which a pane's guard refuses a write for want of a check or under a check whose manifest
+	// digest is anything else. A pane's `legion gh` trusts its read rule under the program that
+	// rule was proven against, whose digest it compiles in, and not under this digest. "" is a
+	// deployment that runs no shared leak check, whose panes are told nothing of it and refuse no
+	// write for its absence.
+	LeakCheckManifestSHA256 string
 	// ExperimentVariants is every arm of every experiment the project declares
 	// (config.Project.ExperimentsDeclared), in the order the file declares the experiments and,
 	// within one experiment, the order it declares the arms. A pane names the overlays of the
@@ -164,6 +174,13 @@ type Options struct {
 	Executable func() (string, error)
 	// Now stamps observations and ages orphans; time.Now when nil.
 	Now func() time.Time
+	// Clock is what the runtime's own bounds are measured on: the sweep's period (ProbeInterval),
+	// each tmux invocation's CommandTimeout, a launch's wait for its pane to run the pane's
+	// command (CommandTimeout again) and a stop's grace (StopGrace). The pause between two reads of
+	// a pane in those waits, the adoption timeout (AdoptTimeout, which the agent's connection
+	// measures) and Now's stamps stay the machine's. clock.Real when nil; a test hands it a
+	// clocktest.Fake and moves it.
+	Clock clock.Clock
 	// Log receives what the runtime decides without being asked; slog.Default() when nil.
 	Log *slog.Logger
 }
@@ -199,10 +216,12 @@ type Runtime struct {
 	// leak check in (resolveLeakCheck). environ above is the pane environment, which carries
 	// neither the operator's XDG_CONFIG_HOME nor any name off the allow list, so it is no
 	// environment to resolve that check in.
-	ownEnviron      []string
-	tmuxPath        string
-	legion          string
-	now             func() time.Time
+	ownEnviron []string
+	tmuxPath   string
+	legion     string
+	now        func() time.Time
+	// clock is Options.Clock, clock.Real when that is nil (New).
+	clock           clock.Clock
 	log             *slog.Logger
 	providerEnvDir  string
 	providerKeys    []string
@@ -212,6 +231,8 @@ type Runtime struct {
 	// takeOver is the runtime whose locators this runtime takes over (Options.TakeOver):
 	// runtime.RuntimeSandbox under TakeOverKubernetes, "" for none.
 	takeOver string
+	// leakCheckManifestSHA256 is Options.LeakCheckManifestSHA256, the digest every pane is told.
+	leakCheckManifestSHA256 string
 
 	// run executes one tmux argv. A field so an in-package test can record every argv the
 	// runtime hands tmux; New sets it to runTmux.
@@ -333,47 +354,52 @@ func New(opts Options) (*Runtime, error) {
 	}
 	markers, agents := agentMarkers(opts.Launchers)
 	r := &Runtime{
-		socket:               "legion-" + opts.Project,
-		stateDir:             opts.StateDir,
-		streamAddress:        opts.StreamAddress,
-		daemonURL:            opts.DaemonURL,
-		envoyURL:             opts.EnvoyURL,
-		natsURLs:             opts.NatsURLs,
-		dispatchURL:          opts.DispatchURL,
-		dispatchToken:        opts.DispatchTokenFile,
-		gitHubCredential:     opts.GitHubCredential,
-		controllerCredential: opts.ControllerCredential,
-		gh:                   opts.GH,
-		claimRepository:      opts.ClaimRepository,
-		launchers:            opts.Launchers,
-		markers:              markers,
-		agents:               agents,
-		stopGrace:            opts.StopGrace,
-		probeInterval:        opts.ProbeInterval,
-		adoptTimeout:         opts.AdoptTimeout,
-		commandTimeout:       opts.CommandTimeout,
-		conns:                opts.Conns,
-		paneEnv:              paneEnv,
-		ownEnviron:           environ,
-		tmuxPath:             tmuxPath,
-		legion:               legion,
-		now:                  opts.Now,
-		log:                  opts.Log,
-		providerEnvDir:       opts.ProviderEnvDir,
-		providerKeys:         providerKeys,
-		operatorEnv:          opts.PaneEnv,
-		piConfigFiles:        opts.PiConfigFiles,
-		roleConfigFiles:      opts.RoleConfigFiles,
-		takeOver:             takeOver,
-		readProc:             os.ReadFile,
-		tracked:              map[string]*trackedProcess{},
-		displaced:            map[claim.Token]runtime.Locator{},
+		socket:                  "legion-" + opts.Project,
+		stateDir:                opts.StateDir,
+		streamAddress:           opts.StreamAddress,
+		daemonURL:               opts.DaemonURL,
+		envoyURL:                opts.EnvoyURL,
+		natsURLs:                opts.NatsURLs,
+		dispatchURL:             opts.DispatchURL,
+		dispatchToken:           opts.DispatchTokenFile,
+		gitHubCredential:        opts.GitHubCredential,
+		controllerCredential:    opts.ControllerCredential,
+		gh:                      opts.GH,
+		claimRepository:         opts.ClaimRepository,
+		launchers:               opts.Launchers,
+		markers:                 markers,
+		agents:                  agents,
+		stopGrace:               opts.StopGrace,
+		probeInterval:           opts.ProbeInterval,
+		adoptTimeout:            opts.AdoptTimeout,
+		commandTimeout:          opts.CommandTimeout,
+		conns:                   opts.Conns,
+		paneEnv:                 paneEnv,
+		ownEnviron:              environ,
+		tmuxPath:                tmuxPath,
+		legion:                  legion,
+		now:                     opts.Now,
+		clock:                   opts.Clock,
+		log:                     opts.Log,
+		providerEnvDir:          opts.ProviderEnvDir,
+		providerKeys:            providerKeys,
+		operatorEnv:             opts.PaneEnv,
+		piConfigFiles:           opts.PiConfigFiles,
+		roleConfigFiles:         opts.RoleConfigFiles,
+		takeOver:                takeOver,
+		leakCheckManifestSHA256: opts.LeakCheckManifestSHA256,
+		readProc:                os.ReadFile,
+		tracked:                 map[string]*trackedProcess{},
+		displaced:               map[claim.Token]runtime.Locator{},
 	}
 	if r.commandTimeout == 0 {
 		r.commandTimeout = defaultCommandTimeout
 	}
 	if r.now == nil {
 		r.now = time.Now
+	}
+	if r.clock == nil {
+		r.clock = clock.Real()
 	}
 	if r.log == nil {
 		r.log = slog.Default()
@@ -447,7 +473,7 @@ type result struct {
 // open past the timeout for a server still holding the client's pipes, and the client's exit is
 // then its answer.
 func (r *Runtime) runTmux(ctx context.Context, argv []string) (result, error) {
-	bounded, cancel := context.WithTimeout(ctx, r.commandTimeout)
+	bounded, cancel := r.clock.WithTimeout(ctx, r.commandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(bounded, r.tmuxPath, argv[1:]...)
 	cmd.Env = r.environ
@@ -797,9 +823,10 @@ func (r *Runtime) settleUnverified(loc runtime.Locator, pane string, inc incarna
 
 // awaitNotRunning re-verifies the pane until the recorded process no longer verifies, or grace
 // is spent, and returns the last verdict. A verdict that cannot be reached — tmux not answering
-// — keeps the wait going; it proves nothing either way.
+// — keeps the wait going; it proves nothing either way. The grace runs on the runtime's clock
+// (Options.Clock); the pace between verifications stays the machine's.
 func (r *Runtime) awaitNotRunning(ctx context.Context, pane string, inc incarnation, grace time.Duration) (verdict, error) {
-	deadline := time.NewTimer(grace)
+	deadline := r.clock.NewTimer(grace)
 	defer deadline.Stop()
 	tick := time.NewTicker(pollInterval)
 	defer tick.Stop()
@@ -807,7 +834,7 @@ func (r *Runtime) awaitNotRunning(ctx context.Context, pane string, inc incarnat
 		select {
 		case <-ctx.Done():
 			return verdict{}, ctx.Err()
-		case <-deadline.C:
+		case <-deadline.C():
 			return r.verifyPane(ctx, pane, inc)
 		case <-tick.C:
 			v, err := r.verifyPane(ctx, pane, inc)

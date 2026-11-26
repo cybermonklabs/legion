@@ -9,6 +9,9 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { z } from "zod";
 import { createLegionTool } from "./tools";
 
+/** The contract the build under test speaks, which its client states on every request. */
+const CONTRACT = 60;
+
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
 function daemonFixture(name: string): string {
   return readFileSync(
@@ -69,10 +72,13 @@ function liveDaemon(refuse?: { path: string; status: number; body: object }) {
       }
       const fixture = {
         "/legion/v1/state": "state.json",
+        "/legion/v1/issues/LEGION-208/record": "issue-record.json",
         "/legion/v1/grants": "grant.json",
         "/legion/v1/handoff/complete": "handoff-complete.json",
         "/legion/v1/signoff": "signoff.json",
         "/legion/v1/gates/register": "gate-register.json",
+        "/legion/v1/plans/register": "plan-register.json",
+        "/legion/v1/tasks/stop": "task-stop.json",
       }[route];
       if (fixture === undefined) return new Response("no route", { status: 404 });
       return new Response(daemonFixture(fixture), {
@@ -116,7 +122,7 @@ function restartingClient(live: string, down: string, outage: number) {
     const url = String(input);
     return fetch(sent <= outage ? url.replace(live, down) : url, init);
   }) as typeof fetch;
-  return createLegionDaemonClient(live, fetchFn);
+  return createLegionDaemonClient(live, { pluginContract: CONTRACT, fetch: fetchFn });
 }
 
 /** A virtual clock: each wait is recorded and moves time on at once. */
@@ -160,8 +166,8 @@ function toolFor(
     onUpdateAnswered: () => undefined,
     handoffReport: async () => ({ handoffId: HANDOFF_ID, handoffVersion: 1, commit: COMMIT }),
     branchHead: async () => "",
-    resolveDocument: async () => {
-      throw new Error("no document lookup expected");
+    dispatch: async () => {
+      throw new Error("no Dispatch read expected");
     },
     restartClock: { now: clock.now, sleep: clock.sleep },
   });
@@ -194,7 +200,7 @@ test("handoff_complete waits out a daemon that refuses connections while it rest
   expect(result.details).toEqual(JSON.parse(daemonFixture("handoff-complete.json")));
   expect(completed).toEqual(["ses_208"]);
   expect(live.answered).toEqual([
-    "/legion/v1/state",
+    "/legion/v1/issues/LEGION-208/record",
     "/legion/v1/grants",
     "/legion/v1/handoff/complete",
   ]);
@@ -228,7 +234,7 @@ test("handoff_complete retries a connection the daemon closed before answering, 
   expect(result.isError).toBe(true);
   expect(result.content[0]).toEqual({
     type: "text",
-    text: `POST /legion/v1/handoff/complete failed with 409 HANDOFF_ALREADY_RECORDED: ${detail} (an earlier attempt of handoff_complete lost its connection before the daemon answered, and may have been applied: read the record before calling again)`,
+    text: `POST /legion/v1/handoff/complete failed with 409 HANDOFF_ALREADY_RECORDED: ${detail} (an earlier attempt of handoff_complete lost its connection before the daemon answered, and may have been applied: read_record of your own issue says whether it landed)`,
   });
   expect(completed).toEqual([]);
   expect(live.answered.filter((route) => route === "/legion/v1/handoff/complete")).toHaveLength(1);
@@ -290,6 +296,38 @@ test("register_gate waits out a restarting daemon", async () => {
   expect(live.answered).toEqual(["/legion/v1/grants", "/legion/v1/gates/register"]);
   expect(clock.waits).toEqual([500, 1000]);
   expect(updates).toHaveLength(1);
+});
+
+// The owner's plan (contract 219): the daemon answers a registration it applied, given again, as
+// taken while that version is in force, and a stop of a task already stopped changes nothing, so
+// each waits out a restart.
+test("register_plan and stop_task wait out a restarting daemon", async () => {
+  const plan = "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11";
+  for (const [parameters, route, answer] of [
+    [
+      { op: "register_plan", issue: "LEGION-209", artifactId: plan, version: 4 },
+      "/legion/v1/plans/register",
+      daemonFixture("plan-register.json"),
+    ],
+    [
+      { op: "stop_task", issue: "LEGION-209", task: "a" },
+      "/legion/v1/tasks/stop",
+      daemonFixture("task-stop.json"),
+    ],
+  ] as const) {
+    const live = liveDaemon();
+    const clock = virtualClock();
+    const client = restartingClient(live.url, refusingOrigin(), 2);
+    const tool = toolFor("architect", client, clock, [], "LEGION-208");
+
+    const { result, updates } = await run(tool, parameters);
+
+    const details = JSON.parse(answer);
+    expect(result).toEqual({ content: [{ type: "text", text: JSON.stringify(details) }], details });
+    expect(live.answered).toEqual(["/legion/v1/grants", route]);
+    expect(clock.waits).toEqual([500, 1000]);
+    expect(updates).toHaveLength(1);
+  }
 });
 
 test("an aborted call stops waiting and sends nothing more, even with the daemon back up", async () => {
@@ -409,7 +447,7 @@ test("a 503 from a proxy in front of the daemon is retried like a refused connec
   const clock = virtualClock();
   const tool = toolFor(
     "architect",
-    createLegionDaemonClient(`http://127.0.0.1:${server.port}`),
+    createLegionDaemonClient(`http://127.0.0.1:${server.port}`, { pluginContract: CONTRACT }),
     clock
   );
 

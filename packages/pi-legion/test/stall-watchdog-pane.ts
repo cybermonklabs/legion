@@ -6,11 +6,13 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import type { LegionState } from "@legion/contracts/legion-api";
+import { stallSweepMs } from "@legion/pi-shared/stall-limits";
 import {
   type Block,
   type Cleanup,
   call,
   deliveryFor,
+  isSelfCheck,
   messageStream,
   ompNatsGuard,
   ompRoot,
@@ -60,9 +62,15 @@ export const ARCHITECT_TOPIC = `notifications.role.legion-${PROJECT}-${TREE.toLo
  * wedged cell is overdue one sweep after it starts rather than four hours later. */
 export const BOUND_MS = 6_000;
 
-/** The gap between the ladder's steps (`LEGION_STALL_STEP_MS`): four seconds, so each step lands
- * on the sweep after the one before it. */
-export const STEP_MS = 4_000;
+/** The gap between the ladder's steps (`LEGION_STALL_STEP_MS`): five seconds, which is the gap
+ * the steps had when they landed on the plugin's old 5-second sweep, and longer than the host's
+ * own `abort()` takes to end a turn (about five seconds, the measurements in
+ * `extensions/legion-stall-watchdog-omp.test.ts`'s header), so the step after the abort never
+ * runs while the abort is still landing. */
+export const STEP_MS = 5_000;
+
+/** How often the plugin sweeps its book on that gap (`stallSweepMs`): a quarter of it, 1.25 s. */
+export const SWEEP_MS = stallSweepMs({ stepMs: STEP_MS });
 
 /** The deadline the backgrounded-call case's shell command declares, which is the rule that
  * would judge that call were its record still open, and also when the host kills the job it
@@ -71,7 +79,7 @@ export const STEP_MS = 4_000;
 export const SHELL_DEADLINE_MS = 20_000;
 
 /** How long a case waits for something the pane owes it before failing: the pane's boot and the
- * three steps of the ladder, each a 5-second sweep apart. */
+ * three steps of the ladder, each `STEP_MS` apart. */
 export const DEADLINE_MS = 120_000;
 
 /** How long `settled()` waits for the pane to finish the line it is writing. One line is one
@@ -80,20 +88,14 @@ export const DEADLINE_MS = 120_000;
 const SETTLED_MS = 5_000;
 
 /** How long a case watches for something that must not happen: the bound, two of the plugin's
- * 5-second sweeps, and a margin. */
-export const QUIET_MS = BOUND_MS + 12_000;
+ * sweeps, and a margin. */
+export const QUIET_MS = BOUND_MS + 2 * SWEEP_MS + 2_000;
 
 export const cleanup: Cleanup = [];
 
 /** A Messages request's whole conversation, as one string to find texts in. */
 export function conversation(request: Request): string {
   return JSON.stringify(request.body.messages ?? null);
-}
-
-/** A Messages request's last message, which is what started the turn it answers. */
-export function lastMessage(request: Request): string {
-  const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
-  return JSON.stringify(messages.at(-1) ?? null);
 }
 
 /**
@@ -220,9 +222,7 @@ const MOVED_ON = {
   strandedClaims: [],
   capabilities: [],
   repositories: {
-    owners: ["acme"],
-    mapped: [{ repo: "acme/widgets", default: true }],
-    refused: [],
+    live: [{ repo: "acme/widgets", apps: { implement: true, review: true } }],
     withoutWebhookApp: [],
     caches: [],
   },
@@ -388,9 +388,7 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
   const { requests, base } = serveStandin(cleanup, (url, body) => {
     if (url.pathname === "/anthropic/v1/messages") {
       const request: Request = { path: url.pathname, body };
-      const own =
-        conversation(request).includes("WATCH-ROLE-ASSIGNMENT") &&
-        !lastMessage(request).includes("<btw>");
+      const own = conversation(request).includes("WATCH-ROLE-ASSIGNMENT") && !isSelfCheck(request);
       if (!own) {
         sides += 1;
         return new Response(
@@ -420,7 +418,11 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
     if (url.pathname === "/legion/v1/claims/activity") return new Response(null, { status: 204 });
-    if (url.pathname === "/legion/v1/state") return Response.json(MOVED_ON);
+    // The stall notice's record check and the phase reminder's both read one issue's record
+    // (dispatch://INFRA-2694); no reader of this pane asks for the whole project body.
+    if (url.pathname === `/legion/v1/issues/${ISSUE}/record`) {
+      return Response.json(MOVED_ON.issues[ISSUE]);
+    }
     if (url.pathname === "/legion/v1/grants") {
       grants += 1;
       return Response.json({
@@ -429,6 +431,12 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
       });
     }
     if (url.pathname.startsWith("/legion/")) {
+      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
+    }
+    // The Envoy listener, which serves `/v1/` and nothing else: registration, the role claim, the
+    // publish below, and any other `/v1/` read answer with an interest. A path outside it is a
+    // route this stand-in does not serve, and it is refused.
+    if (!url.pathname.startsWith("/v1/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }
     if (url.pathname === "/v1/messages/publish") {
@@ -446,7 +454,7 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
         trace_id: `trace-${key}`,
       });
     }
-    // The Envoy listener: registration, the role claim, and any read answer with an interest. A
+    // Registration, the role claim, and any other `/v1/` read answer with an interest. A
     // registration is answered a consumer on the session's own relay subject, the one path a
     // message reaches a session by (INFRA-771); an answer without one leaves the pane deaf and
     // its claim boot fails.

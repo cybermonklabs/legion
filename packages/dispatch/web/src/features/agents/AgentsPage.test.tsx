@@ -1,4 +1,4 @@
-import { expect, jest, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts";
 import {
   focusManager,
@@ -11,9 +11,15 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
-import { afterRescue } from "../../__tests__/focus-rescue";
-import { listOf, panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
+import { afterFrameAndTasks } from "../../__tests__/frames";
+import { pressHeld } from "../../__tests__/held-press";
+import { pickIn } from "../../__tests__/issue-picks";
+import { listOf, panelOf, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
+import { ownReplies } from "../../__tests__/own-replies";
+import { architectureTree, issueCollaborators } from "../../__tests__/search-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
@@ -22,8 +28,11 @@ import {
   ApiError,
   api,
   NetworkError,
+  REQUEST_DEADLINE_MS,
   RequestTimeoutError,
 } from "../../api/client";
+import { userAgentStateQuery } from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
 import type {
   Agent,
   BroadcastCreated,
@@ -34,6 +43,7 @@ import type {
   MessageDelivery,
   MessageDeliveryMode,
   MessageRead,
+  UserAgentState,
   UserAgentStates,
 } from "../../api/types";
 import { AuthGate } from "../../app";
@@ -48,11 +58,13 @@ import "../agent-view/AgentConversationPage";
 import "../margin/Margin";
 import "./BroadcastPage";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import type { AgentPart } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
 import { resetWriteStorage } from "../writes/write-storage";
-import { orderAgents } from "./AgentsPage";
+// The page itself is a lazy route of the app too, loaded here for the same reason.
+import "./AgentsPage";
 import type { AgentGroup } from "./agent-groups";
 import { type AgentFilters, filterOptions, matchesFilters, searchWords } from "./agent-search";
 import {
@@ -61,6 +73,14 @@ import {
   broadcastSendState,
   composedBroadcast,
 } from "./broadcast-plan";
+
+// A message, a reply and a held send's words are Markdown (`MarkdownBody`), drawn by the lazy
+// Markdown engine, and several rows read them as soon as their row shows. So the file loads the
+// engine before its first row, in whatever order the rows run and in the cold lane, which holds
+// the engine's load back.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** What each attempt of a message to one agent, or of a broadcast, is held to, beside what it
  *  carries: its deadline and the key that names the press (`Idempotency-Key`). */
@@ -90,45 +110,58 @@ async function refuseBroadcast(): Promise<never> {
 // fixture frozen at an absolute date would age out of every retry assertion.
 const recentAttemptAt = new Date(Date.now() - 60_000).toISOString();
 
-/** When the file loaded, which most fixture times below are dated from. A time whose reading a
- *  row asserts to the minute - a `seen` label, or the two minutes that keep a session Active - is
- *  dated with `ago` as the row builds it instead: the page reads the clock as it draws, and random
- *  order can run a row a minute or more after the file loaded. */
-const now = Date.now();
+/**
+ * When the row running now began, which the sessions and asks below count back from. The page
+ * groups a session by its own clock as it draws (`agentGroup`: Active is Dispatch activity inside
+ * two minutes), so a fixture dated once, as this file loads, ages while the file runs: a loaded
+ * run reaches some rows more than a minute in, where the Planner's activity "a minute ago" is
+ * past two minutes and the Planner reads as Idle. So each row dates them again: `agents` here,
+ * and `inbox` in a hook of its own beside it, which runs after this one. A time whose reading a
+ * row asserts to the minute - a `seen` label, or the two minutes that keep a session Active - is
+ * dated with `ago` as the row builds it instead, as `staleAgent` and `deployerAgent` are.
+ */
+let now: number;
+let agents: ReturnType<typeof datedAgents>;
+beforeEach(() => {
+  now = Date.now();
+  agents = datedAgents();
+});
 
 /** `ms` before this moment. */
 function ago(ms: number): number {
   return Date.now() - ms;
 }
 
-const agents = [
-  {
-    capabilities: ["aside", "btw"],
-    dir: "/workspaces/planner",
-    host: "build-host",
-    last_activity: new Date(now - 60_000).toISOString(),
-    last_seen: now - 30_000,
-    machine_id: "build-host",
-    open_asks: 2,
-    roles: ["planner"],
-    session_id: "planner-session",
-    state: "running",
-    title: "Planner",
-  },
-  {
-    capabilities: ["aside"],
-    dir: "/workspaces/reviewer",
-    host: "review-host",
-    last_activity: new Date(now - 10 * 60_000).toISOString(),
-    last_seen: now - 5 * 60_000,
-    machine_id: "review-host",
-    open_asks: 0,
-    roles: [],
-    session_id: "reviewer-session",
-    state: "running",
-    title: "Reviewer",
-  },
-] satisfies Agent[];
+function datedAgents() {
+  return [
+    {
+      capabilities: ["aside", "btw"],
+      dir: "/workspaces/planner",
+      host: "build-host",
+      last_activity: new Date(now - 60_000).toISOString(),
+      last_seen: now - 30_000,
+      machine_id: "build-host",
+      open_asks: 2,
+      roles: ["planner"],
+      session_id: "planner-session",
+      state: "running",
+      title: "Planner",
+    },
+    {
+      capabilities: ["aside"],
+      dir: "/workspaces/reviewer",
+      host: "review-host",
+      last_activity: new Date(now - 10 * 60_000).toISOString(),
+      last_seen: now - 5 * 60_000,
+      machine_id: "review-host",
+      open_asks: 0,
+      roles: [],
+      session_id: "reviewer-session",
+      state: "running",
+      title: "Reviewer",
+    },
+  ] satisfies Agent[];
+}
 
 /** The agent list as a plan reads it after a read that succeeded: it says who is absent. */
 function currentList(listed: readonly Agent[]): BroadcastRoster {
@@ -138,44 +171,47 @@ function currentList(listed: readonly Agent[]): BroadcastRoster {
 // The signed-in reader is `alice`, and a card's first number is their own work: these rows wait
 // on them, which is what the server answers in `waiting_on_person` for an ask nobody has handed
 // on whose issue is theirs.
-const inbox: InboxRow[] = [1, 2].map((number) => ({
-  anchor: null,
-  answer: null,
-  artifact_id: null,
-  asked_of: null,
-  asked_of_at: null,
-  asked_of_by: null,
-  author: { id: "planner-session", kind: "session" },
-  block_id: null,
-  created_at: new Date(now - 60_000).toISOString(),
-  edited_at: null,
-  id: `ask-${number}`,
-  issue: { assignee: "alice", key: "CORE-1", title: "Core work" },
-  issue_key: "CORE-1",
-  waiting_on_person: "alice",
-  kind: "question",
-  last_reply: null,
-  multiple: false,
-  opened_event_id: number,
-  options: [],
-  thread: {
-    answers: [],
-    claimant: null,
-    edits: [],
-    followers: [],
-    replies: [],
-    route: null,
-    route_status: null,
-    route_holder: null,
-    route_status_reason: null,
-  },
-  priority: null,
-  snoozed_until: null,
-  question: "What should happen next?",
-  state: "open",
-  waiting_on: "human",
-  urgency: "med",
-}));
+let inbox: InboxRow[];
+beforeEach(() => {
+  inbox = [1, 2].map((number) => ({
+    anchor: null,
+    answer: null,
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
+    author: { id: "planner-session", kind: "session" },
+    block_id: null,
+    created_at: new Date(now - 60_000).toISOString(),
+    edited_at: null,
+    id: `ask-${number}`,
+    issue: { assignee: "alice", key: "CORE-1", title: "Core work" },
+    issue_key: "CORE-1",
+    waiting_on_person: "alice",
+    kind: "question",
+    last_reply: null,
+    multiple: false,
+    opened_event_id: number,
+    options: [],
+    thread: {
+      answers: [],
+      claimant: null,
+      edits: [],
+      followers: [],
+      replies: [],
+      route: null,
+      route_status: null,
+      route_holder: null,
+      route_status_reason: null,
+    },
+    priority: null,
+    snoozed_until: null,
+    question: "What should happen next?",
+    state: "open",
+    waiting_on: "human",
+    urgency: "med",
+  }));
+});
 
 function message(body: string, overrides: Partial<Message> = {}): Message {
   return {
@@ -184,6 +220,7 @@ function message(body: string, overrides: Partial<Message> = {}): Message {
     broadcast_id: null,
     created_at: "2026-09-14T00:00:00Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id: "message-1",
     in_reply_to: null,
     issue_key: null,
@@ -203,6 +240,11 @@ function LocationProbe() {
   return <div data-testid="location-search">{location.search}</div>;
 }
 
+/** The viewer's agent state of `session` as the page holds it. */
+function storedState(queryClient: QueryClient, session: string): UserAgentState | undefined {
+  return queryClient.getQueryData<UserAgentStates>(userAgentStateQuery().queryKey)?.[session];
+}
+
 function renderAgents({
   agentState = {},
   inboxRows = inbox,
@@ -210,6 +252,7 @@ function renderAgents({
   listedAgents = agents,
   issues = [],
   messages = [],
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
 }: {
   agentState?: UserAgentStates;
   /** The inbox read's answer, or a promise a test resolves itself to hold that read out. */
@@ -218,6 +261,8 @@ function renderAgents({
   listedAgents?: Agent[];
   issues?: IssueSummary[];
   messages?: MessageRead[];
+  /** The query client the page reads through, a plain one unless the case needs the app's own. */
+  queryClient?: QueryClient;
 } = {}) {
   const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
     event_head: "0",
@@ -229,6 +274,14 @@ function renderAgents({
   const listAgentMessages = spyOn(api, "listAgentMessages").mockResolvedValue(messages);
   const listIssues = spyOn(api, "listIssues").mockResolvedValue(issues);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
+  // A box with no issue offers everyone who has signed in instead of an issue's people.
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "alice" }]);
+  // The reference picker in each box reads the issue's collaborators and the project's
+  // components when a door opens, and a read no handler answers fails its test.
+  const getIssueCollaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue(
+    issueCollaborators()
+  );
+  const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue(architectureTree());
   const createAgentMessage = spyOn(api, "createAgentMessage").mockImplementation(
     async (_session, input) => message(input.body)
   );
@@ -284,23 +337,36 @@ function renderAgents({
     session_id: "planner-session",
     state: "sent",
   });
-  const getMyAgentState = spyOn(api, "getMyAgentState").mockResolvedValue(agentState);
+  // Dispatch's store of the viewer's agent state: a read answers it as it stands, and a write
+  // changes it, so a read asked after a write - the one a write's answer asks again for a read it
+  // cancelled (`replaceQueryData`) - answers the write. While a row holds the reads
+  // (`holdAgentStateReads`), each waits, so what the page shows of a write is what it stored of
+  // the write's own answer.
+  const served: UserAgentStates = { ...agentState };
+  let heldReads: (() => void)[] | undefined;
+  const getMyAgentState = spyOn(api, "getMyAgentState").mockImplementation(() => {
+    if (heldReads === undefined) return Promise.resolve({ ...served });
+    const { promise, resolve } = Promise.withResolvers<UserAgentStates>();
+    heldReads.push(() => resolve({ ...served }));
+    return promise;
+  });
   // Dispatch answers a state write with the session's whole state: the marks the write set over
   // the state it held, with `pinned_at` added by a pin and dropped by an unpin, and nothing left
   // unread. A mark the body leaves out rides as a null the write does not read.
   const putAgentState = answerAgentStates().mockImplementation(async (session, input) => {
     const { cleared_before: cleared, pinned, read_through: read } = input;
-    const { pinned_at: held, ...rest } = agentState[session] ?? {};
+    const { pinned_at: held, ...rest } = served[session] ?? {};
     const pinnedAt = pinned == null ? held : pinned ? ANSWERED_PIN_AT : undefined;
-    return {
+    const state = {
       ...rest,
       ...(cleared == null ? {} : { cleared_before: cleared }),
       ...(read == null ? {} : { read_through: read }),
       ...(pinnedAt === undefined ? {} : { pinned_at: pinnedAt }),
       unread_replies: 0,
     };
+    served[session] = state;
+    return state;
   });
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <QueryClientProvider client={queryClient}>
@@ -318,12 +384,28 @@ function renderAgents({
     getBroadcast,
     getInbox,
     getMyAgentState,
+    /** Holds every agent-state read from here on, and answers the function that lets them go:
+     *  it answers each with the state as it stands then, inside an awaited `act`, since each
+     *  answer redraws the page. */
+    holdAgentStateReads: (): (() => Promise<void>) => {
+      heldReads ??= [];
+      return () =>
+        act(async () => {
+          const answers = heldReads ?? [];
+          heldReads = undefined;
+          for (const answer of answers) answer();
+        });
+    },
     listAgentMessages,
     listAgents,
     listIssues,
     listProjects,
     putAgentState,
     queryClient,
+    /** Changes what Dispatch holds of `session`, as another of the person's devices would. */
+    serveAgentState: (session: string, state: UserAgentState) => {
+      served[session] = state;
+    },
     restore: () => {
       getBroadcast.mockRestore();
       getMyAgentState.mockRestore();
@@ -333,6 +415,9 @@ function renderAgents({
       createBroadcast.mockRestore();
       createMessageDelivery.mockRestore();
       listProjects.mockRestore();
+      getIssueCollaborators.mockRestore();
+      getArchitecture.mockRestore();
+      listUsers.mockRestore();
       listIssues.mockRestore();
       listAgentMessages.mockRestore();
       listAgents.mockRestore();
@@ -729,54 +814,6 @@ function session(overrides: Partial<Agent> & Pick<Agent, "session_id">): Agent {
 
 const minutesAgo = (minutes: number) => new Date(ago(minutes * 60_000)).toISOString();
 
-test("orderAgents puts who needs you first, then open asks, then Dispatch recency with silent sessions last", () => {
-  const needsYou = session({ last_activity: minutesAgo(30), open_asks: 1, session_id: "needy" });
-  const owed = session({ last_activity: minutesAgo(20), open_asks: 3, session_id: "owed" });
-  const recent = session({ last_activity: minutesAgo(1), session_id: "recent" });
-  const older = session({ last_activity: minutesAgo(5), session_id: "older" });
-  const silentB = session({ session_id: "silent-b", title: "Beta" });
-  const silentA = session({ session_id: "silent-a", title: "Alpha" });
-  const ordered = orderAgents(
-    [silentB, older, recent, owed, silentA, needsYou],
-    [],
-    new Map([["needy", 1]])
-  );
-  expect(ordered.map((agent) => agent.session_id)).toEqual([
-    "needy",
-    "owed",
-    "recent",
-    "older",
-    "silent-a",
-    "silent-b",
-  ]);
-});
-
-test("orderAgents keeps pinned sessions first in pin order, whoever needs you", () => {
-  const needsYou = session({ last_activity: minutesAgo(1), open_asks: 1, session_id: "needy" });
-  const pinnedSilent = session({ session_id: "pinned-silent" });
-  const pinnedRecent = session({ last_activity: minutesAgo(2), session_id: "pinned-recent" });
-  const ordered = orderAgents(
-    [needsYou, pinnedRecent, pinnedSilent],
-    ["pinned-silent", "pinned-recent"],
-    new Map([["needy", 1]])
-  );
-  expect(ordered.map((agent) => agent.session_id)).toEqual([
-    "pinned-silent",
-    "pinned-recent",
-    "needy",
-  ]);
-});
-
-test("orderAgents orders Dispatch activity within one second by time, not by the timestamp strings", () => {
-  // As text `…00.12Z` sorts after `…00.123456Z`, the later time.
-  const earlier = session({ last_activity: "2026-10-02T00:00:00.12Z", session_id: "earlier" });
-  const later = session({ last_activity: "2026-10-02T00:00:00.123456Z", session_id: "later" });
-  expect(orderAgents([earlier, later], [], new Map()).map((agent) => agent.session_id)).toEqual([
-    "later",
-    "earlier",
-  ]);
-});
-
 // The four groups are `agent-groups.ts`'s own rule, with its own tests; what the page does with
 // them - the headings, the counts, the collapse and who lands where - is tested below.
 
@@ -858,13 +895,13 @@ test("matchesFilters keeps a session any picked group, machine or role holds, fr
   expect(narrow({ machines: ["build-host"] }, "active", "reviewer-host")).toBe(false);
 });
 
-test("filterOptions offers the machines the live sessions occupy, and the ones the filter names besides", () => {
+test("filterOptions offers what the live sessions occupy, and what the filters name besides", () => {
   const live = [
     session({ host: "build-host", roles: ["planner"], session_id: "one", title: "One" }),
     session({ host: "archive-host", roles: [], session_id: "two", title: "Two" }),
   ];
 
-  expect(filterOptions(live, [])).toEqual({
+  expect(filterOptions(live, [], [])).toEqual({
     machines: ["archive-host", "build-host"],
     roles: ["planner"],
   });
@@ -872,13 +909,17 @@ test("filterOptions offers the machines the live sessions occupy, and the ones t
   // A `?machine=` naming a host no live session reports - an old link, or a machine whose
   // sessions have ended - is an option of its own, in machine order with the rest, so the
   // control shows the filter that is hiding every row and its row can be unticked.
-  expect(filterOptions(live, ["ended-host"]).machines).toEqual([
+  expect(filterOptions(live, ["ended-host"], []).machines).toEqual([
     "archive-host",
     "build-host",
     "ended-host",
   ]);
   // A machine the live sessions do report is offered once, not twice.
-  expect(filterOptions(live, ["build-host"]).machines).toEqual(["archive-host", "build-host"]);
+  expect(filterOptions(live, ["build-host"], []).machines).toEqual(["archive-host", "build-host"]);
+  // A `?role=` whose holder has stopped is an option of its own by the same rule, and a role a
+  // live session carries is still offered once.
+  expect(filterOptions(live, [], ["merger"]).roles).toEqual(["merger", "planner"]);
+  expect(filterOptions(live, [], ["planner"]).roles).toEqual(["planner"]);
 });
 
 test("Agents lists each session in its group, orders the rows inside one, and keeps a re-poll stable", async () => {
@@ -1009,13 +1050,75 @@ test("Agents keeps a pinned session in its own group, first among its rows", asy
     expect(titles(region)).toEqual(["Planner", "Silent", "Reviewer"]);
     expect(groupCount(region, "idle")).toBe("(2)");
 
+    const releaseReads = page.holdAgentStateReads();
+    // The reads that follow the write wait, so what the row sees is what the page stored of
+    // the write's own answer, not what a later read brought.
+    // Another of the person's devices clears Silent's conversation first, so Dispatch's answer to
+    // the unpin carries that Clear, which the press does not draw.
+    page.serveAgentState("silent-session", {
+      cleared_before: "2026-09-14T00:30:00Z",
+      pinned_at: "2026-09-14T00:00:00Z",
+      unread_replies: 0,
+    });
     await user.click(within(region).getByRole("button", { name: "Unpin Silent" }));
     // Unpinned it stays in Idle, behind the Reviewer, whose activity is the newer of the two.
     await waitFor(() => expect(titles(region)).toEqual(["Planner", "Reviewer", "Silent"]));
     expect(groupCount(region, "idle")).toBe("(2)");
+    await waitFor(() =>
+      expect(storedState(page.queryClient, "silent-session")?.cleared_before).toBe(
+        "2026-09-14T00:30:00Z"
+      )
+    );
+    await releaseReads();
     expect(page.putAgentState.mock.calls.map(([session, input]) => [session, input])).toEqual([
       ["silent-session", { pinned: false }],
     ]);
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// INFRA-3135 round 24 (the tester's, measured in builds Jobs infra-3135-a5b-h and -a5b-b): two
+// agents of one group are pinned, Alpha first in pin order, and the reader presses Enter on
+// Alpha's Unpin. The row moves below Beta's, and the browser puts the focus back on the button
+// that moved with it - in WebKit at 390x664 that left "Pin Alpha" at 816 px in a 664 px window,
+// with nothing scrolled. A landing is one the reader can see, and nothing scrolls to reach it, so
+// the focus goes with no scroll to the same control of the row now standing where Alpha's stood,
+// Beta's own pin button.
+test("Unpin that leaves the focus on the moved row's own control out of sight hands it to the pin of the row now at its place", async () => {
+  const user = userEvent.setup();
+  const pinnedIdle = (title: string, sessionID: string): Agent => ({
+    ...agents[1],
+    session_id: sessionID,
+    title,
+  });
+  const page = renderAgents({
+    agentState: {
+      "alpha-session": { pinned_at: "2026-09-14T00:00:00Z", unread_replies: 0 },
+      "beta-session": { pinned_at: "2026-09-14T00:10:00Z", unread_replies: 0 },
+    },
+    listedAgents: [pinnedIdle("Alpha", "alpha-session"), pinnedIdle("Beta", "beta-session")],
+  });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const unpinAlpha = await screen.findByRole("button", { name: "Unpin Alpha" });
+    expect(
+      within(region)
+        .getAllByRole("heading", { hidden: false, level: 2 })
+        .map((heading) => heading.textContent)
+    ).toEqual(["Alpha", "Beta"]);
+    // Where the move leaves Alpha's own button: below the window, as WebKit left it at 390x664,
+    // where the button stood 152 px past the window's foot. happy-dom lays nothing out itself.
+    unpinAlpha.getBoundingClientRect = () => new DOMRect(0, window.innerHeight + 152, 200, 40);
+    act(() => unpinAlpha.focus());
+    await user.keyboard("{Enter}");
+
+    const pinAlpha = await screen.findByRole("button", { name: "Pin Alpha" });
+    expect(screen.getByRole("button", { name: "Unpin Beta" })).toHaveFocus();
+    expect(pinAlpha).not.toHaveFocus();
+    expect(document.activeElement).not.toBe(document.body);
   } finally {
     page.view.unmount();
     page.restore();
@@ -1188,10 +1291,18 @@ test("Agents pins a card by writing the person's agent state, not a browser pref
   try {
     const pin = await screen.findByRole("button", { name: "Pin Planner" });
     expect(pin).toHaveAttribute("aria-pressed", "false");
+    const releaseReads = first.holdAgentStateReads();
+    // The reads that follow the write wait, so what the row sees is what the page stored of
+    // the write's own answer, not what a later read brought.
     await user.click(pin);
 
     const unpin = await screen.findByRole("button", { name: "Unpin Planner" });
     expect(unpin).toHaveAttribute("aria-pressed", "true");
+    // The press draws the pin at the browser's time; the answer carries Dispatch's.
+    await waitFor(() =>
+      expect(storedState(first.queryClient, "planner-session")?.pinned_at).toBe(ANSWERED_PIN_AT)
+    );
+    await releaseReads();
     expect(within(unpin.closest("article") ?? unpin).getByRole("heading").textContent).toBe(
       "Planner"
     );
@@ -1300,13 +1411,13 @@ test("Agents keeps selected-issue sends on the issue message route", async () =>
     await waitFor(() =>
       expect(
         (within(planner).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement).value
-      ).toBe("@Planner")
+      ).toBe("[@Planner](dispatch://agent/planner-session) ")
     );
-    // The pick put `@Planner` in the box as an accepted mention the composer follows, so the
-    // rest of the message is written after it: replacing the box would drop that mention.
+    // The pick wrote the party's mention into the box, and the one space a seed ends with, so
+    // the rest of the message is written after it: replacing the box would drop that mention.
     const comment = within(planner).getByRole("textbox", { name: "Comment" });
     await user.click(comment);
-    await user.paste(" Track this under Core");
+    await user.paste("Track this under Core");
     // The composer's own form submit, which user-event has no form for.
     fireEvent.submit(within(planner).getByRole("form", { name: "Comment composer" }));
     await waitFor(() =>
@@ -1314,9 +1425,8 @@ test("Agents keeps selected-issue sends on the issue message route", async () =>
       expect(page.createComment).toHaveBeenCalledWith(
         "CORE-1",
         {
-          body: "@Planner Track this under Core",
+          body: "[@Planner](dispatch://agent/planner-session) Track this under Core",
           delivery: "aside",
-          mentions: [{ target: "session:planner-session" }],
         },
         keyedAttempt
       )
@@ -1324,6 +1434,147 @@ test("Agents keeps selected-issue sends on the issue message route", async () =>
   } finally {
     page.view.unmount();
     page.restore();
+  }
+});
+
+/** Opens a row's Issue list and picks the row named `issue`: an issue's key and title, or No
+ *  issue. */
+async function pickIssue(user: UserEvent, row: HTMLElement, issue: string): Promise<void> {
+  await user.click(within(row).getByRole("button", { name: pickNamed("Choose issue") }));
+  await user.click(await within(issueList(row)).findByRole("option", { name: issue }));
+}
+
+// An Agents row's composer is one box for its session, whose address the issue picker moves. The
+// picker is the reader's own control, so a message Dispatch refused goes with the pick: the draft
+// takes the issue's mention at once, and its Retry comments on the issue, a new write under a key
+// of its own, rather than sending the direct message again.
+test("a direct message refused on an Agents row goes with the issue pick, and its Retry comments there", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ issues: [coreIssue] });
+  page.createAgentMessage.mockRejectedValueOnce(
+    new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused the message" })
+  );
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    await expand(user, planner, "Planner");
+    const field = within(planner).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    const composer = within(planner).getByRole("form", { name: "Comment composer" });
+    await type(user, field, "Status please");
+    // The composer's own form submit, which user-event has no form for.
+    fireEvent.submit(composer);
+    await within(planner).findByText("Couldn't send — Dispatch refused the message");
+
+    await pickIssue(user, planner, "CORE-1 · Core work");
+    // The issue's seed names Planner as the link a pick writes (`seededDraft`, R4).
+    await waitFor(() =>
+      expect(field.value).toBe("[@Planner](dispatch://agent/planner-session) Status please")
+    );
+    expect(within(planner).queryByText(/This message was written/)).not.toBeInTheDocument();
+    await user.click(within(planner).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(page.createComment).toHaveBeenCalledTimes(1));
+    expect(page.createComment.mock.calls.map(([issue, input]) => [issue, input.body])).toEqual([
+      ["CORE-1", "[@Planner](dispatch://agent/planner-session) Status please"],
+    ]);
+    expect(page.createAgentMessage).toHaveBeenCalledTimes(1);
+    expect(page.createComment.mock.calls[0]?.[2].key).not.toBe(
+      page.createAgentMessage.mock.calls[0]?.[2].key
+    );
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+/** A picture pasted into a row's message. */
+const shot = new File(["bytes"], "shot.png", { type: "image/png" });
+
+// A file pasted into an Agents row is uploaded to the address the row was on, as a message is
+// sent to it, and its reference belongs to the draft it was pasted into. The picker is the
+// reader's own control, so that draft goes with a pick, and so does a refused upload: its Retry
+// is offered at once, uploads to the issue the file was pasted for - the press carries it - and
+// adds the file's reference to the message the row now writes.
+test("an upload refused on an Agents row's issue goes with the pick, and its Retry joins the message there", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ issues: [coreIssue] });
+  const uploadArtifact = spyOn(api, "uploadArtifact")
+    .mockRejectedValueOnce(
+      new ApiError(413, { code: "FILE_TOO_LARGE", error: "That file is too large." })
+    )
+    .mockResolvedValue({
+      artifact: { name: "shot.png", slug: "shot-png" },
+      version: { number: 1 },
+    } as never);
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    await expand(user, planner, "Planner");
+    const field = within(planner).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await pickIssue(user, planner, "CORE-1 · Core work");
+    // The issue's seed names Planner as the link a pick writes (`seededDraft`, R4).
+    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/planner-session) "));
+    // user-event's paste carries text, never the file this field uploads.
+    fireEvent.paste(field, { clipboardData: { files: [shot] } });
+    await within(planner).findByText("That file is too large.");
+
+    await pickIssue(user, planner, "No issue");
+    await waitFor(() => expect(field.value).toBe(""));
+    expect(within(planner).queryByText(/This file was pasted/)).not.toBeInTheDocument();
+    await user.click(within(planner).getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(field.value).toBe("![shot.png](dispatch://CORE-1/artifact/shot-png@v1)")
+    );
+    expect(uploadArtifact.mock.calls.map(([owner]) => owner)).toEqual([
+      { issue: "CORE-1" },
+      { issue: "CORE-1" },
+    ]);
+  } finally {
+    page.view.unmount();
+    page.restore();
+    uploadArtifact.mockRestore();
+  }
+});
+
+// A file's reference belongs to the draft it was pasted into, and an issue pick is the reader's
+// own move, which that draft goes with. One that lands after the pick joins the message at once,
+// naming the issue the file went to, not the address the row writes to now.
+test("an upload that lands after an Agents row's issue pick joins the message at once, naming its issue", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ issues: [coreIssue] });
+  const stored = Promise.withResolvers<never>();
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockReturnValue(stored.promise);
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    await expand(user, planner, "Planner");
+    const field = within(planner).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await pickIssue(user, planner, "CORE-1 · Core work");
+    // The issue's seed names Planner as the link a pick writes (`seededDraft`, R4).
+    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/planner-session) "));
+    // user-event's paste carries text, never the file this field uploads.
+    fireEvent.paste(field, { clipboardData: { files: [shot] } });
+    await waitFor(() => expect(uploadArtifact).toHaveBeenCalledTimes(1));
+
+    await pickIssue(user, planner, "No issue");
+    await waitFor(() => expect(field.value).toBe(""));
+    act(() =>
+      stored.resolve({
+        artifact: { name: "shot.png", slug: "shot-png" },
+        version: { number: 1 },
+      } as never)
+    );
+    await waitFor(() =>
+      expect(field.value).toBe("![shot.png](dispatch://CORE-1/artifact/shot-png@v1)")
+    );
+    expect(within(planner).queryByText(/is uploaded/)).not.toBeInTheDocument();
+    expect(uploadArtifact).toHaveBeenCalledTimes(1);
+  } finally {
+    page.view.unmount();
+    page.restore();
+    uploadArtifact.mockRestore();
   }
 });
 
@@ -1485,31 +1736,39 @@ test("Agents keeps an issue-attached legacy reply on its issue message route", a
   }
 });
 
-test("Agents retain targeted-message retries and attempt history", async () => {
-  const user = userEvent.setup();
-  const root = message("Can this ship?", {
-    deliveries: [
-      {
-        ...messageDeliveryFields(),
-        attempt: 1,
-        created_at: recentAttemptAt,
-        delivery: "btw",
-        envelope_id: null,
-        error: "no live session planner-session",
-        message_id: "message-1",
-        reply_id: null,
-        session_id: "planner-session",
-        state: "failed",
-      },
-    ],
-  });
-  const steerCapableAgents = agents.map((candidate) =>
+/** A failed attempt of the message `id`, in `delivery`'s mode, to the Planner. */
+function failedAttempt(id: string, delivery: MessageDeliveryMode): MessageDelivery {
+  return {
+    ...messageDeliveryFields(),
+    attempt: 1,
+    created_at: recentAttemptAt,
+    delivery,
+    envelope_id: null,
+    error: "no live session planner-session",
+    message_id: id,
+    reply_id: null,
+    session_id: "planner-session",
+    state: "failed",
+  };
+}
+
+/** The listed agents, with the Planner advertising steer beside its own capabilities: read as each
+ *  row runs, since `agents` is dated again before every row. */
+function steerCapableAgents() {
+  return agents.map((candidate) =>
     candidate.session_id === "planner-session"
       ? { ...candidate, capabilities: [...candidate.capabilities, "steer"] }
       : candidate
   );
+}
+
+test("Agents retain targeted-message retries and attempt history", async () => {
+  const user = userEvent.setup();
+  const root = message("Can this ship?", {
+    deliveries: [failedAttempt("message-1", "btw")],
+  });
   const page = renderAgents({
-    listedAgents: steerCapableAgents,
+    listedAgents: steerCapableAgents(),
     messages: [{ message: root, replies: [] }],
   });
 
@@ -1536,23 +1795,183 @@ test("Agents retain targeted-message retries and attempt history", async () => {
   }
 });
 
+/** Where the focus is, in words: the button that holds it, by its text, else the tag of the
+ *  element that does. */
+function focusedControl(): string {
+  const focused = document.activeElement;
+  return focused instanceof HTMLButtonElement
+    ? `button ${focused.textContent ?? ""}`
+    : (focused?.tagName.toLowerCase() ?? "nothing");
+}
+
+/** How each retry button of `names` in `row` stands, in words: `disabled` while it is disabled,
+ *  `held` while it is held (`aria-disabled`), and `free` otherwise. */
+function retryButtons(row: HTMLElement, names: readonly string[]): string[] {
+  return names.map((name) => {
+    const button = within(row).getByRole<HTMLButtonElement>("button", { name });
+    const held = button.getAttribute("aria-disabled") === "true" ? "held" : "free";
+    return `${name}: ${button.disabled ? "disabled" : held}`;
+  });
+}
+
+/** A message whose one attempt, an aside, failed: its retry row draws Retry and both mode
+ *  changes. */
+const failedAside = {
+  message: message("Can this ship?", { deliveries: [failedAttempt("message-1", "aside")] }),
+  replies: [],
+} as const;
+
+// `DispatchQueryClient` answers the invalidation of the idle conversation after a delivery retry
+// with the conversation's own fetch, which TanStack pauses while the browser is offline, and no
+// request deadline runs while a fetch is paused. So the retry's hold through that read has a
+// timer of its own, the request deadline (`REQUEST_DEADLINE_MS`). Retry and the mode changes are
+// held (`aria-disabled`), never disabled, while the retry is out and through that read. A
+// disabled button drops the focus to the page's body in a browser, and does here under
+// `emulateChromiumFocusFixup`. So the pressed button keeps the focus, and a second press sends
+// nothing. At the deadline the row is let go, and the conversation says it is not read yet and
+// why. Once the network returns, the conversation is read and the note goes. A message's retry
+// row and a reply's are two writes of their own, each held through the same read.
+test.each([
+  {
+    drawn: ["Retry", "Use BTW instead", "Use Send instead"],
+    exchange: failedAside,
+    mode: "aside",
+    pressed: "Retry",
+    retried: "message-1",
+    which: "message's",
+  },
+  {
+    drawn: ["Retry", "Use BTW instead", "Use Send instead"],
+    exchange: failedAside,
+    mode: "btw",
+    pressed: "Use BTW instead",
+    retried: "message-1",
+    which: "message's",
+  },
+  {
+    drawn: ["Retry", "Use BTW instead", "Use Send instead"],
+    exchange: failedAside,
+    mode: "steer",
+    pressed: "Use Send instead",
+    retried: "message-1",
+    which: "message's",
+  },
+  {
+    drawn: ["Retry", "Use BTW instead"],
+    exchange: {
+      // The session's answer takes the message's own retry row away, so only the reply's is drawn.
+      message: message("Can this ship?"),
+      replies: [
+        message("Looking into it.", {
+          author: { id: "planner-session", kind: "session" },
+          id: "message-2",
+          in_reply_to: "message-1",
+        }),
+        message("Any update?", {
+          deliveries: [failedAttempt("message-3", "steer")],
+          id: "message-3",
+          in_reply_to: "message-1",
+        }),
+      ],
+    },
+    mode: "steer",
+    pressed: "Retry",
+    retried: "message-3",
+    which: "reply's",
+  },
+] as const)("offline, the $which $pressed holds its retry row with the focus on it through the write and the paused read, and lets go at the request deadline, saying why", async ({
+  drawn,
+  exchange,
+  mode,
+  pressed: pressedName,
+  retried,
+}) => {
+  const online = onlineManager.isOnline();
+  const user = userEvent.setup();
+  const page = renderAgents({
+    listedAgents: steerCapableAgents(),
+    messages: [{ message: exchange.message, replies: [...exchange.replies] }],
+    queryClient: new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } }),
+  });
+  // The retry's answer, held until the case moves the clock, so what it sets off runs in `act`.
+  const delivered = Promise.withResolvers<MessageDelivery>();
+  page.createMessageDelivery.mockImplementation(() => delivered.promise);
+  const stopFocusFixup = emulateChromiumFocusFixup();
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const pressed = await within(planner).findByRole("button", { name: pressedName });
+    const row = () => ({ buttons: retryButtons(planner, drawn), focus: focusedControl() });
+    const held = { buttons: drawn.map((name) => `${name}: held`), focus: `button ${pressedName}` };
+    const reads = page.listAgentMessages.mock.calls.length;
+    jest.useFakeTimers();
+    const onClock = userOnFakeClock();
+    /** Presses the held button again, by key and by pointer, and lets what it set off run. */
+    const pressAgain = async () => {
+      await onClock.keyboard("{Enter}");
+      await onClock.click(pressed);
+      await tick(0);
+    };
+    onlineManager.setOnline(false);
+    act(() => pressed.focus());
+    await onClock.keyboard("{Enter}");
+    await tick(0);
+    expect(page.createMessageDelivery).toHaveBeenCalledWith(retried, mode, keyedAttempt);
+    // The retry is out: the row is held, and the pressed button keeps the focus.
+    expect(row()).toEqual(held);
+    await pressAgain();
+    expect(page.createMessageDelivery).toHaveBeenCalledTimes(1);
+
+    delivered.resolve({
+      ...failedAttempt(retried, mode),
+      attempt: 2,
+      envelope_id: "envelope-2",
+      error: null,
+      state: "sent",
+    });
+    await tick(1_000);
+    expect(
+      page.queryClient.getQueryState(["agents", "planner-session", "messages"])?.fetchStatus
+    ).toBe("paused");
+    // The retry landed and its read is paused: the row is still held, with the focus.
+    expect(row()).toEqual(held);
+    await pressAgain();
+    expect(page.createMessageDelivery).toHaveBeenCalledTimes(1);
+
+    // The retry landed within the second before, which is when the hold's timer started.
+    await tick(REQUEST_DEADLINE_MS - 2_000);
+    expect(row()).toEqual(held);
+
+    await tick(2_000);
+    expect(row()).toEqual({
+      buttons: drawn.map((name) => `${name}: free`),
+      focus: `button ${pressedName}`,
+    });
+    expect(page.listAgentMessages.mock.calls.length).toBe(reads);
+    expect(within(planner).getByText(/^Could not load this conversation\./).textContent).toBe(
+      "Could not load this conversation. Dispatch could not be reached."
+    );
+
+    act(() => onlineManager.setOnline(true));
+    await tick(0);
+    expect(page.listAgentMessages.mock.calls.length).toBeGreaterThan(reads);
+    expect(within(planner).queryByText(/^Could not load this conversation\./)).toBeNull();
+  } finally {
+    stopFocusFixup();
+    // The page and its reads go before the network returns, so no read paused offline goes on.
+    page.view.unmount();
+    page.queryClient.clear();
+    onlineManager.setOnline(online);
+    realClock();
+    page.restore();
+  }
+});
+
 test("Use Send instead is disabled when the target does not advertise steer", async () => {
   const user = userEvent.setup();
   const root = message("Can this ship?", {
-    deliveries: [
-      {
-        ...messageDeliveryFields(),
-        attempt: 1,
-        created_at: recentAttemptAt,
-        delivery: "btw",
-        envelope_id: null,
-        error: "no live session planner-session",
-        message_id: "message-1",
-        reply_id: null,
-        session_id: "planner-session",
-        state: "failed",
-      },
-    ],
+    deliveries: [failedAttempt("message-1", "btw")],
   });
   // The shared "planner" fixture advertises aside and btw, not steer.
   const page = renderAgents({ messages: [{ message: root, replies: [] }] });
@@ -1795,9 +2214,11 @@ test("an agent's unread reply shows on its row and in the navigation until its c
     await expect(screen.findByRole("link", { name: "New reply 1" })).resolves.toBeTruthy();
     expect(within(planner).queryByText("At /dash.")).not.toBeInTheDocument();
 
-    await user.click(
-      await within(planner).findByRole("button", { name: "New reply 1 from Planner" })
-    );
+    const opener = await within(planner).findByRole("button", { name: "New reply 1 from Planner" });
+    const releaseReads = page.holdAgentStateReads();
+    // The reads that follow the write wait, so what the row sees is what the page stored of
+    // the write's own answer, not what a later read brought.
+    await user.click(opener);
     await expect(within(planner).findByText("At /dash.")).resolves.toBeTruthy();
     await waitFor(() =>
       expect(page.putAgentState).toHaveBeenCalledWith(
@@ -1810,6 +2231,61 @@ test("an agent's unread reply shows on its row and in the navigation until its c
       expect(within(planner).queryByRole("button", { name: /unread/ })).not.toBeInTheDocument()
     );
     expect(screen.queryByRole("link", { name: /^New repl/ })).not.toBeInTheDocument();
+    await releaseReads();
+    expect(screen.queryByRole("link", { name: /^New repl/ })).not.toBeInTheDocument();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// The New replies pill only opens its row, so it is held while the row is open (`heldPress`),
+// where a press of it does nothing: it keeps the focus, the row stays open, and no second read
+// mark is written. The pill goes once the opened conversation has stored its read mark, which is
+// out here for as long as a server slower than a frame keeps it.
+test("the New replies pill is held while its row is open, and a press on it then changes nothing", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({
+    agentState: { "planner-session": { unread_replies: 1 } },
+    messages: [
+      exchange("m1", "Where is the dashboard?", "2026-09-14T01:00:00Z", {
+        body: "At /dash.",
+        createdAt: "2026-09-14T01:05:00Z",
+      }),
+    ],
+  });
+  const stored = page.putAgentState.getMockImplementation();
+  const mark = Promise.withResolvers<void>();
+  page.putAgentState.mockImplementation(async (session, input, bounds) => {
+    await mark.promise;
+    if (stored === undefined) throw new Error("the agent-state write has no answer");
+    return stored(session, input, bounds);
+  });
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    const toggle = planner.querySelector("[data-agent-toggle]");
+    const pill = await within(planner).findByRole("button", { name: "New reply 1 from Planner" });
+    expect(pill).not.toHaveAttribute("aria-disabled");
+    act(() => pill.focus());
+    await user.keyboard("{Enter}");
+    await expect(within(planner).findByText("At /dash.")).resolves.toBeTruthy();
+    await waitFor(() => expect(page.putAgentState).toHaveBeenCalledTimes(1));
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(pill).toHaveAttribute("aria-disabled", "true");
+
+    // Pressed again while the row is open, it keeps the focus and the row stays as it is.
+    await user.keyboard("{Enter}");
+    expect(pill).toHaveFocus();
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(within(planner).getByText("At /dash.")).toBeTruthy();
+    expect(page.putAgentState).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      mark.resolve();
+      await mark.promise;
+    });
+    await waitFor(() => expect(pill).not.toBeInTheDocument());
   } finally {
     page.view.unmount();
     page.restore();
@@ -1956,6 +2432,9 @@ test("Agents Clear hides every exchange up to now for this viewer and persists t
     const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
     await expand(user, planner, "Planner");
     await expect(within(planner).findByText("Second question")).resolves.toBeTruthy();
+    const releaseReads = page.holdAgentStateReads();
+    // The reads that follow the write wait, so what the row sees is what the page stored of
+    // the write's own answer, not what a later read brought.
     await user.click(within(planner).getByRole("button", { name: "Clear conversation" }));
     // The cutoff is the newest visible message's own timestamp, so the Clear hides exactly what
     // was on screen whatever the browser clock says.
@@ -1978,6 +2457,7 @@ test("Agents Clear hides every exchange up to now for this viewer and persists t
     ).not.toBeInTheDocument();
     const cleared = within(planner).getByText(/^Cleared/);
     expect(cleared.querySelector("time")?.getAttribute("datetime")).toBe("2026-09-14T02:00:00Z");
+    await releaseReads();
     const showAnyway = within(planner).getByRole("button", { name: "Show anyway" });
 
     // Looking back does not touch the cutoff; the whole history is there, folded as usual.
@@ -1991,6 +2471,41 @@ test("Agents Clear hides every exchange up to now for this viewer and persists t
     // The composer stays: a Clear is about reading, not sending.
     expect(within(planner).getByRole("textbox", { name: "Comment" })).toBeTruthy();
   } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// Clear conversation is held while its write is out, by `aria-disabled`, never `disabled`
+// (`pressHeld`): the pressed Clear keeps the focus through the write, and a second press, by key
+// or by pointer, sends nothing.
+test("Clear conversation, held while its write is out, keeps the focus, and a second press sends nothing", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({
+    messages: [exchange("m1", "Only question", "2026-09-14T01:00:00Z")],
+  });
+  const stored = page.putAgentState.getMockImplementation();
+  // The write's answer, held until the case gives it inside `act`.
+  const answer = Promise.withResolvers<void>();
+  page.putAgentState.mockImplementation(async (session, input, bounds) => {
+    await answer.promise;
+    if (stored === undefined) throw new Error("the agent-state write has no answer");
+    return stored(session, input, bounds);
+  });
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const clear = await within(planner).findByRole("button", { name: "Clear conversation" });
+    await pressHeld(user, clear, {
+      name: "Clear conversation",
+      sent: () => page.putAgentState.mock.calls.length,
+    });
+  } finally {
+    await act(async () => {
+      answer.resolve();
+      await answer.promise;
+    });
     page.view.unmount();
     page.restore();
   }
@@ -2206,6 +2721,45 @@ test("Agents replies to an issue-less exchange through the agent route, threaded
       ).toBeNull()
     );
     expect(within(planner).getByRole("button", { name: pickNamed("Choose issue") })).toBeTruthy();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A reply turn quotes the message it answers, which the exchange's read carries with its tree:
+// the quote draws that tree (`excerptTree`) rather than a parse of the parent's markdown. The tree
+// reads differently from the markdown beside it, so a quote drawn from a parse would read
+// `— Can this ship?`.
+test("a reply turn on the Agents page quotes its parent from the tree the exchange read carries", async () => {
+  const user = userEvent.setup();
+  await warmMarkdownRenderer();
+  const root = message("Can **this** ship?");
+  const page = renderAgents({
+    messages: [
+      {
+        message: { ...root, body_tree: displayTree("Can **this** ship today?") },
+        replies: [
+          message("Yes, it can.", {
+            author: { id: "planner-session", kind: "session" },
+            id: "message-2",
+            in_reply_to: root.id,
+          }),
+        ],
+      },
+    ],
+  });
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const conversation = await within(planner).findByRole("list", {
+      name: "Conversation with Planner",
+    });
+    const replies = await within(conversation).findByRole("list", { name: "Replies" });
+    const answer = within(replies).getByText("Yes, it can.").closest("li");
+    if (answer === null) throw new Error("answer turn missing");
+    await waitFor(() => expect(answer).toHaveTextContent("— Can this ship today?"));
+    expect(within(answer).getByText("this").tagName).toBe("STRONG");
   } finally {
     page.view.unmount();
     page.restore();
@@ -2481,10 +3035,8 @@ test("a broadcast leaves out a selected agent that does not advertise the chosen
     );
     const broadcast = within(region).getByRole("region", { name: "Broadcast" });
     // The Reviewer advertises `aside` only, so BTW reaches the Planner alone.
-    await user.selectOptions(
-      within(broadcast).getByRole("combobox", { name: "Delivery mode" }),
-      "btw"
-    );
+    const mode = within(broadcast).getByRole("button", { name: pickNamed("Delivery mode") });
+    await pickIn(user, () => mode, "BTW");
     const excludedLine = within(broadcast).getByText(
       wholeText(
         "Excluded: Reviewer (does not advertise BTW). Nothing is sent to them, and no other mode is substituted."
@@ -2524,17 +3076,16 @@ test("a broadcast whose selection holds an Aside-only session goes as an Aside u
       within(region).getByRole("checkbox", { name: "Select Planner for broadcast" })
     );
     let broadcast = within(region).getByRole("region", { name: "Broadcast" });
-    const mode = () =>
-      within(broadcast).getByRole<HTMLSelectElement>("combobox", { name: "Delivery mode" });
+    const mode = () => within(broadcast).getByRole("button", { name: pickNamed("Delivery mode") });
     // The Planner takes BTW: the broadcast's usual default, named by nothing.
-    expect(mode().value).toBe("btw");
+    expect(mode()).toHaveAccessibleName("Delivery mode BTW");
     expect(within(broadcast).queryByText(/Sending as Aside/)).not.toBeInTheDocument();
     // The Reviewer advertises `aside` only, so the selection's mode becomes Aside and reaches both.
     await user.click(
       within(region).getByRole("checkbox", { name: "Select Reviewer for broadcast" })
     );
     broadcast = within(region).getByRole("region", { name: "Broadcast" });
-    expect(mode().value).toBe("aside");
+    expect(mode()).toHaveAccessibleName("Delivery mode Aside");
     const asideLine = within(broadcast).getByText(
       wholeText("Sending as Aside: Reviewer does not advertise BTW.")
     );
@@ -2584,12 +3135,150 @@ test("a mode both recipients advertise takes the excluded one back in", async ()
       within(region).getByRole("checkbox", { name: "Select Reviewer for broadcast" })
     );
     const broadcast = within(region).getByRole("region", { name: "Broadcast" });
-    await user.selectOptions(
-      within(broadcast).getByRole("combobox", { name: "Delivery mode" }),
-      "aside"
-    );
+    const mode = within(broadcast).getByRole("button", { name: pickNamed("Delivery mode") });
+    // The selection's own mode is Aside, which both take, so BTW is picked first: the Reviewer
+    // advertises Aside alone, and BTW leaves it out.
+    await pickIn(user, () => mode, "BTW");
+    expect(within(broadcast).getByRole("button", { name: "Send to 1" })).toBeTruthy();
+    expect(within(broadcast).queryByText(/Excluded:/)).toBeInTheDocument();
+    await pickIn(user, () => mode, "Aside");
     expect(within(broadcast).queryByText(/Excluded:/)).not.toBeInTheDocument();
     expect(within(broadcast).getByRole("button", { name: "Send to 2" })).toBeTruthy();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// R3: every list of options a reader picks from holds a text box that narrows the options. The
+// broadcast composer's Delivery mode is the shared list's single pick of the modes: pressed, it
+// opens with one text box, a typed word leaves the modes it matches, and Enter on the one left
+// sends the broadcast in that mode.
+test("the broadcast's Delivery mode list opens with a text box, a typed word narrows the modes, and a pick sends in that mode", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents();
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    await user.click(
+      within(region).getByRole("checkbox", { name: "Select Planner for broadcast" })
+    );
+    const broadcast = within(within(region).getByRole("region", { name: "Broadcast" }));
+    const mode = broadcast.getByRole("button", { name: pickNamed("Delivery mode") });
+    expect(mode).toHaveAccessibleName("Delivery mode BTW");
+    const boxes = textBoxes().length;
+    await user.click(mode);
+    const panel = panelOf(mode);
+    expect(textBoxes().length).toBe(boxes + 1);
+    expect(within(panel).getByRole("combobox", { name: "Search delivery modes" })).toHaveFocus();
+    expect(rows(panel)).toEqual(["Aside", "✓BTW", "Send"]);
+    await user.keyboard("asi");
+    expect(rows(panel)).toEqual(["Aside"]);
+    await user.keyboard("{Enter}");
+    expect(mode).toHaveAccessibleName("Delivery mode Aside");
+    expect(mode).toHaveFocus();
+    await type(user, broadcast.getByRole("textbox", { name: "Broadcast message" }), "Report.");
+    await user.click(broadcast.getByRole("button", { name: "Send to 1" }));
+    await waitFor(() =>
+      expect(page.createBroadcast).toHaveBeenCalledWith(
+        { body: "Report.", delivery: "aside", session_ids: ["planner-session"] },
+        keyedAttempt
+      )
+    );
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A `<select>` set to the value it holds fires no change when that value is picked again. The
+// list opens on the mode the broadcast shows, so Enter at once picks that mode. A mode the
+// selection takes stays unpicked by it: the composer still says why it sends as an Aside, and the
+// mode still follows the selection.
+test("a pick of the mode the broadcast shows leaves the selection's own mode unpicked", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents();
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const broadcast = () => within(region).getByRole("region", { name: "Broadcast" });
+    const mode = () =>
+      within(broadcast()).getByRole("button", { name: pickNamed("Delivery mode") });
+    // The Reviewer takes Aside alone, so the selection's own mode is Aside.
+    await user.click(
+      within(region).getByRole("checkbox", { name: "Select Reviewer for broadcast" })
+    );
+    expect(mode()).toHaveAccessibleName("Delivery mode Aside");
+    await user.click(mode());
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(mode()).toHaveAccessibleName("Delivery mode Aside");
+    expect(
+      within(broadcast()).getByText(wholeText("Sending as Aside: Reviewer does not advertise BTW."))
+    ).toBeTruthy();
+    // With only the Planner, which takes BTW, the selection's mode is BTW again.
+    await user.click(
+      within(region).getByRole("checkbox", { name: "Select Planner for broadcast" })
+    );
+    await user.click(
+      within(region).getByRole("checkbox", { name: "Select Reviewer for broadcast" })
+    );
+    expect(mode()).toHaveAccessibleName("Delivery mode BTW");
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// The same pick leaves a restored broadcast as Dispatch refused it. The Reviewer took no BTW when
+// the send was refused and takes it now, so the composer's own plan would reach it; the refused
+// request does not name it, and Send re-sends that request word for word.
+test("a pick of the mode a restored broadcast shows leaves it to be re-sent as refused", async () => {
+  const user = userEvent.setup();
+  const [planner, reviewer] = agents;
+  const page = renderAgents();
+  page.createBroadcast.mockImplementationOnce(refuseBroadcast);
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const composer = () => within(region).getByRole("region", { name: "Broadcast" });
+    await user.click(
+      within(region).getByRole("checkbox", { name: "Select Planner for broadcast" })
+    );
+    await user.click(
+      within(region).getByRole("checkbox", { name: "Select Reviewer for broadcast" })
+    );
+    await pickIn(
+      user,
+      () => within(composer()).getByRole("button", { name: pickNamed("Delivery mode") }),
+      "BTW"
+    );
+    await type(
+      user,
+      within(composer()).getByRole("textbox", { name: "Broadcast message" }),
+      "Still here?"
+    );
+    await user.click(within(composer()).getByRole("button", { name: "Send to 1" }));
+    await waitFor(() => expect(page.createBroadcast).toHaveBeenCalledTimes(1));
+    const first = posted(page, 0);
+
+    page.listAgents.mockResolvedValue([planner, { ...reviewer, capabilities: ["aside", "btw"] }]);
+    await refetchAgents(page.queryClient);
+    const sends = await screen.findByRole("region", { name: "Sends" });
+    await within(sends).findByText(`Could not send to 1 agent: ${BROADCAST_REFUSED}`);
+    await user.click(within(sends).getByRole("button", { name: "Restore draft" }));
+    // Send emptied the composer, and Restore draft drew it again with a trigger of its own.
+    const mode = within(composer()).getByRole("button", { name: pickNamed("Delivery mode") });
+    expect(mode).toHaveAccessibleName("Delivery mode BTW");
+    await user.click(mode);
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(within(composer()).getByRole("heading", { level: 2 }).textContent).toBe(
+      "Broadcast to 1 of 2 selected"
+    );
+    await user.click(within(composer()).getByRole("button", { name: "Send to 1" }));
+    await waitFor(() => expect(page.createBroadcast).toHaveBeenCalledTimes(2));
+    expect(posted(page, 1)).toEqual(first);
   } finally {
     page.view.unmount();
     page.restore();
@@ -2738,20 +3427,20 @@ test("Restore draft keeps a mode the sender did not pick unpicked, so it still f
     const region = await screen.findByRole("region", { name: "Agents" });
     const broadcast = () => within(region).getByRole("region", { name: "Broadcast" });
     const mode = () =>
-      within(broadcast()).getByRole<HTMLSelectElement>("combobox", { name: "Delivery mode" });
+      within(broadcast()).getByRole("button", { name: pickNamed("Delivery mode") });
     // The Reviewer takes Aside alone, so the selection's own mode is Aside.
     await user.click(
       within(region).getByRole("checkbox", { name: "Select Reviewer for broadcast" })
     );
     const body = within(broadcast()).getByRole("textbox", { name: "Broadcast message" });
     await type(user, body, "Report status.");
-    expect(mode().value).toBe("aside");
+    expect(mode()).toHaveAccessibleName("Delivery mode Aside");
     await user.click(screen.getByRole("button", { name: "Send to 1" }));
     const sends = await screen.findByRole("region", { name: "Sends" });
     await within(sends).findByText(`Could not send to 1 agent: ${BROADCAST_REFUSED}`);
     await user.click(within(sends).getByRole("button", { name: "Restore draft" }));
 
-    expect(mode().value).toBe("aside");
+    expect(mode()).toHaveAccessibleName("Delivery mode Aside");
     expect(
       within(broadcast()).getByText(wholeText("Sending as Aside: Reviewer does not advertise BTW."))
     ).toBeTruthy();
@@ -2762,7 +3451,7 @@ test("Restore draft keeps a mode the sender did not pick unpicked, so it still f
     await user.click(
       within(region).getByRole("checkbox", { name: "Select Reviewer for broadcast" })
     );
-    expect(mode().value).toBe("btw");
+    expect(mode()).toHaveAccessibleName("Delivery mode BTW");
   } finally {
     page.view.unmount();
     page.restore();
@@ -2778,14 +3467,13 @@ test("a restored broadcast shows the mode it re-sends, even after the selection'
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
     const composer = () => within(region).getByRole("region", { name: "Broadcast" });
-    const mode = () =>
-      within(composer()).getByRole<HTMLSelectElement>("combobox", { name: "Delivery mode" });
+    const mode = () => within(composer()).getByRole("button", { name: pickNamed("Delivery mode") });
     await user.click(
       within(region).getByRole("checkbox", { name: "Select Reviewer for broadcast" })
     );
     const body = within(composer()).getByRole("textbox", { name: "Broadcast message" });
     await type(user, body, "Report status.");
-    expect(mode().value).toBe("aside");
+    expect(mode()).toHaveAccessibleName("Delivery mode Aside");
     await user.click(within(composer()).getByRole("button", { name: "Send to 1" }));
     await waitFor(() => expect(page.createBroadcast).toHaveBeenCalledTimes(1));
 
@@ -2797,7 +3485,7 @@ test("a restored broadcast shows the mode it re-sends, even after the selection'
     await user.click(within(sends).getByRole("button", { name: "Restore draft" }));
 
     // Held word for word, the request shows its own mode and goes in it.
-    expect(mode().value).toBe("aside");
+    expect(mode()).toHaveAccessibleName("Delivery mode Aside");
     await user.click(within(composer()).getByRole("button", { name: "Send to 1" }));
     await waitFor(() => expect(page.createBroadcast).toHaveBeenCalledTimes(2));
     expect(posted(page, 1)).toEqual(posted(page, 0));
@@ -2823,10 +3511,8 @@ test("a selected agent that went away does not change what Restore draft re-send
       within(region).getByRole("checkbox", { name: "Select Reviewer for broadcast" })
     );
     const composer = () => within(region).getByRole("region", { name: "Broadcast" });
-    await user.selectOptions(
-      within(composer()).getByRole("combobox", { name: "Delivery mode" }),
-      "btw"
-    );
+    const mode = within(composer()).getByRole("button", { name: pickNamed("Delivery mode") });
+    await pickIn(user, () => mode, "BTW");
     const body = within(composer()).getByRole("textbox", { name: "Broadcast message" });
     await type(user, body, "Still here?");
     await user.click(within(composer()).getByRole("button", { name: "Send to 2" }));
@@ -2900,10 +3586,8 @@ test("a selected agent that came back is shown as not in the restored send, and 
     await user.click(
       within(region).getByRole("checkbox", { name: "Select Reviewer for broadcast" })
     );
-    await user.selectOptions(
-      within(composer()).getByRole("combobox", { name: "Delivery mode" }),
-      "btw"
-    );
+    const mode = within(composer()).getByRole("button", { name: pickNamed("Delivery mode") });
+    await pickIn(user, () => mode, "BTW");
     const body = within(composer()).getByRole("textbox", { name: "Broadcast message" });
     await type(user, body, "Still here?");
     expect(
@@ -3492,7 +4176,8 @@ test("a live-view send out when the page reloads is sent again under its key and
   after.createAgentMessage.mockReturnValueOnce(answer.promise);
   try {
     const held = await screen.findByTestId("agent-send-held");
-    expect(within(held).getByText("Your message: “Status please”")).toBeTruthy();
+    expect(within(held).getByText("Your message")).toBeTruthy();
+    expect(within(held).getByText("Status please")).toBeTruthy();
     expect(within(held).getByRole("status").textContent).toBe("Sending…");
     expect(after.createAgentMessage.mock.calls).toEqual([
       [
@@ -3626,12 +4311,11 @@ test("the header checkbox follows the filters and its count never hides a select
     await user.click(header);
     expect(within(region).getByText("2 of 2 matching selected")).toBeTruthy();
     // Picked, so the Aside-only Reviewer is left out of the count below.
-    await user.selectOptions(
-      within(within(region).getByRole("region", { name: "Broadcast" })).getByRole("combobox", {
-        name: "Delivery mode",
-      }),
-      "btw"
+    const mode = within(within(region).getByRole("region", { name: "Broadcast" })).getByRole(
+      "button",
+      { name: pickNamed("Delivery mode") }
     );
+    await pickIn(user, () => mode, "BTW");
     await type(user, search, "PLANNER");
     await waitFor(() =>
       expect(
@@ -3681,11 +4365,12 @@ test("the header checkbox follows the filters and its count never hides a select
   }
 });
 
-// A press that takes its own control away hands the focus on, never to the page's body (ruling
-// ff1a60f5): Clear selection goes with the selection it empties, and its focus goes to the
-// select-all checkbox before it, or to the search box while no row matches and that checkbox is
-// disabled.
-test("Clear selection hands its focus to the select-all checkbox, or to the search box while no row matches", async () => {
+// A press that takes its own control away hands the focus on, and never into a field that takes
+// typed text: Clear selection goes with the selection it empties, and its focus goes to the
+// select-all checkbox before it. While no row matches, that checkbox is disabled and the header
+// holds no other control, so the header's own hand-off walks back over the main content: past the
+// disabled checkbox to the Filter button, and never onto the search box, which takes typed text.
+test("Clear selection hands its focus to the select-all checkbox, and never to the search box while no row matches", async () => {
   const user = userEvent.setup();
   const page = renderAgents();
 
@@ -3716,7 +4401,10 @@ test("Clear selection hands its focus to the select-all checkbox, or to the sear
     expect(
       within(region).queryByRole("button", { name: "Clear selection" })
     ).not.toBeInTheDocument();
-    expect(search).toHaveFocus();
+    await waitFor(() =>
+      expect(within(region).getByRole("button", { name: "Filter · 0" })).toHaveFocus()
+    );
+    expect(search).not.toHaveFocus();
   } finally {
     page.view.unmount();
     page.restore();
@@ -3793,8 +4481,10 @@ test("a refused send's row shows its message formatted on one line, with its who
       "Stop the deploy check main report back"
     );
     expect(preview.querySelector("ol, li, p")).toBeNull();
+    // The hover text is the shared projection, which writes an ordered list's item with its
+    // number as a rendered body draws it (issue page decisions 66 and 88): `1. check` keeps `1.`.
     await waitFor(() =>
-      expect(preview).toHaveAttribute("title", "Stop the deploy check main report back")
+      expect(preview).toHaveAttribute("title", "Stop the deploy 1. check main 2. report back")
     );
   } finally {
     page.view.unmount();
@@ -4078,8 +4768,9 @@ test("a row back after its session left mid-send holds the send it left until it
       within(back).getByRole("button", { name: pickNamed("Choose issue") }) as HTMLButtonElement;
     const field = () =>
       within(back).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement;
-    // The composer holds its draft through its control fieldset.
-    const held = () => field().closest("fieldset")?.disabled;
+    // The composer holds its draft through its control fieldset: `aria-disabled`, never
+    // `disabled`, while the send is out.
+    const held = () => field().closest("fieldset")?.getAttribute("aria-disabled") === "true";
     expect(choose().disabled).toBe(true);
     expect(held()).toBe(true);
     expect(field().value).toBe("Status please");
@@ -4156,6 +4847,53 @@ test("the search box reads its query from the page's address and writes back to 
     await user.clear(search);
     await waitFor(() => expect(screen.getByTestId("location-search").textContent).toBe(""));
     await screen.findByRole("heading", { level: 2, name: "Planner" });
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// `dispatch://role/<token>` opens `/agents?role=<token>`, so the role filter lives
+// in the address as the machine filter does: that link reads as one role picked, and unticking
+// it brings the other rows back and empties the parameter.
+test("the role filter reads the page's address, so a role reference opens the sessions holding it", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ initialEntry: "/agents?role=planner" });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const role = await filterTrigger(user, region, "role");
+    expect(role.textContent).toContain("1");
+    expect(screen.getByTestId("location-search").textContent).toBe("?role=planner");
+    await within(region).findByRole("heading", { level: 2, name: "Planner" });
+    expect(
+      within(region).queryByRole("heading", { level: 2, name: "Reviewer" })
+    ).not.toBeInTheDocument();
+
+    await user.click(role);
+    await user.click(filterOption("role", "planner"));
+
+    await screen.findByRole("heading", { level: 2, name: "Reviewer" });
+    await waitFor(() => expect(screen.getByTestId("location-search").textContent).toBe(""));
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+test("a role no live session holds says so, and says what this list outside an issue holds", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ initialEntry: "/agents?role=merger" });
+
+  try {
+    const empty = await screen.findByRole("region", { name: "Agents filtered empty state" });
+    expect(empty.textContent).toBe(
+      "No live session holds merger. Outside an issue, this list holds only the roles a live session carries; Dispatch keeps no list of every role."
+    );
+    // The option stays in the control, so the reader can clear the filter that hides every row.
+    const region = screen.getByRole("region", { name: "Agents" });
+    await user.click(await filterTrigger(user, region, "role"));
+    expect(filterOption("role", "merger")).toBeInTheDocument();
   } finally {
     page.view.unmount();
     page.restore();
@@ -4264,7 +5002,7 @@ test("the machine filter is a searchable multi-select that keeps the rows of eve
     // No dropdown in the row: its search box, its one filter trigger and its chips are all it
     // draws, and the three filters are buttons over panels inside that trigger's panel.
     const row = controlRow(region);
-    expect(within(row).queryAllByRole("combobox")).toEqual([]);
+    expect(within(row).queryAllByRole("combobox").length).toBe(0);
 
     const machine = await filterTrigger(user, region, "machine");
     expect(machine.textContent).toBe("Machine");
@@ -4544,7 +5282,8 @@ test("a live-view send that keeps failing outlives the view, under one key, unti
     await backToAgents(user);
     await openLiveView(user, "Planner");
     const held = screen.getByTestId("agent-send-held");
-    expect(within(held).getByText("Your message: “Status please”")).toBeTruthy();
+    expect(within(held).getByText("Your message")).toBeTruthy();
+    expect(within(held).getByText("Status please")).toBeTruthy();
     expect(within(held).getByRole("status").textContent).toBe("Sending…");
     await jump(4_000);
     await jump(8_000);
@@ -4595,7 +5334,8 @@ test("the session's Agents row shows a live-view send as its own turn and can st
     const planner = card(region, "Planner");
     await expand(user, planner, "Planner");
     const held = within(planner).getByTestId("agent-send-held");
-    expect(within(held).getByText("Your message: “Status please”")).toBeTruthy();
+    expect(within(held).getByText("Your message")).toBeTruthy();
+    expect(within(held).getByText("Status please")).toBeTruthy();
     expect(within(held).getByRole("status").textContent).toBe("Sending…");
     const field = within(planner).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement;
     expect(field.value).toBe("");
@@ -4691,7 +5431,8 @@ test("a refused live-view send shows on the Agents row, and Discard there drops 
     const planner = card(screen.getByRole("region", { name: "Agents" }), "Planner");
     await expand(user, planner, "Planner");
     const held = within(planner).getByTestId("agent-send-held");
-    expect(within(held).getByText("Your message: “Status please”")).toBeTruthy();
+    expect(within(held).getByText("Your message")).toBeTruthy();
+    expect(within(held).getByText("Status please")).toBeTruthy();
     expect(within(held).getByTestId("agent-send-error").textContent).toBe(
       "Could not send: Dispatch refused the message"
     );
@@ -4791,6 +5532,90 @@ test("an edit typed over a refused row survives a reload", async () => {
   }
 });
 
+// A refused reply is kept in the tab across a reload with the copy of its message that Reply
+// took (`ReplyTarget.excerpt`, `held-sends.ts`), and the row's composer draws it again before the
+// session's conversation is read. The message may have been deleted meanwhile, so the quote gives
+// no word of it until that read answers, and then reads it as it stands: deleted, with no part of
+// the body the reply took.
+test("a reply refused before a reload quotes no word of its message until the conversation is read, then reads it as deleted", async () => {
+  const user = userEvent.setup();
+  const root = message("Can this ship?", { issue_key: "CORE-1" });
+  const answer = message("Yes, it can.", {
+    author: { id: "planner-session", kind: "session" },
+    created_at: "2026-09-14T01:00:00Z",
+    id: "message-2",
+    in_reply_to: root.id,
+    issue_key: "CORE-1",
+  });
+  const before = renderAgents({ messages: [{ message: root, replies: [answer] }] });
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const turn = (await within(planner).findByText("Yes, it can.")).closest("li");
+    if (turn === null) throw new Error("answer turn missing");
+    await user.click(within(turn).getByRole("button", { name: "Reply" }));
+    const composer = within(planner).getByRole("form", { name: "Comment composer" });
+    expect(
+      within(composer).getByText(wholeText("Replying to Planner — Yes, it can."))
+    ).toBeTruthy();
+    before.createMessage.mockRejectedValueOnce(
+      new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused the message" })
+    );
+    await type(user, within(planner).getByRole("textbox", { name: "Comment" }), "Ship it.");
+    // The composer's own form submit, which user-event has no form for.
+    await act(async () => {
+      fireEvent.submit(composer);
+    });
+    await within(planner).findByText("Couldn't send — Dispatch refused the message");
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+  } finally {
+    before.view.unmount();
+    before.restore();
+  }
+
+  reloadTab();
+  const after = renderAgents();
+  // The session's conversation is read only once the row opens, and that read is held.
+  const conversation = Promise.withResolvers<MessageRead[]>();
+  after.listAgentMessages.mockReturnValue(conversation.promise);
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const quoteWords = () =>
+      within(planner).getByRole("form", { name: "Comment composer" }).textContent ?? "";
+    await within(planner).findByText("Couldn't send — Dispatch refused the message");
+    const unread = {
+      author: quoteWords().includes("Replying to Planner"),
+      excerpt: quoteWords().includes("Yes, it can."),
+    };
+    await act(async () => {
+      conversation.resolve([
+        {
+          message: root,
+          replies: [
+            {
+              ...answer,
+              body: "",
+              deleted_at: "2026-09-14T02:00:00Z",
+              deleted_by: { id: "planner-session", kind: "session" },
+            },
+          ],
+        },
+      ]);
+    });
+    await waitFor(() => expect(quoteWords()).toContain("Deleted by"));
+    expect({
+      read: { excerpt: planner.textContent?.includes("Yes, it can.") },
+      unread,
+    }).toEqual({ read: { excerpt: false }, unread: { author: true, excerpt: false } });
+  } finally {
+    after.view.unmount();
+    after.restore();
+  }
+});
+
 // W6. A kept send belongs to the person who pressed it: a tab alice left a send in, that bob
 // signs into, sends nothing of hers, shows no row for it, and drops what was kept.
 test("a send alice left behind is not resumed for bob, and is dropped", async () => {
@@ -4826,6 +5651,15 @@ test("a send alice left behind is not resumed for bob, and is dropped", async ()
     bob.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "bob" });
   });
   try {
+    // The sign-in check `renderAgents` started still answers alice after the data above names
+    // bob, and the page reads who is signed in again after that, so the shell is drawn for bob,
+    // then alice, then bob, each person a shell of their own (`AuthGate`). The page asserted on is
+    // the one drawn once the check has settled on bob, its card looked up there.
+    await waitFor(() => {
+      const check = bob.queryClient.getQueryState<{ login: string }>(["whoami"]);
+      expect(check?.fetchStatus).toBe("idle");
+      expect(check?.data?.login).toBe("bob");
+    });
     const region = await screen.findByRole("region", { name: "Agents" });
     const planner = card(region, "Planner");
     await expand(user, planner, "Planner");
@@ -4882,6 +5716,113 @@ test("a send pressed offline goes late with Stop trying, and lands when the netw
   } finally {
     realClock();
     onlineManager.setOnline(online);
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+test("the Agents page marks an edited message and reads a deleted one as deleted", async () => {
+  const user = userEvent.setup();
+  const edited = message("Can this ship?", {
+    edited_at: "2026-09-14T00:30:00Z",
+    issue_key: "CORE-1",
+  });
+  const deletedReply = message("", {
+    author: { id: "planner-session", kind: "session" },
+    created_at: "2026-09-14T01:00:00Z",
+    deleted_at: "2026-09-14T01:05:00Z",
+    deleted_by: { id: "planner-session", kind: "session" },
+    id: "reply-1",
+    in_reply_to: "message-1",
+  });
+  const page = renderAgents({ messages: [{ message: edited, replies: [deletedReply] }] });
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    await within(planner).findByText("Can this ship?");
+    await waitFor(() => expect(planner.textContent).toContain("edited"));
+    await waitFor(() => expect(planner.textContent).toContain("Deleted by"));
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A reply's quote prints its parent, so a parent its author edited carries ` · edited` in the
+// quote as on its own byline, and a parent nobody edited carries none.
+test("the Agents page marks a reply's quote of an edited parent, and not of a standing one", async () => {
+  const user = userEvent.setup();
+  const root = message("Can this ship?", {
+    edited_at: "2026-09-14T00:30:00Z",
+    issue_key: "CORE-1",
+  });
+  const answer = message("Yes, it can.", {
+    author: { id: "planner-session", kind: "session" },
+    created_at: "2026-09-14T01:00:00Z",
+    id: "reply-1",
+    in_reply_to: "message-1",
+    issue_key: "CORE-1",
+  });
+  const thanks = message("Thanks.", {
+    created_at: "2026-09-14T01:10:00Z",
+    id: "reply-2",
+    in_reply_to: "reply-1",
+    issue_key: "CORE-1",
+  });
+  const page = renderAgents({ messages: [{ message: root, replies: [answer, thanks] }] });
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const turn = (id: string) => planner.querySelector(`[data-turn="message:${id}"]`);
+    await waitFor(() =>
+      expect(turn("reply-1")?.textContent).toContain("· edited — Can this ship?")
+    );
+    await waitFor(() => expect(turn("reply-2")?.textContent).toContain("— Yes, it can."));
+    expect(turn("reply-2")?.textContent).not.toContain("edited");
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A post its author deleted takes no reply (409 POST_DELETED), so the Agents row offers no Reply
+// on one - the exchange's message, or a reply under it - and a standing reply keeps its own.
+test("the Agents page offers no Reply on a deleted message, and a standing one keeps it", async () => {
+  const user = userEvent.setup();
+  const deleted = {
+    deleted_at: "2026-09-14T02:00:00Z",
+    deleted_by: { id: "alice", kind: "user" } as const,
+  };
+  const root = message("", { ...deleted, issue_key: "CORE-1" });
+  const answer = message("Yes, it can.", {
+    author: { id: "planner-session", kind: "session" },
+    created_at: "2026-09-14T01:00:00Z",
+    id: "reply-1",
+    in_reply_to: "message-1",
+    issue_key: "CORE-1",
+  });
+  const thanks = message("", {
+    ...deleted,
+    created_at: "2026-09-14T01:10:00Z",
+    id: "reply-2",
+    in_reply_to: "reply-1",
+    issue_key: "CORE-1",
+  });
+  const page = renderAgents({ messages: [{ message: root, replies: [answer, thanks] }] });
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    await within(planner).findByText("Yes, it can.");
+    const turn = (id: string) => planner.querySelector(`[data-turn="message:${id}"]`);
+    expect({
+      answer: ownReplies(turn("reply-1")),
+      exchange: ownReplies(turn("message-1")),
+      thanks: ownReplies(turn("reply-2")),
+    }).toEqual({ answer: 1, exchange: 0, thanks: 0 });
+  } finally {
     page.view.unmount();
     page.restore();
   }
@@ -5137,9 +6078,9 @@ test("a group heading draws no count until the reads that place a row in its gro
 });
 
 // The page's own agent row is a row of its list, as an Inbox row is of the Inbox. A session that
-// ends takes its row away with no press of the reader's, a loss they did not cause, so the app
-// shell's focus rescue hands the focus into no other agent's row, and the reader's next Space
-// marks no agent they did not pick for broadcast.
+// ends takes its row away with no press of the reader's, a loss they did not cause, so the focus
+// goes into no other agent's row, and the reader's next Space marks no agent they did not pick for
+// broadcast.
 test("an agent's session ending under the focus hands it to no other agent's row, and Space marks nobody", async () => {
   const user = userEvent.setup();
   const [alpha, bravo, charlie] = ["Alpha", "Bravo", "Charlie"].map((title) =>
@@ -5155,7 +6096,7 @@ test("an agent's session ending under the focus hands it to no other agent's row
     page.listAgents.mockResolvedValue([alpha, charlie]);
     await refetchAgents(page.queryClient);
     await waitFor(() => expect(mark).not.toBeInTheDocument());
-    await afterRescue();
+    await afterFrameAndTasks();
 
     expect(document.activeElement?.closest("[data-agent-row]") ?? null).toBeNull();
     await user.keyboard(" ");

@@ -1,6 +1,6 @@
 name: CI job envoy-session-stall
 
-# The steps of ci.yaml's `envoy-session-stall` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#envoy-session-stall` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
@@ -9,13 +9,13 @@ name: CI job envoy-session-stall
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
@@ -40,12 +40,18 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
         options: >-
-          --health-cmd "pg_isready -U postgres"
+          --shm-size=1g
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
     env:
+      JOB_TIMEOUT_MINUTES: 20 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       LEGION_E2E_ENVOY_STACK: "1"
       LEGION_E2E_DISPATCH_STACK: "1"
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
@@ -59,9 +65,12 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # go-envoy: the listener and natsd test/envoy-stack.ts builds, as envoy-e2e-local's
       # e2e-local.sh does.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -69,7 +78,12 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
-      - name: Size the service for this lane's Dispatch processes
+      # The settings the service's command: line asks for, read back from the server; why each one
+      # is .github/scripts/postgres-service-settings.sh's header.
+      - name: Read the service's settings back
+        timeout-minutes: 2
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      - name: Check the service allows this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Build contracts for the stall suites
         run: bun run build
@@ -90,8 +104,10 @@ jobs:
       - name: Session state rig of a stalled session
         run: bun test ./test/session-stall.ts
         working-directory: packages/envoy-client
+      # Through the package's own test script, so the file's hooks get the one --timeout that
+      # packages/pi-envoy/package.json sets, as the pi-envoy job's run gives them.
       - name: Stall test of pi-envoy
-        run: bun test extensions/envoy.test.ts -t "NATS path freezes"
+        run: bun run test extensions/envoy.test.ts -t "NATS path freezes"
         working-directory: packages/pi-envoy
       - name: Stall test of claude-envoy
         run: bun test tests/envoy-channel-stall.test.ts
@@ -113,6 +129,19 @@ jobs:
       # open approval request back from the person is the field the CLI reads and prints.
       - name: Moved-approval advice of the real CLI against a real Dispatch
         run: bun test src/__tests__/moved-approval-advice.live.test.ts
+        working-directory: packages/envoy-client
+      # A comment's role: mention over the same real CLI and real Dispatch (#4426): the comment the CLI posts with --mention carries one delivery attempt for that
+      # target, which is what lets an agent write to the owner of a subject and leave the retry
+      # to Dispatch.
+      - name: Comment mention of the real CLI against a real Dispatch
+        run: bun test src/__tests__/comment-mention.live.test.ts
+        working-directory: packages/envoy-client
+      # A keyed write a real Dispatch refused because it could not resolve the caller.
+      # The client of this tree sends it again under its own key against a server of this tree,
+      # started with an OIDC issuer nothing serves, and the issue holds the comment once.
+      # It needs the same Postgres and Go this job already has.
+      - name: A refused keyed write resent under its key against a real Dispatch
+        run: bun test src/__tests__/dispatch-keyed-resend-live.test.ts
         working-directory: packages/envoy-client
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
