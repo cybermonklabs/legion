@@ -10,21 +10,45 @@ import { scriptCheckpoints } from "./script-functions";
 // open none could complete only where GitHub's read failed, so the checkpoint asks for the pull
 // request before handoff_complete and checks that exactly one is open on the branch; the
 // teardown's close_run_pull_requests closes it.
+// The completion moves an issue with an open pull request out of implementing in the same step.
+// The checkpoint waits for testing before it reads the implementer's handoff.
+// GitHub and Claude Code are unavailable to CI, so this test checks the checkpoint's structure.
 for (const driver of ["claude-backend-sandbox.sh", "claude-backend-tmux.sh"]) {
   const path = fileURLToPath(new URL(`../${driver}`, import.meta.url));
   const script = readFileSync(path, "utf8");
   const checkpoint = scriptCheckpoints(path)("claude-implementer-handoff");
 
   describe(driver, () => {
+    test("the implementer is asked to open the pull request before handoff_complete", () => {
+      expect(checkpoint).not.toContain("Do not open a pull request");
+      expect(checkpoint).toContain(
+        "open a pull request from legion/$issue to the repository's default branch, then call the legion tool's handoff_complete"
+      );
+    });
+
+    test("the checkpoint reads the implement handoff after it moves to testing", () => {
+      expect(checkpoint).not.toContain("handoff_recorded");
+      expect(checkpoint).toContain('wait_for_phase "$issue" testing');
+      expect(checkpoint).toContain('commit=$(role_handoff "$issue" implementer testing)');
+      expect(checkpoint).toContain('assert_round_handoff "$issue" 0');
+    });
+
     test("the checkpoint checks that exactly one pull request is open on the issue branch", () => {
       expect(checkpoint).toContain(
         'open_prs=$(gh -R "$repo" pr list --state open --head "legion/$issue" --json number --jq length)'
       );
       expect(checkpoint).toContain('[ "$open_prs" = 1 ]');
     });
-
     test("the header no longer says the implementer opens no pull request", () => {
       expect(script).not.toContain("opens no pull request");
     });
   });
 }
+
+test("the stall check sees a handoff that moved the issue to testing", () => {
+  const helpers = readFileSync(
+    fileURLToPath(new URL("./claude-transcript.sh", import.meta.url)),
+    "utf8"
+  );
+  expect(helpers).toContain('role_handoff "$issue" implementer implementing testing');
+});
