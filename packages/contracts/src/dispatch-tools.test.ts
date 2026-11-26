@@ -1211,6 +1211,19 @@ describe("dispatchToolSpecs", () => {
     );
   });
 
+  // A priority of 0 needs the p0 scope, which only a person at a browser or a token its maker gave
+  // it to holds, so the description a host shows beside each issue tool's priority, and the
+  // command prints on its --priority row, names the scope before Dispatch refuses the write.
+  test("dispatch_issue and dispatch_issue_update say a priority of 0 needs p0", () => {
+    for (const name of ["dispatch_issue", "dispatch_issue_update"] as const) {
+      const json = z.toJSONSchema(schemaFor(name), { io: "input" }) as {
+        properties: Record<string, { description?: string }>;
+      };
+
+      expect(json.properties.priority?.description, name).toMatch(/\bp0\b/);
+    }
+  });
+
   test("every nullable field describes last, the one order the OMP facade keeps", () => {
     const { api, fields } = recordingSchemaApi();
     for (const spec of dispatchToolSpecs) dispatchToolSchema(spec, api);
