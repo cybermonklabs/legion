@@ -677,23 +677,23 @@ func (e *Engine) besideFacts(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // keptFacts is the start facts of a step at place of w's task of issue that a way 2 runs again
 // after the task's latest fix ended (startFacts, while no fix of the task is open): where the
 // daemon holds a push of the step's own branch beside that fix (record.TaskFix.Pushed), the way kept
-// that branch (deletesAtWay), and the start, made after the fix ended, takes its commits from it
-// (Kept). The role is the role of the step's phase, a phase of a step of the plan, which admitted
-// never is; the implementer's branch beside the fix is the fix's own, which its end push took
-// whole. false for every other start.
+// that branch (deletesAtWay), and the start takes its commits from it (Kept). The fix's Way, which
+// afterFix writes before the way's start, is the record that the way ran, so no step start's moment
+// is read: no step of the task runs when the way is taken (taskStepRuns), so every start and resume
+// of a step after the fix's place from then on comes after the fix's end. The way's own start is
+// among them, and its task is composed before that start is counted (start, stepStanding), when the
+// step's latest start is still its start from before the fix ended. The role is the role of the
+// step's phase, a phase of a step of the plan, which admitted never is; the implementer's branch
+// beside the fix is the fix's own, which its end push took whole. false for every other start.
 func (e *Engine) keptFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, place int) (startFacts, bool, error) {
 	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
-	if err != nil || fix == nil || fix.Way != wayAfterFix || fix.EndedAt == nil || place <= fix.Place {
+	if err != nil || fix == nil || fix.Way != wayAfterFix || place <= fix.Place {
 		return startFacts{}, false, err
 	}
 	role := RoleFor(w.steps()[place-1])
 	pushed := fix.Pushed[string(role)]
 	if role == claim.RoleImplementer || pushed == "" {
 		return startFacts{}, false, nil
-	}
-	start, err := e.store.StepStarts(ctx, tx, issue.Key, record.StepPlace{Task: w.Task, Kind: record.PlaceStep, Place: place})
-	if err != nil || start.StartedAt.Before(*fix.EndedAt) {
-		return startFacts{}, false, err
 	}
 	branch, ok := e.besideBranchOf(issue, w.Task, fix.Fix, role)
 	if !ok {
