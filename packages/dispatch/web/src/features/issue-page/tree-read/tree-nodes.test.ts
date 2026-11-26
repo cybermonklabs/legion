@@ -842,7 +842,7 @@ test("a block keeps F's id where the read names its document", () => {
 // document carries this issue's slug, as a child's Verification document does, so it is never
 // taken for this issue's block; and a check of an issue under this one, which the read reaches
 // through its `serves`, is drawn by that id under the requirement it serves, addressed in its
-// own issue, with its result under it (INFRA-4066 R4).
+// own issue, with its result under it.
 test("another issue's block keeps the read's id where its document has this issue's slug", () => {
   const tree = answer(
     [
@@ -1651,7 +1651,7 @@ test("this issue's plan task is not placed by a child's plan task of the same bl
     `${blockNodeId("spec", "r1")} requirement`,
     `-${blockNodeId("plan-md", "t1")} plan_task`,
     `${blockNodeId("spec", "r2")} requirement`,
-    // The child's own task stands there itself, by its read id (INFRA-4066 R4).
+    // The child's own task stands there itself, by its read id.
     "-t1 plan_task",
     "CORE-2 child_issue",
   ]);

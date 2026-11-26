@@ -141,8 +141,8 @@ function resultsUnder(answer: TreeAnswer, parentId: string): readonly TreeAnswer
  * for another issue.
  *
  * Undefined where the read answers no words' sum on the check (`check`) or no `result` on one
- * of its result nodes (INFRA-1253 R8), so the row draws no standing word: a pass that may be
- * against old words must not read as current (decision 161).
+ * of its result nodes, so the row draws no standing word: a pass that may be against old words
+ * must not read as current.
  */
 function borrowedStanding(check: TreeAnswerNode, answer: TreeAnswer): CheckState | undefined {
   const words = check.check?.text_sha256;

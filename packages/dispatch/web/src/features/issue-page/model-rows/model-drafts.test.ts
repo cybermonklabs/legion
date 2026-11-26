@@ -106,7 +106,7 @@ const WORDS_NOW = "sum-of-the-words-now";
 const WORDS_BEFORE = "sum-of-the-words-before";
 
 /** A result of the child's check `check`, recorded by the agent at `madeAt` as `verdict` against
- *  the check's words summing to `words`, as INFRA-1253 R8 answers a result node. */
+ *  the check's words summing to `words`, as the read answers a result node's `result`. */
 function childResult(
   id: string,
   check: string,
@@ -277,10 +277,11 @@ function standingOf(results: readonly TreeAnswerNode[], check = true) {
 
 // R4, the plan's decision on a borrowed check's standing: the read answers no results read for
 // another issue, so the check stands by F's one reading of a check (`checkStanding`) over the
-// result nodes the read answers under it, with INFRA-1253 R8's members - the newest result
-// nobody withdrew over the check's words now decides; where none is, one over moved words reads
-// out of date, every result withdrawn retracted, and none at all no result. Without those
-// members the check draws no standing word (decision 161).
+// result nodes the read answers under it, from the words' sum the read answers on the check and
+// the `result` on each result node - the newest result nobody withdrew over the check's words
+// now decides; where none is, one over moved words reads out of date, every result withdrawn
+// retracted, and none at all no result. Without that sum or a node's `result` the check draws no
+// standing word, since its standing cannot be shown current.
 test("a borrowed check's standing comes from its results", () => {
   const passThenFail = [
     childResult("res-1", "c-child", "pass", "2026-11-05T10:00:00Z"),
