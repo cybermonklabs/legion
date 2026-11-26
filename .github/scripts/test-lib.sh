@@ -36,6 +36,41 @@ is() { [ "$1" = "$2" ] && echo true || echo false; }
 # with the here-string.
 contains() { grep -q -- "$2" <<<"$1" && echo true || echo false; }
 
+# names_at <text> <prefix> <token>... [--not <token>...]: true/false for check. True when a line of
+# the text opens with <prefix> and, past it, holds each token before --not (a token listed twice,
+# twice over) and, with those occurrences taken out, none of the tokens after --not. The prefix and
+# the tokens are literal strings, never patterns, and the tokens may stand anywhere past the prefix
+# in any order. So a row checks where a line is written, such as a refusal's
+# `::error file=<file>,line=<n>::`, and the names that line holds, and never the words around
+# them (dispatch://INFRA-1545, round 70).
+names_at() {
+  local text=$1 prefix=$2 line rest token
+  local -a want=() refuse=()
+  shift 2
+  while [ "$#" -gt 0 ] && [ "$1" != --not ]; do
+    want+=("$1")
+    shift
+  done
+  if [ "$#" -gt 0 ]; then
+    shift
+    refuse=("$@")
+  fi
+  while IFS= read -r line; do
+    [ "${line:0:${#prefix}}" = "$prefix" ] || continue
+    rest=${line:${#prefix}}
+    for token in ${want[@]+"${want[@]}"}; do
+      [[ $rest == *"$token"* ]] || continue 2
+      rest=${rest/"$token"/$'\n'}
+    done
+    for token in ${refuse[@]+"${refuse[@]}"}; do
+      [[ $rest != *"$token"* ]] || continue 2
+    done
+    echo true
+    return
+  done <<<"$text"
+  echo false
+}
+
 # indent <text>: the text under the case that produced it, two spaces in.
 indent() {
   local line

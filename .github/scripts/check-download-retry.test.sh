@@ -483,41 +483,6 @@ list_check() {
   set -e
 }
 
-# names_at <text> <prefix> <token>... [--not <token>...]: true when a line of the text opens with
-# <prefix>, a refusal's location such as `::error file=<file>,line=<n>::`, and, past it, holds each
-# token before --not (a token listed twice, twice over) and, with those occurrences taken out, none
-# of the tokens after --not. The prefix and the tokens are literal strings, never patterns, and the
-# tokens may stand anywhere on that line in any order. So a row checks where the gate refuses and
-# the steps, files, inputs and figures the refusal names, and never the words around them
-# (dispatch://INFRA-1545, round 70).
-names_at() {
-  local text=$1 prefix=$2 line rest token
-  local -a want=() refuse=()
-  shift 2
-  while [ "$#" -gt 0 ] && [ "$1" != --not ]; do
-    want+=("$1")
-    shift
-  done
-  if [ "$#" -gt 0 ]; then
-    shift
-    refuse=("$@")
-  fi
-  while IFS= read -r line; do
-    [ "${line:0:${#prefix}}" = "$prefix" ] || continue
-    rest=${line:${#prefix}}
-    for token in ${want[@]+"${want[@]}"}; do
-      [[ $rest == *"$token"* ]] || continue 2
-      rest=${rest/"$token"/$'\n'}
-    done
-    for token in ${refuse[@]+"${refuse[@]}"}; do
-      [[ $rest != *"$token"* ]] || continue 2
-    done
-    echo true
-    return
-  done <<<"$text"
-  echo false
-}
-
 echo "case: a tree holding each exception R2 still has a site for passes"
 root=$(fixture exceptions)
 run_check "$root"
@@ -14599,9 +14564,11 @@ check "refuses nothing" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 0)"
 # or `env` beyond that first line. The refusal of bash given the `.go` names `.go` only in the
 # file's path, so its cure offers a `.go` no interpreter and no run by its path. A refusal names
 # the program `.` as a lone dot, which no literal name finds apart from the dots of the paths, so
-# the row of `.` given the `.ts` checks the step and the file; the W12 case's row of `.` given a
-# `.jq`, a refusal the same sentence of the gate writes, checks that it names `.`
-# (dispatch://INFRA-1545, rounds 69 and 70).
+# the row of `.` given the `.ts` reads that refusal with its marks taken off: every backtick, quote
+# and parenthesis deleted, and every comma, semicolon and colon made a space. There the program is
+# a dot that stands alone between two spaces, whatever marks the gate writes round it, and the dots
+# of a path, a suffix and a sentence's end stay joined to their words, so a refusal that names
+# another program there names no lone dot (dispatch://INFRA-1545, rounds 69, 70 and 72).
 echo "case: r66 W17 a top-level .go and .ts under .github/scripts pass, gofmt may name the .go, a shell given either is refused, and a .go opening with any #! line is refused"
 root=$(fixture r66-w17-scanners)
 printf '// a scanner\npackage main\n\nfunc main() {}\n' > "$root/.github/scripts/r66-scan.go"
@@ -14646,9 +14613,12 @@ check "refuses bash given the .go at its run, naming the step, the file and bash
 check "names .go to bash given the .go only in the file's path, offering a .go no interpreter and no run by its path" \
   "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=12::' \
     .github/scripts/r66-scan.go .github/scripts/r66-scan.go --not .go)"
-check "refuses . given the .ts at its run, naming the step and the file" \
-  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=14::' \
-    'Source the TypeScript scanner' .github/scripts/r66-scan.ts)"
+# unmarked <text>: the text with those marks taken off. The row's location loses its marks the same
+# way, so it still ends where the refusal's `::` did, and line 14 reads apart from line 140.
+unmarked() { tr -d "\`'\"()" <<<"$1" | tr ',;:' '   '; }
+check "refuses . given the .ts at its run, naming the step, the file and the program ., a word of its own" \
+  "$(names_at "$(unmarked "$out")" "$(unmarked '::error file=.github/workflows/case.yaml,line=14::')" \
+    'Source the TypeScript scanner' .github/scripts/r66-scan.ts ' . ')"
 check "refuses the .go whose first line runs a shell at its line 1, naming that line and go run, and no path beyond it" \
   "$(names_at "$out" '::error file=.github/scripts/r66-shell.go,line=1::' \
     .github/scripts/r66-shell.go '#!/bin/sh' 'go run' --not /bin/sh)"

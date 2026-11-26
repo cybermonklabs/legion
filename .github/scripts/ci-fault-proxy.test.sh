@@ -93,8 +93,18 @@ echo "measured: the origin listens on 127.0.0.1:$origin_port"
 start_proxy() {
   local name=$1
   shift
+  start_proxy_program "$name" "$proxy_script" "$@"
+}
+
+# start_proxy_program <name> <program> <arguments...>: start_proxy, with python3 running that
+# program and its arguments, the proxy's own among them, in place of ci-fault-proxy.py alone. The
+# --port 0 and --port-file it adds go last, where the proxy's parser reads them as it reads them
+# anywhere.
+start_proxy_program() {
+  local name=$1
+  shift
   local port_file="$work/$name.port" pid port=""
-  python3 "$proxy_script" --port 0 --port-file "$port_file" "$@" > "$work/$name.log" 2>&1 &
+  python3 "$@" --port 0 --port-file "$port_file" > "$work/$name.log" 2>&1 &
   pid=$!
   pids+=("$pid")
   for _ in $(seq 200); do
@@ -444,8 +454,9 @@ check "--probe-host without --coalesce-outage-gap" \
 # one address of each kind it is given, in order. A live address is a listener. A refused address
 # is a port bound with no listener, so the kernel answers a SYN to it with a reset and no other
 # process takes the port. A dead address is a listener of backlog 0 whose one queued connection
-# is never accepted, so the kernel drops every further SYN to it, as one of security.ubuntu.com's
-# addresses did in job 139835657575 of run 45797742953. The driver passes the addresses to
+# is never accepted, so the kernel drops every further SYN to it: it stands in for an origin
+# address that takes no connection, the kind the proxy's CONNECT_STAGGER comment is written for,
+# and says nothing of what held such an address on a runner. The driver passes the addresses to
 # connect_staggered with the total timeout and the stagger it is given, - for the proxy's own. It
 # prints one line: `connected <kind>` or `error <exception>`, the seconds the call took, how many
 # sockets the call left open, and the winner's socket timeout, - for none.
@@ -527,6 +538,60 @@ staggered - 5 refused refused
 check "the call fails with the refusal" "$(is "$st_status $st_kind" 'error ConnectionRefusedError')"
 check "in under 2 s, well inside the 5 s stagger and the 30 s timeout" "$(between "$st_seconds" 0 2)"
 check "and leaves no socket open" "$(is "$st_left" 0)"
+
+echo "case: the proxy itself answers a name whose first address takes no connection from its live second address within 5 s, over plain HTTP and over CONNECT"
+# The connect cases above drive connect_staggered alone. This one drives the proxy whole, through
+# its handler's connect_upstream, with real requests, so it fails when that handler stops using
+# connect_staggered: socket.create_connection tries one address after another and waits out the
+# dead one's whole 30 s before it starts the next. Only the name's resolution is a stand-in. The
+# driver below runs the proxy's own main() in a process whose socket.getaddrinfo answers one name,
+# two-addresses.invalid, with two addresses: first a dead one, made as the driver above makes one,
+# then the origin's. Each carries its own port, as getaddrinfo answers a whole address, and the
+# port a request names is not read. Every other name goes to the real resolver. Both listeners
+# keep the port the kernel gave them.
+# curl's --max-time 5 is the bound: the
+# proxy's own connect answers in about the 0.25 s stagger, and one that waits for the dead address
+# fails here at 5 s rather than at 30 (dispatch://INFRA-1545, round 72).
+cat > "$work/two-addresses.py" <<'TWO'
+import importlib.util, socket, sys
+
+spec = importlib.util.spec_from_file_location("ci_fault_proxy", sys.argv[1])
+proxy = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(proxy)
+name, live_port = sys.argv[2].lower(), int(sys.argv[3])
+dead = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+dead.bind(("127.0.0.1", 0))
+dead.listen(0)
+queued = socket.create_connection(dead.getsockname(), timeout=5)
+resolve = socket.getaddrinfo
+answer = (resolve(*dead.getsockname(), type=socket.SOCK_STREAM)
+          + resolve("127.0.0.1", live_port, type=socket.SOCK_STREAM))
+
+def getaddrinfo(host, *rest, **options):
+    if host != name:
+        return resolve(host, *rest, **options)
+    return list(answer)
+
+socket.getaddrinfo = getaddrinfo
+sys.exit(proxy.main(sys.argv[4:]))
+TWO
+start_proxy_program two-addresses "$work/two-addresses.py" "$proxy_script" two-addresses.invalid "$origin_port" \
+  --mode fail --hosts fetch.invalid
+# Each request's body file is emptied first, for the reason the stall case below gives.
+: > "$work/two-addresses.body"
+run_curl --max-time 5 -o "$work/two-addresses.body" -w '%{time_total}' -x "$proxy" http://two-addresses.invalid/hello.txt
+plain_status=$status plain_seconds=$out plain_body=$(cat "$work/two-addresses.body")
+: > "$work/two-addresses.body"
+run_curl --max-time 5 -o "$work/two-addresses.body" -w '%{time_total}' -x "$proxy" --proxytunnel \
+  http://two-addresses.invalid/hello.txt
+tunnel_status=$status tunnel_seconds=$out tunnel_body=$(cat "$work/two-addresses.body")
+indent "$(cat "$work/two-addresses.log")"
+echo "  measured: plain HTTP answered '$plain_body' after ${plain_seconds}s with curl exit $plain_status, and CONNECT '$tunnel_body' after ${tunnel_seconds}s with curl exit $tunnel_status"
+check "a plain-HTTP request for the name answers from the origin at its live address, inside curl's 5 s bound" \
+  "$(is "$plain_status:$plain_body" '0:the origin answered')"
+check "and so does a CONNECT" "$(is "$tunnel_status:$tunnel_body" '0:the origin answered')"
+check "each took at least the 0.25 s stagger, so the proxy started the dead address first, and under 5 s" \
+  "$(is "$(between "$plain_seconds" 0.25 5):$(between "$tunnel_seconds" 0.25 5)" true:true)"
 
 echo "case: --mode stall sends nothing, so each attempt ends at the client's own bound"
 start_proxy stall --mode stall --hosts fetch.invalid

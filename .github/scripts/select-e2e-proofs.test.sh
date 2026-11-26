@@ -163,40 +163,6 @@ value = json.loads(sys.argv[1])[int(sys.argv[2])][sys.argv[3]]
 print(value if isinstance(value, str) else json.dumps(value))' "$proofs" "$1" "$2"
 }
 
-# names_at <text> <prefix> <token>... [--not <token>...]: true when a line of the text opens with
-# <prefix> and, past it, holds each token before --not (a token listed twice, twice over) and,
-# with those occurrences taken out, none of the tokens after --not. The prefix and the tokens are
-# literal strings, never patterns, and the tokens may stand anywhere on that line in any order. So
-# a row checks where the script refuses and the rows, keys, values and figures the refusal names,
-# and never the words around them (dispatch://INFRA-1545, round 70).
-names_at() {
-  local text=$1 prefix=$2 line rest token
-  local -a want=() refuse=()
-  shift 2
-  while [ "$#" -gt 0 ] && [ "$1" != --not ]; do
-    want+=("$1")
-    shift
-  done
-  if [ "$#" -gt 0 ]; then
-    shift
-    refuse=("$@")
-  fi
-  while IFS= read -r line; do
-    [ "${line:0:${#prefix}}" = "$prefix" ] || continue
-    rest=${line:${#prefix}}
-    for token in ${want[@]+"${want[@]}"}; do
-      [[ $rest == *"$token"* ]] || continue 2
-      rest=${rest/"$token"/$'\n'}
-    done
-    for token in ${refuse[@]+"${refuse[@]}"}; do
-      [[ $rest != *"$token"* ]] || continue 2
-    done
-    echo true
-    return
-  done <<<"$text"
-  echo false
-}
-
 # Where the script refuses the list file, and the keys a hosted row carries, in the order the
 # script's MATRIX lists them and a refusal of a missing key names them all.
 list_error='::error file=.github/e2e-scripts.json::'
@@ -461,8 +427,8 @@ echo "case: a workflow_dispatch for a name in neither list"
 root=$(fixture dispatch-unknown)
 run_select "$root" workflow_dispatch nothing-here
 check "fails" "$(is "$status" 1)"
-check "names the script and every name it could have been given" \
-  "$(names_at "$out" '::error::' scripts/e2e/nothing-here.sh "alpha-proof.sh, beta-proof.sh")"
+check "names the script and every name it could have been given, the two hosted rows and not the elsewhere one" \
+  "$(names_at "$out" '::error::' scripts/e2e/nothing-here.sh alpha-proof.sh beta-proof.sh --not gamma-proof.sh)"
 run_select "$root" workflow_dispatch ""
 check "a dispatch naming nothing fails" "$(is "$status" 1)"
 check "and is refused by the name it was given" \
