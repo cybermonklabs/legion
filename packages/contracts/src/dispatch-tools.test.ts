@@ -1974,10 +1974,6 @@ describe("dispatchToolSpecs", () => {
       "Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit.",
     ],
     [
-      "dispatch_ask",
-      "Measure what you can first, and put the measurement and the size of the population it covers in the question; drop an option that cannot fix most of that population, never offer it cut down, and keep an option not to act (Hold). Set urgency high when your work halts on the answer, and keep working on everything else.",
-    ],
-    [
       "dispatch_issue_update",
       "Never reassign an issue a person holds to get a faster answer: who holds it is their call.",
     ],
