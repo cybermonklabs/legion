@@ -48,7 +48,7 @@ on:
       - '.github/ci-gates/docs.py'
       - '.github/scripts/check-private-names.sh'
       - '.github/scripts/ci-tools.sh'
-      - '.github/scripts/pg-crash-safety-off.sh'
+      - '.github/scripts/postgres-service-settings.sh'
       - '.github/scripts/repo-paths.sh'
       - '.github/workflows/ci.yaml'
       - '.github/workflows/docs-pages.yaml'
