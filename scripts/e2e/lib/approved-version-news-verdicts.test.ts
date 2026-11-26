@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   temporaryDirectories,
@@ -8,6 +8,7 @@ import {
 import {
   a4,
   answers,
+  controlFailure,
   driverTest,
   failed,
   fullPlan,
@@ -111,7 +112,7 @@ const setup = (checks = 5) => [
     .map((check) => `   assert ${a2}: ${check}`),
 ];
 // The one-approval check's own failure on a daemon from before the change, as awaitQueued writes it.
-const ownFailure = `FAIL ${a2}: waited 2m0s for a task queued for the reviewer of AVQ1-1 behind its open turn; last seen: its claim holds no task`;
+const ownFailure = controlFailure(a2);
 const goFailure = [
   `    approved_version_news_part_one_steps_live_test.go:147: ${a2}: waited 2m0s for a task queued for the reviewer of AVQ1-1 behind its open turn`,
   `--- FAIL: ${driverTest} (191.40s)`,
@@ -530,6 +531,126 @@ describe("the arguments check's jj", () => {
   });
 });
 
+const transactSeam =
+  "packages/daemon/internal/daemon/approved_version_news_control_transact_live_test.go";
+const taskSeam = "packages/daemon/internal/daemon/approved_version_news_control_task_live_test.go";
+const contractSeam =
+  "packages/daemon/internal/daemon/approved_version_news_control_contract_live_test.go";
+// The checkout the script's own root names, whose scripts/e2e/lib holds the Go of each seam that
+// control_compat copies.
+const checkout = join(import.meta.dir, "../../..");
+
+/** Runs control_compat over a scratch base tree whose package daemon holds three Go files, the
+ * first defining seedTransact where TRANSACT says so, the second recordTaskAt where TASK says so
+ * and the third versionNewsPluginContract where CONTRACT says so, and answers the tree, the run's
+ * output and its exit. */
+function controlCompat(transact: boolean, task: boolean, contract: boolean) {
+  const tree = scratch();
+  const daemonDir = join(tree, "packages/daemon/internal/daemon");
+  mkdirSync(daemonDir, { recursive: true });
+  writeFileSync(
+    join(daemonDir, "store_test.go"),
+    `package daemon\n\n${transact ? "func seedTransact() error { return nil }\n" : "func seed() {}\n"}`
+  );
+  writeFileSync(
+    join(daemonDir, "seed_test.go"),
+    `package daemon\n\n${task ? "func recordTaskAt() error { return nil }\n" : "func startRoles() {}\n"}`
+  );
+  writeFileSync(
+    join(daemonDir, "claims_test.go"),
+    `package daemon\n\n${contract ? "func versionNewsPluginContract() int { return 0 }\n" : "func registerClaims() {}\n"}`
+  );
+  const result = Bun.spawnSync([
+    Bun.which("bash") ?? "bash",
+    "-c",
+    `set -euo pipefail
+${helperGuard}
+check=base-tree root=${JSON.stringify(checkout)}
+${note}
+${fail}
+${fn("control_compat")}
+control_compat ${JSON.stringify(tree)}`,
+  ]);
+  const out = result.stdout.toString();
+  const err = result.stderr.toString();
+  expectNoMissingHelpers(out, err);
+  return { tree, out, err, code: result.exitCode };
+}
+
+// Part one's control builds this checkout's part-one driver in a scratch copy of the base, and
+// the driver calls three seams an older base lacks: seedTransact and recordTaskAt, which its seed
+// calls, and versionNewsPluginContract, the contract its claims register with. The control copies
+// the base's version of each, a test file of package daemon under //go:build e2e that
+// scripts/e2e/lib holds as a .go.txt file, where the base tree defines no such function, and
+// writes no file where it does; its transcript names each file it writes and each seam the base
+// already defines.
+describe("the control's seam files", () => {
+  test("are written where the base defines no seam", () => {
+    const run = controlCompat(false, false, false);
+    expect(run.code).toBe(0);
+    expect(run.err).toBe("");
+    const transact = readFileSync(join(run.tree, transactSeam), "utf8");
+    expect(transact).toBe(
+      readFileSync(join(import.meta.dir, "approved-version-news-control-transact.go.txt"), "utf8")
+    );
+    expect(transact.startsWith("//go:build e2e\n")).toBe(true);
+    expect(transact).toContain("\npackage daemon\n");
+    expect(transact).toContain(
+      "\nfunc seedTransact(ctx context.Context, pool *store.Pool, write func(ctx context.Context, tx pgx.Tx) error) error {\n" +
+        "\tctx, committed := intake.WithCommitHooks(ctx)\n"
+    );
+    expect(transact.endsWith("\n\tcommitted()\n\treturn nil\n}\n")).toBe(true);
+    const task = readFileSync(join(run.tree, taskSeam), "utf8");
+    expect(task).toBe(
+      readFileSync(join(import.meta.dir, "approved-version-news-control-task.go.txt"), "utf8")
+    );
+    expect(task.startsWith("//go:build e2e\n")).toBe(true);
+    expect(task).toContain("\npackage daemon\n");
+    expect(task).toContain(
+      "\nfunc recordTaskAt(context.Context, pgx.Tx, record.Store, record.Issue) error { return nil }\n"
+    );
+    const contract = readFileSync(join(run.tree, contractSeam), "utf8");
+    expect(contract).toBe(
+      readFileSync(join(import.meta.dir, "approved-version-news-control-contract.go.txt"), "utf8")
+    );
+    expect(contract.startsWith("//go:build e2e\n")).toBe(true);
+    expect(contract).toContain("\npackage daemon\n");
+    expect(contract).toContain(
+      "\nfunc versionNewsPluginContract() int { return api.DaemonAPIVersion }\n"
+    );
+    expect(run.out).toBe(
+      `   wrote ${join(run.tree, transactSeam)}: the base's package daemon defines no seedTransact, which part one's driver takes its transaction through\n` +
+        `   wrote ${join(run.tree, taskSeam)}: the base's package daemon defines no recordTaskAt, which part one's driver calls\n` +
+        `   wrote ${join(run.tree, contractSeam)}: the base's package daemon defines no versionNewsPluginContract, which part one's driver registers its claims' contract through\n`
+    );
+  });
+
+  test("are not written where the base defines all three seams", () => {
+    const run = controlCompat(true, true, true);
+    expect(run.code).toBe(0);
+    expect(run.err).toBe("");
+    expect(existsSync(join(run.tree, transactSeam))).toBe(false);
+    expect(existsSync(join(run.tree, taskSeam))).toBe(false);
+    expect(existsSync(join(run.tree, contractSeam))).toBe(false);
+    expect(run.out).toBe(
+      "   the base's package daemon defines seedTransact, so the control writes no file for it\n" +
+        "   the base's package daemon defines recordTaskAt, so the control writes no file for it\n" +
+        "   the base's package daemon defines versionNewsPluginContract, so the control writes no file for it\n"
+    );
+  });
+
+  test("are written for the one seam the base lacks", () => {
+    const seams = [transactSeam, taskSeam, contractSeam];
+    for (const lacking of seams.keys()) {
+      const run = controlCompat(lacking !== 0, lacking !== 1, lacking !== 2);
+      expect(run.code).toBe(0);
+      for (const [place, seam] of seams.entries()) {
+        expect(existsSync(join(run.tree, seam))).toBe(place === lacking);
+      }
+    }
+  });
+});
+
 /** Runs BODY in a bash whose EXIT trap is the script's finish, with the real lib/run-verdict.sh,
  * over the state finish reads as a run of part one alone leaves it standing in its `driver` check
  * with 3 of its 52 checks counted; VERDICT is the control's, "" for none. BODY calls run_end where
@@ -543,7 +664,7 @@ function finishRun(body: string, verdict = "") {
 ${helperGuard}
 . ${JSON.stringify(join(import.meta.dir, "run-verdict.sh"))}
 ${fn("finish")}
-parts=one base_tree='' prompts_tree='' plan_tree='' counted=3 expected=52 part_two_said=''
+parts=one base_tree='' prompts_tree='' plan_tree='' gateway_tree='' gateway_refresher='' counted=3 expected=52 part_two_said=''
 verdict=${JSON.stringify(verdict)} version_news_evidence=/evidence version_news_started=$SECONDS check=driver
 trap finish EXIT
 ${body}`,

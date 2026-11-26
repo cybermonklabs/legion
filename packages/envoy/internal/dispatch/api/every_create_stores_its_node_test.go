@@ -394,4 +394,5 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/settings/new-issue/_test":                                noObject,
 	"POST /api/v1/writes/_test/slow":                                       noObject,
 	"POST /api/v1/markdown/round-trip":                                     noObject,
+	"POST /api/v1/markdown/file-round-trip":                                noObject,
 }

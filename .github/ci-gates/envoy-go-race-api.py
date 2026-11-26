@@ -16,5 +16,5 @@ GATE = gate("envoy_go_race_api", "envoy-go-race-api", runs=[ceiling_run("envoy-g
      "`bun ../../../../envoy-client/bin/dispatch.ts`, this tree's dispatch command"),
 ) + envoy_client_dep(f"packages/envoy-client/bin/dispatch.ts, which {ENVOY}/internal/dispatch/api/decision_entries_test.go's "
                      "runDispatchCLI runs, imports src/dispatch-cli.ts")
-  + ceiling_reads("envoy-go-race-api") + crash_safety_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod")
+  + ceiling_reads("envoy-go-race-api") + service_settings_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod")
   + bun_job("envoy-go-race-api"))

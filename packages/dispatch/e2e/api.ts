@@ -944,6 +944,16 @@ export async function documentBase(
   return { document: token };
 }
 
+/** `POST /api/v1/markdown/round-trip`: the markdown Dispatch would store for `input.markdown`,
+ *  asked as an agent asks it, the most permissive replacement's answer unless `new_document` asks
+ *  for a new document's refusals. It writes nothing. */
+export function markdownRoundTrip(
+  input: Body<"/api/v1/markdown/round-trip", "post">,
+  options: ApiOptions = { as: "agent" }
+) {
+  return post("/api/v1/markdown/round-trip", { body: input }, options);
+}
+
 /** The blocks of the document's current version, each with the span of markdown it covers. */
 export function getArtifactBlocks(id: string, options: ApiOptions = {}) {
   return get("/api/v1/artifacts/{id}/blocks", { params: { id } }, options);

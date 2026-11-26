@@ -1,9 +1,7 @@
 package gcp_test
 
 import (
-	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,19 +15,38 @@ import (
 // tailnetJoined is the script the golden writes to /etc/envoy/tailnet-joined, run here by /bin/sh
 // with jq from this machine, and docker and sleep stubbed first on PATH: docker answers each
 // `docker exec tailscaled tailscale status --json` with the next of the states it is given, and
-// fails for the state "down", as it does while the container is not up yet.
+// fails for the state "down", as it does while the container is not up yet. Two states are answers
+// no reader can take as one JSON value: "two-values", a Running value with a second value after
+// it, and "text-after", a Running value with text after it. Before it answers it writes what the
+// data disk holds at that moment to EFFECTS_LOG, the marker and the key file, so a test reads when
+// the script acted on them and not only where it left them.
 const dockerStub = `#!/bin/sh
 printf '%s\n' "$*" >>"$DOCKER_LOG"
+marker=absent
+[ -e "$MARKER_FILE" ] && marker=present
+key=unreadable
+[ -f "$KEY_FILE" ] && key=$(cat "$KEY_FILE")
+printf '%s key=%s\n' "$marker" "$key" >>"$EFFECTS_LOG"
 n=$(wc -l <"$DOCKER_LOG")
 state=$(printf '%s\n' $STATES | sed -n "${n}p")
-[ "$state" = down ] && exit 1
-printf '{"BackendState":"%s","Self":{}}\n' "$state"
+case "$state" in
+down) exit 1 ;;
+two-values) printf '{"BackendState":"Running","Self":{}}{"Self":{}}\n' ;;
+text-after) printf '{"BackendState":"Running","Self":{}} not-json\n' ;;
+*) printf '{"BackendState":"%s","Self":{}}\n' "$state" ;;
+esac
 `
 
-// joinedRun is one run of the script: the docker calls, the sleeps, and the marker and key file.
+// joinedUntouched is one status call's reading of the data disk while the script has done
+// nothing to it: no marker, and the key file whole. The script writes its two effects only once
+// the loop has ended, so every call of a run, the one answered Running included, reads this.
+const joinedUntouched = "absent key=" + authKey
+
+// joinedRun is one run of the script: the docker calls, what the data disk held at each of them,
+// the sleeps, and the marker and key file.
 type joinedRun struct {
-	docker, sleeps []string
-	marker, key    string
+	docker, effects, sleeps []string
+	marker, key             string
 }
 
 // joinedHarness is the golden's joined script with docker and sleep stubbed, a data disk directory
@@ -40,16 +57,14 @@ type joinedHarness struct {
 }
 
 // newJoinedHarness fails the test at once without jq, or the wc or sed its docker stub runs, on
-// this machine (tool): the script reads each state with jq, and without one of them reads none, so
-// it would ask again every 5 seconds forever, its sleep stubbed to return at once, until the
-// shell's deadline (gcp.ShellCommand). It fails it at once, too, with a jq the script cannot run
-// on (requireJQFailsOnEmptyInput).
+// this machine (tool): the script reads each state with jq, and without one of them reads none.
+// Any jq will do: the script's wait reads the whole answer (jq -es), so it goes on under jq 1.6
+// as under 1.7 and later when docker prints nothing.
 func newJoinedHarness(t *testing.T) *joinedHarness {
 	t.Helper()
 	for _, name := range []string{"jq", "wc", "sed"} {
 		tool(t, name)
 	}
-	requireJQFailsOnEmptyInput(t)
 	var doc gcp.CloudConfig
 	require.NoError(t, yamlUnmarshalGolden(t, &doc))
 	h := &joinedHarness{
@@ -66,46 +81,28 @@ func newJoinedHarness(t *testing.T) *joinedHarness {
 	return h
 }
 
-// requireJQFailsOnEmptyInput fails the test, naming the jq, unless the jq the script runs (the first
-// on PATH, as tool finds it) exits non-zero under -e when it reads no input. The script's wait reads
-// `docker exec … | jq -e`, and docker prints nothing while the container is not up yet: jq 1.7 and
-// later exit 4 then, as Container-Optimized OS's 1.8 does, and the wait goes on. jq 1.6 exits 0, so
-// under it the script takes a container that is not up for a node that runs, and a row's verdict
-// would be this machine's jq rather than the script's.
-//
-// The probe passes only on a status the jq itself returned. A probe killed by a signal (its
-// context's deadline, an out-of-memory kill) also gives an *exec.ExitError, and taking that for
-// "it exits non-zero" would pass every jq on a machine too slow to run the probe.
-func requireJQFailsOnEmptyInput(t *testing.T) {
-	t.Helper()
-	jq := tool(t, "jq")
-	probe := exec.CommandContext(gcp.ScriptContext(t), jq, "-e", ".")
-	probe.Stdin = strings.NewReader("")
-	err := probe.Run()
-	var exit *exec.ExitError
-	switch {
-	case err == nil:
-		version, _ := exec.CommandContext(gcp.ScriptContext(t), jq, "--version").Output()
-		t.Fatalf("this jq (%s) exits 0 on empty input; the tailnet-joined script needs the exit 4 that jq 1.7+ gives, as COS ships 1.8",
-			strings.TrimSpace(string(version)))
-	case !errors.As(err, &exit):
-		t.Fatalf("%s -e . on empty input did not run: %v", jq, err)
-	case !exit.Exited():
-		t.Fatalf("%s -e . on empty input did not exit of its own (%v), so what it answers on empty input is not read", jq, exit.ProcessState)
-	}
-}
-
 // run runs the script once, as one boot's tailnet-joined.service does, with docker answering the
 // states given, and returns what it printed and its error.
 func (h *joinedHarness) run(t *testing.T, states ...string) (string, error) {
 	t.Helper()
+	return h.runOn(t, h.bin+string(os.PathListSeparator)+os.Getenv("PATH"), states...)
+}
+
+// runOn is run with the PATH given, so a test can run the script on a machine that has the
+// stubs and no jq: the stub directory alone.
+func (h *joinedHarness) runOn(t *testing.T, path string, states ...string) (string, error) {
+	t.Helper()
 	require.NoError(t, os.WriteFile(filepath.Join(h.logs, "docker"), nil, 0o600))
 	require.NoError(t, os.RemoveAll(filepath.Join(h.logs, "sleeps")))
+	require.NoError(t, os.RemoveAll(filepath.Join(h.logs, "effects")))
 	cmd := gcp.ShellCommand(t, h.script, h.marker, h.key)
 	cmd.Env = []string{
-		"PATH=" + h.bin + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"PATH=" + path,
 		"DOCKER_LOG=" + filepath.Join(h.logs, "docker"),
 		"SLEEP_LOG=" + filepath.Join(h.logs, "sleeps"),
+		"EFFECTS_LOG=" + filepath.Join(h.logs, "effects"),
+		"MARKER_FILE=" + h.marker,
+		"KEY_FILE=" + h.key,
 		"STATES=" + strings.Join(states, " "),
 	}
 	out, err := cmd.CombinedOutput()
@@ -122,6 +119,9 @@ func runJoined(t *testing.T, states ...string) joinedRun {
 	docker, err := os.ReadFile(filepath.Join(h.logs, "docker"))
 	require.NoError(t, err)
 	run.docker = strings.Split(strings.TrimSuffix(string(docker), "\n"), "\n")
+	effects, err := os.ReadFile(filepath.Join(h.logs, "effects"))
+	require.NoError(t, err)
+	run.effects = strings.Split(strings.TrimSuffix(string(effects), "\n"), "\n")
 	if sleeps, err := os.ReadFile(filepath.Join(h.logs, "sleeps")); err == nil {
 		run.sleeps = strings.Fields(string(sleeps))
 	}
@@ -135,7 +135,11 @@ func yamlUnmarshalGolden(t *testing.T, doc *gcp.CloudConfig) error {
 
 // Once Tailscale reports the node Running, the script writes the marker on the data disk and
 // empties the key file, keeping the file itself, which tailscaled's container binds: the key stays
-// on the VM no longer than the first login needs, and no later boot fetches it.
+// on the VM no longer than the first login needs, and no later boot fetches it. The data disk is
+// read at each status call as well as at the end, so a script that emptied the key or wrote the
+// marker before the node ran would fail here: where it left the two files cannot say when it
+// acted on them. An answer that is not one JSON value is not Running either, though it holds a
+// Running value: the script asks again after it, and acts only on the whole Running answer.
 func TestTailnetJoinedWaitsForTheNodeToRunThenDropsTheKey(t *testing.T) {
 	run := runJoined(t, "down", "NeedsLogin", "Starting", "Running")
 	require.Equal(t, []string{"5", "5", "5"}, run.sleeps, "it asks again every 5 seconds")
@@ -143,18 +147,57 @@ func TestTailnetJoinedWaitsForTheNodeToRunThenDropsTheKey(t *testing.T) {
 	for _, call := range run.docker {
 		require.Equal(t, "exec tailscaled tailscale --socket=/tmp/tailscaled.sock status --json", call)
 	}
+	require.Equal(t,
+		[]string{joinedUntouched, joinedUntouched, joinedUntouched, joinedUntouched}, run.effects,
+		"no marker and the whole key at every status call: the script acts only once the node runs")
 	_, err := os.Stat(run.marker)
 	require.NoError(t, err, "the marker is written")
 	key, err := os.ReadFile(run.key)
 	require.NoError(t, err, "the key file stays, for tailscaled's bind mount")
 	require.Empty(t, key, "the key is dropped")
+	for _, row := range []struct{ name, answer string }{
+		{"two values, the first Running", "two-values"},
+		{"a Running value with text after it", "text-after"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			run := runJoined(t, row.answer, "Running")
+			require.Equal(t, []string{"5"}, run.sleeps, "it asks again after an answer it cannot take whole")
+			require.Equal(t, []string{joinedUntouched, joinedUntouched}, run.effects,
+				"no marker and the whole key until the whole Running answer")
+			_, err := os.Stat(run.marker)
+			require.NoError(t, err, "the marker is written")
+			key, err := os.ReadFile(run.key)
+			require.NoError(t, err)
+			require.Empty(t, key, "the key is dropped")
+		})
+	}
 }
 
 func TestTailnetJoinedAtOnceWhenTheNodeRuns(t *testing.T) {
 	run := runJoined(t, "Running")
 	require.Empty(t, run.sleeps)
+	require.Equal(t, []string{joinedUntouched}, run.effects, "the one call reads an untouched disk")
 	_, err := os.Stat(run.marker)
 	require.NoError(t, err)
+}
+
+// A machine with no jq cannot read the node's status, so the script says so once and exits
+// non-zero: its unit runs it again 10 seconds later, and the journal names the cause. The wait
+// sends the predicate's own errors to /dev/null, which would otherwise leave a machine without
+// jq waiting for ever with nothing said.
+func TestTailnetJoinedSaysSoOnAMachineWithoutJq(t *testing.T) {
+	h := newJoinedHarness(t)
+	out, err := h.runOn(t, h.bin, "Running")
+	require.Error(t, err, "a run that can read no status fails, so its unit runs it again")
+	require.Equal(t, "tailnet-joined: no jq on this machine, so the node status cannot be read\n", out)
+	docker, dockerErr := os.ReadFile(filepath.Join(h.logs, "docker"))
+	require.NoError(t, dockerErr)
+	require.Empty(t, docker, "it asks nothing")
+	_, statErr := os.Stat(h.marker)
+	require.ErrorIs(t, statErr, os.ErrNotExist, "no marker, so a later boot runs the whole thing again")
+	key, readErr := os.ReadFile(h.key)
+	require.NoError(t, readErr)
+	require.Equal(t, authKey, string(key), "the key is untouched")
 }
 
 // The key is dropped before the marker is written, so a drop that fails leaves no marker: the

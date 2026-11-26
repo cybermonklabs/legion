@@ -490,8 +490,3 @@ func askProjection(name, table, note, member string, links []string, kinds strin
 		unmarked:  askUnmarked(member),
 	}
 }
-
-// answerer is the person node an asks row's answer names, written as asks.AnswererOf names it:
-// the canonical login of the answer's user (user_threads_login is model.CanonicalLogin in SQL),
-// empty where it names nobody. It reads `asks k`.
-const answerer = `coalesce(user_threads_login(k.answer->>'user'), '')`

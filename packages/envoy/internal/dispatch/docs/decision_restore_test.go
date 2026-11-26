@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/decisionread"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -583,6 +584,86 @@ func TestTheConversionWritesAKeepAsTheActorItsEventRecorded(t *testing.T) {
 		if err != nil || len(keptSum) != 1 || !reflect.DeepEqual(keptSum[0].Who, test.want) {
 			t.Errorf("the decision %s holds the kept_text_sum values %+v (%v), want one written by %+v", address, keptSum, err, test.want)
 		}
+	}
+}
+
+// A Keep recorded on a section before a renderer change summed the section in the spelling of the
+// version it names, and the conversion carries it to the section's decision as the release
+// before's Decisions read kept it (keptAcrossRenderers). The version the Keep names is stored in
+// another spelling of the section's loose list (respelledLooseList), and the Keep holds the sum of
+// the section's text in that spelling, so its sum is not the section's as this build renders it.
+// Stamped as another renderer version stored it, the version holds the kept text, which this build
+// reads as the section's text now: the decision holds alice's kept_by and a kept_text_sum. Stamped
+// with this renderer version, the same version and Keep are compared by their sum alone, as a
+// version this renderer version stored is: the decision holds her kept_by and no kept_text_sum,
+// and waits for review.
+func TestTheConversionCarriesAKeepOfASectionAnotherRendererVersionSpelled(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		stamp   int
+		carries bool
+	}{
+		{"another renderer version stored the version the Keep names", pmdoc.RendererVersion - 1, true},
+		{"this renderer version stamps the version the Keep names", pmdoc.RendererVersion, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			issue := newRestoreIssue(t, "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n")
+			decisions := issue.document("decisions-md", "decisions.md", false, "decisions",
+				"# Decisions\n\n## The corpus lists three sources\n\nThe sources are these:\n\n"+looseList)
+			sections := decisionSectionsOf(liveTree(t, issue.service, decisions))
+			if len(sections) != 1 {
+				t.Fatalf("the decisions document's sections are %+v, want one", sections)
+			}
+			heading := sections[0].headingID()
+			list, respelledList := strings.TrimSuffix(looseList, "\n"), strings.TrimSuffix(respelledLooseList, "\n")
+			section, found, err := issue.service.DecisionHeading(ctx, issue.database.Pool, decisions, heading)
+			if err != nil || !found || !strings.Contains(section.Text, list) {
+				t.Fatalf("the heading %s reads the section %+v (%t, %v), want one holding its loose list", heading, section, found, err)
+			}
+			var number int
+			var stored string
+			if err := issue.database.Pool.QueryRow(ctx, `
+				select number, markdown from artifact_versions where artifact_id = $1 order by number desc limit 1
+			`, decisions).Scan(&number, &stored); err != nil {
+				t.Fatalf("read the decisions document's latest version: %v", err)
+			}
+			respelled := strings.Replace(stored, looseList, respelledLooseList, 1)
+			if respelled == stored {
+				t.Fatalf("the decisions document's version %d holds no loose list to respell:\n%s", number, stored)
+			}
+			if _, err := issue.database.Pool.Exec(ctx, `
+				update artifact_versions set markdown = $3, renderer_version = $4 where artifact_id = $1 and number = $2
+			`, decisions, number, respelled, test.stamp); err != nil {
+				t.Fatalf("store version %d in another spelling of its loose list: %v", number, err)
+			}
+			kept := strings.Replace(section.Text, list, respelledList, 1)
+			if decisionread.TextSum(kept) == section.TextSHA256 {
+				t.Fatalf("the kept text %q sums as the section does now: the Keep must hold another sum", kept)
+			}
+			if _, err := issue.database.Pool.Exec(ctx, `
+				insert into decision_keeps (artifact_id, block_id, text_sha256, changed_version, kept_by)
+				values ($1::uuid, $2, $3, $4, 'alice')
+			`, decisions, heading, decisionread.TextSum(kept), number); err != nil {
+				t.Fatalf("write alice's Keep of %s: %v", heading, err)
+			}
+
+			if result := issue.run(true); result.Decisions != 1 || !result.Retired {
+				t.Fatalf("the conversion did %+v, want the section a decision and the document retired", result)
+			}
+			address := issue.movedTo(decisions)[issue.refKey(decisions)+"#"+heading]
+			if address == "" {
+				t.Fatalf("the conversion stated no move from the heading %s", heading)
+			}
+			keptBy, err := graphstore.History(ctx, issue.database.Pool, refs.BlockNodeKind, address, refs.TupleKeptBy)
+			if err != nil || len(keptBy) != 1 || keptBy[0].ToID != "alice" {
+				t.Errorf("the decision %s holds the kept_by tuples %+v (%v), want one to alice", address, keptBy, err)
+			}
+			keptSum, err := graphstore.History(ctx, issue.database.Pool, refs.BlockNodeKind, address, refs.ValueKeptTextSum)
+			if want := map[bool]int{true: 1, false: 0}[test.carries]; err != nil || len(keptSum) != want {
+				t.Errorf("the decision %s holds the kept_text_sum values %+v (%v), want %d", address, keptSum, err, want)
+			}
+		})
 	}
 }
 

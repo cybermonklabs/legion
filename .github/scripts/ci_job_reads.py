@@ -761,39 +761,40 @@ CLEANUP_DETECTOR_PACKAGES = ("internal/dispatch/docs",)
 RACE_DOCS_STEP = "Race-test the document service"
 RACE_DOCS_SCRIPT = (f"{CLEANUP_DETECTOR} RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py "
                     "go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/")
-# Every lane whose tests start a Dispatch process sizes its Postgres service in its CEILING_STEP,
-# which runs .github/scripts/pg-connection-ceiling.sh. The check reads the step's run: line, not
-# what the script runs, so each such gate declares the script, and the go run on the script's line
-# CEILING_GO_RUN, whose closure is internal/dispatch/store/cmd/connections,
+# Every lane whose tests start a Dispatch process checks its Postgres service's max_connections in
+# its CEILING_STEP, which runs .github/scripts/pg-connection-ceiling.sh. The check reads the step's
+# run: line, not what the script runs, so each such gate declares the script, and the go run on the
+# script's line CEILING_GO_RUN, whose closure is internal/dispatch/store/cmd/connections,
 # internal/dispatch/testlimits and the store.
 CEILING = ".github/scripts/pg-connection-ceiling.sh"
-CEILING_STEP = "Size the service for this lane's Dispatch processes"
+CEILING_STEP = "Check the service allows this lane's Dispatch processes"
 CEILING_GO_RUN = 'server=$(cd -- "$repo_root/packages/envoy" && go run ./internal/dispatch/store/cmd/connections)'
 
 
 def ceiling_run(job, workflow=""):
-    """The go run pg-connection-ceiling.sh starts in `job`'s sizing step, in `workflow` when the
+    """The go run pg-connection-ceiling.sh starts in `job`'s ceiling step, in `workflow` when the
     job's steps are not in its own called file (daemon-go-race's, in ci-job-daemon-go.yaml)."""
     return script_run(CEILING, CEILING_GO_RUN, f"run by {at(job, CEILING_STEP, workflow)}", ENVOY,
                       ["./internal/dispatch/store/cmd/connections"], mode="build")
 
 
 def ceiling_reads(job, workflow=""):
-    """pg-connection-ceiling.sh itself, which `job`'s sizing step runs."""
+    """pg-connection-ceiling.sh itself, which `job`'s ceiling step runs."""
     return reads((CEILING, f"{at(job, CEILING_STEP, workflow)} runs it"))
 
 
-# Every job with a Postgres service turns the service's crash safety off in its
-# CRASH_SAFETY_STEP, which runs .github/scripts/pg-crash-safety-off.sh, before its tests
-# (.github/scripts/check-workflow-files.sh refuses a job that does not). The check reads the
-# step's run: line, not what the script runs, so each such gate declares the script.
-CRASH_SAFETY = ".github/scripts/pg-crash-safety-off.sh"
-CRASH_SAFETY_STEP = "Turn crash safety off on the service"
+# Every job with a Postgres service starts it on the command line
+# .github/scripts/postgres-service-settings.sh prints and reads the settings back with that script
+# in its SERVICE_SETTINGS_STEP, before its tests (.github/scripts/check-workflow-files.sh refuses a
+# service or a job that does not). The check reads the step's run: line, not what the script runs,
+# so each such gate declares the script.
+SERVICE_SETTINGS = ".github/scripts/postgres-service-settings.sh"
+SERVICE_SETTINGS_STEP = "Read the service's settings back"
 
 
-def crash_safety_reads(job, workflow="", step=CRASH_SAFETY_STEP):
-    """pg-crash-safety-off.sh itself, which `job`'s crash-safety step runs."""
-    return reads((CRASH_SAFETY, f"{at(job, step, workflow)} runs it"))
+def service_settings_reads(job, workflow="", step=SERVICE_SETTINGS_STEP):
+    """postgres-service-settings.sh itself, which `job`'s read-back step runs."""
+    return reads((SERVICE_SETTINGS, f"{at(job, step, workflow)} runs it"))
 
 
 # The forced-order steps run packages/envoy/scripts/forced-order.sh, whose go test builds each
@@ -869,7 +870,7 @@ def two_builds_same_step():
 def two_builds_go_reads():
     """What the two-build job's Go step reads beyond its closure and the //ci:reads lines of the
     twobuild files: the script its -run comes from, the script that wrote the previous build it
-    runs against, the sizing of the Postgres it runs on, and the Go and the Bun install its CLI
+    runs against, the checks of the Postgres it runs on, and the Go and the Bun install its CLI
     test runs this tree's dispatch command with."""
     return reads(
         (TAGGED_TESTS, f"{at(TWO_BUILDS_JOB, TWO_BUILDS_STEP)} takes its -run from it"),
@@ -879,7 +880,7 @@ def two_builds_go_reads():
          "cmd/dispatch/twobuild_harness_test.go checks, and "
          f"{at(TWO_BUILDS_SAME_JOB, 'Build this tree as the previous build', job_file(TWO_BUILDS_JOB))} "
          "writes the one its own Go step runs against"),
-    ) + ceiling_reads(TWO_BUILDS_JOB) + crash_safety_reads(TWO_BUILDS_JOB) + setup_go(TWO_BUILDS_JOB, f"{ENVOY}/go.mod") + bun_job(TWO_BUILDS_JOB)
+    ) + ceiling_reads(TWO_BUILDS_JOB) + service_settings_reads(TWO_BUILDS_JOB) + setup_go(TWO_BUILDS_JOB, f"{ENVOY}/go.mod") + bun_job(TWO_BUILDS_JOB)
 
 
 # ---------------------------------------------------------------- reading a Go file as text
@@ -2295,6 +2296,7 @@ def browser_gate(filter, job):
          f"e2e/visual.e2e.ts and e2e/visual-guard.e2e.ts import: {at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)} "
          "resolves each visual row's read to the route the table serves it by"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at `packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts#pmdocFixtures` and `packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts#TABLE_PATH`, from the new URL TABLE_PATH holds, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
+        (f"{ENVOY}/internal/dispatch/api/testdata/text-refusals.json", "read at `packages/dispatch/e2e/artifact-dry-run.e2e.ts#rows` and `packages/dispatch/e2e/artifact-dry-run.e2e.ts#textRefusalsFile`, from the new URL textRefusalsFile holds, for that spec's rows, which are the list's rows in each combination the spec runs"),
         ("scripts/e2e/lib/held-port.py", "`packages/dispatch/e2e/run-server.sh#held_port` holds each stack's server port through it"),
         (f"{ENVOY}/scripts/lib/pg-url.sh", "`packages/dispatch/e2e/run-broker.sh#$e2e_dir/../../envoy/scripts/lib/pg-url.sh` sources it, and `packages/dispatch/e2e/harness-listeners.ts#realBrokerListeners` "
                                            f"starts that script in a one-process run on the fake broker: {at_browser(BROWSER_SHARD_SPECS)} and "

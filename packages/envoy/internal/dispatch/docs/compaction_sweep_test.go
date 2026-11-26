@@ -403,5 +403,5 @@ func waitOutTheSweepHour(t *testing.T, database *store.Store) {
 // compactionSweepTick is one tick of the sweep, due now, as RunCompactionSweep's ticker makes one:
 // the pass, when this process takes the lease and no process has swept this hour.
 func (s *Service) compactionSweepTick(ctx context.Context, leases duty.Leases) {
-	duty.Exclusive(ctx, leases, compactionSweepLease, time.Now(), compactionSweepPeriod, s.compactionSweepPass)
+	duty.Exclusive(ctx, nil, leases, compactionSweepLease, time.Now(), compactionSweepPeriod, s.compactionSweepPass)
 }

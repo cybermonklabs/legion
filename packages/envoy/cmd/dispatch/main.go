@@ -499,6 +499,23 @@ func main() {
 	renames := refs.NewRenames(renamePairs)
 	attributor := delivery.NewAttributor(renames)
 
+	// session_titles (migration 20261117100008) holds each session's newest stamped title,
+	// 20261117100015's trigger keeps it in step from the deploy on, and this fills it for the
+	// events stored before that, in committed batches rather than as a migration, whose one
+	// transaction would hold every concurrent write of a session it had already written waiting
+	// out the whole statement (20261117100016's comment). A failure stops the boot:
+	// delivery.ResolveSessionTitles reads session_titles alone, so a process that served with the
+	// table unfilled would name every session stored before this release by its id. Production
+	// runs one replica under a Kubernetes Deployment's `strategy: Recreate` (README.md, "Database
+	// migrations"), so no process serves while this one migrates and fills: the old process has
+	// stopped, and this one listens only once the fill has ended.
+	if filled, err := database.FillSessionTitles(ctx); err != nil {
+		slog.Error("dispatch: fill session_titles for the events stored before this release", "error", err)
+		os.Exit(1)
+	} else if filled > 0 {
+		slog.Info("dispatch: filled session_titles for the events stored before this release", "rows", filled)
+	}
+
 	// The decisions step's first phase (docs.DecisionStep): every asks and ask_followers row the
 	// release before wrote is stated on its ask's node and marked, in committed batches, before
 	// this process serves. A reading's check of its ask takes the answer from the node, which

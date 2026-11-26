@@ -240,18 +240,49 @@ func TestShutdownSettlesEveryOtherRoomWhileOneRoomsQueuedAppendIsHeld(t *testing
 // connected before the scan is the only writer that can land a genuinely new append afterward.
 // The barrier on service.shuttingDown makes that ordering deterministic rather than a race the
 // goroutine scheduler happens to win (LEGION-501).
+//
+// The final version cannot prove this order: settlement can also persist unstored room updates
+// (Ledger.flushThrough). Compare the append's commit with settlement's start instead.
+// Do not spend the drain budget on a fixed hold: both appends and settlement need that budget.
 func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	first := &burstGate{entered: make(chan struct{}), release: make(chan struct{})}
 	second := &burstGate{entered: make(chan struct{}), release: make(chan struct{})}
-	appends := &burstStore{VersionedStore: NewPgVersioned(database), room: artifactID, gates: []*burstGate{first, second}}
+	// afterAppendCommit runs in each append's call, between its commit and its cursor's advance,
+	// and the second gate's entry tells the second append's commit from the first's: ygo's
+	// persistence worker hands a room's updates to the store one call at a time, so the first has
+	// committed before the second reaches its gate.
+	var secondCommitted, settleStarted, settleStartedEarly atomic.Bool
+	persist := NewPgVersioned(database)
+	persist.afterAppendCommit = func(room string, _ persistence.Version) {
+		if room != artifactID {
+			return
+		}
+		select {
+		case <-second.entered:
+			secondCommitted.Store(true)
+		default:
+		}
+	}
+	appends := &burstStore{VersionedStore: persist, room: artifactID, gates: []*burstGate{first, second}}
 	testcleanup.Add(t, func() {
 		first.let()
 		second.let()
 	})
 	service := newShutdownTestService(t, database, appends)
+	// Each start of a settlement of the room once Shutdown has scanned it notes whether the second
+	// append had committed by then; the room's settlement before the burst starts before the scan.
+	service.beforeSettleStart = func(room string) {
+		if room != artifactID || !service.shuttingDown(room) {
+			return
+		}
+		settleStarted.Store(true)
+		if !secondCommitted.Load() {
+			settleStartedEarly.Store(true)
+		}
+	}
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
@@ -286,9 +317,6 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 	waitFor(t, 10*time.Second, "both appends to be recorded as outstanding", func() bool {
 		return service.room(artifactID).durableAppends.Load() >= 2
 	})
-	// Both appends stay queued past the pre-fix 5 s drain budget, and land with time to spare
-	// inside the 9 s per-room budget this round widened it to.
-	time.Sleep(7 * time.Second)
 	first.let()
 	select {
 	case <-second.entered:
@@ -305,6 +333,12 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 	}
 	if shutdownErr != nil {
 		t.Errorf("Shutdown returned %v, want nil: the burst should settle within the per-room drain budget", shutdownErr)
+	}
+	switch {
+	case !settleStarted.Load():
+		t.Errorf("Shutdown started no settlement of the room")
+	case settleStartedEarly.Load():
+		t.Errorf("Shutdown's settlement of the room started before the append recorded after its scan committed: its drain did not wait for that append")
 	}
 	if number, markdown, _ := latestDocumentVersion(t, database, artifactID); number != 2 || markdown != "second\n" {
 		t.Errorf("the document's latest version is %d holding %q, want version 2 holding %q", number, markdown, "second\n")

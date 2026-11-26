@@ -25,6 +25,7 @@ import (
 // whole. All three publish, the store then holds no node and no tuple end past the bound, and a
 // record after them publishes too.
 func TestADeliveredRoleIsLeftOutPastTheAddressBound(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
