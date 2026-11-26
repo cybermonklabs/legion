@@ -19,8 +19,9 @@ import (
 )
 
 // unmarkedAskKinds are the ask tie kinds whose rows the earlier release
-// wrote with no node, in the order the census reads them.
-var unmarkedAskKinds = []string{graphstore.TupleFollowedBy, "ask_parent", "ask_anchor", "ask_answer"}
+// wrote with no node, in the order the census reads them: an ask's block is one of them
+// (askBlockProjection), since that release wrote the row's block columns with no node either.
+var unmarkedAskKinds = []string{graphstore.TupleFollowedBy, "ask_parent", "ask_anchor", "ask_answer", graphstore.TupleAskedOn}
 
 // The rule that a tie kind holding no row and no node is no refusal is for a
 // store nothing of that kind was written to. An asks table and an ask_followers table whose rows
@@ -29,7 +30,7 @@ var unmarkedAskKinds = []string{graphstore.TupleFollowedBy, "ask_parent", "ask_a
 // unmarked rows. Over the agreeing store and one such ask - an ask block anchored to the document
 // and answered by bob - and one follower row of it, every ask kind counts its unmarked row, none
 // prints that nothing of it is written yet, each prints that it checked no row, and the census
-// refuses with those four kinds as the kinds that checked no row. (The project census refuses the
+// refuses with those five kinds as the kinds that checked no row. (The project census refuses the
 // unmarked asks row as well, as a row with no node; that refusal is the project census's own and
 // not this rule's, so the test reads the kinds the census names unpopulated.)
 func TestTheCensusRefusesAskRowsNoBackfillMarked(t *testing.T) {

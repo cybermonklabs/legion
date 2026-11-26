@@ -14,21 +14,26 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
-// seedAskWithoutBlockTuple writes an ask whose row and node the earlier release already marked.
+// seedAskWithoutBlockTuple writes an ask whose row and node the earlier release already marked, in
+// the order its writer writes them: the node first, then the row that names it, which the
+// foreign key asks_node (migration 20261116094058) holds to a node the store holds.
 func seedAskWithoutBlockTuple(t *testing.T, database *store.Store, project, issue, document, refKey string) (id string, createdAt time.Time) {
 	t.Helper()
 	ctx := t.Context()
 	err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `
-			with next as (select gen_random_uuid() as id)
-			insert into asks (id, issue_key, author, question, block_artifact_id, block_id, node_kind, node_address)
-			select id, $1, '{"kind":"user","id":"alice"}', 'Where does this ask stand?', $2::uuid, 'q1', 'ask', id::text
-			from next returning id::text, created_at`, issue, document).Scan(&id, &createdAt); err != nil {
+		if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&id, &createdAt); err != nil {
 			return err
 		}
 		nodes, tuples, _ := graphstore.AskFacts(id, project, nil, model.Actor{Kind: "user", ID: "alice"}, createdAt,
 			graphstore.NoEvent, graphstore.AskPlaces{Anchor: refKey, Document: refKey})
-		return graphstore.Write(ctx, tx, nodes, tuples)
+		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			insert into asks (id, issue_key, author, question, block_artifact_id, block_id, node_kind, node_address, created_at)
+			values ($1::uuid, $2, '{"kind":"user","id":"alice"}', 'Where does this ask stand?', $3::uuid, 'q1', 'ask', $1, $4)`,
+			id, issue, document, createdAt)
+		return err
 	})
 	if err != nil {
 		t.Fatalf("seed the earlier release's ask: %v", err)
