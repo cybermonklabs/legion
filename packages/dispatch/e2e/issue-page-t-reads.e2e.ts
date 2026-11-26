@@ -31,7 +31,6 @@ import {
   besideViewRead,
   blocksReads,
   coverageIndexEventGate,
-  decisionsReadOf,
   decisionsViewGate,
   headerStatus,
   heldAnswer,
@@ -285,29 +284,26 @@ test("each filter draws its view read's rows", async ({ browser }) => {
   }
 });
 
-// c-views' decision lines, owed until the page draws the decisions from the tree read's nodes,
-// once decisions are nodes of the tree read on this branch's base (`partUGate`): each decision,
-// not replaced, whose `shaped` tie names a statement under Spec is named on that statement's line
-// (`[data-spec-because]` in its row), never a row of its own, and the page links each decision it
-// names there to its block (`spec-decided-by.ts`). So a decision is on the line where the line
-// holds a link that `linksTo` reads as the decision's row id (`idOf`, as the row has it). A
-// decision the model marks replaced (its node's `decision.replaced`) draws no line at all (root
-// R5), so the row counts none.
+// c-views' decision lines, owed until the page draws the decisions from the tree read's nodes
+// (`partUGate`): each decision, not replaced, whose `shaped` tie names a statement under Spec is
+// named on that statement's line (`[data-spec-because]` in its row), never a row of its own, and
+// the page links each decision it names there to its block (`spec-decided-by.ts`). So a decision
+// is on the line where the line holds a link that `linksTo` reads as the decision's row id
+// (`idOf`, as the row has it). A decision the model marks replaced (its node's
+// `decision.replaced`) draws no line at all (root R5), so the row counts none.
 // SLOW(>=2s): two seeded issues, each load waited out, and Spec pressed and read until it holds
 // still.
 test("each filter draws its view read's rows, and each decision that shaped a statement is a line on its row @owed", async ({
   browser,
 }) => {
+  owedUnless(partUGate);
   test.setTimeout(ROW_MS);
   for (const [, seed] of VIEW_SEEDS) {
     await phase(browser, seed, async (page, seeded) => {
       owedUnless(await treeReadGate(page, seeded.key));
-      const tree = treeAnswerOf(page);
-      const decisions = decisionsReadOf(page, seeded.key);
       const spec = viewAnswerOf(page, "spec");
       const traffic = watchApiRequests(page);
       await firstLoad(page, traffic, seeded.key);
-      owedUnless(partUGate(await heldAnswer(tree, "the tree read"), decisions.read()));
       const reads = await idReadsOf(seeded.key);
       const drawn = await pressFilter(page, traffic, "spec");
       const answer = await heldAnswer(spec, "the Spec view read");
@@ -358,14 +354,17 @@ test("each filter draws its view read's rows, and each decision that shaped a st
 });
 
 // c-views for Decisions, owed on the model's decisions view of the tree read
-// (`decisionsViewGate`): once the load reads the decisions as the tree read's `view=decisions`,
-// the Decisions filter draws that view read's rows, as Spec, Verification and Plan draw theirs,
-// which is how the root issue settled row 3's gap for Decisions.
+// (`decisionsViewGate`) and on the page drawing the decisions from the tree read's nodes, whose
+// parts the Decisions filter draws (`partUGate`): once the load reads the decisions as the tree
+// read's `view=decisions`, the Decisions filter draws that view read's rows, as Spec,
+// Verification and Plan draw theirs, which is how the root issue settled row 3's gap for
+// Decisions.
 // SLOW(>=2s): two seeded issues, each load waited out, and Decisions pressed, read until it holds
 // still, and released.
 test("each filter draws its view read's rows, and the Decisions filter draws its view read's rows @owed", async ({
   browser,
 }) => {
+  owedUnless(partUGate);
   test.setTimeout(ROW_MS);
   for (const [name, seed] of VIEW_SEEDS) {
     await phase(browser, seed, async (page, seeded) => {

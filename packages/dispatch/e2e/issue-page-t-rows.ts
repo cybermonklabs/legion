@@ -43,7 +43,6 @@ import {
   convertedGate,
   type DecisionsRead,
   type DrawnNode,
-  decisionNodesGate,
   decisionsAreNodes,
   decisionsReadOf,
   decisionTimes,
@@ -52,6 +51,7 @@ import {
   type OutlineKind,
   outlineAnswerOf,
   owedUnless,
+  partUGate,
   R2_ROW_KINDS,
   seedEventsLanded,
   type TreeView,
@@ -118,9 +118,9 @@ import { type ApiRequest, type ApiRequests, expectLoadSettled, watchApiRequests 
  * `@owed`: each runs for real once its gates are on the base. Each clause a later gate holds is a
  * row of its own, titled its row's title and the clause and tagged `@owed`, which checks that gate
  * the same way and asserts the clause once it is met: row 1's decision clauses, for each seed that
- * holds a decision (`decisionNodesGate`); row 2's Decisions (`decisionsViewGate`); row 3's
- * Decisions (`decisionsViewGate`) and its decision lines (`partUGate`); row 4's Keep
- * (`decisionsViewGate` and `partUGate`). Each such row stands in its row's file.
+ * holds a decision (`partUGate`); row 2's Decisions (`decisionsViewGate`); row 3's Decisions
+ * (`decisionsViewGate` and `partUGate`) and its decision lines (`partUGate`); row 4's Keep
+ * (`decisionsViewGate` and `decisionNodesGate`). Each such row stands in its row's file.
  *
  * These helpers name the tree read's modules and its answer's types, so they are not in
  * `e2e/issue-page-t.ts`, which the recorder loads on a base without the tree read. They are not
@@ -129,7 +129,7 @@ import { type ApiRequest, type ApiRequests, expectLoadSettled, watchApiRequests 
  */
 
 /** The seeds whose rows the fixture records a decision row of: row 1's decision clauses read
- *  them (`decisionNodesGate`). */
+ *  them (`partUGate`). */
 export const DECISION_SEEDS = new Set(
   SEEDS.flatMap(([name]) =>
     fixtureSeed(name).rows.some((row) => row.kind.type === "decision") ? [name] : []
@@ -637,10 +637,10 @@ function answeredReviewState(node: IssueTreeNode, changed: boolean): string | nu
   return node.decision?.kept == null ? null : "kept";
 }
 
-/** Row 1's decision clauses, once the seeds' decisions are nodes (`decisionNodesGate`): each
- *  decision row's review state is the answer's, each Change stands under its decision's row, the
- *  section that restates a person's answer is no row, and the answered question's row carries a
- *  chip for each node its `shaped` ties name. */
+/** Row 1's decision clauses, once the page draws the decisions from the tree read's nodes
+ *  (`partUGate`): each decision row's review state is the answer's, each Change stands under its
+ *  decision's row, the section that restates a person's answer is no row, and the answered
+ *  question's row carries a chip for each node its `shaped` ties name. */
 function expectDecisionsFromNodes(outline: OutlineRead, recorded: SeedFixture): void {
   const { answer, rows } = outline;
   const idOf = treeIdOf(answer, outline.reads);
@@ -744,18 +744,18 @@ export async function expectSameRows(
   });
 }
 
-/** Row 1's decision clauses on the seed `name`, which `seed` seeds, owed on `decisionNodesGate`
- *  and asserted once it is met (`expectDecisionsFromNodes`). */
+/** Row 1's decision clauses on the seed `name`, which `seed` seeds, owed on `partUGate` and
+ *  asserted once it is met (`expectDecisionsFromNodes`). */
 export async function expectSameRowsDecisions(
   browser: Browser,
   name: string,
   seed: NamedSeed[1]
 ): Promise<void> {
+  owedUnless(partUGate);
   await phase(browser, seed, async (page, seeded) => {
     owedUnless(await treeReadGate(page, seeded.key));
     owedUnless(await convertedGate(page, seeded.key));
     const outline = await readOutline(page, seeded);
-    owedUnless(decisionNodesGate(outline.answer, outline.decisions));
     expectDecisionsFromNodes(outline, fixtureSeed(name));
   });
 }

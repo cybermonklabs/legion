@@ -19,13 +19,13 @@ import {
   stateWordOf,
 } from "./issue-page-t-rows";
 import {
+  decisionNodesGate,
   decisionsReadOf,
   decisionsViewGate,
   footLineGate,
   headerStatus,
   heldAnswer,
   owedUnless,
-  partUGate,
   treeAnswerOf,
   treeReadGate,
   treeReads,
@@ -127,9 +127,8 @@ test("a write is drawn without a reload", async ({ browser }) => {
 });
 
 // c-fresh's Keep clause, owed on the model's decisions view of the tree read
-// (`decisionsViewGate`) for the Decisions view read, and on the page drawing the decisions from
-// the tree read's nodes (`partUGate`), which records it once decisions are nodes on this
-// branch's base.
+// (`decisionsViewGate`) for the Decisions view read, and on decisions being nodes of the tree
+// read on this branch's base (`decisionNodesGate`).
 // SLOW(>=2s): a seeded issue, its load waited out, a Keep in the outline waited for, Decisions
 // pressed and a second Keep there waited for.
 test("a write is drawn without a reload, and Keep is drawn kept in the outline and in the Decisions view @owed", async ({
@@ -143,7 +142,7 @@ test("a write is drawn without a reload, and Keep is drawn kept in the outline a
     const traffic = watchApiRequests(page);
     const load = await firstLoad(page, traffic, seeded.key);
     owedUnless(decisionsViewGate(load, seeded.key));
-    owedUnless(partUGate(await heldAnswer(tree, "the tree read"), decisions.read()));
+    owedUnless(decisionNodesGate(await heldAnswer(tree, "the tree read"), decisions.read()));
     await unfoldEveryBranch(page);
     const waiting = new Set(
       (await drawnRowReadings(page, { bodies: false })).flatMap((row) =>
