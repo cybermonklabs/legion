@@ -41,7 +41,7 @@ import-path order, so one long package that came late set the step's time. In me
 
 So each step runs in legs: one job per leg, all at the same time, each over the packages
 `.github/go-legs.yaml` lists for it, longest first. Plain leg 1 is internal/store, whose 542 s
-sets its time, beside the next three, each on a core of its own; plain leg 2 is the other 89
+sets its time, beside the next three, each on a core of its own; plain leg 2 is the other 90
 packages, about 880 s of package time over four cores, and the steps no leg splits (the
 race-impossible tests, the forced-order tests and Stage 1, 57 s in that job). internal/daemon
 takes three race legs, a group of its tests each ([below](#why-internaldaemons-tests-run-in-three-legs));
