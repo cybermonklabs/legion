@@ -205,9 +205,9 @@ func (l *ciListener) delivered(token claim.Token, key string) int {
 // ciDaemon is the whole daemon of the CI news tests: the pause's rig (newPauseDaemonRig), booted
 // through startDaemon on a database of its own with the fake runtime, PostgreSQL and NATS, whose
 // Envoy listener is ciListener, and which hands the test its outbox before the outbox's lanes run
-// (overrides.outbox), so a test sets a seam of it there and wakes a lane once it has queued a row
-// as the workflow's own commit would. Its one issue is the rig's first, on liveRepo, with an open
-// pull request, number ciPullRequest, at a head the test names.
+// (overrides.outbox), so a test wakes a lane once it has queued a row as the workflow's own commit
+// would. Its one issue is the rig's first, on liveRepo, with an open pull request, number
+// ciPullRequest, at a head the test names.
 type ciDaemon struct {
 	*pauseDaemonRig
 	listener *ciListener
@@ -217,17 +217,13 @@ type ciDaemon struct {
 	runner   *outbox
 }
 
-// newCIDaemon readies the rig, its outbox seamed by seams (nil for none); nothing is seeded or
-// booted yet.
-func newCIDaemon(t *testing.T, seams func(*outbox)) *ciDaemon {
+// newCIDaemon readies the rig; nothing is seeded or booted yet.
+func newCIDaemon(t *testing.T) *ciDaemon {
 	t.Helper()
 	listener := newCIListener(t)
 	r := newPauseDaemonRig(t, func(cfg *config.Config) { cfg.EnvoyURL = listener.url })
 	d := &ciDaemon{pauseDaemonRig: r, listener: listener, key: r.issue(1)}
 	r.o.outbox = func(o *outbox) {
-		if seams != nil {
-			seams(o)
-		}
 		d.runnerMu.Lock()
 		defer d.runnerMu.Unlock()
 		d.runner = o

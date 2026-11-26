@@ -222,18 +222,12 @@ func (w *workflowRuntime) mergeStateEnds(ctx context.Context, issue string) bool
 // (mergeStateEnds), and ctx's end ends it and the ladder. A climb that ended on the failure instead
 // left mergeStateEnds to take the issue off, and nothing read the head again until another fact
 // asked, so an answer GitHub had by then - a CONFLICTING one among them - reached nothing.
-// dropFirstReadFailure, which only a test sets, ends the climb on the failure as that did.
 func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) string {
 	var backoff time.Duration
 	for read := 1; ; {
 		state, head, err := w.readMergeState(ctx, issue, "")
 		if err != nil {
 			if ctx.Err() != nil {
-				return ""
-			}
-			if w.dropFirstReadFailure {
-				w.log.Warn("read GitHub's merge state for an issue whose read was asked for; the record stands as it was until the next read",
-					"issue", issue, "read", read, "error", err)
 				return ""
 			}
 			backoff = min(max(2*backoff, w.mergeStateWait()), mergeStateFollowWaits*w.mergeStateWait())

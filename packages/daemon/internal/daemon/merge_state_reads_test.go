@@ -669,8 +669,7 @@ func (rig *readRig) endedWithNothingAsked(t *testing.T) {
 // ladder's wait up to twenty of them, a rate limit's longer wait is waited out instead, and a
 // failed read counts as none of the climb's five reads. A request for a read ends the wait and
 // reads at once, and the pull request's close and the reader's end each end the reads with nothing
-// asked. The control, dropFirstReadFailure, ends the climb on the failure as a climb once ended:
-// no reader then holds the read, and nothing is ever asked.
+// asked.
 func TestTheAfterFixReadSurvivesItsFirstError(t *testing.T) {
 	t.Parallel()
 
@@ -776,22 +775,6 @@ func TestTheAfterFixReadSurvivesItsFirstError(t *testing.T) {
 		rig.confirmedAndAskedOnce(t, 3)
 		if waited := time.Since(asked); waited >= time.Minute/2 {
 			t.Fatalf("GitHub answered %s after the request, want the request to end the minute's wait", waited)
-		}
-	})
-
-	t.Run("with the failure dropped no reader holds the read, and nothing is ever asked", func(t *testing.T) {
-		rig := newReadRig(t, approvedCapture, func(read int32) pullAnswer {
-			if read == 1 {
-				return unavailablePull
-			}
-			return conflictingPull
-		})
-		rig.w.dropFirstReadFailure = true
-		rig.start(t)
-		testwait.Eventually(t, "the failed read to be logged", func() bool { return len(rig.lines(t, climbFailed)) >= 1 })
-		rig.endedWithNothingAsked(t)
-		if got := rig.reads.Load(); got != 1 {
-			t.Fatalf("GitHub was read %d times, want the one read that failed", got)
 		}
 	})
 }

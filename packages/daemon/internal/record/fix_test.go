@@ -706,14 +706,14 @@ func TestFixAtReadsTheFixABoundBranchNames(t *testing.T) {
 // besidePushes is what a fix's Pushed reads at each point of besidePushRace.
 type besidePushes struct{ afterPushes, afterStaleUpdate, afterDelete map[string]string }
 
-// besidePushRace plays, on records, the two ways a push beside fix 1 can be lost, each in
-// transactions of its own. A fact's transaction reads fix 1 (stale), then the implementer's push P
-// is written and, before it commits, the tester's push Q waits on its row; P commits, Q commits,
-// and the stale transaction writes fix 1's way from what it read. Then the tester's branch is
-// deleted. It answers Pushed after the two pushes, after the stale update and after the delete.
-func besidePushRace(t *testing.T, records *Postgres) besidePushes {
+// besidePushRace plays the two ways a push beside fix 1 can be lost, each in transactions of its
+// own. A fact's transaction reads fix 1 (stale), then the implementer's push P is written and,
+// before it commits, the tester's push Q waits on its row; P commits, Q commits, and the stale
+// transaction writes fix 1's way from what it read. Then the tester's branch is deleted. It answers
+// Pushed after the two pushes, after the stale update and after the delete.
+func besidePushRace(t *testing.T) besidePushes {
 	t.Helper()
-	st := migratedStore(t)
+	records, st := NewStore(), migratedStore(t)
 	ctx := context.Background()
 	inTx(t, st, func(tx pgx.Tx) {
 		fix := readingFix(1)
@@ -796,14 +796,10 @@ func besidePushRace(t *testing.T, records *Postgres) besidePushes {
 // made at the same time loses it: after the implementer's push P, the tester's push Q that waited
 // on it and a stale update of the fix's way, Pushed holds P and Q, and the delete of the tester's
 // branch takes Q alone.
-//
-// The control, a kept subtest: with the seam rewritePushedWithFix, which writes the whole map from
-// the fix the writer read, the tester's push loses P and the stale update loses Q, which the
-// subtest asserts.
 func TestBesidePushRecordingDoesNotOverwriteAnotherRoleOrGetLost(t *testing.T) {
 	both := map[string]string{"implementer": fixHeadX, "tester": fixHeadY}
 	t.Run("each push keeps every other role's head", func(t *testing.T) {
-		race := besidePushRace(t, NewStore())
+		race := besidePushRace(t)
 		if !reflect.DeepEqual(race.afterPushes, both) {
 			t.Errorf("Pushed after the two pushes = %v, want %v", race.afterPushes, both)
 		}
@@ -812,15 +808,6 @@ func TestBesidePushRecordingDoesNotOverwriteAnotherRoleOrGetLost(t *testing.T) {
 		}
 		if want := map[string]string{"implementer": fixHeadX}; !reflect.DeepEqual(race.afterDelete, want) {
 			t.Errorf("Pushed after the tester's branch was deleted = %v, want %v", race.afterDelete, want)
-		}
-	})
-	t.Run("control: rewritePushedWithFix loses a push to each writer", func(t *testing.T) {
-		race := besidePushRace(t, &Postgres{rewritePushedWithFix: true})
-		if want := map[string]string{"tester": fixHeadY}; !reflect.DeepEqual(race.afterPushes, want) {
-			t.Errorf("Pushed after the two pushes with the whole map rewritten = %v, want %v: the tester's push lost P", race.afterPushes, want)
-		}
-		if race.afterStaleUpdate != nil {
-			t.Errorf("Pushed after the stale update with the whole map rewritten = %v, want none: the stale fix lost Q", race.afterStaleUpdate)
 		}
 	})
 }

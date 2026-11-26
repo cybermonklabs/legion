@@ -28,18 +28,7 @@ const maxInt64 = uint64(^uint64(0) >> 1)
 
 // Postgres implements Store exclusively through caller-owned pgx transactions. It has no pool:
 // opening, committing, and retrying a transaction belong to the layer that owns its boundary.
-type Postgres struct {
-	// keepPreviousPushBranch leaves a step's binding to a branch beside a fix on the place's next
-	// start (RaiseStepStarts), rewritePushedWithFix writes a fix's whole Pushed from the fix a
-	// writer read (UpdateFix, RecordBesidePush), promptWithoutWorkIdentity joins a prompt to read
-	// Dispatch to a pending one of another generation, task or reader, and lowerSeqWins keeps the
-	// older snapshot of a check at that join (EnqueueReadPrompt). Only tests set any of them, as
-	// the control of the rule each takes out.
-	keepPreviousPushBranch    bool
-	rewritePushedWithFix      bool
-	promptWithoutWorkIdentity bool
-	lowerSeqWins              bool
-}
+type Postgres struct{}
 
 var _ Store = (*Postgres)(nil)
 

@@ -41,7 +41,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // fixRigVerification is the walk's Verification document: k1, a before_merge check the tester
@@ -59,12 +58,11 @@ const fixRigFactPrefix = "RIG FACT:"
 // fixRig is the walk's rig: the walk of an owner's plan over the real Dispatch (ownerStepsRig),
 // that Dispatch's events on the run's NATS server and its App on the fake GitHub of check runs
 // (checks), its own database open (dispatchDB), the daemon's GitHub stand-in (pulls), the daemon's
-// log (logs), the clock GitHub's events of the pull requests are stamped with (clock), the seam a
-// control sets on the daemon's engine at each boot (engine, nil for none), the watcher that logs
-// each fact as it arrives (watch), and the outbox of the daemon booted last (lanes), which each
-// boot hands the rig before the outbox's lanes run (overrides.outbox), so a step that writes a row
-// in the store wakes its lane as the commit of a row the workflow writes does. Its steps act on
-// one issue of the run at a time, as ownerStepsRig's do (on).
+// log (logs), the clock GitHub's events of the pull requests are stamped with (clock), the watcher
+// that logs each fact as it arrives (watch), and the outbox of the daemon booted last (lanes),
+// which each boot hands the rig before the outbox's lanes run (overrides.outbox), so a step that
+// writes a row in the store wakes its lane as the commit of a row the workflow writes does. Its
+// steps act on one issue of the run at a time, as ownerStepsRig's do (on).
 type fixRig struct {
 	*ownerStepsRig
 	natsURL    string
@@ -74,7 +72,6 @@ type fixRig struct {
 	logs       *syncBuffer
 	started    time.Time
 	clock      time.Time
-	engine     func(*workflow.Engine)
 	watch      *fixRigWatch
 
 	lanesMu sync.Mutex
@@ -93,10 +90,9 @@ type fixRigIssue struct {
 // newFixRig takes the run's NATS server, starts the fake GitHub of check runs and the scratch
 // Dispatch on it with its App and its delivery settings, files each of issues with its spec and
 // its Verification document, seeds each in the daemon's store at admitted with its architect's
-// launch begun (seedAdmitted), boots the daemon on a database of its own with engine set on its
-// engine (nil for no seam), registers each architect, and starts the watcher. Its steps act on the
-// first issue until on moves them.
-func newFixRig(t *testing.T, engine func(*workflow.Engine), issues ...fixRigIssue) *fixRig {
+// launch begun (seedAdmitted), boots the daemon on a database of its own, registers each
+// architect, and starts the watcher. Its steps act on the first issue until on moves them.
+func newFixRig(t *testing.T, issues ...fixRigIssue) *fixRig {
 	t.Helper()
 	ctx := context.Background()
 	// The NATS server is taken first: testnats.URL empties it of every stream, and Dispatch
@@ -150,7 +146,7 @@ func newFixRig(t *testing.T, engine func(*workflow.Engine), issues ...fixRigIssu
 	r := &fixRig{
 		ownerStepsRig: &ownerStepsRig{stepRecordsRig: &stepRecordsRig{liveProof: proof, dispatch: dispatch,
 			claims: map[claim.Token]*stepClaimant{}, waits: make(chan claim.Token, 16)}, specs: map[string]string{}},
-		natsURL: natsURL, checks: checks, dispatchDB: dispatchDB, logs: &syncBuffer{}, started: time.Now(), engine: engine,
+		natsURL: natsURL, checks: checks, dispatchDB: dispatchDB, logs: &syncBuffer{}, started: time.Now(),
 		pulls: newFixRigGitHub(t),
 	}
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Fix rig"}, http.StatusCreated, nil)
@@ -218,10 +214,9 @@ func (r *fixRig) fileIssue(issue fixRigIssue) {
 }
 
 // boot starts the whole daemon on the store as it stands, over a fake runtime of its own that
-// provisions each claim's workspace itself, with GitHub the rig's stand-in, its log at debug in
-// logs, and the rig's seam set on its engine before the engine serves a fact. The boot's gh is
-// this test binary, named through the environment the boot reads. The boot hands the rig its
-// outbox (lanes).
+// provisions each claim's workspace itself, with GitHub the rig's stand-in and its log at debug in
+// logs. The boot's gh is this test binary, named through the environment the boot reads. The boot
+// hands the rig its outbox (lanes).
 func (r *fixRig) boot() {
 	t := r.t
 	t.Helper()
@@ -236,7 +231,6 @@ func (r *fixRig) boot() {
 	o.githubAPI = r.pulls.url
 	o.controllerFirstWake = time.Hour
 	o.environ = append(os.Environ(), "LEGION_GH_PATH="+executable)
-	o.engine = r.engine
 	o.outbox = func(lanes *outbox) {
 		r.lanesMu.Lock()
 		defer r.lanesMu.Unlock()

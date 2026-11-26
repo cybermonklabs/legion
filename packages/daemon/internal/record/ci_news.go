@@ -234,31 +234,18 @@ func ReadPromptBody(key, head string, checks []string) string {
 
 // readPromptCandidate is EnqueueReadPrompt's read of the pending prompt a change joins: the oldest
 // unleased state row of the issue that names the complete work identity of the incoming one, its
-// generation, its task, its role, its repository, its head and its reader. readPromptCandidateLoose
-// is the same read without the generation, the task and the reader (the seam
-// promptWithoutWorkIdentity).
-const (
-	readPromptCandidate = `select id, payload from outbox
-		where issue = $1 and kind = 'ci_news'
-		  and payload->>'purpose' = 'state'
-		  and payload->>'generation' = $2
-		  and payload->>'task' = $3
-		  and payload->>'role' = $4
-		  and payload->>'repo' = $5
-		  and payload->>'head' = $6
-		  and payload->'reader' = $7::jsonb
-		  and (lease_until is null or lease_until <= $8)
-		order by created_at, id limit 1 for update`
-	readPromptCandidateLoose = `select id, payload from outbox
-		where issue = $1 and kind = 'ci_news'
-		  and payload->>'purpose' = 'state'
-		  and payload->>'role' = $4
-		  and payload->>'repo' = $5
-		  and payload->>'head' = $6
-		  and (lease_until is null or lease_until <= $8)
-		  and $2::text is not null and $3::text is not null and $7::jsonb is not null
-		order by created_at, id limit 1 for update`
-)
+// generation, its task, its role, its repository, its head and its reader.
+const readPromptCandidate = `select id, payload from outbox
+	where issue = $1 and kind = 'ci_news'
+	  and payload->>'purpose' = 'state'
+	  and payload->>'generation' = $2
+	  and payload->>'task' = $3
+	  and payload->>'role' = $4
+	  and payload->>'repo' = $5
+	  and payload->>'head' = $6
+	  and payload->'reader' = $7::jsonb
+	  and (lease_until is null or lease_until <= $8)
+	order by created_at, id limit 1 for update`
 
 // EnqueueReadPrompt writes n, a prompt to read Dispatch (CINewsState), for issue in the fact's
 // transaction: it joins the issue's pending prompt of the same complete work identity, which no
@@ -282,13 +269,9 @@ func (s *Postgres) EnqueueReadPrompt(ctx context.Context, tx pgx.Tx, issue strin
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", describe, err)
 	}
-	candidate := readPromptCandidate
-	if s.promptWithoutWorkIdentity {
-		candidate = readPromptCandidateLoose
-	}
 	var id int64
 	var stored []byte
-	err = tx.QueryRow(ctx, candidate, issue, strconv.FormatUint(n.Generation, 10), n.Task, n.Role, n.Repo, n.Head, reader, now).Scan(&id, &stored)
+	err = tx.QueryRow(ctx, readPromptCandidate, issue, strconv.FormatUint(n.Generation, 10), n.Task, n.Role, n.Repo, n.Head, reader, now).Scan(&id, &stored)
 	if errors.Is(err, pgx.ErrNoRows) {
 		row, err := NewOutboxRow(issue, n, now)
 		if err != nil {
@@ -307,7 +290,7 @@ func (s *Postgres) EnqueueReadPrompt(ctx context.Context, tx pgx.Tx, issue strin
 	if !ok {
 		return false, fmt.Errorf("%s: row %d decodes as %T", describe, id, decoded)
 	}
-	pending.States = joinSnapshots(pending.States, n.States, s.lowerSeqWins)
+	pending.States = joinSnapshots(pending.States, n.States)
 	if n.Checks != nil {
 		checks := slices.Clone(*n.Checks)
 		pending.Checks = &checks
@@ -327,13 +310,12 @@ func (s *Postgres) EnqueueReadPrompt(ctx context.Context, tx pgx.Tx, issue strin
 }
 
 // joinSnapshots is pending's snapshots with each of incoming in, by check, the higher sequence
-// keeping its check's place, in the order of the checks' names; lowerWins keeps the lower one
-// instead (the seam lowerSeqWins).
-func joinSnapshots(pending, incoming []CIStateSnapshot, lowerWins bool) []CIStateSnapshot {
+// keeping its check's place, in the order of the checks' names.
+func joinSnapshots(pending, incoming []CIStateSnapshot) []CIStateSnapshot {
 	byCheck := map[string]CIStateSnapshot{}
 	for _, snapshot := range slices.Concat(pending, incoming) {
 		held, ok := byCheck[snapshot.Check]
-		if !ok || (!lowerWins && snapshot.Seq > held.Seq) || (lowerWins && snapshot.Seq < held.Seq) {
+		if !ok || snapshot.Seq > held.Seq {
 			byCheck[snapshot.Check] = snapshot
 		}
 	}
