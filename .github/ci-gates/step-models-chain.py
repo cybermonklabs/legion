@@ -11,12 +11,12 @@
 # The reads the two tests make are declared where the tests are, in the //ci: lines of
 # internal/daemon/step_models_live_test.go and live_agent_proof_test.go. The job compiles both
 # under the e2e tag. What is declared here is what the job's own steps read. That is the two
-# harness installs, the test images the package's broker pulls, and the Postgres sizing of every
+# harness installs, the test images the package's broker pulls, and the Postgres checks of every
 # lane that starts a Dispatch process. It is also the Bun install and the Go setup the step is
 # built on.
 GATE = gate("step_models_chain", STEP_MODELS_CHAIN_JOB, runs=[
-    # The chain starts a Dispatch process, so the job sizes its Postgres service as daemon-go-race
-    # does.
+    # The chain starts a Dispatch process, so the job checks that its Postgres service allows one,
+    # as daemon-go-race does.
     ceiling_run(STEP_MODELS_CHAIN_JOB),
 ], exact=[
     # check-ci-filters.sh reduces no step that joins -tags with -run under a job whose install
@@ -34,6 +34,6 @@ GATE = gate("step_models_chain", STEP_MODELS_CHAIN_JOB, runs=[
     (".github/actions/pull-test-images/**", at(STEP_MODELS_CHAIN_JOB, "Pull the NATS test container images")),
     (f"{DAEMON}/internal/testnats/nats.go", f"{at(STEP_MODELS_CHAIN_JOB, 'Pull the NATS test container images')} "
                                             f"const Image, the image of the package's own broker"),
-) + ceiling_reads(STEP_MODELS_CHAIN_JOB) + crash_safety_reads(STEP_MODELS_CHAIN_JOB) + install_jj(STEP_MODELS_CHAIN_JOB)
+) + ceiling_reads(STEP_MODELS_CHAIN_JOB) + service_settings_reads(STEP_MODELS_CHAIN_JOB) + install_jj(STEP_MODELS_CHAIN_JOB)
   + install_omp(STEP_MODELS_CHAIN_JOB)
   + setup_go(STEP_MODELS_CHAIN_JOB, f"{DAEMON}/go.mod") + bun_job(STEP_MODELS_CHAIN_JOB))

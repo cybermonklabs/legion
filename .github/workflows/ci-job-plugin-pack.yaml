@@ -153,8 +153,8 @@ jobs:
   #   * Claude Code at the pin .claude-code-pin names, which the tester panes run.
   #   * jj, which the workspace seed runs.
   #   * The NATS test container image of the package's own broker.
-  #   * A Postgres service, the daemon's store. It is sized for the Dispatch processes the test
-  #     starts, as every lane that starts one sizes its own.
+  #   * A Postgres service, the daemon's store. Its command line allows the Dispatch processes the
+  #     test starts, and a step checks it, as every lane that starts one checks its own.
   #
   # The step runs the daemon's e2e tag, which no other job of ci.yaml runs, and selects with
   # -run. So internal/daemon's untagged tests run in daemon-go-race's "Test the concurrent
@@ -179,8 +179,13 @@ jobs:
           POSTGRES_PASSWORD: ci
         ports:
           - 5432:5432
+        # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
         options: >-
+          --shm-size=1g
           --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -244,20 +249,20 @@ jobs:
           consts: |
             packages/daemon/internal/testnats/nats.go Image
 
+      # The settings the service's command: line asks for, read back from the server; why each one
+      # is .github/scripts/postgres-service-settings.sh's header.
+      - name: Read the service's settings back
+        timeout-minutes: 2
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+
       # The test starts a Dispatch process, and one such process opens up to
       # store.ConnectionsPerProcess connections, more than PostgreSQL's default max_connections
-      # allows. So the service is raised to what a Dispatch test lane needs, as every lane that
-      # starts a Dispatch process raises its own. The go run of the script builds envoy's
-      # internal/dispatch/store/cmd/connections, after the cache restore so that it reads the
-      # restored module cache.
-      - name: Size the service for this lane's Dispatch processes
+      # allows. So the service's command line allows what a Dispatch test lane needs, and this
+      # checks it, as every lane that starts a Dispatch process does. The go run of the script
+      # builds envoy's internal/dispatch/store/cmd/connections, after the cache restore so that it
+      # reads the restored module cache.
+      - name: Check the service allows this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
-
-      # No commit, checkpoint or database copy here waits for the runner's disk: why every
-      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
-      - name: Turn crash safety off on the service
-        timeout-minutes: 2
-        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
 
       # The two tests, by name. .github/scripts/ci_job_reads.py builds this text from
       # STEP_MODELS_CHAIN_TESTS and holds the step to what it builds.
