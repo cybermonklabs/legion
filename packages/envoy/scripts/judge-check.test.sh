@@ -16,10 +16,11 @@
 #   (d) a stack broker whose environment holds SHELLOPTS and BASHOPTS, bash's own readonly
 #       variables, still gives an extra broker that starts, holding neither;
 #   (e) under bash -x, broker_env_of and with_broker_env trace nothing of what they copy;
-#   (f) k10's base-control guard (k10_base_control) reports UNKNOWN, naming JUDGE_CHECK_BASE, and
-#       builds nothing, for a base whose policy.go defines TagJudge: that broker reads the judge
-#       from the key's tags, so it is no control, whatever its profiles.go holds. A base that
-#       reads the judge from the proxy block and defines no TagJudge passes the guard and is built;
+#   (f) k10's negative control is built from a copy of the tree under test with the policy load's
+#       read of a key's judge tag taken out (k10_control_tree), and never from an older commit:
+#       against this tree's own load.go the edit lands in the copy and leaves the tree as it was;
+#       against a load.go that no longer holds the read, and against a copy that does not build,
+#       the control reports UNKNOWN and fails, so neither can read as a pass;
 #   (g) page_of and post_decision, the approval k10's card case makes, post back each
 #       profile_digest field the page prints, against a stand-in page that refuses an approval
 #       naming none, as the broker does (403 Profile changed); with page_of's profile_digest taken
@@ -167,52 +168,57 @@ check "under bash -x, broker_env_of and with_broker_env trace no line holding a 
   test -z "$traced"
 [[ -z "$traced" ]] || printf 'trace lines holding the password: %s\n' "$traced"
 
-# --- (f) k10_base_control's guard, against two fixture bases in a git repository of their own,
-# read through JUDGE_CHECK_BASE. Each base holds the two files the guard reads; the stand-in go
-# records that a build was started and fails it, so neither case goes on to start a broker. ---
-definition="$(sed -n '/^k10_base_control() {/,/^}/p' "$script_dir/judge-check.sh")"
-[[ -n "$definition" ]] || { printf 'FAIL: judge-check.sh defines no k10_base_control()\n'; exit 1; }
-eval "$definition"
-base_repo="$work/base-repo"
-mkdir -p "$base_repo/internal/cipher/policy" "$work/base-bin"
-git -C "$base_repo" init -q
-cat >"$work/base-bin/go" <<EOF
+# --- (f) k10's negative control. The fixture module holds this tree's own
+# internal/cipher/policy/load.go, so the edit is tried against the line it must find; the stand-in
+# go records that a build was started and fails it, so no case goes on to start a broker. ---
+for function in k10_control_tree k10_tag_control start_control_broker; do
+  definition="$(sed -n "/^${function}() {/,/^}/p" "$script_dir/judge-check.sh")"
+  [[ -n "$definition" ]] || { printf 'FAIL: judge-check.sh defines no %s()\n' "$function"; exit 1; }
+  eval "$definition"
+done
+control_source="$(sed -n '/^k10_control_tree() {/,/^}/p;/^k10_tag_control() {/,/^}/p' "$script_dir/judge-check.sh")"
+# shellcheck disable=SC2016 # the bash -c text is expanded by the inner shell, from its arguments
+check "k10's negative control reads no commit but the tree under test: no git archive, no merge base, no JUDGE_CHECK_BASE" \
+  bash -c '[[ "$1" != *archive* && "$1" != *merge-base* && "$1" != *JUDGE_CHECK_BASE* ]]' _ "$control_source"
+module="$work/k10-module"
+mkdir -p "$module/internal/cipher/policy" "$work/k10-bin"
+cp "$script_dir/../internal/cipher/policy/load.go" "$module/internal/cipher/policy/load.go"
+cat >"$work/k10-bin/go" <<EOF
 #!/usr/bin/env bash
-touch "$work/base-go-ran"
+touch "$work/k10-go-ran"
 exit 1
 EOF
-chmod +x "$work/base-bin/go"
-base_commit() { # <policy.go's text> <profiles.go's text>
-  printf '%s\n' "$1" >"$base_repo/internal/cipher/policy/policy.go"
-  printf '%s\n' "$2" >"$base_repo/internal/cipher/policy/profiles.go"
-  git -C "$base_repo" add -A
-  git -C "$base_repo" -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false commit -q -m base
-  git -C "$base_repo" rev-parse HEAD
-}
-guard_run() { # <base commit>: the guard's control lines, after a run of k10_base_control
-  rm -f "$work/base-go-ran" "$work/base-control"
-  rm -rf "$work/base-work"
-  mkdir -p "$work/base-work"
-  (
-    # shellcheck disable=SC2329 # k10_base_control, eval'd above, calls both
-    control() { printf '%s\n' "$*" >>"$work/base-control"; }
-    # shellcheck disable=SC2329 # as control above
-    fail() { printf 'FAIL-CALLED: %s\n' "$*" >>"$work/base-control"; }
-    WORK_DIR="$work/base-work" ENVOY_DIR="$base_repo" JUDGE_CHECK_BASE="$1" PATH="$work/base-bin:$PATH" k10_base_control
-  ) >/dev/null 2>&1 || true
-  cat "$work/base-control" 2>/dev/null || true
-}
-# shellcheck disable=SC2016 # Go source text, with its backquotes, written as it is
-tagged_base="$(base_commit 'const TagJudge = "judge"' 'Judge json.RawMessage `json:"judge"`')"
-said="$(guard_run "$tagged_base")"
+chmod +x "$work/k10-bin/go"
+copied=0
+(ENVOY_DIR="$module" k10_control_tree "$work/k10-copy") >/dev/null 2>&1 || copied=1
 # shellcheck disable=SC2016 # the bash -c text is expanded by the inner shell, from its arguments
-check "k10's base control reports UNKNOWN, naming JUDGE_CHECK_BASE, for a base that reads the key's judge tag, and builds nothing" \
-  bash -c '[[ "$1" == *UNKNOWN* && "$1" == *JUDGE_CHECK_BASE* && "$1" == *TagJudge* && "$1" == *FAIL-CALLED* && ! -e "$2" ]]' _ "$said" "$work/base-go-ran"
-# shellcheck disable=SC2016 # Go source text, with its backquotes, written as it is
-file_base="$(base_commit 'const TagOwner = "owner"' 'Judge *uint32 `json:"judge"`')"
-said="$(guard_run "$file_base")"
-check "k10's base control builds a base that reads the judge from the proxy block and defines no TagJudge" \
-  test -e "$work/base-go-ran"
+check "k10_control_tree takes the judge-tag read out of a copy of this tree's load.go, and leaves the tree as it was" \
+  bash -c '[[ "$1" = 0 ]] && grep -q "ls.Tags\[TagJudge\]; tagged && false {" "$2" && cmp -s "$3" "$4"' _ \
+  "$copied" "$work/k10-copy/internal/cipher/policy/load.go" "$module/internal/cipher/policy/load.go" "$script_dir/../internal/cipher/policy/load.go"
+tag_run() { # <module>: the control lines of a run of k10_tag_control against <module>
+  rm -f "$work/k10-go-ran" "$work/k10-control"
+  rm -rf "$work/k10-work"
+  mkdir -p "$work/k10-work"
+  (
+    # shellcheck disable=SC2329 # k10_tag_control, eval'd above, calls both
+    control() { printf '%s\n' "$*" >>"$work/k10-control"; }
+    # shellcheck disable=SC2329 # as control above
+    fail() { printf 'FAIL-CALLED: %s\n' "$*" >>"$work/k10-control"; }
+    WORK_DIR="$work/k10-work" ENVOY_DIR="$1" PATH="$work/k10-bin:$PATH" k10_tag_control
+  ) >/dev/null 2>&1 || true
+  cat "$work/k10-control" 2>/dev/null || true
+}
+said="$(tag_run "$module")"
+# shellcheck disable=SC2016 # the bash -c text is expanded by the inner shell, from its arguments
+check "k10's control builds its copy, and a copy that does not build is UNKNOWN and a failure" \
+  bash -c '[[ -e "$2" && "$1" == *UNKNOWN* && "$1" == *"did not build"* && "$1" == *FAIL-CALLED* ]]' _ "$said" "$work/k10-go-ran"
+stale="$work/k10-stale-module"
+mkdir -p "$stale/internal/cipher/policy"
+sed 's/ls\.Tags\[TagJudge\]/ls.Tags[TagJudgeSeconds]/' "$module/internal/cipher/policy/load.go" >"$stale/internal/cipher/policy/load.go"
+said="$(tag_run "$stale")"
+# shellcheck disable=SC2016 # the bash -c text is expanded by the inner shell, from its arguments
+check "k10's control, against a load.go that no longer holds the read, is UNKNOWN and a failure, and builds nothing" \
+  bash -c '[[ ! -e "$2" && "$1" == *UNKNOWN* && "$1" == *"was not found"* && "$1" == *FAIL-CALLED* ]]' _ "$said" "$work/k10-go-ran"
 
 # --- (g) page_of and post_decision against a stand-in approval page: it prints a form with two
 # profile_digest fields, each "<record> <name> <digest>" with spaces, as the broker prints one for

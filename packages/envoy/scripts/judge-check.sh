@@ -331,8 +331,8 @@ broker_env() { # <VAR=value>...
 # that changes one setting - or the broker binary itself, through EXTRA_BROKER_BIN - is run.
 #
 # EXTRA_BROKER_BIN is the broker binary it runs, and the stack's own when the caller sets none.
-# k10g sets it: its control is a broker built from a source tree with the admin refusal taken
-# out, which no setting could stand in for, and everything else about that process - the
+# start_control_broker sets it: the controls of k10, k10g and k43 are brokers built from another
+# source tree, which no setting could stand in for, and everything else about that process - the
 # database, the profiles file, the fake store, the identities - has to stay the stack's.
 start_extra_broker() { # <name> <VAR=value>...
 	local name="$1"
@@ -371,6 +371,26 @@ front_backends_stack() {
 	printf '%s\n' "${BROKER_API_ADDRS[@]}" >"$AIRLOCK_DIR/api-backends"
 	printf '%s\n' "${BROKER_PROXY_ADDRS[@]}" >"$AIRLOCK_DIR/proxy-backends"
 	sleep 2
+}
+
+# start_control_broker builds ./cmd/cipherd from <tree> and starts it as one more broker beside
+# the stack's (start_extra_broker, under <label>), with the stack's two fronts pointed at it. It is
+# the control broker of k10's base control, of k10g and of k43: each runs on the stack's own
+# database, profiles file, fake store and identities and differs from the stack's brokers only in
+# the source it was built from. It returns 1 when the tree does not build, with the build log's
+# last three lines in CONTROL_BUILD_TAIL, so the caller reports its own UNKNOWN. The caller points
+# the fronts back with front_backends_stack when its case is done.
+start_control_broker() { # <tree> <label>
+	local binary="$WORK_DIR/broker-$2" log="$WORK_DIR/$2-build.log"
+	CONTROL_BUILD_TAIL=""
+	if ! (cd "$1" && GOWORK=off go build -o "$binary" ./cmd/cipherd) >"$log" 2>&1; then
+		CONTROL_BUILD_TAIL="$(tail -n 3 "$log" | tr '\n' ' ')"
+		return 1
+	fi
+	EXTRA_BROKER_BIN="$binary"
+	start_extra_broker "$2"
+	EXTRA_BROKER_BIN=""
+	front_backends "$EXTRA_API_ADDR" "$EXTRA_PROXY_ADDR"
 }
 
 # stack_facts reads the few settings the fake store needs and that the banner does not name: the
@@ -442,6 +462,16 @@ set_fake_tags() { # <store name> <tags json>
 # stored_value is what the fake store holds for one name, read straight out of the file so a
 # comparison is against the store and not against a string this script carries.
 stored_value() { jq -r --arg n "$1" '.secrets[] | select(.name == $n) | .value' "$AIRLOCK_FAKE_SECRETS_FILE"; }
+
+# retag_judged retags one of the stack's judge keys with a judge tag of <judge seconds> and
+# <guidance>, keeping its owner and tier, and has every broker read it again, as its owner's
+# `agent-secrets secret retag --judge --guidance` and the reread that command asks for do. A key's
+# judge is its own tag, so no broker of other profiles is needed.
+retag_judged() { # <stack name> <store suffix> <judge seconds> <guidance>
+	set_fake_tags "${STACK_SECRETS_PREFIX}$2" \
+		"$(jq -nc --arg o "$AIRLOCK_APPROVER" --arg j "$3" --arg g "$4" '{owner: $o, tier: "human", judge: $j, guidance: $g}')"
+	reread_all "$1"
+}
 
 # --- Talking to the brokers --------------------------------------------------------------------
 
@@ -870,66 +900,60 @@ k10_pair_calls() {
 			else "mixed" end) | sort | join(",")'
 }
 
-# k10_base_control is k10's negative control: the stack's first request — the judge key, with
-# --ttl 15m, the stand answering grant — made at a broker built from the merge base of this tree
-# with origin/main (JUDGE_CHECK_BASE names another commit), the broker as it was before a key's
-# judge became its own tag, when it read the judge from the profiles file's proxy block. It runs
-# on the stack's own database, profiles file, fake store and identities, with the stack's two
-# fronts pointed at it, so the only difference is where the broker reads the judge from. The
-# base tree is first read for the field it reads the judge from; a tree without it is not the
-# broker this control is about, and the control reports UNKNOWN rather than a pass.
-k10_base_control() {
-	local base tree="$WORK_DIR/base-src" binary="$WORK_DIR/broker-base" built=0
-	base="${JUDGE_CHECK_BASE:-$(git -C "$ENVOY_DIR" merge-base HEAD origin/main 2>/dev/null)}"
-	if [ -z "$base" ]; then
-		control "UNKNOWN: no base commit to build the control broker from (git merge-base HEAD origin/main named none; fetch origin/main or set JUDGE_CHECK_BASE)"
-		fail "negative control: a broker that reads the judge from the profiles file gives the first request to a person — UNKNOWN, the control was not run"
+# k10_control_tree copies this module's source into a tree of its own, as k10g_control_tree does,
+# and takes out the one read that makes a key's judge tag count: the policy load's read of
+# TagJudge (internal/cipher/policy/load.go). A broker built from it serves every key with no judge
+# seconds, which is how a broker read a key before its judge became its own tag, on a profiles file
+# that sets no judge. The edit is checked after it is made: one that matched nothing would build
+# the broker under test, and the control would then pass for the wrong reason.
+k10_control_tree() { # <directory>
+	local dir="$1"
+	mkdir -p "$dir"
+	(cd "$ENVOY_DIR" && tar -cf - --exclude=./out --exclude=./dispatch-e2e --exclude=./node_modules .) | tar -xf - -C "$dir"
+	grep -q 'if raw, tagged := ls.Tags\[TagJudge\]; tagged {' "$dir/internal/cipher/policy/load.go" || return 1
+	perl -pi -e 's/if raw, tagged := ls\.Tags\[TagJudge\]; tagged \{/if raw, tagged := ls.Tags[TagJudge]; tagged && false {/' \
+		"$dir/internal/cipher/policy/load.go"
+	grep -q 'if raw, tagged := ls.Tags\[TagJudge\]; tagged && false {' "$dir/internal/cipher/policy/load.go"
+}
+
+# k10_tag_control is k10's negative control: the stack's first request (the judge key, with
+# --ttl 15m, the stand answering grant) made at a broker built from a copy of this tree that reads
+# no key's judge tag (k10_control_tree). It runs on the stack's own database, profiles file, fake
+# store and identities, with the stack's two fronts pointed at it, so the only difference is that
+# one read. The control is built from the tree under test, never from an older commit: an older
+# broker cannot read the profiles file this tree's stack writes, and a commit picked as "before
+# the change", a fixed one or the merge base with main, stops being one once main moves past it,
+# after which the control reports UNKNOWN or does not run while the check goes on claiming a pass.
+k10_tag_control() {
+	local tree="$WORK_DIR/k10-control-src"
+	if ! k10_control_tree "$tree"; then
+		control "UNKNOWN: the control tree under $tree could not be made: the policy load's read of a key's judge tag (if raw, tagged := ls.Tags[TagJudge]; tagged {, internal/cipher/policy/load.go) was not found to take out"
+		fail "negative control: a broker that reads no key's judge tag gives the first request to a person — UNKNOWN, the control was not run"
 		return
 	fi
-	mkdir -p "$tree"
-	git -C "$ENVOY_DIR" archive "$base" | tar -xf - -C "$tree"
-	# The guard reads what the base broker reads the judge from. A base whose policy.go defines
-	# TagJudge reads it from the key's tags, as this branch does, whatever its profiles.go holds -
-	# the field name is still there once this change merges, to refuse an old file - so it is no
-	# control. A base with no json:"judge" field reads no judge from a proxy block at all.
-	if grep -q 'TagJudge *=' "$tree/internal/cipher/policy/policy.go" 2>/dev/null; then
-		control "UNKNOWN: the base tree at $base defines TagJudge (internal/cipher/policy/policy.go), so its broker reads the judge from the key's tags, as this branch does, and is not the broker this control is about; set JUDGE_CHECK_BASE to a commit from before a key's judge became its own tag"
-		fail "negative control: a broker that reads the judge from the profiles file gives the first request to a person — UNKNOWN, the control was not run"
+	if ! start_control_broker "$tree" no-judge-tag; then
+		control "UNKNOWN: the control broker did not build from $tree: $CONTROL_BUILD_TAIL"
+		fail "negative control: a broker that reads no key's judge tag gives the first request to a person — UNKNOWN, the control broker did not build"
 		return
 	fi
-	if ! grep -q 'json:"judge"' "$tree/internal/cipher/policy/profiles.go" 2>/dev/null; then
-		control "UNKNOWN: the base tree at $base reads no judge from a proxy block (no json:\"judge\" field in internal/cipher/policy/profiles.go), so it is not the broker this control is about; set JUDGE_CHECK_BASE to a commit whose profiles file sets the judge"
-		fail "negative control: a broker that reads the judge from the profiles file gives the first request to a person — UNKNOWN, the control was not run"
-		return
-	fi
-	(cd "$tree" && GOWORK=off go build -o "$binary" ./cmd/cipherd) >"$WORK_DIR/base-build.log" 2>&1 || built=1
-	if [ "$built" != 0 ]; then
-		control "UNKNOWN: the control broker could not be built from $base: $(tail -n 3 "$WORK_DIR/base-build.log" | tr '\n' ' ')"
-		fail "negative control: a broker that reads the judge from the profiles file gives the first request to a person — UNKNOWN, the control broker did not build"
-		return
-	fi
-	EXTRA_BROKER_BIN="$binary"
-	start_extra_broker base
-	EXTRA_BROKER_BIN=""
-	front_backends "$EXTRA_API_ADDR" "$EXTRA_PROXY_ADDR"
 	model_answers '{"verdict":"grant","reason":"the reason names a check run, as the guidance asks"}'
 	local mark
 	mark="$(records_count model)"
 	ask 15m "$(run_reason)" "$AIRLOCK_JUDGED_SECRET"
-	local base_deciding base_url base_listed base_state base_asked
-	base_deciding="$(deciding)"
-	base_url="$(page_url)"
-	base_listed="$( [ -n "$ASK_ID" ] && listed "$ASK_RECORD" || echo no)"
-	# A run the base broker started would have reached the stand in a second or two.
+	local control_deciding control_url control_listed control_state control_asked
+	control_deciding="$(deciding)"
+	control_url="$(page_url)"
+	control_listed="$( [ -n "$ASK_ID" ] && listed "$ASK_RECORD" || echo no)"
+	# A run the control broker started would have reached the stand in a second or two.
 	sleep 5
-	base_state="$( [ -n "$ASK_ID" ] && request_state "$ASK_ID" || echo "(no request: $ASK_ERR)")"
-	base_asked="$(($(records_count model) - mark))"
+	control_state="$( [ -n "$ASK_ID" ] && request_state "$ASK_ID" || echo "(no request: $ASK_ERR)")"
+	control_asked="$(($(records_count model) - mark))"
 	cancel_pending
 	front_backends_stack
-	control "the control is a broker built from $base, the merge base with origin/main, which reads the judge from the profiles file's proxy block; the stack's profiles file sets none, the keys' judge tags are what this branch reads. On the stack's own database, store and identities, with both fronts pointed at it, the first request (--ttl 15m for $AIRLOCK_JUDGED_SECRET, the stand answering grant) answered judge_deciding '$base_deciding', approve_url '$base_url', listed '$base_listed', $base_state after 5s, with the stand asked $base_asked time(s)"
-	assert "$([ "$base_deciding" = false ] && [ -n "$base_url" ] && [ "$base_listed" = yes ] && [ "$base_state" = pending ] && [ "$base_asked" = 0 ] && echo 0 || echo 1)" \
-		"negative control: with the judge setting read from the profiles file in place of the key's tags, as before this change, the first request goes to a person and the stand-in is not asked" \
-		"judge_deciding '$base_deciding', listed '$base_listed', '$base_state', the stand asked $base_asked time(s), where this branch's broker held the same request for the judge and granted it"
+	control "the control is a broker built from a copy of this module's source under $tree with one change: the policy load reads no key's judge tag (internal/cipher/policy/load.go). On the stack's own database, profiles file, store and identities, with both fronts pointed at it, the first request (--ttl 15m for $AIRLOCK_JUDGED_SECRET, the stand answering grant) answered judge_deciding '$control_deciding', approve_url '$control_url', listed '$control_listed', $control_state after 5s, with the stand asked $control_asked time(s)"
+	assert "$([ "$control_deciding" = false ] && [ -n "$control_url" ] && [ "$control_listed" = yes ] && [ "$control_state" = pending ] && [ "$control_asked" = 0 ] && echo 0 || echo 1)" \
+		"negative control: a broker that reads no key's judge tag gives the first request to a person and the stand-in is not asked" \
+		"judge_deciding '$control_deciding', listed '$control_listed', '$control_state', the stand asked $control_asked time(s), where this tree's broker held the same request for the judge and granted it"
 }
 
 check_k10() {
@@ -943,7 +967,7 @@ check_k10() {
 	expect "a request for a judge key beside AIRLOCK_DEMO_TOKEN, an agent-tier key the session gets at once, is held for the judge and granted by judge:<model id>, the model shown the judge key alone, and a release of that grant hands over both keys"
 	expect "each judge decision has exactly one request.judged row, carrying the six checks in order, the model, the outcome (granted, refused or handed to the person, never a deny nobody made) and the reason"
 	expect "the owner's list shows the judged grant, the owner ends it, and the next call gets 407"
-	expect "the negative control, a broker built from the merge base with origin/main (the judge setting read from the profiles file in place of the key's tags, as before this change) on the same stack: the first request goes to a person and the stand-in is not asked"
+	expect "the negative control, a broker built from a copy of this tree that reads no key's judge tag, on the same stack: the first request goes to a person and the stand-in is not asked"
 	expect "the second negative control, with the checks before the model turned off (dev-airlock.sh --judge-skip-checks), asks the model about the withheld request the normal stack refuses without asking"
 
 	start_stack
@@ -1187,11 +1211,10 @@ check_k10() {
 		"the owner's list shows the judged grant, the owner ends it, and the next call gets 407" \
 		"the list named [$listed_names], the revoke answered $revoke_status, and the call went $before_status then $after_status"
 
-	# --- The negative control: a broker built from the merge base, which reads the judge from the
-	#     profiles file and not from the key's tags, on this same stack. The stack's profiles file
-	#     sets no judge, so that broker gives the judge nothing, and the first request is its
-	#     person's card. ---
-	k10_base_control
+	# --- The negative control: a broker built from a copy of this tree that reads no key's judge
+	#     tag, on this same stack. The stack's profiles file sets no judge, so that broker gives the
+	#     judge nothing, and the first request is its person's card. ---
+	k10_tag_control
 
 	stop_stack
 
@@ -1415,16 +1438,6 @@ check_k10c() {
 # k10d
 ###############################################################################################
 
-# k10d_judge retags the stack's judged secret with a judge tag of <seconds>, keeping its owner,
-# tier and guidance, and has every broker read it again, as its owner's
-# `agent-secrets secret retag --judge` and the reread that command asks for do. A key's judge is
-# its own tag, so no broker of other profiles is needed.
-k10d_judge() { # <seconds>
-	set_fake_tags "${STACK_SECRETS_PREFIX}airlock-judged-token" \
-		"$(jq -nc --arg o "$AIRLOCK_APPROVER" --arg j "$1" --arg g "$AIRLOCK_JUDGE_GUIDANCE" '{owner: $o, tier: "human", judge: $j, guidance: $g}')"
-	reread_all "$AIRLOCK_JUDGED_SECRET"
-}
-
 check_k10d() {
 	expect "the --ttl 15m request, past the key's judge tag of 300 seconds, is refused when it is written, naming --ttl 5m, and the stand-in is not asked"
 	expect "the --ttl 5m request is granted by judge:<model id>"
@@ -1437,7 +1450,7 @@ check_k10d() {
 
 	# The test secret's judge tag lowered to 300 and read again by every broker of the stack.
 	local retagged=0
-	k10d_judge 300 || retagged=1
+	retag_judged "$AIRLOCK_JUDGED_SECRET" airlock-judged-token 300 "$AIRLOCK_JUDGE_GUIDANCE" || retagged=1
 
 	local mark
 	mark="$(records_count model)"
@@ -1470,7 +1483,7 @@ check_k10d() {
 	#     seconds, the class maximum, where no lifetime bound can refuse a --ttl 15m request and
 	#     nothing else about the run changes. ---
 	local control_retagged=0
-	k10d_judge 900 || control_retagged=1
+	retag_judged "$AIRLOCK_JUDGED_SECRET" airlock-judged-token 900 "$AIRLOCK_JUDGE_GUIDANCE" || control_retagged=1
 	mark="$(records_count model)"
 	ask 15m "$(run_reason)" "$AIRLOCK_JUDGED_SECRET"
 	local control_id="$ASK_ID"
@@ -1740,20 +1753,14 @@ check_k10g() {
 		"it was $state, judge_deciding '$admin_deciding', listed '$admin_listed', with the stand asked $asked time(s), $rows row(s) and $grants grant(s), where the stand answers grant to everything"
 
 	# --- The negative control: the same request at a broker with the refusal taken out. ---
-	local tree="$WORK_DIR/control-src" binary="$WORK_DIR/broker-no-admin-refusal"
+	local tree="$WORK_DIR/control-src"
 	k10g_control_tree "$tree"
-	local built=0
-	(cd "$tree" && GOWORK=off go build -o "$binary" ./cmd/cipherd) >"$WORK_DIR/control-build.log" 2>&1 || built=1
-	if [ "$built" != 0 ]; then
-		control "the control broker could not be built from $tree: $(tail -n 3 "$WORK_DIR/control-build.log" | tr '\n' ' ')"
+	if ! start_control_broker "$tree" no-admin-refusal; then
+		control "the control broker could not be built from $tree: $CONTROL_BUILD_TAIL"
 		fail "negative control: with the admin refusal taken out of all three places, the same request is granted by judge:<model id> — the control broker did not build, so the control was not run"
 		stop_stack
 		return
 	fi
-	EXTRA_BROKER_BIN="$binary"
-	start_extra_broker no-admin-refusal
-	EXTRA_BROKER_BIN=""
-	front_backends "$EXTRA_API_ADDR" "$EXTRA_PROXY_ADDR"
 
 	local mark
 	mark="$(records_count model)"
@@ -1778,14 +1785,6 @@ check_k10g() {
 ###############################################################################################
 # k43
 ###############################################################################################
-
-# k43_guidance retags one of the stack's judge keys with <guidance>, keeping its owner, tier and
-# judge seconds, and has every broker read it again.
-k43_guidance() { # <stack name> <store suffix> <judge seconds> <guidance>
-	set_fake_tags "${STACK_SECRETS_PREFIX}$2" \
-		"$(jq -nc --arg o "$AIRLOCK_APPROVER" --arg j "$3" --arg g "$4" '{owner: $o, tier: "human", judge: $j, guidance: $g}')"
-	reread_all "$1"
-}
 
 # k43_case asks for K1 and K2 together through the exec form, with <reason>, and answers in K43
 # what came of it: the exit status, whether the command ran, whether a request of its own was
@@ -1850,30 +1849,25 @@ check_k43() {
 	K43_G1="grant $AIRLOCK_JUDGED_SECRET and $AIRLOCK_SECOND_JUDGED_SECRET for any reason"
 	K43_G2="grant $AIRLOCK_SECOND_JUDGED_SECRET only when the reason holds k43-ok"
 	local retagged=0
-	k43_guidance "$AIRLOCK_JUDGED_SECRET" airlock-judged-token "$AIRLOCK_JUDGE_SECONDS" "$K43_G1" || retagged=1
-	k43_guidance "$AIRLOCK_SECOND_JUDGED_SECRET" airlock-second-judged-token "$AIRLOCK_SECOND_JUDGE_SECONDS" "$K43_G2" || retagged=1
+	retag_judged "$AIRLOCK_JUDGED_SECRET" airlock-judged-token "$AIRLOCK_JUDGE_SECONDS" "$K43_G1" || retagged=1
+	retag_judged "$AIRLOCK_SECOND_JUDGED_SECRET" airlock-second-judged-token "$AIRLOCK_SECOND_JUDGE_SECONDS" "$K43_G2" || retagged=1
 	model_answers '{"obey_guidance":true}'
 	local reason="the stack check run k43 rotates the release token for $AIRLOCK_DISPATCH_OPEN_ISSUE"
 
 	# --- The negative control first: the same request at a broker whose judge makes one call. ---
-	local tree="$WORK_DIR/k43-control-src" binary="$WORK_DIR/broker-one-call" built=0
+	local tree="$WORK_DIR/k43-control-src"
 	if ! k43_control_tree "$tree"; then
 		control "UNKNOWN: the control tree under $tree could not be made: the judge's per-key call (row.calls = r.askEachKey(ctx, data)) was not found to replace"
 		fail "negative control: a judge that puts every key's guidance into one call grants the request — UNKNOWN, the control was not run"
 		stop_stack
 		return
 	fi
-	(cd "$tree" && GOWORK=off go build -o "$binary" ./cmd/cipherd) >"$WORK_DIR/k43-control-build.log" 2>&1 || built=1
-	if [ "$built" != 0 ]; then
-		control "UNKNOWN: the one-call control broker did not build: $(tail -n 3 "$WORK_DIR/k43-control-build.log" | tr '\n' ' ')"
+	if ! start_control_broker "$tree" one-call; then
+		control "UNKNOWN: the one-call control broker did not build: $CONTROL_BUILD_TAIL"
 		fail "negative control: a judge that puts every key's guidance into one call grants the request — UNKNOWN, the control broker did not build"
 		stop_stack
 		return
 	fi
-	EXTRA_BROKER_BIN="$binary"
-	start_extra_broker one-call
-	EXTRA_BROKER_BIN=""
-	front_backends "$EXTRA_API_ADDR" "$EXTRA_PROXY_ADDR"
 	k43_case "$reason"
 	local c_exit="${K43[exit]}" c_ran="${K43[ran]}" c_new="${K43[new]}" c_verdict="${K43[verdict]}" c_asked="${K43[asked]}" c_held="${K43[held]}"
 	front_backends_stack
