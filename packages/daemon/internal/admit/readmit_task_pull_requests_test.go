@@ -22,14 +22,13 @@ import (
 // pull request stays open until the merge of the task that merges closes it; its task b, which
 // needs a and merges, tests at its step 1, with #43 open on legion/LEGION-209.b. Each row stands
 // at generation 1 with a head run. Re-admitted as a root of its own at generation 2, each row,
-// a's and b's, stands at generation 2 with no head run, as a new generation's fence starts
-// (record.ClearGeneration).
+// a's and b's, stands with no head run, as a new generation's fence starts (record.ClearGeneration),
+// and keeps its settlement's generation 1, the listener's and not the issue's.
 //
-// The fault it catches is a re-admission that carries one task's row and leaves the other at a
-// generation the issue left, whose facts the generation's fence then drops. Its controls: the
-// carry of MergePullRequest's row alone, so a's #42 keeps generation 1; and the carry of the
-// issue's first row in task order (the read by issue alone this change deletes), so b's #43 keeps
-// generation 1.
+// The fault it catches is a re-admission that carries one task's row and leaves the other with the
+// head run of a generation the issue left, whose replay puts the old fence back. Its controls: the
+// carry of MergePullRequest's row alone, so a's #42 keeps its run; and the carry of the issue's
+// first row in task order (the read by issue alone this change deletes), so b's #43 keeps its run.
 func TestAReadmittedOrphanCarriesEachTasksPullRequest(t *testing.T) {
 	ctx := context.Background()
 	pool := migratedPool(t)
@@ -102,8 +101,9 @@ func TestAReadmittedOrphanCarriesEachTasksPullRequest(t *testing.T) {
 			t.Fatalf("the pull requests of %s after the hand-over = %+v, %v, want #42 of task a and #43 of task b", child, prs, err)
 		}
 		for _, pr := range prs {
-			if pr.Generation != 2 || pr.Run != nil {
-				t.Fatalf("task %s's #%d after the hand-over stands at generation %d with run %+v, want generation 2 and no run", pr.Task, pr.Number, pr.Generation, pr.Run)
+			if pr.Generation != 1 || pr.Run != nil {
+				t.Fatalf("task %s's #%d after the hand-over stands at generation %d with run %+v, want its settlement's generation 1 kept and no run",
+					pr.Task, pr.Number, pr.Generation, pr.Run)
 			}
 		}
 	})

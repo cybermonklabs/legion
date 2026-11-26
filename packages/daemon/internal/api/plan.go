@@ -55,10 +55,14 @@ type RegisteredTask struct {
 	Needs *[]string `json:"needs,omitempty"`
 }
 
-// PlanRefusal is the answer to a plan Legion does not take, 409 PLAN_REFUSED: the code and the
-// sentence every refusal carries (Failure), and one reason for each cause (intake.PlanRefused).
-// `reasons` arrived with register_plan at OwnerPlanContract, and a caller below it is served the
-// Failure alone (shaping.go's refusal row), as a PauseFailure is below pauseContract.
+// PlanRefusal is the answer to a plan whose content Legion does not take, 409 PLAN_REFUSED: the
+// code and the sentence every refusal carries (Failure), and one reason for each cause, the first
+// plan.MostReasons of each kind of cause and one more that counts the rest of that kind
+// (plan.Supported and plan.Validate, intake.PlanRefused). A plan of an issue whose experiment's group takes no plan
+// from its owner is no such answer: it is the workflow's 409 PLAN_NOT_TAKEN (intake.PlanNotTaken),
+// a Failure with no reasons. `reasons` arrived with register_plan at OwnerPlanContract, and a
+// caller below it is served the Failure alone (shaping.go's refusal row), as a PauseFailure is
+// below pauseContract.
 type PlanRefusal struct {
 	Failure
 	Reasons []PlanReason `json:"reasons"`
@@ -83,7 +87,8 @@ const registerPlanRoute = "register_plan"
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is. It moves
-// only with this change's own number.
+// only with this change's own number, and it is a number of SupportedContracts, which names the
+// constant rather than its number for that reason.
 const OwnerPlanContract = 219
 
 // writeRefusal writes a committed refusal: a refused plan with its reasons beside the code
@@ -111,10 +116,11 @@ func (s *server) writeRefusal(w http.ResponseWriter, r *http.Request, refusal *i
 // document's approval for the version Dispatch has and the issue carrying it (documentOfIssue),
 // reads the plan's blocks at the version given, each need as the task it names (planAt, through
 // plan.FromBlocks), and refuses with one reason for each cause of a plan this release does not
-// carry out (plan.Supported) or no release can (plan.Validate); each of those answers records
-// nothing. A plan both take is recorded as intake.PlanGiven, its needs as task ids, whose rules of
-// a later version are the workflow's, and is answered with the tasks the workflow's apply says the
-// version added (registeredPlan).
+// carry out or no release can (plan.Refusals), the first plan.MostReasons of each kind named and
+// the rest of it counted; each of those answers records nothing. A
+// plan both take is recorded as intake.PlanGiven, its needs as task ids, whose rules of a later
+// version are the workflow's, and is answered with the tasks the workflow's apply says the version
+// added (registeredPlan).
 //
 // The fact's id is the issue, the generation the plan is given at, the document and the version.
 // Whether the registration is one already taken is the record's to say (intake.ApplyFact): a
@@ -163,17 +169,10 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	// FromBlocks read each need as the task it names, so a need that names no task is Validate's,
 	// and the plan recorded and answered holds task ids, which every reader of a need reads. Both
 	// checks run, so a plan with two causes gets two reasons: what this release does not carry out
-	// yet, then what no release can. Each judges the plan against the deployment the daemon's
-	// settings define (Options.Deployment), so a role of `roles` is a role a step names. Validate
-	// checks a plan its owner wrote, before the fact lock, so it runs on the request's context and
-	// stops when the request ends, recording nothing.
-	invalid, err := plan.Validate(r.Context(), given, s.deployment)
-	if err != nil {
-		s.logRequestFailure(r, err, "api: the check of a plan stopped", "issue", req.Issue, "artifact", artifactID, "version", req.Version)
-		s.refuse(w, r, http.StatusServiceUnavailable, "register_plan stopped before it finished checking the plan, because its request ended; nothing was recorded")
-		return
-	}
-	refusals := append(plan.Supported(given, s.deployment), invalid...)
+	// yet, then what no release can, each check naming at most plan.MostReasons causes of each kind.
+	// Refusals judges the plan against the deployment the daemon's settings define
+	// (Options.Deployment), so a role of `roles` is a role a step names.
+	refusals := plan.Refusals(given, s.deployment)
 	if len(refusals) > 0 {
 		s.writeRefusal(w, r, intake.PlanRefused(refusals))
 		return
@@ -236,11 +235,12 @@ type TaskStopRequest struct {
 // (architectForIssue) stops one task of it, answered 200 with no body. The stop is the
 // workflow's (intake.TaskStopped), at the generation the route read: the workflow judges the
 // owner and the generation again under the fact lock, since an adoption or a new run can commit
-// between this read and the fact, and it answers a task the plan does not hold (TaskNotFound) and
-// one that is done (TaskDone). This route's own refusals are the early ones. Each request is its
-// own fact (requestFactID): a task the owner stops, starts again with a later version and stops
-// once more is stopped twice, and a retry of a stop already applied finds the task stopped, which
-// changes nothing.
+// between this read and the fact, and it answers a task the plan does not hold (TaskNotFound), one
+// that is done (TaskDone), and every task of an issue whose experiment's group takes no plan from
+// its owner (intake.TaskNotStopped, PLAN_NOT_TAKEN). This route's own refusals are the early ones.
+// Each request is its own fact (requestFactID): a task the owner stops, starts again with a later
+// version and stops once more is stopped twice, and a retry of a stop already applied finds the
+// task stopped, which changes nothing.
 func (s *server) stopTask(w http.ResponseWriter, r *http.Request) {
 	var req TaskStopRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,

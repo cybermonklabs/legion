@@ -164,8 +164,8 @@ func startsWork(request record.SuperviseRequest) bool {
 // body StartFor reads the same rows with.
 //
 // Two tests the caller holds are deliberately not here, because each is about the issue rather
-// than about the role's entry: that the role is the one the issue's current phase names
-// (phase.RoleFor), and that a worker of the issue has work where it stands (record.AtWork).
+// than about the role's entry: that the role is the one that works the issue's current phase
+// (record.Issue.RoleAt: phase.RoleFor, or at step the role of the running step), and that a worker of the issue has work where it stands (record.AtWork).
 // admit's owedEntryRoles answers both from the records it has already read for the whole pass,
 // and asking them here would mean reading the issue again per role.
 //

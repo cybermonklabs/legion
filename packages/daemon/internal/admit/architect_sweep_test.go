@@ -621,9 +621,11 @@ func TestTheArchitectSweepTellsACarriedRootThePhaseItStandsInNow(t *testing.T) {
 	}
 }
 
-// Every role of the daemon is inside the rule, read from claim.Roles so that a role added to the
-// daemon fails this test until somebody decides where it stands. Five of them are reached as the
-// role of the phase their issue stands in (workflow.RoleFor, record.AtWork); the architect is
+// Every role of Legion's is inside the rule. It is read from claim.Roles, so a role added to Legion
+// fails this test until somebody decides where it stands. A role of the deployment is reached as
+// the role of the running step at step (record.Issue.RoleAt), which step_role_test.go holds. Five
+// of Legion's are reached as the role of the phase their issue stands in (workflow.RoleFor,
+// record.AtWork); the architect is
 // reached by a reading of its own, which is wider at admitted and narrower everywhere else
 // (workflow.ArchitectAtWork):
 //

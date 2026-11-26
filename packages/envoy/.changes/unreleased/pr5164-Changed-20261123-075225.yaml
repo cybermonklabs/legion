@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  Dispatch reads a role a Legion deployment defines as one of Legion's own. A session titled
+  `Legion <role> · <KEY>` of such a role, or the owner's `Legion acceptance · <KEY>`, is a Legion
+  session, and the secrets broker reads the issue of such a role's claim token, so its request for a
+  shared secret is listed for the issue's assignee. The Legion board has a twelfth column, `step`,
+  for an issue at a step of such a role. The sampler observes each issue's `stepRole` as
+  `step_role`, and metric 2 puts the hours of such a step on a bar of that role, read from the
+  observations and, before them, from the step's runs. Metric 3 counts such a step as a send-back
+  only when its run failed and returned the task to an earlier step.
+time: 2026-11-23T07:52:25Z
+custom:
+    Issue: pr5164

@@ -306,7 +306,7 @@ nats_urls:
 dispatch_url: http://127.0.0.1:$port_dispatch
 dispatch_token_file: $work/dispatch-token
 # The project's repository is no key of legion.yaml: the PUT below sets $repo as the project's
-# default repository in Dispatch. `production_check: tester` is the word that names the role a merge's production check
+# default repository in Dispatch. \`production_check: tester\` is the word that names the role a merge's production check
 # is handed to, written out here rather than left to the default, so the run proves the setting is
 # read; Stage 4b's rig names no key and proves the default.
 projects:
@@ -906,9 +906,9 @@ primary_issue() {
   wait_for_worker "$root_issue" reviewer
   pass
 
-  # Three real GitHub changes-requested reviews, each posted by the reviewer pane and ended by its
-  # completion, exercise the round counter, the return to implementing, and the third `pr-blocked`
-  # publication. Every recovery repeats the real workers.
+  # Three real GitHub changes-requested reviews, each posted by the reviewer pane, which then
+  # completes its phase, exercise the round counter, the return to implementing, and the third
+  # `pr-blocked` publication. Every recovery repeats the real workers.
   for round in 1 2 3; do
     begin "review-round-$round-changes-requested"
     # A review that names no correction leaves the implementer nothing it may change under a spec
@@ -922,9 +922,10 @@ primary_issue() {
       review_note="A bot's review thread on the pull request asks whether the file change is needed, and the implementer answered it: judge the answer, reply on that thread in your own words, and name its thread id to the implementer as accepted, as your role says for a bot's thread (the change is needed: the spec asks for it)."
     fi
     request_changes_as_reviewer "$root_issue" "$round" "Stage 3 proof review, round $round: append the line \`$(round_line "$round")\` to the end of the same file this pull request changes, below the lines already there, and change nothing else. The spec permits one more line in that file for a review round, so this correction is in scope." "$review_note"
-    # The round ends when the reviewer completes it: its review, its handoff record, its completion.
+    # The review ends the round whether or not the reviewer has completed, so the reviewer's
+    # handoff record is checked once the daemon records the completion that names it.
     wait_for_phase "$root_issue" implementing 1200
-    assert_handoff_record "$root_issue" reviewer reviewing "$round"
+    assert_review_round_handoff "$root_issue" "$round"
     assert_review_of_head "$root_issue" "$round" CHANGES_REQUESTED
     until_true 180 "round $round to write in_progress on the Dispatch board" dispatch_status_is "$root_issue" in_progress
     wait_for_worker "$root_issue" implementer
@@ -1087,7 +1088,7 @@ primary_issue() {
 
   begin smoke-main-clean
   # The merged pull request carried no handoff (A2): no commit of it changes only .legion/, and no
-  # file it merged is under .legion/, since every phase's handoff is a record on the Dispatch issue.
+  # file it merged is under .legion/, since every handoff is a record on the Dispatch issue.
   handoff_pushes=$(pull_request_legion_only_commits) || fail "could not read the commits of $repo#$pr_number"
   [ -z "$handoff_pushes" ] || fail "$repo#$pr_number carries commits that change only .legion/: $(tr '\n' ' ' <<<"$handoff_pushes")"
   merged_files=$(pull_request_product_files) || fail "could not read the files of $repo#$pr_number"
@@ -1222,9 +1223,9 @@ no_change_close() {
   send_agent "$nochange_issue" architect "Stage 3 no-change proof: the human reviewing your spec requested changes: \"$reason\" End your tree as your role says, and change nothing else."
   until_true 600 "the no-change root to be done in Dispatch" dispatch_status_is "$nochange_issue" "done"
   dispatch_events "$nochange_issue" >"$evidence/nochange-events.json"
-  jq -e '(map(select(.type == "message.created" and (.payload.body | contains("Closed by its architect before its first phase:")))) | first | .seq) as $message
-    | (map(select(.type == "issue.closed")) | first | .seq) as $closed
-    | $message != null and $closed != null and $message < $closed' "$evidence/nochange-events.json" >/dev/null ||
+  # lib/stage3-no-change-close.jq: the reason is on the issue before its close, and a message its
+  # author deleted counts as not posted.
+  jq -e -f "$root/scripts/e2e/lib/stage3-no-change-close.jq" "$evidence/nochange-events.json" >/dev/null ||
     fail "the architect's reason was not posted on $nochange_issue before its close; see $evidence/nochange-events.json"
   jq -e --arg daemon "legion-daemon:$project" '[.[] | select(.type | IN("issue.updated", "issue.closed")) | select(.payload.status | IN("in_progress", "done"))]
     | (map(.payload.status) | unique) == ["done", "in_progress"] and all(.actor.id == $daemon)' "$evidence/nochange-events.json" >/dev/null ||

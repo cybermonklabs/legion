@@ -41,7 +41,9 @@ func microVMChanged(edit func(*MicroVM)) func(*Options) {
 // not are the account, which the launch reads itself (accountDrift,
 // TestALaunchKeepsAnAccountDriftedPodARoundCoversAndReplacesOneNoRoundCovers), and the shape its
 // template was built from — the image, the kind's own reservation, an operator volume or mount,
-// the disk size and the sandbox, each key of podShapeRecord — which
+// the disk size and the sandbox, each a key of podShapeRecord, whose `roles` the launch does not
+// read, since a pod built before a role keeps it and its start waits (runtime.ErrAwaitsPodUpdate) —
+// which
 // the launch reads through the same one computation the round's reasons are named from
 // (shapeDrift). Nothing else would: PodDrift answers nothing for such a pod, so no round is ever
 // opened over it, and a launch that kept it would leave the project controller running for ever in
@@ -67,6 +69,7 @@ func microVMChanged(edit func(*MicroVM)) func(*Options) {
 // on the configuration its pod was built from replaces nothing — the failure that would matter
 // most here, since it would rebuild the controller's pod at every launch of it.
 func TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted(t *testing.T) {
+	t.Parallel()
 	plugins := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: 24}
 	for name, tc := range map[string]struct {
 		// was is the configuration the controller's pod is built on, testOptions' where nil, and
@@ -226,6 +229,7 @@ func TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted(t *testing.T) {
 // it, where the same launch into the controller's pod replaces that pod (podImageDrift,
 // TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted).
 func TestALaunchKeepsAnIssuePodWhateverOfItsShapeMoved(t *testing.T) {
+	t.Parallel()
 	plugins := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: 24}
 	for name, tc := range map[string]struct {
 		now     func(*Options)
@@ -282,6 +286,7 @@ func TestALaunchKeepsAnIssuePodWhateverOfItsShapeMoved(t *testing.T) {
 // what the launch does with such a pod is keptBy's, which cannot read that record and replaces
 // the pod.
 func TestPodImageDriftReadsTheImageAPodWasBuiltFrom(t *testing.T) {
+	t.Parallel()
 	shapeOn := func(image, cpu string) string {
 		t.Helper()
 		encoded, err := json.Marshal(podShapeRecord{
@@ -351,6 +356,7 @@ func TestPodImageDriftReadsTheImageAPodWasBuiltFrom(t *testing.T) {
 // starts the role as the pod it is in was built (no new flag, no new overlay), or it does not
 // start that role in that pod at all.
 func TestARoleStartedInAKeptDriftedPodIsStartedAsItsPodWasBuilt(t *testing.T) {
+	t.Parallel()
 	const overlay = "/etc/legion-operator-roles/fallback.yml"
 	roles := corev1.Volume{Name: "operator-roles", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 		LocalObjectReference: corev1.LocalObjectReference{Name: "legion-operator-roles"},
@@ -433,6 +439,7 @@ func TestARoleStartedInAKeptDriftedPodIsStartedAsItsPodWasBuilt(t *testing.T) {
 // the launch write one onto the pod: it patches no template, so the Sandbox still records the
 // gVisor pod it runs until the update round PodDrift opens over it replaces that pod.
 func TestARoleStartedInAKeptPodWhoseSandboxMovedIsStartedAsItsPodWasBuilt(t *testing.T) {
+	t.Parallel()
 	spec := workerSpec(t)
 	// resumed is a resume of the tester at generation 2 into its issue pod, built under no sandbox
 	// block, by a daemon restarted with move: what PodDrift read of the pod first, the start

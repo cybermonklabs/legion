@@ -826,8 +826,9 @@ func TestAFreshSessionRefusedForATurnThatStartedUnderItHoldsNoSuspension(t *test
 	}
 }
 
-// `controller` is no role the controller's own tool may name: the roles are the six a claim can
-// be on, and the project's controller is none of them. The refusal comes before the grant is
+// `controller` is no role the controller's own tool may name: the roles a claim can be on are
+// Legion's six and each role of the deployment, and the project's controller is none of them. The
+// refusal comes before the grant is
 // redeemed, as every check of this route's body does.
 func TestTheControllersFreshSessionRefusesTheRoleController(t *testing.T) {
 	h := freshSessionHarness(t, &phaseRestarter{})
@@ -942,7 +943,7 @@ func TestAFreshSessionThatCouldNotStartTheClaimAgainAnswersACallerBelow104AsBefo
 					}
 					want := map[string]any{
 						"level": "INFO", "caller": "192.0.2.1:1234", "pod": "",
-						"pluginContract": float64(restoreContract(contract)), "daemonApiVersion": float64(DaemonAPIVersion),
+						"pluginContract": float64(restoreContract(contract)), "daemonApiVersion": float64(DaemonAPIVersion()),
 						"follows": followsRestore, "claim": string(token), "request": "resume", "served": servedTheRefusedStep,
 					}
 					for key, value := range want {

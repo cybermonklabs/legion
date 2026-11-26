@@ -39,10 +39,10 @@ const refreshWindow = 20 * time.Minute
 // the daemon does changes it: only an account approving the grant does, which the next ask past
 // this window finds. Without the memory every refresh of every role of every live pod asks the
 // refused scope again, each exchange preceded by an uncached grant read — for one refused scope
-// of an issue pod, six role bundles times two exchanges a minute — and a rate limit then fails
-// every bundle of the project, the write leases included. Five minutes keeps that at one
-// exchange per scope per five minutes, while leaving an account's fix to reach the daemon well
-// inside the hour an installation token lasts.
+// of an issue pod, a role bundle for each role of the pod times two exchanges a minute — and a
+// rate limit then fails every bundle of the project, the write leases included. Five minutes
+// keeps that at one exchange per scope per five minutes, while leaving an account's fix to reach
+// the daemon well inside the hour an installation token lasts.
 const narrowingRefusalWindow = 5 * time.Minute
 
 // AppRole names the GitHub App a Legion role acts as.
@@ -230,6 +230,11 @@ type Manager struct {
 	// token mode has no entry: its read is the token_command's run, which runTokenCommand shares.
 	pendingInstallations map[AppRole]*pendingInstallations
 	commands             map[scope]*commandRun
+	// loginReleases holds, per App role in token mode, the installation AppLogin took from the
+	// command's release of every installation and has not yet read the App's login under
+	// (loginRelease): a later AppLogin of the role reads under it while it is fresh, so a login
+	// read that failed after its release runs the command no second time for it.
+	loginReleases map[AppRole]releasedInstallation
 	// keys holds each App private key parsed, by its PEM text (generateJWT).
 	keys map[string]*rsa.PrivateKey
 
@@ -285,10 +290,13 @@ type pendingInstallations struct {
 // as a Source, which the build holds it to wherever it is handed over. Forgetter is taken by
 // type assertion instead (internal/daemon's openWorkflow and leakCheckSource), so a Forget
 // renamed without its interface would fail the daemon's boot, or leave the leak check serving
-// a token GitHub refused, rather than fail the build.
+// a token GitHub refused, rather than fail the build. KnownIdentities is taken by type
+// assertion too (internal/daemon's workflowRuntime.knownIdentity), and a source that answers
+// none, such as a test's fake, is one whose every identity is read through a mint.
 var (
-	_ Source    = (*Manager)(nil)
-	_ Forgetter = (*Manager)(nil)
+	_ Source          = (*Manager)(nil)
+	_ Forgetter       = (*Manager)(nil)
+	_ KnownIdentities = (*Manager)(nil)
 )
 
 // New makes an App token manager. Config.Load resolves command and secret key sources before
@@ -334,6 +342,7 @@ func New(apps config.GitHubApps, options Options) *Manager {
 		pendingIdentities:    map[string]*pendingIdentity{},
 		pendingInstallations: map[AppRole]*pendingInstallations{},
 		commands:             map[scope]*commandRun{},
+		loginReleases:        map[AppRole]releasedInstallation{},
 		keys:                 map[string]*rsa.PrivateKey{},
 		refusals:             map[scope]refusedNarrowingAt{},
 		saidShortfalls:       map[saidShortfall]bool{},
@@ -383,6 +392,28 @@ func (m *Manager) Forget(role AppRole, owner string) {
 	maps.DeleteFunc(m.refusals, func(key scope, _ refusedNarrowingAt) bool {
 		return key.role == role && key.owner == forgotten
 	})
+}
+
+// KnownIdentities answers the bot identity of an App that a token source already holds, with no
+// mint and no call to GitHub.
+type KnownIdentities interface {
+	KnownIdentity(role AppRole) (GitIdentity, bool)
+}
+
+// KnownIdentity is the bot identity of the App role's App that a lease of that App already
+// fetched (identity, which caches it by App id for the Manager's life), and false when none has:
+// before the App's first mint, or for an App role that no App is configured for. It reads that
+// cache alone, under mu, and asks GitHub nothing, so a caller that needs the identity and no
+// token — a launch's table of every role's identity, for the other App's roles — costs no mint.
+func (m *Manager) KnownIdentity(role AppRole) (GitIdentity, bool) {
+	app, err := m.app(role)
+	if err != nil {
+		return GitIdentity{}, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	identity, known := m.identities[app.AppID]
+	return identity, known
 }
 
 // forgetNarrowingRefusal drops the narrowing refusal remembered for role's read lease on owner

@@ -788,7 +788,7 @@ func (r *liveRig) checkStalePluginInstall() error {
 
 	old := *worker.last
 	since := time.Now()
-	loc, err := r.resumeWithPlugins(worker, worker.session, &runtime.PluginInstall{PiLegion: legionTar, PiEnvoy: envoyTar, Contract: api.DaemonAPIVersion})
+	loc, err := r.resumeWithPlugins(worker, worker.session, &runtime.PluginInstall{PiLegion: legionTar, PiEnvoy: envoyTar, Contract: api.DaemonAPIVersion()})
 	if err != nil {
 		return err
 	}
@@ -822,8 +822,8 @@ func (r *liveRig) checkStalePluginInstall() error {
 	if err != nil {
 		return err
 	}
-	if legionVersion != r.env.piLegionVersion || legionContract != strconv.Itoa(api.DaemonAPIVersion) {
-		return fmt.Errorf("%s/package.json: version %q contract %q, want version %q and contract %d", legionRoot, legionVersion, legionContract, r.env.piLegionVersion, api.DaemonAPIVersion)
+	if legionVersion != r.env.piLegionVersion || legionContract != strconv.Itoa(api.DaemonAPIVersion()) {
+		return fmt.Errorf("%s/package.json: version %q contract %q, want version %q and contract %d", legionRoot, legionVersion, legionContract, r.env.piLegionVersion, api.DaemonAPIVersion())
 	}
 	envoyVersion, _, err := r.pluginPackageInfo(worker, envoyRoot+"/package.json")
 	if err != nil {
@@ -862,7 +862,7 @@ func (r *liveRig) checkStalePluginInstall() error {
 	// .../g*` has run — but the wrapper's own check ends the child before `exec`, and the runtime
 	// observes it Gone.
 	mark := r.obs.mark()
-	negLoc, err := r.resumeWithPlugins(worker, worker.session, &runtime.PluginInstall{PiLegion: "9.6.1", PiEnvoy: envoyTar, Contract: api.DaemonAPIVersion})
+	negLoc, err := r.resumeWithPlugins(worker, worker.session, &runtime.PluginInstall{PiLegion: "9.6.1", PiEnvoy: envoyTar, Contract: api.DaemonAPIVersion()})
 	if err != nil {
 		return err
 	}
@@ -872,7 +872,7 @@ func (r *liveRig) checkStalePluginInstall() error {
 	if !ok {
 		return fmt.Errorf("no Gone for the negative control's %s within %s", negLoc.Incarnation, liveGoneLimit)
 	}
-	note("runtime", "negative control: Observe gone for %s (the published pi-legion@9.6.1 declares contract 23, not %d) — %s", short(negLoc.Incarnation), api.DaemonAPIVersion, oneLine(firstLine(gone.Detail)))
+	note("runtime", "negative control: Observe gone for %s (the published pi-legion@9.6.1 declares contract 23, not %d) — %s", short(negLoc.Incarnation), api.DaemonAPIVersion(), oneLine(firstLine(gone.Detail)))
 	worker.loc, worker.state = nil, stateDead
 
 	final, err := r.getPod(name)
@@ -1770,7 +1770,7 @@ func (r *liveRig) checkCleanupReapsTheIssue() error {
 
 // issue-suspend-resume: the whole of INFRA-80 on an issue of its own. Its role runs, its session is
 // in the table, and the issue is then closed the way the daemon's durable close effect closes one:
-// SuspendIssue suspends the Sandbox, waits its pod out and deletes the Sandbox with the six role
+// SuspendIssue suspends the Sandbox, waits its pod out and deletes the Sandbox with the role
 // Secrets it owned. Nothing of the issue is left — the Sandbox is gone, and the pod's own disk went
 // with the pod — so the resume that follows is a launch from nothing: a new Sandbox, a new pod, and
 // that pod's own disk, under the same name, since Kubernetes derives it from the pod's, with a new
@@ -1854,6 +1854,7 @@ func (r *liveRig) checkIssueSuspendResume() error {
 // operator's own values are GKE's to pick per pod (confirmed live, 2026-10-17: a six-role root pod
 // carried `["2500m", "X"]`, not a fixed literal), so any non-empty value list is tolerated.
 func TestIsGKEExtendedDurationAffinity(t *testing.T) {
+	t.Parallel()
 	key := "cloud.google.com/extended-duration-pods"
 	required := func(exprs ...corev1.NodeSelectorRequirement) *corev1.Affinity {
 		return &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
@@ -1898,6 +1899,7 @@ func TestIsGKEExtendedDurationAffinity(t *testing.T) {
 // extendedDurationAffinity parameter must gate on the matcher's real verdict, not merely on
 // whether the pod carries any NodeAffinity at all.
 func TestGuaranteedPodAffinity(t *testing.T) {
+	t.Parallel()
 	extended := &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
 		RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
 			NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchExpressions: []corev1.NodeSelectorRequirement{

@@ -57,3 +57,29 @@ func TestARoleRunCountsNoQueuedRowThatNamesAnotherClaim(t *testing.T) {
 		}
 	})
 }
+
+func TestRoleRunsKeepsEachNamedClaimWhenSeveralAgentsHaveTheSameRole(t *testing.T) {
+	ctx := t.Context()
+	st := migratedStore(t)
+	records := NewStore()
+	tokens := []claim.Token{"legion-legion-legion-209-implementer", "legion-legion-legion-209-implementer-2"}
+	var keys []RoleRunKey
+	inTx(t, st, func(tx pgx.Tx) {
+		for _, token := range tokens {
+			row, err := NewOutboxRow("LEGION-209", SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer,
+				Claim: token, Generation: 1, Phase: phase.Implementing}, time.Now())
+			must(t, err)
+			must(t, records.Enqueue(ctx, tx, row))
+			keys = append(keys, RoleRunKey{Token: token, Issue: "LEGION-209", Role: claim.RoleImplementer, Generation: 1})
+		}
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		runs, err := records.RoleRuns(ctx, tx, keys)
+		must(t, err)
+		for _, token := range tokens {
+			if queued := runs[token].Queued; len(queued) != 1 || queued[0].Request.Claim != token {
+				t.Fatalf("the run of %s counts %+v, want exactly the start naming that agent", token, queued)
+			}
+		}
+	})
+}

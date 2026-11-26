@@ -80,7 +80,8 @@ func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, s *TaskScope) (bo
 // Any other end of a join changes nothing: one of a generation the issue has left, of a task its
 // plan no longer holds or whose step waits for no join, and one onto another branch or from other
 // needs, a row that a stop and a later version of the task left behind, whose start again queued a
-// join of its own.
+// join of its own. So does the end of a row that is not the task's newest task_branch row
+// (record.Store.TaskBranchRow), a merge's row among them, which is logged.
 func (e *Engine) taskJoined(ctx context.Context, tx pgx.Tx, fact intake.TaskJoined) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil || issue.Generation != fact.Generation {
@@ -99,6 +100,14 @@ func (e *Engine) taskJoined(ctx context.Context, tx pgx.Tx, fact intake.TaskJoin
 		e.logOnCommit(ctx, "workflow: the end of a join the task's step does not wait for changes nothing", "issue", issue.Key, "task", fact.Task,
 			"state", joined.State, "wait", joined.StepWait, "branch", joined.BranchOf(issue.Key), "needs", joined.Needs,
 			"joined_branch", fact.Branch, "joined_needs", fact.Needs)
+		return intake.Result{}, nil
+	}
+	row, err := e.store.TaskBranchRow(ctx, tx, issue.Key, fact.Generation, fact.Task)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if row == 0 || row != fact.Row {
+		e.logOnCommit(ctx, "workflow: the end of an earlier task join leaves the current wait standing", "issue", issue.Key, "task", fact.Task, "row", fact.Row, "current", row)
 		return intake.Result{}, nil
 	}
 	if fact.Base != "" {

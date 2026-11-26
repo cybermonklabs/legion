@@ -128,6 +128,7 @@ func assertFirstReportTaken(t *testing.T, pool *pgxpool.Pool, engine *Engine, ke
 }
 
 func TestAFirstReportAfterItsRunsEventIsTakenOnTheEndedStep(t *testing.T) {
+	t.Parallel()
 	t.Run("a: no owner's plan, the approval before the reviewer's first completion", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -166,6 +167,7 @@ func TestAFirstReportAfterItsRunsEventIsTakenOnTheEndedStep(t *testing.T) {
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Reviewing)
 		reviewer := seedPhaseWorker(t, pool, root.Key, claim.RoleReviewer, "")
+		seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleReviewer, Claim: reviewer, Entry: 1, EntryTask: "review this change"})
 		onStored(t, pool, engine, root.Key, engine.StartStepRecord)
 		reviewApprovedNow(t, pool, engine, root.Key)
 		assertPhase(t, pool, phase.Accepting)

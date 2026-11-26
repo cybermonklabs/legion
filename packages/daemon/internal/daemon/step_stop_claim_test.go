@@ -23,7 +23,7 @@ import (
 // step's agent is live in the pod from step 1. The owner stops task t at step 3, and the stop's row
 // suspends the agent that ran step 3 and leaves the first step's agent running, also where a
 // restart of the task commits between the stop and the row's run: a later version of the plan
-// changing task t starts it again at step 1 (workflow's restartTask), and the entry of step 1 writes
+// changing task t starts it again at step 1 (workflow's startAtFirstStep), and the entry of step 1 writes
 // the first step's agent on the implementer's phases row. The stop is the engine's own, applied as
 // the owner's stop_task (intake.TaskStopped), and its row runs on the outbox's executor; the
 // restart is modelled as the write its entry makes. The control is the row run with no restart.

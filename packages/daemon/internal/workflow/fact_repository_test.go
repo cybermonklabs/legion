@@ -22,6 +22,7 @@ import (
 // whether the other repository's pull request is on the issue's branch or a record names the other
 // repository for the issue (one written before the record carried the issue's repository).
 func TestAGitHubFactFromAnotherRepositoryChangesNothing(t *testing.T) {
+	t.Parallel()
 	updated := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
 	for _, recorded := range []string{"acme/widgets", "acme/other"} {
 		facts := []intake.Fact{
@@ -58,6 +59,7 @@ func TestAGitHubFactFromAnotherRepositoryChangesNothing(t *testing.T) {
 // Acme/Widgets is the pull request of an issue whose record keeps acme/widgets, the spelling the
 // backfill kept from its clone.
 func TestAPullRequestInAnotherSpellingOfTheIssuesRepositoryIsItsOwn(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	openTree(t, pool)
 	parent := "LEGION-208"
@@ -124,6 +126,7 @@ var renamedUpdated = time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
 // negative control, where it changes nothing at all, as any other repository's fact does
 // (TestAGitHubFactFromAnotherRepositoryChangesNothing).
 func TestAGitHubFactNamingARenamedRepositoryAppliesToTheTreeRecordedUnderItsOldName(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// prRepo is the repository the pull request is recorded on before the fact, empty for the
@@ -234,6 +237,7 @@ func TestAGitHubFactNamingARenamedRepositoryAppliesToTheTreeRecordedUnderItsOldN
 // today; and under no pair against the name it moved to, the negative control, where it changes
 // nothing at all.
 func TestAPullRequestOpenAtTheTransferTakesTheFactsNamingTheRepositoryItMovedTo(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		fact func(repo string) intake.Fact

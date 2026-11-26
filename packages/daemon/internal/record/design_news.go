@@ -328,10 +328,11 @@ func stepConcerns(step DesignStep, issue, tree string) bool {
 //     criteria the tree root alone, since its checks are the root's to prove;
 //   - the member is in the workflow (InWorkflow), its tree does not linger (Issue.Lingers on the
 //     tree's root, as TreeLingers reads it), and its phase has a holder, a phase whose work
-//     phase.RoleFor names a role for: not awaiting_person, done, or held, which a restart moves
-//     back into its phase, and not admitted, which phase.RoleFor names the tree's architect for
-//     (dispatch://INFRA-2614) and which comes before any working phase of the member, so its first
-//     phase's holder takes its baseline at that phase's start (workflow's Engine.enter);
+//     Issue.RoleAt names a role for (at step, the role of the running step, which the plan names):
+//     not awaiting_person, done, or held, which a restart moves back into its phase, and not
+//     admitted, which RoleAt names the tree's architect for (dispatch://INFRA-2614) and which comes
+//     before any working phase of the member, so its first phase's holder takes its baseline at
+//     that phase's start (workflow's Engine.enter);
 //   - its pull request has not merged, in whatever phase it stands: merging is the usual case,
 //     but a pull request can merge while its issue still stands in reviewing, and merged work
 //     never moves back.
@@ -437,7 +438,7 @@ func untold(member Issue, merged, heldBack, owes, other bool) UntoldReason {
 		return UntoldAwaitingPerson
 	case member.Phase == phase.Held:
 		return UntoldHeld
-	case heldBack || phase.RoleFor(member.Phase) == "":
+	case heldBack || (phase.RoleFor(member.Phase) == "" && len(member.RunningAt(member.Phase)) == 0):
 		return UntoldHeldBack
 	}
 	return ""

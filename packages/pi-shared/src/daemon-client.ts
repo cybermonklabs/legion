@@ -16,6 +16,10 @@ import {
   LegionHandoffCompleteResponse,
   type LegionHealth,
   LegionHealthResponse,
+  LegionIntakeDiscardRequest,
+  LegionIntakeDiscardResponse,
+  LegionIntakeReplayRequest,
+  LegionIntakeReplayResponse,
   type LegionIssue,
   LegionIssueRecordResponse,
   LegionIssueStatusRequest,
@@ -132,7 +136,8 @@ export interface LegionDaemonClient {
   readonly exit: (input: ExitInput) => Promise<void>;
   /** `claim.TurnOutcomeRequest`: how one of the claim's turns ended, under the sequence the
    * reporting plugin counted itself (`packages/pi-legion/src/turn-outcome.ts`). The answer is the
-   * trailing run of refused turns the daemon derived and whether this report failed the claim. */
+   * trailing run of refused turns the daemon derived (`LegionTurnOutcomeResponse` says what its
+   * `failed` holds). */
   readonly turnOutcome: (
     input: z.input<typeof LegionTurnOutcomeRequest>
   ) => Promise<z.output<typeof LegionTurnOutcomeResponse>>;
@@ -192,6 +197,21 @@ export interface LegionDaemonClient {
   readonly projectResume: (
     input: z.input<typeof LegionProjectResumeRequest>
   ) => Promise<z.output<typeof LegionProjectResumeResponse>>;
+  /** The controller's `replay_give_up`: the daemon applies again the messages its intake gave up
+   * on that the selection names, `giveUp`, one record by its id, or `consumer` with `throughSeq`,
+   * every open record of that consumer at or below that stream sequence, through the handling a
+   * live delivery takes, the effect `legion intake replay` runs for an operator. The answer is
+   * each record it took with how its replay ended, and how many open records of the selection
+   * are left. */
+  readonly intakeReplay: (
+    input: z.input<typeof LegionIntakeReplayRequest>
+  ) => Promise<z.output<typeof LegionIntakeReplayResponse>>;
+  /** The controller's `discard_give_up`: the daemon closes the give-ups the selection names, for
+   * `reason`, and applies nothing, the effect `legion intake discard` runs for an operator. The
+   * answer is the id of each record it closed. */
+  readonly intakeDiscard: (
+    input: z.input<typeof LegionIntakeDiscardRequest>
+  ) => Promise<z.output<typeof LegionIntakeDiscardResponse>>;
   readonly waveRelease: (
     input: z.input<typeof LegionWaveReleaseRequest>
   ) => Promise<z.output<typeof LegionWaveReleaseResponse>>;
@@ -212,7 +232,9 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
   /** The owner's `register_plan` (contract 219): the plan in one version of a document of the
    * issue, which the daemon reads from Dispatch at that version. The answer is the plan it took;
-   * a plan it does not take is refused `PLAN_REFUSED`, every reason in the sentence. */
+   * a plan whose content it does not take is refused `PLAN_REFUSED`, every reason it names in the
+   * sentence (the first reasons of each kind of cause and a count of the rest of that kind), and a plan
+   * of an issue whose experiment's group takes no plan from its owner `PLAN_NOT_TAKEN`. */
   readonly planRegister: (
     input: z.input<typeof LegionPlanRegisterRequest>
   ) => Promise<z.output<typeof LegionPlanRegisterResponse>>;
@@ -710,6 +732,20 @@ export function createLegionDaemonClient(
         "/legion/v1/project/resume",
         LegionProjectResumeRequest,
         LegionProjectResumeResponse,
+        input
+      ),
+    intakeReplay: (input) =>
+      post(
+        "/legion/v1/intake/replay",
+        LegionIntakeReplayRequest,
+        LegionIntakeReplayResponse,
+        input
+      ),
+    intakeDiscard: (input) =>
+      post(
+        "/legion/v1/intake/discard",
+        LegionIntakeDiscardRequest,
+        LegionIntakeDiscardResponse,
         input
       ),
     gateRegister: (input) =>

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -53,9 +55,7 @@ func newPauseRig(t *testing.T, roles ...claim.Role) *pauseRig {
 	pool := isolatedOutboxPool(t)
 	st := outboxTreeStore(t, pool)
 	records := record.NewStore()
-	putOutboxIssue(t, pool, records, record.Issue{Key: pauseIssue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: "LEGION", Tree: pauseIssue, Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress",
-		Rank: "U", LastDispatchSeq: 5})
+	putOutboxIssue(t, pool, records, podIssueRecord())
 	r := &pauseRig{t: t, ctx: ctx, pool: pool, st: st, logs: &testlog.Buffer{}}
 	for _, role := range roles {
 		if err := st.PutClaim(ctx, r.claim(role, supervise.StateIdle)); err != nil {
@@ -308,6 +308,55 @@ func TestAPauseStopMadeAgainWritesItsRecordsOnce(t *testing.T) {
 	}
 	if _, found, err := r.st.PausePodHoldOf(r.ctx, "LEGION", pauseIssue); err != nil || found {
 		t.Fatalf("a hold of %s's pod stands = %t, %v; want the ended one alone", pauseIssue, found, err)
+	}
+}
+
+// A pause's stop arms the backstop of the worker of the issue's open phase, and at step that
+// worker is the role of the running step, read with the issue (workflow.OpenRoleOf), which the
+// phase alone does not name. With the task of `implementer checker linter` at the checker's step
+// 2, the stopped checker gets the backstop and the stopped implementer and linter get none; with
+// the task at the linter's step 3, the linter gets it and the checker none.
+func TestAPauseStopAtStepArmsTheBackstopOfTheRoleOfTheStep(t *testing.T) {
+	t.Parallel()
+	const checker = claim.Role("checker")
+	for _, tc := range []struct {
+		at   int
+		want claim.Role
+	}{{2, checker}, {3, stepStartLinter}} {
+		t.Run(fmt.Sprintf("the task at step %d", tc.at), func(t *testing.T) {
+			r := newPauseRig(t)
+			records := record.NewStore()
+			issue := podIssueRecord()
+			issue.Phase, issue.Generation = phase.Step, 2
+			putOutboxIssue(t, r.pool, records, issue)
+			seedStepStartPlan(t, r.pool, records, tc.at)
+			roles := []claim.Role{claim.RoleImplementer, checker, stepStartLinter}
+			stopped := make([]supervise.Claim, 0, len(roles))
+			for _, role := range roles {
+				c := r.claim(role, supervise.StateIdle)
+				c.Generation, c.ServingGeneration = 2, 2
+				if err := r.st.PutClaim(r.ctx, c); err != nil {
+					t.Fatalf("seed the %s's claim: %v", role, err)
+				}
+				c.State, c.SuspendedBy = supervise.StateSuspended, supervise.SuspendedByReleased
+				stopped = append(stopped, c)
+			}
+			held := r.pauseLegion()
+			for _, c := range stopped {
+				r.mustStop(c, supervise.PauseStop{Pause: held.ID})
+			}
+			rows, err := r.pool.Query(r.ctx, `select role from pod_wake_backstops where issue = $1 and not fired order by role`, pauseIssue)
+			if err != nil {
+				t.Fatalf("read the backstops of %s: %v", pauseIssue, err)
+			}
+			armed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			if err != nil {
+				t.Fatalf("read the backstops of %s: %v", pauseIssue, err)
+			}
+			if want := []string{string(tc.want)}; !slices.Equal(armed, want) {
+				t.Fatalf("the pause's stops of %s at step %d armed the backstops of %v, want %v, the role of the running step", pauseIssue, tc.at, armed, want)
+			}
+		})
 	}
 }
 
@@ -1102,17 +1151,17 @@ func TestAPauseStopOfAStepsWorkerArmsItsBackstop(t *testing.T) {
 func TestAPausedCancelOfAReleaseArmsTheBackstopOfTheStepsWorker(t *testing.T) {
 	t.Parallel()
 	r := newPauseRig(t)
-	r.atTheCheckersStep()
+	worker, other := r.atTheCheckersStep()
 	if _, err := r.pool.Exec(r.ctx, `insert into issue_releases
-		(project, issue, generation, first_row, boundary_row, last_row, started_row, role, suspended, marked_at)
-		values ('legion', $1, 2, 18, 20, 22, 0, 'architect', $2, now())`, pauseIssue, []string{string(stepPauseChecker)}); err != nil {
+		(project, issue, generation, first_row, boundary_row, last_row, started_row, role, suspended, suspended_claims, marked_at)
+		values ('legion', $1, 2, 18, 20, 22, 0, 'architect', $2, $3, now())`, pauseIssue, []string{string(stepPauseChecker)}, []string{string(worker.Token), string(other.Token)}); err != nil {
 		t.Fatalf("mark the release of %s: %v", pauseIssue, err)
 	}
 	held := r.pauseLegion()
 	runner := &outbox{pool: r.pool, records: record.NewStore(), project: "legion", dispatchProject: "LEGION", trees: r.st,
 		backstop: time.Hour, log: quietLogger(), now: time.Now}
 
-	if err := runner.cancelRelease(r.ctx, pauseIssue, pauseIssue, workflow.IdleHoldBundleSave, "the save failed"); err != nil {
+	if err := runner.cancelRelease(r.ctx, pauseIssue, pauseIssue, workflow.IdleHoldWorkspaceUnread, "the workspace read failed"); err != nil {
 		t.Fatalf("cancel the release while paused: %v", err)
 	}
 	if got := r.count(`select count(*) from project_pause_stops where pause_id = $1 and issue = $2`, held.ID, pauseIssue); got != 2 {

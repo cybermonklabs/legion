@@ -185,7 +185,7 @@ func TestAPhaseRowCarriesItsStep(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		rows, err := NewStore().Phases(ctx, tx, planIssue)
 		must(t, err)
-		if got := PhaseRowOf(rows, claim.RoleReviewer); got.StepTask != "a" || got.StepPlace != 2 {
+		if got := PhaseRowAt(rows, reviewer.Key()); got.StepTask != "a" || got.StepPlace != 2 {
 			t.Fatalf("the reviewer's row runs step %d of task %q, want step 2 of task a as it was written", got.StepPlace, got.StepTask)
 		}
 		if got := PhaseRowOf(rows, claim.RoleImplementer); got.StepTask != "" || got.StepPlace != 0 {
@@ -209,7 +209,7 @@ func TestANewGenerationClearsTheStepOfAPhaseRow(t *testing.T) {
 		must(t, NewStore().PutPhase(ctx, tx, row))
 		rows, err := NewStore().Phases(ctx, tx, planIssue)
 		must(t, err)
-		if got := PhaseRowOf(rows, claim.RoleReviewer); got.StepTask != "a" || got.StepPlace != 2 {
+		if got := PhaseRowAt(rows, row.Key()); got.StepTask != "a" || got.StepPlace != 2 {
 			t.Fatalf("the reviewer's row before the new generation runs step %d of task %q, want step 2 of task a as it was written", got.StepPlace, got.StepTask)
 		}
 		must(t, NewStore().ClearGeneration(ctx, tx, planIssue, planGivenAt))
@@ -217,7 +217,7 @@ func TestANewGenerationClearsTheStepOfAPhaseRow(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		rows, err := NewStore().Phases(ctx, tx, planIssue)
 		must(t, err)
-		got := PhaseRowOf(rows, claim.RoleReviewer)
+		got := PhaseRowAt(rows, row.Key())
 		if got.Entry != 2 {
 			t.Fatalf("the reviewer's entry after a new generation = %d, want 2 kept", got.Entry)
 		}
@@ -378,11 +378,12 @@ func TestArchitectOfTreeIsTheRootsOrAMembersArchitect(t *testing.T) {
 	})
 }
 
-// The plans a first step passes over are each plan of the issue in force whose giver is no
-// architect of the issue's tree now (ArchitectOfTree), with its version and its giver, in the order
-// they were given: a plan of the tree root's architect is not among them, nor a plan of a
-// sub-architect, nor a plan of the default steps, which nobody gave. Once the issue stands in a
-// tree of its own, each of those owners' plans is an earlier owner's.
+// The plans of earlier owners a first step passes over are each plan of the issue in force whose
+// giver is no architect of the issue's tree now (ArchitectOfTree), with its version and its giver,
+// in the order they were given: a plan of the tree root's architect is not among them, nor a plan
+// of a sub-architect, nor a plan of the default steps, which nobody gave. Once the issue stands in
+// a tree of its own, each of those owners' plans is an earlier owner's. (A first step in a group
+// that takes no plan passes its owner's plans over too, which workflow's passOverOwners reads.)
 func TestPlansOfEarlierOwnersLeaveOutEachArchitectOfTheTree(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -470,7 +471,7 @@ func TestDeleteTasksRemovesTheirStepsAndLeavesTheRest(t *testing.T) {
 // MoveTask writes where one task stands and its state, the place one function of the walk keeps
 // (workflow's moveTask): a task at a step, at its retro or at its merge, or at no act. A move takes
 // a stopped task's reason away, since the task is no longer stopped: the one move of a stopped
-// task that keeps it in the workflow is its start again at step 1 (workflow's restartTask). A stop
+// task that keeps it in the workflow is its start again at step 1 (workflow's startAtFirstStep). A stop
 // is StopTask's, which keeps the place and records why. A task the plan does not hold, a place no
 // plan has and a stop without its reason are refused.
 func TestMoveTaskAndStopTaskWriteWhereATaskStands(t *testing.T) {
@@ -814,6 +815,7 @@ func TestReturnCountsLiveOnTheTaskOrOnTheImplementersRow(t *testing.T) {
 		rows, err = records.Phases(ctx, tx, noPlan)
 		must(t, err)
 		want := implementer
+		want.Agent = claim.Agent(claim.RoleImplementer)
 		want.Pass, want.Rounds, want.ConflictRounds, want.BackwardMoves, want.CapTold = counts.Pass, counts.Rounds, counts.ConflictRounds, counts.BackwardMoves, counts.CapTold
 		if got := PhaseRowOf(rows, claim.RoleImplementer); !reflect.DeepEqual(got, want) {
 			t.Fatalf("the implementer's row of %s = %#v, want the counts on it and every other column kept: %#v", noPlan, got, want)

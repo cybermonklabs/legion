@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -111,6 +110,7 @@ func lastStepEnd(t *testing.T, pool *pgxpool.Pool, key, role string) string {
 // into its retro at the approval with no hold. The twin is an issue with no plan rows, which walks
 // today's line: its approval takes it to accepting, and the child's leave changes nothing of it.
 func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
+	t.Parallel()
 	// parent is LEGION-208 walking `implementer reviewer`, standing in reviewing at step 2, with
 	// heldParentChild in implementing beneath it where child is true.
 	parent := func(t *testing.T, child bool) (*pgxpool.Pool, *Engine, *bytes.Buffer) {
@@ -280,6 +280,7 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 // starts the retro, told the review the reviewer passed. The known pass is a plan whose sign-off
 // is its last step, which the sign-off moves into its retro with no hold.
 func TestAParentWhoseSignOffIsNotItsLastStepIsHeldBeforeItsRetro(t *testing.T) {
+	t.Parallel()
 	t.Run("the approval after the sign-off holds the parent before its retro, and the child's leave starts it", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine, logged := loggedEngine()
@@ -405,6 +406,7 @@ func TestAHeldRetroAfterADeploymentStepGetsItsReport(t *testing.T) {
 // its children stood where no role works, and the first report was refused too, so its handoff
 // never reached the step's record.
 func TestAReviewersReportAfterItsApprovalHeldAParentForItsChildrenIsTaken(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine, _ := loggedEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -441,52 +443,5 @@ func TestAReviewersReportAfterItsApprovalHeldAParentForItsChildrenIsTaken(t *tes
 	want := intake.NotCurrentPhase(claim.RoleReviewer, phase.Held, root.Key)
 	if result := apply("the reviewer's second report", again); !reflect.DeepEqual(result.Refusal, want) {
 		t.Fatalf("the reviewer's second report = %+v, want %+v", result.Refusal, want)
-	}
-}
-
-// A version of the design approved while a parent with no acceptance step was held before its
-// retro owes the held parent nothing (record.OwedNews names a held issue UntoldHeld), so no
-// reconcile records its change set for that parent. The release that starts the retro moves the
-// parent into a phase as the pass into the retro would have (transition), so it queues the
-// reconcile of the tree's news as that pass does (queueMovedNews), which records what changed and
-// sends it to the retro's holder: the retro's start carries no item whose change set is not
-// recorded. The control is the same release of a parent whose holder took the approved version
-// already, which is owed nothing and queues no reconcile. The deployment gates the spec of each
-// root, and the root's gate stands open at version 3 from the start; no reconcile stands queued
-// before the release, so the count is the release's own.
-func TestTheReleaseOfAHeldParentQueuesTheReconcileOfNewsItsHoldOwedNothing(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		took int
-		want int
-	}{
-		{name: "a holder that took the version before the approved one", took: 3, want: 1},
-		{name: "a holder that took the approved version", took: 4, want: 0},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := migratedPool(t)
-			engine := gatedStepEngine(config.DesignGateRootIssues, nil)
-			root := stepRoot(t, pool, phase.Admitted)
-			seedGate(t, pool, record.DesignGate{Issue: root.Key, ArtifactID: gateDoc, LatestVersion: 3, ApprovedVersion: new(3), EverOpened: true})
-			seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
-			stepChild(t, pool, heldParentChild, phase.Implementing, nil)
-			move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
-			move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
-			approveReview(t, pool, engine)
-			if held := issueOf(t, pool, engine, root.Key); !record.HeldForChildren(held) {
-				t.Fatalf("%s after the approval stands in %s with hold %+v, want held from retro for its children", root.Key, held.Phase, held.Hold)
-			}
-			// A person approves version 4 of the spec while the parent is held: the hold owes it
-			// nothing, so no reconcile stands for it.
-			seedGate(t, pool, record.DesignGate{Issue: root.Key, ArtifactID: gateDoc, LatestVersion: 4, ApprovedVersion: new(4), EverOpened: true})
-			seedTold(t, pool, root.Key, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: tc.took})
-			seedTold(t, pool, root.Key, record.AudienceArchitect, map[record.DesignStep]int{record.DesignStepSpec: 4})
-			assertOutboxCount(t, pool, "design_changes", 0)
-
-			childLeavesDone(t, pool, engine)
-
-			assertWalksAt(t, pool, engine, root.Key, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
-			assertOutboxCount(t, pool, "design_changes", tc.want)
-		})
 	}
 }

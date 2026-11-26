@@ -17,7 +17,7 @@ import (
 //
 // Three readers have one each: the architects whose waiting notices are released
 // (workflowRuntime.readied), the reads of a task's pull request a handoff asks for (handedOff),
-// and the issues GitHub's merge state is read for (mergeStates). A take answers its keys in the
+// and the task pull requests GitHub's merge state is read for (mergeStates). A take answers its keys in the
 // order compare gives them.
 type wakeSet[K comparable] struct {
 	mu      sync.Mutex

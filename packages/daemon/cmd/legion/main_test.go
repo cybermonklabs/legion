@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
@@ -33,9 +34,21 @@ import (
 const testMainEnv = "LEGION_CMD_TEST_MAIN"
 
 // testCurlEnv names, to this package's test binary run as `legion` (TestMain), the stand-in curl
-// the leak guard's curl reads run (leakguardCurl), so a test of `legion gh` in a process of its
-// own reaches no network.
+// the leak guard's curl reads run (leakguardCurl). A run that names none has leakguardtest.NoCurl,
+// a path with no file, and so has every guard of this binary's own process unless its test sets
+// leakguardCurl: no guard here runs the system's /usr/bin/curl (INFRA-3904). The `legion` these
+// tests build links the same path (legionBuild).
 const testCurlEnv = "LEGION_CMD_TEST_CURL"
+
+// testJJWordBoundEnv names, to this package's test binary run as `legion` (TestMain), the bound
+// in bytes of the jj step's words of ids (jjWordBound), so that a test of `legion jj` in a process
+// of its own reaches that bound with a few commits.
+const testJJWordBoundEnv = "LEGION_TEST_JJ_WORD_BOUND"
+
+// testJJArgMaxEnv names, to this package's test binary run as `legion` (TestMain), the bound in
+// bytes that the jj step keeps the push's command and each of its metaedits under (jjArgMax), so
+// that a test of `legion jj` in a process of its own reaches that bound with a few commits.
+const testJJArgMaxEnv = "LEGION_TEST_JJ_ARG_MAX"
 
 func TestMain(m *testing.M) {
 	// An operator's NATS nkey seed, or either seed's _FILE pointer, reaches no test here and no
@@ -45,6 +58,9 @@ func TestMain(m *testing.M) {
 	for _, name := range []string{"NATS_NKEY_SEED", "NATS_NKEY_SEED_FILE", "NATS_DAEMON_NKEY_SEED", "NATS_DAEMON_NKEY_SEED_FILE"} {
 		os.Unsetenv(name)
 	}
+	// No guard of this binary reads through the system's curl (leakguardtest.NoCurl); a run as
+	// `legion` whose test names a stand-in takes it below.
+	leakguardCurl = leakguardtest.NoCurl
 	if os.Getenv(testMainEnv) == "1" {
 		// A test's stand-in shared check is no copy of the pinned one, so the test names the
 		// public_leak_check.py its stand-in carries as the one the read rule was proven against
@@ -57,6 +73,20 @@ func TestMain(m *testing.M) {
 		// system's own curl.
 		if curl := os.Getenv(testCurlEnv); curl != "" {
 			leakguardCurl = curl
+		}
+		// A test's bounds of the jj step, of its words of ids and of the push's command, low
+		// enough that a push of a few commits reaches them. Only this test binary reads the
+		// variables; the legion binary has no such hook, and its bounds stay 100,000 and
+		// 2,097,152 bytes.
+		for name, bound := range map[string]*int{testJJWordBoundEnv: &jjWordBound, testJJArgMaxEnv: &jjArgMax} {
+			if value := os.Getenv(name); value != "" {
+				n, err := strconv.Atoi(value)
+				if err != nil || n <= 0 {
+					fmt.Fprintf(os.Stderr, "TestMain: %s is %q, which is no number of bytes\n", name, value)
+					os.Exit(2)
+				}
+				*bound = n
+			}
 		}
 		// The bounds legion sets on a program it starts, at what is left of the deadline of the
 		// test binary that started this run (boundByTheDeadline). Only this test binary reads the
@@ -601,6 +631,64 @@ func TestVersionNamesTheLinkedPluginsOnlyWhenBothAreLinked(t *testing.T) {
 	}
 }
 
+// `legion version --contracts` prints this build's own contract, whether its entries are numbered
+// in the merge order a stamp gives or by id, and each entry's id, number and slug, in the build's
+// order. This test binary carries no stamp, so it prints `order id`. A build linked with the
+// stamp of its own entries, as the release and the worker image link theirs (`-ldflags "-X
+// github.com/sjawhar/legion/daemon/internal/api.contractOrder=v1:<ids>"`), prints `order stamped`
+// and the same lines — the stamp `v1:` of a build of no entries among them. A build linked with a
+// stamp that names an entry it does not register runs no command, `legion version` included: it
+// exits non-zero and names the id.
+func TestVersionContractsPrintsTheBuildsEntriesAndItsOrder(t *testing.T) {
+	entries := api.NumberedEntries()
+	ids := make([]string, 0, len(entries))
+	lines := []string{fmt.Sprintf("contract %d", api.DaemonAPIVersion()), ""}
+	for _, entry := range entries {
+		ids = append(ids, strconv.Itoa(entry.ID))
+		lines = append(lines, fmt.Sprintf("%d %d %s", entry.ID, entry.Number, entry.Slug))
+	}
+	want := func(order string) string {
+		lines[1] = "order " + order
+		return strings.Join(lines, "\n") + "\n"
+	}
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "version", "--contracts"}, &out, &errb); code != 0 {
+		t.Fatalf("legion version --contracts exited %d: %s", code, errb.String())
+	}
+	if got := out.String(); got != want("id") {
+		t.Errorf("legion version --contracts of a build with no stamp = %q, want %q", got, want("id"))
+	}
+
+	stamp := "v1:" + strings.Join(ids, ",")
+	const stray = "20990101000000"
+	strayStamp := "v1:" + strings.Join(append(slices.Clone(ids), stray), ",")
+	stamped, refused := filepath.Join(t.TempDir(), "legion"), filepath.Join(t.TempDir(), "legion")
+	for binary, linked := range map[string]string{stamped: stamp, refused: strayStamp} {
+		build := exec.Command("go", "build", "-ldflags", "-X github.com/sjawhar/legion/daemon/internal/api.contractOrder="+linked, "-o", binary, ".")
+		if built, err := build.CombinedOutput(); err != nil {
+			t.Fatalf("go build stamped %q: %v\n%s", linked, err, built)
+		}
+	}
+	printed, err := exec.Command(stamped, "version", "--contracts").Output()
+	if err != nil {
+		t.Fatalf("legion version --contracts of a build stamped %q: %v", stamp, err)
+	}
+	if got := string(printed); got != want("stamped") {
+		t.Errorf("legion version --contracts of a build stamped %q = %q, want %q", stamp, got, want("stamped"))
+	}
+
+	var refusal bytes.Buffer
+	version := exec.Command(refused, "version")
+	version.Stderr = &refusal
+	if err := version.Run(); err == nil {
+		t.Fatalf("legion version of a build stamped %q exited 0, want it refused before it runs", strayStamp)
+	}
+	if !strings.Contains(refusal.String(), stray) {
+		t.Errorf("the refusal of a build stamped %q = %q, want it to name %s", strayStamp, refusal.String(), stray)
+	}
+}
+
 // Both commands that read a configured bind dial it the same way: `legion state --config` on a
 // daemon bound to every interface reads loopback, as `legion status` does.
 func TestStateAddressDialsLoopbackForAWildcardBind(t *testing.T) {
@@ -712,7 +800,7 @@ func productionCheckTesterLine(key string) string {
 }
 
 func defaultStepsTodayLine(key string) string {
-	return "projects." + key + ".default_steps: [planner, implementer, tester, reviewer, acceptance:owner] — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan, runs these steps, then Legion's retro and merge\n"
+	return "projects." + key + ".default_steps: [planner, implementer, tester, reviewer, acceptance:owner] — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan or whose experiment's group takes none, runs these steps, then Legion's retro and merge\n"
 }
 
 func projectLines(key string) string {
@@ -883,7 +971,7 @@ func TestConfigCheckPrintsEachProjectsDefaultSteps(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
-	const runs = " — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan, runs these steps, then Legion's retro and merge\n"
+	const runs = " — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan or whose experiment's group takes none, runs these steps, then Legion's retro and merge\n"
 	want := "Config OK: project=DEMO design-gate-steps=spec\n" +
 		productionCheckTesterLine("DEMO") + "projects.DEMO.default_steps: [planner, implementer, tester, reviewer, acceptance:owner]" + runs +
 		productionCheckTesterLine("OTHER") + "projects.OTHER.default_steps: [implementer, reviewer]" + runs +
@@ -1433,6 +1521,57 @@ func TestConfigCheckReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 	}
 }
 
+// `legion config check` (`legion start --check-config` before the CLI moved onto cobra, which this
+// test's name, cited by dispatch://INFRA-4425's check K1, keeps) takes dispatch_token_broker from
+// the file alone (dispatch://INFRA-4425 R1): with none of the identity variables the daemon's own
+// trade reads set (AGENT_SECRETS_URL, AGENT_SECRETS_MACHINE_IDENTITY,
+// AGENT_SECRETS_MACHINE_TOKEN_FILE), a file with the setting and no dispatch_token_file prints
+// Config OK and exits 0. The check reads a dispatch_token_transition_file as it reads
+// dispatch_token_file: one it can read passes, and one it cannot is refused naming the key. The
+// control is the same file with dispatch_token_file added, refused naming both keys.
+func TestStartCheckConfigTakesTheBrokerSettingWithNoIdentity(t *testing.T) {
+	legionState(t)
+	fixtureenv.Unset(t, "AGENT_SECRETS_URL", "AGENT_SECRETS_MACHINE_IDENTITY", "AGENT_SECRETS_MACHINE_TOKEN_FILE")
+	const exchange = "    agent_secrets: {url: https://secrets.internal.example, token_file: /var/run/legion/agent-secrets-token/token, exchange_audience: legion-broker-exchange}\n"
+	const pluginsGap = "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
+	const broker = "dispatch_token_broker: true\n"
+	const transition = broker + "dispatch_token_transition_file: ./transition-token\n"
+	passes := func(string) (int, string, string) { return 0, demoCheckConfigOK + defaultCacheLine + pluginsGap, "" }
+	for _, tc := range []struct {
+		name, credential string
+		token            bool // whether ./transition-token exists
+		want             func(dir string) (code int, stdout, stderr string)
+	}{
+		{"the setting alone", broker, false, passes},
+		{"the setting with a transition file the check reads", transition, true, passes},
+		{"the setting with a transition file the check cannot read", transition, false, func(dir string) (int, string, string) {
+			return 1, "", "legion config check: dispatch_token_transition_file names " + filepath.Join(dir, "transition-token") + ", which could not be read: "
+		}},
+		{"the setting beside dispatch_token_file", "dispatch_token_file: ./dispatch-token\n" + broker, false, func(string) (int, string, string) {
+			return 1, "", "legion config check: dispatch_token_file and dispatch_token_broker are both set: the daemon's Dispatch credential is the bearer a file holds or its own pod identity traded at the secrets broker, never both\n"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := kubernetesCheckConfig(t, exchange)
+			dir := filepath.Dir(config)
+			rewrite(t, config, "dispatch_token_file: ./dispatch-token\n", tc.credential)
+			if tc.token {
+				if err := os.WriteFile(filepath.Join(dir, "transition-token"), []byte("dispatch-shared\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+			wantCode, wantOut, wantErr := tc.want(dir)
+			if code != wantCode || out.String() != wantOut || !strings.HasPrefix(errb.String(), wantErr) || (wantErr == "") != (errb.Len() == 0) {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want %d, stdout %q and stderr starting %q", code, out.String(), errb.String(), wantCode, wantOut, wantErr)
+			}
+		})
+	}
+}
+
 // `legion config check` refuses a cpu or memory request above its limit and a request that is no
 // quantity, naming the key, with exit 1 and no Config OK.
 func TestConfigCheckRefusesARequestItCannotRender(t *testing.T) {
@@ -1737,7 +1876,9 @@ func TestPlainStateSummarizesTheHeldLifecycleRows(t *testing.T) {
 // An operator reading plain `legion state` is told which agents are in a tool call right now:
 // each by issue and role with the call its stream named and when that call started, read from
 // each claim view's `step`. A call whose end the daemon received is over, so the claim that made
-// it is in none; with no agent in a call the line says so.
+// it is in none; with no agent in a call the line says so. Only a working claim's agent is in a
+// turn: a retired or suspended claim keeps the step it was last in on its record, on purpose, so
+// a call open there is no agent in a call, and the line names only the working claims.
 func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
@@ -1747,11 +1888,28 @@ func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 		`"callId":"toolu_impl_3","argsBytes":128,"argsHash":"9b2e45c0d1f8a673","startedAt":"2026-09-23T01:14:00Z"}`
 	ended := `"step":{"at":"2026-09-23T01:12:00Z","turnStartedAt":"2026-09-23T01:10:00Z","tool":"read",` +
 		`"callId":"toolu_arch_2","argsBytes":74,"argsHash":"3f7c1a9d62b40e58","startedAt":"2026-09-23T01:11:00Z","endedAt":"2026-09-23T01:12:00Z"}`
-	stepping := `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
-		`"architect":{"session":"ses_a","state":"working","pluginContract":0,` + ended + `},` +
-		`"workers":{"implementer":{"claim":{"session":"ses_i","state":"working","pluginContract":0,` + open + `},"rounds":1}}}}`
-	idle := `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
-		`"architect":{"session":"ses_a","state":"working","pluginContract":0,` + ended + `},"workers":{}}}`
+	// claim is one claim view in a state with a step; issue is LEGION-208 with its architect's
+	// claim and, unless implementer is empty, an implementer's claim on its first round. Each row
+	// below names only its claims' states and steps.
+	claim := func(session, state, step string) string {
+		return `{"session":"` + session + `","state":"` + state + `","pluginContract":0,` + step + `}`
+	}
+	issue := func(architect, implementer string) string {
+		workers := `{}`
+		if implementer != "" {
+			workers = `{"implementer":{"claim":` + implementer + `,"rounds":1}}`
+		}
+		return `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
+			`"architect":` + architect + `,"workers":` + workers + `}}`
+	}
+	stepping := issue(claim("ses_a", "working", ended), claim("ses_i", "working", open))
+	idle := issue(claim("ses_a", "working", ended), "")
+	// The architect's claim is retired and the implementer's working, each with a call that has a
+	// start and no end: the retired claim's call is the one its record kept, not an agent in one.
+	openArchitect := `"step":{"at":"2026-09-22T18:40:00Z","turnStartedAt":"2026-09-22T18:30:00Z","tool":"edit",` +
+		`"callId":"toolu_arch_7","argsBytes":96,"argsHash":"5d0e8a1c7b3f2946","startedAt":"2026-09-22T18:40:00Z"}`
+	retiredBeside := issue(claim("ses_a", "retired", openArchitect), claim("ses_i", "working", open))
+	noneWorking := issue(claim("ses_a", "retired", openArchitect), claim("ses_i", "suspended", open))
 	for _, tc := range []struct {
 		name, issues, want string
 	}{
@@ -1759,6 +1917,16 @@ func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 			name:   "one agent in a call, one whose call ended",
 			issues: stepping,
 			want:   "agents in a tool call: 1 — LEGION-208 implementer \"bash toolu_impl_3 since 2026-09-23T01:14:00Z\"\n",
+		},
+		{
+			name:   "a working claim in a call beside a retired claim whose record keeps one",
+			issues: retiredBeside,
+			want:   "agents in a tool call: 1 — LEGION-208 implementer \"bash toolu_impl_3 since 2026-09-23T01:14:00Z\"\n",
+		},
+		{
+			name:   "open calls only on retired and suspended claims",
+			issues: noneWorking,
+			want:   "agents in a tool call: none\n",
 		},
 		{name: "every call ended", issues: idle, want: "agents in a tool call: none\n"},
 		{name: "no issues", issues: `{}`, want: "agents in a tool call: none\n"},
@@ -1906,9 +2074,9 @@ func TestPlainStateSummarizesTheMergeWaits(t *testing.T) {
 	// before and its read an hour ago, LEGION-209's head time this morning and its read a minute
 	// ago, so the older head is the one named although its read is the older too.
 	oldest := `"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"reviewing","status":"needs_review",` +
-		`"pullRequest":{"repo":"acme/widgets","number":1301,"head":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","state":"open","mergeState":"blocked","reviewDecision":"approved"},` +
-		`"mergeWait":{"waitsOn":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","mergeState":"blocked","stateReadAt":"2026-10-19T09:00:00Z",` +
-		`"headUpdatedAt":"2026-10-18T14:00:00Z","checkRuns":2,"toldHead":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","toldState":"blocked"}}`
+		`"pullRequest":{"repo":"acme/widgets","number":1301,"head":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","state":"open","mergeState":"behind","reviewDecision":"approved"},` +
+		`"mergeWait":{"waitsOn":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","mergeState":"behind","stateReadAt":"2026-10-19T09:00:00Z",` +
+		`"headUpdatedAt":"2026-10-18T14:00:00Z","checkRuns":2,"toldHead":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","toldState":"behind"}}`
 	newer := `"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"reviewing","status":"needs_review",` +
 		`"pullRequest":{"repo":"acme/widgets","number":1302,"head":"b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1","state":"open","reviewDecision":"approved"},` +
 		`"mergeWait":{"waitsOn":"b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1","mergeState":"behind","stateReadAt":"2026-10-19T09:59:00Z",` +
@@ -1923,11 +2091,13 @@ func TestPlainStateSummarizesTheMergeWaits(t *testing.T) {
 	alsoNoStateNoStamp := `"LEGION-211":{"key":"LEGION-211","generation":1,"phase":"reviewing","status":"needs_review",` +
 		`"pullRequest":{"repo":"zeta/tools","number":643,"head":"d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3","state":"open","reviewDecision":"approved"},` +
 		`"mergeWait":{"waitsOn":"d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3","checkRuns":0}}`
-	// A wait holding `blocked` and no read time, whose `headUpdatedAt` stands before LEGION-208's,
-	// so it is the oldest head.
+	// A wait holding `draft` and no read time, whose `headUpdatedAt` stands before LEGION-208's,
+	// so it is the oldest head. A `blocked`, MERGEABLE head whose own runs have all concluded and
+	// on which no review request is open would carry no wait: that answer ends the round
+	// (classify.RoundWaitsOnMergeState).
 	stateNoStamp := `"LEGION-212":{"key":"LEGION-212","generation":1,"phase":"reviewing","status":"needs_review",` +
-		`"pullRequest":{"repo":"zeta/tools","number":644,"head":"e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3d4","state":"open","mergeState":"blocked","reviewDecision":"approved"},` +
-		`"mergeWait":{"waitsOn":"e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3d4","mergeState":"blocked",` +
+		`"pullRequest":{"repo":"zeta/tools","number":644,"head":"e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3d4","state":"open","mergeState":"draft","reviewDecision":"approved"},` +
+		`"mergeWait":{"waitsOn":"e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3d4","mergeState":"draft",` +
 		`"headUpdatedAt":"2026-10-17T10:00:00Z","checkRuns":1}}`
 	// A wait holding a read time and no merge state, whose `headUpdatedAt` stands before
 	// LEGION-208's, so it is the oldest head.
@@ -1943,7 +2113,7 @@ func TestPlainStateSummarizesTheMergeWaits(t *testing.T) {
 		{
 			name:   "two waiting, the oldest head not the first listed",
 			issues: `{` + newer + `,` + working + `,` + oldest + `}`,
-			want:   "merge waits: 2; the oldest head, LEGION-208 #1301, head a1b2c3d, GitHub said blocked, read 2026-10-19T09:00:00Z\n",
+			want:   "merge waits: 2; the oldest head, LEGION-208 #1301, head a1b2c3d, GitHub said behind, read 2026-10-19T09:00:00Z\n",
 		},
 		{
 			name:   "one waiting with a merge state and a read time names the state and the read",
@@ -1953,7 +2123,7 @@ func TestPlainStateSummarizesTheMergeWaits(t *testing.T) {
 		{
 			name:   "a wait with no head time sorts behind one that has one",
 			issues: `{` + noStateNoStamp + `,` + oldest + `}`,
-			want:   "merge waits: 2; the oldest head, LEGION-208 #1301, head a1b2c3d, GitHub said blocked, read 2026-10-19T09:00:00Z\n",
+			want:   "merge waits: 2; the oldest head, LEGION-208 #1301, head a1b2c3d, GitHub said behind, read 2026-10-19T09:00:00Z\n",
 		},
 		{
 			name:   "one waiting with no merge state and no read time says no read is recorded for its head",
@@ -1968,7 +2138,7 @@ func TestPlainStateSummarizesTheMergeWaits(t *testing.T) {
 		{
 			name:   "a merge state with no read time says the read time is not recorded",
 			issues: `{` + oldest + `,` + stateNoStamp + `,` + noStateNoStamp + `}`,
-			want:   "merge waits: 3; the oldest head, LEGION-212 #644, head e5f6a7b, GitHub said blocked, read time not recorded\n",
+			want:   "merge waits: 3; the oldest head, LEGION-212 #644, head e5f6a7b, GitHub said draft, read time not recorded\n",
 		},
 		{
 			name:   "a read time with no merge state names the read and says it carried no merge state",
@@ -2144,10 +2314,10 @@ func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 // it exists to catch. (INFRA-2554.)
 func TestTheShippedWordsNameTheWaitingLineBlock(t *testing.T) {
 	const (
-		returned = "Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back," +
-			" and it takes the free slots first."
-		starting = "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank," +
-			" and 1 issue whose work came back stands ahead of all of them."
+		returned = "Its work came back at 2026-10-03T09:58:11Z. It waits at P1, its own priority. It is 1st of 1 issue at P1 whose work came back," +
+			" and it takes the free slots before the issues at P1 that have not started."
+		starting = "It has not started. It waits at P1, its own priority. It is 1st of 1 issue at P1 that has not started, by its own Dispatch rank," +
+			" and 1 issue at P1 whose work came back stands ahead of all of them."
 	)
 	waiting := []string{"WIDGETS-14", "WIDGETS-15"}
 	issues := map[string]api.Issue{
@@ -2817,6 +2987,87 @@ func TestPlainStateGivesEachDurableConsumersLag(t *testing.T) {
 				t.Fatalf("consumerLines =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(tc.want, "\n"))
 			}
 		})
+	}
+}
+
+// An operator reading plain `legion state` is told, one line per consumer with an open give-up,
+// how many it has and the newest stream sequence among them, which `legion intake` takes as
+// --through-seq; then the newest give-ups, at most plainStateGiveUps, each with its id, consumer,
+// subject, sequence, when and after how many deliveries it was given up, why, and the first line of
+// its error. With none open the one line says so.
+func TestPlainStateGivesTheOpenGiveUps(t *testing.T) {
+	gaveUpAt := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	t.Run("none", func(t *testing.T) {
+		if got := intakeGiveUpLines(api.IntakeGiveUpsView{}); !slices.Equal(got, []string{"intake give-ups: none"}) {
+			t.Fatalf("intakeGiveUpLines = %q, want the one line saying none", got)
+		}
+	})
+	t.Run("twelve open across two consumers print the counts and ten records", func(t *testing.T) {
+		giveUps := api.IntakeGiveUpsView{Consumers: []api.IntakeGiveUpCountView{
+			{Name: "legion-go-LEGION-dispatch", Open: 11, NewestSeq: 6044896},
+			{Name: "legion-go-LEGION-github", Open: 1, NewestSeq: 812004},
+		}}
+		for i := range 12 {
+			giveUps.Newest = append(giveUps.Newest, api.IntakeGiveUpView{
+				ID: int64(60 - i), Consumer: "legion-go-LEGION-dispatch", Subject: fmt.Sprintf("notifications.dispatch.issue.LEGION-%d.issue.updated", 300-i),
+				StreamSeq: uint64(6044896 - i), Deliveries: 21, GaveUpAt: gaveUpAt.Add(-time.Duration(i) * time.Minute), Reason: "bound",
+				LastError: "apply the issue event: context deadline exceeded\ngoroutine 7 [running]",
+			})
+		}
+		got := intakeGiveUpLines(giveUps)
+		want := []string{
+			"intake give-ups legion-go-LEGION-dispatch: 11 open, newest seq 6044896",
+			"intake give-ups legion-go-LEGION-github: 1 open, newest seq 812004",
+		}
+		for i := range plainStateGiveUps {
+			want = append(want, fmt.Sprintf("intake give-up %d legion-go-LEGION-dispatch notifications.dispatch.issue.LEGION-%d.issue.updated seq %d gave up %s after 21 deliveries (bound): apply the issue event: context deadline exceeded",
+				60-i, 300-i, 6044896-i, gaveUpAt.Add(-time.Duration(i)*time.Minute).Format(time.RFC3339)))
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("intakeGiveUpLines =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+	})
+}
+
+// A give-up's subject is the publisher's text, which Envoy and NATS refuse only for whitespace,
+// and its error can quote that text. So plain `legion state` writes each character of the subject
+// and of the error that does not print as its Go escape: an ESC or a BEL in them reaches the
+// operator's terminal as text, and does not clear the screen or set the window title. The rest of
+// the line stays as the guides show it.
+func TestPlainStatePrintsNoControlCharacterOfAGiveUp(t *testing.T) {
+	giveUps, err := json.Marshal(api.IntakeGiveUpsView{
+		Consumers: []api.IntakeGiveUpCountView{{Name: "legion-go-LEGION-dispatch", Open: 1, NewestSeq: 48213}},
+		Newest: []api.IntakeGiveUpView{{
+			ID: 412, Consumer: "legion-go-LEGION-dispatch", Subject: "notifications.dispatch.issue.\x1b[2J.issue.updated",
+			StreamSeq: 48213, Deliveries: 1, GaveUpAt: time.Date(2026, 10, 3, 8, 55, 2, 0, time.UTC), Reason: "undecodable",
+			LastError: "issue name \x1b]0;x\x07 is in neither form\ngoroutine 7 [running]",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := `{"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[],"blocked":[]},"issues":{},"pendingStatusWrites":[],"intakeGiveUps":` + string(giveUps) + `}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(served))
+	}))
+	defer server.Close()
+	t.Chdir(t.TempDir())
+	t.Setenv("LEGION_DAEMON_URL", server.URL)
+	t.Setenv("LEGION_ISSUE", "")
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+		t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+	}
+	if i := bytes.IndexAny(out.Bytes(), "\x1b\x07"); i >= 0 {
+		t.Fatalf("legion state printed the byte %q of a give-up to the terminal, in %q", out.Bytes()[i], out.String())
+	}
+	want := `intake give-up 412 legion-go-LEGION-dispatch notifications.dispatch.issue.\x1b[2J.issue.updated seq 48213 ` +
+		`gave up 2026-10-03T08:55:02Z after 1 deliveries (undecodable): issue name \x1b]0;x\a is in neither form` + "\n"
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("legion state printed %q, want the line %q", out.String(), want)
 	}
 }
 

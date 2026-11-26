@@ -530,12 +530,12 @@ func TestReadmissionWaitsForTheOperatorToResumeTheClaimsItSuspended(t *testing.T
 	}
 }
 
-// seedWorkflowTree records root as an admitted tree of project in the store at dsn — the issue, the
-// admission slot its phase keeps (record.KeepsSlot: none past its review) and its tree's lifecycle,
-// as admission leaves a root it promoted — and each of claims, bound to that lifecycle as the
-// daemon binds a claim it admits, its pending delivery written too when it carries one (AdmitClaim
-// alone writes only the claim row). Each tree takes the next free slot, so a test may seed more
-// than one running tree.
+// seedWorkflowTree records root as an admitted tree of project in the store at dsn — the issue,
+// the admission slot its phase keeps (record.KeepsSlot: none in accepting, retro or merging) and
+// its tree's lifecycle, as admission leaves a root it promoted — and each of claims, bound to that
+// lifecycle as the daemon binds a claim it admits, its pending delivery written too when it
+// carries one (AdmitClaim alone writes only the claim row). Each tree takes the next free slot,
+// so a test may seed more than one running tree.
 func seedWorkflowTree(t *testing.T, dsn, project string, root record.Issue, claims ...supervise.Claim) {
 	t.Helper()
 	st, err := store.Open(context.Background(), dsn)

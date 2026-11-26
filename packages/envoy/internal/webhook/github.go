@@ -89,9 +89,11 @@ var (
 )
 
 // GitHubHandler returns the HTTP handler for GitHub webhook events, which reads its bodies against
-// bodies, the listener's one body budget. Each handler remembers the failed deliveries it has
-// logged (failedDeliveries).
-func GitHubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publisher, ci CIRecorder, bodies *BodyBudget) http.HandlerFunc {
+// bodies, the listener's one body budget. reviewerAppID is the App whose verdict check runs the CI
+// record takes (contracts.ReviewerVerdictDecision), and verdictAppID the App whose own check suites
+// it leaves out (contracts.VerdictAppsOwnSuite), none when empty. Each handler remembers the failed
+// deliveries it has logged (failedDeliveries).
+func GitHubHandler(secret, mentionTrigger, reviewerAppID, verdictAppID string, publisher Publisher, ci CIRecorder, bodies *BodyBudget) http.HandlerFunc {
 	failures := newFailedDeliveries(githubFailuresKept, githubFailureAge)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -129,10 +131,20 @@ func GitHubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publi
 			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
 		}
+		// The hook target is the resource whose webhook sent the delivery: for an App's webhook,
+		// integration and the App's id, so a line that names it says which App delivered.
+		targetType := r.Header.Get("X-GitHub-Hook-Installation-Target-Type")
+		targetID := r.Header.Get("X-GitHub-Hook-Installation-Target-ID")
+		// The body's signature covers neither these two headers nor X-GitHub-Delivery, so a signed
+		// body replayed with forged headers chooses them. Each line logs what it holds of them
+		// quoted (%q): the github sender line target_type, target_id and delivery, the github
+		// published line target_id, delivery and the key built from the delivery, and the github
+		// mention detected line delivery. A value holding a space or an `=` adds no field.
 		if githubEvent(event) {
-			log.Printf("github sender login=%s type=%s delivery=%s event=%s",
+			log.Printf("github sender login=%s type=%s target_type=%q target_id=%q delivery=%q event=%s",
 				githubSenderField(payload, "login"),
 				githubSenderField(payload, "type"),
+				targetType, targetID,
 				delivery, event)
 		}
 		// Records and publishes end with the request and at its write deadline (extendDeadlines).
@@ -142,7 +154,7 @@ func GitHubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publi
 		// settled checks envelope for each commit whose suites and check runs are done. A finished
 		// Actions job on the default branch, of a run with no pull request, records nothing and is
 		// published below.
-		if obs := contracts.GithubCIObservations(event, payload); len(obs) > 0 {
+		if obs := contracts.GithubCIObservations(event, payload, verdictAppID); len(obs) > 0 {
 			for _, o := range obs {
 				if o.CheckName == "" {
 					if err := ci.RecordSuite(answer, o); err != nil {
@@ -179,22 +191,46 @@ func GitHubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publi
 			EventID:  id.New(),
 			TraceID:  id.New(),
 		}, trigger)
+		action, _ := payload["action"].(string)
 		for _, item := range items {
 			if err := item.Validate(); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			if err := publisher.PublishWithin(answer, item); err != nil {
+			// One line for each topic the publisher put the envelope on, its copy under a renamed
+			// repository's former name included: which App's webhook delivered which event under
+			// which key, and whether the stream stored it or already held that key, read from the
+			// stream's acknowledgement with whether it answers a resend, so the copies two Apps
+			// deliver of one event can be told apart and counted. A topic published before a later
+			// one failed is logged too.
+			err := publisher.PublishEachWithin(answer, item, func(topic string, duplicate, resent bool) {
+				log.Printf("github published delivery=%q event=%s action=%s topic=%s key=%q target_id=%q result=%s resent=%t",
+					delivery, event, action, topic, item.DedupeKey, targetID, publishResult(duplicate, resent), resent)
+			})
+			if err != nil {
 				failures.deliveryFailed(w, delivery, "github publish", err)
 				return
 			}
 		}
 		if len(items) > 1 {
-			log.Printf("github mention detected delivery=%s trigger=%s", delivery, strings.TrimSpace(trigger))
+			log.Printf("github mention detected delivery=%q trigger=%s", delivery, strings.TrimSpace(trigger))
 		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}
+}
+
+// publishResult is how a `github published` line names the stream's answer to one publish:
+// duplicate when the stream already held the message from an earlier publish, and stored
+// otherwise. A duplicate that answers the bus's resend after the connection closed under its first
+// send (bus.StoredAck.Resent) may name the copy that first send stored, so it is this publish's
+// own copy and stored, as the listener's sender limit reads it (cmd/listener's
+// senderCharge.published).
+func publishResult(duplicate, resent bool) string {
+	if duplicate && !resent {
+		return "duplicate"
+	}
+	return "stored"
 }
 
 // extendDeadlines moves this request's connection deadlines from the server's to the route's own,

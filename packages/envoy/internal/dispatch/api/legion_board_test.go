@@ -284,6 +284,39 @@ func TestTheMergingColumnHoldsMergingAndAwaitingMerge(t *testing.T) {
 	}
 }
 
+// TestAnIssueAtAStepIsOnTheStepColumn: an issue at `step`, where a role the deployment defines
+// works a step of its task, is on one card, in the Step column between Reviewing and Accepting. No
+// column of Legion's own phases is its: such a step is of any type the deployment names, so
+// neither Testing nor Reviewing says what it is, and a phase the board placed in no column would
+// put the issue on no card while its role works it.
+func TestAnIssueAtAStepIsOnTheStepColumn(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
+	now := time.Now().UTC()
+	key := seedLegionIssue(t, database, "INFRA", 1, "An issue at a step of the checker", "a", nil, "")
+	seedLegionObservation(t, database, "INFRA", key, legion.FieldPhase, `"step"`, now.Add(-time.Hour))
+	seedLegionRead(t, database, "INFRA", now.Add(-time.Minute), "")
+
+	board := legionBoardOf(t, handler, "INFRA")
+	ids := make([]string, len(board.Columns))
+	var in []string
+	for index, column := range board.Columns {
+		ids[index] = column.ID
+		if slices.ContainsFunc(column.Cards, func(card legionBoardCard) bool { return card.Key == key }) {
+			in = append(in, column.ID)
+		}
+	}
+	if !slices.Equal(in, []string{"step"}) {
+		t.Fatalf("%s at step is on cards of the columns %v, want one card, in the step column", key, in)
+	}
+	if step := slices.Index(ids, "step"); step < 1 || step+1 >= len(ids) ||
+		ids[step-1] != legionColumnReviewing || ids[step+1] != legionColumnAccepting {
+		t.Errorf("the columns are %v, want step between reviewing and accepting", ids)
+	}
+}
+
 // TestTheLegionBoardQueuesByRankUntilADaemonRecordsItsWaitingLine: before any read recorded an
 // admission block — every read a daemon before this release answered — the Queue column is the
 // roots waiting for a slot in Dispatch's rank order, which is the order the daemon's own line

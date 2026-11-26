@@ -97,6 +97,7 @@ var (
 // launch, since only a Claude launch renders Claude Code's block, the one install block that
 // writes under the cache home today (renderedStartWrapper).
 func TestEveryPathTheRendererPutsOnTheIssueVolumeIsNamedByTheTrimmersLists(t *testing.T) {
+	t.Parallel()
 	const issue = "LEGION-1234"
 	const role = claim.RoleImplementer
 

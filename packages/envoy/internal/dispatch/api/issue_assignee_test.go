@@ -3,12 +3,16 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -38,8 +42,11 @@ func expectAssignee(t *testing.T, got *string, want string) {
 		}
 		return
 	}
-	if got == nil || *got != want {
-		t.Fatalf("assignee = %v, want %q", got, want)
+	if got == nil {
+		t.Fatalf("assignee = null, want %q", want)
+	}
+	if *got != want {
+		t.Fatalf("assignee = %q, want %q", *got, want)
 	}
 }
 
@@ -469,15 +476,20 @@ func TestWhoamiNamesHumanPersonalTokenOwnerAndSharedToken(t *testing.T) {
 
 // GET /whoami answers every caller the OAuth scopes its own credential holds, which is what
 // decides the routes it may call (gateRouteScopes): both for a person at a browser, the set its own
-// row names for a personal token, and none at all for the two credentials a deployment
-// configures rather than a person. A credential holding none is answered an empty array and
+// row names for a personal token, none at all for the two credentials a deployment
+// configures rather than a person, and legion-status alone for a Legion daemon's own broker
+// token, whose broker granted it. A named broker token that names a person and no project holds
+// none, even when its answer holds legion-status: Dispatch reads that scope only on a token
+// scoped to one project. A credential holding none is answered an empty array and
 // never null, so a reader need not tell "this credential holds no scope" from "this build does
 // not say". A personal token holding the person scope is still kind `agent`, since the kind
-// names the credential and the owner names the person it acts for.
+// names the credential and the owner names the person it acts for. The server reads broker
+// tokens through a stub broker (newBrokerTokenRigOn), so one server answers every row.
 func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 	t.Parallel()
 	issuer := newServiceTokenIssuer(t)
-	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t)})
+	rig := newBrokerTokenRigOn(t, testServerOptions{oidc: issuer.verifier(t)})
+	handler, database := rig.handler, rig.database
 	for _, test := range []struct {
 		name   string
 		call   func() *httptest.ResponseRecorder
@@ -526,6 +538,28 @@ func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 			kind:   "agent",
 			scopes: []string{},
 		},
+		{
+			name: "a Legion daemon's own broker token, named, whose broker granted legion-status",
+			call: func() *httptest.ResponseRecorder {
+				caller := newBrokerCaller(t)
+				rig.broker.Says("the-daemon-token", liveDaemonToken(caller.jkt))
+				return rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", "the-daemon-token", nil))
+			},
+			kind:   "agent",
+			scopes: []string{"legion-status"},
+		},
+		{
+			name: "a named broker token whose answer holds legion-status and names a person and no project",
+			call: func() *httptest.ResponseRecorder {
+				caller := newBrokerCaller(t)
+				token := liveDaemonToken(caller.jkt)
+				token.Projects = nil
+				rig.broker.Says("the-projectless-token", token)
+				return rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", "the-projectless-token", nil))
+			},
+			kind:   "agent",
+			scopes: []string{},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := test.call()
@@ -546,6 +580,109 @@ func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 			}
 			if !slices.Equal(*got.Scopes, test.scopes) {
 				t.Fatalf("whoami as %s = scopes %v, want %v", test.name, *got.Scopes, test.scopes)
+			}
+		})
+	}
+}
+
+// GET /whoami names read among the scopes of every read-only credential, read off the
+// credential's read-only mark and never stored among the scopes it holds, and answers the cut it
+// reads at, null for none: the read entry's token, a token narrowed from each kind of trade the
+// broker narrows (the golden file the broker's own test holds its narrowed answers to), and among
+// them the machine login's narrowed token with a cut, and a read-only personal token of each set
+// such a token may hold (readOnlyPersonalTokens). A read-person token that names its person, and a
+// personal token holding person beside read, are told person beside read, and no read-only token
+// is told approve. No read-only token is told that a person must sign in (sign_in_required
+// false), though several name a service and no person as a machine nobody signed in on does: no
+// sign-in lets a read-only token write. The control is a token that writes, told neither read nor
+// a cut.
+//
+// Each token is sent through the mounted handler, as a client sends it: the read-only gate lets
+// every read-only token through to whoami, a token that carries a cut included, and the request
+// resolves its token once (decideBrokerToken), so the sign-in decision whoami answers reads the
+// same caller its scopes and cut are read from. A handler called with no such request would
+// resolve the token a second time on a spent proof and read no caller there at all.
+func TestWhoamiNamesReadAndTheCutOfEveryReadOnlyToken(t *testing.T) {
+	t.Parallel()
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const session = "ses_narrowed"
+	answers := ciphertokentest.NarrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
+	read := []string{model.ScopeRead}
+	personAndRead := []string{model.ScopePerson, model.ScopeRead}
+	wantScopes := map[string][]string{
+		"pod-entry":                     read,
+		"pod-entry-no-person":           read,
+		"read-entry":                    read,
+		"workflow-entry":                read,
+		"google-identity-no-person":     read,
+		"google-identity-with-a-person": read,
+		"person-sign-in":                personAndRead,
+		"machine-login":                 personAndRead,
+		"machine-login-with-a-cut":      personAndRead,
+	}
+	if kinds := slices.Sorted(maps.Keys(answers)); !slices.Equal(kinds, slices.Sorted(maps.Keys(wantScopes))) {
+		t.Fatalf("the golden file answers for %v, and this test names the scopes of %v", kinds, slices.Sorted(maps.Keys(wantScopes)))
+	}
+	type row struct {
+		name   string
+		answer ciphertoken.Introspection
+		// bearer is a personal token, presented as a bearer, and empty for a token the stub
+		// broker answers for with answer.
+		bearer string
+		scopes []string
+		// cut is the cut whoami answers, empty for null.
+		cut string
+	}
+	rows := []row{
+		{name: "the read entry's token", answer: readOnlyToken(caller.jkt), scopes: read},
+		{name: "a token that writes", answer: liveNamedToken(caller.jkt), scopes: []string{}},
+	}
+	for _, kind := range slices.Sorted(maps.Keys(answers)) {
+		rows = append(rows, row{name: "a token narrowed from a " + kind, answer: answers[kind], scopes: wantScopes[kind], cut: answers[kind].AsOf})
+	}
+	if !slices.ContainsFunc(rows, func(r row) bool { return r.cut != "" }) {
+		t.Fatal("no row names a cut, and one must")
+	}
+	for index, personal := range readOnlyPersonalTokens(t, rig) {
+		rows = append(rows, row{name: personal.name, bearer: personal.token, scopes: readOnlyPersonalTokenSets[index].whoami})
+	}
+
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			request := brokerRequest(t, http.MethodGet, "/api/v1/whoami", nil, "Bearer "+row.bearer, "")
+			if row.bearer == "" {
+				token := "a-token-of-" + strings.ReplaceAll(row.name, " ", "-")
+				rig.broker.Says(token, row.answer)
+				request = caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil)
+			}
+			response := rig.serve(request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("whoami: status=%d body=%s", response.Code, response.Body.String())
+			}
+			var members map[string]json.RawMessage
+			if err := json.Unmarshal(response.Body.Bytes(), &members); err != nil {
+				t.Fatalf("decode whoami: %v: %s", err, response.Body.String())
+			}
+			var got struct {
+				Kind   string    `json:"kind"`
+				Scopes *[]string `json:"scopes"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode whoami: %v: %s", err, response.Body.String())
+			}
+			if got.Kind != "agent" || got.Scopes == nil || !slices.Equal(*got.Scopes, row.scopes) {
+				t.Fatalf("whoami = %s, want kind agent and scopes %v", response.Body.String(), row.scopes)
+			}
+			wantCut := "null"
+			if row.cut != "" {
+				wantCut = `"` + row.cut + `"`
+			}
+			if answered, present := members["cut"]; !present || string(answered) != wantCut {
+				t.Fatalf("whoami cut = %s (present %v), want %s: %s", answered, present, wantCut, response.Body.String())
+			}
+			if answered, present := members["sign_in_required"]; !present || string(answered) != "false" {
+				t.Fatalf("whoami sign_in_required = %s (present %v), want false: %s", answered, present, response.Body.String())
 			}
 		})
 	}

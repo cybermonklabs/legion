@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -18,7 +19,7 @@ import (
 const hooksKey = "hooks"
 
 // HookEventWorkBack is the one event that ships: the work of an issue went back a phase, which
-// the daemon counts by its `<from>-<to>` pair (phase.BackwardPairs).
+// the daemon counts by its `<from>-<to>` pair (plan.MovesBackPairs).
 const HookEventWorkBack = "work_back"
 
 // HookEvents are the events a hook's `on` may name: the daemon's own set of events, which the
@@ -29,8 +30,9 @@ const HookEventWorkBack = "work_back"
 var HookEvents = []string{HookEventWorkBack}
 
 // Hook is one entry of `hooks`, the deployment's own prompt in front of named roles every Every
-// moves back. PromptFile is kept as a path: this loader reads no file it names, and boot reads
-// the words (ReadHookPrompt, daemon.readBoot).
+// moves back. PromptFile is kept as a path: this loader reads no hook's file, though the daemon's
+// own load reads each role's prompt_file (CheckRolePrompts), and boot reads the words
+// (ReadHookPrompt, daemon.readBoot).
 type Hook struct {
 	Name       string
 	On         string   // the event; work_back is the one that ships
@@ -181,14 +183,16 @@ func readHookRoles(value *yaml.Node, field string) ([]claim.Role, error) {
 }
 
 // readHookMoves is a hook's `moves`: the moves back it selects, each written "<from>-<to>" as the
-// daemon counts them (phase.MovePairs): two workflow phases, which differ but in step-step. A task
-// moves back by its own order, which need not be today's, so the move back of one task
-// (testing-reviewing, where its review comes before its test) is a forward move of another. A step
-// of a role the deployment defines runs as step, so a move may leave or reach step, and the move
-// back from one such step to another is step-step; any other phase paired with itself is no move.
-// The key left out, and the word `any`, each select every move back, which is the empty list this
-// answers. The empty list in the file is refused instead: it selects nothing, so the hook could
-// never fire, and the operator meant `any` or meant to name a move.
+// daemon counts them: a move back some task's line makes (plan.MovesBackPairs). A task moves back
+// by its own order, which need not be today's, so the move back of one task (testing-reviewing,
+// where its review comes before its test) is a forward move of another. A step of a role the
+// deployment defines runs as step, so a move back may leave or reach step, and the move back from
+// one such step to another is step-step. A pair the daemon counts (phase.MovePairs) that no line
+// makes as a move back is refused, since the hook would never fire, and so is any other phase
+// paired with itself or a word that is no pair. The key left out, and the word `any`, each select
+// every move back, which is the empty list this answers. The empty list in the file is refused
+// instead: it selects nothing, so the hook could never fire, and the operator meant `any` or meant
+// to name a move.
 func readHookMoves(value *yaml.Node, field string) ([]string, error) {
 	key := field + ".moves"
 	if value == nil {
@@ -208,8 +212,12 @@ func readHookMoves(value *yaml.Node, field string) ([]string, error) {
 		return nil, fmt.Errorf("%s names no move back: write any, or leave the key out, to select every move back", key)
 	}
 	for _, move := range moves {
-		if _, _, ok := phase.ParsePair(move); !ok {
+		from, to, ok := phase.ParsePair(move)
+		if !ok {
 			return nil, fmt.Errorf("%s names %q, which is no move the daemon counts: a move is written \"<from>-<to>\", two workflow phases, which differ but in step-step", key, move)
+		}
+		if !plan.CanMoveBack(from, to) {
+			return nil, fmt.Errorf("%s names %q, which no task's line makes as a move back, so the hook would never fire: retro and merging end every line, and every tester, reviewer and acceptance step comes after the implementer's", key, move)
 		}
 	}
 	return moves, nil

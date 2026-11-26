@@ -67,7 +67,7 @@ func TestAPushOnTheBranchOfANeedMovesTheBaseOfItsDependent(t *testing.T) {
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	var asked []string
-	engine.cfg.ReadMergeState = func(issue string) { asked = append(asked, issue) }
+	engine.cfg.ReadMergeState = func(issue record.PullRequestKey) { asked = append(asked, issue.Issue) }
 	root := stepRoot(t, pool, phase.Testing)
 	seedTasks(t, pool, root.Key, root.Generation,
 		planTask{id: "b", steps: []string{"implementer"}, agents: []claim.Agent{"implementer"}, state: record.TaskDone, place: atStep(1)},

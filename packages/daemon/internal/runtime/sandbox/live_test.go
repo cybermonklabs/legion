@@ -286,6 +286,10 @@ type liveEnv struct {
 	// unlike the rest of liveEnv: unset is a blocked run of the secrets-* checks, never a refusal
 	// to start (secretsBlocked).
 	agentSecretsURL, agentSecretsAutoSHA, agentSecretsBin, agentSecretsTokenFile string
+	// agentSecretsAudience is the audience the run enrolls its pods for, the one the namespace's
+	// daemons use (deploymentBrokerAudience), read through the operator context once a broker URL
+	// is set; the script mints the run's login token for the same one.
+	agentSecretsAudience string
 	// The scratch Postgres the script started, which every pod of the run keeps its sessions in:
 	// the file holding its URL at streamAdvertiseHost, which the script also wrote into the
 	// providers Secret under liveSessionsSecretKey for every pod to dial as it dials the worker
@@ -752,6 +756,7 @@ type liveRig struct {
 }
 
 func TestStage4aSandboxRuntimeLive(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (fixtureenv.Live).
 	fixtureenv.Live(t)
 	env := readLiveEnv(t)
 	r := newLiveRig(t, env)
@@ -828,6 +833,16 @@ func newLiveRig(t *testing.T, env liveEnv) *liveRig {
 	}
 	if r.dyn, err = dynamic.NewForConfig(own); err != nil {
 		fail("%v", err)
+	}
+	if env.agentSecretsURL != "" {
+		configMaps, err := r.kubectl("get", "configmaps", "-o", "json")
+		if err != nil {
+			fail("%v", err)
+		}
+		if r.env.agentSecretsAudience, err = deploymentBrokerAudience([]byte(configMaps)); err != nil {
+			fail("%v", err)
+		}
+		note("operator", "the namespace's daemons enroll their pods for the broker audience %s, and so does the run", r.env.agentSecretsAudience)
 	}
 	if agentSecretsBlockReason(env.agentSecretsURL, env.agentSecretsAutoSHA, env.agentSecretsBin, env.agentSecretsTokenFile) == "" {
 		// The run logs in as the daemon does, with the ServiceAccount token the script minted; no
@@ -909,7 +924,7 @@ func newLiveRig(t *testing.T, env liveEnv) *liveRig {
 		r.claims = append(r.claims, &liveClaim{
 			token: token, tree: c.tree, issue: c.issue, role: c.role, name: c.name,
 			// The marker sits at the root of the issue's volume: TreeRoot is mounted read-write in
-			// the pod's one container and seen by every role there (issuePod.launcherContainer), so the six
+			// the pod's one container and seen by every role there (issuePod.launcherContainer), so the
 			// roles of an issue share the one file, and it is the pod's own ephemeral disk, so it
 			// dies with the pod — the property this file's header claims. No pod mounts
 			// ompSessionsDir any more, which is why the marker is not there.
@@ -983,7 +998,7 @@ func (r *liveRig) runtimeOptions(address string, ln *stream.Listener) Options {
 		CacheRepositories:     r.cacheRepositories,
 	}
 	if r.env.agentSecretsURL != "" {
-		opts.AgentSecrets = &AgentSecrets{URL: r.env.agentSecretsURL, Audience: "agent-secrets", TokenExpiry: time.Hour}
+		opts.AgentSecrets = &AgentSecrets{URL: r.env.agentSecretsURL, Audience: r.env.agentSecretsAudience, TokenExpiry: time.Hour}
 	}
 	return opts
 }

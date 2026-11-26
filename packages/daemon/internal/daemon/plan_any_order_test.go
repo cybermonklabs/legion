@@ -187,7 +187,7 @@ func (r *ownerStepsRig) testerFirstRefused() string {
 func (r *ownerStepsRig) pullRequest() *record.PullRequest {
 	r.t.Helper()
 	var pr *record.PullRequest
-	if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+	if err := store.TransactWith(context.Background(), r.st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		pr, err = r.records.MergePullRequest(ctx, tx, r.key)
 		return err

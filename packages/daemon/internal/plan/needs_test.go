@@ -1,9 +1,6 @@
 package plan
 
 import (
-	"context"
-	"errors"
-	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -31,18 +28,18 @@ func planOfTasksAToE(t *testing.T) Plan {
 }
 
 // FromBlocks gives each task's Needs as the ids of the tasks they name, in the order the block
-// writes them: a reference's block id after its last `#b-`, decoded as Dispatch encodes one (`%2E`
-// is a `.`) with a pin after it left out, and a word with no `#b-` as itself. A task named twice is
+// writes them: a reference's block id after its last `#b-`, decoded as Dispatch encodes one (`%2D`
+// is a `-`) with a pin after it left out, and a word with no `#b-` as itself. A task named twice is
 // needed once. Each word that names no task stays in Unresolved. So no caller holds a plan whose
 // needs are words. The fault is a plan read with the words of its needs, which no reader of a task
 // id can read, and which Validate takes; the control is a FromBlocks that keeps each word whole,
 // under which d needs the words.
 func TestFromBlocksReadsEachNeedAsTheTaskItNames(t *testing.T) {
-	read := planOf(t, 1, taskNeeding("a.b"), taskNeeding("c"),
-		taskNeeding("d", needWord("c")+"@v2", needWord("a%2Eb"), "x", "c"),
+	read := planOf(t, 1, taskNeeding("a-b"), taskNeeding("c"),
+		taskNeeding("d", needWord("c")+"@v2", needWord("a%2Db"), "x", "c"),
 		taskNeeding("e", "d", needWord("d")+"@vx"))
-	if got := read.Tasks[2]; !reflect.DeepEqual(got.Needs, []string{"c", "a.b"}) || !reflect.DeepEqual(got.Unresolved, []string{"x"}) {
-		t.Fatalf("d needs %q and leaves %q unresolved, want [c a.b] and [x]", got.Needs, got.Unresolved)
+	if got := read.Tasks[2]; !reflect.DeepEqual(got.Needs, []string{"c", "a-b"}) || !reflect.DeepEqual(got.Unresolved, []string{"x"}) {
+		t.Fatalf("d needs %q and leaves %q unresolved, want [c a-b] and [x]", got.Needs, got.Unresolved)
 	}
 	// A pin that is no `@v<N>` makes the reference name no block, as Dispatch reads it.
 	if got := read.Tasks[3]; !reflect.DeepEqual(got.Needs, []string{"d"}) || !reflect.DeepEqual(got.Unresolved, []string{needWord("d") + "@vx"}) {
@@ -79,7 +76,7 @@ func TestANeedThatNamesNoTaskIsRefused(t *testing.T) {
 		{name: "the plan of tasks a to e", plan: planOfTasksAToE(t)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := validated(t, tc.plan, d); !reflect.DeepEqual(got, tc.want) {
+			if got := Validate(tc.plan, d); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("Validate =\n%+v\nwant\n%+v", got, tc.want)
 			}
 		})
@@ -124,7 +121,7 @@ func TestANeedIntoAnotherIssueIsRefused(t *testing.T) {
 			if got := p.Tasks[1].Needs; !reflect.DeepEqual(got, tc.needs) {
 				t.Fatalf("d needs %q, want %q", got, tc.needs)
 			}
-			if got := validated(t, p, d); !reflect.DeepEqual(got, tc.want) {
+			if got := Validate(p, d); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("Validate =\n%+v\nwant\n%+v", got, tc.want)
 			}
 		})
@@ -169,7 +166,7 @@ func TestANeedOfNoIssueIsRefused(t *testing.T) {
 			if got := p.Tasks[1].Needs; !reflect.DeepEqual(got, tc.needs) {
 				t.Fatalf("d needs %q, want %q", got, tc.needs)
 			}
-			if got := validated(t, p, d); !reflect.DeepEqual(got, tc.want) {
+			if got := Validate(p, d); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("Validate =\n%+v\nwant\n%+v", got, tc.want)
 			}
 		})
@@ -213,34 +210,9 @@ func TestATaskThatNeedsItselfIsRefused(t *testing.T) {
 		{name: "the plan of tasks a to e", plan: planOfTasksAToE(t)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := validated(t, tc.plan, d); !reflect.DeepEqual(got, tc.want) {
+			if got := Validate(tc.plan, d); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("Validate =\n%+v\nwant\n%+v", got, tc.want)
 			}
 		})
-	}
-}
-
-// ringOf is a plan of size tasks t00000, t00001, … in which each task needs the next and the last
-// needs the first: one set of tasks that need each other, whose one cycle passes through every
-// task. Its tasks name no steps, so Validate's only cause in it is the cycle.
-func ringOf(size int) Plan {
-	tasks := make([]Task, size)
-	for i := range tasks {
-		tasks[i] = Task{ID: fmt.Sprintf("t%05d", i), Needs: []string{fmt.Sprintf("t%05d", (i+1)%size)}}
-	}
-	return Plan{Tasks: tasks}
-}
-
-// register_plan checks a plan its owner wrote before the fact lock, so the check of cycles runs on
-// the request's context: once the context has ended, Validate stops and answers the context's
-// error and no refusal. The fault is a check that runs to its end after its request has gone; the
-// control is a check of cycles that never reads its context, under which the ring of 1,000 tasks
-// answers its refusal and no error.
-func TestAnEndedContextStopsTheCheckOfCycles(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	refusals, err := Validate(ctx, ringOf(1_000), Deployment{Roles: BuiltinRoles()})
-	if !errors.Is(err, context.Canceled) || refusals != nil {
-		t.Fatalf("Validate under an ended context = %d refusals and error %v, want none and %v", len(refusals), err, context.Canceled)
 	}
 }

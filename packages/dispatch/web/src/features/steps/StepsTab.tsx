@@ -19,7 +19,14 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { type PlannedStep, type StepRow, type StepTaskRows, stepTasks } from "./steps-model";
+import {
+  type PlannedStep,
+  type ShownState,
+  type StepRow,
+  type StepTaskRows,
+  stepTasks,
+  stepVariant,
+} from "./steps-model";
 
 const COLUMNS = [
   "Step",
@@ -113,17 +120,11 @@ function Identifier({ value }: { value: string }): ReactNode {
   });
 }
 
-/** A state a run's result and a planned step both show: that the step runs, how its run ended, or
- *  a result this build has no word for, with the server's own word for it. */
-type SharedState =
-  | { state: "running" | "passed" | "failed" | "stopped" }
-  | { state: "other"; result: string };
-
-/** The words and colours of a state a run's result and a planned step share: `running` as a
- *  badge, `passed` and `failed` in their colours, `stopped` in weight alone, and a result this build
- *  has no word for in the server's own word. A state either caller adds fails to compile where it
- *  passes that state here, until this draws it. */
-function StateLabel({ shown }: { shown: SharedState }): ReactNode {
+/** The words and colours of a state a run's result and a planned step share (`ShownState`, built
+ *  from the contract's words in steps-model): `running` as a badge, `passed` and `failed` in their
+ *  colours, `stopped` in weight alone, and a result this build has no word for in the server's own
+ *  word. A state the contract adds fails to compile here until this draws it. */
+function StateLabel({ shown }: { shown: ShownState }): ReactNode {
   switch (shown.state) {
     case "running":
       return (
@@ -172,13 +173,12 @@ function Result({ row }: { row: StepRow }): ReactNode {
 }
 
 /** Where a step of the plan stands: `not started` before any run of it, then its newest run's
- *  state in the words and colours a run's result uses (StateLabel). A state `PlannedStepState` adds
- *  fails to compile where it is passed to StateLabel, until that draws it. */
+ *  state in the words and colours a run's result uses (StateLabel). */
 function PlannedState({ step }: { step: PlannedStep }): ReactNode {
   if (step.state === "not started") {
     return <span className={textMutedOnSurface}>not started</span>;
   }
-  return <StateLabel shown={{ result: step.result, state: step.state }} />;
+  return <StateLabel shown={step} />;
 }
 
 /** One task: the tasks of the plan it needs - nothing for a task that needs none or that the plan
@@ -334,13 +334,15 @@ function useCatchUp(issueKey: string, shown: boolean): void {
  * The steps of the issue (`GET /issues/{key}/steps`): one section per task, in the server's order
  * - the tasks of the issue's plan first, then each other task that ran - each with the tasks it
  * needs, each step the plan gives it and where that step stands, and one row per run of a step:
- * its role, type, agent, model, attempt, start, end and result. The records are the Legion
- * daemon's; this tab only reads them, and only through its catch-up (`useCatchUp`) and Retry, so
- * the query fetches nothing on its own: it is never enabled, and a read that failed is asked again
- * by the catch-up's next read, not by the app's retry policy, whose retries no cleanup of the tab
- * could stop. A failed read shows alone only while the tab has drawn nothing; after a read that
- * answered, the failure and its Retry stand above the rows that read drew, since nothing may read
- * again until the next start or Retry.
+ * its role, type, agent, model, attempt, start, end and result. Where the records of the issue's
+ * newest run name an experiment, the tab shows `Experiment <experiment>: variant <variant>` once
+ * above its tasks. The records are the Legion daemon's; this tab only reads them, and only
+ * through its catch-up (`useCatchUp`) and Retry, so the query fetches nothing on its own: it is
+ * never enabled, and a read that failed is asked again by the catch-up's next read, not by the
+ * app's retry policy, whose retries no cleanup of the tab could stop. A failed read shows alone
+ * only while the tab has drawn nothing; after a read that answered, the failure and its Retry
+ * stand above the rows that read drew, since nothing may read again until the next start or
+ * Retry.
  */
 export function StepsTab({ active, issueKey }: { active: boolean; issueKey: string }): ReactNode {
   const query = useQuery({ ...issueStepsQuery(issueKey), enabled: false, retry: false });
@@ -356,9 +358,12 @@ export function StepsTab({ active, issueKey }: { active: boolean; issueKey: stri
     return failure ?? <p className={textMutedOnCanvas}>Loading steps…</p>;
   }
   const tasks = stepTasks(query.data);
+  // The experiment a draw put the issue in, with the variant it drew, once above the tasks.
+  const variant = stepVariant(query.data);
   return (
     <div className="min-w-0 space-y-6">
       {failure}
+      {variant === null ? null : <p className={`text-sm ${textSecondaryOnCanvas}`}>{variant}</p>}
       {tasks.length === 0 ? (
         <EmptyState label="Steps empty state" message="No step of this issue has run in Legion." />
       ) : (

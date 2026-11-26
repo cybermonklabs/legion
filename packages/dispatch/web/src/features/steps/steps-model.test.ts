@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import type { StepRecord } from "../../api/types";
 import { defaultRuns, stepRecord as record } from "./step-record-fixture";
-import { stepTasks } from "./steps-model";
+import { type AnsweredState, stepTasks, stepVariant } from "./steps-model";
 
 // What the tab draws, without a DOM: the server's tasks in the server's order, each task's runs
 // in the order the read listed them, a retro and a merge named by their kind, and a run that has
@@ -151,7 +151,7 @@ test("stepTasks draws each planned step at the state the server answers", () => 
         planned: [
           { name: "implementer", state: "running", step: 1 },
           { name: "reviewer", state: "not started", step: 2 },
-          { name: "acceptance:owner", state: "skipped", step: 3 },
+          { name: "acceptance:owner", state: "skipped" as AnsweredState, step: 3 },
         ],
         steps: [
           record({
@@ -168,10 +168,31 @@ test("stepTasks draws each planned step at the state the server answers", () => 
     ],
   });
   expect(task?.planned).toEqual([
-    { name: "implementer", result: "running", state: "running", step: 1 },
-    { name: "reviewer", result: "not started", state: "not started", step: 2 },
+    { name: "implementer", state: "running", step: 1 },
+    { name: "reviewer", state: "not started", step: 2 },
     { name: "acceptance:owner", result: "skipped", state: "other", step: 3 },
   ]);
+});
+
+// Each state of the contract's enum (PLANNED_STEP_STATES, the generated union) is drawn as itself,
+// never as `other`. The list below is held to the union by `satisfies`, which refuses a key the
+// union lacks and a list that lacks one of its states, so a state renamed in the contract fails
+// the web client's typecheck here and in the model's switch (plannedStep), until both name it.
+test("stepTasks draws each planned state the contract names as itself", () => {
+  const states = {
+    failed: true,
+    "not started": true,
+    passed: true,
+    running: true,
+    stopped: true,
+  } satisfies Record<AnsweredState, true>;
+  for (const state of Object.keys(states) as AnsweredState[]) {
+    const [task] = stepTasks({
+      issue: "CORE-1",
+      tasks: [{ needs: [], planned: [{ name: "tester", state, step: 1 }], steps: [], task: "a" }],
+    });
+    expect(task?.planned, state).toEqual([{ name: "tester", state, step: 1 }]);
+  }
 });
 
 // A move back names where it sent the task. Place 0 is the retro's, which a merger's move back
@@ -238,4 +259,37 @@ test("stepTasks keeps a run whose result or kind it does not know, in the server
     ["skipped", "2", "other", "skipped"],
     ["pause", "pause", "passed", false],
   ]);
+});
+
+// The variant of the issue is the one the records of its newest run, its highest generation,
+// name: an older run that names another and a newest record that names none yet change nothing,
+// and records that name none, null or left out as a Dispatch older than the two fields answers
+// them, name none.
+test("stepVariant names the experiment and the variant the newest run's records name", () => {
+  const named = { experiment: "planning", variant: "b" };
+  expect(
+    stepVariant({
+      issue: "CORE-1",
+      tasks: [
+        {
+          needs: null,
+          steps: [
+            record({ experiment: "planning", id: "older", variant: "a" }),
+            record({ generation: 2, id: "newest-unnamed" }),
+            record({ generation: 2, id: "newest", ...named }),
+          ],
+          task: "default",
+        },
+      ],
+    })
+  ).toBe("Experiment planning: variant b");
+  const older = record({ id: "no-fields" }) as Partial<StepRecord>;
+  delete older.experiment;
+  delete older.variant;
+  for (const steps of [[record({ id: "none" })], [older as StepRecord]]) {
+    expect(
+      stepVariant({ issue: "CORE-1", tasks: [{ needs: null, steps, task: "default" }] })
+    ).toBeNull();
+  }
+  expect(stepVariant({ issue: "CORE-1", tasks: [] })).toBeNull();
 });

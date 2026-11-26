@@ -248,7 +248,7 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 		t.Fatalf("seed the listener's report: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `update claims set plugin_contract = $1, activity_at = now(),
-		activity_background = false, activity_kinds = '', activity_next_reminder_at = null`, api.DaemonAPIVersion); err != nil {
+		activity_background = false, activity_kinds = '', activity_next_reminder_at = null`, api.DaemonAPIVersion()); err != nil {
 		t.Fatalf("report what the pods are doing: %v", err)
 	}
 	idle := &workflowRuntime{pool: pool, projectID: "legion", log: quietLogger(), idleStore: trees,
@@ -409,7 +409,7 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 
 		queued := rig.queuedBy(t, func() { rig.w.releaseIdlePods(ctx) })
 		if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
-			t.Fatalf("queued rows = %v, want the save, the role stop and the teardown and nothing else", queued)
+			t.Fatalf("queued rows = %v, want the workspace check, the role stop and the teardown and nothing else", queued)
 		}
 		rig.drain(t)
 		if got := rig.machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByReleased {

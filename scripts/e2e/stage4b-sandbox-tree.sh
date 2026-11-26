@@ -282,7 +282,7 @@ admission_cap=4
 tree1_children=2
 # The pods the run needs placed at once, every one an issue pod: the cap's issues, since an issue
 # the daemon has started runs in one pod of its own, and an issue keeps its pod past its slot — a
-# root in a phase past its review holds none and keeps its pod. Four pods stand at each
+# root in accepting, retro or merging holds none and keeps its pod. Four pods stand at each
 # gathering: the four slot holders of issue-independence, and, at children-first-acceptance, tree
 # 1 with its pod and no slot beside tree 3 and children 3 and 4, which is four pods against three
 # slots. The run launches no controller pod: its controller starts from
@@ -318,7 +318,7 @@ run_resources="${run_resources%,}}}"
 unset field
 # The daemon's log text the children's and tree 1's Sandboxes are judged by: the delete a child's
 # stop logs — its close as done here, and a park the same way, since SuspendIssue deletes the
-# Sandbox and the six role Secrets it owns once the pod is gone, and the disk went with that pod
+# Sandbox and the role Secrets it owns once the pod is gone, and the disk went with that pod
 # (internal/runtime/sandbox/issue_suspend.go).
 deleted_msg="sandbox runtime: deleted the closed issue's Sandbox and the role Secrets it owned"
 # How long a planner the driver has told to plan gets to finish: before its handoff it runs its two
@@ -482,7 +482,7 @@ rk() { timeout --foreground 300 kubectl --kubeconfig "$runtime_kubeconfig" --con
 # No pod asks for or keeps off another pod's node (LEGION-632: every issue pod owns its volume and
 # shares nothing with another pod), so the scheduler bin-packs the run's pods where the legion pool
 # has room, and Karpenter adds nodes under the pool's limits. An issue pod's one `roles` container
-# reserves cpu and memory for all six roles (run_resources' `issue`), so the room is counted in pods
+# reserves cpu and memory for all its roles (run_resources' `issue`), so the room is counted in pods
 # of that one reservation, against what the pool's Ready nodes have free and what its limits leave.
 
 # pool_pod_room prints, as JSON, how many of the run's pods the legion pool can place now
@@ -1105,7 +1105,7 @@ session_copy() {
     echo "the sessions under $prefix are not copied: their directory $root/$stem resolves to $dest, not directly inside $root" >&2
     return 1
   fi
-  table=$(session_psql table omp_session_files <<<"SELECT to_regclass(:'table') IS NOT NULL;") || return 1
+  table=$(session_psql table public.omp_session_files <<<"SELECT to_regclass(:'table') IS NOT NULL;") || return 1
   case $table in
     t) ;;
     f)
@@ -1119,7 +1119,7 @@ session_copy() {
       echo "the sessions under $prefix are not copied: the session database $session_db_container answered '$table' to whether it has a session table" >&2
       return 1 ;;
   esac
-  hex=$(session_psql prefix "$prefix" <<<"SELECT encode(convert_to(path, 'UTF8'), 'hex') FROM omp_session_files WHERE left(path, length(:'prefix')) = :'prefix' ORDER BY path;") || return 1
+  hex=$(session_psql prefix "$prefix" <<<"SELECT encode(convert_to(path, 'UTF8'), 'hex') FROM public.omp_session_files WHERE left(path, length(:'prefix')) = :'prefix' ORDER BY path;") || return 1
   [ -n "$hex" ] || return 0
   mkdir -p -- "$dest" || return 1
   # Every name is derived before any is written, so a key whose name a later key also derives is
@@ -4024,7 +4024,7 @@ begin child-release
 # and its disk goes with the pod, since an issue's disk is its pod's own ephemeral volume
 # (INFRA-80); the root's Sandbox stays Running, its own pod's disk Bound and its pod the same.
 # Child 2 set backlog: a park reaches SuspendIssue exactly as a close does (linger.go enqueues an
-# IssueSuspend for every stop that is not a merged done), so its Sandbox is deleted with the six
+# IssueSuspend for every stop that is not a merged done), so its Sandbox is deleted with the
 # role Secrets it owned once its pod is gone, and its disk went with that pod; nothing of the
 # parked child is left to keep, and its next todo (child-reentered) makes the Sandbox afresh.
 # The two slots those children held are freed with them, and the line's first issue takes one:
@@ -4220,7 +4220,7 @@ begin repository-tools
 pod=$(claim_sandbox "$tree2" planner) || fail "tree 2's planner has no Sandbox"
 fixture_dir=/legion/workspaces/$repo/${tree2,,}
 # The shim warms the index after the agent starts, so the planner's first turn can end before the
-# index is built. One of the pod's six role shims wins the warm-up lease and builds while the others
+# index is built. One of the pod's role shims wins the warm-up lease and builds while the others
 # skip. Every role's shim writes to the pod's one `roles` container's log, behind the launcher's
 # `<role>: ` prefix (internal/launcher/launcher.go prefixWriter), so the success line is read from
 # that log, and every role's warm-up lines are kept as codegraph-warm-up.txt, which the fail line
@@ -4552,7 +4552,7 @@ begin github-credential
 # runs the same gh with the same credential. The pushes on legion/<issue> were made by the
 # implement App itself with plain jj: GitHub's record of the pull request's head names the implement
 # App, and that head has its check runs (acceptance 4a). No phase pushes a commit to hand off: no
-# commit of the pull request changes only .legion/, and the planner's handoff, as every role's, is
+# commit of the pull request changes only .legion/, and the planner's handoff, as every handoff, is
 # a record on the Dispatch issue written under the planner's claim session (assert_handoff_record).
 gh_pod=$(claim_sandbox "$tree1" implementer) || fail "tree 1's implementer has no Sandbox locator"
 gh_bin=$(pod_exec "$gh_pod" implementer sh -c 'command -v gh') || fail "no gh in the implementer's namespaces of $gh_pod"
@@ -4613,7 +4613,7 @@ for role in implementer reviewer; do
     fail "could not read /proc in the $role's namespaces of $gh_pod"
   [ "$(grep -c . <<<"$shims")" = 1 ] || fail "the $role's namespaces of $gh_pod list worker-shims $(tr '\n' ' ' <<<"$shims"), want its own alone"
 done
-note "in $gh_pod's roles container $roles_dir holds all six roles' directories; the implementer and the reviewer each see their own gh-<role> copy at $gh_config_dir (hashes match the container's), an empty $roles_dir and one worker-shim in /proc"
+note "in $gh_pod's roles container $roles_dir holds every role's directory; the implementer and the reviewer each see their own gh-<role> copy at $gh_config_dir (hashes match the container's), an empty $roles_dir and one worker-shim in /proc"
 # Every role's Secret got its gh files when the pod was made, and no daemon route serves a token.
 for role in architect planner implementer tester reviewer merger; do
   gh_log_line written "$gh_pod" "$role" >/dev/null || fail "the daemon log has no 'github credential written' line for $role of $gh_pod"
@@ -4786,9 +4786,9 @@ pass
 begin tree-reviewed
 send_agent "$tree1" tester "Stage 4b proof test operation: inspect the implementer's actual one-file change and pull request #$pr_number, run a focused observable check, record the required test handoff with verdict pass, then call the legion tool's handoff_complete with verdict pass."
 on_tree "$tree1" wait_for_phase "$tree1" reviewing 1200
-# No move back has counted the implementer a round yet: the conflict of conflict-no-takeover moved
-# nothing (dispatch://INFRA-4374), and a move back is what counts one, as every move back does
-# since #1850 (workflow/engine.go movesBack → recordRound). So tree 1 stands at round 0 here and at
+# No review has counted the implementer a round yet: the conflict of conflict-no-takeover moved
+# nothing (dispatch://INFRA-4374), and a round is what a review that requests changes counts
+# (workflow/engine.go recordRound), a tester's fail and a move back counting none. So tree 1 stands at round 0 here and at
 # round 1 once the review below requests changes; `round_line 1` and `round_correction_pushed 1`
 # below label that round.
 assert_handoff_record "$tree1" tester testing 0
@@ -4892,8 +4892,8 @@ note "the reviewer approved pull request #$pr_number at its head; its thread the
 # the tree's architect, told by the reviewer's phase-finished notice, accepts with sign_off or sends
 # the issue back. The wait is for accepting itself, read within a poll of the reviewer's completion;
 # the architect acts on no notice under the proof's instructions, so the issue stands there until
-# children-first-acceptance's prompt. A root in accepting holds no admission slot: its work is
-# past its review, so the daemon takes the row back there, while its tree stays live and its
+# children-first-acceptance's prompt. A root in accepting holds no admission slot, since
+# accepting keeps none wherever the task places it, so the daemon takes the row back there, while its tree stays live and its
 # architect keeps its pod.
 on_tree "$tree1" until_true 900 "$tree1 to leave reviewing for accepting" issue_phase "$tree1" accepting
 state_file accepting
@@ -5003,7 +5003,7 @@ phase_change_logged "$tree1" accepting retro sign_off ||
   fail "the daemon log has no \"workflow: phase changed\" line moving $tree1 from accepting to retro on sign_off"
 until_true 120 "the daemon's retro status on the Dispatch board" dispatch_status_is "$tree1" retro
 note "once the last issue beneath it had left, the architect's sign_off moved $tree1 to retro (workflow: phase changed from=accepting to=retro trigger=sign_off), the board retro"
-# The sign-off starts the implementer's retro, whose task names the phase; the resumed implementer
+# The sign-off, the last of tree 1's default steps, starts the implementer's retro, whose task names the phase; the resumed implementer
 # may finish it before the proof's instruction reaches it, so the prompt goes only while the issue
 # sits in retro.
 if issue_phase "$tree1" retro >/dev/null; then
@@ -6142,10 +6142,10 @@ dispatch_get "issues/$report" | jq -e '(.labels | map(ascii_downcase) | index("l
   fail "$report, the report issue, carries the legion label"
 # The message is the controller's, names tree 1, which runs throughout, and the free slots, and
 # holds the skill's 2,000-character budget for the report, which is the report's own length rule
-# and not the Dispatch server's body cap.
+# and not the Dispatch server's body cap; a message its author deleted counts as not posted
+# (lib/stage4b-report-posted.jq).
 report_posted() {
-  dispatch_events "$report" | jq -e --arg s "$controller_session" --arg tree "$tree1" \
-    'any(.[]; .type == "message.created" and .actor.id == $s and (.payload.body | test("(^|[^0-9A-Za-z-])" + $tree + "($|[^0-9])")) and (.payload.body | test("slot"; "i")) and (.payload.body | length) <= 2000)' >/dev/null
+  dispatch_events "$report" | jq -e --arg s "$controller_session" --arg tree "$tree1" -f "$root/scripts/e2e/lib/stage4b-report-posted.jq" >/dev/null
 }
 until_true 300 "the controller's report message on $report" report_posted
 # It was posted on a turn a tick started while the controller was idle, the quiet day's wake. A
@@ -6485,57 +6485,23 @@ await_merger_merge "$repo" "$pr_number" --delete-branch
 handoff_pushes=$(pull_request_legion_only_commits) || fail "could not read the commits of pull request #$pr_number"
 [ -z "$handoff_pushes" ] || fail "merged pull request #$pr_number carries commits that change only .legion/: $(tr '\n' ' ' <<<"$handoff_pushes")"
 note "merged pull request #$pr_number holds $(gh api --paginate "repos/$repo/pulls/$pr_number/commits" --jq '.[].sha' | grep -c .) commits, none changing only .legion/"
-# The merge is recorded and the root waits for the rest of its tree (INFRA-229).
-merge_recorded() {
-  daemon_state | jq -e --arg issue "$tree1" '.issues[$issue] | .phase == "merging" and .pullRequest.state == "merged"' >/dev/null
-}
-on_tree "$tree1" until_true 600 "the daemon to record pull request #$pr_number merged on $tree1, which stays in merging" merge_recorded
-waiting_for=$(log_lines "workflow: a merged root's close waits for the rest of its tree" |
-  jq -r -s --arg issue "$tree1" '[.[] | select(.issue == $issue)] | last | .waitingFor // empty')
-[ "$waiting_for" = "$child3, $child4" ] ||
-  fail "the daemon logged $tree1's merged close waiting for '${waiting_for:-nothing}', want \"$child3, $child4\""
-until_true 300 "the pr-merged notice on $tree1's architect" notice_delivered "$tree1" architect "$(notice_needle pr-merged "$tree1")"
-merged_notice=$(notice_line "$tree1" architect "$(notice_needle pr-merged "$tree1")")
-for want in "#$pr_number" "$child3" "$child4"; do
-  grep -qF -- "$want" <<<"$merged_notice" ||
-    fail "the pr-merged notice on $tree1's architect does not name $want: $(cut -c1-300 <<<"$merged_notice")"
-done
-state_file merged-waiting
-jq -e --arg issue "$tree1" '(.admission.active | index($issue)) != null and .issues[$issue].check == null' "$evidence/merged-waiting.json" >/dev/null ||
-  fail "the merge freed $tree1's slot or opened its production check while its tree still ran: $(jq -c --arg issue "$tree1" '{active: .admission.active, check: .issues[$issue].check}' "$evidence/merged-waiting.json")"
-dispatch_status_is "$tree1" retro >/dev/null ||
-  fail "the board shows $tree1 $(dispatch_get "issues/$tree1" | jq -r .status) at its merge, want the retro it stands in: the done is the close's"
-lingered=$(log_lines "workflow: tree lingers" | jq -c --arg tree "$tree1" 'select(.tree == $tree)' | grep -c . || true)
-[ "$lingered" = 0 ] ||
-  fail "the daemon lingered tree $tree1 at its merge ($lingered times) while $child3 and $child4 were still in the workflow"
-merge_claims=$(issue_claim_states "$tree1" | paste -sd ',' -)
-case $merge_claims in *suspended*) fail "the merge suspended a claim of $tree1 while its tree still ran: $merge_claims" ;; esac
-note "$repo#$pr_number merged by $merge_when_clean_by at $merge_when_clean_commit: the daemon recorded the merge and left $tree1 in merging (claims $merge_claims, its slot kept, Dispatch retro, no linger, no production check), telling its architect once that the close waits for $waiting_for"
-# The children leave one at a time, and only the last park closes the root. A parked child leaves
-# the workflow (phase done) with its claims suspended, and the park deletes its Sandbox with the six
-# role Secrets it owned once its pod is gone, the disk going with that pod: the path child-release
-# took for child 2, read the same way (child_parked).
-for child in "$child3" "$child4"; do
-  if [ "$child" = "$child3" ]; then child_pod=$child3_pod; else child_pod=$child4_pod; fi
-  set_status "$child" backlog
-  until_true 600 "$child to leave the workflow" issue_phase "$child" "done"
-  until_true "$phase_seconds" "$child's park to suspend its planner" issue_worker_state "$child" planner suspended
-  until_true 600 "$child's Sandbox, pod and disk to be gone after its backlog" child_parked "$child" "$child_pod"
-  note "the proof human parked $child (backlog): it left the workflow, its planner is suspended, and it has no Sandbox, no pod and no disk (its pod $child_pod took the disk $child_pod-issue with it)"
-  [ "$child" = "$child4" ] || issue_phase "$tree1" merging >/dev/null ||
-    fail "$tree1 left merging on $child3's park, with $child4 still in the workflow"
-done
-# The last park closes the root, as the merge of a finished tree's root does.
+# The merge closes the root on the merge itself: nothing of tree 1 is in the workflow, so
+# closeMerged waits for nobody. Its wait is entered only with an issue beneath the root still in
+# the workflow, and the architect's pr-merged notice is that wait's own (closeMergedTelling), so
+# neither the wait's log line nor the notice may appear here.
 on_tree "$tree1" wait_for_phase "$tree1" "done" 900
 phase_change_logged "$tree1" merging "done" pull_request_merged ||
   fail "the daemon log has no \"workflow: phase changed\" line moving $tree1 from merging to done on pull_request_merged"
-closed_last=$(log_lines "workflow: a merged root closes once its last child left the workflow" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
-[ "$closed_last" = 1 ] ||
-  fail "the daemon logged \"a merged root closes once its last child left the workflow\" for $tree1 $closed_last times, want once, at $child4's park"
+waited=$(log_lines "workflow: a merged issue's close waits for the issues beneath it" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
+[ "$waited" = 0 ] ||
+  fail "the daemon logged $tree1's merged close waiting for the issues beneath it $waited times, though $child3 and $child4 left the workflow at children-first-acceptance: $(log_lines "workflow: a merged issue's close waits for the issues beneath it" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | tail -1)"
+told=$(notice_deliveries "$tree1" architect "$(notice_needle pr-merged "$tree1")")
+[ "$told" = 0 ] ||
+  fail "$tree1's architect was told $told pr-merged notices, which only a close that waits for the issues beneath it sends: $(notice_line "$tree1" architect "$(notice_needle pr-merged "$tree1")" | tail -1 | cut -c1-300)"
 until_true 120 "the daemon's done status on the Dispatch board" dispatch_status_is "$tree1" "done"
 state_file merged-closed
 # No issue of tree 1 holds an admission slot once it closes: the root's row went when it reached
-# accepting, past its review, its children's at their parks, and the close frees whatever is left.
+# accepting, which keeps none, its children's at their parks, and the close frees whatever is left.
 jq -e --arg issue "$tree1" '(.admission.active | index($issue)) == null and ([.issues | to_entries[] | select(.value.tree == $issue and .value.slot != null) | .key] | length) == 0' \
   "$evidence/merged-closed.json" >/dev/null ||
   fail "an issue of tree $tree1 holds an admission slot at its close: $(jq -c --arg issue "$tree1" '{active: .admission.active, slotted: [.issues | to_entries[] | select(.value.tree == $issue and .value.slot != null) | .key]}' "$evidence/merged-closed.json")"
@@ -6572,7 +6538,7 @@ timeout_hook=limit_pending_blocked # clean_smoke_main leaves the hook empty
 # A look took up to 10 minutes from its task to its report in acceptance runs.
 on_tree "$tree1" until_true 600 "the tester's pending report on the first look of $tree1's production check" check_look_reported "$tree1" 1
 # root_parked: the root keeps no Sandbox, no pod and no disk between its looks. The pending report
-# suspends the tester's claim and queues an IssueSuspend, which deletes the Sandbox with the six
+# suspends the tester's claim and queues an IssueSuspend, which deletes the Sandbox with the
 # role Secrets it owned once the pod is gone (internal/workflow/check.go endLookPending), exactly as
 # any other stop of an issue does, so there is no mode left to read: the gone-read of
 # child1_released is the signal here too, the pod's disk inside it for the reason child2_parked
@@ -6659,7 +6625,7 @@ pass
 begin node-release
 # Tree 1 lingers (linger_hours 0.5, from the close its merge brought on): no issue of it
 # keeps a Sandbox or a pod — the linger suspends every member and queues an IssueSuspend for each
-# (linger.go beginLinger), which deletes that member's Sandbox, with the six role Secrets it owned,
+# (linger.go beginLinger), which deletes that member's Sandbox, with the role Secrets it owned,
 # once its pod is gone, and the disk went with the pod; children 2, 3 and 4 had already lost theirs
 # to their parks — and no pod of tree 1 is left on any node a pod of tree 1 ran on. No pod asks for
 # or keeps off a node (LEGION-632): a node empties when the pods on it stop, and the pool
@@ -6773,7 +6739,7 @@ begin close
 # waited, and the reads below hold either way; the close waits while a member's production check is
 # open, which production-check-bound saw closed) the tree's cleanup foreground-deletes every Sandbox
 # still carrying tree 1's label, and the linger leaves it little: a member's own stop took its
-# Sandbox and the six role Secrets it owned once that member's pod was gone — child 1's at its done,
+# Sandbox and the role Secrets it owned once that member's pod was gone — child 1's at its done,
 # child 2's at child-release, those of children 3 and 4 at the parks that let the sign-off land, the
 # root's at the linger's IssueSuspend row and again when its production check closed — and each
 # disk went with the pod that owned it. Every member of the tree is out of the workflow, so nothing

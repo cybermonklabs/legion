@@ -58,7 +58,7 @@ func seedStepStartPlan(t *testing.T, pool *store.Pool, records record.Store, at 
 // does not say which step it is of. The linter's start of step 3 of `implementer checker linter`
 // was queued, under the transition's lock, while the task stood at step 3. It waited on its row's
 // backoff (an operator's suspension of the claim, or a pod built before the role); meanwhile a
-// conflict sent the work back and the task now stands at the checker's step 2, still at the phase
+// move back sent the work to the checker's step 2, and the task now stands there, still at the phase
 // step, with the linter's row on the same entry, so the generation, the phase and the entry all
 // pass. The outbox's fence holds the start to the role of the step the task stands at
 // (record.Issue.HoldsQueued) and finishes it without acting: no linter claim is created and no task
@@ -245,6 +245,42 @@ func TestPhaseHoldsAnswersFromTheRoleOfTheRunningStep(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Fatalf("phaseHolds of the %s's step task with the task at step %d = %v, want %v", tc.role, tc.at, got, tc.want)
+			}
+		})
+	}
+}
+
+// The pod start gate puts the workers of the issue's running steps first among the starts no
+// request raised (supervise.Deps.PhaseRoles, workflowRuntime.phaseRoles). For a single running
+// step it answers one role: the checker at step 2 of `implementer checker linter`, the linter
+// at step 3. The control is an issue at implementing with no plan rows, whose implementer the
+// phase names.
+func TestPhaseRoleAnswersTheRoleOfTheRunningStep(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		phase phase.Phase
+		at    int
+		want  claim.Role
+	}{
+		{"the task at the checker's step 2", phase.Step, 2, "checker"},
+		{"the task at the linter's step 3", phase.Step, 3, stepStartLinter},
+		{"the control: implementing", phase.Implementing, 0, claim.RoleImplementer},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			putOutboxIssue(t, pool, records, record.Issue{Key: stepStartKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Project: "LEGION", Tree: stepStartKey, Title: "Workflow", Phase: tc.phase, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+			if tc.at > 0 {
+				seedStepStartPlan(t, pool, records, tc.at)
+			}
+			got, err := (&workflowRuntime{pool: pool, records: records}).phaseRoles(context.Background(), stepStartKey)
+			if err != nil {
+				t.Fatalf("phaseRoles: %v", err)
+			}
+			if len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("phaseRoles of %s (%s) = %q, want only %q, the worker of its running step", stepStartKey, tc.name, got, tc.want)
 			}
 		})
 	}

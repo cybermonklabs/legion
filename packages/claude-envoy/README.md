@@ -383,9 +383,9 @@ Code session needs it.
 
 ## Legion phase workers
 
-A Legion daemon can run a phase worker (planner, implementer, tester, reviewer or merger) on
-Claude Code when `legion.yaml` sets `worker_backends: {<role>: claude}` (tmux runtime only; see
-`docs/deployment.md`, "Phase workers on Claude Code"). The daemon launches
+A Legion daemon can run a phase worker (planner, implementer, tester, reviewer, merger or a role
+the deployment defines) on Claude Code when `legion.yaml` sets `worker_backends: {<role>: claude}`,
+under either runtime (see `docs/deployment.md`, "Phase workers on Claude Code"). The daemon launches
 `legion claude-bridge -- claude -p …` with two plugin directories, this package and its generated
 `legion/`, and a per-claim `CLAUDE_CONFIG_DIR`. In that pane the MCP server:
 

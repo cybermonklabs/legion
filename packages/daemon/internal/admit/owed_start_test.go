@@ -17,12 +17,14 @@ import (
 )
 
 // midPhaseStart is one supervise start row of an issue, with whether a lane may run it now
-// (record.Store.DueRows, the predicate the outbox claims by).
+// (record.Store.DueRows, the predicate the outbox claims by) and whether it is a news-only start,
+// which brings no work (workflow's startsWork).
 type midPhaseStart struct {
 	role      claim.Role
 	task      string
 	needsSlot bool
 	claimable bool
+	news      bool
 }
 
 // startsOf is every supervise start row issue holds, oldest first.
@@ -40,7 +42,7 @@ func startsOf(t *testing.T, pool *pgxpool.Pool, issue string) []midPhaseStart {
 			runnable[row.ID] = struct{}{}
 		}
 		all, err := tx.Query(ctx, `select id, coalesce(payload->>'role', ''), coalesce(payload->>'task', ''),
-			coalesce(payload->>'needsSlot', '') = 'true'
+			coalesce(payload->>'needsSlot', '') = 'true', coalesce(payload->>'news', '') = 'true'
 			from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start' order by id`, issue)
 		if err != nil {
 			t.Fatalf("list the starts of %s: %v", issue, err)
@@ -49,7 +51,7 @@ func startsOf(t *testing.T, pool *pgxpool.Pool, issue string) []midPhaseStart {
 		for all.Next() {
 			var id int64
 			var row midPhaseStart
-			if err := all.Scan(&id, &row.role, &row.task, &row.needsSlot); err != nil {
+			if err := all.Scan(&id, &row.role, &row.task, &row.needsSlot, &row.news); err != nil {
 				t.Fatalf("scan a start of %s: %v", issue, err)
 			}
 			_, row.claimable = runnable[id]
@@ -114,24 +116,18 @@ func midPhaseChild(t *testing.T, pool *pgxpool.Pool, root, key string, stands ph
 		t.Fatal(err)
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
-		ctx := context.Background()
-		if err := record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: role, Claim: token}); err != nil {
+		if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: key, Role: role, Claim: token}); err != nil {
 			t.Fatalf("seed the %s's row of %s: %v", role, key, err)
 		}
-		if _, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
-			serving_generation, launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
-			values ($1, $2, $3, $4, $5, 1, 'ses', '/sessions/ses.jsonl', 'suspended', 1, 0, 0, 0, 0, 'daemon')`,
-			string(token), project, root, key, string(role)); err != nil {
-			t.Fatalf("seed the %s of %s: %v", role, key, err)
-		}
 	})
+	putClaimRow(t, pool, root, key, role, 1, "suspended")
 	return token
 }
 
 // A3's eighth return, which is admission's own start rather than a transition: a re-admitted
-// tree whose two children stand mid-phase. The child short of its review waits for a slot of
-// its own, because the cap counts the issues whose change is still to write and the tree's one
-// root slot no longer carries its children; the child past its review waits for none
+// tree whose two children stand mid-phase. The child in testing waits for a slot of its own,
+// because the cap counts the issues whose change is still to write and the tree's one root slot
+// no longer carries its children; the child in retro waits for none, since retro keeps no slot
 // (record.KeepsSlot), so its start is claimable as soon as the branch row ahead of it is run.
 //
 // The promotion writes everything but the tasks in the fact's own transaction: the root's new
@@ -193,8 +189,8 @@ func TestAReadmittedTreesMidPhaseChildrenEachWaitForTheirOwnSlot(t *testing.T) {
 		phase phase.Phase
 		// waits says the child's start waits for an admission slot, which the phase it stands
 		// in decides (record.PhaseKeepsSlot, read by workflow.StartOrOwe): the tester's start
-		// waits, and the retro implementer's does not, since an issue past its review holds no
-		// row for that start to wait for.
+		// waits, and the retro implementer's does not, since retro keeps no row for that start
+		// to wait for.
 		waits bool
 	}{testing_: {role: claim.RoleTester, phase: phase.Testing, waits: true}, retro: {role: claim.RoleImplementer, phase: phase.Retro}} {
 		// The re-admission rewrites no phase: the phase a member's record carries is the phase it

@@ -25,7 +25,8 @@ state_dir: ./state                     # the daemon's local state
 bind: 0.0.0.0
 advertise_host: legion-daemon-widgets.legion.svc
 daemon_url: http://legion-daemon-widgets.legion.svc:13370
-admission_cap: 4                       # issues running at once, roots and children alike
+admission_cap: 4                       # issues holding a slot at once, roots and children alike; an issue in
+                                       # accepting, retro or merging holds none
 pod_update_max_open_rounds: 2          # issues holding an open pod-update round at once; a round asks every
                                        # worker of its issue to push its work, let its subagents and background
                                        # jobs finish or stop them, push what they made and wait. Leave the key
@@ -77,6 +78,7 @@ dispatch_token_file: ./dispatch-token
 envoy_url: http://envoy.example.com:9020
 envoy_token_file: ./envoy-token
 nats_urls: [nats://nats.example.com:4222]
+# private_name_rules_file: ./private-name-rules.toml  # the gitleaks rule file every role's leak guard runs
 
 projects:
   WIDGETS: {}                          # each Dispatch project the daemon runs; it names no
@@ -121,8 +123,9 @@ projects:
   #                                    # /etc/legion-memory
   #     instructions: /etc/legion-daemon/memory-instructions.md # optional: a markdown file on the
   #                                    # daemon's own disk, not a pod mount: the daemon reads it at
-  #                                    # boot and appends its text to every memory-group role's
-  #                                    # system prompt, after the deployment's own instructions.
+  #                                    # boot, and again before each launch, and appends its text
+  #                                    # to every memory-group role's system prompt, after the
+  #                                    # deployment's own instructions.
   #                                    # mode: on with no instructions appends nothing
   #   experiments:                     # optional: what this project draws its trees and its issues
   #                                    # into, by the name each draw records. The memory block above
@@ -153,6 +156,18 @@ projects:
   #                                    # does not mount
   #         - name: control            # the arm that names no file at all is the control the others
   #                                    # are measured against
+  #     planning: {mode: random, unit: issue, variants: [{name: owner, plan: owner}, {name: default, plan: default}]}
+  #                                    # an experiment that sets how each issue is done: an arm's
+  #                                    # plan is owner, whose issues take the plan their owner
+  #                                    # gives with register_plan, or default, whose issues run
+  #                                    # this project's default_steps and take no plan from their
+  #                                    # owner: once the daemon records such an issue, its owner's
+  #                                    # register_plan and stop_task are answered 409
+  #                                    # PLAN_NOT_TAKEN. Every arm of it names plan, it is unit:
+  #                                    # issue, and no other experiment of the project sets plan;
+  #                                    # owner-alone is refused, since this release does not carry
+  #                                    # it out. Each issue keeps the plan of its draw for its
+  #                                    # whole life, whatever this file says later
 # leak_check:                          # optional: the deployment's shared public leak check, which
 #   repository: example-org/deployment # the daemon reads at the worker image's pin
 #   manifest_sha256: <64 hex digits>   # (LEGION_LEAK_CHECK_TAG) and pushes to every pod: the
@@ -212,15 +227,22 @@ projects:
 #                                      # the event: work_back, a move to an earlier phase, is the
 #                                      # one event the daemon has. moves are the moves back the
 #                                      # hook counts, each written <from>-<to> of two workflow
-#                                      # phases (testing-implementing, reviewing-implementing,
-#                                      # merging-implementing and the 18 other pairs), or
+#                                      # phases, which differ but in step-step
+#                                      # (testing-implementing, reviewing-implementing,
+#                                      # merging-implementing, or any other of the 41 moves
+#                                      # back a task's line can make,
+#                                      # such as testing-reviewing on a task whose review step
+#                                      # comes before its test step; a move into retro or
+#                                      # merging, or from implementing to a later step, is
+#                                      # refused, since it never fires), or
 #                                      # the word any, which a hook that leaves the key out takes
 #                                      # as well. every is a positive whole number: the hook
 #                                      # fires when the counts of the moves it counts, added up,
 #                                      # are a whole multiple of it. roles are the roles it
-#                                      # writes to, at least one of implementer, tester,
-#                                      # reviewer, planner and merger; the architect is refused,
-#                                      # since the daemon's own wake to an architect is a notice.
+#                                      # writes to, at least one, each implementer, tester,
+#                                      # reviewer, planner, merger or a role of `roles`. The
+#                                      # architect is refused, since the daemon's own wake to an
+#                                      # architect is a notice.
 #                                      # The words are prompt here or prompt_file below, never
 #                                      # both and never neither. Each refusal at load names the
 #                                      # hook by its place in the list and the key at fault, as
@@ -264,22 +286,27 @@ github_apps:
     app_id: "100002"
     private_key_command: cat ./review-app.pem
 # worker_backends:                     # a phase worker's role (planner, implementer, tester, reviewer,
-#   implementer: claude                # merger) on omp, the default, or claude: Claude Code under
-#                                      # `legion claude-bridge`, which runs under either runtime. In a pod,
-#                                      # as in this file, it runs out of the worker image, which carries
-#                                      # Claude Code and the claude-envoy plugin; under runtime: tmux it
-#                                      # needs LEGION_CLAUDE_PLUGIN_DIR (and LEGION_CLAUDE_PATH,
-#                                      # LEGION_BUN_PATH, else PATH) in the daemon's environment. Legion
-#                                      # holds no model route for it either: put ANTHROPIC_API_KEY in
-#                                      # provider_keys (pod.env refuses a credential-shaped name) and
-#                                      # ANTHROPIC_BASE_URL and ANTHROPIC_MODEL in runtime.kubernetes.pod.env.
+#   implementer: claude                # merger, or a role of roles) on omp, the default, or claude:
+#                                      # Claude Code under `legion claude-bridge`, which runs under either
+#                                      # runtime. In a pod, as in this file, the worker image carries the
+#                                      # claude-envoy plugin and Claude Code's pin, not Claude Code. Each
+#                                      # launch there installs the pinned release. Under runtime: tmux it
+#                                      # needs LEGION_CLAUDE_PLUGIN_DIR (and
+#                                      # LEGION_CLAUDE_PATH, LEGION_BUN_PATH, else PATH) in the daemon's
+#                                      # environment. Legion holds no model route for it either: put
+#                                      # ANTHROPIC_API_KEY in provider_keys (pod.env refuses a
+#                                      # credential-shaped name) and ANTHROPIC_BASE_URL and
+#                                      # ANTHROPIC_MODEL in runtime.kubernetes.pod.env. A role of roles
+#                                      # that names a model is launched with --model and that model.
 # role_config_files:                   # Oh My Pi overlays one role names and no other: here a model
 #   implementer: [/etc/legion-operator-roles/fallback.yml] # fallback chain (retry.modelFallback and
 #   tester: [/etc/legion-operator-roles/fallback.yml]      # retry.fallbackChains) for the roles whose
 #   merger: [/etc/legion-operator-roles/fallback.yml]      # output a machine checks. Keys: an issue
-#                                      # role, or controller under controller: daemon; values: absolute
-#                                      # paths, named in that role's PI_CONFIG_FILES after pod.env's (or
-#                                      # runtime.tmux.pi_config_files). Under runtime: kubernetes each file
+#                                      # role (architect, planner, implementer, tester, reviewer,
+#                                      # merger, or a role of roles), or controller under controller: daemon;
+#                                      # values: absolute paths, named in that role's PI_CONFIG_FILES after
+#                                      # pod.env's (or runtime.tmux.pi_config_files). Under runtime:
+#                                      # kubernetes each file
 #                                      # must be in a pod.volume_mounts mount below: uncomment the
 #                                      # operator-roles volume and mount there too, a ConfigMap
 #                                      # legion-operator-roles mounted at /etc/legion-operator-roles. The
@@ -293,9 +320,10 @@ github_apps:
 #                                      # turn was serving goes back to waiting and the session comes
 #                                      # back and is sent it again, with nothing charged to the
 #                                      # claim. Keys: an issue role (architect, planner, implementer,
-#                                      # tester, reviewer, merger), or controller; values: a decimal
-#                                      # number of hours, and 0 the backstop off for that role, which
-#                                      # nothing else does. A role left out runs on twice the bound
+#                                      # tester, reviewer, merger, or a role of roles), or controller;
+#                                      # values: a decimal number of hours, and 0 the backstop off for
+#                                      # that role, which nothing else does. A role left out runs on
+#                                      # twice the bound
 #                                      # that worker's plugin holds a tool call no deadline judges
 #                                      # to — 8 hours for an implementer and a reviewer, 2 for every
 #                                      # other role and the controller — so the worker's own
@@ -557,7 +585,7 @@ runtime:
         # - {volume: operator-experiments, mount_path: /etc/legion-experiments} # a variant's config_files overlays
 
 # The daemon reports, at boot, in `legion state` and to the controller on every tick, each worker
-# capability the deployment's own configuration closes or leaves open (LEGION-578): the secrets
+# capability the deployment's own configuration closes or leaves open: the secrets
 # broker (runtime.kubernetes.agent_secrets), model fallback (retry.modelFallback in the operator's
 # overlay, read by the image probe) and every pod's reservation (resources above, which the
 # daemon's defaults fill for every pod, so that row is present on every Kubernetes deployment). A
@@ -566,4 +594,4 @@ runtime:
 # that one.
 capabilities:
   decided:
-    secrets: "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod reads a secret"
+    secrets: "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod asks the broker for a secret"

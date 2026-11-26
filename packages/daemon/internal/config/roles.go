@@ -1,7 +1,6 @@
 package config
 
 import (
-	"context"
 	"fmt"
 	"maps"
 	"os"
@@ -106,7 +105,9 @@ func readRoles(value *yaml.Node, key string) ([]Role, error) {
 }
 
 // readRole is one role's block: its `type` and its `prompt_file`, which it must name, and its
-// optional `model` and `github_app`.
+// optional `model` and `github_app`. A role of the type review acts as the review App: the
+// account that reviews a change is never the one that wrote it, a review step's fail counts a
+// review round, and GitHub refuses an approval from a pull request's author.
 func readRole(value *yaml.Node, field string) (Role, error) {
 	if value.Kind != yaml.MappingNode {
 		return Role{}, fmt.Errorf("%s must be a mapping", field)
@@ -131,6 +132,9 @@ func readRole(value *yaml.Node, field string) (Role, error) {
 	switch {
 	case err != nil:
 		return Role{}, err
+	case app == RoleAppImplement && role.Type == plan.TypeReview:
+		return Role{}, fmt.Errorf("%s.github_app is %s, and a role of the type %s acts as the %s App: the account that reviews a change is never the one that wrote it",
+			field, RoleAppImplement, plan.TypeReview, RoleAppReview)
 	case app == RoleAppImplement || app == RoleAppReview:
 		role.GitHubApp = app
 	case app != "":
@@ -196,7 +200,7 @@ func CheckRolePrompts(roles []Role) error {
 }
 
 // issueRoles are the roles of an issue the deployment runs: Legion's six (claim.Roles), in the
-// order the workflow reaches them, then each role of `roles`, in the file's order.
+// order of the default steps, then each role of `roles`, in the file's order.
 func (c Config) issueRoles() []claim.Role {
 	return c.withRoles(claim.Roles)
 }
@@ -248,10 +252,10 @@ func checkDeploymentRoleKeys(cfg Config) error {
 }
 
 // checkDefaultSteps holds each project's `default_steps` to the checks a plan of the one task
-// `default` with those steps passes (plan.Supported, then plan.Validate against the deployment's
-// roles, Legion's and those of `roles`), so the steps a task with none runs are steps this release
-// carries out. The projects are judged in the order of their keys, and a refusal names the key,
-// then gives every reason of both checks.
+// `default` with those steps passes (plan.Refusals: plan.Supported, then plan.Validate against the
+// deployment's roles, Legion's and those of `roles`), so the steps a task with none runs are steps
+// this release carries out. The projects are judged in the order of their keys, and a refusal names
+// the key, then gives every reason of both checks.
 func checkDefaultSteps(cfg Config) error {
 	deployment := cfg.Deployment()
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
@@ -260,13 +264,7 @@ func checkDefaultSteps(cfg Config) error {
 			continue
 		}
 		task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
-		// The loader serves no request whose end could stop the check, and a plan of one task with
-		// no need has no cycle to look for, so the check runs to its end.
-		invalid, err := plan.Validate(context.Background(), task, deployment)
-		if err != nil {
-			return fmt.Errorf("projects.%s.default_steps: %w", key, err)
-		}
-		refusals := append(plan.Supported(task, deployment), invalid...)
+		refusals := plan.Refusals(task, deployment)
 		if len(refusals) == 0 {
 			continue
 		}

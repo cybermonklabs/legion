@@ -9,6 +9,10 @@
       "types": "./src/bun-child-environment.ts",
       "bun": "./src/bun-child-environment.ts"
     },
+    "./deadline": {
+      "types": "./src/deadline.ts",
+      "bun": "./src/deadline.ts"
+    },
     "./environment": {
       "types": "./src/environment.ts",
       "bun": "./src/environment.ts"
@@ -20,6 +24,10 @@
     "./fixture-secret": {
       "types": "./src/fixture-secret.ts",
       "bun": "./src/fixture-secret.ts"
+    },
+    "./hang-guard": {
+      "types": "./src/hang-guard.ts",
+      "bun": "./src/hang-guard.ts"
     },
     "./held-process": {
       "types": "./src/held-process.ts",
@@ -33,6 +41,18 @@
       "types": "./src/loopback-host.ts",
       "bun": "./src/loopback-host.ts"
     },
+    "./process-bounds": {
+      "types": "./src/process-bounds.ts",
+      "bun": "./src/process-bounds.ts"
+    },
+    "./process-end": {
+      "types": "./src/process-end.ts",
+      "bun": "./src/process-end.ts"
+    },
+    "./row-deadline": {
+      "types": "./src/row-deadline.ts",
+      "bun": "./src/row-deadline.ts"
+    },
     "./standin-body": {
       "types": "./src/standin-body.ts",
       "bun": "./src/standin-body.ts"
@@ -45,6 +65,14 @@
       "types": "./src/temporary-tmpdir.ts",
       "bun": "./src/temporary-tmpdir.ts"
     },
+    "./timer-record": {
+      "types": "./src/timer-record.ts",
+      "bun": "./src/timer-record.ts"
+    },
+    "./timer-record-preload": {
+      "types": "./src/timer-record-preload.ts",
+      "bun": "./src/timer-record-preload.ts"
+    },
     "./transcript-lines": {
       "types": "./src/transcript-lines.ts",
       "bun": "./src/transcript-lines.ts"
@@ -52,11 +80,18 @@
     "./version-control-environment": {
       "types": "./src/version-control-environment.ts",
       "bun": "./src/version-control-environment.ts"
+    },
+    "./wait": {
+      "types": "./src/wait.ts",
+      "bun": "./src/wait.ts"
     }
   },
+  "//": [
+    "test: --timeout 30000 is at least twice the slowest row of this package, read in a build-cluster pod (7 CPUs, gVisor) on 2026-11-23: row-deadline.test.ts's rows whose child spends a 4500 ms span and then waits out its 7000 ms deadline (a file's afterEach that follows a row, a describe's beforeAll that follows a row, a later file's beforeAll) took 11,511.81 to 11,512.89 ms in three runs of this command; 30000 holds that 2.61 times. Most of each such row is its child's own wait to that deadline, a span and a deadline the row sets; with each child stalled 1500 ms before each span, the whole file still passed, in 84 s."
+  ],
   "scripts": {
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --timeout 30000 --preload @legion/test-fixtures/row-deadline",
     "lint": "bunx biome check src/"
   },
   "devDependencies": {

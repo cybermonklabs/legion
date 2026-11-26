@@ -114,6 +114,7 @@ func refusedBeforeOwnerSteps(t *testing.T, row record.OutboxRow) string {
 // And the same block with its project predicate taken off deletes OTHER's rows of the new kinds too:
 // that predicate, and nothing else, is what keeps them.
 func TestTheOwnerStepsWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCannotRead(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	queuedAt := time.Date(2026, 11, 17, 3, 0, 0, 0, time.UTC)
 	rowsOf := func(project string) []struct {
@@ -131,7 +132,7 @@ func TestTheOwnerStepsWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCannotRea
 			{name: "the notice of an owner's stop", newKind: true, payload: record.Notice{Kind: "task-stopped", Role: claim.RoleTester, Phase: phase.Testing,
 				StoppedBy: stopper, Reason: "task a of " + key + " was stopped by its owner"}},
 			{name: "the notice of a stop no step could return from", newKind: true, payload: record.Notice{Kind: "task-stopped", Role: claim.RoleTester,
-				Phase: phase.Testing, Reason: "task a of " + key + " was stopped: step 1 (tester) failed"}},
+				Phase: phase.Testing, Reason: "task a of " + key + " was stopped: step 2 (tester) failed and no earlier step of the type implementation can take the work"}},
 			{name: "the notice of a retro held for the issues beneath", newKind: true, payload: record.Notice{Kind: "retro-held",
 				Role: claim.RoleImplementer, Phase: phase.Retro, Reason: key + " passed its last step"}},
 			{name: "the notice of a plan not taken", newKind: true, payload: record.Notice{Kind: "plan-not-taken", Role: claim.RoleArchitect,
@@ -231,6 +232,7 @@ func TestTheOwnerStepsWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCannotRea
 // An escalated hold keeps its reason, and another project's hold of either reason stands. The
 // control: the update with its project predicate taken off clears the other project's too.
 func TestTheOwnerStepsWayBackClearsItsProjectsTwoNewHoldReasons(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const issuePredicate = " and split_part(key, '-', 1) = '<PROJECT>'"
 	scoped := ownerStepsWayBack(t)

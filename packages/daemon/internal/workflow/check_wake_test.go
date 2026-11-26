@@ -49,6 +49,7 @@ func onlyWake(t *testing.T, pool *pgxpool.Pool, issue string) outboxRow {
 // (issue_suspend). When the row's fact arrives the next look starts, woken by what the report
 // said. A wake three hours out and one an hour out each start their look at their own time.
 func TestAPendingsNamedWakeStartsTheNextLookAtThatTimeAndNoEarlier(t *testing.T) {
+	t.Parallel()
 	for _, ahead := range []time.Duration{3 * time.Hour, time.Hour} {
 		t.Run(ahead.String(), func(t *testing.T) {
 			rig := childCheckRig(t)
@@ -102,6 +103,7 @@ func TestAPendingsNamedWakeStartsTheNextLookAtThatTimeAndNoEarlier(t *testing.T)
 // the bound row already stands and starts the check's last look, and a wake row beside it would
 // start an ordinary look after the last one.
 func TestAWakeAtOrPastTheBoundNamesNoRowAndTheBoundStartsTheLastLook(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		at   time.Time
@@ -136,6 +138,7 @@ func TestAWakeAtOrPastTheBoundNamesNoRowAndTheBoundStartsTheLastLook(t *testing.
 // so a report naming its own moment, or one already past, starts its next look a minute after the
 // report and no sooner.
 func TestAWakeUnderAMinuteOutStartsTheNextLookAMinuteAfterTheReport(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		at   time.Time
@@ -171,6 +174,7 @@ func TestAWakeUnderAMinuteOutStartsTheNextLookAMinuteAfterTheReport(t *testing.T
 // as its reason, and that row starts it. Nothing else would: no boot and no deploy event reads
 // production.
 func TestAnUnreportedLookNamesTheNextLookALookBoundOutAndItStarts(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		end  intake.Fact
@@ -215,6 +219,7 @@ func TestAnUnreportedLookNamesTheNextLookALookBoundOutAndItStarts(t *testing.T) 
 // The same three ends on the check's last look close the check as not run, as a pending of that
 // look does: no look follows the bound's, so no wake is named and no row is left behind.
 func TestAnUnreportedLastLookClosesTheCheckAsNotRun(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		end  intake.Fact
@@ -255,6 +260,7 @@ func TestAnUnreportedLastLookClosesTheCheckAsNotRun(t *testing.T) {
 // look and is queued again a look bound later rather than dropped, so a check whose issue
 // re-entered the workflow and closed again on the same merge still holds its agent's wake.
 func TestAPendingOnAnIssueBackInTheWorkflowNamesItsWakeAndSuspendsNobody(t *testing.T) {
+	t.Parallel()
 	rig := rootCheckRig(t)
 	if _, err := rig.pool.Exec(context.Background(), "update issues set phase = 'admitted', status = 'todo', linger_until = null, generation = generation + 1 where key = 'LEGION-208'"); err != nil {
 		t.Fatal(err)
@@ -303,6 +309,7 @@ func TestAPendingOnAnIssueBackInTheWorkflowNamesItsWakeAndSuspendsNobody(t *test
 // the check has left, and a row whose look is already open. Without these the queue a running
 // issue's wake takes would make an orphan row immortal.
 func TestAWakeRowWithNoLookToStartStartsNoneAndIsNotQueuedAgain(t *testing.T) {
+	t.Parallel()
 	t.Run("a closed check", func(t *testing.T) {
 		rig := childCheckRig(t)
 		rig.apply("pass", intake.CheckReport{Issue: "LEGION-209", Look: 1, Verdict: "pass", Summary: "driven in production"})

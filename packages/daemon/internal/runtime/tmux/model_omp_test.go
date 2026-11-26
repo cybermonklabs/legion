@@ -2,7 +2,6 @@ package tmux
 
 import (
 	"bytes"
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,16 +10,16 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// A pane that resumes the session its claim recorded runs the model the operator's settings put
-// on the `default` role, not the one that session saved: the pane's command carries `--model
-// @default`, and @default is Oh My Pi's own name for that role. Measured on the pinned binary: a
+// A pane of a role that names no model, resuming the session its claim recorded, runs the model
+// the operator's settings put on the `default` role, not the one that session saved: the pane's
+// command carries `--model @default`, and @default is Oh My Pi's own name for that role. Measured on the pinned binary: a
 // session saved on one model, the profile's `modelRoles.default` moved to another, and the pane's
 // own command answering with the profile's current model. The same command with the flag taken
 // out is the control, and reports the saved model instead.
@@ -58,9 +57,7 @@ func TestTheResumedPaneRunsTheConfiguredModel(t *testing.T) {
 	environ := testbin.OMPEnviron(home)
 	run := func(command, stdin string) (stdout, stderr string, exitErr error) {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, shell, "-c", command)
+		cmd := exec.CommandContext(testwait.Context(t), shell, "-c", command)
 		cmd.Dir, cmd.Env, cmd.Stdin = work, environ, strings.NewReader(stdin)
 		var out, errOut bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &errOut

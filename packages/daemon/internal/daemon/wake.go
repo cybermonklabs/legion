@@ -451,12 +451,8 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 	if r.backstop <= 0 {
 		return nil
 	}
-	open := workflow.OpenStepsOf(issue)
-	if len(open) == 0 {
-		return nil
-	}
-	rows, err := r.phaseRows(ctx, issue.Key)
-	if err != nil {
+	workers, err := workflow.OpenWorkers(r.project, issue)
+	if err != nil || len(workers) == 0 {
 		return err
 	}
 	released, err := r.trees.ReleasedClaimsIn(ctx, r.project, issue.Key)
@@ -464,11 +460,7 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 		return err
 	}
 	armed := map[claim.Token]bool{}
-	for _, step := range open {
-		worker, err := record.WorkerClaim(r.project, issue.Key, step.Role, rows)
-		if err != nil {
-			return fmt.Errorf("the %s of %s: %w", step.Role, issue.Key, err)
-		}
+	for _, worker := range workers {
 		for _, c := range released {
 			if armed[worker] || c.Token != worker || c.ServingGeneration != issue.Generation {
 				continue
@@ -476,9 +468,9 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 			armed[worker] = true
 			due := r.now().UTC().Add(r.backstop)
 			r.log.Info("wake: the release of an issue's pod arms its open phase's backstop",
-				"issue", issue.Key, "role", step.Role, "claim", worker, "due", due.Format(time.RFC3339))
+				"issue", issue.Key, "role", c.Role, "claim", worker, "due", due.Format(time.RFC3339))
 			if err := r.trees.ArmPodBackstop(ctx, store.PodWakeBackstop{Project: r.project, Issue: issue.Key,
-				Claim: worker, Role: step.Role, DueAt: due}); err != nil {
+				Claim: worker, Role: c.Role, DueAt: due}); err != nil {
 				return err
 			}
 		}
@@ -510,16 +502,23 @@ func (r *outbox) takeOverRelease(ctx context.Context, issue string, token claim.
 	}
 }
 
-// dropReleasedWork takes a released pod's issue over and deletes the workspace bundle its release
-// saved: the issue is done, or its tree is closing, so nothing will restore that bundle and
-// nothing should. A linger and a park keep theirs, because their issue comes back. A runner with
-// no tree store does nothing, as takeOverRelease says.
-func (r *outbox) dropReleasedWork(ctx context.Context, issue string) {
+// forgetIdleRelease takes a released pod's issue over and forgets the decline of an idle release
+// of it (store.ForgetIdleDecline): the issue is done, or its tree is closing, so no idle release of
+// its pod is coming. It deletes the record of the disks of the issue's pods too
+// (store.DeleteIssuePodDisks), which the issue's update rounds read (workOnRoundPod): no round of
+// the issue's pods is left to name a role by it. Both records expire together, at the end of the
+// issue's work, which is the one event of every caller, so a change to the idle release here must
+// keep the delete of the disks' record. A linger and a park keep both, because their issue comes
+// back. A runner with no tree store does nothing, as takeOverRelease says.
+func (r *outbox) forgetIdleRelease(ctx context.Context, issue string) {
 	r.takeOverRelease(ctx, issue, "", "")
 	if r.trees == nil {
 		return
 	}
-	if err := r.trees.DeleteWorkspaceBundle(ctx, issue); err != nil {
-		r.log.Warn("wake: could not delete the workspace bundle of a finished issue", "issue", issue, "error", err)
+	if err := r.trees.ForgetIdleDecline(ctx, r.project, issue); err != nil {
+		r.log.Warn("wake: could not forget the declined idle release of a finished issue", "issue", issue, "error", err)
+	}
+	if err := r.trees.DeleteIssuePodDisks(ctx, issue); err != nil {
+		r.log.Warn("wake: could not delete the record of the disks of the pods of a finished issue", "issue", issue, "error", err)
 	}
 }

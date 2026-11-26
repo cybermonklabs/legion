@@ -28,6 +28,10 @@ const workerShimUsage = "legion worker-shim --connect <unix:///path|tcp://host:p
 // loaded machine makes slow to act on its SIGTERM is not killed at 5 s.
 var workerShimGrace = shim.DefaultGrace
 
+func init() {
+	programbound.Register(&workerShimGrace)
+}
+
 // newWorkerShimCommand is `legion worker-shim`, the command a runtime puts in front of every phase
 // worker's OMP: it dials the daemon's worker stream, and bridges OMP to it once acked. Its lines
 // go to stdout, which is what the pane shows, through the URL rule (redact.Writer), and so do its

@@ -51,6 +51,30 @@ func TestWorkerClaimRefusesARoleThatIsNoRole(t *testing.T) {
 	}
 }
 
+// Under the task key a phases row is one agent's (PhaseRow.Key), so a later entry of a step for
+// another agent writes a row of its own beside the earlier agent's, and both name the step. The
+// step is one, worked by the row of its latest entry: the claim of the role's worker is that row's
+// claim. Two steps of the role worked by two agents at once, the steps of two tasks, name no one
+// worker, and the read is refused so the caller names the claim it means.
+func TestWorkerClaimReadsEachStepAtItsLatestEntry(t *testing.T) {
+	const keyed claim.Token = "legion-legion-infra-12-implementer"
+	const later claim.Token = "legion-legion-infra-12-reviewer"
+	moved := []PhaseRow{
+		{Role: claim.RoleTester, StepTask: "a", StepPlace: 2, Entry: 2, Claim: keyed},
+		{Role: claim.RoleTester, StepTask: "a", StepPlace: 2, Entry: 3, Claim: later},
+	}
+	if got, err := WorkerClaim("legion", "INFRA-12", claim.RoleTester, moved); err != nil || got != later {
+		t.Fatalf("WorkerClaim of a step a later entry moved to %s = %q, %v; want %s, the claim of its latest entry", later, got, err, later)
+	}
+	twoSteps := []PhaseRow{
+		{Role: claim.RoleTester, StepTask: "a", StepPlace: 2, Entry: 2, Claim: keyed},
+		{Role: claim.RoleTester, StepTask: "b", StepPlace: 2, Entry: 2, Claim: later},
+	}
+	if got, err := WorkerClaim("legion", "INFRA-12", claim.RoleTester, twoSteps); err == nil {
+		t.Fatalf("WorkerClaim of two tasks' tester steps worked by two agents = %q, want the refusal that names no one worker", got)
+	}
+}
+
 // A row whose producer holds the claim it is for carries it, and a row the release before wrote
 // carries none: each of the three payloads decodes both, the claim it names kept and none read as
 // "" so the runner reads the worker's claim from the record.
@@ -77,8 +101,8 @@ func TestAPayloadNamesTheClaimItsProducerHolds(t *testing.T) {
 			kind:      OutboxKindIssueBundle,
 			named:     `{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"tester","claim":"` + string(keyed) + `"}`,
 			unnamed:   `{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"tester"}`,
-			claimOf:   func(p OutboxPayload) claim.Token { return p.(IssueBundle).Claim },
-			roundTrip: IssueBundle{Tree: "LEGION-208", Generation: 1, TreeGeneration: 1, Role: claim.RoleTester, Claim: keyed},
+			claimOf:   func(p OutboxPayload) claim.Token { return p.(IssueWorkspaceCheck).Claim },
+			roundTrip: IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 1, TreeGeneration: 1, Role: claim.RoleTester, Claim: keyed},
 		},
 		{
 			name:      "an update round's ask",
@@ -124,7 +148,7 @@ func TestAPayloadNamesTheClaimItsProducerHolds(t *testing.T) {
 func TestAPayloadRefusesAClaimThatIsNoClaimToken(t *testing.T) {
 	for _, payload := range []OutboxPayload{
 		SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 1, Claim: "tester"},
-		IssueBundle{Tree: "LEGION-208", Generation: 1, TreeGeneration: 1, Role: claim.RoleTester, Claim: "tester"},
+		IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 1, TreeGeneration: 1, Role: claim.RoleTester, Claim: "tester"},
 		UpdateAsk{Role: claim.RoleTester, Round: "r1", Text: "Push.", Claim: "tester"},
 		HookPrompt{Hook: "back", Role: claim.RoleTester, Claim: "tester", From: phase.Testing, To: phase.Implementing, Count: 1, Prompt: "Read it."},
 		MergeForwardMessage{Role: claim.RoleImplementer, Claim: "tester", Step: MergeForwardAsk, Head: "c0de", Base: "main",

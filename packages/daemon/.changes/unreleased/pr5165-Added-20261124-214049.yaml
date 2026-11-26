@@ -1,0 +1,5 @@
+kind: Added
+body: "Independent tasks of a plan can run at the same time. Each task keeps its own branch, working copy, pull request and running step. Tasks wait for their needs to merge, and the issue merges after the final task merges. Later plan versions can add, change and remove tasks. Idle workspace checks include every task's working copy, and merge-state reads retain each task's pull request."
+time: 2026-11-24T21:40:49.141288Z
+custom:
+    Issue: pr5165

@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -35,8 +36,8 @@ type Inputs struct {
 	Tx pgx.Tx
 	// Store is what every record read goes through.
 	Store record.Store
-	// Project is the Dispatch project whose pending status writes and held lifecycle rows the
-	// state lists.
+	// Project is the Dispatch project whose pending status writes, held lifecycle rows and open
+	// intake give-ups the state lists.
 	Project string
 	// Steps are the design-gate steps the deployment gates (config.Gates.Steps). Each root's
 	// view answers the steps its tree is gated on, which these steps and the root's gate rows
@@ -71,7 +72,8 @@ type Inputs struct {
 
 // Project joins durable issue facts to current supervision claims for GET /legion/v1/state. The
 // role whose phase entry and given entry each issue's view carries is the role that works its
-// current phase (phase.RoleFor), and the two handshake times beside them are that role's claim's,
+// current phase (record.Issue.RoleAt: phase.RoleFor, or at step the role of the running step),
+// and the two handshake times beside them are that role's claim's,
 // but for a tree's own root, whose times are its architect's claim's in every phase
 // (supervise.Claim.Handshake).
 func Project(ctx context.Context, in Inputs) (api.State, error) {
@@ -80,11 +82,13 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		return api.State{}, err
 	}
 	knownIssues := make(map[string]struct{}, len(issues))
+	keys := make([]string, 0, len(issues))
 	// lingering is every tree whose root lingers, or closed after it lingered: only a root carries a
 	// linger deadline, and re-admission clears it.
 	lingering := make(map[string]bool)
 	for _, issue := range issues {
 		knownIssues[issue.Key] = struct{}{}
+		keys = append(keys, issue.Key)
 		if issue.Lingers() {
 			lingering[issue.Key] = true
 		}
@@ -136,6 +140,10 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	if err != nil {
 		return api.State{}, err
 	}
+	giveUps, err := in.Store.OpenIntakeGiveUps(ctx, in.Tx, in.Project, stateNewestGiveUps)
+	if err != nil {
+		return api.State{}, err
+	}
 	// The open production checks, by issue, each issue's oldest first as the store lists them: the
 	// checks are read once for the whole state, since a closed check shows nothing and the open ones
 	// are few. An issue whose tasks merged one after another holds a check of each merge.
@@ -147,21 +155,28 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	for _, check := range openChecks {
 		checks[check.Issue] = append(checks[check.Issue], check)
 	}
+	// Every issue's pull request, the pull request of its merge, by issue key, in two statements for
+	// the whole state rather than a read an issue (record.Store.PullRequestsOf). It loads none of
+	// what each pull request remembers of its settled heads: the state shows none of it, a read of
+	// one pull request would load up to 32 rows of it for every issue, and the state writes no
+	// record back.
+	pullRequests, err := in.Store.PullRequestsOf(ctx, in.Tx, keys)
+	if err != nil {
+		return api.State{}, err
+	}
 
 	// The wake each claim's own view names, read from the one list the state names under
 	// `wakesWaiting`, so a claim view and that list report the same wake (api.ClaimWakes).
 	claimWakes := api.ClaimWakes(in.Wakes)
-	// The entry each claim was last queued a task of, by the issue and role the claim holds
-	// (supervise.Claim.GivenEntry), and beside it the claim's handshake of the last entry it was
-	// queued a task of (supervise.Claim.Handshake): the numbers and the two times an issue's view
-	// shows beside the entry its phases row names. They are keyed by issue and role rather than by
-	// claim token because the token on the phases row can be empty, for a role no claim was ever
-	// created for, or stale, from a claim an earlier run retired, where the claim of this issue and
-	// this role is the one the admission pass weighs (admit's resumeSlottedWorkers). One claim
-	// stands per issue and role (claim.NewToken), so one entry holds both readings of it.
-	entries := make(map[issueRole]roleEntry, len(in.Claims))
+	// An issue can hold several agents of one role. Entry and handshake readings keep the
+	// agent's name, including when no phases row has yet named its claim.
+	entries := make(map[issueAgent]roleEntry, len(in.Claims))
 	for _, current := range in.Claims {
-		entries[issueRole{issue: current.Issue, role: current.Role}] = roleEntry{given: current.GivenEntry, handshake: current.Handshake}
+		_, agent, ok := current.Token.Cut()
+		if !ok {
+			agent = claim.Agent(current.Role)
+		}
+		entries[issueAgent{issue: current.Issue, agent: agent}] = roleEntry{given: current.GivenEntry, handshake: current.Handshake}
 	}
 
 	claimViews := make(map[claim.Token]api.ClaimView, len(in.Claims))
@@ -201,6 +216,8 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// their own: one list, set here, so the two readings come from one place.
 	projected := api.State{Issues: make(map[string]api.Issue, len(issues)), WakesWaiting: in.Wakes}
 	for _, issue := range issues {
+		// The issue's own Dispatch priority, null on the wire for none (api.Issue.Priority).
+		priority := api.PriorityView(issue.Priority)
 		view := api.Issue{
 			Key:           issue.Key,
 			Generation:    issue.Generation,
@@ -216,6 +233,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			// The parent chain a labelled root is held under, empty for every other record: the
 			// hold on it is the ancestry hold, and nothing else on this wire names the chain.
 			Ancestry: issue.Ancestry,
+			Priority: &priority,
 			Workers:  map[claim.Role]api.PhaseView{},
 		}
 		for _, role := range waitingForPod[issue.Key] {
@@ -284,8 +302,8 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			}
 			// The architect is the issue's architect and no worker of its `workers` map, so no
 			// phase view is built for it. Its row is read all the same: the entry below is
-			// read off `phases` by the role that works the issue's phase (phase.RoleFor), which
-			// is the architect for a root at admitted.
+			// read off `phases` by the role that works the issue's phase (record.Issue.RoleAt),
+			// which is the architect for a root at admitted.
 			if item.Role == claim.RoleArchitect {
 				view.Architect = &claimView
 				continue
@@ -326,11 +344,21 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		// transition has ever handed work on, which is the number admit's owedEntryRoles weighs
 		// the same role's claim against, so the state shows what the admission pass weighs.
 		role := phase.RoleFor(issue.Phase)
+		agent := claim.Agent(role)
+		key := record.PhaseKey{Issue: issue.Key, Role: role, Agent: agent}
 		if at := issue.RunningAt(issue.Phase); len(at) > 0 {
 			role = at[0].Role
+			agent = at[0].Agent
+			if agent == "" {
+				agent = claim.Agent(role)
+			}
+			key.Role, key.Agent = role, agent
+			if len(tasksOf[issue.Key]) > 0 && role != claim.RoleArchitect {
+				key.Task = at[0].Task
+			}
 		}
 		if role != "" {
-			view.PhaseEntry, view.GivenEntry = record.PhaseRowOf(phases, role).Entry, entries[issueRole{issue: issue.Key, role: role}].given
+			view.PhaseEntry, view.GivenEntry = record.PhaseRowAt(phases, key).Entry, entries[issueAgent{issue: issue.Key, agent: agent}].given
 		}
 		// Beside them the two times of a handshake: when a task of an entry was first queued to a
 		// claim and when a turn of its worker first confirmed one (api.Issue.EntryQueuedAt and
@@ -342,23 +370,23 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		// phase, and none in a phase no role works. Either is shown for the issue's current
 		// generation alone (handshakeTimes), so a re-admitted root carries neither until its new
 		// architect entry is queued.
-		handshakeRole := role
+		handshakeRole, handshakeAgent := role, agent
 		if claim.IsTreeRoot(issue.Key, issue.Tree) {
-			handshakeRole = claim.RoleArchitect
+			handshakeRole, handshakeAgent = claim.RoleArchitect, claim.Agent(claim.RoleArchitect)
 		}
 		if handshakeRole != "" {
 			view.EntryQueuedAt, view.EntryConfirmedAt =
-				handshakeTimes(entries[issueRole{issue: issue.Key, role: handshakeRole}].handshake, issue.Generation)
+				handshakeTimes(entries[issueAgent{issue: issue.Key, agent: handshakeAgent}].handshake, issue.Generation)
 		}
 
 		// The issue's own pull request is its merge's: the row of its first task with a merge still
-		// to come, else of its last merge (record.Store.MergePullRequest), and so is what its review
-		// round waits on from GitHub. Each task's own pull request is served on that task
-		// (taskViews), so the review round of a task that does not merge keeps its served pull
-		// request there.
-		pr, err := in.Store.MergePullRequest(ctx, in.Tx, issue.Key)
-		if err != nil {
-			return api.State{}, err
+		// to come, else of its last merge, as record.Store.PullRequestsOf read it above by
+		// MergePullRequest's rule, and so is what its review round waits on from GitHub. Each
+		// task's own pull request is served on that task (taskViews), so the review round of a task
+		// that does not merge keeps its served pull request there.
+		var pr *record.PullRequest
+		if recorded, found := pullRequests[issue.Key]; found {
+			pr = &recorded
 		}
 		merges := reviewerOf(reviewer, pr)
 		view.PullRequest = pullRequestView(pr, merges)
@@ -485,28 +513,37 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// issues of this project among the issues the loop above gave a view to, each of them.
 	//
 	// Beside the place, each member carries the line's own fields for a program to read
-	// (api.WaitingLineView): the part it waits in and why, its place within that part and the
-	// part's length, whether it holds a slot, and what placed it — all of them read from the
-	// entry the line holds beside the issue (record.LineEntry), which the loop below walks, so
-	// that the fields a member carries and the key listed beside them come from one entry. The
-	// two parts are counted once over the whole line before the loop, because this pass holds
-	// every entry of it: a member's `partLength` is the count of the entries carrying its part
-	// and nothing else, and the other part's count is what the sentence below names.
-	parts := make(map[record.LinePart]int, 2)
+	// (api.WaitingLineView): the priority that placed it, the part it waits in within that
+	// priority's band and why, its place within that band and part and the length of that band's
+	// part, whether it holds a slot, and what placed it — all of them read from the entry the
+	// line holds beside the issue (record.LineEntry), which the loop below walks, so that the
+	// fields a member carries and the key listed beside them come from one entry. The parts are
+	// counted once over the whole line before the loop, per band, because this pass holds every
+	// entry of it: a member's `partLength` is the count of the entries carrying its priority and
+	// its part and nothing else, and the count of the other part of its band is what the sentence
+	// below names.
+	type bandPart struct {
+		priority record.Priority
+		part     record.LinePart
+	}
+	parts := make(map[bandPart]int)
 	for _, entry := range line {
-		parts[entry.Part]++
+		parts[bandPart{entry.Priority, entry.Part}]++
 	}
 	for i, entry := range line {
 		key := entry.Issue.Key
 		projected.Admission.Waiting[i] = key
 		holds := entry.Holds
+		placed := api.PriorityView(entry.Priority)
+		standsIn := bandPart{entry.Priority, entry.Part}
 		view := projected.Issues[key]
 		view.WaitingLine = &api.WaitingLineView{
 			Place: i + 1, Length: len(line),
 			Part: entry.Part.String(), Kind: entry.Kind.String(),
-			PartPlace: entry.PartPlace, PartLength: parts[entry.Part],
+			PartPlace: entry.PartPlace, PartLength: parts[standsIn],
 			HoldsSlot: &holds,
 			RootRank:  entry.RootRank,
+			Priority:  &placed,
 		}
 		// The two ranks and the root's key are what placed a member of the starting part, and
 		// that part alone carries them: a member of the returned part was placed by the moment
@@ -525,14 +562,14 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			view.WaitingLine.Since = &since
 		}
 		// The sentence a person reads (waitingLineReason), rendered from the entry itself, the
-		// length of the part it stands in and the length of the part it does not, which is what
-		// a member of the starting part waits behind. The render reads those and nothing else,
-		// so the words have one source and a test of them needs no database.
-		other := parts[record.PartReturned]
+		// length of the part of its band it stands in and the length of that band's other part,
+		// which is what a member of the starting part waits behind. The render reads those and
+		// nothing else, so the words have one source and a test of them needs no database.
+		other := bandPart{entry.Priority, record.PartReturned}
 		if entry.Part == record.PartReturned {
-			other = parts[record.PartStarting]
+			other.part = record.PartStarting
 		}
-		view.WaitingLine.Reason = waitingLineReason(entry, parts[entry.Part], other)
+		view.WaitingLine.Reason = waitingLineReason(entry, parts[standsIn], parts[other])
 		projected.Issues[key] = view
 	}
 	projected.Admission.Blocked = blockers.Blocked(rows, own, line, record.ChildWaitRows(facts.ChildWaits))
@@ -551,13 +588,13 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// It reads the held list above for the sentence of most issues it answers, and it is not
 	// that list: the list says where every issue the daemon holds in the workflow stands and why
 	// nothing of it runs, and this answers why an issue is not working now. The two part at an
-	// issue whose work runs past its review, which the list names and this answers for not at
+	// issue whose work runs in accepting, retro or merging, which the list names and this answers for not at
 	// all; where they part and why is written once, with the arm that parts them
-	// (atWorkPastReview).
+	// (atWorkInSlotlessPhase).
 	//
-	// The running roots are the term that says an issue past its review is at work: it holds no
+	// The running roots are the term that says an issue in accepting, retro or merging is at work: it holds no
 	// slot since dispatch://INFRA-2560, so no list of the three places it and the answer turns
-	// on whether its tree runs at all (whyStates, atWorkPastReview). They are read from the
+	// on whether its tree runs at all (whyStates, atWorkInSlotlessPhase). They are read from the
 	// records and the facts this pass already holds, so the reading costs no query, and they
 	// are the same roots record.LiveRoots is read from above — live is wider than running,
 	// and a parked root's tree is neither.
@@ -565,11 +602,12 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// Every issue of a live tree carries that tree's quiet time (contract 111): `treeMovedAt`,
 	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long
 	// it has been still at the instant the rest of this state is measured at. The pair is the
-	// tree's, so every issue of one tree carries the same two values — a child past its own
-	// review, which holds no slot, and a done child recorded under the tree among them, since
-	// what has stopped is the tree and not the issue a reader happens to hold. A tree that is no
-	// longer live is measured for nobody: its root is in no `admission.trees` entry, there is
-	// nothing of the deployment's left to wait on, and each of its issues carries neither key.
+	// tree's, so every issue of one tree carries the same two values — a child in accepting,
+	// retro or merging, which holds no slot, and a done child recorded under the tree among
+	// them, since what has stopped is the tree and not the issue a reader happens to hold. A
+	// tree that is no longer live is measured for nobody: its root is in no `admission.trees`
+	// entry, there is nothing of the deployment's left to wait on, and each of its issues carries
+	// neither key.
 	//
 	// The measure is read once for the whole state (quietTrees), from the records and the claims
 	// this pass already holds, and a live root is always one of its trees whatever its own
@@ -608,7 +646,60 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			WaitsOn:       row.WaitsOn,
 		}
 	}
+	projected.IntakeGiveUps = intakeGiveUpsView(giveUps)
 	return projected, nil
+}
+
+// stateNewestGiveUps is how many open give-ups the state lists (api.IntakeGiveUpsView.Newest).
+// The state is read by every agent's read_state and by `legion state`, and a burst of give-ups
+// runs to thousands (2,293 terminated in a day on one daemon, 2026-11-18): fifty records of a few
+// hundred bytes each keep the key to tens of kilobytes of a body that measured 4 MB, and the
+// per-consumer counts and newest sequences say the rest, which a bulk replay or discard takes by
+// consumer and sequence without the list naming each record.
+const stateNewestGiveUps = 50
+
+// stateGiveUpErrorRunes is how much of each listed give-up's last error the state carries, cut on
+// a rune boundary: enough for the error's first sentence and its cause, which tell one failure
+// from another. The record keeps the error up to storetext.FarSideErrorRunes and the give-up's log
+// line the whole of it, so the state, which reaches every agent's context, carries no more than a
+// reader needs to choose between a replay and a discard.
+const stateGiveUpErrorRunes = 300
+
+// intakeGiveUpsView is open as the state shows it: each consumer's count and newest sequence, and
+// each listed record with its subject as the store keeps text (storetext.Text), since the record
+// keeps the publisher's bytes and the state is JSON text a reader takes in, its error cut to
+// stateGiveUpErrorRunes, and a null event id for a message that did not decode.
+func intakeGiveUpsView(open record.IntakeGiveUps) api.IntakeGiveUpsView {
+	view := api.IntakeGiveUpsView{
+		Consumers: make([]api.IntakeGiveUpCountView, len(open.Consumers)),
+		Newest:    make([]api.IntakeGiveUpView, len(open.Newest)),
+	}
+	for i, count := range open.Consumers {
+		view.Consumers[i] = api.IntakeGiveUpCountView{Name: count.Consumer, Open: count.Open, NewestSeq: count.NewestSeq}
+	}
+	for i, failure := range open.Newest {
+		listed := api.IntakeGiveUpView{
+			ID: failure.ID, Consumer: failure.Consumer, Subject: storetext.Text(failure.Subject), StreamSeq: failure.StreamSeq,
+			StoredAt: failure.StoredAt, Deliveries: failure.Deliveries, GaveUpAt: failure.GivenUpAt,
+			Reason: failure.GiveUpReason, LastError: firstRunes(failure.LastError, stateGiveUpErrorRunes),
+		}
+		if failure.EventID != "" {
+			listed.EventID = &failure.EventID
+		}
+		view.Newest[i] = listed
+	}
+	return view
+}
+
+// firstRunes is text's first n runes, cut on a rune boundary, or text whole when it is shorter.
+func firstRunes(text string, n int) string {
+	for offset := range text {
+		if n == 0 {
+			return text[:offset]
+		}
+		n--
+	}
+	return text
 }
 
 // assignmentViews is every experiment answer that applies to the issue key, whose tree's root is
@@ -642,7 +733,7 @@ func assignmentViews(assignments map[string][]record.Assignment, key, tree strin
 	}
 	views := make([]api.AssignmentView, len(rows))
 	for i, row := range rows {
-		views[i] = api.AssignmentView{Experiment: row.Experiment, Variant: row.Variant, Mode: row.Mode, DrawnAt: row.DrawnAt}
+		views[i] = api.AssignmentView{Experiment: row.Experiment, Variant: row.Variant, Mode: row.Mode, DrawnAt: row.DrawnAt, Plan: row.Plan}
 	}
 	slices.SortStableFunc(views, func(a, b api.AssignmentView) int {
 		return cmp.Or(cmp.Compare(place(a.Experiment), place(b.Experiment)), cmp.Compare(a.Experiment, b.Experiment))
@@ -734,11 +825,10 @@ func quietTrees(own []record.Issue, claims []supervise.Claim, now time.Time) map
 	return record.QuietTrees(own, record.TreeClaimsOf(claims), now)
 }
 
-// issueRole is one issue and one of its roles, the pair a claim is held under (supervise.Claim's
-// Issue and Role): the key of the lookup that answers what each role was last given.
-type issueRole struct {
+// issueAgent keeps distinct workers of one role distinct in the entry lookup.
+type issueAgent struct {
 	issue string
-	role  claim.Role
+	agent claim.Agent
 }
 
 // roleEntry is what the claim of one issue and role says of its entry: the entry it was last
@@ -882,15 +972,16 @@ func countedTask(tasks []record.PlanTask, running string) (record.PlanTask, bool
 
 // taskViews is tasks, the tasks of issue's plan in task id order, as the state serves them
 // (api.TaskView), from two reads of the issue: the act each task stands at
-// (record.Store.TaskActs) and each task's own pull request (record.Store.TaskPullRequests).
-// reviewer is the issue's reviewer's row, which bears on the pull request of the task whose step
-// it runs (reviewerOf).
+// (record.Store.TaskActs) and each task's own pull request, each its row alone, with none of what
+// it remembers of its settled heads, as PullRequestsOf reads the issue's own
+// (record.Store.TaskPullRequestRows). reviewer is the issue's reviewer's row, which bears on the
+// pull request of the task whose step it runs (reviewerOf).
 func taskViews(ctx context.Context, in Inputs, issue record.Issue, tasks []record.PlanTask, reviewer record.PhaseRow) ([]api.TaskView, error) {
 	acts, err := in.Store.TaskActs(ctx, in.Tx, issue)
 	if err != nil {
 		return nil, err
 	}
-	prs, err := in.Store.TaskPullRequests(ctx, in.Tx, issue.Key)
+	prs, err := in.Store.TaskPullRequestRows(ctx, in.Tx, issue.Key)
 	if err != nil {
 		return nil, err
 	}

@@ -1,5 +1,12 @@
 package config
 
+// This row and two of the envoy rows below it - internal/dispatch/outbox/
+// expects_reply_never_false_test.go and internal/dispatch/api/live_events_test.go - declare a
+// read every filter gating a job that compiles them already matches. They are here so that a
+// later narrowing of one of those filters is refused by rule 1 rather than dropping the read
+// with nobody noticing (dispatch://INFRA-1413).
+//ci:reads packages/contracts/fixtures/daemon-api/* golden (the write is under -update, which CI never passes)
+
 import (
 	"bytes"
 	"encoding/json"
@@ -37,8 +44,8 @@ type stallDefaults struct {
 // to DEFAULT_STALL_LIMITS, to the per-role bounds the plugin resolves and to the watchdog's
 // DECLARED_DEADLINE_MOST_MS, so a number moved on one side alone fails a test on the other.
 func TestStallDefaultsGolden(t *testing.T) {
-	// RoleConfigRoles is every issue role and then the controller: the same set a session's
-	// LEGION_ROLE can hold, and so the set the bound has a default for.
+	// RoleConfigRoles is Legion's six issue roles and then the controller: the roles of Legion's a
+	// session's LEGION_ROLE can hold, and so the set the bound has a default for.
 	byRole := make(map[claim.Role]int64, len(RoleConfigRoles))
 	for _, role := range RoleConfigRoles {
 		byRole[role] = StallCallBoundFor(role).Milliseconds()

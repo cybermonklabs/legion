@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/envoy/steprecord"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
@@ -31,8 +32,10 @@ type Block struct {
 // every other block is skipped. Each task's needs are the ids of the tasks they name, read against
 // issue (resolveNeeds), so no plan holds a need as a word. A document with no task block is read as
 // a plan with no task, which Validate refuses. It answers an error only for a block it cannot read
-// at all: a task or a role with no id, one id on two such blocks, and a task whose `steps` is
-// outside the grammar (ParseSteps); the error names the block.
+// at all: a task or a role with no id, one id on two such blocks, a task whose id is outside
+// Dispatch's task form (steprecord.TaskIDHolds), whose steps Dispatch could never record, and a
+// task whose `steps` is outside the grammar (ParseSteps); the error names the block, its id or
+// word quoted (quoted).
 func FromBlocks(issue, artifactID string, version int, blocks []Block) (Plan, error) {
 	p := Plan{ArtifactID: artifactID, Version: version}
 	typeOf := map[string]string{}
@@ -44,12 +47,19 @@ func FromBlocks(issue, artifactID string, version int, blocks []Block) (Plan, er
 			return Plan{}, fmt.Errorf("a %s block has no id, so no step of the plan can be named", block.Type)
 		}
 		if earlier, ok := typeOf[block.ID]; ok {
-			return Plan{}, fmt.Errorf("the id %s names a %s block and a %s block, so it names no one block", block.ID, earlier, block.Type)
+			return Plan{}, fmt.Errorf("the id %s names a %s block and a %s block, so it names no one block", quoted(block.ID), earlier, block.Type)
 		}
 		typeOf[block.ID] = block.Type
 		if block.Type == RoleBlockType {
 			p.RoleBlocks = append(p.RoleBlocks, block.ID)
 			continue
+		}
+		if !steprecord.TaskIDHolds(block.ID) {
+			// The error gives no length of its own: quoted's mark gives the length of what the URL
+			// rule left of a cut id, and the length of the id as written would give away the length
+			// of a credential it holds.
+			return Plan{}, fmt.Errorf("the task %s has an id outside the form of a task id, %s, so Dispatch could record none of its steps",
+				quoted(block.ID), steprecord.TaskIDRule)
 		}
 		task, err := taskOf(block)
 		if err != nil {
@@ -88,7 +98,7 @@ func taskOf(block Block) (Task, error) {
 // `dispatch://` reference names a task of p only when it is of issue (issueOf): one into another
 // issue, and one that starts with no issue key, names no task of p, whatever its block id, and
 // stays in Task.OutsideIssue; any other word whose id is no task of p stays in Task.Unresolved.
-// Validate refuses both.
+// Each such word stays once however often the block writes it, and Validate refuses both.
 func resolveNeeds(p Plan, issue string) Plan {
 	ids := make(map[string]bool, len(p.Tasks))
 	for _, task := range p.Tasks {
@@ -96,29 +106,47 @@ func resolveNeeds(p Plan, issue string) Plan {
 	}
 	tasks := make([]Task, len(p.Tasks))
 	for i, task := range p.Tasks {
-		words := task.Needs
-		task.Needs, task.Unresolved, task.OutsideIssue = nil, nil, nil
-		for _, word := range words {
-			if of, reference := issueOf(word); reference && of != issue {
-				if !slices.Contains(task.OutsideIssue, word) {
-					task.OutsideIssue = append(task.OutsideIssue, word)
-				}
-				continue
-			}
-			id := neededID(word)
-			switch {
-			case !ids[id]:
-				if !slices.Contains(task.Unresolved, word) {
-					task.Unresolved = append(task.Unresolved, word)
-				}
-			case !slices.Contains(task.Needs, id):
-				task.Needs = append(task.Needs, id)
-			}
-		}
+		task.Needs, task.Unresolved, task.OutsideIssue = resolved(task.Needs, ids, issue)
 		tasks[i] = task
 	}
 	p.Tasks = tasks
 	return p
+}
+
+// resolved is one task's `needs` words as the ids of the tasks of ids they name, the words that
+// name none, and the `dispatch://` references not of issue (issueOf), each kept once in the
+// block's order. Each word is looked up in a set of what is kept already, so the read takes time
+// linear in the words, where a scan of the kept list for each word would be quadratic in the words
+// of one block, and one `needs` attribute within Dispatch's document limit holds hundreds of
+// thousands of words. TestEachNeedOfAPlanIsReadInLinearTime holds the read to its thread's CPU
+// time, since no count kept here would see a scan. A word is a reference not of issue or it is
+// not, so one set holds the words kept in either list.
+func resolved(words []string, ids map[string]bool, issue string) (needs, unresolved, outside []string) {
+	if len(words) == 0 {
+		return nil, nil, nil
+	}
+	needed, left := map[string]bool{}, map[string]bool{}
+	for _, word := range words {
+		if of, reference := issueOf(word); reference && of != issue {
+			if !left[word] {
+				left[word] = true
+				outside = append(outside, word)
+			}
+			continue
+		}
+		id := neededID(word)
+		switch {
+		case !ids[id]:
+			if !left[word] {
+				left[word] = true
+				unresolved = append(unresolved, word)
+			}
+		case !needed[id]:
+			needed[id] = true
+			needs = append(needs, id)
+		}
+	}
+	return needs, unresolved, outside
 }
 
 // issueOf is the issue a `needs` word names when it is a `dispatch://` reference, as Dispatch reads

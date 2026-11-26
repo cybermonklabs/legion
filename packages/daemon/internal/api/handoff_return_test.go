@@ -41,8 +41,8 @@ func completionKeys(t *testing.T, h *harness, key string) []string {
 }
 
 // A step that failed names the step its task returns to with returnTo, by its place in the
-// task, 1 for its first. Only a tester's completion with the verdict fail names one: a pass,
-// another role's completion and a place below 1 are refused before anything is recorded, each
+// task, 1 for its first. Only the completion of a tester or of a role of the deployment with the
+// verdict fail names one: a pass, another of Legion's roles' completion and a place below 1 are refused before anything is recorded, each
 // with its reason. A fail naming a step carries it on the fact, and its key names the place, so a
 // fail naming another step, after the workflow refused the first, is a fact of its own; a fail
 // naming none keeps today's key.
@@ -106,7 +106,7 @@ func TestACheckReportNamesNoStepToReturnTo(t *testing.T) {
 	tester := newCheckLookClaim(t, h, "LEGION-208", claim.RoleTester, 2)
 	want := returnToNeedsFail("this report on look 2 of LEGION-208's production check")
 	for _, verdict := range []string{"pass", "fail"} {
-		if message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "looked", Verdict: verdict, ReturnTo: new(1)}),
+		if message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "looked", Verdict: verdict, ReturnTo: new(1), CheckOpenedAt: &checkOpenedAt}),
 			http.StatusBadRequest, "RETURN_TO_NEEDS_FAIL"); message != want {
 			t.Fatalf("a %s report naming returnTo was refused with %q, want %q", verdict, message, want)
 		}
@@ -114,7 +114,7 @@ func TestACheckReportNamesNoStepToReturnTo(t *testing.T) {
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("facts after the refusals = %#v, want none", got)
 	}
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "looked", Verdict: "pass"}))
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "looked", Verdict: "pass", CheckOpenedAt: &checkOpenedAt}))
 	if got := facts.recorded(); len(got) != 1 {
 		t.Fatalf("facts after the report without returnTo = %#v, want one", got)
 	}

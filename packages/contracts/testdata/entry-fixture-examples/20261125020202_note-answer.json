@@ -1,0 +1,23 @@
+{
+  "answers": [
+    { "answer": "health", "removeKeyPaths": ["project"] },
+    { "answer": "no-content", "noBody": false, "addKeyPaths": ["accepted"] },
+    {
+      "answer": "note",
+      "change": "add",
+      "noBody": false,
+      "addKeyPaths": ["kind", "note"],
+      "addValues": { "kind": ["plain", "urgent"] }
+    },
+    { "answer": "state", "removeValues": { "issues.*.role": ["architect", "tester"] } }
+  ],
+  "routes": [{ "route": "POST /legion/v1/children/park", "change": "remove" }],
+  "answerRows": [
+    { "id": "health", "routes": ["GET /legion/v1/health"], "noBody": false },
+    { "id": "note", "routes": ["POST /legion/v1/issues/note"], "noBody": false }
+  ],
+  "enumeratedRows": [
+    { "answer": "note", "keyPath": "kind", "values": ["plain", "urgent"] },
+    { "answer": "state", "keyPath": "issues.*.role", "values": [], "open": true }
+  ]
+}

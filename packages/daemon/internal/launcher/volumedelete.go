@@ -55,7 +55,7 @@ import (
 // out of containDeletions and nothing else changed, the swap case deleted the bait under the home
 // at that path's trial, on 2026-11-14, kernel 4.19.0-gvisor, under go1.27.3.
 //
-// What that bounds, exactly. All six roles of an issue pod run as one uid — the worker image's
+// What that bounds, exactly. Every role of an issue pod runs as one uid — the worker image's
 // unprivileged user, roleUID — so a role can already delete anything of /legion it can reach by
 // a path of its own, the other roles' caches and workspaces included. Containment takes none of
 // that away and claims to take none of it away: what a followed link reaches inside the
@@ -511,7 +511,9 @@ const volumeDeleteFirstFD = 3
 // (trailing): what it keeps goes into errRemoverGone's text, and from there into the sweep's
 // stop reason and a line of the pod's log, so its size is this package's to choose rather than
 // the child's. The first bytes are the ones kept because they are the ones that say why: the
-// error runVolumeTrimDelete writes before it exits, or a panic's message before its stack.
+// error runVolumeTrimDelete writes before it exits, or a panic's message before its stack. What it
+// kept is a child's text its bound may have cut, so trailing quotes it as redact.Read keeps a
+// bounded read.
 type saidBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer

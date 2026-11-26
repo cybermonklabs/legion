@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -157,6 +158,50 @@ func TestAParkedStartOfWorkTheIssueLeftStartsNoProcessAtItsTurn(t *testing.T) {
 	}
 }
 
+// A start's launch can park at its issue pod's gate as well, behind another role's session load
+// (askPod), written launching with no process, and the issue can leave the start's work before the
+// gate grants the pod. The grant judges the work again, as the wake pacing's turn does
+// (startLeftWhileParked): a launch whose work the issue left starts no process, its claim is
+// suspended for the daemon, and the pod goes to the next start that waits. The control is the same
+// parked start whose work still holds at the grant, which starts once while the next start waits.
+func TestAStartParkedAtThePodsGateIsJudgedAgainAtItsGrant(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		holds bool
+	}{
+		{"the issue leaves the start's work before the grant", false},
+		{"the control: the work still holds at the grant", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			holds, asked := true, 0
+			h := podHarness(t, "")
+			phaseHoldsAnswering(&holds, &asked)(&h.deps)
+			first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
+			third := h.podRole(claim.RoleTester, StateSuspended)
+			h.mustPostTo(first.m, RequestResume{Claim: first.token})
+			h.wantStarts(first.token, 1)
+			h.parks(second, RequestRuleResume{Claim: second.token, Reason: "it owns its issue's step", Start: startOfStep}, 0)
+			h.parks(third, RequestResume{Claim: third.token}, 0)
+
+			holds = tc.holds
+			h.loadEnds(first)
+
+			if tc.holds {
+				h.wantGrantedStart(second, 1)
+				h.wantStarts(third.token, 0)
+				return
+			}
+			h.wantGrantedStart(third, 1)
+			second.m.Wait()
+			h.wantStarts(second.token, 0)
+			if got := second.m.Claim(); got.State != StateSuspended || got.SuspendedBy != SuspendedByDaemon || got.Locator != nil {
+				t.Fatalf("the parked start's claim after the grant = %s by %q recording %+v, want suspended by the daemon with no process",
+					got.State, got.SuspendedBy, got.Locator)
+			}
+		})
+	}
+}
+
 // A start's launch the session store could not answer is tried again a minute later with the claim
 // launching and no process (startWaitsForStore), and that retry carries the start's work, so it
 // judges the work again as a parked launch's turn does: a start whose work the issue left during
@@ -196,6 +241,51 @@ func TestAStartRetriedAfterTheSessionStoreFailedJudgesItsWorkAgain(t *testing.T)
 			h.wantCalls("Resume", tc.resumes)
 			if got := h.claim(); !tc.holds && (got.State != StateSuspended || got.SuspendedBy != SuspendedByDaemon) {
 				t.Fatalf("the retried start's claim = %s by %q, want suspended by the daemon", got.State, got.SuspendedBy)
+			}
+		})
+	}
+}
+
+// A pod-round wait must keep the workflow start's identity, as a session-store wait does.
+// Dropping that identity at the retry launches obsolete work; the control keeps the work
+// current and must resume the same session after the pod is replaced.
+func TestAStartRetriedAfterItsPodRoundWaitJudgesItsWorkAgain(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		holds   bool
+		resumes int
+	}{
+		{"the issue leaves the start's work before the retry", false, 1},
+		{"the control: the work still holds at the retry", true, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			holds, asked := true, 0
+			h := newBareHarness(t)
+			phaseHoldsAnswering(&holds, &asked)(&h.deps)
+			suspended := queuedClaim()
+			suspended.State, suspended.Generation, suspended.Session, suspended.SessionFile = StateSuspended, 1, session, sessionFile
+			suspended.SuspendedBy = SuspendedByDaemon
+			if err := h.store.PutClaim(h.ctx, suspended); err != nil {
+				t.Fatal(err)
+			}
+			h.start(suspended)
+			waiting := fmt.Errorf("resume %s: %w", testToken, runtime.ErrAwaitingPodRound)
+			h.rt.OnResume = func(context.Context) error { return waiting }
+			if err := h.handle(RequestRuleResume{Claim: testToken, Reason: "it owns its issue's step", Start: startOfStep}); !errors.Is(err, runtime.ErrAwaitingPodRound) {
+				t.Fatalf("the start's resume answered %v, want the wait for its pod's round", err)
+			}
+			h.wantState(StateLaunching)
+			h.rt.OnResume = nil
+			holds = tc.holds
+			h.advance(podRoundRetry)
+
+			h.wantCalls("Resume", tc.resumes)
+			got := h.claim()
+			if !tc.holds && (got.State != StateSuspended || got.SuspendedBy != SuspendedByDaemon || got.Locator != nil) {
+				t.Fatalf("the retried start's claim = %s by %q at %+v, want suspended by the daemon with no process", got.State, got.SuspendedBy, got.Locator)
+			}
+			if tc.holds && (got.Locator == nil || got.SessionFile != sessionFile) {
+				t.Fatalf("the current start's retry = %+v, want the same session running", got)
 			}
 		})
 	}

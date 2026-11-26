@@ -182,18 +182,18 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 		t.Fatalf("E was launched %d times, want only its boot launch: its parked relaunch does not run", len(launched))
 	}
 
-	// The pods of X and W stay, held by the pause, and no rule deletes them or saves their work.
-	deleted, bundled := r.rt.podReads()
-	if len(deleted) != 0 || len(bundled) != 0 {
-		t.Fatalf("the runtime deleted the pods of %v and bundled %v while the project is paused, want none", deleted, bundled)
+	// The pods of X and W stay, held by the pause, and no rule deletes them or reads their workspace.
+	deleted, read := r.rt.podReads()
+	if len(deleted) != 0 || len(read) != 0 {
+		t.Fatalf("the runtime deleted the pods of %v and read the workspaces of %v while the project is paused, want none", deleted, read)
 	}
 	for _, issue := range []string{X, W} {
 		if !r.openPodHold(issue) {
 			t.Fatalf("no pause holds %s's pod, want the pause's hold over the pod it stopped", issue)
 		}
 	}
-	if saved := r.count(`select count(*) from workspace_bundles`); saved != 0 {
-		t.Fatalf("%d workspaces saved while the project is paused, want none", saved)
+	if declined := r.count(`select count(*) from idle_release_declines`); declined != 0 {
+		t.Fatalf("%d releases declined while the project is paused, want none: the pause marks no release", declined)
 	}
 
 	// Z is not admitted.
@@ -750,13 +750,13 @@ func TestPauseKeepsThePods(t *testing.T) {
 	// Past the idle period and past the rounds' bound, with the project paused.
 	r.advance(pauseRigPodUpdateGrace + time.Minute)
 	r.advance(pauseRigIdleMinutes * time.Minute)
-	deleted, bundled := r.rt.podReads()
-	if !slices.Equal(deleted, []string{pods[4]}) || len(bundled) != 0 {
-		t.Fatalf("while the project is paused the runtime deleted the pods of %v and bundled %v, want pod 5's deletion alone",
-			deleted, bundled)
+	deleted, read := r.rt.podReads()
+	if !slices.Equal(deleted, []string{pods[4]}) || len(read) != 0 {
+		t.Fatalf("while the project is paused the runtime deleted the pods of %v and read the workspaces of %v, want pod 5's deletion alone",
+			deleted, read)
 	}
-	if saved := r.count(`select count(*) from workspace_bundles`); saved != 0 {
-		t.Fatalf("%d workspaces saved while the project is paused, want none", saved)
+	if declined := r.count(`select count(*) from idle_release_declines`); declined != 0 {
+		t.Fatalf("%d releases declined while the project is paused, want none: the pause marks no release", declined)
 	}
 	roundsHeld := 0
 	for _, n := range []int{2, 6} {
@@ -796,10 +796,10 @@ func TestPauseKeepsThePods(t *testing.T) {
 	}
 	r.advance(pauseRigIdleMinutes*time.Minute + time.Minute)
 	r.advance(time.Minute)
-	deleted, bundled = r.rt.podReads()
-	if !slices.Equal(deleted, []string{pods[4]}) || len(bundled) != 0 {
-		t.Fatalf("after the resume the runtime deleted the pods of %v and bundled %v, want pod 5's deletion alone: pod 4, which holds only an architect, stands too",
-			deleted, bundled)
+	deleted, read = r.rt.podReads()
+	if !slices.Equal(deleted, []string{pods[4]}) || len(read) != 0 {
+		t.Fatalf("after the resume the runtime deleted the pods of %v and read the workspaces of %v, want pod 5's deletion alone: pod 4, which holds only an architect, stands too",
+			deleted, read)
 	}
 	for _, issue := range []string{pods[0], pods[1], pods[2], pods[3]} {
 		if !r.openPodHold(issue) {
@@ -824,9 +824,9 @@ func TestPauseKeepsThePods(t *testing.T) {
 	if _, present := r.rt.IssueSandbox(pods[0]); !present {
 		t.Fatal("pod 1's Sandbox is gone at the wake, want the worker launched in the pod that holds its work")
 	}
-	deleted, bundled = r.rt.podReads()
-	if slices.Contains(deleted, pods[0]) || len(bundled) != 0 {
-		t.Fatalf("pod 1 deleted (%v) or a workspace bundled (%v) at the wake, want the disk kept", deleted, bundled)
+	deleted, read = r.rt.podReads()
+	if slices.Contains(deleted, pods[0]) || len(read) != 0 {
+		t.Fatalf("pod 1 deleted (%v) or a workspace read (%v) at the wake, want the disk kept", deleted, read)
 	}
 	r.ready(worker(1))
 	testwait.Eventually(t, "the hold on pod 1 to end at its worker's ready", func() bool {
@@ -878,7 +878,7 @@ func (r *pauseDaemonRig) ready(token claim.Token) {
 	c := r.claim(token)
 	r.handle(token, supervise.StreamHello{Claim: token, Generation: c.Generation})
 	r.handle(token, supervise.RequestRegister{Claim: token, Generation: c.Generation, Session: c.Session, SessionFile: c.SessionFile,
-		PluginContract: api.DaemonAPIVersion})
+		PluginContract: api.DaemonAPIVersion()})
 	r.handle(token, supervise.RequestReady{Claim: token, Generation: c.Generation, Session: c.Session})
 	r.awaitState(token, supervise.StateReady, "the woken role is ready")
 }

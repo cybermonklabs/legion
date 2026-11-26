@@ -93,7 +93,7 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 // covered by a queued start of its phase (queuedRowCovers). The silence repair reads no
 // suspended claim and no claim a queued start covers (unpromptedPhaseWorker). A later start
 // through StartOrOwe that carries the same slot mark, which a start of merging or of another
-// phase past the review does, takes the owed start out while it is still queued and unleased
+// phase that holds no slot (accepting, retro) does, takes the owed start out while it is still queued and unleased
 // (held by a closed design gate, or not yet run) and writes its own in its place
 // (Store.EnqueueStart). A later start of a phase that holds a slot, such as implementing after the
 // merger's own move back, leaves it queued, and the outbox's phase fence ends it, since it serves
@@ -138,11 +138,11 @@ func (e *Engine) cutoverStoppedMerger(ctx context.Context, tx pgx.Tx, owner susp
 	if issue.Phase != phase.Merging || owner.run.Claim.SuspendedBy != supervise.SuspendedByReleased {
 		return false, nil
 	}
-	pr, err := e.taskPullRequest(ctx, tx, owner.scope)
+	pr, err := e.taskPullRequestRow(ctx, tx, owner.scope)
 	if err != nil || pr == nil || pr.State != record.PullRequestOpen {
 		return false, err
 	}
-	row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleMerger)
+	row, err := e.stepRow(ctx, tx, owner.scope, claim.RoleMerger)
 	if err != nil || row.HandoffCommit == "" {
 		return false, err
 	}
@@ -160,13 +160,13 @@ func (e *Engine) cutoverStoppedMerger(ctx context.Context, tx pgx.Tx, owner susp
 // back from the merger's queued rows, since the mark is StartOrOwe's to set.
 func (e *Engine) oweCutoverMerger(ctx context.Context, tx pgx.Tx, owner suspendedOwner) error {
 	issue := owner.scope.issue
-	if err := e.clearHandoff(ctx, tx, issue.Key, claim.RoleMerger); err != nil {
+	if err := e.clearHandoff(ctx, tx, owner.scope, claim.RoleMerger); err != nil {
 		return err
 	}
 	// The row is read after the clear, so the row the start is built from is the row the
 	// transaction leaves. The clear moves no entry, and the merger's run is the one the selection
 	// read: nothing between the two writes a queued row or the claim.
-	row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleMerger)
+	row, err := e.stepRow(ctx, tx, owner.scope, claim.RoleMerger)
 	if err != nil {
 		return err
 	}

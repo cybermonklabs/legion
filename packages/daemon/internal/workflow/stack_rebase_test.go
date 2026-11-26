@@ -24,6 +24,7 @@ import (
 // for any moved head, and a clean answer moves nothing either; in merging, the merge GitHub then
 // reports at the rebased head closes the issue.
 func TestAStackRebasePastTheReviewSendsNothingBack(t *testing.T) {
+	t.Parallel()
 	rebase := intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208",
 		Before: "head", Sender: "web-flow", HeadSHA: "rebased", Base: "main"}
 	for _, tc := range []struct {
@@ -52,7 +53,7 @@ func TestAStackRebasePastTheReviewSendsNothingBack(t *testing.T) {
 					HandoffVersion: 1, Summary: "reviewed", Decision: &record.ReviewDecision{State: "approved", Head: "head"}})
 				engine := mergingEngine()
 				var reads []string
-				engine.cfg.ReadMergeState = func(issue string) { reads = append(reads, issue) }
+				engine.cfg.ReadMergeState = func(issue record.PullRequestKey) { reads = append(reads, issue.Issue) }
 				applyRefusingNothing(t, pool, engine, tc.facts...)
 				if !slices.Contains(reads, "LEGION-208") {
 					t.Fatalf("after the rebase the daemon asked a merge-state read of %v, want LEGION-208's", reads)

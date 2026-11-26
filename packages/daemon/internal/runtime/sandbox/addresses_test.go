@@ -24,7 +24,7 @@ const (
 func addressRuntime(t *testing.T, edit func(*Options)) *Runtime {
 	t.Helper()
 	opts := testOptions()
-	opts.DispatchURL, opts.DispatchToken = testDispatchURL, "dispatch-bearer"
+	opts.DispatchURL, opts.Dispatch = testDispatchURL, DispatchCredential{Bearer: "dispatch-bearer"}
 	opts.AgentSecrets = &AgentSecrets{URL: testBrokerURL, Audience: "agent-secrets", TokenExpiry: time.Hour}
 	if edit != nil {
 		edit(&opts)
@@ -43,7 +43,7 @@ func addressRuntime(t *testing.T, edit func(*Options)) *Runtime {
 func movedSince(t *testing.T, launched, now *Runtime) []movedAddress {
 	t.Helper()
 	pod := &corev1.Pod{Spec: podOf(t, launched, workerSpec(t))}
-	record, err := launched.recordFor(claim.RoleTester, 1, launched.enrollsIn(&pod.Spec, claim.RoleTester))
+	record, err := launched.recordFor(claim.RoleTester, 1, launched.enrollsIn(&pod.Spec, claim.RoleTester), launched.dispatch.Bearer != "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func movedSince(t *testing.T, launched, now *Runtime) []movedAddress {
 	if stream, ok := now.movedStream(pod, podContainer(claim.RoleTester)); ok {
 		moved = append(moved, stream)
 	}
-	environment, err := now.movedEnvironment(s, pod, claim.RoleTester, 1)
+	environment, _, err := now.movedEnvironment(s, pod, claim.RoleTester, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,6 +66,7 @@ func movedSince(t *testing.T, launched, now *Runtime) []movedAddress {
 // under the configuration the runtime has now is named for none, a `$` the kubelet would expand
 // included.
 func TestEachAddressARoleIsHandedIsComparedAlone(t *testing.T) {
+	t.Parallel()
 	commas := []string{"nats://user,more:password@192.0.2.9:4222", "nats://user:password,more@192.0.2.10:4222"}
 	credentialed := "https://legion:dispatch-password@dispatch.internal.example"
 	for name, tc := range map[string]struct {
@@ -98,7 +99,7 @@ func TestEachAddressARoleIsHandedIsComparedAlone(t *testing.T) {
 			want:     &movedAddress{"AGENT_SECRETS_URL", "https://secrets-old.internal.example", testBrokerURL},
 		},
 		"Dispatch configured only now": {
-			launched: func(o *Options) { o.DispatchURL, o.DispatchToken = "", "" },
+			launched: func(o *Options) { o.DispatchURL, o.Dispatch = "", DispatchCredential{} },
 			want:     &movedAddress{"DISPATCH_URL", "(unset)", testDispatchURL},
 		},
 		"the secrets broker no longer configured": {
@@ -141,6 +142,7 @@ func TestEachAddressARoleIsHandedIsComparedAlone(t *testing.T) {
 // when it yields no scheme and host. Userinfo, path, query and fragment never enter it, a raw comma
 // in the userinfo and an at sign in the path included, and a NATS list is named entry by entry.
 func TestANamedAddressShowsOnlyItsSchemeHostAndPort(t *testing.T) {
+	t.Parallel()
 	for address, want := range map[string]string{
 		"":                      "(unset)",
 		"nats://192.0.2.9:4222": "nats://192.0.2.9:4222",
@@ -173,6 +175,7 @@ func TestANamedAddressShowsOnlyItsSchemeHostAndPort(t *testing.T) {
 // An observation's detail names each moved address as `<variable> <held>, now <handed>`, one after
 // another (docs/kubernetes.md, "A pod whose address moved").
 func TestAMovedAddressIsDescribedAsItHoldsThenWhatItIsHandedNow(t *testing.T) {
+	t.Parallel()
 	moved := []movedAddress{{connectFlag, "tcp://192.0.2.5:13371", "tcp://192.0.2.7:13371"}, {"ENVOY_URL", "(unset)", "https://envoy.internal.example"}}
 	want := "--connect tcp://192.0.2.5:13371, now tcp://192.0.2.7:13371; ENVOY_URL (unset), now https://envoy.internal.example"
 	if got := describeMoved(moved); got != want {
@@ -224,9 +227,10 @@ func TestAPodsAppsAreItsRolesAppsAndARoleNobodyDefinesIsAnError(t *testing.T) {
 // A record that cannot be read proves nothing about the generation's addresses: it is an error, which
 // evaluate reads as stale, rather than a generation with nothing moved.
 func TestAnUnreadableAddressRecordIsAnError(t *testing.T) {
+	t.Parallel()
 	r := addressRuntime(t, nil)
 	s := &sandbox{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{addressesAnnotation(claim.RoleTester): "{not json"}}}
-	if moved, err := r.movedEnvironment(s, &corev1.Pod{}, claim.RoleTester, 1); err == nil || !strings.Contains(err.Error(), "is unreadable") {
+	if moved, _, err := r.movedEnvironment(s, &corev1.Pod{}, claim.RoleTester, 1); err == nil || !strings.Contains(err.Error(), "is unreadable") {
 		t.Fatalf("movedEnvironment = %+v, %v; want the record's unreadability", moved, err)
 	}
 }
@@ -235,6 +239,7 @@ func TestAnUnreadableAddressRecordIsAnError(t *testing.T) {
 // credentials: no userinfo, path, query or fragment, only each address's scheme, host and port and a
 // digest of its whole value.
 func TestTheAddressRecordHoldsNoCredential(t *testing.T) {
+	t.Parallel()
 	r := addressRuntime(t, func(o *Options) {
 		o.DaemonURL = "http://legion:daemon-password@192.0.2.5:13370"
 		o.NATSURLs = []string{"nats://legion:nats-password@192.0.2.9:4222/tenant%2Fnats-path", "nats://192.0.2.10:4222?token=nats-query"}
@@ -242,7 +247,7 @@ func TestTheAddressRecordHoldsNoCredential(t *testing.T) {
 		o.DispatchURL = "https://legion:dispatch-password@dispatch.internal.example"
 		o.AgentSecrets.URL = "https://secrets.internal.example/?token=broker-query"
 	})
-	record, err := r.recordFor(claim.RoleTester, 7, r.enrollsIn(nil, claim.RoleTester))
+	record, err := r.recordFor(claim.RoleTester, 7, r.enrollsIn(nil, claim.RoleTester), true)
 	if err != nil {
 		t.Fatal(err)
 	}

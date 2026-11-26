@@ -182,8 +182,11 @@ note "listener port $envoy_port"
 (cd "$root" && bun install --frozen-lockfile >/dev/null)
 envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$omp_home" --dest "$work/pi-envoy")
 manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion")
-want_contract=$(jq -r .legion.daemonApiVersion "$root/packages/pi-legion/package.json")
-note "plugins $(jq -r '.name + "@" + .version' "$envoy_manifest") and $(jq -r '.name + "@" + .version' "$manifest") in OMP profile $profile, daemonApiVersion $want_contract"
+# The contract this checkout's daemon speaks, which the pack above wrote into the installed
+# manifest: the checkout's own manifest declares none (scripts/daemon-contract.sh, of the working
+# tree, so a `git archive` tree with no .git reads it too).
+want_contract=$(bash "$root/scripts/daemon-contract.sh")
+note "plugins $(jq -r '.name + "@" + .version' "$envoy_manifest") and $(jq -r '.name + "@" + .version' "$manifest") in OMP profile $profile, daemon API contract $want_contract"
 # write_controller_profile AGENT writes the controller's profile settings into AGENT, the profile's
 # agent directory (lib/omp-home.test.ts reads what it writes). The boot gate resolves the model of
 # every task agent the prompts dispatch, so the profile names their roles and the default one model,
@@ -226,8 +229,9 @@ envoy_token_file: $work/envoy-token
 probe_interval_seconds: 5
 # The wake pacing off (INFRA-976): this proof starts roles and waits on bounded times, and at the
 # default of 8 wakes a minute every wake after the first would spend those waits queueing. The two
-# wake keys add no line to legion config check, which prints the renames, the open capability
-# rows, the pause line and, under Kubernetes alone, the pod lines (checkConfig in cmd/legion):
+# wake keys add no line to legion config check, which prints a line for each role the deployment
+# defines after the project lines (none here), then the renames, the open capability rows, the
+# pause line and, under Kubernetes alone, the pod lines (checkConfig in cmd/legion):
 # under tmux the pause line names runtime: tmux whatever the pacing is (pause.Unavailable reads
 # the runtime first). config-check-passes below compares everything after the OK line with a fixed
 # string.

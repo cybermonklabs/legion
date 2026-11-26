@@ -21,7 +21,7 @@
 #     wait; c starts once b is done, d once a and c are, e once d is, and e's pull request merges;
 #   - steps-read: `dispatch steps --issue <KEY>` as the person, once that issue is done, prints its
 #     five tasks, then each task of the plan with its needs and each planned step passed, as
-#     `task d needs a, c: 1 implementer:i passed, 2 reviewer:r passed`;
+#     `task d needs [a,c]: 1 implementer:i passed, 2 reviewer:r passed`;
 #   - step-waits-for-agent: tasks x and y whose first steps are of the one key k; once the gate
 #     opens x's step runs and y's waits for k; once x's step ends y's starts in k's one session,
 #     and the implementer was launched once;

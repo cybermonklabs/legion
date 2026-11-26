@@ -95,6 +95,7 @@ func rootCheckRig(t *testing.T) checkRig {
 // A report on the root's check while its tree lingers is recorded: linger holds the members of a
 // closed tree, and the check after the close is the one thing a member still does there.
 func TestACheckReportWhileTheRootLingersIsRecorded(t *testing.T) {
+	t.Parallel()
 	rig := rootCheckRig(t)
 	if result := rig.apply("pass", intake.CheckReport{Issue: "LEGION-208", Claim: "tester", Look: 1, Verdict: "pass", Summary: "driven in production"}); result.Refusal != nil {
 		t.Fatalf("the report = %+v, want it recorded", result.Refusal)
@@ -110,6 +111,7 @@ func TestACheckReportWhileTheRootLingersIsRecorded(t *testing.T) {
 // start row so the suspension's fences find no later start. The check stays open at look 1 with
 // its look closed.
 func TestAPendingReportSuspendsTheTesterAfterTheLooksStart(t *testing.T) {
+	t.Parallel()
 	rig := childCheckRig(t)
 	starts := issueOutboxOf(t, rig.pool, "LEGION-209", "supervise")
 	start := starts[len(starts)-1]
@@ -139,8 +141,9 @@ func TestAPendingReportSuspendsTheTesterAfterTheLooksStart(t *testing.T) {
 
 // A pass closes a child's check as recorded and ends the tester's part in it: its claim is
 // closed (issue_close) and the child's Sandbox deleted with the pod it ran in (an IssueSuspend),
-// since its five other claims retired at the close. A fail closes it as a defect the same way.
+// since every other claim of it retired at the close. A fail closes it as a defect the same way.
 func TestAPassOrFailOfAChildsCheckClosesItAndDeletesItsSandbox(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		verdict string
 		outcome record.CheckOutcome
@@ -169,6 +172,7 @@ func TestAPassOrFailOfAChildsCheckClosesItAndDeletesItsSandbox(t *testing.T) {
 // A pass of a root's check closes the tester's claim and writes the suspension that deletes
 // its Sandbox, as the linger's own row did: the tree's close then finds nothing of it left.
 func TestAPassOfARootsCheckClosesItsTesterAndSuspendsTheIssue(t *testing.T) {
+	t.Parallel()
 	rig := rootCheckRig(t)
 	rig.apply("pass", intake.CheckReport{Issue: "LEGION-208", Look: 1, Verdict: "pass", Summary: "seen"})
 	if got := superviseRequests(t, rig.pool, "issue_close"); got["LEGION-208/tester"] != 1 || len(got) != 1 {
@@ -187,6 +191,7 @@ func TestAPassOfARootsCheckClosesItsTesterAndSuspendsTheIssue(t *testing.T) {
 // with a verdict other than pass, pending or fail. A report of the current look is taken however
 // that look ended (TestALateReportOfTheCurrentLookIsRecorded).
 func TestACheckReportIsRefusedWhereNoLookIsOpenToIt(t *testing.T) {
+	t.Parallel()
 	rig := childCheckRig(t)
 	if got := refusalCode(rig.apply("no-check", intake.CheckReport{Issue: "LEGION-208", Look: 1, Verdict: "pass"})); got != "CHECK_NOT_OPEN" {
 		t.Fatalf("a report on an issue with no check = %q, want CHECK_NOT_OPEN", got)
@@ -216,6 +221,7 @@ func TestACheckReportIsRefusedWhereNoLookIsOpenToIt(t *testing.T) {
 // A look nobody reports ends at its bound as a pending report would: the tester is suspended
 // and the Sandbox with it. A row naming a look already ended, or an earlier look, changes nothing.
 func TestCheckLookEndedEndsASilentLook(t *testing.T) {
+	t.Parallel()
 	rig := childCheckRig(t)
 	rig.apply("stale-look", intake.CheckLookEnded{Issue: "LEGION-209", Look: 2, Cause: "look bound"})
 	if check := productionCheck(t, rig.pool, "LEGION-209"); !check.LookOpen {
@@ -245,6 +251,7 @@ func TestCheckLookEndedEndsASilentLook(t *testing.T) {
 // OpenedAt leaves the second's look 1 open, where the same fact naming the second check ends the
 // look.
 func TestAFactOfAReplacedCheckChangesNothingOfItsSuccessor(t *testing.T) {
+	t.Parallel()
 	rig := newCheckRig(t)
 	seedMergingChild(t, rig.pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
 	firstOpened := checkOpened.Add(-24 * time.Hour)
@@ -284,6 +291,7 @@ func TestAFactOfAReplacedCheckChangesNothingOfItsSuccessor(t *testing.T) {
 // changes nothing, as before: the implementer's, which worked the issue's phases but not its
 // check.
 func TestTheTestersFailedClaimEndsItsLook(t *testing.T) {
+	t.Parallel()
 	rig := childCheckRig(t)
 	rig.apply("implementer-failed", failedClaim("LEGION-209", claim.RoleImplementer))
 	if check := productionCheck(t, rig.pool, "LEGION-209"); !check.LookOpen {
@@ -312,6 +320,7 @@ func TestTheTestersFailedClaimEndsItsLook(t *testing.T) {
 // an engine whose own checks are the tester's: the look its bound starts is handed to the
 // implementer, and that implementer's report of the look is taken and retires its claim.
 func TestACheckRecordingTheImplementerStartsTheImplementerAndTakesItsReport(t *testing.T) {
+	t.Parallel()
 	rig := newCheckRig(t)
 	seedIssue(t, rig.pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
 	parent := "LEGION-208"
@@ -352,6 +361,7 @@ func TestACheckRecordingTheImplementerStartsTheImplementerAndTakesItsReport(t *t
 // looks once the daemon is rebuilt with the setting off, where that same daemon opens no check of
 // its own.
 func TestACheckOpenedUnderTheTesterKeepsItWhenTheSettingGoesOff(t *testing.T) {
+	t.Parallel()
 	rig := childCheckRig(t)
 	off := New(record.NewStore(), Config{Project: "LEGION", Linger: time.Hour, ProductionCheckBound: checkBound, Clock: rig.clock.Now}, nil)
 	apply := applyFacts(t, rig.pool, off)
@@ -381,6 +391,7 @@ func TestACheckOpenedUnderTheTesterKeepsItWhenTheSettingGoesOff(t *testing.T) {
 // pod are the run's), and the bound closes the check as not run without an issue_close of the
 // implementer the run reuses.
 func TestAReopenedRootsCheckStartsNoLookWhileItRunsAgain(t *testing.T) {
+	t.Parallel()
 	rig := rootCheckRig(t)
 	if _, err := rig.pool.Exec(context.Background(), "update issues set phase = 'admitted', status = 'todo', linger_until = null, generation = generation + 1 where key = 'LEGION-208'"); err != nil {
 		t.Fatal(err)
@@ -424,6 +435,7 @@ func TestAReopenedRootsCheckStartsNoLookWhileItRunsAgain(t *testing.T) {
 // second bound row queued, no look started. A rerun's merge, of another pull request after a
 // re-entry closed the check, still replaces it (openCheck).
 func TestADoneChildSetDoneAgainKeepsItsChecks(t *testing.T) {
+	t.Parallel()
 	rig := childCheckRig(t)
 	rig.apply("report", intake.CheckReport{Issue: "LEGION-209", Look: 1, Verdict: "pass", Summary: "seen"})
 	recorded := productionCheck(t, rig.pool, "LEGION-209")
@@ -458,6 +470,7 @@ func TestADoneChildSetDoneAgainKeepsItsChecks(t *testing.T) {
 // row that comes due before the check's bound changes nothing and queues no row, since the
 // check's own row comes at its bound.
 func TestTheBoundStartsTheLastLookWhoseNothingClosesTheCheckAsNotRun(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		end  intake.Fact
@@ -516,6 +529,7 @@ func TestTheBoundStartsTheLastLookWhoseNothingClosesTheCheckAsNotRun(t *testing.
 // rebuilt with 3 days starts its last look at the bound it opened with, told 2 days. Every other
 // rig reaches the bound under the bound it opened with, where the two read the same.
 func TestTheBoundsLookIsToldTheBoundTheCheckOpenedWith(t *testing.T) {
+	t.Parallel()
 	rig := childCheckRig(t)
 	rig.apply("pending", intake.CheckReport{Issue: "LEGION-209", Look: 1, Verdict: "pending", Summary: "not deployed yet"})
 	cfg := rig.engine.cfg
@@ -538,6 +552,7 @@ func TestTheBoundsLookIsToldTheBoundTheCheckOpenedWith(t *testing.T) {
 // tree stays as it was. The check's close re-arms the linger's close, due now, and the expiry then
 // applies.
 func TestTheTreesCloseWaitsForAnOpenCheckAndRunsOnceItCloses(t *testing.T) {
+	t.Parallel()
 	rig := rootCheckRig(t)
 	seedRoleClaims(t, rig.pool, "LEGION-208", "LEGION-209")
 	rig.clock.now = checkOpened.Add(time.Hour)
@@ -579,6 +594,7 @@ func TestTheTreesCloseWaitsForAnOpenCheckAndRunsOnceItCloses(t *testing.T) {
 // A done child set back to todo closes its open check as not run before its new run starts. The
 // tester's live claim stays live: the closed check rejects its old look's report.
 func TestReenterChildClosesItsOpenCheckAsNotRun(t *testing.T) {
+	t.Parallel()
 	rig := childCheckRig(t)
 	seedSlot(t, rig.pool, record.Slot{Issue: "LEGION-208", Index: 0})
 	rig.apply("todo", intake.DispatchIssue{Key: "LEGION-209", Seq: 3, Type: "issue.updated", Status: "todo", Title: "child", Parent: "LEGION-208", Rank: "V"})
@@ -612,6 +628,7 @@ func TestReenterChildClosesItsOpenCheckAsNotRun(t *testing.T) {
 // never read here, since the daemon's records hold no record of another project: that case is the
 // daemon package's (TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands).
 func TestTheBootSweepClosesMigratedMergedIssuesAndLeavesARootWithARunningChild(t *testing.T) {
+	t.Parallel()
 	rig := newCheckRig(t)
 	seedIssue(t, rig.pool, record.Issue{Key: "LEGION-301", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-301", Project: "LEGION", Title: "alone", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "A"})
 	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestMerged, Issue: "LEGION-301", Repo: "sjawhar/legion", Number: 1, Branch: "legion/LEGION-301", HeadSHA: "h1", Failing: []string{}})
@@ -699,6 +716,7 @@ func TestTheBootSweepClosesMigratedMergedIssuesAndLeavesARootWithARunningChild(t
 // `dispatch result` at the merge commit and none asks for the retired Production: line. The task
 // is prose for a pane, so it carries the phrases without their backticks.
 func TestTheCheckTaskAsksForARecordedResultAndNoRetiredLine(t *testing.T) {
+	t.Parallel()
 	issue := record.Issue{Key: "LEGION-208", Title: "A production check"}
 	check := record.ProductionCheck{Issue: issue.Key, Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43", OpenedAt: checkOpened, Looks: 1}
 	for _, last := range []bool{false, true} {

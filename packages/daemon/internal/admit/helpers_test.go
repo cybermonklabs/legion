@@ -107,8 +107,16 @@ func newAdmissionWithSteps(t *testing.T, cap int, steps []record.DesignStep, log
 // under, and a test of two keys proves a behaviour reads none of it.
 func newAdmissionForProject(t *testing.T, project string, cap int, steps []record.DesignStep, log *slog.Logger) *Admission {
 	t.Helper()
+	return newAdmissionDrawing(t, project, cap, steps, log, nil)
+}
+
+// newAdmissionDrawing is newAdmissionForProject whose engine draws every `random` experiment from
+// source, the one source admission draws with too (workflow.Engine's ExperimentSource); nil is the
+// engine's own, experiment.CryptoSource.
+func newAdmissionDrawing(t *testing.T, project string, cap int, steps []record.DesignStep, log *slog.Logger, source func(uint64) (uint64, error)) *Admission {
+	t.Helper()
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: project, Repositories: testRepositories, Steps: steps,
-		Clock: func() time.Time { return fixedNow }}, log)
+		ExperimentSource: source, Clock: func() time.Time { return fixedNow }}, log)
 	admission := New(record.NewStore(), engine, cap, project, log)
 	admission.now = func() time.Time { return fixedNow }
 	return admission
@@ -161,14 +169,15 @@ func assertEffects(t *testing.T, pool *pgxpool.Pool, want []effect) {
 
 // effects is the outbox as these tests compare it: every row in id order, its payload decoded,
 // with every task-less phase start and every step record left out. A phase worker's start is one
-// row, which carries the task and waits for the issue's admission slot (workflow.StartOrOwe); a
-// start that names a phase and carries no task is a role admission brings back beside it, which
-// asks that role nothing. These assertions are about the starts that carry work, as the workflow
-// package's own helpers are. A start that names no phase is no phase worker's — the architect
-// start promotion makes, the production check's look — and is left in. A step record is written
-// beside the rows of each start and end of a step, and the tests of those sites read it exactly
-// (workflow's step_sites_test.go and step_sites_linger_test.go, and step_records_test.go here for
-// admission's own sites), so every row of any other kind is still compared here.
+// row, which carries the task and, in a phase that keeps a slot (record.PhaseKeepsSlot), waits
+// for the issue's admission slot (workflow.StartOrOwe); a start that names a phase and carries no
+// task is a role admission brings back beside it, which asks that role nothing. These assertions
+// are about the starts that carry work, as the workflow package's own helpers are. A start that
+// names no phase is no phase worker's — the architect start promotion makes, the production
+// check's look — and is left in. A step record is written beside the rows of each start and end
+// of a step, and the tests of those sites read it exactly (workflow's step_sites_test.go and
+// step_sites_linger_test.go, and step_records_test.go here for admission's own sites), so every
+// row of any other kind is still compared here.
 //
 // A supervise start carries the phase entry its task is of (record.SuperviseRequest.Entry),
 // which the transition raised on the role's phases row, numbered across the rows that name the

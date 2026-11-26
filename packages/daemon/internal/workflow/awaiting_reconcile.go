@@ -281,7 +281,7 @@ type awaitDecision struct {
 //
 // Rule 0 is the spec's own condition (dispatch://INFRA-980, "Which issue needs a slot"): a root
 // enters awaiting_person only while it holds a slot, which now says the daemon has started it
-// and its work is not yet past its review (record.KeepsSlot); a root at admitted whose gate has
+// and it stands in a phase that keeps a slot (record.KeepsSlot); a root at admitted whose gate has
 // never opened keeps that slot through a wait on another issue (blockers.waitsOf). It is read as
 // the root's own slot row
 // (awaitView.Slotted). A root still waiting in line for
@@ -647,7 +647,7 @@ const DesignApprovedWake = "this resume is your design-approved wake"
 // not answer it, which no notice told (tellChangesOnce); what is still with the person (withHuman)
 // and what waits on the architect (a tree question, or the closed gate's approval request, on the
 // agent's turn). Handing back is advice only while the gate is not open, since an open gate moves
-// the root to planning, where a hand-back starts no wait; the request's own thread is named only
+// the root to its task's first step, where a hand-back starts no wait; the request's own thread is named only
 // while the request is open. armed says whether the design gate is armed: with it off, no approval
 // is asked for, register_gate is never the advice, and an open gate is no person's approval. A
 // wait the gates.design: off rule answered (gateOffAnswer) is never said to be approved: under an

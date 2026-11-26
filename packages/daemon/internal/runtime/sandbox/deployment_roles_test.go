@@ -170,10 +170,10 @@ func TestAnOperatorVolumeMayNotTakeADeploymentRolesVolumeName(t *testing.T) {
 	pod := Pod{Volumes: []corev1.Volume{{Name: "launcher-checker", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}}
 	legion := append(slices.Clone(claim.Roles), claim.RoleController)
 	want := "runtime.kubernetes.pod.volumes[0].name launcher-checker is a volume Legion puts in every pod"
-	if err := CheckPod(pod, append(slices.Clone(legion), "checker"), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err == nil || err.Error() != want {
+	if err := CheckPod(pod, append(slices.Clone(legion), "checker"), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange); err == nil || err.Error() != want {
 		t.Errorf("CheckPod with the checker among the roles = %v, want %q", err, want)
 	}
-	if err := CheckPod(pod, legion, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err != nil {
+	if err := CheckPod(pod, legion, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange); err != nil {
 		t.Errorf("CheckPod with no checker among the roles = %v, want no refusal", err)
 	}
 }
@@ -191,11 +191,86 @@ func TestTheLauncherCredentialOfADeploymentRoleIsForgottenWithItsSandbox(t *test
 	s := &sandbox{ObjectMeta: metav1.ObjectMeta{Name: name, UID: "uid-sandbox"}}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: roleSecretName(name, "checker")}, Data: map[string][]byte{LauncherTokenFile: []byte("token")}}
 	r.cacheLauncherCredential(s, secret)
-	if _, held, _ := r.launcherAuth.lookup(secret.Name, s.UID); !held {
+	if _, held := r.launcherAuth.lookup(secret.Name, s.UID); !held {
 		t.Fatalf("the checker's credential was not cached")
 	}
 	r.forgetLauncherCredentials(name)
-	if _, held, _ := r.launcherAuth.lookup(secret.Name, s.UID); held {
+	if _, held := r.launcherAuth.lookup(secret.Name, s.UID); held {
 		t.Errorf("the checker's launcher credential is still held after its Sandbox %s was forgotten", name)
+	}
+}
+
+// The release of an idle pod whose Sandbox keeps its volume deletes the Secrets the Sandbox owns,
+// the role Secret of each role of the deployment among them, as it deletes each of Legion's: each
+// holds a launcher token and the gh files of its App, which no pod reads once the pod is gone
+// (deleteIssueSecrets over Runtime.issueRoles). The control is the same release with the loop over
+// Legion's six alone, which leaves the checker's and the critic's Secrets behind.
+func TestTheReleaseOfAKeptVolumeDeletesEachDeploymentRolesSecret(t *testing.T) {
+	g := newRig(t, nil,
+		withOptions(func(o *Options) {
+			o.DeploymentApps = appauth.DeploymentApps{"checker": appauth.Implement, "critic": appauth.Review}
+			keptVolumes(SandboxMicroVM)(o)
+		}),
+		withProjectTokens(refusingOwnerTokens{refuse: new(atomic.Bool)}))
+	g.spawn(childSpec(t))
+	name := SandboxName(childToken)
+	secrets := []string{secretName(name)}
+	for _, role := range append(slices.Clone(claim.Roles), "checker", "critic") {
+		secrets = append(secrets, roleSecretName(name, role))
+	}
+	for _, secret := range secrets {
+		if g.secret(secret) == nil {
+			t.Fatalf("the running pod's Sandbox has no Secret %s", secret)
+		}
+	}
+	if _, err := g.r.ReleaseIssue(g.ctx, childIssue, testTree, authorized, nil); err != nil {
+		t.Fatalf("ReleaseIssue: %v", err)
+	}
+	if s := g.sandbox(name); s == nil || !ownsKeptVolume(s) {
+		t.Fatalf("after the release the issue's Sandbox is %+v, want it kept with its volume", s)
+	}
+	for _, secret := range secrets {
+		if g.secret(secret) != nil {
+			t.Errorf("the release left the Secret %s, want each Secret of the Sandbox deleted", secret)
+		}
+	}
+}
+
+// The release of a kept volume deletes the role Secret of each role the Sandbox's pod was built
+// with, a role the deployment no longer defines among them: a daemon that restarted with settings
+// that dropped the checker releases a pod built while the checker was defined, and the checker's
+// Secret, which holds its launcher token and the gh files of its App, goes with the others
+// (deleteIssueSecrets over the stored template's roles, builtRoles, as well as Runtime.issueRoles).
+// The control is the loop over the runtime's roles alone, which leaves the checker's Secret behind.
+func TestTheReleaseOfAKeptVolumeDeletesTheSecretOfARoleTheDeploymentLost(t *testing.T) {
+	g := newRig(t, nil,
+		withOptions(func(o *Options) {
+			o.DeploymentApps = appauth.DeploymentApps{"checker": appauth.Implement, "critic": appauth.Review}
+			keptVolumes(SandboxMicroVM)(o)
+		}),
+		withProjectTokens(refusingOwnerTokens{refuse: new(atomic.Bool)}))
+	g.spawn(childSpec(t))
+	name := SandboxName(childToken)
+	checker := roleSecretName(name, "checker")
+	if g.secret(checker) == nil {
+		t.Fatalf("the running pod's Sandbox has no Secret %s", checker)
+	}
+	restarted := secondRuntime(t, g, func(o *Options) {
+		*o = g.opts
+		o.DeploymentApps = appauth.DeploymentApps{"critic": appauth.Review}
+	})()
+	if slices.Contains(restarted.issueRoles, "checker") {
+		t.Fatalf("the restarted runtime's issue roles %v hold the checker, want it gone with the setting", restarted.issueRoles)
+	}
+
+	if _, err := restarted.ReleaseIssue(g.ctx, childIssue, testTree, authorized, nil); err != nil {
+		t.Fatalf("ReleaseIssue: %v", err)
+	}
+
+	if s := g.sandbox(name); s == nil || !ownsKeptVolume(s) {
+		t.Fatalf("after the release the issue's Sandbox is %+v, want it kept with its volume", s)
+	}
+	if g.secret(checker) != nil {
+		t.Errorf("the release left the Secret %s of the checker, a role the pod was built with, want it deleted", checker)
 	}
 }

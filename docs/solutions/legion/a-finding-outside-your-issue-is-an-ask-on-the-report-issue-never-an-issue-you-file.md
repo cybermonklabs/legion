@@ -33,6 +33,6 @@ tree. The rest of each learning stands.
 
 ## Evidence
 
-Sami ruled on 2026-10-23 that an agent or the controller opens an ask and he decides whether a
-finding needs a new issue. Over the three days before, Legion agents had filed 78 of a deployment's
+Since 2026-10-23, an agent or the controller opens an ask and a person decides whether a finding
+needs a new issue. Over the three days before, Legion agents had filed 78 of a deployment's
 project's 158 issues, and the controller had admitted 21 of its own filings to `todo` itself.

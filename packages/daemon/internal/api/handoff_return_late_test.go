@@ -53,6 +53,7 @@ func TestALateFailNamingAStepOffItsTasksLineIsRefusedNotFailed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed the plan of %s: %v", root, err)
 	}
+	seedEntry(t, h, root, claim.RoleTester, 1)
 	tester := newLiveClaim(t, h, root, claim.RoleTester)
 	written := tester.writeHandoff("test", 1)
 	fail := func(returnTo *int) HandoffCompleteRequest {

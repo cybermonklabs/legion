@@ -81,7 +81,7 @@ func appliedFactKinds(t *testing.T) []string {
 }
 
 // stepPlaces is where each phase stands in the task default, as the records Dispatch receives
-// name it: the kind and the place in the task. A phase not here runs no step.
+// name it: the kind and the place in the task. A phase not here runs no step of the task default.
 var stepPlaces = map[phase.Phase]record.StepPlace{
 	phase.Planning:     {Task: "default", Kind: "step", Place: 1},
 	phase.Implementing: {Task: "default", Kind: "step", Place: 2},
@@ -464,6 +464,7 @@ func zeroFact(t *testing.T, kind string) intake.Fact {
 		intake.DispatchApprovalMoved{}, intake.DispatchAskRestored{}, intake.HandoffComplete{}, intake.PullRequestOpened{},
 		intake.PullRequestSynchronized{}, intake.Push{}, intake.BasePush{}, intake.PullRequestChecks{},
 		intake.PullRequestMergeability{}, intake.PullRequestReview{}, intake.PullRequestClosed{}, intake.PullRequestDequeued{},
+		intake.PullRequestReviewRequests{}, intake.PullRequestMergeStateUnread{},
 		intake.MergeQueueReadDone{}, intake.PullRequestMissing{}, intake.ClaimReady{}, intake.ClaimFailed{},
 		intake.SessionLost{}, intake.SessionStoreFault{}, intake.MemoryGuardKill{}, intake.VolumeNearFull{}, intake.RetryOrEscalate{},
 		intake.RestartPhase{}, intake.SignOff{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{},

@@ -209,6 +209,10 @@ func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, s TaskScope, end
 // root's leave begins, since the task's own state is the truer answer. A stop in a lingering tree
 // changes nothing and says so, and so does a stop where its hold cannot stand: a root that waits on
 // a person before its first step (stopRefusal).
+//
+// An issue whose group takes no plan from its owner (groupOf, takesNoPlan) takes no stop of its
+// tasks from that owner either: the experiment decides how the issue is done. The stop is
+// answered PLAN_NOT_TAKEN before anything else is read, and the task goes on as it stood.
 func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskStopped) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil {
@@ -216,6 +220,13 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 	}
 	if issue == nil {
 		return intake.Result{Refusal: intake.TaskNotFound(fact.Issue, fact.Task, nil)}, nil
+	}
+	group, err := e.groupOf(ctx, tx, issue.Key)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if takesNoPlan(group) {
+		return intake.Result{Refusal: intake.TaskNotStopped(issue.Key, group)}, nil
 	}
 	// The stopped task is read on its own scope (scopeOn), whatever the plan's count of tasks; a run
 	// with no plan rows is its issue (noPlanScope).
@@ -318,9 +329,11 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 // the same of a release). Step 1's role is started at a raised entry (start), which writes the
 // start of its step, and its entry counts as a move back, since it asks for the work again from the
 // first step. The step the task stood in ended when it stopped (stopTask), so none is ended here.
-// After the start, the restart does what a move does after its start (releasedIntoPhase): it
-// queues the reconcile of the tree's news, which the hold owed the issue nothing of, and acts on
-// the pull request's merge forward as a move into step 1's phase does. The act is task_restarted,
+// After the start, the restart does what a move does after its start: it queues the reconcile of
+// the tree's news (queueMovedNews), and it acts on the merge forward of the task's pull request as
+// a move from the phase the hold is from into step 1's phase does (mergeForwardOnEntry), so a
+// restart into implementing drops an ask made before the hold, which would otherwise hold back
+// every later ask of its head (mergeForward asks once for each head). The act is task_restarted,
 // which the log line names: no row of the table moves a held issue.
 //
 // Its callers hand it a stopped task, or the new task of a later version, waiting: a task held
@@ -391,11 +404,11 @@ func (e *Engine) startAtFirstStep(ctx context.Context, tx pgx.Tx, s TaskScope, r
 	// The role of the task's first step (Walk.RoleAt), so a first step of a role the deployment
 	// defines starts that role again.
 	role := s.walk.RoleAt(first)
-	if err := e.clearHandoff(ctx, tx, s.issue.Key, role); err != nil {
+	if err := e.clearHandoff(ctx, tx, s, role); err != nil {
 		return err
 	}
 	// The pull request of the task, read once: the start's task names it (readPull), and the merge
-	// forward of the release acts on it (releasedIntoPhase).
+	// forward of the release acts on it (mergeForwardOnEntry).
 	pr, err := e.taskPullRequest(ctx, tx, s)
 	if err != nil {
 		return err
@@ -406,7 +419,10 @@ func (e *Engine) startAtFirstStep(ctx context.Context, tx pgx.Tx, s TaskScope, r
 	}, true); err != nil {
 		return err
 	}
-	return e.releasedIntoPhase(ctx, tx, s, from, pr)
+	if err := e.queueMovedNews(ctx, tx, issue); err != nil {
+		return err
+	}
+	return e.mergeForwardOnEntry(ctx, tx, s, pr)
 }
 
 // scopeWalks is the walk of each task of s's plan, in task id order, with s's own walk in place of

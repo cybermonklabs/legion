@@ -1,5 +1,7 @@
 package workspace
 
+//ci:reads packages/contracts/fixtures/daemon-api/task-dirs.json TestTheTaskDirFixture reads it through ../../../contracts (its write is under -update, which CI never passes)
+
 import (
 	"bytes"
 	"encoding/json"

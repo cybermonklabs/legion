@@ -52,7 +52,7 @@ func joinEnds(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, task string
 	row := tasksOf(t, pool, engine, key)[task]
 	id := fmt.Sprintf("task-joined:%s:%d:%s:%v", key, issue.Generation, task, row.StepWaitSince)
 	mustSpend(t, "the end of the join of task "+task, applyFacts(t, pool, engine)(id,
-		intake.TaskJoined{Issue: key, Generation: issue.Generation, Task: task, Branch: row.BranchOf(key), Needs: row.Needs}))
+		intake.TaskJoined{Issue: key, Generation: issue.Generation, Task: task, Row: joinRowOf(t, pool, key, issue.Generation, task), Branch: row.BranchOf(key), Needs: row.Needs}))
 }
 
 // joinsEnd applies the end of the join of each task of key whose step waits for its join and whose
@@ -115,7 +115,7 @@ func TestEachStartOfATaskWaitsForItsJoin(t *testing.T) {
 
 		branch := tasksOf(t, pool, engine, root.Key)["d"].BranchOf(root.Key)
 		mustSpend(t, "the end of d's join", applyFacts(t, pool, engine)("task-joined:d",
-			intake.TaskJoined{Issue: root.Key, Generation: root.Generation, Task: "d", Branch: branch, Needs: []string{"a", "c"}}))
+			intake.TaskJoined{Issue: root.Key, Generation: root.Generation, Task: "d", Row: joinRowOf(t, pool, root.Key, root.Generation, "d"), Branch: branch, Needs: []string{"a", "c"}}))
 
 		assertWaits(t, tasksOf(t, pool, engine, root.Key), "d", atStep(1), record.StepWaitNone)
 		if claims := startClaims(t, pool, root.Key, claim.RoleImplementer); !slices.Contains(claims, agentClaim(t, root.Key, "impl-d")) {
@@ -150,7 +150,11 @@ func TestEachStartOfATaskWaitsForItsJoin(t *testing.T) {
 
 		assertWaits(t, tasksOf(t, pool, engine, root.Key), "c", atStep(1), record.StepWaitNone)
 		const told = "Reason: the owner gave version 2 of the plan while task c was stopped."
-		row := roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer)
+		var row record.PhaseRow
+		onTask(t, pool, engine, root.Key, "c", func(ctx context.Context, tx pgx.Tx, s TaskScope) (err error) {
+			row, err = engine.stepRow(ctx, tx, s, claim.RoleImplementer)
+			return err
+		})
 		if !row.EntryMovedBack || !strings.Contains(row.EntryTask, told) {
 			t.Fatalf("the implementer's row after c's join has entry %d (moved back %t) and task %q, want an entry raised as a move back whose task holds %q",
 				row.Entry, row.EntryMovedBack, row.EntryTask, told)
@@ -243,13 +247,6 @@ func TestAJoinThatWaitedAtAReadmissionStartsAgain(t *testing.T) {
 	branch := "legion/" + root.Key + ".d"
 	seedTaskBranch(t, pool, root.Key, "d", branch)
 	joinWaits(t, pool, root.Key, root.Generation, "d")
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		row, err := record.NewOutboxRow(root.Key, record.TaskBranch{Generation: root.Generation, Task: "d"}, stepClock)
-		if err != nil {
-			return err
-		}
-		return record.NewStore().Enqueue(t.Context(), tx, row)
-	})
 
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		next := root
@@ -270,11 +267,11 @@ func TestAJoinThatWaitedAtAReadmissionStartsAgain(t *testing.T) {
 
 	apply := applyFacts(t, pool, engine)
 	mustSpend(t, "the end of d's join at generation 1", apply("task-joined:1",
-		intake.TaskJoined{Issue: root.Key, Generation: root.Generation, Task: "d", Branch: branch, Needs: []string{"c"}}))
+		intake.TaskJoined{Issue: root.Key, Generation: root.Generation, Task: "d", Row: joinRowOf(t, pool, root.Key, root.Generation, "d"), Branch: branch, Needs: []string{"c"}}))
 	assertWaits(t, tasksOf(t, pool, engine, root.Key), "d", atStep(1), record.StepWaitJoin)
 
 	mustSpend(t, "the end of d's join at generation 2", apply("task-joined:2",
-		intake.TaskJoined{Issue: root.Key, Generation: root.Generation + 1, Task: "d", Branch: branch, Needs: []string{"c"}}))
+		intake.TaskJoined{Issue: root.Key, Generation: root.Generation + 1, Task: "d", Row: joinRowOf(t, pool, root.Key, root.Generation+1, "d"), Branch: branch, Needs: []string{"c"}}))
 	assertWaits(t, tasksOf(t, pool, engine, root.Key), "d", atStep(1), record.StepWaitNone)
 	if claims := startClaims(t, pool, root.Key, claim.RoleImplementer); !slices.Equal(claims, []claim.Token{agentClaim(t, root.Key, "impl-d")}) {
 		t.Fatalf("the implementer's starts of %s after d's join at generation 2 = %v, want d's agent impl-d alone", root.Key, claims)

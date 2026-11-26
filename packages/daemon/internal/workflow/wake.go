@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"slices"
 	"strconv"
@@ -126,12 +127,35 @@ type WakeStop int
 
 const (
 	// StoppedByRelease: an idle release stopped the session and took its pod, which the wake
-	// brings back as a fresh pod with the workspace the release saved.
+	// brings back as a fresh pod. The release took the pod only because no working copy and no
+	// bookmark of its workspace held a commit origin does not hold and no working-copy change was in
+	// it (WorkspaceAfterRelease).
 	StoppedByRelease WakeStop = iota
 	// StoppedByPause: a project's pause stopped the session and kept its pod, its workspace and
 	// its unpushed work as they were (decision 16 of dispatch://INFRA-3759).
 	StoppedByPause
 )
+
+// WorkspaceAfterRelease is what a role woken after an idle release is told of its workspace, in
+// the daemon's wake task (WakeTask) and in the notice the role's plugin writes when its launcher
+// finds the workspace made again (WORKSPACE_AFTER_RELEASE in
+// packages/pi-shared/src/workspace-recreated.ts). The two say it in the same words, so a woken
+// role reads one account of its workspace, and what they say is what the daemon knows: the
+// release's check keeps a pod whose workspace holds a commit on a working copy or a local bookmark
+// that no branch or tag on origin holds, or a working-copy change (internal/daemon's
+// checkIssueWorkspace, the shim's workspaceWorkRevset), and a pod whose disk went with it comes
+// back with a workspace that provisioning made from the issue's pushed branch. The read does not
+// count a commit that no working copy and no bookmark reaches, a side head a role left with
+// `jj new <base>`, so the release can take one, and the text says so: it never says that nothing
+// unpushed was lost, nor that unpushed work was kept, since the daemon keeps none. A kept volume is
+// the one disk that does not go, which is why the second sentence is conditional. The text is the data file
+// workspace-after-release.txt beside this one, embedded here and read by the plugin's test
+// (packages/pi-shared/src/workspace-recreated.test.ts), which holds its copy to it byte for byte;
+// the file's one line ends in a newline, which the text does not carry.
+var WorkspaceAfterRelease = strings.TrimSuffix(workspaceAfterReleaseFile, "\n")
+
+//go:embed workspace-after-release.txt
+var workspaceAfterReleaseFile string
 
 // WakeTask is the one task a woken role is given, the sentence its first turn reads before
 // anything else: what stopped its session, which wake brought it back and what that wake was
@@ -152,7 +176,7 @@ const (
 // read only when its footer names the entry that stands. The text here names no entry itself.
 func WakeTask(kind, detail string, stop WakeStop) string {
 	preamble := "Your issue's pod had been released while it was idle, and this wake brought it back. " +
-		"Your session, your workspace and any work you had not pushed are as you left them. "
+		WorkspaceAfterRelease + " Your session is as you left it. "
 	away, backstop := "while your pod was gone", "the release's backstop"
 	if stop == StoppedByPause {
 		preamble = "Your project was paused, and its pause stopped your session. This wake started it again. " +
@@ -234,6 +258,15 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 // the same role, an earlier version's agent, does not work the step. A head that settles again as
 // each of its checks finishes wakes the pod no second time, because the role's resume is still
 // open. It answers each role it woke, in the steps' order.
+//
+// Asking the apply step also keeps a settlement delivered late, or replayed from a message the
+// intake gave up on, however late, from waking anyone where the record will not take it for the
+// pull request's head now (dispatch://INFRA-1575 R1): one of a head the pull request has left, or
+// one of its head older than what the record already took. The apply step weighs it against the
+// fence the record would apply it to (classify.SettlementFor), which is the one the record
+// remembers for the head when its fence was reset, so it is stale exactly where it is with the
+// fence standing, and the woken worker's task would otherwise name a verdict that is no longer
+// the head's.
 func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks) ([]claim.Role, error) {
 	if e.cfg.Pods == nil || fact.HeadSHA == "" {
 		return nil, nil
@@ -480,40 +513,36 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, released.Token, kind, pause, WakeTask(kind, detail, stop)))
 }
 
-// OpenWorkers is the claim of the worker of each of issue's steps that take work (OpenStepsOf),
-// each claim once, in the steps' order, and none where no step takes work: the claim the record
-// gives the step of that step's role, through record.WorkerClaim over the issue's phases rows,
-// read in tx. That claim can be a keyed agent's, whose token names another role, beside the role's
-// own claim of an earlier version of the plan, so a role does not name it. It answers which claims
-// a pause's stop arms a backstop for — an architect gets none, because nothing of its own is due
-// and a sub-architect woken for nothing would hold a pod open for the backstop period — and
-// project is the project's token, as record.WorkerClaim takes it.
-func OpenWorkers(ctx context.Context, phases PhaseReader, tx pgx.Tx, project string, issue record.Issue) ([]claim.Token, error) {
+// OpenWorkers names each distinct agent of the steps that take work, in task order.
+// RunningStep already carries the canonical agent, so this reads no role-collapsed phase row.
+func OpenWorkers(project string, issue record.Issue) ([]claim.Token, error) {
 	open := OpenStepsOf(issue)
 	if len(open) == 0 {
 		return nil, nil
 	}
-	rows, err := phases.Phases(ctx, tx, issue.Key)
-	if err != nil {
-		return nil, fmt.Errorf("read the phases of %s: %w", issue.Key, err)
+	workers := make([]claim.Token, 0, len(open))
+	var seen map[claim.Token]bool
+	if len(open) > 1 {
+		seen = make(map[claim.Token]bool, len(open))
 	}
-	var workers []claim.Token
 	for _, step := range open {
-		worker, err := record.WorkerClaim(project, issue.Key, step.Role, rows)
+		agent := step.Agent
+		if agent == "" {
+			agent = claim.Agent(step.Role)
+		}
+		worker, err := claim.AgentToken(project, issue.Key, agent)
 		if err != nil {
 			return nil, err
 		}
-		if !slices.Contains(workers, worker) {
-			workers = append(workers, worker)
+		if seen[worker] {
+			continue
 		}
+		if seen != nil {
+			seen[worker] = true
+		}
+		workers = append(workers, worker)
 	}
 	return workers, nil
-}
-
-// PhaseReader reads an issue's phases rows (record.Store.Phases), what OpenWorkers needs of a
-// record store.
-type PhaseReader interface {
-	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]record.PhaseRow, error)
 }
 
 // OpenStepsOf is each running step of issue that takes work (record.Issue.Running), in task id
@@ -525,8 +554,9 @@ type PhaseReader interface {
 // brings a worker back to its work reads, and each loops over every step it answers: which ready
 // claim is sent its step's task (readyWorkerTask), which suspended claims the boot resumes
 // (suspendedPhaseOwners), which claim the silence repair prompts (phaseWorkerRecord), which roles
-// a CI settlement wakes (wakeOnSettlement), and which claims an idle release keeps
-// (idlePhaseOpen).
+// a CI settlement wakes (wakeOnSettlement), which claims an idle release keeps
+// (idlePhaseOpen), and which roles' starts the pod start gate puts first (the daemon's
+// phaseRoles).
 func OpenStepsOf(issue record.Issue) []record.RunningStep {
 	var open []record.RunningStep
 	for _, step := range issue.Running {

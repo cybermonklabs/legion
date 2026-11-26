@@ -28,8 +28,8 @@ import (
 // the install (Installed) and refuses to start an agent where it is not the pin's. It is under the
 // issue's scratch, `/legion/scratch` (internal/runtime/sandbox's scratchRoot): the roles of a pod
 // share that scratch — TMPDIR, the cache home and the data home sit directly under it and every
-// role is told the same one — so one install serves all six roles, and it dies with the pod, as a
-// copy of a check that publishes often should. The directory is this package's constant rather
+// role is told the same one — so one install serves all the pod's roles, and it dies with the pod,
+// as a copy of a check that publishes often should. The directory is this package's constant rather
 // than the runtime's because the install writes it and the runtime names it
 // (sandbox.mainEnvironment sets PUBLIC_LEAK_CHECK to InstalledCheck): one string, so the path a
 // role is told and the path the install writes cannot drift.
@@ -483,11 +483,13 @@ func firstLine(printed string) string {
 // its roles no CheckerVar, so the role starts without one.
 //
 // With a pin and CheckerVar it answers a *SetupFailure, naming the pin and what the install holds,
-// where the check is absent, where its tag file cannot be read (naming why), where the install
-// records no tag, where it records another tag, and where the install's manifest digest
-// (manifestSHA256: the launcher script, the program, the must-pass lines and the README) is not
-// the deployment's or cannot be read: a role whose check is not the pin's, or not the one the
-// deployment named by its manifest digest (Setting.ManifestSHA256), runs no agent.
+// each as shownText shows it, where the check is absent, where its tag file cannot be read (naming
+// why), where the install records no tag, where it records another tag, and where the install's
+// manifest digest (manifestSHA256: the launcher script, the program, the must-pass lines and the
+// README) is not the deployment's or cannot be read: a role whose check is not the pin's, or not
+// the one the deployment named by its manifest digest (Setting.ManifestSHA256), runs no agent. The
+// reason a refused tag file gives is rolefile's own sentence, which names the tag file's path as
+// written, and not as shownText shows it.
 func Installed(env []string, dir string) (string, error) {
 	pin := value(env, TagVariable)
 	if pin == "" || !configured(env) {
@@ -501,26 +503,26 @@ func Installed(env []string, dir string) (string, error) {
 	switch {
 	case refused != nil:
 		return "", &SetupFailure{What: installWhat,
-			Why: fmt.Sprintf("%s=%s, and the install at %s is no install of it: its tag file is refused (%v)", TagVariable, pin, dir, refused)}
+			Why: fmt.Sprintf("%s=%s, and the install at %s is no install of it: its tag file is refused (%v)", TagVariable, shownText(pin), shownText(dir), refused)}
 	case !there:
 		return "", &SetupFailure{What: installWhat,
-			Why: fmt.Sprintf("%s=%s, and the pod's launcher installed no check at %s", TagVariable, pin, check)}
+			Why: fmt.Sprintf("%s=%s, and the pod's launcher installed no check at %s", TagVariable, shownText(pin), shownText(check))}
 	case tag == "":
 		return "", &SetupFailure{What: installWhat,
-			Why: fmt.Sprintf("%s=%s, and the install at %s records no tag (%s)", TagVariable, pin, dir, tagFile)}
+			Why: fmt.Sprintf("%s=%s, and the install at %s records no tag (%s)", TagVariable, shownText(pin), shownText(dir), tagFile)}
 	case tag != pin:
 		return "", &SetupFailure{What: installWhat,
-			Why: fmt.Sprintf("%s=%s, and the install at %s is of %s", TagVariable, pin, dir, tag)}
+			Why: fmt.Sprintf("%s=%s, and the install at %s is of %s", TagVariable, shownText(pin), shownText(dir), shownText(tag))}
 	}
 	checker := value(env, CheckerVar)
 	held, err := manifestSHA256(check)
 	switch {
 	case err != nil:
 		return "", &SetupFailure{What: installWhat,
-			Why: fmt.Sprintf("%s=%s, and the manifest of the install at %s cannot be read to compare with %s=%s: %v", TagVariable, pin, dir, CheckerVar, checker, err)}
+			Why: fmt.Sprintf("%s=%s, and the manifest of the install at %s cannot be read to compare with %s=%s: %v", TagVariable, shownText(pin), shownText(dir), CheckerVar, shownText(checker), err)}
 	case !strings.EqualFold(held, checker):
 		return "", &SetupFailure{What: installWhat,
-			Why: fmt.Sprintf("%s=%s, and the install at %s has the manifest digest %s, not the deployment's %s=%s", TagVariable, pin, dir, held, CheckerVar, checker)}
+			Why: fmt.Sprintf("%s=%s, and the install at %s has the manifest digest %s, not the deployment's %s=%s", TagVariable, shownText(pin), shownText(dir), held, CheckerVar, shownText(checker))}
 	}
 	return check, nil
 }

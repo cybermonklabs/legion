@@ -47,17 +47,52 @@ var typeMigrations = []string{
 }
 
 // backfillVersion is the newest migration of the releases that carry the graph store and its
-// backfill (`backfill-graph-store`) and not 20261123080000: every legion-envoy release from
-// v34.11.0 up to the one that carries that migration (v34.11.0 to v34.11.4 on 2026-11-23) holds
-// every migration through 20261121060636_search_document_text and none after it, so a deployment
-// may have run the backfill over a store at this version. Every type migration of typeMigrations
-// is numbered below it; one numbered above it runs over graph_nodes and graph_tuples the backfill
-// may have filled.
+// backfill (`backfill-graph-store`) and not 20261123080000: each of legion-envoy-v34.11.0 to
+// legion-envoy-v34.11.8, every release before legion-envoy-v34.12.0, which carries that migration,
+// holds 20261121060636_search_document_text as its newest migration and none after it, so a
+// deployment may have run the backfill over a store at this version. Those releases do not hold
+// every migration this tree numbers below it (unreleasedVersionsBelowTheBackfill), the backfill's
+// four indexes (20261119020700 to 20261119021000) among them, which came with a later release: the
+// runner applies every version it has not recorded, so this tree's MigrateThrough builds them here
+// too (openAtTheBackfill). Every type migration of typeMigrations is numbered below it; one
+// numbered above it runs over graph_nodes and graph_tuples the backfill may have filled.
 const backfillVersion = 20261121060636
+
+// unreleasedVersionsBelowTheBackfill is every version this tree numbers below backfillVersion that
+// no v34.11.x release holds, read from each release's migrations
+// (`git ls-tree --name-only legion-envoy-v34.11.<n> -- packages/envoy/internal/dispatch/store/migrations/`):
+// legion-envoy-v34.11.0 to legion-envoy-v34.11.8 hold the same releasedThroughTheBackfill
+// migrations, every one numbered at or below backfillVersion and every one a file of this tree. The
+// runner applies every version its version table does not record, whatever its number, so a store
+// of those releases that ran the backfill meets each version listed here as pending over the
+// graph_nodes and graph_tuples the backfill filled, before the type migrations numbered above
+// backfillVersion (requireTheUnreleasedBelowTheBackfillAreTheFiles). Among them,
+// 20261116015042_graph_nodes_project adds two nullable columns to graph_nodes, and
+// 20261116015056_graph_nodes_project_index builds an index of it concurrently. The census counts
+// neither as a change of graph_nodes for the bounded writes of a type migration after them. Each
+// version listed here that writes rows of graph_nodes (writesGraphNodes) is a type migration such
+// a store meets after its backfill, and requireTheCensusAdmitsEachTypeMigrationAboveTheLimit judges
+// it as it judges the type migrations numbered above backfillVersion. A version a later release
+// holds is listed here too, as 20261110224508_post_corrections is, which legion-envoy-v34.22.0
+// first holds: a v34.11.x store meets it after its backfill all the same.
+var unreleasedVersionsBelowTheBackfill = []int{
+	20261110224508, 20261116015042, 20261116015056, 20261116015736, 20261116035709, 20261116081157,
+	20261116085957, 20261116232217, 20261117025900, 20261117025901, 20261117025902, 20261117025903,
+	20261117025904, 20261117025905, 20261117025906, 20261117025907, 20261117025908, 20261117025909,
+	20261117025910, 20261118161237, 20261118181230, 20261119020700, 20261119020800, 20261119020900,
+	20261119021000, 20261120020130, 20261120023712, 20261120131444, 20261120150130, 20261120204136,
+	20261121043859,
+}
+
+// releasedThroughTheBackfill is how many migrations each v34.11.x release holds, all of them
+// numbered at or below backfillVersion.
+const releasedThroughTheBackfill = 290
 
 // openAtTheBackfill is a store this tree's runner migrated through backfillVersion and no further:
 // the store a deployment of those releases holds before it runs the backfill, and the store the type
-// migrations before the backfill left.
+// migrations before the backfill left, with the backfill's four indexes beside it. Those are
+// indexes alone, so they change no row this test writes or reads, and the backfill this test runs
+// is this tree's (graphcensus.Backfill), which refuses to run without them.
 func openAtTheBackfill(t *testing.T) *store.Store {
 	t.Helper()
 	return storetest.OpenFrom(t, fmt.Sprintf("this tree's runner through %d (openAtTheBackfill)", backfillVersion), func(databaseURL string) error {
@@ -102,6 +137,7 @@ var closedSupertags = []string{
 // store, fails here. A pointer is listed by its target's type as that type stands at each read,
 // and a pointer whose rows name its node by the targets its attribute node holds at that read.
 func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
+	// Not parallel: it installs pmdoc's process-wide block schema.
 	database := storetest.Open(t)
 	ctx := context.Background()
 	pool := database.Pool
@@ -125,17 +161,23 @@ func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 }
 
 // TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema runs every type migration
-// written after the store's backfill as a deployment of the releases that carry the backfill meets
+// a deployment of the releases that carry the backfill meets after it, as that deployment meets
 // it. The store is at backfillVersion (openAtTheBackfill); it holds an issue and comments written
 // as the releases before the graph store wrote them, which name no node, and backfill-graph-store's
 // own run (graphcensus.Backfill) states their nodes and tuples, as a deployment runs it once that
-// release serves. Then the migration census of this binary's pending migrations runs with its table
-// limit at one byte, the store census tests' size fixture, under which every table that holds a row
-// is above the limit, so an admission here holds at any size: it must admit each pending migration
-// that writes graph_nodes, for bounded writes of graph_nodes and graph_tuples, with no refusal. The
-// runner applies the rest, and the store is held to the file as TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt
-// holds a fresh one, and to leaving every node and tuple the backfill wrote as it was.
+// release serves. The store then forgets the versions below backfillVersion that no v34.11.x
+// release holds (unreleasedVersionsBelowTheBackfill), which such a deployment meets as pending
+// over the store its backfill filled, and the migration census of this binary's pending
+// migrations runs with its table limit at one byte (censusLimit), the store census tests' size
+// fixture, under which every table that holds a row is above the limit, so an admission here holds
+// at any size: it must admit each pending migration that writes graph_nodes, for bounded writes of
+// graph_nodes and graph_tuples, with no refusal. The forgotten rows are put back, the runner
+// applies the rest, and the store is held to the file as
+// TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt holds a fresh one, and to leaving every
+// node and tuple the backfill wrote as it was.
 func TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema(t *testing.T) {
+	t.Parallel()
+	requireTheUnreleasedBelowTheBackfillAreTheFiles(t)
 	database := openAtTheBackfill(t)
 	ctx := context.Background()
 	pool := database.Pool
@@ -143,7 +185,9 @@ func TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema(t *test
 	writeRowsBeforeTheStore(t, ctx, pool)
 	runTheBackfill(t, ctx, database)
 	backfilled := backfilledRows(t, ctx, pool)
+	held := forgetVersions(t, ctx, pool, unreleasedVersionsBelowTheBackfill)
 	requireTheCensusAdmitsEachTypeMigrationAboveTheLimit(t, ctx, pool)
+	putVersionsBack(t, ctx, pool, held)
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("apply the migrations after %d over the backfilled store: %v", backfillVersion, err)
 	}
@@ -244,16 +288,95 @@ func backfilledRows(t *testing.T, ctx context.Context, pool *store.Pool) []strin
 	return written
 }
 
-// requireTheCensusAdmitsEachTypeMigrationAboveTheLimit takes the migration census of this binary's
-// migrations over the store, with the table limit at one byte, and holds each pending migration
-// that touches graph_nodes - each type migration written after the backfill - to being admitted
-// for bounded writes of graph_nodes and of graph_tuples, which the census read above the limit,
-// with no refusal at all. A pending migration that touches neither is not judged here: its
-// refusal at one byte says nothing about a type migration. A census that judged no type migration
-// fails, since it proved nothing.
-func requireTheCensusAdmitsEachTypeMigrationAboveTheLimit(t *testing.T, ctx context.Context, pool *store.Pool) {
+// requireTheUnreleasedBelowTheBackfillAreTheFiles holds unreleasedVersionsBelowTheBackfill to the
+// migrations this binary embeds, read from disk (storeMigrationsDir): each version listed is a
+// migration of this tree numbered below backfillVersion, listed once and in order, and the
+// migrations at or below backfillVersion that the versions leave out number
+// releasedThroughTheBackfill, the ones every v34.11.x release holds. A migration numbered below
+// backfillVersion that no such release holds and the versions leave out fails that count, and the
+// census never reads it as pending over the backfilled store.
+func requireTheUnreleasedBelowTheBackfillAreTheFiles(t *testing.T) {
 	t.Helper()
-	const limit = 1
+	migrations, err := pgmigrate.Load(os.DirFS(storeMigrationsDir), "migrations")
+	if err != nil {
+		t.Fatalf("load the store's migrations: %v", err)
+	}
+	names := map[int]string{}
+	for _, migration := range migrations {
+		names[migration.Version] = migration.Name
+	}
+	unreleased := map[int]bool{}
+	for i, version := range unreleasedVersionsBelowTheBackfill {
+		if i > 0 && version <= unreleasedVersionsBelowTheBackfill[i-1] {
+			t.Errorf("unreleasedVersionsBelowTheBackfill lists %d after %d: list each version once, in ascending order", version, unreleasedVersionsBelowTheBackfill[i-1])
+		}
+		if version >= backfillVersion {
+			t.Errorf("unreleasedVersionsBelowTheBackfill lists %d, which is not below %d", version, backfillVersion)
+		}
+		if names[version] == "" {
+			t.Errorf("unreleasedVersionsBelowTheBackfill lists %d, which is no migration of this tree", version)
+		}
+		unreleased[version] = true
+	}
+	released := 0
+	for _, migration := range migrations {
+		if migration.Version <= backfillVersion && !unreleased[migration.Version] {
+			released++
+		}
+	}
+	if released != releasedThroughTheBackfill {
+		t.Errorf("this tree holds %d migrations at or below %d beside unreleasedVersionsBelowTheBackfill, and each v34.11.x release holds %d: "+
+			"list in unreleasedVersionsBelowTheBackfill each version below %d that `git ls-tree --name-only legion-envoy-v34.11.8 -- packages/envoy/internal/dispatch/store/migrations/` does not name",
+			released, backfillVersion, releasedThroughTheBackfill, backfillVersion)
+	}
+}
+
+// forgetVersions deletes the rows of versions from the store's version table, so the census and the
+// runner read those migrations as pending, and answers the rows as they stood, as JSON, for
+// putVersionsBack. It fails unless the table recorded every one of them.
+func forgetVersions(t *testing.T, ctx context.Context, pool *store.Pool, versions []int) string {
+	t.Helper()
+	var held string
+	var forgotten int
+	if err := pool.QueryRow(ctx, `
+		with forgotten as (delete from schema_migrations where version = any($1) returning *)
+		select coalesce(jsonb_agg(to_jsonb(forgotten)), '[]')::text, count(*) from forgotten
+	`, versions).Scan(&held, &forgotten); err != nil {
+		t.Fatalf("forget the version rows of %v: %v", versions, err)
+	}
+	if forgotten != len(versions) {
+		t.Fatalf("the version table recorded %d of the %d versions %v", forgotten, len(versions), versions)
+	}
+	return held
+}
+
+// putVersionsBack writes the rows forgetVersions answered back as they stood, so the runner applies
+// none of those migrations a second time.
+func putVersionsBack(t *testing.T, ctx context.Context, pool *store.Pool, held string) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `insert into schema_migrations select * from jsonb_populate_recordset(null::schema_migrations, $1::jsonb)`, held); err != nil {
+		t.Fatalf("put the forgotten version rows back: %v", err)
+	}
+}
+
+// writesGraphNodes says whether a pending migration writes rows of graph_nodes, as a type migration
+// does: it names graph_nodes itself, not as a table a foreign key reaches, and the census exempts
+// it from the limit neither as catalog-only (TableSizeExemption) nor as a concurrent index build.
+// Among the migrations below backfillVersion, one that only adds a column or an index to
+// graph_nodes, or a foreign key into it, touches graph_nodes and writes none of its rows.
+func writesGraphNodes(entry pgmigrate.MigrationCensus) bool {
+	return entry.TableSizeExemption == "" && !entry.ConcurrentIndex &&
+		slices.ContainsFunc(entry.Tables, func(table pgmigrate.TableCensus) bool { return table.Name == "graph_nodes" && table.Through == "" })
+}
+
+// censusLimit is the table limit of the census this file takes, one byte: the store census tests'
+// size fixture, under which every table that holds a row is above the limit.
+const censusLimit = 1
+
+// pendingCensus takes the migration census of this binary's migrations over the store, with the
+// table limit at censusLimit, and logs its report, naming the store it read as over.
+func pendingCensus(t *testing.T, ctx context.Context, pool *store.Pool, over string) *pgmigrate.Report {
+	t.Helper()
 	migrations, err := pgmigrate.Load(os.DirFS(storeMigrationsDir), "migrations")
 	if err != nil {
 		t.Fatalf("load the store's migrations: %v", err)
@@ -263,40 +386,55 @@ func requireTheCensusAdmitsEachTypeMigrationAboveTheLimit(t *testing.T, ctx cont
 		t.Fatalf("connect for the census: %v", err)
 	}
 	defer conn.Close(context.Background())
-	report, err := pgmigrate.Census(ctx, conn, migrations, "schema_migrations", pgmigrate.CensusOptions{TableLimit: limit})
+	report, err := pgmigrate.Census(ctx, conn, migrations, "schema_migrations", pgmigrate.CensusOptions{TableLimit: censusLimit})
 	if err != nil {
 		t.Fatalf("census: %v", err)
 	}
 	var out strings.Builder
 	report.Write(&out)
-	t.Logf("census at a %d-byte table limit over the backfilled store:\n%s", limit, out.String())
+	t.Logf("census at a %d-byte table limit over %s:\n%s", censusLimit, over, out.String())
+	return report
+}
+
+// requireTheCensusAdmitsEachTypeMigrationAboveTheLimit takes the migration census of this binary's
+// migrations over the backfilled store (pendingCensus), and holds each type migration pending there
+// to being admitted for bounded writes of graph_nodes and of graph_tuples, which the census read
+// above the limit, with no refusal at all. The type migrations are each pending migration that
+// writes rows of graph_nodes (writesGraphNodes), whatever its number: those numbered above
+// backfillVersion, written after the backfill, and those of unreleasedVersionsBelowTheBackfill,
+// which a store of the v34.11.x releases meets after its backfill too. Any other pending migration
+// is not judged here: its refusal at one byte says nothing about a type migration. A census that
+// judged no type migration fails, since it proved nothing.
+func requireTheCensusAdmitsEachTypeMigrationAboveTheLimit(t *testing.T, ctx context.Context, pool *store.Pool) {
+	t.Helper()
 	judged := 0
-	for _, entry := range report.Pending {
+	for _, entry := range pendingCensus(t, ctx, pool, "the backfilled store").Pending {
 		admitted := map[string]bool{}
 		for _, table := range entry.Tables {
 			if table.Name != "graph_nodes" && table.Name != "graph_tuples" {
 				continue
 			}
-			if !table.Exists || table.Bytes <= limit {
-				t.Fatalf("%s: the census read %s as %+v, not above the %d-byte limit, so nothing was proved about a table above it", entry.Migration.Name, table.Name, table, limit)
+			if !table.Exists || table.Bytes <= censusLimit {
+				t.Fatalf("%s: the census read %s as %+v, not above the %d-byte limit, so nothing was proved about a table above it", entry.Migration.Name, table.Name, table, censusLimit)
 			}
 			admitted[table.Name] = table.BoundedWrites > 0
 		}
-		if _, ok := admitted["graph_nodes"]; !ok {
+		name := entry.Migration.Name
+		if !writesGraphNodes(entry) {
 			continue
 		}
 		judged++
 		for _, table := range []string{"graph_nodes", "graph_tuples"} {
 			if !admitted[table] {
-				t.Errorf("%s is not admitted for bounded writes of %s above the limit; a type migration written after the backfill writes %s", entry.Migration.Name, table, typeMigrationShape)
+				t.Errorf("%s is not admitted for bounded writes of %s above the limit; a type migration pending over a backfilled store writes %s", name, table, typeMigrationShape)
 			}
 		}
 		for _, refusal := range entry.Refusals {
-			t.Errorf("the census refuses %s over a backfilled store: %s", entry.Migration.Name, refusal)
+			t.Errorf("the census refuses %s over a backfilled store: %s", name, refusal)
 		}
 	}
 	if judged == 0 {
-		t.Fatalf("no pending migration after %d touches graph_nodes, so the census judged no type migration written after the backfill", backfillVersion)
+		t.Fatalf("no pending migration writes graph_nodes, so the census judged no type migration over the backfilled store")
 	}
 }
 

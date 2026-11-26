@@ -16,12 +16,13 @@ import { executeDispatchTool } from "../dispatch-execute";
 import { DispatchNoRouteError } from "../dispatch-http";
 
 // `dispatch steps --issue <KEY>`: the tasks of an issue and the steps that ran on it, as Dispatch's
-// `GET /api/v1/issues/{key}/steps` answers them: one header line, then each task in turn. A task of
-// the plan prints one line of its needs and its planned steps before its runs, and each run prints
-// one line. The format cases drive `executeDispatchTool` over the shared fake Dispatch
-// (`test/fake-dispatch.ts`) as a fetch, so each reads the text and the details a host is handed;
-// the command-line cases drive the real CLI against that fake on a loopback port, and read its exit
-// code and output.
+// `GET /api/v1/issues/{key}/steps` answers them: one header line, then, where the records of the
+// issue's newest run name an experiment, `Experiment <experiment>: variant <variant>.`, then each
+// task in turn. A task of the plan prints one line of its needs and its planned steps before its
+// runs, and each run prints one line. The format cases drive `executeDispatchTool` over the shared
+// fake Dispatch (`test/fake-dispatch.ts`) as a fetch, so each reads the text and the details a host
+// is handed; the command-line cases drive the real CLI against that fake on a loopback port, and
+// read its exit code and output.
 
 /** The implementer's run of LEG-1's step 2: ended, with its model and its report. */
 const implementer: StepRecord = {
@@ -44,6 +45,8 @@ const implementer: StepRecord = {
   report: "9b2e4d6f-8a1c-4e3b-a5d7-c9f1e3b5d7a9",
   rating: null,
   rating_reason: null,
+  experiment: null,
+  variant: null,
 };
 
 /** The tester's run of step 3, still running: no end, no result, and no session or model, which
@@ -68,6 +71,8 @@ const tester: StepRecord = {
   report: null,
   rating: null,
   rating_reason: null,
+  experiment: null,
+  variant: null,
 };
 
 /**
@@ -94,6 +99,8 @@ const mergedByGitHub: StepRecord = {
   report: null,
   rating: null,
   rating_reason: null,
+  experiment: null,
+  variant: null,
 };
 
 /** The docs task's first run, which started before any run of task default. */
@@ -117,6 +124,8 @@ const docsDraft: StepRecord = {
   report: null,
   rating: null,
   rating_reason: null,
+  experiment: null,
+  variant: null,
 };
 
 /** A second run of a review of another task, sent back to step 1 of that task. */
@@ -140,6 +149,8 @@ const docsReview: StepRecord = {
   report: null,
   rating: null,
   rating_reason: null,
+  experiment: null,
+  variant: null,
 };
 
 /** The implementer's retro of LEG-1, which rated the plan: a retro is the one kind of run that
@@ -164,6 +175,8 @@ const ratedRetro: StepRecord = {
   report: null,
   rating: 4,
   rating_reason: "The plan fit the work; the review sent it back once.",
+  experiment: null,
+  variant: null,
 };
 
 /** A merger's run that failed and sent its task back to place 0, the retro: a destination of 0
@@ -188,6 +201,8 @@ const mergeSentBack: StepRecord = {
   report: null,
   rating: null,
   rating_reason: null,
+  experiment: null,
+  variant: null,
 };
 
 const config = {
@@ -261,6 +276,66 @@ describe("dispatch steps", () => {
     expect(result.text.split("\n")[2]).toBe(
       "default 0 merge merger - attempt 1 - - - 2026-11-16T12:00:00Z passed"
     );
+  });
+
+  // An issue a draw put in an experiment names the experiment and the variant drawn on each of its
+  // records, and the read prints them once, above its steps; an issue whose records name none
+  // prints no such line (the first row above).
+  test("an issue in an experiment prints its variant once, above its steps", async () => {
+    const drawn = { experiment: "planning", variant: "b" };
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [
+        {
+          task: "default",
+          needs: null,
+          steps: [
+            { ...implementer, ...drawn },
+            { ...tester, ...drawn },
+          ],
+        },
+      ],
+    };
+
+    const { result } = await readSteps(answer);
+
+    expect(result.text).toBe(
+      [
+        "LEG-1: 2 steps in 1 tasks",
+        "Experiment planning: variant b.",
+        "default 2 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed",
+        "default 3 step tester testing attempt 1 legion-leg-leg-1-tester - 2026-11-16T10:00:00Z running running",
+      ].join("\n")
+    );
+  });
+
+  // The variant is the one the records of the issue's newest run name: a run of an older
+  // generation that names another, and a record of the newest that names none yet, change nothing.
+  test("the variant printed is the one the newest run's records name", async () => {
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [
+        {
+          task: "default",
+          needs: null,
+          steps: [
+            { ...implementer, experiment: "planning", variant: "a" },
+            { ...tester, generation: 2 },
+            {
+              ...implementer,
+              id: "8e2c4a6b-1d3f-5b7a-9c0e-2f4a6c8e0b13",
+              generation: 2,
+              experiment: "planning",
+              variant: "b",
+            },
+          ],
+        },
+      ],
+    };
+
+    const { result } = await readSteps(answer);
+
+    expect(result.text.split("\n")[1]).toBe("Experiment planning: variant b.");
   });
 
   // The line keeps its columns and prints no rating; the details a host is handed are the
@@ -420,17 +495,17 @@ describe("dispatch steps", () => {
     expect(result.text).toBe(
       [
         "LEG-1: 1 steps in 2 tasks",
-        "task a needs nothing: 1 implementer running, 2 reviewer not started",
+        "task a needs []: 1 implementer running, 2 reviewer not started",
         "a 1 step implementer implementation attempt 1 legion-leg-leg-1-implementer - 2026-11-16T09:00:00Z running running",
-        "task b needs a: 1 tester not started",
+        "task b needs [a]: 1 tester not started",
       ].join("\n")
     );
     expect(result.details).toEqual({ issue: "LEG-1", tasks: answer.tasks });
   });
 
   // A plan node that recorded no needs (a daemon of the release before wrote it, or a Dispatch of
-  // the release before took the write) answers them null: the line says they are not recorded,
-  // never that the task needs nothing.
+  // the release before took the write) answers them null: the line prints `-` for them, as a run's
+  // line prints a field its record does not hold, never `[]`, the list of a task that needs none.
   test("a task whose needs are not recorded says so", async () => {
     const answer: IssueSteps = {
       issue: "LEG-1",
@@ -446,9 +521,32 @@ describe("dispatch steps", () => {
 
     const { result } = await readSteps(answer);
 
-    expect(result.text.split("\n")[1]).toBe(
-      "task default needs are not recorded: 1 implementer passed"
-    );
+    expect(result.text.split("\n")[1]).toBe("task default needs -: 1 implementer passed");
+  });
+
+  // The variant is the issue's, so its line stands once, right after the header and above the
+  // line of the plan's first task, where step-records-read.sh reads it. The fault is a variant
+  // line printed inside a task, which that reader takes for no run.
+  test("an issue in an experiment prints its variant above the first task's needs", async () => {
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [
+        {
+          task: "default",
+          needs: [],
+          planned: [{ step: 1, name: "implementer", state: "passed" }],
+          steps: [{ ...implementer, step: 1, experiment: "planning", variant: "b" }],
+        },
+      ],
+    };
+
+    const { result } = await readSteps(answer);
+
+    expect(result.text.split("\n").slice(0, 3)).toEqual([
+      "LEG-1: 1 steps in 1 tasks",
+      "Experiment planning: variant b.",
+      "task default needs []: 1 implementer passed",
+    ]);
   });
 
   // Dispatch reads where a planned step stands from the runs of the plan's own run of the issue;
@@ -482,7 +580,51 @@ describe("dispatch steps", () => {
     const { result } = await readSteps(answer);
 
     expect(result.text.split("\n")[1]).toBe(
-      "task default needs nothing: 1 implementer passed, 2 reviewer not started"
+      "task default needs []: 1 implementer passed, 2 reviewer not started"
+    );
+  });
+
+  // A task id is lowercase letters, digits and hyphens (STEP_TASK_PATTERN), so `nothing` is one,
+  // and a word for "no need" that a task id can take reads two ways. So the needs print as a list
+  // in brackets, `[]` for none, and `-` where they are not recorded: neither is a task id. The ids
+  // are joined by commas with no space, so the list stays one field of a line split on spaces. The
+  // fault is a word for none that a task id can take; the control is the command that prints
+  // `nothing` for none, under which the task that needs none and the task that needs `nothing`
+  // print the same words.
+  test("a task named nothing is told apart from a task that needs none", async () => {
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [
+        {
+          task: "nothing",
+          needs: [],
+          planned: [{ step: 1, name: "implementer", state: "not started" }],
+          steps: [],
+        },
+        {
+          task: "a",
+          needs: ["nothing"],
+          planned: [{ step: 1, name: "tester", state: "not started" }],
+          steps: [],
+        },
+        {
+          task: "c",
+          needs: ["a", "nothing"],
+          planned: [{ step: 1, name: "reviewer", state: "not started" }],
+          steps: [],
+        },
+      ],
+    };
+
+    const { result } = await readSteps(answer);
+
+    expect(result.text).toBe(
+      [
+        "LEG-1: 0 steps in 3 tasks",
+        "task nothing needs []: 1 implementer not started",
+        "task a needs [nothing]: 1 tester not started",
+        "task c needs [a,nothing]: 1 reviewer not started",
+      ].join("\n")
     );
   });
 

@@ -1,0 +1,5 @@
+kind: Added
+body: "Dispatch records the needs, branches and running steps of concurrent tasks in an issue's plan, so each task's progress remains distinct."
+time: 2026-11-24T21:40:49.141288Z
+custom:
+    Issue: pr5165

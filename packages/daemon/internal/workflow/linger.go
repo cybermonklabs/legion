@@ -33,12 +33,13 @@ import (
 // parent keeps running in a pod of its own. A child closed as done with a production
 // check that stays open past the close — one of its checks open already, or the check of a merged
 // pull request of its run that this leave opens — keeps the claim of each such check's agent
-// (keptClaims): every other claim is closed, no IssueSuspend is written, and each check the leave
-// opens starts in its agent's live session; the check's own close retires its claim and writes the
-// suspension (closeCheck). A project whose `production_check` is off checks nothing in
-// production and opens no check, so its merged child's close is like any other done: every claim is
-// closed and the Sandbox deleted with the pod and the disk it ran on. A leave at any other status
-// opens no check: a park suspends the issue's claims and its pod, which a look would need.
+// (keptClaims): every other claim is closed, a role of the deployment's among them, no
+// IssueSuspend is written, and each check the leave opens starts in its agent's live session; the
+// check's own close retires its claim and writes the suspension (closeCheck). A project whose
+// `production_check` is off checks nothing in production and opens no check, so its merged child's
+// close is like any other done: every claim is closed and the Sandbox deleted with the pod and the
+// disk it ran on. A leave at any other status opens no check: a park suspends the issue's claims
+// and its pod, which a look would need.
 // A done child set back to todo opens a new run, and each of its claims comes back on the session
 // it kept when a start of its role reaches it: the architect's and the planner's at its next first
 // phase start. Every claim above is one of Legion's own; the issue's Dispatch claim is the
@@ -58,18 +59,18 @@ import (
 //
 // Whatever the departure, the issue carries no mark of a slot released for a wait afterwards.
 // The mark is the daemon's answer to "this issue was started and its row is gone because it
-// waits on another issue" (record.Issue.ReleasedForWaitAt), and this write is the third of the
-// three that clear it: the other two are the grant of a slot and admission's release, which
-// reads the project's live issues alone (admit's releaseSlots), and a child this function parks
-// at phase.Done is in neither half of that read (record.Postgres.LiveIssues), so without this
-// write nothing would ever clear it. Left standing, a person's later todo would re-enter the
-// issue carrying it, and the line would stand it among the issues whose work came back, at a
-// moment from before the leave, rather than among the issues whose first phase can start, which
-// are ordered by Dispatch rank (record.Waiting). The write is made whatever the record in hand
-// says, because that copy may have been read before the release wrote the mark, and a departure
-// is rare enough that one statement costs nothing.
+// waits on another issue" (record.Issue.ReleasedForWaitAt, which lists every write that clears
+// it). Admission's release reads the project's live issues alone (admit's releaseSlots), and a
+// child this function parks at phase.Done is in neither half of that read
+// (record.Postgres.LiveIssues) and may never see its tree re-admitted, so without this write
+// nothing would ever clear it. Left standing, a person's later todo would
+// re-enter the issue carrying it, and the line would stand it among the issues whose work came
+// back, at a moment from before the leave, rather than among the issues whose first phase can
+// start, which are ordered by Dispatch rank (record.Waiting). The write is made whatever the
+// record in hand says, because that copy may have been read before the release wrote the mark,
+// and a departure is rare enough that one statement costs nothing.
 //
-// Nor does its pull request keep a merge forward (clearMergeForward): the ask, its landing and
+// Nor does its pull request keep a merge forward (clearMergeForwards): the ask, its landing and
 // the review it asked for are of the run that is leaving, and a run that comes back asks about a
 // conflict afresh. This is the one place an issue leaves the workflow, so it is the one clear of
 // a departure.
@@ -174,7 +175,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	// record is read again rather than taken from the snapshot above, because closing the
 	// nearest one leaves (transition's own leave) and may close the ones above it on the way.
 	// The same departure may be the last one an ancestor held before its retro waited for, a
-	// parent whose plan has no acceptance step (record.HoldForChildren): the fact's settle starts
+	// parent whose last step is not the owner's acceptance (record.HoldForChildren): the fact's settle starts
 	// its retro (releaseHeldParents), as it does for every other change of what stands beneath
 	// it.
 	for _, ancestor := range above {
@@ -276,17 +277,19 @@ func (e *Engine) leaveByTasks(ctx context.Context, tx pgx.Tx, written record.Iss
 	return e.openCheckIfMerged(ctx, tx, written, merges, true)
 }
 
-// leaveMerges is the pull request of each merge of issue's run (record.Store.MergePullRequests:
+// leaveMerges is the pull request of each merge of issue's run (record.Store.MergePullRequestRows:
 // each task that has a merge, done, to come, or cut short by a park, as the plan stood) that a
 // leave at status checks: each of them at done, and none at any other status, since a park
 // suspends the claims and the pod a look would need. Its rows are the same whether they are read
 // before the leave writes the issue's tasks out of the workflow or after: that write changes no
 // task's needs or merges, and a task it writes done at its merge stood among the tasks that merge.
+// Each is its row alone: the leave and the checks it opens read the state, the task and the merge,
+// and write none of them back.
 func (e *Engine) leaveMerges(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) ([]record.PullRequest, error) {
 	if status != "done" {
 		return nil, nil
 	}
-	return e.store.MergePullRequests(ctx, tx, issue.Key)
+	return e.store.MergePullRequestRows(ctx, tx, issue.Key)
 }
 
 // toldPullRequests is the number of each pull request of issue that is open and that no queued
@@ -294,9 +297,10 @@ func (e *Engine) leaveMerges(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // what the notice of a child's leave names (leftNotice). A merge that ends the issue queues the
 // close of each other open pull request in its own transaction, before its leave, so that leave
 // names none of them; a close that keeps failing keeps its row, and its pull requests are not
-// named while it retries.
+// named while it retries. It reads each pull request's row alone (record.Store.TaskPullRequestRows),
+// since its state and its number are all it reads.
 func (e *Engine) toldPullRequests(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]int, error) {
-	prs, err := e.store.TaskPullRequests(ctx, tx, issue.Key)
+	prs, err := e.store.TaskPullRequestRows(ctx, tx, issue.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -457,15 +461,16 @@ type awaitedMerge struct {
 }
 
 // mergesAwaited is each task of issue's run that stands at its merge, with its pull request: the
-// rows of the issue's merges (record.Store.MergePullRequests) whose task's copy awaits its merge
+// rows of the issue's merges (record.Store.MergePullRequestRows) whose task's copy awaits its merge
 // (awaitsMerge), in task id order, and for an issue with no plan rows its one row where the issue
 // itself awaits its merge. It is the one read of the merges an issue waits on, read on the issue as
 // the store holds it, with no copy for a task: whether the merging of an issue is finished
 // (PhaseFinished), the close of a merge that waited for the issues beneath it (closeAwaitingMerge),
 // the boot's sweep of merges GitHub reported (sweepMerged) and the hand-over of a member left at
-// its merge with its pull request open (unfinishedHandOvers) read it.
+// its merge with its pull request open (unfinishedHandOvers) read it. Each pull request is its row
+// alone, with none of what it remembers of its settled heads: no reader writes it back.
 func mergesAwaited(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) ([]awaitedMerge, error) {
-	prs, err := store.MergePullRequests(ctx, tx, issue.Key)
+	prs, err := store.MergePullRequestRows(ctx, tx, issue.Key)
 	if err != nil || len(prs) == 0 {
 		return nil, err
 	}
@@ -531,8 +536,8 @@ func awaitsMerge(issue record.Issue) bool {
 
 // InWorkflow says whether an issue is in the workflow: its status is one the workflow runs in and
 // its phase short of done. One still admitted counts, since it will run — a root reopened inside
-// its linger (admit's readmit) stands in `admitted` with no role's phase until its architect
-// reaches planning, and is running again from the reopen. It is the production check's "runs
+// its linger (admit's readmit) stands in `admitted` with no role's phase until its gate opens its
+// task's first step, and is running again from the reopen. It is the production check's "runs
 // again" predicate (check.go) and the outbox's (checkLookHolds): a look of an issue that runs
 // again would resume the implementer and relaunch its Sandbox under the run, so none starts.
 //
@@ -643,10 +648,11 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // guard would otherwise strand is exactly the one holding an open pull request with no live tree
 // left to merge it — green and approved, with nothing in the workflow that would ever merge it.
 // Whether that pull request is open is the one fact here that record.Issue does not carry, so it
-// is read from the pull_requests row of each task of the member that stands at its merge
-// (mergesAwaited), and only for a member of a non-done root's tree that this clause could take —
-// one at phase.Merging that is in the workflow — so a tree of many members costs a handful of reads
-// at most.
+// is read from the pull_requests row alone of each task of the member that stands at its merge
+// (mergesAwaited): its state is all this reads, so the read loads none of what the pull request
+// remembers of its settled heads. It is read only for a member of a non-done root's tree that this
+// clause could take — one at phase.Merging that is in the workflow — so a tree of many members
+// costs a handful of reads at most.
 //
 // What the close does around the hand-over, for a member handed over under either rule: the same
 // expiry still queues a tree_close for each claim of every member — one for each stored claim, and

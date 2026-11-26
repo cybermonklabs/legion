@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The live proof that a pull request which conflicts with its base past the review is the merger's
-# to resolve (cybermonklabs/legion#4979). An issue in accepting whose head GitHub answers CONFLICTING
+# The live proof that a pull request which conflicts with its base once every step of its task has
+# run is the merger's to resolve (cybermonklabs/legion#4979), on the default steps, whose last step
+# is the acceptance. An issue in accepting whose head GitHub answers CONFLICTING
 # has the conflict recorded after the daemon's two reads a minute apart, and nothing is sent to any
 # role, the architect's checks-red notice included. The architect's sign-off moves it to retro,
 # which asks nothing either; retro's completion moves it to merging, where the merger is started

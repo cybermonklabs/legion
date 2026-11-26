@@ -20,6 +20,7 @@ import (
 // step's claim it named none of, which reaches a claim that comes up after the move. The outbox
 // decides whether each claim still stands in that tree when its row runs.
 func TestAnAdoptionQueuesTheOldTreesStopOfEachClaimItLeavesThere(t *testing.T) {
+	t.Parallel()
 	const closedRoot, member, liveRoot = "LEGION-207", "LEGION-208", "LEGION-300"
 	pool := migratedPool(t)
 	now := time.Date(2026, 11, 18, 23, 0, 0, 0, time.UTC)

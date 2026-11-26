@@ -31,11 +31,19 @@ type newsHolder struct {
 }
 
 // phaseHolder is the holder of member's phase where a phase worker holds it: the claim, in the
-// project whose token is project, of the role the phase names. A phase no role holds, accepting,
-// which the owning architect holds (newsClaims.holderOf), and a token that cannot be built name
-// none.
+// project whose token is project, of the role that works the member there. The current phase's
+// canonical running steps supply its first task agent; phases with no running task use their
+// built-in role. Accepting belongs to the owning architect (newsClaims.holderOf). A phase no
+// role holds, and a token that cannot be built, name none.
 func phaseHolder(project string, member record.Issue) (newsHolder, bool) {
 	role := phase.RoleFor(member.Phase)
+	if steps := member.RunningAt(member.Phase); len(steps) != 0 {
+		token, err := claim.AgentToken(project, member.Key, steps[0].Agent)
+		if err != nil {
+			return newsHolder{}, false
+		}
+		return newsHolder{issue: member, role: steps[0].Role, token: token}, true
+	}
 	if role == "" || role == claim.RoleArchitect {
 		return newsHolder{}, false
 	}
@@ -251,7 +259,7 @@ func readOwedHolders(ctx context.Context, tx pgx.Tx, records record.Store, claim
 		if err != nil {
 			return nil, err
 		}
-		holder.entry = record.PhaseRowOf(rows, holder.role).Entry
+		holder.entry = record.PhaseRowForClaim(rows, holder.role, holder.token).Entry
 		holders[key] = holder
 		runKeys = append(runKeys, record.RoleRunKey{Token: holder.token, Issue: holder.issue.Key, Role: holder.role, Generation: holder.issue.Generation})
 	}

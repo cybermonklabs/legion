@@ -17,7 +17,7 @@ import (
 // nothing else: the ask that the implementer, or in merging the merger, merge the base forward and
 // push, the hold that tells the worker of the phase the issue stays in to stop writing the
 // workspace while it does, and, once the merge lands, the landed to that worker and the review to
-// the reviewer of an issue past its review whose task has a reviewer step (payload.Message,
+// the reviewer of an issue whose task's reviewer step already ran (payload.Message,
 // composed from the pull request as this attempt reads it). It stops nothing it reaches.
 //
 // The row is held as a merge-queue removal's is (mergeQueueRemoval), not ended as a plain role
@@ -56,7 +56,7 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 	var left string
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		issue, pr, left, err = workflow.MergeForwardAt(ctx, r.records, tx, row.Issue, payload.Role, payload.Step, payload.Head)
+		issue, pr, left, err = workflow.MergeForwardAt(ctx, r.records, tx, r.deployment, record.PullRequestKey{Issue: row.Issue, Number: payload.PullRequest}, payload.Role, payload.Step, payload.Head)
 		return err
 	}); err != nil {
 		return fmt.Errorf("read the issue and the pull request of %s: %w", row.Issue, err)

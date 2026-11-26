@@ -211,7 +211,7 @@ test("collaboratorSections groups the server's list into the three sections the 
 });
 
 // A role the deployment defines is a Legion role too: its agents get a section of their own, after
-// the six in workflow order, each such role by name, which is the order the server lists them in.
+// the six in the order of the default steps, each such role by name, which is the order the server lists them in.
 // None is left among the other agents.
 test("collaboratorSections puts a deployment role's agents in a Legion section after the six", async () => {
   const collaborators: IssueCollaborators = {

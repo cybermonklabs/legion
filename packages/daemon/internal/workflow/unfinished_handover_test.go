@@ -31,6 +31,7 @@ import (
 // G as held by nobody and left it todo at admitted in a closed tree for ever. Decided from G's
 // own state — in the workflow and never started — the hand-over is the same in all four.
 func TestTheHeldGrandchildIsHandedOverWhateverBecomesOfItsAcceptedParent(t *testing.T) {
+	t.Parallel()
 	root, child, held := "LEGION-208", "LEGION-209", "LEGION-210"
 	for _, during := range []struct {
 		name  string
@@ -121,6 +122,7 @@ func TestTheHeldGrandchildIsHandedOverWhateverBecomesOfItsAcceptedParent(t *test
 // here. Left behind instead, it would stand todo at admitted in a closed tree, which is the one
 // place no slot, no status and no person's move reaches.
 func TestALingerHandsOverTheParentStillWaitingForItsChildren(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	until := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
 	root, parent, openChild := "LEGION-208", "LEGION-209", "LEGION-300"
@@ -152,6 +154,7 @@ func TestALingerHandsOverTheParentStillWaitingForItsChildren(t *testing.T) {
 // released stay with the tree, their Dispatch status saying they wait on nobody
 // (record.OutOfWorkflow).
 func TestAClosedTreeKeepsOnlyTheMembersThatLeftTheWorkflow(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	now := time.Date(2026, 11, 4, 4, 0, 0, 0, time.UTC)
 	engine := New(record.NewStore(), Config{Project: "LEGION", Linger: time.Hour, ProductionCheckBound: 48 * time.Hour,
@@ -235,6 +238,7 @@ const (
 // behind, it lost its claims and its workspace with the rest of the tree and stood at
 // awaiting_merge for good, which is where INFRA-1333 stood until a person merged it by hand.
 func TestLingerHandsOver(t *testing.T) {
+	t.Parallel()
 	t.Run("a parked root hands over the member whose merge nothing else will make", func(t *testing.T) {
 		pool, logged, apply := handsOverFixture(t)
 		seedRoleClaims(t, pool, handsOverParkedAtTheMerge, handsOverWorking)
@@ -437,4 +441,66 @@ func closeDecisionLines(t *testing.T, logged *bytes.Buffer) []string {
 		lines = append(lines, line[strings.Index(line, "level="):])
 	}
 	return lines
+}
+
+// The daemon's labelled todo that handed a child over, delivered after the reopen that cancelled
+// its hand-over and after a newer event of the child, is still consumed as a stale hand-over: its
+// fence row goes and the child's status is reasserted. It records nothing of itself on the child,
+// whose record keeps the newer event's title, sequence and Dispatch status. Here the status repair
+// put the child back to in_progress on Dispatch (sequence 3) and a person then renamed it
+// (sequence 4) before the hand-over's own todo (sequence 2) reached the daemon, as a replay of a
+// message the intake gave up on does, however late.
+func TestALateLabelledTodoAgainstACancelledHandoverKeepsTheNewerRecord(t *testing.T) {
+	t.Parallel()
+	const root, child = "LEGION-208", "LEGION-209"
+	pool := migratedPool(t)
+	parent := root
+	seedIssue(t, pool, record.Issue{Key: root, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: root,
+		Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 2, Status: "in_progress", DispatchStatus: "in_progress",
+		Rank: "U", HandedOver: true, LastDispatchSeq: 1})
+	seedTreeLifecycle(t, pool, root)
+	seedIssue(t, pool, record.Issue{Key: child, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: root,
+		Project: "LEGION", Title: "child", Parent: &parent, Phase: phase.Planning, Generation: 2, Status: "in_progress",
+		DispatchStatus: "in_progress", Rank: "B", LastDispatchSeq: 1})
+	// The linger of generation 1 handed the child over, and the root's reopen cancelled that.
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		records := record.NewStore()
+		if err := records.PutHandover(t.Context(), tx, record.Handover{Issue: child, Tree: root, Generation: 1}); err != nil {
+			return err
+		}
+		return records.CancelTreeHandovers(t.Context(), tx, root, 1)
+	})
+	engine := testEngine(config.DesignGateRootIssues, nil)
+
+	applyMirrored(t, pool, engine, "renamed", intake.DispatchIssue{Key: child, ResolvedRepo: "sjawhar/legion", Seq: 4, Type: "issue.updated",
+		Status: "in_progress", Title: "the child, renamed", Parent: root, Rank: "B", HandedOver: true})
+	recordTheObservation(t, pool, child, "the child, renamed", "in_progress", 4)
+	newer := storedIssue(t, pool, child)
+
+	applyMirrored(t, pool, engine, "late-hand-over", intake.DispatchIssue{Key: child, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
+		Status: "todo", Title: "child", Parent: root, Rank: "B", HandedOver: true, DaemonActor: true})
+
+	if got := storedIssue(t, pool, child); got.LastDispatchSeq != newer.LastDispatchSeq || got.Title != newer.Title ||
+		got.DispatchStatus != newer.DispatchStatus || got.HandedOver != newer.HandedOver || got.Tree != root || got.Phase != phase.Planning {
+		t.Fatalf("the child after the late hand-over todo = sequence %d, title %q, Dispatch status %q, in %s at %s; want the newer record's sequence %d, title %q and Dispatch status %q, in %s at planning",
+			got.LastDispatchSeq, got.Title, got.DispatchStatus, got.Tree, got.Phase, newer.LastDispatchSeq, newer.Title, newer.DispatchStatus, root)
+	}
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		handover, err := record.NewStore().Handover(t.Context(), tx, child)
+		if err == nil && handover != nil {
+			t.Errorf("the hand-over fence after its late todo = %+v, want it consumed", *handover)
+		}
+		return err
+	})
+}
+
+// recordTheObservation records on the issue what admission records of a newer Dispatch event
+// when it runs behind the workflow handler (its recordObservation): the title, the status Dispatch
+// shows and the event's sequence. A test that drives the engine alone writes it itself.
+func recordTheObservation(t *testing.T, pool *pgxpool.Pool, key, title, shown string, seq int64) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), "update issues set title = $2, dispatch_status = $3, last_dispatch_seq = $4 where key = $1",
+		key, title, shown, seq); err != nil {
+		t.Fatalf("record the observation of %s at sequence %d: %v", key, seq, err)
+	}
 }

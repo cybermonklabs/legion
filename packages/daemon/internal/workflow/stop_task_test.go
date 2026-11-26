@@ -28,11 +28,12 @@ func ownersStop(t *testing.T, issue record.Issue, task string) intake.TaskStoppe
 // stopped with.
 const stopsBy = "task a of LEGION-208 was stopped by its owner"
 
-// The owner's stop_task of a task that is not done stops it where it stands, in one transaction:
-// the task is stopped with its reason and keeps its place, its issue is held from
-// the phase of that place for the stopped task, keeping the slot of that phase and writing no
-// Dispatch status, the record of the running step ends stopped, and the process of the step's
-// role is stopped with its session kept (step_stop, whose source is the daemon's). The caller
+// The owner's stop_task of a task that is not done, on an issue of no experiment's group (in the
+// group default every stop is refused, plan_experiment_test.go), stops it where it stands, in one
+// transaction: the task is stopped with its reason and keeps its place, its issue is held from the
+// phase of that place for the stopped task, keeping the slot of that phase and writing no Dispatch
+// status, the record of the running step ends stopped, and the process of the step's role is
+// stopped with its session kept (step_stop, whose source is the daemon's). The caller
 // is answered by its own call, and the architect the issue's notices reach is told in a
 // task-stopped notice that names who stopped the task (the daemon's notice executor publishes it
 // only to an architect that is not the one that stopped it). A merge GitHub still lands on a task
@@ -41,6 +42,7 @@ const stopsBy = "task a of LEGION-208 was stopped by its owner"
 // stopped. An issue with no plan rows has no task to stop, and a stop of a member of a
 // lingering tree, whose phase and running task the linger keeps, changes nothing.
 func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
+	t.Parallel()
 	t.Run("at testing", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -87,7 +89,8 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 			t.Fatalf("the task-stopped notices = %+v, want the one %+v", notices, want)
 		}
 
-		// A stop of a task already stopped changes nothing, and is no refusal.
+		// A stop of a task already stopped changes nothing, and is no refusal (on an issue of no
+		// group; in the group default every stop is refused first).
 		before := standingOf(t, pool, engine, root.Key, true)
 		if result := applyFacts(t, pool, engine)("stop-again", stop); result.Refusal != nil {
 			t.Fatalf("the owner's second stop was refused: %+v", result.Refusal)

@@ -25,7 +25,7 @@ import (
 // `admission.waiting` and `admission.blocked` are all filled and whose members of the line
 // carry the sentence already rendered for them (api.WaitingLineView.Reason); own are this
 // project's own records; running are the roots whose trees run (record.RunningRoots), which is
-// what says the work of an issue past its review is going on; stranded are the claims the
+// what says the work of an issue in accepting, retro or merging is going on; stranded are the claims the
 // daemon judges nothing will wake, handed to Project because this package may not read
 // internal/workflow; rows is the Dispatch mirror this pass judged the links from and
 // childWaits the children-first judgement it made (record.ChildWaitsOf).
@@ -36,11 +36,11 @@ import (
 // the commonest question a reader brings. An issue that matches none of the four carries no
 // answer at all: an issue of `admission.active` whose worker is running, an issue at
 // phase.Held whose hold came from a phase that keeps a slot and which holds that slot, which
-// stands in that same list, and an issue whose work is running past its own review, which holds
+// stands in that same list, and an issue whose work is running in accepting, retro or merging, which holds
 // no slot since dispatch://INFRA-2560 and so stands in none of the three lists that place an
-// issue, only in `admission.held` (atWorkPastReview). An issue at phase.Held that gave its slot
+// issue, only in `admission.held` (atWorkInSlotlessPhase). An issue at phase.Held that gave its slot
 // back to wait on another issue stands in the line and reads `waiting` (blockers.waitsOf). A
-// hold from a phase past the review keeps no slot (record.KeepsSlot, which reads
+// hold from accepting, retro or merging keeps no slot (record.KeepsSlot, which reads
 // record.StandsAt), and no worker of such an issue runs, so it is in neither of those two and is
 // answered by the last arm.
 //
@@ -176,14 +176,14 @@ func whyStates(state *api.State, own []record.Issue, running map[string]struct{}
 			// Neither the line nor `blocked` names it, so this arm reads out the two kinds
 			// that are working now before it names the rest unlisted: an issue holding one of
 			// the cap's slots, which `admission.active` names, and an issue whose work is
-			// running past its own review, which holds no slot and so stands in
-			// `admission.held` rather than in a list this pass reads (atWorkPastReview). Each
+			// running in accepting, retro or merging, which holds no slot and so stands in
+			// `admission.held` rather than in a list this pass reads (atWorkInSlotlessPhase). Each
 			// carries no answer, because `why` answers for an issue that is not working now and
 			// both of these are.
 			if _, placed := active[issue.Key]; placed {
 				continue
 			}
-			if atWorkPastReview(issue, running) {
+			if atWorkInSlotlessPhase(issue, running) {
 				continue
 			}
 			reason, _ := heldWordReason(api.WhyUnlisted, causes[issue.Key])
@@ -268,7 +268,7 @@ func linkReason(waitsOn []string) string {
 	return fmt.Sprintf("It waits on %s, which are not done.", englishIssues(waitsOn))
 }
 
-// atWorkPastReview is an issue whose work is running now in a phase past its own review:
+// atWorkInSlotlessPhase is an issue whose work is running now in a phase that holds no slot:
 // accepting, where the architect that owns the issue reads the head the issue's worker built, its
 // retro, and its merge. Since dispatch://INFRA-2560 such an issue holds none of the cap's slots
 // (record.PhaseKeepsSlot), so `admission.active` does not name it and it reaches the last arm of
@@ -282,9 +282,9 @@ func linkReason(waitsOn []string) string {
 // runs for one that is not working. This arm is the one place `why` parts from the held list:
 // the list says where the issue stands, and `why` that nothing is to be answered for it.
 //
-// The phase alone cannot say it, and that is what this reads the work for. The phases past the
-// review are the ones no slot is held through, so an issue standing in one of them is an issue
-// the cap has stopped counting, not an issue a worker is running: a member of a tree that has
+// The phase alone cannot say it, and that is what this reads the work for. An issue standing in a
+// phase that holds no slot is an issue the cap has stopped counting, not by that alone an issue a
+// worker is running: a member of a tree that has
 // stopped stands in exactly the same phase as a member of a tree that is working. The two terms
 // of work are the tree and the claim, which is the pair the measure of a stalled tree reads
 // (admit's tellStalledTrees, over record.RunningRoots and record.TreeQuiet.AtWork), and this
@@ -296,7 +296,7 @@ func linkReason(waitsOn []string) string {
 // suspends every claim of its members while their Dispatch status stands, so the record holds
 // them in the workflow (record.InWorkflow) and whyStates reads them, and nothing of them runs
 // again until the root is admitted afresh. Such a member is served `unlisted` with its held
-// word's sentence, as it was before the phases past the review stopped holding a slot: the park
+// word's sentence, as it was before accepting, retro and merging stopped holding a slot: the park
 // takes the slot of every member of the tree it stops back whatever the phase
 // (record.NeedsSlot), so such a member stood in none of the three lists then either.
 //
@@ -310,14 +310,14 @@ func linkReason(waitsOn []string) string {
 // would tell a reader the work had stopped.
 //
 // A held issue answers false here whatever phase its hold came from, which is the first term of
-// the pair below and not a reading of the raw phase: record.PastReview reads the phase a hold
-// came from (record.StandsAt), so an issue held from its retro stands past its review in every
+// the pair below and not a reading of the raw phase: record.InSlotlessPhase reads the phase a hold
+// came from (record.StandsAt), so an issue held from its retro stands in its retro in every
 // rule the slot is judged by, and the term beside it is what puts the record's own `held` back
 // for this one question. A hold is what stops the work: no worker of a held issue runs, so it is
 // served `unlisted` with its held word's sentence — never at_work's, which the ladder refuses a
 // held issue (record.HeldReasonOf) — and the hold is what a reader of it asks about.
-func atWorkPastReview(issue record.Issue, running map[string]struct{}) bool {
-	if issue.Phase == phase.Held || !record.PastReview(issue) {
+func atWorkInSlotlessPhase(issue record.Issue, running map[string]struct{}) bool {
+	if issue.Phase == phase.Held || !record.InSlotlessPhase(issue) {
 		return false
 	}
 	_, runs := running[issue.Tree]
@@ -349,9 +349,9 @@ func atWorkPastReview(issue record.Issue, running map[string]struct{}) bool {
 // `unlisted` and not `held`, because `held` is a phase of the workflow, whose issues the daemon
 // has started: one held from a phase that keeps a slot stands in `admission.active`, or in
 // `admission.waiting` while it waits on another issue (blockers.waitsOf). at_work has its entry,
-// and the issues that read that word stand past their review and are not held
+// and the issues that read that word stand in accepting, retro or merging and are not held
 // (record.HeldAtWork); one whose work runs in a tree that runs is served no answer at all
-// (atWorkPastReview), so the entry is served only to a member past its review of a tree that
+// (atWorkInSlotlessPhase), so the entry is served only to a member in accepting, retro or merging of a tree that
 // runs nothing.
 //
 // The fallback is unclassified's sentence, the ladder's own last word, which says that no rule
@@ -368,7 +368,8 @@ func atWorkPastReview(issue record.Issue, running map[string]struct{}) bool {
 var heldSentences = map[record.HeldReason]heldSentence{
 	record.HeldTreeClosed: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
 		return "Its tree is closed: " + heldBy + " has finished, or lingers after leaving the workflow, " +
-			"and the daemon starts no issue of that tree."
+			"or waits in the line for the promotion that opens its tree again, and the daemon starts no issue of that tree; " +
+			"in the last case that root's promotion ends this hold."
 	}},
 	record.HeldTreeParked: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
 		return "Its tree is parked: " + heldBy + " stands in backlog or icebox, " +
@@ -395,7 +396,7 @@ var heldSentences = map[record.HeldReason]heldSentence{
 			"so nothing of its own work starts while that issue stands in retro or merging."
 	}},
 	record.HeldChildrenBeforeRetro: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(heldBy string) string {
-		return "It passed the last step of its task, and its plan has no acceptance step, so the daemon holds it before its retro " +
+		return "It passed the last step of its task, which is not the owner's acceptance, so the daemon holds it before its retro " +
 			"while these issues beneath it are still in the workflow: " + heldBy + ". Its retro does not start while one of them is."
 	}},
 	record.HeldTaskStopped: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(string) string {

@@ -18,7 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -55,7 +54,7 @@ func pinLeakCheck(t *testing.T, tag string) {
 // packed as the daemon packs it (leakguard.PackTarballManifest).
 func packedLeakCheck(t *testing.T, launcher string) []byte {
 	t.Helper()
-	fixture := make([]byte, shimwire.LauncherBundlePayloadBytes+4096)
+	fixture := make([]byte, shimwire.LauncherSlicePayloadBytes+4096)
 	_, _ = rand.NewChaCha8([32]byte{}).Read(fixture)
 	raw := leakguardtest.GitHubTarball(t, map[string]leakguardtest.Member{
 		leakguardtest.CheckName:    {Body: "#!/bin/sh\n" + launcher, Mode: 0o755},
@@ -250,6 +249,7 @@ func tree(t *testing.T, root string) map[string]string {
 // as the controller's pod mounts its one role's. A layout that moved the directory would leave the
 // guard copying under a root-owned mount point no role can write, or into /tmp.
 func TestTheGuardsPrivateCopyIsMadeInTheRolesOwnPrivateDirectory(t *testing.T) {
+	t.Parallel()
 	if want := FixedRoot + "/" + RolePrivateDir; leakguard.PrivateCopyBase != want {
 		t.Fatalf("leakguard.PrivateCopyBase = %s, want the private directory role-init binds for the role alone, %s", leakguard.PrivateCopyBase, want)
 	}
@@ -259,6 +259,7 @@ func TestTheGuardsPrivateCopyIsMadeInTheRolesOwnPrivateDirectory(t *testing.T) {
 // launcher whose environment names no pin says nothing of a check at all, and refuses a check
 // pushed to it anyway, writing nothing.
 func TestTheHelloNamesTheLaunchersLeakCheckPin(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (pinLeakCheck).
 	t.Run("a pin", func(t *testing.T) {
 		pinLeakCheck(t, leakCheckPin)
 		g := newSessionRig(t, Config{LeakCheckDir: filepath.Join(t.TempDir(), "leak-check")})
@@ -292,6 +293,7 @@ func TestTheHelloNamesTheLaunchersLeakCheckPin(t *testing.T) {
 // the same process says it is installed, and a sequence pushed again on it is answered Installed
 // at once with no second install.
 func TestTheSingleRoleLauncherInstallsThePushedCheckOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (pinLeakCheck).
 	pinLeakCheck(t, leakCheckPin)
 	dir := filepath.Join(t.TempDir(), "leak-check")
 	runs := filepath.Join(t.TempDir(), "help-runs")
@@ -329,6 +331,7 @@ func TestTheSingleRoleLauncherInstallsThePushedCheckOnce(t *testing.T) {
 // What a launcher process installed is its own: a new Run over a directory an earlier one
 // installed into says it has installed nothing, and installs over that install when pushed.
 func TestANewLauncherProcessInstallsOverTheInstallItFinds(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (pinLeakCheck).
 	pinLeakCheck(t, leakCheckPin)
 	dir := filepath.Join(t.TempDir(), "leak-check")
 	runs := filepath.Join(t.TempDir(), "help-runs")
@@ -361,6 +364,7 @@ func TestANewLauncherProcessInstallsOverTheInstallItFinds(t *testing.T) {
 // is verified once, and a role that reconnects says it is installed. Nothing of a role's
 // namespaces is needed, since no generation starts.
 func TestTheRolesOfOneContainerInstallTheCheckOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (pinLeakCheck).
 	pinLeakCheck(t, leakCheckPin)
 	dir := filepath.Join(t.TempDir(), "leak-check")
 	runs := filepath.Join(t.TempDir(), "help-runs")
@@ -397,6 +401,7 @@ func TestTheRolesOfOneContainerInstallTheCheckOnce(t *testing.T) {
 // whichever slice makes the body whole installs it, every other slice of either caller finds it
 // installed, both sequences end Installed, and the check is verified once.
 func TestTwoCallersOfOneCheckInstallInstallItOnce(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "leak-check")
 	runs := filepath.Join(t.TempDir(), "help-runs")
 	frames := servedLeakCheck(t, leakCheckPin, runs)
@@ -448,6 +453,7 @@ func TestTwoCallersOfOneCheckInstallInstallItOnce(t *testing.T) {
 // refused slices were dropped), a tag that is not the launcher's pin, and a check whose --help
 // does not answer.
 func TestARefusedLeakCheckLeavesTheDirectoryAsItWas(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (pinLeakCheck).
 	for _, tc := range []struct {
 		name   string
 		frames func(t *testing.T, runs string) []shimwire.LauncherLeakCheck
@@ -544,18 +550,9 @@ func testerRolesDir(t *testing.T) string {
 // test that runs it is not parallel, and runs its own commands through guard or while the reaper
 // is stopped.
 //
-// passed waits until a whole pass of the reaper that began after the call has ended, and reports
-// whether one did. The signals channel holds one SIGCHLD, so a send completes only once the reaper
-// has taken the one before it, and the reaper takes the next only once its pass is over. When
-// passed is called, n sends are counted: send n+2 completes after the call (the count of send n+1
-// had not been made, and the sender counts each send before it makes the next), so the pass that
-// takes it begins after the call, and send n+4 completes only once the reaper has taken send n+3,
-// after that pass ended.
-//
-// Neither waits on the reaper past 30 s before the test binary's deadline (reaperBound): a pass
-// that never ends fails t by name there, in stop, or answers false from passed, rather than hold
-// the test until Go's alarm.
-func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop func(), passed func() bool) {
+// stop does not wait on the reaper past 30 s before the test binary's deadline (reaperBound): a
+// pass that never ends fails t by name there rather than hold the test until Go's alarm.
+func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop func()) {
 	t.Helper()
 	orphan := exec.Command("/bin/sh", "-c", "exit 0")
 	if err := orphan.Start(); err != nil {
@@ -563,7 +560,6 @@ func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop 
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	signals := make(chan os.Signal, 1)
-	var sent atomic.Uint64
 	var reaping sync.WaitGroup
 	reaping.Go(func() { reapOrphans(ctx, signals, managers, guard) })
 	reaping.Go(func() {
@@ -572,7 +568,6 @@ func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop 
 			case <-ctx.Done():
 				return
 			case signals <- syscall.SIGCHLD:
-				sent.Add(1)
 			}
 		}
 	})
@@ -591,11 +586,7 @@ func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop 
 			t.Errorf("the orphan %d's own wait answered %v, want ECHILD or ESRCH: the reaper left it unreaped, so it never ran while the test's commands did", orphan.Process.Pid, err)
 		}
 	}
-	passed = func() bool {
-		from := sent.Load()
-		return testwait.Holds(reaperBound(t), time.Millisecond, func() bool { return sent.Load() >= from+4 })
-	}
-	return stop, passed
+	return stop
 }
 
 // reaperBound is how long a wait on PID 1's reaper that begins now may last: until 30 s before
@@ -606,44 +597,13 @@ func reaperBound(t *testing.T) time.Duration {
 	return testwait.Bounded(t, 3*365*24*time.Hour, 30*time.Second)
 }
 
-// metTheReaper is start with the race between PID 1's reaper and a command's own wait run to its
-// end before that wait reads the command's exit: once start has started the command, the answer
-// waits for the command to exit and then for a whole pass of the reaper that began after it
-// (passed). By then a command the guard holds is still its own wait's, and any other's exit is
-// the reaper's, so its own wait answers ECHILD. A row whose control left the race to the machine
-// needed a pass to land between an unguarded command's exit and its wait, and failed whenever none
-// did (TestPutBacksUnderThePodsReaperKeepTheirExitStatus in CI's daemon-go, 2026-11-21: "none of 5
-// put-backs with no guard lost an exit to the reaper"). A command that never exits, or a reaper
-// that never finishes a pass, fails t by name at 30 s before the test binary's deadline
-// (reaperBound). Once that moment has passed, a start waits for nothing and says nothing more: the
-// failure is the first wait's, and every later one would only repeat it.
-func metTheReaper(t *testing.T, start procgroup.Starter, passed func() bool) procgroup.Starter {
-	return func(cmd *exec.Cmd) (func(), error) {
-		done, err := start(cmd)
-		if err != nil || reaperBound(t) <= 0 {
-			return done, err
-		}
-		pid := cmd.Process.Pid
-		ended := func() bool {
-			_, err := os.Stat(filepath.Join("/proc", strconv.Itoa(pid)))
-			return errors.Is(err, os.ErrNotExist) || zombie(pid)
-		}
-		switch {
-		case !testwait.Holds(reaperBound(t), time.Millisecond, ended):
-			t.Errorf("the command %d (%s) never exited, to 30 s before the test binary's deadline", pid, strings.Join(cmd.Args, " "))
-		case !passed():
-			t.Errorf("the reaper finished no pass after the command %d exited, to 30 s before the test binary's deadline", pid)
-		}
-		return done, nil
-	}
-}
-
 // While the install's verification runs — the served check's `--help`, a child of the launcher,
 // which is its pod's PID 1 — the guard holds its pid, so no pass of the pod's reaper can take its
 // exit before the install's own wait reads it (TestTheLeakCheckInstallSurvivesPID1sReaper is that
 // race). The check served here writes its own pid and waits, while it runs, until the test has
 // read the guard, so the answer does not depend on how fast a reaper's pass is on this machine.
 func TestTheLeakCheckInstallsVerificationIsHeldFromThePodsReaperWhileItRuns(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (pinLeakCheck).
 	pinLeakCheck(t, leakCheckPin)
 	marks := t.TempDir()
 	pidFile, release := filepath.Join(marks, "pid"), filepath.Join(marks, "release")
@@ -661,17 +621,19 @@ func TestTheLeakCheckInstallsVerificationIsHeldFromThePodsReaperWhileItRuns(t *t
 		err  error
 	}
 	read := make(chan reading, 1)
+	// The bound is read here, on the test's goroutine: beforeDeadline fails t when no time is left.
+	bound := beforeDeadline(t)
 	go func() {
 		// The check is let go on every path, so the install the test waits on below ends.
 		defer func() { _ = os.WriteFile(release, nil, 0o600) }()
 		var pid int
-		if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+		if !testwait.Holds(bound, 10*time.Millisecond, func() bool {
 			body, err := os.ReadFile(pidFile)
 			n, convErr := strconv.Atoi(strings.TrimSpace(string(body)))
 			pid = n
 			return err == nil && convErr == nil && pid > 0
 		}) {
-			read <- reading{err: fmt.Errorf("the served check wrote no pid to %s within 10s", pidFile)}
+			read <- reading{err: fmt.Errorf("the served check wrote no pid to %s under the test's hang guard", pidFile)}
 			return
 		}
 		guard.mu.Lock()
@@ -712,6 +674,7 @@ const installsUnderReaper = 200
 // unguarded installs met no reap at all, so the installs run in the test binary as PID 1 of a PID
 // namespace of its own (TestLeakCheckInstallPIDOneHelper).
 func TestTheLeakCheckInstallSurvivesPID1sReaper(t *testing.T) {
+	t.Parallel()
 	t.Logf("%s", runAsPIDOne(t, "TestLeakCheckInstallPIDOneHelper"))
 }
 
@@ -723,6 +686,7 @@ func TestTheLeakCheckInstallSurvivesPID1sReaper(t *testing.T) {
 // the reaper (reapedByAnother), within installsUnderReaper tries, or the reaper never met a run's
 // exit and the installs before it prove nothing.
 func TestLeakCheckInstallPIDOneHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	if os.Getenv(pidOneHelperEnv) != "1" {
 		return
 	}
@@ -743,7 +707,7 @@ func TestLeakCheckInstallPIDOneHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stop, _ := relentlessReaper(t, managers, guard)
+	stop := relentlessReaper(t, managers, guard)
 
 	var refused []string
 	for index := range installsUnderReaper {

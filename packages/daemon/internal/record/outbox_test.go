@@ -59,6 +59,9 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		ControllerNotice{Kind: ProjectPausedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now,
 			Reason: "the model provider is down"}},
 		ControllerNotice{Kind: ProjectResumedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now.Add(time.Hour)}},
+		ControllerNotice{Kind: IntakeGaveUpNotice, Count: 3, GiveUps: []NoticeGiveUp{
+			{ID: 41, Consumer: "legion-go-LEGION-dispatch", Subject: "notifications.dispatch.issue.LEGION-208.issue.updated"},
+			{ID: 42, Consumer: "legion-go-LEGION-wake", Subject: "notifications.legion.LEGION.wake"}}},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Task: "Write the spec."},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, Phase: phase.Reviewing, News: true},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 3, News: true},
@@ -77,8 +80,23 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		TaskCopyRemove{Generation: 2, Task: "b", Branch: "legion/LEGION-208.b.2"},
 		SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Reason: "LEGION-209 is done"},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
+		// A release's workspace check, and a left pod's close's, which names the roles it closes and
+		// the newest turn start of the pass that queued it (IssueWorkspaceCheck.TurnStart).
+		IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7, Role: claim.RoleImplementer},
+		IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7, Role: claim.RolePlanner,
+			CloseRoles: []claim.Role{claim.RolePlanner}, TurnStart: now.Add(-40 * time.Minute)},
+		// The stop and the Sandbox suspension that close queues after a clean read carry the same
+		// moment (SuperviseRequest.TurnStart, IssueSuspend.TurnStart), and the zero moment where no
+		// claim had had a turn: a fence any turn passes, which is no fence at all only where the row
+		// names none.
+		SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RolePlanner, Generation: 3,
+			Reason: "LEGION-209 left the workflow", TurnStart: new(now.Add(-40 * time.Minute))},
+		SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RolePlanner, Generation: 3,
+			Reason: "LEGION-209 left the workflow", TurnStart: new(time.Time{})},
+		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7, TurnStart: new(now.Add(-40 * time.Minute))},
+		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7, TurnStart: new(time.Time{})},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Task: "Production check of LEGION-208", CheckLook: 2, CheckOpenedAt: now},
-		CheckWakeDue{Look: 2, OpenedAt: now, Reason: "the tester's own wake"},
+		CheckWakeDue{Look: 2, OpenedAt: now, WakeAt: now.Add(2 * time.Hour), Reason: "the tester's own wake"},
 		CheckWakeDue{Look: 3, Reason: "a look nobody reported"},
 		CheckLook{Look: 2, OpenedAt: now},
 		CheckLook{Look: 1},
@@ -473,8 +491,20 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a suspend naming a pause", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Pause: 7}, reason: "only a pause's stop and a start name one"},
 		{name: "a start naming a negative pause", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Pause: -7}, reason: "only a pause's stop and a start name one"},
 		{name: "a suspend naming a wake kind", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeKind: pods.WakeChecks}, reason: "only a start names one"},
+		{name: "a start fenced on a turn start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, TurnStart: new(now)}, reason: "only a left pod's close's suspend names one"},
+		{name: "a release's stop fenced on a turn start", payload: SuperviseRequest{Op: "release", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, TurnStart: new(now)}, reason: "only a left pod's close's suspend names one"},
 		{name: "a start naming no wake kind of the pods", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: "listener_ready"}, reason: "only a start names one"},
 		{name: "a pause's launch naming no pause", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: pods.WakePause}, reason: "names the pause that owed it"},
+		{name: "an intake-gave-up notice counting none", payload: ControllerNotice{Kind: IntakeGaveUpNotice, GiveUps: noticeGiveUps(1)}, reason: "counts one give-up or more"},
+		{name: "an intake-gave-up notice naming none", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1}, reason: "names between 1 and 1 of them, not 0"},
+		{name: "an intake-gave-up notice naming 101", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 150, GiveUps: noticeGiveUps(101)}, reason: "names between 1 and 100 of them, not 101"},
+		{name: "an intake-gave-up notice naming more than it counts", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: noticeGiveUps(2)}, reason: "names between 1 and 1 of them, not 2"},
+		{name: "an intake-gave-up notice naming a give-up with no id", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: []NoticeGiveUp{{Consumer: "legion-go-LEGION-dispatch"}}}, reason: "by its positive record id"},
+		{name: "an intake-gave-up notice to a role", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Role: claim.RoleArchitect, Count: 1, GiveUps: noticeGiveUps(1)}, reason: "carries no role"},
+		{name: "give-ups named on a tick", payload: ControllerNotice{Kind: TickNotice, GiveUps: noticeGiveUps(1)}, reason: "only an intake-gave-up notice does"},
+		{name: "a count on a tick", payload: ControllerNotice{Kind: TickNotice, Count: 1}, reason: "only an intake-gave-up notice does"},
+		{name: "a count on an architect's notice", payload: Notice{Kind: "phase-finished", Count: 1}, reason: "only an intake-gave-up notice does"},
+		{name: "an intake-gave-up notice for an architect", payload: Notice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: noticeGiveUps(1)}, reason: "unknown notice kind"},
 		{name: "unknown supervise operation", payload: SuperviseRequest{Op: "unknown"}, reason: "unknown supervise operation"},
 		{name: "a stop that is not a tree close", payload: SuperviseRequest{Op: "stop", Tree: "LEGION-208", Role: claim.RoleArchitect}, reason: "unknown supervise operation"},
 		{name: "an issue close naming a linger", payload: SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Linger: 7}, reason: "only a tree close"},
@@ -752,7 +782,7 @@ const newsOnlyRefusal = "a supervise start for news alone carries no task and no
 // the hook's words exactly as the deployment wrote them, and the daemon's remaining facts. The
 // counts stand below the words, because the shipped hook's words point at them, and the header
 // stands above, because a worker knows a hook by the line it starts with. The counts are listed
-// in the order phase.BackwardPairs() gives, which is neither the map's own order nor
+// in the order phase.MovePairs() gives, which is neither the map's own order nor
 // alphabetical, so two readings of one row read alike. The pull-request sentence stands only for
 // an issue with a pull request, and the words of the hook come through whole: a prompt that
 // spells a word in angle brackets is published with it, since the daemon substitutes nothing
@@ -1277,5 +1307,26 @@ func TestARowsBackoffDoublesFromOneSecondUpToSixtyFourSeconds(t *testing.T) {
 	}
 	if RetryBackoffMost != 64*time.Second {
 		t.Errorf("RetryBackoffMost = %s, want 64s, the backoff of every count past six", RetryBackoffMost)
+	}
+}
+
+// The review a landed merge forward asks of the reviewer tells it to report what it decided to
+// the architect and to the worker of the phase the issue stands in, which can act on a request for
+// changes there. A reviewer step that ran before a tester step is asked while the issue stands in
+// testing, so it tells the tester too. In accepting the architect holds the phase, so it alone is
+// told.
+func TestAMergeForwardReviewTellsTheArchitectAndTheWorkerOfThePhase(t *testing.T) {
+	pr := PullRequest{Repo: "sjawhar/legion"}
+	for at, want := range map[phase.Phase]string{
+		phase.Testing:   " Then tell the architect and the tester what you decided, each on the topic of the claim that works its step.",
+		phase.Accepting: " Then tell the architect what you decided, on its role topic.",
+		phase.Retro:     " Then tell the architect and the implementer what you decided, each on the topic of the claim that works its step.",
+		phase.Merging:   " Then tell the architect and the merger what you decided, each on the topic of the claim that works its step.",
+	} {
+		review := MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main",
+			Phase: at, PullRequest: 42}
+		if got := review.Message("LEGION-208", pr); !strings.HasSuffix(got, want) {
+			t.Errorf("the review in %s reads %q, want it to end %q", at, got, want)
+		}
 	}
 }

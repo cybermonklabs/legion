@@ -24,13 +24,14 @@ import (
 // write follows. The root keeps its phase, its linger stays unarmed, none of its claims is stopped,
 // and the architect is told which child left and how. What the child's claims get is the
 // status's: a child closed as done by a human has every claim closed (issue_close); one closed at
-// its merge has five claims closed and the role that works its production check kept for the
+// its merge has every claim closed but that of the role that works its production check, kept for the
 // check the merge opens, whose close writes the suspension (merge_close_test.go); and one parked
 // in backlog, icebox or triage has every claim suspended, and its pod goes with the Sandbox the
 // one IssueSuspend its leave writes deletes. The merged child writes none at its close: that
 // role's claim and the pod stay for the production check's first look, and the suspension comes
 // with the check's pause or close (merge_close_test.go, which asserts zero here).
 func TestAChildLeavingTheWorkflowNeverClosesItsTree(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		fact   intake.Fact
@@ -119,6 +120,7 @@ func TestAChildLeavingTheWorkflowNeverClosesItsTree(t *testing.T) {
 // Admission frees the slot of a root a human moves to triage, so the engine lingers its tree as it
 // does for backlog, icebox, and done: a tree without a slot must not keep running.
 func TestARootMovedToTriageLingersItsTree(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	now := time.Date(2026, 9, 23, 4, 0, 0, 0, time.UTC)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
@@ -198,6 +200,7 @@ func issueSuspensions(t *testing.T, pool *pgxpool.Pool, issue string) []record.I
 // never dropped. It names no linger, so no root is read for it; a tree close acts on its linger
 // alone.
 func TestStopActsFencesAnIssueCloseLikeASuspend(t *testing.T) {
+	t.Parallel()
 	until := time.Date(2026, 9, 23, 5, 0, 0, 0, time.UTC)
 	lingering := &record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Generation: 7, LingerUntil: &until}
 	for _, tc := range []struct {
@@ -232,6 +235,7 @@ func TestStopActsFencesAnIssueCloseLikeASuspend(t *testing.T) {
 // The record keeps whether its pull request merged or closed, whatever phase the issue is in, so a
 // re-admitted generation drops a finished pull request and keeps an open one.
 func TestTheRecordKeepsWhetherItsPullRequestMergedOrClosed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		at    phase.Phase
@@ -276,6 +280,7 @@ func TestTheRecordKeepsWhetherItsPullRequestMergedOrClosed(t *testing.T) {
 // The fault it catches for several pull requests is a notice that names one of them (its control:
 // the notice read from the issue's merge pull request alone, which names #43 alone).
 func TestTheNoticeOfAChildsMoveNamesItsOpenPullRequestAndEachIssueUnderItNotDone(t *testing.T) {
+	t.Parallel()
 	member := func(key, parent string, at phase.Phase, status string) record.Issue {
 		return record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION",
 			Title: key, Parent: &parent, Phase: at, Generation: 7, Status: status, Rank: "V", LastDispatchSeq: 1}
@@ -368,6 +373,7 @@ func TestTheNoticeOfAChildsMoveNamesItsOpenPullRequestAndEachIssueUnderItNotDone
 // stopped or started, and no production check opens (dispatch://INFRA-3178/spec R4). The record
 // is the same whoever wrote the done, so a person's done stands in for the owner's here.
 func TestAMergeOfTheOpenPullRequestOfAClosedChildClosesNothing(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)
 	seedMergingChild(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})

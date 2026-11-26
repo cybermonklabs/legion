@@ -157,8 +157,9 @@ func (e *Engine) releaseHeldParents(ctx context.Context, tx pgx.Tx, written []st
 // retro's Dispatch status is queued through Engine.status, since the
 // hold wrote none and the record still holds the status of the last step (PhaseStatus(held) is
 // empty). The implementer is started with the task the pass into the retro would have started it
-// with (transition): the handoff of the step the task passed last, which the hold kept on that
-// step's phases row, and the pull request. Its start raises its entry and the count of starts of
+// with (transition): the report of the step the task passed last, its handoff, or the verdict of
+// a role of the deployment, which writes none, as the hold kept them on that step's phases row,
+// and the pull request. Its start raises its entry and the count of starts of
 // the retro's place (start, which writes the retro's step), not restart, which raises neither,
 // since this retro never ran. The act is children_done, which the log line names: no row of the
 // table moves a held issue.
@@ -206,7 +207,6 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if err := e.status(ctx, tx, held, status, ""); err != nil {
 		return err
 	}
-	from := record.StandsAt(s.issue)
 	s.issue.Phase, s.issue.Hold, s.issue.Status = phase.Retro, nil, status
 	if _, err := e.putScope(ctx, tx, &s); err != nil {
 		return err
@@ -220,12 +220,12 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	e.logOnCommit(ctx, "workflow: the last issue beneath a held parent left the workflow, and its retro starts", "issue", held.Key, "tree", held.Tree,
 		"task", w.Task, "act", "children_done", "from", phase.Held, "to", phase.Retro, "status", held.Status)
 	role := phase.RoleFor(phase.Retro)
-	if err := e.clearHandoff(ctx, tx, held.Key, role); err != nil {
+	if err := e.clearHandoff(ctx, tx, s, role); err != nil {
 		return err
 	}
-	// The pull request of the parent's task, read once: the start's task names it (readPull), and
-	// the merge forward of the release acts on it (releasedIntoPhase).
-	pr, err := e.taskPullRequest(ctx, tx, s)
+	// The pull request of the parent's task, read once as its row alone (taskPullRequestRow): the
+	// start's task names it (readPull), and nothing here writes it back.
+	pr, err := e.taskPullRequestRow(ctx, tx, s)
 	if err != nil {
 		return err
 	}
@@ -235,10 +235,11 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 		return err
 	}
 	// The release moves the parent into its retro as the pass into the retro would have
-	// (transition), so it does what that pass does after its start (releasedIntoPhase): the
-	// reconcile of its tree's news, which the hold owed the parent nothing of, and the merge
-	// forward of the move.
-	return e.releasedIntoPhase(ctx, tx, s, from, pr)
+	// (transition), so it queues the reconcile of its tree's news as that pass does
+	// (queueMovedNews). It asks nothing of the merge forward, as the hold before it asked nothing
+	// (holdBeforeRetro): the retro is where the merge comes next (classify.MergeComesNext), where a
+	// move asks nothing (mergeForwardOnEntry).
+	return e.queueMovedNews(ctx, tx, held)
 }
 
 // heldForChildren is the scope of parent's task held for the issues beneath it: the task whose

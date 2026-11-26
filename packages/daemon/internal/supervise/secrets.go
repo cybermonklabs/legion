@@ -70,9 +70,10 @@ const (
 	CarriedDormant = "dormant"
 )
 
-// PermanentError is a broker refusal a retry cannot change (a broker 4xx other than an expired
-// token): an Enroll refusal drops the identity and waits for the shim's next hello; a Revoke
-// refusal is not retried.
+// PermanentError is a broker refusal a retry cannot change (a broker 4xx other than a 408 or a
+// 429, which are an outage, an expired pod token, or a registrar the broker does not yet list:
+// cipher.APIError.Permanent): an Enroll refusal drops the identity and waits for the shim's next
+// hello; a Revoke refusal is not retried.
 type PermanentError interface{ Permanent() bool }
 
 // ExpiredTokenError is an Enroll failure the broker gave because the pod token presented had
@@ -85,8 +86,15 @@ type ExpiredTokenError interface{ TokenExpired() bool }
 // written, again and again on r.After, until stop is called or ctx ends. stop returns only once a
 // write in flight has been answered, without cancelling it. The daemon's is cipher.Client's
 // own KeepPodSession, which logs each write naming the pod and the session.
+//
+// ReleasePodSessions is the broker's release of session names (Machine.ReleaseNames, envoy's POST
+// /v1/oauth/exchange/pod-sessions/release): nil only once the broker answered that every name is
+// released, so that from then on it refuses each exchange under them that a registration of this
+// daemon's admitted. Any other answer releases nothing: a PermanentError is a refusal a retry
+// cannot change, unless it is a RouteUnservedError, a broker with no such route.
 type Registrar interface {
 	KeepPodSession(ctx context.Context, r PodSession) (stop func(), err error)
+	ReleasePodSessions(ctx context.Context, names []string) error
 }
 
 // PodSession is one pod's registration to trade under one session name, bound to the role's own
@@ -336,14 +344,15 @@ func (m *Machine) revokeUnheld(ctx context.Context, refused error) error {
 // the agent's registration, or the session a relaunch resumes, so a relaunched pod's uid is
 // registered for the session it resumes at its shim's first hello, with that hello's thumbprint,
 // before the resumed agent registers again — or else the one the runtime chose for this launch
-// (runtime.LaunchSessionNamer): a Claude Code role's, registered at its shim's hello, before its
-// agent registers. An Oh My Pi role's fresh session is known at its registration, which its agent
-// makes after its shim's hello, and is registered there before the registration is answered
-// (register). The first write is made in this decision, bounded by the RPC timeout, and its refusal
-// changes nothing the machine decides; the renewal goes on on the machine's clock until the process
-// is let go (letGo, stopRegistration) or the claim moves to another session or key. Each pod,
-// session and key is registered once per incarnation: a later hello or observation of the same one
-// starts nothing.
+// (runtime.LaunchSessionNamer): a Claude Code role's, and an Oh My Pi role's whose pod trades an
+// exchange identity, registered at its shim's hello, before its agent registers. An Oh My Pi
+// role's fresh session the runtime named no id for (a launch into a kept pod that trades nothing)
+// is known at its registration, which its agent makes after its shim's hello, and is registered
+// there before the registration is answered (register). The first write is made in this decision,
+// bounded by the RPC timeout, and its refusal changes nothing the machine decides; the renewal
+// goes on on the machine's clock until the process is let go (letGo, stopRegistration) or the
+// claim moves to another session or key. Each pod, session and key is registered once per
+// incarnation: a later hello or observation of the same one starts nothing.
 //
 // The session is held to the claim before the first write, as an enrollment's is (holdRecorded,
 // plan E's t-e-54): every name the claim's record gives it, or, for the id

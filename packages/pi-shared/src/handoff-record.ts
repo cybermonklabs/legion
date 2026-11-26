@@ -36,6 +36,8 @@ import { staleGitLockNote } from "./git-lock";
  * goes; the daemon refuses it `HANDOFF_STALE_ENTRY` when it is of an earlier phase entry, and
  * `HANDOFF_HEAD_MERGED_FORWARD` when it is of testing or reviewing once a merge forward of the
  * issue's pull request has landed, since a completion naming no commit says nothing about a head.
+ * A role of the deployment writes no record and always reports `@-` (`completedPhase`), which the
+ * daemon refuses `HANDOFF_HEAD_MERGED_FORWARD` when it is a head a merge forward replaced.
  *
  * While the step stands in implementing, the phase the implementer works, its round is the
  * commit its working copy stands on, `@-`, so its record and its branch are held to that commit:
@@ -68,10 +70,10 @@ import { staleGitLockNote } from "./git-lock";
  * daemon would not read, and the daemon never records a sibling's `@-` as the role's handoff
  * commit.
  *
- * Every other completion — retro, the merger's, the architect's, which leaves no phase — reports
- * the commit the workspace stands on, `@-`, and no record. The implementer's report on its closed
- * issue's production check resolves neither: `legion-phase-ops.ts` never asks this module for
- * one.
+ * Every other phase completion — retro, the merger's, the architect's, which leaves no phase —
+ * reports the commit the workspace stands on, `@-`, and no record. A report with
+ * `check_opened_at` resolves neither: `legion-phase-ops.ts` bypasses this module for it. Without
+ * that field, even a call on a done issue follows the phase path and asks this module.
  *
  * The module also reads the head of the step's branch at origin that a `ready_for_update` signal
  * reports (`findPushedBranchHead`), with the same jj and the same revset the completion's push
@@ -172,7 +174,7 @@ export function paneLatestHandoff(
   fetchImpl: typeof fetch = fetch
 ): LatestHandoff {
   return async (issue, word) => {
-    const { dispatch } = sessionDispatchSettings(file, env, { cwd, session });
+    const { dispatch } = await sessionDispatchSettings(file, env, { cwd, session });
     if (!dispatch.enabled) {
       throw new Error(`Dispatch is off for this pane: ${dispatch.error ?? dispatch.notice}`);
     }
@@ -242,14 +244,14 @@ const FOR_STEP = "the working copy of this session's step cannot be found";
 
 /**
  * The step that this session's agent, `agent`, runs in the issue `record` serves, as a completion
- * and an update signal read it. Of a record that serves the issue's tasks (`tasks`, contract 224)
+ * and an update signal read it. Of a record that serves the issue's tasks (`tasks`, contract 264)
  * it is the task whose `agent` is `agent` and whose step is at work: a running task whose step
  * waits for nothing, or a held one. Its branch is the task's, its working copy the directory the
  * daemon's `workspace.TaskDir` derives from LEGION_WORKSPACE and that branch (`taskDir`), and its
  * phase the task's, `held` for a held task, as the daemon's completion route reads a completion of
  * one (`handoffPosition`). Otherwise the step is the issue's own: LEGION_WORKSPACE as it stands,
  * `legion/<issue>` and the issue's phase. That is the answer for a record that serves no tasks — a
- * daemon below contract 224, or an issue with no plan rows — and for an agent at no step of the
+ * daemon below contract 264, or an issue with no plan rows — and for an agent at no step of the
  * record's tasks, whose completion the daemon then decides: of a plan of one task as before tasks,
  * and of a plan of several as a completion of no phase of it (`HANDOFF_NOT_CURRENT_PHASE`).
  *
@@ -397,7 +399,7 @@ const STANDING = ["log", "-r", "@-", "--no-graph", "-T", "commit_id"] as const;
 
 /** A commit as a handoff record names it: 40 lower-case hexadecimal characters, the shape every
  * role's prompt asks for and the one the daemon compares a completion's head against. */
-const RECORD_HEAD = /^[0-9a-f]{40}$/;
+export const RECORD_HEAD = /^[0-9a-f]{40}$/;
 
 /** The head a handoff record's `body` names, the commit the work that record reports was done
  * against, or `undefined` when the body is no JSON object, carries no `head`, or carries one of
@@ -417,7 +419,7 @@ function recordHead(body: string): string | undefined {
 
 /** The head of `step`'s branch at origin, as `ready_for_update` reports it: the commit the pane's
  * jj reads for that branch at the remote, and `""` when the branch is not on the remote at all — a
- * planner before its first push has none, which is no error. */
+ * planner step that runs before the branch's first push has none, which is no error. */
 export async function findPushedBranchHead(input: {
   readonly step: StepCopy;
   readonly jj?: JjRunner;

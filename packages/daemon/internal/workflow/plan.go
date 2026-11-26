@@ -3,11 +3,14 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
@@ -73,6 +76,27 @@ func (e *Engine) passOverEarlierOwners(ctx context.Context, tx pgx.Tx, issue rec
 	return earlier, nil
 }
 
+// groupOf is the group of issue: the row of its experiment assignments that says how it is done
+// (experiment.GroupOf), or the zero row, an issue of no group. The row was written at the issue's
+// draw, once, so the group is the one the issue was drawn into whatever the project's file says
+// now, and no reader of the workflow asks that file for it.
+func (e *Engine) groupOf(ctx context.Context, tx pgx.Tx, issue string) (record.Assignment, error) {
+	rows, err := e.store.AssignmentsFor(ctx, tx, []string{issue})
+	if err != nil {
+		return record.Assignment{}, err
+	}
+	return experiment.GroupOf(rows[issue]), nil
+}
+
+// takesNoPlan says whether group, an issue's row of groupOf, takes no plan from the issue's owner:
+// the arm runs the project's default steps. It is the one answer the three readers of the group
+// read — the first step (planFirstStep), register_plan (planGiven) and stop_task (taskStopped) —
+// and it holds only the word this release carries out: the loader refuses `owner-alone`
+// (config's readVariants), so no draw of this release writes it.
+func takesNoPlan(group record.Assignment) bool {
+	return config.PlanGroup(group.Plan) == config.PlanGroupDefault
+}
+
 // planFirstStep settles the plan the first step of issue's run walks, in the transaction that
 // starts it (gateOpened) and before the transition reads it (walk), so each run that starts its
 // work in this release has plan rows. A plan an earlier owner gave is passed over first
@@ -83,12 +107,22 @@ func (e *Engine) passOverEarlierOwners(ctx context.Context, tx pgx.Tx, issue rec
 // its start (CarryPlan without carried): each task waits at no act, and the transition starts the
 // first step of its line. Where the owner gave none, the run takes the project's default steps
 // (defaultRows). Nothing is passed over in silence, and the plan the run takes is the one the
-// telling names (tellPassedOver). The run is not carried, so the open pull requests of an earlier
-// run that no task of the plan holds close (closeEarlierPullRequests). Each task takes its branch
-// at its start (Engine.start, through startTaskCopy), and it answers the plan the step settled,
-// which the gate's opening starts its ready tasks on (startReady): the generation's own rows as
-// read, which the step keeps as they are, else the rows it wrote, read again.
+// telling names (tellPassedOver).
+//
+// An issue whose group takes no plan from its owner (groupOf, takesNoPlan) takes the default
+// steps: the owner's plans are passed over too (passOverOwners), and the one notice that tells
+// what it passed over names the group (tellNotTaken).
+//
+// In either case the run is not carried, so the open pull requests of an earlier run that no task
+// of the plan holds close (closeEarlierPullRequests). Each task takes its branch at its start
+// (Engine.start, through startTaskCopy), and it answers the plan the step settled, which the
+// gate's opening starts its ready tasks on (startReady): the generation's own rows as read, which
+// the step keeps as they are, else the rows it wrote, read again.
 func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue) (*record.StoredPlan, error) {
+	group, err := e.groupOf(ctx, tx, issue.Key)
+	if err != nil {
+		return nil, err
+	}
 	earlier, err := e.passOverEarlierOwners(ctx, tx, issue)
 	if err != nil {
 		return nil, err
@@ -97,13 +131,28 @@ func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if err != nil {
 		return nil, err
 	}
-	if stored == nil {
-		if stored, err = e.store.OwnersNewestPlan(ctx, tx, issue); err != nil {
+	if takesNoPlan(group) {
+		var owners []record.PlanVersion
+		if owners, stored, err = e.passOverOwners(ctx, tx, issue, stored); err != nil {
 			return nil, err
 		}
-	}
-	if err := e.takeFirstPlan(ctx, tx, issue, stored, earlier); err != nil {
-		return nil, err
+		// The group's one notice tells the earlier owners' versions with its owner's, so the plans of
+		// earlier owners go to tellNotTaken and none to tellPassedOver, whose text offers register_plan.
+		if err := e.takeFirstPlan(ctx, tx, issue, stored, nil); err != nil {
+			return nil, err
+		}
+		if err := e.tellNotTaken(ctx, tx, issue, group, append(earlier, owners...)); err != nil {
+			return nil, err
+		}
+	} else {
+		if stored == nil {
+			if stored, err = e.store.OwnersNewestPlan(ctx, tx, issue); err != nil {
+				return nil, err
+			}
+		}
+		if err := e.takeFirstPlan(ctx, tx, issue, stored, earlier); err != nil {
+			return nil, err
+		}
 	}
 	if err := e.closeEarlierPullRequests(ctx, tx, issue); err != nil {
 		return nil, err
@@ -179,9 +228,35 @@ func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issu
 	return e.tellPassedOver(ctx, tx, issue, earlier, stored.Version)
 }
 
-// defaultRows is the plan of issue's run whose owner gave none: version 0 of the source
-// default, given now, with no document and no giver, and one task, default, whose block names no
-// steps and so runs the project's default steps (Config.DefaultSteps), waiting at no act.
+// passOverOwners deletes every plan of issue's owner that its first step could take, for an issue
+// whose group runs the project's default steps, and answers the versions it passed over, in the
+// order they were given, and the plan of the run's generation that stands after it (stored, as the
+// caller read it): the owner's plan in force at each generation (record.Store's PlansOfOwners), the
+// run's own, generation 0, which holds a plan given before the daemon recorded and drew the issue,
+// and each copy a carry wrote to a later generation. A run that passed over the newest alone would
+// leave the copies before it to the next run's first step, which would tell the same version again.
+// A plan of the run's generation that no owner gave, a hand-over's carried default, stands. The
+// rows go in this transaction.
+func (e *Engine) passOverOwners(ctx context.Context, tx pgx.Tx, issue record.Issue, stored *record.StoredPlan) ([]record.PlanVersion, *record.StoredPlan, error) {
+	passed, err := e.store.PlansOfOwners(ctx, tx, issue)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, version := range passed {
+		if err := e.store.DeletePlan(ctx, tx, issue.Key, version.Generation); err != nil {
+			return nil, nil, err
+		}
+		if stored != nil && version.Generation == stored.Version.Generation {
+			stored = nil
+		}
+	}
+	return passed, stored, nil
+}
+
+// defaultRows is the plan of issue's run whose owner gave none, or whose experiment's group takes
+// no plan from its owner (passOverOwners): version 0 of the source default, given now, with no
+// document and no giver, and one task, default, whose block names no steps and so runs the
+// project's default steps (Config.DefaultSteps), waiting at no act.
 func (e *Engine) defaultRows(issue record.Issue) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
 	version := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Source: record.PlanSourceDefault, GivenAt: e.now()}
 	task := record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: defaultTask, BlockText: "The project's default steps.",
@@ -204,9 +279,10 @@ func planSteps(d plan.Deployment, issue string, generation uint64, task string, 
 }
 
 // tellPassedOver says what the first step of issue passed over, the plans of earlier owners
-// (passOverEarlierOwners): one log line for each version, naming the plan the first step runs
-// (runs, the version in force of its generation: the owner's, or the default steps), and one
-// plan-not-taken notice to the issue's architect. Nothing passed over tells nothing.
+// (passOverEarlierOwners): one log line for each copy it deleted, with its generation, naming the
+// plan the first step runs (runs, the version in force of its generation: the owner's, or the
+// default steps), and one plan-not-taken notice to the issue's architect, which names each version
+// once (namedOnce). Nothing passed over tells nothing.
 func (e *Engine) tellPassedOver(ctx context.Context, tx pgx.Tx, issue record.Issue, earlier []record.PlanVersion, runs record.PlanVersion) error {
 	if len(earlier) == 0 {
 		return nil
@@ -216,15 +292,48 @@ func (e *Engine) tellPassedOver(ctx context.Context, tx pgx.Tx, issue record.Iss
 		ran = describeVersion(runs)
 		told = ran
 	}
-	passed := make([]string, len(earlier))
-	for i, version := range earlier {
-		passed[i] = describeVersion(version)
+	for _, version := range earlier {
 		e.logOnCommit(ctx, "workflow: a plan of an earlier owner is not taken", "issue", issue.Key, "generation", version.Generation,
 			"version", version.Version, "document", version.ArtifactID, "giver", version.GivenBy, "runs", ran)
 	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
 		"The first step of %s took no plan of an earlier owner: %s. It runs %s. To run a plan it did not take, give it again with register_plan as your own.",
-		issue.Key, strings.Join(passed, "; "), told)})
+		issue.Key, namedOnce(earlier), told)})
+}
+
+// tellNotTaken says what the first step of issue, whose group runs the project's default steps
+// (group), passed over: every plan of an earlier owner (passOverEarlierOwners) and of its owner
+// (passOverOwners), in that order. One log line for each copy it deleted, with its generation, and
+// one plan-not-taken notice to the issue's architect, which names each version once (namedOnce)
+// and the group, so the owner learns why no plan of its own is taken. Unlike the notice of an
+// earlier owner's plan alone (tellPassedOver), it offers no register_plan: no plan given for this
+// issue is taken. Nothing passed over tells nothing.
+func (e *Engine) tellNotTaken(ctx context.Context, tx pgx.Tx, issue record.Issue, group record.Assignment, passed []record.PlanVersion) error {
+	if len(passed) == 0 {
+		return nil
+	}
+	for _, version := range passed {
+		e.logOnCommit(ctx, "workflow: a plan is not taken: the issue's group runs the project's default steps", "issue", issue.Key,
+			"generation", version.Generation, "version", version.Version, "document", version.ArtifactID, "giver", version.GivenBy,
+			"experiment", group.Experiment, "variant", group.Variant)
+	}
+	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
+		"The first step of %s took no plan: %s. %s", issue.Key, namedOnce(passed), intake.GroupClause(issue.Key, group))})
+}
+
+// namedOnce names the versions a first step passed over as its plan-not-taken notice names them:
+// each version once (describeVersion), in the order it was first passed over. A rerun carries the
+// owner's plan to its new generation with the time it was given (record.Store's CarryPlan), so the
+// versions passed over hold one copy of a version for each generation it ran, and the notice names
+// the version, not its copies.
+func namedOnce(versions []record.PlanVersion) string {
+	named := make([]string, 0, len(versions))
+	for _, version := range versions {
+		if described := describeVersion(version); !slices.Contains(named, described) {
+			named = append(named, described)
+		}
+	}
+	return strings.Join(named, "; ")
 }
 
 // describeVersion names an owner's version of a plan as a log line and a notice name it: its
@@ -281,16 +390,20 @@ func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, s TaskScope, rating r
 	if err != nil {
 		return err
 	}
-	write := stepWrite(issue, step.place, step.role, step.typ, start.Agent, start.Starts)
+	drawn, err := e.variantOf(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
+	write := stepWrite(issue, drawn, step.place, step.role, step.typ, start.Agent, start.Starts)
 	write.PlanRating = &rating
 	return e.enqueue(ctx, tx, issue.Key, write)
 }
 
 // planHold says whether issue is held by its plan rather than by a failure: its owner stopped its
-// task (record.HoldTaskStopped), or, as a parent whose plan has no acceptance step, it waits for
+// task (record.HoldTaskStopped), or, as a parent whose last step is not the owner's acceptance, it waits for
 // the issues beneath it in place of its retro (record.HoldForChildren). No path that resumes the
 // work of a held issue resumes such a hold: a later version of the plan or a person's todo on a
-// root ends a task's stop (restartTask, or waitForFirstStep for a task stopped before its first
+// root ends a task's stop (startAtFirstStep, or waitForFirstStep for a task stopped before its first
 // step), and the parent's retro starts once nothing beneath it is open (releaseHeldParents). stored says whether the
 // issue's run has plan rows: no plan holds a run that has none, so a hold of either reason on such
 // a run, which the roll-forward of a way back that left its reason finds, is a plain hold that a
@@ -344,6 +457,8 @@ const (
 // for its children at its retro, and a stopped task at the step the stop ended, whose own role's
 // report is the run the stop ended and is no left phase's, so a run of a left phase is never also
 // that run.
+// A left phase is reported only if its row holds this run's started task (ranUnreported), not
+// merely a claim that may have been created to look at a production check.
 func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, s TaskScope, fact intake.HandoffComplete, reported phase.Phase) (pastReport, error) {
 	issue := s.issue
 	left, err := e.leftItsPhase(ctx, tx, issue, fact.Role, fact.Claim)
@@ -364,8 +479,8 @@ func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, s TaskScope, fact 
 // lateReport is the refusal of fact, role's report of reported, a phase issue no longer stands in,
 // where issue's run has plan rows and a stop of its task ended the run the report is of. past is
 // the run the report is of (pastReportOf). The report of the phase a stop holds the issue from is
-// late where it is of the run the stop ended (ranUnreported); its first sentence is the reason the
-// task stores (LateReportOfStoppedTask). Every other report gets nil: the first report of a run an
+// late only where its row still holds this run's started task (ranUnreported); its first sentence
+// is the reason the task stores (LateReportOfStoppedTask). Every other report gets nil: the first report of a run an
 // event ended, whatever step the task stands at now, which handoff takes as it takes one on an
 // issue with no plan rows (leftPhaseReported); one of no run; one of a run whose plan rows are
 // gone; one of the retro or the merge; one of a task whose issue left the workflow
@@ -395,11 +510,11 @@ func (e *Engine) lateReport(ctx context.Context, tx pgx.Tx, s TaskScope, fact in
 // the rest of the row stand as they were, and no movement is marked. The record counts as used, so
 // the step's next run is refused it (HANDOFF_NOT_NEW) and writes a handoff of its own, as the
 // refusal tells the agent. A report that names no record writes nothing.
-func (e *Engine) spendLateHandoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComplete) error {
+func (e *Engine) spendLateHandoff(ctx context.Context, tx pgx.Tx, s TaskScope, fact intake.HandoffComplete) error {
 	if fact.HandoffRecord == "" {
 		return nil
 	}
-	row, err := e.phaseRow(ctx, tx, fact.Issue, fact.Role)
+	row, err := e.stepRow(ctx, tx, s, fact.Role)
 	if err != nil || row.LastHandoff == fact.HandoffRecord {
 		return err
 	}

@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A confirmed design-news delivery now logs a warning when its shared holder credit can
+  cover other live task agents on the same issue. The warning names the issue, version,
+  recipient, and other agents, as not recipients of this delivery; it does not say they
+  never received that version elsewhere. It is logged only after the transaction commits,
+  not after a rollback or a repeated write of the same confirmation. Delivery and credit
+  do not change, and no architect notice is sent. The shared holder row can still let an
+  agent that was not the holder miss a version; the warning records that limitation.
+time: 2026-11-25T01:13:31Z

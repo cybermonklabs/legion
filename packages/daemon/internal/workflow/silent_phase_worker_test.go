@@ -73,6 +73,7 @@ func inState(s *silentRun, state supervise.ClaimState) {
 // each row below flips one term of that case and is answered false. The rows are the terms in
 // the order SilentPhaseWorker asks them.
 func TestASilentPhaseWorkerIsAWorkerUpBetweenTurnsHoldingNoTaskWhoseLastStepPassedTheBound(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		change func(*silentRun)

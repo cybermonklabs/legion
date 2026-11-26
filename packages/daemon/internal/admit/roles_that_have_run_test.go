@@ -147,7 +147,7 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 		pool := migratedPool(t)
 		admission := newAdmission(t, 1, nil)
 		seedTree(t, pool, phase.Testing, "in_progress")
-		// The member has run three of its six roles: the tester, whose phase it stands in, and two
+		// The member has run three of Legion's six roles: the tester, whose phase it stands in, and two
 		// that have handed their phases on. The reviewer, the merger and its own sub-architect
 		// have never run.
 		tokens := hasRun(t, pool, member, claim.RoleTester, claim.RolePlanner, claim.RoleImplementer)

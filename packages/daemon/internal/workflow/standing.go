@@ -248,13 +248,14 @@ func standingText(issue record.Issue, dir func(record.Issue, string) string, w W
 
 // pullRequestPart is what the worker of issue's phase is told of pr, the pull request of its task
 // (Standing.pull): ` Pull request: #<n>.`, nothing where its task has none. A merger in merging at
-// the head a merge forward landed past the review, while the review that landing asked of the
-// reviewer stands for that head (mergeForwardReviewOwed), is told after it to merge that head only
-// once the reviewer's approval of it is on the pull request: the daemon records no decision outside
-// reviewing, so the approval is the merger's to read on GitHub. A merger resumed in a fresh
-// session is told the same as one started at retro's completion, the one move into merging, or at
-// the retry of a held merging (retryPhase): each composes its task from the row its own
-// transaction reads (standingPart), so the part says what the record holds.
+// the head a merge forward landed on where the task's reviewer step already ran
+// (mergeForwardLanded), while the review that landing asked of the reviewer stands for that head
+// (mergeForwardReviewOwed), is told after it to merge that head only once the reviewer's approval
+// of it is on the pull request: the daemon records no decision outside reviewing, so the approval
+// is the merger's to read on GitHub. A merger resumed in a fresh session is told the same as one
+// started at retro's completion, the one move into merging, or at the retry of a held merging
+// (retryPhase): each composes its task from the row its own transaction reads (standingPart), so
+// the part says what the record holds.
 func pullRequestPart(issue record.Issue, pr *record.PullRequest) string {
 	if pr == nil {
 		return ""
@@ -384,7 +385,8 @@ func pullRequestBase(base string) string {
 // most one step of an issue, so its row holds that step's facts, and each step before a running
 // one completed in the run that led to it: a step that runs again after a return writes its new
 // record on the row before the step after it starts. A step whose role writes no handoff (the
-// owner's acceptance) has no line.
+// owner's acceptance, and a role of the deployment, whose verdict only the task of the step after
+// it names) has no line.
 func reportsBefore(rows []record.PhaseRow, w Walk, words []string, place int) string {
 	var text strings.Builder
 	for j := 1; j < place; j++ {

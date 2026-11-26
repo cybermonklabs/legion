@@ -105,7 +105,10 @@ func TestAPullRequestEventThatNamesNoHeadRepositoryIsLogged(t *testing.T) {
 		message := deliveredMessage{unexpectedMessage: unexpectedMessage{t: t}, subject: "notifications.github.sjawhar.legion.pr.9",
 			data: envelopeJSON(t, id, "github", string(text)), acks: &acks}
 		before := acks.Load()
-		if !consumeMessage(ctx, message, spec, capturedRepositories, pool, []Handler{writeHandler("recorded", nil)}, names, dropped, noHeadRepo) {
+		metadata, _ := message.Metadata()
+		run := consumerRun{spec: spec, repositories: capturedRepositories, pool: pool, names: names, noHeadRepo: noHeadRepo, remade: &remadeFailures{},
+			dropped: dropped}
+		if !consumeMessage(ctx, message, metadata, run, []Handler{writeHandler("recorded", nil)}) {
 			t.Fatalf("%s was not handled, want it acknowledged; the consumer's log:\n%s", id, logs)
 		}
 		if got := acks.Load() - before; got != 1 {

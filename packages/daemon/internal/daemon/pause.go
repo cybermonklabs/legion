@@ -261,7 +261,7 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 		if issue != nil && p.backstop > 0 && c.ServingGeneration == issue.Generation {
 			// The worker of each step that takes work is a claim, not a role: at step a keyed
 			// agent's claim can work the step beside the role's own claim (workflow.OpenWorkers).
-			workers, err := workflow.OpenWorkers(ctx, p.records, tx, p.token, *issue)
+			workers, err := workflow.OpenWorkers(p.token, *issue)
 			if err != nil {
 				return made, err
 			}
@@ -341,6 +341,15 @@ func (p *projectPause) wakeLetOut(token claim.Token, issue string, role claim.Ro
 // (pause.StopKey), so the stops run now rather than at the next sweep. The catch-up's line and the
 // wakes of the rows it queued are the hook of its commit. A failed ask is logged: the gate still
 // holds every launch, and the next boot's pass asks what this one could not.
+//
+// It reads each claim's published view (supervise.Machine.View), never Machine.Claim, which would
+// hold the catch-up for a launch's whole start in the runtime. A launch that passed the gate before
+// the flag was set and whose first write was published before this read is read launching and
+// asked to stop. One whose first write was not published yet is read as the claim stood before it.
+// A claim that stood suspended, failed or retired reads gone and is asked nothing: its launch
+// checks the pause again after its first write, which comes after this read and so after the flag
+// was set, and the pause's gate holds it there (supervise's launchTries). A claim that stood
+// queued (a spawn) or live (a relaunch) reads not gone and is asked to stop, as any live role is.
 func (p *projectPause) Paused(ctx context.Context, held store.Pause, asked []store.PauseStopClaim) {
 	named := make(map[claim.Token]bool, len(asked))
 	lanes := map[string]bool{}
@@ -580,15 +589,16 @@ func (r *outbox) pauseStop(ctx context.Context, row record.OutboxRow, payload re
 	if !found {
 		return r.endPauseStop(ctx, row, issue, held, token, store.PauseStopFailed, "the daemon supervises no claim of the role")
 	}
-	switch machine.Claim().State {
-	case supervise.StateFailed, supervise.StateRetired:
+	// The read before the stop is claimToStop's. The read after it is the published view
+	// (supervise.Machine.View), which never waits: what the stop's own decision left.
+	if _, stoppable := claimToStop(machine); !stoppable {
 		return r.endPauseStop(ctx, row, issue, held, token, store.PauseStopFailed, "the claim has failed or retired")
 	}
 	err = machine.Handle(ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByReleased, Pause: held.ID, Reason: payload.Reason})
 	var refused *supervise.RefusedError
 	switch {
 	case err == nil:
-		return r.pauseStopAnswered(ctx, row, held, machine.Claim())
+		return r.pauseStopAnswered(ctx, row, held, machine.View().Claim)
 	case errors.Is(err, supervise.ErrPauseEnded):
 		r.pauseStopEnded(row, issue, payload.Role, held.ID)
 		return nil
@@ -623,7 +633,7 @@ func (r *outbox) pauseStopEnded(row record.OutboxRow, issue string, role claim.R
 // hold, its owed launch or its backstop, when it lands.
 func (r *outbox) pauseStopAnswered(ctx context.Context, row record.OutboxRow, held store.Pause, c supervise.Claim) error {
 	switch {
-	case c.State == supervise.StateFailed || c.State == supervise.StateRetired:
+	case supervise.FailedOrRetired(c.State):
 		return r.endPauseStop(ctx, row, c.Issue, held, c.Token, store.PauseStopFailed, "the claim has failed or retired")
 	case c.State != supervise.StateSuspended:
 		return wait.Until(r.now().UTC().Add(pauseStopWait),

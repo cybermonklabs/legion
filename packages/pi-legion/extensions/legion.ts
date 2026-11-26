@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config";
 import { resolveIssueDocumentId } from "@legion/envoy-client/dispatch-execute";
 import { DispatchClient } from "@legion/envoy-client/dispatch-http";
@@ -86,6 +87,12 @@ import {
   workspaceRecreatedMessage,
   workspaceRecreatedNotice,
 } from "../src/workspace-recreated";
+
+// The daemon API contract this build speaks, read once as the module loads (`daemonContract`):
+// the manifest of the module this process loaded names it once a pack has written it, and a
+// checkout's own fixtures decide it for a plugin run from the checkout. A bundle installed with
+// neither refuses to load here rather than speak a number it guessed.
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir);
 
 // Fatal bootstrap failures call this instead of `process.exit` directly, so a
 // test can substitute a throwing stand-in without killing the test runner. The stall watch's
@@ -241,26 +248,25 @@ export default function legionExtension(pi: PiApi): void {
   // The Envoy listener this entry's own notices go to — the architect's reminder notice, and the
   // stall watch's notice of a stuck call — built once and only when a notice is due: this entry
   // reaches no listener of its own otherwise. Envoy off for the session leaves it undefined, and
-  // the reminder keeps coming without a notice.
-  let noticePublisher: { readonly publish: EnvoyPublish | undefined } | undefined;
-  const publisher = (): EnvoyPublish | undefined => {
-    if (noticePublisher === undefined) {
-      const envoy = sessionEnvoySettings(sessionConfigFile("omp", process.env), process.env, {
-        cwd: process.cwd(),
-        nats: false,
-        session: currentSessionID,
+  // the reminder keeps coming without a notice. The build is kept as it starts, so two notices
+  // due together wait for one; a build that failed is dropped, and the next notice tries again.
+  let noticePublisher: Promise<EnvoyPublish | undefined> | undefined;
+  const publisher = (): Promise<EnvoyPublish | undefined> => {
+    noticePublisher ??= sessionEnvoySettings(sessionConfigFile("omp", process.env), process.env, {
+      cwd: process.cwd(),
+      nats: false,
+      session: currentSessionID,
+    })
+      .then((envoy) =>
+        envoy.enabled
+          ? createEnvoyClient({ baseUrl: envoy.url, credential: envoy.credential, fetch }).publish
+          : undefined
+      )
+      .catch((error: unknown) => {
+        noticePublisher = undefined;
+        throw error;
       });
-      noticePublisher = {
-        publish: envoy.enabled
-          ? createEnvoyClient({
-              baseUrl: envoy.url,
-              credential: envoy.credential,
-              fetch,
-            }).publish
-          : undefined,
-      };
-    }
-    return noticePublisher.publish;
+    return noticePublisher;
   };
   const phaseReminder = createPhaseReminder({
     sendReminder: (reminder) =>
@@ -370,12 +376,11 @@ export default function legionExtension(pi: PiApi): void {
 
   let daemonClient: LegionDaemonClient | undefined;
   const roleDaemon = (): LegionDaemonClient => {
-    // This build's own `legion.daemonApiVersion`, read from the manifest of the module this
-    // process loaded, as the claim's registration reads it. The daemon serves each answer in
-    // the shape the contract the caller states describes.
+    // This build's own contract, as the claim's registration states it. The daemon serves each
+    // answer in the shape the contract the caller states describes.
     daemonClient ??= createLegionDaemonClient(
       requiredEnvironment(process.env, "LEGION_DAEMON_URL"),
-      { pluginContract: pkg.legion.daemonApiVersion }
+      { pluginContract: PLUGIN_CONTRACT }
     );
     return daemonClient;
   };
@@ -672,10 +677,11 @@ export default function legionExtension(pi: PiApi): void {
        * INFRA-927: the session measures its six capability rows on this interval, while it is
        * idle, up to three times, until every row is present — a check that lost the boot-time
        * race stayed reported open for the session's whole life, since the boot measured once and
-       * never again. The architect measures first at the sixth tick as every other role does
-       * (`CAPABILITY_FIRST_DUE_TICK` plus its index in `LEGION_ROLES`); its extra readies make
-       * its waiting notices due at once, which is the same release a relaunched architect's ready
-       * already makes.
+       * never again. The architect measures first at the sixth tick as every other role of
+       * `LEGION_ROLES` does (`CAPABILITY_FIRST_DUE_TICK` plus its index in `LEGION_ROLES`); its
+       * extra readies make its waiting notices due at once, which is the same release a
+       * relaunched architect's ready already makes. A role of the deployment, outside
+       * `LEGION_ROLES`, measures first at the twelfth tick.
        *
        * The measurement's input is snapshotted here, since the host's accessors answer only from
        * a handler and throw at factory time, and it is read before `registerLegionTool()` below,
@@ -759,6 +765,9 @@ export default function legionExtension(pi: PiApi): void {
   pi.on("agent_start", async (_event, context) => {
     recreatedNotice = undefined;
     clearStartupTurn(context.sessionManager.getSessionId());
+    // Whether this run is a prompt of the daemon's is the turn-outcome report's to read
+    // (`src/turn-outcome.ts`, and its `input` handler below).
+    turnOutcomes.runStarted(context.sessionManager.getSessionId());
     // The operator moved on: a session change's re-claim outcome left in its widget comes down.
     controllerSession.handleAgentStart(context);
     // INFRA-1573: a turn of this session has started, whatever started it, so the claim boot
@@ -881,7 +890,14 @@ export default function legionExtension(pi: PiApi): void {
   // that says how a turn ended, so it is where the outcome is reported (`src/turn-outcome.ts`).
   // The host does not await this handler and nothing of the turn waits on the report, but the
   // report is awaited inside it all the same, so its failure is the handler's own promise rather
-  // than a floating one, and the reporter never rejects.
+  // than a floating one, and the reporter never rejects. What it reads of which runs a prompt of
+  // the daemon's started comes from that prompt's RPC `input`, below, and the next `agent_start`
+  // (the handler above), so that a turn no prompt ran is reported as one, for the daemon to judge
+  // from the report (dispatch://INFRA-4508's R4). The input handler changes nothing of the input.
+  pi.on("input", async (event, context) => {
+    turnOutcomes.inputArrived(context.sessionManager.getSessionId(), event);
+    return undefined;
+  });
   pi.on("agent_end", async (event, context) => {
     await turnOutcomes.report(context.sessionManager.getSessionId(), event);
   });
@@ -966,10 +982,12 @@ export default function legionExtension(pi: PiApi): void {
         resolveDocument: async (issue, reference) => {
           // The file pi-envoy's session reads: Oh My Pi's rule, in the same process.
           const config = activeDispatchSettings(
-            sessionDispatchSettings(sessionConfigFile("omp", process.env), process.env, {
-              cwd: process.cwd(),
-              session: currentSessionID,
-            }).dispatch
+            (
+              await sessionDispatchSettings(sessionConfigFile("omp", process.env), process.env, {
+                cwd: process.cwd(),
+                session: currentSessionID,
+              })
+            ).dispatch
           );
           if (config === null) {
             throw new Error(

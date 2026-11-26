@@ -1,5 +1,13 @@
 package workflow
 
+//ci:reads packages/daemon/cmd/legion/main.go TestTheShippedWordsNameTheWaitingLineBand reads every file of its list under ../../../..
+//ci:reads packages/daemon/internal/admit/admit.go TestTheShippedWordsNameTheWaitingLineBand reads every file of its list under ../../../..
+//ci:reads packages/daemon/internal/admit/awaiting_person_test.go TestTheShippedWordsNameTheWaitingLineBand reads every file of its list under ../../../..
+//ci:reads packages/daemon/internal/admit/hold_test.go TestTheShippedWordsNameTheWaitingLineBand reads every file of its list under ../../../..
+//ci:reads packages/daemon/internal/api/state.go TestTheShippedWordsNameTheWaitingLineBand reads every file of its list under ../../../..
+//ci:reads packages/daemon/internal/daemon/awaiting_catchup.go TestTheShippedWordsNameTheWaitingLineBand reads every file of its list under ../../../..
+//ci:reads packages/daemon/internal/phase/phase.go TestTheShippedWordsNameTheWaitingLineBand reads every file of its list under ../../../..
+
 import (
 	"os"
 	"path/filepath"
@@ -11,7 +19,7 @@ import (
 
 // Where the waiting line puts an issue whose work came back is shipped text, so the fragment is
 // read from the source it is declared in (record.WaitingLineBand) rather than written out again
-// here. Fourteen files carry the fifteen texts that state it — admit.go carries two — and the
+// here. Twelve files carry the thirteen texts that state it — admit.go carries two — and the
 // eight of them that are files of packages/daemon are read here, one loop running
 // both checks over each: the fragment's presence, and the ban below. Presence reads the fragment
 // and nothing else: whether the sentence around it is true is a reader's to judge, never this
@@ -19,7 +27,7 @@ import (
 // that puts its prose on a single line, so a text wrapped across a line break reads as one
 // written out on a single line. (INFRA-1100.)
 //
-// The six texts outside packages/daemon are read out of waiting_line_words_extract.txt, the
+// The four texts outside packages/daemon are read out of waiting_line_words_extract.txt, the
 // copy of their sentences committed beside this package, and never out of the files themselves:
 // a test that reads a shipped text puts that text in this job's filter — a declared read applies
 // to every compiled source file of a run — and an edit of a docs or skill page would then
@@ -56,6 +64,7 @@ import (
 // enough to leave running-legion.md's honest definition of the ordinal, `1 being first in the
 // line`, standing.
 func TestTheShippedWordsNameTheWaitingLineBand(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join("..", "..", "..", "..")
 	body := func(file string) string {
 		t.Helper()

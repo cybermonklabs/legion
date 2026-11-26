@@ -70,8 +70,12 @@ func (e *Engine) OpenUncountedRuns(ctx context.Context, tx pgx.Tx) (int, error) 
 			if err != nil {
 				return 0, err
 			}
+			drawn, err := e.variantOf(ctx, tx, issue.Key)
+			if err != nil {
+				return 0, err
+			}
 			first, err := e.store.OpenUncountedStep(ctx, tx, issue.Key, step.place, func(starts int64) record.StepRecord {
-				write := stepWrite(view, step.place, step.role, step.typ, string(agent), starts)
+				write := stepWrite(view, drawn, step.place, step.role, step.typ, string(agent), starts)
 				if !startedAt.IsZero() {
 					write.StartedAt = new(startedAt)
 				}

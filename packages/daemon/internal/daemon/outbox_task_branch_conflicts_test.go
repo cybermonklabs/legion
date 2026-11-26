@@ -77,7 +77,7 @@ func asAFact(t *testing.T, rig *taskBranchRig, what string, write func(ctx conte
 
 // laterVersionDropsC is the store writes of the owner's stop of task d (taskStopped's StopTask)
 // and of a later version that changes d's needs to a alone (planGiven: givenRows through PutPlan,
-// then restartTask's move of the changed stopped task to its first step).
+// then startAtFirstStep's move of the changed stopped task to its first step).
 func laterVersionDropsC(ctx context.Context, rig *taskBranchRig, tx pgx.Tx) error {
 	issue := taskBranchIssue
 	v2 := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner, GivenAt: time.Now()}

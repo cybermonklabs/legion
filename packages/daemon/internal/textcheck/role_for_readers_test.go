@@ -1,5 +1,11 @@
 package textcheck
 
+// The branch of dispatch://INFRA-2614 wrote this check in internal/workflow's role_for_test.go;
+// it moved here because it walks every .go file of the module, test files included, and a row
+// keyed on a file of internal/workflow would put every test file of packages/daemon - this
+// package's and the live tests' among them - on daemon-go's filter (dispatch://INFRA-1413).
+//ci:reads packages/daemon/**/*.go walks every .go file under packages/daemon (../..,) and TestEveryReaderOfRoleForLeavesTheArchitectUnchanged parses each one
+
 import (
 	"go/ast"
 	"go/parser"
@@ -55,11 +61,11 @@ type roleForReader struct {
 // while RoleFor named no role (phase.Of, and the completion route's answerCompletion, which reads
 // the phase LeftBy answers where the role does not work the issue's), or reads only the places of
 // a plan's steps, which admitted never is (reportsBefore, Walk.RoleAt, and Engine.startAtFirstStep
-// and Engine.startReady, which read their task's first step: a planner's, an
-// implementer's or a role of the deployment's, as plan.Supported takes the acceptance only after
-// an implementer, and Engine.startAfterWait, which reads the step a task whose start waited stands
-// at, a step place: a first step whose join ended or is queued again, or a step whose freed agent
-// takes it, since only a step waits for its join or its agent), or reads the retro's own
+// and Engine.startReady, which read their task's first step: a planner's, an implementer's or a
+// role of the deployment's, as plan.Supported holds each tester, reviewer and acceptance step after
+// an implementer step, and Engine.startAfterWait, which reads the step a task whose start waited
+// stands at, a step place: a first step whose join ended or is queued again, or a step whose freed
+// agent takes it, since only a step waits for its join or its agent), or reads the retro's own
 // phase (retroHeldNotice and Engine.startHeldRetro, which run only for a parent held before its
 // retro for the issues beneath it), or answers the running steps' roles to the readers this list
 // holds (record.RunningOf, and record.stepOfRow, the one reading of a row of plan rows, which

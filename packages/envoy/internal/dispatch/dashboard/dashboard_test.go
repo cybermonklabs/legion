@@ -439,3 +439,25 @@ func TestPublishAndPruneTogetherLeaveThePublishedBuildReadable(t *testing.T) {
 		}
 	}
 }
+
+// A build's asset can pass 64 KiB on its own, so its publish passes it in a kind of argument a
+// released connection counts (store.CountedArgumentBytesForTest), or the connection that stored
+// it would keep it while idle. The publish runs at a server's boot and through no route, so api's
+// TestNoLargeStoreWritePassesAnArgumentTheReleaseCannotCount cannot drive it (this package
+// imports routes, which imports api): it is held here, on a pool that reads every statement's
+// arguments.
+func TestPublishPassesALargeAssetInAKindTheReleaseCounts(t *testing.T) {
+	reader := storetest.NewLargeArguments()
+	pool := storetest.Traced(t, storetest.Open(t).Pool, reader, nil)
+	dist := writeDist(t, map[string][]byte{
+		"index.html":         page("/assets/index-a1.js", "a"),
+		"assets/index-a1.js": bytes.Repeat([]byte("export const x = 1;\n"), 5_000),
+	})
+	const publish = "a build's publish"
+	reader.Begin(publish)
+	if _, err := Publish(context.Background(), pool, dist, "0123456789abcdef0123456789abcdef01234567"); err != nil {
+		t.Fatalf("publish the build: %v", err)
+	}
+	reader.RequireLarge(t, publish)
+	reader.RequireCounted(t)
+}

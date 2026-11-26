@@ -196,11 +196,11 @@ func (e *Engine) joinAgain(ctx context.Context, tx pgx.Tx, keys []string) error 
 			if row.State != record.TaskRunning || row.StepWait != record.StepWaitJoin {
 				continue
 			}
-			queued, err := e.store.TaskBranchQueued(ctx, tx, key, issue.Generation, row.Task)
+			queued, err := e.store.TaskBranchRow(ctx, tx, key, issue.Generation, row.Task)
 			if err != nil {
 				return err
 			}
-			if !queued {
+			if queued == 0 {
 				unjoined = append(unjoined, row.Task)
 			}
 		}
@@ -247,12 +247,12 @@ func planTasksOf(stored *record.StoredPlan) []record.PlanTask {
 // work stands and its own pull request (standingPart). Where the start that waited was a start
 // again of the task at its first step or a move back (Walk.StartReason), the task is told why, and
 // its entry counts as a move back, as that start's own would have had it waited for nothing
-// (restartTask, transition). said is the log line, which names the issue, the task, its place and
+// (startAtFirstStep, transition). said is the log line, which names the issue, the task, its place and
 // role, and args.
 func (e *Engine) startAfterWait(ctx context.Context, tx pgx.Tx, s TaskScope, said string, args ...any) error {
 	w, view := s.walk, s.issue
 	role := w.RoleAt(w.Place)
-	if err := e.clearHandoff(ctx, tx, view.Key, role); err != nil {
+	if err := e.clearHandoff(ctx, tx, s, role); err != nil {
 		return err
 	}
 	reason := w.StartReason
@@ -578,7 +578,7 @@ func (e *Engine) generationStarted(ctx context.Context, tx pgx.Tx, issue record.
 			return true, err
 		}
 	}
-	gates, err := e.store.GatesOf(ctx, tx, root.Key)
+	lifecycle, gate, err := record.RootFacts(ctx, e.store, tx, *root, e.cfg.Steps)
 	if err != nil {
 		return false, err
 	}
@@ -587,18 +587,20 @@ func (e *Engine) generationStarted(ctx context.Context, tx pgx.Tx, issue record.
 		return false, err
 	}
 	holds := slices.ContainsFunc(slots, func(slot record.Slot) bool { return slot.Issue == root.Key })
-	return !record.AwaitsPromotion(*root, record.TreeGate{Steps: e.cfg.Steps, Rows: gates}, holds), nil
+	return !record.AwaitsPromotion(*root, lifecycle, gate, holds), nil
 }
 
 // mergeCanLand says whether the merge of s's task, which awaits its landing in the tree root
 // lingers, can still land there: while the linger runs and no fact has closed it, while the pull
-// request of s's task is open (taskPullRequest), or where the close of root's linger handed s's
-// issue over, whose re-admission ends the merge's run instead.
+// request of s's task is open (taskPullRequestRow), or where the close of root's linger handed s's
+// issue over, whose re-admission ends the merge's run instead. The pull request's state is all it
+// reads, so it reads the row alone, with none of what the pull request remembers of its settled
+// heads.
 func (e *Engine) mergeCanLand(ctx context.Context, tx pgx.Tx, runs *factRuns, s TaskScope, root record.Issue) (bool, error) {
 	if record.Lingering(root, e.now()) && !runs.closed[root.Tree] {
 		return true, nil
 	}
-	pr, err := e.taskPullRequest(ctx, tx, s)
+	pr, err := e.taskPullRequestRow(ctx, tx, s)
 	if err != nil {
 		return false, err
 	}

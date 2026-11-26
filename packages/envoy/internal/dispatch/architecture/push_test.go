@@ -1,5 +1,7 @@
 package architecture
 
+//ci:reads packages/envoy/scripts/fixtures/github/push.json push os.ReadFile(pushFixture)
+
 import (
 	"context"
 	"encoding/json"
