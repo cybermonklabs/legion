@@ -182,6 +182,22 @@ func TestIssueKeysAreTheWordsThatMayNameATrackersIssue(t *testing.T) {
 	}
 }
 
+// Every role acts as the one App, the pull request's author, so GitHub would let any role resolve a
+// review thread; the rule is that the implementer resolves every thread and no other role does, so
+// the reviewer names the bot threads it accepted to the implementer. The implementer's part states
+// that rule, and no longer the reason main gave, that the reviewer cannot resolve a thread as its
+// own App, which the one App made false.
+func TestTheImplementerResolvesEveryThreadAndNoOtherRoleDoes(t *testing.T) {
+	text := foldWhitespace(rolePart(t, "implementer.md"))
+	const rule = "You resolve every thread and no other role does, so the reviewer names the bot threads it accepted to you"
+	if !strings.Contains(text, rule) {
+		t.Errorf("roles/implementer.md omits %q", rule)
+	}
+	if retired := "The reviewer cannot resolve a thread as its own App"; strings.Contains(text, retired) {
+		t.Errorf("roles/implementer.md still says %q, which the one App made false", retired)
+	}
+}
+
 // Every role a claim can be on has its own part, and none is blank: a blank part boots a worker with
 // no instructions at all. The merger composes no core.
 func TestEveryRoleHasItsPartAndTheMergerHasNoCore(t *testing.T) {

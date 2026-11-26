@@ -999,6 +999,30 @@ test("the architect skill names the reviewer's verdict past review as its review
   );
 });
 
+// R5: the reviewer's references say that it sends its verdict and submits a `COMMENT` review, the
+// review that carries its findings and decides nothing.
+test("the reviewer's references name its verdict and its COMMENT review", () => {
+  const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
+  expect(mergeGate).toContain("Your role prompt gives the verdict, the `COMMENT` review, its footer,");
+  const threads = collapsed(path.join(staged, "legion-worker", "references", "review-threads.md"));
+  expect(threads).toContain(
+    "(on the implementer's role topic, or in the body of its `COMMENT` review)"
+  );
+});
+
+// No step of any task gives an approving review, since every role acts as the one App, the pull
+// request's author: the architect asks a person for one a base requires, and waits for no step.
+test("the acceptance skill says no step gives a required approving review", () => {
+  const acceptance = collapsed(
+    path.join(staged, "legion-architect", "references", "acceptance.md")
+  );
+  expect(acceptance).toContain(
+    "a required approving review, which no step gives: open a `dispatch ask` naming the base rule;"
+  );
+  expect(acceptance).not.toContain("that no reviewer step gave");
+  expect(acceptance).not.toContain("Do not wait for a reviewer phase the task does not have");
+});
+
 // Each sentence that held only in the default steps holds for every order the plan validator
 // allows: a task may leave out the reviewer and the owner's acceptance, a parent whose last step
 // is not the acceptance is held before its retro, retro's `Handoff:` line names the report of the

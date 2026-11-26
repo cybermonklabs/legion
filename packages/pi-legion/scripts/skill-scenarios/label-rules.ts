@@ -299,11 +299,6 @@ const ENTRIES_LATER_FAIL: readonly Entry[] = [
     has: "`untrusted-input`",
     keep: "A security-review table row, not a Dispatch check.",
   },
-  {
-    file: "skills/legion-architect/references/acceptance.md",
-    has: "Do not wait for a reviewer phase the task does not have",
-    keep: "A required approving review no step gives, which the architect asks a person for, not a check result.",
-  },
   ...GUIDE_LATER_FAIL,
 ];
 
@@ -366,11 +361,6 @@ const ENTRIES_ARCHITECT_LATER_FAIL: readonly Entry[] = [
     file: "skills/thermonuclear-deep-review/SKILL.md",
     has: "`untrusted-input`",
     keep: "A security-review table row, not a Dispatch check.",
-  },
-  {
-    file: "skills/legion-architect/references/acceptance.md",
-    has: "Do not wait for a reviewer phase the task does not have",
-    keep: "A required approving review no step gives, which the architect asks a person for, not a check result.",
   },
   ...GUIDE_LATER_FAIL,
 ];
