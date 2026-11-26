@@ -165,7 +165,7 @@ questions_file=$root/scripts/e2e/answer-loop/questions.json
 ok=
 check=setup
 timeout_hook=
-mode=claims-only
+mode='claims-only'
 # The App key command inputs this run was not given, set in prerequisites and empty in workflow
 # mode: what the mode note and every answering criterion's WAITING line name
 # (lib/answer-loop-reads.sh, app_keys_missing_names and answering_blockers).
@@ -623,6 +623,7 @@ real_tools() {
   mkdir -p "$work/realbin"
   local IFS=:
   for dir in $PATH; do
+    # shellcheck disable=SC2015 # the loop skips a dir when either test fails
     [ -x "$dir/gh" ] && [ ! -d "$dir/gh" ] || continue
     [ "$(head -c 2 "$dir/gh")" = '#!' ] && continue
     gh=$dir/gh
@@ -865,6 +866,7 @@ gpt_preflight() {
         [0-9][0-9][0-9]) transient= ;;
         *) transient=1 ;;
       esac
+      # shellcheck disable=SC2015 # the loop stops asking when either test fails
       [ -n "$transient" ] && [ "$attempt" != 4 ] || break
       note "GPT-6.1: the preflight's call $attempt answered $code, which says nothing of the model; asking again in 10 s"
       sleep 10
@@ -911,6 +913,7 @@ gpt_route_setting() {
 # not resolve as written fails the run.
 install_gpt_route() {
   local home=$1 profile=$2 label=$3 agent_dir=$1/.omp/profiles/$2/agent disabled resolved
+  # shellcheck disable=SC2015 # the run fails when the read or its jq test fails
   disabled=$(gpt_route_setting "$home" "$profile" disabledProviders) &&
     jq -e 'type == "array" and all(.[]; type == "string") and (index("openai") | not)' <<<"$disabled" >/dev/null ||
     fail "the profile $profile's disabledProviders read as ${disabled:-nothing}, not a list without openai"
@@ -1756,6 +1759,7 @@ else
   model_key_file=$work/anthropic-key
   key_source=${LEGION_E2E_ANTHROPIC_KEY_FILE:-${LEGION_E2E_CLAUDE_KEY_FILE:-}}
   if [ -n "$key_source" ]; then
+    # shellcheck disable=SC2015 # the run fails when either test fails
     [ -f "$key_source" ] && [ -r "$key_source" ] ||
       fail "the key file $key_source is not a readable file"
     (umask 077 && tr -d '[:space:]' <"$key_source" >"$model_key_file")
@@ -1781,6 +1785,7 @@ note "questions: $questions_file, sha256 $(sha256sum "$questions_file" | cut -d'
 gpt_model=$(jq -r .agents.gpt.model "$questions_file")
 gpt_model_id=${gpt_model#openai/}
 gpt_level=$(jq -r .agents.gpt.thinking "$questions_file")
+# shellcheck disable=SC2015 # the run fails when either test fails
 [[ $gpt_model == openai/?* ]] && [[ $answers_prices == *" $gpt_model: "* ]] ||
   fail "$questions_file's GPT agent runs on $gpt_model, which is no OpenAI model the answers block prices"
 # The role Apps. Each App's credential is a key command of the operator's,
@@ -1918,6 +1923,7 @@ install_plugins "$root" "$branch_home" "$branch_profile" "$work/branch-plugins"
 # /opt/legion/pi-envoy/bin/dispatch does. The daemon finds no other: its PATH holds none, and a
 # runner has no worker image's install.
 daemon_dispatch=$work/branch-plugins/pi-envoy/bin/dispatch
+# shellcheck disable=SC2015 # the run fails when either test fails
 [ -x "$daemon_dispatch" ] && [ -f "$work/branch-plugins/pi-envoy/dist/dispatch.js" ] ||
   fail "the branch's pi-envoy pack holds no runnable bin/dispatch with its dist/dispatch.js under $work/branch-plugins/pi-envoy"
 note "the answer loop's dispatch tool runs $daemon_dispatch (LEGION_DISPATCH_PATH)"
@@ -2016,12 +2022,9 @@ envoy_ask_text() {
 # ask_and_expect NAME KIND TARGET QUESTION_ID: the Envoy half every answering criterion shares: a 200
 # instead of a 404, then a reply on the asker's topic within four minutes holding the answer key
 # (replied_with_keys). It leaves asked_event set to the event the listener answered the send with,
-# "" where it answered no 200, and asked_question to the question the reply answers (its
-# legion-answer marker), "" where no reply came, so a check judges that answer's own log lines and
-# no later one's, and a row's read takes its answer by the event (A2, A15).
+# "" where it answered no 200, so a row's read takes its answer by the event (A2, A15).
 ask_and_expect() {
   local label=$1 kind=$2 target=$3 id=$4 sent code event reply missing
-  asked_question=
   asked_event=
   sent=$(envoy_ask "$kind" "$target" "$id")
   code=${sent%% *}
@@ -2031,7 +2034,6 @@ ask_and_expect() {
   asked_event=$event
   soft_wait 240 "the answer to $id on the asker's topic" inbox_reply "$event" || return 1
   reply=$(inbox_reply "$event")
-  asked_question=$(answer_question_id "$reply")
   note "$label: reply: $(head -c 400 <<<"$reply" | tr '\n' ' ')"
   if missing=$(replied_with_keys "$event" "$id"); then
     return 0
@@ -2504,7 +2506,8 @@ a20_quiet_read() {
 }
 check_a20() {
   criterion A20 "a person's reply that mentions nobody, under the loop's own answer in a closed issue's thread, is answered there by the stopped tester, nothing of it starting; a reply that follows the person's own is no agent's to answer; a reply that asks nothing gets no post; and of two stopped writers in a thread the newest answers" infra448 || return 0
-  local issue=${agent[$store:tester.issue]} session=${agent[$store:tester.session]} old=${agent[$store:tester_old.session]}
+  local issue=${agent[$store:tester.issue]} session=${agent[$store:tester.session]}
+  local old=${agent[$store:tester_old.session]}
   local head=${agent[$store:a3.comment]:-} replies first reply_id control_id skipped_before panes_before before deadline ok=0 said
   local writers='' wroot='' wold='' wreply='' wskipped quiet='' qroot='' qwrote='' qreply='' qdropped qneedle ok_writers=0 ok_quiet=0
   if [ -z "$head" ]; then
@@ -2833,6 +2836,7 @@ settled_pr_comments() {
   local comments started=$SECONDS
   while :; do
     comments=$(pr_comments "$1" "$2")
+    # shellcheck disable=SC2015 # the wait ends when either test fails
     [ "$(jq length <<<"$comments")" = 0 ] && ((SECONDS - started < 60)) || break
     sleep 5
   done
@@ -2948,12 +2952,12 @@ check_a7() {
 # the asker; and this boot named the reply's question in no line, a second hand-off of it among
 # them: the daemon was handed the question once and answered it once.
 a8_once_read() {
-  local stored_before=$1 planner=${agent[$store:planner.session]} sent event codes='' events='' want='' same='' qid stored replies taken again
+  local stored_before=$1 planner=${agent[$store:planner.session]} sent event codes='' answered_events='' want='' same='' qid stored replies taken again
   shift
   event=${1#* }
   for sent in "$@"; do
     codes+="${codes:+ }${sent%% *}"
-    events+="${events:+ }${sent#* }"
+    answered_events+="${answered_events:+ }${sent#* }"
     want+="${want:+ }200"
     same+="${same:+ }$event"
   done
@@ -2962,9 +2966,9 @@ a8_once_read() {
   taken=$(question_lines "$qid")
   stored=$(($(listener_stored_handoffs_to "$planner") - stored_before))
   # shellcheck disable=SC2086 # each answered event is a word of its own, and an empty one none
-  replies=$(replies_to $events)
-  read_said="one envelope $# time(s) (listener $codes, answered events $events): hand-offs the stream stored for them $stored; replies on the asker's topic $replies; this boot's lines naming the question ${qid:-(none)}: $taken, of them handed off again $again"
-  [ "$codes" = "$want" ] && [ -n "$event" ] && [ "$events" = "$same" ] && [ "$stored" = 1 ] && [ "$replies" = 1 ] &&
+  replies=$(replies_to $answered_events)
+  read_said="one envelope $# time(s) (listener $codes, answered events $answered_events): hand-offs the stream stored for them $stored; replies on the asker's topic $replies; this boot's lines naming the question ${qid:-(none)}: $taken, of them handed off again $again"
+  [ "$codes" = "$want" ] && [ -n "$event" ] && [ "$answered_events" = "$same" ] && [ "$stored" = 1 ] && [ "$replies" = 1 ] &&
     [ -n "$qid" ] && [ "$taken" = 0 ] && [ "$again" = 0 ]
 }
 # a8_kill_read EVENT is the read of A8's second leg: one reply to EVENT reached the asker, across
@@ -3216,6 +3220,7 @@ a9_read() {
   q1=$(answer_question_id "$(inbox_reply "$1" 2>/dev/null || true)")
   q2=$(answer_question_id "$(inbox_reply "$2" 2>/dev/null || true)")
   request=$(first_request_after agents "$4")
+  # shellcheck disable=SC2015 # printf 0 cannot fail
   counts="question 1 $(question_occurrences "$request" in-order-1 "$run_tag" "$3"), question 2 $(question_occurrences "$request" in-order-2 "$run_tag" "$3"), exchange 1 $([ -z "$q1" ] && printf 0 || appended_exchanges architect "$q1"), exchange 2 $([ -z "$q2" ] && printf 0 || appended_exchanges architect "$q2")"
   # Every reply the architect gave since the task was delivered, not its last one: on resume it may
   # also answer a person's earlier reply in the same turn, and its last words then answer that.
@@ -3504,7 +3509,7 @@ check_a10() {
   criterion A10 "a Claude Code worker and a compacted Oh My Pi conversation are answered from their conversations and resume after" || return 0
   local session=${agent[$store:pre_change.session]} token=${agent[$store:pre_change.token]} t1 t2 s1 s2 e1 e2 line transcript sigs thinking unexercised='' m ok_claude=0 ok_compact=0 t3 s3 e3 compaction said1 said2 claude_said
   local before=$evidence/sessions/$store/pre_change-before-A10-1.jsonl
-  local asked_at k marker again pair='' pairs='' cache_why='' found judged=''
+  local asked_at k marker again pair='' served='' cache_why='' found judged=''
   local -a markers events organizations
   # The conversation as it stands before the first question, kept as A10's GPT-6.1 clause keeps its own:
   # the first request must carry the signatures this holds, and not those the answers below add to it.
@@ -3557,23 +3562,23 @@ check_a10() {
   while :; do
     k=$((${#markers[@]} - 1))
     organizations=()
-    pairs=
+    served=
     for marker in "${markers[@]}"; do
       organizations+=("$(call_organization "$(daemon_call_for "$marker")")")
-      pairs+="${pairs:+, }$marker ${organizations[-1]:-none}"
+      served+="${served:+, }$marker ${organizations[-1]:-none}"
     done
-    note "the answers so far were served by the organizations: $pairs"
+    note "the answers so far were served by the organizations: $served"
     if found=$(same_organization_pair "${organizations[@]}"); then
       judged=${found#* }
       pair="${markers[${found% *}]} and ${markers[judged]}"
       break
     fi
     if ! inbox_reply "${events[k]}" >/dev/null; then
-      cache_why="the answer to ${markers[k]} was not posted, so the second question was not asked again (the answers' organizations: $pairs)"
+      cache_why="the answer to ${markers[k]} was not posted, so the second question was not asked again (the answers' organizations: $served)"
       break
     fi
     if [ "$k" -gt 4 ] || ((SECONDS + 10 - asked_at >= 300)); then
-      cache_why="the model gateway served no two answers from one organization ($pairs), within the cache lifetime and four asks again, and a prompt cache is kept per organization, so no cache read was observed"
+      cache_why="the model gateway served no two answers from one organization ($served), within the cache lifetime and four asks again, and a prompt cache is kept per organization, so no cache read was observed"
       break
     fi
     sleep 10
@@ -3729,6 +3734,7 @@ check_a12() {
     sent=$(envoy_ask session "${agent[$store:planner.session]}" repository-file "a12-$fault-$run_tag")
     event=${sent#* }
     passed_on() { fault_passed_on "$fault"; }
+    # shellcheck disable=SC2015 # true cannot fail; it keeps either wait's timeout from ending the run
     soft_wait 300 "the $fault fault to be passed on" passed_on && soft_wait 60 "the daemon's reply" inbox_reply "$event" || true
     # The bound of seconds stops the answer while its model call may still run: a loop that posted
     # that call's late reply as well would post it once the model is done, so the leg waits a
@@ -4720,7 +4726,8 @@ check_a22() {
   criterion A22 "a stopped agent reads a comment written after it stopped with its dispatch tool, posts where asked in its own name with the loop's mark and the loop answers none of it, the tool refuses a status write, a claim and a document edit, the log names each call's session, and a daemon with no dispatch command offers no dispatch tool" || return 0
   # The post leg's comment; the read leg reads, and the refusal leg's three writes are refused.
   asks_writes "dispatch comment"
-  local planner=${agent[$store:planner.session]} issue=${agent[$store:planner.issue]} mentioned=${agent[$store:tester_old.session]}
+  local planner=${agent[$store:planner.session]}
+  local issue=${agent[$store:planner.issue]} mentioned=${agent[$store:tester_old.session]}
   local target marker comment read_body post_body refuse_body standing skipped tools check absent_tools='' absent_check='' found keep
   local ok_read=0 ok_post=0 ok_refuse=0 ok_tools=0 said=''
   tools=$(boot_tools_line)
@@ -4817,7 +4824,7 @@ check_a22() {
 # calls on LABEL holds a web_search call with each search's query and an address its result
 # returned.
 a23_search_read() {
-  local reply message question lines answered calls line call query url faults results='[]' ran=0 recomputed=yes resumed=yes request gh dispatch
+  local reply message question lines answered calls line call query url faults search_urls='[]' ran=0 recomputed=yes resumed=yes request gh dispatch
   reply=$(inbox_reply "$1" 2>/dev/null) || reply=
   message=$(reply_message "$reply")
   question=$(answer_question_id "$reply")
@@ -4834,14 +4841,14 @@ a23_search_read() {
     if [ "$(jq -r '(.searches // 0) > 0 and (.error // "") == ""' <<<"$line")" = true ]; then
       ran=$((ran + 1))
       [ "$(jq -r '.status // 0' <<<"$call")" = 200 ] || recomputed=no
-      results=$(jq -c --argjson c "$call" '. + ($c.urls // []) | unique' <<<"$results")
+      search_urls=$(jq -c --argjson c "$call" '. + ($c.urls // []) | unique' <<<"$search_urls")
       url=$(jq -r '.urls[0] // ""' <<<"$call")
       request_holds_search "$request" "$query" "$url" || resumed=no
     fi
     [ "$call" = null ] || search_line_recomputes "$line" "$call" "$web_search_fee" || recomputed=no
   done < <(jq -c '.[]?' <<<"$lines" 2>/dev/null)
-  faults=$(citation_faults "$message" "$results" "$gh" "$dispatch")
-  read_said="$4's reply to ${1:-(no event)}: $(said_text "$message"); the web_search lines of its answer ${question:-(none)}: $(jq -c 'map({seq, query, searches, costUSD, error})' <<<"$lines" 2>/dev/null || printf '%s' "$lines"), $ran of them a search that ran; each with its call answered 200 and its cost its call's tokens and its fee: $recomputed; the addresses the searches returned: $results; what is wrong with the addresses the reply cites: ${faults:-nothing}; the cost line: $(jq -c '{webSearches, webSearchUSD, costUSD}' <<<"${answered:-null}" 2>/dev/null || printf none); $4's first request on $3 after $2 holds a web_search call and its result for each search: $resumed"
+  faults=$(citation_faults "$message" "$search_urls" "$gh" "$dispatch")
+  read_said="$4's reply to ${1:-(no event)}: $(said_text "$message"); the web_search lines of its answer ${question:-(none)}: $(jq -c 'map({seq, query, searches, costUSD, error})' <<<"$lines" 2>/dev/null || printf '%s' "$lines"), $ran of them a search that ran; each with its call answered 200 and its cost its call's tokens and its fee: $recomputed; the addresses the searches returned: $search_urls; what is wrong with the addresses the reply cites: ${faults:-nothing}; the cost line: $(jq -c '{webSearches, webSearchUSD, costUSD}' <<<"${answered:-null}" 2>/dev/null || printf none); $4's first request on $3 after $2 holds a web_search call and its result for each search: $resumed"
   [ "$ran" -gt 0 ] && [ "$recomputed" = yes ] && [ -z "$faults" ] && [ "$resumed" = yes ] &&
     search_fee_carried "$answered" "$lines" "$web_search_fee"
 }
@@ -4903,6 +4910,7 @@ check_a23() {
   start_daemon "$work/branch/legion" "$work/a23-$store.yaml" "$daemon_log" "$branch_home" "$branch_profile" "$branch_plugin"
   sent=$(envoy_ask session "${agent[$store:planner.session]}" a23-fourth-search "a23-fourth-$run_tag-$store")
   event=${sent#* }
+  # shellcheck disable=SC2015 # true cannot fail; it keeps either wait's timeout from ending the run
   soft_wait 300 "the loop's fourth search to be refused" fault_passed_on model_calls && soft_wait 60 "the daemon's reply" a23_fourth_read "$event" || true
   a23_fourth_read "$event" && ok_fourth=1
   note "$read_said"
@@ -5630,10 +5638,10 @@ a17_control_comment() {
 # now where not given. A17's control places such a comment as the implement App, carrying the loop's
 # mark (a17_control_comment), and this read must see it.
 a17_nothing_written() {
-  local listing=${1:-} ids='no listing at all'
+  local listing=${1:-} holding='no listing at all'
   [ -n "$listing" ] || listing=$(pr_comment_listing "${agent[$store:implementer.pr]}")
-  ! jq -e 'type == "array"' <<<"$listing" >/dev/null 2>&1 || ids=$(comment_ids_holding "$listing" "$leak_marker")
-  read_said="comments on #${agent[$store:implementer.pr]} holding $leak_marker: $ids"
+  ! jq -e 'type == "array"' <<<"$listing" >/dev/null 2>&1 || holding=$(comment_ids_holding "$listing" "$leak_marker")
+  read_said="comments on #${agent[$store:implementer.pr]} holding $leak_marker: $holding"
   refused_marker_absent "$listing" "$leak_marker"
 }
 
@@ -5700,7 +5708,9 @@ control_send_a19() {
 # stands on that pull request.
 control_read_a19() {
   local number=${agent[$store:a19.number]} session=${agent[$store:reviewer.session]} head=${agent[$store:a19.head]} issue=${agent[$store:a19.issue]} since=${control[$store:A19.since]} review delivery reviews
+  # shellcheck disable=SC2317 # soft_wait below runs it by name
   approved() { approval_by "$(reviewer_approvals "$number" "$session" "$since")" "$review_app_login" "$head"; }
+  # shellcheck disable=SC2317 # soft_wait below runs it by name
   accepted() { phase_changed "$issue" reviewing accepting; }
   soft_wait 60 "the reviewer's approval of $head on GitHub since $since" approved || true
   review=$(reviewer_approvals "$number" "$session" "$since")
@@ -5783,7 +5793,8 @@ control_read_a21() {
 }
 
 control_send_a22() {
-  local planner=${agent[$store:planner.session]} issue=${agent[$store:planner.issue]} target=${agent[$store:a22.target]:-} mentioned=${agent[$store:tester_old.session]}
+  local planner=${agent[$store:planner.session]}
+  local issue=${agent[$store:planner.issue]} target=${agent[$store:a22.target]:-} mentioned=${agent[$store:tester_old.session]}
   control_sent A22 "A22's target issue" "$target" || return 1
   control[$store:A22.marker]=answer-loop-a22-control-$run_tag-$store
   control[$store:A22.read]="$(question_text a22-late-comment) $(control_suffix a22-late-comment A22)"

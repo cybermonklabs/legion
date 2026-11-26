@@ -196,6 +196,7 @@ check_boot_without_answers() {
 # cost_price is jq's price table of the models the run answers on and prices (answer-loop.sh's
 # answers_prices), USD per million tokens as [input, output, cache write, cache read]: Claude
 # Sonnet 5.5, whichever harness names it, and GPT-6.1; null for any other model.
+# shellcheck disable=SC2016 # a jq program: $m is jq's variable, not the shell's
 cost_price='def cost_price: (.model // "") as $m
   | if ($m | test("claude-sonnet-5-5")) then [3, 15, 3.75, 0.3]
     elif $m == "openai/gpt-6.1-sol" then [2, 10, 2.5, 0.1]
