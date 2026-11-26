@@ -90,5 +90,4 @@ var survivorReasons = map[string]string{
 	"observeCommit: d.H.Turned[r.Task.L] |= 1 << p.Cause.R": "The driver's turn-credit ledger, which I1 reads; dropping it can only blind I1, as its two plants show.",
 	"observeCommit: d.H.Recovering &^= 1 << l":              "The driver's reading of D10's doubt; keeping the bit after the task left or the claim stopped can only make the twice and replacement oracles stricter, and neither fires.",
 	"restart: d.H.Recovering |= 1 << l":                     "The driver's reading of D10's doubt; dropping it can only blind the twice oracle, as the D10 restore plant shows.",
-	"restart: d.Booted = true":                              "Booted is the boot-memory oracle's own flag, which no transition reads; dropping it can only blind that oracle, as its plant shows.",
 }
