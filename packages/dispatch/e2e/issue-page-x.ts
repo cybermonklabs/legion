@@ -66,7 +66,8 @@ import type { ApiRequest } from "./traffic";
  *   (`data-preset-count`) and its flag (`data-preset-flag`), the Verification summary's "N of M
  *   covered" and Details' "Referenced by" - beside the same counts made from a page's own tree
  *   read (`heldUnder`, `reservedUnder`, `referencesTo`) and comments read (`marginComments`),
- *   with `viewCount` of `e2e/issue-page-t-tree.ts` for a view's.
+ *   with `viewCount` of `e2e/issue-page-t-tree.ts` for a view's; a question of the spec is named
+ *   by the read id the read it is drawn from holds it by (`questionReadId`).
  * - **What the page sent**: the requests to the node state routes (`nodeStateRequests`) and the
  *   address each settle names (`settlesSent`).
  * - **The gates** a row reads once, each holding back the readings that need code not yet under
@@ -203,6 +204,40 @@ export function nodeHolding(answer: IssueTreeRead, word: string): IssueTreeNode 
   );
 }
 
+/** The id of the ask the server indexed the question `question` of `seeded` from its block: the
+ *  read id of its ask's node, and what `/asks/<id>` names it by. */
+function askIdOf(seeded: NodeStateSeed, question: SpecQuestion): string {
+  const asks: Readonly<Record<SpecQuestion, string>> = {
+    openQuestion: seeded.whole.openQuestion.askId,
+    overtakenQuestion: seeded.overtakenAskId,
+    proposedQuestion: seeded.proposedAskId,
+  };
+  return asks[question];
+}
+
+/**
+ * The read id `answer` holds the question `question` of `seeded` by: the read id the row the page
+ * draws for it from `answer` carries (`data-node-read-id`), and the one `treeIdOf(answer, …)` of
+ * `tree-read/tree-nodes.ts` maps to the question's page id (`<slug>#b-<block id>`), where it maps
+ * a read id `answer` does not hold to itself. A question written as an `ask` block is two nodes of
+ * the whole tree read, the block and the ask the server indexed from it, which the page draws as
+ * one row carrying the block's read id. Conversation's read names its kinds (`queries.ts`'
+ * `CONVERSATION_KINDS`), and the server's `kind` filter takes for `ask` the ask's node and never
+ * an ask block (`issue_tree_read.go`'s `issueTreeQuery.Kind`), so Conversation draws the question
+ * from its ask's node alone; nor does that read hold a result, a plan task or a constraint, which
+ * are none of its kinds. Graph's read names no kind and holds the block, as the whole tree read
+ * (`readTree(key, null)`, `NodeStateSeed.answer`) does. So: the block's read id where `answer`
+ * holds the block, else its ask's.
+ */
+export function questionReadId(
+  answer: IssueTreeRead,
+  seeded: NodeStateSeed,
+  question: SpecQuestion
+): string {
+  const block = seeded.ids[question];
+  return (answer.nodes ?? []).some((node) => node.id === block) ? block : askIdOf(seeded, question);
+}
+
 /** A tree read's nodes by the read `parent` each stands under. */
 type Children = ReadonlyMap<string, readonly IssueTreeNode[]>;
 
@@ -247,10 +282,6 @@ const NO_CONVERSATION_ROW: Readonly<Record<string, true>> = { plan_task: true, r
 
 /** What a count of the nodes under a row reads besides the row's own node. */
 export interface HeldRow {
-  /** The ids of the other nodes of the read the page draws in this row's place. A question the
-   *  server indexed from a block of a document is two nodes of the read, the block and its ask,
-   *  which the page draws as one row. */
-  readonly alike?: readonly string[];
   /** The ids of the comments the reader's comments read anchors (`marginComments`). As
    *  `tree-read/tree-nodes.ts`' `onNodeText` reads one, a comment of them the read hangs under a
    *  node other than the issue's own is on that node's text: the page draws it, and the replies
@@ -263,8 +294,9 @@ export interface HeldRow {
   readonly undrawn?: Readonly<Record<string, true>>;
 }
 
-/** Every node of issue `key` in `answer` under the node `readId`, and under each of `alike`, at
- *  any depth, by the read's `parent`, that Conversation draws as a row: the tree each count walks.
+/** Every node of issue `key` in `answer` under the node `readId`, at any depth, by the read's
+ *  `parent`, that Conversation draws as a row: the tree each count walks. A question is one node
+ *  of Conversation's read, its ask's (`questionReadId`), so its branch is that node's alone.
  *  The walk passes through a node the page draws no row for - a block of an ask, a comment or a
  *  message, which the page draws inside its item's row, or a node of an `undrawn` kind - to what
  *  stands under it, and through a plan task or a result (`NO_CONVERSATION_ROW`), which it counts
@@ -275,10 +307,10 @@ function underIn(
   answer: IssueTreeRead,
   key: string,
   readId: string,
-  { alike = [], margin, undrawn }: HeldRow = {}
+  { margin, undrawn }: HeldRow = {}
 ): IssueTreeNode[] {
   const children = childrenIn(answer);
-  const seen = new Set<string>([readId, ...alike]);
+  const seen = new Set<string>([readId]);
   const walk = (id: string): IssueTreeNode[] => {
     const found: IssueTreeNode[] = [];
     for (const child of children.get(id) ?? []) {
@@ -303,7 +335,7 @@ function underIn(
     }
     return found;
   };
-  return [readId, ...alike].flatMap((id) => walk(id));
+  return walk(readId);
 }
 
 /** How many nodes the branch of `readId` holds in `answer` that Conversation draws: what its row's
@@ -433,18 +465,19 @@ export interface NodeStateIds {
   readonly decision1: string;
   /** The lens on statement 8. */
   readonly lens: string;
-  /** The open question the spec's own `ask` block was indexed into, which waits on alice and
-   *  stays live. */
+  /** The open question the spec's own `ask` block was indexed into, by its block
+   *  (`OPEN_QUESTION_BLOCK_ID`), which waits on alice and stays live. A read that holds its ask
+   *  alone holds it by its ask's id (`questionReadId`). */
   readonly openQuestion: string;
-  /** The block `OVERTAKEN_QUESTION_ID`, by which the page draws its question's one row: the block
-   *  stays live, and the ask it was indexed into (`NodeStateSeed.overtakenAskId`), which waits on
-   *  alice, is overtaken. */
+  /** The block `OVERTAKEN_QUESTION_ID`, by which a read that holds it draws its question's one
+   *  row (`questionReadId`): the block stays live, and the ask it was indexed into
+   *  (`NodeStateSeed.overtakenAskId`), which waits on alice, is overtaken. */
   readonly overtakenQuestion: string;
   readonly planTask1: string;
   readonly planTask2: string;
-  /** The block `PROPOSED_QUESTION_ID`, by which the page draws its question's one row: the block
-   *  stays live, and the ask it was indexed into (`NodeStateSeed.proposedAskId`), which waits on
-   *  alice, is proposed. */
+  /** The block `PROPOSED_QUESTION_ID`, by which a read that holds it draws its question's one
+   *  row (`questionReadId`): the block stays live, and the ask it was indexed into
+   *  (`NodeStateSeed.proposedAskId`), which waits on alice, is proposed. */
   readonly proposedQuestion: string;
   /** The criterion written under the overtaken question. */
   readonly questionCriterion: string;
@@ -462,6 +495,10 @@ export interface NodeStateIds {
   /** The agent's decision that waits for review (`OVERTAKEN_DECISION_ID`), which is overtaken. */
   readonly waitingDecision: string;
 }
+
+/** A question of the spec `seedNodeStates` names by its block (`NodeStateIds`), written as an
+ *  `ask` block the server indexed an ask from. */
+export type SpecQuestion = "openQuestion" | "overtakenQuestion" | "proposedQuestion";
 
 /** The nodes whose state `seedNodeStates` writes by their own address, by the state each is
  *  written at. */
@@ -485,7 +522,9 @@ export interface NodeStateSeed {
   /** Each node whose state it wrote, and statement 9, by its address in the tree read: each
    *  question's by its ask's address (`dispatch://<KEY>/ask/<id>`), which names the ask's node. */
   readonly addresses: Readonly<Record<StatedNode | "statement9", string>>;
-  /** Alice's tree read once every state was written. */
+  /** Alice's whole tree read once every state was written (`readTree(key, null)`): it names no
+   *  kind, so it holds every node Graph's read holds, each question's block among them
+   *  (`questionReadId`). */
   readonly answer: IssueTreeRead;
   readonly ids: NodeStateIds;
   readonly lens: LensInvoked;
@@ -608,7 +647,8 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
   ).toEqual({ on: "human", person: "alice" });
   // A question's address is its ask's (`dispatch://<KEY>/ask/<id>`), which names the ask's node:
   // the node a `parent` pointer takes (`conversationKinds`), and the one whose state the page
-  // draws on the question's one row, drawn from its block.
+  // draws on the question's one row, drawn from its block where the read holds the block
+  // (`questionReadId`).
   const askAddress = (id: string) => buildDispatchReference({ id, key, kind: "ask" });
   const parent = askAddress(overtakenAskId);
   const under = await editArtifact(
@@ -793,7 +833,7 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
   );
   // The criterion and the statement name the question by its ask's address, so the read stands
   // each under the ask's node (the node its `part_of` names), which the page draws as the
-  // question's one row, drawn from its block.
+  // question's one row, drawn from its block where the read holds the block (`questionReadId`).
   for (const [id, what] of [
     [nodes.questionCriterion.id, "criterion"],
     [nodes.questionStatement.id, "statement"],
