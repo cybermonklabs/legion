@@ -336,8 +336,11 @@ under it. Each `web/src/` and `e2e/` path below is under `packages/dispatch`.
 Two rules set the edges of those layers:
 
 - A rule that the Go server and the browser both implement is one row of a fixture table that both suites read.
-  The table is in the package that holds the rule: `packages/envoy/internal/dispatch/pmdoc/testdata/` for how a document is read and written, `packages/envoy/internal/dispatch/text/testdata/` for how a text's references and code spans are read, and `packages/contracts/fixtures/` for a shape or a value the server and its clients share, such as the scalars Go's `unicode.IsSpace` reports (`go-unicode-isspace.json`).
+  The table is in the `testdata/` or `fixtures/` directory of the package that holds the rule.
+  Examples are `packages/envoy/internal/dispatch/pmdoc/testdata/` (how a document is read and written), `packages/envoy/internal/dispatch/text/testdata/` (how a text's references and code spans are read) and `packages/contracts/fixtures/` (a shape or a value the server and its clients share, such as the scalars Go's `unicode.IsSpace` reports in `go-unicode-isspace.json`).
+  A table that a program writes is changed at its source, and the test that reads the table names that source.
   In `pmdoc/testdata/`, `pmdoc/gen/gen.ts` writes `fixtures.json`, `splices.json` and `typed-fence-lines.json` from the browser editor's own engine: add a markdown file to `corpus/`, a splice to `replaceRangeCases` in `gen.ts` or a case to `typed-fence-lines.json`, then run `bun run gen` in `pmdoc/gen`.
+  Five more tables copy a constant of `packages/contracts/src`, and `text/code_test.go` writes `code-ranges.json` when it runs with `-update`.
   Add the shape there, not a row on each surface.
 
 - A row that drives no browser is no browser row. A command-line row goes to the tests of the
