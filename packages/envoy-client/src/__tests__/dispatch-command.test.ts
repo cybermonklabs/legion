@@ -13,6 +13,7 @@ import {
   toolForCommand,
 } from "../dispatch-command";
 import { executeDispatchTool } from "../dispatch-execute";
+import { NotUtf8Error } from "../dispatch-file-text";
 import { projectBody } from "./dispatch-command-surface-responses";
 
 const noFiles = {
@@ -616,6 +617,36 @@ describe("a bare - given to a text flag", () => {
       kind: "refused",
       tool: "dispatch_result",
       problems: [bareDash("--run"), "unknown flag --runn"],
+    });
+  });
+});
+
+describe("a file flag whose bytes are not UTF-8", () => {
+  const bytes = Uint8Array.of(0x41, 0xff);
+  const notUtf8 = {
+    readText: (path: string): string => {
+      if (path === "bad") throw new NotUtf8Error(bytes);
+      throw new Error(`unexpected read ${path}`);
+    },
+  };
+
+  test("is refused for the bytes, naming the field the flag sets, unless the argv is refused for a field given twice, in either order", () => {
+    expect(
+      parseCommand(["comment", "--issue", "DSP-1", "--body-file", "bad"], notUtf8)
+    ).toStrictEqual({ kind: "unstorable", tool: "dispatch_comment", field: "body", bytes });
+    expect(
+      parseCommand(["comment", "--issue", "DSP-1", "--body-file", "bad", "--body", "x"], notUtf8)
+    ).toStrictEqual({
+      kind: "refused",
+      tool: "dispatch_comment",
+      problems: ["--body-file and --body both set body"],
+    });
+    expect(
+      parseCommand(["comment", "--issue", "DSP-1", "--body", "x", "--body-file", "bad"], notUtf8)
+    ).toStrictEqual({
+      kind: "refused",
+      tool: "dispatch_comment",
+      problems: ["--body and --body-file both set body"],
     });
   });
 });
