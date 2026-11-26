@@ -13,7 +13,7 @@ The rules behind them: [Admission and the `legion` label](https://cybermonklabs.
   one in `awaiting_person`, one at `admitted` whose gate has never opened, and one carried from another tree.
 
 - `admission.p0Holders` and `admission.p0Bound`: how many holders in `admission.active` are P0, and the P0 bound in force (`bound`, null for none) with `legion.yaml`'s `configured` value and any `live` value.
-  An issue is P0 when its `resolvedPriority` is 0.
+  An issue is P0 when its `resolvedPriority` is 0, or, where `resolvedPriority` is absent, its own `priority` is 0.
   A P0 issue starts outside the cap while fewer than `bound` P0 issues hold a slot, or always when `bound` is null.
 
 - `admission.trees`: the roots of the live trees, whether or not any issue of them holds a slot.
