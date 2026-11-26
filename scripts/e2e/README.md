@@ -396,6 +396,11 @@ Each item below names a script, then what it proves.
   and the reviewer the pass started, its turn held while its review App's approval moves the issue to `accepting`, then completes, the tool names its own review record, and the completion is taken, which `GET /legion/v1/state` shows on the reviewer's phases row, with the issue still in `accepting`.
   Needs an Oh My Pi (`LEGION_OMP_PATH`), `jj`, `git` and `bun`; no cluster, no Claude Code, no GitHub and no tmux, so a Legion pod and a devbox both run it
 
+- `teardown-effects.sh`
+
+  replay recorded `legion` calls through the real Oh My Pi tool and a whole daemon on scratch Dispatch, or drive the no-model controls for implementer completion and production-check scheduling.
+  Run this proof in an isolated build Job, not in the issue pod.
+
 - `busy-relaunch-delivery.sh`
 
   a worker in a turn is sent its task once and again only after that turn, the turn that serves a task settles it, and a relaunched process reads what the relaunch ended in the first prompt it is sent (dispatch://INFRA-3276 R4 and R3), driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with five real `omp --mode rpc` panes under the real `legion worker-shim`, each carrying this checkout's two plugins and answered by a model stand-in of the driver's own, one of them recalling from a Hindsight stand-in whose held recall is the measured wait between Oh My Pi's acknowledgement of a prompt and that prompt's turn:
@@ -5062,6 +5067,34 @@ the tool names no record of the phase the role left and sends the commit `jj` re
 What the proof stands in for lies outside the completion: the broker is a native `nats-server`, GitHub is the REST stand-in the issue proofs share (`liveGitHub`, in `internal/daemon/live_issue_proof_test.go`), which this driver starts for the one pull request (no reviews, mergeable, its merge state `clean`, and listed open on the issue's branch for the implementer's completion to read), the origin is a bare git repository of the run's own, the review is the GitHub envelope Envoy relays, Envoy's listener is the package's `noticeListener`, the two Apps' tokens are placeholders, and each pane's provider is a stand-in of the driver's own.
 `LATE_COMPLETION_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, or `/tmp` when it is unset, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`), each pane's (`panes/`) and the driver's output;
 the run's work directory, the driver binary among it, is under `TMPDIR` too.
+
+## teardown-effects.sh
+
+```sh
+export LEGION_OMP_PATH=/opt/omp/bin/omp
+export LEGION_TEST_PG_DSN='postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable'
+bash scripts/e2e/teardown-effects.sh --controls --cases packages/pi-legion/scripts/skill-scenarios/testdata/heldout-case-example.json
+bash scripts/e2e/teardown-effects.sh --runs <lane-R-run-directory-or-parent>
+```
+
+Run both modes in a build Job with `go`, `git`, `jj`, `bun` after `bun install`, `python3`, and loopback PostgreSQL with `pgvector` and permission to create scratch databases.
+The proof uses a real `omp --mode rpc` pane under `legion worker-shim` with a scripted provider on loopback; it needs neither a model route nor GitHub credentials.
+It starts its own broker and Dispatch server, points the daemon's GitHub client at a local fixture, and records the HTTP replies from the real daemon alongside the tool results.
+
+`--controls` drives the example cases' known-good traces, a local-only implementer head, a pushed head with no open pull request, and a Dispatch comment naming a time.
+The local-only head is refused by the tool before a completion reaches the daemon.
+A non-final `pending` without `wake_at` is refused as `CHECK_WAKE_REQUIRED`.
+Neither that refusal nor the comment writes `production_checks.wake_at` or a `check_wake` row; a valid `pending` writes both.
+A pushed head with an open pull request allows implementing to advance.
+Each control writes an `effects.json`, and `daemon-answers.json` records the completion responses observed on the wire.
+
+`--runs` reads each run's world, clock, Dispatch readback, GitHub calls, git remote, jj workspace and session JSONL.
+It replays the `legion` calls in transcript order and writes `<outcome id>/effects.json`, including the before and after phase, wake state, named handoffs and ordered replies.
+A different, missing or extra daemon reply marks the replay `DIVERGED`, not a result.
+The transcript reader's unit fixture is synthetic and uses the Oh My Pi JSONL shape; it is not evidence from a lane R run.
+
+`TEARDOWN_EFFECTS_EVIDENCE_DIR` selects the output directory.
+Without it, the script prints the path to a fresh evidence directory under `TMPDIR`.
 
 ## busy-relaunch-delivery.sh
 

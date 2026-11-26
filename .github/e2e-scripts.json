@@ -366,6 +366,10 @@
       "needs": "a deployed Dispatch and the operator's own credential: the dispatch command on PATH, run in the operator's own shell with its session (DISPATCH_HOST and DISPATCH_SESSION_ID) and the deployed Dispatch and token its envoy.json or DISPATCH_URL and DISPATCH_TOKEN name, and the key of one issue a deployed Legion ran to done after the release that records each step; it reads that issue's step records and its project's plans, and starts nothing"
     },
     {
+      "script": "teardown-effects.sh",
+      "needs": "a build Job with the pinned Oh My Pi executable (LEGION_OMP_PATH), which a GitHub-hosted runner has none of, a loopback PostgreSQL with pgvector (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, bun with this repository's node_modules, and for a replay the lane R run directories it replays"
+    },
+    {
       "script": "verifiers-staging-token.sh",
       "needs": "a projected service-account token the staging EKS cluster minted, and its own Postgres and NATS containers"
     },

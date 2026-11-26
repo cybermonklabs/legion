@@ -1,0 +1,36 @@
+{
+  "id": "2ab5b411-ec81-4d1c-8ded-d62b02c08bb6",
+  "answers": [
+    {
+      "seq": 0,
+      "at": "2030-01-08T12:03:10Z",
+      "by": "daemon",
+      "op": "handoff_complete",
+      "status": 400,
+      "code": "CHECK_WAKE_REQUIRED",
+      "body": {
+        "code": "CHECK_WAKE_REQUIRED",
+        "error": "a pending report names wakeAt, when the next look of ACME-21's production check is due; look 1 stays open and nothing was recorded, so send this report again with a time"
+      }
+    },
+    {
+      "seq": 1,
+      "at": "2030-01-08T12:03:40Z",
+      "by": "daemon",
+      "op": "handoff_complete",
+      "status": 200,
+      "code": null,
+      "body": {}
+    }
+  ],
+  "phaseBefore": "done",
+  "phaseAfter": "done",
+  "productionCheck": {
+    "wakeAt": "2030-01-08T12:30:00Z",
+    "checkWakeRow": {
+      "dueAt": "2030-01-08T12:30:00Z"
+    }
+  },
+  "handoffRecords": [],
+  "diverged": []
+}

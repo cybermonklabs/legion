@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "captured": {
+    "command": "bash scripts/e2e/teardown-effects.sh --controls --cases packages/pi-legion/scripts/skill-scenarios/testdata/heldout-case-example.json",
+    "at": "2026-11-26T10:55:15.681192974Z",
+    "commit": "fc1c33b5f1ad8beb866ee2b0b0a3cdbda126acc4"
+  },
+  "answers": [
+    {
+      "name": "implementer-no-pull-request",
+      "method": "POST",
+      "path": "/legion/v1/handoff/complete",
+      "match": {
+        "commit": "2e74250b193c1f3c1efcd146dc3f8dcecb2c419c",
+        "handoffId": "3febcc18-9e66-48bc-a50e-77fb3126ca00"
+      },
+      "status": 409,
+      "body": {
+        "code": "HANDOFF_NO_PULL_REQUEST",
+        "error": "no open pull request on cybermonklabs/legion legion/ACME-12; nothing was recorded. Open the pull request and complete again."
+      }
+    },
+    {
+      "name": "implementer-accepted",
+      "method": "POST",
+      "path": "/legion/v1/handoff/complete",
+      "match": {
+        "commit": "2e74250b193c1f3c1efcd146dc3f8dcecb2c419c",
+        "handoffId": "2c009b23-b8e9-4109-ac3a-50cb413bfb7f"
+      },
+      "status": 200,
+      "body": {}
+    },
+    {
+      "name": "check-wake-required",
+      "method": "POST",
+      "path": "/legion/v1/handoff/complete",
+      "match": {
+        "checkOpenedAt": "2030-01-08T11:58:00Z",
+        "verdict": "pending",
+        "wakeAt": null
+      },
+      "status": 400,
+      "body": {
+        "code": "CHECK_WAKE_REQUIRED",
+        "error": "a pending report names wakeAt, when the next look of ACME-21's production check is due; look 1 stays open and nothing was recorded, so send this report again with a time"
+      }
+    },
+    {
+      "name": "pending-accepted",
+      "method": "POST",
+      "path": "/legion/v1/handoff/complete",
+      "match": {
+        "checkOpenedAt": "2030-01-08T11:58:00Z",
+        "verdict": "pending",
+        "wakeAt": "2030-01-08T12:30:00Z"
+      },
+      "status": 200,
+      "body": {}
+    }
+  ]
+}
