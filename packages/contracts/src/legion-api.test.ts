@@ -2979,7 +2979,7 @@ test("the state golden carries a step on an ancestor's basis and whether each ro
         artifactId: "f3b8d1a6-5c27-4e90-8a14-6e9c2d7b0f58",
         version: 5,
         approver: "user:alice",
-        approvedAt: "2026-09-20T15:02:41Z",
+        approvedAt: "2126-09-20T15:02:41Z",
       },
     },
   ]);
@@ -3009,8 +3009,11 @@ test("the state golden carries a step on an ancestor's basis and whether each ro
     "LEGION-211": false,
     "LEGION-212": true,
     "LEGION-214": false,
+    "LEGION-215": false,
+    "LEGION-216": false,
     "LEGION-218": true,
     "LEGION-219": true,
+    "LEGION-220": undefined,
   });
   expect("treeRuns" in (state.issues["LEGION-209"] ?? {})).toBeFalse();
 
