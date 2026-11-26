@@ -1482,10 +1482,7 @@ export function landOnRow(
 
 /** Holds `row` on screen (`holdOnScreen`) and ends the hold of the row `held` held before, so
  *  one row is held at a time. */
-export function holdInPlaceOf(
-  row: HTMLElement,
-  held: RefObject<AbortController | undefined>
-): void {
+function holdInPlaceOf(row: HTMLElement, held: RefObject<AbortController | undefined>): void {
   held.current?.abort();
   held.current = holdOnScreen(row);
 }

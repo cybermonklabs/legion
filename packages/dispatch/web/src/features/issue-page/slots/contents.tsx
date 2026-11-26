@@ -52,9 +52,9 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
   // Whether a message produced a node is read over the whole tree: the words filter's view drops
   // the node a matching message produced (`isContentsEntry`).
   const producing = useMemo(() => producingMessages(root), [root]);
-  // How a reference the sentences and the entries cite is named, read once over the whole tree
-  // (`referenceStandIns`).
-  const { nameOf } = useIssueNames(issue, root);
+  // What a reference the sentences and the entries cite is named by: the names the page
+  // published, as the node's row in the outline names it (`referenceStandIns`).
+  const lineNames = useIssueNames(issue.key);
   const ask = useAskOutline();
   const [focusBranch, setFocusBranch] = useFocusBranch();
   const chosen = useContentsChosen();
@@ -64,13 +64,13 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
       <IssueThreeThings
         counts={counts}
         issueKey={issue.key}
+        lineNames={lineNames}
         look="contents"
-        nameOf={nameOf}
         summary={memo}
       />
       <ContentsList
         focusBranch={focusBranch}
-        nameOf={nameOf}
+        lineNames={lineNames}
         onFocusBranch={(current) => {
           setFocusBranch(!focusBranch);
           ask(current, !focusBranch);

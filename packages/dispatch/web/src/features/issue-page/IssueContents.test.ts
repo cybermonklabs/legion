@@ -1,17 +1,26 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, within } from "@testing-library/react";
-import { createElement, useEffect } from "react";
+import { act, render, waitFor, within } from "@testing-library/react";
+import { createElement, Fragment, type ReactElement, type ReactNode, useEffect } from "react";
+import { MemoryRouter } from "react-router-dom";
 
+import { displayTree } from "../../__tests__/display-trees";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { Actor } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { PublishedReferenceNames, ReferenceNamesProvider } from "../refs/reference-names";
 import { producingMessages } from "./contents-entries";
+import { KEY } from "./decisions-filter/decisions-fixtures";
 import { FocusedNodeProvider, useSetFocusedNode } from "./focused-node";
 import { type ContentsEntry, ContentsList, contentsOf } from "./IssueContents";
 import type { TreeNode } from "./issue-tree";
+import { NoTooltips } from "./NoTooltips";
+import { type LineNames, useIssueNames } from "./one-line";
 import { CONTROL_LABELS, type NodeType } from "./page-words";
 import { presetView } from "./presets";
+import { Publisher, publishedNames } from "./projection-fixture";
+import { RowText } from "./RowText";
 import { SENTENCE_TABLE } from "./sentence-table";
 
 /**
@@ -50,6 +59,25 @@ function node(
 const alice: Actor = { id: "alice", kind: "user" };
 const bob: Actor = { id: "bob", kind: "user" };
 const agent: Actor = { id: "session-1", kind: "agent" };
+
+/** What a page that published `lines`, the line a chip names each block by, and no other name
+ *  names an entry's references by (`useIssueNames`): a reference with no line reads as its
+ *  author wrote it. */
+function lineNamesOf(lines: ReadonlyMap<string, string> = new Map()): LineNames {
+  return {
+    ambiguous: new Set(),
+    author: () => "",
+    deleted: new Map(),
+    edited: new Set(),
+    issue: "CORE-1",
+    issues: [],
+    lines,
+    names: new Map(),
+  };
+}
+
+/** A page that has published no name. */
+const NO_NAMES = lineNamesOf();
 
 /** Each entry as its id, with the entries under it after a colon. */
 function shape(entries: readonly ContentsEntry[]): string[] {
@@ -215,7 +243,7 @@ test("folding the entry above the one the reader is in leaves the tab stop on th
         createElement(FocusOn, { id: "ask-2" }),
         createElement(ContentsList, {
           focusBranch: false,
-          nameOf: () => undefined,
+          lineNames: NO_NAMES,
           onFocusBranch: () => {},
           onGo: () => {},
           producing: producingMessages(root),
@@ -263,7 +291,7 @@ test("a list drawn more than 30 s after whoami answered asks for it nothing", ()
       { client },
       createElement(ContentsList, {
         focusBranch: false,
-        nameOf: () => undefined,
+        lineNames: NO_NAMES,
         onFocusBranch: () => {},
         onGo: () => {},
         producing: new Set<string>(),
@@ -299,11 +327,15 @@ const deep = node("CORE-1", "issue", [
 const CHARACTER = 8;
 
 /**
- * The list drawn over `root` in a box `width` px wide. The two reads of the browser's layout
- * that the list makes (`useOneLineBox`) and happy-dom does not answer are answered as a browser
- * would: the list's own width, and its words measured on a canvas, `CHARACTER` px a character.
+ * `element` drawn under a query client that holds the reader, as the list is drawn in a box
+ * `width` px wide. The two reads of the browser's layout that the list makes (`useOneLineBox`)
+ * and happy-dom does not answer are answered as a browser would: the list's own width, and its
+ * words measured on a canvas, `CHARACTER` px a character.
  */
-function drawList(root: TreeNode, width: number): { container: HTMLElement; unmount: () => void } {
+function drawMeasured(
+  width: number,
+  element: ReactElement
+): { container: HTMLElement; unmount: () => void } {
   const canvas = spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation((() => ({
     font: "",
     measureText: (text: string) => ({ width: text.length * CHARACTER }),
@@ -324,20 +356,7 @@ function drawList(root: TreeNode, width: number): { container: HTMLElement; unmo
       defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
     });
     client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
-    const view = render(
-      createElement(
-        QueryClientProvider,
-        { client },
-        createElement(ContentsList, {
-          focusBranch: false,
-          nameOf: () => undefined,
-          onFocusBranch: () => {},
-          onGo: () => {},
-          producing: producingMessages(root),
-          root,
-        })
-      )
-    );
+    const view = render(createElement(QueryClientProvider, { client }, element));
     return {
       container: view.container,
       unmount: () => {
@@ -349,6 +368,26 @@ function drawList(root: TreeNode, width: number): { container: HTMLElement; unmo
     restore();
     throw error;
   }
+}
+
+/** The list drawn over `root` in a box `width` px wide (`drawMeasured`), its entries' references
+ *  named by `lineNames`, as the slot names them (`useIssueNames`). */
+function drawList(
+  root: TreeNode,
+  width: number,
+  lineNames: LineNames = NO_NAMES
+): { container: HTMLElement; unmount: () => void } {
+  return drawMeasured(
+    width,
+    createElement(ContentsList, {
+      focusBranch: false,
+      lineNames,
+      onFocusBranch: () => {},
+      onGo: () => {},
+      producing: producingMessages(root),
+      root,
+    })
+  );
 }
 
 // R3 and review finding 4590606141: where an entry's row leaves its line less room than the
@@ -419,78 +458,26 @@ test("an entry draws its node's first block as its line, never its first two blo
   }
 });
 
-/** `drawList`'s list over `root` in a box `width` px wide, its entries' references named by
- *  `nameOf`, as the slot names them (`useReferenceNames`). */
-function drawNamedList(
-  root: TreeNode,
-  width: number,
-  nameOf: (reference: string) => string | undefined
-): { container: HTMLElement; unmount: () => void } {
-  const canvas = spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation((() => ({
-    font: "",
-    measureText: (text: string) => ({ width: text.length * CHARACTER }),
-  })) as unknown as HTMLCanvasElement["getContext"]);
-  const box = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
-  ) {
-    return new DOMRect(0, 0, this.getAttribute("role") === "tree" ? width : 0, 0);
-  });
-  const restore = () => {
-    canvas.mockRestore();
-    box.mockRestore();
-  };
-  try {
-    const client = new QueryClient({
-      defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-    });
-    client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
-    const view = render(
-      createElement(
-        QueryClientProvider,
-        { client },
-        createElement(ContentsList, {
-          focusBranch: false,
-          nameOf,
-          onFocusBranch: () => {},
-          onGo: () => {},
-          producing: producingMessages(root),
-          root,
-        })
-      )
-    );
-    return {
-      container: view.container,
-      unmount: () => {
-        view.unmount();
-        restore();
-      },
-    };
-  } catch (error) {
-    restore();
-    throw error;
-  }
-}
-
 // R1, R14 and the tester's F20: an entry's line is cut with each reference it cites still
 // unnamed and measured with each named. A statement's name opens with its label ("R1."), which
-// ends no sentence of the line, and the row's width never cuts the line inside the name.
-test("an entry that cites a labelled statement is cut before the name goes in, never inside it", () => {
+// ends no sentence of the line, and the row's width cuts the line at a word of the name, never
+// inside one: each word of a name is a token of its own.
+test("an entry that cites a labelled statement is cut before the name goes in, never inside a word of it", () => {
   const cited = "dispatch://CORE-1/spec#b-r1";
-  const nameOf = (reference: string) =>
-    reference === cited ? "R1. Every node is whole" : undefined;
+  const lineNames = lineNamesOf(new Map([[cited, "R1. Every node is whole"]]));
   const opened = node("CORE-1", "issue", [
     node("ask-1", "ask", [], { text: `Should ${cited} stay as it is? Then more.` }),
   ]);
   // 600 px leaves the whole first sentence room: 45 characters, 360 px. 258 px leaves the line
   // 200 px beside the row's other parts (24 px of margins, padding and inset, 33 of twisty,
-  // bullet and gaps, the pixel for rounding): "Should R1. Every node is…" would fit, but its cut
-  // is inside the name, and "Should R1. Every node is whole…" (248 px) does not, so the line is
-  // the word before the name.
+  // bullet and gaps, the pixel for rounding): "Should R1. Every node is whole…" (248 px) does not
+  // fit, and "Should R1. Every node is…" (200 px), cut at the space between two of the name's
+  // words, does.
   for (const [width, drawn] of [
     [600, "Should R1. Every node is whole stay as it is?"],
-    [258, "Should…"],
+    [258, "Should R1. Every node is…"],
   ] as const) {
-    const view = drawNamedList(opened, width, nameOf);
+    const view = drawList(opened, width, lineNames);
     try {
       const line = view.container.querySelector<HTMLElement>(
         '[data-contents-entry="ask-1"] [data-contents-line]'
@@ -499,6 +486,111 @@ test("an entry that cites a labelled statement is cut before the name goes in, n
     } finally {
       view.unmount();
     }
+  }
+});
+
+// R8 and R14: an entry names a reference the page published no name for - another issue's
+// comment it has not answered for, or answered is gone - as the words its author wrote, as the
+// node's row in the outline draws it, and never as its short form ("OTHER-1 comment").
+test("an entry draws a reference the page published no name for as written, never as its short form", () => {
+  const gone = "dispatch://OTHER-1/comment/0f8e2c3a-6b1d-4e5f-9a7c-2d3e4f5a6b7c";
+  const opened = node("CORE-1", "issue", [
+    node("ask-1", "ask", [], { text: `Does ${gone} still hold? Then more.` }),
+  ]);
+  // 1000 px leaves the first sentence, 80 characters and 640 px, room beside the entry's parts.
+  const view = drawList(opened, 1000);
+  try {
+    const line = view.container.querySelector<HTMLElement>(
+      '[data-contents-entry="ask-1"] [data-contents-line]'
+    );
+    expect(line?.textContent).toBe(`Does ${gone} still hold?`);
+    expect(line?.textContent).not.toContain("OTHER-1 comment");
+  } finally {
+    view.unmount();
+  }
+});
+
+/** The Contents list over `root` as the slot draws it, its entries' references named by what the
+ *  page published (`useIssueNames`). */
+function PublishedContents({ root }: { root: TreeNode }): ReactNode {
+  const lineNames = useIssueNames(KEY);
+  return createElement(ContentsList, {
+    focusBranch: false,
+    lineNames,
+    onFocusBranch: () => {},
+    onGo: () => {},
+    producing: producingMessages(root),
+    root,
+  });
+}
+
+// R1, R14 and R16: a Contents entry is a plain line, and names each reference its words cite as
+// the node's row in the outline names it, by the one rule (`rowReferenceNames`,
+// `rowReferenceWords`) from the same names the page published: an issue by its key and its title.
+// The entry read the key alone where the row read the key and the title.
+test("a Contents entry and its outline row name a resolved issue alike, by key and title", async () => {
+  await warmMarkdownRenderer();
+  const cited = "dispatch://CORE-7";
+  const title = "The header draws the approval of each step";
+  const text = `Does ${cited} still hold?`;
+  const tree = displayTree(text);
+  if (tree === undefined) throw new Error("the engine read no tree of the question's words");
+  const root = node("CORE-1", "issue", [node("ask-1", "ask", [], { text, tree })]);
+  const published = publishedNames(new Map([[cited, title]]));
+  // 1000 px leaves the entry's whole line room beside its parts, so the box cuts nothing.
+  const view = drawMeasured(
+    1000,
+    createElement(
+      MemoryRouter,
+      null,
+      createElement(
+        NoTooltips,
+        null,
+        createElement(
+          ReferenceNamesProvider,
+          null,
+          createElement(Publisher, { published }),
+          createElement(PublishedReferenceNames, {
+            // biome-ignore lint/correctness/noChildrenProp: the provider types `children` as a required prop, which createElement's positional children do not fill in a file that writes no JSX.
+            children: createElement(
+              Fragment,
+              null,
+              createElement(PublishedContents, { root }),
+              createElement(
+                "div",
+                { "data-outline-row": "" },
+                createElement(RowText, { markdown: text, tree })
+              )
+            ),
+            published,
+          })
+        )
+      )
+    )
+  );
+  try {
+    const drawn = `Does CORE-7 ${title} still hold?`;
+    const entry = () =>
+      view.container.querySelector<HTMLElement>(
+        '[data-contents-entry="ask-1"] [data-contents-line]'
+      );
+    const row = () => view.container.querySelector<HTMLElement>("[data-outline-row]");
+    await waitFor(() => expect(entry()?.textContent, "the Contents entry").toBe(drawn));
+    await waitFor(() =>
+      expect(
+        row()?.querySelector(`a[data-row-reference="${cited}"]`)?.textContent,
+        "the outline row's link"
+      ).toBe(`CORE-7 ${title}`)
+    );
+    expect(row()?.textContent?.trim(), "the outline row").toBe(drawn);
+    for (const [where, words] of [
+      ["the Contents entry", entry()?.textContent],
+      ["the outline row", row()?.textContent],
+    ] as const) {
+      expect(words, where).not.toContain("dispatch://");
+    }
+  } finally {
+    view.unmount();
   }
 });
 

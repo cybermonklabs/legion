@@ -63,8 +63,10 @@ import type { BriefCounts } from "../IssueThreeThings";
 import type { OutlineRequest } from "../IssueTree";
 import { presetPath } from "../issue-address";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
+import { type CaretAt, caretInBlock } from "../node-caret";
 import { shortDay } from "../node-time";
 import { TWO_THREADS } from "../outline-fixtures";
+import { NO_FAILED_READS } from "../outline-reads";
 import { OutlineRequestProvider } from "../outline-request";
 import { AUTHOR_TEXT_ATTRIBUTE, KEY_REPORTS } from "../page-structure";
 import {
@@ -345,6 +347,7 @@ function drawBody(
       emptyLine={EMPTY_STATE_LINES.spec}
       holdsEscape={false}
       issue={over}
+      namesLine={NO_FAILED_READS}
       onEditing={onEditing}
       published={published}
       reader={reader}
@@ -875,8 +878,8 @@ test("an agent's decision draws its words with each reference named, in its cell
     issueTree([
       statement("r4", { text: `**R4.** ${name}.` }),
       // The tree names the statement a decision shaped by a chip on the decision, from the
-      // batched read (`tree-drafts.ts`), which is the name the page gives it
-      // (`referenceStandIns`).
+      // batched read (`tree-drafts.ts`), whose name the page publishes, which a plain line names
+      // it by (`referenceStandIns`).
       decisionNode("d1", {
         chips: [{ answered: true, gone: false, reading: { words: name }, ref: cited }],
         text: words,
@@ -2764,6 +2767,36 @@ test("an uncounted inline kind still puts the caret in the pressed word", async 
   });
 });
 
+// An atom that ends a statement's block holds no text, so the editor's text ends before it. A
+// press past the atom (`pressInWords`'s `next`) puts the caret after it, in its paragraph, where
+// the block ends, and a press inside it puts the caret before it, at the end of the text before
+// it. A plain editable stands in for the editor: each atom drawn `contenteditable="false"`, then
+// the separator and the break ProseMirror draws after an atom that ends a paragraph. The picture
+// has loaded, so it holds no text.
+test("a press past an atom that ends a statement's block puts the caret after it, and one inside it before it", () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const at: CaretAt = { x: 1, y: 2, offset: "Read the note".length, word: ["the ", "note", "", 4] };
+  try {
+    for (const atom of [
+      '<span contenteditable="false" data-type="html">&lt;name&gt;</span>',
+      '<sup contenteditable="false" data-type="footnote_reference">1</sup>',
+      '<span contenteditable="false" data-dispatch-doc-picture=""><img alt="shot.png"></span>',
+    ]) {
+      host.innerHTML = `<div contenteditable="true"><section data-block-id="r1"><p>Read the note${atom}<img class="ProseMirror-separator" alt=""><br class="ProseMirror-trailingBreak"></p></section></div>`;
+      const paragraph = host.querySelector("p");
+      expect(caretInBlock(host, "r1", { ...at, next: true }), atom).toBe(true);
+      expect(window.getSelection()?.anchorNode, atom).toBe(paragraph);
+      expect(window.getSelection()?.anchorOffset, atom).toBe(2);
+      expect(caretInBlock(host, "r1", at), atom).toBe(true);
+      expect(window.getSelection()?.anchorNode, atom).toBe(paragraph?.firstChild);
+      expect(window.getSelection()?.anchorOffset, atom).toBe("Read the note".length);
+    }
+  } finally {
+    host.remove();
+  }
+});
+
 // The same order on a decision's cell: a press on the cell draws the person's whole answer only
 // once it ends, and the statement that had the focus keeps its look until then; a press on that
 // statement keeps the whole answer drawn until it ends, and then the statement takes the focus.
@@ -3931,7 +3964,7 @@ test("the body drawn again after its reads' answers have aged past 30 s sends no
 test("an option label that cites a statement is drawn by the statement's name, never its address", () => {
   const label = `Keep ${statementRef("r2")} as written`;
   const named = "Keep R2. Every address as written";
-  // The page names the statement by the words of the first chip naming it (`useReferenceNames`).
+  // The page names the statement by the name it published for it (`useIssueNames`).
   const made = decisionNode("d1", {
     chips: [
       {

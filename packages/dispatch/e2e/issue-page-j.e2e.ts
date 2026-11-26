@@ -30,10 +30,13 @@ import {
   editArtifact,
   getArtifact,
   getAsk,
+  getIssue,
   getIssueCoverage,
   getIssueDecisions,
   listComments,
   listIssueAsks,
+  requestApproval,
+  withOpenedAsk,
 } from "./api";
 import { expectTimeout } from "./expect-timeout";
 import { nextFrames } from "./frames";
@@ -57,10 +60,14 @@ import {
   contentsPane,
   gotoIssue,
   issuePage,
+  openMenu,
   outlineControl,
   outlineSheet,
   phase,
+  presetChooser,
   presetCount,
+  presetMenuItem,
+  presetRow,
   presetToggle,
 } from "./issue-page";
 import {
@@ -92,6 +99,7 @@ import {
   onScreen,
   openPreset,
   rowGaps,
+  rowReference,
 } from "./issue-page-i";
 import {
   becauseLines,
@@ -112,6 +120,7 @@ import {
   specRuns,
   statementBlock,
   threeThings,
+  wheelPastTop,
   wordAtCaret,
 } from "./issue-page-j";
 import { withIssuePage } from "./issue-page-option";
@@ -119,6 +128,7 @@ import { IPHONE_13 } from "./issue-page-p";
 import { TYPEFACE, typefaceAddress, typefaceStatuses } from "./issue-page-typeface";
 import { verificationCheck } from "./issue-page-v";
 import { settledScrollTop } from "./mermaid-helpers";
+import { settledValue } from "./settled";
 import { expect, test } from "./test";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 import { assertPageFits } from "./unclipped";
@@ -460,6 +470,53 @@ test("a Contents entry draws a node's first line, cut at a word", async ({ brows
   });
 });
 
+// c-tree with R1, R14 and R16: a Contents entry is a plain line, and names each reference its
+// words cite as the node's row in the outline names it, by the one rule and from the same names
+// the page published: another issue by its key and then its title. The entry drew the key alone
+// where the row drew the key and the title. The entry's line may be cut at a word to its box, so
+// it is read to the title's first words; the row draws the reference whole.
+// SLOW(>=2s): two seeded issues with their specs, a question on the child, and a load of the page
+// read until the cited issue's name is drawn in both places.
+test("a Contents entry names an issue its words cite by key and title, as its outline row does", async ({
+  browser,
+}) => {
+  const seed = async () => {
+    const seeded = await seedChildWithSpec();
+    const cited = await getIssue(seeded.parent.key);
+    const question = await createAsk(seeded.child.key, {
+      question: `dispatch://${cited.key} sets the release day: do the notes ship on that day too?`,
+    });
+    return { child: seeded.child.key, cited, question: question.id };
+  };
+  await phase(browser, seed, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.child}`);
+    await expectIssuePageDrawn(page);
+    const reference = `dispatch://${seeded.cited.key}`;
+    const named = `${seeded.cited.key} ${seeded.cited.title}`;
+    const opening = `${seeded.cited.key} ${seeded.cited.title.split(" ").slice(0, 2).join(" ")}`;
+    const entry = contentsPane(page).locator(
+      `[data-contents-entry="${seeded.question}"] [data-contents-line]`
+    );
+    await expect(entry, "the Contents list does not list the question").toBeVisible();
+    await expect
+      .poll(async () => ((await entry.textContent()) ?? "").trim().slice(0, opening.length), {
+        message: "the Contents entry does not open with the cited issue's key and title",
+      })
+      .toBe(opening);
+    await expect(entry, "the Contents entry draws the reference's address").not.toContainText(
+      "dispatch://"
+    );
+    const row = nodeRow(page, seeded.question).first();
+    await expect(
+      rowReference(row, reference),
+      "the outline row does not name the cited issue by its key and title"
+    ).toHaveText(named);
+    await expect(rowWords(row), "the outline row draws the reference's address").not.toContainText(
+      "dispatch://"
+    );
+  });
+});
+
 // c-typeface, the typeface arriving late. The Contents list cuts each entry's first line at a word
 // to the room its box leaves it, measuring the words on a canvas in the face the list is drawn in
 // (`one-line.ts`), and `font-display: swap` (`styles.css`) draws the page's first frames in the
@@ -553,9 +610,11 @@ test("a Contents entry is cut again in the typeface once its file arrives @phone
 
 // Enter or a press on a Contents entry goes to its node in the outline and marks the entry.
 // Focus branch draws that branch alone, then the whole outline again. Below 1024 px choosing an
-// entry in the Outline sheet closes it. The reader's message is drawn in the outline but has no
-// entry: no node was placed under it. Spec has a count, but Conversation does not.
-// SLOW(>=2s): the whole seeded issue, two loads of the page, and six moves of the focus and the
+// entry in the Outline sheet closes it, and in the sheet opened again Focus branch draws the
+// chosen entry's branch alone, then the outline it stood on again. The reader's message is drawn
+// in the outline but has no entry: no node was placed under it. Spec has a count, but
+// Conversation does not.
+// SLOW(>=2s): the whole seeded issue, two loads of the page, and eight moves of the focus and the
 // toggle, each waited on until the outline redraws.
 test("a Contents entry goes to its node, and Focus branch draws that branch alone @phone", async ({
   browser,
@@ -671,6 +730,40 @@ test("a Contents entry goes to its node, and Focus branch draws that branch alon
         message: "a choice in the Outline sheet by Enter went to no node",
       })
       .toBe(question);
+
+    // The sheet opened again after that choice, whose list is drawn anew with the focus gone
+    // from the outline to the Outline control: Focus branch there draws the chosen entry's
+    // branch alone, and turned off, the outline the choice left again, which below 1024 px is
+    // rooted at the node's parent (`goToNode`).
+    await outlineControl(page).click();
+    await expect(
+      chosen,
+      "the Outline sheet opened after a choice does not list the chosen entry"
+    ).toHaveCount(1);
+    await expect(
+      chosen,
+      "the reopened Outline sheet did not keep the chosen entry marked"
+    ).toHaveAttribute("aria-selected", "true");
+    const crumbs = issuePage(page).locator("[data-crumb]");
+    const parentDepth = await settledValue("the outline the choice left", () => crumbs.count());
+    const sheetBranch = focusBranchControl(outlineSheet(page));
+    await expect(sheetBranch).toHaveAttribute("aria-pressed", "false");
+    await sheetBranch.click();
+    await expect(sheetBranch).toHaveAttribute("aria-pressed", "true");
+    await expect
+      .poll(branch, {
+        message:
+          "Focus branch in the Outline sheet opened after a choice did not draw the chosen entry's branch alone",
+      })
+      .toEqual({ first: question, outside: [] });
+    await expect(crumbs, "Focus branch did not zoom from the parent into the entry").toHaveCount(
+      parentDepth + 1
+    );
+    await sheetBranch.click();
+    await expect(sheetBranch).toHaveAttribute("aria-pressed", "false");
+    await expect(crumbs, "Focus branch turned off did not return to the parent").toHaveCount(
+      parentDepth
+    );
   });
 });
 
@@ -2163,23 +2256,7 @@ test("a press on a Spec statement's words puts the caret at the press and keeps 
     ).toHaveCount(seeded.requirements.length + 1);
     // A turn of the wheel, the reader's own act, stands the long statement's top 200 px above the
     // screen, with the rest of its 600 words on screen under the column heads.
-    const heads = body.locator("[data-spec-head]");
-    const headsBottom = await heads.evaluate((head) => head.getBoundingClientRect().bottom);
-    const top = await long.evaluate((row) => row.getBoundingClientRect().top);
-    const wheelAt = await settledScrollTop(page);
-    await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
-    await page.mouse.wheel(0, top + 200);
-    await expect
-      .poll(() => settledScrollTop(page), { message: "the wheel does not scroll the page" })
-      .not.toBe(wheelAt);
-    const box = await long.evaluate((row) => {
-      const { bottom, left, top: rowTop, width } = row.getBoundingClientRect();
-      return { bottom, left, top: rowTop, width };
-    });
-    expect(
-      box.top,
-      "after the wheel the long statement's top is not above the screen"
-    ).toBeLessThan(0);
+    const { box, headsBottom } = await wheelPastTop(page, long);
     expect(
       box.bottom - headsBottom,
       "after the wheel the long statement shows under 100 px of its words below the column heads"
@@ -2234,26 +2311,9 @@ test("a drag over a Spec statement's words keeps the selection on screen and the
   const seed = seedStatement(() => statementBlock(LONG_BLOCK_ID, longWords("long", 600)));
   await phase(browser, seed, async (page, seeded) => {
     const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
-    const body = issuePage(page).locator("[data-spec-body]");
-    const heads = body.locator("[data-spec-head]");
-    const headsBottom = await heads.evaluate((head) => head.getBoundingClientRect().bottom);
     // A turn of the wheel, the reader's own act, stands the long statement's top 200 px above the
     // screen, with the rest of its 600 words on screen under the column heads.
-    const top = await long.evaluate((row) => row.getBoundingClientRect().top);
-    const wheelAt = await settledScrollTop(page);
-    await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
-    await page.mouse.wheel(0, top + 200);
-    await expect
-      .poll(() => settledScrollTop(page), { message: "the wheel does not scroll the page" })
-      .not.toBe(wheelAt);
-    const box = await long.evaluate((row) => {
-      const { left, top: rowTop, width } = row.getBoundingClientRect();
-      return { left, top: rowTop, width };
-    });
-    expect(
-      box.top,
-      "after the wheel the long statement's top is not above the screen"
-    ).toBeLessThan(0);
+    const { box, headsBottom } = await wheelPastTop(page, long);
     expect(
       await long.evaluate((row) => row.contains(document.activeElement)),
       "the long statement holds the focus before the drag"
@@ -2504,5 +2564,214 @@ test("a press on a Spec statement's words after every inline kind the editor hol
         "a press on the statement's words after every inline kind does not put the caret in them",
       otherWord: `a press on the word "${pressed}", after every inline kind the statement holds, puts the caret in another word`,
     });
+  });
+});
+
+// The view row holds each filter control's place before the counts arrive. On a large issue the
+// reads the counts come from - the coverage, the decisions and the results - answered 5 to 7 s
+// after the row was drawn; each filter control then grew by its signal, and every control after
+// it moved right: Decisions from x 442-519 to x 537-615, so a press meant for it opened Plan.
+// Here those three reads are held from the page's load, so the row is drawn with no count
+// (`slots/view-row.tsx`), a press of the pointer on Decisions opens Decisions, and once the reads
+// are let go and every filter draws its count, each of the five controls - its toggle and the
+// label beside it that holds its signal - stands where it stood, at 1440 px; at 390 px the one
+// control and each item of its open menu do too. The boxes are read after the press, since the
+// control that is on is drawn semibold, which is wider, and once the page's typeface has loaded,
+// since the face it falls back to until then is not as wide. A row whose filter controls draw no
+// room for their signals until the counts arrive (`IssuePresets.tsx`'s `Signal`) fails on
+// "Spec's width at 1440 px changed when the counts arrived".
+// SLOW(>=2s): the whole issue, and two loads of the page, each with three reads held.
+test("a press on Decisions before the counts arrive opens Decisions, and no control moves when they do", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const countPaths = new Set(
+      ["coverage", "decisions", "results"].map((read) => `/api/v1/issues/${seeded.key}/${read}`)
+    );
+    const countRead = (url: URL): boolean => countPaths.has(url.pathname);
+    /** Holds every read the counts come from, from now until the call it hands back. */
+    const holdCounts = async (): Promise<() => void> => {
+      const held = Promise.withResolvers<void>();
+      await page.route(countRead, async (route) => {
+        await held.promise;
+        await route.continue();
+      });
+      return () => held.resolve();
+    };
+    const filters = PRESET_ORDER.filter((preset) => preset !== "conversation");
+    const counts = presetRow(page).locator("[data-preset-count]");
+    /** A control's left edge and its width. */
+    type ControlBox = { readonly width: number; readonly x: number };
+    /** The left edge and the width of each control of `controls`, by its name, read together. */
+    const boxesOf = async (
+      controls: readonly (readonly [string, Locator])[]
+    ): Promise<ReadonlyMap<string, ControlBox>> => {
+      const boxes = await Promise.all(
+        controls.map(async ([name, control]) => [name, await control.boundingBox()] as const)
+      );
+      const read = new Map<string, ControlBox>();
+      for (const [name, box] of boxes) {
+        if (box === null) throw new Error(`${name} draws no box`);
+        read.set(name, { width: box.width, x: box.x });
+      }
+      return read;
+    };
+    /** That each control of `controls` stands, within 1 px, where `before` read it at `width`. */
+    const expectUnmoved = async (
+      controls: readonly (readonly [string, Locator])[],
+      before: ReadonlyMap<string, ControlBox>,
+      width: number
+    ): Promise<void> => {
+      const after = await boxesOf(controls);
+      for (const [name] of controls) {
+        const from = before.get(name);
+        const to = after.get(name);
+        expect(
+          Math.abs((to?.x ?? Number.NaN) - (from?.x ?? Number.NaN)),
+          `${name}'s left edge at ${width} px moved when the counts arrived, from ${from?.x} to ${to?.x}`
+        ).toBeLessThanOrEqual(1);
+        expect(
+          Math.abs((to?.width ?? Number.NaN) - (from?.width ?? Number.NaN)),
+          `${name}'s width at ${width} px changed when the counts arrived, from ${from?.width} to ${to?.width}`
+        ).toBeLessThanOrEqual(1);
+      }
+    };
+    const typefaceLoaded = async (width: number): Promise<void> => {
+      await expect
+        .poll(() => typefaceStatuses(page), {
+          message: `the ${TYPEFACE} face did not load at ${width} px`,
+        })
+        .toEqual(["loaded"]);
+    };
+
+    // At 1440 px: the row of five, each control its toggle and the label beside it.
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    const letGo = await holdCounts();
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expect(
+      presetToggle(page, "decisions"),
+      "the view row draws no Decisions control while the counts' reads are held"
+    ).toBeVisible();
+    await typefaceLoaded(DESKTOP.width);
+    await expect(counts, "a control drew a count while the counts' reads were held").toHaveCount(0);
+    await presetToggle(page, "decisions").click();
+    await expect(
+      page,
+      "a press on Decisions before the counts arrived did not open Decisions"
+    ).toHaveURL(presetPath(seeded.key, "decisions"));
+    await expect(presetToggle(page, "decisions")).toHaveAttribute("aria-pressed", "true");
+    await expect(
+      counts,
+      "a control drew a count before the counts' reads were let go, so the press was not before the counts"
+    ).toHaveCount(0);
+    const row = PRESET_ORDER.map(
+      (preset) => [PRESET_NAMES[preset], presetToggle(page, preset).locator("xpath=..")] as const
+    );
+    const rowBefore = await boxesOf(row);
+    letGo();
+    for (const preset of filters) {
+      await expect(
+        presetCount(page, preset),
+        `${PRESET_NAMES[preset]} draws no count once the reads answer at 1440 px`
+      ).toHaveText(/^\d+$/);
+    }
+    await expectUnmoved(row, rowBefore, DESKTOP.width);
+    await page.unroute(countRead);
+
+    // At 390 px: the one control, drawing Decisions, and each item of its menu, opened before the
+    // counts arrive.
+    await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
+    const letGoPhone = await holdCounts();
+    await gotoIssue(page, presetPath(seeded.key, "decisions"));
+    await expect(
+      presetChooser(page),
+      "the view row draws no one control at 390 px while the counts' reads are held"
+    ).toBeVisible();
+    await typefaceLoaded(PHONE.width);
+    await expect(
+      counts,
+      "a control drew a count at 390 px while the counts' reads were held"
+    ).toHaveCount(0);
+    await presetChooser(page).click();
+    await expect(openMenu(page), "the one control opened no menu at 390 px").toHaveCount(1);
+    const phone = [
+      ["The one control", presetChooser(page)] as const,
+      ...PRESET_ORDER.map(
+        (preset) => [`The menu's ${PRESET_NAMES[preset]}`, presetMenuItem(page, preset)] as const
+      ),
+    ];
+    const phoneBefore = await boxesOf(phone);
+    letGoPhone();
+    for (const preset of filters) {
+      await expect(
+        openMenu(page).locator(`[data-preset-count="${preset}"]`),
+        `the menu's ${PRESET_NAMES[preset]} draws no count once the reads answer at 390 px`
+      ).toHaveText(/^\d+$/);
+    }
+    await expect(openMenu(page), "the menu closed when the counts arrived").toHaveCount(1);
+    await expectUnmoved(phone, phoneBefore, PHONE.width);
+    await page.unroute(countRead);
+  });
+});
+
+// A link to an approval request on the spec, the Decisions view's address naming the request
+// beside it (`?ask=`), opens the Spec view. The request is no node of the tree (`tree-drafts.ts`'s
+// `addAsks`), so the Decisions view draws no row of it and the stage draws the outline in its
+// place, whose landing reads the request (`issue/useItemLanding.ts`): it names the document it
+// asks about and no block of it (`approval.artifact_id`), so the landing goes to the spec's
+// address with the request marked (`address-target.ts`'s `landingPath`), `/spec?mark=<id>`. That
+// address opens a document (`issue-address.ts`'s `documentItem`), so the stage draws the Spec view
+// and not the outline (`slots/stage.tsx`), which draws its statements with the focus on the first,
+// its tab stop, as the request is none of its rows. The request is answered first, so Details
+// holds no card of it - it lists the issue's open asks and the asks anchored in the document
+// (`margin/useMarginItems.ts`) - and stays closed: an open request is a card there, and the
+// address that marks it opens Details on that card, which takes the focus to its Close
+// (`margin/Margin.tsx`). Where the Spec view's slot draws nothing, as on `main` before the view
+// was built, the address draws a blank stage, and this row fails on "the Spec view is not drawn
+// at the approval request's address".
+// SLOW(>=2s): a seeded issue with an approval request, a load of Settings and one of the link.
+test("a link to an approval request opens the Spec view rather than a blank page", async ({
+  browser,
+}) => {
+  const seed = async () => {
+    const seeded = await seedNoChildren();
+    const requested = withOpenedAsk(
+      await requestApproval(seeded.specArtifactId, { summary: "Read it back." }, asPlanner)
+    );
+    await answerAsk(
+      requested.ask.id,
+      { expected_edited_at: null, selected: ["Approve"] },
+      { login: "alice" }
+    );
+    return { ...seeded, approvalId: requested.ask.id };
+  };
+  await phase(browser, seed, async (page, seeded) => {
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    await page.goto("/settings");
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Settings" }),
+      "Settings is not drawn before the approval request's link is loaded"
+    ).toBeVisible();
+    await gotoIssue(page, `${presetPath(seeded.key, "decisions")}?ask=${seeded.approvalId}`);
+    await expect(
+      page,
+      "the approval request's link does not land on the spec's address with the request marked"
+    ).toHaveURL(`${presetPath(seeded.key, "spec")}?mark=${seeded.approvalId}`);
+    const body = issuePage(page).locator("[data-spec-body]");
+    await expect(
+      body,
+      "the Spec view is not drawn at the approval request's address"
+    ).toBeVisible();
+    const statements = body.locator("[data-spec-statement]");
+    await expect(
+      statements,
+      "the Spec view at the approval request's address does not draw every statement of the spec"
+    ).toHaveCount(seeded.requirements.length);
+    await expect(
+      statements.first(),
+      "the approval request's address leaves the focus off the Spec view's first statement"
+    ).toBeFocused();
+    await expectOnScreen(statements.first(), "the approval request's address under Spec");
   });
 });

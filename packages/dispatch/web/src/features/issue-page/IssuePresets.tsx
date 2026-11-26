@@ -28,7 +28,7 @@ import {
   PRESET_ORDER,
   type Preset,
 } from "./page-words";
-import type { PresetSignal } from "./presets";
+import { type Filter, isFilter, type PresetSignal } from "./presets";
 import { useShortcutHelpOpener } from "./shortcut-help-opener";
 
 /**
@@ -50,10 +50,11 @@ import { useShortcutHelpOpener } from "./shortcut-help-opener";
  * the arrow keys, Home and End move between the seven, and Enter and Space press.
  *
  * A toggle is the prototype's `.tab`: its name, which is the button, named by that word alone -
- * the word a voice user says. Where a signal is drawn, it is beside the button in the same box,
- * as a `<label>` so a press on the count presses the button too. The signal is the button's
+ * the word a voice user says. A filter's signal is beside the button in the same box, as a
+ * `<label>` so a press on the count presses the button too. The signal is the button's
  * description (`aria-describedby`), not a word drawn inside the button and missing from its
- * name (WCAG 2.5.3).
+ * name (WCAG 2.5.3). Each filter holds its signal's room from its first draw, empty until the
+ * counts are read (`Signal`), so no control moves when they arrive.
  *
  * The row has two shapes and no third. From 1280 px it is the row of seven (`PRESET_ORDER`),
  * which is where R2 says the views are one row; below it - R2's 1024 px and every width between,
@@ -92,11 +93,12 @@ export function IssuePresets({
    *  as the stage, which draw no sheet. A caller that gives it leaves `outline` undefined, so
    *  the row draws one Outline control (`slots/view-row.tsx`). */
   sheet?: (tools: ReactNode) => ReactNode;
-  /** What each control draws after its name (`presets.ts`'s `filterSignals`). A control with no
-   *  signal, such as Conversation, draws just its name, and so does Dashboard, whose count of
-   *  what waits on the reader is the header's (dispatch://INFRA-5702/spec#b-r-header-count). The
-   *  whole record is undefined until the counts can be read (`slots/view-row.tsx`). */
-  signals?: Readonly<Partial<Record<Preset, PresetSignal>>>;
+  /** What each control draws after its name (`presets.ts`'s `filterSignals`). Conversation and
+   *  Documents draw no signal, and neither does Dashboard, whose count of what waits on the
+   *  reader is the header's (dispatch://INFRA-5702/spec#b-r-header-count). The whole record is
+   *  undefined until the counts can be read (`slots/view-row.tsx`), and until then each filter
+   *  holds its signal's room empty. */
+  signals?: Readonly<Record<Filter, PresetSignal>>;
   /** The version control: the view's document's while a view is on, or the opened document's;
    *  none with neither (part N's R3). */
   toolbar?: ReactNode;
@@ -346,7 +348,6 @@ export function IssuePresets({
   const filterRow = { [FILTER_ROW_ATTRIBUTE]: "" };
 
   if (!row) {
-    const activeSignal = signals?.[active];
     return (
       // The prototype's `#viewbar`: the one control and Outline on one line, 8 px above and
       // below, and from 761 px the small controls at its right end.
@@ -378,14 +379,14 @@ export function IssuePresets({
               <span data-preset-name="" {...pageChrome}>
                 {PRESET_NAMES[active]}
               </span>
-              {activeSignal === undefined ? null : <Signal preset={active} signal={activeSignal} />}
+              {isFilter(active) ? <Signal preset={active} signal={signals?.[active]} /> : null}
             </span>
             <MenuMark />
           </button>
           {open === "presets" ? (
             <div className={`${pageMenu} left-0`} onKeyDown={walkMenu} role="menu">
               {PRESET_ORDER.map((preset) => {
-                const signal = signals?.[preset];
+                const signal = isFilter(preset) ? signals?.[preset] : undefined;
                 return (
                   // Named by its name and any signal it draws; checked where it is the one on.
                   <button
@@ -411,9 +412,9 @@ export function IssuePresets({
                     <span id={nameId(preset)} {...pageChrome}>
                       {PRESET_NAMES[preset]}
                     </span>
-                    {signal === undefined ? null : (
+                    {isFilter(preset) ? (
                       <Signal id={signalId(preset)} preset={preset} signal={signal} />
-                    )}
+                    ) : null}
                   </button>
                 );
               })}
@@ -446,7 +447,7 @@ export function IssuePresets({
       >
         {PRESET_ORDER.map((preset) => {
           const on = preset === active;
-          const signal = signals?.[preset];
+          const signal = isFilter(preset) ? signals?.[preset] : undefined;
           return (
             // The prototype's `.tab`: the name and any signal on one baseline, the rule under
             // both, ink and semibold for the one on.
@@ -498,9 +499,9 @@ export function IssuePresets({
                 }}
                 onMouseDown={(event) => event.preventDefault()}
               >
-                {signal === undefined ? null : (
+                {isFilter(preset) ? (
                   <Signal id={signalId(preset)} preset={preset} signal={signal} />
-                )}
+                ) : null}
               </label>
             </span>
           );
@@ -555,11 +556,41 @@ function step(
 }
 
 /**
- * What one control draws after its name: its count, then the noun the count is in, or what of
- * it asks something of the reader, in the prototype's `.sig` (12 px, the quiet grey; the failed
- * red for what failed and the decision violet for what waits for review, each with its word, so
- * the colour repeats what the word says). The count is the author's number and carries
- * `data-preset-count`, which the checks read it by.
+ * The room each filter's signal takes from its control's first draw, in the signal's own `ch`,
+ * the advance of "0" in its 12 px medium face: the counts arrive seconds after the row on a large
+ * issue (`slots/view-row.tsx`), and a control that grew then moved every control after it under a
+ * press aimed at one of them. Each room holds its filter's longest signal (`PresetSignal`) with a
+ * count of three digits and a flag of two. In the page's Inter, where "0" is 7.57 px at 12 px and
+ * no digit is wider, "000" is 3.00 ch, "000 steps" 7.53 ch, "000 · 00 failing" 11.33 ch and
+ * "000 · 00 to review" 13.73 ch; each room rounds that up, which leaves room for the medium face
+ * the signal is drawn in. A longer signal still widens its control.
+ *
+ * With every room drawn the row of five is 732 px: each control its 12 px before the name, the
+ * name (14 px: Conversation 88 px, Spec 34, Verification 76, Plan 28, Decisions 64), the label's
+ * 6 px and 12 px and the room (Spec 23 px, Verification 91, Plan 61, Decisions 110), and 2 px
+ * between controls. With Keys (50 px) and the row's two 8 px gaps it needs 798 px, which the
+ * 1168 px the row has at 1280 px (less the 56 px rail and the 28 px insets) and the 1328 px it has
+ * at 1440 px hold on one line. Below 1280 px the one control's widest name and room, Decisions',
+ * take 230 px of the 362 px it has at 390 px; the menu is at least 260 px wide (`pageMenu`), and
+ * its widest item, Decisions with its room, takes 214 px of the 246 px inside its padding and
+ * rule, so no item widens it when the signals arrive.
+ */
+const SIGNAL_ROOM: Readonly<Record<Filter, string>> = {
+  decisions: "min-w-[14.5ch]",
+  plan: "min-w-[8ch]",
+  spec: "min-w-[3ch]",
+  verification: "min-w-[12ch]",
+};
+
+/**
+ * What one filter control draws after its name, in its room (`SIGNAL_ROOM`): its count, then the
+ * noun the count is in, or what of it asks something of the reader, in the prototype's `.sig`
+ * (12 px, the quiet grey; the failed red for what failed and the decision violet for what waits
+ * for review, each with its word, so the colour repeats what the word says). The count is the
+ * author's number and carries `data-preset-count`, which the checks read it by. Until the signal
+ * is known the room is drawn empty and hidden from assistive technology, so it holds the
+ * control's width and no screen reader hears it or find-in-page matches in it. The room carries
+ * `data-preset-signal` either way.
  */
 function Signal({
   id,
@@ -567,25 +598,36 @@ function Signal({
   signal,
 }: {
   id?: string;
-  preset: Preset;
-  signal: PresetSignal;
+  preset: Filter;
+  signal: PresetSignal | undefined;
 }): ReactNode {
-  const { flag, unit } = signal;
   return (
-    <span className={`text-xs leading-4 font-medium ${pageQuietText}`} id={id}>
-      <span data-preset-count={preset} {...authorText}>
-        {signal.count}
-      </span>
-      {unit === undefined ? null : <span {...pageChrome}> {FILTER_SIGNAL_WORDS[unit]}</span>}
-      {flag === undefined ? null : (
-        <span
-          className={flag.word === "failing" ? pageFailedText : pageDecisionText}
-          data-preset-flag={flag.word}
-          {...pageChrome}
-        >
-          {" · "}
-          <span {...authorText}>{flag.count}</span> {FILTER_SIGNAL_WORDS[flag.word]}
-        </span>
+    <span
+      aria-hidden={signal === undefined ? true : undefined}
+      className={`inline-block ${SIGNAL_ROOM[preset]} text-xs leading-4 font-medium ${pageQuietText}`}
+      data-preset-signal={preset}
+      id={id}
+    >
+      {signal === undefined ? null : (
+        <>
+          <span data-preset-count={preset} {...authorText}>
+            {signal.count}
+          </span>
+          {signal.unit === undefined ? null : (
+            <span {...pageChrome}> {FILTER_SIGNAL_WORDS[signal.unit]}</span>
+          )}
+          {signal.flag === undefined ? null : (
+            <span
+              className={signal.flag.word === "failing" ? pageFailedText : pageDecisionText}
+              data-preset-flag={signal.flag.word}
+              {...pageChrome}
+            >
+              {" · "}
+              <span {...authorText}>{signal.flag.count}</span>{" "}
+              {FILTER_SIGNAL_WORDS[signal.flag.word]}
+            </span>
+          )}
+        </>
       )}
     </span>
   );

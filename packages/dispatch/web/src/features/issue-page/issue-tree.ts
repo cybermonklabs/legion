@@ -17,7 +17,7 @@ import type {
 import { storedReading } from "../decision-card/stored-reading";
 import type { ReferenceNameReading } from "../refs/reference-names";
 import type { TextSource } from "../refs/text-references";
-import { wordsOf } from "../refs/tree-fragment";
+import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
 import type { GapKind, NodeState, NodeType } from "./page-words";
 import { titleReading } from "./statement-rules";
 import { treeContext } from "./target-naming";
@@ -463,7 +463,7 @@ export type LineReading =
  * (R8, issue page decision 350); and it reads no list or block marker as a word, but for an
  * ordered list's number (decisions 66 and 88).
  *
- * - **A node with a reading** by the first block of it that holds any words (`firstBlockOf`):
+ * - **A node with a reading** by the first block that holds any words (`firstWordedBlock`):
  *   a heading or a paragraph, and of a list, an item or a block quote the first block of its own
  *   that holds any, so a later item or paragraph is no part of the line. A heading so ends at its
  *   own line and its marker is no word of it, so `## # 1 rule` reads `# 1 rule`. A block that
@@ -492,7 +492,7 @@ export function lineReading(node: {
   if (node.type === "issue") return { key: node.id, tree: titleReading(node.text) };
   if (node.type === "child_issue") return { tree: titleReading(node.text) };
   if (node.tree === undefined) return { markdown: node.text };
-  const block = firstBlockOf(node.tree);
+  const block = firstWordedBlock(node.tree);
   return block === undefined ? { none: true } : { tree: block };
 }
 
@@ -522,7 +522,7 @@ export function lineWordsRaw(node: {
 }
 
 /**
- * The words a reading opens with, by the page's one first-block rule (`firstBlockOf`), each
+ * The words a reading opens with, by the page's one first-block rule (`firstWordedBlock`), each
  * bare address as written (`wordsOf`): the words of the reading's first block that holds any,
  * alone, and of a list, an item or a block quote the words of its own first block that holds
  * any: `- one` over an indented `- inner` reads `one`, and a block quote of two paragraphs,
@@ -541,41 +541,8 @@ export function lineWordsRaw(node: {
  * name: a node's line (`lineWordsRaw`) and a person's quote (`spec-decided-by.ts`).
  */
 export function firstBlockWordsRaw(reading: DisplayTree): string {
-  const block = firstBlockOf(reading);
+  const block = firstWordedBlock(reading);
   return block === undefined ? "" : wordsOf(block);
-}
-
-/** The blocks `firstBlockOf` walks into rather than reads whole. */
-const CONTAINER_BLOCKS: ReadonlySet<string> = new Set([
-  "blockquote",
-  "bullet_list",
-  "list_item",
-  "ordered_list",
-]);
-
-/**
- * `reading` holding the first of its blocks that holds any words (`wordsOf`) and nothing else;
- * undefined for a reading none of whose blocks holds a word. It is the page's one first-block
- * rule: a node's one line projects from it (`lineReading`), and its words are read from it
- * (`firstBlockWordsRaw`). It is main's `firstWordedBlock` (`refs/tree-fragment.ts`) with the
- * containers walked into: a bulleted or a numbered list, a list item and a block quote are each
- * read as their own first block that holds words by this same walk, so a list's later items, an
- * item's nested list or later paragraphs and a block quote's later paragraphs are no part of it.
- * The containers stay around the block they hold, so an ordered list keeps the number its kept
- * item is drawn with, which the projection reads from the list's start and the item's place in
- * it.
- */
-function firstBlockOf(reading: DisplayTree): DisplayTree | undefined {
-  const children = Array.isArray(reading.content) ? (reading.content as DisplayTree[]) : [];
-  const at = children.findIndex((child) => wordsOf(child).trim() !== "");
-  const block = children[at];
-  if (block === undefined) return undefined;
-  const kept = CONTAINER_BLOCKS.has(block.type) ? (firstBlockOf(block) ?? block) : block;
-  const attrs = reading.attrs as { readonly order?: unknown } | undefined;
-  const order = typeof attrs?.order === "number" ? attrs.order : 1;
-  const start =
-    reading.type === "ordered_list" && at > 0 ? { attrs: { ...attrs, order: order + at } } : {};
-  return { ...reading, ...start, content: [kept] };
 }
 
 /** The issue's whole tree, from the reads it was given. */

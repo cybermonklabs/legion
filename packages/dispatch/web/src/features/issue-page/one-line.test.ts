@@ -1,8 +1,16 @@
 import { expect, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, renderHook } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
 
-import { shortForm } from "../refs/routes";
+import type { Actor, Agent } from "../../api/types";
+import { POST_MARK_WORDS, type PostDeletion } from "../refs/post-marks";
+import { ReferenceNamesProvider } from "../refs/reference-names";
 import { drawnLine, firstLineOf } from "./first-line";
-import { oneLineCut, referenceStandIns } from "./one-line";
+import { type LineNames, oneLineCut, referenceStandIns, useIssueNames } from "./one-line";
+import { NODE_TYPE_NAMES } from "./page-words";
+import { Publisher, publishedNames } from "./projection-fixture";
+import { knownIssueKeys } from "./row-references";
 
 /** A face that draws every character 7 px wide, so each budget below is a sum a reader can
  *  check by hand. */
@@ -11,6 +19,26 @@ const widthOf = (text: string) => text.length * 7;
 /** The line a row `room` px wide draws of `text`, with nothing beside it. */
 function alone(text: string, room: number) {
   return oneLineCut({ after: 0, before: 0, room, text, widthOf });
+}
+
+/** What a page that published `names` - each target's name, an issue's title among them - and
+ *  `lines` - the line a chip names a block by - names a plain line's references by
+ *  (`useIssueNames`), on the issue `KEY-1`; nothing deleted, edited or ambiguous. */
+function published(
+  names: Readonly<Record<string, string>> = {},
+  lines: Readonly<Record<string, string>> = {}
+): LineNames {
+  const named = new Map(Object.entries(names));
+  return {
+    ambiguous: new Set(),
+    author: () => "",
+    deleted: new Map(),
+    edited: new Set(),
+    issue: "KEY-1",
+    issues: knownIssueKeys(named),
+    lines: new Map(Object.entries(lines)),
+    names: named,
+  };
 }
 
 /**
@@ -135,9 +163,10 @@ test("a first word no line of the row holds is drawn whole, wrapping inside itse
 
 /**
  * The tester's F20: a plain line the page draws is no link, so it names each reference in plain
- * words - a block by the page's name for it, an issue by its key, and anything the page has no
- * name for by its short form - and drops a typed block's source line, which is markup and no
- * word of the text. No address, block id or fence is left.
+ * words, as the node's row in the outline names it - a block as its chip names it, an issue by
+ * its key and its title, and a whole document by the page's word for one - and drops a typed
+ * block's source line, which is markup and no word of the text. No address, block id or fence is
+ * left.
  */
 test("a plain line names each reference and drops a typed block's source line", () => {
   const block = "dispatch://KEY-1/spec#b-r1";
@@ -145,50 +174,118 @@ test("a plain line names each reference and drops a typed block's source line", 
     ":::requirement{#r1}",
     `The page cites ${block}, dispatch://KEY-1 and dispatch://KEY-1/artifact/notes.`,
   ].join("\n");
-  const references = referenceStandIns((reference) =>
-    reference === block ? "the whole issue" : undefined
+  const references = referenceStandIns(
+    published({ "dispatch://KEY-1": "The first issue" }, { [block]: "the whole issue" })
   );
   const line = references.named(references.standIn(text));
-  const notes = shortForm({ key: "KEY-1", kind: "artifact", slug: "notes" });
-  expect(line).toBe(`The page cites the whole issue, KEY-1 and ${notes}.`);
+  expect(line).toBe(
+    `The page cites the whole issue, KEY-1 The first issue and ${NODE_TYPE_NAMES.document}.`
+  );
   for (const mark of [":::", "#b-", "dispatch://"]) {
     expect(line).not.toContain(mark);
   }
 });
 
+// A plain line names an issue as the node's row in the outline does (`rowReferenceWords`): by
+// its key and its title, once the page has published the title. One the page published no name
+// for - it has not answered, or is gone - reads as the words its author wrote, as the row draws
+// it, and never by its key alone, which the row never draws.
+test("a plain line names a resolved issue by its key and title, and an unresolved one as written", () => {
+  const references = referenceStandIns(published({ "dispatch://KEY-7": "The new issue page" }));
+  expect(
+    references.named(references.standIn("See dispatch://KEY-7 and dispatch://KEY-9 first."))
+  ).toBe("See KEY-7 The new issue page and dispatch://KEY-9 first.");
+});
+
+// R8: a reference the page published no name for - another issue's comment it has not answered
+// for, or answered is gone - reads as the words its author wrote, as the row draws it, and never
+// as its short form ("OTHER-1 comment"), which names no one comment.
+test("a reference the page published no name for reads as written, never as its short form", () => {
+  const gone = "dispatch://OTHER-1/comment/0f8e2c3a-6b1d-4e5f-9a7c-2d3e4f5a6b7c";
+  const references = referenceStandIns(published());
+  const line = references.named(
+    drawnLine(firstLineOf(references.standIn(`It follows ${gone} closely. Then more.`)))
+  );
+  expect(line).toBe(`It follows ${gone} closely.`);
+  expect(line).not.toContain("OTHER-1 comment");
+});
+
+// A bare key is a reference where the page named an issue for it (`knownIssueKeys`), as the row
+// links one, and reads as the key and the title; a key the page named nothing for is the words
+// it is.
+test("a bare key the page named an issue for reads as its key and title", () => {
+  const references = referenceStandIns(published({ "dispatch://KEY-7": "The new issue page" }));
+  expect(references.named(references.standIn("Ask KEY-7 first, not KEY-9."))).toBe(
+    "Ask KEY-7 The new issue page first, not KEY-9."
+  );
+});
+
+// A block reads as its chip names it in the row (`chipName`): its line, cut at a word to a chip's
+// 32 characters with its ellipsis.
+test("a plain line names a block as its chip names it", () => {
+  const block = "dispatch://KEY-1/spec#b-r3";
+  const references = referenceStandIns(
+    published({}, { [block]: "Every address in a node's words is drawn by its name" })
+  );
+  expect(references.named(references.standIn(`Keep ${block} as it is.`))).toBe(
+    "Keep Every address in a node's words… as it is."
+  );
+});
+
+// R1: a title is a name of many words, each its own token, so `firstLineOf`'s limit cuts the
+// line at a word inside the title, and the line draws one ellipsis. 11 characters, then the
+// title's: its sixth "draws" ends at the 100th character, and the space after it is the last one
+// inside the limit.
+test("a long title is cut at a word inside it, with one ellipsis", () => {
+  const title = `The new issue page ${"draws a line ".repeat(8)}whole`;
+  const references = referenceStandIns(published({ "dispatch://KEY-7": title }));
+  const line = references.named(
+    drawnLine(firstLineOf(references.standIn("Read dispatch://KEY-7 before the rest.")))
+  );
+  expect(line).toBe(`Read KEY-7 The new issue page ${"draws a line ".repeat(5)}draws…`);
+  expect(line.match(/…/gu), "the line draws more than one ellipsis").toHaveLength(1);
+});
+
 /**
  * The tester's F20 on a line the page cuts: a reference is named only after the cut, so its
- * name takes no part in it. A statement's name opens with its label ("R2."), which read as a
- * sentence end would end the line inside the name; the limit never falls at one of the name's
- * own spaces; and a reference counts against `firstLineOf`'s 100 characters as its name's
- * characters, which are what the line draws, not its address's.
+ * name's marks take no part in it. A statement's name opens with its label ("R2."), which read as
+ * a sentence end would end the line inside the name; the limit falls at a space and never inside
+ * a word of the name; and a reference counts against `firstLineOf`'s 100 characters as its
+ * name's characters, which are what the line draws, not its address's.
  */
 test("a line is cut with each reference still unnamed, and each is named after the cut", () => {
   const block = "dispatch://KEY-1/spec#b-r2";
-  const nameOf = (reference: string) => (reference === block ? "R2. Every address" : undefined);
+  const names = published(
+    { "dispatch://KEY-2": "Two", "dispatch://KEY-3": "Three" },
+    { [block]: "R2. Every address" }
+  );
   const lineOf = (text: string) => {
-    const references = referenceStandIns(nameOf);
+    const references = referenceStandIns(names);
     return references.named(drawnLine(firstLineOf(references.standIn(text))));
   };
 
   // The name's label ends no sentence: the line ends where its author's sentence does.
   expect(lineOf(`Keep ${block} and dispatch://KEY-2 whole. Then more.`)).toBe(
-    "Keep R2. Every address and KEY-2 whole."
+    "Keep R2. Every address and KEY-2 Two whole."
   );
   // 73 characters, the name's 17 and " says." are 96, so the sentence is the line; its address's
   // 26 characters would make it 105, and cut it inside the sentence.
   const before = `${"word ".repeat(14)}as `;
   expect(lineOf(`${before}${block} says. Then more.`)).toBe(`${before}R2. Every address says.`);
-  // 88 characters and the name pass the limit inside the name: the line ends before it, at the
-  // author's own space, and is drawn with its ellipsis.
+  // 88 characters and the name pass the limit inside the name. Each word of a name is its own
+  // token, so the limit cuts at the last of the name's own spaces inside it, after "Every", and
+  // never inside a word: the line keeps the words of the name that fit, with its ellipsis, rather
+  // than end before the whole name.
   const long = `${"word ".repeat(17)}as`;
-  expect(lineOf(`${long} ${block} says, and more words follow.`)).toBe(`${long}…`);
+  expect(lineOf(`${long} ${block} says, and more words follow.`)).toBe(`${long} R2. Every…`);
 
-  // One holder stands in for the references of several texts, each by a token of its own.
-  const references = referenceStandIns(nameOf);
+  // One holder stands in for the references of several texts, each by tokens of its own.
+  const references = referenceStandIns(names);
   const first = references.standIn(`See ${block}.`);
   const second = references.standIn("Ask dispatch://KEY-3 first.");
-  expect(references.named(`${first} ${second}`)).toBe("See R2. Every address. Ask KEY-3 first.");
+  expect(references.named(`${first} ${second}`)).toBe(
+    "See R2. Every address. Ask KEY-3 Three first."
+  );
 });
 
 // R1 and R5: a plain line draws its author's words as they wrote them, with each reference named.
@@ -198,10 +295,10 @@ test("a line is cut with each reference still unnamed, and each is named after t
 // read "<U+E000> dispatch://ACME-7 then" drew its Contents entry as "ACME-7 ACME-7…":
 // the author's own character was drawn as the reference's name.
 test("a private-use character the author wrote is drawn as written, never as a reference's name", () => {
-  const references = referenceStandIns(() => undefined);
+  const references = referenceStandIns(published({ "dispatch://KEY-2": "Two" }));
   const text = "\ue000 marks dispatch://KEY-2 here, and \ue001 is the next icon.";
   expect(references.named(references.standIn(text))).toBe(
-    "\ue000 marks KEY-2 here, and \ue001 is the next icon."
+    "\ue000 marks KEY-2 Two here, and \ue001 is the next icon."
   );
 });
 
@@ -213,9 +310,7 @@ test("a private-use character the author wrote is drawn as written, never as a r
 // shows the……".
 test("a line cut right after a name that ends with an ellipsis draws one ellipsis", () => {
   const block = "dispatch://KEY-1/spec#b-r2";
-  const references = referenceStandIns((reference) =>
-    reference === block ? "R2. Every address…" : undefined
-  );
+  const references = referenceStandIns(published({}, { [block]: "R2. Every address…" }));
   // 78 characters, then the name's 18: the space after it is the last one inside the limit.
   const before = `${"word ".repeat(15)}as `;
   const text = `${before}${block} says the rest of it, and more words follow on.`;
@@ -230,9 +325,7 @@ test("a line cut right after a name that ends with an ellipsis draws one ellipsi
 // draws no second one.
 test("a line cut right after a name that ends with a full stop still draws its ellipsis", () => {
   const block = "dispatch://KEY-1/spec#b-r2";
-  const references = referenceStandIns((reference) =>
-    reference === block ? "R2. Every address." : undefined
-  );
+  const references = referenceStandIns(published({}, { [block]: "R2. Every address." }));
   // 78 characters, then the name's 18: the space after it is the last one inside the limit.
   const before = `${"word ".repeat(15)}as `;
   const text = `${before}${block} says the rest of it, and more words follow on.`;
@@ -253,4 +346,76 @@ test("a run that ends with the author's own ellipsis is measured with that one a
     under: false,
     wraps: false,
   });
+});
+
+/** One session the agent registry lists as live under `title`, which the listener last heard at
+ *  `lastSeen`, as `GET /api/v1/agents` lists it. */
+function listed(sessionId: string, title: string, lastSeen: number): Agent {
+  return {
+    capabilities: [],
+    dir: "/w",
+    host: "host",
+    last_activity: null,
+    last_seen: lastSeen,
+    machine_id: "host",
+    open_asks: 0,
+    roles: [],
+    session_id: sessionId,
+    state: "live",
+    title,
+  };
+}
+
+// A plain line's names are read once for every Contents entry, every sentence of the summary
+// and every group of the Spec view, and each is built again where they change. The page's rule
+// for an author is made anew at every poll of the agent registry, while a plain line reads it
+// only for the actor of a deleted post (`rowReferenceNames`), so a poll that names every such
+// actor as before - a live agent heard again, nothing renamed - hands on the same names, and one
+// that renames such an actor hands on new names, which name it anew.
+test("a plain line's names are kept while a registry poll names the deleted posts' actors alike", () => {
+  const writer = "writer-session";
+  const helper = "helper-session";
+  const comment = "dispatch://KEY-1/comment/c-deleted";
+  const by: Actor = { id: writer, kind: "session" };
+  const deleted = new Map<string, PostDeletion>([[comment, { at: "2026-11-05T10:00:00Z", by }]]);
+  // The page publishes the deleted comment's name with the delete, as its batched read does: its
+  // deleted line, the actor named as no registry knows them.
+  const name = `${POST_MARK_WORDS.deleted_by} ${writer}`;
+  const published = publishedNames(new Map([[comment, name]]), { deleted });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["agents"], [listed(writer, "Planner", 1), listed(helper, "Helper", 1)]);
+  const names = renderHook(() => useIssueNames("KEY-1"), {
+    wrapper: ({ children }: { children: ReactNode }) =>
+      createElement(
+        QueryClientProvider,
+        { client },
+        createElement(
+          ReferenceNamesProvider,
+          null,
+          createElement(Publisher, { published }),
+          children
+        )
+      ),
+  });
+  const line = (lineNames: LineNames): string => {
+    const references = referenceStandIns(lineNames);
+    return references.named(references.standIn(`See ${comment}.`));
+  };
+  try {
+    const first = names.result.current;
+    expect(line(first)).toBe(`See ${POST_MARK_WORDS.deleted_by} Planner.`);
+    // A poll that answers the registry anew: the helper, still live, was heard again.
+    act(() => {
+      client.setQueryData(["agents"], [listed(writer, "Planner", 1), listed(helper, "Helper", 2)]);
+    });
+    expect(names.result.current).toBe(first);
+    // A poll that renames the deleted comment's actor.
+    act(() => {
+      client.setQueryData(["agents"], [listed(writer, "Reviewer", 1), listed(helper, "Helper", 2)]);
+    });
+    expect(names.result.current).not.toBe(first);
+    expect(line(names.result.current)).toBe(`See ${POST_MARK_WORDS.deleted_by} Reviewer.`);
+  } finally {
+    names.unmount();
+  }
 });
