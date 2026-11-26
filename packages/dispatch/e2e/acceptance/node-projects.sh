@@ -103,12 +103,19 @@ readonly work
 printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 key=""
 fixture_saved=""
+# cleanup closes the run's issue and puts the fake Envoy's list back. A close the server refuses
+# fails a run that had passed: the run leaves its database as a server can go on writing to, and
+# a refused status write on its issue says it did not (an event this driver wrote out of turn did
+# that once).
 cleanup() {
   local code=$?
   if [[ -n "$key" ]]; then
     send PATCH "/api/v1/issues/$key" \
       "$(jq -cn --arg s "$session" '{status: "done", actor: {kind: "session", id: $s}}')"
-    [[ "$status" == 200 ]] || printf 'node-projects.sh: could not close %s: HTTP %s\n' "$key" "$status" >&2
+    if [[ "$status" != 200 ]]; then
+      printf 'FAIL: cleanup close %s: HTTP %s\n' "$key" "$status" >&2
+      [[ "$code" != 0 ]] || code=1
+    fi
   fi
   if [[ -n "$fixture_saved" ]]; then
     curl -sS -o /dev/null -X PUT -H 'Content-Type: application/json' \
@@ -525,16 +532,21 @@ pass "$section" "the census names the live node of $scratch_ref, which no row st
 # could cure it: with this build serving alone, the last pass (section pass) is 10 minutes behind,
 # and no event before this one names the orphaned node. The tick that reads it owes the object
 # pass (graphcensus.EventsOweObjectPass), whose sweep states the node gone as this build's own
-# removal does, under this event (graphcensus.StateOrphanedGone). The horizon is watched from 5 s
-# before the event, as section pass watches it.
+# removal does, under this event (graphcensus.StateOrphanedGone). The event is appended as every
+# build appends one, at the issue's next last_seq, which the same statement moves: an event written
+# past last_seq would take the seq of the server's next event on the issue, whose append then fails
+# on events_issue_key_seq_key. The horizon is watched from 5 s before the event, as section pass
+# watches it.
 start_horizon_watch "$section"
 query "$section" "the earlier build's removal event of $scratch_ref" "
+  with bumped as (update issues set last_seq = last_seq + 1 where key = '$key' returning last_seq)
   insert into events (issue_key, seq, type, actor, payload, notify)
-  select '$key', coalesce(max(seq), 0) + 1, 'artifact.removed', '{\"kind\":\"user\",\"id\":\"$person\"}',
+  select '$key', bumped.last_seq, 'artifact.removed', '{\"kind\":\"user\",\"id\":\"$person\"}',
          jsonb_build_object('artifact', jsonb_build_object('id', '$removed_id', 'issue_key', '$key',
            'slug', '${scratch_ref#*/}', 'ref_key', '$scratch_ref')), false
-  from events where issue_key = '$key'
+  from bumped
   returning id"
+[[ -n "$answer" ]] || fail "$section" "the earlier build's removal event of $scratch_ref" "no issue $key took the event"
 readonly removal="$answer"
 await_pass "$section" "$removal" "exists (select 1 from graph_nodes where kind = 'artifact' and id = '$scratch_ref' and state = 'gone')" \
   "gone node of $scratch_ref"
