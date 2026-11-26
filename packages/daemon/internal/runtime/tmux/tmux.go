@@ -487,6 +487,16 @@ func plantDelay(name string) time.Duration {
 // plantFirstCall is the one call of this process the first-call plant stalls.
 var plantFirstCall sync.Once
 
+// plantReapCall is the one call of this process the reap-delay plant holds.
+var plantReapCall sync.Once
+
+// plantReapFirst is true on the first call of the process and false on every later one.
+func plantReapFirst() bool {
+	first := false
+	plantReapCall.Do(func() { first = true })
+	return first
+}
+
 // runTmux runs one argv against the private server under the pane environment, bounded by the
 // command timeout. A client that ran and did not succeed is a result: one that exited non-zero,
 // one its timeout killed, and one some other signal ended (the kernel's out-of-memory kill), so
@@ -519,7 +529,19 @@ func (r *Runtime) runTmux(ctx context.Context, argv []string) (result, error) {
 	killed := procgroup.KilledByContext(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
+	// PLANT (verdict run, not for merge): runTmux spends this long between starting the client
+	// and waiting for it, on the first call of the process alone, so the client's reap comes
+	// that much after its own exit. Everything else is what cmd.Run does.
+	var err error
+	if delay := plantDelay("tmux-reap-delay"); delay > 0 && plantReapFirst() {
+		fmt.Fprintf(os.Stderr, "PLANT tmux-reap-delay fired: %s between the client's start and its wait (%s)\n", delay, strings.Join(argv, " "))
+		if err = cmd.Start(); err == nil {
+			time.Sleep(delay)
+			err = cmd.Wait()
+		}
+	} else {
+		err = cmd.Run()
+	}
 	res := result{stdout: stdout.String(), stderr: stderr.String()}
 	if err == nil {
 		return res, nil
