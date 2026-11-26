@@ -44,8 +44,15 @@
  * `last_seq`, `notify` false and published at once, whose payload is `model.CommentEventPayload`'s
  * fields, `id` among them (`api/events.go` reads it). The comments name no node, as that release's
  * do; the server's block index gives them their nodes and their blocks from those events
- * (`docs/block_index_roll.go`), and the seed waits for it (`awaitBlockIndexDrained`). After each
- * transaction the seed reads back through the API what it wrote, and it stops where a count, a
+ * (`docs/block_index_roll.go`), and the seed waits for it (`awaitBlockIndexDrained`). The block
+ * index reads only the events after its own cursor (`readEventsAfterCursor`), which it writes on
+ * its first tick whose horizon has proven an event, at that horizon, and which never moves back. So
+ * the seed waits for that cursor before its first comment (`awaitBlockIndexCursor`), else the
+ * cursor would start past the events, and each transaction moves `events_id_seq` past the cursor
+ * before it inserts, as the release before lands its events after the index's cursor: a row's
+ * reset (`resetDatabase`, `e2e/seed.ts`) empties the events and restarts their ids, but keeps the
+ * cursor where the last row left it, so the ids a row after the first draws are behind it. After
+ * each transaction the seed reads back through the API what it wrote, and it stops where a count, a
  * `seq` or an event's comment differs, rather than let the row read a copy it did not write.
  */
 
@@ -117,6 +124,11 @@ const DRAIN_POLL_MS = 2_000;
  *  every 2 s while a batch is full: the copies' 9,465 comments are 48 ticks, 96 s, so about 126 s
  *  in all. The bound is more than twice that, for a loaded Job. */
 const DRAIN_BOUND_MS = 300_000;
+
+/** How long the seed waits for the block index's event cursor: the block index writes it on its
+ *  first tick whose horizon has proven an event, and an idle server ticks every 30 s
+ *  (`BlockIndexReconcileInterval`). The bound is two such ticks. */
+const CURSOR_BOUND_MS = 60_000;
 
 /** One copy, as the plan's table under "The sizes from the real system" writes it. */
 interface CopyShape {
@@ -282,7 +294,9 @@ function generatedDocument(number: number, blocks: number): string {
  * says why by SQL): the roots by the writer, a millisecond apart, then the floor's 60 replies by
  * the planner session on the oldest of them, after every root, each naming it as the comment it
  * replies to and answers. The events take the issue's next `seq`s in the comments' order, and the
- * statement answers each comment with its event's `seq`, the oldest first.
+ * statement answers each comment with its event's `seq`, the oldest first. After its transaction
+ * id and before its insert, the transaction moves `events_id_seq` past the block index's cursor,
+ * so the events' ids are after it (the file's head says why).
  */
 async function writeComments(key: string, shape: CopyShape): Promise<WrittenComment[]> {
   const count = shape.comments;
@@ -305,6 +319,8 @@ async function writeComments(key: string, shape: CopyShape): Promise<WrittenComm
   const out = await sql(
     "begin",
     "select pg_current_xact_id()",
+    `select setval('events_id_seq', greatest(nextval('events_id_seq'),
+       (select coalesce(max(event_id), 0) + 1 from block_index_event_cursors)))`,
     `with roots as (
        insert into comments (issue_key, author, body, created_at)
        select ${issue}, ${authorLiteral(WRITER)},
@@ -481,6 +497,26 @@ async function writeCopy(shape: CopyShape): Promise<WrittenCopy> {
   };
 }
 
+/** Waits, reading every `DRAIN_POLL_MS` within `CURSOR_BOUND_MS`, until the server's block index
+ *  has written its event cursor (`block_index_event_cursors`), and answers how long it took: the
+ *  events a copy's comments write before it would start behind it (the file's head says why). */
+async function awaitBlockIndexCursor(): Promise<number> {
+  const started = Date.now();
+  for (;;) {
+    const read = (await sql("select count(*) from block_index_event_cursors")).trim();
+    if (!/^\d+$/u.test(read)) {
+      throw new Error(`the block index's cursors read ${JSON.stringify(read)}, not a count`);
+    }
+    if (Number(read) > 0) return Date.now() - started;
+    if (Date.now() - started > CURSOR_BOUND_MS) {
+      throw new Error(
+        `the block index wrote no event cursor ${CURSOR_BOUND_MS / 1000} s after the seed began, so the copies' comments would start behind it`
+      );
+    }
+    await pause(DRAIN_POLL_MS);
+  }
+}
+
 /** Waits, reading every `DRAIN_POLL_MS` within `DRAIN_BOUND_MS`, until the server's block index
  *  has taken in what the copies wrote: no document version owes its blocks, no comment of the
  *  copies owes its own (`comment_block_state.owed_at`), and every one of them names its node.
@@ -588,14 +624,17 @@ async function expectCopyWritten(copy: WrittenCopy): Promise<ScaleCopy> {
 }
 
 /**
- * Writes the three copies into a project of their own, reads each copy's comments and events back
- * after its transaction (`expectCommentsWritten`), waits for the block index to take them all in
+ * Writes the three copies into a project of their own, once the block index has written its event
+ * cursor (`awaitBlockIndexCursor`), reads each copy's comments and events back after its
+ * transaction (`expectCommentsWritten`), waits for the block index to take them all in
  * (`awaitBlockIndexDrained`), and reads every count back through the API (`expectCopyWritten`)
  * before the row's first load. The reader signed in as each copy's questions were asked of them
  * (`handAskOn`), and has read none of the copies.
  */
 export async function seedScale(): Promise<ScaleSeed> {
   await createProject({ key: PROJECT, name: "The largest issues" });
+  const cursor = await awaitBlockIndexCursor();
+  console.log(`SCALE cursor: the block index's event cursor stood after ${cursor / 1000} s`);
   const written: WrittenCopy[] = [];
   for (const shape of COPIES) {
     const copy = await writeCopy(shape);
