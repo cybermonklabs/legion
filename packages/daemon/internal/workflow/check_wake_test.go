@@ -329,6 +329,9 @@ func TestAWakeRowWithNoLookToStartStartsNoneAndIsNotQueuedAgain(t *testing.T) {
 			})
 		})
 		rig.apply("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"})
+		// A person closes the merged child, which opens its check of the later merge, as
+		// childCheckRig does.
+		rig.apply("child-closed", intake.DispatchIssue{Key: "LEGION-209", Seq: 2, Type: "issue.closed", Status: "done", Title: "child", Parent: "LEGION-208", Rank: "V"})
 		rig.apply("pending", intake.CheckReport{Issue: "LEGION-209", Look: 1, Verdict: "pending", Summary: "the deploy has not carried the merge",
 			WakeAt: new(checkOpened.Add(time.Hour))})
 		assertWakeStartsNothing(t, rig, "LEGION-209", intake.CheckWakeDue{Issue: "LEGION-209", Look: 1, OpenedAt: first, Reason: "the first check's wake"})

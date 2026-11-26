@@ -1,4 +1,4 @@
--- 20261124124111_graph_supertags_check_subject.up.sql
+-- 20261125164529_graph_supertags_check_subject.up.sql
 --
 -- The block schema moves to version 6. `pmdoc/schema/blocks.json` gave the `check` type two
 -- attributes after `ci_check`: `subject`, an enum of `code`, `production` and `graph` that says

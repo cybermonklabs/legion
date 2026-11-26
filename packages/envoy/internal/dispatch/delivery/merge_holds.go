@@ -108,7 +108,7 @@ func (a *Attributor) MergeIn(ctx context.Context, q refs.Queryer, issueKey, repo
 // the newest one whose final head holds the merge it follows (api/results_merge.go). repo is
 // compared without case, as HeadStoredAt compares it, since a row an envelope wrote carries
 // GitHub's spelling; the branch is compared as it is, since a git branch name is case-sensitive.
-// The read is one lookup on pull_request_heads_merged_head_ref (migration 20261124124112).
+// The read is one lookup on pull_request_heads_merged_head_ref (migration 20261125164530).
 func LandingOf(ctx context.Context, q refs.Queryer, repo, branch string, answers HeadAnswers) ([]MergedPullRequest, error) {
 	return readMerged(ctx, q, answers, fmt.Sprintf("the merged pull requests of %s from %s", repo, branch), landingRead, repo, branch)
 }

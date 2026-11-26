@@ -564,8 +564,8 @@ func TestAConflictAfterTheReviewLandsThroughTheMerger(t *testing.T) {
 	}
 
 	apply(6*time.Minute, intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"})
-	if got := issuePhase(t, pool); got != phase.Done {
-		t.Fatalf("after GitHub merged the pull request the issue is in %s, want done", got)
+	if got := issuePhase(t, pool); got != phase.Verifying {
+		t.Fatalf("after GitHub merged the pull request the issue is in %s, want verifying: its close waits for its checks", got)
 	}
 	for _, message := range mergeForwardMessages(t, pool) {
 		if message.Role == claim.RoleImplementer {
@@ -574,8 +574,8 @@ func TestAConflictAfterTheReviewLandsThroughTheMerger(t *testing.T) {
 	}
 	// A move into implementing writes in_progress (PhaseStatus), so a status write of it is the
 	// trace of any phase handed back to the implementer.
-	if statuses := queuedStatuses(t, pool); slices.Contains(statuses, "in_progress") || !slices.Contains(statuses, "retro") || !slices.Contains(statuses, "done") {
-		t.Fatalf("the run wrote the statuses %q, want retro and done and never in_progress: no phase went back to the implementer", statuses)
+	if statuses := queuedStatuses(t, pool); slices.Contains(statuses, "in_progress") || !slices.Contains(statuses, "retro") || !slices.Contains(statuses, "testing") {
+		t.Fatalf("the run wrote the statuses %q, want retro and testing and never in_progress: no phase went back to the implementer", statuses)
 	}
 	if pass := implementerPass(t, pool); pass != 0 {
 		t.Fatalf("the implementer counts %d moves back, want none", pass)

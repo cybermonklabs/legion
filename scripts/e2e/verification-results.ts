@@ -1291,8 +1291,12 @@ A default-branch result is compared with the default branch alone.
   ] as const;
   for (const [number, commit, merged] of wantedBases) {
     const basis = heads.get(number);
-    if (basis?.kind !== "pull_request" || basis.repo !== repo || basis.commit !== commit ||
-      (basis.merged ?? false) !== merged) {
+    if (
+      basis?.kind !== "pull_request" ||
+      (basis.repo ?? repo) !== repo ||
+      basis.commit !== commit ||
+      (basis.merged ?? false) !== merged
+    ) {
       return `compared_with is missing basis ${repo}#${number}@${commit} (merged=${merged}); got ${JSON.stringify(bases)}`;
     }
     if (basis.learned_at === undefined) {
@@ -1304,15 +1308,30 @@ A default-branch result is compared with the default branch alone.
   }
   const subjects = before.pass_stands.subjects ?? [];
   for (const [number, commit, merged] of wantedBases) {
-    if (!merged && !subjects.some(({ basis }) => basis.kind === "pull_request" &&
-      basis.repo === repo && basis.pull_request === number && basis.commit === commit)) {
+    if (
+      !merged &&
+      !subjects.some(
+        ({ basis }) =>
+          basis.kind === "pull_request" &&
+          (basis.repo ?? repo) === repo &&
+          basis.pull_request === number &&
+          basis.commit === commit
+      )
+    ) {
       return `pass_stands.subjects is missing open subject ${repo}#${number}@${commit}; got ${JSON.stringify(subjects)}`;
     }
   }
   for (const { basis } of subjects) {
-    if (!wantedBases.some(([number, commit, merged]) => !merged &&
-      basis.kind === "pull_request" && basis.repo === repo &&
-      basis.pull_request === number && basis.commit === commit)) {
+    if (
+      !wantedBases.some(
+        ([number, commit, merged]) =>
+          !merged &&
+          basis.kind === "pull_request" &&
+          (basis.repo ?? repo) === repo &&
+          basis.pull_request === number &&
+          basis.commit === commit
+      )
+    ) {
       return `pass_stands.subjects contains unexpected subject ${basis.repo}#${basis.pull_request}@${basis.commit}; only the two open heads are subjects`;
     }
   }

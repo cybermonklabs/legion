@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -86,34 +87,27 @@ func TestAFinishedRootSettlesItsUnfinishedChildrenWhenItsLingerEnds(t *testing.T
 	}
 }
 
-// A merged root's close waits for the rest of its tree: the merge leaves the root in merging,
-// holding no slot, since merging is past the root's own review (record.KeepsSlot). No child is
-// disturbed, and the close comes once the last of them leaves — here the architect parking each.
-// That close lingers the tree and opens the root's production check, whose first look its
-// implementer reports, since the tree's close waits for an open check (the workflow's check
-// tests). Nothing is left mid-run by then, so the linger's end hands no child over. A pull
-// request opened from the root's branch while it waits is new work and leaves the merge it waits
-// on standing.
+// A merged root's close waits in verifying for the rest of its tree, holding no slot, since
+// verifying is past the root's own review (record.KeepsSlot). No child is disturbed, and the
+// close comes at the read after the last of them leaves — here the architect parking each — and
+// once the production check of the root's generation recorded its pass, which this test seeds as
+// the check Legion opens in verifying. That close lingers the tree. Nothing is left mid-run by
+// then, so the linger's end hands no child over. A pull request opened from the root's branch
+// while it waits is new work and leaves the merge it waits on standing.
 //
-// One member does not hold the close: the released child that has never started a phase. It
-// stands at admitted beneath a root in merging, which is a root the daemon has already
-// accepted, so the daemon itself holds the child there while that root stands in
-// merging (record.AcceptedAncestor) — and a child the daemon pins is left out of the set the close
-// waits on (record.OpenBeneath). Counting it would deadlock the pair: the child waits for the
-// root to leave merging and the root waits for the child to leave, and no act of a person short of
-// parking the child breaks it. This is the one recorded departure from the spec of
-// dispatch://INFRA-980, decided on dispatch://INFRA-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104.
+// The released child that has never started a phase holds the close too. A root in verifying is
+// not accepted (record.Accepted), so the daemon no longer holds the child at admitted beneath it:
+// the child is an issue beneath the root in the workflow, and the root waits for it (D10). Before
+// verifying, a root waiting in merging was accepted and left such a child out of its wait, the one
+// recorded departure from the spec of dispatch://INFRA-980.
 func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) {
 	pool, admission, engine := seedFinishingTree(t)
 	if result, err := intake.ApplyFact(context.Background(), pool, "github", "merged", intake.PullRequestMerged{Repo: "acme/widgets", Number: 1, MergeSHA: "merge-1"}, engine, admission); err != nil || result.Refusal != nil {
 		t.Fatalf("merge %s = %+v, %v", finishedRoot, result.Refusal, err)
 	}
-	if got := issue(t, pool, finishedRoot); got.Phase != phase.Merging || got.Lingers() {
-		t.Fatalf("the merged root = %#v, want it still in merging, not lingering", got)
+	if got := issue(t, pool, finishedRoot); got.Phase != phase.Verifying || got.Lingers() {
+		t.Fatalf("the merged root = %#v, want it in verifying, not lingering", got)
 	}
-	// A root that waits for its merge stands in merging, which keeps none of the cap's rows, so
-	// it holds none while it waits. Its tree runs on, which the untouched children below say.
-	assertSlots(t, pool, nil)
 	for _, key := range []string{planning, heldTesting, inRetro, awaiting, inAccepting} {
 		if got := issue(t, pool, key); got.Generation != 1 || got.Tree != finishedRoot {
 			t.Fatalf("%s after its root's merge = %#v, want it untouched in %s's tree", key, got, finishedRoot)
@@ -122,8 +116,8 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 	if result, err := intake.ApplyFact(context.Background(), pool, "github", "follow-up-opened", intake.PullRequestOpened{Repo: "acme/widgets", Number: 2, Branch: "legion/LEGION-1", HeadSHA: "follow-up", UpdatedAt: fixedNow.Add(time.Hour)}, engine, admission); err != nil || result.Refusal != nil {
 		t.Fatalf("open a follow-up pull request from %s's branch = %+v, %v", finishedRoot, result.Refusal, err)
 	}
-	if got := issue(t, pool, finishedRoot); got.Phase != phase.Merging {
-		t.Fatalf("the merged root once a follow-up pull request opened = %#v, want it still in merging", got)
+	if got := issue(t, pool, finishedRoot); got.Phase != phase.Verifying {
+		t.Fatalf("the merged root once a follow-up pull request opened = %#v, want it still in verifying", got)
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
 		pr, err := record.NewStore().PullRequest(context.Background(), tx, finishedRoot)
@@ -132,45 +126,37 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 		}
 	})
 
-	// Every member that ran but the last leaves the root waiting. The released child that has
-	// never started a phase (unstarted) is the departure above: the daemon holds it at admitted
-	// beneath this accepted root, so it does not hold the close, and parking it afterwards finds
-	// the root already done.
+	// Every member leaves the root waiting, the unstarted one among them.
 	park := func(seq int, key string) {
 		t.Helper()
 		apply(t, pool, admission, "park-"+key, intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: int64(seq) + 4, Type: "issue.updated", Status: "backlog", Title: key, Parent: finishedRoot, Rank: "B"}, engine)
 	}
-	for seq, key := range []string{planning, heldTesting, inRetro, awaiting} {
+	for seq, key := range []string{planning, heldTesting, inRetro, awaiting, inAccepting, unstarted} {
 		park(seq, key)
-		if got := issue(t, pool, finishedRoot); got.Phase != phase.Merging {
-			t.Fatalf("the root once %s was parked = %#v, want it still waiting for the rest of its tree", key, got)
+		if got := issue(t, pool, finishedRoot); got.Phase != phase.Verifying {
+			t.Fatalf("the root once %s was parked = %#v, want it still waiting in verifying", key, got)
 		}
 	}
-	if got := issue(t, pool, unstarted); got.Phase != phase.Admitted || !record.InWorkflow(got) {
-		t.Fatalf("the unstarted child while its root waits = %#v, want it still in the workflow at admitted, held there by its accepted root", got)
-	}
-	park(4, inAccepting)
-	if got := issue(t, pool, finishedRoot); got.Phase != phase.Done || !got.Lingers() {
-		t.Fatalf("the root once its last started child left = %#v, want it done and lingering, with the child it holds at admitted not counted", got)
-	}
-	assertSlots(t, pool, nil)
 	inTx(t, pool, func(tx pgx.Tx) {
-		check, err := record.NewStore().ProductionCheck(context.Background(), tx, finishedRoot)
-		if err != nil || check == nil || !check.Open() || check.Number != 1 || check.MergeSHA != "merge-1" {
-			t.Fatalf("the root's production check = %+v, %v, want it open on pull request #1 at merge-1", check, err)
+		opened := fixedNow.Truncate(time.Microsecond)
+		if err := record.NewStore().PutProductionCheck(context.Background(), tx, record.ProductionCheck{Issue: finishedRoot, Project: "LEGION", Tree: finishedRoot,
+			Repo: "acme/widgets", Number: 1, MergeSHA: "merge-1", OpenedAt: opened, BoundAt: opened.Add(time.Hour), Role: claim.RoleTester, Looks: 1,
+			ClosedAt: &opened, Outcome: record.CheckRecorded, Generation: 1}); err != nil {
+			t.Fatalf("seed the root's recorded production check: %v", err)
 		}
 	})
-	if result, err := intake.ApplyFact(context.Background(), pool, "api", "check-pass", intake.CheckReport{Issue: finishedRoot, Look: 1, Verdict: "pass", Summary: "driven"}, engine, admission); err != nil || result.Refusal != nil {
-		t.Fatalf("report %s's production check = %+v, %v", finishedRoot, result.Refusal, err)
+	if result, err := intake.ApplyFact(context.Background(), pool, "outbox", "read", intake.CloseChecksRead{Issue: finishedRoot, Generation: 1, ReadAt: fixedNow.Add(time.Second),
+		Answer: &record.CheckReadAnswer{Results: dispatch.IssueResults{Issue: finishedRoot}}}, engine, admission); err != nil || result.Refusal != nil {
+		t.Fatalf("read %s's checks = %+v, %v", finishedRoot, result.Refusal, err)
 	}
+	if got := issue(t, pool, finishedRoot); got.Phase != phase.Done || !got.Lingers() {
+		t.Fatalf("the root at the read after its last child left = %#v, want it done and lingering", got)
+	}
+	assertSlots(t, pool, nil)
 
 	expireLinger(t, pool, admission, engine)
-	// The child the exclusion kept out of the close is the child the linger hands over. It is
-	// the other half of the departure above: leaving it where it stands would leave it todo at
-	// admitted in a closed tree for ever, with nobody told. Nothing else of this tree is handed
-	// over — every member that ran was parked before the close.
-	if got := handOvers(t, pool); len(got) != 1 || got[0] != unstarted {
-		t.Fatalf("hand-overs once the linger ended = %v, want %s alone: the child this root's close left at admitted runs as a root of its own, and every member that ran was parked", got, unstarted)
+	if got := handOvers(t, pool); len(got) != 0 {
+		t.Fatalf("hand-overs once the linger ended = %v, want none: every member was parked before the close", got)
 	}
 }
 

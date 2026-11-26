@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -591,9 +592,10 @@ func TestTheOwningArchitectsBacklogThenDoneEndsAtDone(t *testing.T) {
 	}
 }
 
-// A merged issue stands in merging while an issue under it is in the workflow, and closes once the
-// last of them leaves. The owner's move of that last issue is such a departure, so the merged
-// issue above it closes on it, as on a person's move.
+// A merged issue stands in verifying while an issue under it is in the workflow, and closes at the
+// read after the last of them leaves. The owner's move of that last issue is such a departure, so
+// the merged issue above it has its checks read again and closes on that read, as on a person's
+// move.
 func TestTheOwningArchitectsMoveEndsTheWaitOfAMergedAncestor(t *testing.T) {
 	for _, status := range []string{record.DoneStatus, "backlog"} {
 		t.Run(status, func(t *testing.T) {
@@ -601,78 +603,69 @@ func TestTheOwningArchitectsMoveEndsTheWaitOfAMergedAncestor(t *testing.T) {
 				child := issues[ownerChild]
 				child.Phase, child.Status, child.DispatchStatus = phase.Merging, "retro", "retro"
 			})
-			rig.pullRequest(ownerChild, 42, record.PullRequestMerged)
+			rig.pullRequest(ownerChild, 42, record.PullRequestOpen)
+			rig.merge(ownerChild, 42)
+			if got := issue(t, rig.pool, ownerChild); got.Phase != phase.Verifying {
+				t.Fatalf("%s after its merge = phase %s, want verifying while %s runs under it", ownerChild, got.Phase, ownerGrandchild)
+			}
 			rig.write(ownerGrandchild, status, rootArchitect)
 			rig.assertLeft(ownerGrandchild, status)
+			if got := issue(t, rig.pool, ownerChild); got.Phase != phase.Verifying {
+				t.Fatalf("%s after the last issue under it left = phase %s, want verifying until the read after the leave", ownerChild, got.Phase)
+			}
+			rig.readPasses(ownerChild, 42)
 			if got := issue(t, rig.pool, ownerChild); got.Phase != phase.Done || got.Status != record.DoneStatus {
-				t.Fatalf("%s after the last issue under it left = phase %s, status %s, want it closed at done", ownerChild, got.Phase, got.Status)
+				t.Fatalf("%s at the read after the last issue under it left = phase %s, status %s, want it closed at done", ownerChild, got.Phase, got.Status)
 			}
 		})
 	}
 }
 
-// assertCheckOpened holds that the owner's done on key, which added the rows added, opened key's
-// production check on its merged pull request number: the check stands open at its first look,
-// worked by the tester. Each claim of key but the tester's closes, and the tester gets the look's
-// start. The pod stays for the look, so no pod suspension is queued, and no claim is suspended.
-func (r *ownerRig) assertCheckOpened(key string, number int, added []effect) {
+// readPasses records key's production check of its generation as recorded on its merged pull
+// request number, as Legion's check in verifying would, and applies the read of key's checks,
+// whose Verification document holds none: the close then waits for nothing the read decides.
+func (r *ownerRig) readPasses(key string, number int) {
 	r.t.Helper()
-	if got := issue(r.t, r.pool, key); got.Phase != phase.Done || got.Status != record.DoneStatus {
-		r.t.Fatalf("%s after the done = phase %s, status %s, want phase done at done", key, got.Phase, got.Status)
-	}
-	check := r.check(key)
-	if check == nil || !check.Open() || check.Looks != 1 || check.Role != claim.RoleTester || check.Number != number || check.MergeSHA != "merge-"+key {
-		r.t.Fatalf("the production check of %s = %+v, want it open at look 1 for the tester, on #%d at merge-%s", key, check, number, key)
-	}
-	added = rowsFor(added, key)
-	want := slices.DeleteFunc(slices.Clone(claim.Roles), func(role claim.Role) bool { return role == claim.RoleTester })
-	if got := rolesOf(added, "issue_close"); !reflect.DeepEqual(got, want) {
-		r.t.Fatalf("issue_close requests the done added for %s = %v, want one for each role but the tester, %v", key, got, want)
-	}
-	if got := rolesOf(added, "suspend"); len(got) != 0 {
-		r.t.Fatalf("suspend requests the done added for %s = %v, want none", key, got)
-	}
-	if suspends := payloadsOf[record.IssueSuspend](added); len(suspends) != 0 {
-		r.t.Fatalf("pod suspensions the done added for %s = %+v, want none while the check looks", key, suspends)
-	}
-	var looks []record.SuperviseRequest
-	for _, request := range payloadsOf[record.SuperviseRequest](added) {
-		if request.Op == "start" {
-			looks = append(looks, request)
+	recorded := issue(r.t, r.pool, key)
+	inTx(r.t, r.pool, func(tx pgx.Tx) {
+		opened := fixedNow.Truncate(time.Microsecond)
+		if err := record.NewStore().PutProductionCheck(context.Background(), tx, record.ProductionCheck{Issue: key, Project: "LEGION", Tree: recorded.Tree,
+			Repo: "acme/widgets", Number: number, MergeSHA: "merge-" + key, OpenedAt: opened, BoundAt: opened.Add(time.Hour), Role: claim.RoleTester, Looks: 1,
+			ClosedAt: &opened, Outcome: record.CheckRecorded, Generation: recorded.Generation}); err != nil {
+			r.t.Fatalf("seed the recorded production check of %s: %v", key, err)
 		}
-	}
-	if len(looks) != 1 || looks[0].Role != claim.RoleTester || looks[0].CheckLook != 1 || looks[0].Task == "" {
-		r.t.Fatalf("starts the done added for %s = %+v, want the tester's first look alone", key, looks)
+	})
+	if result, err := intake.ApplyFact(context.Background(), r.pool, "outbox", "read-"+key, intake.CloseChecksRead{Issue: key, Generation: recorded.Generation,
+		ReadAt: fixedNow.Add(time.Second), Answer: &record.CheckReadAnswer{Results: dispatch.IssueResults{Issue: key}}}, r.engine, r.admission); err != nil || result.Refusal != nil {
+		r.t.Fatalf("read the checks of %s: %+v, %v", key, result.Refusal, err)
 	}
 }
 
-// A done on a child whose pull request merged opens the child's production check, as the close at
-// its merge would: whether the child still runs, or the owner already took it out of the workflow
-// and the pull request merged after that move.
-func TestTheOwningArchitectsDoneOnAChildWhosePullRequestMergedOpensItsCheck(t *testing.T) {
-	t.Run("running", func(t *testing.T) {
-		rig := seedOwnerTree(t, nil)
+// The owning architect's done on a child whose pull request merged is set back, as any other
+// session's write on the tree is: such a child closes by its checks or by a person (D16, door 7).
+// The child stays in verifying, the daemon writes its status back, and the architect is told
+// close-waits.
+func TestTheOwningArchitectsDoneOnAChildWhosePullRequestMergedIsSetBack(t *testing.T) {
+	t.Run("waiting in verifying", func(t *testing.T) {
+		rig := seedOwnerTree(t, func(issues map[string]*record.Issue) {
+			child := issues[ownerChild]
+			child.Phase, child.Status, child.DispatchStatus = phase.Merging, "retro", "retro"
+			delete(issues, ownerGrandchild)
+		})
 		rig.pullRequest(ownerChild, 42, record.PullRequestOpen)
 		rig.merge(ownerChild, 42)
-		if got, check := issue(t, rig.pool, ownerChild), rig.check(ownerChild); got.Phase != phase.Implementing || check != nil {
-			t.Fatalf("%s after its merge in implementing = phase %s with check %+v, want it still in implementing and no check: this test proves nothing", ownerChild, got.Phase, check)
+		if got := issue(t, rig.pool, ownerChild); got.Phase != phase.Verifying {
+			t.Fatalf("%s after its merge = phase %s, want verifying: this test proves nothing", ownerChild, got.Phase)
 		}
-		before := effects(t, rig.pool)
 		rig.write(ownerChild, record.DoneStatus, rootArchitect)
-		rig.assertCheckOpened(ownerChild, 42, effects(t, rig.pool)[len(before):])
-	})
-	t.Run("already out of the workflow", func(t *testing.T) {
-		rig := seedOwnerTree(t, nil)
-		rig.pullRequest(ownerChild, 42, record.PullRequestOpen)
-		rig.write(ownerChild, "backlog", rootArchitect)
-		rig.assertLeft(ownerChild, "backlog")
-		rig.merge(ownerChild, 42)
-		if got, check := issue(t, rig.pool, ownerChild), rig.check(ownerChild); got.Phase != phase.Done || got.Status != "backlog" || check != nil {
-			t.Fatalf("%s after its merge at backlog = phase %s, status %s, check %+v, want it at backlog with no check", ownerChild, got.Phase, got.Status, check)
+		if got := issue(t, rig.pool, ownerChild); got.Phase != phase.Verifying || got.Status != "testing" {
+			t.Fatalf("%s after its owner's done = phase %s, status %s, want it kept in verifying at testing", ownerChild, got.Phase, got.Status)
 		}
-		before := effects(t, rig.pool)
-		rig.write(ownerChild, record.DoneStatus, rootArchitect)
-		rig.assertCheckOpened(ownerChild, 42, effects(t, rig.pool)[len(before):])
+		var setBack int
+		if err := rig.pool.QueryRow(context.Background(), `select count(*) from outbox where kind = 'dispatch_status' and issue = $1
+			and payload->>'status' = 'testing' and payload->>'observedStatus' = 'done'`, ownerChild).Scan(&setBack); err != nil || setBack != 1 {
+			t.Fatalf("the set-back writes of %s = %d, %v; want one writing testing over the done", ownerChild, setBack, err)
+		}
 	})
 }
 

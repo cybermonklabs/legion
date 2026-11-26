@@ -591,8 +591,8 @@ func TestAcceptingAndAMergeGitHubMadeGetAStart(t *testing.T) {
 		if end.ID != start.ID || end.Agent != "" || end.StartedAt == nil || !end.StartedAt.Equal(*start.StartedAt) {
 			t.Fatalf("the merge's end = %+v, want the start's id %s, no agent and the start's moment %v", end, start.ID, start.StartedAt)
 		}
-		if got := issueAt(t, pool, "LEGION-208"); got != phase.Done {
-			t.Fatalf("LEGION-208 stands at %s, want done", got)
+		if got := issueAt(t, pool, "LEGION-208"); got != phase.Verifying {
+			t.Fatalf("LEGION-208 stands at %s, want verifying: its close waits for its checks", got)
 		}
 	})
 }
@@ -719,8 +719,9 @@ func TestAnIssueRunningAtTheUpgradeEndsWithOneRecord(t *testing.T) {
 // the entry its merger still holds is an earlier visit's, raised before that completion: that
 // merge ends with no agent and no start. One whose merger this visit started ends under that
 // merger, at its entry, which the move into merging raised (enter) after that completion, or at
-// its very moment where the clock gave the two one reading. Each merge waits on a child, whose
-// departure closes the root.
+// its very moment where the clock gave the two one reading. The release before left each root
+// waiting in merging on a child, and the boot's sweep takes the merge (sweepMerged): the root
+// waits in verifying, and the move ends the merge.
 func TestAnUpgradedMergeNamesOnlyAMergerOfItsOwnVisit(t *testing.T) {
 	t.Parallel()
 	retroCompleted := stepClock.Add(-2 * time.Hour)
@@ -742,10 +743,9 @@ func TestAnUpgradedMergeNamesOnlyAMergerOfItsOwnVisit(t *testing.T) {
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Entry: 5, EntryRaisedAt: retroCompleted.Add(-time.Hour),
 				CompletedAt: retroCompleted})
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Entry: 2, EntryRaisedAt: tc.entry})
-			applyFacts(t, pool, stepEngine(nil))("child-done", intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "sjawhar/legion", Seq: 2,
-				Type: "issue.updated", Status: "done", Title: "LEGION-209", Parent: "LEGION-208", Rank: "V"})
-			if got := issueAt(t, pool, "LEGION-208"); got != phase.Done {
-				t.Fatalf("LEGION-208 stands at %s once its last child left, want done", got)
+			applyFacts(t, pool, stepEngine(nil))("boot", intake.DaemonBooted{Boot: 1})
+			if got := issueAt(t, pool, "LEGION-208"); got != phase.Verifying {
+				t.Fatalf("LEGION-208 stands at %s after the boot took its merge, want verifying", got)
 			}
 			writes := stepWrites(t, pool, "LEGION-208")
 			if len(writes) != 1 || writes[0].ID != StepID("LEGION-208", 1, placeOf("merge", 0), 0) {
