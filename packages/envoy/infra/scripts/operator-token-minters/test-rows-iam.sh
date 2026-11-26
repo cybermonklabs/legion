@@ -57,6 +57,8 @@
 #   (ch) GKE's service agent of a project number the check does not read (999999999999) holding
 #        roles/container.admin exits 1 naming the number; that of a fleet member's project
 #        (example-grade, 222222222222) holding it there exits 0;
+#   (gp) a Policy Analyzer group path expanded to a service account is still a finding naming that
+#        account; a stub that drops expanded members misses it.
 #   (dm) Deployment Manager acts as the project's Google APIs service agent, which holds roles/editor:
 #        an agent's Google service account holding roles/deploymentmanager.editor on the project
 #        exits 1 naming it and the route, and a copy of the check without the step exits 0 in that
@@ -499,4 +501,19 @@ dm_row() {
 if row dm; then
   each dm_row holder control misspelt unread
   passed "(dm) an agent's Google service account that may make or change a Deployment Manager deployment exits 1 naming it and the route, which a copy without the step misses; a misspelt name and a refused analysis read UNKNOWN"
+fi
+
+# --- (gp) An expanded group member that is a service account is still a finding. ---
+if row gp; then
+  base_world
+  jq -n --arg member "serviceAccount:$worker_gsa" '{"group:cluster-admins@example.com": [$member]}' >"$world/groups.json"
+  run
+  want_status 1 "a service account expanded from a group"
+  want_text "FINDING serviceAccount:$worker_gsa:" "a service account expanded from a group"
+
+  OPERATOR_MINTERS_GROUP_STUB=drop run
+  want_status 1 "a stub that drops expanded group members"
+  ! has_prefix "FINDING serviceAccount:$worker_gsa:" ||
+    fail "the group-members stub still named the expanded service account"
+  passed "(gp) a service account expanded from a group is a finding, which the stub control misses"
 fi

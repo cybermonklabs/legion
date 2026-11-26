@@ -507,6 +507,7 @@ usage: operator-token-minters.sh [flags]
   --signing-secret NAME      the Secret Manager secret of the writer hold's signing key
   --secret NAME              the broker secret of the operator's credential (default ENVOY_OPERATOR)
   --rbac-render FILE         a JSON render of the cluster's RBAC program; repeatable
+  --secret-render FILE       a Kubernetes-object JSON render of a Secret program; repeatable
   --iam-preview FILE         `pulumi preview --json --show-sames` of an IAM program; repeatable
   --analysis-scope organizations/N|folders/N|projects/ID
                              Policy Analyzer's scope (default: the project's top ancestor)
@@ -538,7 +539,7 @@ for ((arg = 1; arg <= $#; arg++)); do
 done
 PROJECT="" CLUSTER="" LOCATION="" POOL_PROJECT="" NAMESPACE=envoy-operator KSA=envoy-operator GSA="" BROKER="" BROKER_WORKLOAD=""
 SQL_INSTANCE="" DB_SECRET="" BROKER_STATE="" SIGNING_SECRET="" SECRET=ENVOY_OPERATOR ANALYSIS_SCOPE="" REPORT="" FLEET=""
-AGENT_NAMESPACES=() RBAC_RENDERS=() IAM_PREVIEWS=() CREDENTIALS_ARGS=() GUARDED_FLAGS=() RBAC_ONLY_MEMBERS=() SERVICE_AGENTS=()
+AGENT_NAMESPACES=() RBAC_RENDERS=() SECRET_RENDERS=() IAM_PREVIEWS=() CREDENTIALS_ARGS=() GUARDED_FLAGS=() RBAC_ONLY_MEMBERS=() SERVICE_AGENTS=()
 # A usage error names the flag, or an argument's place, and never the text given: a value pasted in
 # the wrong place may be a credential. Each flag that names a thing is held to that thing's form
 # below, before any step runs, and refuses a value shaped as a credential its issuer marks
@@ -557,7 +558,7 @@ while [ "$#" -gt 0 ]; do
   case "$flag" in
     --project | --cluster | --location | --pool-project | --namespace | --service-account | --gsa | --agent-namespace | --broker-account | \
       --broker-workload | --sql-instance | --db-secret | --broker-state | --signing-secret | --secret | \
-      --rbac-render | --iam-preview | --analysis-scope | --credentials-arg | --report | --guarded | --fleet | --rbac-only-member | \
+      --rbac-render | --secret-render | --iam-preview | --analysis-scope | --credentials-arg | --report | --guarded | --fleet | --rbac-only-member | \
       --service-agent)
       [ "$#" -gt 0 ] || usage_error "$flag needs a value"
       value="$1"
@@ -587,6 +588,7 @@ while [ "$#" -gt 0 ]; do
     --signing-secret) SIGNING_SECRET="$value" ;;
     --secret) SECRET="$value" ;;
     --rbac-render) RBAC_RENDERS+=("$value") ;;
+    --secret-render) SECRET_RENDERS+=("$value") ;;
     --iam-preview) IAM_PREVIEWS+=("$value") ;;
     --analysis-scope) ANALYSIS_SCOPE="$value" ;;
     --credentials-arg) CREDENTIALS_ARGS+=("$value") ;;
@@ -703,7 +705,7 @@ LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/operator-token-minters"
 # Every part and jq file must be readable before any is sourced: a missing one would stop the run
 # before output.sh defines its report, or leave a step that needs it unread.
 missing=""
-for part in output.sh rights.sh principals.sh checks.sh step-permission-names.sh step-code-rbac.sh step-code-iam.sh \
+for part in output.sh rights.sh principals.sh checks.sh step-permission-names.sh step-code-secrets.sh step-code-rbac.sh step-code-iam.sh \
   step-clusters.sh reviews.sh admission-backends.sh broker-fence.sh step-rbac.sh iam-analysis.sh step-gke-iam.sh \
   step-workload-identity.sh step-live-iam.sh step-admin-tag.sh analysis.jq become-rights.jq broker-fence.jq broker-fence.json \
   code-iam.jq code-rbac.jq custom.jq custom-rights.jq fleet.jq guard-rights.jq binding-rights.jq rec.jq review-answer.jq \
@@ -737,6 +739,8 @@ fi
 . "$LIB/broker-fence.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-permission-names.sh
 . "$LIB/step-permission-names.sh"
+# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-code-secrets.sh
+. "$LIB/step-code-secrets.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-code-rbac.sh
 . "$LIB/step-code-rbac.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-code-iam.sh

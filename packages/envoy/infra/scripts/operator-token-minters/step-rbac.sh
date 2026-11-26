@@ -23,7 +23,7 @@ else
   # Every guarded pair's rights and the other clusters' guard rights, each right once: where both
   # list one, the full list's label stays; and the custom resources' and the admission resources'
   # rights, from this cluster's discovery.
-  rights="$(with_rights "$(rights_json db)" "$GUARD_RIGHTS")"
+  rights="$(with_rights "$(with_rights "$(rights_json db)" "$SECRET_RIGHTS")" "$GUARD_RIGHTS")"
   custom_rights "$KUBE" plain || unknown "$step" "$CUSTOM_ERROR"
   rights="$(with_rights "$rights" "$CUSTOM_RIGHTS")"
   admission_rights "$KUBE" || unknown "$step" "$ADMISSION_ERROR"
@@ -32,59 +32,9 @@ else
   # admission policies' parameters (admission-backends.sh).
   admission_power "$KUBE" "$step" operator
   rights="$(with_rights "$rights" "$POWER_RIGHTS")"
-  # Each token Secret of a guarded namespace, by name: a review that names no Secret is refused for
-  # a get limited to the name, and a Secret of type kubernetes.io/service-account-token holds its
-  # ServiceAccount's token. Those a guarded pair's ServiceAccount lists (its `secrets`), and every
-  # one the namespace's list of that type holds, whichever ServiceAccount it names; a refused list
-  # is UNKNOWN. The list asks for the Table form first, whose rows carry no Secret's data: kubectl
-  # asks the API server for the server-side Table form for its default output alone (Accept:
-  # application/json;as=Table;v=v1;g=meta.k8s.io, then the same for v1beta1, then plain
-  # application/json), whose rows carry each Secret's name,
-  # type, number of data keys and age, and beside them the Secret's metadata alone: kubectl sends no
-  # includeObject, and the API server then puts each object's PartialObjectMetadata in its row
-  # (k8s.io/apiserver's endpoints/handlers/response.go, asTable). With -o name, -o jsonpath or -o
-  # json, kubectl asks for plain JSON and gets the Secrets whole, data included, and picks the names
-  # out itself (kubectl's get.go, transformRequests), and get --raw sends no Accept header that
-  # could ask for a PartialObjectMetadataList; both read with kubectl 1.36.4 against a server that
-  # records each request's Accept header. So the list is that default output, and the names are its
-  # first column under its header. Two cases still bring a token into kubectl's memory, though
-  # kubectl prints and writes none of it:
-  #   - Each row's metadata is the Secret's whole metadata. A token Secret made by `kubectl apply`
-  #     from a manifest that held its token carries that token in its
-  #     kubectl.kubernetes.io/last-applied-configuration annotation.
-  #   - The Accept header ends with plain application/json, so a server or proxy that cannot make
-  #     the Table answers with the Secrets whole, data included; kube-apiserver makes the Table for
-  #     core Secrets. kubectl then prints its own columns, NAME and AGE alone (read with kubectl
-  #     1.36.4 against a server that answers plain JSON whatever the Accept header asks), so a list
-  #     whose header is not NAME TYPE DATA AGE is UNKNOWN, and the run never passes on it.
-  # An empty list passes the header check: kubectl prints "No resources found in <namespace>
-  # namespace." to stderr alone (kubectl's get.go), so the list's file is empty and holds no name.
-  : >"$WORK/token-secrets.tsv"
-  jq -r '.items[] | select(("\(.metadata.namespace)/\(.metadata.name)") as $p | any($ARGS.positional[]; . == $p))
-    | .metadata.namespace as $ns | (.secrets // [])[] | [$ns, .name] | @tsv' "$WORK/serviceaccounts.json" --args "${GUARDED[@]}" >>"$WORK/token-secrets.tsv"
-  for guarded_ns in $(printf '%s\n' "${GUARDED[@]%%/*}" | sort -u); do
-    if ! kubectl --kubeconfig "$KUBE" get secrets -n "$guarded_ns" --field-selector type=kubernetes.io/service-account-token \
-      --server-print=true >"$WORK/token-secret-rows.txt" 2>"$WORK/token-secrets.err"; then
-      unknown "$step" "the API server refused the list of token Secrets in $guarded_ns (it needs list on secrets there, container.secrets.list on GKE), so a token Secret no ServiceAccount lists is not asked by name: $(first_line "$WORK/token-secrets.err")"
-    elif [ -s "$WORK/token-secret-rows.txt" ] &&
-      ! awk 'NR == 1 { exit !(NF == 4 && $1 == "NAME" && $2 == "TYPE" && $3 == "DATA" && $4 == "AGE") }' "$WORK/token-secret-rows.txt"; then
-      unknown "$step" "the API server's list of token Secrets in $guarded_ns came without the Table's columns NAME TYPE DATA AGE, so it was not the Table form: a server that cannot make the Table sends the Secrets whole, data included, which kubectl read though it printed none"
-    elif ! awk 'NR > 1 { print $1 }' "$WORK/token-secret-rows.txt" >"$WORK/token-secret-names.txt" ||
-      grep -qvE '^([a-z0-9]([-.a-z0-9]*[a-z0-9])?)?$' "$WORK/token-secret-names.txt"; then
-      unknown "$step" "the API server's list of token Secrets in $guarded_ns holds a row whose first column is no Kubernetes name"
-    else
-      while IFS= read -r secret_name; do
-        [ -z "$secret_name" ] || printf '%s\t%s\n' "$guarded_ns" "$secret_name" >>"$WORK/token-secrets.tsv"
-      done <"$WORK/token-secret-names.txt"
-    fi
-  done
-  rights="$(with_rights "$rights" "$(jq -R -s -c '[split("\n")[] | select(length > 0) | split("\t") | {ns: .[0], n: .[1]}] | unique[]
-      | {verb: "get", group: "", resource: "secrets", sub: "", ns: .ns, name: .n, label: "get secrets \(.n) in \(.ns)"}
-      | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}' "$WORK/token-secrets.tsv" | jq -s -c .)")"
-  # The broker's pod fence (broker-fence.sh), read once the admission discovery, the webhooks'
-  # backends and the guarded namespaces' token Secrets are: while it is credited (FENCE_CREDITED),
-  # this cluster's reviews judge what it refuses as credits, and who can delete it is asked beside
-  # who can write it.
+  # The broker's pod fence (broker-fence.sh) is read once the admission discovery and webhook
+  # backends are: while it is credited (FENCE_CREDITED), this cluster's reviews judge what it
+  # refuses as credits, and who can delete it is asked beside who can write it.
   fence_live "$KUBE" "$step"
   [ -z "$FENCE_CREDITED" ] || rights="$(with_rights "$rights" "$FENCE_WRITE_RIGHTS")"
   jq -r "$JQ_REC"'.items[] | [.metadata.namespace, .metadata.name, (.metadata.annotations["iam.gke.io/gcp-service-account"] // "")] | rec' \

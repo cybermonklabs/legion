@@ -4841,6 +4841,36 @@ its path.
 `scripts/operator-token-minters.test.sh` runs every plant and control against a fake `kubectl`,
 `gcloud`, `curl` and `agent-secrets`.
 
+### Minter-auditor render inputs
+
+The auditor receives the following objects as immutable render files.
+Each is UTF-8 JSON and is passed unmodified to the named flag.
+
+- `rbac/cluster-grants` is one or more Kubernetes objects.
+  It may be one `List` object, one JSON array of objects, or a stream of JSON objects.
+  The auditor passes it with `--rbac-render`.
+
+- `secrets/dispatch` and `secrets/broker` use the same Kubernetes-object shape and are each passed
+  with `--secret-render`.
+  The auditor reads only objects whose `kind` is `Secret`, and only their
+  `metadata.namespace`, `metadata.name`, `type`, and
+  `metadata.annotations["kubernetes.io/service-account.name"]`.
+  It never reads `data` or `stringData`.
+  A valid render with no Secret objects declares none.
+
+- `iam/bootstrap` and `iam/root` are each one JSON object printed by
+  `pulumi preview --json --show-sames`.
+  The object must have the `steps` and `changeSummary` fields that command writes.
+  The auditor passes each file with `--iam-preview`.
+
+The image entrypoint takes no argument.
+It fetches these five render objects before running the check.
+It builds an authenticated gcloud context for each audited cluster with
+`gcloud container clusters get-credentials` and the gke-gcloud-auth-plugin.
+It uses the pod's Workload Identity credential for all four contexts, including the local cluster,
+because the read ClusterRoles bind the auditor's Google service account rather than the pod token.
+If it cannot build a context, the report is `UNKNOWN` and names that cluster.
+
 A plugin release builds the sets from Envoy's names at its own commit, so a listener built from a
 later commit that publishes or subscribes to a subject those names lacked needs a hub rendered by
 a later release.

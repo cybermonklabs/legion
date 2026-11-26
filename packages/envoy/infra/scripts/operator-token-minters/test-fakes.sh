@@ -143,6 +143,7 @@ case "${words[*]}" in
       --arg project "$project" --arg number "$number" \
       --arg org_res "//cloudresourcemanager.googleapis.com/organizations/100" \
       --arg expand_groups "${flag[expand-groups]:-}${flag[output-group-edges]:-}" --arg expand_roles "${flag[expand-roles]:-}" \
+      --arg group_stub "${OPERATOR_MINTERS_GROUP_STUB:-}" \
       --arg impersonation "${flag[analyze-service-account-impersonation]:-}" \
       --arg explored "$([ -e "$world/not-explored" ] && echo false || echo true)" \
       --arg empty "$([ -e "$world/empty-analysis" ] && echo true || echo false)" \
@@ -164,7 +165,7 @@ case "${words[*]}" in
                   resources: [{fullResourceName: $res}],
                   accesses: (if $expand_roles == "true" then [$held[] | {permission: .}] else [{role: $b.role}] end)
                 }],
-                identityList: (if $expand_groups == "truetrue"
+                identityList: (if $expand_groups == "truetrue" and $group_stub != "drop"
                   then {identities: ([$b.members[], $edges[].targetNode] | unique | map({name: .})), groupEdges: $edges}
                   else {identities: ($b.members | map({name: .}))} end),
                 fullyExplored: true
@@ -207,6 +208,48 @@ done
 read -r _ cluster <"$kubeconfig"
 dir="$world/clusters/$cluster"
 [ -d "$dir" ] || { echo "fake kubectl: no cluster $cluster" >&2; exit 2; }
+record_read() {
+  local step verb group resource url=""
+  emit() {
+    printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "${5:-}" >>"$world/kubectl-calls.tsv"
+  }
+  case "${args[*]}" in
+    "create -f - -o json") emit reviews.sh create authorization.k8s.io subjectaccessreviews ;;
+    "get serviceaccounts --all-namespaces -o json")
+      if [ "$cluster" = operator-cluster ]; then step=step-rbac.sh; else step=step-workload-identity.sh; fi
+      emit "$step" list "" serviceaccounts
+      ;;
+    "get clusterrolebindings,rolebindings --all-namespaces -o json")
+      emit reviews.sh list rbac.authorization.k8s.io clusterrolebindings
+      emit reviews.sh list rbac.authorization.k8s.io rolebindings
+      ;;
+    "get roles,clusterroles --all-namespaces -o json")
+      emit reviews.sh list rbac.authorization.k8s.io roles
+      emit reviews.sh list rbac.authorization.k8s.io clusterroles
+      ;;
+    "get namespace "*" -o name") emit step-workload-identity.sh get "" namespaces ;;
+    "get pods -n "*" -o json") emit broker-fence.sh list "" pods ;;
+    "get service -n "*"-o json") emit admission-backends.sh get "" services ;;
+    "get mutatingwebhookconfigurations,validatingwebhookconfigurations -o json")
+      emit admission-backends.sh list admissionregistration.k8s.io mutatingwebhookconfigurations
+      emit admission-backends.sh list admissionregistration.k8s.io validatingwebhookconfigurations
+      ;;
+    "get customresourcedefinitions -o json") emit admission-backends.sh list apiextensions.k8s.io customresourcedefinitions ;;
+    "get workloadallowlists.auto.gke.io -o json") emit admission-backends.sh list auto.gke.io workloadallowlists ;;
+    "get validatingadmissionpolicies.admissionregistration.k8s.io,validatingadmissionpolicybindings.admissionregistration.k8s.io -o json")
+      emit broker-fence.sh list admissionregistration.k8s.io validatingadmissionpolicies
+      emit broker-fence.sh list admissionregistration.k8s.io validatingadmissionpolicybindings
+      ;;
+    "get --raw /metrics") emit reviews.sh get "" "" /metrics ;;
+    "get --raw "*) emit admission-backends.sh get "" "" "${args[2]}" ;;
+    "api-resources --namespaced=true --verbs=create -o name" | "api-resources --namespaced=false -o name" | "api-resources --api-group=admissionregistration.k8s.io -o name")
+      emit reviews.sh get "" "" /api
+      emit reviews.sh get "" "" /apis
+      emit reviews.sh get "" "" /apis/*
+      ;;
+  esac
+}
+record_read
 forbidden() {
   echo "Error from server (Forbidden): $1 is forbidden: User \"reader@example-project.iam.gserviceaccount.com\" cannot $2 at the cluster scope: requires one of [\"$3\"] permission(s)." >&2
   exit 1

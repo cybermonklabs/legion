@@ -20,6 +20,8 @@
 #        name, is a finding naming that namespace (the live steps' binding rights, read in code);
 #   (bw) a render's rule limited by resourceNames on update of a mutating webhook configuration, or
 #        on patch of a Deployment in secrets-broker, is a finding naming the names;
+#   (se) a Secret render carries no printed Secret value, malformed JSON reads UNKNOWN, and a valid
+#        render with no Secret objects is accepted;
 #   (ca) a render's create namespaces, create of a mutating webhook configuration, and the
 #        certificate chain (create, patch of the approval, approve of the client signer by name)
 #        are each a finding, the chain as one, and create of requests alone is none.
@@ -219,4 +221,29 @@ if row ca; then
   ! has_prefix "FINDING system:serviceaccount:legion:worker: create certificatesigningrequests.certificates.k8s.io" ||
     fail "a render's create certificatesigningrequests is reported alone"
   passed "(ca) a render's guard right, admission right and certificate chain are each a finding, the chain as one"
+fi
+
+# --- (se) The Secret render is a Kubernetes-object render that does not expose Secret values. ---
+if row se; then
+  base_world
+  jq -n --arg canary "SECRET-RENDER-DATA-CANARY" '{apiVersion: "v1", kind: "List", items: [
+    {apiVersion: "v1", kind: "Secret",
+     metadata: {namespace: "envoy-operator", name: "envoy-operator-token",
+                annotations: {"kubernetes.io/service-account.name": "envoy-operator"}},
+     type: "kubernetes.io/service-account-token", data: {token: $canary}, stringData: {token: $canary}}
+  ]}' >"$world/secret-render.json"
+  run
+  want_status 0 "a Secret render that carries Secret data"
+  ! has_prefix "SECRET-RENDER-DATA-CANARY" || fail "the Secret render's data was printed"
+
+  printf 'not JSON\n' >"$world/secret-render.json"
+  run
+  want_status 2 "a malformed Secret render"
+  want_text "UNKNOWN code: Secrets: --secret-render entry 1 is not a Kubernetes-object JSON render" \
+    "a malformed Secret render"
+
+  jq -n '{apiVersion: "v1", kind: "List", items: []}' >"$world/secret-render.json"
+  run
+  want_status 0 "a valid Secret render with no Secret objects"
+  passed "(se) a Secret render supplies no Secret value, rejects malformed JSON and accepts no Secret objects"
 fi

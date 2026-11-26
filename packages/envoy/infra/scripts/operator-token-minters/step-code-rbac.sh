@@ -33,7 +33,7 @@ else
     else
       binding_built=false
     fi
-    code_rights="$(with_rights "$(with_rights "$(with_rights "$(rights_json db)" "$GUARD_RIGHTS")" "$ADMISSION_CODE_RIGHTS")" "$code_binding")"
+    code_rights="$(with_rights "$(with_rights "$(with_rights "$(with_rights "$(rights_json db)" "$SECRET_RIGHTS")" "$GUARD_RIGHTS")" "$ADMISSION_CODE_RIGHTS")" "$code_binding")"
     [ -z "$FENCE_DECLARED" ] || code_rights="$(with_rights "$code_rights" "$FENCE_WRITE_RIGHTS")"
     csr_reset
     # jq reads the renders from its stdin, so an error it prints names no file, and the rights from a

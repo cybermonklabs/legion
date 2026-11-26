@@ -41,16 +41,14 @@
 #        flag's form, or as a file flag's file is printed in neither stdout, stderr nor --report: a
 #        flag that names a thing refuses a value of another form, naming the flag and never its
 #        text, and a file flag's file is named by the flag and its place;
-#   (cp) the list of a guarded namespace's token Secrets is asked in the API server's Table form,
-#        whose response carries no data field, so no Secret's data reaches the box, the run's work
-#        directory or its output;
+#   (cp) the auditor never asks the API server for a Secret, even when a guarded namespace holds
+#        token Secrets that carry data.
+#   (rd) every fake kubectl call is in reads.json with its Kubernetes verb, resource or non-resource
+#        URL and source step; removing get namespaces makes the workload-identity row fail.
 #   (cq) a credential of a name flag's form shaped as a credential its issuer marks (a ghp_ token,
 #        a github_pat_ token, an AIza key and a Slack token as --signing-secret, an AWS access key
 #        ID as --secret) is refused too, naming the flag and never the value, and is printed in
 #        neither stdout, stderr nor --report;
-#   (cr) a list of a guarded namespace's token Secrets that kubectl prints without the Table's
-#        columns, as it does when a server or proxy that cannot make the Table answers with the
-#        Secrets whole, reads UNKNOWN for that namespace, and the RBAC step does not pass;
 #   (cs) a cluster whose principals and rights are each more than one argument of a command line
 #        holds is reviewed whole: they reach jq through files and its stdin, never its arguments;
 #   (cv) a part that builds the custom resources' rights or the binding namespaces' rights and
@@ -430,44 +428,38 @@ if row co; then
   passed "(co) a text pasted alone, as a name flag's value of another form or as a file flag's file is printed in neither stdout, stderr nor --report"
 fi
 
-# printed_secret_data: whether the run printed a token Secret's data, as the world holds it
-# (SECRET-DATA-CANARY-7f3a) or as the API server sends it, base64 (test-fakes.sh's secret_data_b64).
 printed_secret_data() { has_prefix "SECRET-DATA-CANARY-7f3a" || has_prefix "$(printf '%s' SECRET-DATA-CANARY-7f3a | base64)"; }
 
-# --- (cp) The token Secrets are listed in the Table form: the API server's response to each list
-# carries no data field, and no Secret's data is written to the work directory or printed. The fake
-# kubectl holds each Secret's data, as a real API server does, answers each list with what the API
-# server sends kubectl for it (the Table for the default output; the Secrets whole, data included,
-# for -o json, -o name and -o jsonpath), records each response, and on each later call looks for
-# that data under the run's work directory; this row runs in a temporary directory of its own, so
-# that look sees this run's work directory alone. ---
-if row cp; then
+ # --- (cp) The auditor never asks the API server for a Secret. ---
+ if row cp; then
+   base_world
+   jq -n '[{namespace: "envoy-operator", name: "envoy-operator-token-legacy"}, {namespace: "secrets-broker", name: "secrets-broker-token-legacy"}]' \
+     >"$world/clusters/operator-cluster/token-secrets.json"
+   : >"$world/clusters/operator-cluster/token-secret-data"
+   run
+   want_status 0 "an auditor that does not read Secrets"
+   [ ! -e "$world/clusters/operator-cluster/token-secret-responses" ] ||
+     fail "the auditor asked the API server for token Secrets"
+   [ ! -e "$world/clusters/operator-cluster/secret-data-asked" ] ||
+     fail "the auditor asked the API server for token Secrets whole"
+   ! printed_secret_data || fail "the auditor printed a token Secret's data"
+   passed "(cp) token Secrets present on the API server are never read"
+ fi
+
+# --- (rd) The recorded Kubernetes reads are the declared least privilege. ---
+if row rd; then
   base_world
-  # One in each guarded namespace: the shell empties a redirect's file before kubectl runs, so the
-  # list's file in the work directory holds the last namespace's Secrets when later calls look.
-  jq -n '[{namespace: "envoy-operator", name: "envoy-operator-token-legacy"}, {namespace: "secrets-broker", name: "secrets-broker-token-legacy"}]' \
-    >"$world/clusters/operator-cluster/token-secrets.json"
-  : >"$world/clusters/operator-cluster/token-secret-data"
-  own_tmp="$temporary_dir/cp-tmp"
-  mkdir -p "$own_tmp"
-  mapfile -t cp_args < <(full_args)
-  status=0
-  output="$(env PATH="$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$own_tmp" bash "$check" "${cp_args[@]}" 2>&1)" || status=$?
-  cp_failures=""
-  responses="$world/clusters/operator-cluster/token-secret-responses"
-  # One list for each guarded namespace, envoy-operator's and secrets-broker's: a row that read no
-  # response would pass with nothing seen.
-  listed="$(if [ -e "$responses" ]; then wc -l <"$responses"; else echo 0; fi)"
-  [ "$listed" -eq 2 ] || cp_failures+="the API server answered $listed lists of token Secrets, not one for each of the 2 guarded namespaces "
-  data_paths="$(if [ -e "$responses" ]; then jq -r 'paths | select(.[-1] == "data") | map(tostring) | join(".")' "$responses" | sort -u | paste -sd ' '; fi)"
-  [ -z "$data_paths" ] || cp_failures+="the API server's response to the list of token Secrets carried a data field: $data_paths "
-  [ ! -e "$world/clusters/operator-cluster/secret-data-asked" ] ||
-    cp_failures+="the check asked the API server for token Secrets whole, data included: $(tr '\n' ';' <"$world/clusters/operator-cluster/secret-data-asked") "
-  [ ! -e "$world/clusters/operator-cluster/secret-data-in-work" ] ||
-    cp_failures+="a token Secret's data was in the run's work directory: $(sort -u "$world/clusters/operator-cluster/secret-data-in-work" | sed "s|^$own_tmp/||" | tr '\n' ' ') "
-  ! printed_secret_data || cp_failures+="the check printed a token Secret's data "
-  [ -z "$cp_failures" ] || fail "$cp_failures"
-  passed "(cp) the token Secrets of a guarded namespace are listed in the Table form: no response carries a data field, and no Secret's data is kept in the work directory or printed"
+  add_cluster other-cluster us-east1
+  OPERATOR_MINTERS_VERIFY_READS=true run
+  want_status 0 "every recorded Kubernetes read is declared"
+
+  jq 'del(.[] | select(.step == "step-workload-identity.sh" and .verb == "get" and .apiGroup == "" and .resource == "namespaces"))' \
+    "$reads" >"$temporary_dir/reads-without-namespaces.json"
+  OPERATOR_MINTERS_VERIFY_READS=true OPERATOR_MINTERS_READS="$temporary_dir/reads-without-namespaces.json" run
+  want_status 1 "a read removed from the manifest"
+  want_text "FAIL: recorded kubectl get namespaces is absent from reads.json for step-workload-identity.sh" \
+    "a missing get namespaces declaration"
+  passed "(rd) each fake kubectl call is declared, and dropping get namespaces fails the workload-identity row"
 fi
 
 # --- (cq) A credential of a name flag's form is refused too when it is shaped as a credential its
@@ -482,32 +474,6 @@ if row cq; then
   passed "(cq) a credential of a name flag's form, shaped as a credential its issuer marks, is refused, naming the flag, and printed in neither stdout, stderr nor --report"
 fi
 
-# --- (cr) The token Secrets' list answered without the Table: the world's API server answers as a
-# server or proxy that cannot make the Table does, with the Secrets whole, data included, and the
-# fake kubectl prints them under NAME and AGE alone, as kubectl 1.36.4 does. Each guarded
-# namespace's list reads UNKNOWN, naming the namespace, the run exits 2, and the RBAC step does not
-# pass. Run by hand, the control is step-rbac.sh's list as it was before this row, with
-# --no-headers and no header check, keeping the first column whatever the columns are: the RBAC
-# step passes, the run exits 0, and the row fails naming that exit. ---
-if row cr; then
-  base_world
-  jq -n '[{namespace: "envoy-operator", name: "envoy-operator-token-legacy"}, {namespace: "secrets-broker", name: "secrets-broker-token-legacy"}]' \
-    >"$world/clusters/operator-cluster/token-secrets.json"
-  : >"$world/clusters/operator-cluster/token-secrets-no-table"
-  # The Secrets hold their data, so the server's answer carries it, as the comment above says.
-  : >"$world/clusters/operator-cluster/token-secret-data"
-  run
-  for ns in envoy-operator secrets-broker; do
-    want_rbac_unknown "the API server's list of token Secrets in $ns came without the Table's columns NAME TYPE DATA AGE, so it was not the Table form: a server that cannot make the Table sends the Secrets whole, data included, which kubectl read though it printed none" \
-      "the list of $ns's token Secrets answered without the Table"
-  done
-  responses="$world/clusters/operator-cluster/token-secret-responses"
-  if [ ! -e "$responses" ] || ! jq -e -s 'any(.[].items[]?; has("data"))' "$responses" >/dev/null; then
-    fail "the world's server sent no token Secret's data, so the row does not hold the case its comment names"
-  fi
-  ! printed_secret_data || fail "the check printed a token Secret's data"
-  passed "(cr) a list of token Secrets that kubectl prints without the Table's columns reads UNKNOWN for its namespace, and the RBAC step does not pass"
-fi
 
 # --- (cs) A cluster whose principals and rights are each more than one argument of a command line
 # holds. Linux refuses an exec whose one argument is longer than MAX_ARG_STRLEN, 128 KiB, which the

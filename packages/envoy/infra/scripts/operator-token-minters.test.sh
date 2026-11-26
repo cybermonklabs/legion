@@ -91,6 +91,7 @@ readonly relay=relay@example-project.iam.gserviceaccount.com
 readonly relay_res="//iam.googleapis.com/projects/example-project/serviceAccounts/relay@example-project.iam.gserviceaccount.com"
 readonly route_pair=envoy-route/envoy-route-password-reader
 readonly fixture="${OPERATOR_MINTERS_FIXTURE:-$script_dir/testdata/operator-token-minters-report.json}"
+readonly reads="$script_dir/operator-token-minters/reads.json"
 readonly wi_member="serviceAccount:example-project.svc.id.goog[envoy-operator/envoy-operator]"
 readonly control_wi_member="serviceAccount:example-project.svc.id.goog[envoy-operator-control/envoy-operator]"
 readonly broker_wi_member="serviceAccount:example-project.svc.id.goog[secrets-broker/secrets-broker]"
@@ -428,6 +429,7 @@ build_world() {
     {apiVersion: "rbac.authorization.k8s.io/v1", kind: "RoleBinding", metadata: {name: "sessions", namespace: "legion"},
      roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "Role", name: "sessions"},
      subjects: [{kind: "ServiceAccount", name: "worker", namespace: "legion"}]}]}' >"$world/render.json"
+  jq -n '{apiVersion: "v1", kind: "List", items: []}' >"$world/secret-render.json"
   jq -n --arg p "$project" --arg gsa "$gsa" --arg broker "$broker" --arg wi "$wi_member" --arg ci "$ci_gsa" '
     def step($name; $type; $inputs): {op: "same", urn: "urn:pulumi:example::iam::\($type)::\($name)", provider: "example-provider",
                                       newState: {urn: "urn:pulumi:example::iam::\($type)::\($name)", custom: true, type: $type, inputs: $inputs}};
@@ -464,7 +466,7 @@ full_args() {
     --broker-account "$broker" --broker-workload secrets-broker/secrets-broker \
     --sql-instance example-instance --db-secret example-db/broker-db-login --broker-state gs://example-state/broker \
     --signing-secret hold-signing-example \
-    --rbac-render "$world/render.json" --iam-preview "$world/preview.json"
+    --rbac-render "$world/render.json" --secret-render "$world/secret-render.json" --iam-preview "$world/preview.json"
 }
 output=""
 status=0
@@ -490,11 +492,34 @@ args_without() {
   done
   printf '%s\n' "${keep[@]}"
 }
+# verify_kubectl_reads: every fake kubectl read the row made is one the auditor's
+# production ClusterRole can grant, with the source step that issued it.
+verify_kubectl_reads() {
+  local manifest="${OPERATOR_MINTERS_READS:-$reads}" step verb group resource url failure=""
+  [ -r "$manifest" ] || {
+    output+=$'\n'"FAIL: the reads manifest $manifest cannot be read"
+    return 1
+  }
+  while IFS='|' read -r step verb group resource url; do
+    if [ -n "$url" ]; then
+      jq -e --arg step "$step" --arg verb "$verb" --arg url "$url" \
+        'any(.[]; .step == $step and .verb == $verb and .nonResourceURL == $url)' "$manifest" >/dev/null ||
+        failure+="FAIL: recorded kubectl $verb $url is absent from reads.json for $step"$'\n'
+    else
+      jq -e --arg step "$step" --arg verb "$verb" --arg group "$group" --arg resource "$resource" \
+        'any(.[]; .step == $step and .verb == $verb and .apiGroup == $group and .resource == $resource)' "$manifest" >/dev/null ||
+        failure+="FAIL: recorded kubectl $verb $resource is absent from reads.json for $step"$'\n'
+    fi
+  done < <(sort -u "$world/kubectl-calls.tsv" 2>/dev/null || true)
+  [ -z "$failure" ] || { output+=$'\n'"${failure%$'\n'}"; return 1; }
+}
 # run_only ARGS...: the check with ARGS alone; run_script names another copy of the script to run, as
 # a row breaking one of its parts does (run_script=<copy> run).
 run_only() {
   status=0
+  : >"$world/kubectl-calls.tsv"
   output="$(env PATH="$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$temporary_dir" bash "${run_script:-$check}" "$@" 2>&1)" || status=$?
+  [ "${OPERATOR_MINTERS_VERIFY_READS:-true}" != true ] || verify_kubectl_reads || status=1
 }
 # plant FILE OLD NEW: FILE with its one OLD made NEW; fails the row when FILE does not hold OLD once,
 # so a plant that missed its line cannot pass as a control.
