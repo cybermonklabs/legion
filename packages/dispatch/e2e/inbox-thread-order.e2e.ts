@@ -1,3 +1,4 @@
+import { CONTROL } from "../web/src/components/control-names";
 import { setLiveSessions } from "./agents";
 import {
   createAsk,
@@ -9,8 +10,9 @@ import {
   listIssueMessages,
   markThreadRead,
 } from "./api";
-import { displayChoice } from "./filters";
+import { control, controlRow, displayChoice } from "./filters";
 import { settledScrollTop } from "./frames";
+import { drawer } from "./inbox-drawer";
 import { inboxPane, paneScroller, selectRow } from "./inbox-pane";
 import { asSession, holdReadMarks, replyRowId, THREAD_SESSION } from "./inbox-threads";
 import { expect, type Locator, type Page, test } from "./test";
@@ -181,30 +183,65 @@ async function openFold(thread: Drawn): Promise<void> {
   await expectOrder(thread, "oldest");
 }
 
-/** Where the page stands: the window's scroll, and the reading pane's while there is one. */
-async function scrollPositions(page: Page, pane: boolean): Promise<Record<string, number>> {
-  return {
-    page: await settledScrollTop(page),
-    ...(pane ? { pane: await settledScrollTop(paneScroller(page)) } : {}),
-  };
+/** Where the page stands: the window's scroll, and each of `boxes`' own scroll. */
+async function scrollPositions(
+  page: Page,
+  boxes: Readonly<Record<string, Locator>>
+): Promise<Record<string, number>> {
+  const positions: Record<string, number> = { page: await settledScrollTop(page) };
+  for (const [name, box] of Object.entries(boxes)) positions[name] = await settledScrollTop(box);
+  return positions;
 }
 
 /**
- * Picks Newest first, then Oldest first again, in the display menu, with each of `threads` open
- * in Oldest first with its fold open. After each pick every thread reads in the order picked,
- * its fold is still open, nothing scrolled, the page did not load again, and the menu is still
+ * The View trigger of the bar inside `bar`: the bar's own button where the bar draws it in its
+ * line, else its item of **More**, where a bar under 640 px of its width holds it - the drawer's
+ * (R8, `components/ControlRow.tsx`). **More** is opened with a script click, for the reason
+ * `switchBothWays` gives, and handed back so it is shut the same way.
+ */
+async function viewTrigger(
+  page: Page,
+  bar: Locator | Page
+): Promise<{ more: Locator | null; trigger: Locator }> {
+  const row = controlRow(bar);
+  const button = control(row, CONTROL.displayMenu).and(
+    page.getByRole("button", { exact: true, name: "View" })
+  );
+  const more = control(row, CONTROL.moreMenu);
+  await expect(button.or(more).first()).toBeVisible();
+  // The wait above saw the button or More, and the bar lays itself out from its own width
+  // before it first paints, so whether the button is drawn is settled once either shows.
+  if ((await button.count()) > 0) return { more: null, trigger: button };
+  await more.evaluate((node) => (node as HTMLElement).click());
+  const item = page
+    .getByRole("menu", { name: "More" })
+    .getByRole("menuitem", { exact: true, name: "View" });
+  await expect(item).toHaveCount(1);
+  return { more, trigger: item };
+}
+
+/**
+ * Picks Newest first, then Oldest first again, in the display menu of the bar in `bar`, with each
+ * of `threads` open in Oldest first with its fold open. After each pick every thread reads in
+ * the order picked, its fold is still open, nothing scrolled - neither the window nor any of
+ * `boxes`, the boxes the threads scroll in - the page did not load again, and the menu is still
  * open with the order picked.
  *
  * The scroll is recorded before the menu opens, so the reads after a pick cover the whole
  * switch, the menu's opening too. The test opens and shuts the menu with a script click on
- * View. Playwright's own click scrolls a control into view before it presses it. At 1024 px with
- * the list scrolled, View is above the screen, so that scroll would be the test's and not the
- * page's. A script click scrolls nothing.
+ * View, and on **More** where View is among its items. Playwright's own click scrolls a control
+ * into view before it presses it. At 1024 px with the list scrolled, View is above the screen,
+ * so that scroll would be the test's and not the page's. A script click scrolls nothing.
  */
-async function switchBothWays(page: Page, threads: readonly Drawn[], pane: boolean): Promise<void> {
-  const before = await scrollPositions(page, pane);
-  const trigger = page.getByRole("button", { exact: true, name: "View" });
+async function switchBothWays(
+  page: Page,
+  bar: Locator | Page,
+  threads: readonly Drawn[],
+  boxes: Readonly<Record<string, Locator>>
+): Promise<void> {
+  const before = await scrollPositions(page, boxes);
   const menu = page.getByRole("dialog", { name: "View" });
+  const { more, trigger } = await viewTrigger(page, bar);
   await trigger.evaluate((node) => (node as HTMLElement).click());
   await expect(menu).toHaveCount(1);
   for (const order of ["newest", "oldest"] as const) {
@@ -217,7 +254,7 @@ async function switchBothWays(page: Page, threads: readonly Drawn[], pane: boole
       await expectOrder(thread, order);
       await expectFoldOpen(thread);
     }
-    expect(await scrollPositions(page, pane), `the scroll after ${order}`).toEqual(before);
+    expect(await scrollPositions(page, boxes), `the scroll after ${order}`).toEqual(before);
     // A load of the page would have dropped the mark the test set on the window.
     expect(
       await page.evaluate((name) => Reflect.get(window, name), MARKER),
@@ -226,13 +263,18 @@ async function switchBothWays(page: Page, threads: readonly Drawn[], pane: boole
     await expect(menu, `the display menu after ${order}`).toBeVisible();
     await expect(choice).toBeChecked();
   }
-  // Shut again, so the panel covers nothing the test drives next.
+  // Shut again, so the panel covers nothing the test drives next: View, then **More**, which
+  // stays open under a menu opened from it.
   await trigger.evaluate((node) => (node as HTMLElement).click());
   await expect(menu).toHaveCount(0);
+  if (more !== null) {
+    await more.evaluate((node) => (node as HTMLElement).click());
+    await expect(page.getByRole("menu", { name: "More" })).toHaveCount(0);
+  }
 }
 
 // SLOW(>=2s): twelve long replies seeded over three threads, then the order switched both ways
-// four times, three in the pane and once over three cards, each read part by part.
+// four times, three in the pane and once over three cards in the drawer, each read part by part.
 test("the thread order switch reorders the open thread with no reload", async ({ browser }) => {
   // Three threads seeded, then three switches in the pane and one over three cards.
   test.slow();
@@ -291,12 +333,25 @@ test("the thread order switch reorders the open thread with no reload", async ({
     for (const [row, thread] of paneThreads) {
       await selectRow(page, row);
       await openFold(thread);
-      await switchBothWays(page, [thread], true);
+      await switchBothWays(page, page, [thread], { pane: paneScroller(page) });
     }
 
-    // Below the pane's width each row draws its thread in its own card.
+    // Below the pane's width the Inbox page lists short rows and opens one row's view in place
+    // of the list and its bar (main's #5223), so the thread drawn in its row's card is the
+    // drawer's, which keeps the card at every width. The drawer is offered on every page but the
+    // Inbox, so the test leaves the Inbox by the navigation's own link: a route change, which
+    // loads no page and keeps the mark on the window.
+    await page
+      .getByRole("navigation", { name: "Navigation" })
+      .getByRole("link", { exact: true, name: "Agents" })
+      .click();
+    await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
     await page.setViewportSize({ height: 900, width: 1024 });
-    const row = (id: string) => page.locator(`[data-inbox-row="${id}"]`);
+    await page.locator("body").focus();
+    await page.keyboard.press("i");
+    const peek = drawer(page);
+    await expect(peek).toBeVisible();
+    const row = (id: string) => peek.locator(`[data-inbox-row="${id}"]`);
     const commentCard = row(replyRowId(seeded.commentId)).locator("[data-inbox-thread-body]");
     const messageCard = row(replyRowId(seeded.messageId)).locator("[data-inbox-thread-body]");
     const askCard = row(seeded.askId).getByTestId(`ask-${seeded.askId}`);
@@ -326,7 +381,7 @@ test("the thread order switch reorders the open thread with no reload", async ({
       },
     ];
     for (const thread of cards) await openFold(thread);
-    await switchBothWays(page, cards, false);
+    await switchBothWays(page, peek, cards, { drawer: peek });
   } finally {
     await alice.close();
   }
