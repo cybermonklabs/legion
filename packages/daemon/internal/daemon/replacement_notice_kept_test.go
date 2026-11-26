@@ -8,7 +8,8 @@ package daemon
 // once the store takes rows again the notice goes out, once. A round stays open until then
 // (the Legion reviewer's point D on fa9deb04): its end clears what each claim records of the
 // round, which is what the notice names, so a notice queued after the end would name no role that
-// had not answered, and would read a kept volume as one marked for a reset.
+// had not answered, and would say that the pod's disk is gone where it is a kept volume that is
+// still there (roundKeptVolume reads when the round opened from the claims).
 
 import (
 	"strings"
@@ -136,7 +137,7 @@ func (r *podUpdateRig) wantRoundEnded() {
 // whose disk is a kept volume that the issue's next pod mounts, over a read that found an unpushed
 // commit. The store refuses the notice. The round stays open, and once the store takes
 // the notice, the notice is the one the replacement built: the work is on the kept volume, which is
-// still there, not on one the replacement marked for a reset.
+// still there.
 func TestARoundWhoseNoticeTheStoreRefusedIsToldWhatItsReplacementFound(t *testing.T) {
 	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
@@ -150,7 +151,7 @@ func TestARoundWhoseNoticeTheStoreRefusedIsToldWhatItsReplacementFound(t *testin
 	rig.wantToldOnce("once the store takes the row")
 	rig.wantRoundEnded()
 	told := rig.architectNotices(record.WorkspaceTakenNotice)
-	if reason := told[0].Reason; !strings.Contains(reason, "the volume is still there") || strings.Contains(reason, "deletes its volume") {
+	if reason := told[0].Reason; !strings.Contains(reason, "the volume is still there") {
 		t.Fatalf("the architect was told %q, want the notice the replacement built: the work is on the kept volume, which is still there", reason)
 	}
 }

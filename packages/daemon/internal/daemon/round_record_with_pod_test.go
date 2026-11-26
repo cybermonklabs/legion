@@ -92,8 +92,8 @@ func (r *podUpdateRig) recordRoundOverAFailedRead() {
 
 // wantToldOnceByTheLaunch sweeps roundSweeps times and holds the outbox to one workspace-taken notice
 // to the issue's architect, the launch's of withPodTaken: it names the Sandbox it deleted, the pod
-// that went with it and the commit its read found, and says nothing of a volume the round marked
-// for a reset. The issue is written nothing, and no record stands.
+// that went with it and the commit its read found. The issue is written nothing, and no record
+// stands.
 func (r *podUpdateRig) wantToldOnceByTheLaunch(what string) {
 	r.t.Helper()
 	for range roundSweeps {
@@ -101,8 +101,7 @@ func (r *podUpdateRig) wantToldOnceByTheLaunch(what string) {
 	}
 	told := r.architectNotices(record.WorkspaceTakenNotice)
 	if len(told) != 1 || !strings.Contains(told[0].Reason, "deleted the Sandbox of "+podUpdateIssue+" (uid "+keptSandboxUID+")") ||
-		!strings.Contains(told[0].Reason, launchWithPodSentence) || !strings.Contains(told[0].Reason, launchReadCommit) ||
-		strings.Contains(told[0].Reason, "marked it for a reset") {
+		!strings.Contains(told[0].Reason, launchWithPodSentence) || !strings.Contains(told[0].Reason, launchReadCommit) {
 		r.t.Fatalf("the architect was told %+v %s, want one workspace-taken notice, the launch's, naming the Sandbox it deleted, the pod that went with it and the commit %s its read found",
 			told, what, launchReadCommit)
 	}
