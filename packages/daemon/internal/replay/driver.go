@@ -397,6 +397,8 @@ func (d *driver) newChain(at time.Time) {
 	// (p0BoundAt): a rule that starts a P0 issue outside the cap admits under it, and every other
 	// rule reads it not at all.
 	d.admission.UseP0Bound(func() *int { return p0BoundAt(w, d.clock.Instant()) })
+	// Each of the replay's own facts runs the pass, whatever it wrote (ownFact).
+	d.admission.UsePassFacts(ownFact)
 	d.handlers = []intake.Handler{replayHandler{engine: d.engine, clock: d.clock.Now, rule: d.rule, records: d.records, project: w.Project}}
 	for _, handler := range admit.Handlers(d.records, w.Project, d.engine, d.admission) {
 		if _, pass := handler.(*admit.Admission); pass {

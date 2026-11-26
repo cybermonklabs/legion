@@ -145,6 +145,11 @@ type Admission struct {
 	// pass's own transaction: nil in the daemon until a person turns admission by signals on, when
 	// every pass admits under the cap.
 	signalRead func(ctx context.Context, tx pgx.Tx, at time.Time) (signals.Snapshot, bool, error)
+
+	// passFacts names more facts the pass rule (Apply) runs the pass on whatever their transaction
+	// wrote, beside passFact's (UsePassFacts): nil in the daemon, which names none; a replay names
+	// its own facts.
+	passFacts func(intake.Fact) bool
 }
 
 // ReportCapabilities registers open, whose answer every tick controller notice carries as its
@@ -219,6 +224,16 @@ func (a *Admission) UseClock(clock func() time.Time) {
 // own fact. It is a setter rather than a parameter of New for the reason UseExperiments is.
 func (a *Admission) UseP0Bound(bound func() *int) {
 	a.p0Bound = bound
+}
+
+// UsePassFacts registers runs, which names more facts the pass rule (Apply) runs the pass on
+// whatever their transaction wrote, beside passFact's. A replay names its own facts with it: each
+// stands for a change its daemon made outside any fact (a change of the P0 bound, a claim the
+// supervisor settled) or for a pass of its own, as passFact's facts do, and writes no record that
+// would run the pass by itself. The daemon registers none. It is a setter rather than a parameter
+// of New for the reason UseExperiments is.
+func (a *Admission) UsePassFacts(runs func(intake.Fact) bool) {
+	a.passFacts = runs
 }
 
 // p0BoundNow is the P0 bound this pass admits under (UseP0Bound), nil for none.
@@ -363,7 +378,7 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 			return returned, nil, err
 		}
 		promote := a.promoteWritten
-		if passFact(fact) {
+		if passFact(fact) || a.passFacts != nil && a.passFacts(fact) {
 			promote = a.promote
 		}
 		_, returned, err := promote(ctx, tx)

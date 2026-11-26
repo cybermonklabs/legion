@@ -18,9 +18,21 @@ import (
 // unexported, so a type of another package is a fact only by embedding one of intake's; the
 // embedded intake.EntrySweep carries nothing and names no issue, and no handler of the daemon's
 // chain takes a replay fact for one, since each of them reads a fact by its own type, which is
-// this package's: the mirror and the engine do nothing for it, and admission runs its pass, as for
-// every fact it does not know.
+// this package's: the mirror and the engine do nothing for it. Admission runs its pass on every
+// replay fact whatever its transaction wrote (ownFact, registered with admit's UsePassFacts),
+// since each stands for a change the replayed daemon made outside the facts the replay applies
+// (a change of the P0 bound, a claim its supervisor settled, a mark or a refusal it kept) and
+// several write no record of the project, so the pass rule would run none for them.
 type replayFact struct{ intake.EntrySweep }
+
+// replayOwn marks a fact of this package (ownFact).
+func (replayFact) replayOwn() {}
+
+// ownFact says whether fact is one of this package's own (replayFact).
+func ownFact(fact intake.Fact) bool {
+	_, own := fact.(interface{ replayOwn() })
+	return own
+}
 
 // RecordedMove is one recorded phase move a replay enters at the end of its work segment, by
 // workflow.(*Engine).ReplayTransition (MoveTransition): Issue at Generation moved From To by
