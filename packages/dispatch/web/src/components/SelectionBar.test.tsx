@@ -1318,6 +1318,74 @@ test.each([
   }
 });
 
+test("a click outside the rows leaves focus on the body when the parked row goes before the read", async () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const leaving = ["CORE-13"];
+  const view = render(
+    <PlacedList count={1} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />
+  );
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(<PlacedList count={0} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />);
+    const parked = rowBox("CORE-13");
+    expect(focusedName()).toBe("Select CORE-13");
+
+    act(() => {
+      document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      // The browser blurs the mark on a click on blank space. There is no new focusin.
+      parked.blur();
+    });
+    const kept = without(PLACED_KEYS, "CORE-13");
+    view.rerender(<PlacedList count={0} last="CORE-13" listed={kept} />);
+    expect(parked.isConnected).toBe(false);
+    expect(document.activeElement?.tagName).toBe("BODY");
+    await act(afterTask);
+    expect(focusedName()).toBeNull();
+    view.rerender(<PlacedList count={0} last="CORE-13" listed={kept} />);
+    expect(document.activeElement?.tagName).toBe("BODY");
+  } finally {
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
+test("window blur ends the key wait so a later keyup does not owe the landing again", async () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const leaving = ["CORE-13"];
+  const view = render(
+    <PlacedList count={1} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />
+  );
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(<PlacedList count={0} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />);
+    const parked = rowBox("CORE-13");
+    expect(focusedName()).toBe("Select CORE-13");
+
+    const key = { bubbles: true, code: "KeyJ", key: "j" };
+    act(() => {
+      parked.dispatchEvent(new KeyboardEvent("keydown", key));
+      window.dispatchEvent(new Event("blur"));
+      parked.dispatchEvent(new KeyboardEvent("keyup", key));
+    });
+    await act(afterTask);
+    expect(focusedName()).toBe("Select CORE-13");
+    view.rerender(<PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-13")} />);
+    expect(focusedName()).toBeNull();
+    expect(document.activeElement?.tagName).toBe("BODY");
+  } finally {
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
 // INFRA-3135, round 29 (N2a): a modifier pressed alone acts on nothing - it only changes the key
 // pressed with it - so it is none of the reader's acts. Shift on the parked mark of a leaving row
 // moves nothing and ends nothing: the landing is still owed, and the commit that takes the press's
@@ -1785,7 +1853,12 @@ function mountEndRoomPage({
   const headBox = spyOn(head, "getBoundingClientRect").mockReturnValue(
     new DOMRect(0, 300, 800, 40)
   );
-  const page = (count: number, float: boolean, hidden?: readonly string[]) => (
+  const page = (
+    count: number,
+    float: boolean | "boxless",
+    hidden?: readonly string[],
+    listed = PLACED_KEYS
+  ) => (
     <>
       <main data-testid={mainId} {...{ [DOCUMENT_SCROLL_ATTRIBUTE]: "" }}>
         <PlacedList
@@ -1799,13 +1872,14 @@ function mountEndRoomPage({
           }}
           head={head}
           last="CORE-10"
-          listed={PLACED_KEYS}
+          listed={listed}
           undrawn={hidden}
         />
         <p data-testid={lineId}>The last line of the page.</p>
       </main>
       <FootFloat
-        active={float}
+        active={float !== false}
+        boxHeight={float === "boxless" ? 0 : undefined}
         height={viewHeight}
         style={{ position: "fixed" }}
         testId={floatId}
@@ -1857,8 +1931,7 @@ function mountEndRoomPage({
     fitHeights,
     layOutMark,
     scrolled,
-    rerender: (count: number, float: boolean, hidden?: readonly string[]) =>
-      view.rerender(page(count, float, hidden)),
+    rerender: (...props: Parameters<typeof page>) => view.rerender(page(...props)),
     restore: () => {
       list.scrollTop = 0;
       document.documentElement.scrollTop = 0;
@@ -1907,6 +1980,30 @@ test("a landing that scrolls a box off its end releases kept foot room and refit
     expect(fitHeights).toEqual([400, 430]);
     expect(mark.getBoundingClientRect().top).toBe(340);
     expect<readonly unknown[]>(scrolled.mock.calls).toEqual([[{ top: -150 }]]);
+  } finally {
+    page.restore();
+  }
+});
+
+test("the first fit releases stale float room before choosing the row now at the marked place", async () => {
+  const page = mountEndRoomPage({ id: "boxless", markTop: 710 });
+  const { main, fitHeights } = page;
+  try {
+    // CORE-11 is below the 400 px box but visible in the 430 px box. CORE-9 is in sight in either.
+    page.layOutMark(rowBox("CORE-11"));
+    rowBox("CORE-9").getBoundingClientRect = () => new DOMRect(10, 650, 16, 16);
+    await act(nextFrame);
+    expect(main.style.paddingBottom).toBe("80px");
+
+    pressInBar("Dismiss");
+    page.rerender(0, "boxless", undefined, without(PLACED_KEYS, "CORE-10"));
+    // The frame's pass still has the old float size. The first fit must use the room without it.
+    expect(main.style.paddingBottom).toBe("80px");
+    expect(fitHeights).toEqual([]);
+    await act(nextFrame);
+    expect(focusedName()).toBe("Select CORE-11");
+    expect(fitHeights).toEqual([430, 430]);
+    expect(main.style.paddingBottom).toBe("");
   } finally {
     page.restore();
   }

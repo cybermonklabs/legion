@@ -422,3 +422,19 @@ test("footPassNow runs a foot pass immediately, releases kept room once a box le
     view.unmount();
   }
 });
+
+test("footPassNow drops a float whose box is gone before its ResizeObserver runs", async () => {
+  await withTheTable({ float: true }, async (box) => {
+    expect(box).toHaveAttribute(MARK_ATTRIBUTE);
+    expect(box.getAttribute("style")).toContain("80px");
+
+    const float = screen.getByTestId("float");
+    // The status corner stays mounted, but its last child went. No resize callback has run.
+    float.getBoundingClientRect = () => new DOMRect();
+    expect(box).toHaveAttribute(MARK_ATTRIBUTE);
+    expect(footPassNow()).toBe(true);
+    expect(box).not.toHaveAttribute(MARK_ATTRIBUTE);
+    expect(box.getAttribute("style") ?? "").not.toContain("80px");
+    expect(footPassNow()).toBe(false);
+  });
+});
