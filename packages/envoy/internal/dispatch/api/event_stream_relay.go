@@ -183,13 +183,16 @@ type eventStreamRelay struct {
 	// zero is eventRelayGapMin.
 	coalesce, gapFallback time.Duration
 	// readAfter reads one page of the committed events in (after, through]; nil is
-	// readEventsAfterID. A test counts the relay's reads of the event log through it.
+	// readEventsAfterIDOnLog. A test counts the relay's reads of the event log through it.
 	readAfter func(ctx context.Context, after, through int64) ([]model.Event, error)
 	// aroundRead runs before each read of a generation's loop (run), and the function it answers
 	// runs once that read has ended, its retries included; nil in production. A test holds the
 	// reads back and counts the ones under way through it, so it orders a reset of the log
 	// against them by what the relay is doing rather than by a sleep.
 	aroundRead func() (ended func())
+	// beforePage runs in a read just before each page of the log it reads, after the read's reset
+	// check and its horizon; nil in production. A test holds a read there while it resets the log.
+	beforePage func()
 
 	// running counts every generation's goroutines. Add runs under mu and only while closed is
 	// false, so no Add can follow the Wait in wait.
@@ -434,11 +437,12 @@ func (g *relayGeneration) onConnected() { signal(g.wake) }
 // holds the gap, on that write's commit notification, read at once, or after the fallback delay,
 // eventRelayGapMin doubling to eventRelayGapMax while the horizon stands still and back to
 // eventRelayGapMin whenever it moves. Nothing is scheduled while no gap is open, so an idle
-// generation observes nothing. A gap re-read skips the reset check: it asks only whether the
-// horizon has moved, on the horizon's own connection, and reads the shared pool only once there
-// is something to publish, so a gap held open by a long event write costs no request a
-// connection. A reset is still caught at the next notification, which the refill's own inserts
-// send.
+// generation observes nothing. A gap re-read skips the separate reset check: it asks only whether
+// the horizon has moved, on the horizon's own connection, and reads the shared pool only once
+// there is something to publish, so a gap held open by a long event write costs no request a
+// connection. Each page it reads is still checked against a reset in its own statement (read), so
+// it publishes nothing of a reset log, and the reset ends the generation at the next notification,
+// which the refill's own inserts send.
 func (r *eventStreamRelay) run(ctx context.Context, g *relayGeneration) {
 	gaps := eventGapReread{first: r.gapFallback}
 	defer gaps.stop()
@@ -495,8 +499,16 @@ func (r *eventStreamRelay) run(ctx context.Context, g *relayGeneration) {
 // stopped while its read was in flight publishes only into its own stream, which has no subscriber
 // left. It pages until a short page or until the cursor stands on the horizon, all through the one
 // horizon it read first: what commits meanwhile is the next read's. A log that was reset under the
-// cursor is answered first, and publishes nothing (resetCursor); checkReset false skips that check
-// (run's gap re-read).
+// cursor is answered first, and publishes nothing (resetCursor); checkReset false skips that
+// separate check (run's gap re-read).
+//
+// Each page is read only while the row at the cursor still carries the created_at the relay read
+// (readEventsAfterIDOnLog), in the page's own statement. The reset check above is a statement of
+// its own, so a reset can commit after it and before a page. Read without that guard, the page
+// would hold the new log's rows above the old cursor: the relay would publish them as the events
+// after the ones it published, and move its cursor onto a row of the new log, so no later reset
+// check could tell the log was reset, and no subscription would ever be ended. A page the guard
+// refuses is empty: the read checks the cursor again and, on a reset, ends the generation.
 //
 // It answers the horizon it read through and what a gap open above it waits for (Horizon.Gap):
 // an event observed above the horizon that this read could not publish, which run re-reads for.
@@ -523,16 +535,34 @@ func (r *eventStreamRelay) read(ctx context.Context, g *relayGeneration, checkRe
 		return 0, events.GapNone, false
 	}
 	for {
-		cursor, _ := r.at(g)
+		cursor, at := r.at(g)
 		if cursor >= safe {
 			return safe, horizon.Gap(), true
 		}
-		committed, err := r.page(tracked, cursor, safe)
+		if r.beforePage != nil {
+			r.beforePage()
+		}
+		committed, err := r.page(tracked, cursor, at, safe)
 		if err != nil {
 			if ctx.Err() == nil {
 				slog.Warn("dispatch: the event stream relay could not read the committed events; retrying", "error", err)
 			}
 			return 0, events.GapNone, false
+		}
+		if len(committed) == 0 {
+			// Every id up to safe is final, so a page with none of them read either rolled-back ids
+			// or a log whose row at the cursor the guard no longer found. Only a check tells them
+			// apart.
+			switch reset, err := r.resetCursor(tracked, g); {
+			case err != nil:
+				if ctx.Err() == nil {
+					slog.Warn("dispatch: the event stream relay could not check its cursor against the event log; retrying", "error", err)
+				}
+				return 0, events.GapNone, false
+			case reset:
+				return 0, events.GapNone, true
+			}
+			return safe, horizon.Gap(), true
 		}
 		relayed := make([]relayedEvent, len(committed))
 		for index, event := range committed {
@@ -550,16 +580,17 @@ func (r *eventStreamRelay) read(ctx context.Context, g *relayGeneration, checkRe
 	}
 }
 
-// page reads the committed events in (after, through]: the relay's one read of the event log's
-// rows, the read an events subscription's catch-up also pages through (readEventsAfterID).
+// page reads the committed events in (after, through] while the event at after still carries
+// afterAt: the relay's one read of the event log's rows (readEventsAfterIDOnLog). An events
+// subscription's catch-up pages through the same rows (readEventsAfterID).
 //
 // The relay reads one page for every subscriber at once and resolves no credential, so it reads
 // as one that proves no author (refs' visibility registry).
-func (r *eventStreamRelay) page(ctx context.Context, after, through int64) ([]model.Event, error) {
+func (r *eventStreamRelay) page(ctx context.Context, after int64, afterAt time.Time, through int64) ([]model.Event, error) {
 	if r.readAfter != nil {
 		return r.readAfter(ctx, after, through)
 	}
-	return r.server.readEventsAfterID(ctx, model.Actor{}, after, through, maxEventReplay)
+	return r.server.readEventsAfterIDOnLog(ctx, model.Actor{}, after, afterAt, through, maxEventReplay)
 }
 
 // publish fans one page out to g's subscribers and moves g's cursor to its last event, under mu.

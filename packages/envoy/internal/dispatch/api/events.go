@@ -305,6 +305,23 @@ func (s *server) readEventsAfterID(ctx context.Context, who model.Actor, after, 
 	`, after, through, limit)
 }
 
+// readEventsAfterIDOnLog is readEventsAfterID for a reader whose cursor after is the id of an event
+// it read with created_at afterAt (0 and the zero time before the first): the page holds rows only
+// while that row still carries that created_at, in the statement's own snapshot. A reset of the log
+// (e2e/seed.ts's delete with the table's sequence restarted, or `truncate events restart
+// identity`) holds an ACCESS EXCLUSIVE lock on events until it commits, and the statement holds its
+// ACCESS SHARE lock until it ends, so the reset lands wholly before or wholly after this read. A
+// page read after a reset is therefore empty, never a page of the new log above the old cursor,
+// which the reader would take for the events after the ones it read (events.EventLogWasReset
+// tells the two cases apart).
+func (s *server) readEventsAfterIDOnLog(ctx context.Context, who model.Actor, after int64, afterAt time.Time, through int64, limit int) ([]model.Event, error) {
+	return s.readEventRows(ctx, who, eventSelect+`
+		where e.id > $1 and e.id <= $2
+		  and ($1 = 0 or exists (select 1 from events c where c.id = $1 and c.created_at = $4))
+		order by e.id asc limit $3
+	`, after, through, limit, afterAt)
+}
+
 // eventLogUnbrokenThrough is the id before the first one missing from the event log counted up
 // from 1, or its newest id when none is missing: every id at or below it is a committed event.
 // It reads the whole log, so feedEvents asks it only of a log that was reset beneath the relay,
