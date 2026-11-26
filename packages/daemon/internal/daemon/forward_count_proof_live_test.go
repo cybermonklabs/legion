@@ -10,7 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/testdb"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // forwardCountProof is one project's liveProof over the run's shared broker, with a store of that
