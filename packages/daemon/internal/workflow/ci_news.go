@@ -317,6 +317,19 @@ func (e *Engine) reportRuns(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if len(runs) == 0 && len(statuses) == 0 {
 		return nil
 	}
+	held, err := e.store.HeadStates(ctx, tx, issue.Key, pr.Repo, pr.CheckedHead)
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		if !slices.Contains(held.Checks, run.Name) || (run.Conclusion != string(record.RunSucceeded) && run.Conclusion != "success") {
+			continue
+		}
+		if _, err := e.store.PutCheckState(ctx, tx, record.CheckState{Issue: issue.Key, Repo: pr.Repo, Head: pr.CheckedHead, Check: run.Name,
+			State: stateYes, CICase: "success", Roles: []string{"ci"}, Seq: held.States[run.Name].Seq + 1}); err != nil {
+			return err
+		}
+	}
 	readers, err := e.ciReaders(ctx, tx, issue, w)
 	if err != nil {
 		return err
