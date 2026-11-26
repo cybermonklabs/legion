@@ -861,7 +861,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// key and a short id do change what a resolving read answers - a `#id` would not, the
 	// comment having no id yet, so the document its `#id`s resolve against is nothing - but
 	// none of them changes who the body names, which is all this read is for.
-	bodyParties := text.ExtractAt(input.Body, s.deps.ServerURL)
+	bodyParties := text.ExtractAt(input.Body, s.deps.Origins)
 	delivery, mentionTargets, err := validateCommentMentions(input, bodyParties)
 	if err != nil {
 		s.writeHandlerError(w, err)
