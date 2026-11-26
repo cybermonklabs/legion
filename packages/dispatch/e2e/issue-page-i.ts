@@ -645,10 +645,12 @@ export async function pickPreset(page: Page, name: string): Promise<void> {
   // The row has to be on the page before its shape can be read: a count taken while the page
   // is still loading answers zero for both shapes.
   await row.waitFor();
-  const toggle = row.getByRole("button", { exact: true, name });
   // The wait above drew the row, which draws one shape or the other with it by one media query
-  // and its negation, so one count says which shape this width draws.
-  if ((await toggle.count()) > 0) {
+  // and its negation, so one count says which shape this width draws: the one control's. A
+  // count of the toggle by its name would not say it, since on a view with no signal, such as
+  // Conversation, the one control is named by that view's word alone.
+  if ((await presetChooser(page).count()) === 0) {
+    const toggle = row.getByRole("button", { exact: true, name });
     // Its `aria-pressed` is drawn with it, from the address the page is on, so it says whether
     // its view is on now: a press on one already on would turn it off.
     if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
@@ -663,18 +665,20 @@ export async function pickPreset(page: Page, name: string): Promise<void> {
 
 /** Fails unless the page is on the view `name`, whichever shape the row has at this width: the
  *  row of toggles presses the one it is on (`aria-pressed`), and the one control below 1280 px
- *  draws its name and its signal as its own name (`IssuePresets.tsx`). */
+ *  draws the name of the view that is on as its own name, then that view's signal where the view
+ *  is a filter (`IssuePresets.tsx`). */
 export async function expectActivePreset(page: Page, name: string): Promise<void> {
   const row = presetRow(page);
   await row.waitFor();
-  const toggle = row.getByRole("button", { exact: true, name });
-  // The wait above drew the row, which draws one shape or the other with it by one media query
-  // and its negation, so one count says which shape this width draws.
-  if ((await toggle.count()) > 0) {
-    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  // One count says which shape this width draws, as in `pickPreset`.
+  if ((await presetChooser(page).count()) === 0) {
+    await expect(row.getByRole("button", { exact: true, name })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
     return;
   }
-  await expect(presetChooser(page)).toHaveAccessibleName(new RegExp(`^${name} \\d+\\b`));
+  await expect(presetChooser(page)).toHaveAccessibleName(new RegExp(`^${name}(?: \\d+\\b|$)`));
 }
 
 // ---------------------------------------------------------------------------------------------
