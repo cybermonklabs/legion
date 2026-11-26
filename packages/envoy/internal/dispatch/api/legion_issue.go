@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
@@ -116,6 +115,10 @@ type legionIssueRead struct {
 // 404 NOT_FOUND as GET /api/v1/issues/{key} answers it (readLegionIssue).
 func (s *server) getLegionIssue(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
+		return
+	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	answer, err := s.readLegionIssue(r.Context(), r.PathValue("key"))

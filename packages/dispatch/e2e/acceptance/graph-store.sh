@@ -7,18 +7,19 @@
 # each person authored, what reached each session, that a failed or pending attempt earns no
 # tuple and that a queued one earns one, and that a failed one earns its session no node. It
 # checks the role, the session and the page, and it holds every read against a table of
-# identities a person wrote into this driver. A message earns no
-# tuple in this child - only a comment has a node on the near end of a delivery, and
-# the child that moves the inbox, the messages and the read state gives a message its own - so
-# what the driver reads of the message is the
-# role it reaches and that role's page, and that nothing stands on the message itself (G10).
+# identities a person wrote into this driver. A message is a node of its project, written with its
+# own create and carrying that node's base attributes, and earns no delivery or authorship tuple
+# in this child - only a comment has a node on the near end of a delivery, and a later change
+# gives a message those tuples - so what the driver reads of the message is its node, the role it
+# reaches and that role's page, and that no other tuple stands on the message itself (G10).
 #
 # The run writes at least one tuple of every kind it holds, and G14 holds every tuple standing on
 # this run's nodes, of every kind, to the writer, the causing event and a time its record allows:
-# authored_by and the base attributes (visibility, state) of every node it reads, delivered_to -
-# the answer to an attempt the listener had not taken among them (G12) - a page's and a session's
-# part_of, a role's held_by with its retraction (G9), and alias_of (G13). A kind that holds no
-# tuple of this run fails there too, so a writer that stopped writing one cannot pass as right.
+# authored_by and the base attributes (visibility, state, and a comment's project) of every node
+# it reads, delivered_to - the answer to an attempt the listener had not taken among them (G12) -
+# a page's and a session's part_of, a role's held_by with its retraction (G9), and alias_of
+# (G13). A kind that holds no tuple of this run fails there too, so a writer that stopped writing
+# one cannot pass as right.
 #
 # Which clause is read which way, and why:
 #
@@ -95,6 +96,7 @@ require_env DISPATCH_URL PROJECT DATABASE_URL FAKE_ENVOY_PORT
 require_commands bun curl jq psql sleep
 read_bearer
 
+# shellcheck disable=SC2031 # the DISPATCH_URL lib.sh's `cli` exports is its own subshell's; this one is the caller's
 readonly base="${DISPATCH_URL%/}"
 # The dashboard's origin, the scheme and host of DISPATCH_URL: a write the person's cookie
 # authenticates must name it (enforceCookieOrigin).
@@ -102,6 +104,7 @@ base_host="${base#*://}"
 readonly origin="${base%%://*}://${base_host%%/*}"
 # shellcheck disable=SC2153 # these are the caller's inputs, checked by name above
 readonly project="$PROJECT"
+# shellcheck disable=SC2153 # DATABASE_URL is the caller's input, checked by name above
 readonly database_url="$DATABASE_URL"
 readonly envoy="http://127.0.0.1:$FAKE_ENVOY_PORT"
 readonly person="${DEV_SIGNIN_LOGIN:-alice}"
@@ -326,7 +329,7 @@ claim_role() {
 #     written, since only that write ties it to anybody.
 identities=(
   "$person|$person"
-  "$(printf '%s' "$person" | tr 'a-z' 'A-Z')|$person"
+  "$(printf '%s' "$person" | tr '[:lower:]' '[:upper:]')|$person"
   "  $person  |$person"
   "$twin|$twin"
 )
@@ -334,13 +337,9 @@ readonly identities
 readonly proved_identity="$proved_session|$person"
 
 # S: the inputs, the people, the listener's sessions and the issue.
-host="${database_url#*://}"
-host="${host#*@}"
-host="${host%%[:/]*}"
-case "$host" in
-  127.0.0.1 | ::1 | localhost) pass setup "DATABASE_URL names this machine ($host)" ;;
-  *) fail setup "DATABASE_URL names this machine" "host $host is not loopback; this driver reads this pod's own test database and never a deployment's" ;;
-esac
+loopback_database_url "$database_url" ||
+  fail setup "DATABASE_URL names this machine" "the URL must name one loopback host with no connection override; this driver reads this pod's own test database, never a deployment's"
+pass setup "DATABASE_URL names this machine"
 [[ "$twin" != "$person" ]] ||
   fail setup "two logins differing by one character" "$person and $twin are one login"
 sign_in "$person"
@@ -797,12 +796,15 @@ want_value G9 "the first holder's part_of stands after its claim ended" "true|$r
    where from_kind = 'session' and from_id = '$holder_session' and kind = 'part_of'
      and to_kind = 'role' and to_id = '$role'"
 
-# G10: a message earns no tuple in this child. Only a comment has a node on the near end of a
-# delivery today (outbox.deliveredItem), so the record of what a batch delivered appends no
-# delivered_to tuple for a message, and no writer appends its authored_by. What a message on a
-# role-routed issue does have in the store is that role, its page and the page's part_of: the
-# outbox writes a role and its page for every role an event names, and the first event to name
-# this one is the write that routed the issue to it, so that write is the cause the store records.
+# G10: a message is a node of its project and earns no delivery or authorship tuple in this child.
+# Its create writes its node before its row, in the issue's project, and the message.created event
+# causes that node and its three base attributes: its visibility, its state and its project. Only
+# a comment has a node on the near end of a delivery today (outbox.deliveredItem), so the record
+# of what a batch delivered appends no delivered_to tuple for a message, and no writer appends its
+# authored_by. What else a message on a role-routed issue has in the store is that role, its page
+# and the page's part_of: the outbox writes a role and its page for every role an event names, and
+# the first event to name this one is the write that routed the issue to it, so that write is the
+# cause the store records.
 #
 # The message is on an issue of its own, routed to a role of this run's own, so the role it
 # reaches is named by that route and that message alone. It names no target: a targeted message
@@ -844,26 +846,33 @@ want_value G10 "the role's page hangs under the role" 1 \
   "select count(*) from graph_tuples where from_kind = 'page' and from_id = 'role/$message_role'
      and kind = 'part_of' and to_kind = 'role' and to_id = '$message_role' and asserted
      and source_event = $route_event"
-# The two reads of nothing, each beside the same read of something: the route's event caused the
-# role's and the page's tuples, and the comment G9 delivered to a role stands in tuples, so a zero
-# for the message is the message earning nothing and not a read that matched nothing.
+# The reads of the message, each beside a read of something: the route's event caused the role's
+# and the page's tuples, and the comment G9 delivered to a role stands in tuples, so the message's
+# own node and base attributes, and nothing more, are what its event caused, and a zero for any
+# other tuple on the message is the message earning nothing more and not a read that matched
+# nothing.
 query G10 "count the tuples the route's event caused" \
   "select count(*) from graph_tuples where source_event = $route_event"
 [[ "$answer" -gt 0 ]] ||
   fail G10 "the route's event caused the role's tuples" "no tuple names event $route_event as its cause"
 route_caused="$answer"
-want_value G10 "the message's event caused no node and no tuple (the route's caused $route_caused tuple(s))" "0|0" \
+want_value G10 "the message is a node of $project, live, made by its own write" 1 \
+  "select count(*) from graph_nodes where kind = 'message' and id = '$message'
+     and project_key = '$project' and parties is null and state = 'live' and source_event = $message_event"
+want_value G10 "the message's event caused its node and the node's visibility, state and project (the route's caused $route_caused tuple(s))" "1|3|3" \
   "select (select count(*) from graph_nodes where source_event = $message_event) || '|'
-          || (select count(*) from graph_tuples where source_event = $message_event)"
+          || (select count(*) from graph_tuples where source_event = $message_event) || '|'
+          || (select count(*) from graph_tuples where source_event = $message_event
+                and from_kind = 'message' and from_id = '$message' and to_kind = 'value' and asserted
+                and kind in ('visibility', 'state', 'project'))"
 query G10 "count the tuples that stand on the comment G9 delivered" \
   "select count(*) from graph_tuples where from_id = '$role_comment' or to_id = '$role_comment'"
 [[ "$answer" -gt 0 ]] ||
   fail G10 "the comment G9 delivered stands in tuples" "no tuple names $role_comment"
 comment_tuples="$answer"
-want_value G10 "no tuple stands on the message (the comment G9 delivered stands in $comment_tuples)" 0 \
-  "select count(*) from graph_tuples where from_id = '$message' or to_id = '$message'"
-want_value G10 "the message is no node of this child" 0 \
-  "select count(*) from graph_nodes where id = '$message'"
+want_value G10 "no delivered_to, authored_by or other tuple but its base attributes stands on the message (the comment G9 delivered stands in $comment_tuples)" 0 \
+  "select count(*) from graph_tuples where (from_id = '$message' or to_id = '$message')
+     and kind not in ('visibility', 'state', 'project', 'parties')"
 
 # G11: an ask a session follows records that session, and a session the store never recorded
 # answers no node at all, read through the server's own node reader. An ask's followers are the
@@ -1026,8 +1035,9 @@ expect G13 "what the proved session wrote stays that session's and is on no pers
 #     answer to it states none. A delivered_to under any other actor, or under one of these two
 #     actors with the other's event, fails.
 #   - visibility and state, the base attributes, are stated by the write that made the node or
-#     moved them, under that write's writer, event and time (graphstore's queueNodes): a comment's
-#     by its own write at its own time; a person's and a session's that wrote by the comment that
+#     moved them, under that write's writer, event and time (graphstore's queueNodes), as is a
+#     comment's project, the third base attribute this run's nodes carry: a comment's by its own
+#     write at its own time; a person's and a session's that wrote by the comment that
 #     first named them, at that comment's time; a session's an attempt reached by the settle of
 #     that attempt, at the attempt's time (graphstore.QueueReached), or by an answer it gave, at the
 #     answer's (api's queueAnsweredDelivery); a follower's by the follow, no earlier than it
@@ -1176,7 +1186,7 @@ tuples_carry G14 "every alias_of tuple of this run's sessions carries the actor 
    left join comments c on c.id::text = e.payload->>'id' and c.author = e.actor
      and t.from_id in (c.author->>'id', c.author->'act'->>'session')
    where t.kind = 'alias_of' and $run_nodes"
-for attribute in visibility state; do
+for attribute in visibility state project; do
   tuples_carry G14 "every $attribute tuple of this run's nodes carries the writer, the event and the time of the write that made or moved it" \
     "select format('%s:%s %s %s', t.from_kind, t.from_id, t.kind, t.to_id) as tuple,
             t.who, t.source_event, t.at,
@@ -1242,6 +1252,6 @@ want_value G14 "no tuple of a kind this driver holds no rule for stands on this 
   "select count(*) || coalesce(': ' || string_agg(distinct t.from_kind || ' ' || t.kind, ', '), '')
    from graph_tuples t
    where $run_nodes and t.from_kind <> 'person'
-     and t.kind not in ('authored_by', 'delivered_to', 'part_of', 'held_by', 'alias_of', 'visibility', 'state')"
+     and t.kind not in ('authored_by', 'delivered_to', 'part_of', 'held_by', 'alias_of', 'visibility', 'state', 'project')"
 
 printf 'graph-store.sh: every check passed\n'

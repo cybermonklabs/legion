@@ -9,8 +9,9 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -92,7 +93,7 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	// Everything the retraction is decided on is read in the statements after that lock, each
 	// taking a fresh snapshot: a second retraction of this result, whose only writer is this
 	// route under this lock, reads the first one as soon as that one commits.
-	result, err := readRetractedResult(r.Context(), tx, resultID)
+	result, err := readRetractedResult(r.Context(), tx, who, resultID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -213,13 +214,14 @@ func claimingSession(ctx context.Context, q queryer, key string) (string, error)
 // lock here would serialise nothing the owner's lock does not: check_results is written once, by
 // the record route under the check issue's owner lock, and two retractions of one result are
 // taken one after the other because both hold that lock while they read and write
-// (retractCheckResult).
-func readRetractedResult(ctx context.Context, tx pgx.Tx, id string) (retractedResult, error) {
+// (retractCheckResult). It reads the result as who reads the issue it was recorded on: a result
+// of an issue who does not see is a result no row holds.
+func readRetractedResult(ctx context.Context, tx pgx.Tx, who model.Actor, id string) (retractedResult, error) {
 	var result retractedResult
 	err := tx.QueryRow(ctx, `
 		select issue_key, check_issue_key, check_block_id, commit_sha, session
-		from check_results where id = $1
-	`, id).Scan(&result.IssueKey, &result.CheckIssueKey, &result.CheckBlockID,
+		from check_results where id = $1 and `+access.IssueProjectClause("check_results.issue_key", "$2")+`
+	`, id, refs.VisibilityArg(who)).Scan(&result.IssueKey, &result.CheckIssueKey, &result.CheckBlockID,
 		&result.CommitSHA, &result.Session)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return retractedResult{}, errorf(http.StatusNotFound, "RESULT_NOT_FOUND", "result not found")

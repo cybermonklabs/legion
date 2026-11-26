@@ -24,6 +24,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -58,11 +59,12 @@ var renewalFailures = []renewalFailure{
 }
 
 // newRenewalRig is a box with endedPerson signed in, whose broker mints access tokens that live a
-// minute: inside DefaultRenewBefore, so every Token and every renewal of Run asks the issuer for a
-// fresh identity token first. Its clients' clock stands still (the authority's now, which
-// personClient's clients read too), so the token in hand stays one Token could still answer
-// however long the box takes between two calls. Under f.held, the broker refuses every trade
-// after the first membership_held.
+// minute: inside DefaultRenewBefore, so a token in hand is held only until halfway through what
+// was left of its life (renewalAt) and every renewal of Run asks the issuer for a fresh identity
+// token first. Its clients' clock stands still (the authority's now, which personClient's
+// clients read too) until a test steps it (pastRenewal), so the token in hand stays one Token
+// could still answer however long the box takes between two calls. Under f.held, the broker
+// refuses every trade after the first membership_held.
 func newRenewalRig(t *testing.T, f renewalFailure) (*signInRig, SignInRecord) {
 	t.Helper()
 	rig := newSignInRig(t, func(n int, _ url.Values) (int, map[string]any) {
@@ -73,9 +75,17 @@ func newRenewalRig(t *testing.T, f renewalFailure) (*signInRig, SignInRecord) {
 		answer["expires_in"] = 60
 		return 200, answer
 	})
-	start := time.Now()
-	rig.authority.now = func() time.Time { return start }
+	rig.clock = &atomic.Int64{}
+	rig.clock.Store(time.Now().UnixNano())
+	rig.authority.now = func() time.Time { return time.Unix(0, rig.clock.Load()) }
 	return rig, rig.signIn(t, endedPerson)
+}
+
+// pastRenewal steps the rig's clock 31 seconds on: past the renewal time of a minute's token that
+// landed at the clock's last reading (halfway through its life, renewalAt), and short of its
+// expiry, so the next Token trades again while the token in hand is still live.
+func (rig *signInRig) pastRenewal() {
+	rig.clock.Add(int64(31 * time.Second))
 }
 
 // apply makes the issuer answer f's refusal to every refresh from now on; the broker's hold is
@@ -121,6 +131,9 @@ func TestASignInTheIssuerEndedIsNotServedFromTheTokenInHand(t *testing.T) {
 				t.Fatalf("the first trade of %s's sign-in: %v", endedPerson, err)
 			}
 			f.apply(rig)
+			// Past the first token's renewal time and short of its expiry: Token trades again,
+			// and the token in hand is one it could still answer.
+			rig.pastRenewal()
 			token, err := client.Token(ctx)
 			switch {
 			case !f.final && (err != nil || token == nil || token.AccessToken != first.AccessToken):
@@ -222,6 +235,7 @@ func TestAnIssuerEndingASignInWhoseTokenIsStillLiveFallsBackToTheMachine(t *test
 				t.Fatalf("the first enrolment answered %+v, %v; want credential-1", first, err)
 			}
 			f.apply(rig)
+			rig.pastRenewal()
 			authority, err := rig.authority.Current(ctx)
 			switch {
 			case !f.final && (err != nil || authority == nil || authority.CredentialID != "credential-1" || authority.Operator != endedPerson):

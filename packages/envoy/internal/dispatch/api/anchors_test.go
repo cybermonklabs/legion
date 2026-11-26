@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-
 	"net/http"
 	"regexp"
 	"strings"

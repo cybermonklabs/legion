@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -27,7 +28,6 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
-
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -41,6 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -464,7 +465,10 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		})
 		request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/credential-requests?approver=me", nil), "alice")
 		response := httptest.NewRecorder()
-		routerFor(t, boot, routes.AppContextOptions{}).ServeHTTP(response, request)
+		// A database, as every deployment has: the read check resolves the signed-in caller's
+		// viewer from it before the route reads the broker, and a server with none reads every
+		// caller as the closed viewer, which no deployment-wide read admits.
+		routerFor(t, boot, routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
 		if response.Code != http.StatusOK {
 			t.Fatalf("GET /api/v1/credential-requests: %d %s", response.Code, response.Body.String())
 		}
@@ -1128,6 +1132,52 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"ENVOY_ACCOUNT_GOOGLE_AUDIENCE": "envoy-listener", "ENVOY_ACCOUNT_TOKEN_FILE": "/run/token"}, "ENVOY_ACCOUNT_GOOGLE_AUDIENCE")
 		},
+		"DISPATCH_PROJECT_OWNER_FALLBACK": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_PROJECT_OWNER_FALLBACK": " operator@example.com "}); boot.ProjectOwnerFallback != "operator@example.com" {
+				t.Errorf("ProjectOwnerFallback = %q", boot.ProjectOwnerFallback)
+			}
+			if boot := resolveWith(t, nil); boot.ProjectOwnerFallback != "" {
+				t.Errorf("unset: ProjectOwnerFallback = %q", boot.ProjectOwnerFallback)
+			}
+			for _, value := range []string{"Operator@example.com", "operator", "operator@", "@example.com", "operator@example.com,carol@example.com", "op erator@example.com"} {
+				refusedWith(t, map[string]string{"DISPATCH_PROJECT_OWNER_FALLBACK": value}, "DISPATCH_PROJECT_OWNER_FALLBACK must be a lowercase email")
+			}
+			// Its reader is the boot's owner check (store.EnsureProjectOwners): over a project
+			// with no owner a process refuses to serve, naming
+			// the project and both repairs, until the setting names a full member, whom the boot
+			// then makes the project's owner.
+			t.Run("boot", func(t *testing.T) {
+				ctx := context.Background()
+				database := storetest.Open(t)
+				if _, err := database.Pool.Exec(ctx, `
+					insert into people (email, member_kind) values ('operator@example.com', 'full');
+					alter table projects disable trigger projects_owner_from_default;
+					insert into projects (key, name, default_assignee) values ('STRAY', 'Its default never signed in', 'gone@example.com');
+					alter table projects enable trigger projects_owner_from_default;
+				`); err != nil {
+					t.Fatalf("seed a project with no owner: %v", err)
+				}
+				refused := startDispatchProcess(t, database.Pool.Config().ConnString())
+				refused.WaitExit(t, "its start over a project with no owner")
+				output := refused.Output.String()
+				if code := refused.Cmd.ProcessState.ExitCode(); code != 1 {
+					t.Errorf("unset: Dispatch exited %d over a project with no owner, want 1:\n%s", code, output)
+				}
+				for _, named := range []string{"STRAY", "DISPATCH_PROJECT_OWNER_FALLBACK", "envoy-dispatch project-owner <KEY> <email>"} {
+					if !strings.Contains(output, named) {
+						t.Errorf("unset: Dispatch refused its start without naming %q:\n%s", named, output)
+					}
+				}
+				served := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
+					Env: map[string]string{"DISPATCH_PROJECT_OWNER_FALLBACK": "operator@example.com"},
+				})
+				served.waitHealthy(t)
+				var owner string
+				if err := database.Pool.QueryRow(ctx, `select owner from projects where key = 'STRAY'`).Scan(&owner); err != nil || owner != "operator@example.com" {
+					t.Errorf("DISPATCH_PROJECT_OWNER_FALLBACK=operator@example.com: STRAY's owner after the boot = %q, %v; want the operator", owner, err)
+				}
+			})
+		},
 		"DISPATCH_APP_CLIENT_ID": func(t *testing.T) {
 			if clientID, source, err := loadApp(t, map[string]string{"DISPATCH_APP_CLIENT_ID": "Iv1.env"}); err != nil || clientID != "Iv1.env" || source != "env" {
 				t.Errorf("set: client %q from %q, %v; want the variable over app.json", clientID, source, err)
@@ -1497,7 +1547,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				}
 				request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/credential-requests?approver=me", nil), "alice")
 				response := httptest.NewRecorder()
-				routerFor(t, resolveWith(t, nil), routes.AppContextOptions{}).ServeHTTP(response, request)
+				routerFor(t, resolveWith(t, nil), routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
 				if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != "null" {
 					t.Errorf("unset: GET /api/v1/credential-requests answered %d %s, want 200 null", response.Code, response.Body.String())
 				}
@@ -1830,14 +1880,16 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Error("DISPATCH_TEST_HOOKS=true: hooks on, want only 1 to mount them")
 			}
 			// The routes the flag mounts: the e2e harness's hooks that close every open live socket, as
-			// a restart (1012) or the socket's age (4001) does.
+			// a restart (1012) or the socket's age (4001) does. They are deployment writes, and a router
+			// with no database reads every caller as the closed viewer, which no deployment write
+			// admits, so the router gets the store a deployment has.
 			t.Run("router", func(t *testing.T) {
 				for _, hook := range []string{"/api/v1/live/_test/disconnect", "/api/v1/live/_test/rotate"} {
 					for value, want := range map[string]int{"1": http.StatusOK, "": http.StatusNotFound} {
 						request := signedIn(t, httptest.NewRequest(http.MethodPost, hook, nil), "alice")
 						request.Header.Set("Sec-Fetch-Site", "same-origin")
 						response := httptest.NewRecorder()
-						routerFor(t, resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": value}), routes.AppContextOptions{}).ServeHTTP(response, request)
+						routerFor(t, resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": value}), routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
 						if response.Code != want {
 							t.Errorf("DISPATCH_TEST_HOOKS=%q: POST %s answered %d %s, want %d", value, hook, response.Code, response.Body.String(), want)
 						}
@@ -2201,7 +2253,7 @@ func TestDocumentDepsCarryEveryBootSetting(t *testing.T) {
 		MaxDocConnections: 16,
 		TestHooksEnabled:  true,
 	}
-	got := documentDeps(boot, docs.Deps{})
+	got := documentDeps(boot, "", docs.Deps{})
 	for _, field := range []struct {
 		name      string
 		got, want any
@@ -2220,6 +2272,22 @@ func TestDocumentDepsCarryEveryBootSetting(t *testing.T) {
 	}
 }
 
+// The document service reads a dashboard link as the API does, whatever the server URL ends in:
+// api.NewDeps trims one trailing `/` before it builds its origins, and documentDeps trims the same
+// one, so a server URL ending in `//` reads `/issues/ABC-1` under it as an issue in both, and a
+// server URL ending in one `/` or none does too.
+func TestDocumentDepsReadLinksAsTheAPIDoes(t *testing.T) {
+	for _, serverURL := range []string{"https://dispatch.example", "https://dispatch.example/", "https://dispatch.example//"} {
+		apiOrigins := text.NewOrigins(strings.TrimSuffix(serverURL, "/"))
+		docOrigins := documentDeps(bootConfig{}, serverURL, docs.Deps{}).Origins
+		const page = "https://dispatch.example/issues/ABC-1"
+		api, document := text.Extract(page, apiOrigins), text.Extract(page, docOrigins)
+		if !reflect.DeepEqual(document, api) || len(api) != 1 || api[0].Kind != "issue" {
+			t.Errorf("server URL %q: the document service reads %s as %+v and the API as %+v, want both the issue", serverURL, page, document, api)
+		}
+	}
+}
+
 // documentCapReachesTheService hands name, one of the document service's caps, to the service
 // main builds (newDocumentService) through the settings read alone, and reads back the cap it
 // sets (capOf of docs.Service.RoomCapsForTest): unset, the service's own default of 1,000; set,
@@ -2228,7 +2296,7 @@ func documentCapReachesTheService(t *testing.T, name string, capOf func(rooms, c
 	t.Helper()
 	for value, want := range map[string]int{"": 1000, " 25 ": 25} {
 		boot := resolveWith(t, map[string]string{name: value})
-		documents := newDocumentService(boot, docs.Deps{})
+		documents := newDocumentService(boot, "", docs.Deps{})
 		t.Cleanup(func() {
 			if err := documents.Shutdown(context.Background()); err != nil {
 				t.Errorf("shut the document service down: %v", err)
@@ -2341,7 +2409,7 @@ func TestACredentialPageWithAnUnreadableAccountTokenDoesNotBlameTheBroker(t *tes
 			})
 			request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/credential-requests?approver=me", nil), "alice")
 			response := httptest.NewRecorder()
-			routerFor(t, boot, routes.AppContextOptions{}).ServeHTTP(response, request)
+			routerFor(t, boot, routes.AppContextOptions{Store: storetest.Open(t)}).ServeHTTP(response, request)
 			if called {
 				t.Fatal("the broker was called with no token Dispatch could read")
 			}

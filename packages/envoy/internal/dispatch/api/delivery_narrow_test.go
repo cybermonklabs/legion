@@ -178,11 +178,11 @@ func TestANarrowedPopulationComputesWhatAFreshReadReturns(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse %q: %v", rawQuery, err)
 		}
-		timeline, err := s.readDeliveryPopulation(ctx, settings, from, to, query, true)
+		timeline, err := s.readDeliveryPopulation(ctx, everyReader, settings, from, to, query, true)
 		if err != nil {
 			t.Fatalf("read the timeline population: %v", err)
 		}
-		measured, err := s.readDeliveryPopulation(ctx, settings, from, to, query, false)
+		measured, err := s.readDeliveryPopulation(ctx, everyReader, settings, from, to, query, false)
 		if err != nil {
 			t.Fatalf("read the measures population: %v", err)
 		}
@@ -207,7 +207,7 @@ func TestANarrowedPopulationComputesWhatAFreshReadReturns(t *testing.T) {
 	// without joining the waiting line (#4 and #5 shipped three hours in by run 302, whose head
 	// follows their merges; #6 is another repository's); by from+3d only #7 remains, and #6's issue
 	// and session titles have gone.
-	timeline, err := s.readDeliveryPopulation(ctx, settings, from, to, url.Values{}, true)
+	timeline, err := s.readDeliveryPopulation(ctx, everyReader, settings, from, to, url.Values{}, true)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestANarrowedPipelinePopulationComputesWhatAFreshReadReturns(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	pop, err := directServer(deps).readPipelinePopulation(t.Context(), settings, at)
+	pop, err := directServer(deps).readPipelinePopulation(t.Context(), everyReader, settings, at)
 	if err != nil {
 		t.Fatalf("read the pipeline population: %v", err)
 	}

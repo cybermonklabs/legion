@@ -162,7 +162,7 @@ func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
 	}
 	want := map[string][]Target{spec: {}, notes: {}, project: {}}
 	for _, shape := range shapes {
-		got, err := ScopeOf(ctx, tx, model.Actor{}, shape.Kind, shape.ID)
+		got, err := ScopeOf(ctx, tx, serverReader, shape.Kind, shape.ID)
 		if err != nil {
 			t.Fatalf("scope of %s: %v", shape.name, err)
 		}
@@ -185,7 +185,7 @@ func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
 			t.Errorf("scope sources of %s = %v; want %v", doc, got, sources)
 		}
 	}
-	if got, err := ScopeOf(ctx, tx, model.Actor{}, "comment", "c1"); err != nil || got != "" {
+	if got, err := ScopeOf(ctx, tx, serverReader, "comment", "c1"); err != nil || got != "" {
 		t.Fatalf("scope of a source that is not a uuid = %q, %v; want none", got, err)
 	}
 }
@@ -279,7 +279,9 @@ func TestPendingScopeAgreesWithScopeOf(t *testing.T) {
 		if err != nil {
 			t.Fatalf("pending scope of %s: %v", shape.name, err)
 		}
-		stored, err := ScopeOf(ctx, tx, model.Actor{}, shape.kind, shape.stored)
+		// The server's own reader, which sees every project: a pending document's scope is the
+		// server's reading too, read for no caller.
+		stored, err := ScopeOf(ctx, tx, model.ServerReader, shape.kind, shape.stored)
 		if err != nil {
 			t.Fatalf("scope of the stored %s: %v", shape.name, err)
 		}
@@ -380,7 +382,7 @@ func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
 		"```\n"+copiedFrom("unclosed", source))
 	insertScopeVersion(t, tx, handbook, 1, ":::ask{#rule}\nWhich?\n:::\n")
 
-	issueAsk := func(id string) text.Ref { return text.Extract("dispatch://ACME-1/ask/"+id, "")[0] }
+	issueAsk := func(id string) text.Ref { return text.Extract("dispatch://ACME-1/ask/"+id, text.NewOrigins(""))[0] }
 	for doc, want := range map[string]map[string]text.Ref{
 		spec: {
 			"q1":     issueAsk(q1),
@@ -390,9 +392,9 @@ func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
 			"after":  issueAsk(source),
 		},
 		record:   nil,
-		handbook: {"rule": text.Extract("dispatch://ACME/artifact/handbook/ask/"+projectQuestion, "")[0]},
+		handbook: {"rule": text.Extract("dispatch://ACME/artifact/handbook/ask/"+projectQuestion, text.NewOrigins(""))[0]},
 	} {
-		got, err := QuestionMap(ctx, tx, model.Actor{}, doc)
+		got, err := QuestionMap(ctx, tx, serverReader, doc)
 		if err != nil {
 			t.Fatalf("question map of %s: %v", doc, err)
 		}
@@ -422,13 +424,13 @@ func TestQuestionMapReadsABlockIDWrittenQuoted(t *testing.T) {
 	insertScopeVersion(t, tx, spec, 1, ":::ask{#q1}\nWhich?\n:::\n\n"+
 		`:::ask{id="q 2" state="open"}`+"\nWhich?\n:::\n")
 
-	got, err := QuestionMap(ctx, tx, model.Actor{}, spec)
+	got, err := QuestionMap(ctx, tx, serverReader, spec)
 	if err != nil {
 		t.Fatalf("question map of the spec: %v", err)
 	}
 	want := map[string]text.Ref{
-		"q1":  text.Extract("dispatch://ACME-1/ask/"+shortcut, "")[0],
-		"q 2": text.Extract("dispatch://ACME-1/ask/"+quoted, "")[0],
+		"q1":  text.Extract("dispatch://ACME-1/ask/"+shortcut, text.NewOrigins(""))[0],
+		"q 2": text.Extract("dispatch://ACME-1/ask/"+quoted, text.NewOrigins(""))[0],
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("question map of the spec = %#v; want %#v", got, want)

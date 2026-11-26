@@ -1,0 +1,34 @@
+-- 20261116081157_session_projects_proven.up.sql — session_projects holds only sessions a
+-- credential proved.
+--
+-- Private projects' R4: a session is one of a project's agents when session_projects records that it
+-- acted in the project (access.SessionClause), which shows it to the project's restricted and listed
+-- viewers. Migration 20261116015736_project_access recorded every session an event's actor named,
+-- and a credential that proves no session (the deployment's shared token, a personal token) names
+-- the session in the request body (api.bearerSessionActor), so one holder of a project's token could
+-- make any other session look like one of that project's agents. From this release on, the live
+-- insert (events.queueSessionProjects) and `envoy-dispatch backfill-session-projects` record only a
+-- session the event's credential proved: an act naming the actor's own session and no personal token
+-- (events.provedSession).
+--
+-- The rows recorded under the earlier rule cannot be told apart once written, so every row goes,
+-- and the marker with them: the operator runs `envoy-dispatch backfill-session-projects` again after
+-- the deploy, which records the proven pairs of every event and writes the marker again. Until it
+-- does, no project can be made private (409 PRIVATE_PROJECTS_INCOMPLETE), and every pair left out
+-- fails closed: a viewer that is not open sees a session only as its own or through a project it
+-- sees, and an open viewer, which reads every session no pair places in a project it does not see,
+-- reads no session but its own while the marker is absent and any project is private
+-- (access.SessionClause). With no private project an open viewer reads every session, as before.
+--
+-- Under Recreate, the build before this one has stopped before the migration runs, so nothing
+-- records a pair under the earlier rule after the delete. A deployment that rolls runs
+-- `envoy-dispatch backfill-session-projects --reset` once its last old pod is gone, which runs these
+-- two deletes and fills again (cmd/dispatch/README.md, "Filling the sessions' projects").
+--
+-- Both tables are a read model of `events`, small, and written by no reader of a row; each delete
+-- takes its table's lock for as long as it reads its rows.
+--
+-- Its identifier is the UTC moment it was written, as `migrationid` requires of every migration
+-- past the numbered series, which closed at 0161.
+delete from session_projects;
+delete from session_projects_filled;

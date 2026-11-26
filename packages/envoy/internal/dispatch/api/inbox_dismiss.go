@@ -11,7 +11,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -569,6 +568,10 @@ func inboxDismissSeenNoReply(row, field string) error {
 // dismissInbox answers POST /api/v1/me/inbox/dismiss.
 func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
+	if !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}

@@ -60,6 +60,13 @@ type settingsResponse struct {
 	// field and reads no type tag, so it serves a secret that carries type alone as a stored
 	// secret, and `agent-secrets` writes no typed secret through a broker that does not say this.
 	SecretTypeTag bool `json:"secret_type_tag"`
+	// Always true: this broker takes approver_issuer, approver_subject and
+	// approver_session_generation in a machine login's approve (decideBody), records the account on
+	// the login it mints and refuses an approval they place before a replacement (403
+	// APPROVER_REPLACED). Dispatch sends them only to a broker that says this
+	// (internal/dispatch/cipher's Client.TakesApproverFields): a broker from before them sends no
+	// such field and refuses a decision body carrying any of them 400 INVALID_DECISION.
+	ApproverFields bool `json:"approver_fields"`
 }
 
 // judgeKey is one key in settingsResponse.JudgeKeys.
@@ -78,7 +85,7 @@ type judgeKey struct {
 // the key under the cloud credential alone, with no identity at the broker at all.
 func (s *server) readSettings(w http.ResponseWriter, r *http.Request) {
 	resp := settingsResponse{Store: s.deps.SecretsStore, SecretsPrefix: s.deps.SecretsPrefix,
-		GoogleExchangeAudience: s.deps.GoogleExchangeAudience, SecretTypeTag: true}
+		GoogleExchangeAudience: s.deps.GoogleExchangeAudience, SecretTypeTag: true, ApproverFields: true}
 	switch s.deps.SecretsStore {
 	case secrets.StoreGCP:
 		resp.KMSKeyName = s.deps.SecretsKMSKey
@@ -155,8 +162,10 @@ const RereadAcceptedReason = "the reread was taken; this broker says what it ser
 //
 // A caller that sends a Proof header must be a session the broker authenticates, as on every
 // session route (sessionCaller: 401 PROOF_INVALID, or 503 when the proof cannot be checked), and
-// is answered as before, once the reread is done: whether the broker serves the name, why not, and
-// as which type. That is more than a request for the secret tells a session, which is refused
+// one whose enrollment names a person Dispatch holds is refused as on every session route
+// (refuseHeldSession: 403 MEMBERSHIP_HELD, or 503 HOLD_UNCHECKABLE). Any other is answered as
+// before, once the reread is done: whether the broker serves the name, why not, and as which
+// type. That is more than a request for the secret tells a session, which is refused
 // UNKNOWN_SECRET alike for a name no secret carries and for a secret the broker refuses. A
 // session's reread whose request ended first - its caller went away, or its deadline passed - is
 // the request's failure, not the broker's, so it logs nothing, as the miss path logs nothing for
@@ -188,6 +197,9 @@ func (s *server) rereadSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	recorder.NoteCaller(answer.CallerSession, who.enrollment)
+	if s.refuseHeldSession(w, r, who.enrollment) {
+		return
+	}
 	lk, err := s.refreshAndTell(r.Context(), name, nil)
 	switch {
 	case err != nil && r.Context().Err() != nil:

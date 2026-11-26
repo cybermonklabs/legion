@@ -192,23 +192,13 @@ const itemBlockCurrent = `b.position is not null`
 // written over the arm's rows aliased g. It reads the ids once, and then, for each id, every arm
 // of graph_edges that can end at a block of that kind through its own index of targets, keyed by
 // to_kind and to_id (a reply by replies_to_block), each with the view's own rule for a current
-// block (migration 20261105014808): a block's pointer while block_refs lists it, a link an item's
-// block holds while that block is current (itemBlockLinks), and a reply to an ask's part told
-// from one to a comment's block by its prefix. Each edge comes once: a node's block ids are
-// distinct, document_blocks being keyed by document and block and an item's blocks table holding
-// one row for each item and block id.
-//
-// A document block's link is read from its block_refs row whether the row names its node or not,
-// under the rule each kind of row is listed by (blockRefListed), as the out read of a document
-// reads the same rows: a row that names no node is the view's block_refs arm, and one that names
-// its node is the row the view's tuple arm answers that link only while it carries the node
-// (migration 20261109215947), so the row read here is that link whichever arm of the view would
-// answer it, through the one index of targets block_refs has.
-//
-// A block the acting person, whose credential the read binds at seen, may not see holds no edge
-// of the read: its id is tested once against the block kind's predicate (VisibleKind), before
-// any link table is read for it.
-func keyedBlockArm(blockKind, ids, source, seen string) string {
+// block (migration 20261105014808): a block_refs row while blockRefListed lists it, the test the
+// view's arm that answers the row makes (its tuple arm for a row that names its node, migration
+// 20261109215947), a link an item's block holds while that block is current (itemBlockLinks), and
+// a reply to an ask's part told from one to a comment's block by its prefix. Each edge comes once:
+// a node's block ids are distinct, document_blocks being keyed by document and block and an item's
+// blocks table holding one row for each item and block id.
+func keyedBlockArm(blockKind, ids, source string) string {
 	arms := []string{
 		`select r.from_kind, r.from_id, r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq
 				from refs r where r.to_kind = '` + blockKind + `' and r.to_id = k.node_id`,
@@ -234,7 +224,7 @@ func keyedBlockArm(blockKind, ids, source, seen string) string {
 				union all
 				`) + `
 			) g (from_kind, from_id, kind, to_kind, to_id, created_at, source_seq)
-			where ` + VisibleKind(blockKind, "k.node_id", seen) + ` and ` + source
+			where ` + source
 }
 
 // blockRepliesArm is graph_edges' arm of the replies to a block of an item of kind owner, keyed
@@ -385,7 +375,9 @@ func resolveEdges(ctx context.Context, q Queryer, who model.Actor, query Query) 
 // (visibility.go) and never applied to the rows in Go: an edge whose far end who may not see is
 // no row of this read, and neither is one at a block who may not see. That is what keeps a
 // count and the list behind it saying the same thing, since the count binds the same predicate
-// over the same ends (BacklinkCounts).
+// over the same ends (BacklinkCounts). The node read is held to who by the same registry
+// (queriedNodeSeen), so the read holds on its own: a node who may not see has no edge here,
+// whatever the caller's own read of the node answered before.
 //
 // The node's own kind is written into the statement as a literal and only its id is bound, as
 // the count writes the kind it counts for (backlinkCountSQL). graph_edges is a union of
@@ -404,7 +396,9 @@ func resolveEdges(ctx context.Context, q Queryer, who model.Actor, query Query) 
 // node's own. Measured at --scale 1 with jit off, it took 165 of the 166 ms of the statement for
 // the seed's root message with the most replies and 205 of the 261 ms of the one for the seed's
 // anchored document, and it grew with every block link of that kind in the database. The arm over
-// the node itself reads graph_edges by to_kind and to_id, which reach each arm's index.
+// the node itself reads graph_edges by to_kind and to_id, which reach each arm's index. The block
+// arm carries the visibility predicate of the block it ends at beside the source's, as the arm
+// over the node itself carries the source's.
 func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) ([]edgeRow, error) {
 	if !slices.Contains(nodeKinds, query.Kind) {
 		// A kind no loader resolves is the address of no node this build knows, and the
@@ -449,7 +443,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		case document:
 			arms += `
 			union all
-			` + keyedBlockArm("block", documentBlockIDs(id), source, seen)
+			` + keyedBlockArm("block", documentBlockIDs(id), VisibleKind("block", "g.to_id", seen)+` and `+source)
 			if query.WholeDocuments {
 				// An ask's row holds its question's links alone, so the only edge from an ask
 				// that cites the document in an option or in its answer is that part's.
@@ -460,7 +454,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		case itemBlocks:
 			arms += `
 			union all
-			` + keyedBlockArm(item.BlockKind(), itemBlockIDs(item, blocks), source, seen)
+			` + keyedBlockArm(item.BlockKind(), itemBlockIDs(item, blocks), VisibleKind(item.BlockKind(), "g.to_id", seen)+` and `+source)
 		}
 	case query.Direction == "out" && document:
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
@@ -489,7 +483,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 	}
 	var sql strings.Builder
 	sql.WriteString(`select kind, other_kind, other_id, created_at, source_seq, at_block from (` + arms + `)
-		as e (kind, other_kind, other_id, created_at, source_seq, at_block) where true`)
+		as e (kind, other_kind, other_id, created_at, source_seq, at_block) where ` + queriedNodeSeen(query, seen))
 	if len(query.Kinds) > 0 {
 		args = append(args, query.Kinds)
 		sql.WriteString(" and kind = any($" + strconv.Itoa(len(args)) + ")")
@@ -538,6 +532,19 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		return nil, fmt.Errorf("iterate graph edges: %w", err)
 	}
 	return edges, nil
+}
+
+// queriedNodeSeen is the registry's predicate over the node a read of edges is of, bound at $1 in
+// the spelling its direction keys it by: the store's own id for an inbound read, and for an
+// outbound read the from side's, which the kind's rewrite translates (an artifact's uuid to its
+// ref_key), as VisibleEnd translates it. It names only parameters, so Postgres tests it once for
+// the whole statement.
+func queriedNodeSeen(query Query, seen string) string {
+	address := "$1"
+	if rewrite := nodeRegistry[query.Kind].visibility.fromAddress; query.Direction == "out" && rewrite != nil {
+		address = rewrite(address)
+	}
+	return VisibleKind(query.Kind, address, seen)
 }
 
 func foldsAnswers(query Query) bool {
@@ -688,11 +695,6 @@ func (n resolvedNode) name() string {
 
 // resolveNodes loads every distinct other end by kind, each loader answering only what who may
 // see.
-//
-// The block, ask, comment and message loaders join issues, artifacts and artifact_versions by
-// lateral probes by key that each stop at their first row, so however many ids a read passes, the
-// planner cannot hash-join a sequential read of a whole table, as it did for a plain join to
-// issues from about 80 ids with 12,000 issues. Each of those loaders names its probes.
 func resolveNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool, rows []edgeRow) (map[[2]string]resolvedNode, error) {
 	byKind := make(map[string][]string)
 	seen := make(map[[2]string]struct{})
@@ -706,14 +708,14 @@ func resolveNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool
 	}
 	nodes := make(map[[2]string]resolvedNode, len(seen))
 	for kind, ids := range byKind {
-		load := nodeRegistry[kind]
-		if load == nil {
+		entry, known := nodeRegistry[kind]
+		if !known || entry.load == nil {
 			// A kind this build cannot address is a node a newer build added, read while both
 			// builds serve one graph_edges: its edges are omitted, as an edge whose other end no
 			// longer exists is. A kind the registry resolves no nodes of is omitted the same way.
 			continue
 		}
-		if err := load(ctx, q, who, kind, byRefKey, ids, nodes); err != nil {
+		if err := entry.load(ctx, q, who, kind, byRefKey, ids, nodes); err != nil {
 			return nil, err
 		}
 	}
@@ -845,7 +847,7 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 // that version (blockFirstVersion); its last change is its changed version, by that version's
 // authors. It belongs to its document at its changed version.
 //
-// Its joins to artifacts and artifact_versions are lateral probes by key (resolveNodes).
+// Its joins to artifacts and artifact_versions are lateral probes by key (nodeLoader).
 func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	held, args := blockNodesAddressed(ids, who)
 	rows, err := q.Query(ctx, `
@@ -954,12 +956,15 @@ func anchorVersion(alias string) string {
 // An artifact_id that casts to no uuid names no document, so such an anchor falls through to the
 // branch below - the ask's block document, at that branch's version - exactly as an anchor
 // carrying no artifact_id at all does, and as both search arms link the same ask. The version and
-// the document therefore always come from one branch.
+// the document therefore always come from one branch. The document is joined only where the
+// reader sees its node (VisibleKind), as loadArtifactNodes reads it: a stored anchor or approval
+// naming a document the reader may not see names no parent document, as one naming a uuid no
+// document holds does.
 //
 // The edit lookup repeats events_ask_payload_id's type list (migration 0030), so the planner can
 // prove the partial index serves it.
 //
-// Its joins to issues and artifacts are lateral probes by key (resolveNodes).
+// Its joins to issues and artifacts are lateral probes by key (nodeLoader).
 func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	anchorArtifact := store.CastableUUID(`k.anchor->>'artifact_id'`)
 	rows, err := q.Query(ctx, `
@@ -980,7 +985,7 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 			  when k.block_artifact_id is not null then k.block_artifact_id
 			  when k.kind = 'approval' then (k.approval->>'artifact_id')::uuid
 			  else k.artifact_id
-			end
+			end and `+VisibleKind("artifact", "doc.ref_key", "$2")+`
 			limit 1
 		) doc on true
 		left join lateral (
@@ -1030,8 +1035,11 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 // (written_version). A comment written on no document belongs to its issue. A reply shares its
 // head's owner, and so the owner its reference, and the reference of the block it names, are
 // written under.
+// The document is joined only where the reader sees its node (VisibleKind), as loadAskNodes joins
+// an ask's: an anchor naming a document the reader may not see names no parent, as one naming a
+// uuid no document holds does.
 //
-// Its joins to issues and artifacts are lateral probes by key (resolveNodes).
+// Its joins to issues and artifacts are lateral probes by key (nodeLoader).
 func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
 		select c.id::text, c.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), c.body,
@@ -1042,7 +1050,9 @@ func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string,
 		left join lateral (select a.project_key, a.slug from artifacts a where a.id = c.artifact_id limit 1) a on true
 		left join lateral (
 			select doc.id, doc.issue_key, doc.project_key, doc.session_id, doc.slug, doc.kind, doc.is_primary
-			from artifacts doc where doc.id = coalesce((c.anchor->>'artifact_id')::uuid, c.artifact_id) limit 1
+			from artifacts doc where doc.id = coalesce((c.anchor->>'artifact_id')::uuid, c.artifact_id)
+			  and `+VisibleKind("artifact", "doc.ref_key", "$2")+`
+			limit 1
 		) doc on true
 		where c.id::text = any($1) and `+VisibleKind("comment", "c.id::text", "$2"), ids, VisibilityArg(who))
 	if err != nil {
@@ -1092,7 +1102,7 @@ func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string,
 // belongs to that block, another reply to the message it answers, which shares its issue, and
 // another message to its issue; a direct message belongs to no node.
 //
-// Its join to issues is a lateral probe by key (resolveNodes).
+// Its join to issues is a lateral probe by key (nodeLoader).
 func loadMessageNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
 		select m.id::text, m.issue_key, coalesce(i.project_key, ''), m.body, m.author, m.created_at, m.edited_at,

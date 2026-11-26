@@ -67,7 +67,7 @@ func awaitRecovered(t *testing.T, service *Service, artifactID string) {
 
 func requireText(t *testing.T, service *Service, artifactID, want string) {
 	t.Helper()
-	if got, err := service.Text(context.Background(), artifactID); err != nil || got != want {
+	if got, err := service.Text(context.Background(), serverReader, artifactID); err != nil || got != want {
 		t.Fatalf("document = %q (%v), want %q", got, err, want)
 	}
 }
@@ -467,7 +467,7 @@ func TestABlockPathReadThatCannotWaitFailsFastOnAFailedRoom(t *testing.T) {
 	if err := service.warmLiveDocument(ctx, artifactID); err != nil {
 		t.Fatalf("load live document: %v", err)
 	}
-	blocks, err := service.Blocks(ctx, artifactID)
+	blocks, err := service.Blocks(ctx, serverReader, artifactID)
 	if err != nil || len(blocks) != 1 {
 		t.Fatalf("blocks = %#v err=%v, want the one paragraph", blocks, err)
 	}
@@ -482,12 +482,12 @@ func TestABlockPathReadThatCannotWaitFailsFastOnAFailedRoom(t *testing.T) {
 	service.failRoom(artifactID, errors.New("injected room failure"))
 
 	failsFast(t, "a block path read that cannot wait", func() error {
-		_, err := service.BlockPath(WithoutRecoveryWait(ctx), artifactID, blocks[0].ID)
+		_, err := service.BlockPath(WithoutRecoveryWait(ctx), serverReader, artifactID, blocks[0].ID)
 		return err
 	})
 	waited := make(chan error, 1)
 	go func() {
-		_, err := service.BlockPath(ctx, artifactID, blocks[0].ID)
+		_, err := service.BlockPath(ctx, serverReader, artifactID, blocks[0].ID)
 		waited <- err
 	}()
 	select {

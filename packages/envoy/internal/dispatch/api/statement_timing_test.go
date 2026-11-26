@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -75,6 +76,7 @@ func TestStatementTimings(t *testing.T) {
 	// both sides read the same rows; the listing's status is a list where main's was one value,
 	// so each side is passed its own empty status.
 	filters := []any{subjects.Project, "", "", nil, []string{}, false, []int16{}, false}
+	viewer := refs.VisibilityArg(everyReader)
 	listArguments := slices.Concat(filters, []any{nil, nil, []string{}, false, false, false})
 	listArguments[1] = []string{}
 	runner.Pair(t, "the issue list, unpaged",
@@ -310,7 +312,7 @@ select count(*) from document_arm`
 // relatedMeaningQuery rank their arms by, which makes it the after side of that arm's pair. It
 // is built here rather than beside those two statements because this measurement is its only
 // reader, and a server would otherwise build it at start for nothing.
-var relatedDocumentKeywordLeg = searchDocumentKeywordLeg(relatedCoordinationRank)
+var relatedDocumentKeywordLeg = searchDocumentKeywordLeg(relatedCoordinationRank, 5)
 
 // databaseHoldsDocumentSearch answers whether the database under measurement holds
 // document_search (migration 20261101182447), which is what decides how the five document-arm

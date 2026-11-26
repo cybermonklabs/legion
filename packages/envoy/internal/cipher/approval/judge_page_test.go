@@ -5,6 +5,7 @@
 package approval_test
 
 import (
+	"crypto/sha256"
 	"errors"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/store"
 )
 
 // judgeModel is the model deciding in this file; the name the page prints for it is
@@ -153,8 +155,17 @@ func TestThePageOffersNoDecisionWhileTheJudgeHolds(t *testing.T) {
 	if grants, events := r.grants(t, p.recordID), r.terminalEvents(t, p.recordID); grants != 0 || events != 0 {
 		t.Errorf("after the POST naming it the record has %d grants and %d terminal events; want neither", grants, events)
 	}
-	if _, err := r.machine.ApplyDecision(t.Context(), p.recordID, true, ada); !errors.Is(err, requests.ErrJudgeHolds) {
-		t.Errorf("ApplyDecision by %s while the judge holds = %v; want requests.ErrJudgeHolds", ada, err)
+	// A decision is made under a live page session (requests.Machine.ApplyPageDecision), so the
+	// direct one is made under a session of ada's own, signed in for it.
+	direct := sha256.Sum256([]byte("ada's session for the direct decision"))
+	if err := r.st.CreateBrowserSession(t.Context(), store.BrowserSignIn{
+		Hash: direct, Login: ada, Account: store.IssuerSubject{Issuer: r.issuer.URL(), Subject: "sub-ada"},
+		Expires: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("sign %s in for the direct decision: %v", ada, err)
+	}
+	if _, err := r.machine.ApplyPageDecision(t.Context(), p.recordID, true, store.BrowserSessionRef{Hash: direct, Login: ada}); !errors.Is(err, requests.ErrJudgeHolds) {
+		t.Errorf("ApplyPageDecision by %s while the judge holds = %v; want requests.ErrJudgeHolds", ada, err)
 	}
 
 	if _, err := r.machine.LogJudged(t.Context(), p.recordID, judgeModel, map[string]any{"verdict": "deny", "error": "the model did not answer"}); err != nil {

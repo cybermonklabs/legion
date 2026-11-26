@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -44,11 +43,11 @@ func withdrawnReason(issueKey string) string {
 // keyed request it still ends at the keyed run's bound (keyedRunLimit). issueSettleBudget
 // (docs.SettleIssueDocuments) bounds only the waits for the rooms' durable appends and whether a
 // retry starts, not a settlement already running.
-func (s *server) settleIssueBeforeClose(ctx context.Context, issueKey string) {
+func (s *server) settleIssueBeforeClose(ctx context.Context, who model.Actor, issueKey string) {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return
 	}
-	if _, open, err := issueStatus(ctx, issueKey, pooledOwnerRead(s.deps.Store.Pool)); err != nil || !open {
+	if _, open, err := issueStatus(ctx, who, issueKey, pooledOwnerRead(s.deps.Store.Pool)); err != nil || !open {
 		return
 	}
 	if err := s.deps.Docs.SettleIssueDocuments(ctx, issueKey); err != nil {
@@ -327,7 +326,7 @@ func (s *server) readIssueAsks(ctx context.Context, tx pgx.Tx, query string, arg
 	for index := range asks {
 		pointers[index] = &asks[index]
 	}
-	if err := s.attachOpenedEventIDs(ctx, tx, pointers); err != nil {
+	if err := s.attachOpenedEventIDs(ctx, tx, nil, pointers); err != nil {
 		return nil, err
 	}
 	return asks, nil

@@ -105,8 +105,9 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 		return nil
 	}
 	// Every case below writes a line, and every line names the run, so the rule its words are kept
-	// by is read before any of them; an issue holding no check CI proves still reads nothing.
-	words, err := s.readLineWords(ctx, s.deps.Store.Pool)
+	// by is read before any of them; an issue holding no check CI proves still reads nothing. The
+	// line is the server's own, from CI's run, so it reads every project's key.
+	words, err := s.readLineWords(ctx, s.deps.Store.Pool, model.ServerReader)
 	if err != nil {
 		return err
 	}

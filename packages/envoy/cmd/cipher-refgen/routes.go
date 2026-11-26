@@ -140,8 +140,10 @@ type authClass struct {
 var credentialLabels = map[string]string{
 	"public":           "None",
 	"sessionAuth":      "Session proof",
+	"sessionEndAuth":   "Session proof, a held person's too",
 	"renewAuth":        "Renewal session proof",
 	"launcherAuth":     "Machine credential",
+	"launcherEndAuth":  "Machine credential, a held person's too",
 	"accountAuth":      "Caller ServiceAccount token",
 	"serviceAuth":      "Service login ServiceAccount token",
 	"edgeListenerAuth": "Edge listener identity token",

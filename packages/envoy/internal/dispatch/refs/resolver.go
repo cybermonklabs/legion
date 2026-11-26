@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -16,8 +17,8 @@ import (
 // Reader is the database one write reads every text of its source through, over the pool or
 // transaction that write runs in and for the one source whose text it is: its kind and id decide
 // the document a `#id` resolves against, its writer the items a short id resolves among, and the
-// server URL is the one the mentions are read with. It is one write's object, not a cache: a
-// caller builds it, reads every text of that source through it - a comment's body, an ask's
+// server's origins are the ones the mentions are read with. It is one write's object, not a cache:
+// a caller builds it, reads every text of that source through it - a comment's body, an ask's
 // question and each of its parts - and drops it, so the database answers once per kind for a
 // write however many texts it holds, and what it answered is the one transaction's view. It is
 // the text.Resolver every write of a text reads that text through (Mentions) before it plans what
@@ -35,12 +36,16 @@ import (
 type Reader struct {
 	// ctx is the write's context, held because text.Resolver's methods take none: the reader
 	// lives for one write and is never stored.
-	ctx       context.Context
-	q         Queryer
-	kind, id  string
-	serverURL string
+	ctx      context.Context
+	q        Queryer
+	kind, id string
+	origins  text.Origins
 	// writer is the author of the source's text, whom its short ids resolve for (Items).
 	writer model.Actor
+	// seer is writer with the viewer its short ids are resolved under (seenBy): the writer as
+	// given where it carries one, else the person it records as the read rule resolves them;
+	// resolved at most once, the first time a short id is asked.
+	seer *model.Actor
 
 	// source is what the reader reads of its source and not of its writer, which every reader of
 	// one write of that source shares (writtenBy), so the write asks the database once per kind
@@ -79,19 +84,20 @@ type prefixKey struct {
 }
 
 // NewReader is the Reader of one write of the text of the source fromKind/fromID, over q, the
-// pool or transaction that write runs in, with serverURL the server its mentions are read with,
-// for writer, the source's author: a comment's, a message's or an ask's author, and a document
-// version's writer, the first author its row records (IndexedVersion). A short id the text writes
-// resolves only among the items writer may see, through the predicate every read of the graph
-// binds (ResolvePrefix, VisibleKind): an answer that counted an item writer may not see - a prefix
-// it shares with a visible one, left ambiguous - would tell the writer that item exists (R9,
-// R19). The writer is the author the source records and not the credential that made the write,
-// so every path that indexes the stored text again (RebuildAll, ReindexOwed) resolves it for the
-// same person the write did. A source that records no author resolves for the zero actor, which
-// proves nobody and so sees no item reserved for its author. An ask's answer part is the one text
-// of a source that another person wrote, and it resolves for its answerer (writtenBy).
-func NewReader(ctx context.Context, q Queryer, writer model.Actor, fromKind, fromID, serverURL string) *Reader {
-	return &Reader{ctx: ctx, q: q, writer: writer, kind: fromKind, id: fromID, serverURL: serverURL, source: &sourceReads{}}
+// pool or transaction that write runs in, with origins the server's, whose dashboard URLs its
+// mentions are read as, for writer, the source's author: a comment's, a message's or an ask's
+// author, and a document version's writer, the first author its row records (IndexedVersion). A
+// short id the text writes resolves only among the items writer may see, through the predicate
+// every read of the graph binds (ResolvePrefix, VisibleKind): an answer that counted an item writer
+// may not see - a prefix it shares with a visible one, left ambiguous - would tell the writer that
+// item exists (R9, R19). The writer is the author the source records and not the credential that
+// made the write, so every path that indexes the stored text again (RebuildAll, ReindexOwed)
+// resolves it for the same person the write did. A source that records no author resolves for the
+// zero actor, which proves nobody and so sees no item reserved for its author. An ask's answer part
+// is the one text of a source that another person wrote, and it resolves for its answerer
+// (writtenBy).
+func NewReader(ctx context.Context, q Queryer, writer model.Actor, fromKind, fromID string, origins text.Origins) *Reader {
+	return &Reader{ctx: ctx, q: q, writer: writer, kind: fromKind, id: fromID, origins: origins, source: &sourceReads{}}
 }
 
 // NewReaderInScope is NewReader for a source whose row the write's own transaction may have
@@ -105,8 +111,8 @@ func NewReader(ctx context.Context, q Queryer, writer model.Actor, fromKind, fro
 // The document is no more read here than ScopeOf is: both are read by Questions, for a body
 // that holds a `#` candidate and for no other, so a create whose text names no question block
 // sends neither query (PendingDocument).
-func NewReaderInScope(ctx context.Context, q Queryer, writer model.Actor, fromKind, fromID, serverURL string, document *PendingDocument) *Reader {
-	reader := NewReader(ctx, q, writer, fromKind, fromID, serverURL)
+func NewReaderInScope(ctx context.Context, q Queryer, writer model.Actor, fromKind, fromID string, origins text.Origins, document *PendingDocument) *Reader {
+	reader := NewReader(ctx, q, writer, fromKind, fromID, origins)
 	reader.source.pending = document
 	return reader
 }
@@ -117,7 +123,7 @@ func NewReaderInScope(ctx context.Context, q Queryer, writer model.Actor, fromKi
 // issues a bare key names and the source's question map - it shares with r (sourceReads), so the
 // write still asks the database once per kind for those.
 func (r *Reader) writtenBy(writer model.Actor) *Reader {
-	return &Reader{ctx: r.ctx, q: r.q, writer: writer, kind: r.kind, id: r.id, serverURL: r.serverURL, source: r.source}
+	return &Reader{ctx: r.ctx, q: r.q, writer: writer, kind: r.kind, id: r.id, origins: r.origins, source: r.source}
 }
 
 // writerOf decodes the author a source's row records, a single-actor column, as the writer a
@@ -151,13 +157,13 @@ func writerOf(raw []byte) (model.Actor, error) {
 // the write's own transaction aborts that transaction, so the write fails at its next statement
 // whatever this answers.
 func (r *Reader) Mentions(body string) []text.Located {
-	located, err := text.Mentions(body, r.serverURL, r)
+	located, err := text.Mentions(body, r.origins, r)
 	if err != nil {
 		// Unreachable: r answers every failure as nothing resolved and returns none. A build
 		// that gives it a reason to fail must still not fail the write, so the text is indexed
 		// as the grammar alone reads it.
 		r.failed("resolve the references of a text", err)
-		return text.ExtractAt(body, r.serverURL)
+		return text.ExtractAt(body, r.origins)
 	}
 	return located
 }
@@ -279,7 +285,11 @@ func (r *Reader) Items(prefixes []text.Prefix) (map[int]string, error) {
 // resolveItem is the whole id key names for the reader's writer, "" where it names nothing or two
 // items or more. An error is a failure reaching the database alone.
 func (r *Reader) resolveItem(key prefixKey) (string, error) {
-	candidate, err := ResolvePrefix(r.ctx, r.q, r.writer, key.kind, key.scope, key.prefix, Viewer{})
+	writer, err := r.seenBy()
+	if err != nil {
+		return "", err
+	}
+	candidate, err := ResolvePrefix(r.ctx, r.q, writer, key.kind, key.scope, key.prefix, Viewer{})
 	switch {
 	case err == nil:
 		return candidate.ID, nil
@@ -287,6 +297,30 @@ func (r *Reader) resolveItem(key prefixKey) (string, error) {
 		return "", nil
 	}
 	return "", err
+}
+
+// seenBy is the reader's writer as the visibility predicate binds it (VisibilityArg). A writer
+// the caller resolved carries its viewer, and is used as it is. A writer read from a stored row,
+// the author a source records, carries none, and with no viewer the predicate sees nothing
+// (VisibilityArg's closed viewer), so no short id would resolve: such a writer is read as the
+// person it records sees now (access.RecordedViewer: their member kind and the projects whose
+// access names them, no credential's list), which is what every later rebuild of the same text
+// resolves it as too. A session author names its owner, and one that records no person is no
+// person: it sees what a credential naming nobody sees.
+func (r *Reader) seenBy() (model.Actor, error) {
+	if r.seer != nil {
+		return *r.seer, nil
+	}
+	writer := r.writer
+	if writer.Viewer == nil {
+		viewer, err := access.RecordedViewer(r.ctx, r.q, writer)
+		if err != nil {
+			return model.Actor{}, err
+		}
+		writer.Viewer = &viewer
+	}
+	r.seer = &writer
+	return writer, nil
 }
 
 // PrefixScope is what one short id asks ResolvePrefix: the kind the reference names, the owner

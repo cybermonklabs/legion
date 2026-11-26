@@ -2,6 +2,7 @@ package graphstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -96,10 +97,16 @@ func TestTheAuthorIsThePersonACredentialProvedAndNothingElseJoinsTwo(t *testing.
 			Visibility: VisibilityProject, State: StateLive,
 			MadeAt: at, MadeBy: row.writer, SourceEvent: NoEvent,
 		})
+		// AuthorIsSQL reads the author from its argument's "author" member, the shape
+		// refs.VisibilityArg binds (visibilityArgument).
+		argument, err := json.Marshal(map[string]json.RawMessage{"author": ActingCredential(row.reader)})
+		if err != nil {
+			t.Fatalf("%s: encode the reader's author: %v", row.name, err)
+		}
 		var stored bool
 		if err := database.Pool.QueryRow(ctx,
 			`select `+AuthorIsSQL("made_by", "$3")+` from graph_nodes where kind = $1 and id = $2`,
-			KindPerson, id, ActingCredential(row.reader)).Scan(&stored); err != nil {
+			KindPerson, id, argument).Scan(&stored); err != nil {
 			t.Fatalf("%s: read the node under the rule: %v", row.name, err)
 		}
 		if stored != row.want {

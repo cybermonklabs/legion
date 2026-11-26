@@ -716,7 +716,8 @@ func backlinkTargets(t *testing.T, database *store.Store, kind string) []string 
 	return append(ids, "nothing-points-at-this")
 }
 
-// requireBacklinkCountsAsThePreviousRelease fails unless refs.BacklinkCounts answers, for every
+// requireBacklinkCountsAsThePreviousRelease fails unless refs.BacklinkCounts, read as the server's
+// own reader (model.ServerReader), which sees every project and every party, answers, for every
 // node kind its arm table declares and at every id backlinkTargets reads for that kind, what the
 // previous release's count statement (docstest.ViewBacklinkCountSQL) answers over
 // previousGraphEdges, naming the reading, the kind, the id and both counts at each id the two
@@ -730,7 +731,7 @@ func requireBacklinkCountsAsThePreviousRelease(t *testing.T, database *store.Sto
 	counts := make(map[string]map[string]int, len(kinds))
 	for _, kind := range kinds {
 		ids := backlinkTargets(t, database, kind)
-		count, err := refs.BacklinkCounts(context.Background(), database.Pool, model.Actor{}, kind, ids, nil)
+		count, err := refs.BacklinkCounts(context.Background(), database.Pool, model.ServerReader, kind, ids, nil)
 		if err != nil {
 			t.Fatalf("%s: count %s backlinks: %v", stage, kind, err)
 		}
@@ -1205,7 +1206,7 @@ func writeVersionAsAnOlderBuild(t *testing.T, database *store.Store, service *Se
 	ctx := context.Background()
 	browserReplaceText(t, service, artifactID, markdown, model.Actor{Kind: "user", ID: "alice"})
 	waitForLandedAppends(t, service, artifactID)
-	live, _, err := service.TextWithBlocks(ctx, artifactID)
+	live, _, err := service.TextWithBlocks(ctx, serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read the live text of %s: %v", artifactID, err)
 	}

@@ -365,7 +365,8 @@ func loadAnchorRefreshedAsks(ctx context.Context, tx pgx.Tx, ids []string) (map[
 			return nil, fmt.Errorf("load refreshed ask %q: %w", id, pgx.ErrNoRows)
 		}
 	}
-	openedEventIDs, err := events.OpenedEventIDs(ctx, tx, ids)
+	// The cascade refreshes every ask of the document whoever wrote it, and answers no reader.
+	openedEventIDs, err := events.OpenedEventIDs(ctx, tx, ids, events.EveryEvent)
 	if err != nil {
 		return nil, fmt.Errorf("load refreshed asks' opened events: %w", err)
 	}

@@ -38,6 +38,10 @@ func (s *server) getLegionSetting(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	settings, err := legion.GetSettings(r.Context(), s.deps.Store.Pool, project)
 	if err != nil {
 		if errors.Is(err, legion.ErrNoSettings) {
@@ -132,7 +136,11 @@ func (s *server) legionProject(w http.ResponseWriter, r *http.Request) (string, 
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("project", project))
 		return "", false
 	}
-	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, project); err != nil {
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return "", false
+	}
+	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, who, project); err != nil {
 		s.writeHandlerError(w, err)
 		return "", false
 	}

@@ -16,8 +16,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -156,26 +156,29 @@ const (
 //
 // The document arm is a named piece of its own (searchDocumentKeywordLeg), so that it can be
 // ranked, read and measured apart from the four arms beside it.
-func searchKeywordLegs(rank func(searchColumn string) string) string {
-	return `
+func searchKeywordLegs(rank func(searchColumn string) string) func(seen int) string {
+	return func(seen int) string {
+		return `
   select 'issue' as kind, 'keyword' as list, i.key as issue_key, null::uuid as owner_artifact_id, null::uuid as artifact_id, i.key as id, null::text as block_id,
          null::text as window_id, null::text[] as covers,
          i.title as issue_title, i.status as issue_status,
          null::text as owner_project, null::text as owner_slug, null::text as owner_name, i.updated_at,
          false as own, ` + rank("i.search") + ` as r
     from issues i, q
-   where i.search @@ q.tsq and not (i.key = any(q.own_keys)) and ($2 = '' or i.project_key = $2)` +
-		searchRowFilters("i.status", "i.created_by", "i.updated_at") + `
+   where i.search @@ q.tsq and not (i.key = any(q.own_keys)) and ($2 = '' or i.project_key = $2)
+     and ` + searchProjectVisible("i.project_key", seen) +
+			searchRowFilters("i.status", "i.created_by", "i.updated_at") + `
   union all
   select 'issue', 'keyword', i.key, null::uuid, null::uuid, i.key, null::text,
          null::text, null::text[],
          i.title, i.status, null::text, null::text, null::text, i.updated_at,
          true, ` + rank("i.search") + `
     from q, unnest(q.own_keys) as named(key), issues i
-   where i.key = named.key and ($2 = '' or i.project_key = $2)` +
-		searchRowFilters("i.status", "i.created_by", "i.updated_at") + `
+   where i.key = named.key and ($2 = '' or i.project_key = $2)
+     and ` + searchProjectVisible("i.project_key", seen) +
+			searchRowFilters("i.status", "i.created_by", "i.updated_at") + `
   union all
-` + searchDocumentKeywordLeg(rank) + `
+` + searchDocumentKeywordLeg(rank, seen) + `
   union all
   select 'comment' as kind, 'keyword', c.issue_key, c.artifact_id, coalesce(c.artifact_id, (c.anchor->>'artifact_id')::uuid), c.id::text, null::text,
          null::text, null::text[],
@@ -186,8 +189,9 @@ func searchKeywordLegs(rank func(searchColumn string) string) string {
     left join issues i on i.key = c.issue_key
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key, q
-   where c.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
-		searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)") + `
+   where c.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)
+     and ` + searchProjectVisible("coalesce(i.project_key, p.key)", seen) +
+			searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)") + `
   union all
   select 'ask' as kind, 'keyword', k.issue_key, case when k.issue_key is null then coalesce(k.artifact_id, k.block_artifact_id) else null::uuid end,
          coalesce(k.artifact_id, k.block_artifact_id, ` + store.CastableUUID(`k.anchor->>'artifact_id'`) + `), k.id::text, ` + askBlockNodeSQL + `,
@@ -198,16 +202,19 @@ func searchKeywordLegs(rank func(searchColumn string) string) string {
     left join issues i on i.key = k.issue_key
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key, q
-   where k.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
-		searchRowFilters("i.status", "k.author", "coalesce(k.edited_at, k.created_at)") + `
+   where k.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)
+     and ` + searchProjectVisible("coalesce(i.project_key, p.key)", seen) +
+			searchRowFilters("i.status", "k.author", "coalesce(k.edited_at, k.created_at)") + `
   union all
   select 'message' as kind, 'keyword', m.issue_key, null::uuid, null::uuid, m.id::text, null::text,
          null::text, null::text[],
          i.title, i.status, null::text, null::text, null::text, i.updated_at,
          false, ` + rank("m.search") + `
     from messages m join issues i on i.key = m.issue_key, q
-   where m.search @@ q.tsq and ($2 = '' or i.project_key = $2)` +
-		searchRowFilters("i.status", "m.author", "coalesce(m.edited_at, m.created_at)")
+   where m.search @@ q.tsq and ($2 = '' or i.project_key = $2)
+     and ` + searchProjectVisible("i.project_key", seen) +
+			searchRowFilters("i.status", "m.author", "coalesce(m.edited_at, m.created_at)")
+	}
 }
 
 // searchRowFilters is the status, author and date filter every leg of every search narrows by,
@@ -249,8 +256,9 @@ func searchRowFilters(status, author, written string) string {
 //
 // The text carries no newline of its own at either end: searchKeywordLegs joins it to its
 // neighbours with the union the arms are separated by, and a caller running the arm by itself
-// wraps it in a select of its own.
-func searchDocumentKeywordLeg(rank func(searchColumn string) string) string {
+// wraps it in a select of its own. seen is the parameter that caller binds the acting credential
+// at (searchProjectVisible).
+func searchDocumentKeywordLeg(rank func(searchColumn string) string, seen int) string {
 	return `  select 'document' as kind, 'keyword', a.issue_key, case when a.issue_key is null then a.id else null::uuid end, a.id, a.id::text, null::text,
          null::text, null::text[],
          i.title, i.status, p.key, a.slug, a.name,
@@ -260,12 +268,22 @@ func searchDocumentKeywordLeg(rank func(searchColumn string) string) string {
     join artifacts a on a.id = v.artifact_id
     left join issues i on i.key = a.issue_key
     join projects p on p.key = a.project_key, q
-   where a.kind = 'doc' and v.search @@ q.tsq and ($2 = '' or p.key = $2)` +
+   where a.kind = 'doc' and v.search @@ q.tsq and ($2 = '' or p.key = $2)
+     and ` + searchProjectVisible("p.key", seen) +
 		searchRowFilters("i.status", "a.created_by", "v.created_at")
 }
 
+// searchProjectVisible is the project rule every arm of search binds, keyword and meaning alike,
+// over project, the project the arm's own row belongs to: access.ProjectClause, with the reader's
+// viewer bound at seen (refs.VisibilityArg). A row of no project - a comment or an ask on an agent
+// conversation's file - is no project's to decide, and the party rule decides it, which the node
+// registry's predicate states (searchKindsCTE, and each meaning arm's refs.VisibleKind).
+func searchProjectVisible(project string, seen int) string {
+	return `(` + project + ` is null or ` + access.ProjectClause(project, searchParam(seen)) + `)`
+}
+
 // searchKeywordLegsSQL is search's own keyword legs, each arm ranked by ts_rank_cd with length
-// normalisation.
+// normalisation, rendered for the parameter a statement binds the acting credential at.
 var searchKeywordLegsSQL = searchKeywordLegs(func(searchColumn string) string {
 	// 32 is ts_rank_cd's "divide the rank by itself plus one" normalisation flag: the raw rank
 	// grows with every further matching lexeme a text holds, and dividing it by itself plus one
@@ -536,9 +554,10 @@ func searchParam(number int) string {
 // searchQueryBody is searchQuery after its q, over keywordLegs (searchKeywordLegs), fused (the
 // "fused" CTE scoring what the legs matched, searchFusedSQL or relatedFusedSQL) and without or
 // with an exclusion (searchKindsCTE): every CTE it reads q from and the page. seen is the
-// parameter the acting credential is bound at, which every caller numbers after its own.
-func searchQueryBody(keywordLegs, fused, exclude string, seen int) string {
-	return searchKindsCTE(keywordLegs, exclude, seen) + `ranked as (
+// parameter the acting credential is bound at, which every caller numbers after its own, and
+// which the legs are rendered for.
+func searchQueryBody(keywordLegs func(seen int) string, fused, exclude string, seen int) string {
+	return searchKindsCTE(keywordLegs(seen), exclude, seen) + `ranked as (
   select *, row_number() over (partition by kind order by own desc, r desc, updated_at desc, id) as pos,
          count(*) over (partition by kind) as matches
     from kinds
@@ -794,16 +813,18 @@ func (scope meaningProjectScope) candidateProject(column string) string {
 // at.
 //
 // Each candidate CTE binds the predicate of its own node kind besides the one searchKindsCTE
-// binds over every arm: a candidate CTE cuts to its own limit by distance before anything
-// downstream filters it, so a node the acting person may not see would otherwise take a place
-// in that cut and hide a node they may.
-func searchQueryMeaningBody(keywordLegs, fused, exclude string, seen int, scope meaningProjectScope) string {
+// binds over every arm, and the project rule over its own row's project (searchProjectVisible):
+// a candidate CTE cuts to its own limit by distance before anything downstream filters it, so a
+// node the acting person may not see would otherwise take a place in that cut and hide a node
+// they may.
+func searchQueryMeaningBody(keywordLegs func(seen int) string, fused, exclude string, seen int, scope meaningProjectScope) string {
 	return `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
     join issues i on i.key = e.id, q
    where e.kind = 'issue' and e.embedding is not null and e.model = $11` + scope.candidateProject("i.project_key") + `
+     and ` + searchProjectVisible("i.project_key", seen) + `
      and ` + refs.VisibleKind("issue", "i.key", searchParam(seen)) +
 		searchRowFilters("i.status", "i.created_by", "i.updated_at") + `
    order by e.embedding <=> $9::vector
@@ -1092,7 +1113,7 @@ meaning_comment as (
 }
 
 func (s *server) search(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -1186,7 +1207,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// either. TookMS counts the reads.
 	started := time.Now()
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	if err := s.attachAskStates(r.Context(), s.deps.Store.Pool, response.Results, reader); err != nil {
+	if err := s.attachAskStates(r.Context(), s.deps.Store.Pool, who, response.Results, reader); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1227,7 +1248,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 // the delete marks of its comments and messages (stampSearchPostMarks), one read by id of the
 // page's own posts.
 func (s *server) runSearch(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
-	keys, err := s.searchOwnIssueKeys(ctx, parameters.text, parameters.numberScope())
+	keys, err := s.searchOwnIssueKeys(ctx, parameters.text, parameters.numberScope(), parameters.who)
 	if err != nil {
 		return model.SearchResponse{}, err
 	}
