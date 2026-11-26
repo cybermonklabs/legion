@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
-import type { CredentialSession } from "../../api/types";
-import { runningAgent } from "./agent-fixture";
+import type { CredentialSession } from "../../../api/types";
+import { runningAgent } from "../agent-fixture";
 import { credentialSessionLines, credentialSessionNamesAnyone } from "./session";
 
 const RUNNING = {

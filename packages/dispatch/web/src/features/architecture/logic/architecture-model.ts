@@ -5,9 +5,9 @@ import type {
   ArchitectureTreeIssueRef,
   ArchitectureTreeSource,
   IssueComponentsInput,
-} from "../../api/types";
-import { compareTimestamps } from "../../lib/timestamps";
-import { isIssueStatus, issueStatuses } from "../project/board-model";
+} from "../../../api/types";
+import { compareTimestamps } from "../../../lib/timestamps";
+import { isIssueStatus, issueStatuses } from "../../project/board-model";
 
 /** The importer's ticker runs every five minutes; a source unchecked for two ticks is stale. */
 export const STALE_AFTER_MS = 10 * 60_000;
