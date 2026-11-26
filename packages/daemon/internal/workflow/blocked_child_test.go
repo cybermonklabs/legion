@@ -218,7 +218,7 @@ func blockedNow(t *testing.T, pool *pgxpool.Pool) []record.BlockedIssue {
 		if err != nil {
 			return err
 		}
-		blocked = blockers.Blocked(blockers.Rows(mirrored), issues, nil, nil)
+		blocked = blockers.Blocked(blockers.Rows(mirrored), issues, nil, record.LineFacts{})
 		return nil
 	})
 	return blocked

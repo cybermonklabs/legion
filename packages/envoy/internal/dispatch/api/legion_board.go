@@ -16,9 +16,10 @@
 //     a field a daemon does not send is a field the board has no observation of. Nothing takes a
 //     slot holder for a root: a card's tree is the daemon's own `tree` where a read carried one
 //     (dispatch://INFRA-980 adds it) and the parent chain otherwise.
-//   - The columns are the spec's, in one ordered list (legionBoardColumnOrder), and a phase maps
-//     to exactly one of them (legionPhaseColumns), so the view and metric 2's "no role" bar agree
-//     on where `awaiting_person` and `held` go (the plan's D11).
+//   - The columns are the spec's, with Waiting on children for the phase dispatch://INFRA-3320
+//     added, in one ordered list (legionBoardColumnOrder), and a phase maps to exactly one of them
+//     (legionPhaseColumns), so the view and metric 2's "no role" bar agree on where
+//     `awaiting_children`, `awaiting_person` and `held` go (the plan's D11).
 package api
 
 import (
@@ -40,20 +41,23 @@ import (
 // The board's columns. Queue holds the daemon's waiting line and, after it, the issues a blocker
 // link holds; Design the issues whose phase is still `admitted` that are on a card at all — the
 // slot holders, and the ones no card stands above, which are on no other issue's count
-// (legionBoardCompute); Retro `retro` alone; Merging `merging` and `awaiting_merge`; and Held the
-// phase metric 2 puts on the "no role" bar beside `awaiting_person` (the plan's D11).
+// (legionBoardCompute); Retro `retro` alone; Merging `merging` and `awaiting_merge`; Waiting on
+// children the parents in `awaiting_children`, whether or not the daemon's blocked list names
+// them (legionBoardCompute); and Held the phase metric 2 puts on the "no role" bar beside
+// `awaiting_person` and `awaiting_children` (the plan's D11).
 const (
-	legionColumnQueue        = "queue"
-	legionColumnDesign       = "design"
-	legionColumnPlanning     = "planning"
-	legionColumnImplementing = "implementing"
-	legionColumnTesting      = "testing"
-	legionColumnReviewing    = "reviewing"
-	legionColumnAccepting    = "accepting"
-	legionColumnRetro        = "retro"
-	legionColumnMerging      = "merging"
-	legionColumnAwaiting     = "awaiting_person"
-	legionColumnHeld         = "held"
+	legionColumnQueue            = "queue"
+	legionColumnDesign           = "design"
+	legionColumnPlanning         = "planning"
+	legionColumnImplementing     = "implementing"
+	legionColumnTesting          = "testing"
+	legionColumnReviewing        = "reviewing"
+	legionColumnAccepting        = "accepting"
+	legionColumnRetro            = "retro"
+	legionColumnMerging          = "merging"
+	legionColumnAwaitingChildren = "awaiting_children"
+	legionColumnAwaitingPerson   = "awaiting_person"
+	legionColumnHeld             = "held"
 )
 
 // legionBoardColumnOrder is every column of the board, left to right, with the label the view
@@ -69,7 +73,8 @@ var legionBoardColumnOrder = []struct{ id, label string }{
 	{legionColumnAccepting, "Accepting"},
 	{legionColumnRetro, "Retro"},
 	{legionColumnMerging, "Merging"},
-	{legionColumnAwaiting, "Waiting on a person"},
+	{legionColumnAwaitingChildren, "Waiting on children"},
+	{legionColumnAwaitingPerson, "Waiting on a person"},
 	{legionColumnHeld, "Held"},
 }
 
@@ -77,20 +82,22 @@ var legionBoardColumnOrder = []struct{ id, label string }{
 // name (`done`, and any phase a later daemon adds) puts the issue on no card: the board shows the
 // work in flight, and a phase Dispatch has never heard of is not something it can place. Which
 // phases share a column is the board's own choice, made here: `retro` has a column of its own, as
-// it has a word of its own in the spec's tables ("Phase words in tables"), and Merging holds the
-// two phases those tables name merging, `merging` and `awaiting_merge`.
+// it has a word of its own in the spec's tables ("Phase words in tables"), Merging holds the
+// two phases those tables name merging, `merging` and `awaiting_merge`, and `awaiting_children`
+// has a column of its own: a parent in it keeps no slot and waits for none, and no role works it.
 var legionPhaseColumns = map[string]string{
-	legion.PhaseAdmitted:       legionColumnDesign,
-	legion.PhasePlanning:       legionColumnPlanning,
-	legion.PhaseImplementing:   legionColumnImplementing,
-	legion.PhaseTesting:        legionColumnTesting,
-	legion.PhaseReviewing:      legionColumnReviewing,
-	legion.PhaseAccepting:      legionColumnAccepting,
-	legion.PhaseRetro:          legionColumnRetro,
-	legion.PhaseMerging:        legionColumnMerging,
-	legion.PhaseAwaitingMerge:  legionColumnMerging,
-	legion.PhaseAwaitingPerson: legionColumnAwaiting,
-	legion.PhaseHeld:           legionColumnHeld,
+	legion.PhaseAdmitted:         legionColumnDesign,
+	legion.PhasePlanning:         legionColumnPlanning,
+	legion.PhaseImplementing:     legionColumnImplementing,
+	legion.PhaseTesting:          legionColumnTesting,
+	legion.PhaseReviewing:        legionColumnReviewing,
+	legion.PhaseAccepting:        legionColumnAccepting,
+	legion.PhaseRetro:            legionColumnRetro,
+	legion.PhaseMerging:          legionColumnMerging,
+	legion.PhaseAwaitingMerge:    legionColumnMerging,
+	legion.PhaseAwaitingChildren: legionColumnAwaitingChildren,
+	legion.PhaseAwaitingPerson:   legionColumnAwaitingPerson,
+	legion.PhaseHeld:             legionColumnHeld,
 }
 
 // legionNotConfiguredCode and legionNotConfiguredMessage are the one refusal a project with no
@@ -131,10 +138,10 @@ type legionBoardHeader struct {
 }
 
 // legionBoardColumn is one column: its id, the label the view shows, and its cards in the order
-// the view draws them. ID is one of the eleven columns, in the order legionBoardColumnOrder draws
+// the view draws them. ID is one of the twelve columns, in the order legionBoardColumnOrder draws
 // them; the enum is what makes the generated type carry that set rather than a bare string.
 type legionBoardColumn struct {
-	ID    string            `json:"id" enum:"queue,design,planning,implementing,testing,reviewing,accepting,retro,merging,awaiting_person,held"`
+	ID    string            `json:"id" enum:"queue,design,planning,implementing,testing,reviewing,accepting,retro,merging,awaiting_children,awaiting_person,held"`
 	Label string            `json:"label"`
 	Cards []legionBoardCard `json:"cards"`
 }
@@ -143,10 +150,11 @@ type legionBoardColumn struct {
 // issues table, joined on the daemon's key (the plan's D13; the daemon's state carries none of the
 // three). Phase, PhaseSince, Slot, Roles and WaitingOn are the newest observations of that issue,
 // PhaseSince being when the phase it is in was first recorded — the time in the phase the card
-// shows. BlockedBy names the issues a blocker link holds it on, and Children counts the issues of
-// its tree that its tree has not started, which are on no card of their own. The card carries no
-// CI verdict: the daemon's state has none since cybermonklabs/legion#2539, and a verdict row a
-// read wrote before then is read by nothing.
+// shows. BlockedBy names the issues a blocker link holds it on; for a parent in
+// `awaiting_children` it names the open children the daemon lists it as blocked on, not blocker
+// links. Children counts the issues of its tree that its tree has not started, which are on no
+// card of their own. The card carries no CI verdict: the daemon's state has none since
+// cybermonklabs/legion#2539, and a verdict row a read wrote before then is read by nothing.
 type legionBoardCard struct {
 	Key        string           `json:"key"`
 	Title      string           `json:"title"`
@@ -536,14 +544,18 @@ func (c *legionBoardCards) nearestCard(key string) string {
 // A card's column is the first of these that holds: the daemon's waiting line, in its own order,
 // which the view does not re-sort (the spec's "Rule details": that order puts answered roots
 // first, then follows Dispatch's rank); the issues a blocker link holds, after them in the Queue
-// column; and otherwise the column its phase falls in. An issue the daemon reports in `admitted`
-// that holds no slot and that neither list names is a child its tree has not started: it is on no
-// card, and the nearest card above it in its tree counts it. Where no issue above it carries a
-// card — its tree climbs through issues the daemon reports nothing of, or through issues whose
-// phase is on no column — it is a card of its own, since a count on an issue the board shows
-// nothing of is a count no reader can see. Where no read has recorded an admission block the
-// waiting line is Dispatch's rank order over the issues in that position, which is the order the
-// daemon's own line follows once a root's wait is answered.
+// column, but for a parent in `awaiting_children`; and otherwise the column its phase falls in.
+// The daemon lists such a parent as blocked on its open children while one is open
+// (dispatch://INFRA-3320, R11), but it waits on them and not on a slot: its card is in Waiting on
+// children for the whole wait, naming its open children while the daemon lists them, and stays
+// there after its last child closes until the pass that returns it. An issue the daemon reports
+// in `admitted` that holds no slot and that neither list names is a child its tree has not
+// started: it is on no card, and the nearest card above it in its tree counts it. Where no issue
+// above it carries a card — its tree climbs through issues the daemon reports nothing of, or
+// through issues whose phase is on no column — it is a card of its own, since a count on an issue
+// the board shows nothing of is a count no reader can see. Where no read has recorded an
+// admission block the waiting line is Dispatch's rank order over the issues in that position,
+// which is the order the daemon's own line follows once a root's wait is answered.
 func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResponse {
 	cards := map[string][]legionBoardCard{}
 	placed := map[string]bool{}
@@ -557,7 +569,7 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 	}
 
 	// The queue: the daemon's waiting line in its own order, then the issues a blocker link holds
-	// that the line does not already name.
+	// that the line does not already name, but for a parent waiting on its children.
 	queued := make([]string, 0, len(waiting)+len(blockers))
 	seen := map[string]bool{}
 	for _, key := range waiting {
@@ -569,7 +581,7 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 	}
 	blocked := make([]string, 0, len(blockers))
 	for key := range blockers {
-		if p.issues[key] != nil && !seen[key] {
+		if issue := p.issues[key]; issue != nil && !seen[key] && issue.state.Phase != legion.PhaseAwaitingChildren {
 			blocked = append(blocked, key)
 		}
 	}

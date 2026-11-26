@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // CheckLook names one look of one production check: the look's number and the check instance the
@@ -1238,14 +1239,15 @@ func (m *Machine) currentNews(ctx context.Context) (bool, error) {
 // (askFirst), and every drop of a delivery runs it in the same step as the drop: sendPending's
 // four — the task its issue's phase has left behind, an older daemon's ask of an update round,
 // the daemon's own delivery of a relaunch's record that no longer tells, and the task queued for
-// news of which nothing stands now (currentNews) — the retirement's (machine.go's retire), and
-// dropUpdateTask, which makes it of its own for the three drops a round that is over makes
-// through it (leaveRound, endPodUpdate, openPodUpdate's round switch). The one drop that does not
-// run it is currentRootTask's retirement of a root architect's held task that names nothing any
-// more: sendPending's asksRoot branch clears askFirst before it, without asking, so no question
-// is left to answer. Left armed over nothing pending, the question would make the claim's next
-// task the running turn's — confirmed by a turn of another cause, never prompted, and retired
-// unsent by that turn's end — and the worker would never receive that task at all.
+// news of which nothing stands now (currentNews) — the retirement's (machine.go's retire), the
+// retirement of the task of a phase the workflow stopped (RetireStoppedTask), and dropUpdateTask,
+// which makes it of its own for the three drops a round that is over makes through it
+// (leaveRound, endPodUpdate, openPodUpdate's round switch). The one drop that does not run it is
+// currentRootTask's retirement of a root architect's held task that names nothing any more:
+// sendPending's asksRoot branch clears askFirst before it, without asking, so no question is left
+// to answer. Left armed over nothing pending, the question would make the claim's next task the
+// running turn's — confirmed by a turn of another cause, never prompted, and retired unsent by
+// that turn's end — and the worker would never receive that task at all.
 //
 // It asks what a send would have asked, and confirms nothing: no delivery is left to confirm, so
 // an agent the ask finds in a turn only moves the claim to working, dated from the answer
@@ -1303,6 +1305,72 @@ func (m *Machine) dropPending(ctx context.Context) error {
 	return m.answerAskFirstAfterDrop(ctx)
 }
 
+// ErrTaskSending is RetireStoppedTask finding the task it would retire on its way to the agent
+// (Machine.send): the prompt is already leaving, so the retirement waits for the send to settle
+// and is asked again, when the task is either confirmed by the turn it started or back as
+// unsent, and either way retired then.
+var ErrTaskSending = wait.New("the task is on its way to the agent")
+
+// RetireStoppedTask retires the task this claim holds for phase p of run generation, at an entry
+// no later than entry (0 for a stop that names no entry), and answers whether it held one. It is
+// the retirement of the task of a phase the workflow stopped under its worker: the admission
+// pass's move of a parent into awaiting_children, which holds that phase's start on the record
+// and gives it back later on an entry of its own (internal/workflow's StopForChildren and
+// ReturnFromChildren). Its one caller is the outbox, which runs the move's `retire_task` row
+// (internal/daemon's outbox).
+//
+// The task goes whether or not a turn has taken it. Unsent, every send already drops it while
+// the issue waits (sendPending asks PhaseHolds first), but the return puts the issue back in that
+// same phase at the same run, where PhaseHolds holds it again, and a task held back the whole
+// wait — behind a suspension, an answered update round, a paced launch, a stale plugin or a turn
+// that outlives the wait — would then reach the worker before the return's own start is given
+// its slot. Taken, the turn that took it runs on, and a death that takes it back marked
+// interrupted would send it again the same way. So it goes here, as a newer task retires one a
+// turn has taken (queue), and the claim keeps its state, its turn and its session: the task is
+// stale, not the agent.
+//
+// A task of another phase or run, one of a later entry — the return's own start, should it reach
+// the claim before this row runs — and a task of no phase (an operator's own, an architect's, the
+// daemon's own delivery of a relaunch's record) are not this phase's work and are left where they
+// are. A task on its way to the agent is answered ErrTaskSending and retired when the outbox runs
+// the row again.
+//
+// The retirement holds to the rules a busy answer, a late turn and a relaunch's record keep. The
+// prompts the task waited on a result for go with it (retirePending, Machine.outstanding), and so
+// does the wait for the turn of a prompt Oh My Pi acknowledged and has not started (TimerTurn).
+// That wait names the retired id, so its timer is fenced out when it fires and never clears it;
+// left armed, it would hold every later send of the claim (sendPending) and take the late turn of
+// the retired prompt for the next task's (beginTurn). That late turn once it starts, and the turn
+// a busy answer recorded the claim working for (recordBusyTurn), are then no task's turn, and the
+// end of each sends the next task. A record of the last let-go that a turn's confirmation of this
+// task told stays told, as it does where a newer task retires one a turn has taken (queue): that
+// turn read the sentence the prompt carried. A record that still tells is handled as at each of
+// sendPending's drops (relaunchAfterDrop): the claim, which holds nothing now, is given the
+// daemon's own delivery of that record and sent it, since the task that would have carried the
+// sentence in front of itself is gone. That delivery names no phase, so this row never retires it.
+func (m *Machine) RetireStoppedTask(ctx context.Context, p phase.Phase, generation uint64, entry int64) (bool, error) {
+	m.mu.Lock()
+	defer m.unlock()
+	d := m.claim.Pending
+	if d == nil || d.Phase == "" || d.Phase != p || d.Generation != generation || (entry > 0 && d.Entry > entry) {
+		return false, nil
+	}
+	if m.send != nil {
+		return false, ErrTaskSending
+	}
+	m.log.Info("supervise: the workflow stopped the phase this task was queued for; it is retired rather than kept",
+		"delivery", d.ID, "issue", m.claim.Issue, "phase", p, "entry", d.Entry, "confirmed", !d.ConfirmedAt.IsZero(),
+		"outstanding", m.outstanding)
+	if err := m.retirePending(ctx); err != nil {
+		return false, err
+	}
+	m.disarm(TimerTurn)
+	if err := m.answerAskFirstAfterDrop(ctx); err != nil {
+		return true, err
+	}
+	return true, m.relaunchAfterDrop(ctx)
+}
+
 // relaunchAfterDrop gives a claim that one of sendPending's drops left holding nothing the
 // daemon's own delivery of its record of the last let-go (queueRelaunch), when that record still
 // tells, and sends it. The ready queues that delivery only for a claim that holds nothing when it
@@ -1310,7 +1378,8 @@ func (m *Machine) dropPending(ctx context.Context) error {
 // its phase gone, an older daemon's ask of an update round, a task queued for news of the
 // approved design alone with nothing left to say (currentNews), or a root architect's held task
 // left naming nothing (currentRootTask) — leaves the claim holding nothing, and the sentence
-// would wait for whatever task came next.
+// would wait for whatever task came next. The retirement of the task of a phase the workflow
+// stopped (RetireStoppedTask) leaves the claim the same way, and ends the same way.
 //
 // It runs after the drop's retirement and after the answer to the question a restart armed for
 // the dropped delivery (answerAskFirstAfterDrop), which asks only of a claim holding nothing, so

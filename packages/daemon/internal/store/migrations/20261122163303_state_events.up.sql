@@ -13,26 +13,27 @@
 -- lane publishes its rows strictly in sequence order (internal/record's outboxInOrder).
 --
 -- The check is one list, so the migration that sets it names every kind. This one follows the list
--- of 20261119203047_design_news: that migration's thirty kinds, step_record, plan_record,
--- conflict_confirm, merge_forward and design_changes among them, and these three, thirty-three in
--- all. Its version stands above 20261119203047 on purpose: Migrate applies every unrecorded
--- migration in version order, so the list with the higher version is the last word on any
--- database. A version below 20261119203047 would let that migration run after this one on a fresh
--- database and write its list without the three state kinds, and the check would then refuse
--- every state row. A list that left out one of 20261119203047's kinds would refuse every row of
--- that kind the daemon queues, and fail the upgrade of a database that holds one pending, such as
--- a design_changes row on a database the release before this one migrated.
+-- of 20261122154643_outbox_kinds_with_the_basis_seeds: that migration's thirty-two kinds,
+-- step_record, plan_record, conflict_confirm, merge_forward, design_changes, pending_basis_seed
+-- and reparent_seed among them, and these three, thirty-five in all. Its version stands above
+-- 20261122154643 on purpose: Migrate applies every unrecorded migration in version order, so the
+-- list with the higher version is the last word on any database. A version below 20261122154643
+-- would let that migration run after this one on a fresh database and write its list without the
+-- three state kinds, and the check would then refuse every state row. A list that left out one of
+-- 20261122154643's kinds would refuse every row of that kind the daemon queues, and fail the
+-- upgrade of a database that holds one pending, such as a pending_basis_seed row on a database
+-- main migrated.
 --
 -- This file was numbered 20261119184200, below 20261119203047, and moved above it at the forward
 -- merge that brought that list in. No release carries the earlier version and main never merged
 -- it, so no deployment's database records it. Only a database that a build of this branch
 -- migrated before that merge does, and such a database is a test's own: it would apply this file
 -- a second time and fail on the first create table below, so make it again rather than upgrade it.
+-- Until the forward merge that brought in 20261122154643, this file wrote its list without
+-- pending_basis_seed and reparent_seed, and such a database is a test's own as well.
 --
--- phase_ended stays in the list for the reason 20261119003157 keeps it. The daemon no longer
--- queues a row of it, but the release before 20261119003157 does. After a rollback that release
--- runs on the check this file writes, since it has no migration of its own left to apply, and a
--- list without phase_ended would refuse the first such row it queues (SQLSTATE 23514).
+-- phase_ended stays in the list: the daemon queues it for the admission pass's move of a parent
+-- whose worker is in the middle of its phase into awaiting_children (20261122154643 says why).
 alter table outbox drop constraint if exists outbox_kind_check;
 alter table outbox add constraint outbox_kind_check check (kind in (
   'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
@@ -40,8 +41,8 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
-  'conflict_confirm', 'merge_forward', 'design_changes', 'state_change', 'state_admission',
-  'state_boot'));
+  'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
+  'state_change', 'state_admission', 'state_boot'));
 
 -- One counter row per project. last_seq is the sequence of the newest state row the project's
 -- daemon committed, last_at that row's time, and last_tx the transaction that committed it. The

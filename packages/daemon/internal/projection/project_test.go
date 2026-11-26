@@ -211,6 +211,28 @@ func (s projectionStore) AncestorsOf(_ context.Context, _ pgx.Tx, project string
 	return slices.SortedFunc(maps.Values(chain), func(a, b record.Issue) int { return cmp.Compare(a.Key, b.Key) }), nil
 }
 
+// GatesRestingOn is every gate this store holds that rests on one of ancestors
+// (record.DesignGate.RestsOnIssue), in issue and then step order, as the real store reads them:
+// the read of the roots that rest on a parent held before its retro (record.RestingRootsOn).
+func (s projectionStore) GatesRestingOn(_ context.Context, _ pgx.Tx, ancestors ...string) ([]record.DesignGate, error) {
+	var resting []record.DesignGate
+	for _, issue := range slices.Sorted(maps.Keys(s.gates)) {
+		for _, step := range record.DesignSteps {
+			gate, held := s.gates[issue][step]
+			if held && slices.ContainsFunc(ancestors, gate.RestsOnIssue) {
+				resting = append(resting, gate)
+			}
+		}
+	}
+	return resting, nil
+}
+
+// IssuesByKey is the record of each of keys this store holds, as the real store reads them by
+// primary key.
+func (s projectionStore) IssuesByKey(ctx context.Context, tx pgx.Tx, keys []string) ([]record.Issue, error) {
+	return s.IssuesOf(ctx, tx, "", keys)
+}
+
 // projectedAt is the fixed instant every test here projects at.
 var projectedAt = time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
 

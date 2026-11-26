@@ -103,7 +103,7 @@ func TestTheDispatchCredentialIsStrippedBelowItsContract(t *testing.T) {
 	}
 	for _, line := range narrowings {
 		if line.Dropped == "dispatchCredential" {
-			t.Errorf("a caller stating %d is narrowed of dispatchCredential: %+v", dispatchCredentialContract, narrowings)
+			t.Errorf("a caller stating %d is told it lost dispatchCredential: %+v", dispatchCredentialContract, narrowings)
 		}
 	}
 	wantNarrowings(t, narrowings, dispatchCredentialContract, narrowingsExpected(carried, dispatchCredentialContract))

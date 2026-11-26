@@ -87,7 +87,7 @@ func AdmissionOf(issues []record.Issue, slots []record.Slot, rows map[string]Row
 			Active:  active,
 			Waiting: waiting,
 			Trees:   slices.Sorted(maps.Keys(live)),
-			Blocked: Blocked(rows, issues, line, record.ChildWaitRows(facts.ChildWaits)),
+			Blocked: Blocked(rows, issues, line, facts),
 			Held:    record.HeldList(issues, slots, line, dropped, facts),
 		},
 		Line:  line,

@@ -70,8 +70,11 @@ func seedLegionRead(t *testing.T, database *store.Store, project string, at time
 
 // seedLegionBoard writes one project's board: a waiting line whose first root was answered, an
 // issue a blocker link holds, a root in design with an unstarted child, a child in a turn, a root
-// waiting on a person, a held issue, and an issue that finished. It is the state one whole read
-// of a daemon would have recorded, written as that read records it.
+// waiting on a person, a held issue, an issue that finished, a parent in `awaiting_children` that
+// the daemon lists as blocked on its open child, which its tree has not started, and a parent in
+// `awaiting_children` that no list names, its last child closed and the pass that returns it not
+// yet run. It is the state one whole read of a daemon would have recorded, written as that read
+// records it.
 func seedLegionBoard(t *testing.T, database *store.Store, project string, now time.Time) {
 	t.Helper()
 	ago := func(hours float64) time.Time { return now.Add(-time.Duration(hours * float64(time.Hour))) }
@@ -92,6 +95,10 @@ func seedLegionBoard(t *testing.T, database *store.Store, project string, now ti
 		{6, "The held issue", "g", nil, "", "held"},
 		{7, "The finished issue", "h", nil, "", "done"},
 		{8, "The unstarted child", "i", nil, project + "-3", "admitted"},
+		{11, "The parent waiting on its child", "j", nil, "", "awaiting_children"},
+		{12, "The parent's open child", "k", nil, project + "-11", "admitted"},
+		{13, "The parent whose last child closed", "l", nil, "", "awaiting_children"},
+		{14, "The closed child", "m", nil, project + "-13", "done"},
 	}
 	for _, issue := range keys {
 		key := seedLegionIssue(t, database, project, issue.number, issue.title, issue.rank, issue.priority, issue.parent)
@@ -109,12 +116,14 @@ func seedLegionBoard(t *testing.T, database *store.Store, project string, now ti
 		`{"kind":"ask","since":"2026-11-03T09:00:00Z","answeredAt":"2026-11-03T10:00:00Z"}`, ago(6))
 	seedLegionObservation(t, database, project, project+"-5", legion.FieldWaitingOn,
 		`{"kind":"gate","since":"2026-11-03T08:00:00Z"}`, ago(6))
+	// The daemon lists a parent in awaiting_children as blocked on its open children, and in
+	// neither the active nor the waiting list, since it keeps no slot (dispatch://INFRA-3320, R11).
 	seedLegionObservation(t, database, project, legion.AdmissionKey, legion.FieldAdmission, fmt.Sprintf(`{
 		"cap": 4,
 		"active": [%q, %q],
 		"waiting": [%q, %q],
-		"blocked": [{"issue": %q, "blockedBy": [%q]}]
-	}`, project+"-3", project+"-4", project+"-10", project+"-1", project+"-2", project+"-99"), ago(3))
+		"blocked": [{"issue": %q, "blockedBy": [%q]}, {"issue": %q, "blockedBy": [%q]}]
+	}`, project+"-3", project+"-4", project+"-10", project+"-1", project+"-2", project+"-99", project+"-11", project+"-12"), ago(3))
 	seedLegionRead(t, database, project, ago(0.01), "")
 }
 
@@ -161,9 +170,10 @@ func legionCard(t *testing.T, board legionBoardResponse, key string) legionBoard
 
 // TestTheLegionBoardPutsEachIssueInOneColumn: the Queue column is the daemon's own waiting line,
 // in its order, then the issues a blocker link holds; every other issue the daemon reports is in
-// the column its phase names; an issue the tree has not started is on no card and is counted on
-// its root's; and the header carries the slots in use, the cap, the queue's length and the last
-// read.
+// the column its phase names, a parent in `awaiting_children` there too while the daemon lists it
+// as blocked on its open children, which its card names; an issue the tree has not started is on
+// no card and is counted on its root's or its parent's; and the header carries the slots in use,
+// the cap, the queue's length and the last read.
 func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
@@ -190,25 +200,36 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 	if got := legionColumnKeys(t, board, legionColumnQueue); !slices.Equal(got, []string{"INFRA-10", "INFRA-1", "INFRA-2"}) {
 		t.Errorf("the queue holds %v, want the waiting line then the blocked issue", got)
 	}
+	// Each parent in `awaiting_children` carries a card, in its own column (the map below). The
+	// one the daemon lists as blocked names its open child as what holds it and counts that child;
+	// the one whose last child closed, which no list names, names nothing and counts nothing.
+	waiting := legionCard(t, board, "INFRA-11")
+	if !slices.Equal(waiting.BlockedBy, []string{"INFRA-12"}) || waiting.Children != 1 || waiting.Phase != "awaiting_children" {
+		t.Errorf("the waiting parent's card = %+v, want its open child as what holds it and as the one child its tree has not started", waiting)
+	}
+	if returning := legionCard(t, board, "INFRA-13"); len(returning.BlockedBy) != 0 || returning.Children != 0 {
+		t.Errorf("the card of the parent whose last child closed = %+v, want nothing holding it and no child counted", returning)
+	}
 	for id, want := range map[string][]string{
-		legionColumnDesign:       {"INFRA-3"},
-		legionColumnImplementing: {"INFRA-4"},
-		legionColumnAwaiting:     {"INFRA-5"},
-		legionColumnHeld:         {"INFRA-6"},
-		legionColumnPlanning:     {},
-		legionColumnTesting:      {},
-		legionColumnReviewing:    {},
-		legionColumnAccepting:    {},
-		legionColumnRetro:        {},
-		legionColumnMerging:      {},
+		legionColumnDesign:           {"INFRA-3"},
+		legionColumnImplementing:     {"INFRA-4"},
+		legionColumnAwaitingPerson:   {"INFRA-5"},
+		legionColumnHeld:             {"INFRA-6"},
+		legionColumnAwaitingChildren: {"INFRA-11", "INFRA-13"},
+		legionColumnPlanning:         {},
+		legionColumnTesting:          {},
+		legionColumnReviewing:        {},
+		legionColumnAccepting:        {},
+		legionColumnRetro:            {},
+		legionColumnMerging:          {},
 	} {
 		if got := legionColumnKeys(t, board, id); !slices.Equal(got, want) {
 			t.Errorf("the %s column holds %v, want %v", id, got, want)
 		}
 	}
-	// The finished issue and the child its tree has not started are on no card; the root counts
-	// the child.
-	for _, gone := range []string{"INFRA-7", "INFRA-8"} {
+	// The finished issue, the closed child and the two children their trees have not started are
+	// on no card; the design root counts its child, and the waiting parent its own.
+	for _, gone := range []string{"INFRA-7", "INFRA-8", "INFRA-12", "INFRA-14"} {
 		for _, column := range board.Columns {
 			if slices.ContainsFunc(column.Cards, func(card legionBoardCard) bool { return card.Key == gone }) {
 				t.Errorf("%s has a card of its own, in %s", gone, column.ID)
@@ -676,10 +697,10 @@ func TestARecordPostgresRefusesIsAFailedReadAndTheBoardKeepsTheLastGoodRead(t *t
 		t.Errorf("the header = %+v (read_error %v), want the read failed, its error the refusal of its record", header, deref(header.ReadError))
 	}
 	for column, want := range map[string][]string{
-		legionColumnImplementing: {"INFRA-1"},
-		legionColumnTesting:      {"INFRA-2"},
-		legionColumnReviewing:    {},
-		legionColumnAwaiting:     {},
+		legionColumnImplementing:   {"INFRA-1"},
+		legionColumnTesting:        {"INFRA-2"},
+		legionColumnReviewing:      {},
+		legionColumnAwaitingPerson: {},
 	} {
 		if got := legionColumnKeys(t, board, column); !slices.Equal(got, want) {
 			t.Errorf("the %s column holds %v, want %v: the last good read's cards", column, got, want)
