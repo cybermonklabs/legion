@@ -306,3 +306,5 @@ unhomed:
     row: "test-value-md 9.6 daemon-api-contract-merge-order.test.sh: keep, run only when its own files change; INFRA-5797"
   - finding: "script: scripts/daemon-contract-convert.test.sh: daemon-contract-convert.test.sh"
     row: "test-value-md 9.7 daemon-contract-convert.test.sh: keep, run only when its own files change; INFRA-5797"
+  - finding: "variable: packages/envoy/internal/dispatch/store/session_titles_scale_test.go: DISPATCH_SESSION_TITLES_SCALE_URL"
+    row: "test-value-md 9.11 TestSessionTitlesBootScale, session-titles-scale.sh's boot scale run: tool; INFRA-5796"

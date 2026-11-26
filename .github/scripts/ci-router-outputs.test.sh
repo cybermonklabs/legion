@@ -12,6 +12,13 @@
 # nothing. Two copies of ci.yaml, each with one label literal broken, show that a broken term
 # fails its case rather than leaving the set.
 #
+# It fixes the terms of the outputs the sibling children of dispatch://INFRA-3411 add, each with
+# the job it gates (dispatch://INFRA-5794/spec#b-r8): daemon_live and agent_harness held, lifted on
+# a pull request by full-ci or lane:<own name> alone; kind on no pull request whatever the labels,
+# and on a merge group or a dispatch its filter selects, or on every-job. A copy of ci.yaml with the
+# three written so passes, a kind written as a held output and an agent_harness lifted by
+# lane:agent-harness fail, and this ci.yaml is held to the same terms for each of the three it has.
+#
 # It holds a dispatched run's selection and the workflow's cancel key the same way, through the
 # changes job's own steps and the workflow's own `concurrency:`
 # (.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job):
@@ -196,6 +203,78 @@ open(path, "w").write(body)
 PY
   echo "$dir/.github/workflows/ci.yaml"
 }
+
+# sibling_terms <workflow> <filters file>: what keeps the outputs the sibling children of
+# dispatch://INFRA-3411 add from the terms dispatch://INFRA-5794/spec#b-r8 fixes, one line each;
+# and `absent: <name>` for each of them the workflow's changes job does not have yet, since each
+# sibling adds its own output with the job it gates. daemon_live and agent_harness are held: on a
+# pull request each is true only where its filter says yes and the pull request carries full-ci or
+# lane:<its own name>. kind runs on no pull request whatever the labels, and in a merge group and a
+# dispatch of a branch where its filter says yes, or on every-job.
+sibling_terms() {
+  local workflow=$1 file=$2 name verdicts
+  verdict_of() { value "$("$script_dir/ci_router_outputs.py" "$workflow" --filters "$file" "$@" | sort)" "$name"; }
+  for name in daemon_live agent_harness kind; do
+    if [ -z "$(verdict_of --event pull_request --verdicts false)" ]; then
+      echo "absent: $name"
+      continue
+    fi
+    verdicts=(--verdicts false --verdict "$name=true")
+    [ "$(verdict_of --event merge_group "${verdicts[@]}")" = true ] || echo "$name: a merge group its filter selects leaves it off"
+    [ "$(verdict_of --event merge_group --verdicts false)" = false ] || echo "$name: a merge group its filter does not select turns it on"
+    [ "$(verdict_of --event workflow_dispatch --ref refs/heads/feature --input every-job=true --verdicts false)" = true ] \
+      || echo "$name: a dispatch that asks for every job leaves it off"
+    [ "$(verdict_of --event workflow_dispatch --ref refs/heads/feature "${verdicts[@]}")" = true ] \
+      || echo "$name: a dispatch of a branch its filter selects leaves it off"
+    if [ "$name" = kind ]; then
+      for label in "" full-ci lane:kind; do
+        local labelled=()
+        [ -z "$label" ] || labelled=(--label "$label")
+        [ "$(verdict_of --event pull_request "${verdicts[@]}" "${labelled[@]}")" = false ] \
+          || echo "kind: a pull request${label:+ under $label} its filter selects turns it on"
+      done
+      continue
+    fi
+    [ "$(verdict_of --event pull_request "${verdicts[@]}")" = false ] || echo "$name: an unlabelled pull request turns it on"
+    [ "$(verdict_of --event pull_request "${verdicts[@]}" --label full-ci)" = true ] || echo "$name: full-ci leaves it off"
+    [ "$(verdict_of --event pull_request "${verdicts[@]}" --label "lane:$name")" = true ] || echo "$name: lane:$name leaves it off"
+    [ "$(verdict_of --event pull_request --verdicts false --label "lane:$name")" = false ] \
+      || echo "$name: lane:$name turns it on where its filter says no"
+    [ "$(verdict_of --event pull_request "${verdicts[@]}" --label lane:envoy_go)" = false ] \
+      || echo "$name: another held output's label, lane:envoy_go, turns it on"
+  done
+}
+
+# The three outputs as dispatch://INFRA-5794/spec#b-r8 has the siblings write them, in main's form,
+# each on a filter of its own name added to a copy of the computed filters.
+sibling_filters=$work/sibling-filters.yaml
+cp "$filters" "$sibling_filters"
+printf 'daemon_live:\n  - packages/daemon/**\nagent_harness:\n  - packages/daemon/**\nkind:\n  - packages/envoy/infra/**\n' >> "$sibling_filters"
+# held_term <output> <label>: an output line of the changes job, held as main's held outputs are.
+held_term() {
+  printf "      %s: \${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, '%s')) && steps.filter.outputs.%s || 'false' }}" "$1" "$2" "$1"
+}
+kind_term="      kind: \${{ steps.scope.outputs.every_job && 'true' || github.event_name != 'pull_request' && steps.filter.outputs.kind || 'false' }}"
+ref_line="      ref_is_main: \${{ steps.ref.outputs.is_main }}"
+siblings=$(copy_with "$work/siblings" ci.yaml "$ref_line" \
+  "$(held_term daemon_live lane:daemon_live)"$'\n'"$(held_term agent_harness lane:agent_harness)"$'\n'"$kind_term"$'\n'"$ref_line")
+
+echo "case: the outputs the sibling children add keep the terms their base fixes"
+check "written as the base has them, all three hold" "$(is "$(sibling_terms "$siblings" "$sibling_filters")" "")"
+got=$(sibling_terms "$repo/.github/workflows/ci.yaml" "$filters")
+check "this ci.yaml breaks none of them (absent here: $(grep '^absent: ' <<<"$got" | cut -d' ' -f2 | tr '\n' ' '))" \
+  "$(is "$(grep -v '^absent: ' <<<"$got")" "")"
+
+echo "case: a kind output written as a held one fails its pull-request rows"
+broken=$(copy_with "$work/siblings-kind-held" ci.yaml "$ref_line" "$(held_term kind lane:kind)"$'\n'"$ref_line")
+got=$(sibling_terms "$broken" "$sibling_filters")
+check "full-ci and lane:kind turn it on, and say so" \
+  "$(is "$(grep '^kind: ' <<<"$got" | tr '\n' '|')" "kind: a pull request under full-ci its filter selects turns it on|kind: a pull request under lane:kind its filter selects turns it on|")"
+
+echo "case: an agent_harness lifted by lane:agent-harness, as 97c620377c's agent-harness was, fails its lane row"
+broken=$(copy_with "$work/siblings-dashed" ci.yaml "$ref_line" "$(held_term agent_harness lane:agent-harness)"$'\n'"$ref_line")
+got=$(sibling_terms "$broken" "$sibling_filters")
+check "lane:agent_harness leaves it off, and says so" "$(is "$(grep '^agent_harness: ' <<<"$got")" "agent_harness: lane:agent_harness leaves it off")"
 
 echo "case: an output whose full-ci literal is broken stays in the set and fails the full-ci case"
 broken=$(copy_with "$work/no-full-ci" ci.yaml \
