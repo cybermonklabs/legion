@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -331,7 +332,10 @@ yes) printf "$legion$with_envoy" >&2; exit 0 ;;
 # A pass that takes its time, as Oh My Pi does on a loaded machine: longer than a budget of a
 # second or two, and far inside the rig's.
 yes-slowly) sleep 2; printf "$legion$with_envoy" >&2; exit 0 ;;
-yes-then-linger) printf "$legion$with_envoy" >&2; held & echo $! >"$dir/lingering.pid"; exit 0 ;;
+# Answers, leaves a child holding the output pipe (held &), and exits. started holds when the kernel
+# made this process (testexec.MarkStart's starttime, which no line of the process moves), and exited
+# the moment just before its exit (testexec.MarkNow): between the two is the stand-in's own run.
+yes-then-linger) ` + testexec.MarkStart(`"$dir/started"`) + `; printf "$legion$with_envoy" >&2; held & echo $! >"$dir/lingering.pid"; ` + testexec.MarkNow(`"$dir/exited"`) + `; exit 0 ;;
 yes-elsewhere) printf "LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=file://$HOME/elsewhere/dist/legion.js?mtime=1\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n$with_envoy" >&2; exit 0 ;;
 yes-unowned) printf "LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=file://$HOME/unowned/legion.js\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n$with_envoy" >&2; exit 0 ;;
 # No pi-envoy; a skill asked for is missing too, so a test can see which refusal wins.
@@ -607,31 +611,41 @@ func TestTheLoadProbeRunsWhatAPaneRunsAndPassesOnTheLoadedMarker(t *testing.T) {
 // running) holds the probe's output pipe open past procgroup.WaitDelay, but the probe already
 // answered before that, and must neither be retried for it nor wait for it. Attempts is capped at
 // 1 so a reintroduced regression (treating the lingering child as a transient non-answer) fails
-// fast with this test's own message, instead of retrying until go test's own timeout ends the run;
-// and the gate must give its pass back within passWithin of the probe's exit, with the child still
-// running. The exit is read from the fake's last act before it (lingering.pid, fakeOmp.markedAt).
-// The child is held, so it never ends on a timer of its own, and a gate that held its pass for the
-// child's pipe long past the probe's exit, a WaitDelay far past procgroup.WaitDelay, would still
-// find it running: the bound fails that gate. A gate that waited for the child to close the pipe
-// would not return while the child is held, and fails at the test binary's deadline. With one
-// attempt, a budget kill fails the test, which gateUnder's budget (answerBudget, 20 s) keeps out
-// of reach of the fake's own exit on a loaded box. The child stays in the probe's process group,
-// so this row holds the in-group side of a budget far away. An exit inside the budget whose pipe
-// is held past it is TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt's.
+// fast with this test's own message, instead of retrying until go test's own timeout ends the run,
+// and the child must still be running when the gate returns. The child is held, so it never ends
+// on a timer of its own: a gate that waited for it to close the pipe would not return while it is
+// held, and fails at the test binary's deadline.
+//
+// Main's form gave the attempt a 10 s budget from before the probe started, so a gate that spent
+// that long on an attempt whose Oh My Pi answered at once was cut off and refused. The bound stays,
+// as main's 10 s (gateBound), on the gate's own time and no stand-in's. The fake Oh My Pi records
+// when the kernel made its process (started: the probe's own process, which the probe's exec
+// keeps) and the moment just before it exits (exited), and the span between them is the stand-in's
+// own run, which a loaded machine slows. What is left of the call is the gate's: from the call to
+// that start, and from Oh My Pi's exit to the pass. Of the second, procgroup.WaitDelay is not the
+// gate's to spend: the probe's leader has exited, and os/exec waits that long for the child to
+// close the pipe before it closes the pipe itself (procgroup.Configure sets it on every probe the
+// gate runs, Cmd.Wait starts it once the leader is reaped, and the run returns only once it is
+// over). Main's budget ended at that reap, so it never counted WaitDelay either, and the bound
+// leaves it out. A gate whose probe stays on after Oh My Pi answered, or that holds the pass after
+// the run, fails here; a loaded machine that slows the fake does not. With one attempt, a budget
+// kill fails the test too, which gateUnder's budget (answerBudget, 20 s) keeps out of reach of the
+// fake's own run on a loaded box. The child stays in the probe's process group, so this row holds
+// the in-group side of a budget far away. An exit inside the budget whose pipe is held past it is
+// TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt's.
 func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutputPipe(t *testing.T) {
 	t.Parallel()
-	// passWithin is half a minute: the probe's exit, then procgroup.WaitDelay for the child's
-	// pipe, then the run's return, on a loaded machine.
-	const passWithin = 30 * time.Second
+	const gateBound = 10 * time.Second
 	f := newFakeOmp(t, "yes-then-linger")
 	gate, _ := gateUnder(t, f, contractCurrent)
 	gate.retry.Attempts = 1
 	t.Cleanup(func() { killPIDFile(t, filepath.Join(f.dir, "lingering.pid")) })
 
+	called := testexec.SinceBoot(t)
 	if err := gate.verify(context.Background()); err != nil {
 		t.Fatalf("the gate refused a plugin that answered yes before a lingering child outlived it: %v", err)
 	}
-	returned := time.Now()
+	returned := testexec.SinceBoot(t)
 
 	if n := f.attempts(t); n != 1 {
 		t.Fatalf("Oh My Pi ran %d times, want once: a lingering descendant is not a reason to retry an answer already given", n)
@@ -643,8 +657,15 @@ func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutpu
 	if err := syscall.Kill(pid, 0); err != nil {
 		t.Errorf("the lingering child (PID %d) was gone when the gate returned (%v): the gate waited for it to close the probe's output pipe", pid, err)
 	}
-	if waited := returned.Sub(f.markedAt(t, "lingering.pid")); waited > passWithin {
-		t.Errorf("the gate gave its pass back %s after the probe exited, past %s: it held the pass for the lingering child's pipe long after the probe answered", waited, passWithin)
+	began := testexec.StartedAfter(t, filepath.Join(f.dir, "started"), called)
+	exited, err := testexec.ReadNowMark(filepath.Join(f.dir, "exited"))
+	if err != nil {
+		t.Fatalf("read when the fake Oh My Pi exited: %v", err)
+	}
+	held := procgroup.WaitDelayNow()
+	if own := began + (returned - exited) - held; own > gateBound {
+		t.Errorf("the gate spent %s of its own on an attempt whose Oh My Pi answered at once, past main's %s: %s from the call to Oh My Pi's start, and %s from its exit to the pass, less the %s os/exec holds the lingering child's pipe (procgroup.WaitDelay): the probe stayed on after Oh My Pi answered, or the gate held the pass after the run",
+			own, gateBound, began, returned-exited, held)
 	}
 }
 
