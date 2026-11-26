@@ -21,7 +21,9 @@ package api
 // target `step`, and one optional field, `returnTo`, the place of the step the move returns to
 // (below 1 `400 INVALID_RETURN_TO`; a place the workflow may not name, or a `to` that is not the
 // phase that step runs as, `409 BACKWARD_REFUSED`). `fresh_session` and `compact` name the roles
-// `architect, planner, implementer, tester, reviewer, merger, or a role of this deployment`.
+// `architect, planner, implementer, tester, reviewer, merger, or a role of this deployment`, and so
+// do the agent routes `POST /legion/v1/agents/stop`, `retry`, `suspend` and `resume`, which the
+// entry 20261125182642 agent-actions adds after this one.
 //
 // The entry adds `step` to the four enumerated fields that take an issue's phase (its
 // enumeratedValues), and the record answer takes it at its own key paths (withValuesAdded). It
