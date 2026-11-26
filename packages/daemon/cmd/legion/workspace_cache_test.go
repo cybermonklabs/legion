@@ -45,6 +45,7 @@ func (v *issueVolume) cacheArgs() []string {
 // Every refusal `cache` makes happens before it runs git, listens or writes anything: its root is
 // as it was, and no one-shot credential is left in its TMPDIR.
 func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	for _, tc := range []struct {
 		name string
 		args func(v *issueVolume) []string
@@ -179,6 +180,7 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 // outside an issue's volume (workspace.InitExitOutsideVolume) is an issue pod's alone. Here GitHub
 // answers the cache's first clone with a 403, and the cache, with no clone to serve, ends.
 func TestWorkspaceInitCacheExitsOneWhenGitHubRefusesItsFirstClone(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	attempts := v.failClones(t, "remote: Write access to repository not granted.\nfatal: unable to access 'https://github.com/acme/widgets/': The requested URL returned error: 403\n")
 	v.setenv(t)
@@ -211,6 +213,7 @@ func TestWorkspaceInitCacheExitsOneWhenGitHubRefusesItsFirstClone(t *testing.T) 
 // holds no token on the volume, and
 // exits 0 once stopped.
 func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	v.setenv(t)
 	t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token)
@@ -320,6 +323,7 @@ func cacheGet(t *testing.T, ctx context.Context, url, bearer string) (int, http.
 // sends the double nothing and /packs is the mux's 404, naming no repository. Either way no line it
 // prints holds a signed address, a V4 parameter, its bearer or the planted ref's contents.
 func TestWorkspaceInitCacheUsesTheBucketWhenSet(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (STORAGE_EMULATOR_HOST and the bucket's); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	for _, tc := range []struct {
 		name   string
 		bucket bool

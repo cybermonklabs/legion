@@ -31,6 +31,7 @@ import (
 // is no statement of the runtime's and is read nowhere here, a bound counted from the launch turn
 // being no promise about the wall clock of a loaded machine.
 func TestALaunchTryEndsAtItsBoundNamingIt(t *testing.T) {
+	t.Parallel()
 	for name, launch := range map[string]func(g *rig, spec runtime.SpawnSpec) error{
 		"Spawn": func(g *rig, spec runtime.SpawnSpec) error {
 			_, err := g.r.Spawn(g.ctx, spec)
@@ -104,6 +105,8 @@ func awaitingItsRoleLauncher(t *testing.T, g *rig, spec runtime.SpawnSpec) {
 // launching. Each try runs out the same way here, so the launch budget runs out and the claim
 // fails, its last error naming the bound.
 func TestALaunchTryThatRunsOutIsChargedAndTheNextTryRuns(t *testing.T) {
+	// Not parallel: it reads the second 500 ms try while that try runs, which other tests' load could
+	// make it read only after the try ran out.
 	g := newRig(t, nil)
 	g.autoStart.Store(false)
 	g.r.launchBound = 500 * time.Millisecond
@@ -134,6 +137,7 @@ func TestALaunchTryThatRunsOutIsChargedAndTheNextTryRuns(t *testing.T) {
 // is charged nothing. The claim stays launching at the same generation with no process recorded,
 // for the next boot to launch again, and the supervisor says why.
 func TestALaunchTryItsContextEndsIsChargedNothing(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.autoStart.Store(false)
 	spec := workerSpec(t)
@@ -174,6 +178,7 @@ func TestALaunchTryItsContextEndsIsChargedNothing(t *testing.T) {
 // (keptVolumeAttachWait), and the sum is 5 minutes more, 6 h 9 min 41 s. The rig's runtime answers
 // the same arithmetic over its own options.
 func TestLaunchBoundSumsTheTrysWaitsAndCalls(t *testing.T) {
+	t.Parallel()
 	boot, provision, grace := 120*time.Second, 295*time.Minute, 10*time.Second
 	if relaunchCalls != 85 || cacheEnsureCalls != 14 {
 		t.Fatalf("relaunchCalls = %d, want 85: %d per try (%d of them the repository cache's ensure) and %d per each of %d roles", relaunchCalls, relaunchPodCalls, cacheEnsureCalls, relaunchRoleCalls, len(claim.Roles))
@@ -231,6 +236,7 @@ func (s countingStore) IssueRunsElsewhere(ctx context.Context, project, issue, t
 // calls than relaunchCalls counts, every request through the fakes (the informers' lists and
 // watches aside), every mint, every store read and every launcher frame together.
 func TestAReplacingLaunchMakesNoMoreCallsThanTheBoundCounts(t *testing.T) {
+	t.Parallel()
 	var mints, renders, reads atomic.Int32
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.Tokens = countingTokens{&mints}

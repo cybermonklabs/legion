@@ -311,7 +311,7 @@ func modeRefusal(kind, got string) string {
 }
 
 // What a block that sets only its required members settles to: the issue volume at 50Gi, both
-// pods' reservations at the daemon's default (an issue pod 3 CPU and 19Gi over an 80Gi disk limit
+// pods' reservations at the daemon's default (an issue pod 2 CPU and 8Gi over an 80Gi disk limit
 // and a 6Gi disk request, the controller's pod 1 CPU and 4Gi over a 10Gi limit and a 1Gi request),
 // no scheduling beyond the Legion pool the runtime selects, in-cluster credentials, and nothing of
 // the operator's in any pod.
@@ -330,7 +330,7 @@ func TestLoadForValidationDefaultsTheKubernetesBlock(t *testing.T) {
 	}{
 		{"issue_volume", block.IssueVolume, "50Gi"},
 		{"resources", block.Resources, PodResources{
-			Issue:      Reservation{CPU: "3", CPURequest: "3", Memory: "19Gi", MemoryRequest: "19Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"},
+			Issue:      Reservation{CPU: "2", CPURequest: "2", Memory: "8Gi", MemoryRequest: "8Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"},
 			Controller: Reservation{CPU: "1", CPURequest: "1", Memory: "4Gi", MemoryRequest: "4Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "1Gi"},
 		}},
 		{"scheduling", block.Scheduling, Scheduling{}},
@@ -360,16 +360,33 @@ func TestLoadForValidationDefaultsTheKubernetesBlock(t *testing.T) {
 // settles to a complete reservation: the pod stays Guaranteed with no memory the operator wrote,
 // and bounded on the node's disk with no ephemeral storage the operator wrote.
 func TestAPodSettingOnlyItsCPUKeepsTheDefaultMemory(t *testing.T) {
-	cfg, err := LoadForValidation(writeConfigFile(t, "controller: daemon\n"+kubernetesFile+"    resources: {issue: {cpu: 2}, controller: {memory: 2Gi}}\n"), noEnv)
+	cfg, err := LoadForValidation(writeConfigFile(t, "controller: daemon\n"+kubernetesFile+"    resources: {issue: {cpu: 4}, controller: {memory: 2Gi}}\n"), noEnv)
 	if err != nil {
 		t.Fatalf("LoadForValidation: %v", err)
 	}
 	resources := cfg.Runtime.Kubernetes.Resources
-	if got, want := resources.Issue, (Reservation{CPU: "2", CPURequest: "2", Memory: "19Gi", MemoryRequest: "19Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"}); got != want {
+	if got, want := resources.Issue, (Reservation{CPU: "4", CPURequest: "4", Memory: "8Gi", MemoryRequest: "8Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"}); got != want {
 		t.Errorf("issue = %+v, want %+v: the file's cpu and the default memory and disk bound", got, want)
 	}
 	if got, want := resources.Controller, (Reservation{CPU: "1", CPURequest: "1", Memory: "2Gi", MemoryRequest: "2Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "1Gi"}); got != want {
 		t.Errorf("controller = %+v, want %+v: the default cpu and disk bound and the file's memory", got, want)
+	}
+}
+
+// An issue pod's entry that sets only its memory takes the default's cpu, and its memory request
+// settles to the file's own limit: `memory: 32Gi` alone is 2 CPU and 32Gi, each requested in full,
+// so the pod stays Guaranteed over the default disk bound.
+func TestAnIssuePodThatSetsOnlyItsMemoryTakesTheDefaultCPU(t *testing.T) {
+	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    resources: {issue: {memory: 32Gi}}\n"), noEnv)
+	if err != nil {
+		t.Fatalf("LoadForValidation: %v", err)
+	}
+	issue := cfg.Runtime.Kubernetes.Resources.Issue
+	if want := (Reservation{CPU: "2", CPURequest: "2", Memory: "32Gi", MemoryRequest: "32Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"}); issue != want {
+		t.Errorf("issue = %+v, want %+v: the default cpu and disk bound and the file's memory", issue, want)
+	}
+	if issue.Burstable() {
+		t.Errorf("issue %+v reads Burstable, want Guaranteed", issue)
 	}
 }
 
@@ -382,7 +399,7 @@ func TestAPodCanRequestLessMemoryThanItsLimit(t *testing.T) {
 		t.Fatalf("LoadForValidation: %v", err)
 	}
 	issue := cfg.Runtime.Kubernetes.Resources.Issue
-	want := Reservation{CPU: "3", CPURequest: "3", Memory: "32Gi", MemoryRequest: "8Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"}
+	want := Reservation{CPU: "2", CPURequest: "2", Memory: "32Gi", MemoryRequest: "8Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"}
 	if issue != want {
 		t.Errorf("issue = %+v, want %+v", issue, want)
 	}
@@ -521,13 +538,13 @@ func TestAPodRequestMustBeAQuantityNoGreaterThanItsLimit(t *testing.T) {
 		},
 		{
 			name:      "memory request past the default limit",
-			resources: "issue: {memory_request: 20Gi}",
-			want:      "runtime.kubernetes.resources.issue.memory_request 20Gi exceeds memory 19Gi",
+			resources: "issue: {memory_request: 9Gi}",
+			want:      "runtime.kubernetes.resources.issue.memory_request 9Gi exceeds memory 8Gi",
 		},
 		{
 			name:      "cpu request past its limit",
-			resources: "issue: {cpu: 2, cpu_request: 2500m}",
-			want:      "runtime.kubernetes.resources.issue.cpu_request 2500m exceeds cpu 2",
+			resources: "issue: {cpu: 4, cpu_request: 4500m}",
+			want:      "runtime.kubernetes.resources.issue.cpu_request 4500m exceeds cpu 4",
 		},
 		{
 			name:      "memory request is not a quantity",
@@ -559,8 +576,8 @@ func TestAPodsEphemeralStorageBoundSettlesFieldByField(t *testing.T) {
 		resources string
 		want      Reservation
 	}{
-		{"issue: {ephemeral_storage: 100Gi}", Reservation{CPU: "3", CPURequest: "3", Memory: "19Gi", MemoryRequest: "19Gi", EphemeralStorage: "100Gi", EphemeralStorageRequest: "6Gi"}},
-		{"issue: {ephemeral_storage_request: 8Gi}", Reservation{CPU: "3", CPURequest: "3", Memory: "19Gi", MemoryRequest: "19Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "8Gi"}},
+		{"issue: {ephemeral_storage: 100Gi}", Reservation{CPU: "2", CPURequest: "2", Memory: "8Gi", MemoryRequest: "8Gi", EphemeralStorage: "100Gi", EphemeralStorageRequest: "6Gi"}},
+		{"issue: {ephemeral_storage_request: 8Gi}", Reservation{CPU: "2", CPURequest: "2", Memory: "8Gi", MemoryRequest: "8Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "8Gi"}},
 	} {
 		cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    resources: {"+tc.resources+"}\n"), noEnv)
 		if err != nil {
