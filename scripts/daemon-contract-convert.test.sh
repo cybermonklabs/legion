@@ -63,8 +63,10 @@
 # read; on the stacked branch, the first branch, a base branch that has not merged the cutover yet,
 # and so with that branch's refusal where the two have two merge bases (the crossed branch: the
 # stacked branch with a commit from before the cutover merged, which the first branch merges too);
-# and a branch whose entry declares no constant, over a main where another change's entry file
-# declares the one the script would name it.
+# a branch whose entry declares no constant, over a main where another change's entry file
+# declares the one the script would name it; and a branch stacked on it, with an entry of its own
+# with no constant and the same issue key, over a main that took its base branch's entry as a
+# squash, where the refusal names its own entry by the name it would get with that entry gone.
 # After the first branch is converted and its row moved, the stacked branch is refused, the same
 # way, over a main that took the first branch as a squash: over its merge base with that main the
 # stacked branch reads N+1 as its own, and the refusal names the entry file that main holds of it;
@@ -101,11 +103,12 @@ branch_crossed=convert-test-crossed-$$
 branch_conflict=convert-test-conflict-$$
 branch_rebased=convert-test-rebased-$$
 branch_named=convert-test-named-$$
+branch_named_stacked=convert-test-named-stacked-$$
 cleanup() {
   git -C "$root" worktree remove --force "$repo" >/dev/null 2>&1 || true
   git -C "$root" worktree remove --force "$repo_two" >/dev/null 2>&1 || true
   git -C "$root" worktree remove --force "$repo_stacked" >/dev/null 2>&1 || true
-  git -C "$root" branch -D -q "$branch" "$branch_two" "$branch_stacked" "$branch_crossed" "$branch_conflict" "$branch_rebased" "$branch_named" >/dev/null 2>&1 || true
+  git -C "$root" branch -D -q "$branch" "$branch_two" "$branch_stacked" "$branch_crossed" "$branch_conflict" "$branch_rebased" "$branch_named" "$branch_named_stacked" >/dev/null 2>&1 || true
   rm -rf "$scratch"
 }
 trap cleanup EXIT
@@ -228,6 +231,13 @@ stacked_alone() {
   [ "${#added[@]}" -eq 1 ] && [[ ${added[0]} == */contract_*_convert-stacked.go ]] ||
     fail "$2 adds ${#added[@]} entry files over $1, want 1, entry $((k + 1))'s: ${added[*]}"
   echo "${added[0]}"
+}
+
+# entry_file_blob ID SLUG CONSTANT TEXT writes to git, and prints the blob of, an entry file as a
+# conversion writes it: TEXT after `// ID SLUG: `, and CONSTANT declared as ID and registered.
+entry_file_blob() {
+  printf '%s\n' "package api" "" "// $1 $2: $4" "const $3 = $1" "" "func init() {" \
+    "	registerEntry(contractEntry{id: $3, slug: \"$2\"})" "}" | git hash-object -w --stdin
 }
 
 # fixture_of ENTRY_FILE prints the path of the entry's fixture.
@@ -450,15 +460,32 @@ git checkout -q -b "$branch_named" "$base"
 numbered_text "$api/version.go" "$k" "dispatch://INFRA-1569 conversion test -- an entry with no constant of its own."
 git commit -q -am "feat(daemon): the conversion test's entry $k, with no constant"
 named_file=$api/contract_20000101000000_infra-1569.go
-named_blob=$(printf '%s\n' "package api" "" \
-  "// 20000101000000 infra-1569: dispatch://INFRA-1569 conversion test -- another change's entry, which took the name." \
-  "const infra1569Contract = 20000101000000" "" "func init() {" \
-  '	registerEntry(contractEntry{id: infra1569Contract, slug: "infra-1569"})' "}" | git hash-object -w --stdin)
+named_blob=$(entry_file_blob 20000101000000 infra-1569 infra1569Contract \
+  "dispatch://INFRA-1569 conversion test -- another change's entry, which took the name.")
 named_main=$(git commit-tree "$(tree_with "$this" --add --cacheinfo "100644,$named_blob,$named_file")" -p "$this" \
   -m "convert-test: this change, with another change's entry file that declares infra1569Contract")
 refused "the conversion of an entry with no constant over a main whose entry file declares the one it would get" \
   "entry $k of this branch declares no constant, and the one this script names it, infra1569Contract, $named_file of $named_main declares" \
   "Or another change took that name: give the entry a constant of another name in the branch" -- --base "$named_main"
+
+step "an entry with no constant is named once the base branch's entries are left out"
+# A main takes that branch's entry $k as a squash, as an entry file that opens with its text and
+# declares infra1569Contract. A branch stacked on it adds its own entry $((k + 1)), with no constant
+# either and a text with the same issue key. The script names $((k + 1)) as it would with $k gone:
+# infra1569Contract, not infra15692Contract (slug infra-1569-2), the name the conversion over the
+# base branch would give it too. So one run refuses both, $k by its text and $((k + 1)) by that name.
+git checkout -q -b "$branch_named_stacked" "$branch_named"
+numbered_text "$api/version.go" "$((k + 1))" "dispatch://INFRA-1569 conversion test -- the stacked entry with no constant of its own."
+git commit -q -am "feat(daemon): the conversion test's entry $((k + 1)), with no constant, stacked on entry $k"
+squash_file=$api/contract_20000101000001_infra-1569.go
+squash_blob=$(entry_file_blob 20000101000001 infra-1569 infra1569Contract \
+  "dispatch://INFRA-1569 conversion test -- an entry with no constant of its own.")
+named_squash=$(git commit-tree "$(tree_with "$this" --add --cacheinfo "100644,$squash_blob,$squash_file")" -p "$this" \
+  -m "convert-test: this change, with the branch of entry $k taken as a squash")
+refused "the conversion of a stacked entry with no constant over a main that took its base branch's entry as a squash" \
+  "entry $k of this branch is $squash_file of $named_squash" \
+  "entry $((k + 1)) of this branch declares no constant, and the one this script names it, infra1569Contract, $squash_file of $named_squash declares" \
+  -- --base "$named_squash"
 git checkout -q "$branch_stacked"
 cd "$repo"
 
