@@ -348,7 +348,7 @@ func checkSupervision(opts Options) error {
 	case opts.CacheRepositories == nil:
 		return refuse("no repository set for the repository caches")
 	}
-	if err := opts.RepositoryCache.check(); err != nil {
+	if err := opts.RepositoryCache.check(opts.Pod); err != nil {
 		return refuse("%v", err)
 	}
 	host, ok := strings.CutPrefix(opts.StreamURL, "tcp://")
@@ -362,9 +362,10 @@ func checkSupervision(opts Options) error {
 // defaults, touching no cluster. A runtime it builds alone runs the image probe and nothing else
 // (newProber); configure adds supervision's requirements to it.
 func configureProber(opts Options) (*Runtime, error) {
-	// The three provisioning phases' bounds together (ProvisionBound): the fetch's clocked budget,
-	// which its stream from the repository cache runs outside of, the shared clone's own, and the
-	// issue's own checkout's.
+	// The three provisioning phases' bounds together (ProvisionBound): the fetch's clocked budget
+	// (workspace.FetchBudget: the cache wait, the bucket attempt, /tar's verification and the
+	// delta), which its stream from the repository cache runs outside of, the shared clone's own,
+	// and the issue's own checkout's.
 	provisionBound := workspace.FetchBudget + workspace.CloneTimeout + workspace.CheckoutTimeout
 	// The longest a launch try gives a pod to start (startBound), which the try's bound counts in
 	// awaitRoleLauncher's backstop (launchBound): the kept-volume bound where the microvm block
@@ -939,16 +940,17 @@ func serviceAccountOr(name string) string {
 // accountDrift is the ServiceAccount p runs as, and whether it is not account, the one this
 // runtime creates p's kind of pod with, which each caller passes for the pod it holds: the kind's
 // own (podKind.serviceAccount — the controller's runtime.kubernetes.pod.controller_service_account
-// where the operator names one), and runtime.kubernetes.pod.service_account for every other pod, a
-// repository cache's included. A pod runs as the account it was created with for its whole life
-// — the field is fixed on the pod, and nothing the daemon writes to the Sandbox moves it — so an
-// operator who changes either account reaches a running pod only by replacing it: until then its
-// agents hold the identity the old account grants, whatever the configuration now says they may
-// reach. Such a pod is replaced by its own update round, which first asks every worker in it to
-// do the steps of its update message (supervise.UpdateTask), where a round covers its kind
-// (roundCovers, PodDrift), by the next launch of one of its roles where no round does (relaunch),
-// and by reconcileCachePod at the next ensure of a cache's (a sweep, or a new issue pod of its
-// repository); ReconcileOrphans warns of each one it finds, as all of them do for imageDrift.
+// where the operator names one), the cache's own for a cache pod whose bucket is on
+// (cachePodAccount), and runtime.kubernetes.pod.service_account for every other pod. A pod runs as
+// the account it was created with for its whole life — the field is fixed on the pod, and nothing
+// the daemon writes to the Sandbox moves it — so an operator who changes any of those accounts
+// reaches a running pod only by replacing it: until then its agents hold the identity the old
+// account grants, whatever the configuration now says they may reach. Such a pod is replaced by
+// its own update round, which first asks every worker in it to do the steps of its update message
+// (supervise.UpdateTask), where a round covers its kind (roundCovers, PodDrift), by the next
+// launch of one of its roles where no round does (relaunch), and by reconcileCachePod at the next
+// ensure of a cache's (a sweep, or a new issue pod of its repository); ReconcileOrphans warns of
+// each one it finds but a cache's, as all of them do for imageDrift.
 // The comparison is of the live pod's spec.ServiceAccountName, never the Sandbox's stored
 // template: the API server keeps a named account as written. It reads an unset account as
 // `default` on both sides, because the two sides spell the same account differently — the daemon

@@ -139,6 +139,47 @@ Each item below names a script, then what it proves.
   `--dry-run` renders the manifest, validates it with `kubectl` (the namespace's admission where this pod may create a Job, else `kubectl`'s own schema), creates nothing, and exits.
   Legion pod only
 
+- `repository-cache-burst-job.sh`
+
+  a burst of 20 `legion workspace-init fetch` runs at once leaves the repository cache pod's CPU below 0.2 CPU while the cache's bucket is on, and above 0.5 CPU while it is off (check `o2` of INFRA-5789), measured as one Kubernetes Job on the worker image digest the caller names, under the rules of `docs/kubernetes.md`, "Running a workload in the cluster from a role":
+  the image's own `legion workspace-init cache` and `fetch` run against a double of Cloud Storage, IAM Credentials' `signBlob` and the metadata server (`packages/daemon/internal/repocache/fakegcs`), because no identity a Job may use can sign an address (`iam.serviceAccounts.signBlob`), so a real bucket's signed addresses are proved in production alone, and not by this run.
+  The Job is one gVisor pod of three containers, `double`, `cache` and `fetchers`, each with a directory of its own on one disk volume mounted at `/scratch`, and two init containers that stage the files.
+  The `double` is the non-test Go files of the package and of `cmd/fakegcs` in the harness's checkout, written into the Job's command and compiled there with the worker image's Go, never installed in the image.
+  The probe the Job runs is `repository-cache-burst-probe.sh` beside the harness, which writes it and the double's sources into the Job's command, since a Job holds no checkout to read them from, so the files are one recipe and none is changed without the others, and the harness is run from a checkout of the commit whose worker image `--image` names.
+
+  - Measuring.
+    The `cache` container's request and limit are the production cache's default, 1 CPU and 4Gi, the same in both arms, and its sampler reads only that container's cumulative CPU counter (cgroup v2 `cpu.stat` `usage_usec`, or v1 `cpuacct.usage`, found from `/proc/self/cgroup` and `/proc/self/mountinfo`), so the double's and the fetches' CPU is not in it.
+    The probe prints both files once, with no pod uid, and keeps a sanitized copy of their shape under `testdata/repository-cache-burst/`, which its `self-test` parses.
+    Before the arms, the image's real `legion config check` passes a fixture `legion.yaml` with both `runtime.kubernetes.repository_cache` keys, passes one with neither, and refuses the bucket alone naming `service_account`.
+    An attribution check then runs: a 3-second CPU loop in the `fetchers` container must move the `cache` container's counter by under 0.5 CPU-seconds, the same loop in the `cache` container by 2.4 to 3.6, and the measuring loop's own cost, idle for 20 seconds, must be under 0.02 CPU, a tenth of the enabled arm's ceiling, or the run is void.
+
+  - The arms and the verdict.
+    The enabled arm starts the cache with `STORAGE_EMULATOR_HOST` at the double and `LEGION_REPOSITORY_CACHE_BUCKET` set, waits for `/healthz` ready and for `GET /packs` to answer 200 with a manifest of every pack and index of the clone with its size (printed: the count, the bytes and the names, never an address), reads the counter, releases 20 fetches at one barrier (a file on the volume), reads it every 10 seconds and when the last fetch exits, and stops the cache.
+    `--refresh` is `24h`, so no refresh or repack lands in a timed interval.
+    The 20 feeds are deleted, and the disabled arm starts the cache on the same clone root with neither variable and does the same.
+    Each arm prints the clone's refs count and pack sizes once, and each fetch's exit status, wall time, `source=` line and reason, and `bucket object=` lines, never a URL, a query, a token or a ref's contents: every output is searched for `X-Goog-`, `Bearer`, `Authorization` and both tokens first, and a hit fails the run and prints nothing of that file.
+    Each interval's CPU is the counter's change over its wall seconds, the final partial interval included.
+    The run passes when, in the enabled arm, 20 fetches exit 0, each with `source=bucket` and the object lines of the manifest it was given, none with `source=/tar`, at least one sample read `/healthz`'s stream count and none found a `/tar` stream in flight, and every interval below 0.2 CPU;
+    and, in the disabled arm, 20 fetches exit 0, each with `source=/tar reason=/packs is not served`, `/packs` answers 404, and at least one full interval (9.5 seconds or more) is above 0.5 CPU.
+    A disabled arm with no such interval is void, not a pass: the run is too short to tell the arms apart.
+    The probe's last line is `JOB-RESULT pass`, `JOB-RESULT fail` or `JOB-RESULT void`, and the harness reads that line, never the Job's phase.
+    A leak fails the run, even one that stopped before any arm ended.
+    `bash scripts/e2e/repository-cache-burst-probe.sh self-test` runs on any Linux host with bash 4 or later, GNU coreutils, `jq` and `awk`: the cgroup parser against the fixtures, the counter reads, the manifest check, and the verdict against synthetic series (a passing one, an enabled interval at 0.25 and at exactly 0.2, a disabled arm that never crosses 0.5 in a full interval or only in a partial one, a wrong source, an enabled arm whose `/healthz` was never read and one read once, a leak, a run stopped before any arm ended with a leak and without one, a failed attribution).
+    `scripts/e2e/lib/repository-cache-burst-probe.test.ts` runs that self-test under `bun test`.
+
+  - Inputs and running.
+    Needs a pod whose projected credential may create a Job (`kubectl -n <namespace> auth can-i create jobs` answers `yes`), `kubectl` and `jq`, the image to test by digest (`--image`, from the `Worker Image` run's `Record digest` step), and the deployment's compute class, storage class, labels and annotations (`--node-selector`, `--storage-class`, `--label`, `--annotation`, or one file of them, `--job-settings`, whose lines are `<name>=<value>` with the names `node-selector`, `storage-class`, `namespace`, `service-account`, `label` and `annotation`), whose values are in that deployment's own declaration and in no file of this repository.
+    The pod's CPU, memory and disk are inputs too (`--fetch-cpu`, `--fetch-memory`, `--double-cpu`, `--double-memory`, `--disk`), and the harness prints their totals for the cost annotations.
+    The default disk, 120Gi, is sized for the default repository (`nodejs/node`, one pack and index of 1,777,396,269 bytes, measured 2026-11-26 in Job `infra-5789-cache-burst-fbmgg`): the cache's clone, the double's copy and 20 fresh feeds at once are 22 copies, about 39 GB, which 120Gi holds with room to spare, and the probe reads the clone's real size and refuses (void) when the volume cannot hold 20 feeds beside it.
+    The default fetchers' CPU, 16, is sized for 20 `git fsck --connectivity-only` runs at once: on firefox's history, 20 of them on 8 CPU ran out of both the bucket attempt's 15-minute bound and `/tar`'s 30-minute bound, and on the default repository 16 CPU ran each of the 20 fetches in 91 to 208 s.
+    A deployment whose admission lowers a CPU request that equals its limit gives the opt-out label of a timed run with `--label`, and the harness reads the cache container's request back from the admitted Job and refuses the run when it is not 1 CPU.
+    `--repo` names another public repository than node's;
+    `--dry-run` renders the manifest, validates it with `kubectl` (the namespace's admission where this pod may create a Job, else `kubectl`'s own schema), prints the cache container's CPU request as admitted, creates nothing, and exits.
+    Run it detached, as `docs/kubernetes.md`, "Running a workload in the cluster from a role", and the harness's own header set out (`flock "$log" setsid -f bash …`): it runs about ten minutes on the default repository, and its clean-up is a trap that a tool killing a long call does not let run.
+    Exit statuses: 0 pass; 1 the Job ran and a check failed; 2 the harness could not run, or the run is void; 3 the Job reached no verdict inside its deadline.
+
+  Legion pod only
+
 - `controller-start-tmux.sh`
 
   the operator-launched controller on the Go daemon under tmux:

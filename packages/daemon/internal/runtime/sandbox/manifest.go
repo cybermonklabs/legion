@@ -103,14 +103,16 @@ const (
 	computeClassKey     = "cloud.google.com/compute-class"
 )
 
-// doNotDisruptAnnotation and safeToEvictAnnotation are the two autoscaler stop-eviction annotation
-// keys a pod template can carry: Karpenter's own (AWS), which every pod carries, the image probe's
-// included (podTemplate, probeManifest), and the Cluster Autoscaler's, which GKE Autopilot honours
-// as a request for extended-duration protection and which only a pod asking for that run time
-// carries (podKind.asksExtendedRunTime) — the controller's pod always, an issue pod only while its
-// reservation is Guaranteed. An issue pod whose cpu or memory request is below its limit carries
-// the second not at all, so Autopilot stops giving it a node of its own and it shares a node and
-// bursts. evictedOverRequest states which of the cluster's ends of such a pod the daemon charges.
+// doNotDisruptAnnotation and safeToEvictAnnotation are the two autoscaler annotation keys a pod
+// template can carry: Karpenter's own (AWS), which every pod carries, the image probe's included
+// (podTemplate, probeManifest), and the Cluster Autoscaler's, which GKE Autopilot honours as a
+// request for extended-duration protection. podTemplate sets the second against eviction only on
+// a pod asking for that run time (podKind.asksExtendedRunTime): the controller's pod always, an
+// issue pod only while its reservation is Guaranteed. An issue pod whose cpu or memory request is
+// below its limit carries the second not at all, so Autopilot stops giving it a node of its own
+// and it shares a node and bursts; evictedOverRequest states which of the cluster's ends of such a
+// pod the daemon charges. cachePodTemplate sets the first and the second as "true", so the
+// cluster autoscaler may move a cache pod and remove the node it held.
 const (
 	doNotDisruptAnnotation = "karpenter.sh/do-not-disrupt"
 	safeToEvictAnnotation  = "cluster-autoscaler.kubernetes.io/safe-to-evict"
@@ -1817,8 +1819,9 @@ func (r *Runtime) initEnvironment(launch) []corev1.EnvVar {
 // ProvisionBound satisfies runtime.Runtime: workspace.FetchBudget plus workspace.CloneTimeout plus
 // workspace.CheckoutTimeout. Each term is the real bound of one step whose duration follows the
 // repository's size, and the three run one after the other: workspace-fetch's whole budget (its
-// wait for the repository cache, then one FetchTimeout for the verification of what the cache
-// streamed, then one of its own for the delta from GitHub), workspace-init's shared clone of
+// wait for the repository cache, then one BucketFetchTimeout for its attempt on the cache's
+// bucket, then one FetchTimeout for the verification of what the cache's /tar streamed when that
+// attempt failed, then one of its own for the delta from GitHub), workspace-init's shared clone of
 // the feed, whose size-following steps share one CloneTimeout, and the issue's own checkout, the
 // one command that writes the whole working copy (`jj sparse reset`, workspace.Provision), under
 // CheckoutTimeout. It is how much longer than the boot timeout a launch may wait for its pod's

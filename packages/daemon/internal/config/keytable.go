@@ -717,6 +717,10 @@ var nestedKeys = []memberGroup{
 			Description: "How long a cache outlives the last live record that names its repository before the orphan sweep deletes it with its volume and its Secret, in whole hours; a live record or a launch that names the repository again before that keeps its cache."},
 		{Name: "resources", Default: "the cache's container takes the daemon's own reservation", RequiredBy: "no",
 			Description: "What the cache pod's one container reserves and is bounded by, in a pod reservation's own six fields."},
+		{Name: "bucket", Default: "no bucket: an issue pod's feed comes from the cache's `/tar` alone", RequiredBy: "when `service_account` is set",
+			Description: "The Cloud Storage bucket each cache keeps the packs it serves in, which an issue pod's fetch downloads through the 15-minute signed addresses its cache gives it, falling back to `/tar`; set together with `service_account`, and both left out turn it off."},
+		{Name: "service_account", Default: "the cache pods run as `pod.service_account`, as every issue pod does", RequiredBy: "when `bucket` is set",
+			Description: "The Kubernetes ServiceAccount the cache pods alone run as, the one the bucket's grant goes to; it must differ from the account the issue pods run as (`pod.service_account`, or `default` while that is unset), so no issue pod holds a grant on the bucket, and from `pod.controller_service_account` where that is set, so the controller's pod holds none either."},
 	}},
 	{Path: kubernetesKey + ".repository_cache.resources", Members: []member{
 		{Name: "cpu", Default: "`1`", RequiredBy: "no",
