@@ -1,0 +1,70 @@
+kind: Added
+body: |-
+  A parent starts no phase of planning through accepting while a Dispatch child of it is open. The
+  daemon moves it to the new phase `awaiting_children` in place of that start: from a transition,
+  from a release of a hold, or at the admission pass for a parent in `accepting`, a start not yet
+  delivered or a worker in the middle of its phase. A start that a role's move back writes out of
+  `retro` or `merging` is not held. A waiting parent holds no admission slot, shows `in_progress`
+  in Dispatch and stands in `admission.blocked` with its open children. No backstop, CI settlement
+  or resume path starts a role of it. Its architect gets one `awaiting-children` notice, and a
+  worker whose phase the move ended is told to push what it has and stop, in a `phase_ended`
+  message, the kind #4464 stopped writing for a conflict, which migration
+  `20261122154643_outbox_kinds_with_the_basis_seeds` keeps in the outbox's kind check. That
+  worker's pending task for the phase is retired (the supervise op `retire_task`). The start held
+  for a worker stopped in the middle of its phase, or for a start not yet delivered, is the task
+  that worker was given for the entry the phase stands on: after a retry, the retry's task,
+  whether or not the worker's turn has ended, and otherwise the work that entry was raised with.
+  The hold keeps that task as it was composed, before the daemon added the base-merge sentence of
+  a tester of a parent or the reviewer's two sentences of its review round, which the return adds
+  once to the task it gives back: the raise of a phase worker's entry and each retry of it record
+  the task they give on the role's phases row with the entry and the issue's generation it is for
+  (`phases.entry_given_task`, `phases.entry_given_entry` and `phases.entry_given_generation`),
+  and the hold reads it only for the entry the row stands on in the issue's generation. On an
+  entry the release before raised, the hold is that entry's own work. It is the phase's resume
+  task on an entry a re-admitted tree's promotion raised, which hands the worker that task, on an
+  entry whose task a re-admission cleared and no retry has replaced, and for a reviewer on an
+  entry the release before raised, since that release stored the reviewer's task with its round's
+  sentences. Where the move drops a merge forward of the parent's pull request that has not
+  landed, a stopped worker other than the role it was asked of (the implementer, or the
+  merger for an ask made in merging) is told to write and push nothing more, since that
+  role may be merging in the workspace they share, and that role is told of the dropped
+  merge forward, with its head and its base, in its own `phase_ended` message where the move
+  ended its phase and otherwise in a `role_message`: one that has begun the merge finishes
+  and pushes it and does nothing more, one that has not begun it begins none, and the daemon
+  does not ask for it again. `request_backward_move`, `sign_off` and `stop_task` on the parent
+  are refused `WAITING_ON_CHILDREN`. The wait records each child that held it, the ones open at
+  the move and each one an admission pass finds open under the parent later. Once no child is
+  open, the admission pass returns the parent on a new phase entry, marked as a move back, so a
+  completion from before the wait is refused. A held plan or implementation comes back as that
+  phase, and a held test, review or acceptance comes back as the first step of the issue's walk
+  after the implementer's (`testing` on today's line, `reviewing` on a plan of an implementer and
+  a reviewer), on a task that names the held start and carries the implementer's last handoff; a
+  parent whose pull request merged during the wait comes back at the start it held, and one that
+  held `accepting` comes back into `accepting` as a move into it does, a failed architect of its
+  own started again and the accepting step's run opened. A stopped task that a later version of
+  the plan or a person's todo starts again at its first step under an open child waits in
+  `awaiting_children` too, holding that start. Each task the return starts names the children
+  that merged during the wait, with their pull requests, and asks for no merge of the default
+  branch. Every testing task of a parent, an issue with a Dispatch child, waited or not, asks the
+  tester to test the
+  head merged with the tip of the pull request's base branch once it carries the children's
+  merges, in a checkout of its own, and to record each result with that base commit. This release
+  replaces the rule of #3995's note that the root and sub-architect prompts sign off a parent
+  after its last round: a parent is signed off once each check a role runs has a pass at its head
+  whose observed line names a base commit carrying every needed child's merge, and a parent with
+  an open child waits in `awaiting_children`. Migration
+  `20261114232555_awaiting_children` adds the phase, the held start with `children_wait_children`,
+  `children_waited_at`, `phases.entry_from`, `phases.entry_given_task`,
+  `phases.entry_given_entry` and `phases.entry_given_generation`. A caller below daemon
+  API contract entry 20261125161152 (gate-basis) is served such a parent's `phase` as `admitted` and its held word as
+  `children_first`. The first admission
+  pass after the deploy moves every started parent of a running tree (in `planning` through
+  `accepting`, its pull request not merged) that has an open Dispatch child into
+  `awaiting_children`, an open child being one `record.ChildOpen` reads as open, a child filed in
+  the backlog or triage and never released among them, and where such a parent's worker is in the
+  middle of its phase it retires that worker's task and sends that worker a `phase_ended` message
+  in the middle of its turn. `docs/kubernetes.md` gives a read that lists those parents before the
+  deploy, as the first step of the section "Rolling back the release that holds a parent's start
+  while a child of it is open", and says there how to roll the release back.
+custom:
+    Issue: pr4592

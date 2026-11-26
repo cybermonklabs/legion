@@ -172,6 +172,7 @@ func treeSummaryNews() News {
 			{Issue: "LEGION-213", Phase: phase.Planning, State: NewsAlreadyTaken},
 			{Issue: "LEGION-214", Phase: phase.Admitted, State: NewsAdmitted},
 			{Issue: "LEGION-215", Phase: phase.Held, State: NewsStopped},
+			{Issue: "LEGION-217", Phase: phase.AwaitingChildren, State: NewsAwaitingChildren},
 			{Issue: "LEGION-216", Phase: phase.Done, State: NewsDone},
 		}}
 }
@@ -610,6 +611,8 @@ func TestTheArchitectsSummaryNamesEveryMemberWithItsStateAndReason(t *testing.T)
 		"- LEGION-214, in admitted: ":        "told nothing: it has not started, and its first phase starts from the approved version.",
 		"- LEGION-215, in held: ":            "told nothing while it is held: the release that moves it back into a phase carries what it is owed then.",
 		"- LEGION-216, in done: ":            "told nothing: its work is done.",
+		"- LEGION-217, in awaiting_children: ": "told nothing while it waits on its open children: the return that moves it back into its phase " +
+			"once no child of it is open carries what it is owed then.",
 	} {
 		if line := newsLine(t, text, opening); !strings.Contains(line, want) {
 			t.Errorf("the summary's line %q does not say %q", line, want)

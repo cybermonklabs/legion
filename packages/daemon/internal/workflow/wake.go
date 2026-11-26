@@ -109,6 +109,9 @@ type Pods interface {
 	// so its backstop wakes no one (podBackstopDue). An older such start brings no one back, since
 	// admission finishes it without acting, so it silences no backstop.
 	WaitsForItsSlot(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
+	// CancelPodBackstops drops every open backstop of issue: a parent that moves into
+	// awaiting_children has no phase for one to wake a role of it into (awaitChildren).
+	CancelPodBackstops(ctx context.Context, tx pgx.Tx, issue string) error
 }
 
 // wakeRow is the outbox row a wake writes: a `start` of the woken role at the issue's current
