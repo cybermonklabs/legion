@@ -11,10 +11,12 @@
   "description": "Autonomous development swarm using Oh My Pi agents",
   "private": true,
   "scripts": {
+    "postinstall": "bun packages/contracts/scripts/gen-api.ts || { rm -f packages/contracts/src/dispatch-api.generated.ts || exit 1; echo 'postinstall: packages/contracts/scripts/gen-api.ts failed (above), so packages/contracts/src/dispatch-api.generated.ts is removed: every type check that reads the Dispatch API types fails naming it until `bun run gen:api` in packages/contracts succeeds' >&2; }",
     "dispatch:local": "cd packages/dispatch && bun run dispatch:local",
     "docs:dev": "cd docs/site && bun run dev",
     "docs:build": "cd docs/site && bun run build",
-    "docs:media": "bun docs/site/media/shots.ts"
+    "docs:media": "bun docs/site/media/shots.ts",
+    "test:e2e-lib": "bun test --timeout 200000 scripts/e2e/lib"
   },
   "workspaces": [
     "packages/cipher-client",

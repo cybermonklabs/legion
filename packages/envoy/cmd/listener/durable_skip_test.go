@@ -18,6 +18,7 @@ import (
 // of a session nobody has, are decoded as before. Every message here is undecodable, so a decode
 // shows as the handler's decode failure.
 func TestSubjectIndexAcksADurableMessageNoSessionNeedsBeforeDecodingIt(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	// An interest whose session entry has lapsed: the durable cannot read a record saying the
 	// session takes the message itself, so it decodes and delivers it (durableNeedsDelivery).

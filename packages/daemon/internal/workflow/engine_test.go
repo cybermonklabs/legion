@@ -40,6 +40,7 @@ func (admissionStub) Apply(context.Context, pgx.Tx, intake.Fact) (intake.Result,
 }
 
 func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	store := record.NewStore()
 	ctx := context.Background()
@@ -97,6 +98,7 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 // creating the child's branch, which each start waits for, and the in_progress of the phase it
 // enters written over the todo Dispatch shows.
 func TestRegisteredOpenGateRecordsChildAndStartsPlanningAtItsSlot(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 4, Status: "in_progress", Rank: "U"})
@@ -136,6 +138,7 @@ func TestRegisteredOpenGateRecordsChildAndStartsPlanningAtItsSlot(t *testing.T) 
 // orders every review it will have, and takes the head the reopen names - commits pushed while it
 // was closed reach no synchronize, so the reopen is the only fact that carries them.
 func TestAReopenedPullRequestTakesItsNewHeadAndKeepsItsReview(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"})
@@ -174,6 +177,7 @@ func TestAReopenedPullRequestTakesItsNewHeadAndKeepsItsReview(t *testing.T) {
 // open gate if the gate took another document's events, so the test holds the behaviour rather
 // than the arithmetic of a version too old to matter.
 func TestDecisionsDocumentLeavesDesignGateOpen(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U"})
@@ -202,6 +206,7 @@ func TestDecisionsDocumentLeavesDesignGateOpen(t *testing.T) {
 }
 
 func TestImplementationReachesTestingWhenHandoffAndPullRequestArriveInEitherOrder(t *testing.T) {
+	t.Parallel()
 	for _, handoffFirst := range []bool{true, false} {
 		name := "pull-request-first"
 		if handoffFirst {
@@ -243,6 +248,7 @@ func TestImplementationReachesTestingWhenHandoffAndPullRequestArriveInEitherOrde
 }
 
 func TestCapturedArtifactVersionAndApprovalFlowThroughConsume(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "CAPTURE-4", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "CAPTURE-4", Project: "CAPTURE", Title: "captured gate", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U"})
@@ -274,6 +280,7 @@ func TestCapturedArtifactVersionAndApprovalFlowThroughConsume(t *testing.T) {
 // before the fact reaches the engine: the review's whole path, decode, permission read and apply,
 // runs through the real consumer.
 func TestCapturedApprovedReviewFlowsThroughConsumeToAccepting(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "captured review", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
@@ -314,6 +321,7 @@ func TestCapturedApprovedReviewFlowsThroughConsumeToAccepting(t *testing.T) {
 // kept moving (dispatch://INFRA-1442). Here no round was a conflict round, so the second number
 // is none, and the third rejection reaches the cap on its own.
 func TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
@@ -349,6 +357,7 @@ func TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound(t *testing.T) {
 // from a reviewer (VERDICT_ROLE_FORBIDDEN), and the tester's handoff as the Dispatch record it reads
 // with `dispatch handoff-read`, with no commit, since this completion of the tester's names none.
 func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
@@ -368,23 +377,17 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 	}
 }
 
-// reviewerPrompt is the reviewer's composed prompt as its pane reads it (rolePrompt).
+// reviewerPrompt is the reviewer's composed prompt as its pane reads it: every part Compose names,
+// read back and joined in order.
 func reviewerPrompt(t *testing.T) string {
-	t.Helper()
-	return rolePrompt(t, claim.RoleReviewer)
-}
-
-// rolePrompt is role's composed prompt as its pane reads it: every part Compose names, read back
-// and joined in order.
-func rolePrompt(t *testing.T, role claim.Role) string {
 	t.Helper()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	parts, err := composer.Compose(role, false)
+	parts, err := composer.Compose(claim.RoleReviewer, false)
 	if err != nil {
-		t.Fatalf("compose the %s's prompt: %v", role, err)
+		t.Fatalf("compose the reviewer's prompt: %v", err)
 	}
 	var prompt strings.Builder
 	for _, path := range parts.RolePromptPaths {
@@ -400,6 +403,7 @@ func rolePrompt(t *testing.T, role claim.Role) string {
 // The reviewer's prompt names the label its task's verdict carries as the tester's result and says
 // its own completion carries none, so a rename on either side alone fails here.
 func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
+	t.Parallel()
 	prompt := reviewerPrompt(t)
 	for _, want := range []string{"`" + testerVerdictLabel + ":`", "`VERDICT_ROLE_FORBIDDEN`"} {
 		if !strings.Contains(prompt, want) {
@@ -415,6 +419,7 @@ func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
 // reviewer writes the entry into its review's footer, so a prompt that did not name the field
 // would leave every review moving no commit.
 func TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries(t *testing.T) {
+	t.Parallel()
 	mergeGate := filepath.Join("..", "..", "..", "..", "skills", "legion-worker", "references", "merge-gate.md")
 	body, err := os.ReadFile(mergeGate)
 	if err != nil {
@@ -445,6 +450,7 @@ func TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries(t *testing.T) {
 // summary, and beside it the verdict the tester gave. Neither stands in for the other; a notice
 // that carried the verdict in its summary told the architect "pass" and nothing the tester wrote.
 func TestAPhaseFinishedNoticeCarriesTheWorkersSummaryAndItsVerdict(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
@@ -478,6 +484,7 @@ func TestAPhaseFinishedNoticeCarriesTheWorkersSummaryAndItsVerdict(t *testing.T)
 // waits for an open check (check_test.go). No child of such a tree is left mid-run, so the expiry
 // hands none over; the hand-over of a root a person closed is admit's cover (finished_root_test.go).
 func TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	now := time.Date(2026, 9, 23, 4, 0, 0, 0, time.UTC)
@@ -611,6 +618,7 @@ func assertOutboxCount(t *testing.T, pool *pgxpool.Pool, kind string, want int) 
 // until its issue closes. (The merge's row is the close itself, which suspends the tree:
 // TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace.)
 func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
+	t.Parallel()
 	// The root's architect, whose sign-off the route names it by; the seeded issue has no run of a
 	// step the record counts, so its route reads none.
 	architect := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect))
@@ -734,6 +742,7 @@ func assertStartTasksNamePhase(t *testing.T, pool *pgxpool.Pool, want phase.Phas
 // move onto accepting starts no worker: the architect that owns the issue, whose phase it is, is
 // already live.
 func TestEveryBackwardEdgeAppliesThroughIntake(t *testing.T) {
+	t.Parallel()
 	for _, from := range []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging} {
 		for _, to := range requiredBackwardTargets(phase.Order, from) {
 			t.Run(string(from)+"-to-"+string(to), func(t *testing.T) {
@@ -776,6 +785,7 @@ func TestEveryBackwardEdgeAppliesThroughIntake(t *testing.T) {
 // write carries the status the record held as the status it was observed at, so a person's move
 // since is not written over.
 func TestAMoveBackIntoPlanningWritesInProgress(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "backward", Phase: phase.Reviewing, Generation: 1, Status: PhaseStatus(phase.Reviewing), Rank: "U"})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim"})
@@ -803,6 +813,7 @@ func TestAMoveBackIntoPlanningWritesInProgress(t *testing.T) {
 // implementer's from accepting among them; or to no phase at all, which the row lookup would
 // otherwise take to match any row.
 func TestABackwardMoveNoRowServesIsRefused(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		from      phase.Phase
@@ -1021,6 +1032,7 @@ func randomSuffix(t *testing.T) string {
 // move sends the issue back to keys its new round on — here the merger's own words for a merge it
 // would not make (request_backward_move).
 func TestABackwardMovesTaskNamesThePullRequestAndTheReason(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "backward", Phase: phase.Merging, Generation: 1, Status: "in_progress", Rank: "U"})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: phase.RoleFor(phase.Merging), Claim: "claim"})
@@ -1046,6 +1058,7 @@ func TestABackwardMovesTaskNamesThePullRequestAndTheReason(t *testing.T) {
 // merging and in accepting whose pull request is still open: each goes back and starts the
 // phase's worker, so the merge alone is what refuses the others.
 func TestABackwardMoveOfAMergedIssueIsRefused(t *testing.T) {
+	t.Parallel()
 	const reason = "its pull request has merged; a merged change never moves back"
 	for _, tc := range []struct {
 		name    string
@@ -1128,6 +1141,7 @@ func capPosts(t *testing.T, pool *pgxpool.Pool) (messages []string, blocked int)
 // finished with no verdict. So the notice names the move: the phase it went back to, the role that
 // asked, and that role's own words.
 func TestABackwardMovesNoticeNamesTheMoveAndItsReason(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
@@ -1163,6 +1177,7 @@ func TestABackwardMovesNoticeNamesTheMoveAndItsReason(t *testing.T) {
 // round nobody spent. This is the one case of main's conflict_round_test.go that outlived the merge
 // lane that test was written against.
 func TestAConflictRoundCountsAgainstNoCap(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
