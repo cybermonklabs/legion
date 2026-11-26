@@ -49,18 +49,12 @@ func TestDropNamesTheHolderWhenTheLastDropAttemptEndsWithItsContext(t *testing.T
 func TestDropFailsByNameWhenStuckBeforeItsSecondAttempt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	admin := &heldDropAdmin{firstAttempt: make(chan struct{})}
+	// The fake cancels inside the first Exec, before it returns the refusal, so the context is
+	// already done when Drop reaches its inter-attempt select. A cancel on this goroutine would
+	// race the 250 ms pass timer, and a slow scheduler would let Drop make a second attempt.
+	admin := &heldDropAdmin{cancelOnFirstAttempt: cancel}
 	result := make(chan error, 1)
 	go func() { result <- Drop(ctx, admin, "legion_drop_holder") }()
-	bound := testwait.Context(t)
-	select {
-	case <-admin.firstAttempt:
-		cancel()
-	case <-bound.Done():
-		t.Fatal("Drop did not make its first forced-drop attempt before the test bound")
-	case err := <-result:
-		t.Fatalf("Drop returned before its first forced-drop attempt: %v", err)
-	}
 	err := testwait.Receive(t, "Drop to fail once its context ended before the second attempt", result)
 	if err == nil {
 		t.Fatal("Drop returned nil although its context ended before the second attempt")
@@ -90,7 +84,7 @@ func requireHolderDiagnostic(t *testing.T, err error, admin *heldDropAdmin) {
 type heldDropAdmin struct {
 	attempts              int
 	blockSecondAttempt    chan struct{}
-	firstAttempt          chan struct{}
+	cancelOnFirstAttempt  context.CancelFunc
 	refusal               *pgconn.PgError
 	query, database       string
 	liveDiagnosticContext bool
@@ -102,8 +96,8 @@ func (a *heldDropAdmin) Exec(ctx context.Context, _ string, _ ...any) (pgconn.Co
 		a.refusal = &pgconn.PgError{Code: objectInUse, Message: "database is being accessed by other users"}
 	}
 	if a.attempts == 1 {
-		if a.firstAttempt != nil {
-			close(a.firstAttempt)
+		if a.cancelOnFirstAttempt != nil {
+			a.cancelOnFirstAttempt()
 		}
 		return pgconn.CommandTag{}, a.refusal
 	}
