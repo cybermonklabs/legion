@@ -180,8 +180,9 @@ type outbox struct {
 	// served under its own name.
 	repositories *repositories
 	// privateNameRules is the deployment's private-name rule file as boot compiled it
-	// (plan.privateNameRules), which every issue branch's create runs over the ref name before it
-	// writes (ghbranch.Create), set by attach after newOutbox. Nil where the deployment names no
+	// (plan.privateNameRules), which every branch create runs over the ref name before it writes
+	// (ghbranch.Create): an issue's branch, and a task's branch and join branch (joinBranch). Set by
+	// attach after newOutbox. Nil where the deployment names no
 	// rule file, and in a test that builds the outbox by hand: the create then runs no
 	// private-name rule.
 	privateNameRules *leakguard.RuleSet

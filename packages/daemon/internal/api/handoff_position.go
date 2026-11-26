@@ -24,8 +24,8 @@ import (
 // (record.PhaseRow.LastHandoff), the phase entry the completing role's current phase is on
 // (record.PhaseRow.Entry, 0 on a row no start has stamped) and whether the start that raised it
 // moved the issue back (record.PhaseRow.EntryMovedBack), its pull request record, nil while none
-// is recorded, and its production check that the caller's live look is of, nil where no such
-// check was opened.
+// is recorded, and its production check opened at the time a check report names
+// (HandoffCompleteRequest.CheckOpenedAt), nil where no check was opened then.
 //
 // Of a plan of any count of tasks, one among them, the task is named in ofTask, and the position is
 // that task's: issue stands where the issue stands for that task alone (standingOfTask), the pass
@@ -55,7 +55,7 @@ type completionPosition struct {
 
 // handoffPosition reads key's position (completionPosition) for the completing role and the claim
 // that completes, whose phases row names the entry it was last raised to, and the check opened at
-// checkOpenedAt, the check of the caller's live look (the issue's newest for the zero time).
+// checkOpenedAt, the time a check report names (the issue's newest for the zero time).
 // An issue the workflow does not record is a position with no issue and no error. The pull
 // request is the row of the completion's task (record.Store.PullRequestOfTask): the route reads
 // its head and its state and writes nothing of it.

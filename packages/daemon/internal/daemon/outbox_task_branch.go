@@ -394,7 +394,7 @@ func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, ont
 	if len(starts) > 0 {
 		base = starts[0].Branch
 	}
-	if err := ghbranch.Create(ctx, github, repo, onto, base); err != nil {
+	if err := ghbranch.Create(ctx, github, repo, onto, base, r.privateNameRules); err != nil {
 		if len(starts) > 0 && githubAnswered(err, http.StatusNotFound) {
 			return nil, false, missing(starts[0], err)
 		}
@@ -419,7 +419,7 @@ func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, ont
 	if onto == branch {
 		return conflicts, false, nil
 	}
-	if err := ghbranch.Create(ctx, github, repo, branch, onto); err != nil {
+	if err := ghbranch.Create(ctx, github, repo, branch, onto, r.privateNameRules); err != nil {
 		return nil, false, err
 	}
 	joined, err := ghbranch.Merge(ctx, github, repo, branch, onto, fmt.Sprintf("%s: join the work of %s", issue.Key, idsNamed("task", needs)))

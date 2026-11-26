@@ -24,12 +24,10 @@ import (
 //   - a look's task given while the step's turn runs: the step's completion is the tester's phase
 //     completion, then the look's report is a check report of look 2.
 //
-// This test is kept red in its first order, on purpose, until handoff_complete names what it
-// reports. The route tells a check report from a phase completion by what the claim serves
-// (supervise.Claim.ServingCheck), and the claim stops serving the look it retired as soon as a task
-// of a phase is queued, so the look's report made in its own turn is routed as a phase completion
-// and refused. The call does not yet name its check; the pull request that gives the call that
-// field makes this test pass.
+// The look's report names its check (checkOpenedAt), so the route takes it as a check report
+// whatever the claim serves when it arrives: the claim stops serving the look it retired as soon as
+// a task of a phase is queued, and a route that read that state routed the look's report made in
+// its own turn as a phase completion and refused it.
 func TestEachReportOfALookAndAStepOfOneAgentIsRecordedAsWhatItIs(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -73,7 +71,7 @@ func TestEachReportOfALookAndAStepOfOneAgentIsRecordedAsWhatItIs(t *testing.T) {
 			reportsTheLook := func() {
 				t.Helper()
 				completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "the deploy has not carried the merge",
-					Verdict: "pending", WakeAt: &checkWakeAt}))
+					Verdict: "pending", WakeAt: &checkWakeAt, CheckOpenedAt: &checkOpenedAt}))
 				want := intake.CheckReport{Issue: "LEGION-208", Claim: tester.token, Look: 2, Verdict: "pending",
 					Summary: "the deploy has not carried the merge", WakeAt: &checkWakeAt, OpenedAt: checkOpenedAt}
 				if got := lastCheckReport(t, facts); !sameCheckReport(got, want) {
