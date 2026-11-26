@@ -4270,7 +4270,7 @@ every database this release migrated records 20261125223008_claim_held_for above
 A rollback to a release before #5505 reports 20261125223008 before the block and after it too: neither that migration nor #5575's 20261125212800 nor #5398's 20261124130001 nor #4392's 20261124182040 nor #5372's 20261124143026 nor #5349's 20261124073512 nor #5365's 20261124060500 carries a way back, and the way back of #5566's 20261125163328 deletes no version row, so their rows stand, and the ways back in the headers of `20261125000600_production_check_failed_looks.up.sql`, which a rollback to a release before #5385 runs first, and of `20261123224717_members_owed.up.sql`, which a rollback to a release before #5303 runs first, each delete that version's row alone.
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 alter table pending_task_deliveries add column if not exists delivered_at timestamptz;
 alter table pending_task_deliveries add column if not exists marked_by text not null default '';

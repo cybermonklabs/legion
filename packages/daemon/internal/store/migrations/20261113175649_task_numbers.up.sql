@@ -101,7 +101,7 @@
 -- twenty-two statements below, run with the daemon stopped. docs/kubernetes.md carries the same
 -- block as the step an operator runs, beside the phase entry's, and the two say the same thing.
 --
---   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
 --   alter table pending_task_deliveries add column if not exists delivered_at timestamptz;
 --   alter table pending_task_deliveries add column if not exists marked_by text not null default '';
