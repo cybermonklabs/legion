@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+    The daemon API contract gains the entry `texts-folder-root` and its fixture: the pane variable
+    `LEGION_TEXTS_ROOT` and the launcher frame members `checksTexts` (hello), `texts` (start)
+    and `texts` (start result), which carry an experiment arm's folder of texts to a pod's launcher.
+time: 2026-11-26T04:22:59Z
+custom:
+    Issue: INFRA-5590

@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+    A launch of an experiment arm's folder of texts names its extension root in
+    `LEGION_TEXTS_ROOT`. The plugin reads `dispatch-first` from the root's
+    `skills/dispatch-first/SKILL.md` and gives the root's `skills/` folder from
+    `resources_discover` in place of its own, so the arm's copy of a skill keeps its plain name.
+    It sets the variable to the empty string at load, so an Oh My Pi a worker starts reads
+    Legion's own texts.
+time: 2026-11-26T04:22:44Z
+custom:
+    Issue: INFRA-5590

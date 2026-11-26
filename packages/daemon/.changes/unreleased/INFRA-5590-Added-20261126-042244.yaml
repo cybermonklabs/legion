@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+    An arm of an experiment can name a folder of texts (`texts`, a clean absolute path beside
+    `instructions`) whose files replace Legion's role prompt parts, agents, skills and the
+    dispatch-first text for the roles the experiment reaches, so the arm runs one whole version of
+    Legion's texts. `manifest.json` in the folder records the digest of the text each file
+    replaces. A launch whose folder fails a check (a stale digest, a path with no Legion text, an
+    agent or skill the image does not ship, a folder or manifest that cannot be read, a part no
+    reached role reads, a launch that installs the plugins after its start) runs Legion's own
+    texts and none of the arm's settings, names no arm in its model calls, and tells the issue
+    once for each claim and cause. The daemon refuses to start, and `legion config check`
+    refuses, a folder it cannot read, one with no manifest, one outside the pods' mounts, a part
+    no reached role reads, a folder for a role not on Oh My Pi, and two experiments that give a
+    folder to one role. A contract entry, `texts-folder-root`, adds the pane variable
+    `LEGION_TEXTS_ROOT` and three launcher frame members.
+time: 2026-11-26T04:22:44Z
+custom:
+    Issue: INFRA-5590
