@@ -106,8 +106,7 @@ func listTargets(t *testing.T, handler http.Handler, project string, comments in
 	return key, "/api/v1/issues/" + key + "/comments", "/api/v1/issues/" + key + "/events"
 }
 
-// issueLastSeq is the issue's newest event sequence: what the activity feed's validator is built
-// on, and what the comment list's deliberately is not.
+// issueLastSeq is the issue's newest event sequence, which both lists' validators hash.
 func issueLastSeq(t *testing.T, database *store.Store, key string) int {
 	t.Helper()
 	var lastSeq int
@@ -121,6 +120,7 @@ func issueLastSeq(t *testing.T, database *store.Store, key string) int {
 // An unchanged list answers a reader holding its own ETag a 304 with no body, and a reader holding
 // a stale one the whole answer again, under the ETag it had all along. Both lists, both readings.
 func TestAnUnchangedListAnswersNotModifiedToItsOwnETag(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	_, comments, feed := listTargets(t, handler, "ETAG", 3)
 	for _, list := range []struct{ name, target string }{
@@ -159,6 +159,7 @@ func TestAnUnchangedListAnswersNotModifiedToItsOwnETag(t *testing.T) {
 // accepted encoding each choose their bytes, on the answer and on the 304 that revalidates it: a
 // 304 that named neither would let a cache hand a caller the answer written for the other.
 func TestBothListsVaryOnTheTreesHeaderAndTheAcceptedEncoding(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	_, comments, feed := listTargets(t, handler, "VARY", 2)
 	for _, target := range []string{comments, feed} {
@@ -175,6 +176,7 @@ func TestBothListsVaryOnTheTreesHeaderAndTheAcceptedEncoding(t *testing.T) {
 // An edited comment moves the comment list's ETag and the answer carries the new wording: the
 // negative control of a warm read that is served from what was kept.
 func TestAnEditedCommentChangesTheCommentListsETag(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "EDITL", "An edited comment", "A spec")
 	comment := createReferenceAPIComment(t, handler, issue.Key, "The **first** wording of this comment.")
@@ -199,6 +201,7 @@ func TestAnEditedCommentChangesTheCommentListsETag(t *testing.T) {
 // validator exists for: an ETag over that column would answer 304 to a reader whose list now
 // shows an attempt it has never seen.
 func TestANewDeliveryAttemptChangesTheCommentListsETagWithNoEventAppended(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "DLVRL", "A delivery attempt", "A spec")
 	comment := createReferenceAPIComment(t, handler, issue.Key, "A comment a session is to be told about.")
@@ -257,6 +260,7 @@ func TestADeployOfANewDisplayParserVersionChangesBothListETags(t *testing.T) {
 // The feed's validator covers the query that chooses its page: two pages of one issue never share
 // an ETag, and a reader holding one page's validator is answered the whole of another.
 func TestTheActivityFeedsETagChangesWithItsPagingQuery(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	_, _, feed := listTargets(t, handler, "PAGEL", 3)
 	etags := map[string]string{}
@@ -281,6 +285,7 @@ func TestTheActivityFeedsETagChangesWithItsPagingQuery(t *testing.T) {
 // for either list: the reading is hashed into the ETag, so neither can be answered 304 against the
 // other's.
 func TestATreesRequestAndOneWithoutNeverShareAListETag(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	_, comments, feed := listTargets(t, handler, "TREEL", 2)
 	for _, list := range []struct{ name, target string }{
@@ -306,6 +311,7 @@ func TestATreesRequestAndOneWithoutNeverShareAListETag(t *testing.T) {
 // its own to each: this is the list a validator over the bytes alone would hand to the wrong
 // caller, which is why the reading is hashed in beside them.
 func TestAnEmptyCommentListAnswersOneETagPerReading(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "EMPTYL", "No comments at all", "A spec")
 	target := "/api/v1/issues/" + issue.Key + "/comments"
@@ -328,6 +334,7 @@ func TestAnEmptyCommentListAnswersOneETagPerReading(t *testing.T) {
 // from its watermark (answerCommentList) - so no statement of either touches the table its answer
 // is built from, and both are written without encoding or compressing anything again.
 func TestASecondReadOfEachListIsAnsweredFromTheKeptBytes(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	counter := &roundTrips{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
@@ -383,6 +390,7 @@ func TestASecondReadOfEachListIsAnsweredFromTheKeptBytes(t *testing.T) {
 // compressed form is why these answers set their own Content-Encoding, which is what keeps the
 // compression layer from compressing them a second time (list_answers.go).
 func TestAWarmGzipReadOfAListIsCompressedOnce(t *testing.T) {
+	t.Parallel()
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	_, comments, feed := listTargets(t, handler, "GZWARM", 6)
 	for _, list := range []struct{ name, target string }{
@@ -444,24 +452,49 @@ func emptyIssuesAsAScenarioResetDoes(t *testing.T, database *store.Store) {
 	}
 }
 
-// A key a new issue takes from an old one is never answered the old issue's activity feed. The
-// feed's validator stands on issues.last_seq, a counter of the issue row, so two issues of one
-// key stand at one sequence and would otherwise be given one ETag: the second issue's reader
-// would be answered 304, or written the bytes this server kept for the first. The issue's
-// created_at is hashed in beside the column so neither can happen, which is what the browser
-// harness needs of it - it empties `issues` and restarts each project's numbering between
-// scenarios, under a server process that keeps running.
-func TestANewIssueUnderARecycledKeyIsNeverAnsweredTheOldIssuesFeed(t *testing.T) {
+// A key a new issue takes from an old one is never answered either of the old issue's lists.
+// Both validators stand on counters a new issue of the key can reach again: the feed's on
+// issues.last_seq, a counter of the issue row that starts again with it, and the comment list's
+// on that and on the list's watermark, which a new issue with no comment keeps at the old count
+// and a database restored under a running server starts again. So two issues of one key, each
+// with one comment over a watermark that started again, stand at one sequence and one count and
+// would otherwise be given one ETag: the second issue's reader would be answered 304, or
+// written the bytes this server kept for the first. The issue's created_at is hashed in beside
+// the counters so neither can happen, which is what the browser harness needs of it - it empties
+// `issues` and restarts each project's numbering between scenarios, under a server process that
+// keeps running - and what a database restored under a running server needs of it.
+func TestANewIssueUnderARecycledKeyIsNeverAnsweredTheOldIssuesLists(t *testing.T) {
+	t.Parallel()
 	// A settlement of the first issue's spec writes to the tables the reset below empties, and a
 	// delay no test run reaches keeps the two apart, as it does in the harness (quiesceDocuments).
 	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
 	first := createInteractionIssue(t, handler, "RECYCL", "The first issue of this key", "")
-	feed := "/api/v1/issues/" + first.Key + "/events"
-	before := listRead(t, handler, feed, listReadOptions{trees: true})
-	beforeETag := listETagOf(t, before, "the first issue's feed")
+	createReferenceAPIComment(t, handler, first.Key, "A comment on the first issue")
+	// was is a text only the first issue's answer holds, and is a text only the second's holds.
+	lists := []struct{ name, target, was, is string }{
+		{"comment list", commentListOf(first.Key), "A comment on the first issue", "A comment on the second issue"},
+		{"activity feed", "/api/v1/issues/" + first.Key + "/events", "The first issue of this key", "The second issue of this key"},
+	}
+	beforeETags := make([]string, len(lists))
+	for i, list := range lists {
+		before := listRead(t, handler, list.target, listReadOptions{trees: true})
+		beforeETags[i] = listETagOf(t, before, "the first issue's "+list.name)
+		if !strings.Contains(before.Body.String(), list.was) {
+			t.Fatalf("the first issue's %s answers %s, want %q in it", list.name, before.Body.String(), list.was)
+		}
+	}
 	beforeSeq := issueLastSeq(t, database, first.Key)
+	beforeCount := commentWatermark(t, database, first.Key)
 
 	emptyIssuesAsAScenarioResetDoes(t, database)
+	// The comment list's counter starts again too, as a database restored under a running server
+	// starts it: the browser harness's reset does not empty comment_watermarks, which no foreign
+	// key reaches (migration 20261106020619), but a restore takes it back to the count the backup
+	// held, and an empty one holds none. Emptied, it stands where the new issue's own comment puts
+	// it, the count the first issue's list was read at.
+	if _, err := database.Pool.Exec(context.Background(), `truncate table comment_watermarks`); err != nil {
+		t.Fatalf("empty the comment lists' counters: %v", err)
+	}
 
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
 		"project": "RECYCL", "title": "The second issue of this key", "spec": "",
@@ -475,27 +508,38 @@ func TestANewIssueUnderARecycledKeyIsNeverAnsweredTheOldIssuesFeed(t *testing.T)
 	if second.Key != first.Key {
 		t.Fatalf("the second issue is %s, want the %s the first had: this case needs the key back", second.Key, first.Key)
 	}
+	createReferenceAPIComment(t, handler, second.Key, "A comment on the second issue")
 	if seq := issueLastSeq(t, database, second.Key); seq != beforeSeq {
 		t.Fatalf("the two issues of %s stand at sequences %d and %d: this case needs the one sequence",
 			first.Key, beforeSeq, seq)
 	}
-
-	after := listRead(t, handler, feed, listReadOptions{trees: true})
-	afterETag := listETagOf(t, after, "the second issue's feed")
-	if afterETag == beforeETag {
-		t.Errorf("both issues of %s answer the feed ETag %s", first.Key, beforeETag)
-	}
-	if !strings.Contains(after.Body.String(), "The second issue of this key") {
-		t.Fatalf("the feed of %s answers %s, want the issue that holds the key now", first.Key, after.Body.String())
+	if count := commentWatermark(t, database, second.Key); count != beforeCount {
+		t.Fatalf("the two comment lists of %s stand at counts %d and %d: this case needs the one count",
+			first.Key, beforeCount, count)
 	}
 
-	holding := listRead(t, handler, feed, listReadOptions{trees: true, etag: beforeETag})
-	if got := listETagOf(t, holding, "the feed read holding the first issue's ETag"); got != afterETag {
-		t.Fatalf("a reader holding the first issue's validator is answered %s, want the %s the feed stands at", got, afterETag)
-	}
-	if !bytes.Equal(holding.Body.Bytes(), after.Body.Bytes()) {
-		t.Errorf("a reader holding the first issue's validator is answered %d bytes, want the %d the feed carries",
-			holding.Body.Len(), after.Body.Len())
+	for i, list := range lists {
+		t.Run(list.name, func(t *testing.T) {
+			after := listRead(t, handler, list.target, listReadOptions{trees: true})
+			afterETag := listETagOf(t, after, "the second issue's "+list.name)
+			if afterETag == beforeETags[i] {
+				t.Errorf("both issues of %s answer the %s ETag %s", first.Key, list.name, afterETag)
+			}
+			if body := after.Body.String(); !strings.Contains(body, list.is) || strings.Contains(body, list.was) {
+				t.Errorf("the %s of %s answers %s, want the one of the issue that holds the key now: %q in it and %q not",
+					list.name, first.Key, body, list.is, list.was)
+			}
+
+			holding := listRead(t, handler, list.target, listReadOptions{trees: true, etag: beforeETags[i]})
+			if got := listETagOf(t, holding, "the "+list.name+" read holding the first issue's ETag"); got != afterETag {
+				t.Fatalf("a reader holding the first issue's validator is answered %s, want the %s the %s stands at",
+					got, afterETag, list.name)
+			}
+			if !bytes.Equal(holding.Body.Bytes(), after.Body.Bytes()) {
+				t.Errorf("a reader holding the first issue's validator is answered %d bytes, want the %d the %s carries",
+					holding.Body.Len(), after.Body.Len(), list.name)
+			}
+		})
 	}
 }
 
@@ -509,6 +553,7 @@ func TestANewIssueUnderARecycledKeyIsNeverAnsweredTheOldIssuesFeed(t *testing.T)
 // on the one database: the rows they answer are the same rows, so the only thing that can part
 // their validators is the build.
 func TestTwoBuildsNeverShareAListValidator(t *testing.T) {
+	t.Parallel()
 	before, database, _, _ := newRegisteredTestServer(t, testServerOptions{buildCommit: strings.Repeat("a", 40)})
 	_, comments, feed := listTargets(t, before, "BUILDL", 2)
 	after, _, _ := newTestServer(t, testServerOptions{store: database, buildCommit: strings.Repeat("b", 40)})
@@ -540,6 +585,7 @@ func TestTwoBuildsNeverShareAListValidator(t *testing.T) {
 // answer's length alone, 64 MiB of bound would hold 22 million such entries and the keys alone
 // would fill the pod.
 func TestAKeptListAnswerIsChargedTheKeyAndTheBufferItHolds(t *testing.T) {
+	t.Parallel()
 	cache := newListAnswerCache()
 	const ownerBytes = 1 << 20
 	body := make(listAnswerBytes, 3, 4096)
@@ -573,6 +619,7 @@ func TestAKeptListAnswerIsChargedTheKeyAndTheBufferItHolds(t *testing.T) {
 // spelled it, so a signed-in caller asking for one made-up key after another - each as long as a
 // URL may be - would otherwise fill this cache with empty lists under keys of its own choosing.
 func TestAListOfAnOwnerNoRowHoldsKeepsNothing(t *testing.T) {
+	t.Parallel()
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	missing := "NOSUCH-" + strings.Repeat("k", 4096)
 	for _, list := range []struct{ name, target string }{

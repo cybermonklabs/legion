@@ -1,7 +1,6 @@
 package kvwatch_test
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -88,9 +87,7 @@ func TestAWarmUpLogsWhatItStreamedAndThatItCompleted(t *testing.T) {
 	w := kvwatch.New("interest registry", kv, into, kvwatch.WithLogger(logger))
 	t.Cleanup(w.Stop)
 	w.Start()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := w.WaitReady(ctx); err != nil {
+	if err := w.WaitReady(testContext(t)); err != nil {
 		t.Fatalf("WaitReady: %v", err)
 	}
 
@@ -141,9 +138,7 @@ func TestATimedOutWarmUpSaysSoAndIsReadAgainByTheWatcher(t *testing.T) {
 	}
 	now.advance(kvwatch.ScanIdleTimeout)
 	arm.fireIdle(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := w.WaitReady(ctx); err != nil {
+	if err := w.WaitReady(testContext(t)); err != nil {
 		t.Fatalf("WaitReady: %v", err)
 	}
 

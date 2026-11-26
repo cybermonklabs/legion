@@ -6,11 +6,11 @@
 # It starts one scripts/dev-stack.sh run with --project-access (the real broker, the real Dispatch,
 # the real dev-oidc-issuer, the real agent-secrets and its helper, the airlock's proxy and its
 # stands), makes PRIV private with carol as its owner and bob on its access list, writes PRIV_KEY
-# (tagged dispatch-project=PRIV, shared, agent tier) and PUB_KEY (untagged), and then drives one
-# caller at a time. For each it runs `agent-secrets request PRIV_KEY` and `agent-secrets request
-# PUB_KEY` and one trade (packages/cipher-client/scripts/print-trade.ts, which prints the
-# introspection's project_scope and projects), and prints one PASS or FAIL line per answer, naming
-# the caller and the secret:
+# (tagged dispatch-project=PRIV, shared, agent tier, and proxy=<the stack's airlock kind>) and
+# PUB_KEY (untagged), and then drives one caller at a time. For each it runs `agent-secrets request
+# PRIV_KEY` and `agent-secrets request PUB_KEY` and one trade
+# (packages/cipher-client/scripts/print-trade.ts, which prints the introspection's project_scope
+# and projects), and prints one PASS or FAIL line per answer, naming the caller and the secret:
 #   * PRIV's pod, the production path: the pod of legion-priv-worker, whose exchange entry maps it
 #     to PRIV for carol. Its trade of its exchange token is project scope "named" with ["PRIV"];
 #     it enrols itself (agent-secrets enroll --pod --service legion-priv) and is granted both.
@@ -21,20 +21,20 @@
 #     enrollment are both refused, with or without F's check.
 #   * carol's session naming nothing: PUB_KEY granted, PRIV_KEY denied project-not-named.
 #   * the machine's own session: PUB_KEY as today (granted: shared and agent tier), PRIV_KEY denied.
-#   * PRIV's pod behind the airlock: the stack's rules bind PRIV_KEY to the airlock's bound host,
-#     so the pod's grant of it is spent through the proxy. A request through the proxy is served
-#     by the bound host (its own answer is read, not the stands' records: the stands run in a
-#     container); then carol, the person of the pod's exchange entry, is taken off PRIV, and the
-#     next request's CONNECT is refused 407.
+#   * PRIV's pod behind the airlock: PRIV_KEY's proxy tag names the kind the stack's profiles file
+#     declares, whose one host is the airlock's bound host, so the pod's grant of it is spent
+#     through the proxy. A request through the proxy is served by the bound host (its own answer is
+#     read, not the stands' records: the stands run in a container); then carol, the person of the
+#     pod's exchange entry, is taken off PRIV, and the next request's CONNECT is refused 407.
 # A person's session runs through an agent-secrets-helper of that person's own box, in which the
 # person signed in with `agent-secrets login` at the stack's issuer. The session's own calls read
 # no sign-in, so they go to the helper, which enrols them under the person's sign-in naming the
 # projects the session listed.
 #
-# The negative control, --control untagged, writes PRIV_KEY with no dispatch-project tag. Every
-# caller then gets it, and the run fails naming the first caller that got it although it should
-# have been refused. It fails for the reason the probe would be blind: a secret the rule cannot see
-# is exactly an untagged one.
+# The negative control, --control untagged, writes PRIV_KEY with no dispatch-project tag (its proxy
+# tag stays, so the airlock rows still read the rule). Every caller then gets it, and the run fails
+# naming the first caller that got it although it should have been refused. It fails for the
+# reason the probe would be blind: a secret the rule cannot see is exactly an untagged one.
 #
 # Live mode, --broker-url URL --secret NAME: no stack and no write, the session half alone,
 # against a running deployment. It needs, in its environment, the pod's exchange token
@@ -426,7 +426,7 @@ for name in AGENT_SECRETS_URL AGENT_SECRETS_ACCOUNT_TOKEN_FILE DISPATCH_URL DEV_
   AGENT_SECRETS_SIGNIN_CLIENT_ID AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE DEV_STACK_PROJECT_ACCESS \
   DEV_STACK_PRIV_PROJECT DEV_STACK_PRIV_OWNER DEV_STACK_PRIV_SERVICE DEV_STACK_PRIV_SESSION \
   DEV_STACK_PRIV_EXCHANGE_TOKEN_FILE DEV_STACK_PRIV_POD_TOKEN_FILE DEV_STACK_PRIV_SECRET \
-  DEV_STACK_AIRLOCK_PROXY_URL DEV_STACK_AIRLOCK_BOUND_URL DEV_STACK_AIRLOCK_CA_CERT_FILE; do
+  DEV_STACK_AIRLOCK_KIND DEV_STACK_AIRLOCK_PROXY_URL DEV_STACK_AIRLOCK_BOUND_URL DEV_STACK_AIRLOCK_CA_CERT_FILE; do
   banner[$name]="$(exported "$name")"
   [ -n "${banner[$name]}" ] || unread+=("$name")
 done
@@ -449,6 +449,7 @@ PRIV_SESSION="${banner[DEV_STACK_PRIV_SESSION]}"
 PRIV_EXCHANGE_TOKEN_FILE="${banner[DEV_STACK_PRIV_EXCHANGE_TOKEN_FILE]}"
 PRIV_POD_TOKEN_FILE="${banner[DEV_STACK_PRIV_POD_TOKEN_FILE]}"
 PRIV_SECRET="${banner[DEV_STACK_PRIV_SECRET]}"
+AIRLOCK_KIND="${banner[DEV_STACK_AIRLOCK_KIND]}"
 AIRLOCK_PROXY_URL="${banner[DEV_STACK_AIRLOCK_PROXY_URL]}"
 AIRLOCK_BOUND_URL="${banner[DEV_STACK_AIRLOCK_BOUND_URL]}"
 AIRLOCK_CA_CERT_FILE="${banner[DEV_STACK_AIRLOCK_CA_CERT_FILE]}"
@@ -496,11 +497,14 @@ standin_patch_access_owner() {
 
 # --- The secrets: PRIV_KEY of the private project, shared and agent tier, so owner and tier alone
 # would give it to every session at once and only the project decides; PUB_KEY with no project at
-# all, which must go on being served to everyone its owner and tier allow. The control run writes
-# PRIV_KEY with no project tag, exactly a secret the rule cannot see. The broker reads both again
-# at once (its reread route). ---
-priv_tags="$(jq -cn --arg project "$PRIV_PROJECT" --arg control "$CONTROL" \
-  '{owner: "shared", tier: "agent"} + (if $control == "untagged" then {} else {"dispatch-project": $project} end)')"
+# all, which must go on being served to everyone its owner and tier allow. PRIV_KEY carries the
+# proxy tag naming the kind the stack's banner exports, which puts it behind the airlock: the stack's
+# profiles file declares that kind and names no profile, so the tag is the one thing that binds
+# PRIV_KEY to the bound host. The control run writes PRIV_KEY with no project tag, exactly a secret
+# the rule cannot see, and the same proxy tag. The broker reads both again at once (its reread
+# route). ---
+priv_tags="$(jq -cn --arg project "$PRIV_PROJECT" --arg kind "$AIRLOCK_KIND" --arg control "$CONTROL" \
+  '{owner: "shared", tier: "agent", proxy: $kind} + (if $control == "untagged" then {} else {"dispatch-project": $project} end)')"
 store_name() { printf 'example/agent-secrets/%s' "$(printf '%s' "$1" | tr '[:upper:]_' '[:lower:]-')"; }
 jq --arg priv "$(store_name "$PRIV_SECRET")" --arg pub "$(store_name "$PUB_SECRET")" --argjson tags "$priv_tags" '
   .secrets |= map(select(.name != $priv and .name != $pub))

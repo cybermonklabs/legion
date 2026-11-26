@@ -14,7 +14,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -73,7 +72,7 @@ func TestEveryDecisionSiteAdmitsAMember(t *testing.T) {
 	reader := newGroupReader(cfg, iam.URL, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: podBearer}))
 
 	local := secrets.NewLocal(policytest.Secret("TEAM_TOKEN", record.GroupPrefix+wiredGroup, policy.TierAgent, "team-v1"))
-	current, err := loadFirstPolicy(t.Context(), policyLoader(cfg, policytest.Store(local), proxyrules.Rules{}, metrics.New(), reader), reader, metrics.New(), firstGroupReadsWait)
+	current, err := loadFirstPolicy(t.Context(), policyLoader(cfg, policytest.Store(local), policy.Profiles{}, metrics.New(), reader), reader, metrics.New(), firstGroupReadsWait)
 	if err != nil {
 		t.Fatalf("loadFirstPolicy: %v", err)
 	}
@@ -91,7 +90,7 @@ func TestEveryDecisionSiteAdmitsAMember(t *testing.T) {
 		}
 	}
 	approver := record.GroupPrefix + wiredGroup
-	machine := newRequestMachine(cfg, nil, current, nil, nil, proxyrules.Rules{}, "", nil, nil, reader)
+	machine := newRequestMachine(cfg, nil, current, nil, nil, "", nil, nil, reader)
 	for _, c := range []struct {
 		login string
 		want  bool

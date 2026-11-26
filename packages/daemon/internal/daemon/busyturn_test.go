@@ -31,6 +31,7 @@ func aliveObservation(m *supervise.Machine) supervise.RuntimeObservation {
 // observation rather than a turn end and is told by the count of turns the machine has ended
 // (supervise.Machine.TurnsEnded, wakeIssue). The tester's task is sent then, and not a sweep later.
 func TestABusyRecordedTurnEndReleasesTheIssuesHeldTask(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// end is what ends the implementer's turn once its agent stops streaming, posted through
@@ -121,6 +122,7 @@ func TestABusyRecordedTurnEndReleasesTheIssuesHeldTask(t *testing.T) {
 // read them before that step was written and leaves the machine to judge (supervise's
 // backstopStalledTurn).
 func TestABusyRecordedClaimIsNotBackstopped(t *testing.T) {
+	t.Parallel()
 	rig := newBackstopRig(t)
 	idle := rig.claim(claim.RoleImplementer, "LEGION-209", backstopBound+30*time.Minute, true)
 	idle.State, idle.Pending = supervise.StateReady, nil
@@ -173,13 +175,14 @@ func TestABusyRecordedClaimIsNotBackstopped(t *testing.T) {
 // releases, which is the control; the same pod, once its implementer's task is answered busy, is
 // held in_turn, and the daemon's own pass queues none of a release's rows.
 func TestABusyRecordedClaimIsNotReleasedAsIdle(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	decide := func() workflow.IdleDecision {
 		t.Helper()
 		var decision workflow.IdleDecision
 		if _, err := rig.st.ReleaseIdleIssue(ctx, "legion", rig.issue.Key, func(view pods.IdleView) (store.IdleReleaseMark, error) {
-			decision = workflow.IdleRelease(view, time.Now().UTC(), rig.w.idlePeriod, true, api.DaemonAPIVersion)
+			decision = workflow.IdleRelease(view, time.Now().UTC(), rig.w.idlePeriod, true, api.DaemonAPIVersion())
 			return store.IdleReleaseMark{}, nil
 		}); err != nil {
 			t.Fatalf("read the pod's idle decision: %v", err)

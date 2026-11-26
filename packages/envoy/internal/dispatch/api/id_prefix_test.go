@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -210,6 +212,7 @@ var idPrefixKindPrefixes = map[string]struct{ one, two, none string }{
 // own 404; and a whole uuid nothing carries gets that same 404, which is the control proving
 // the prefix is answered as an unknown whole id is and not by a 404 this test merely asserts.
 func TestAnIDPrefixNamesOneItemOnEveryOwnerFreeRoute(t *testing.T) {
+	t.Parallel()
 	fixture := newIDPrefixFixture(t)
 	for _, route := range idPrefixRoutes() {
 		prefixes := idPrefixKindPrefixes[route.kind]
@@ -280,9 +283,145 @@ func TestAnIDPrefixNamesOneItemOnEveryOwnerFreeRoute(t *testing.T) {
 	}
 }
 
+// TestAnAmbiguousPrefixCutsNoCandidateReferenceInHalf: a candidate's first line is cut at 160 runes
+// where no reference crosses the cut (refs.FirstLine), so a key the bound falls inside is left out
+// whole rather than listed as `CORE-12`, which a reader would follow to another issue. It holds for
+// each kind of first line a candidate carries: a comment's body, a document's name and a block's
+// text.
+func TestAnAmbiguousPrefixCutsNoCandidateReferenceInHalf(t *testing.T) {
+	t.Parallel()
+	fixture := newIDPrefixFixture(t)
+	// 152 runes, so a key after it starts before the cut at 159 and ends after it.
+	lead := strings.Repeat("x", 151) + " "
+	for nth := 1; nth <= 2; nth++ {
+		long := fmt.Sprintf("%sCORE-123%d decides it.", lead, nth)
+		seedExec(t, fixture.database, "a comment with a long first line", `
+			insert into comments (id, issue_key, author, body) values ($1::uuid, $2, $3::jsonb, $4)
+		`, chosenID("c0000003", nth), fixture.issue, idPrefixAuthor, long)
+		seedExec(t, fixture.database, "a document with a long name", `
+			insert into artifacts (id, issue_key, project_key, slug, name, kind, created_by)
+			values ($1::uuid, $2, 'PRE', $3, $4, 'doc', $5::jsonb)
+		`, chosenID("f0000003", nth), fixture.issue, fmt.Sprintf("long-%d-md", nth), long, idPrefixAuthor)
+		seedExec(t, fixture.database, "a version of the document with a long name", `
+			insert into artifact_versions (artifact_id, number, markdown) values ($1::uuid, 1, '# Long')
+		`, chosenID("f0000003", nth))
+		seedExec(t, fixture.database, "an indexed block with a long text", `
+			insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
+			values ($1::uuid, $2, $1::text || '#' || $2, 'paragraph', '', $3, 1, now())
+		`, chosenID("f0000001", 1), fmt.Sprintf("cd34ab12e%d", nth), long)
+	}
+	want := strings.Repeat("x", 151) + "…"
+	for _, route := range []struct{ kind, path string }{
+		{"comment", "/api/v1/comments/c0000003"},
+		{"artifact", "/api/v1/artifacts/f0000003"},
+		{"block", "/api/v1/artifacts/f0000001/blocks/cd34ab12"},
+	} {
+		shared := dispatchRequest(t, fixture.handler, http.MethodGet, route.path, nil, "alice")
+		if shared.Code != http.StatusConflict {
+			t.Fatalf("read %s: status=%d body=%s, want 409", route.path, shared.Code, shared.Body.String())
+		}
+		candidates := decodeBody[ambiguousIDAnswer](t, shared).Candidates
+		if len(candidates) != 2 {
+			t.Fatalf("candidates of %s = %+v, want the two the prefix names", route.path, candidates)
+		}
+		for nth, candidate := range candidates {
+			if candidate.Kind != route.kind || candidate.FirstLine != want {
+				t.Fatalf("%s candidate %d = %+v, want the first line %q: the key the cut falls inside left out whole",
+					route.kind, nth, candidate, want)
+			}
+		}
+	}
+}
+
+// ambiguousCandidates is the candidates of the 409 ID_AMBIGUOUS a GET of target answers: as a
+// person, or with the agent bearer where bearer, and with `Dispatch-Trees: 1` where trees.
+func ambiguousCandidates(t *testing.T, handler http.Handler, target string, bearer, trees bool) []refs.Candidate {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	if bearer {
+		request.Header.Set("Authorization", "Bearer agent-token")
+	} else {
+		request.Header.Set("X-Dispatch-User", "alice")
+	}
+	if trees {
+		request.Header.Set("Dispatch-Trees", "1")
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("GET %s (trees=%v): status=%d body=%s, want 409", target, trees, response.Code, response.Body.String())
+	}
+	answer := decodeBody[ambiguousIDAnswer](t, response)
+	if answer.Code != contracts.IDAmbiguous || len(answer.Candidates) != 2 {
+		t.Fatalf("GET %s (trees=%v) = %+v, want %s with the two items the prefix names", target, trees, answer, contracts.IDAmbiguous)
+	}
+	return answer.Candidates
+}
+
+// requireFirstLineTree fails unless candidate carries the tree pmdoc.DisplayJSON makes of exactly
+// the first line it carries.
+func requireFirstLineTree(t *testing.T, candidate refs.Candidate) {
+	t.Helper()
+	if candidate.FirstLine == "" || candidate.FirstLineTree == nil {
+		t.Fatalf("candidate %+v, want a first line with its tree", candidate)
+	}
+	want := sameShape(t, pmdoc.DisplayJSON(candidate.FirstLine, pmdoc.DisplayLatest))
+	if got := sameShape(t, json.RawMessage(candidate.FirstLineTree)); !bytes.Equal(got, want) {
+		t.Errorf("%s candidate %s: first_line_tree is\n\t%s\nwant the tree of %q\n\t%s", candidate.Kind, candidate.ID, got, candidate.FirstLine, want)
+	}
+}
+
+// TestAnAmbiguousPrefixListsEachFirstLineTreeOnlyUnderTheHeader: the dashboard draws a
+// candidate's first line through the renderer, so a caller that sends `Dispatch-Trees: 1` is
+// given its tree beside it - the tree pmdoc.DisplayJSON makes of exactly that line - for an
+// ask's question, a comment's body, a message's body and a block's text, and a caller that sends
+// none is given no tree. A document's first line is its file's name, drawn as the characters it
+// is, and carries no tree under the header either.
+func TestAnAmbiguousPrefixListsEachFirstLineTreeOnlyUnderTheHeader(t *testing.T) {
+	t.Parallel()
+	fixture := newIDPrefixFixture(t)
+	for nth := 1; nth <= 2; nth++ {
+		seedExec(t, fixture.database, "an indexed block", `
+			insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
+			values ($1::uuid, $2, $1::text || '#' || $2, 'paragraph', '', $3, 1, now())
+		`, chosenID("f0000001", 1), fmt.Sprintf("cd34ab12e%d", nth), fmt.Sprintf("Ship the **block** %d.", nth))
+	}
+	for _, route := range []struct {
+		kind, path string
+		tree       bool
+	}{
+		{"ask", "/api/v1/asks/a0000002", true},
+		{"comment", "/api/v1/comments/c0000002", true},
+		{"message", "/api/v1/messages/d0000002", true},
+		{"block", "/api/v1/artifacts/f0000001/blocks/cd34ab12", true},
+		{"artifact", "/api/v1/artifacts/f0000002", false},
+	} {
+		t.Run(route.kind, func(t *testing.T) {
+			for _, candidate := range ambiguousCandidates(t, fixture.handler, route.path, false, false) {
+				if candidate.FirstLine == "" || candidate.FirstLineTree != nil {
+					t.Errorf("without the header, candidate %+v, want its first line and no tree", candidate)
+				}
+			}
+			for _, candidate := range ambiguousCandidates(t, fixture.handler, route.path, false, true) {
+				if candidate.Kind != route.kind {
+					t.Fatalf("candidate %+v, want a %s", candidate, route.kind)
+				}
+				if !route.tree {
+					if candidate.FirstLine == "" || candidate.FirstLineTree != nil {
+						t.Errorf("a document candidate under the header = %+v, want its name and no tree", candidate)
+					}
+					continue
+				}
+				requireFirstLineTree(t, candidate)
+			}
+		})
+	}
+}
+
 // TestAnAskIsAnsweredByAnIDPrefix: a write route resolves its prefix and writes the item it
 // named, so the ask the prefix shortens is the ask that ends up answered.
 func TestAnAskIsAnsweredByAnIDPrefix(t *testing.T) {
+	t.Parallel()
 	fixture := newIDPrefixFixture(t)
 	answered := dispatchRequest(t, fixture.handler, http.MethodPost, "/api/v1/asks/a0000001/answer",
 		map[string]any{"text": "This way."}, "alice")
@@ -310,6 +449,7 @@ func TestAnAskIsAnsweredByAnIDPrefix(t *testing.T) {
 // document's blocks carry is 409 ID_AMBIGUOUS, the same prefix under another document names
 // nothing, and a block id that is no id written short is matched exactly, as it always was.
 func TestABlockIDPrefixIsMatchedWithinTheDocumentItsRouteNames(t *testing.T) {
+	t.Parallel()
 	fixture := newIDPrefixFixture(t)
 	document := chosenID("f0000001", 1)
 	for _, block := range []struct{ document, id string }{
@@ -362,6 +502,7 @@ func TestABlockIDPrefixIsMatchedWithinTheDocumentItsRouteNames(t *testing.T) {
 // of a prefix two of its blocks carry and the route's own 404 for the one block the live
 // document does not hold - and never the 500 of a value Postgres refuses as a uuid.
 func TestABlockPrefixUnderAUUIDSpellingTheRouteReadsIsResolvedToo(t *testing.T) {
+	t.Parallel()
 	fixture := newIDPrefixFixture(t)
 	document := chosenID("f0000001", 1)
 	for _, blockID := range []string{"ab12cd34ef", "ab12cd34ff"} {
@@ -391,6 +532,7 @@ func TestABlockPrefixUnderAUUIDSpellingTheRouteReadsIsResolvedToo(t *testing.T) 
 // its id out of the path and parses none of it, so the whole id the layer left there is the
 // comment it resolves.
 func TestAWriteRouteThatParsesNoIDActsOnTheResolvedItem(t *testing.T) {
+	t.Parallel()
 	fixture := newIDPrefixFixture(t)
 	resolved := dispatchRequest(t, fixture.handler, http.MethodPost, "/api/v1/comments/c0000001/resolve",
 		map[string]any{}, "alice")
@@ -409,11 +551,13 @@ func TestAWriteRouteThatParsesNoIDActsOnTheResolvedItem(t *testing.T) {
 	}
 }
 
-// TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk: the project check runs behind the
-// prefix layer, so it judges the item the prefix named. A credential scoped to one project is
-// refused another project's ask by its prefix exactly as it is by its whole id, and the refusal
-// names both projects.
-func TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk(t *testing.T) {
+// TestAProjectScopedTokenResolvesAnotherProjectsAskByAPrefix: the project check runs behind the
+// prefix layer, so it judges the item the prefix named, and a credential scoped to one project
+// writes another project's ask as a credential that names no project does (INFRA-4799). It
+// resolves one ask of another project by its whole id and another by its prefix, and each
+// request reaches the handler, which answers 200 with the ask the path named, resolved.
+func TestAProjectScopedTokenResolvesAnotherProjectsAskByAPrefix(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-scoped-to-one-project"
@@ -421,24 +565,21 @@ func TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk(t *testing.T) {
 	seedProject(t, rig, brokerTestProject, "Broker")
 	other := seedProject(t, rig, "OTH", "Other")
 
-	const prefix = "b0000001"
-	id := chosenID(prefix, 1)
-	seedAsk(t, rig.database, other.issue, id, "Which way?")
-
 	body := map[string]any{"kind": "resolved", "reason": "Answered elsewhere."}
-	for _, spelling := range []struct{ name, written string }{{"the whole id", id}, {"its prefix", prefix}} {
-		name, written := spelling.name, spelling.written
-		refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+written+"/resolve", token, body))
-		if refused.Code != http.StatusForbidden {
-			t.Fatalf("%s: status=%d body=%s, want 403", name, refused.Code, refused.Body.String())
-		}
-		refusal := decodeBody[refusalAnswer](t, refused)
-		if refusal.Code != codeProjectScope {
-			t.Fatalf("%s: refusal = %+v, want %s", name, refusal, codeProjectScope)
-		}
-		if !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, other.key) {
-			t.Fatalf("%s: refusal %q names neither %s nor %s", name, refusal.Error, brokerTestProject, other.key)
-		}
+	for _, spelling := range []struct{ name, id, written string }{
+		{"the whole id", chosenID("b0000001", 1), chosenID("b0000001", 1)},
+		{"its prefix", chosenID("b0000002", 1), "b0000002"},
+	} {
+		t.Run(spelling.name, func(t *testing.T) {
+			seedAsk(t, rig.database, other.issue, spelling.id, "Which way?")
+			resolved := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+spelling.written+"/resolve", token, body))
+			if resolved.Code != http.StatusOK {
+				t.Fatalf("resolve %s's ask by %s: status=%d body=%s, want 200", other.key, spelling.name, resolved.Code, resolved.Body.String())
+			}
+			if ask := decodeBody[model.Ask](t, resolved); ask.ID != spelling.id || ask.Resolution == nil {
+				t.Fatalf("the answer is ask %s with resolution %+v, want %s resolved", ask.ID, ask.Resolution, spelling.id)
+			}
+		})
 	}
 }
 
@@ -447,6 +588,7 @@ func TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk(t *testing.T) {
 // session not in the conversation is refused by the prefix exactly as by the whole id, and a
 // refusal listing such a message carries no line of its text for that caller.
 func TestADirectMessagePrefixKeepsTheConversationGuard(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	for nth, id := range []string{chosenID("e0000001", 1), chosenID("e0000002", 1), chosenID("e0000002", 2)} {
 		seedExec(t, database, "a direct message", `
@@ -495,10 +637,34 @@ func TestADirectMessagePrefixKeepsTheConversationGuard(t *testing.T) {
 	}
 }
 
+// TestAGuardedDirectMessageCandidateCarriesNeitherItsLineNorItsTree: a direct message's first
+// line is withheld from a session that is not in its conversation, and so is the tree of that
+// line, though the caller asked for the trees; a person, who reads any conversation, is given
+// both.
+func TestAGuardedDirectMessageCandidateCarriesNeitherItsLineNorItsTree(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	for nth := 1; nth <= 2; nth++ {
+		seedExec(t, database, "a direct message", `
+			insert into messages (id, issue_key, author, body, target)
+			values ($1::uuid, null, $2::jsonb, $3, 'session:s1')
+		`, chosenID("e0000002", nth), idPrefixAuthor, fmt.Sprintf("Where is the *dashboard* %d?", nth))
+	}
+	for _, candidate := range ambiguousCandidates(t, handler, "/api/v1/messages/e0000002?session=s2", true, true) {
+		if candidate.FirstLine != "" || candidate.FirstLineTree != nil {
+			t.Errorf("s2's candidate under the header = %+v, want neither the line nor its tree of a conversation s2 is not in", candidate)
+		}
+	}
+	for _, candidate := range ambiguousCandidates(t, handler, "/api/v1/messages/e0000002", false, true) {
+		requireFirstLineTree(t, candidate)
+	}
+}
+
 // TestAReferenceResolvesAPrefixWithinTheOwnerItNames: `?to=` reads a short id as the one item of
 // the owner the reference names, and the same prefix under another owner names nothing — while a
 // whole id is read whatever owner the reference names, as this route has always read one.
 func TestAReferenceResolvesAPrefixWithinTheOwnerItNames(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	first := createInteractionIssue(t, handler, "REF", "Short ids in references", "# Spec\n\nA passage.")
 	second := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
@@ -547,6 +713,7 @@ func TestAReferenceResolvesAPrefixWithinTheOwnerItNames(t *testing.T) {
 // of that document carrying it. The same prefix on another document of the project, and under
 // the project's issue, names that owner's item or nothing at all.
 func TestAReferenceResolvesAPrefixWithinTheProjectDocumentItNames(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "PDR", "Short ids on a document", "# Spec\n\nA passage.")
 	handbook := createProjectDocument(t, handler, "PDR", "Handbook", "# Handbook\n")
@@ -625,6 +792,7 @@ func TestAReferenceResolvesAPrefixWithinTheProjectDocumentItNames(t *testing.T) 
 // source of each of the four kinds, by whole id and by prefix; a source whose text belongs to no
 // document is 404.
 func TestTheQuestionMapRouteAnswersEverySourceKind(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "QMP", "A spec with a question", "# Spec\n\nA passage.")
 	// The create path seeds the spec through the document service and queues that document's
@@ -719,6 +887,7 @@ func TestTheQuestionMapRouteAnswersEverySourceKind(t *testing.T) {
 // under a name in braces rather than the id every other read of it carries. Every spelling of
 // one id answers what the canonical id answers, and one nothing carries this route's own 404.
 func TestTheQuestionMapRouteReadsEveryUuidSpellingAsTheCanonicalID(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "QMU", "A spec with a question", "# Spec\n\nA passage.")
 	// Wait for the settlement the create path queues for this spec, as the seed below writes a
@@ -786,6 +955,7 @@ func TestTheQuestionMapRouteReadsEveryUuidSpellingAsTheCanonicalID(t *testing.T)
 // the value to a uuid column, and a reference naming no node gets the 404 this route answers
 // for one. The canonical id, which the graph does hold, answers its node.
 func TestAReferenceWritingAnIDAnotherWayIsNoFiveHundred(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "URN", "An ask a reference names", "# Spec\n\nA passage.")
 	id := chosenID("cb000001", 1)
@@ -837,6 +1007,7 @@ var unknownIDRouteProbes = map[string]unknownIDRouteProbe{
 	"PATCH /api/v1/comments/{id}":                            {body: map[string]any{"body": "A remark."}},
 	"POST /api/v1/comments/{id}/deliveries":                  {body: map[string]any{"actor": sessionActor(), "delivery": "btw"}},
 	"POST /api/v1/comments/{id}/reply":                       {body: map[string]any{"actor": sessionActor(), "attempt": 1, "body": "A reply."}, bearer: true},
+	"PATCH /api/v1/messages/{id}":                            {body: map[string]any{"body": "A corrected message."}},
 	"POST /api/v1/messages/{id}/deliveries":                  {body: map[string]any{"actor": sessionActor(), "delivery": "btw"}},
 	"POST /api/v1/messages/{id}/deliveries/{attempt}/accept": {bearer: true},
 	"POST /api/v1/messages/{id}/reply":                       {body: map[string]any{"actor": sessionActor(), "attempt": 1, "body": "A reply."}, bearer: true},
@@ -884,6 +1055,7 @@ func unknownIDRouteRequest(t *testing.T, handler http.Handler, method, path stri
 // own name. The one route that answers no 404 for an id it does not hold (notFoundNone) is held
 // to that: its answer is anything but a 404.
 func TestEveryResolvingIDRouteAnswersTheNotFoundItNames(t *testing.T) {
+	t.Parallel()
 	// Every route the table mounts, the test hooks' one that takes a document id included.
 	handler, _ := newTestHandlerWithTestHooks(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Unknown ids", "# Spec\n\nA passage.")

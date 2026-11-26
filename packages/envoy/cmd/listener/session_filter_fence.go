@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/nats-io/nats.go"
@@ -171,7 +172,7 @@ const filterFenceAttempts = 5
 // other two lines leave it unnamed (storedFilterWrite, sessionRelays.settleFilter): both of
 // those end on a filter the session's next heartbeat sets, which is the same act whatever the
 // write followed.
-func fenceFilterWrite(ctx context.Context, logger *logging.Logger, registry *store.Registry, sessionID, after string, write func() (uint64, filterWriteOutcome)) {
+func fenceFilterWrite(ctx context.Context, logger *logging.Logger, registry *store.Registry, sessionID, after string, write func() (uint64, filterWriteOutcome)) error {
 	// stands is the revision of the row whose filter is on the consumer, and landed says a pass
 	// put one there, which stands alone cannot: a write built for a session the bucket holds no
 	// row for is fenced on revision 0. newest is what the bucket answered after that write.
@@ -182,7 +183,7 @@ func fenceFilterWrite(ctx context.Context, logger *logging.Logger, registry *sto
 		if outcome == filterWriteSettled {
 			// The consumer is as its row asks, there is none, or the record names none: no
 			// filter of any row is a window in what this session is delivered through.
-			return
+			return nil
 		}
 		if outcome == filterWriteSessionGone {
 			// The session is gone, so the line leaving the filter to its next heartbeat is
@@ -192,11 +193,13 @@ func fenceFilterWrite(ctx context.Context, logger *logging.Logger, registry *sto
 				logger.Warn("listener left the filter of an older interest row on the consumer of a session the bucket holds no record for; the session is gone, so no heartbeat sets that filter and the consumer goes with the delete that took the record, or with the stream's inactive threshold",
 					slog.String("session_id", sessionID), slog.String("after", after), slog.Uint64("wrote_revision", stands))
 			}
-			return
+			return errFilterSessionGone
 		}
 		if outcome == filterWriteNotMade {
 			if !landed {
-				return // nothing of this loop's landed, so no older row's filter stands
+				// Nothing of this loop's landed, so no older row's filter stands, and the
+				// filter the consumer had before the loop is still on it.
+				return errFilterNotWritten
 			}
 			// A corrective pass that wrote nothing leaves the pass before it standing, and the
 			// bucket answered a newer row than that one: that is the line below's case too.
@@ -207,15 +210,27 @@ func fenceFilterWrite(ctx context.Context, logger *logging.Logger, registry *sto
 		if _, newest, err = storedTopics(ctx, registry, sessionID); err != nil {
 			logger.Warn("session consumer filter written and left unjudged: the interest row could not be read again; the session's next heartbeat sets it",
 				slog.String("session_id", sessionID), slog.Uint64("wrote_revision", stands), slog.String("error", err.Error()))
-			return
+			return fmt.Errorf("%w: %w", errFilterUnjudged, err)
 		}
 		if !rowMovedUnder(newest, stands) {
-			return
+			return nil
 		}
 	}
 	logger.Warn("session consumer filter left on an older interest row than the bucket holds; the session's next heartbeat sets it",
 		slog.String("session_id", sessionID), slog.Uint64("wrote_revision", stands), slog.Uint64("newest_revision", newest))
+	return errFilterOlderRow
 }
+
+// The ends of a fenced filter write that leave the consumer on a filter the bucket's newest row
+// does not ask for, or one nobody judged, each as fenceFilterWrite answers it beside the line it
+// or the pass logs: a caller that must say what that costs it (the takeover's narrowing of the
+// former holder, roleSetHandler) names it, and the rest have nothing to add.
+var (
+	errFilterSessionGone = errors.New("the bucket holds no record of the session, so the filter a write of this loop left stands on a consumer no session reads")
+	errFilterNotWritten  = errors.New("no write of the newest interest row's filter landed, so the consumer keeps the filter it had")
+	errFilterUnjudged    = errors.New("the filter was written and the interest row could not be read again to judge it")
+	errFilterOlderRow    = errors.New("the filter left on the consumer is an older interest row's than the bucket holds")
+)
 
 // rowMovedUnder reports whether the interest row the bucket answered at revision newest was
 // stored after the row a filter write was built from, at revision wrote, so that a pass planned
@@ -272,40 +287,60 @@ func storedTopics(ctx context.Context, registry *store.Registry, sessionID strin
 	return row.Topics, revision, nil
 }
 
-// filterAfterUnsubscribe, filterAfterUnansweredRegistration and filterAfterRestart name what a
-// write of a session consumer's filter built from the bucket's newest row follows, which its log
-// line carries (storedFilterStep): the unsubscribe that removed topics from the row (refollow),
-// the registration this listener could not answer (registerSession), or the relay restart whose
-// own filter write the fence is correcting (sessionRelays.settleFilter).
+// filterAfterUnsubscribe, filterAfterUnansweredRegistration, filterAfterRestart and
+// filterAfterTakeover name what a write of a session consumer's filter built from the bucket's
+// newest row follows, which its log line carries (storedFilterStep): the unsubscribe that removed
+// topics from the row (refollow), the registration this listener could not answer
+// (registerSession), the relay restart whose own filter write the fence is correcting
+// (sessionRelays.settleFilter), or a claim that took a controller role from the session
+// (narrowFormerHolder).
 const (
 	filterAfterUnsubscribe            = "unsubscribe"
 	filterAfterUnansweredRegistration = "unanswered registration"
 	filterAfterRestart                = "relay restart"
+	filterAfterTakeover               = "role takeover"
 )
 
 // storedFilterWrite holds the filter of sessionID's consumer to the topics the bucket's newest
 // row holds, every pass of it fenced on the revision that row was read at (fenceFilterWrite,
 // storedFilterStep). after names what the write follows, for the log.
 //
-// It owns the three things its callers would otherwise each repeat (refollow, registerSession):
-// the listener that holds no session-consumer connection, which only a test builds and which
-// writes nothing; the budget every consumer call this listener makes is bounded by
-// (sessionConsumerCallTimeout), which here covers the whole loop, as it covers a relay restart's
-// calls and the corrections after them; and the session's lock, which orders these writes against
-// the registrations', the relay's restart and the delete a reaper or a stop makes of the same
-// session.
-func (m *sessionDelivery) storedFilterWrite(ctx context.Context, registry *store.Registry, sessionID, after string) {
+// It owns the three things its callers would otherwise each repeat (refollow, registerSession,
+// narrowFormerHolder): the listener that holds no session-consumer connection, which only a test
+// builds and which writes nothing; the budget every consumer call this listener makes is bounded
+// by (sessionConsumerCallTimeout), which here covers the whole loop and the wait for the session's
+// lock before it, as it covers a relay restart's calls and the corrections after them; and the
+// session's lock, which orders these writes against the registrations', the relay's restart and
+// the delete a reaper or a stop makes of the same session. A registration holds that lock across
+// its consumer call and its writes, so a write that found the lock taken for the whole budget
+// gives up rather than wait on: the budget would be spent by then, and its own calls would fail.
+//
+// It answers nil when the consumer filters on what the bucket's newest row asks, or there is no
+// consumer to filter, and otherwise why it may not: a listener with no session-consumer
+// connection, a lock that was not free within the budget, or the end the fence answered
+// (fenceFilterWrite). The pass or the fence has logged what it met; a caller that must say what
+// the filter left standing costs it logs that itself (narrowFormerHolder).
+func (m *sessionDelivery) storedFilterWrite(ctx context.Context, registry *store.Registry, sessionID, after string) error {
 	if m == nil || m.consumers == nil {
-		return
+		return errNoSessionConsumers
 	}
 	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
-	unlock := m.locks.lock(sessionID)
+	unlock, err := m.locks.lockWithin(ctx, sessionID)
+	if err != nil {
+		m.logger.Warn("session consumer filter left unchanged: the session's lock was not free within the filter write's budget; the session's next heartbeat sets it",
+			slog.String("session_id", sessionID), slog.String("after", after), slog.String("error", err.Error()))
+		return fmt.Errorf("the session's lock was not free within the filter write's budget: %w", err)
+	}
 	defer unlock()
-	fenceFilterWrite(ctx, m.logger, registry, sessionID, after, func() (uint64, filterWriteOutcome) {
+	return fenceFilterWrite(ctx, m.logger, registry, sessionID, after, func() (uint64, filterWriteOutcome) {
 		return m.storedFilterStep(ctx, registry, sessionID, after)
 	})
 }
+
+// errNoSessionConsumers is storedFilterWrite's answer on a listener that holds no
+// session-consumer connection, which only a test builds: it writes no filter.
+var errNoSessionConsumers = errors.New("this listener holds no session-consumer connection, so it writes no consumer filter")
 
 // storedFilterStep is one pass of a fenced write of the filter the bucket's newest interest row
 // asks for: it reads that row from registry, sets the consumer's filter to the subjects its
@@ -333,7 +368,13 @@ func (m *sessionDelivery) storedFilterStep(ctx context.Context, registry *store.
 	if m.afterStoredRowRead != nil {
 		m.afterStoredRowRead()
 	}
-	if err := m.consumers.UpdateFilter(ctx, sessionID, m.storedRowFilter(registry, sessionID, topics)); err != nil {
+	filter, err := m.storedRowFilter(ctx, registry, sessionID, topics)
+	if err != nil {
+		m.logger.Warn("session consumer filter left unchanged: the session's interests could not be judged",
+			slog.String("session_id", sessionID), slog.String("after", after), slog.String("error", err.Error()))
+		return 0, filterWriteNotMade
+	}
+	if err := m.consumers.UpdateFilter(ctx, sessionID, filter); err != nil {
 		if errors.Is(err, bus.ErrSessionConsumerNotFound) {
 			return 0, filterWriteSettled
 		}

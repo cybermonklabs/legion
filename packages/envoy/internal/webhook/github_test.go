@@ -372,7 +372,7 @@ func TestGitHubHandler(t *testing.T) {
 			if trigger == "" {
 				trigger = "@legion"
 			}
-			handler := GitHubHandler(tc.secret, trigger, "", pub, recorder)
+			handler := GitHubHandler(tc.secret, trigger, "", "", pub, recorder, NewBodyBudget(DefaultBodyBudget, nil))
 
 			body := []byte(tc.body)
 			req := httptest.NewRequest(tc.method, "/webhook/github", strings.NewReader(tc.body))
@@ -435,7 +435,7 @@ func TestAPublishRefusedAsTooLargeIsNotLoggedAsAFailure(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			logged.Reset()
-			handler := GitHubHandler("s", "@legion", "", &mockPublisher{err: tc.err}, &mockRecorder{})
+			handler := GitHubHandler("s", "@legion", "", "", &mockPublisher{err: tc.err}, &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil))
 			req := httptest.NewRequest(http.MethodPost, "/webhook/github", bytes.NewReader(push))
 			req.Header.Set("X-GitHub-Delivery", "d-log")
 			req.Header.Set("X-GitHub-Event", "push")
@@ -482,7 +482,7 @@ func TestARedeliveredGitHubFailureLogsTheCountedLineOnce(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			logged.Reset()
-			handler := GitHubHandler("s", "@legion", "", tc.publisher, tc.recorder)
+			handler := GitHubHandler("s", "@legion", "", "", tc.publisher, tc.recorder, NewBodyBudget(DefaultBodyBudget, nil))
 			for _, delivery := range []string{"d-again", "d-again", "d-other"} {
 				req := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(tc.body))
 				req.Header.Set("X-GitHub-Delivery", delivery)
@@ -579,7 +579,7 @@ func TestAnOverLongGitHubDeliveryIsNeverRememberedAsAFailure(t *testing.T) {
 		log.SetFlags(log.LstdFlags)
 		t.Cleanup(func() { log.SetOutput(previous); log.SetFlags(flags) })
 		body := `{"ref":"refs/heads/main","repository":{"name":"legion","owner":{"login":"sjawhar"},"full_name":"sjawhar/legion"}}`
-		handler := GitHubHandler("s", "@legion", "", &mockPublisher{err: fmt.Errorf("publish: %w", bus.ErrTooLarge)}, &mockRecorder{})
+		handler := GitHubHandler("s", "@legion", "", "", &mockPublisher{err: fmt.Errorf("publish: %w", bus.ErrTooLarge)}, &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil))
 		delivery := strings.Repeat("d", githubDeliveryKeyMax+1)
 		for attempt := 1; attempt <= 2; attempt++ {
 			req := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(body))
@@ -620,7 +620,7 @@ func TestADeliveryToAFullStreamIsAnswered503(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 	t.Cleanup(client.Close)
-	bustest.FillStream(t, client, 64)
+	bustest.FillStream(t, client)
 	before, err := client.JS().StreamInfo(bus.Stream)
 	if err != nil {
 		t.Fatalf("read the full stream: %v", err)
@@ -636,7 +636,7 @@ func TestADeliveryToAFullStreamIsAnswered503(t *testing.T) {
 	req.Header.Set("X-GitHub-Event", "push")
 	req.Header.Set("X-Hub-Signature-256", githubSign("s", push))
 	rec := httptest.NewRecorder()
-	GitHubHandler("s", "@legion", "", client, &mockRecorder{}).ServeHTTP(rec, req)
+	GitHubHandler("s", "@legion", "", "", client, &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil)).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503; body = %s", rec.Code, rec.Body.String())
@@ -690,14 +690,14 @@ func TestAGitHubDeliveryTheFullStreamRefusedIsStoredOnARedeliveryOnceTheStreamHa
 		return items[0]
 	}
 
-	bustest.FillStream(t, client, 64)
+	bustest.FillStream(t, client)
 
 	var logged bytes.Buffer
 	previous, flags := log.Writer(), log.Flags()
 	log.SetOutput(&logged)
 	log.SetFlags(log.LstdFlags)
 	t.Cleanup(func() { log.SetOutput(previous); log.SetFlags(flags) })
-	handler := GitHubHandler("s", "@legion", "", client, &mockRecorder{})
+	handler := GitHubHandler("s", "@legion", "", "", client, &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil))
 	// post delivers guid's push to branch as GitHub sends it and answers the status and the lines
 	// it logged, each without the date and time the alarms' filters read past.
 	post := func(guid, branch string) (int, []string) {
@@ -741,7 +741,8 @@ func TestAGitHubDeliveryTheFullStreamRefusedIsStoredOnARedeliveryOnceTheStreamHa
 	}
 
 	// Another delivery the full stream refused, asked for again once the stream has room: the
-	// redelivery is stored, so the listener answers 200 and logs nothing.
+	// redelivery is stored, so the listener answers 200 and logs no failure, only the line naming
+	// the stored publish.
 	stored := envelope("d-room", "stored")
 	if status, lines = post("d-room", "stored"); status != http.StatusServiceUnavailable || len(lines) != 1 {
 		t.Fatalf("the delivery into the full stream answered %d and logged %v, want 503 and one counted line", status, lines)
@@ -749,8 +750,9 @@ func TestAGitHubDeliveryTheFullStreamRefusedIsStoredOnARedeliveryOnceTheStreamHa
 	if err := js.PurgeStream(bus.Stream); err != nil {
 		t.Fatalf("purge the stream: %v", err)
 	}
-	if status, lines = post("d-room", "stored"); status != http.StatusOK || len(lines) != 0 {
-		t.Fatalf("after the purge, the redelivery answered %d and logged %v, want 200 and no line", status, lines)
+	if status, lines = post("d-room", "stored"); status != http.StatusOK || len(lines) != 1 ||
+		!strings.HasPrefix(lines[0], `github published delivery="d-room" `) || !strings.HasSuffix(lines[0], " result=stored resent=false") {
+		t.Fatalf("after the purge, the redelivery answered %d and logged %v, want 200 and its one github published line, stored", status, lines)
 	}
 	info, err := js.StreamInfo(bus.Stream)
 	if err != nil {
@@ -790,7 +792,7 @@ func TestGitHubHandlerSubIssuesFixture(t *testing.T) {
 	}
 
 	pub := &mockPublisher{}
-	handler := GitHubHandler("s", "@legion", "", pub, &mockRecorder{})
+	handler := GitHubHandler("s", "@legion", "", "", pub, &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil))
 
 	req := httptest.NewRequest("POST", "/webhook/github", strings.NewReader(string(body)))
 	req.Header.Set("X-GitHub-Delivery", "d-fixture-sub-issues")
@@ -846,7 +848,7 @@ func TestGitHubHandlerMergeGroup(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pub := &mockPublisher{}
 			recorder := &mockRecorder{}
-			handler := GitHubHandler("s", "@legion", "", pub, recorder)
+			handler := GitHubHandler("s", "@legion", "", "", pub, recorder, NewBodyBudget(DefaultBodyBudget, nil))
 			req := httptest.NewRequest("POST", "/webhook/github", strings.NewReader(string(tc.body)))
 			req.Header.Set("X-GitHub-Delivery", fmt.Sprintf("d-merge-group-%d", i))
 			req.Header.Set("X-GitHub-Event", "merge_group")
@@ -892,7 +894,7 @@ func TestGitHubHandlerCIRecordsObservations(t *testing.T) {
 	t.Run("check_run records without publishing raw observations", func(t *testing.T) {
 		pub := &mockPublisher{}
 		rec := &mockRecorder{}
-		handler := GitHubHandler("s", "@legion", "", pub, rec)
+		handler := GitHubHandler("s", "@legion", "", "", pub, rec, NewBodyBudget(DefaultBodyBudget, nil))
 		body := []byte(checkRun)
 		req := httptest.NewRequest("POST", "/webhook/github", strings.NewReader(checkRun))
 		req.Header.Set("X-GitHub-Delivery", "d-ci-1")
@@ -934,7 +936,7 @@ func TestGitHubHandlerCIRecordsObservations(t *testing.T) {
 		}`
 		pub := &mockPublisher{}
 		rec := &mockRecorder{}
-		handler := GitHubHandler("s", "@legion", "", pub, rec)
+		handler := GitHubHandler("s", "@legion", "", "", pub, rec, NewBodyBudget(DefaultBodyBudget, nil))
 		req := httptest.NewRequest("POST", "/webhook/github", strings.NewReader(checkSuite))
 		req.Header.Set("X-GitHub-Delivery", "d-ci-suite")
 		req.Header.Set("X-GitHub-Event", "check_suite")
@@ -969,7 +971,7 @@ func TestGitHubHandlerCIRecordsObservations(t *testing.T) {
 	t.Run("recorder error returns 503", func(t *testing.T) {
 		pub := &mockPublisher{}
 		rec := &mockRecorder{err: fmt.Errorf("kv down")}
-		handler := GitHubHandler("s", "@legion", "", pub, rec)
+		handler := GitHubHandler("s", "@legion", "", "", pub, rec, NewBodyBudget(DefaultBodyBudget, nil))
 		body := []byte(checkRun)
 		req := httptest.NewRequest("POST", "/webhook/github", strings.NewReader(checkRun))
 		req.Header.Set("X-GitHub-Delivery", "d-ci-2")
@@ -986,7 +988,7 @@ func TestGitHubHandlerCIRecordsObservations(t *testing.T) {
 		push := `{"ref": "refs/heads/main", "sender": {"login": "octocat", "type": "User"}, "repository": {"name": "legion", "owner": {"login": "sjawhar"}, "full_name": "sjawhar/legion"}}`
 		pub := &mockPublisher{}
 		rec := &mockRecorder{}
-		handler := GitHubHandler("s", "@legion", "", pub, rec)
+		handler := GitHubHandler("s", "@legion", "", "", pub, rec, NewBodyBudget(DefaultBodyBudget, nil))
 		body := []byte(push)
 		req := httptest.NewRequest("POST", "/webhook/github", strings.NewReader(push))
 		req.Header.Set("X-GitHub-Delivery", "d-push-1")
@@ -1041,7 +1043,7 @@ func TestGitHubHandlerFiltersReviewerVerdicts(t *testing.T) {
 		t.Run("right-App "+name+" verdict is recorded without raw publication", func(t *testing.T) {
 			pub := &mockPublisher{}
 			rec := &mockRecorder{}
-			handler := GitHubHandler(secret, "@legion", reviewerAppID, pub, rec)
+			handler := GitHubHandler(secret, "@legion", reviewerAppID, "", pub, rec, NewBodyBudget(DefaultBodyBudget, nil))
 			post(t, handler, checkRun(name, reviewerAppID))
 
 			if len(pub.published) != 0 {
@@ -1059,7 +1061,7 @@ func TestGitHubHandlerFiltersReviewerVerdicts(t *testing.T) {
 	t.Run("wrong-App tester verdict is dropped", func(t *testing.T) {
 		pub := &mockPublisher{}
 		rec := &mockRecorder{}
-		handler := GitHubHandler(secret, "@legion", reviewerAppID, pub, rec)
+		handler := GitHubHandler(secret, "@legion", reviewerAppID, "", pub, rec, NewBodyBudget(DefaultBodyBudget, nil))
 		post(t, handler, checkRun("tester", "98765"))
 		if len(rec.calls) != 0 {
 			t.Fatalf("recorder calls = %d, want 0 for wrong-App tester", len(rec.calls))
@@ -1072,7 +1074,7 @@ func TestGitHubHandlerFiltersReviewerVerdicts(t *testing.T) {
 	t.Run("missing reviewer App ID drops bare verdict", func(t *testing.T) {
 		pub := &mockPublisher{}
 		rec := &mockRecorder{}
-		handler := GitHubHandler(secret, "@legion", "", pub, rec)
+		handler := GitHubHandler(secret, "@legion", "", "", pub, rec, NewBodyBudget(DefaultBodyBudget, nil))
 		post(t, handler, checkRun("tester", reviewerAppID))
 		if len(rec.calls) != 0 {
 			t.Fatalf("recorder calls = %d, want 0 without a reviewer App ID", len(rec.calls))
@@ -1085,7 +1087,7 @@ func TestGitHubHandlerFiltersReviewerVerdicts(t *testing.T) {
 	t.Run("ordinary CI check is recorded from another App", func(t *testing.T) {
 		pub := &mockPublisher{}
 		rec := &mockRecorder{}
-		handler := GitHubHandler(secret, "@legion", reviewerAppID, pub, rec)
+		handler := GitHubHandler(secret, "@legion", reviewerAppID, "", pub, rec, NewBodyBudget(DefaultBodyBudget, nil))
 		post(t, handler, checkRun("unit-tests", "98765"))
 		if len(rec.calls) != 1 {
 			t.Fatalf("recorder calls = %d, want 1", len(rec.calls))
@@ -1140,7 +1142,7 @@ func TestGitHubHandlerAttributesACheckRunByItsSuiteHeadBranch(t *testing.T) {
 		t.Helper()
 		pub := &mockPublisher{}
 		rec := &mockRecorder{}
-		handler := GitHubHandler(secret, "@legion", reviewerApp, pub, rec)
+		handler := GitHubHandler(secret, "@legion", reviewerApp, "", pub, rec, NewBodyBudget(DefaultBodyBudget, nil))
 		req := httptest.NewRequest("POST", "/webhook/github", strings.NewReader(body))
 		req.Header.Set("X-GitHub-Delivery", "d-head-branch")
 		req.Header.Set("X-GitHub-Event", "check_run")
@@ -1261,7 +1263,7 @@ func TestGitHubHandlerPublishesAPushOfSeveralMegabytes(t *testing.T) {
 		t.Fatalf("the push is %d bytes, want the ~3.6 MB of a thousand-commit push", len(body))
 	}
 	pub := &mockPublisher{}
-	handler := GitHubHandler(secret, "@legion", "", pub, &mockRecorder{})
+	handler := GitHubHandler(secret, "@legion", "", "", pub, &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil))
 	req := httptest.NewRequest(http.MethodPost, "/webhook/github", bytes.NewReader(body))
 	req.Header.Set("X-GitHub-Delivery", "delivery-large-push")
 	req.Header.Set("X-GitHub-Event", "push")
@@ -1314,7 +1316,7 @@ func TestGitHubHandlerStoresAPushWhoseRefIsFiveThousandBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal push: %v", err)
 	}
-	handler := GitHubHandler(secret, "@legion", "", client, &mockRecorder{})
+	handler := GitHubHandler(secret, "@legion", "", "", client, &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil))
 	req := httptest.NewRequest(http.MethodPost, "/webhook/github", bytes.NewReader(body))
 	req.Header.Set("X-GitHub-Delivery", "delivery-long-ref")
 	req.Header.Set("X-GitHub-Event", "push")

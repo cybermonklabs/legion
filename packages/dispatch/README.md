@@ -10,7 +10,7 @@ suggestions, artifacts, and durable event history. The Go server in
 `AuthGate` requests `GET /auth/whoami` and sends unauthenticated visitors to the
 Google sign-in flow. All application requests are same-origin. React Router serves
 the Inbox at `/`, an issue workspace at `/issues/:key/*`, and the
-repository-to-project settings page at `/settings`; TanStack Query and the live socket's events
+settings page at `/settings`; TanStack Query and the live socket's events
 feed keep the issue, Inbox, documents, and sidebar current.
 
 The desktop shell has a sidebar, issue content, and review margin. Issue content has Spec,
@@ -86,13 +86,18 @@ harness as `127.0.0.1:<port>`, never `localhost`: under that flag the router
 refuses any other `Host`. The server process has no caller Home or XDG
 directory and receives no inherited `DISPATCH_*`, `ENVOY_*` or `NATS_*`
 variable, so neither a shell setting nor `~/.config/legion/envoy.json` /
-`~/.local/share/dispatch` can redirect it. The one way in from outside is the
-broker switch below: a URL in `DISPATCH_E2E_AGENT_SECRETS_URL`, with the token
+`~/.local/share/dispatch` can redirect it. There are two ways in from outside.
+One is the broker switch below: a URL in `DISPATCH_E2E_AGENT_SECRETS_URL`, with the token
 of a ServiceAccount that broker lists in
 `DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE`, points the server's credential
 requests at a broker the caller runs, as the secrets broker's docs rig
 (`docs/site/media/broker/rig.sh`) does with the token its local issuer
-(`packages/envoy/cmd/dev-oidc-issuer`) keeps.
+(`packages/envoy/cmd/dev-oidc-issuer`) keeps. The other is
+`DISPATCH_E2E_NATS_URLS`: a NATS address there reaches the server as its
+`NATS_URLS` in place of `DISPATCH_NATS_DISABLED=1`, which turns the events
+publisher on for a driver that proves what a delivery writes. It is the rig's
+own variable because a shell's `NATS_URLS` is the Envoy listener's, and a server
+that took it would publish test notifications where real sessions receive them.
 
 `DATABASE_URL` is a one-stack run's input unless it names a Postgres of its own
 (stacks, below), and must name an isolated
@@ -428,14 +433,15 @@ Its inputs are the harness's own. `DATABASE_URL`, when set, is used as given: it
 every start. Unset, the command runs `packages/envoy/scripts/dev-postgres.sh`, which creates,
 starts or reuses the `dispatch-pg` container, and creates database `dispatch_local` in it once.
 That script runs the container from its pinned image, pgvector on PostgreSQL 18, the version
-Dispatch's tests and dev databases run; Dispatch's migrations need its `vector` extension. It
-refuses a `dispatch-pg` on any other image or major and prints the commands that dump its
-databases and restore them into a new container on the pinned image, quoted so they paste as they
-read. The harness ports (`DISPATCH_E2E_PORT`, `FAKE_ENVOY_PORT`, `PLAIN_HTTP_PORT`,
-`FAKE_GITHUB_PORT`, `FAKE_BROKER_PORT`) are unset unless you need a fixed one: unset, the OS
-chooses each, so two instances never collide; set, the port is used as given, and an occupied one
-fails with `address already in use`. psql runs without `PGHOSTADDR` (`e2e/psql.ts`), and a Ctrl-C
-ends a psql in flight too.
+Dispatch's tests and dev databases run; Dispatch's migrations need its `vector` extension. They
+also need `btree_gin`, a contrib extension that PostgreSQL includes, and a migration creates each
+of the two extensions. The script refuses a `dispatch-pg` on any other image or major and prints the
+commands that dump its databases and restore them into a new container on the pinned image,
+quoted so they paste as they read. The harness ports (`DISPATCH_E2E_PORT`, `FAKE_ENVOY_PORT`,
+`PLAIN_HTTP_PORT`, `FAKE_GITHUB_PORT`, `FAKE_BROKER_PORT`) are unset unless you need a fixed one:
+unset, the OS chooses each, so two instances never collide; set, the port is used as given, and
+an occupied one fails with `address already in use`. psql runs without `PGHOSTADDR`
+(`e2e/psql.ts`), and a Ctrl-C ends a psql in flight too.
 
 A spec runs against the instance with the printed command, which sets
 `DISPATCH_E2E_REUSE_SERVERS=1`, the five ports and the same `DATABASE_URL`; each spec empties the
@@ -543,9 +549,9 @@ optional ones:
 - `FAKE_GITHUB_PORT`, the harness's fake GitHub, which the server reads as
   `DISPATCH_GITHUB_API_BASE`. The run gives it one repository holding one pull request whose
   title names the issue and one further commit beside that pull request's head, replacing every
-  repository the fake served: where `PROJECT` maps no default repository the reading section
-  seeds a repository of its own, maps it as `PROJECT`'s default and removes the mapping on exit;
-  where `PROJECT` maps one, the setup seeds that repository and maps nothing. The results of the
+  repository the fake served. Where `PROJECT` has no default repository, the reading section
+  seeds a repository of its own, sets it as `PROJECT`'s default and clears that default on exit.
+  Where `PROJECT` has one, the setup seeds that repository and sets nothing. The results of the
   check are then compared with that pull request's head, a result at the further commit — whose
   first twelve characters are the head's — stands at none of them, and a result at a commit the
   repository holds neither of is refused. Unset, one `SKIP: reading …` line stands in for the
@@ -562,9 +568,9 @@ It asks the issue's own repository first, and reads the links only where GitHub 
 Where a read of a linked pull request or of a linked repository does not answer and no repository is shown to hold the commit, it refuses the result `502 GITHUB_UNREADABLE`, and where its own read of the issue's links fails, it answers a server error, `500 INTERNAL`; either way it stores nothing, and the caller records the result again.
 One record reads at most 10 linked pull requests, each distinct repository once, and a refusal says how many links the bound left unread.
 The script links no pull request to any issue it writes, so no linked repository is asked about any result it records.
-Only GitHub's `422 No commit found for SHA` refuses, and the script reads `PROJECT`'s repository mappings once, in its setup, to know which of two runs it is.
-Where `PROJECT` maps no default repository, every result recorded outside the reading section is stored because the check's issue resolves to no repository, which is never asked about; inside the section, each stored result names a commit it seeded its fake GitHub with, and the one commit it seeds nothing with is the refusal it drives.
-Where `PROJECT` already maps one, every issue the script writes resolves to that repository, so the setup reads that repository's default-branch head from GitHub with `gh` and every result is recorded at that head: no check stands down, and the run prints no `SKIP` for a recorded result.
+Only GitHub's `422 No commit found for SHA` refuses, and the script reads `PROJECT`'s default repository once, in its setup (`default_repo` on `GET /api/v1/projects`), to know which of two runs it is.
+Where `PROJECT` has no default repository, every result recorded outside the reading section is stored because the check's issue resolves to no repository, which is never asked about; inside the section, each stored result names a commit it seeded its fake GitHub with, and the one commit it seeds nothing with is the refusal it drives.
+Where `PROJECT` already has one, every issue the script writes resolves to that repository, so the setup reads that repository's default-branch head from GitHub with `gh` and every result is recorded at that head: no check stands down, and the run prints no `SKIP` for a recorded result.
 A repository `gh` cannot read fails the run, naming it.
 Where `FAKE_GITHUB_PORT` is set the setup also gives that repository, that head, the look-alike and the pull request to the fake, since a server reading the fake asks the fake and not GitHub; a server reading the real GitHub needs no such seeding, and a fake-backed run proves this script's fixture and its count rather than a server talking to GitHub.
 Every other check runs either way, the `result` section's two refusals among them: a malformed field and an unknown check are refused before any commit is read.
@@ -641,11 +647,11 @@ document socket admits a person alone, so the sockets of `k1` sign that person i
 runs with NATS disabled, so no `pull_request` event stores a pull request head: the script stages
 each head with `psql` as one `pull_request_heads` row attributed to its issue, and gives the fake
 one repository holding the same pull requests and each head's check runs, replacing every
-repository the fake served. That repository is `PROJECT`'s default where it maps one, and
-otherwise one of the run's own, which nothing maps. It writes nine issues in `PROJECT` and closes
-every one of them, also when a check fails; on exit it deletes the rows it staged and empties the
-fake. Against `bun run dispatch:local`, with the URL, the fake GitHub's port and the database it
-prints:
+repository the fake served. That repository is `PROJECT`'s default where it has one, and
+otherwise one of the run's own, which is no project's default. It writes nine issues in
+`PROJECT` and closes every one of them, also when a check fails; on exit it deletes the rows it
+staged and empties the fake. Against `bun run dispatch:local`, with the URL, the fake GitHub's
+port and the database it prints:
 
 ```bash
 DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
@@ -659,6 +665,91 @@ issue's documents), it counts the document as not indexed when `GET /api/v1/arti
 lists blocks while `GET /api/v1/references?to=<document>&kind=part_of` lists none, and prints
 `documents=<n> indexed=<n> not_indexed=<n>`, then each not-indexed document's reference. A document
 with no blocks counts as indexed, since it owes no nodes.
+
+`e2e/acceptance/graph-store.sh` drives the people and the agents of the node and tuple store: what
+each person authored, what reached each session, a comment that reached nobody, a failed attempt,
+an attempt the listener queued for a session that is not running, and the role, the session and
+the page a delivery writes. It takes the first three inputs,
+`DATABASE_URL` (the database that server serves, on this machine, which it reads the tuples no
+route answers through) and `FAKE_ENVOY_PORT` (the harness's fake Envoy, whose session fixture it
+adds role-less sessions, one of them stopped, and a role's holder to and puts back on exit), with `DEV_SIGNIN_LOGIN`
+optional. Its delivery checks need the server to have a bus: `bun run dispatch:local` leaves NATS
+off, and without `DISPATCH_E2E_NATS_URLS` (which `e2e/run-server.sh` hands the server as its
+`NATS_URLS`) the publisher writes no `delivered_to` tuple and those checks wait out their 30 s
+poll. Start a JetStream NATS of your own (`nats-server -js`) and name it when you start the
+instance, `DISPATCH_E2E_NATS_URLS=nats://127.0.0.1:<port> bun run dispatch:local`; then, against
+it:
+
+```bash
+DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e FAKE_ENVOY_PORT=9023 \
+  DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
+  DEV_SIGNIN_LOGIN=alice bash packages/dispatch/e2e/acceptance/graph-store.sh
+```
+
+`e2e/acceptance/graph-sizing.sh` drives `envoy-dispatch census --store --sizing`: the write rate
+by kind, every table this branch's migrations touch, where the two store tables reach in a year,
+two runs printing one report, and the block-index backlog, with the reconciliation's own drain
+timed beside a request that indexes the same document itself, a reading that gates nothing. It
+takes the first three inputs, `DATABASE_URL`, the built `envoy-dispatch` on `PATH`, and two
+required inputs of the production reading: `PRODUCTION_PROJECT`, the Google Cloud project whose
+Cloud Monitoring holds production's disk use, and `PRODUCTION_DATABASE_ID`, the Cloud SQL instance
+whose disk use it reads, through this pod's own Google identity. This repository is public and
+names neither, so the driver refuses to start without them (exit 2). `PRODUCTION_WINDOW_DAYS` is
+optional (21 unset, refused below 14). It writes a corpus under an issue of its own and removes
+it on exit, since a corpus left behind is read by the next run as growth:
+
+```bash
+DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e DISPATCH_URL=http://127.0.0.1:8777 \
+  DISPATCH_TOKEN=e2e-token PROJECT=CORE PRODUCTION_PROJECT=<gcp-project> \
+  PRODUCTION_DATABASE_ID=<gcp-project>:<cloud-sql-instance> \
+  bash packages/dispatch/e2e/acceptance/graph-sizing.sh
+```
+
+`e2e/acceptance/priority-list-production.sh` is the driver of the check `c-both-plans-production`:
+it measures how long production's server takes to answer the issue list filtered by a priority, as
+the p90 of the access log's `elapsed_ms` over 200 reads of each of three requests.
+The three are the page of 50 (`page`), `&open=true` (`open`) and the whole list (`whole`) of the
+priority with the most open issues.
+The script sends them itself, one at a time, 200 of each form in turn, each with the User-Agent
+`priority-list-production/<probe id>/<form>`, and stops after 21 reads of one form took over
+1,000 ms by curl's clock.
+It then reads their lines back from the deployment's container logs with `gcloud logging read`,
+again every 30 s for at most 10 minutes until the log holds every line the probe sent.
+A form's p90 is the value at rank ceil(0.9 n) of its lines' `elapsed_ms` in ascending order, and
+the form passes at 200 ms or under.
+Before it sends a read, the fleet must have served a commit carrying `MERGE_SHA` for three hours:
+`/healthz`'s `fleet_commit`, the commit every live server process serves, must carry it by
+GitHub's compare (`identical` or `ahead`).
+A look that has to wait ends on the line `read again at or after <time> with ...`, which names the
+values the next look takes, and exits 3.
+
+Its inputs are `DISPATCH_URL`, the deployed Dispatch; the bearer, in `DISPATCH_TOKEN` or
+`DISPATCH_TOKEN_FILE`; `MERGE_SHA`, the merge commit's 40 hex digits; and `LOGGING_PROJECT`, the
+Google Cloud project that holds the deployment's container logs.
+This public repository names no such project, so the driver refuses to start without it (exit 2).
+Each time it takes or prints is UTC to the second, `YYYY-MM-DDTHH:MM:SSZ`.
+A later look also takes the values the line of an earlier one names: `FLEET_SINCE` and
+`FLEET_COMMIT`, the time the three hours started and the commit they count for, so a deploy in
+between starts them over; or `PROBE_ID`, `PROBE_AT` and `PROBE_STOPPED`, all three or none, with
+which the look sends nothing and reads back that probe's lines.
+`BEFORE_DEPLOY=1` is for the check's negative control alone: the look then requires a commit that
+does not carry `MERGE_SHA`, and skips the three-hour wait.
+`gh` and `gcloud` run as the accounts they are signed in with.
+It exits 0 when every form's p90 is at most 200 ms; 1 when a form's p90 is over 200 ms, a line's
+status is not 200 or the first answer of a form holds no issue; 2 when the look cannot measure (an
+input unset or malformed, a first answer that is not 200, no line of the probe in the log after 10
+minutes, or a probe id of another build); and 3 for a look that waits.
+A look that finds a failure exits 1 even where it would also wait.
+The first look, from the repository root; each later one adds the values the last one named:
+
+```bash
+DISPATCH_URL=https://dispatch.internal.example DISPATCH_TOKEN_FILE=<file holding the bearer> \
+  MERGE_SHA=<merge commit> LOGGING_PROJECT=<project> \
+  bash packages/dispatch/e2e/acceptance/priority-list-production.sh
+```
+
+`cd packages/dispatch && bun test e2e/__tests__/priority-list-production.test.ts` runs it against
+stand-ins of `curl`, `gh`, `gcloud` and `sleep` that reach nothing past the host.
 
 `e2e/acceptance/replace-blocks.sh` drives what `doc-edit`'s `replace` does with a `with` that
 names blocks: a list written over a paragraph's whole text, a list written over the text of a
@@ -690,6 +781,7 @@ createdb -h 127.0.0.1 -p 5433 -U legion_test dispatch_local_replace
 DATABASE_URL=postgres://legion_test@127.0.0.1:5433/dispatch_local_replace?sslmode=disable \
   bash packages/dispatch/e2e/acceptance/replace-blocks.sh
 ```
+
 `e2e/acceptance/create-document.sh` drives the command line's own create, the one that makes a
 document from a title with no file and no text, through the same real CLI. It takes `DISPATCH_URL`,
 the bearer and `DISPATCH_DEFAULT_ASSIGNEE`, a person who has signed in to that server: the bearer
@@ -727,9 +819,11 @@ who has signed in, so the project may name her.
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
 stacks through Playwright's own global setup now, which no shell driver can reach.
 
-All six source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
-missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`
-without printing it, unsetting both so no process the script starts inherits it.
+All ten drivers source `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
+share: it refuses an unset input or a missing command with exit 2, reads the bearer from
+`DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it, unsetting both so no process the
+script starts inherits it, and holds the `pass`, `fail`, `skip`, `want_status`, `expect` and
+`query` every driver checks with. `with-harness.sh` is no driver and sources none of it.
 
 `e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`: it
 measures which of our listed addresses a machine reaches over the path given to a person from
@@ -919,10 +1013,38 @@ real stack: what the server decides, a read of the row's own write, a frame the 
 a clock. A stubbed row skips only inside its own body: a `describe`-level skip whose condition
 reads a worker fixture is seen by neither the row map nor the replay (`e2e/tools/row-map.ts`).
 
-A new real-stack spec file needs a line in `e2e/stub/real-stack-reasons.ts` saying what the
-server decides for its rows, and a new stub file a header comment saying why a recording can
-answer its rows. After either, `bun e2e/tools/row-map.ts --write` regenerates `e2e/row-map.md`,
-which `e2e/__tests__/row-map.test.ts` holds to a fresh generation.
+`bun e2e/tools/row-map.ts` generates the row map and prints it. Git does not keep the map.
+`--write` writes it to `e2e/row-map.md`, which git ignores, so no commit keeps the file.
+`e2e/__tests__/row-map.test.ts` generates the map on each run and fails on each refusal of the
+tool. CI generates the map in each run of `dispatch-ui`, the job that runs that test.
+
+`e2e/stub/real-stack-reasons.ts` keeps the reasons of the real-stack spec files that were there
+when its list closed. A change to one of those reasons is made in `real-stack-reasons.ts`.
+A new real-stack spec file gives its reason to `real-stack-reasons.ts` in a `/** … */` comment at
+the very start of the file. A stub file gives its reason to `e2e/tools/row-map.ts` the same way.
+A real-stack file's reason says what the server decides for its rows. A stub file's reason says
+why a recording can answer its rows.
+
+Each open part of the new issue page adds its words in `page-words-<letter>.ts`, a file of its own
+beside `web/src/features/issue-page/page-words.ts`. A part's `page-words-<letter>.ts` holds the
+tables that the part adds, each a named export that it lists in `unasked` or `answers`. Under
+`add`, it holds the part's new keys for a table that `page-words.ts` declares. The open parts are
+J, L, M, N, S, T, U, W, X, Y and Z.
+
+A new key for a table that a part's file declares goes in that part's `page-words-<letter>.ts`,
+from any pull request. TypeScript reads the keys of a table where the table is declared. The tables
+`PRESET_NAMES`, `CHECK_WHEN_WORDS`, `RESULT_STANDS_WORDS`, `DELIVERY_STATE_WORDS` and
+`AUTHOR_KIND_WORDS` take keys only in `page-words.ts`, because a closed type fixes their keys. The
+type of a part's `add` gives each of them the type `never`, so the type check refuses words for
+one of them in a part's file whose `add` has a literal type, with or without `satisfies PartWords`.
+A case of `page-words.test.ts` refuses such a key, and a key for a table that `page-words.ts` does
+not declare, in any part's file whatever the type of its `add`, and names the file and the table
+(`page-words-parts.ts`, `PartWords.add`).
+
+A change to a word is made in place, in the file that holds it: `page-words.ts` or a part's file.
+Every other new word of a pull request that is not an open part goes in `page-words.ts`. The four
+tables of `page-structure.ts`, and code in `page-words.ts`, stay shared. A key that two files give
+fails `page-words.test.ts`, which names the key and both files.
 
 The stubbed layer reads three variables of its own, and a run that is not recording needs none
 of them. `DISPATCH_E2E_STUB_RECORD=1` makes the stubbed rows meet the real harness and write
@@ -1029,6 +1151,49 @@ of `e2e/visual.e2e.ts`, whose baselines are committed as
 claims. A baseline comes only from the pinned container, through
 `e2e/visual-run.sh --update-snapshots`; the script's header says how to take one from CI on a
 machine with no container.
+
+A third layer holds every page to the layout rule of `AGENTS.md` ("Layout"), and
+`bun run e2e:layout` runs all of it. It reads the routes of `e2e/layout-routes.ts` - every
+reviewed route, the excluded ones whose reason argues only against a shot or a scan, two pages a
+reader's choice in this browser draws another way (the new issue page, the project's board), and
+the project page and its Architecture tab, which a project with an architecture source draws -
+over the review corpus and a stress layer that writes
+production's lengths (`e2e/layout-seed.ts`), at 360, 900, 1280, 1440 and 1920 px, and again in
+each state a route names (the Peek drawer open, rows or agents selected). At each width
+`e2e/layout-check.ts` loads the page fresh, waits for `waitForRouteSettled`, and runs
+`measureLayout` (`e2e/layout-measure.ts`) in the page: a page that scrolls sideways, a box that
+does for anything but a code block, one picture wider than the box, a data table or a board's
+lanes, something cut off at a side with no ellipsis (a code block's text, a picture and a fixed
+layer's own text among them), a closed `data-layout-group` showing more entries than its cap, a
+group that declares a cap other than a whole number from 1 to 10 or marks more than one "+N"
+control, and a group the route must mark (`requiredGroups`) of which no shown entry is marked.
+Each direct child of a `data-layout-group` element is one entry, except the one "+N" control,
+which is marked `data-layout-more`; so each child must be one chip, since a child that draws
+several chips still counts as one and its group can show more chips than its cap and pass. The
+rows are
+`e2e/layout-rule.stub.e2e.ts`, in the stubbed layer on every pull request: their HTTP answers are
+recorded as every stubbed row's are, and the document and live sockets beside the HAR
+(`e2e/layout-sockets.ts`); `bun run e2e:stub:record -- layout-rule.stub` records them again after
+a change to the stress layer. The rows draw the app's font stacks in faces committed under
+`e2e/fonts/` (each directory holds its licence), the faces CI resolves for them: the root's
+`Inter` in DejaVu Sans, Tailwind's `--font-mono` and `--font-sans` (opened with them for the rows)
+in Liberation Mono and Liberation Sans, and the editor's `SF Mono` and the diagrams'
+`JetBrains Mono` in DejaVu Sans Mono. A reading fails if any of them does not load. The rows run
+in `en-US` and UTC, so a run on any machine measures the text CI measures.
+`e2e/layout-measure.stub.e2e.ts` draws each defect and each allowed
+case, and holds the instrument to reporting the one and not the other. A row fails on each breach
+no entry of `e2e/layout-breaches.ts` accepts - an entry names the locator the row prints for its
+breach (for a page that scrolls sideways, that of the deepest element past the viewport), matches
+only a breach of that locator, and accepts exactly its `count` of them, so the count is the bound
+of what it lets through - on a page whose own region drew fewer than 100 elements (or the route's
+own `minElements`), and on an entry whose route, state and width it measured and which its
+reading did not match exactly; and
+`e2e/__tests__/layout-routes.test.ts` refuses an entry that names a route or a state the rows
+never read; the type `LayoutWidth` holds its width to the five the rows read. That list holds the
+breaches main still has, in one array per INFRA-5200 fix pull request (the issue page's, the
+Inbox's and the other pages'); each fix pull request deletes every entry of its own array and
+leaves it empty, so the three merge in any order, and the list and its use go once all three are
+empty.
 
 ## Phone check
 

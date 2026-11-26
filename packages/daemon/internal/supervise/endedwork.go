@@ -15,10 +15,10 @@ import (
 // speaks of its last turn at all, and whether the record has been told. The next process is told
 // it in a prompt: the sentence RelaunchSentence composes from it, in front of the task the claim
 // holds or as a delivery of the daemon's own when it holds none (Delivery.message,
-// queueRelaunch), and marked told at the confirmation of the prompt that carried it (confirm).
-// This is the record that sentence is built from, written where the machine lets the process go
-// (letGo, recordEnd) and persisted on the claim's row (store's ended_work), since that prompt can
-// be a relaunch, a wake and a daemon restart away.
+// queueRelaunch), and marked told at the confirmation of the prompt that carried it
+// (confirmCarrying). This is the record that sentence is built from, written where the machine
+// lets the process go (letGo, recordEnd) and persisted on the claim's row (store's ended_work),
+// since that prompt can be a relaunch, a wake and a daemon restart away.
 //
 // The zero value is a claim whose let-go ended nothing worth telling, or that has been let go of
 // none: Cause is empty.
@@ -71,10 +71,10 @@ type EndedWork struct {
 	// (dispatch://INFRA-3276 R3, "unknown is not silence").
 	Reported bool `json:"reported"`
 	// Told is whether the record has been told to a later process, and ToldBy the delivery whose
-	// confirmation told it, as confirm states, or "" for an old session's record the abandonment
-	// of that session ended (forgetSession). A record not yet told is replaced by a newer one only
-	// as the union of the two (joined), so what the earlier let-go ended is not lost before anyone
-	// reads it.
+	// confirmation told it, as confirmCarrying states, or "" for an old session's record the
+	// abandonment of that session ended (forgetSession). A record not yet told is replaced by a
+	// newer one only as the union of the two (joined), so what the earlier let-go ended is not
+	// lost before anyone reads it.
 	Told   bool   `json:"told,omitempty"`
 	ToldBy string `json:"toldBy,omitempty"`
 }
@@ -118,12 +118,12 @@ type ActivityReport struct {
 // — a spawn, a resume, a retry, and every relaunch whose process an earlier step of the same
 // recovery already let go — and a retirement that ends the claim's work on purpose, the tree's
 // or the issue's close and the agent's own exit (retire). endStopped is a stop's (RequestStop:
-// `legion claims stop`, the operator's close of a tree stopping its other claims, and the daemon
+// `legion claims stop`, the operator's close of a tree stopping its other agents, and the daemon
 // stopping a controller it launched once the deployment leaves the controller to its operator),
-// since every retry that keeps the session relaunches a stopped claim on the session it records —
-// the operator's (`legion claims retry`: RequestOperatorRetry for an architect or a worker whose
-// issue works no phase of its role, and the workflow's start of that phase, below, for a worker
-// in its phase), the controller keeper's retry of a retired controller (daemon's
+// since every retry that keeps the session relaunches a stopped agent on the session its claim
+// records — the operator's (`legion claims retry`: RequestAskedRetry for an architect or a worker
+// whose issue works no phase of its role, and the workflow's start of that phase, below, for a
+// worker in its phase), the controller keeper's retry of a retired controller (daemon's
 // controllerKeeper.keep, RequestRetry) and the workflow's start of a retired worker's phase
 // (daemon's outbox.supervise, RequestRetry) — and that session's next turn reads what the stop
 // ended (dispatch://INFRA-3276 R3).
@@ -209,7 +209,7 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 //
 // A record written here is new words, so a prompt that carried the sentence of the record it
 // replaces carried none of this one: the mark of such a prompt goes (Machine.carried), and only a
-// prompt sent from here on tells this record when its turn begins (confirm).
+// prompt sent from here on tells this record when its turn begins (confirmCarrying).
 //
 // Before anything else it takes back a telling the let-go cannot vouch for, that of a confirmation
 // a turn took while the send of its prompt was in flight or a prompt of the task still waited on
@@ -321,15 +321,15 @@ func (m *Machine) endState() ClaimState {
 // before that turn began is no report of that turn (claim.ReadSessionWork), though the background
 // work it says ran is kept.
 //
-// The read is bounded by the claim-write deadline, as the writes of a decision are, so a store that
-// has stopped answering costs the record and never holds the let-go: a read that fails, and a daemon
-// that wires no read, are a launch with no report, which the record says rather than reading it as
+// The read is bounded as the writes of a decision are (bounded), so a store that has stopped
+// answering costs the record and never holds the let-go: a read that fails, and a daemon that
+// wires no read, are a launch with no report, which the record says rather than reading it as
 // nothing running.
 func (m *Machine) launchActivity(ctx context.Context) (ActivityReport, bool) {
 	if m.deps.ClaimActivity == nil {
 		return ActivityReport{}, false
 	}
-	reading, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
+	reading, cancel := m.bounded(ctx)
 	defer cancel()
 	report, held, err := m.deps.ClaimActivity(reading, m.claim.Token, m.claim.Generation)
 	if err != nil {

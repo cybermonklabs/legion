@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -15,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A write transaction runs a read phase holding no transaction id - its owner's advisory lock
@@ -51,6 +53,7 @@ func (g *gatedProjectMark) ProjectMark(ctx context.Context, artifactID, markID s
 // (refuseClosed, refusedWhenClosed): a comment and a message it takes, so neither would say
 // whether the close was seen.
 func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
+	t.Parallel()
 	// The seeded spec's settlement takes the owner lock this test holds; keep it out of the queue.
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "Closed while waiting", "A spec")
@@ -100,12 +103,13 @@ func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 // to its commit. Both succeed, neither is refused as a deadlock, and the mark, made after the
 // reply was written, leaves the thread read.
 func TestAThreadReadWaitsForAWritersReadPhase(t *testing.T) {
+	t.Parallel()
 	gate := &gatedProjectMark{entered: make(chan struct{}), release: make(chan struct{})}
 	handler, _, database := pooledDocumentHandlerWith(t, 8, time.Hour, func(service *docs.Service) docs.API {
 		gate.API = service
 		return gate
 	})
-	handler = withDeadline(handler)
+	handler = withDeadline(t, handler)
 	var released sync.Once
 	release := func() { released.Do(func() { close(gate.release) }) }
 	defer release()
@@ -123,13 +127,16 @@ func TestAThreadReadWaitsForAWritersReadPhase(t *testing.T) {
 			"body": "Yes.", "reply_to": root.ID, "actor": sessionActor(),
 		})
 	}()
-	select {
-	case <-gate.entered:
-	case response := <-replies:
-		t.Fatalf("the reply answered %d %s before projecting its thread", response.Code, response.Body.String())
-	case <-time.After(10 * time.Second):
-		t.Fatal("the reply never reached its thread's projection")
-	}
+	testwait.Until(t, "the reply to reach its thread's projection", func() (bool, bool) {
+		select {
+		case <-gate.entered:
+			return true, true
+		case response := <-replies:
+			t.Fatalf("the reply answered %d %s before projecting its thread", response.Code, response.Body.String())
+		default:
+		}
+		return false, false
+	})
 
 	mark := time.Now()
 	marks := make(chan *httptest.ResponseRecorder, 1)
@@ -183,35 +190,23 @@ func transactionIDHolders(t *testing.T, database *store.Store) (int, string) {
 // That refresh can begin after the create answers, and its rebuild takes its id only once it
 // inserts, so a moment with no holder does not show it has ended; its row of search_term_totals,
 // written in the same transaction, does. A test that counts every backend waits it out first, as
-// the refusal tests wait it out, so what it counts afterwards is the writers it drives.
+// the refusal tests wait it out, so what it counts afterwards is the writers it drives. Each of its
+// two waits has one bound, the test binary's deadline (testwait.UntilPolling).
 func awaitNoTransactionIDHolder(t *testing.T, database *store.Store) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	testwait.UntilPolling(t, 5*time.Millisecond, "the TEST project's search term statistics to be refreshed (its search_term_totals row)", func() (bool, bool) {
 		var refreshed bool
 		if err := database.Pool.QueryRow(context.Background(), `
 			select exists (select 1 from search_term_totals where project_key = 'TEST')
 		`).Scan(&refreshed); err != nil {
 			t.Fatalf("read search_term_totals: %v", err)
 		}
-		if refreshed {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the TEST project's search term statistics were not refreshed within 30s")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	for {
+		return refreshed, refreshed
+	})
+	testwait.UntilPolling(t, 5*time.Millisecond, "no backend to hold a transaction id (the holders and what they run)", func() (string, bool) {
 		holders, running := transactionIDHolders(t, database)
-		if holders == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d backends still hold a transaction id after 30s: %s", holders, running)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return fmt.Sprintf("%d: %s", holders, running), holders == 0
+	})
 }
 
 // Two anchored comments on one spec still run one at a time, and the second waits for the first
@@ -219,12 +214,13 @@ func awaitNoTransactionIDHolder(t *testing.T, database *store.Store) {
 // the event horizon. Both land, their events in the order they arrived and the issue's sequence
 // without a gap.
 func TestTwoWritersOfOneOwnerSerializeWithoutATransactionID(t *testing.T) {
+	t.Parallel()
 	gate := &gatedMarkQuote{entered: make(chan struct{}), release: make(chan struct{})}
 	handler, _, database := pooledDocumentHandlerWith(t, 8, time.Hour, func(service *docs.Service) docs.API {
 		gate.API = service
 		return gate
 	})
-	handler = withDeadline(handler)
+	handler = withDeadline(t, handler)
 	var released sync.Once
 	release := func() { released.Do(func() { close(gate.release) }) }
 	defer release()
@@ -238,13 +234,16 @@ func TestTwoWritersOfOneOwnerSerializeWithoutATransactionID(t *testing.T) {
 	}
 	firsts := make(chan *httptest.ResponseRecorder, 1)
 	go func() { firsts <- comment("alpha", "first") }()
-	select {
-	case <-gate.entered:
-	case response := <-firsts:
-		t.Fatalf("the first comment answered %d %s before marking its quote", response.Code, response.Body.String())
-	case <-time.After(10 * time.Second):
-		t.Fatal("the first comment never reached its quote's mark")
-	}
+	testwait.Until(t, "the first comment to reach its quote's mark", func() (bool, bool) {
+		select {
+		case <-gate.entered:
+			return true, true
+		case response := <-firsts:
+			t.Fatalf("the first comment answered %d %s before marking its quote", response.Code, response.Body.String())
+		default:
+		}
+		return false, false
+	})
 	holders, running := transactionIDHolders(t, database)
 	if holders != 0 {
 		t.Fatalf("%d backends hold a transaction id while the first comment is in its read phase, want none: %s", holders, running)
@@ -313,6 +312,7 @@ func TestTwoWritersOfOneOwnerSerializeWithoutATransactionID(t *testing.T) {
 // one another's label. Both wait for the lock's holder with no transaction id, then each reads
 // what the one before it committed: both labels land, and the issue's sequence has no gap.
 func TestTwoPatchesOfOneIssueSerializeOnItsOwnerLockAndLoseNoUpdate(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "Two patches", "A spec")
 	awaitNoTransactionIDHolder(t, database)
@@ -333,8 +333,7 @@ func TestTwoPatchesOfOneIssueSerializeOnItsOwnerLockAndLoseNoUpdate(t *testing.T
 	answers := make(chan *httptest.ResponseRecorder, 2)
 	go addLabel("alpha", answers)
 	go addLabel("bravo", answers)
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.UntilPolling(t, 5*time.Millisecond, "two PATCHes to wait on the issue's owner lock (the waiters)", func() (int, bool) {
 		select {
 		case response := <-answers:
 			t.Fatalf("a PATCH answered %d %s while another transaction held the issue's owner lock", response.Code, response.Body.String())
@@ -344,14 +343,8 @@ func TestTwoPatchesOfOneIssueSerializeOnItsOwnerLockAndLoseNoUpdate(t *testing.T
 		if holdingXid != 0 {
 			t.Fatalf("%d of %d PATCHes wait on the issue's owner lock holding a transaction id, want none", holdingXid, waiting)
 		}
-		if waiting >= 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("only %d PATCHes waited on the issue's owner lock within 10s, want 2", waiting)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return waiting, waiting >= 2
+	})
 	var lastSeqBefore int
 	if err := database.Pool.QueryRow(context.Background(), `select last_seq from issues where key = $1`, issue.Key).Scan(&lastSeqBefore); err != nil {
 		t.Fatalf("read the issue's sequence: %v", err)
@@ -392,6 +385,7 @@ func TestTwoPatchesOfOneIssueSerializeOnItsOwnerLockAndLoseNoUpdate(t *testing.T
 // queues the document's replacement first and its events last, so a failure anywhere in between
 // shows in every one of them.
 func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
+	t.Parallel()
 	suggest := func(t *testing.T, handler http.Handler) (issueKey, artifactID, commentID string) {
 		t.Helper()
 		issue := createInteractionIssue(t, handler, "TEST", "Failed write phase", "foo")
@@ -428,7 +422,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 	t.Run("a refused guard", func(t *testing.T) {
 		var service *docs.Service
 		var gate *firstReplaceGate
-		handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
 			service = docs.New(docs.Deps{Store: database, Settle: time.Hour})
 			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 			gate = &firstReplaceGate{
@@ -436,28 +430,39 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 			}
 			return gate
 		})
-		handler = withDeadline(handler)
+		handler = withDeadline(t, handler)
 		var released sync.Once
 		release := func() { released.Do(func() { close(gate.releaseFirst) }) }
 		defer release()
 		_, artifactID, commentID := suggest(t, handler)
+		// The issue's create starts the term-statistics refresh; it has committed before the
+		// accept starts, so the fingerprint below holds none of its writes.
+		awaitBackgroundWrites(t, served)
 
 		responses := make(chan *httptest.ResponseRecorder, 1)
 		go func() {
 			responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
 		}()
-		select {
-		case <-gate.firstEntered:
-		case response := <-responses:
-			t.Fatalf("the accept answered %d %s before replacing the quote", response.Code, response.Body.String())
-		case <-time.After(10 * time.Second):
-			t.Fatal("the accept never reached the replacement")
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if _, err := database.Pool.Exec(ctx, `
+		testwait.Until(t, "the accept to reach the replacement", func() (bool, bool) {
+			select {
+			case <-gate.firstEntered:
+				return true, true
+			case response := <-responses:
+				t.Fatalf("the accept answered %d %s before replacing the quote", response.Code, response.Body.String())
+			default:
+			}
+			return false, false
+		})
+		// The update takes no lock the accept holds in its read phase. It runs on a goroutine of its
+		// own, so that the wait for it ends on its answer, bounded by the test binary's deadline.
+		decided := make(chan error, 1)
+		go func() {
+			_, err := database.Pool.Exec(t.Context(), `
 			update comments set suggestion = jsonb_set(suggestion, '{accepted}', 'false'::jsonb) where id = $1
-		`, commentID); err != nil {
+		`, commentID)
+			decided <- err
+		}()
+		if err := testwait.Receive(t, "the update that decides the suggestion behind the accept", decided); err != nil {
 			t.Fatalf("decide the suggestion behind the accept: %v", err)
 		}
 		// The accept's read phase wrote nothing, so this is the database as it stood before it.
@@ -478,12 +483,12 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 	// written in the transaction.
 	t.Run("a unique violation", func(t *testing.T) {
 		var service *docs.Service
-		handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
 			service = docs.New(docs.Deps{Store: database, Settle: time.Hour})
 			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 			return service
 		})
-		handler = withDeadline(handler)
+		handler = withDeadline(t, handler)
 		issueKey, artifactID, commentID := suggest(t, handler)
 		if _, err := database.Pool.Exec(context.Background(), `
 			insert into events (issue_key, seq, type, actor, payload, notify)
@@ -492,6 +497,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		`, issueKey); err != nil {
 			t.Fatalf("take the issue's next sequence number: %v", err)
 		}
+		awaitBackgroundWrites(t, served)
 		before := databaseFingerprint(t, database)
 
 		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
@@ -525,7 +531,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 			return service
 		})
-		handler = withDeadline(handler)
+		handler = withDeadline(t, handler)
 		issue := createInteractionIssue(t, handler, "TEST", "Failed comment write phase", "foo")
 		takeNextSeq(t, database, issue.Key)
 		// Creating the issue starts the project's term-statistics refresh, which drains
@@ -553,7 +559,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 			return service
 		})
-		handler = withDeadline(handler)
+		handler = withDeadline(t, handler)
 		issue := createInteractionIssue(t, handler, "TEST", "Failed message write phase", "foo")
 		takeNextSeq(t, database, issue.Key)
 		// The same refresh the comment's row above waits out.

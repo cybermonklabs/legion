@@ -38,6 +38,9 @@ commands:
   stub-embed       serve Azure's embeddings route over https with a certificate it generates
                    (-cert-out, for Dispatch's SSL_CERT_FILE): deterministic 1536-float vectors,
                    so a deployment with no Azure still embeds what the seed writes
+  oidc-mint        generate a P-256 key and one ES256 token of it per -sub, each written to its own
+                   file, for a cluster copy's own token issuer (cluster.sh up); prints the key's
+                   public half as JSON
   cgroup-merge     reduce a cluster sampler's cgroup.jsonl to a step directory's cgroup.json
   vm-sample        sample the VMs' containers and the VMs themselves over ssh (vm/sample.sh) into
                    a cgroup.jsonl, the file cgroup-merge reads
@@ -111,6 +114,8 @@ func main() {
 		err = runSeedFinish(os.Args[2:])
 	case "stub-embed":
 		err = runStubEmbed(os.Args[2:])
+	case "oidc-mint":
+		err = runOIDCMint(os.Args[2:])
 	case "cgroup-merge":
 		err = runCgroupMerge(os.Args[2:])
 	case "vm-sample":

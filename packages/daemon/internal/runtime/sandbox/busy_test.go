@@ -35,6 +35,7 @@ func etcdThrottled() error {
 // only when it names no reason; a webhook's denial is a refusal whatever its code; and an error
 // that carries no status got no answer and is not busy, wherever each sits in the error's chain.
 func TestServerBusyTellsAnOverloadedServerFromARefusal(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		err  error
 		busy bool
@@ -73,6 +74,7 @@ func TestServerBusyTellsAnOverloadedServerFromARefusal(t *testing.T) {
 // made is sent once and fails with the server's answer, for its own caller to try again, and on a
 // launch's context it is sent again until the server answers it.
 func TestOnlyALaunchsRequestsAreSentAgainWhileTheServerIsOverloaded(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		ctx       func(context.Context) context.Context
 		wantSent  int32
@@ -112,6 +114,8 @@ func TestOnlyALaunchsRequestsAreSentAgainWhileTheServerIsOverloaded(t *testing.T
 // otherwise the boot timeout from its first send: the bound each wait of a launch has, never a
 // multiple of it.
 func TestALaunchsRequestStopsWaitingAtItsDeadline(t *testing.T) {
+	// Not parallel: it holds a read's wall-clock wait to its deadline plus one recheck interval,
+	// and to 600 ms under a 400 ms boot timeout, bounds other tests' load would move.
 	for name, tc := range map[string]struct {
 		// bootTimeout is the rig's boot timeout, 0 for the rig's own; deadline is the request's
 		// context's, 0 for none.
@@ -169,6 +173,7 @@ func TestALaunchsRequestStopsWaitingAtItsDeadline(t *testing.T) {
 // store's feed is failing while the launches wait for their launchers. The burst converges: every
 // claim is launched, and none is charged a launch failure.
 func TestABurstOfRelaunchesThroughAThrottlingAPIServerConvergesUncharged(t *testing.T) {
+	t.Parallel()
 	for name, refusal := range map[string]error{
 		"the feeds refused with 429":        apierrors.NewTooManyRequests("the request has been limited by the API server's flow control", 1),
 		"the feeds refused with etcd's 500": apierrors.NewInternalError(errors.New(etcdThrottle)),
@@ -285,6 +290,7 @@ func burstOfRelaunches(t *testing.T, feedRefusal error) {
 // A write the server applied and answered timed out (a 504) is sent again and refused as already
 // done: the launch reads what the write left and goes on from it, and is launched, charged nothing.
 func TestAWriteTheServerAppliedButAnsweredTimedOutIsLaunchedUncharged(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	machine, _, _ := supervisedSandboxMachine(t, g, spec)
@@ -342,6 +348,7 @@ func fenceRefused(name string) error {
 // resend, since the resourceVersion it tests has moved: the launch reads the Sandbox again, finds it
 // relabelled, and goes on.
 func TestARelabelTheServerAppliedButAnsweredTimedOutGoesOn(t *testing.T) {
+	t.Parallel()
 	var g *rig
 	g, sent := relabelSandbox(t, func(sent int32, a k8stesting.Action) (bool, k8sruntime.Object, error) {
 		if sent > 1 {
@@ -365,6 +372,7 @@ func TestARelabelTheServerAppliedButAnsweredTimedOutGoesOn(t *testing.T) {
 // change, fails the try after one patch: the Sandbox read again still holds the resourceVersion the
 // refused patch tested.
 func TestALastingRefusalOfTheRelabelFailsTheTryAfterOnePatch(t *testing.T) {
+	t.Parallel()
 	g, sent := relabelSandbox(t, func(int32, k8stesting.Action) (bool, k8sruntime.Object, error) {
 		return true, nil, fenceRefused(SandboxName(workerToken))
 	})
@@ -381,6 +389,8 @@ func TestALastingRefusalOfTheRelabelFailsTheTryAfterOnePatch(t *testing.T) {
 // most of awaitPodGone's budget, then the confirming read of it is answered overloaded, and the wait
 // still ends at its budget rather than a boot timeout after that read began.
 func TestARequestInsideALaunchsWaitEndsWithTheWaitsBudget(t *testing.T) {
+	// Not parallel: it holds awaitPodGone's wall-clock span to 1.3 s of its 1 s budget, a bound
+	// other tests' load would move.
 	const boot = time.Second
 	name := SandboxName(workerToken)
 	labels := map[string]string{labelProject: testProject, labelTree: testTree, labelIssue: testTree}

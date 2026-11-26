@@ -25,7 +25,9 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 )
 
-// buildStands builds the command into a directory of the test's own and returns its path.
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
+
+// buildStands builds the command and returns its path.
 func buildStands(t *testing.T) string {
 	t.Helper()
 	return cmdtest.BuildCommand(t, cmdtest.Command{Name: "dev-airlock-stands", Env: append(os.Environ(), "GOTOOLCHAIN=go1.27.3")})
@@ -219,6 +221,9 @@ func TestTheModelStandsAnswerIsSetWhileItRuns(t *testing.T) {
 	}{
 		{name: "a denying verdict", answer: `{"verdict":"deny","reason":"the reason names no issue"}`, want: "deny", unwanted: "grant"},
 		{name: "a reply that is no object", answer: `{"text":"I would rather not say."}`, want: "I would rather not say."},
+		// The call askTheModel makes holds no judge data object, so a stand that obeys guidance
+		// finds no key to grant and denies it, saying why.
+		{name: "an answer that obeys guidance", answer: `{"obey_guidance":true}`, want: "could not read the call", unwanted: "grant"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if status, body := setTheAnswer(t, out.ModelAnswerURL, c.answer); status != http.StatusOK {
@@ -233,10 +238,13 @@ func TestTheModelStandsAnswerIsSetWhileItRuns(t *testing.T) {
 	if status, body := setTheAnswer(t, out.ModelAnswerURL, `{}`); status != http.StatusBadRequest {
 		t.Errorf("an answer naming nothing was answered %d %s; want 400", status, body)
 	}
+	if status, body := setTheAnswer(t, out.ModelAnswerURL, `{"obey_guidance":true,"verdict":"grant"}`); status != http.StatusBadRequest {
+		t.Errorf("an answer that both obeys guidance and names a verdict was answered %d %s; want 400", status, body)
+	}
 
 	records := recordsOf(t, out.Stands[standModel].Records)
-	if len(records) != 3 {
-		t.Fatalf("the model stand recorded %d calls; want the three the row made", len(records))
+	if len(records) != 4 {
+		t.Fatalf("the model stand recorded %d calls; want the four the row made", len(records))
 	}
 	if records[0].Path != "/v1/messages" || records[0].Method != http.MethodPost {
 		t.Errorf("the model stand recorded %s %s; want the Messages API call", records[0].Method, records[0].Path)

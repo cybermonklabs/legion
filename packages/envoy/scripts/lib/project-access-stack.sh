@@ -37,13 +37,17 @@ PRIV_POD_TOKEN_FILE="$WORK_DIR/priv-pod-token"
 DISPATCH_AUDIENCE="dispatch"
 BROKER_ACCESS_ACCOUNT="system:serviceaccount:example-ns:example-broker"
 BROKER_ACCESS_TOKEN_FILE="$WORK_DIR/broker-access-token"
-# The airlock, under --project-access alone: the one secret the rules bind, the host it may go to,
-# the rules file, and the container the stands run in (one per run, named from this run's own
-# suffix so two runs never share one). The image is any with a glibc: the only thing run in it is
-# the stands binary this run built, bind-mounted in.
+# The airlock, under --project-access alone: the one secret behind it, the kind it is behind and
+# that kind's one host, the profiles file, and the container the stands run in (one per run, named
+# from this run's own suffix so two runs never share one). The secret is behind the kind by its own
+# proxy tag, which whoever writes it into the store sets (scripts/project-secrets-check.sh does,
+# from the kind the banner exports); the profiles file declares the kind and names no profile. The
+# image is any with a glibc: the only thing run in it is the stands binary this run built,
+# bind-mounted in.
 PRIV_SECRET="PRIV_KEY"
+AIRLOCK_KIND="priv"
 AIRLOCK_BOUND_HOST="priv.airlock.test"
-AIRLOCK_RULES_FILE="$WORK_DIR/airlock.json"
+AIRLOCK_PROFILES_FILE="$WORK_DIR/profiles.json"
 AIRLOCK_IMAGE="${DEV_STACK_AIRLOCK_IMAGE:-docker.io/library/python:3.12-slim}"
 AIRLOCK_CONTAINER="dev-stack-stands-$(printf '%s' "${WORK_DIR##*.}" | tr '[:upper:]' '[:lower:]')"
 
@@ -51,7 +55,7 @@ AIRLOCK_CONTAINER="dev-stack-stands-$(printf '%s' "${WORK_DIR##*.}" | tr '[:uppe
 # --project-access gives it, and starts the airlock they name; without the option it leaves each
 # empty and starts nothing:
 #   PROJECT_ACCESS_ENV   BROKER_PROJECT_ACCESS_URL and BROKER_PROJECT_ACCESS_TOKEN_FILE
-#   AIRLOCK_ENV          the BROKER_AIRLOCK_* settings (airlock_broker_env)
+#   AIRLOCK_ENV          BROKER_PROFILES_FILE and the BROKER_AIRLOCK_* settings (airlock_broker_env)
 #   AIRLOCK_PROXY_PORT   the port this run picked for the broker's proxy
 #   AIRLOCK_PROXY_URL    http://127.0.0.1:<that port>
 # The first two are arrays of NAME=value the broker's start line passes on.
@@ -78,7 +82,7 @@ project_access_broker_setup() {
     # shellcheck source=lib/airlock-stack.sh
     . "$SCRIPT_DIR/lib/airlock-stack.sh"
     airlock_stands_start "$BIN_DIR/dev-airlock-stands" "$WORK_DIR" "$AIRLOCK_BOUND_HOST" "$AIRLOCK_IMAGE" "$AIRLOCK_CONTAINER"
-    airlock_rules_write "$AIRLOCK_RULES_FILE" "$AIRLOCK_BOUND_HOST" "$PRIV_SECRET"
+    airlock_profiles_write "$AIRLOCK_PROFILES_FILE" "$AIRLOCK_KIND" "$AIRLOCK_BOUND_HOST"
     # The proxy's port, which the broker must be told at boot and binds itself: the kernel picks a
     # free one here, this script lets it go, and the broker takes it a moment later. Nothing holds
     # it in between, so another process on this machine can take it first; that race is why the
@@ -92,7 +96,7 @@ print(s.getsockname()[1])
 s.close()
 ")"
     AIRLOCK_PROXY_URL="http://127.0.0.1:${AIRLOCK_PROXY_PORT}"
-    mapfile -t AIRLOCK_ENV < <(airlock_broker_env "$AIRLOCK_RULES_FILE" "$AIRLOCK_PROXY_URL" "127.0.0.1:${AIRLOCK_PROXY_PORT}")
+    mapfile -t AIRLOCK_ENV < <(airlock_broker_env "$AIRLOCK_PROFILES_FILE" "$AIRLOCK_PROXY_URL" "127.0.0.1:${AIRLOCK_PROXY_PORT}")
   fi
 }
 
@@ -137,8 +141,10 @@ project_access_dispatch_env() {
 # project_access_exports prints the banner's lines for PRIV's pod, the option and the airlock, as
 # the banner prints every export: two spaces, then `export NAME=value`. dev-stack.sh's banner
 # prints them after DEV_STACK_METADATA_SCRIPT's, in its one write. In a run without
-# --project-access the airlock's three values are empty.
+# --project-access the airlock's four values are empty.
 project_access_exports() {
+  local kind=""
+  [ "$PROJECT_ACCESS" != true ] || kind="$AIRLOCK_KIND"
   cat <<EOF
   export DEV_STACK_PRIV_PROJECT=$PRIV_PROJECT
   export DEV_STACK_PRIV_OWNER=$PRIV_OWNER
@@ -149,6 +155,7 @@ project_access_exports() {
   export DEV_STACK_PRIV_POD_TOKEN_FILE=$PRIV_POD_TOKEN_FILE
   export DEV_STACK_PROJECT_ACCESS=$PROJECT_ACCESS
   export DEV_STACK_PRIV_SECRET=$PRIV_SECRET
+  export DEV_STACK_AIRLOCK_KIND=$kind
   export DEV_STACK_AIRLOCK_PROXY_URL=$AIRLOCK_PROXY_URL
   export DEV_STACK_AIRLOCK_BOUND_URL=${AIRLOCK_S_URL:-}
   export DEV_STACK_AIRLOCK_CA_CERT_FILE=${AIRLOCK_CA_CERT_FILE:-}

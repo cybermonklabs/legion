@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
@@ -18,16 +19,27 @@ type launchSecret struct {
 }
 
 // launchSecrets are the secrets every launch's spec carries, in name order: the Envoy bearer, when
-// the daemon has one, and the pane NATS nkey seed, when the configuration or the daemon's
-// environment (lookup) names one (natsauth.Seed). The daemon's own NATS connection authenticates
-// with that seed only when the daemon has no seed of its own (natsauth.DaemonSeed,
-// chooseNATSConnection), which no launch carries. Which of them there are is known from the
-// configuration and the environment alone, so checkOperatorConfig names them without reading a file.
+// the daemon has one; the deployment's private-name rule file (leakguard.RulesSecret), when the
+// configuration or the daemon's environment names one (config.Config.PrivateNameRulesFile), as
+// its bytes verbatim, which every role's leak guard runs behind the secret's `_FILE` pointer,
+// leakguard.RulesFileVar; and the pane NATS nkey seed, when the configuration or the daemon's
+// environment (lookup) names one (natsauth.Seed). The rule file is read here and nowhere else:
+// readBoot compiles these same bytes, so the rules a role runs are the rules boot accepted, and a
+// file named or changed later reaches no launch before the daemon restarts. The daemon's own NATS
+// connection authenticates with the pane seed only when the daemon has no seed of its own
+// (natsauth.DaemonSeed, chooseNATSConnection), which no launch carries. Which of them there are is
+// known from the configuration and the environment alone, so checkOperatorConfig names them
+// without reading a file.
 func launchSecrets(cfg config.Config, lookup func(string) (string, bool)) []launchSecret {
 	var secrets []launchSecret
 	if cfg.EnvoyTokenFile != "" {
 		secrets = append(secrets, launchSecret{"ENVOY_TOKEN", func() (string, error) {
 			return config.ReadSecretPointer("envoy_token_file", cfg.EnvoyTokenFile)
+		}})
+	}
+	if cfg.PrivateNameRulesFile != "" {
+		secrets = append(secrets, launchSecret{leakguard.RulesSecret, func() (string, error) {
+			return readPrivateNameRulesFile(cfg.PrivateNameRulesNamedBy, cfg.PrivateNameRulesFile)
 		}})
 	}
 	if natsauth.Configured(cfg.NatsNkeySeedFile, lookup) {
@@ -68,7 +80,10 @@ func launchSecretNames(cfg config.Config, lookup func(string) (string, bool)) []
 // behind its `<NAME>_FILE` pointer alone (a tmux pane would refuse every launch; a pod's shim skips
 // the key). Under runtime: kubernetes, the operator's pod and provider keys are then held to the
 // Sandbox runtime's own refusals (sandbox.CheckPod), the exchange identity's names among them only
-// where runtime.kubernetes.agent_secrets names an exchange_audience.
+// where runtime.kubernetes.agent_secrets names an exchange_audience, and DISPATCH_TOKEN_BROKER only
+// under dispatch_token_broker. CheckPod refuses a provider key named DISPATCH_TOKEN or
+// DISPATCH_TOKEN_FILE with or without dispatch_token_broker, and under it gives the broker's
+// reason: a shared Dispatch token.
 func checkOperatorConfig(cfg config.Config, lookup func(string) (string, bool)) error {
 	names := launchSecretNames(cfg, lookup)
 	for _, key := range cfg.ProviderKeys {
@@ -79,9 +94,13 @@ func checkOperatorConfig(cfg config.Config, lookup func(string) (string, bool)) 
 	if cfg.Runtime.Kubernetes == nil {
 		return nil
 	}
-	broker := cfg.Runtime.Kubernetes.AgentSecrets
+	audience := ""
+	if broker := cfg.Runtime.Kubernetes.AgentSecrets; broker != nil {
+		audience = broker.ExchangeAudience
+	}
 	return sandbox.CheckPod(sandbox.Pod(cfg.Runtime.Kubernetes.Pod), providerSecretKeys(cfg.ProviderKeys),
-		workerImageTools, names, providersSecrets(cfg, lookup), cfg.Runtime.Kubernetes.SessionStore, broker != nil && broker.ExchangeAudience != "")
+		workerImageTools, names, providersSecrets(cfg, lookup), cfg.Runtime.Kubernetes.SessionStore,
+		sandbox.ExchangeOf(audience, cfg.DispatchTokenBroker))
 }
 
 // environLookup is os.LookupEnv over environ, the daemon's environment or a test's.

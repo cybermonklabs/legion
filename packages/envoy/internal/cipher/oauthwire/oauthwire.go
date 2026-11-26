@@ -1,10 +1,12 @@
 // Package oauthwire is the wire contract of the broker's OAuth endpoints that the broker and the
-// callers it answers share: the clients they present, the scope a machine login asks for and the
-// one a read entry's token holds, the names the token exchange knows a subject token by, the
-// fields the broker adds to a token answer, and the one grammar of a token's list of projects. It
-// imports nothing of the broker — only the standard library and the project-key rule
-// internal/contracts generates — so the agent-secrets helper reads it without the broker's
-// storage.
+// callers it answers share: the clients they present, the scope a machine login asks for, the one
+// a read token holds, the one a Legion daemon's token holds and the one an approve-only token
+// holds (ScopeApprove), the names the token exchange
+// knows a subject token by, the header of a read trade's holder proof, the fields the broker adds
+// to a token answer, the session prefix a Legion daemon's own entry fixes, and the one grammar of
+// a token's list of projects. It imports nothing of the broker — only the standard library and
+// the project-key rule internal/contracts generates — so the agent-secrets helper reads it without
+// the broker's storage.
 package oauthwire
 
 import (
@@ -26,13 +28,39 @@ const (
 	ClientID = "agent-secrets-helper"
 	// Scope is the one scope a machine login asks for and is granted.
 	Scope = "machine"
-	// ScopeRead is the one OAuth scope a token minted from a read entry
-	// (BROKER_EXCHANGE_READ_ACCOUNTS) holds, and the only scope the exchange grants: a token
-	// that writes nothing and reads only the routes a resource server lists for it, which
-	// Dispatch does in its read list and every other service refuses (ciphertoken). The entry
-	// decides it, never the request: the exchange client is registered for Scope alone, so the
-	// library refuses a request that names this one invalid_scope under every entry.
+	// ScopeRead is the OAuth scope of a token that only reads: one a read entry
+	// (BROKER_EXCHANGE_READ_ACCOUNTS) mints, and one any trade narrows to reading because it
+	// asked for this scope. Such a token writes nothing and reads only the routes a resource
+	// server classes as reads, which Dispatch does and every other service refuses
+	// (ciphertoken). The exchange client is registered for it, and a trade that names it keeps
+	// the identity it would have had and holds this scope beside one of the narrowed project
+	// scopes (ProjectScopeReadNamed, ProjectScopeReadPerson, ProjectScopeReadNone). A read
+	// entry's trade that names no scope holds it beside ProjectScopeNone, as before.
 	ScopeRead = "read"
+	// ScopeApprove is the one OAuth scope of the token the broker mints for a person's approve
+	// grant and spends through its proxy: beside the project scope person it is an approve-only
+	// token, which a resource server that serves one holds to its approve routes and every other
+	// service refuses (ciphertoken). No exchange grants it to a token it hands out.
+	ScopeApprove = "approve"
+	// ScopePerson is the OAuth scope a token narrowed to reading holds beside ScopeRead when it
+	// acts for its person: a ProjectScopeReadPerson token that names a person, whose answer's
+	// scope is "read person". No other token holds it.
+	ScopePerson = "person"
+	// ScopeLegionStatus is the OAuth scope the exchange grants a Legion daemon's own token: the
+	// token of an account entry that names a project and fixes the session legion-daemon:<that
+	// project>, for a trade that does not ask for ScopeRead. Dispatch lets a credential that holds
+	// it write a Legion issue's status where DISPATCH_LEGION_STATUS_SCOPE refuses that write to
+	// others but the architect of an issue above. The entry decides it, never the request: the
+	// exchange client is not registered for it, so the library refuses a request that names it
+	// invalid_scope. A resource server that does not read the word accepts the token and ignores it.
+	ScopeLegionStatus = "legion-status"
+	// LegionDaemonSessionPrefix starts the session name a Legion daemon writes its project's
+	// issues under: legion-daemon:<PROJECT>. The broker marks an entry that fixes it for its own
+	// project as a Legion daemon's own (exchange.Claims.LegionStatus), and Dispatch reads it
+	// through ciphertoken.LegionDaemonSessionPrefix: one spelling for both ends of this module.
+	// The daemon's DaemonSession (packages/daemon/internal/dispatch/client.go), another Go module,
+	// writes the name and changes together with this one.
+	LegionDaemonSessionPrefix = "legion-daemon:"
 	// ExtraCredentialID is the token answer's field naming the launcher credential the login holds;
 	// the login's session carries it under the same key.
 	ExtraCredentialID = "credential_id"
@@ -76,6 +104,19 @@ const (
 	// entry's one project or none, and a trade that names no person names none. Absent or blank
 	// is no projects.
 	FormProjects = "projects"
+	// FormAsOf is the exchange request's fourth broker-defined form parameter: the cut, the past
+	// time a narrowed token reads at, as an RFC 3339 time with at most six fractional digits. Only
+	// a trade that asks for ScopeRead may carry one, and it may be no later than the trade itself;
+	// the broker refuses any other cut invalid_request, naming this parameter. The token keeps the
+	// cut, and its introspection answer names it (Introspection.AsOf).
+	FormAsOf = "as_of"
+	// HeaderDPoPHolder is the request header of a read trade's second proof: a JWT of the DPoP
+	// shape (typ dpop+jwt, ES256, the P-256 key it is signed with embedded as jwk, htm, htu,
+	// iat and jti, and the server's nonce when it asks for one) over the same request as the
+	// DPoP proof, signed with a key made for the token's holder. The broker binds the narrowed
+	// token to that key rather than to the DPoP proof's, so a read token is never bound to a key
+	// that signs launcher proofs: a person's read trade must send it, and any read trade may.
+	HeaderDPoPHolder = "DPoP-Holder"
 	// SubjectTokenTypeKubernetes is the subject_token_type a pod presents its projected
 	// Kubernetes service-account token under. RFC 8693 registers no name for one, so the broker
 	// defines this one and the exchange client is the only client that may present it.
@@ -125,24 +166,144 @@ const (
 	MembershipHeld = "membership_held"
 )
 
+// The token exchange's answer to a trade the broker grants a capability it mints and holds
+// (requests.MintedKind): a placeholder of Cipher's proxy bound to a grant the broker keeps, never
+// an access token. The caller asks for it under TokenTypeProxyPlaceholder, and the broker's proxy
+// swaps the grant's token in for the placeholder on each request the kind's dpop entry allows.
+const (
+	// TokenTypeProxyPlaceholder is the requested_token_type such a caller asks for and the
+	// issued_token_type it is answered: the placeholder its requests carry through the proxy.
+	// RFC 8693 Section 2.2.1 lets the issued token be other than an access token; the broker
+	// defines this name, as it defines its subject token types.
+	TokenTypeProxyPlaceholder = "urn:envoy:params:oauth:token-type:proxy-placeholder"
+	// ExtraGrantID is the placeholder answer's field naming the grant: its kind's word, a colon
+	// and its uuid.
+	ExtraGrantID = "grant_id"
+	// ExtraProxy is the placeholder answer's field holding the grant's AirlockRelease: how the
+	// session reaches the proxy that holds the grant's token.
+	ExtraProxy = "proxy"
+)
+
+// AirlockRelease is how a command reaches the values the airlock holds back: the proxy it sends
+// their requests through, the certificate authority that proxy's certificates are signed by, the
+// password every connection to it opens with, and one entry per name held back. A release of
+// secrets answers it under "airlock" (POST /v1/grants/{id}/values), and the token exchange's
+// placeholder answer under ExtraProxy.
+type AirlockRelease struct {
+	// The URL the command points HTTPS_PROXY at (BROKER_AIRLOCK_PROXY_URL).
+	ProxyURL string `json:"proxy_url"`
+	// The PEM certificate the command must trust to reach the proxy, which signs a certificate
+	// for each host it carries a request to.
+	CACertificate string `json:"ca_certificate"`
+	// The password every proxy connection authenticates with: one of this grant's own
+	// placeholders, the first (name, slot) pair in sorted order.
+	ProxyPassword string `json:"proxy_password"`
+	// Each name the airlock holds back, by the name the command knows it as.
+	Names map[string]AirlockName `json:"names"`
+}
+
+// AirlockName is one name the airlock holds back.
+type AirlockName struct {
+	// What the command's environment variable of that name holds: the released shape of the
+	// secret with a placeholder wherever its value would be.
+	Value string `json:"value"`
+	// Each slot of the secret and the placeholder standing for it, so a command that takes one
+	// value of the secret apart knows which placeholder is which.
+	Slots map[string]string `json:"slots"`
+	// The hosts the secret's airlock entry allows, which the command keeps off its NO_PROXY so
+	// their requests reach the proxy.
+	Hosts []string `json:"hosts"`
+}
+
 // The wire names of a token's project scope, which an introspection answer's ProjectScope carries
 // and the exchange writes onto the session it stores (internal/cipher/oauth, ClaimProjectScope).
 // They are short and fixed so a reader of either reads one word rather than the prose
 // exchange.ProjectScope.String prints for an operator.
 const (
-	// ProjectScopeNamed is a token an operator's entry mapped: it acts for the entry's person and
-	// its Projects holds the entry's one project, or none for an account entry naming none (the
-	// shared public-session account's). It never holds two.
+	// ProjectScopeNamed is a token held to one project, or to none. An operator's entry maps most
+	// of them. An entry that names a person mints a token that acts for that person, and its
+	// Projects holds the entry's one project, or none for an account entry naming none (the shared
+	// public-session account's). An account entry naming no person mints a token that acts as the
+	// account itself, its service, and its Projects holds none. A job entry mints a token that
+	// names the entry's identity as its service and no person, and its Projects holds the entry's
+	// one project, never none. Neither token that names no person holds an OAuth scope. A
+	// restricted member's machine login is the one person's credential that makes one
+	// (exchange.Set.Machine): it acts for that member, and its Projects holds the one project its
+	// trade asked for. It never holds two projects. An entry's token records no Google account and
+	// no creation time, since the operator's configuration, not an account, names its person; a
+	// restricted member's records the account and the creation its trade recorded, as a person
+	// token's does.
 	ProjectScopeNamed = "named"
 	// ProjectScopePerson is a token that acts as its person: its Projects holds the 0 to
-	// MaxProjects projects the trade asked for, each one its person could see at the trade.
+	// MaxProjects projects the trade asked for, each one its person could see at the trade. A
+	// machine's token that names a service and no person carries it too, and names no project.
 	ProjectScopePerson = "person"
 	// ProjectScopeNone is a token that may write no project and names none: the token a read
 	// entry mints, which holds the scope ScopeRead and nothing else. A resource server of a
 	// build that predates it refuses it, since it accepts only the two words above, and one of
 	// this build accepts it only where it asks to (ciphertoken).
 	ProjectScopeNone = "none"
+	// ProjectScopePublic is a token a job entry naming `public` mints: it names the entry's
+	// identity as its service and no person, it reaches every public project, which no list
+	// names, and its Projects holds the private projects the entry lists, 0 to MaxProjects of
+	// them, whatever the trade named. The word itself is no project key and is never in
+	// Projects. It holds no OAuth scope, and no trade narrows it to reading: the exchange refuses
+	// that trade. A resource server of a build that predates it refuses it, since it does not
+	// know the word, and one of this build accepts it only beside a service, no person, no OAuth
+	// scope and no cut (ciphertoken).
+	ProjectScopePublic = "public"
+	// ProjectScopeReadNamed is a ProjectScopeNamed token narrowed to reading: its trade asked for
+	// ScopeRead, and it names the person and the projects the same trade would have named without
+	// it. It holds the OAuth scope ScopeRead alone. A resource server of a build that predates the
+	// three narrowed words refuses each of them, so no build reads a narrowed token as one that
+	// writes.
+	ProjectScopeReadNamed = "read-named"
+	// ProjectScopeReadPerson is a ProjectScopePerson token narrowed to reading the same way. It
+	// holds the OAuth scope ScopeRead, and the scope person beside it when it names a person
+	// ("read person"), since a person-scoped token that names its person is the one kind that acts
+	// for that person.
+	ProjectScopeReadPerson = "read-person"
+	// ProjectScopeReadNone is a ProjectScopeNone token whose trade asked for ScopeRead: a read
+	// entry's token, narrowed on request. It holds the OAuth scope ScopeRead alone, as the read
+	// entry's token does.
+	ProjectScopeReadNone = "read-none"
 )
+
+// BaseProjectScope is the word whose rules a project-scope word's projects are read under:
+// ProjectScopeNamed for ProjectScopeReadNamed, ProjectScopePerson for ProjectScopeReadPerson,
+// ProjectScopeNone for ProjectScopeReadNone, and any other word as it is. A narrowed token's
+// projects mean what its base word's do, so every reader that checks a token's projects reads
+// this word, and a narrowed trade is checked and answered as the same trade without ScopeRead.
+// A word is narrowed exactly when this answers another word.
+func BaseProjectScope(word string) string {
+	switch word {
+	case ProjectScopeReadNamed:
+		return ProjectScopeNamed
+	case ProjectScopeReadPerson:
+		return ProjectScopePerson
+	case ProjectScopeReadNone:
+		return ProjectScopeNone
+	}
+	return word
+}
+
+// AccountSubjectPrefix opens a Kubernetes service account's subject,
+// system:serviceaccount:<namespace>:<name>. It tells a Kubernetes subject from a Google account
+// address where a reader holds one string that may be either (exchange.Set.ProjectsForAccount);
+// whether a string is a whole subject is AccountSubject's to answer.
+const AccountSubjectPrefix = "system:serviceaccount:"
+
+// AccountSubject is a Kubernetes service account's whole subject, the one a pod's projected token
+// carries: system:serviceaccount:<namespace>:<name>, the namespace a DNS label and the name a DNS
+// subdomain. It is the one spelling of that grammar: the broker's configuration holds every
+// account its settings name to it (config), and the exchange every account entry and read entry
+// (exchange.NewSet), so it is also the service a ProjectScopeNamed token that names no person
+// and no project carries: the one entry that mints that shape is an account entry naming no
+// person, whose token acts as the account (exchange.Set.Pod). A resource server reads a named
+// token that names no person and no project and a service this does not match whole as no token
+// the broker mints (ciphertoken). A job's named token names no person and one project, and its
+// service is any identity a job entry lists, an account, a workflow or a Google account.
+var AccountSubject = regexp.MustCompile(`^` + AccountSubjectPrefix + `[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?:[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?$`)
 
 // MaxProjects is the most projects one token names.
 const MaxProjects = 16
@@ -199,11 +360,19 @@ func ValidProjects(projects []string) error {
 // the empty string for none. ParseProjects reads it back to the same list.
 func JoinProjects(projects []string) string { return strings.Join(projects, " ") }
 
+// NotHeldUntilPassed is Introspection.NotHeldUntil for a person whose not-held answer the broker's
+// hold gate judged past its deadline: Unix second 1, which every reader's clock is past, so each
+// refuses the token as a deadline passed. The gate judges the deadline by its own clock, or as
+// passed whatever its clock says when it equals Dispatch's as_of (Dispatch's unavailable answer),
+// so the deadline itself could still lie ahead of a reader whose clock is behind.
+const NotHeldUntilPassed int64 = 1
+
 // Introspection is what the broker knows about one of its access tokens: the RFC 7662 answer the
 // broker's introspection route serialises and a resource server reads a presented token back
 // through (internal/ciphertoken). The broker's tokens are opaque, so everything here comes from
-// the row the token is stored in rather than from the token's own bytes, and a token the broker
-// has revoked or let expire is simply not live.
+// the rows the broker stores rather than from the token's own bytes — the token's, and for its
+// account the row of the credential behind it — and a token the broker has revoked or let expire
+// is simply not live.
 //
 // The JSON names are RFC 7662's where it has one and the broker's own where it does not; the
 // route serialises this struct and adds no field of its own. Both ends read this one declaration,
@@ -217,10 +386,14 @@ type Introspection struct {
 	// Person is the person the session acts for.
 	Person string `json:"person,omitempty"`
 	// Service is the service a token that names no person was minted for: the fleet its machine
-	// belongs to, as BROKER_VM_SERVICES names it, or the service a read entry names
-	// (BROKER_EXCHANGE_READ_ACCOUNTS). A token names a person or a service and never both, so a
-	// reader that records who is answerable for a write reads Person, and one that decides what a
-	// machine may reach reads this.
+	// belongs to, as BROKER_VM_SERVICES names it, the service a read entry names
+	// (BROKER_EXCHANGE_READ_ACCOUNTS), the account of a BROKER_EXCHANGE_ACCOUNTS entry naming no
+	// person (system:serviceaccount:<namespace>:<name>), which that token acts as, or, for a job's
+	// token, the identity its job entry lists: a pod's Kubernetes service account
+	// (system:serviceaccount:<namespace>:<name>), a workflow (<repository>/<workflow path>@<ref>)
+	// or a Google account's address. A token names a person or a service and never both, so a
+	// reader that records who is answerable for a write reads Person, or this where Person is
+	// empty, and one that decides what a machine or a job may reach reads this.
 	Service string `json:"service,omitempty"`
 	// Machine is the machine a person signed in on acted through: the Google account of the
 	// actor token the exchange was made with, as BROKER_VM_SERVICES lists it. It is set only
@@ -229,19 +402,81 @@ type Introspection struct {
 	// as the actor token's issuer spells it, which is a Google subject rather than an account,
 	// so this is the name a reader can act on.
 	Machine string `json:"machine,omitempty"`
-	// ProjectScope is what Projects means: ProjectScopeNamed, ProjectScopePerson or
-	// ProjectScopeNone. A machine login's own token, which no exchange decided for, carries
-	// neither this nor Projects.
+	// AccountIssuer is the issuer of the Google account the credential behind a token naming a
+	// person records, as oidc.CanonicalIssuer spells it, which the token's trade wrote onto the
+	// token when it minted it: for a token a person's sign-in on a machine minted, the issuer of
+	// the person's own identity token that made the trade; for a token a machine login's own token
+	// was exchanged for, the issuer of the account that approved that login. It is set with
+	// AccountSubject or not at all, and is empty for a token naming no person, for one of a login
+	// no person's account approved (or an older Dispatch approved), and for one minted before the
+	// broker recorded the account on its token. RFC 7662's own `iss` is the token's issuer, which
+	// is the broker, so this is named apart from it.
+	AccountIssuer string `json:"account_issuer,omitempty"`
+	// AccountSubject is that account's `sub`, beside AccountIssuer. RFC 7662's own `sub` is the
+	// token's subject, the principal the exchange decided, so this is named apart from it. It is
+	// what will let a resource server tell which account a token is, once one reads it: a token
+	// whose account no longer holds the person's address is the replaced account's, however its
+	// person reads. No reader in this tree reads it yet.
+	AccountSubject string `json:"account_subject,omitempty"`
+	// Held is whether Dispatch holds the person this token names until they sign in to Dispatch
+	// again, or until a refresh confirms them with Google: Google refused their Dispatch sign-in,
+	// or no refresh has confirmed them for 24 hours. The broker's introspection writes it, from
+	// its hold gate (internal/cipher/hold), for an active token naming a person, as `person` or,
+	// for a machine login's own token, as its operator. The Envoy listener reads it
+	// (ciphertoken.Caller.Held) after its own checks and refuses the token 401 MEMBERSHIP_HELD;
+	// Dispatch will refuse it the same way once it reads it, and does not yet.
+	// A held token is still active: a hold revokes nothing, and the token works again once the
+	// hold ends. It is false for a token naming no person.
+	Held bool `json:"held,omitempty"`
+	// NotHeldUntil is when the broker's answer that the person this token names is not held stops
+	// being good, in seconds since the epoch, rounded down: the deadline an IAP deployment's
+	// Dispatch put on that answer (its not_held_until), which the broker's hold gate serves until
+	// and not at (hold.Gate.Decide). The broker's introspection writes it beside a not-held
+	// answer that has one. The Envoy listener keeps the answer no later than it
+	// (ciphertoken.Caller.NotHeldUntil), and refuses the token as unavailable once it has passed;
+	// Dispatch will do the same once it reads it, and does not yet. A
+	// not-held answer the gate judged past its deadline is written NotHeldUntilPassed, 1, a moment
+	// every reader's clock is past. It is 0, and absent, for a held answer, a token naming no
+	// person, and every answer outside IAP.
+	NotHeldUntil int64 `json:"not_held_until,omitempty"`
+	// CredentialCreatedAt is when the credential behind a token naming a person was made, as Unix
+	// seconds from the broker database's own clock: the person's sign-in on a machine, or the
+	// machine login the token was exchanged from, not the token's own iat, which a refresh renews.
+	// The token's trade wrote it onto the token when it minted it. It is for a resource server
+	// that holds a token recording no account to its creation, since one made before the person's
+	// account was recorded may be an earlier holder's; no reader in this tree reads it yet. It is
+	// 0, and absent, for a token naming no person and for one minted before the broker recorded
+	// it.
+	CredentialCreatedAt int64 `json:"credential_created_at,omitempty"`
+	// ProjectScope is what Projects means: ProjectScopeNamed, ProjectScopePerson,
+	// ProjectScopeNone or ProjectScopePublic, or one of the first three narrowed to reading
+	// (ProjectScopeReadNamed, ProjectScopeReadPerson, ProjectScopeReadNone), whose Projects mean
+	// what its base word's do. A job's token carries ProjectScopeNamed or ProjectScopePublic,
+	// beside its Service and no Person. A machine login's own token, which no exchange decided
+	// for, carries neither this nor Projects.
 	ProjectScope string `json:"project_scope,omitempty"`
 	// Projects is the token's list of projects: for a ProjectScopeNamed token, the entry's one
-	// project, or none for an account entry naming none; for a ProjectScopePerson token, the 0 to
-	// MaxProjects projects its trade asked for, each one its person could see then; for a
-	// ProjectScopeNone token, none. Sorted, each once; absent for none.
+	// project, or none for an account entry that names a person and no project or for one that
+	// names neither a person nor a project (<account>== of BROKER_EXCHANGE_ACCOUNTS), whose token
+	// acts as the account, always one for a job's token, and the one project a restricted
+	// member's machine login asked for; for a ProjectScopePerson token, the 0 to MaxProjects
+	// projects its trade asked for, each one its person could see then, and none for a token that
+	// names a service; for a ProjectScopePublic token, the 0 to MaxProjects private projects its
+	// job entry lists, the whole list whatever the trade named; for a ProjectScopeNone token,
+	// none. Sorted, each once; absent for none.
 	Projects []string `json:"projects,omitempty"`
 	// Scope is the OAuth scope the token was granted, space-separated as RFC 7662 spells it. An
-	// exchanged token holds ScopeRead when a read entry minted it and no scope otherwise, and a
-	// machine login's own token holds Scope.
+	// exchanged token holds ScopeRead when a read entry minted it or its trade asked for it, and
+	// then ScopePerson beside it ("read person") for a ProjectScopeReadPerson token that names
+	// its person; it holds ScopeLegionStatus when a Legion daemon's own entry minted it and its
+	// trade did not ask for ScopeRead. The token the broker mints for a person's approve grant
+	// holds ScopeApprove alone. Every other exchanged token holds no scope, and a machine login's
+	// own token holds Scope.
 	Scope string `json:"scope,omitempty"`
+	// AsOf is the token's cut: the past time a narrowed token reads at, which its trade asked for
+	// (FormAsOf), in UTC to the microsecond (2006-01-02T15:04:05.000000Z). Only a token of one of
+	// the three narrowed project scopes carries one, and it is absent with no cut.
+	AsOf string `json:"as_of,omitempty"`
 	// ExpiresAt is when the token expires, in seconds since the epoch (RFC 7662's 'exp'), so a
 	// caller that remembers an affirmative answer can keep it no longer than the token lives.
 	ExpiresAt int64 `json:"exp,omitempty"`

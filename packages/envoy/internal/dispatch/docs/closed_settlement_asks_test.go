@@ -94,6 +94,7 @@ func editNoticeRows(t *testing.T, database *store.Store, artifactID string, held
 // edit after the reopen opens a notice that starts at the settled version, so it never carries
 // alice's edit, which the settlement saved while DOC-1 was closed.
 func TestASettlementAfterACloseWakesNobody(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	ctx := context.Background()
@@ -233,6 +234,7 @@ func (f closedSettlementFixture) requireNothingStored(t *testing.T, what string,
 // margin, is refused at the store (gateAppend), and the refusal closes her room. Once no room holds
 // the document, a rebuild carrying markdown of a history that does not load is refused too.
 func TestAClosedIssuesDocumentStillRefusesAPersonsWrite(t *testing.T) {
+	t.Parallel()
 	f := newClosedSettlementFixture(t)
 	ctx := context.Background()
 	alice := f.admitBeforeTheClose(t)
@@ -305,6 +307,7 @@ func TestAClosedIssuesDocumentStillRefusesAPersonsWrite(t *testing.T) {
 // settles the document; its record reads the issue open when the settlement holds the document's
 // owner lock, and the block is saved resolved with no row, its author recorded for the reopen.
 func TestAnAskBlockOnAServiceThatHasNotHeardTheCloseGetsNoRow(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	ctx := context.Background()
 	b := pair.taskB
@@ -365,6 +368,7 @@ func TestAnAskBlockOnAServiceThatHasNotHeardTheCloseGetsNoRow(t *testing.T) {
 // reopen marks the document owed (MarkReopenOwedAskDocuments), and one resumption pass settles
 // it on the open issue, which restores the ask as a returning block's ask is restored.
 func TestARetractedAsksBlockThatReturnsWhileClosedIsRestoredAtTheReopen(t *testing.T) {
+	t.Parallel()
 	service, artifactID, _ := settleReturnedAskBlockWhileClosed(t)
 	reopenTestIssue(t, service)
 	if err := service.resumeOwedSettlements(context.Background(), 0); err != nil {
@@ -388,6 +392,7 @@ func TestARetractedAsksBlockThatReturnsWhileClosedIsRestoredAtTheReopen(t *testi
 // open issue restores the ask with an ask.opened in her name, which notifies, as her own
 // edit's restoration of an ask does on an open issue.
 func TestTheSettlementAfterAReopenCreditsTheEditorTheClosedSettlementSaved(t *testing.T) {
+	t.Parallel()
 	service, artifactID, alice := settleReturnedAskBlockWhileClosed(t)
 	ctx := context.Background()
 	reopenTestIssue(t, service)
@@ -430,7 +435,7 @@ func settleReturnedAskBlockWhileClosed(t *testing.T) (*Service, string, model.Ac
 		t.Fatalf("the seeded ask block's ask reads %s, want open", ask.State)
 	}
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
-	editAsConnectedPeer(t, service, artifactID, 1, alice, withoutAskBlocks)
+	editAsConnectedPeer(t, service, artifactID, 1, alice, WithoutAskBlocks)
 	settleCurrentGeneration(t, service, artifactID)
 	if ask := blockAskOn(t, service, artifactID, "returning-ask"); !settlementRetracted(ask) {
 		t.Fatalf("the ask whose block alice deleted reads %s %+v, want the settlement's retraction", ask.State, ask.Resolution)
@@ -498,6 +503,7 @@ func keptClosedEditSource(t *testing.T, service *Service, artifactID string) *mo
 // write after it, which credits no one as the reopen's ask-state write does (withLifecycleWrite),
 // leaves the pending row naming nobody, and its settlement's version is SettlementActor's.
 func TestAReopenForgetsTheKeptEditorOfADocumentThatOwesNothing(t *testing.T) {
+	t.Parallel()
 	service, artifactID, _ := settleEditWhileClosed(t)
 	ctx := context.Background()
 
@@ -580,6 +586,7 @@ func settleEditWhileClosed(t *testing.T) (*Service, string, model.Actor) {
 // pending row naming no editor and nothing else, whose deletion shows that it committed. Neither
 // writes a version or stores an update, and the document still keeps alice after each.
 func TestAClosedIssuesSettlementThatSavesNothingKeepsTheKeptEditor(t *testing.T) {
+	t.Parallel()
 	service, artifactID, alice := settleEditWhileClosed(t)
 	ctx := context.Background()
 	version, _, _ := latestDocumentVersion(t, service.store, artifactID)
@@ -614,6 +621,7 @@ func TestAClosedIssuesSettlementThatSavesNothingKeepsTheKeptEditor(t *testing.T)
 // settlement saves it and keeps alice. The reopen marks the document owed, so it keeps alice for
 // that settlement, and the settlement on the open issue deletes her.
 func TestAnOpenIssuesSettlementForgetsTheKeptEditor(t *testing.T) {
+	t.Parallel()
 	service, artifactID, alice := settleReturnedAskBlockWhileClosed(t)
 	ctx := context.Background()
 	reopenTestIssue(t, service)

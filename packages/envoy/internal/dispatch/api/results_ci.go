@@ -89,9 +89,11 @@ type ciRun struct {
 // loaded for it, which say whether it holds a recorded result and so is CI's at all. An issue
 // holding no check CI proves asks nothing of the database or of GitHub. issueKey is the route's
 // issue, whose Verification document holds the checks and whose pull request heads they are read
-// at. Only a failed read of Dispatch's own database is an error; whatever GitHub answers is a
-// case of the answer.
-func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []model.CheckBlock) error {
+// at. It runs after reader has learned the heads GitHub names (comparisonReader.learn) and reads
+// the newest head with reader's answers (delivery.NewestPullRequestHead), so a head this read's
+// read-through learned is the head a check CI proves is derived at. Only a failed read of
+// Dispatch's own database is an error; whatever GitHub answers is a case of the answer.
+func (s *server) deriveCIResults(ctx context.Context, reader *comparisonReader, issueKey string, checks []model.CheckBlock) error {
 	var proved []provedCI
 	names := map[string]struct{}{}
 	for index := range checks {
@@ -110,7 +112,12 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 	if err != nil {
 		return err
 	}
-	head, found, err := delivery.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey)
+	// The newest head is read after learn, so a writer's read finds the row its own read-through
+	// stored, and a read-only caller's read finds the head its own read-through learned, through
+	// the request's answers it passes as every other read of the heads does. A reader that named a
+	// commit learns nothing, so its answers are empty and it reads the stored rows alone, whoever
+	// reads.
+	head, found, err := delivery.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey, reader.answers)
 	if err != nil {
 		return err
 	}
@@ -334,15 +341,23 @@ func ciUnconcluded(check model.CheckBlock, name, state, ciCase, detail string, w
 	}
 }
 
-// ciRunOfLine is the run a check's ci_check names as a pull-request body line names it, `CI run`
-// and the words words keeps of the name, since the name is text the check's author wrote; where
-// words keeps none of it, the line says `the CI run the check names`.
+// ciRunOfLine is the run a check's ci_check names as a pull-request body line names it: `CI run`
+// and the name's words joined by single blanks, when the line drops none of them (lineWords.drops).
+// The name is text the check's author wrote, so where the line drops any of its words, or the name
+// has none, the line says `the CI run the check names` instead. The words left of a name that lost
+// some are a run nobody can find (`0)` of `unit_tests (test_x.py, 0)`), and two such runs can read
+// the same.
 func ciRunOfLine(name string, words lineWords) string {
-	kept := words.keep(name)
-	if kept == "" {
+	fields := strings.Fields(name)
+	if len(fields) == 0 {
 		return "the CI run the check names"
 	}
-	return "CI run " + kept
+	for _, word := range fields {
+		if words.drops(word) {
+			return "the CI run the check names"
+		}
+	}
+	return "CI run " + strings.Join(fields, " ")
 }
 
 // ciVerdictLine is the pull-request body line of a derived result: the recorded line's grammar,

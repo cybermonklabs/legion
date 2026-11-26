@@ -1,10 +1,12 @@
 //go:build e2e
 
-// The GitHub envelopes two whole-daemon live proofs publish alike, merge_wait_readable_live_test.go's
-// and review_range_live_test.go's: the review App's review of a pull request, the implementer's push
-// and GitHub's synchronize, each published on the ENVOY_NOTIFICATIONS stream as Envoy relays the
-// webhook (liveProof's publish) and waited on until the daemon's intake has applied it
-// (waitProcessed). It carries `//go:build e2e` because no untagged test calls it.
+// The GitHub envelopes the whole-daemon live proofs publish alike, merge_wait_readable_live_test.go's,
+// review_range_live_test.go's and conflict_merger_live_test.go's among them: the review App's review
+// of a pull request, the implementer's push, GitHub's events of a pull request, its synchronize
+// among them, and CI's settlement of a head, each published on the ENVOY_NOTIFICATIONS stream as
+// Envoy relays it (liveProof's publish) and, where the proof reads what the daemon made of it next,
+// waited on until the daemon's intake has applied it (waitProcessed). It carries `//go:build e2e`
+// because no untagged test calls it.
 package daemon
 
 import (
@@ -70,16 +72,79 @@ func (p *liveProof) publishPushOf(issue, from, to string) {
 // orders the observation by and the record keeps as HeadUpdatedAt.
 func (p *liveProof) publishSynchronizeOf(number int, issue, head, base, title string, updated time.Time) {
 	p.t.Helper()
-	payload, err := json.Marshal(map[string]string{
-		"action": "synchronize", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(number),
-		"head_sha": head, "base_ref": base, "head_ref": claim.IssueBranch(issue),
-		"title":      title,
-		"url":        "https://github.com/" + liveRepo + "/pull/" + strconv.Itoa(number),
-		"updated_at": updated.Format(time.RFC3339),
+	p.waitProcessed(p.publishPullRequest(livePullRequestEvent{action: "synchronize", number: number, issue: issue, head: head,
+		base: base, title: title, updated: updated}, fmt.Sprintf("pr-%d-synchronize-%s", number, head[:8])))
+}
+
+// livePullRequestEvent is one GitHub event of a pull request as a live proof publishes it: its
+// action, the pull request numbered number from issue's branch into base, titled title, at head,
+// GitHub's clock of it (updated), for a "closed" event that merged it, the merge commit (merge, ""
+// for any other event), and, for a synchronize made by a named account, that account (sender) and
+// the head the move left (before), both "" for an event that names no sender, as Envoy's relay
+// named none before it relayed one.
+type livePullRequestEvent struct {
+	action                   string
+	number                   int
+	issue, head, base, title string
+	updated                  time.Time
+	merge                    string
+	before, sender           string
+}
+
+// publishPullRequest publishes event under eventID, as Envoy relays a GitHub pull-request event
+// (intake's decodePullRequest reads it), and answers the published message for a caller that
+// waits for the daemon to apply it (waitProcessed).
+func (p *liveProof) publishPullRequest(event livePullRequestEvent, eventID string) string {
+	p.t.Helper()
+	fields := map[string]string{
+		"action": event.action, "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(event.number),
+		"head_sha": event.head, "base_ref": event.base, "head_ref": claim.IssueBranch(event.issue),
+		"title":      event.title,
+		"url":        "https://github.com/" + liveRepo + "/pull/" + strconv.Itoa(event.number),
+		"updated_at": event.updated.Format(time.RFC3339),
+	}
+	if event.merge != "" {
+		fields["merged"], fields["merge_commit_sha"] = "true", event.merge
+	}
+	if event.sender != "" {
+		fields["before"], fields["sender"] = event.before, event.sender
+	}
+	payload, err := json.Marshal(fields)
+	if err != nil {
+		p.t.Fatalf("encode the %s payload of pull request #%d: %v", event.action, event.number, err)
+	}
+	subject := fmt.Sprintf("notifications.github.%s.pr.%d", p.subjectRepo(), event.number)
+	return p.publish(subject, "github", eventID, string(payload))
+}
+
+// publishSettlementOf publishes CI's settlement of the pull request numbered number at head, as
+// Envoy relays the listener's settlement (intake's decodeChecks reads it, which takes the subject
+// as part of the fact's identity): one run of each name of passed and failed, those of failed
+// named failing and none cancelled. seq numbers the settlement, and the runs' ids and snapshot are
+// its own, so a head settled twice is the same checks re-run rather than the same report again
+// (classify's redundantSettlement). Each run reaches the fence stamped with the head it ran on and
+// the conclusion the settlement's lists give it (classify's stampedRuns), which is what makes it a
+// run of this head's own.
+func (p *liveProof) publishSettlementOf(number int, head string, seq int64, passed, failed []string) {
+	p.t.Helper()
+	names := append(append([]string{}, passed...), failed...)
+	runs := make([]map[string]any, 0, len(names))
+	for i, name := range names {
+		runs = append(runs, map[string]any{"name": name, "id": int64(number)*1000 + seq*10 + int64(i) + 1})
+	}
+	group := func(names []string) map[string]any {
+		return map[string]any{"count": len(names), "checks": append([]string{}, names...)}
+	}
+	payload, err := json.Marshal(map[string]any{
+		"kind": "checks", "repo": liveRepo, "number": strconv.Itoa(number), "sha": head, "check_runs": runs,
+		"generation": 0, "snapshot": fmt.Sprintf("snapshot-%s-%d", head[:8], seq), "settled_at": time.Now().UnixMilli(),
+		"failed": group(failed), "cancelled": group(nil), "running": group(nil), "queued": group(nil), "skipped": group(nil),
+		"passed":         group(passed),
+		"failing_checks": append([]string{}, failed...),
 	})
 	if err != nil {
-		p.t.Fatalf("encode the synchronize payload: %v", err)
+		p.t.Fatalf("encode the checks payload: %v", err)
 	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d", p.subjectRepo(), number)
-	p.waitProcessed(p.publish(subject, "github", fmt.Sprintf("pr-%d-synchronize-%s", number, head[:8]), string(payload)))
+	subject := fmt.Sprintf("notifications.github.%s.pr.%d.checks", p.subjectRepo(), number)
+	p.waitProcessed(p.publish(subject, "github", fmt.Sprintf("checks-%d-%d", number, seq), string(payload)))
 }

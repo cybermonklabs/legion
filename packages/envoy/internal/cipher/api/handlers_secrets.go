@@ -39,14 +39,15 @@ type settingsResponse struct {
 	// With gcp-secret-manager, the number of the project every agent secret is in, the one the
 	// prefix names; absent otherwise.
 	GCPProject string `json:"gcp_project,omitempty"`
-	// JudgeKeys is each key the airlock rules give the model judge, by name, with its judge
-	// seconds and the guidance the judge decides it on — the rules file's own words, never a
-	// value — and absent where the rules give the judge nothing. It is what `agent-secrets secret
-	// show` reads to say who decides a request for a key and what the judge will look for, so an
-	// agent can meet the guidance on its first request. It is the rules' answer and the same on
-	// every broker with the same rules; one that runs no judge sends such a request to its
-	// person. An administrator's key is named here when the rules give it seconds, and its
-	// person decides it all the same; `secret show` reads its tag.
+	// JudgeKeys is each key the broker serves whose judge tag gives the model judge seconds of it
+	// (policy.TagJudge), by name, with those seconds and the guidance the judge decides it on — the
+	// key's own guidance tag, never a value — and absent where no key carries one. It is what
+	// `agent-secrets secret show` reads to say who decides a request for a key and what the judge
+	// will look for, so an agent can meet the guidance on its first request. It is the live
+	// policy's answer; a broker that runs no judge sends such a request to its person. An
+	// administrator's key or an Anthropic federation key is named here when its judge tag gives
+	// it seconds, and its person decides it all the same (policy.Secret.PersonApprovesEveryRelease);
+	// `secret show` reads its tags.
 	JudgeKeys map[string]judgeKey `json:"judge_keys,omitempty"`
 	// The audience a machine's Google identity token must carry at the token exchange
 	// (BROKER_GOOGLE_OIDC_AUDIENCE), on either store; absent where no machine can trade one, which
@@ -60,14 +61,25 @@ type settingsResponse struct {
 	// field and reads no type tag, so it serves a secret that carries type alone as a stored
 	// secret, and `agent-secrets` writes no typed secret through a broker that does not say this.
 	SecretTypeTag bool `json:"secret_type_tag"`
+	// Always true: this broker takes approver_issuer, approver_subject and
+	// approver_session_generation in a machine login's approve (decideBody), records the account on
+	// the login it mints and refuses an approval they place before a replacement (403
+	// APPROVER_REPLACED). It is for a Dispatch that records accounts, which would send them only
+	// to a broker that says this, since a broker from before them refuses a decision body carrying
+	// any of them 400 INVALID_DECISION. Dispatch in this tree sends none of them.
+	ApproverFields bool `json:"approver_fields"`
 }
 
 // judgeKey is one key in settingsResponse.JudgeKeys.
 type judgeKey struct {
 	// Seconds is the longest grant the judge makes of the key, its default lifetime too.
 	Seconds int64 `json:"seconds"`
-	// Guidance is the key owner's instruction to the judge, "" for an entry that gives none.
+	// Guidance is the key owner's instruction to the judge, "" for a key that carries none.
 	Guidance string `json:"guidance,omitempty"`
+	// Source is the stored secret a profile is made from, whose judge and guidance tags these
+	// are, and absent for a name served as itself. A source that profiles of other names use is
+	// served only through them, so `secret show` of it finds its judged profiles by this field.
+	Source string `json:"source,omitempty"`
 }
 
 // readSettings is GET /v1/settings: public, since it answers only the broker's own configuration —
@@ -78,7 +90,7 @@ type judgeKey struct {
 // the key under the cloud credential alone, with no identity at the broker at all.
 func (s *server) readSettings(w http.ResponseWriter, r *http.Request) {
 	resp := settingsResponse{Store: s.deps.SecretsStore, SecretsPrefix: s.deps.SecretsPrefix,
-		GoogleExchangeAudience: s.deps.GoogleExchangeAudience, SecretTypeTag: true}
+		GoogleExchangeAudience: s.deps.GoogleExchangeAudience, SecretTypeTag: true, ApproverFields: true}
 	switch s.deps.SecretsStore {
 	case secrets.StoreGCP:
 		resp.KMSKeyName = s.deps.SecretsKMSKey
@@ -87,14 +99,21 @@ func (s *server) readSettings(w http.ResponseWriter, r *http.Request) {
 		resp.KMSKeyARN = s.deps.SecretsKMSKey
 		resp.AWSRegion, resp.AWSAccountID = secrets.AWSKeyARNParts(s.deps.SecretsKMSKey)
 	}
-	if m := s.deps.Machine; m != nil {
-		for _, rule := range m.Airlock.Secrets {
-			if rule.Judge != nil {
-				if resp.JudgeKeys == nil {
-					resp.JudgeKeys = map[string]judgeKey{}
-				}
-				resp.JudgeKeys[rule.Name] = judgeKey{Seconds: int64(*rule.Judge), Guidance: rule.Guidance}
+	if m := s.deps.Machine; m != nil && m.Policy != nil {
+		set := m.Policy.Get()
+		for name, secret := range set.Secrets {
+			seconds, judged := set.JudgeSeconds(name)
+			if !judged {
+				continue
 			}
+			if resp.JudgeKeys == nil {
+				resp.JudgeKeys = map[string]judgeKey{}
+			}
+			key := judgeKey{Seconds: int64(seconds), Guidance: secret.Guidance}
+			if secret.Profile != nil && secret.Profile.Source != "" && secret.Profile.Source != name {
+				key.Source = secret.Profile.Source
+			}
+			resp.JudgeKeys[name] = key
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -155,8 +174,10 @@ const RereadAcceptedReason = "the reread was taken; this broker says what it ser
 //
 // A caller that sends a Proof header must be a session the broker authenticates, as on every
 // session route (sessionCaller: 401 PROOF_INVALID, or 503 when the proof cannot be checked), and
-// is answered as before, once the reread is done: whether the broker serves the name, why not, and
-// as which type. That is more than a request for the secret tells a session, which is refused
+// one whose enrollment names a person Dispatch holds is refused as on every session route
+// (refuseHeldSession: 403 MEMBERSHIP_HELD, or 503 HOLD_UNCHECKABLE). Any other is answered as
+// before, once the reread is done: whether the broker serves the name, why not, and as which
+// type. That is more than a request for the secret tells a session, which is refused
 // UNKNOWN_SECRET alike for a name no secret carries and for a secret the broker refuses. A
 // session's reread whose request ended first - its caller went away, or its deadline passed - is
 // the request's failure, not the broker's, so it logs nothing, as the miss path logs nothing for
@@ -188,6 +209,9 @@ func (s *server) rereadSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	recorder.NoteCaller(answer.CallerSession, who.enrollment)
+	if s.refuseHeldSession(w, r, who.enrollment) {
+		return
+	}
 	lk, err := s.refreshAndTell(r.Context(), name, nil)
 	switch {
 	case err != nil && r.Context().Err() != nil:
@@ -208,14 +232,15 @@ func (s *server) rereadSecret(w http.ResponseWriter, r *http.Request) {
 // reread it too (notifyPeers) once this pod has merged what it read: when the reread succeeded,
 // and when only its value read was cut (policy.ErrValueUnchecked), since the tags it read are in
 // force here then too. It is the one place both of the route's rereads, a session's and the one
-// run after a 202, decide whether the peers are told.
+// run after a 202, decide whether the peers are told, and it hands the fan-out's caller what the
+// reread moved (policy.Lookup.Moved, Deps.NotifyReread).
 func (s *server) refreshAndTell(ctx context.Context, name string, beforeNotify func()) (policy.Lookup, error) {
 	lk, err := s.deps.Policy.RefreshOne(ctx, name)
 	if err == nil || errors.Is(err, policy.ErrValueUnchecked) {
 		if beforeNotify != nil {
 			beforeNotify()
 		}
-		s.notifyPeers(ctx, name)
+		s.notifyPeers(ctx, name, lk.Moved)
 	}
 	return lk, err
 }
@@ -280,7 +305,8 @@ const rereadAfterAnswerTimeout = 45 * time.Second
 // reread run after its answer (rereadAfterAnswer) has done the same. A reread that merged nothing
 // - a name no secret can carry, a request that ended before or during the metadata read, a store
 // that failed, or the 429 refuseReread wrote before any work - is nothing for a peer to copy, and
-// neither calls it for any of them. ctx is the context the reread ran on, whose values it keeps.
+// neither calls it for any of them. ctx is the context the reread ran on, whose values it keeps,
+// and moved the names whose value that reread may have moved (policy.Lookup.Moved).
 //
 // It notifies on every reread that merged, whether or not the broker now serves the name.
 // Notifying only when the live answer changed would need RefreshOne to report a change it does
@@ -304,13 +330,13 @@ const rereadAfterAnswerTimeout = 45 * time.Second
 // RefreshOne's other caller is the miss path in requests/machine_state.go, which is bounded per
 // enrollment and per process and already heals a new secret on first use; fanning that out would
 // spend every peer a store read for a name that peer may never be asked for.
-func (s *server) notifyPeers(ctx context.Context, name string) {
+func (s *server) notifyPeers(ctx context.Context, name string, moved []string) {
 	if s.deps.NotifyReread == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), notifyRereadTimeout)
 	defer cancel()
-	s.deps.NotifyReread(ctx, name)
+	s.deps.NotifyReread(ctx, name, moved)
 }
 
 // notifyRereadTimeout bounds the fan-out one reread sends: a single Postgres NOTIFY on the shared

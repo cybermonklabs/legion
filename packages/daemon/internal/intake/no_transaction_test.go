@@ -7,7 +7,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -33,13 +32,14 @@ func (l *factLocks) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndD
 
 // A repository the daemon hears carries far more GitHub events than Legion's own pull requests: other pull
 // requests opened and pushed to, their reviews and CI settlements, and every workflow its CI runs.
-// None of them can change a record, so each is acknowledged without a transaction, the fact lock
-// or a GitHub read: a pull request event on a branch that is no issue's, a review or a checks
+// None of them can change a record, so each is acknowledged with no fact transaction, no fact lock
+// and no GitHub read: a pull request event on a branch that is no issue's, a review or a checks
 // settlement of a pull request the daemon does not record, and a run of any workflow, which wakes
 // nothing. Once the daemon records the pull request, the same review and settlement are applied
 // under the lock, the review's author's permission read first, and so is a pull request event on
 // an issue's branch.
 func TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	locks := &factLocks{}
@@ -85,16 +85,21 @@ func TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction(t *testing.T
 	// and of the permission reads, so nothing of its own may be cut short and tried again.
 	// AckWait bounds each read the handler makes - whether the pull request is recorded
 	// (recordedPullRequest) and the review author's permission (resolveReviewPermission) - and
-	// consumerSpec's 200 ms is about the length of this handler's own work on a loaded runner, so
-	// the row sets a minute as a guard far above it. The margin is what makes these counts sound:
-	// a redelivery the counts would see needs the whole minute to pass before the handling's
-	// acknowledgement reaches the server. The campaign of dispatch://INFRA-1113 measured that
-	// trip at 516.8 ms at its largest, under 16 busy loops on 2 CPUs, and the handler's own work
-	// and that trip together, about 717 ms, are a factor of about 80 below this window.
-	// The progress keeper reports nothing here: it ticks at a third of the window
-	// (spec.AckWait/3 in consume.go), so at 20 s, and each handling of this row acknowledges in
-	// about 200 ms, long before the first tick is due (keepInProgress, ackprogress.go).
-	spec.AckWait = time.Minute
+	// any fixed window lets the machine decide whether a read is cut: consumerSpec's 200 ms is
+	// about the length of this handler's own work on a loaded runner, and a minute is cut by a
+	// read of 61 s, such as the counted pool's first, which opens its first connection. So the
+	// window, and the row's wait for each acknowledgement (waitAcknowledged), are what is left of
+	// the test binary's deadline less 30 s (testwait.Remaining): a read however slow is waited
+	// out, and only one that never answers fails the row, by name, before the binary's own
+	// timeout. The window is also what makes these counts sound: a redelivery the counts would
+	// see needs the whole window to pass before the handling's acknowledgement reaches the
+	// server. The campaign of dispatch://INFRA-1113 measured that trip at 516.8 ms at its largest,
+	// under 16 busy loops on 2 CPUs, and the handler's own work and that trip together, about
+	// 717 ms, are far below this window. The progress keeper reports nothing here: it ticks at a
+	// third of the window (spec.AckWait/3 in consume.go), and each handling of this row
+	// acknowledges in about 200 ms, long before the first tick is due (keepInProgress,
+	// ackprogress.go).
+	spec.AckWait = testwait.Remaining(t)
 	var mu sync.Mutex
 	var asked []string
 	spec.ReviewPermission = func(_ context.Context, review PullRequestReview) (bool, error) {
@@ -174,10 +179,13 @@ func TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction(t *testing.T
 	}
 }
 
-// publishAt publishes data on subject and returns its stream sequence.
+// publishAt publishes data on subject and returns its stream sequence. The publish waits as
+// publish's does, until the row's hang guards end (testwait.Remaining).
 func publishAt(t *testing.T, js jetstream.JetStream, subject string, data []byte) uint64 {
 	t.Helper()
-	ack, err := js.Publish(context.Background(), subject, data)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancel()
+	ack, err := js.Publish(ctx, subject, data)
 	if err != nil {
 		t.Fatalf("publish %s: %v", subject, err)
 	}
@@ -186,15 +194,23 @@ func publishAt(t *testing.T, js jetstream.JetStream, subject string, data []byte
 
 // waitAcknowledged waits until consumer has acknowledged every message up to the stream sequence
 // last, with nothing pending or waiting for its acknowledgement: a nak'd message would still be
-// waiting, so this is every message handled for good.
+// waiting, so this is every message handled for good. Its bound is what is left of the test
+// binary's deadline less 30 s (testwait.Remaining), so a handling whose store read is slow is
+// waited out, and one that never ends fails the row here, by name, before the binary's own
+// timeout. Its reads of the consumer end there too, in place of the five seconds nats.go gives a
+// request whose context has no deadline, though a read that fails only makes the next poll read
+// again.
 func waitAcknowledged(t *testing.T, stream jetstream.Stream, consumer string, last uint64) {
 	t.Helper()
-	testwait.Eventually(t, consumer+" acknowledged every message", func() bool {
-		item, err := stream.Consumer(context.Background(), consumer)
+	bound := testwait.Remaining(t)
+	ctx, cancel := context.WithTimeout(context.Background(), bound)
+	defer cancel()
+	testwait.WithinPolling(t, bound, testwait.Poll, consumer+" acknowledged every message", func() bool {
+		item, err := stream.Consumer(ctx, consumer)
 		if err != nil {
 			return false
 		}
-		info, err := item.Info(context.Background())
+		info, err := item.Info(ctx)
 		return err == nil && info.AckFloor.Stream >= last && info.NumAckPending == 0 && info.NumPending == 0
 	})
 }

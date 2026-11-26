@@ -43,7 +43,7 @@ func TestHandleAgentMessage_UnknownSession(t *testing.T) {
 // fanned out on delivers the message from its own durable.
 func TestHandleAgentMessage_StoredInterestOnAnotherMachine(t *testing.T) {
 	sessions := newSessionRegistry(t)
-	if err := sessions.Put("ses_target", session.SessionEntry{Dir: "/test"}); err != nil {
+	if err := sessions.Put("ses_target", session.SessionEntry{MachineID: "test-machine", Dir: "/test"}); err != nil {
 		t.Fatalf("failed to register session: %v", err)
 	}
 

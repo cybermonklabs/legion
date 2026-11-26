@@ -178,10 +178,10 @@ func relaunchesOntoTheCurrentPlugin(c *letGoCell) {
 
 // stopsForTheOperator is the operator's stop (stop, end, retire), which records what it ended
 // under its own cause (endStopped) and puts the claim where the operator's retry reaches it:
-// retired (RequestOperatorRetry's row, operatorRetry).
+// retired (RequestAskedRetry's row, askedRetry).
 func stopsForTheOperator(c *letGoCell) {
 	c.h.t.Helper()
-	c.h.must(RequestStop{Claim: c.h.token})
+	c.h.must(RequestStop{Claim: c.h.token, By: SuspendedByOperator})
 }
 
 // backstopsTheStall is the daemon's stall backstop once the claim's last step is past its role's
@@ -272,15 +272,15 @@ func relaunchedToReady(h *harness) {
 // (resume, revive).
 func resumedByTheOperator(h *harness) {
 	h.t.Helper()
-	h.must(RequestResume{Claim: h.token})
+	h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 	h.relaunched()
 }
 
 // retriedByTheOperator is the operator's retry of the stopped claim, brought up to ready
-// (operatorRetry, retry, revive).
+// (askedRetry, retry, revive).
 func retriedByTheOperator(h *harness) {
 	h.t.Helper()
-	h.must(RequestOperatorRetry{Claim: h.token})
+	h.must(RequestAskedRetry{Claim: h.token, By: SuspendedByOperator})
 	h.relaunched()
 }
 
@@ -463,8 +463,8 @@ func (h *harness) wantNoTaskSentInterruptedWithoutItsRecord(cause string, letGo 
 //   - A retirement after prompt failures, in a turn, idle with its task's result to come, and in
 //     a compaction with or without a turn: no prompt goes out to fail. sendPending hands a prompt
 //     only to a ready or idle claim holding an unconfirmed task, a turn's confirmation disarms the
-//     bound on a prompt's turn (confirm, TimerTurn), and a task handed to a working claim waits
-//     for it (deliverLater), so promptFailed and chargePrompt are never reached.
+//     bound on a prompt's turn (confirmCarrying, TimerTurn), and a task handed to a working claim
+//     waits for it (deliverLater), so promptFailed and chargePrompt are never reached.
 //   - A stale-plugin relaunch in a turn, and in a compaction with or without a turn: the claim is
 //     working, so the relaunch waits for that end (refreshPlugin's holdStaleRelaunch, run by
 //     afterTurn).
@@ -495,7 +495,7 @@ func TestARelaunchRecordsEveryLetGoKindInEveryClaimState(t *testing.T) {
 		deathInATurn      = letGoKind{name: "a death in a turn", drive: dies, next: relaunchedToReady}
 		repoint           = letGoKind{name: "a repoint", drive: repoints, next: relaunchedToReady}
 		stalePlugin       = letGoKind{name: "a stale-plugin relaunch", drive: relaunchesOntoTheCurrentPlugin, next: relaunchedToReady}
-		operatorRetry     = letGoKind{name: "an operator's retry", drive: stopsForTheOperator, next: retriedByTheOperator}
+		operatorsRetry    = letGoKind{name: "an operator's retry", drive: stopsForTheOperator, next: retriedByTheOperator}
 		stallBackstop     = letGoKind{name: "a stall backstop", drive: backstopsTheStall, next: relaunchedToReady}
 		suspensionAtOnce  = letGoKind{name: "a suspension landing at once", drive: suspendsAtOnce, next: resumedByTheOperator}
 	)
@@ -554,12 +554,12 @@ func TestARelaunchRecordsEveryLetGoKindInEveryClaimState(t *testing.T) {
 		{kind: stalePlugin, state: compaction, keeps: StateWorking},
 		{kind: stalePlugin, state: turnUnderCompaction, keeps: StateWorking},
 
-		{kind: operatorRetry, state: noTurn, record: recorded{cause: endStopped}, sent: sentRecordAlone, says: saysNoTurn},
-		{kind: operatorRetry, state: inATurn, record: recorded{cause: endStopped, turn: true, taskTurn: true}, sent: sentRecordAlone, says: saysTurnCut},
-		{kind: operatorRetry, state: resultToCome, record: recorded{cause: endStopped}, sent: sentRecordAlone, says: saysNoTurn},
-		{kind: operatorRetry, state: resultToComeQuiet, sent: sentNothing},
-		{kind: operatorRetry, state: compaction, record: recorded{cause: endStopped}, sent: sentRecordAlone, says: saysNoTurn},
-		{kind: operatorRetry, state: turnUnderCompaction, record: recorded{cause: endStopped, turn: true}, sent: sentRecordAlone, says: saysTurnCut},
+		{kind: operatorsRetry, state: noTurn, record: recorded{cause: endStopped}, sent: sentRecordAlone, says: saysNoTurn},
+		{kind: operatorsRetry, state: inATurn, record: recorded{cause: endStopped, turn: true, taskTurn: true}, sent: sentRecordAlone, says: saysTurnCut},
+		{kind: operatorsRetry, state: resultToCome, record: recorded{cause: endStopped}, sent: sentRecordAlone, says: saysNoTurn},
+		{kind: operatorsRetry, state: resultToComeQuiet, sent: sentNothing},
+		{kind: operatorsRetry, state: compaction, record: recorded{cause: endStopped}, sent: sentRecordAlone, says: saysNoTurn},
+		{kind: operatorsRetry, state: turnUnderCompaction, record: recorded{cause: endStopped, turn: true}, sent: sentRecordAlone, says: saysTurnCut},
 
 		{kind: stallBackstop, state: noTurn, keeps: StateIdle},
 		{kind: stallBackstop, state: inATurn, record: recorded{cause: stalledTurn, turn: true, taskTurn: true}, sent: sentTaskTakenBack, says: saysTaskTurn},

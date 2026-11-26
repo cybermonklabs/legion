@@ -54,6 +54,7 @@ func subArchitectOn(t *testing.T, sup *supervisor, state supervise.ClaimState, l
 // older catch-up, which finishes without publishing; the root's claim and generation decide
 // nothing about it.
 func TestASubArchitectsCatchUpGoesToItAlone(t *testing.T) {
+	t.Parallel()
 	t.Run("to the child's own architect", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		records := record.NewStore()

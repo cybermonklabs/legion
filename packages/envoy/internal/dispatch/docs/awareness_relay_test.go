@@ -114,6 +114,7 @@ func requireAwareness(t *testing.T, reader *docstest.Peer, holds func(map[uint64
 // A reader's cursor set on one process reaches a reader of the same document on the other, each
 // way, and so does its next move.
 func TestAwarenessSetOnOneProcessReachesAReaderOnTheOther(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	runAwareness(t, pair.taskA)
 	runAwareness(t, pair.taskB)
@@ -135,6 +136,9 @@ func TestAwarenessSetOnOneProcessReachesAReaderOnTheOther(t *testing.T) {
 // cursors it superseded until each client's next heartbeat - 15 s in a browser, and never for
 // the readers here, which send none.
 func TestEveryReaderMovingAtOnceOnOneProcessReachesAReaderOnTheOther(t *testing.T) {
+	// Not parallel: it holds five readers' cursors to reaching a reader on the other process within
+	// one second, and among the package's parallel tests the relay took longer (envoy-go-docs-finalizers
+	// job 137379091221).
 	pair := newProcessPair(t)
 	runAwareness(t, pair.taskA)
 	runAwareness(t, pair.taskB)
@@ -182,6 +186,7 @@ func movingClient(reader int) uint64 { return 3_000 + uint64(reader) }
 // at once: the room that loads for it asks the other processes for their readers' states, and
 // they answer. The test's readers send no heartbeat, so nothing else would bring it.
 func TestAReaderOpeningSecondOnTheOtherProcessSeesTheFirstReadersAwareness(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	runAwareness(t, pair.taskA)
 	runAwareness(t, pair.taskB)
@@ -199,6 +204,7 @@ func TestAReaderOpeningSecondOnTheOtherProcessSeesTheFirstReadersAwareness(t *te
 // A reader who joins a room already resident on its process, and that loaded with no reader in
 // it, asks for the other processes' readers' states as it joins: the load asked nobody.
 func TestAReaderJoiningAResidentRoomOnTheOtherProcessSeesTheFirstReadersAwareness(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	runAwareness(t, pair.taskA)
 	handledB := runAwareness(t, pair.taskB)
@@ -220,6 +226,7 @@ func TestAReaderJoiningAResidentRoomOnTheOtherProcessSeesTheFirstReadersAwarenes
 // A reader leaving on one process leaves on the other: ygo's removal of the departing peer's
 // states is relayed like any other change.
 func TestADisconnectOnOneProcessRemovesTheClientsAwarenessOnTheOther(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	runAwareness(t, pair.taskA)
 	runAwareness(t, pair.taskB)
@@ -236,6 +243,7 @@ func TestADisconnectOnOneProcessRemovesTheClientsAwarenessOnTheOther(t *testing.
 // or a failed room's eviction makes - removes its readers' states on the other processes too,
 // though the close disconnects them and tears the room's relay down together.
 func TestARoomThisProcessClosesRemovesItsReadersAwarenessOnTheOther(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	runAwareness(t, pair.taskA)
 	runAwareness(t, pair.taskB)
@@ -276,6 +284,7 @@ func waitForAwarenessState(t *testing.T, handled <-chan awarenessMessage, artifa
 // own in it: it does not load the document on a process no reader of it is on, and it does not
 // reach - nor restamp the idle clock of - a room resident here with nobody reading it.
 func TestRelayedAwarenessNeitherLoadsNorKeepsARoomWithNoReaderOfItsOwn(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	runAwareness(t, pair.taskA)
 	handledB := runAwareness(t, pair.taskB)
@@ -306,6 +315,7 @@ func TestRelayedAwarenessNeitherLoadsNorKeepsARoomWithNoReaderOfItsOwn(t *testin
 // scheduling decides; the invariant is that every one of them was dropped, so none of them
 // reached task B.
 func TestAnAwarenessStateTooLargeToRelayIsDroppedAndCounted(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	// Each batch of the room that carries alice's client as a state rather than a removal offers
 	// that state to the size check once (awarenessNotifications), so these offers are what the
@@ -378,6 +388,7 @@ func relayedClients(service *Service, room string) int {
 // all is the bound each socket is held to before ygo applies it (awareness_limit.go); this one
 // is applied to the room's awareness directly, as ygo's own expiry and removal paths do.
 func TestAnAwarenessFrameOverTheClientBoundRelaysNoMoreThanTheBound(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	handledB := runAwareness(t, pair.taskB)
 	if err := pair.taskA.warmLiveDocument(context.Background(), pair.artifactID); err != nil {
@@ -438,6 +449,7 @@ func TestAnAwarenessFrameOverTheClientBoundRelaysNoMoreThanTheBound(t *testing.T
 // after a frame of thousands has gone is taken by the room and relayed at once rather than
 // refused until the frame's clients have expired and been purged.
 func TestAwarenessClientsThatLeaveFreeTheRoomsBoundAtOnce(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	runAwareness(t, pair.taskA)
 	runAwareness(t, pair.taskB)
@@ -473,6 +485,7 @@ func TestAwarenessClientsThatLeaveFreeTheRoomsBoundAtOnce(t *testing.T) {
 // A batch too large for one notification is split across several, each within the limit and
 // holding whole clients, and a client too large for any is dropped and counted.
 func TestAnAwarenessBatchIsSplitAcrossNotificationsWithinTheLimit(t *testing.T) {
+	t.Parallel()
 	relay := newAwarenessRelay(&Service{processID: "00000000-0000-0000-0000-000000000001"})
 	room := "00000000-0000-0000-0000-000000000002"
 	batch := make(map[uint64]awarenessEntry)
@@ -528,6 +541,7 @@ func TestAnAwarenessBatchIsSplitAcrossNotificationsWithinTheLimit(t *testing.T) 
 
 // Every document socket's upgrade names the process serving it.
 func TestTheDocumentWebsocketUpgradeNamesItsProcess(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	reader := pair.openReader(t, pair.serverA, "alice")
 	if pair.taskA.hostname == "" {

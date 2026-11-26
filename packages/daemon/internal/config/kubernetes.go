@@ -43,10 +43,11 @@ type Kubernetes struct {
 	Kubeconfig string
 	Context    string
 	Scheduling Scheduling
-	// Sandbox is `runtime.kubernetes.sandbox`, settled: the sandbox each issue pod runs in (gVisor
-	// unless the file says otherwise), the issues whose pods run in the other one, and where a
-	// microVM pod runs. It places issue pods alone: the controller's pod, the repository cache pods
-	// and the image probe run in gVisor whatever it says.
+	// Sandbox is `runtime.kubernetes.sandbox`, settled: the sandbox each issue pod and the
+	// controller's pod run in (gVisor unless the file says otherwise), the issues whose pods run in
+	// the other one, and where a microVM pod runs. It places the issue pods and the controller's pod
+	// alone, the controller's by Type and never by CanaryIssues: the repository cache pods and the
+	// image probe run in gVisor whatever it says.
 	Sandbox SandboxConfig
 	// Resources are the reservations of the two pods the daemon builds: every issue pod's, whose
 	// one container runs all six workflow roles (runtime.kubernetes.resources.issue), and the
@@ -115,10 +116,11 @@ type Kubernetes struct {
 	// deployment; `idle_minutes: 0` turns it off.
 	IdleRelease IdleReleaseConfig
 	// MemoryGuard is `runtime.kubernetes.memory_guard`, settled: what the memory guard in each
-	// issue pod's launcher process runs by. Every default applies when the file sets no block, so
-	// the guard is on for every Kubernetes deployment, as idle release is;
-	// `issue_pods.enabled: false` turns it off, and an issue pod's launcher is then handed no
-	// settings at all (sandbox.Options.MemoryGuard nil).
+	// issue pod's launcher process, and in the launcher of the project controller's pod, runs by.
+	// Every default applies when the file sets no block, so the guard is on for every Kubernetes
+	// deployment, as idle release is; a kind's `enabled: false` turns it off for that kind's pods,
+	// whose launchers are then handed no settings at all (sandbox.Options.MemoryGuard nil for an
+	// issue pod, sandbox.Options.ControllerMemoryGuard nil for the controller's).
 	MemoryGuard MemoryGuardConfig
 	// VolumeTrim is `runtime.kubernetes.volume_trim`, settled: what the cache trimmer in each
 	// issue pod's launcher process runs by, deleting the oldest entries of the four cache roots
@@ -157,12 +159,13 @@ var defaultRepositoryCache = RepositoryCacheConfig{
 func DefaultRepositoryCache() RepositoryCacheConfig { return defaultRepositoryCache }
 
 // IdleReleaseConfig is `runtime.kubernetes.idle_release`: the idle period an issue pod must pass
-// with no turn in progress and no turn due before the daemon saves its workspace's unpushed work,
-// suspends each live claim with the source `released` and deletes the pod, its disk and its
-// Sandbox (IdleMinutes), and how long after that release the backstop wakes each phase worker of
-// the pod whose phase is open (BackstopMinutes), standing in for a wait that raises no event of
-// its own. IdleMinutes zero turns release off, and the deployment's pods then live from an
-// issue's first role start to its close.
+// with no turn in progress and no turn due before the daemon suspends each live claim with the
+// source `released` and deletes the pod, its disk and its Sandbox (IdleMinutes), and how long
+// after that release the backstop wakes each phase worker of the pod whose phase is open
+// (BackstopMinutes), standing in for a wait that raises no event of its own. A release saves
+// nothing of the workspace: the workspace check holds a pod whose workspace holds work that no
+// branch or tag on origin holds. IdleMinutes zero turns release off, and the deployment's pods then
+// live from an issue's first role start to its close.
 type IdleReleaseConfig struct {
 	IdleMinutes     int
 	BackstopMinutes int
@@ -189,22 +192,34 @@ var defaultIdleRelease = IdleReleaseConfig{IdleMinutes: 10, BackstopMinutes: 60}
 func DefaultIdleRelease() IdleReleaseConfig { return defaultIdleRelease }
 
 // MemoryGuardConfig is `runtime.kubernetes.memory_guard`: the memory guard's settings, by the
-// kind of pod a launcher's guard runs in. IssuePods is every issue pod's; the mapping is keyed by
-// pod kind so the project controller's pod can have a block of its own beside it (INFRA-3531).
+// kind of pod a launcher's guard runs in. IssuePods is every issue pod's; ControllerPod is the
+// project controller's pod's, the one a daemon under `controller: daemon` launches, whose launcher
+// runs the guard as PID 1 of the controller's container in gVisor (INFRA-3531), and in a microVM
+// the guest watch in its place, which no kind's settings reach (INFRA-4567). Each kind is settled
+// from its own block alone, so a value written under one never moves the other.
 type MemoryGuardConfig struct {
-	IssuePods MemoryGuardPodConfig
+	IssuePods     MemoryGuardPodConfig
+	ControllerPod MemoryGuardPodConfig
 }
 
 // MemoryGuardPodConfig is one kind of pod's memory guard: whether it runs at all, and the four
 // numbers it runs by (shimwire.LauncherMemoryGuard, which a launcher is handed on the answer to
 // its hello). The guard reads the pod's anonymous memory every IntervalMilliseconds; at
-// ActPercent of the container's memory limit it ends the largest process it may end, where those
-// processes hold at least FloorPercent of the limit between them, and after a kill it waits up to
-// WaitSeconds for the reading to fall before it ends another. With Enabled false the daemon hands
-// the launchers no settings: each guard runs at the defaults from its launcher's start, as it does
-// while no daemon has answered, and turns off at its launcher's first acknowledgement, after which
-// it ends nothing and the pod's memory is bounded by the kernel's kill of the whole container
-// alone.
+// ActPercent of the container's memory limit it ends, of the processes it may end, the process
+// that grew the most over its last few reads, else the largest one it has read at most once in its
+// last two readings near the limit, else the one that grew the most since the guard's first kill
+// while the reading stays near the limit, else the largest, a fork that still runs its parent's
+// program counted by what it holds over its parent, where those processes hold at least
+// FloorPercent of the limit between them, and at or above the urgent share, halfway from
+// ActPercent to the limit, every other process that grew over its last few reads at the same
+// reading and, where a process it may end is not new to its stay near the limit, every other one
+// new to it that holds memory of its own; after the kills of a reading it ends no other until
+// every killed process has exited or WaitSeconds has passed, and it gives the rise up once
+// WaitSeconds has passed with the reading not fallen and nothing it may end grown since the kills.
+// With Enabled false the daemon hands the launchers no settings: each guard runs at its defaults
+// from its launcher's start, as it does while no daemon has answered, and turns off at its
+// launcher's first acknowledgement, after which it ends nothing and the pod's memory is bounded by
+// the kernel's kill of the whole container alone.
 type MemoryGuardPodConfig struct {
 	Enabled              bool
 	ActPercent           int
@@ -214,18 +229,24 @@ type MemoryGuardPodConfig struct {
 }
 
 // DefaultMemoryGuard is the memory guard's settled configuration when the file sets none: on for
-// issue pods, at the wire's own defaults (shimwire.MemoryGuardActDefault and its three siblings)
-// rather than copies of them. Those are also what a launcher's guard runs by before any
-// acknowledgement reaches it, so the one change a measurement may make to a default moves both
-// the launcher's start and every deployment's setting.
+// issue pods and for the controller's pod alike, each at the wire's own defaults
+// (shimwire.MemoryGuardActDefault and its three siblings) rather than copies of them, but for the
+// controller pod's own wait after a kill, shimwire.MemoryGuardControllerWaitDefault (R4 of
+// INFRA-3531). Those are also what each kind's launcher's guard runs by before any acknowledgement
+// reaches it (memoryguard.Defaults, memoryguard.ControllerDefaults), so the one change a
+// measurement may make to a default moves both the launcher's start and every deployment's
+// setting.
 func DefaultMemoryGuard() MemoryGuardConfig {
-	return MemoryGuardConfig{IssuePods: MemoryGuardPodConfig{
+	issue := MemoryGuardPodConfig{
 		Enabled:              true,
 		ActPercent:           shimwire.MemoryGuardActDefault,
 		FloorPercent:         shimwire.MemoryGuardFloorDefault,
 		WaitSeconds:          shimwire.MemoryGuardWaitDefault,
 		IntervalMilliseconds: shimwire.MemoryGuardIntervalDefault,
-	}}
+	}
+	controller := issue
+	controller.WaitSeconds = shimwire.MemoryGuardControllerWaitDefault
+	return MemoryGuardConfig{IssuePods: issue, ControllerPod: controller}
 }
 
 // VolumeTrimConfig is `runtime.kubernetes.volume_trim`: what the cache trimmer in each issue
@@ -271,11 +292,12 @@ type Scheduling struct {
 // Toleration is one `scheduling.tolerations` entry. Value is "" under operator Exists.
 type Toleration struct{ Key, Operator, Value, Effect string }
 
-// SandboxType is the sandbox an issue pod runs in.
+// SandboxType is the sandbox an issue pod or the project controller's pod runs in.
 type SandboxType string
 
 const (
-	// SandboxGVisor is gVisor, the sandbox of every issue pod a file names no other for.
+	// SandboxGVisor is gVisor, the sandbox of every issue pod a file names no other for, and of the
+	// controller's pod where Type is not microvm.
 	SandboxGVisor SandboxType = "gvisor"
 	// SandboxMicroVM is a GKE Sandbox microVM, on a node of the ComputeClass MicroVMConfig names.
 	SandboxMicroVM SandboxType = "microvm"
@@ -284,10 +306,12 @@ const (
 // SandboxConfig is `runtime.kubernetes.sandbox`, settled. One daemon serves one project, so it is
 // that project's.
 type SandboxConfig struct {
-	// Type is the sandbox of the project's issue pods: SandboxGVisor when the file names none.
+	// Type is the sandbox of the project's issue pods and of its controller's pod: SandboxGVisor
+	// when the file names none.
 	Type SandboxType
 	// CanaryIssues are the issue keys whose pods run in the sandbox Type does not name, each once
-	// and in the file's order; nil when the file names none.
+	// and in the file's order; nil when the file names none. They name issues, so they never move
+	// the controller's pod.
 	CanaryIssues []string
 	// MicroVM is where a microVM pod runs, its disk and its metadata endpoint; nil when the file
 	// names no `microvm` block. The loader requires one, with its ComputeClass, while any issue
@@ -301,8 +325,9 @@ type MicroVMConfig struct {
 	// ComputeClass is the GKE ComputeClass whose nodes run the microVM pods. It is "" only in a
 	// block no issue pod uses.
 	ComputeClass string
-	// StorageClass is the class of a microVM pod's workspace volume: the file's
-	// `microvm.storage_class`, else Kubernetes.StorageClass, which the loader fills in.
+	// StorageClass is the class of a microVM issue pod's workspace volume: the file's
+	// `microvm.storage_class`, else Kubernetes.StorageClass, which the loader fills in. The
+	// controller's disk stays on Kubernetes.StorageClass in either sandbox.
 	StorageClass string
 	// KeepVolume is `microvm.keep_volume`: when true, each microVM issue pod's workspace volume is
 	// a claim that the issue's Sandbox owns. The claim stays through the pod's ends and the
@@ -323,8 +348,9 @@ type MetadataConfig struct {
 	IdentityProvider string
 }
 
-// AnyMicroVM reports whether an issue pod may run in a microVM: Type is microvm, or CanaryIssues
-// names an issue, whose pod then runs in a microVM on a gVisor project.
+// AnyMicroVM reports whether a pod may run in a microVM: Type is microvm, under which the
+// controller's pod runs in one and so does every issue pod CanaryIssues does not name, or
+// CanaryIssues names an issue, whose pod then runs in a microVM on a gVisor project.
 func (c SandboxConfig) AnyMicroVM() bool {
 	return c.Type == SandboxMicroVM || len(c.CanaryIssues) > 0
 }
@@ -371,21 +397,24 @@ func below(request, limit string) bool {
 	return requested.Cmp(limited) < 0
 }
 
-// defaultResources is the two pods' reservations when the file sets none. An issue pod gets 3 CPU
-// and 19Gi, each requested in full, over an 80Gi disk limit and a 6Gi disk request. Under gVisor
-// every process of a pod uses whatever the pod has free, so the pod's peak must fit its one
-// number: an INFRA issue pod measured at 1-minute resolution used its whole 19Gi for minutes while
-// its reviewer ran a review (2026-10-21). The disk limit bounds what the pod writes to the node's
-// disk; the request, which the scheduler fits to the node's allocatable ephemeral storage — its
-// root volume, which nobody has sized for these pods — binds scheduling to little. An operator who
-// knows the root volume raises the request so the scheduler reserves disk; GKE Autopilot admits no
-// main container requesting more than 10Gi of it and clamps each container's limit to its request,
-// so a deployment there sets both to at most 10Gi. The controller, which runs alone in its pod,
-// gets a pod of its own size. The image probe pod takes none of these: its own fixed 500m and 1Gi
+// defaultResources is the two pods' reservations when the file sets none. An issue pod gets 2 CPU
+// and 8Gi, each requested in full, over an 80Gi disk limit and a 6Gi disk request: the size
+// INFRA's issue pods have run at since dispatch://INFRA-3504's roll (read 2026-11-25), with the
+// route and the guidance that take builds and whole test suites out of the pod in place
+// (dispatch://INFRA-1115, R1 to R4). Under gVisor every process of a pod uses whatever the pod has
+// free, so the pod's peak must fit its one number: an INFRA issue pod that still ran its own
+// builds, measured at 1-minute resolution, used its whole 19Gi for minutes while its reviewer ran
+// a review (2026-10-21). The disk limit bounds what the pod writes to the node's disk; the
+// request, which the scheduler fits to the node's allocatable ephemeral storage — its root volume,
+// which nobody has sized for these pods — binds scheduling to little. An operator who knows the
+// root volume raises the request so the scheduler reserves disk; GKE Autopilot admits no main
+// container requesting more than 10Gi of it and clamps each container's limit to its request, so a
+// deployment there sets both to at most 10Gi. The controller, which runs alone in its pod, gets a
+// pod of its own size. The image probe pod takes none of these: its own fixed 500m and 1Gi
 // (internal/daemon/kubernetes.go, probeReservation), since it starts one Oh My Pi at a time and
 // runs no lane, and a probe sized as a pod could not boot on a full pool.
 var defaultResources = PodResources{
-	Issue:      Reservation{CPU: "3", CPURequest: "3", Memory: "19Gi", MemoryRequest: "19Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"},
+	Issue:      Reservation{CPU: "2", CPURequest: "2", Memory: "8Gi", MemoryRequest: "8Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"},
 	Controller: Reservation{CPU: "1", CPURequest: "1", Memory: "4Gi", MemoryRequest: "4Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "1Gi"},
 }
 
@@ -398,15 +427,22 @@ func DefaultResources() PodResources {
 // PodConfig is `runtime.kubernetes.pod`, what the operator adds to every pod Legion runs, the image
 // probe's included, in the API's own types: variables and volume mounts for the agent's container,
 // the volumes they mount (each a Secret, a ConfigMap, a projection of ServiceAccount tokens,
-// Secrets, and ConfigMaps, a PersistentVolumeClaim, or an NFS export), and the ServiceAccount the pods run as. It passes through as written:
-// the loader refuses a shape no pod could carry, the Sandbox runtime a name or path of Legion's own
-// or the worker image's (sandbox.CheckPod), and the API server the rest when it creates the
-// image probe's pod, which carries it, at boot.
+// Secrets, and ConfigMaps, a PersistentVolumeClaim, or an NFS export), the ServiceAccount the pods
+// run as, and the one the daemon-launched controller's pod runs as in its place when the file names
+// one (controller_service_account, which only `controller: daemon` reads). It passes through as
+// written: the loader refuses a shape no pod could carry, the Sandbox runtime a name or path of
+// Legion's own or the worker image's (sandbox.CheckPod), and the API server the rest when it
+// creates the image probe's pod at boot, which carries all of it but controller_service_account:
+// that pod runs as service_account (sandbox's probeManifest), so the API server would first read
+// the controller's account at the controller's launch, and the loader checks that name itself
+// (readPod). Its fields are sandbox.Pod's, one for one, since the daemon converts the one into the
+// other.
 type PodConfig struct {
-	Env            map[string]string
-	Volumes        []corev1.Volume
-	VolumeMounts   []corev1.VolumeMount
-	ServiceAccount string
+	Env                      map[string]string
+	Volumes                  []corev1.Volume
+	VolumeMounts             []corev1.VolumeMount
+	ServiceAccount           string
+	ControllerServiceAccount string
 }
 
 const (
@@ -427,8 +463,8 @@ var imageDigestRef = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
 // daemon logs in with at boot and again before each launcher credential expires, reading the file
 // each time so the kubelet's rotation is picked up (no person approves the login, and the key it
 // wins lives only in process memory); the audience of the projected token every pod carries for
-// the broker; and that pod token's lifetime. The audience defaults to the broker's own
-// (`agent-secrets`) and the lifetime to 3600 s, the most the cluster's admission policy admits for a
+// the broker; and that pod token's lifetime. The audience defaults to Cipher's own
+// (`cipher`) and the lifetime to 3600 s, the most the cluster's admission policy admits for a
 // Legion worker token; the API server issues none under 600. ExchangeAudience is the audience of a
 // second projected token every enrolled pod carries, the identity the broker's exchange trades for
 // a broker token (`BROKER_EXCHANGE_K8S_AUDIENCE`); empty, no pod carries one.
@@ -440,12 +476,15 @@ type AgentSecretsConfig struct {
 	ExchangeAudience   string
 }
 
+// DefaultAgentSecretsAudience is the audience an agent_secrets block that names none settles on,
+// Cipher's; the key table prints it as the block's default.
+const DefaultAgentSecretsAudience = "cipher"
+
 const (
-	agentSecretsKey             = kubernetesKey + ".agent_secrets"
-	defaultAgentSecretsAudience = "agent-secrets"
-	defaultTokenExpirySeconds   = 3600
-	minTokenExpirySeconds       = 600
-	maxTokenExpirySeconds       = 3600
+	agentSecretsKey           = kubernetesKey + ".agent_secrets"
+	defaultTokenExpirySeconds = 3600
+	minTokenExpirySeconds     = 600
+	maxTokenExpirySeconds     = 3600
 )
 
 // readAgentSecrets reads `runtime.kubernetes.agent_secrets`: nil when absent, every member checked.
@@ -463,7 +502,7 @@ func readAgentSecrets(value *yaml.Node) (*AgentSecretsConfig, error) {
 	if fields["operator"] != nil {
 		return nil, fmt.Errorf("%s.operator was removed (LEGION-664): the daemon logs in with its own ServiceAccount token (token_file), which no person approves, so it names no approver; delete the key", agentSecretsKey)
 	}
-	block := &AgentSecretsConfig{Audience: defaultAgentSecretsAudience, TokenExpirySeconds: defaultTokenExpirySeconds}
+	block := &AgentSecretsConfig{Audience: DefaultAgentSecretsAudience, TokenExpirySeconds: defaultTokenExpirySeconds}
 	if block.URL, err = requiredString(fields["url"], agentSecretsKey+".url", ""); err != nil {
 		return nil, err
 	}
@@ -914,7 +953,7 @@ var (
 // when absent. type is one of the two words; each canary_issues entry is an issue key, named once;
 // the microvm block is read whether or not an issue pod uses it, and is required with its
 // compute_class while one does. storageClass is `runtime.kubernetes.storage_class`, a microVM
-// pod's storage class when the block names none.
+// issue pod's storage class when the block names none.
 func readSandbox(value *yaml.Node, storageClass string) (SandboxConfig, error) {
 	settled := SandboxConfig{Type: SandboxGVisor}
 	if value == nil {
@@ -1031,14 +1070,16 @@ func readMetadata(value *yaml.Node) (*MetadataConfig, error) {
 	return block, nil
 }
 
-// checkSandboxAgainstTheBlock refuses, while an issue pod runs in a microVM, what the operator's
-// scheduling, pod and broker blocks would set that the microVM pod's own placement and endpoint
-// own: a node selector or a toleration on sandbox.gke.io/runtime, since the pod's RuntimeClass
-// adds both at admission; and, while the metadata endpoint is on, a pod.env variable the pod's
-// launcher sets to that endpoint, and a broker audience (agent_secrets.audience or
-// exchange_audience) that is the Workload Identity pool, since the cluster projects one volume per
-// audience and the pool's token is the launcher's alone. Each refusal names the operator's key.
-// With no issue pod in a microVM it refuses nothing, so a microvm block kept for a revert changes
+// checkSandboxAgainstTheBlock refuses, while an issue pod runs in a microVM (AnyMicroVM, which
+// holds wherever the controller's pod runs in one too), what the operator's scheduling, pod and
+// broker blocks would set that a microVM pod's own placement and endpoint own, an issue pod's or
+// the controller's: a node selector or a toleration on sandbox.gke.io/runtime, since the pod's
+// RuntimeClass adds both at admission; and, while the metadata endpoint is on, a pod.env variable
+// the pod's launcher sets to that endpoint, and a broker audience (agent_secrets.audience or
+// exchange_audience) that is the Workload Identity pool, since the cluster projects one volume
+// per audience, so the two tokens would be one, and the broker's, which every role of an issue pod
+// reads, would be the token the endpoint exchanges. Each refusal names the operator's key. With
+// no issue pod in a microVM it refuses nothing, so a microvm block kept for a revert changes
 // nothing.
 func checkSandboxAgainstTheBlock(block *Kubernetes) error {
 	sandbox := block.Sandbox
@@ -1069,7 +1110,7 @@ func checkSandboxAgainstTheBlock(block *Kubernetes) error {
 			{"audience", secrets.Audience}, {"exchange_audience", secrets.ExchangeAudience},
 		} {
 			if member.audience == pool {
-				return fmt.Errorf("%s.%s must differ from %s.workload_pool (both %s) while an issue pod runs in a microVM: the cluster projects one volume per audience, and the pool's token is the launcher's alone",
+				return fmt.Errorf("%s.%s must differ from %s.workload_pool (both %s) while an issue pod runs in a microVM: the cluster projects one volume per audience, so the two tokens would be one",
 					agentSecretsKey, member.name, metadataKey, pool)
 			}
 		}
@@ -1132,11 +1173,12 @@ func checkWriterAudienceAgainstRoleTokens(block *Kubernetes) error {
 	return nil
 }
 
-// readMemoryGuard reads `runtime.kubernetes.memory_guard`, settled: a mapping by pod kind, of which
-// this release knows `issue_pods` alone (readMemoryGuardPod), and the default (DefaultMemoryGuard)
-// for every member the file leaves out, so the guard runs wherever the file says nothing. Any
-// other member is refused by name: `controller_pod` is INFRA-3531's to add, and a loader that
-// accepted it unread would let an operator believe the controller's pod guarded.
+// readMemoryGuard reads `runtime.kubernetes.memory_guard`, settled: a mapping by pod kind,
+// `issue_pods` and `controller_pod`, each read by readMemoryGuardPod against its own key-table
+// group, and the default (DefaultMemoryGuard) for every member the file leaves out, so the guard
+// runs wherever the file says nothing. Each kind is settled from its own block and its own
+// defaults, so a value written under one never moves the other. Any other member is refused by
+// name.
 func readMemoryGuard(value *yaml.Node) (MemoryGuardConfig, error) {
 	const key = kubernetesKey + ".memory_guard"
 	settled := DefaultMemoryGuard()
@@ -1150,7 +1192,10 @@ func readMemoryGuard(value *yaml.Node) (MemoryGuardConfig, error) {
 	if err != nil {
 		return MemoryGuardConfig{}, err
 	}
-	if settled.IssuePods, err = readMemoryGuardPod(fields["issue_pods"], key+".issue_pods", settled.IssuePods); err != nil {
+	if settled.IssuePods, err = readMemoryGuardPod(fields["issue_pods"], key+".issue_pods", settled.IssuePods, issuePodsGuardMembers); err != nil {
+		return MemoryGuardConfig{}, err
+	}
+	if settled.ControllerPod, err = readMemoryGuardPod(fields["controller_pod"], key+".controller_pod", settled.ControllerPod, controllerPodGuardMembers); err != nil {
 		return MemoryGuardConfig{}, err
 	}
 	return settled, nil
@@ -1158,26 +1203,34 @@ func readMemoryGuard(value *yaml.Node) (MemoryGuardConfig, error) {
 
 // readMemoryGuardPod reads one pod kind's block of `runtime.kubernetes.memory_guard` under key:
 // each member the file sets and settled's for each it leaves out, and settled whole for a block
-// the file leaves null (`issue_pods:` with no value), as every other block of the file reads a
-// null. `enabled` is read from the settled default rather than from the key's presence, because
-// the default is on: an operator writing `enabled: true` back must get the guard, and a value that
-// is no YAML boolean — `off` and `yes` among them, which this loader's reader tags as strings — is
-// refused rather than read as a word nobody meant.
+// the file leaves null (`issue_pods:` or `controller_pod:` with no value), as every other block of
+// the file reads a null. `enabled` is read from the settled default rather than from the key's
+// presence, because the default is on: an operator writing `enabled: true` back must get the
+// guard, and a value that is no YAML boolean — `off` and `yes` among them, which this loader's
+// reader tags as strings — is refused rather than read as a word nobody meant.
+//
+// described is the kind's own key-table group, read by that kind's members reader below
+// (issuePodsGuardMembers, controllerPodGuardMembers), as readObjectSource takes its place's group:
+// the two blocks carry the same five names, but each kind's lines are its own in `legion
+// config-reference`, and a group derived from one kind would leave the other's keys undescribed.
 //
 // Each number is held to the wire's own range (shimwire.MemoryGuardActMin and its siblings), which
 // the launcher's guard checks the settings against a second time on its side of the connection: a
 // range widened here alone would load cleanly and then be refused by every pod's guard, which
-// keeps the settings it ran by and logs the refusal instead (memoryguard's Guard.Apply). A refusal
-// names the whole key and both ends of its range, as the loader's other range refusals do
-// (agent_secrets' token_expiry_seconds).
-func readMemoryGuardPod(value *yaml.Node, key string, settled MemoryGuardPodConfig) (MemoryGuardPodConfig, error) {
+// keeps the settings it ran by and logs the refusal instead (memoryguard's Guard.Apply). The act
+// share's highest is shimwire.MemoryGuardConfigActMax, 90, below the wire's 95, for both kinds, so
+// that the urgent share stays at most 95% of the limit, below the kill point measured at 4 GiB
+// (INFRA-3531 R4 of spec version 43); a range narrowed here alone loads nothing the launcher
+// refuses. A refusal names the whole key and both ends of its range, as the loader's other range
+// refusals do (agent_secrets' token_expiry_seconds).
+func readMemoryGuardPod(value *yaml.Node, key string, settled MemoryGuardPodConfig, described func(*yaml.Node, string) (map[string]*yaml.Node, error)) (MemoryGuardPodConfig, error) {
 	if value == nil || value.Tag == "!!null" {
 		return settled, nil
 	}
 	if value.Kind != yaml.MappingNode {
 		return MemoryGuardPodConfig{}, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := describedMembers(value, key, kubernetesKey+".memory_guard.issue_pods")
+	fields, err := described(value, key)
 	if err != nil {
 		return MemoryGuardPodConfig{}, err
 	}
@@ -1193,7 +1246,7 @@ func readMemoryGuardPod(value *yaml.Node, key string, settled MemoryGuardPodConf
 		min, max int
 		into     *int
 	}{
-		{"act_percent", shimwire.MemoryGuardActMin, shimwire.MemoryGuardActMax, &settled.ActPercent},
+		{"act_percent", shimwire.MemoryGuardActMin, shimwire.MemoryGuardConfigActMax, &settled.ActPercent},
 		{"floor_percent", shimwire.MemoryGuardFloorMin, shimwire.MemoryGuardFloorMax, &settled.FloorPercent},
 		{"wait_seconds", shimwire.MemoryGuardWaitMin, shimwire.MemoryGuardWaitMax, &settled.WaitSeconds},
 		{"interval_milliseconds", shimwire.MemoryGuardIntervalMin, shimwire.MemoryGuardIntervalMax, &settled.IntervalMilliseconds},
@@ -1211,6 +1264,19 @@ func readMemoryGuardPod(value *yaml.Node, key string, settled MemoryGuardPodConf
 		*number.into = *read
 	}
 	return settled, nil
+}
+
+// The two members readers a pod kind's block names (readMemoryGuardPod): `issue_pods`' and
+// `controller_pod`'s. Each names its group as a constant of its own, as readObjectSource's four
+// readers do, which is what carries both kinds' keys into `legion config-reference` and holds the
+// two to the key table (TestNoKeyBypassesTheKeyTable).
+
+func issuePodsGuardMembers(value *yaml.Node, key string) (map[string]*yaml.Node, error) {
+	return describedMembers(value, key, kubernetesKey+".memory_guard.issue_pods")
+}
+
+func controllerPodGuardMembers(value *yaml.Node, key string) (map[string]*yaml.Node, error) {
+	return describedMembers(value, key, kubernetesKey+".memory_guard.controller_pod")
 }
 
 // readVolumeTrim reads `runtime.kubernetes.volume_trim`, settled: each member the file sets and
@@ -1310,8 +1376,13 @@ func ReadPodFile(path string) (PodConfig, error) {
 }
 
 // readPod reads `runtime.kubernetes.pod`, refusing a shape no pod could carry, and a
-// ServiceAccount still holding a ${…} placeholder: nothing in Legion expands one, as the token
-// projection says, so the API server would refuse every pod for an account that does not exist.
+// ServiceAccount, the pods' or the controller's, still holding a ${…} placeholder: nothing in
+// Legion expands one, as the token projection says, so the API server would refuse every pod for
+// an account that does not exist. It refuses a controller_service_account that is no
+// ServiceAccount's name too, a DNS-1123 subdomain as the API server requires, as readClaimSource
+// refuses a claim's: no pod at boot runs as that account, so the API server would refuse the name
+// only at the controller's launch, after load, `legion config check` and boot had all passed it.
+// service_account needs no such check, since the image probe's pod runs as it at boot.
 func readPod(value *yaml.Node) (PodConfig, error) {
 	if value == nil {
 		return PodConfig{}, nil
@@ -1339,6 +1410,15 @@ func readPod(value *yaml.Node) (PodConfig, error) {
 	}
 	if err := unfilledPlaceholder(podKey+".service_account", pod.ServiceAccount, "the ServiceAccount the pods run as"); err != nil {
 		return PodConfig{}, err
+	}
+	if pod.ControllerServiceAccount, err = optionalString(fields["controller_service_account"], podKey+".controller_service_account"); err != nil {
+		return PodConfig{}, err
+	}
+	if err := unfilledPlaceholder(podKey+".controller_service_account", pod.ControllerServiceAccount, "the ServiceAccount the controller's pod runs as"); err != nil {
+		return PodConfig{}, err
+	}
+	if name := pod.ControllerServiceAccount; name != "" && len(validation.IsDNS1123Subdomain(name)) != 0 {
+		return PodConfig{}, fmt.Errorf("%s.controller_service_account %q is no ServiceAccount's name: a ServiceAccount is named with lowercase letters, digits, '-' and '.', starting and ending with a letter or digit, in at most 253 characters", podKey, name)
 	}
 	return pod, nil
 }
@@ -2273,7 +2353,7 @@ func checkKubernetesKeys(file fileConfig) error {
 		{"operator_token_file", file.OperatorTokenFile == nil, "legion claims presents this token, as legion controller start does under controller: operator"},
 		{"dispatch_url", file.DispatchURL == nil, "the workflow is what launches every pod"},
 		{"github_apps", file.GitHubApps == nil, "every pod's workspace is cloned with the implement App's token"},
-		{"projects", file.Projects == nil, "every pod works one issue of a configured project"},
+		{"projects", file.Projects == nil, "every pod works one issue of one of the projects it names"},
 	} {
 		if rule.absent {
 			return fmt.Errorf("%s is required when runtime is kubernetes: %s", rule.key, rule.why)

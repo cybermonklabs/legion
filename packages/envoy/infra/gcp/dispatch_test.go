@@ -487,6 +487,11 @@ func TestDispatchResolverRefusesInvalidInputs(t *testing.T) {
 		{name: "a zero app ID", input: "appId", edit: func(a *gcp.DispatchArgs) { setApp(a); a.AppId = "0" }, err: []string{"appId", "numeric"}},
 		{name: "an invalid app private key secret name", input: "appPrivateKeySecretName", edit: func(a *gcp.DispatchArgs) { setApp(a); a.AppPrivateKeySecretName = "Example_Key" }, err: []string{"appPrivateKeySecretName", "DNS subdomain"}},
 		{name: "an invalid app private key secret key", input: "appPrivateKeySecretKey", edit: func(a *gcp.DispatchArgs) { setApp(a); a.AppPrivateKeySecretKey = "bad/key" }, err: []string{"appPrivateKeySecretKey", "must match"}},
+		{name: "a verdict App id without the App", input: "verdictAppId", edit: func(a *gcp.DispatchArgs) { a.VerdictAppId = pulumi.StringRef("5341240") }, err: []string{"verdictAppId is given without the GitHub App", "appClientId"}},
+		{name: "a blank verdict App id", input: "verdictAppId", edit: func(a *gcp.DispatchArgs) { setApp(a); a.VerdictAppId = pulumi.StringRef(" ") }, err: []string{"verdictAppId is blank: give the verdict App's id, or leave it out"}},
+		{name: "a non-numeric verdict App id", input: "verdictAppId", edit: func(a *gcp.DispatchArgs) { setApp(a); a.VerdictAppId = pulumi.StringRef("not-a-number") }, err: []string{`verdictAppId "not-a-number" is not a GitHub App id: a whole number above 0, with no leading zero`}},
+		{name: "a verdict App id with a leading zero", input: "verdictAppId", edit: func(a *gcp.DispatchArgs) { setApp(a); a.VerdictAppId = pulumi.StringRef("05341240") }, err: []string{`verdictAppId "05341240" is not a GitHub App id`}},
+		{name: "a zero verdict App id", input: "verdictAppId", edit: func(a *gcp.DispatchArgs) { setApp(a); a.VerdictAppId = pulumi.StringRef("0") }, err: []string{`verdictAppId "0" is not a GitHub App id`}},
 		{name: "fewer than one replica", input: "replicas", edit: func(a *gcp.DispatchArgs) { a.Replicas = pulumi.IntRef(0) }, err: []string{"replicas", "at least 1"}},
 		{name: "fewer than one front-door replica", input: "frontDoorReplicas", edit: func(a *gcp.DispatchArgs) { a.FrontDoorReplicas = pulumi.IntRef(0) }, err: []string{"frontDoorReplicas 0", "at least 1"}},
 		{name: "fewer than one listener replica", input: "listenerReplicas", edit: func(a *gcp.DispatchArgs) { a.ListenerReplicas = pulumi.IntRef(-1) }, err: []string{"listenerReplicas -1", "at least 1"}},
@@ -831,10 +836,13 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed inside the OIDC issuer", "oidcIssuer", func(a *gcp.DispatchArgs) {
 			a.OidcAudience, a.OidcIssuer = dispatchOidcAudience, "https://"+lower+".internal.example"
 		}},
+		{"a seed inside the project owner fallback", "projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = lower + "@example.com" }},
 		{"a seed as the app client ID", "appClientId", func(a *gcp.DispatchArgs) { a.AppClientId = seed }},
 		{"a seed as the app ID", "appId", func(a *gcp.DispatchArgs) { a.AppId = seed }},
 		{"a seed as the app private key secret name", "appPrivateKeySecretName", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretName = lower }},
 		{"a seed as the app private key secret key", "appPrivateKeySecretKey", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretKey = seed }},
+		{"a seed as the verdict App id", "verdictAppId", func(a *gcp.DispatchArgs) { setApp(a); a.VerdictAppId = pulumi.StringRef(seed) }},
+		{"a seed in the consumer-name setting", "consumerNames", func(a *gcp.DispatchArgs) { a.ConsumerNames = "fresh-" + seed }},
 		{"a seed in the Azure federation audience", "azureFederationAudience", func(a *gcp.DispatchArgs) {
 			setAzureFederation(a)
 			a.AzureFederationAudience = pulumi.StringRef("api://" + lower)
@@ -2598,6 +2606,29 @@ func TestDispatchPodWithBrokerAndAppMatchesGolden(t *testing.T) {
 	requirePodGolden(t, m, "example-dispatch", "dispatch-pod-with-broker-and-app.golden")
 }
 
+// verdictAppId gives Dispatch the verdict App's id as DISPATCH_VERDICT_APP_ID, right after the App's
+// own three variables, so its CI reconcile pass leaves that App's check suites out of the CI record
+// as the listener does under ENVOY_VERDICT_APP_ID; nothing else in the pod changes. Unset, the pod
+// renders no such variable and is TestDispatchPodWithBrokerAndAppMatchesGolden's own.
+func TestDispatchPodWritesTheVerdictAppIdOnlyWhenGiven(t *testing.T) {
+	m, err := runDispatch(t, dispatchBrokerAndAppArgs(t), true)
+	require.NoError(t, err)
+	require.NotContains(t, containerEnv(t, podContainer(t, deploymentPodTemplate(t, m, "example-dispatch"), "envoy-dispatch")), "DISPATCH_VERDICT_APP_ID")
+
+	m, err = runDispatch(t, dispatchVerdictAppArgs(t), true)
+	require.NoError(t, err)
+	requirePodGolden(t, m, "example-dispatch", "dispatch-pod-with-verdict-app.golden")
+}
+
+// dispatchVerdictAppArgs is dispatchBrokerAndAppArgs with the verdict App's id given, the fixture
+// of testdata/dispatch-pod-with-verdict-app.golden.
+func dispatchVerdictAppArgs(t *testing.T) *gcp.DispatchArgs {
+	t.Helper()
+	args := dispatchBrokerAndAppArgs(t)
+	args.VerdictAppId = pulumi.StringRef("5341240")
+	return args
+}
+
 // With a broker configured, the app's container carries what Dispatch boots on: Dispatch requires
 // DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE whenever DISPATCH_AGENT_SECRETS_URL is set, refuses to
 // start while either removed shared-bearer setting (DISPATCH_AGENT_SECRETS_TOKEN or its _FILE) is
@@ -2702,6 +2733,57 @@ func TestDispatchRefusesAnOidcIssuerWithNoAudience(t *testing.T) {
 	require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: oidcAudience is required when oidcIssuer is set")
 	requireInputError(t, err, "oidcAudience")
 	require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types())
+}
+
+// requireOptionalEnv fails unless env carries name with want, or, with want "", carries no name at
+// all: an optional setting renders only when its input is set.
+func requireOptionalEnv(t *testing.T, env map[string]any, name, want string) {
+	t.Helper()
+	if want == "" {
+		require.NotContains(t, env, name)
+		return
+	}
+	require.Equal(t, want, env[name])
+}
+
+// A value Dispatch refuses at boot is refused when the stack plans, naming the input, so one typo
+// never reaches a Deployment whose one replica would then not start: an owner fallback that is no
+// lowercase email.
+func TestDispatchRefusesAnAccessValueDispatchWouldRefuseAtBoot(t *testing.T) {
+	for _, row := range []struct {
+		name, want string
+		edit       func(*gcp.DispatchArgs)
+	}{
+		{"an owner fallback that is no email", "projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = "owner" }},
+		{"an owner fallback that is not lowercase", "projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = "Owner@example.com" }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := dispatchArgs()
+			args.OidcAudience = dispatchOidcAudience
+			row.edit(args)
+			m, err := runDispatch(t, args, true)
+			require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: "+row.want)
+			// The core.InputError names a list by its own name, the path cut at its index.
+			input, _, _ := strings.Cut(row.want, "[")
+			requireInputError(t, err, input)
+			require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types())
+		})
+	}
+}
+
+// projectOwnerFallback renders DISPATCH_PROJECT_OWNER_FALLBACK, the member Dispatch makes, at boot,
+// the owner of every project the migration left without one, and renders nothing when it is unset.
+func TestDispatchRendersTheProjectOwnerFallbackOnlyWhenSet(t *testing.T) {
+	for _, owner := range []string{"", "owner@example.com"} {
+		t.Run(fmt.Sprintf("%q", owner), func(t *testing.T) {
+			args := dispatchArgs()
+			args.ProjectOwnerFallback = owner
+			m, err := runDispatch(t, args, true)
+			require.NoError(t, err)
+			env := containerEnv(t, podContainer(t, deploymentPodTemplate(t, m, "example-dispatch"), "envoy-dispatch"))
+			requireOptionalEnv(t, env, "DISPATCH_PROJECT_OWNER_FALLBACK", owner)
+		})
+	}
 }
 
 // A refused Azure configuration is refused by the resolver, before the component registers, so

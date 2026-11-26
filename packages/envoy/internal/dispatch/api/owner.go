@@ -73,19 +73,36 @@ func (s *server) documentOwnerFromRequest(ctx context.Context, q queryer, r *htt
 	return artifact, documentOwner(artifact.ID), nil
 }
 
+// loadProject reads the project row, every column model.Project carries but the open-ask count,
+// which only the project list reads. A project.updated event carries what this answers, so its
+// payload is the whole row a reader of the project list sees. An unknown key is 404
+// PROJECT_NOT_FOUND (errProjectNotFound).
 func (s *server) loadProject(ctx context.Context, q queryer, key string) (model.Project, error) {
 	var project model.Project
-	if err := q.QueryRow(ctx, `select key, name, created_at from projects where key = $1`, key).Scan(
+	if err := q.QueryRow(ctx, `
+		select key, name, gated_steps, default_repo, proven_sessions, created_at from projects where key = $1
+	`, key).Scan(
 		&project.Key,
 		&project.Name,
+		&project.GatedSteps,
+		&project.DefaultRepo,
+		&project.ProvenSessions,
 		&project.CreatedAt,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return model.Project{}, errorf(http.StatusNotFound, "PROJECT_NOT_FOUND", "project not found")
+			return model.Project{}, errProjectNotFound()
 		}
 		return model.Project{}, err
 	}
 	return project, nil
+}
+
+// errProjectNotFound is the 404 PROJECT_NOT_FOUND of a project key that no project holds, which
+// the project routes answer (loadProject). The going POST answers it too, to a caller whose
+// credential names one project, for a private project that the credential does not name
+// (createGoingRequest), so the two answers are one.
+func errProjectNotFound() error {
+	return errorf(http.StatusNotFound, "PROJECT_NOT_FOUND", "project not found")
 }
 
 // requireOpenOwner locks the owner before its collaboration rows are changed.

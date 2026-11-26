@@ -1,12 +1,20 @@
-import { afterEach, beforeAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { afterEach, beforeAll, expect } from "bun:test";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
+import { endianness } from "node:os";
 import { join } from "node:path";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostGate, hostTool, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "./arg-max-force";
 import { ownGroup, untilRunning } from "./own-group";
 import { procRootOf } from "./proc-root";
-import { libRowBoundMs, rowWaits, stateOf, untilGone } from "./row-waits";
+import { libRowBoundMs, rowWaitMarginMs, rowWaits, stateOf, untilGone } from "./row-waits";
 
 // run_processes (lib/rig.sh) names the processes of a run still alive, and stop_marked_processes
 // (lib/process-tree.sh) ends them: each that carries the run's mark, LEGION_E2E_RUN=$work, which the
@@ -18,13 +26,24 @@ import { libRowBoundMs, rowWaits, stateOf, untilGone } from "./row-waits";
 const rig = join(import.meta.dir, "rig.sh");
 const force = join(import.meta.dir, "arg-max-force.sh");
 const root = join(import.meta.dir, "..", "..", "..");
+
+// The bound of every row of this file (rowWaits sets it with setDefaultTimeout), whatever the
+// runner's command line, is a hang guard that decides no verdict: every wait a row makes on the
+// kernel ends rowWaitMarginMs before it (waits.end()), naming what it waited for and what it saw, so
+// the walk and the cleanup after a wait still fit in the row, and a wait that runs out fails by its
+// own message rather than by bun's timeout. No span shorter than the row decides a wait: a forced
+// run on a devbox at a load near 450 (2026-11-21) held an escaped process inside its exec for more
+// than 3 s, and the fixed 3 s wait this replaced failed the row. Bun gives a hook the default bound
+// in force when the hook is registered, so this comes before every hook of the file,
+// temporaryDirectory's afterAll that removes `dir` among them: on that devbox's shared scratch disk
+// that removal ran 14.5 s to 20.6 s in three whole-file runs, past bun's 5 s for a hook, and failed
+// the file as "(unnamed) … a beforeEach/afterEach hook timed out" while every row passed.
+const waits = rowWaits(libRowBoundMs);
 const dir = temporaryDirectory("run-processes-test");
 // perl: every process a row starts, and every harness, runs through ownGroup (lib/own-group.ts).
-const skip = skipWithout("perl");
-// python3: the newline-name row renames its process through prctl (ctypes).
-const withoutPython = skipWithout("python3");
-// A row's waits on what its processes do (untilRunning, untilGone) end 20 s before its bound.
-const waits = rowWaits(libRowBoundMs);
+const host = hostGate({ programs: ["perl"] });
+// python3: the newline-name row renames its process through prctl (ctypes), and fails by name
+// without it rather than skipping (requireHostTools).
 const bin = join(dir, "bin");
 const calls = join(dir, "calls");
 beforeAll(() => {
@@ -88,6 +107,40 @@ function spawn(argv: string[], options: { cwd: string; env?: Record<string, stri
   started.push(child.pid);
   return child.pid;
 }
+// untilExecDone resolves once PID has finished its exec of PROGRAM as far as a walk of the marks
+// reads it: its exe link (/proc/<pid>/exe) names PROGRAM and its /proc/<pid>/environ reads
+// non-empty. Inside an exec Linux gives the process its new memory, and the exe link with it,
+// before it sets where that memory's arguments and environment end (create_elf_tables in
+// fs/binfmt_elf.c): first the arguments' end, then a placeholder end of the environment, which lets
+// /proc/<pid>/cmdline read in full (get_mm_cmdline in fs/proc/base.c reads once that end is not 0),
+// and only after it has counted each variable the environment's real end. Until then environ reads
+// empty and a walk of the marks names nothing, so a wait on the exe link or on the command line can
+// end inside the exec. Nothing signals the end of another process's exec, so it reads both every
+// 50 ms, as untilGone and untilRunning do, until the row's waits end (waits.end()), and reads once
+// more then; past that it rejects naming the pid, what its exe link read and how many bytes its
+// environ held.
+async function untilExecDone(pid: number, program: string): Promise<void> {
+  const want = realpathSync(hostTool(program) ?? program);
+  const end = waits.end();
+  let exe = "";
+  let environ = 0;
+  for (;;) {
+    try {
+      exe = readlinkSync(`/proc/${pid}/exe`);
+      environ = exe === want ? readFileSync(`/proc/${pid}/environ`).length : 0;
+    } catch {
+      exe = "";
+      environ = 0;
+    }
+    if (exe === want && environ > 0) return;
+    const now = performance.now();
+    if (now >= end) break;
+    await Bun.sleep(Math.min(50, end - now));
+  }
+  throw new Error(
+    `pid ${pid} did not finish its exec of ${want} by the end of the row's waits (${(libRowBoundMs - rowWaitMarginMs) / 1000} s after the row began): its exe link read ${exe || "nothing"} and its environ ${environ} bytes`
+  );
+}
 
 // harness runs BODY in a bash with lib/rig.sh and lib/arg-max-force.sh sourced for the run
 // directory WORK, marked as a run marks itself (LEGION_E2E_RUN), under the drivers' `set -Eeuo
@@ -129,7 +182,7 @@ function rowRoot(): string {
 }
 const pids = (out: string) => out.split("\n").filter(Boolean);
 
-test.skipIf(skip)(
+host.test(
   "names each process that carries the run's mark and none that only works under the run's directory or names it, running no command for each /proc entry",
   () => {
     const work = join(dir, "work");
@@ -180,11 +233,14 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "names a marked process of the run that left every tree the run started, double-forked to pid 1 or a subreaper",
-  () => {
+  async () => {
     // run_processes is the run's search for its leftovers: a daemon that forked twice and whose
     // parent ended belongs to no tree the run recorded, and only a walk of every process finds it.
+    // The walk starts once the escaped subshell's exec of sleep is done (untilExecDone): inside the
+    // exec its /proc/<pid>/environ reads empty, so the walk names nothing, while its exe link already
+    // reads sleep. On a loaded devbox the row read [] where it wants the pid in 1 to 2 of 10 runs.
     const work = join(dir, "escaped");
     mkdirSync(work);
     const pidFile = join(dir, "escaped.pid");
@@ -205,6 +261,7 @@ test.skipIf(skip)(
     expect(forked.exitCode).toBe(0);
     const pid = Number(readFileSync(pidFile, "utf8").trim());
     started.push(pid);
+    await untilExecDone(pid, "sleep");
     // Its parent, the subshell, has ended, so nothing the test started is its parent any more.
     const parent = readFileSync(`/proc/${pid}/stat`, "utf8")
       .replace(/^[\s\S]*\) /, "")
@@ -218,8 +275,15 @@ test.skipIf(skip)(
 );
 
 // The force cannot hold under gVisor (a Legion pod's kernel), which starts a program past ARG_MAX:
-// there these two rows are skipped, by this name (argMaxForceHolds), rather than failed or passed.
-test.skipIf(skip || !argMaxForceHolds())(
+// there these two rows are skipped outside CI, naming why, and failed by name under GITHUB_ACTIONS,
+// whose runner holds it (hostGate).
+const argMax = hostGate({
+  programs: ["perl"],
+  reason: argMaxForceHolds()
+    ? ""
+    : "This kernel starts a program past ARG_MAX under a 512 KiB stack (gVisor does), so the force lib/arg-max-force.sh puts these rows under cannot be put in force.",
+});
+argMax.test(
   "names every marked process of the run where argv and the environment past ARG_MAX would stop a program handed every /proc entry",
   () => {
     // The force (lib/arg-max-force.sh): an exec handed every <pid> entry of the row's proc root as an
@@ -241,7 +305,7 @@ run_processes`
   }
 );
 
-test.skipIf(skip || !argMaxForceHolds())(
+argMax.test(
   "listening_holders names the holder of a listening socket where a program handed every /proc/<pid>/fd would not start",
   () => {
     // listening_holders (lib/rig.sh) walks every process for the one holding a socket, held_only_by's
@@ -266,7 +330,152 @@ listening_holders ${listener.port}`
   }
 );
 
-test.skipIf(skip)(
+// otherLoopback says whether this host lets a socket listen on 127.0.0.2, an address of the
+// loopback network other than 127.0.0.1. Linux routes all of 127.0.0.0/8 to lo; a host that does
+// not skips the row that needs it outside CI, naming why, and under GITHUB_ACTIONS fails it by its
+// own name (hostGate's reason).
+const otherLoopback = (() => {
+  try {
+    Bun.listen({ hostname: "127.0.0.2", port: 0, socket: { data() {} } }).stop(true);
+    return true;
+  } catch {
+    return false;
+  }
+})();
+const sameAddress = hostGate({
+  programs: ["perl"],
+  reason: otherLoopback ? "" : "This host lets no socket listen on 127.0.0.2.",
+});
+// A python3 that listens on 1.0.0.127 at a port the kernel chooses, prints the port, and stays: an
+// address no interface holds, which IP_FREEBIND (15 on Linux) lets a socket bind.
+const freeBound = `import socket, time
+s = socket.socket()
+s.setsockopt(socket.SOL_IP, getattr(socket, "IP_FREEBIND", 15), 1)
+s.bind(("1.0.0.127", 0))
+s.listen()
+print(s.getsockname()[1], flush=True)
+time.sleep(60)`;
+// freeBind says whether this host lets that socket listen; a kernel that refuses IP_FREEBIND skips
+// the row that needs it outside CI, naming why, and under GITHUB_ACTIONS fails it by its own name
+// (hostGate's reason). A host without python3 is not read as such a kernel: the row needs python3
+// and fails by name without it on any host (requireHostTools).
+const freeBind =
+  hostTool("python3") === null ||
+  Bun.spawnSync(["python3", "-c", freeBound.replace("time.sleep(60)", "")], {
+    stdout: "ignore",
+    stderr: "ignore",
+  }).exitCode === 0;
+const byteOrder = hostGate({
+  programs: ["perl"],
+  reason: freeBind ? "" : "This host lets no python3 socket listen on 1.0.0.127 (IP_FREEBIND).",
+});
+// spelled is how /proc/net/tcp writes the IPv4 address ADDRESS: the hexadecimal of its 32 bits in
+// this host's byte order, so 127.0.0.1 is 0100007F on a little-endian host.
+function spelled(address: string): string {
+  const bytes = address
+    .split(".")
+    .map((b) => Number(b).toString(16).toUpperCase().padStart(2, "0"));
+  return (endianness() === "LE" ? bytes.reverse() : bytes).join("");
+}
+// onlyTheLoopbackHolder is a row's whole check that listening_holders counts only the socket on
+// 127.0.0.1:PORT: PROGRAM, another process, listens on OTHER at a port the kernel chooses and
+// prints it, and this test process then listens on 127.0.0.1 with that port. That order cannot
+// meet the collision the row is about: the other order, 127.0.0.1 first, failed when a third
+// process already held OTHER at the port the kernel then gave 127.0.0.1. No order removes the
+// reverse, a port the kernel gives OTHER that some process already listens on at 127.0.0.1 (or on
+// every address), since the box's processes share one network namespace: that refuses this listen,
+// and the row takes a fresh port from a new process until the row's waits end (waits.end()), then
+// fails naming every port 127.0.0.1 refused, a failure of its setup and not of listening_holders.
+// Both LISTEN rows are read from /proc/net/tcp before the walk, which must name this test process
+// alone.
+async function onlyTheLoopbackHolder(name: string, program: string[], other: string) {
+  const work = join(dir, name);
+  mkdirSync(work);
+  let listener: { port: number; stop(closeActiveConnections?: boolean): void } | undefined;
+  const refused: string[] = [];
+  const deadline = waits.end();
+  try {
+    while (listener === undefined) {
+      if (performance.now() >= deadline) {
+        throw new Error(
+          `no port free on both ${other} and 127.0.0.1 by the end of the row's waits (${(libRowBoundMs - rowWaitMarginMs) / 1000} s after the row began): ${refused.length} ports tried, each refused on 127.0.0.1, so listening_holders was not run (${refused.join("; ")})`
+        );
+      }
+      const holder = Bun.spawn(ownGroup(program), {
+        cwd: dir,
+        env: { PATH: process.env.PATH ?? "" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      started.push(holder.pid);
+      const said = new TextDecoder().decode((await holder.stdout.getReader().read()).value);
+      const port = Number(said.trim());
+      if (!Number.isInteger(port) || port <= 0) {
+        holder.kill("SIGKILL");
+        throw new Error(
+          `the process listening on ${other} printed ${JSON.stringify(said)}, not its port: ${await new Response(holder.stderr).text()}`
+        );
+      }
+      try {
+        listener = Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } });
+      } catch (error) {
+        refused.push(`${port}: ${(error as Error).message}`);
+        holder.kill("SIGKILL");
+      }
+    }
+    const port = listener?.port ?? 0;
+    const hex = port.toString(16).toUpperCase().padStart(4, "0");
+    const listening = readFileSync("/proc/net/tcp", "utf8")
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/))
+      .filter((fields) => fields[3] === "0A" && fields[1]?.endsWith(`:${hex}`))
+      .map((fields) => fields[1]);
+    expect(listening).toEqual(
+      expect.arrayContaining([`${spelled("127.0.0.1")}:${hex}`, `${spelled(other)}:${hex}`])
+    );
+    const r = harness(work, `listening_holders ${port}`);
+    expect({ code: r.code, out: r.out, err: r.err }).toEqual({
+      code: 0,
+      out: `${process.pid}\n`,
+      err: "",
+    });
+  } finally {
+    listener?.stop(true);
+  }
+}
+
+sameAddress.test(
+  "listening_holders counts only the socket on 127.0.0.1:PORT: one another process listens with on the same port of another loopback address is none of it",
+  async () => {
+    // The kernel's bind of port 0 on 127.0.0.1 can hand out a port another process already listens
+    // on at another loopback address. On a devbox a Go test (buckets.test) listened on
+    // 127.162.56.110:41869 while the killed-reader row's own listener had 127.0.0.1:41869, and a
+    // count of every LISTEN row with that port read "2 sockets listen" and failed the row. Here the
+    // other address is 127.0.0.2, held by a bun of its own.
+    await onlyTheLoopbackHolder(
+      "same-port",
+      [
+        process.execPath,
+        "-e",
+        'console.log(Bun.listen({ hostname: "127.0.0.2", port: 0, socket: { data() {} } }).port); setTimeout(() => {}, 60000);',
+      ],
+      "127.0.0.2"
+    );
+  }
+);
+
+byteOrder.test(
+  "listening_holders reads 127.0.0.1 in this host's byte order: a socket on 1.0.0.127, the other order's spelling of it, is none of it",
+  async () => {
+    requireHostTools("python3");
+    // /proc/net/tcp writes 127.0.0.1 as 0100007F on a little-endian host, and 7F000001 there is
+    // 1.0.0.127; a read that took both spellings counted a socket on 1.0.0.127:PORT beside the one
+    // on 127.0.0.1:PORT and read "2 sockets listen".
+    await onlyTheLoopbackHolder("byte-order", ["python3", "-c", freeBound], "1.0.0.127");
+  }
+);
+
+host.test(
   "a walk whose reader a signal ended after part of its output is no answer: listening_holders and run_processes exit 2",
   () => {
     // A find that writes 2000 bytes and is then SIGKILLed prints no complaint of its own; neither does
@@ -313,7 +522,7 @@ st=0; run_processes >/dev/null 2>"$work/rp.err" || st=$?; echo "run_processes $s
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "a run that has not marked itself has no processes to read: run_processes and stop_marked_processes exit 2",
   () => {
     const work = join(dir, "unmarked");
@@ -330,7 +539,7 @@ st=0; stop_marked_processes "$work" 2>"$work/stop.err" || st=$?; echo "stop_mark
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "an empty run directory names no process: marked_processes, procs_naming and names_dir refuse it with 2",
   () => {
     // With DIR empty and the mark unset, `LEGION_E2E_RUN=` and `XDG_CONFIG_HOME=` followed by any
@@ -358,7 +567,7 @@ st=0; names_dir "" XDG_CONFIG_HOME ${bystander} 2>"$work/nd.err" || st=$?; echo 
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes ends every marked process of the run, an escaped one too, and leaves a person's shell and tail -f under the run's directory running",
   async () => {
     const work = join(dir, "sweep");
@@ -379,6 +588,9 @@ test.skipIf(skip)(
     );
     const escaped = Number(readFileSync(pidFile, "utf8").trim());
     started.push(escaped);
+    // A sweep made inside the escaped process's exec of sleep reads no mark in its environment and
+    // leaves it running, as the double-forked row's walk names nothing then (untilExecDone).
+    await untilExecDone(escaped, "sleep");
     const shell = spawn(["sleep", "60"], { cwd: work });
     const tail = spawn(["tail", "-f", join(work, "transcript.log")], { cwd: work });
     const r = harness(work, `stop_marked_processes "$work"; echo "status $?"`);
@@ -391,7 +603,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes with a grace gives each marked process SIGTERM and the grace to exit, then SIGKILLs only the survivors",
   async () => {
     const work = join(dir, "grace");
@@ -432,7 +644,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes signals no pid whose start time is not the one its walk read, and leaves it running",
   async () => {
     // The walk's pairs stand in for a pid that ended and passed to another marked process between the
@@ -464,7 +676,7 @@ grep -qw -- ${pid} "$work/kills" && echo "its own start: the record holds its st
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes ends a child that cleared its environment with the marked process that started it",
   async () => {
     // A marked bash starts a child under `env -i`, which carries no mark and no other variable of the
@@ -498,7 +710,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes with a grace ends a child that cleared its environment when the marked process that started it exits on its SIGTERM",
   async () => {
     // The marked process exits on the TERM and leaves its child behind; its children were read while
@@ -528,7 +740,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes ends a marked process it froze even where its parent reads otherwise the second time, as when the parent exits after the freeze",
   async () => {
     // proc_parent answers the real parent on its first read of the process and pid 1 on every read
@@ -552,7 +764,7 @@ stop_marked_processes "$work"; echo "status $?"`
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes with a grace leaves running a pid below a marked process whose parent is not the process it was read under, as a pid a stranger took",
   async () => {
     // proc_children answers, for the marked bash's child, the pid of a stranger: an unmarked process
@@ -584,7 +796,7 @@ stop_marked_processes "$work" 1; echo "status $?"`
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes with a grace leaves running the children of a stranger that took the pid of a process below a marked one",
   async () => {
     // The marked bash's child, which carries no mark, is read and printed; then its pid passes to
@@ -625,9 +837,10 @@ stop_marked_processes "$work" 1; echo "status $?"`
   }
 );
 
-test.skipIf(skip || withoutPython)(
+host.test(
   "names and ends a marked process whose name holds a newline and a `) `, which a read of the stat's first line took for another parent and no start",
   async () => {
+    requireHostTools("python3");
     // The process renames itself to `) S 1` and a newline (prctl PR_SET_NAME, through python3's
     // ctypes: perl's $0 would write over the environment the walk reads the mark from): the first
     // line of its /proc/<pid>/stat then reads as a process whose parent is pid 1, with nothing

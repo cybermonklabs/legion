@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -106,10 +107,11 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 //
 // Such a pod is kept unless the update round over it is over by the daemon's rule for a round with
 // no process in its pod (Options.RoundPodEnds, dispatch://INFRA-4109 R7): no role process runs in
-// it, and nothing holds it — no operator's suspension, no project pause, and, before the round's
-// bound, no role that holds the round's ask it has not answered. The round would replace such a
-// pod a moment later, so a role started in it would have its first turn ended and be launched a
-// second time, as INFRA-4455's tester was on 2026-11-19. The daemon is asked under the pod's launch
+// it, and nothing holds it — no suspension that holds (the operator's or the controller's), no
+// project pause, and, before the round's bound, no role that holds the round's ask it has not
+// answered. The round would replace such a pod a moment later, so a role started
+// in it would have its first turn ended and be launched a second time, as INFRA-4455's tester was
+// on 2026-11-19. The daemon is asked under the pod's launch
 // turn, so the round's bound is read when the launch runs rather than when the role was resumed,
 // and a yes has this launch make the round's own replacement: the Suspended patch names the pod
 // under the round's mark (displacing, suspendAnnotating, roundReplacement), and the role starts
@@ -123,10 +125,20 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // address — the two whose worker cannot be reached at all and the four driftedInPod reads, which
 // in a covered pod are a round's — and the shape its template was built from is read here
 // (shapeDrift, the one reading PodDrift takes of a covered pod's shape). A launch installing a
-// stale-plugin pair into such a pod keeps it, as it always did
-// (spec.Plugins, LEGION-164): the install, not a fresh pod on the configured image, is what brings
-// that agent onto the current plugin, and a pod replaced for any other reason in the same sweep
-// still is.
+// stale-plugin pair (spec.Plugins, LEGION-164) into such a pod, the project controller's, reads one
+// key of that shape alone, the image (podImageDrift). A controller pod built on another image is
+// replaced: the install puts the release's plugins under the agent and nothing more, so the kept
+// pod would go on running another release's legion launcher as its process 1 and another
+// release's Oh My Pi, where the fresh pod on the configured image carries the release's own of
+// each, and so nothing is installed into it. A controller pod whose other facets alone drifted —
+// its reservation, an operator volume or mount, its disk — is kept and the pair installed into it,
+// as it always was: the install, not a fresh pod, is what brings that agent onto the current
+// plugin, and the next launch that installs nothing replaces the pod for those facets. A pod
+// replaced for any other reason in the same sweep still is. An issue pod is kept by an installing
+// launch as by every launch, whatever of its shape moved, its image included, and the pair is
+// installed into it, unless its update round is over (Options.RoundPodEnds, above): the
+// installing launch then makes the round's own replacement, as every launch does, and installs
+// nothing into the new pod.
 //
 // A ServiceAccount other than the configured one (accountDrift) is answered by whoever answers
 // the pod's other drift. A launch into a pod a round covers keeps it for the account as for every
@@ -167,12 +179,12 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // On an error the caller owns stopping its previous process (runtime.Runtime's Spawn and Resume);
 // relaunch stops only the child it may itself have started: a Start the launcher received but did
 // not answer in time (stopIssuedChild). A launch installs its plugin pair (launcherCommand) only
-// when spec.Plugins is set and the pod was kept rather than replaced: a pod replaced for any other
+// when spec.Plugins is set and the pod was kept rather than replaced: a pod replaced for any
 // reason — a suspended Sandbox, a lost launcher binding, a failed init, a pod that never started, a
-// moved address, an update round that is over — comes up on the configured image, which the boot
-// gate holds to the daemon's contract, so its copies are already right; carrying the install onto
-// a fresh pod would be installing over a pair already current. l.spec.Plugins is cleared in that
-// case before launcherCommand builds its argv.
+// moved address, an update round that is over, a controller pod built on another image — comes up
+// on the configured image, which the boot gate holds to the daemon's contract, so its copies are
+// already right; carrying the install onto a fresh pod would be installing over a pair already
+// current. l.spec.Plugins is cleared in that case before launcherCommand builds its argv.
 //
 // An issue Sandbox whose disk shape is not the one this launch renders (supersededDisk) is
 // replaced with the pod. It is one of the release before the pod-owned disk, which owns an
@@ -218,6 +230,17 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // Sandbox and the pod, having stopped, recorded and sent nothing in the pod; the supervisor's next
 // Resume, which has the agent's own command resolve the id, ensures the Sandbox, reads the launcher
 // bindings and waits for the launcher again.
+//
+// A launch that replaces a pod a round covers on its own account — a pod that is not live with a
+// pod of its own in a Sandbox not suspended, a moved facet (movedInPod), another disk shape
+// (supersededDisk), unbound launchers (launcherBound), or a stored template it cannot read
+// (keptBy) — takes a disk that may hold work no role pushed (R7 of #5285). Before
+// the suspension it has a launcher of the pod read the issue's workspace where the pod is live and
+// a connected launcher of it can read, and has the daemon record what the act takes
+// (launchTaken, Options.LaunchTakes). Once the pod is gone, and the Sandbox too where the act
+// deletes it with its kept volume, it hands the daemon what it took (Options.LaunchTook), which
+// tells the issue's architect. A replacement that keeps the issue's kept volume and its Sandbox
+// takes no disk and is handed nothing.
 func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	ctx = launching(ctx)
 	l, err := r.prepare(spec)
@@ -256,7 +279,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			"scheduledFor", scheduledFor.Round(time.Second), "startBound", bound, "claim", spec.Claim)
 		live = false
 	}
-	_, accountDrifted := accountDrift(pod, r.pod.ServiceAccount)
+	_, accountDrifted := accountDrift(pod, l.kind.serviceAccount(r))
 	installing := l.spec.Plugins != nil
 	// A kept volume on which an init container failed for a cause local to it is reset: the launch
 	// replaces its Sandbox as it replaces one of the other disk shape (volumeReset). A change of
@@ -268,8 +291,11 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	covered := roundCovers(l.kind)
 	// A live pod no round covers is this launch's to replace for every kind of drift: every facet
 	// of the pod itself but the account comes through movedInPod, the account is read here as
-	// accountDrifted, and the shape its template was built from is read here too, unless this
-	// launch is installing a stale-plugin pair into it (roundCovers, shapeDrift).
+	// accountDrifted, and the shape its template was built from is read here too (roundCovers,
+	// shapeDrift). A launch installing a stale-plugin pair into such a pod reads the image of that
+	// shape alone (podImageDrift): it replaces a controller pod built on another image, whose
+	// launcher and Oh My Pi no install reaches, and keeps a controller pod whose other facets alone
+	// drifted, installing the pair into it.
 	//
 	// A pod running as a ServiceAccount other than the configured one is this launch's to
 	// replace only where no round covers that pod (accountDrift, roundCovers), and then whatever
@@ -286,11 +312,54 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// such a Sandbox with it below. A reset comes with a pod that is not live: a pod whose init
 	// container failed, or no pod after ReplacePod or the release.
 	drifted := len(r.shapeDrift(s, l.shapeKey())) > 0
-	replace := !live || (accountDrifted && !covered) ||
-		(replacement != "" && !drifted) ||
-		slices.ContainsFunc(l.roles, func(role claim.Role) bool { return len(r.movedInPod(pod, role)) > 0 }) ||
-		(!installing && !covered && (drifted ||
-			len(r.leakCheckDrift(recordedLeakChecker(s.Spec.PodTemplate.Metadata.Annotations, s.Annotations, string(pod.UID)))) > 0))
+	// moved is read of a live pod alone, as the expression below read it before: a pod that is not
+	// live may be no pod at all, and is replaced for that.
+	moved := live && slices.ContainsFunc(l.roles, func(role claim.Role) bool { return len(r.movedInPod(pod, role)) > 0 })
+	// forced is why this launch replaces the pod whether a round covers it or not: the pod is not
+	// live, the Sandbox has a disk shape this launch does not render and the pod's shape record
+	// does not drift, or a facet fixed for the pod's life moved. A pod no round covers is this
+	// launch's to replace for every drift below as well.
+	var forced string
+	switch {
+	case !live:
+		forced = "the pod was not live"
+	case replacement != "" && !drifted:
+		forced = "the issue's Sandbox has a disk shape that this launch does not render (" + string(replacement) + ")"
+	case moved:
+		forced = "a facet of the pod that is fixed for its life moved, so the launching role cannot start in that pod"
+	}
+	replace := forced != "" ||
+		(!covered && (accountDrifted ||
+			(!installing && (drifted ||
+				len(r.leakCheckDrift(recordedLeakChecker(s.Spec.PodTemplate.Metadata.Annotations, s.Annotations, string(pod.UID)))) > 0)) ||
+			(installing && podImageDrift(s, r.podShapes[l.shapeKey()]))))
+	// took is why this launch replaces a pod a round covers on its own account, rather than as the
+	// round's own replacement (R7 of #5285): forced, read before the pod's bindings and stored
+	// template (below), or what those find. The daemon is told what such a replacement took
+	// (Options.LaunchTook, launchTaken), which reads no workspace of a pod that is not live. The
+	// daemon is told nothing of the replacement of a pod no round covers (took "").
+	var took string
+	if covered {
+		took = forced
+	}
+	// A pod whose launchers are not bound to it is replaced by this launch on its own account
+	// (launcherBound), so the bindings are read before the update round is asked of the pod: a
+	// round's reading that keeps the pod, and tells the issue it stays, would be followed at once
+	// by this launch's replacement of it (the Legion reviewer's point 10).
+	if !replace {
+		bound, err := r.launcherBound(bounded, s, pod, &l)
+		if err != nil {
+			return fail("read its pod's launcher bindings", err)
+		}
+		replace = !bound
+		if covered && replace {
+			// One launcher bound wrongly says nothing of the others: a launcher of the pod that
+			// is connected and authenticated for it can still read the workspace (launchTaken,
+			// GPT-6.1 Sol's point 4 on #5285 at 0259f8af), and no read is made only where none
+			// can make it.
+			took = "the pod's launchers are not bound to it"
+		}
+	}
 	// A live pod a round covers that this launch would keep may be the pod of an update round
 	// that is over: no role process runs in it, and nothing holds it, so the round is about to
 	// replace it. A role started in it now would have its first turn ended by that replacement
@@ -299,7 +368,10 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// over has its pod replaced here, as the round's own replacement and not a launch's: the
 	// Sandbox is suspended under the round's mark, and the role starts in a new pod. A kept volume
 	// stays with the Sandbox as it does at any replacement of a live pod, and a Sandbox of the other
-	// disk shape is replaced below, as for any other replacement.
+	// disk shape is replaced below, as for any other replacement. The image rule of a launch
+	// installing a stale-plugin pair (podImageDrift) reads only a pod no round covers, so it never
+	// meets this one: an installing launch into a covered pod asks the daemon as any launch does,
+	// and where the round is over it installs nothing into the new pod (below).
 	kind := launchReplacement
 	if !replace && covered && r.roundPodEnds != nil {
 		ends, err := r.roundPodEnds(bounded, spec.Claim, string(pod.UID))
@@ -313,13 +385,6 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		}
 	}
 	if !replace {
-		bound, err := r.launcherBound(bounded, s, pod, &l)
-		if err != nil {
-			return fail("read its pod's launcher bindings", err)
-		}
-		replace = !bound
-	}
-	if !replace {
 		// The pod is kept, so this role is started as that pod was built rather than as the
 		// configuration now reads (keptBy): a drifted pod the update round has not replaced yet
 		// carries neither an enrollment nor an overlay the configuration gained after it was
@@ -331,16 +396,49 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		kept, readable := r.keptBy(s, string(pod.UID), l)
 		if !readable {
 			replace = true
+			if covered {
+				took = "the pod's stored template cannot be read, so the launch cannot tell what the pod carries"
+			}
 		} else {
 			l.kept = &kept
 		}
 	}
+	// Whether this launch keeps its pod is settled now, so under dispatch_token_broker so is its
+	// Dispatch credential: none for a pod that carries an exchange identity, the transition token
+	// for a kept pod built before it, or a refusal, before anything of the pod is touched, that
+	// waits for that pod's update round (dispatchCredential).
+	if err := r.dispatchCredential(&l, pod); err != nil {
+		return runtime.Locator{}, err
+	}
+	// So is whether its Oh My Pi starts under an id the runtime chose (trades): prepare chose one
+	// where the configuration trades, and a launch that keeps a pod that trades nothing drops it
+	// here, once, so each reader of l.omp reads it alone (ompInputs), save agentArgv's first case,
+	// which owns a resume of a session the claim records with no file (spec.ResumeSession) as the
+	// one word `--resume=<id>` and needs no l.omp.resume. A launch that resumes by id, with no id
+	// Oh My Pi can read as one, is refused here, before anything of the pod is touched, and a
+	// launch that trades nothing resumes by its file as before (ompResumeRefusal).
+	if !l.trades(r) {
+		l.omp = ompInputs{}
+	}
+	if err := l.ompResumeRefusal(); err != nil {
+		return runtime.Locator{}, fmt.Errorf("launch %s: %w", spec.Claim, err)
+	}
 	if installing && replace {
-		// Replaced for some other reason: the fresh pod's image is already current, so nothing is
-		// installed into it.
+		// Replaced, a controller pod built on another image included: the fresh pod comes up on
+		// the configured image, whose plugins are already current, so nothing is installed into it.
 		l.spec.Plugins = nil
 	}
+	taken := r.launchTaken(bounded, l, s, pod, kind, replacement, took, live)
 	if replace {
+		// The daemon records what the replacement is about to take before anything takes it
+		// (Options.LaunchTakes), so a launch, or a daemon, that stops once the disk is taken
+		// still leaves the daemon its word of it (GPT-6.1 Sol's points 1 and 2 on #5285). A
+		// record that cannot be written fails the launch, which then takes nothing.
+		if taken != nil && r.launchTakes != nil {
+			if err := r.launchTakes(bounded, *taken); err != nil {
+				return fail("record what its replacement takes", err)
+			}
+		}
 		switch {
 		case live:
 			suspended, err := r.suspendAnnotating(bounded, s, displacing(pod.UID, kind))
@@ -374,10 +472,19 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 				return fail("replace its sandbox ("+string(replacement)+")", err)
 			}
 		}
+		// The daemon is told once the act is made and confirmed: the pod gone, and, where the act
+		// takes the kept volume, the Sandbox that owned it gone, which deleteStoredSandbox waits
+		// for (GPT-6.1 Sol's point 4 on #5285 at fa9deb04). A launch that stops before then leaves
+		// the record the daemon wrote, which a sweep finishes or keeps from what the API server holds
+		// of the act's target (ReadAct).
+		if taken != nil && r.launchTook != nil {
+			r.launchTook(ctx, *taken)
+		}
 		if s.Annotations[secretsReleasedAnnotation] != "" {
 			if s, err = r.annotate(bounded, s, map[string]*string{secretsReleasedAnnotation: nil}); err != nil {
 				return fail("remove the release's record that its secrets are deleted", err)
 			}
+			r.forgetTaken(s.Name)
 		}
 		if err := l.kind.provision(bounded, r, &l, s); err != nil {
 			return runtime.Locator{}, fmt.Errorf("launch %s: %w", spec.Claim, boundRanOut(ctx, bounded, r.launchBound, err))
@@ -400,7 +507,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			return fail("wait for its new pod", err)
 		}
 		s = running
-		if err := r.bindLauncherSecrets(bounded, s, l, string(pod.UID)); err != nil {
+		if err := r.bindLauncherSecrets(bounded, s, l.roles, string(pod.UID)); err != nil {
 			return fail("bind its role launchers to the new pod", err)
 		}
 	}
@@ -411,7 +518,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err != nil {
 		return fail("wait for its role launcher", err)
 	}
-	starting, cancel := context.WithDeadline(bounded, deadline.Add(r.terminationGrace))
+	starting, cancel := r.clock.WithDeadline(bounded, deadline.Add(r.terminationGrace))
 	defer cancel()
 	if ended {
 		// The pod this launch waited on has ended — gone, replaced, terminal, or its init container
@@ -428,7 +535,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// recreated. So the launch ends here, answering runtime.ErrSessionLookupUnavailable, which the
 	// supervisor follows in the same try with a Resume that has the agent resolve the id. It ends
 	// before anything is done in the pod: no earlier generation is stopped, no address is recorded,
-	// no leak check or saved workspace is sent, and no start, so there is no issued child to stop
+	// no leak check is sent, and no start, so there is no issued child to stop
 	// (stopIssuedChild). A spec with ResumeByAgent is held to nothing here: it names no
 	// session to the launcher (launcherCommand), so any launcher the pod has can start it.
 	if spec.ResumeSession != "" && !spec.ResumeByAgent && !r.launchers.resumesBySession(spec.Claim, loc.Sandbox.PodUID) {
@@ -445,7 +552,11 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			return fail(fmt.Sprintf("stop its earlier generation %d", stale), err)
 		}
 	}
-	if err := r.recordAddresses(starting, s, spec.Role, spec.Generation, l.enrolls(r)); err != nil {
+	// Whether the start carries a Dispatch token is the launch's own decision (prepare's bearer,
+	// dispatchCredential's transition token), recorded with the generation's addresses so a
+	// restarted daemon counts it too (Runtime.DispatchTokens).
+	carried := l.secrets[dispatchTokenKey] != ""
+	if err := r.recordAddresses(starting, s, spec.Role, spec.Generation, l.enrolls(r), carried); err != nil {
 		return fail("record the addresses its generation is handed", err)
 	}
 	// The check's digest is decided against the exact launcher's served tarball. For a kept pod
@@ -475,12 +586,84 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err := l.checkStartFrame(command); err != nil {
 		return fail("measure its start frame", err)
 	}
-	if err := r.launchers.start(starting, spec.Claim, string(pod.UID), session, command); err != nil {
+	// A pod of a kept volume is recorded with that volume before the role's start
+	// (recordKeptPod). A record the store could not write refuses this launch before its Start
+	// frame goes out, as the leak check's refusal does, so no role runs in a pod of a kept volume
+	// the issue's update round has no record of; nothing was issued, so nothing is stopped.
+	if err := r.launchers.recordKeptPod(starting, session); err != nil {
+		return fail("record its pod with its kept volume", err)
+	}
+	if err := r.launchers.start(starting, spec.Claim, session, command); err != nil {
 		return fail("start through its authenticated launcher", errors.Join(err, r.stopIssuedChild(ctx, spec.Claim, string(pod.UID), spec.Generation, err)))
 	}
 	r.nameSession(loc, l)
+	r.launchedDispatchToken(loc, carried)
 	r.join(loc)
 	return loc, nil
+}
+
+// launchTaken is what a launch's own replacement of an issue pod a round covers takes (R7 of
+// #5285), for the daemon's record and word of it (Options.LaunchTakes,
+// LaunchTook), or nil where the launch takes no disk the daemon is to be told of: took is "" (the
+// launch keeps the pod), or kind is a round's own replacement (roundReplacement, which the daemon
+// makes and tells of itself). Each replacement has an operation identity of its own
+// (runtime.TakenPod.Operation). Which disk it takes is what decides the rest (GPT-6.1 Sol's point 3
+// on #5285 at 0259f8af, and its point 4 at fa9deb04):
+//
+//   - A Sandbox that is suspended, or that runs no pod of its own, has no pod for the launch to
+//     take; what it can still hold is a volume it owns, which only a replacement of the Sandbox
+//     deletes (replacement, a change of the disk shape or a kept volume's reset). Such a launch
+//     takes that volume (runtime.TakesVolume, the Sandbox's uid its target), and no process runs
+//     to read it, so it says no read could be made. It names the pod only where the Sandbox still
+//     owns one: the pod a Sandbox names as displaced may be a pod of the Sandbox it replaced, which
+//     never used this volume (the Legion reviewer's minor point 4). A launch that replaces no
+//     Sandbox, or a Sandbox that owns no volume, takes nothing.
+//   - A pod of the Sandbox's own takes its disk with it, unless the launch keeps the issue's volume
+//     and its Sandbox (keepsVolume, replacement ""): the pod (runtime.TakesPod, the pod's uid its
+//     target), or, where the launch replaces a Sandbox that owns a volume, that volume
+//     (runtime.TakesVolume, the Sandbox's uid its target) with the pod (runtime.TakenPod.WithPod),
+//     so that the finish of the act takes the records of the pod's own acts with it. A launcher of
+//     the pod reads the issue's
+//     workspace first (launcherWorkspaceWork): any launcher connected and authenticated for that
+//     pod that says it reads a workspace, whatever the bindings of the other roles say. The read
+//     runs under the pod's launch turn, which it does not take: no turn voids it, and the launch
+//     waits for nothing else. A read with no such launcher fails, and the daemon is told so. A pod
+//     that is not live (live false) has no process in it to read, and no read is made.
+func (r *Runtime) launchTaken(ctx context.Context, l launch, s *sandbox, pod *corev1.Pod, kind replacementKind,
+	replacement sandboxReplacement, took string, live bool) *runtime.TakenPod {
+	if took == "" || kind == roundReplacement {
+		return nil
+	}
+	ownsVolume := len(s.Spec.VolumeClaimTemplates) > 0
+	if s.mode() == modeSuspended || !ownedBy(pod, s.UID) {
+		if replacement == "" || !ownsVolume {
+			return nil
+		}
+		taken := &runtime.TakenPod{Operation: uuid.NewString(), Claim: l.spec.Claim, Issue: l.spec.Issue,
+			Why: "the launch replaces the issue's Sandbox and the volume it keeps (" + string(replacement) + ")",
+			Act: runtime.VolumeAct(string(s.UID)),
+			Err: errors.New("the issue's Sandbox runs no live pod, so no process can read the workspace on its volume")}
+		if ownedBy(pod, s.UID) {
+			taken.PodUID = string(pod.UID)
+		}
+		return taken
+	}
+	if l.keepsVolume() && replacement == "" {
+		return nil
+	}
+	taken := &runtime.TakenPod{Operation: uuid.NewString(), Claim: l.spec.Claim, Issue: l.spec.Issue, PodUID: string(pod.UID), Why: took,
+		Act: runtime.PodAct(string(pod.UID))}
+	if replacement != "" && ownsVolume {
+		// The launch deletes the Sandbox, and the volume with it, over the Sandbox's own pod, which
+		// goes with them (runtime.TakenPod.WithPod).
+		taken.Act, taken.WithPod = runtime.VolumeAct(string(s.UID)), true
+	}
+	if !live {
+		taken.Err = errors.New("the pod is not live, so no process in it can read the workspace")
+		return taken
+	}
+	taken.Work, taken.Err = r.launcherWorkspaceWork(ctx, l.spec.Issue, string(pod.UID))
+	return taken
 }
 
 // keptBy is what the live pod podUID of the Sandbox read as s was built with, for the role l starts
@@ -516,10 +699,62 @@ func (r *Runtime) keptBy(s *sandbox, podUID string, l launch) (keptPod, bool) {
 		checker: checker, recorded: recorded}, true
 }
 
+// dispatchCredential settles, under dispatch_token_broker, the Dispatch credential l's generation
+// carries, once relaunch knows whether l keeps pod, the live pod it found (l.kept), whose name is
+// its Sandbox's (l.name). prepare gave no launch a Dispatch token under the setting. A launch whose
+// pod carries an exchange identity — every pod a launch builds, since configure takes the setting
+// only beside an exchange audience, and a kept pod built with that identity — keeps none, and its
+// role trades the identity for a token of its own (launch.brokersDispatch,
+// DISPATCH_TOKEN_BROKER). A launch that keeps a pod built before the identity has none to trade
+// until the pod's update round replaces the pod (keptPod.trades), so it carries the transition
+// token as a launch carries the bearer without the setting, the role reading it through
+// DISPATCH_TOKEN_FILE; with no transition token named, the launch is refused (awaitsPodRound) with
+// runtime.AwaitingPodRound, which is runtime.ErrAwaitingPodRound naming the pod, and the supervisor
+// waits for that round, charging nothing. The refusal names the pod by the locator this launch's
+// process in it would have had (locatorFor). The supervisor keeps that locator on the claim, and
+// the round opens over the pod and replaces it through that locator where no claim records a
+// process there. A launch never replaces a pod a round covers, and the controller's pod, which no
+// round covers, is never kept without the identity: its launch replaces it for that drift
+// (movedInPod).
+//
+// A launch that carries the transition token is counted, and logged naming the claim, the pod and
+// both counts, once its start is sent (launchedDispatchToken): those are the launches a deployment
+// waits out before it removes dispatch_token_transition_file, and a launch that fails before its
+// start never handed its role the token.
+//
+// pod is read only for a launch that keeps it, which is a launch that found it live: a launch
+// that replaces its pod, or finds none, trades the identity the pod it builds carries.
+func (r *Runtime) dispatchCredential(l *launch, pod *corev1.Pod) error {
+	trades := l.trades(r)
+	if r.awaitsPodRound(trades) {
+		return fmt.Errorf("launch %s: %w", l.spec.Claim, &runtime.AwaitingPodRound{
+			Pod: r.locatorFor(l.spec.Claim, l.spec.Role, pod.UID, l.spec.Generation),
+			Reason: fmt.Sprintf("pod %s carries no exchange identity and dispatch_token_transition_file is not set; its update round replaces it",
+				l.name),
+		})
+	}
+	if r.dispatch.Broker && !trades {
+		l.secrets[dispatchTokenKey] = r.dispatch.Transition
+	}
+	return nil
+}
+
+// awaitsPodRound is whether a launch into a pod that trades as trades says (tradesIn) is refused
+// until the pod's update round replaces it: the deployment sets dispatch_token_broker, names no
+// dispatch_token_transition_file, and the pod carries no identity the exchange trades. It is the
+// one statement of that condition. dispatchCredential refuses a launch on it, and PodDrift marks a
+// drift of the pod's exchange identity as one that breaks the pod on it, read of the live pod for
+// the claim's role, so the refusal and the mark cannot come apart.
+func (r *Runtime) awaitsPodRound(trades bool) bool {
+	return r.dispatch.Broker && r.dispatch.Transition == "" && !trades
+}
+
 // stopIssuedChild stops generation of token's launcher in podUID after its Start returned startErr,
 // unless the launcher answered that Start with a refusal (startRefusal), which started nothing. A
 // launch whose shared public leak check could not be installed never reaches it: serveLeakCheck
-// refuses that launch before its Start is built.
+// refuses that launch before its Start is built. Nor does a launch whose pod of a kept volume the
+// store could not record: recordKeptPod refuses it before its Start is sent
+// (runtime.KeptPodUnrecorded).
 // Any other error leaves the Start's outcome unknown: the launcher may have received it and begun
 // the generation while its answer was still on its way. The Stop travels after the Start on the
 // same connection, so the launcher handles it once it has handled the Start. It runs with its own
@@ -652,19 +887,19 @@ func (r *Runtime) startBound(s *sandbox) time.Duration {
 // its start bound alone, and the failure names that bound.
 func (r *Runtime) awaitRoleLauncher(ctx context.Context, loc runtime.Locator, start time.Duration) (bool, time.Time, error) {
 	what := "role launcher " + string(loc.Claim)
-	began := time.Now()
+	began := r.clock.Now()
 	deadline := began.Add(start)
 	var first time.Time
 	ended := false
 	// await's own budget is only a backstop (launcherBackstop). The check below runs at every
-	// informer event and at least every recheckInterval, and it ends the wait before it extends the
-	// deadline, so the pod is first seen provisioning within the start bound of the wait's start or
-	// never, and no deadline lies past the start bound, the boot timeout and ProvisionBound from
-	// the wait's start.
+	// informer event and recheckInterval after each check began (await), and it ends the wait
+	// before it extends the deadline, so the pod is first seen provisioning within the start bound
+	// of the wait's start or never, and no deadline lies past the start bound, the boot timeout and
+	// ProvisionBound from the wait's start.
 	backstop := launcherBackstop(start, r.bootTimeout, r.ProvisionBound())
 	err := r.await(ctx, backstop, what, func(context.Context) (bool, error) {
 		view, err := r.view(loc.Sandbox.Name)
-		if serverBusy(err) && time.Now().Before(deadline) {
+		if serverBusy(err) && r.clock.Now().Before(deadline) {
 			// A store whose list or watch the API server answers overloaded is waited out within the
 			// wait's deadline, as the launch's own requests are (resend): the informer lists and
 			// watches again by itself.
@@ -681,7 +916,7 @@ func (r *Runtime) awaitRoleLauncher(ctx context.Context, loc runtime.Locator, st
 		if _, ready := r.launchers.state(loc.Claim, loc.Sandbox.PodUID); ready {
 			return true, nil
 		}
-		now := time.Now()
+		now := r.clock.Now()
 		if !now.Before(deadline) {
 			return false, fmt.Errorf("timed out after %s waiting for %s%s", deadline.Sub(began), what, r.stillFetching(view.pod))
 		}
@@ -781,7 +1016,7 @@ func (r *Runtime) suspendFailedLaunch(ctx context.Context, token claim.Token, s 
 // Sandbox. One it creates carries the name of the pod a replacement whose own Create failed left
 // stranded (createSandbox), so the roles that replacement ended are read as displaced from it.
 func (r *Runtime) ensureSandbox(ctx context.Context, l launch) (*sandbox, error) {
-	deadline := time.Now().Add(r.bootTimeout)
+	deadline := r.clock.Now().Add(r.bootTimeout)
 	// refused is the relabel the API server refused as invalid, and refusedAt the resourceVersion its
 	// fence tested: a Sandbox read again still at that resourceVersion has not changed since, so the
 	// refusal was the patch's own, and it is the answer.
@@ -792,7 +1027,7 @@ func (r *Runtime) ensureSandbox(ctx context.Context, l launch) (*sandbox, error)
 		u, err := r.sandboxClient().Get(ctx, l.name, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
 			created, err := r.createSandbox(ctx, l)
-			if apierrors.IsAlreadyExists(err) && time.Now().Before(deadline) {
+			if apierrors.IsAlreadyExists(err) && r.clock.Now().Before(deadline) {
 				continue
 			}
 			if err != nil {
@@ -838,7 +1073,7 @@ func (r *Runtime) ensureSandbox(ctx context.Context, l launch) (*sandbox, error)
 			r.log.Info("sandbox runtime: relabelling a sandbox for its issue's new tree, keeping the Sandbox",
 				"sandbox", l.name, "uid", s.UID, "tree", s.Labels[labelTree], "for", tree, "operatingMode", s.mode())
 			relabelled, err := r.patch(ctx, s, ops...)
-			if apierrors.IsInvalid(err) && time.Now().Before(deadline) {
+			if apierrors.IsInvalid(err) && r.clock.Now().Before(deadline) {
 				// The fence's test failed: the Sandbox changed since the read, or this patch, sent
 				// again after an overloaded answer (resend), was already applied. Read it again and
 				// decide from what it holds now; one still at the tested resourceVersion refused the
@@ -859,7 +1094,7 @@ func (r *Runtime) ensureSandbox(ctx context.Context, l launch) (*sandbox, error)
 			}
 			return err == nil && current.GetUID() != s.UID, err
 		}
-		if err := r.await(ctx, time.Until(deadline), fmt.Sprintf("sandbox %s (uid %s) to be deleted", l.name, s.UID), gone); err != nil {
+		if err := r.await(ctx, deadline.Sub(r.clock.Now()), fmt.Sprintf("sandbox %s (uid %s) to be deleted", l.name, s.UID), gone); err != nil {
 			return nil, err
 		}
 	}
@@ -1195,9 +1430,12 @@ func (r *Runtime) waitedOut(ctx context.Context, s *sandbox) string {
 }
 
 // writeLauncherSecrets makes, for each launcher role of the pod (l.roles), a role-private Secret
-// holding a fresh launcher token. It runs only before a new pod starts, so every pod's launchers
-// authenticate with tokens no earlier pod held; a role's launch credentials travel in its
-// launcher's start command instead (launcherCommand). The Secret also carries the role's GitHub
+// holding a fresh launcher token. It runs only before a pod a launch makes starts, so the launchers
+// of such a pod authenticate with tokens no pod of an earlier launch held. A pod Agent Sandbox
+// makes again outside a launch, after an eviction or a node loss, projects the same Secrets, so
+// its launchers hold the tokens of the pod it replaced, which is gone; it is bound to them at its
+// launchers' first hello (bindAtHello). A role's launch credentials travel in its launcher's start
+// command instead (launcherCommand). The Secret also carries the role's GitHub
 // credential, its gh bundle (gitHubBundles): each directory of that role's own bundle as its
 // hosts.yml and config.yml (GitHubHostsKey, GitHubConfigKey), the bundle's configured renames
 // (GitHubPairsKey, empty where the project has none that resolve) and the default owner
@@ -1430,29 +1668,49 @@ func ownedBySandbox(refs []metav1.OwnerReference, uid types.UID) bool {
 }
 
 // lockPod takes a pod's launch turn, keyed by its Sandbox's name, an issue pod's and the project
-// controller's alike: one relaunch, issue suspension, release or orphan deletion of a pod at a time
-// holds it. Role starts in a healthy pod share it only while they select a launcher command; the
-// pods of one tree's issues take turns of their own, never one another's.
+// controller's alike: one relaunch, issue suspension, release or orphan deletion of a pod, or one
+// binding of its launchers at a hello (bindAtHello), at a time holds it. Role starts in a healthy
+// pod share it only while they select a launcher command; the pods of one tree's issues take turns
+// of their own, never one another's.
 func (r *Runtime) lockPod(ctx context.Context, sandbox string) (func(), error) {
 	return r.takeTurn(ctx, r.podTurns, sandbox)
+}
+
+// tryLockPod takes a pod's launch turn where nothing holds it, and takes nothing and reports false
+// where something does (lockPod).
+func (r *Runtime) tryLockPod(sandbox string) (func(), bool) {
+	turn := r.turnOf(r.podTurns, sandbox)
+	select {
+	case turn <- struct{}{}:
+		return func() { <-turn }, true
+	default:
+		return nil, false
+	}
 }
 
 // takeTurn waits for key's turn in turns, a map r.mu guards, until ctx ends; the returned func
 // gives the turn back.
 func (r *Runtime) takeTurn(ctx context.Context, turns map[string]chan struct{}, key string) (func(), error) {
-	r.mu.Lock()
-	turn, ok := turns[key]
-	if !ok {
-		turn = make(chan struct{}, 1)
-		turns[key] = turn
-	}
-	r.mu.Unlock()
+	turn := r.turnOf(turns, key)
 	select {
 	case turn <- struct{}{}:
 		return func() { <-turn }, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// turnOf is key's turn in turns, a map r.mu guards, made where key has none yet: a channel of one
+// slot, held while it is full.
+func (r *Runtime) turnOf(turns map[string]chan struct{}, key string) chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	turn, ok := turns[key]
+	if !ok {
+		turn = make(chan struct{}, 1)
+		turns[key] = turn
+	}
+	return turn
 }
 
 // jsonPatchOp is one RFC 6902 operation.

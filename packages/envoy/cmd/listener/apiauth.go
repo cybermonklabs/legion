@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 const bearerPrefix = "Bearer "
@@ -75,6 +76,10 @@ type listenerAPIAuth struct {
 	google *googleIdentities
 	// brokers takes access tokens the secrets broker issued; nil on a listener that takes none.
 	brokers *brokerTokens
+	// edgeProjects is ENVOY_EDGE_PROJECTS (config.Service.EdgeProjects): the projects an edge
+	// listener serves, empty on every other listener. Non-empty, /v1 admits a broker token alone,
+	// and only one EdgeAdmits admits (project_scope.go).
+	edgeProjects []string
 	// allowedHosts is ENVOY_ALLOWED_HOSTS, the names an open /v1 serves beside loopback.
 	allowedHosts []string
 	// logger takes every refusal and every warned admission; apiAuth refuses an auth without one.
@@ -89,9 +94,9 @@ type listenerAPIAuth struct {
 }
 
 // requiresBearer reports whether /v1 takes a bearer, which is what closes it to a caller that
-// presents none.
+// presents none. An edge listener always does: it admits a broker token alone.
 func (a listenerAPIAuth) requiresBearer() bool {
-	return a.token != "" || a.verifier != nil || a.google != nil
+	return a.token != "" || a.verifier != nil || a.google != nil || len(a.edgeProjects) > 0
 }
 
 // googleIdentities admits a caller by its own Google identity token, the credential of a caller
@@ -337,7 +342,11 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 // presentation is this credential whatever the listener's other settings are, and is never
 // retried as a bearer. It comes before the open pass-through too, which is what binds a session
 // on an open listener: a caller that presents a broker token is held to the session it names
-// even where /v1 would have served the request with no credential at all.
+// even where /v1 would have served the request with no credential at all. A token that passes
+// every check but whose broker answers its person held is refused 401 MEMBERSHIP_HELD
+// (refuseHeldBrokerToken), and served again once the broker answers otherwise; one whose broker
+// answers its person not held only until a deadline that has passed is 503 BROKER_UNAVAILABLE
+// (refuseLapsedBrokerToken), and served again once the broker answers a later deadline.
 //
 // A listener with none of the broker variables set reads that header as it read every
 // Authorization header it did not know before this credential existed: the open listener serves
@@ -386,6 +395,10 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		r, read := auth.readEdgeCaller(w, r)
+		if !read {
+			return
+		}
 		if open && !servesHost(r.Host, auth.allowedHosts) {
 			auth.logger.Warn("listener: request for a host it does not serve",
 				slog.String("host", r.Host),
@@ -403,12 +416,44 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 		}
 		_, presented := ciphertoken.Presented(r)
 		if auth.brokers != nil && presented {
+			// An edge listener gives a body-less request its proof back on a 503
+			// (proofReleasingWriter), so the one retry Google's load balancer sends of it is not
+			// refused as a replay. No other listener has that balancer in front of it.
+			var spend *proofSpend
+			if r.ContentLength == 0 && len(auth.edgeProjects) > 0 {
+				spend = &proofSpend{}
+				r = r.WithContext(withProofSpend(r.Context(), spend))
+			}
 			caller, err := auth.brokers.verify(r)
 			if err != nil {
 				refuseBrokerToken(w, auth.logger, r, auth.brokers, err)
 				return
 			}
-			admit(w, r.WithContext(withBrokerCaller(r.Context(), caller)), credentialBroker)
+			switch {
+			case caller.Held:
+				refuseHeldBrokerToken(w, auth.logger, r, caller)
+				return
+			case auth.brokers.lapsed(caller):
+				refuseLapsedBrokerToken(w, auth.logger, r)
+				return
+			}
+			ctx := withBrokerCaller(r.Context(), caller)
+			if len(auth.edgeProjects) > 0 {
+				if err := EdgeAdmits(auth.edgeProjects, caller); err != nil {
+					auth.logger.Warn("listener: edge listener refused a broker token",
+						slog.String("session", caller.Session),
+						slog.String("reason", err.Error()),
+						slog.Any("served", auth.edgeProjects),
+						slog.String("path", r.URL.Path))
+					writeJSON(w, http.StatusForbidden, listenerwire.EdgeRefusal{Reason: edgeTokenNotAdmitted, Error: err.Error()})
+					return
+				}
+				ctx = withEdgeHold(ctx, auth.logger)
+			}
+			if spend != nil {
+				w = &proofReleasingWriter{ResponseWriter: w, r: r, spend: spend, logger: auth.logger}
+			}
+			admit(w, r.WithContext(ctx), credentialBroker)
 			return
 		}
 		if open {
@@ -417,6 +462,12 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 				return
 			}
 			admit(w, r, credentialNone)
+			return
+		}
+		// An edge listener admits a broker token alone (EdgeAdmits): whatever else a request
+		// presents, it is refused here as an unknown credential is, before any bearer is compared.
+		if len(auth.edgeProjects) > 0 {
+			writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 
@@ -454,6 +505,31 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 	})
 }
 
+// readEdgeCaller is r as an edge listener reads it before anything else of it: carrying the
+// address Google's load balancer forwarded for its caller (withCallerAddress), which the broker
+// token's introspection bucket keys on (listenerSourceAddress), so the address is read once,
+// here. It reports false when it refused r, a request from the balancer's proxies that names no
+// such address (edgeCallerAddress), with the 400 and the log line that says why. Every other
+// listener's r is answered as it is.
+func (a listenerAPIAuth) readEdgeCaller(w http.ResponseWriter, r *http.Request) (*http.Request, bool) {
+	if len(a.edgeProjects) == 0 {
+		return r, true
+	}
+	address, forwarded, err := edgeCallerAddress(r)
+	if err != nil {
+		a.logger.Warn("listener: edge request without the address Google's load balancer forwards",
+			slog.String("reason", err.Error()),
+			slog.String("path", r.URL.Path),
+			slog.String("remote", r.RemoteAddr))
+		writeJSONError(w, http.StatusBadRequest, edgeForwardedRefusal)
+		return nil, false
+	}
+	if forwarded {
+		r = r.WithContext(withCallerAddress(r.Context(), address))
+	}
+	return r, true
+}
+
 // refuseBrokerToken answers a DPoP presentation this listener did not admit, and logs the one
 // line that says why: the class, as the service-account branch logs oidc.Reason's, the path, and
 // never the token or the proof.
@@ -468,6 +544,13 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 // wait it must come back after; nothing of it reached the broker. Every other outcome is the
 // same 401 and the same body every other refused credential gets here, so the answer tells an
 // unauthenticated caller nothing about which credentials this listener takes.
+//
+// None of the 503s here comes after the proof is spent, so a retry of the same request with the
+// same proof, the one Google's load balancer sends after a 503, is judged afresh: the broker is
+// asked before the proof is checked (ciphertoken.Verify), and a spent-proof store that did not
+// answer recorded nothing the listener knows of. That store's create may still land after it
+// stopped waiting, and the retry then meets it as a replay; proofReleasingWriter says why no
+// release follows it.
 func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Request, brokers *brokerTokens, err error) {
 	reason := brokerTokenReason(err)
 	logger.Warn("listener: broker token rejected",
@@ -489,6 +572,39 @@ func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Re
 	default:
 		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 	}
+}
+
+// refuseHeldBrokerToken answers a broker token that passed every check of this listener, the
+// proof and the key among them, whose broker answered its person held (ciphertoken.Caller.Held):
+// Dispatch holds that person's credentials until it confirms them again, by their next sign-in
+// under a Google rule or the Workspace Directory's next active answer under Identity-Aware Proxy.
+// The answer carries no rule and the listener knows none, so it is 401 MEMBERSHIP_HELD in words
+// true under both, naming the person; the token is still live, so a client keeps it and the same
+// token is served once the broker answers otherwise. It logs the rejection line every refused
+// presentation writes, under the class membership_held.
+func refuseHeldBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Request, caller ciphertoken.Caller) {
+	logger.Warn("listener: broker token rejected",
+		slog.String("reason", relaySocketReasonMembershipHeld),
+		slog.String("path", r.URL.Path))
+	writeJSON(w, http.StatusUnauthorized, listenerwire.APIError{Code: "MEMBERSHIP_HELD", Error: fmt.Sprintf(
+		"Dispatch holds %s's credentials; they work again once Dispatch confirms them", caller.Person)})
+}
+
+// refuseLapsedBrokerToken answers a broker token that passed every check of this listener whose
+// broker answered its person not held only until a deadline that has passed
+// (ciphertoken.Verifier.Lapsed): an IAP deployment's Dispatch has had no active Workspace Directory
+// answer for that person in 24 hours, so whether they may still act cannot be read. It is 503
+// BROKER_UNAVAILABLE with Retry-After 60, as its words ask, and never a refusal of the token, which
+// is served again once the broker answers a later deadline (Dispatch reads no deadline yet, and
+// serves such a token). It logs the rejection line every refused presentation writes, under the
+// class deadline_passed.
+func refuseLapsedBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Request) {
+	logger.Warn("listener: broker token rejected",
+		slog.String("reason", relaySocketReasonDeadlinePassed),
+		slog.String("path", r.URL.Path))
+	w.Header().Set("Retry-After", "60")
+	writeJSON(w, http.StatusServiceUnavailable, listenerwire.APIError{Code: "BROKER_UNAVAILABLE",
+		Error: "whether this token's person may still act could not be read; try again in a minute"})
 }
 
 // brokerTokenCheckFailed is the class of a presentation this listener could not judge at all:
@@ -703,6 +819,9 @@ func describeListenerAPIAuth(auth listenerAPIAuth, issuer string) string {
 		named = append(named, "google "+auth.google.audience+" for "+strings.Join(auth.google.accounts, ", "))
 	}
 	if described := auth.brokers.describe(); described != "" {
+		if len(auth.edgeProjects) > 0 {
+			described += " alone, as the edge listener of " + strings.Join(auth.edgeProjects, ", ")
+		}
 		named = append(named, described)
 	}
 	if len(named) == 0 {

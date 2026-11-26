@@ -118,7 +118,7 @@ func (r *roleHoldersRig) moveClaim(token claim.Token, state supervise.ClaimState
 
 func (r *roleHoldersRig) enqueue(issue string) {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		queued, err := store.EnqueueRoleHolders(r.ctx, tx, gatePublishProject, issue, r.clock())
 		if err == nil && !queued {
 			r.t.Errorf("the role-holder publication of %s was refused as another project's than %s", issue, gatePublishProject)
@@ -159,6 +159,7 @@ func queuedRoleHolders(t *testing.T, pool *store.Pool) ([]string, int) {
 // suspended and a failed claim leave the set, and so does a claim with no session yet. The set is
 // read when the row runs, not when it is queued, so a claim that ended between the two is gone.
 func TestTheExecutorPublishesTheLiveSetAtRunTime(t *testing.T) {
+	t.Parallel()
 	const issue = "LEGION-208"
 	r := newRoleHoldersRig(t)
 	tester := r.seedClaim(issue, claim.RoleTester, "ses-1", supervise.StateReady, time.Minute)
@@ -193,6 +194,7 @@ func TestTheExecutorPublishesTheLiveSetAtRunTime(t *testing.T) {
 // clause publishes all six sessions; without its `h.kind` predicate it publishes the one held as a
 // file name, and without its `h.project` predicate the one held in another project.
 func TestTheExecutorPublishesNoSessionItsClaimDoesNotHold(t *testing.T) {
+	t.Parallel()
 	const issue = "LEGION-209"
 	r := newRoleHoldersRig(t)
 	r.seedClaim(issue, claim.RoleTester, "ses-own", supervise.StateReady, time.Minute)
@@ -249,6 +251,7 @@ func TestTheExecutorPublishesNoSessionItsClaimDoesNotHold(t *testing.T) {
 // The control (the pull request records the run): LiveRoleHolders asking for the session id's
 // hold alone, as round 13 did; every one of the four claims is published beside the architect.
 func TestTheExecutorPublishesASessionOnlyWhileItsClaimHoldsEveryNameOfIt(t *testing.T) {
+	t.Parallel()
 	const issue = "LEGION-210"
 	const uuid = "9d0c8b7a-6e5f-4a3b-8c2d-1e0f9a8b7c6d"
 	r := newRoleHoldersRig(t)
@@ -296,6 +299,7 @@ func TestTheExecutorPublishesASessionOnlyWhileItsClaimHoldsEveryNameOfIt(t *test
 // transaction of its own, and a second ready of the same issue queues no second row: the one row
 // is made due again.
 func TestTheReadysQueueOfTheRolePublicationKeepsOneRowAnIssue(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	w := &workflowRuntime{pool: pool, records: record.NewStore(), dispatchProject: gatePublishProject, log: quietLogger()}
 	tester := supervise.Claim{Token: "legion-legion-legion-208-tester", Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleTester}
@@ -316,6 +320,7 @@ func TestTheReadysQueueOfTheRolePublicationKeepsOneRowAnIssue(t *testing.T) {
 // its due time unchanged, while the ready of this project's claim beside it queues its own. Every
 // ready of such a spawn takes this path, so it is an ordinary one and logs no warning.
 func TestTheReadyOfAClaimOfAnotherProjectsIssueQueuesNoRolePublication(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	var logs syncBuffer
@@ -362,6 +367,7 @@ func TestTheReadyOfAClaimOfAnotherProjectsIssueQueuesNoRolePublication(t *testin
 // the claims that release ended. A claim that changed longer ago and a claim of another project
 // are left out.
 func TestBootQueuesEveryRecentIssue(t *testing.T) {
+	t.Parallel()
 	r := newRoleHoldersRig(t)
 	r.seedClaim("LEGION-1", claim.RoleTester, "ses-1", supervise.StateIdle, 30*24*time.Hour)
 	r.seedClaim("LEGION-2", claim.RoleTester, "ses-2", supervise.StateRetired, 24*time.Hour)
@@ -391,6 +397,7 @@ func TestBootQueuesEveryRecentIssue(t *testing.T) {
 // leaves it, so no claim write queued its row. A boot that skips the pass, or a pass that queues
 // nothing, leaves the session unpublished until the next change of a claim on its issue.
 func TestTheWorkflowsBootQueuesTheRolePublicationOfALiveClaim(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedSilentPhaseWorker(t, pool, "CAPTURE-701", time.Now().UTC())
 	if issues, rows := queuedRoleHolders(t, pool); rows != 0 {
@@ -410,11 +417,14 @@ func TestTheWorkflowsBootQueuesTheRolePublicationOfALiveClaim(t *testing.T) {
 // the session as holding its role. Each end is driven from an idle claim through its machine over
 // the real store: a stop and a suspension.
 func TestARepairedEndIsPublishedWhenItsWriteLands(t *testing.T) {
+	t.Parallel()
 	for _, end := range []struct {
 		state supervise.ClaimState
 		event func(claim.Token) supervise.Event
 	}{
-		{supervise.StateRetired, func(token claim.Token) supervise.Event { return supervise.RequestStop{Claim: token} }},
+		{supervise.StateRetired, func(token claim.Token) supervise.Event {
+			return supervise.RequestStop{Claim: token, By: supervise.SuspendedByOperator}
+		}},
 		{supervise.StateSuspended, func(token claim.Token) supervise.Event {
 			return supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByOperator}
 		}},
@@ -480,6 +490,7 @@ func TestARepairedEndIsPublishedWhenItsWriteLands(t *testing.T) {
 // that names the issue and Dispatch's code, and nothing else: the issue's next ready or end of a
 // claim queues a fresh publication, which reads the live set again.
 func TestRoleHoldersExecutorRetriesARefusal(t *testing.T) {
+	t.Parallel()
 	const issue = "LEGION-208"
 	r := newRoleHoldersRig(t)
 	logs := &syncBuffer{}
@@ -566,6 +577,7 @@ func TestRoleHoldersExecutorRetriesARefusal(t *testing.T) {
 // ends the row. The stand-in answers as the router does, through the daemon's real HTTP client,
 // so the client's reading of that body is what decides.
 func TestARoleHoldersPublicationWaitsForADispatchThatHasNoRouteForIt(t *testing.T) {
+	t.Parallel()
 	const issue = "LEGION-208"
 	r := newRoleHoldersRig(t)
 	logs := &syncBuffer{}
@@ -598,7 +610,7 @@ func TestARoleHoldersPublicationWaitsForADispatchThatHasNoRouteForIt(t *testing.
 		_ = json.NewEncoder(w).Encode(map[string]any{"issue": issue, "holders": body.Holders})
 	}))
 	t.Cleanup(server.Close)
-	r.runner.dispatch = dispatch.New(server.URL, "agent-token")
+	r.runner.dispatch = dispatch.New(server.URL, dispatch.BearerTransport("agent-token", nil))
 	run := func() {
 		t.Helper()
 		if drained, _ := r.runner.drain(r.ctx, "", []record.OutboxKind{record.OutboxKindRoleHoldersPublish}); !drained {

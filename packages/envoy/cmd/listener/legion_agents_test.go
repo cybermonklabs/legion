@@ -31,6 +31,14 @@ type legionListener struct {
 	mux  http.Handler
 }
 
+// newLegionAgentRegistry serves store, a registry whose bucket is open: the registry a test's
+// listener holds, where the listener itself opens its own (openLegionAgentRegistry).
+func newLegionAgentRegistry(store *legionagents.Store) *legionAgentRegistry {
+	r := &legionAgentRegistry{}
+	r.state.Store(&legionAgentState{store: store})
+	return r
+}
+
 func newLegionListener(t *testing.T, client *bus.Client) *legionListener {
 	t.Helper()
 	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
@@ -121,6 +129,7 @@ func deref(value *string) string {
 // One entry written through PUT /v1/legion/agents/sessions/<id> is answered whole by each read,
 // with live following the session registry as it stands at the read.
 func TestLegionAgentRoutesRoundTripAnEntry(t *testing.T) {
+	t.Parallel()
 	l := newLegionListener(t, setupPublishTestClient(t))
 	stored := decodeLegion[legionAnswer](t, l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester",
 		legionEntry("ses-tester", "INFRA-448", "tester", "2026-10-26T03:15:00Z")))
@@ -151,6 +160,7 @@ func TestLegionAgentRoutesRoundTripAnEntry(t *testing.T) {
 // A batch is recorded in order, and each listing filters its issue or role token, orders an issue
 // by role then newest first, and derives who replaced whom within a role token.
 func TestLegionAgentBatchRouteRecordsEveryEntry(t *testing.T) {
+	t.Parallel()
 	l := newLegionListener(t, setupPublishTestClient(t))
 	body := `{"entries":[` + strings.Join([]string{
 		legionEntry("ses-old-reviewer", "INFRA-448", "reviewer", "2026-10-26T01:00:00Z"),
@@ -184,6 +194,7 @@ func TestLegionAgentBatchRouteRecordsEveryEntry(t *testing.T) {
 // An absence is answered as one: an unknown session is a 404 naming it, and a listing with nothing
 // in it is an empty list.
 func TestLegionAgentRoutesAnswerAnAbsence(t *testing.T) {
+	t.Parallel()
 	l := newLegionListener(t, setupPublishTestClient(t))
 	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "INFRA-448", "tester", "2026-10-26T03:15:00Z"))
 	if got := l.want(t, http.StatusNotFound, http.MethodGet, "/v1/legion/agents/sessions/ses-unknown", ""); strings.TrimSpace(got) != `{"error":"unknown legion agent ses-unknown"}` {
@@ -202,6 +213,7 @@ func TestLegionAgentRoutesAnswerAnAbsence(t *testing.T) {
 // Each request the registry refuses is a 400 (a 413 past a bound, a 405 for a method no route
 // takes) and writes nothing.
 func TestLegionAgentRoutesRefuseWhatTheRegistryDoesNotTake(t *testing.T) {
+	t.Parallel()
 	l := newLegionListener(t, setupPublishTestClient(t))
 	good := legionEntry("ses-good", "INFRA-448", "tester", "2026-10-26T03:15:00Z")
 	badRole := strings.Replace(legionEntry("ses-bad", "INFRA-448", "tester", "2026-10-26T03:15:00Z"), `"role":"tester"`, `"role":"controller"`, 1)
@@ -248,6 +260,7 @@ func TestLegionAgentRoutesRefuseWhatTheRegistryDoesNotTake(t *testing.T) {
 // A session belongs to one issue and role for good: a write moving it, alone or in a batch, is a
 // 409 naming what it is recorded for, and nothing changes.
 func TestLegionAgentRoutesRefuseMovingASession(t *testing.T) {
+	t.Parallel()
 	l := newLegionListener(t, setupPublishTestClient(t))
 	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "INFRA-448", "tester", "2026-10-26T03:15:00Z"))
 	got := l.want(t, http.StatusConflict, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "INFRA-449", "tester", "2026-10-26T03:15:00Z"))
@@ -270,6 +283,7 @@ func TestLegionAgentRoutesRefuseMovingASession(t *testing.T) {
 
 // The project.<legion_project> key is the daemon's own (INFRA-204), and no route reads it.
 func TestLegionAgentRoutesIgnoreAProjectKey(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	l := newLegionListener(t, client)
 	l.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", legionEntry("ses-tester", "INFRA-448", "tester", "2026-10-26T03:15:00Z"))
@@ -291,6 +305,7 @@ func TestLegionAgentRoutesIgnoreAProjectKey(t *testing.T) {
 // The registry is the bucket's: a listener started again over a restarted NATS answers what the
 // one before it recorded, and a read the bucket cannot answer is a 503, never an absence.
 func TestLegionAgentsSurviveAListenerRestart(t *testing.T) {
+	t.Parallel()
 	server, uri := testnats.Start(t)
 	connect := func() *bus.Client {
 		client, err := bus.Connect([]string{uri}, bus.WithReplicas(1))
@@ -329,6 +344,7 @@ func TestLegionAgentsSurviveAListenerRestart(t *testing.T) {
 // without end; a session another write claimed is a 409; and only a write the bucket did not answer
 // is a 503 to retry.
 func TestABatchFailureAnswersItsOwnStatusWithWhatItWrote(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		cause  error
@@ -377,6 +393,7 @@ authorization {
 // the server applies the grant and the listener reconnects, its reconnect hook wakes the retry,
 // which opens the bucket, and the routes serve.
 func TestAListenerWithoutTheRegistryGrantServesAndAnswersItsRoutes503(t *testing.T) {
+	t.Parallel()
 	bucket := "KV_" + bus.LegionAgentBucket
 	server, uri := testnats.StartConfig(t, listenerGrant(
 		"$JS.API.STREAM.*."+bucket, "$JS.API.STREAM.*.*."+bucket,
@@ -411,7 +428,7 @@ func TestAListenerWithoutTheRegistryGrantServesAndAnswersItsRoutes503(t *testing
 	}
 
 	server.Restart(t, listenerGrant())
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		status, answer := callListener(t, listener.port, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", entry)
 		if status == http.StatusOK {
@@ -435,6 +452,7 @@ func TestAListenerWithoutTheRegistryGrantServesAndAnswersItsRoutes503(t *testing
 // once an open succeeds, with no NATS connection event in between, the routes serve and one INFO
 // says the registry opened.
 func TestALegionAgentRegistryWhoseFirstOpenFailsServesOnceItsRetryOpensIt(t *testing.T) {
+	t.Parallel()
 	l := newLegionListener(t, setupPublishTestClient(t))
 	var failing atomic.Bool
 	failing.Store(true)
@@ -463,7 +481,7 @@ func TestALegionAgentRegistryWhoseFirstOpenFailsServesOnceItsRetryOpensIt(t *tes
 	}
 
 	failing.Store(false)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for l.do(t, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "").Code != http.StatusOK {
 		if time.Now().After(deadline) {
 			t.Fatalf("the registry still answers 503 after its open recovered\n%s", logs.String())
@@ -496,6 +514,7 @@ func TestALegionAgentRegistryWhoseFirstOpenFailsServesOnceItsRetryOpensIt(t *tes
 // connection: it answers 503 naming the move and opens the bucket again on the latest connection,
 // with no further event owed.
 func TestALegionAgentRegistryWhoseMoveToANewConnectionFailsOpensAgainOnTheLatest(t *testing.T) {
+	t.Parallel()
 	l := newLegionListener(t, setupPublishTestClient(t))
 	closed, err := natsgo.Connect(testnats.URL(t))
 	if err != nil {
@@ -533,7 +552,7 @@ func TestALegionAgentRegistryWhoseMoveToANewConnectionFailsOpensAgainOnTheLatest
 	t.Cleanup(func() { started.close(context.Background()) })
 	l.deps.legionAgents = started
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for !strings.Contains(logs.String(), "legion agent registry did not move to the new NATS connection") {
 		if time.Now().After(deadline) {
 			t.Fatalf("the registry did not report the failed move\n%s", logs.String())
@@ -587,7 +606,7 @@ func TestClosingALegionAgentRegistryDoesNotWaitForAnOpenUnderWay(t *testing.T) {
 	})
 	select {
 	case <-inOpen:
-	case <-time.After(10 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("the retry did not open again")
 	}
 
@@ -602,7 +621,7 @@ func TestClosingALegionAgentRegistryDoesNotWaitForAnOpenUnderWay(t *testing.T) {
 	close(release)
 	select {
 	case <-registry.retried:
-	case <-time.After(10 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("the retry did not end once its open returned")
 	}
 	if n := opens.Load(); n != 2 {

@@ -1,6 +1,16 @@
 import { expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import { type AnswerRow, daemonApiRecords } from "@legion/contracts/daemon-api-records";
 import * as legionApi from "@legion/contracts/legion-api";
 import { LegionReadyRequest } from "@legion/contracts/legion-api";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -16,6 +26,7 @@ import {
   retryWhileDaemonRestarts,
 } from "./daemon-client";
 import { type ClaimCapability, executePhaseOp } from "./legion-phase-ops";
+import { toolFailure } from "./tool-result";
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
 function daemonFixture(name: string): Record<string, unknown> {
@@ -374,14 +385,23 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     readonly issueStatus: (body: object) => Promise<unknown>;
     readonly freshSession: (body: object) => Promise<unknown>;
     readonly compact: (body: object) => Promise<unknown>;
+    readonly stopAgent: (body: object) => Promise<unknown>;
+    readonly retryAgent: (body: object) => Promise<unknown>;
+    readonly suspendAgent: (body: object) => Promise<unknown>;
+    readonly resumeAgent: (body: object) => Promise<unknown>;
+    readonly issuePodUpdate: (body: object) => Promise<unknown>;
     readonly projectPause: (body: object) => Promise<unknown>;
     readonly projectResume: (body: object) => Promise<unknown>;
+    readonly intakeReplay: (body: object) => Promise<unknown>;
+    readonly intakeDiscard: (body: object) => Promise<unknown>;
     readonly gateRegister: (body: object) => Promise<unknown>;
     readonly waveRelease: (body: object) => Promise<unknown>;
     readonly phaseBackward: (body: object) => Promise<unknown>;
     readonly phaseRetry: (body: object) => Promise<unknown>;
     readonly signOff: (body: object) => Promise<unknown>;
     readonly childRerun: (body: object) => Promise<unknown>;
+    readonly planRegister: (body: object) => Promise<unknown>;
+    readonly taskStop: (body: object) => Promise<unknown>;
   };
   const calls: ReadonlyArray<readonly [keyof WorkflowClient, string, object, string]> = [
     [
@@ -405,6 +425,21 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       },
       "handoff-complete.json",
     ],
+    // A tester's fail names the step its task returns to (contract 219).
+    [
+      "handoffComplete",
+      "/legion/v1/handoff/complete",
+      {
+        grantId: "grant-209",
+        summary: "the proof is thin",
+        verdict: "fail",
+        commit: "abc123",
+        handoffId: "5b1f0c2e-9d7a-4c3b-8e61-2f4a9d0c7b13",
+        handoffVersion: 3,
+        returnTo: 1,
+      },
+      "handoff-complete.json",
+    ],
     [
       "issueStatus",
       "/legion/v1/issues/status",
@@ -425,6 +460,41 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
       "compact.json",
     ],
+    // Four of the six agent actions (stop, retry, suspend, resume) take the body of the other
+    // two, the recoveries, and answer the claim's state after each, with who holds a suspension
+    // over the agent.
+    [
+      "stopAgent",
+      "/legion/v1/agents/stop",
+      { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
+      "agent-stop.json",
+    ],
+    [
+      "retryAgent",
+      "/legion/v1/agents/retry",
+      { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
+      "agent-retry.json",
+    ],
+    [
+      "suspendAgent",
+      "/legion/v1/agents/suspend",
+      { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
+      "agent-suspend.json",
+    ],
+    [
+      "resumeAgent",
+      "/legion/v1/agents/resume",
+      { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
+      "agent-resume.json",
+    ],
+    // The controller's replace_pod: the daemon's update round over the issue's pod, its reasons,
+    // and whether this request opened it.
+    [
+      "issuePodUpdate",
+      "/legion/v1/issues/pod-update",
+      { grantId: "grant-208", issue: "LEGION-209" },
+      "issue-pod-update.json",
+    ],
     // The controller's pause and resume name no project: the daemon pauses its own. Each
     // answers the pause as the daemon's golden wrote it, the resume with how many held rows it
     // let out.
@@ -435,6 +505,26 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       "project-pause.json",
     ],
     ["projectResume", "/legion/v1/project/resume", { grantId: "grant-208" }, "project-resume.json"],
+    // The controller's replay and discard of the intake's give-ups: one record by its id, or a
+    // consumer's open records through a stream sequence. Each answers as the daemon's golden
+    // wrote it, the replay with each record's outcome and the discard with the ids it closed.
+    [
+      "intakeReplay",
+      "/legion/v1/intake/replay",
+      { grantId: "grant-208", giveUp: 41 },
+      "intake-replay.json",
+    ],
+    [
+      "intakeDiscard",
+      "/legion/v1/intake/discard",
+      {
+        grantId: "grant-208",
+        consumer: "legion-go-LEGION-dispatch",
+        throughSeq: 6044896,
+        reason: "the listener published a non-JSON body",
+      },
+      "intake-discard.json",
+    ],
     [
       "gateRegister",
       "/legion/v1/gates/register",
@@ -443,6 +533,23 @@ test("posts every Stage 3 workflow request through its matching route", async ()
         issue: "LEGION-208",
         artifactId: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
         version: 7,
+      },
+      "gate-register.json",
+    ],
+    // A registration on an ancestor's basis carries the ancestor's document id, its version and
+    // the architect's reason beside the root's own document (entry 20261125161152 (gate-basis)).
+    [
+      "gateRegister",
+      "/legion/v1/gates/register",
+      {
+        grantId: "grant-208",
+        issue: "LEGION-208",
+        artifactId: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
+        version: 4,
+        step: "spec",
+        basisArtifactId: "6f4a2c8e-1b3d-4f5a-8c7e-9d0b1a2c3e4f",
+        basisVersion: 3,
+        reason: "LEGION-208's checks serve P2 of LEGION-100's approved spec.",
       },
       "gate-register.json",
     ],
@@ -475,6 +582,24 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       "/legion/v1/children/rerun",
       { grantId: "grant-208", issue: "LEGION-209" },
       "child-rerun.json",
+    ],
+    // The owner's plan (contract 219): register_plan answers the plan it took, stop_task nothing.
+    [
+      "planRegister",
+      "/legion/v1/plans/register",
+      {
+        grantId: "grant-208",
+        issue: "LEGION-209",
+        artifactId: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
+        version: 4,
+      },
+      "plan-register.json",
+    ],
+    [
+      "taskStop",
+      "/legion/v1/tasks/stop",
+      { grantId: "grant-208", issue: "LEGION-209", task: "a" },
+      "task-stop.json",
     ],
   ];
   const { fetch, requests } = daemon((url) => {
@@ -528,6 +653,59 @@ test("a workflow refusal surfaces its stable code and message", async () => {
   });
 });
 
+// A refused plan is answered 409 PLAN_REFUSED with every reason in its sentence, beside `reasons`
+// by task, which the refusal's schema strips: the agent reads each cause in the error.
+test("a refused plan surfaces its code and every reason in its sentence", async () => {
+  const error =
+    "Legion refused this plan and recorded nothing: the plan has 2 tasks, and this release runs a plan of one task. This release of Legion does not carry it out yet.";
+  const { fetch, requests } = daemon(() =>
+    Response.json(
+      {
+        code: "PLAN_REFUSED",
+        error,
+        reasons: [
+          {
+            task: "",
+            reason:
+              "the plan has 2 tasks, and this release runs a plan of one task. This release of Legion does not carry it out yet.",
+          },
+        ],
+      },
+      { status: 409 }
+    )
+  );
+  const refused = await createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch,
+  })
+    .planRegister({
+      grantId: "grant-208",
+      issue: "LEGION-209",
+      artifactId: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
+      version: 5,
+    })
+    .catch((caught: unknown) => caught);
+  expect(refused).toMatchObject({ status: 409, code: "PLAN_REFUSED", detail: error });
+  expect(requests).toHaveLength(1);
+});
+
+// The daemon refuses a returnTo on a completion that fails no step (RETURN_TO_NEEDS_FAIL); the
+// request's schema refuses it the same, so it never leaves the pane.
+test("a completion naming returnTo without the verdict fail is refused before it goes", async () => {
+  const { fetch, requests } = daemon(() => Response.json({}));
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch,
+  });
+  for (const verdict of ["pass", ""]) {
+    const refused = await (async () =>
+      client.handoffComplete({ grantId: "grant-209", summary: "done", verdict, returnTo: 1 }))()
+      .then(() => undefined)
+      .catch((caught: unknown) => caught);
+    expect(refused, `verdict ${JSON.stringify(verdict)} with returnTo`).toBeInstanceOf(Error);
+  }
+  expect(requests).toHaveLength(0);
+});
 // A refused pause or resume carries more than a code and a sentence: the pause that stands, or
 // the last pause (`LegionPauseFailureResponse`). The client reads the refusal through the plain
 // refusal shape, which ignores those keys, so the caller still gets the daemon's code and its
@@ -560,6 +738,27 @@ test("a refused pause and a refused resume surface the daemon's code and sentenc
     fetch,
   });
   expect(() => client.projectPause({ grantId: "grant-208", reason: "" })).toThrow();
+  expect(requests).toEqual([]);
+});
+
+// A replay or a discard that names both forms of selection, or neither, and a discard with no
+// reason, are refused before they leave the pane, as every request the schema does not describe
+// is; the daemon would refuse each (`GIVE_UP_REQUEST_INVALID`).
+test("a give-up selection of both forms or neither, and a discard with no reason, are refused before any request", () => {
+  const { fetch, requests } = daemon(() => Response.json(daemonFixture("intake-replay.json")));
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch,
+  });
+  const both = {
+    grantId: "grant-208",
+    giveUp: 41,
+    consumer: "legion-go-LEGION-dispatch",
+    throughSeq: 6044896,
+  };
+  expect(() => client.intakeReplay(both as never)).toThrow();
+  expect(() => client.intakeReplay({ grantId: "grant-208" } as never)).toThrow();
+  expect(() => client.intakeDiscard({ grantId: "grant-208", giveUp: 41, reason: "" })).toThrow();
   expect(requests).toEqual([]);
 });
 
@@ -703,6 +902,138 @@ test("a 409 refusal keeps its stable code through a key no schema names", async 
     code: "GATE_UNAPPROVED",
     detail: "Dispatch refused the write",
   });
+});
+
+// An architect's request the daemon read for a generation of the issue, or a run of its step,
+// that no longer stands is refused 409 with one of these codes, and its sentence says to read the
+// record again (`packages/daemon/internal/intake/facts.go`). A plugin a release behind its daemon
+// has no line for any of them, so this guards what both releases do with a code they do not know:
+// the agent is shown it with its sentence after one request, and nothing sends it again. sign_off
+// and register_gate run through the restart retry, as the legion tool runs them; the backward
+// move, retry_or_escalate and close_root go to the daemon once, with no retry around them.
+test("a refusal of a stale request is shown with its code and sentence after one request, and is never retried", async () => {
+  type Refusable = Record<
+    "signOff" | "gateRegister" | "phaseBackward" | "phaseRetry" | "rootClose",
+    (body: object) => Promise<unknown>
+  >;
+  const rows: ReadonlyArray<{
+    readonly code: string;
+    readonly operation: keyof Refusable;
+    /** The label the tool's restart retry runs the request under; none for a direct request. */
+    readonly retriedAs?: string;
+    readonly route: string;
+    readonly body: object;
+    readonly sentence: string;
+  }> = [
+    {
+      code: "SIGNOFF_STALE_GENERATION",
+      operation: "signOff",
+      retriedAs: "sign_off",
+      route: "/legion/v1/signoff",
+      body: { grantId: "grant-208", issue: "LEGION-208" },
+      sentence:
+        "the sign-off was asked for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Read the issue again before you sign it off. This sign-off changed nothing.",
+    },
+    {
+      code: "SIGNOFF_STALE_ENTRY",
+      operation: "signOff",
+      retriedAs: "sign_off",
+      route: "/legion/v1/signoff",
+      body: { grantId: "grant-208", issue: "LEGION-208" },
+      sentence:
+        "the sign-off was asked of run 1 of the step at place 2 of task a of LEGION-208, and LEGION-208 stands at run 2 of the step at place 2 of task a now. Read the evidence of the run that stands before you sign it off. This sign-off changed nothing.",
+    },
+    {
+      code: "BACKWARD_STALE_GENERATION",
+      operation: "phaseBackward",
+      route: "/legion/v1/phase/backward",
+      body: {
+        grantId: "grant-208",
+        issue: "LEGION-208",
+        to: "implementing",
+        reason: "the review found no test of the refusal",
+      },
+      sentence:
+        "the backward move was asked for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Read the issue again before you move it back. This move changed nothing.",
+    },
+    {
+      code: "BACKWARD_STALE_ENTRY",
+      operation: "phaseBackward",
+      route: "/legion/v1/phase/backward",
+      body: {
+        grantId: "grant-208",
+        issue: "LEGION-208",
+        to: "implementing",
+        reason: "the review found no test of the refusal",
+      },
+      sentence:
+        "the backward move was asked of run 1 of the step at place 2 of task a of LEGION-208, and LEGION-208 stands at no run of a step now. Read the run that stands before you move it back. This move changed nothing.",
+    },
+    {
+      code: "RETRY_STALE_GENERATION",
+      operation: "phaseRetry",
+      route: "/legion/v1/phase/retry",
+      body: { grantId: "grant-208", issue: "LEGION-208", decision: "retry" },
+      sentence:
+        "the retry_or_escalate was asked for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Read the issue again before you decide its hold. This decision changed nothing.",
+    },
+    {
+      code: "CLOSE_STALE_GENERATION",
+      operation: "rootClose",
+      route: "/legion/v1/roots/close",
+      body: { grantId: "grant-208", issue: "LEGION-208", reason: "the work is done elsewhere" },
+      sentence:
+        "the close was asked for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Read the root again before you close it. This close changed nothing.",
+    },
+    {
+      code: "GATE_STALE_GENERATION",
+      operation: "gateRegister",
+      retriedAs: "register_gate",
+      route: "/legion/v1/gates/register",
+      body: {
+        grantId: "grant-208",
+        issue: "LEGION-208",
+        artifactId: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
+        version: 7,
+      },
+      sentence:
+        "the registration was asked for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Register the document again for the run that stands. This registration changed nothing.",
+    },
+  ];
+
+  for (const { code, operation, retriedAs, route, body, sentence } of rows) {
+    const { fetch, requests } = daemon(() =>
+      Response.json({ code, error: sentence }, { status: 409 })
+    );
+    const client = createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch,
+    }) as unknown as Refusable;
+    let clock = 0;
+    const waits: number[] = [];
+    const send = () => client[operation](body);
+    const refused = await (retriedAs === undefined
+      ? send()
+      : retryWhileDaemonRestarts(retriedAs, send, {
+          now: () => clock,
+          sleep: async (ms: number) => {
+            waits.push(ms);
+            clock += ms;
+          },
+        })
+    ).catch((error: unknown) => error);
+
+    expect(refused, code).toBeInstanceOf(LegionDaemonApiError);
+    expect(refused, code).toMatchObject({ status: 409, code, detail: sentence });
+    expect(daemonUnreachable(refused), code).toBeUndefined();
+    expect(requests, code).toEqual([{ method: "POST", url: `http://daemon.test${route}`, body }]);
+    expect(waits, code).toEqual([]);
+    expect(toolFailure(refused), code).toEqual({
+      content: [{ type: "text", text: `POST ${route} failed with 409 ${code}: ${sentence}` }],
+      details: {},
+      isError: true,
+    });
+  }
 });
 
 test("a 502 refusal keeps its stable code through a key no schema names, and is the daemon's own answer, which is handed back rather than retried for ten minutes", async () => {
@@ -1050,11 +1381,12 @@ function once<T>(compute: () => T): () => T {
 // ─────────────────────────────────────────────────────────────────────────────
 // The table census: the answers this client parses, held to the daemon's table.
 //
-// `packages/contracts/fixtures/daemon-api/answers.json` is the daemon's own table of the
-// answers a plugin parses (`packages/daemon/internal/api/answers.go`), one row per response
-// schema. This census reads the client's source and fails when either side names an answer the
-// other does not. The two sides are joined by route and by nothing else: no mapping of schema
-// to row id is written here, so neither side can be taught to agree with the other.
+// The daemon's own table of the answers a plugin parses (`packages/daemon/internal/api/answers.go`)
+// is the rows of `packages/contracts/fixtures/daemon-api/answers.json`, which are the numbered
+// entries' alone, with the rows each entry fixture adds over them (`daemonApiRecords`), one row
+// per response schema. This census reads the client's source and fails when either side names an
+// answer the other does not. The two sides are joined by route and by nothing else: no mapping of
+// schema to row id is written here, so neither side can be taught to agree with the other.
 //
 // What the join does not reach. A row carries its id, its routes, its `since` and its `noBody`
 // (the state's row its typed settings keys too, which the settings census below reads), and no
@@ -1240,29 +1572,8 @@ function answerKey(noBody: boolean, routes: readonly string[]): string {
   return `${noBody ? "no body" : "a body"} on ${named.length === 0 ? "no route" : named.join(", ")}`;
 }
 
-/** One row of `answers.json`. `typedSettings` is on the state's row alone: every top-level key of
- * `settings` a plugin's reader types, from the contract `since` to `until`, both included, or to
- * the daemon's own contract where `until` is absent. */
-interface AnswerRow {
-  readonly id: string;
-  readonly routes: readonly string[];
-  readonly noBody: boolean;
-  readonly typedSettings?: readonly {
-    readonly key: string;
-    readonly since: number;
-    readonly until?: number;
-  }[];
-}
-
-/** `answers.json`, the daemon's table of the answers a plugin parses. */
-function answerRows(): AnswerRow[] {
-  return JSON.parse(
-    readFileSync(
-      path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/answers.json"),
-      "utf8"
-    )
-  );
-}
+/** Where this checkout holds the daemon API fixtures. */
+const DAEMON_API_FIXTURES = path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api");
 
 /** The client's own source, parsed once. The table census reads its parse sites, and the
  * read-set census takes the schemas those sites name. */
@@ -1274,14 +1585,11 @@ const clientSource = once(() => {
 /** The parse sites of the client's source, read once. */
 const clientParseSites = once(() => parseSites(clientSource()));
 
-test("every answer the client parses is a row of the daemon's table, and every row is parsed", () => {
-  const { sites, problems } = clientParseSites();
-  // Fails closed: a call this pass could not read is named here, never passed over.
-  expect(problems).toEqual([]);
-  // A pass that read no call at all would leave every comparison below holding vacuously.
-  expect(sites.length).toBeGreaterThan(0);
-
-  const rows = answerRows();
+/** What the table census finds wrong between the client and the table of the build whose daemon
+ * API fixtures are `fixtureDir`: each answer the client parses that no row holds, and each row no
+ * parse site of the client parses. */
+function tableMismatches(fixtureDir: string): string[] {
+  const rows = daemonApiRecords(fixtureDir).answers;
   const unmatched = new Map<string, AnswerRow[]>();
   for (const row of rows) {
     const key = answerKey(row.noBody, row.routes);
@@ -1289,7 +1597,7 @@ test("every answer the client parses is a row of the daemon's table, and every r
   }
 
   const wrong: string[] = [];
-  for (const answer of clientAnswers(sites)) {
+  for (const answer of clientAnswers(clientParseSites().sites)) {
     const key = answerKey(answer.noBody, answer.routes);
     const rowsHere = unmatched.get(key);
     if (rowsHere !== undefined && rowsHere.length > 0) {
@@ -1307,7 +1615,16 @@ test("every answer the client parses is a row of the daemon's table, and every r
       );
     }
   }
-  expect(wrong).toEqual([]);
+  return wrong;
+}
+
+test("every answer the client parses is a row of the daemon's table, and every row is parsed", () => {
+  const { sites, problems } = clientParseSites();
+  // Fails closed: a call this pass could not read is named here, never passed over.
+  expect(problems).toEqual([]);
+  // A pass that read no call at all would leave every comparison below holding vacuously.
+  expect(sites.length).toBeGreaterThan(0);
+  expect(tableMismatches(DAEMON_API_FIXTURES)).toEqual([]);
 });
 
 /** The state schema's own `settings`, unwrapped as the read-set census walks a schema. */
@@ -1320,26 +1637,83 @@ function stateSettings(): z.ZodObject {
   return settings;
 }
 
+/** The settings keys the table of the build whose daemon API fixtures are `fixtureDir` types at
+ * that build's own contract, sorted. */
+function declaredSettings(fixtureDir: string): string[] {
+  // The build's own contract is the tree's: L plus its count of entry fixtures.
+  const { contract, answers } = daemonApiRecords(fixtureDir);
+  const declaring = answers.filter((row) => row.typedSettings !== undefined);
+  expect(declaring.map((row) => row.id)).toEqual(["state"]);
+  return (declaring[0]?.typedSettings ?? [])
+    .filter((setting) => setting.since <= contract && (setting.until ?? contract) >= contract)
+    .map((setting) => setting.key)
+    .sort();
+}
+
 // The settings census: the keys the daemon's table declares a reader types at its own contract
 // are the keys `legionSettings` types. The daemon's records of the state hold a settings key path
-// exactly where its table types the key (`typedSettings` in `answers.json`, answers.go's
+// exactly where its table types the key (the state row's `typedSettings`, answers.go's
 // `typedSettings`), so a key this schema types with no row there is a key whose removal a reader
 // refuses and no record catches, and a row typing a key this schema does not name holds every
 // later legion.yaml change to a record no reader needs.
 test("the settings keys answers.json types at the daemon's own contract are the keys legionSettings types", () => {
-  const contract = daemonFixture("version.json").daemonApiVersion;
-  if (typeof contract !== "number") throw new Error("version.json declares no daemonApiVersion");
-  const declaring = answerRows().filter((row) => row.typedSettings !== undefined);
-  expect(declaring.map((row) => row.id)).toEqual(["state"]);
-  const declared = (declaring[0]?.typedSettings ?? [])
-    .filter((setting) => setting.since <= contract && (setting.until ?? contract) >= contract)
-    .map((setting) => setting.key)
-    .sort();
-
   const typed = Object.keys(stateSettings().def.shape).sort();
   // A schema typing no key would leave the comparison below holding for an empty table.
   expect(typed.length).toBeGreaterThan(0);
-  expect(declared).toEqual(typed);
+  expect(declaredSettings(DAEMON_API_FIXTURES)).toEqual(typed);
+});
+
+// Both censuses read the table of the build, and an entry fixture adds rows to that table as
+// `answers.json` holds them: an entry that adds an answer the client parses adds its row, and one
+// that types a settings key adds the key to the state's row. So a tree whose entry adds a row or a
+// key holds both censuses as the tree whose `answers.json` holds it does. This tree is the
+// checkout's fixtures with one row the client parses and one key the state's row types taken out
+// of `answers.json`, and put back by one entry fixture that ranks after every other.
+test("a row and a settings key an entry fixture adds are in the daemon's table for both censuses", () => {
+  // The frozen rows: the tree below holds them in its `answers.json`, less what its entry adds.
+  const rows: AnswerRow[] = JSON.parse(
+    readFileSync(path.join(DAEMON_API_FIXTURES, "answers.json"), "utf8")
+  );
+  const moved = rows.find((row) => row.typedSettings === undefined);
+  const state = rows.find((row) => row.id === "state");
+  const key = state?.typedSettings?.find((setting) => setting.until === undefined)?.key;
+  if (moved === undefined || state === undefined || key === undefined) {
+    throw new Error(
+      "answers.json holds no row without typed settings, or no state's row typing a key to the daemon's own contract"
+    );
+  }
+  const root = mkdtempSync(path.join(tmpdir(), "daemon-client-entry-"));
+  try {
+    const fixtureDir = path.join(root, "packages", "contracts", "fixtures", "daemon-api");
+    cpSync(DAEMON_API_FIXTURES, fixtureDir, { recursive: true });
+    const frozen = rows
+      .filter((row) => row !== moved)
+      .map((row) =>
+        row === state
+          ? { ...row, typedSettings: row.typedSettings?.filter((setting) => setting.key !== key) }
+          : row
+      );
+    writeFileSync(path.join(fixtureDir, "answers.json"), JSON.stringify(frozen));
+    mkdirSync(path.join(fixtureDir, "contracts"), { recursive: true });
+    const entry = {
+      answers: [],
+      routes: [],
+      answerRows: [
+        { id: moved.id, routes: moved.routes, noBody: moved.noBody },
+        { id: state.id, routes: [], noBody: state.noBody, typedSettings: [{ key }] },
+      ],
+      enumeratedRows: [],
+    };
+    writeFileSync(
+      path.join(fixtureDir, "contracts", "99991231235959_entry-rows.json"),
+      JSON.stringify(entry)
+    );
+
+    expect(tableMismatches(fixtureDir)).toEqual([]);
+    expect(declaredSettings(fixtureDir)).toEqual(Object.keys(stateSettings().def.shape).sort());
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 // The premise both the census above and the daemon's settings records rest on, as

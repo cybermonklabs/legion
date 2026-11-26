@@ -2,6 +2,7 @@ package bus
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A connection life ends as soon as its status listener receives a drop report. nats.go drops a
@@ -26,8 +28,9 @@ import (
 //
 // The controls: a pinIf that ignores its ch argument lets a stale life pin, so the second row's
 // window is refused. A check that never ends a pinned life fails the first; a >= rather than > in
-// endReconnected fails both the second and the third. The tests' 30 s waits only guard against NATS
-// not changing state.
+// endReconnected fails both the second and the third. The tests' waits end on what they wait for,
+// and their one bound, the test binary's deadline (testwait), only guards against NATS not changing
+// state.
 func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 	every := lifeCheckEvery.Swap(int64(time.Hour))
 	t.Cleanup(func() { lifeCheckEvery.Store(every) })
@@ -62,11 +65,7 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 			})
 		}
 		releaseAfterCount := func() {
-			select {
-			case <-held:
-			case <-time.After(30 * time.Second):
-				t.Fatal("the reconnect handshake did not reach the hold")
-			}
+			testwait.Receive(t, "the reconnect handshake to reach the hold", held)
 			hold.Release()
 		}
 		w.afterConnected.Store(&startDrop)
@@ -190,6 +189,7 @@ func TestAConnectionsCheckKeepsALifePinnedAfterItsRead(t *testing.T) {
 // control is an endReconnected that ends the life whatever waits in the listener: the read ends
 // the pinned life at once.
 func TestAWatchsReadLeavesALifeToAReportTheDrainHasNotTaken(t *testing.T) {
+	t.Parallel()
 	l := &connLife{reports: make(chan nats.Status, 10), checks: make(chan reconnectRead), quit: make(chan struct{}), life: make(chan struct{})}
 	pinned := l.current()
 	if !l.pinIf(pinned, 0) {
@@ -233,37 +233,35 @@ func requireFresh(t *testing.T, client *Client, after string) {
 
 func waitForLifeEnded(t *testing.T, life <-chan struct{}) {
 	t.Helper()
-	select {
-	case <-life:
-	case <-time.After(30 * time.Second):
-		t.Fatal("control: nats.go's report of the drop never ended the old life")
-	}
+	testwait.Receive(t, "nats.go's report of the drop to end the old life (control)", life)
 }
 
 // cutUntilReconnecting waits, with hold's link cut, until nats.go reads conn as RECONNECTING: it has
-// reported the drop.
+// reported the drop. The wait is bounded only by the test binary's deadline (testwait.UntilPolling);
+// one that gives up fails the test inside testwait, so hold's link is restored on the way out.
 func cutUntilReconnecting(t *testing.T, conn *nats.Conn, hold *testnats.HandshakeHold) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for conn.Status() != nats.RECONNECTING {
-		if time.Now().After(deadline) {
+	reconnecting := false
+	defer func() {
+		if !reconnecting {
 			hold.Restore()
-			t.Fatalf("control: nats.go did not read the connection as reconnecting within 30 s of the cut: status %v", conn.Status())
 		}
-		time.Sleep(time.Millisecond)
-	}
+	}()
+	testwait.UntilPolling(t, time.Millisecond, "nats.go to read the connection as reconnecting after the cut (control)", func() (nats.Status, bool) {
+		status := conn.Status()
+		return status, status == nats.RECONNECTING
+	})
+	reconnecting = true
 }
 
-// waitForReconnect waits until nats.go has reconnected conn, with the reconnect counted past before.
+// waitForReconnect waits until nats.go has reconnected conn, with the reconnect counted past before,
+// bounded only by the test binary's deadline (testwait.Until).
 func waitForReconnect(t *testing.T, conn *nats.Conn, before uint64) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for conn.Status() != nats.CONNECTED || conn.Stats().Reconnects == before {
-		if time.Now().After(deadline) {
-			t.Fatalf("control: nats.go did not reconnect within 30 s of the cut: status %v, %d reconnect(s)", conn.Status(), conn.Stats().Reconnects-before)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Until(t, "nats.go to reconnect after the cut (control)", func() (string, bool) {
+		status, reconnects := conn.Status(), conn.Stats().Reconnects
+		return fmt.Sprintf("status %v, %d reconnect(s)", status, reconnects-before), status == nats.CONNECTED && reconnects != before
+	})
 }
 
 // pinAfterReconnect waits until nats.go has reconnected conn, with the reconnect counted past before,

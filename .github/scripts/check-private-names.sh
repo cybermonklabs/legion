@@ -44,9 +44,10 @@
 #      (`-metadata.google.internal:80` and `x_metadata.google.internal` pass; no DNS name holds a
 #      `_`). A run over a tree reads no such ending: the tree holds those two names and its tests'
 #      own hosts of that shape, which name no private network. The bare reading is the CI check's
-#      alone, on purpose: the daemon's leak guard, which runs this script's port over the
-#      `legion gh` calls it checks and every text handed to `legion leak-check text`, does not
-#      read it, since it would refuse agents' own writes;
+#      alone, on purpose: this script's port, .github/private-names.toml, which runs where
+#      something names it (the port harness, release-push.sh's leak guard, and a deployment that
+#      names it as its leak guard's rule file), does not read it, since it would refuse agents'
+#      own writes;
 #   4. a Tailscale MagicDNS host — a DNS label then `.ts.net`, in any case, with no letter or
 #      digit after it. A reserved tailnet name (`example-tailnet`, under any machine name of its
 #      own in front) passes;
@@ -216,7 +217,7 @@ esac
 # says what it refuses): a host that ends in `.internal`, every label before it included, each
 # starting with a letter or a digit. Its whole matches that name no private host: the two
 # well-known names, with the trailing characters the rule may have captured. Neither is in the
-# variables the daemon's leak guard ports (private-names.toml), which read no such text.
+# variables .github/private-names.toml ports, which read no such text.
 bare_host_rule='([[:alnum:]][[:alnum:]-]*[.])*[[:alnum:]][[:alnum:]-]*[.]internal([^[:alnum:]._]|_+([^[:alnum:]]|$)|[.]([^[:alnum:]]|$)|$)'
 allowed_bare_host='(metadata[.]google|host[.]docker)[.]internal([^[:alnum:].]|[.][^[:alnum:]]?|_+[^[:alnum:]]?)?'
 bare_hosts=${PRIVATE_NAME_BARE_HOSTS:-no}
@@ -325,17 +326,22 @@ if [ ${#keys[@]} -gt 0 ]; then
 fi
 for i in "${!term_patterns[@]}"; do printf '%s\n' "${term_patterns[i]}" > "$pattern_dir/term.$i"; done
 # One line says how many terms and keys the run read, and never a term or a key: on a pull
-# request's own run, the proof that the job holds the list. An empty list prints the warning
-# below instead.
+# request's own run, the proof that the job holds the list. It counts a key as read only in a
+# `keys` run, the one run that checks it: a `names` run reads the `key:` lines too, since its
+# masking hides a key, but checks none, so its line says that its keys were not checked. An empty
+# list prints the warning below instead.
 if [ ${#terms[@]} -gt 0 ]; then
   printf '%s\n' "${term_patterns[@]}" > "$patterns_file"
   if [ ${#terms[@]} -eq 1 ]; then read_count="1 term"; else read_count="${#terms[@]} terms"; fi
-  if [ ${#keys[@]} -eq 1 ]; then
-    read_count+=" and 1 issue key"
-  elif [ ${#keys[@]} -gt 1 ]; then
-    read_count+=" and ${#keys[@]} issue keys"
+  if [ ${#keys[@]} -eq 1 ]; then key_count="1 issue key"; else key_count="${#keys[@]} issue keys"; fi
+  if [ ${#keys[@]} -eq 0 ]; then
+    read_count+=" read"
+  elif [ "$rules" = keys ]; then
+    read_count+=" and $key_count read"
+  else
+    read_count+=" read; $key_count not checked: rule 6 runs only with PRIVATE_NAME_RULES=keys"
   fi
-  echo "check-private-names: PRIVATE_NAME_TERMS: $read_count read"
+  echo "check-private-names: PRIVATE_NAME_TERMS: $read_count"
 fi
 
 # named_parts <part...>: the 1-based index of each part the first two rules match, one a line, by

@@ -706,7 +706,7 @@ printf 'a manifest\n' > "$state/manifests/$WHOLE_TAG"
 run_mirror
 check "fails" "$(is "$status" 1)"
 check "naming the row and the word" \
-  "$(contains "$out" "^::error::ci-tools: odd: the manifest's second_source is 's3', and this file reads github-release, ghcr-mirror, npm, pypi and pulumi-releases\$")"
+  "$(contains "$out" "^::error::ci-tools: odd: the manifest's second_source is 's3', and this file reads github-release, ghcr-mirror, npm, pypi, pulumi-releases and helm-releases\$")"
 check "stops at that row, after the row before it was read" \
   "$(contains "$out" "^held whole sha256:$WHOLE ($WHOLE_TAG)\$")"
 check "says of no row that it needs no copy" "$(is "$(contains "$out" 'needs no copy')" false)"

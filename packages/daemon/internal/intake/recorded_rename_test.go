@@ -3,7 +3,6 @@ package intake
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -17,6 +16,7 @@ import (
 // transaction and no GitHub read; so does a number neither name records. A fact that is no
 // review and no settlement is recorded whatever it names.
 func TestAReviewOfAPullRequestRecordedUnderTheOtherNameOfARenameIsRecorded(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	recordPullRequest(t, pool, "LEGION-208", 42)
 	renamed := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
@@ -45,11 +45,13 @@ func TestAReviewOfAPullRequestRecordedUnderTheOtherNameOfARenameIsRecorded(t *te
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// A hang guard, not the subject: AckWait bounds the one store read recordedPullRequest
-			// makes, and at 5 s whether a read a loaded runner made slower came back as the row's
-			// answer or as context deadline exceeded was the machine's to decide. A minute, or what
-			// is left of the test binary's deadline less a second when that is sooner
-			// (testwait.Bounded), only a hung read reaches.
-			spec := ConsumerSpec{Project: "LEGION", AckWait: testwait.Bounded(t, time.Minute, time.Second), Renames: tc.renames}
+			// makes, and any fixed window lets the machine decide whether a slow read comes back as
+			// the row's answer or as context deadline exceeded: at 5 s a loaded runner's read did,
+			// and at one minute a read of 61 s did. The window is what is left of the test
+			// binary's deadline less 30 s (testwait.Remaining), so a read however slow is
+			// waited out and only one that never answers fails the row, by name, before the
+			// binary's own timeout.
+			spec := ConsumerSpec{Project: "LEGION", AckWait: testwait.Remaining(t), Renames: tc.renames}
 			got, err := recordedPullRequest(context.Background(), spec, pool, tc.fact)
 			if err != nil || got != tc.want {
 				t.Fatalf("recordedPullRequest(%#v) = %v, %v; want %v and no error", tc.fact, got, err, tc.want)
