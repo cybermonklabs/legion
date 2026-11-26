@@ -1114,7 +1114,7 @@ func fillTable(t *builder) {
 	t.ignore(onClosed, noProcess, processless...)
 
 	// The prompt's own outcome, from the send's goroutine.
-	t.row(onAcked, "the prompt was acknowledged: wait for its turn", acked, nil, prompted...)
+	t.row(onAcked, "the prompt was acknowledged: wait for its turn, or, for a task a turn has already confirmed, only record the prompt (ackedInTurn)", acked, nil, prompted...)
 	t.row(onAcked, "a turn already confirmed the delivery: the prompt is still outstanding until its result", ackedInTurn, nil, StateWorking)
 	t.ignore(onAcked, noSend, unready...)
 	t.ignore(onAcked, noSend, gone...)
@@ -1641,7 +1641,16 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 // the prompt it may find running carried. An acknowledgement the shim gave from its own record, for
 // a send under an id it already carried (shimwire's Dedupe), is of the same news as the send it
 // forwarded, since every send under one id carries the same news.
-func acked(m *Machine, ctx context.Context, _ Event) error {
+//
+// A task a turn has already confirmed is ackedInTurn's. The stream reported that turn's start and
+// its end before this acknowledgement, which reaches the machine on the send's own goroutine, so
+// the claim is ready or idle again holding the task (settle leaves it to the send's outcome,
+// resultPending's send window): the mark and the wait for a turn armed here would be for a turn
+// that has run, and that wait would take the task back at its bound (noTurn).
+func acked(m *Machine, ctx context.Context, ev Event) error {
+	if !m.claim.Pending.ConfirmedAt.IsZero() {
+		return ackedInTurn(m, ctx, ev)
+	}
 	m.helloDuringSend = false
 	p := m.claim.Pending
 	m.awaitResult(p.ID, p.News)
@@ -1654,10 +1663,10 @@ func acked(m *Machine, ctx context.Context, _ Event) error {
 // ackedInTurn is the acknowledgement of a prompt whose turn the stream reported first: Oh My Pi's
 // agent_start can land before the answer to the prompt that caused it, and that start has already
 // confirmed the delivery (turnStarted). The mark and the wait for a turn are that turn's to need,
-// and it has started — but the prompt itself is still outstanding, and which of the turns that
-// follow is its own is still a question only its result answers, so it is recorded here too, with
-// the news it carried. The copy the confirmation credits stays as that confirmation fixed it
-// (turnAnswers). Nothing else moves, and nothing is written.
+// and it has started, and it may have ended too (acked) — but the prompt itself is still
+// outstanding, and which of the turns that follow is its own is still a question only its result
+// answers, so it is recorded here too, with the news it carried. The copy the confirmation credits
+// stays as that confirmation fixed it (turnAnswers). Nothing else moves, and nothing is written.
 func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 	m.helloDuringSend = false
 	p := m.claim.Pending
@@ -1908,6 +1917,15 @@ func refusedUnprompted(m *Machine, ctx context.Context, ev Event) error {
 // on the spot for ever against an agent that cannot start a turn at all.
 func lateRefused(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(StreamLateRefusal)
+	// A refusal of the prompt whose send is still in flight answers that send, as its result
+	// would (sending.resulted): read before the send's outcome, it leaves the send's window open
+	// otherwise, and an earlier prompt's no-turn answer would then find the turn the task was
+	// confirmed by still waiting on a send whose prompt has said it ran none (waitedOutAnswer). A
+	// replayed refusal is an earlier connection's, of a prompt sent before this send under the
+	// same id, so it answers nothing of this one.
+	if send := m.send; send != nil && send.id == r.DeliveryID && !r.Replayed {
+		send.resulted = true
+	}
 	if done, err := refusedElsewhere(m, ctx, r); done {
 		return err
 	}
@@ -2218,7 +2236,10 @@ func (m *Machine) busyTurnBegun(delivery string) {
 // Whose turn it was is a question background work made real, and settle is where it is answered:
 // a turn that ends while the task's prompt is still outstanding retires nothing, because Oh My
 // Pi's agent_end names no prompt and a role's own background result starts turns the daemon
-// never prompted.
+// never prompted. Nor does one that ends while the send of that prompt is in flight and no answer
+// has made it moot (sending.resulted): its own result or its refusal after the acknowledgement,
+// or a turn-reporting result of any prompt of the task. The stream can hand the machine a turn's
+// end before the send's acknowledgement (resultPending's send window, sending).
 //
 // A stale-plugin relaunch held for this turn (refreshPlugin) runs here, before the queued task's
 // send: the claim's process speaks a plugin contract that cannot answer an update round, so it is
@@ -2236,12 +2257,12 @@ func (m *Machine) busyTurnBegun(delivery string) {
 //
 // The turn's end is logged here (turnEndedLine), and this is the only exit from working that
 // writes that line. The line names what this turn's own start line named (startTurn, endTurn),
-// because no reading of the claim can answer what the ending turn was: the window this same
-// function's resultPending branch leaves is one where the claim holds a task confirmed — its
-// turn ended before Oh My Pi said which turn the prompt's was, so settle retired nothing and the
-// task is still in the worker's hands — while the turn now ending is a turn of the agent's own,
-// which started naming no delivery. Every other way out of a turn writes a line of its own
-// instead, which is what a reader who found a start and no end looks for:
+// because no reading of the claim can answer what the ending turn was. While resultPending holds,
+// including before the send's acknowledgement, the claim can still hold a task confirmed by an
+// earlier turn — that turn ended before Oh My Pi said which turn the prompt's was, so settle
+// retired nothing — while the turn now ending is a turn of the agent's own, which started naming
+// no delivery. Every other way out of a turn writes a line of its own instead, which is what a
+// reader who found a start and no end looks for:
 //
 //   - a death of the process (died): "supervise: process died";
 //   - a held suspension whose deadline runs out (suspendAtTimeout): "supervise: the agent's turn
@@ -2268,11 +2289,10 @@ func (m *Machine) busyTurnBegun(delivery string) {
 // A suspension held for the turn runs here, now that the turn is over (holdSuspension). Its stop
 // cuts off no turn, so what the let-go records reads the claim as idle, the state this end gives
 // it (suspendHeldAtEnd): the next process is told it was in no turn, and the task the turn
-// confirmed is no task cut off in its turn (recordEnd). A project pause's hold waits instead for
-// the result of the turn's prompt where Oh My Pi has not written it yet (stopWaitsForResult), and
-// runs from that result (promptResulted, stopAtResult): only the result says whether the turn
-// finished its task or a provider refused it, and a stop made first would retire a refused task
-// the role is still owed.
+// confirmed is no task cut off in its turn (recordEnd). A project pause's hold waits instead
+// while the answer to the turn's prompt is still to come, and stopWaitsForResult says what ends
+// that wait: only the answer says whether the turn finished its task or a provider refused it,
+// and a stop made first would retire a refused task the role is still owed.
 //
 // Every end this records is counted (TurnsEnded), the compaction's below included, so the daemon
 // can post it to the issue's other claims once this decision is published (its wakeIssue): a phase
@@ -2320,19 +2340,34 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	}
 	if m.resultPending() {
 		// Oh My Pi has not said yet which turn this prompt's was, so settle retired nothing and
-		// the task is still in the worker's hands. What is held for the turn runs from the
-		// result instead (promptResulted), which is where this turn is over for it.
+		// the task is still in the worker's hands. What is held for the turn waits for that
+		// answer: a pause's hold as stopWaitsForResult says, and the rest as afterTurn says.
 		return nil
 	}
 	return m.afterTurn(ctx)
 }
 
-// afterTurn runs what the machine held for the agent's turn, once that turn is over for the
-// delivery too: its end seen and its prompt's result in, whichever came first (settle,
-// resultPending). What it holds reads the worker's hands — the stale-plugin relaunch would take
-// an unretired task back from the process it replaces (refreshPlugin) — so it may not run while
-// the task whose turn just ended is still unsettled. The send runs last, as it does from every
-// other decision.
+// afterTurn runs what the machine held for the agent's turn once the end has been seen and the
+// prompt's result has been decided (settle, resultPending), in whichever order they come. What
+// it holds reads the worker's hands — the stale-plugin relaunch would take an unretired task back
+// from the process it replaces (refreshPlugin) — so it may not run while the task whose turn just
+// ended is still unsettled. The send runs last, as it does from every other decision.
+//
+// A turn that ended while its prompt's answer was still to come (resultPending) comes back here
+// from that answer only where it is a result that says a turn ran with no provider error and no
+// pause's hold stops the claim at it (promptResulted), or the no-turn answer of a prompt whose
+// wait for its turn ran out, taking an idle claim's confirmation back (waitedOutAnswer). No other
+// answer runs this: not a send refused or lost (refused), not a result or a refusal after the
+// acknowledgement that says the prompt ran no turn (promptFailed, recordBusyTurn), and not a
+// result whose turn ended in a provider error (providerErrored). After a busy answer the claim is
+// recorded working, and the end of the turn it names comes here through turnEnded. After any
+// other, a stale-plugin relaunch held for the turn waits for its lane: the next sweep posts
+// StalePlugin for the claim, idle by then (refreshStalePlugin), as it does for a relaunch the
+// refresh gate refuses below, except for a claim in a pod round, which the lane leaves until that
+// round ends (staleForTheLane in internal/daemon). Meanwhile sendPending hands no task to a claim
+// whose calls this daemon refuses for its plugin (staleRefusesClaim), which is every claim such a
+// relaunch is held for unless it is in an update round; a claim in an update round is served on
+// its old contract (StaleRefusesCalls), so a task can reach its stale process.
 //
 // The held relaunch is the refresh gate's second asker (RefreshGate, dispatch://INFRA-2712 R1):
 // the claim took no credit while its turn ran (holdStaleRelaunch), so the relaunch run here
@@ -2423,6 +2458,12 @@ func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.s
 // A result for a delivery the claim no longer holds — retired, or taken back under a new id with
 // no prompt of it outstanding — is fenced out before this runs (fence).
 //
+// A result can be decided before the outcome of the send whose prompt it answers (sending), or
+// while a resend of the same task is still in flight. A result reporting a turn, successful or
+// not, ends the wait for every prompt of that task, including the resend (sending.resulted,
+// resultPending). A result reporting no turn answers only its own prompt. The fence has already
+// checked that the result names the pending delivery or an outstanding prompt of its task.
+//
 // A turn that ended in a provider error does not retire its task (providerErrored): the work is
 // still owed, and the daemon owes the worker another prompt of it rather than an idle claim
 // (dispatch://INFRA-956 R2). A turn that ended with no error is the one that clears the claim's
@@ -2447,6 +2488,9 @@ func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.s
 // prompt this daemon did not see acknowledged, the copy the task holds.
 func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(StreamPromptResult)
+	if send := m.send; send != nil && (send.id == r.DeliveryID || (r.AgentInvoked && send.id == m.claim.Pending.ID)) {
+		send.resulted = true
+	}
 	if !r.AgentInvoked {
 		busy := agentBusy(r.Error)
 		why := "acknowledged, and Oh My Pi ran no turn for it"
@@ -2520,8 +2564,9 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 // twice for one prompt.
 //
 // What the answer can still take back is a confirmation a turn took for this prompt. With no other
-// prompt of the task outstanding and no send of it in flight, the turn that confirmed the task was
-// matched to this prompt (turnStarted), and the prompt says it never ran, so that turn was another
+// prompt of the task outstanding and no send of it whose answer is still to come (sendUnanswered),
+// the turn that confirmed the task was matched to this prompt or to a send whose prompt has since
+// said it ran none (turnStarted), and the prompt says it never ran, so that turn was another
 // input's: the task goes back to waiting (takeBackPending), and that turn's end sends it — or,
 // when the end has already come and left what it held to this result (turnEnded, resultPending),
 // it goes from here (afterTurn), as it does from a result of a turn that ran (promptResulted).
@@ -2552,7 +2597,7 @@ func (m *Machine) waitedOutAnswer(ctx context.Context, id string, read, busy boo
 			return m.recordBusyTurn(ctx)
 		}
 		return nil
-	case !p.ConfirmedAt.IsZero() && m.send == nil:
+	case !p.ConfirmedAt.IsZero() && !m.sendUnanswered():
 		m.log.Warn("supervise: a prompt whose wait for its turn ran out was answered with no turn, so the turn taken for it was another's; the task goes back to waiting",
 			"delivery", id, "pending", p.ID, "why", why)
 		if err := m.takeBackPending(ctx, read); err != nil {
@@ -2577,13 +2622,33 @@ func (m *Machine) waitedOutAnswer(ctx context.Context, id string, read, busy boo
 	return m.markUnread(ctx)
 }
 
-// resultPending is whether the claim is still waiting on the result of a prompt of its pending task
-// it has had acknowledged (Machine.outstanding): the window in which a turn that ends may be any
-// turn at all. It is open only while the agent can still answer — a claim whose process a
-// suspension, a death or a retirement has taken is told nothing more, and the turn's end is all
-// the answer there will ever be.
+// resultPending is whether the claim is still waiting for the result of its pending task's prompt,
+// the window in which a turn that ends may be any turn at all: the question every reader of "was
+// the turn that ended this task's" asks. Oh My Pi's agent_end names no prompt, so the answer is
+// the result's, and the window has two parts:
+//
+//   - the send window: the send of the task's prompt is in flight and no answer has made it moot
+//     (sendUnanswered): its own result or its refusal after the acknowledgement, or a
+//     turn-reporting result of any prompt of the task.
+//     The send's outcome reaches the machine on the send's own goroutine, and the turn the prompt
+//     starts, its end and its result reach it from the stream's queue, so all three can be decided
+//     before the outcome (sending); and
+//   - the outstanding window: a prompt of the task has been acknowledged and its result is still
+//     to come (Machine.outstanding).
+//
+// The send window is open wherever the send is: a claim whose process a suspension, a death or a
+// retirement has taken has forgotten its send (letGo, forgetSend). The outstanding window is open
+// only while the agent can still answer — a claim whose process has been taken is told nothing
+// more, and the turn's end is all the answer there will ever be.
 func (m *Machine) resultPending() bool {
-	if m.claim.Pending == nil || !m.awaitsResult() {
+	p := m.claim.Pending
+	if p == nil {
+		return false
+	}
+	if m.sendUnanswered() && m.send.id == p.ID {
+		return true
+	}
+	if !m.awaitsResult() {
 		return false
 	}
 	switch m.claim.State {
@@ -2591,6 +2656,18 @@ func (m *Machine) resultPending() bool {
 		return true
 	}
 	return false
+}
+
+// sendUnanswered is whether a send is in flight whose answer is still to come: no answer has made
+// its outcome moot (sending.resulted). It is the one reading of that for the questions a send
+// in flight is asked. resultPending asks it of the pending task's own send: whether a turn that
+// ends may be any turn at all. turnAnswers asks it of a send under any id: whether a turn that
+// starts now may be that send's prompt's, and so is taken for the task's. confirmationInDoubt
+// asks it under any id for that reason: whether a let-go can vouch for the task's confirmation.
+// waitedOutAnswer asks it too: whether the turn that confirmed the task may still be the send's,
+// where an earlier prompt says it ran none.
+func (m *Machine) sendUnanswered() bool {
+	return m.send != nil && !m.send.resulted
 }
 
 func bootInterval(m *Machine, ctx context.Context, _ Event) error {

@@ -1491,7 +1491,8 @@ A refused connection costs no dial and no credential work, and its line holds no
 No other process of the role passes the check:
 
 - A command that Oh My Pi runs is a descendant of Oh My Pi, so it is never a direct child of the shim.
-  No process of the shim makes itself a subreaper, so an orphan goes to role-init, the init of the role's PID namespace.
+  A shim under role-init never makes itself a subreaper, so an orphan goes to role-init, the init of the role's PID namespace.
+  Only the controller pod's single-role shim reaps orphans itself (`--reap-orphans`, [Daemon-launched controller](#daemon-launched-controller)), and that form runs no session peer check.
 
 - An orphan that runs `legion worker-shim` is younger than the real shim, and the check takes the oldest.
 
@@ -2770,6 +2771,8 @@ This release also writes two new reasons of a hold on `issues.hold_reason`: `tas
 An earlier release serves `holdReason` as the record holds it, and its plugin reads the key with the one value `escalated` (`LegionStateResponse` in that release's `packages/contracts/src/legion-api.ts`) and refuses the whole state body for another, so every agent's `read_record` and each completion's read of the state on that project would fail while any issue stands held for either reason.
 
 At the rollback, with every project's daemon on that database stopped and before the earlier image is pinned, run the way back below in one `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1` session, with `<PROJECT>` the key of the project whose daemon rolls back.
+On a store that cybermonklabs/legion#5310's release or a later one migrated, also run the way back in the header of `20261124033010_plan_earlier_givers.up.sql` in that session, before or after the block below: it drops `issue_plans.earlier_givers` where the table still stands and deletes that migration's version row, so the roll-forward's `Migrate` adds the column again to the table it creates.
+Each of its statements runs again with no error, so it runs in each project's session as the block below does.
 An earlier release refuses a `legion.yaml` that names `projects.<KEY>.default_steps`, with `Unknown key "projects.<KEY>.default_steps"` (`readProject` in `config/stage3.go`), so remove that key from `legion.yaml` before you pin the earlier image, where the file sets it.
 It drops the three tables and the two columns and deletes the migration's version row, so the roll-forward's `Migrate` runs the migration again (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
 That part is owed to the roll-forward, not to the earlier release.
@@ -3614,6 +3617,7 @@ So after the roll-forward a cause the earlier release wrote with other text is s
 `20261124182040_issue_pod_disks.up.sql`, of #4392's release, carries no way back, since an earlier release names `issue_pod_disks` in no statement and leaves it standing.
 A rollback of a store that #4590's release or a later one migrated runs #4903's way back and the steps of [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages) first, and those steps delete rows alone and keep the version row of `20261120144241_intake_failures`.
 A rollback of a store that #5303's release or a later one migrated runs the way back in the header of `20261123224717_members_owed.up.sql` first, which deletes that version's row.
+A rollback of a store that cybermonklabs/legion#5310's release or a later one migrated runs the way back in the header of `20261124033010_plan_earlier_givers.up.sql` too, with the steps of [Rolling back the release whose owner's plan picks the steps](#rolling-back-the-release-whose-owners-plan-picks-the-steps), and it deletes that version's row.
 A rollback of a store that the release that backs a production check off a checking role that keeps failing migrated runs the way back in the header of `20261125000600_production_check_failed_looks.up.sql` first, with every daemon of the database stopped, which takes `wakeAt` off every queued `check_wake` row, drops `production_checks.failed_looks` and deletes that version's row, and then #5303's, since that release carries #5303; that store then reports the highest version it still records after the two blocks, #4392's 20261124182040, which that release carries too and which has no way back.
 A rollback of a store that the release that lets a message wake go ahead of the other paced wakes migrated runs the way back in the header of `20261125163328_message_wake_pacing.up.sql` first, with every daemon of the database stopped, which makes every catch-up that the wake pacing still holds due at once, takes `paced_turns` off every queued catch-up and clears every claim's message mark; it drops no column and deletes no version row, so that store then reports 20261125163328, whose two columns an earlier release names in no statement.
 
@@ -3698,6 +3702,7 @@ The migrations recorded above this one are these.
 20261123165139_experiment_assignment_plan adds `experiment_assignments.plan` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it takes `plan` out of `legion.yaml` first ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
 20261123212127_claim_start_failure_after_ready empties `claims.last_start_failure` on every claim stored ready, working or idle, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads an empty start failure as none recorded.
 20261123224717_members_owed, of dispatch://INFRA-5471, adds `issues.members_owed`, true on the roots whose re-admission has still to bring their members back, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every fact after the drop.
+20261124033010_plan_earlier_givers adds `issue_plans.earlier_givers`, each owner that gave a version of a plan before the one `given_by` names, at its default, no earlier giver, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; its way back, which drops the column where `issue_plans` still stands and deletes its row, runs only in a rollback past `20261117034837_issue_plans`, before or after that migration's way back, and a rollback onto a release that has the plan tables costs what its header says: the earlier release passes a version over at a first step where the giver it last recorded no longer owns the issue, though an earlier giver still does.
 20261124060500_issue_priority adds `issues.priority`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; it carries no way back, since an earlier release reads none of it, a row that release updates keeps the priority it held, and only a row it inserts gets null.
 20261124073512_claim_cause_times adds `claims.last_death_at`, `claims.last_start_failure_at`, `claims.last_death_digest` and `claims.last_start_failure_digest`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the four columns standing, which the earlier release names in no statement; it carries no way back.
 20261124130001_pull_request_reviews_requested, of dispatch://INFRA-4192, adds five columns of `pull_requests`: `reviews_requested`, how many review requests GitHub holds open on the pull request, null on every row it finds; `head_checks`, whether a check of the head was running when the merge state was read, at its default `''`; `null_mergeable_reads` and `null_mergeable_since`, how many reads in a row answered `mergeable` null and when the first was, at 0 and the zero instant; and `evidence_read_at`, the read time of the read that wrote them, at the zero instant.
@@ -5100,7 +5105,7 @@ the guest watch runs whatever that block says, `enabled: false` included, and a 
 
 **In the controller's pod.**
 Where `type` is `microvm`, the controller's launcher runs the guest watch by the rules of this section over the controller pod's classifier (`controllerClassifier`, "What it spares, and what it may end" in [The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)).
-The processes that classifier protects are the ones that section's guard spares, and the session processes it marks are the shim and every direct child of the shim.
+The processes that classifier protects are the ones that section's guard spares, and the session processes it marks are the shim and each of the shim's own children, never an orphan the shim adopted.
 Every process of the container is the controller's, so each process the watch names is reported to the controller, and its `ended` line names `role=controller`.
 That pod has no `role-init`: once the shim has exited, the launcher, PID 1, drains the exited generation itself, sending SIGTERM over the container's processes, waiting up to its stop grace for them to go, and sending SIGKILL to each one left (`cleanExitedGeneration`, `packages/daemon/internal/launcher/process.go`).
 That drain's SIGKILL takes the place of `role-init`'s in "The kills" and "What the sign does not show" below, so the watch's `SessionDrain` there is the stop grace and a second more, where an issue pod's is 3 s (`controllerSessionDrain`, `packages/daemon/internal/launcher/memoryguard.go`).
@@ -5765,6 +5770,14 @@ a link an earlier generation of the role left there (a `~/.cache` linked elsewhe
 a link, which role-init does not follow on the way to a mount point: replaced it with the mount
 point's place`, and anything else in the way that is neither a link nor a directory fails the generation.
 role-init then starts the shim's argv unchanged as its child, cloned into a nested user namespace that maps uid and gid 1000 with no capabilities, and stays the PID namespace's init, so when a generation ends every process it started ends with it and a role's `kill -9 -1` reaches none of its siblings'.
+The shim runs in role-init's own process group, so every orphan the role leaves in the shim's group (a `cmd &` whose shell exits) is reaped by role-init inside that group (`runRoleShim`, `roleinit_linux.go`).
+With the shim in a group of its own, the cluster's gVisor ended roles: it keeps, per process group, a count of the members whose parent is in another group of the session, takes one from it when such a member is reaped, and adds none when a member is reparented (`ancestors` in gVisor's `pkg/sentry/kernel/sessions.go`, and `task_exit.go` beside it).
+Each orphan role-init reaped from outside the shim's group lowered that count, until the group read as orphaned while the shim still ran, and a stopped member then brought SIGHUP and SIGCONT to the whole group, the shim and Oh My Pi among them.
+In role-init's group the one member with a parent outside it is role-init, whose parent is the launcher, so the group never reads as orphaned while the role runs.
+A role process can signal that group itself, and role-init is in it: with `kill 0`, or with the group's number, which is 1 in the role's PID namespace, so `kill -- -<pgid>` there is `kill(-1)` and reaches every process of the role but role-init.
+role-init takes a SIGTERM or a SIGINT to the group as the launcher's stop: SIGTERM to the whole role, and no drain after the shim exits.
+Each other signal the Go runtime ends a process on when it is sent (SIGHUP, SIGQUIT, SIGABRT, SIGILL, SIGTRAP, SIGSYS, SIGSTKFLT, and a sent SIGBUS, SIGFPE or SIGSEGV) role-init catches and drops (`roleInitDropped`), so it ends only the processes that take it, the shim among them, and role-init reports the shim's status and drains the role as for any shim that exits on its own.
+Oh My Pi sends no signal to its own group in its normal run, since its embedded shell refuses `kill 0`.
 The isolation rests on ownership and private mounts, not on a read-only root, which a nested user namespace could undo (`docs/solutions/legion/namespace-isolation-under-gvisor-holds-on-locked-mounts-and-ownership-not-a-read-only-root-INFRA-208.md`).
 An operator mount (`runtime.kubernetes.pod.volume_mounts`) at or above `/tmp`, `/var/tmp`, `/run/lock`, `/var/lock` or `/dev/shm`, or at or above the image's other spellings of them (`/var/run/lock`, `/run/shm`, `/var/run/shm`), is refused:
 `runtime.kubernetes.pod.volume_mounts[i].mount_path <p> is at or above <dir>, which every role's namespace in an issue pod covers with its own: mount under it instead`.
@@ -7616,12 +7629,16 @@ The guard spares:
 - the shim, the generation the launcher started, while that process is the launcher's own executable run as `worker-shim`:
   once the launcher has reaped the shim, the kernel may give its pid to another process;
 
-- every direct child of the shim: Oh My Pi, whether its start wrapper has run `exec` yet or not, the agent-secrets renewer and its keygen;
+- the shim's own children: Oh My Pi, whether its start wrapper has run `exec` yet or not, the agent-secrets renewer and its keygen.
+  The shim reaps the orphans its tree leaves (`--reap-orphans`, [Daemon-launched controller](#daemon-launched-controller)), so an orphan of a command Oh My Pi ran becomes a direct child of the shim as well.
+  The launcher tells the shim's own children apart (`shimOwnChildren`): Oh My Pi is the oldest direct child that does not run the shim's `--agent-secrets-bin`, since every orphan descends from Oh My Pi's commands and is younger than it, and the renewer and keygen run that executable as `renew` and `keygen`.
+  Any other direct child of the shim is an adopted orphan, which the guard may end as it may end one that PID 1 adopted.
+  An orphan that runs that executable as `renew` or `keygen` is spared: that is the rule's cost;
 
 - Oh My Pi's helpers, each reached from Oh My Pi through a chain of helpers, by the rule of an issue pod:
   a process that runs Oh My Pi's own executable with a first argument that starts `__omp_worker_`, except `__omp_worker_js_eval_process`, the kernel of the JavaScript eval tool.
 
-Every other process may be ended: a command the controller ran and what that command started, the JavaScript eval kernel wherever it runs and what it starts, a Python kernel, what a helper runs that is no helper, a helper's name under a command, a `worker-shim` that is not the launcher's generation, an orphan that PID 1 adopted, and a shell that `kubectl exec` started with what it runs.
+Every other process may be ended: a command the controller ran and what that command started, the JavaScript eval kernel wherever it runs and what it starts, a Python kernel, what a helper runs that is no helper, a helper's name under a command, a `worker-shim` that is not the launcher's generation, an orphan that PID 1 or the shim adopted, and a shell that `kubectl exec` started with what it runs.
 
 **Whom it tells.**
 Every process of the container is the controller's, spared or not.
@@ -10653,6 +10670,10 @@ Sandbox `legion-<project>-controller` in `runtime.kubernetes.namespace` runs the
 Its one container, `controller`, runs `legion launcher --role controller`:
 it authenticates to the worker stream with its own launcher token and starts and stops the controller's `legion worker-shim` and Oh My Pi, on the pod baseline (`--pod-safety`:
 the two session-placing variables, [Settings order](#operator-configuration), and Oh My Pi's profile directory made under its state home, `/legion/scratch/state/controller`), on the daemon's command, as an issue pod's launcher does each role's, so a relaunch in a healthy pod is a new generation of that child rather than a new pod.
+The launcher adds `--reap-orphans` to that shim's command (`reapingShim`, `internal/launcher/launcher.go`), and to no shim under role-init.
+With it the shim makes itself the child subreaper of everything it starts and reaps the orphans its process group leaves, rather than the launcher, the container's PID 1, reaping them from a group of its own, which under the cluster's gVisor could make the shim's group read as orphaned and hang it up ([Each role in namespaces of its own](#anatomy-of-a-sandbox-pod) says how).
+Every child the shim waits for itself (Oh My Pi, the secrets keygen and renewer) starts through one guard that this reaper passes over (`internal/subreaper`), so no such child's exit is taken from its own wait.
+The memory guard of this pod tells the shim's own children from the orphans the shim adopts, and may end an adopted orphan as it may end one that PID 1 adopted ([The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)).
 In a microVM its launcher is also given `--microvm` and, where the deployment sets `runtime.kubernetes.sandbox.microvm.metadata`, the metadata endpoint's two flags, and then serves that endpoint from the projected token it mounts at `/var/run/legion/workload-identity` ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
 Its role Secret, `legion-<project>-controller-controller-boot`, holds the launcher's token and its gh bundle (each owner's `github-hosts-<owner>` and `github-config-<owner>`, the review App's read-only `hosts.yml` and `config.yml` for every owner that App is installed on and for an owner a configured rename moved a repository away from, each token reaching every repository that owner's installation holds, `github-renames`, the bundle's configured renames, and `github-default`, the first owner), refreshed every minute as every role's are, and is the only Secret its launch writes:
 there is no provisioning `-boot` Secret.
@@ -10698,7 +10719,7 @@ The container mounts the writer token at `/var/run/legion/roles/session-writer`,
 It mounts nothing at the fixed paths of the single-role form: `/var/run/legion/launcher`, `/var/run/legion/private`, `/var/run/legion/state`, `/var/run/legion/gh` and `/var/run/legion/agent-secrets`.
 role-init starts the controller's generation in namespaces of its own and binds the controller's own gh, private, state and agent-secrets key directories back at those paths, but not its launcher token.
 So the controller's agent finds each directory where it always has, and it reads neither the writer token nor the launcher token.
-The roles-dir form changes five things for the controller:
+The roles-dir form changes six things for the controller:
 
 - The memory guard knows the controller's processes by the `role-init` above them, as an issue pod's guard knows each role's (`podClassifier`), in place of `controllerClassifier`, and it spares what an issue pod's guard spares in a role.
   Before the daemon's first answer it runs at an issue pod's defaults, and that answer hands it `runtime.kubernetes.memory_guard.controller_pod`'s settings, as in the single-role form (`launcherHelloAck`).
@@ -10711,6 +10732,9 @@ The roles-dir form changes five things for the controller:
 
 - A process that the controller's generation leaves running after its shim exits gets role-init's drain: SIGTERM over the role's namespace, two seconds (`roleNamespaceDrain`), then SIGKILL (`runRoleShim`, `internal/launcher/roleinit_linux.go`).
   In the single-role form, the launcher as PID 1 gives such a process up to `--stop-grace` (`cleanExitedGeneration`).
+
+- The orphans the controller's shim and Oh My Pi leave are reaped by role-init, inside the process group the shim shares with role-init, and the shim is not given `--reap-orphans` (`runRoleShim`).
+  In the single-role form the shim reaps them itself.
 
 - The controller's home overlay, its `/tmp` and `/var/tmp` and its own config home are on the role homes volume, a disk `emptyDir` that counts against the controller pod's ephemeral storage ([Issue sizing](#issue-sizing-one-reservation-per-pod)).
 
