@@ -212,9 +212,8 @@
 // argument, an id of a way out): a node id, a value or a line of a file, a name of code or a value
 // of a scenario is cut (specgraph.Cut), whole up to 100 bytes, else its first and its last 50 bytes
 // with … between them, so no line grows with the files, and a JSON line holds each value whole, as
-// data for a program. print writes each document
-// into the files as the approved spec holds it, since a change copies it byte for byte; no CI job
-// runs print.
+// data for a program. print writes each document into the spec files of its directory itself, as
+// the approved spec holds it, byte for byte; no CI job runs print.
 package main
 
 import (

@@ -315,9 +315,9 @@ func (a Approved) Since(id string) time.Time {
 func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 	name := fmt.Sprintf("approved %s version %d", id, v.Version)
 	tree, problems := Parse(map[string][]byte{name: []byte(v.Document)})
-	// Parse holds a document with no problem that loses a node to the document that Print writes
-	// (not-printed); a document with a problem of the schema that loses a node it does not hold to
-	// it, so the check below does.
+	// Parse compares a document with the document that Print writes for its node (not-printed) only
+	// when no problem of the document loses a node. A problem of the schema that loses a node passes
+	// here, as the schema's problems do, so the check below compares such a document itself.
 	printedFormUnchecked := slices.ContainsFunc(problems, func(p Problem) bool { return p.Effect == LosesNode })
 	problems = slices.DeleteFunc(problems, func(p Problem) bool { return p.Rule == "schema" })
 	if len(problems) != 0 {

@@ -385,13 +385,9 @@ func finishOld(fsys fileSystem, old, dir string, read map[string]string) (lines 
 			names = append(names, name)
 		}
 	}
-	if len(names) == 0 && fsys.remove(old) == nil {
-		removeRecord(fsys, old)
+	what, path, removed, err := leave(fsys, old, names)
+	if removed {
 		return nil, false
-	}
-	what := strings.Join(names, ", ")
-	if what == "" {
-		what = "an entry" // made in old after the run read it, so old was not empty
 	}
 	cause := "another program made or changed " + what + " there while print ran"
 	held := "which another program made or changed there while print ran"
@@ -399,14 +395,12 @@ func finishOld(fsys fileSystem, old, dir string, read map[string]string) (lines 
 		cause = fmt.Sprintf("the system refused to move %s back into %s (%s)", what, dir, refused)
 		held = fmt.Sprintf("which the system refused to move back into %s (%s)", dir, refused)
 	}
-	path, err := keep(fsys, old)
 	switch {
 	case err != nil && read == nil:
 		return []string{fmt.Sprintf("print could not remove %s, which held %s before the run, and holds %s, and print has no record of the texts that the run that left it read: %s", old, dir, what, err)}, true
 	case err != nil:
 		return []string{fmt.Sprintf("print could not remove %s, which held %s before the run, and holds %s, %s: %s", old, dir, what, held, err)}, true
 	}
-	removeRecord(fsys, old)
 	if read == nil {
 		return []string{fmt.Sprintf("print kept %s, which held %s before the run: it holds %s, and print has no record of the texts that the run that left it read, so compare each with the entry of that name in %s",
 			path, dir, what, dir)}, true
@@ -448,20 +442,35 @@ func undoNew(fsys fileSystem, staging, dir string) (lines []string, kept bool) {
 			names = append(names, name)
 		}
 	}
-	if len(names) == 0 && fsys.remove(staging) == nil {
-		removeRecord(fsys, staging)
+	what, path, removed, err := leave(fsys, staging, names)
+	switch {
+	case removed:
 		return nil, false
-	}
-	what := strings.Join(names, ", ")
-	if what == "" {
-		what = "an entry" // made in staging after the run read it, so staging was not empty
-	}
-	path, err := keep(fsys, staging)
-	if err != nil {
+	case err != nil:
 		return []string{fmt.Sprintf("print could not remove %s, which a killed run of print left beside %s, and holds %s, which print did not make: %s", staging, dir, what, err)}, true
 	}
-	removeRecord(fsys, staging)
 	return []string{fmt.Sprintf("print kept %s, which a killed run of print left beside %s: it holds %s, which print did not make", path, dir, what)}, true
+}
+
+// leave removes left, a directory that a run of print built or exchanged out of the spec
+// directory, and its record, when names, the entries of left that print could neither move nor
+// remove, is empty, and answers removed. Else it keeps left under another name (keep), and removes
+// its record once it kept it; it answers what, which names those entries ("an entry" for one made
+// in left after the run read it, so left was not empty), the name that it kept left under, and the
+// refusal of keep.
+func leave(fsys fileSystem, left string, names []string) (what, kept string, removed bool, err error) {
+	if len(names) == 0 && fsys.remove(left) == nil {
+		removeRecord(fsys, left)
+		return "", "", true, nil
+	}
+	what = strings.Join(names, ", ")
+	if what == "" {
+		what = "an entry"
+	}
+	if kept, err = keep(fsys, left); err == nil {
+		removeRecord(fsys, left)
+	}
+	return what, kept, false, err
 }
 
 // keep gives path, a directory that print leaves, a name that cleanLeftovers does not take as its
