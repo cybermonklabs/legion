@@ -2047,7 +2047,7 @@ func TestTask310RouteGoldens(t *testing.T) {
 		Opened:  true,
 	})
 	golden(t, "fresh-session.json", FreshSessionResponse{})
-	golden(t, "compact.json", CompactResponse{Reason: "Nothing to compact (session too small)"})
+	golden(t, "compact.json", CompactResponse{Reason: "Nothing to hand off (already compacted)"})
 	golden(t, "agent-stop.json", AgentActionResponse{State: string(supervise.StateRetired)})
 	golden(t, "agent-retry.json", AgentActionResponse{State: string(supervise.StateLaunching)})
 	golden(t, "agent-suspend.json", AgentActionResponse{

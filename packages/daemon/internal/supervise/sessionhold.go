@@ -291,6 +291,11 @@ func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 			return ReleasedNames{}, err
 		}
 	}
+	// The release writes the claim row alone, so a take-back the claim must carry goes first
+	// (carryPending, writeCarried).
+	if err := m.writeCarried(ctx); err != nil {
+		return ReleasedNames{}, err
+	}
 	c := m.stored()
 	if mark {
 		c.Abandoned.Released, released.Abandoned = m.deps.Clock.Now(), a.Session

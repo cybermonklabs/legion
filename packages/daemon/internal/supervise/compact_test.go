@@ -8,9 +8,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// compactInstructions stands for what the API sends with every compaction: Oh My Pi writes a
-// text summary only for a compaction that carries instructions, and Machine.Compact refuses one
-// that carries none.
+// compactInstructions stands for what the API sends with every compaction: the instructions
+// keep the reviewer's entry in Oh My Pi's handoff document, and Machine.Compact refuses a
+// compaction that carries none.
 const testCompactInstructions = "Write the summary as text."
 
 // ladderStuck is the claim the provider-errors notice names, idle between the ladder's sends:
@@ -89,18 +89,18 @@ func TestACompactionStartsTheRunOfProviderErrorsAgainSoItIsHandedOnASecondTime(t
 	}
 }
 
-// A compaction Oh My Pi refused or skipped resets nothing: the session is as it was, so the run
-// of refused turns it carried still stands and the notice does not go again for it. The
-// owed task goes again all the same.
+// A handoff Oh My Pi refused resets nothing: the session is as it was, so the run of refused
+// turns it carried still stands and the notice does not go again for it. The owed task goes
+// again all the same.
 func TestACompactionThatWasRefusedKeepsTheRunOfProviderErrors(t *testing.T) {
 	notices := 0
 	h := ladderStuck(t, &notices)
 	sent := ladderSends
-	h.conn.RefuseCompact("Nothing to compact (session too small)")
+	h.conn.RefuseCompact("Nothing to hand off (already compacted)")
 
 	err := h.m.Compact(h.ctx, testCompactInstructions)
 
-	if reason := runtimeRefusalReason(err); reason != "Nothing to compact (session too small)" {
+	if reason := runtimeRefusalReason(err); reason != "Nothing to hand off (already compacted)" {
 		t.Fatalf("compact answered %v, want Oh My Pi's own refusal", err)
 	}
 	h.m.Wait()
@@ -174,9 +174,9 @@ func waitForCompacting(t *testing.T, h *harness) {
 }
 
 // A turn that ends while the session is being compacted leaves the claim exactly where it is: a
-// compaction aborts whatever turn its session was running, so a background turn's end can
-// arrive under one, and taking it for the compaction's end would hand the claim its owed task
-// while Oh My Pi is still writing the summary.
+// turn can start and end under the compaction, a background turn among them, and taking its end
+// for the compaction's end would hand the claim its owed task while Oh My Pi is still writing the
+// handoff document.
 func TestATurnThatEndsDuringACompactionLeavesTheClaimWorking(t *testing.T) {
 	notices := 0
 	h := ladderStuck(t, &notices)
@@ -200,9 +200,8 @@ func TestATurnThatEndsDuringACompactionLeavesTheClaimWorking(t *testing.T) {
 	h.wantPrompts(sent + 1)
 }
 
-// A compaction asked for with no instructions is refused before anything is sent: Oh My Pi
-// archives the history onto snapcompact's images for a compaction that carries none, and a
-// worker resumed on images needs a vision model to read its own past.
+// A compaction asked for with no instructions is refused before anything is sent: the
+// instructions are what keep the reviewer's entry in Oh My Pi's handoff document.
 func TestACompactionWithNoInstructionsIsRefusedBeforeAnythingIsSent(t *testing.T) {
 	notices := 0
 	h := ladderStuck(t, &notices)
@@ -217,48 +216,6 @@ func TestACompactionWithNoInstructionsIsRefusedBeforeAnythingIsSent(t *testing.T
 	}
 	if got := h.state(); got != StateIdle {
 		t.Fatalf("the claim is %s, want it left idle", got)
-	}
-}
-
-// The ladder has just sent the owed task and the prompt is in flight — acknowledged, with the
-// wait for its turn armed — when the compaction is taken. Oh My Pi runs one thing at a time, so
-// the compaction aborts the turn that prompt started, and the result of an aborted turn carries
-// no error of its own: read as a turn that worked, it would confirm the task and the end of the
-// compaction would retire it unsent. The task is taken back instead, and the end of the
-// compaction sends it again.
-func TestACompactionTakenWhileTheOwedPromptIsInFlightSendsTheTaskAgainAfterIt(t *testing.T) {
-	notices := 0
-	h := ladderStuck(t, &notices)
-	h.advance(promptRetryMax) // the ladder's next step sends the owed task
-	sent := h.wantPrompts(ladderSends + 1)[ladderSends].DeliveryID
-	if got := h.state(); got != StateIdle {
-		t.Fatalf("after the ladder's send the claim is %s, want it idle waiting for the turn", got)
-	}
-	release := h.conn.HoldCompact()
-	compacted := make(chan error, 1)
-	go func() { compacted <- h.m.Compact(h.ctx, testCompactInstructions) }()
-	waitForCompacting(t, h)
-
-	h.must(StreamTurnStart{Claim: h.token})
-	h.mustQuiet(StreamTurnEnd{Claim: h.token})
-	h.must(StreamPromptResult{Claim: h.token, DeliveryID: sent, AgentInvoked: true})
-
-	release()
-	if err := <-compacted; err != nil {
-		t.Fatalf("compact: %v", err)
-	}
-	h.m.Wait()
-	owed := h.claim().Pending
-	if owed == nil {
-		t.Fatal("the compaction retired the task whose turn it aborted: the claim owes nothing, and nothing sends it again")
-	}
-	if owed.ID == sent {
-		t.Fatalf("the task kept the id %q its aborted prompt carried; a task taken back goes under a new one, so that prompt's result names nothing", sent)
-	}
-	prompts := h.wantPrompts(ladderSends + 2)
-	if prompts[ladderSends+1].DeliveryID != owed.ID {
-		t.Fatalf("the send after the compaction carried %q, want the task the claim still owes, %q",
-			prompts[ladderSends+1].DeliveryID, owed.ID)
 	}
 }
 
@@ -895,8 +852,8 @@ func TestACompactionOfAClaimASuspensionIsHeldOverIsNotTaken(t *testing.T) {
 //
 // What the new machine has of the compaction is nothing. It is memory only (compacting), the
 // claim records only the working the take wrote (compactStart), and the shim carries no event of
-// a compaction either: Oh My Pi answers the `compact` request, and that answer goes to the
-// connection of the daemon that asked (shimwire.Compact). So the restored claim is the shape
+// a compaction either: Oh My Pi answers the `handoff` request, and that answer goes to the
+// connection of the daemon that asked (shimwire.Handoff). So the restored claim is the shape
 // every other restored working claim is, and its recovery is that shape's: the daemon asks the
 // agent whether the turn an earlier daemon saw start is still running (askTurnOver).
 //
@@ -950,18 +907,19 @@ func TestARestartWhileASessionIsBeingCompactedSendsNothingWhileItsAgentIsInATurn
 	}
 }
 
-// The same restart, and the agent answers that no turn is running — the answer the question can
-// get while Oh My Pi is still writing the summary, since a compaction is not a turn of the agent
-// and the daemon has no second word to ask about one. The restarted daemon ends the turn it was
-// asking about and the owed task goes, into a session that may still be being compacted.
+// The same restart, and the agent answers that no turn is running — the answer the question gets
+// while Oh My Pi is still writing the handoff document, since a handoff is not a turn of the
+// agent and the daemon has no second word to ask about one. The restarted daemon ends the turn it
+// was asking about and the owed task goes, into a session that may still be handing off.
 //
 // That is the recovery compactStart states and the only one a restart can make: no store and no
 // frame tells the new daemon a compaction is in flight (restartedMidCompaction), so the agent's
 // own answer is the whole of what it has to go on, and a daemon that distrusted that answer
 // would hold the claim working with nothing left to end it — the stuck worker this issue is
 // about. What the recovery must not do is lose the task, and it does not: the task stays
-// pending and unconfirmed under the id it was sent as, so a prompt a compaction swallows starts
-// no turn and the sweep that follows sends it again (observe).
+// pending and unconfirmed under the id it was sent as, so the turn Oh My Pi starts for that
+// prompt once the handoff is over confirms it, and a prompt that starts no turn is sent again by
+// the sweep that follows (observe).
 func TestARestartWhileASessionIsBeingCompactedSendsTheOwedTaskWhenItsAgentSaysNoTurnIsRunning(t *testing.T) {
 	h := restartedMidCompaction(t)
 	owed := h.pending().ID
@@ -975,6 +933,6 @@ func TestARestartWhileASessionIsBeingCompactedSendsTheOwedTaskWhenItsAgentSaysNo
 		t.Fatalf("the send after the restart's question carried %q, want the task the claim owed, %q", prompts[ladderSends].DeliveryID, owed)
 	}
 	if got := h.pending(); got.ID != owed || !got.ConfirmedAt.IsZero() {
-		t.Fatalf("the claim holds %+v, want the task %s kept unconfirmed: a prompt the compaction swallows starts no turn, and the sweep sends it again", got, owed)
+		t.Fatalf("the claim holds %+v, want the task %s kept unconfirmed until a turn of it starts", got, owed)
 	}
 }

@@ -1579,6 +1579,12 @@ type Machine struct {
 	// a re-send, should that send fail.
 	send            *sending
 	helloDuringSend bool
+	// heldSend is the delivery id of the send that was in flight when a compaction took the claim
+	// (compactStart): the pinned Oh My Pi parks a prompt that reaches it while a handoff runs, and
+	// admits and acknowledges it only once the handoff ends, so that send's wait can run out with
+	// the prompt still on its way to its turn. Its outcome reads the mark (refused) and clears it,
+	// and so do a new send and a let-go (startSend, forgetSend). It is memory only.
+	heldSend string
 	// unsaved is a pending delivery the store's row does not hold as memory holds it — a write of
 	// it the store did not take (saved), a row a rotation the daemon never heard of left under
 	// another id (retirePending), or the copy of an unconfirmed task's news that letGo dropped in
@@ -1658,35 +1664,62 @@ type Machine struct {
 	// hold across the one refusal and the end after it, in one daemon run, and a restart in that
 	// window costs the claim the one launch failure that end is then charged.
 	refusedEarlierRelease uint64
-	// outstanding is every prompt of the pending task that Oh My Pi acknowledged and has not yet
-	// reported the end of (shimwire.PromptResult), by delivery id. The pinned Oh My Pi answers each
-	// prompt with exactly one prompt_result, owned by the first run after the prompt's admission
-	// (rpc-prompt-results.ts), and refuses a prompt that arrives while another is admitted ("Agent
-	// is already processing") rather than queue it; the Claude Code bridge takes one prompt at a
-	// time too (internal/claudebridge's Busy and promptRun). So the session's next turn after an
+	// outstanding is every prompt of the pending task whose result Oh My Pi has not yet reported
+	// (shimwire.PromptResult), by delivery id: one it acknowledged, or one held, whose frame the
+	// daemon wrote and whose reply did not come, which proves the frame was written and not that Oh
+	// My Pi received it (awaitedPrompt). The pinned Oh My Pi answers each prompt with exactly one
+	// prompt_result, owned by the first run after the prompt's admission (rpc-prompt-results.ts),
+	// and refuses a prompt that arrives while another is admitted ("Agent is already processing")
+	// rather than queue it; the Claude Code bridge takes one prompt at a time too
+	// (internal/claudebridge's Busy and promptRun). So the session's next turn after an
 	// acknowledgement is that prompt's, however long its pre-turn work runs past the wait for it
-	// (noTurn): a turn that starts while an id is held here is the task's (turnStarted), and a
+	// (noTurn): a turn that starts while an id is recorded here is taken for the task's
+	// (turnStarted), tentatively where only held entries are recorded (awaitedPrompt), and a
 	// result naming one is the task's whichever id the task has moved on to since (fence,
-	// promptResulted). While one is held, a turn that ends is not known to be the task's — with
+	// promptResulted). While one is recorded, a turn that ends is not known to be the task's — with
 	// background work on, a role's own background result wakes it and starts turns the daemon
 	// never prompted — so the delivery's life ends at its result rather than at any agent_end
 	// (turnEnded, resultPending).
 	//
-	// acked and ackedInTurn add an id, with the news of the approved design that prompt carried,
-	// which a confirmation of that prompt's turn credits (turnAnswers, turnNews). A result or a
-	// refusal naming one removes it, and the result of a prompt that ran a turn ends the wait for
-	// them all (promptResulted); the wait for a turn that runs out (noTurn) takes the task back and
-	// keeps its prompt here. The sweep's answer that the agent is in no prompt empties it
-	// (askTurnOver), and so does a compaction, which aborts whatever run the session had
-	// (compactStart). letGo, retirePending — and with it queue, when a newer task takes the pending
-	// one's place — and interrupted empty it too, since what it waits on goes with the process or the
-	// task. Each of those empties it through forgetOutstanding.
+	// Each entry is in one of two states, and the two prove different things (awaitedPrompt):
+	// acknowledged, which acked and ackedInTurn add (takeAck), and held, which keepHeldPrompt adds
+	// for a send the compaction held whose prompt frame was written and whose answer did not come
+	// (runtime.ErrPromptUnanswered). An entry is added with the news of the approved design its
+	// prompt carried, which a confirmation of that prompt's turn credits (turnAnswers, turnNews). A
+	// result or a refusal naming one removes it, and the result of a prompt that ran a turn ends the
+	// wait for them all (promptResulted). The wait for a turn that runs out (noTurn) takes the task
+	// back and keeps an acknowledged prompt here, and removes a held one before it sends that prompt
+	// again under its id, taking nothing back. The sweep's answer that the agent is in no prompt
+	// empties it (askTurnOver); a compaction does not, since it is Oh My Pi's handoff, which aborts
+	// no turn (compactStart). letGo, retirePending — and with it queue, when a newer task takes the
+	// pending one's place — and interrupted empty it too, since what it waits on goes with the
+	// process or the task. Each of those empties it through forgetOutstanding.
 	//
 	// It is memory only: a daemon restarted inside a late turn's wait restores the claim with no
 	// prompt outstanding and asks the agent where it is instead (askFirst), so that window keeps
 	// the behaviour it had before the set: a turn that starts is taken for the task by askFirst,
 	// and credits the delivery's own copy (Delivery.Carried).
 	outstanding awaitedPrompts
+	// resulted is the delivery id of the last prompt whose result promptResulted took, a turn
+	// that ran or one that ended in a provider error. A result of a prompt whose task still holds
+	// that id prevents sendPending from sending it again under the same id after the take-back's
+	// write failed: the shim would answer from its old record, without a second turn. The result
+	// also marks that prompt's sending record answered, so fenceOutcome drops a later
+	// acknowledgement before acked and takeAck see it. It is memory only.
+	resulted string
+	// ranTask is the pending delivery's id when promptResulted last took a result as a turn that
+	// ran with no provider error — the task that result completed, under whichever id the task held
+	// then. resulted names the prompt, which can be an earlier prompt of the task whose wait for its
+	// turn moved the task to a new id while it stayed outstanding (takeBackPending); ranTask names
+	// the task. It ends confirmationInDoubt only where that task's successful result leaves a
+	// different send unanswered, so the result did not already make sendUnanswered false. It is
+	// memory only.
+	ranTask string
+	// carryPending is whether the next claim write must carry the pending delivery in the same
+	// transaction (carriesPending): set by a let-go's take-back of a confirmation (letGo), cleared
+	// once a write of both lands (wroteCarried).
+	// It is memory only.
+	carryPending bool
 	// turnOutcomeFailed is whether the turn-outcome report this decision handles failed the
 	// claim: turnOutcome clears it, unpromptedTurnEnded sets it when it fails the claim, and
 	// HandleTurnOutcome reads it and clears it before the decision's lock is let go, so a report
@@ -2026,12 +2059,32 @@ type sending struct {
 	resulted   bool
 }
 
-// awaitedPrompt is one prompt of the pending task that Oh My Pi acknowledged and has not yet
-// reported the end of (Machine.outstanding): its delivery id, and the news of the approved design
-// it carried, as its first acknowledgement recorded it (awaitResult).
+// awaitedPrompt is one prompt of the pending task whose frame the daemon wrote and whose result Oh
+// My Pi has not yet reported (Machine.outstanding): its delivery id, the news of the approved
+// design it carried as the entry's first writer recorded it (awaitResult, keepHeldPrompt), and
+// which of the two states it is in.
+//
+// An acknowledged entry (held false) is a prompt Oh My Pi admitted. It runs one admitted prompt at
+// a time, so the session's next turn is that prompt's: a turn that starts is the task's
+// (turnAnswers), its confirmation stands until the prompt's result, and a let-go leaves it
+// confirmed (sendUnproven).
+//
+// A held entry (held true) is a prompt whose frame the daemon wrote while a compaction held the
+// send, and whose reply did not come within the send's deadline (keepHeldPrompt,
+// runtime.ErrPromptUnanswered). It proves the frame was written, not that Oh My Pi received it.
+// Where Oh My Pi did receive it, the pinned build parks a prompt that reaches it while a handoff
+// runs, and admits and acknowledges it only once the handoff ends. A turn that starts confirms the
+// task as it would for an acknowledged entry, but only tentatively, since it is no proof that Oh
+// My Pi admitted the prompt: a confirmation that rests on held entries alone is unproven, because
+// nothing yet says the turn was not another input's, so a let-go takes it back (sendUnproven), and
+// a wait for its turn that runs out charges it nothing and sends the prompt again under its id
+// (noTurn). No path acknowledges a held entry: the acknowledgement Oh My Pi writes after the
+// handoff reaches no request (stream's Conn.answer), and noTurn removes the entry before it sends
+// the prompt again.
 type awaitedPrompt struct {
 	id   string
 	news []byte
+	held bool
 }
 
 // awaitedPrompts is every prompt the pending task waits on a result for, oldest first
@@ -3133,7 +3186,7 @@ func (m *Machine) fence(ctx context.Context, ev Event) (bool, error) {
 }
 
 // timesADelivery is whether a timer of kind waits on one delivery rather than on the claim or
-// its process: the wait for an acknowledged prompt's turn, and the ladder's wait a provider
+// its process: the wait for an outstanding prompt's turn, and the ladder's wait a provider
 // error arms (providererror.go). Each is fenced on the claim's pending delivery as well as on
 // the id the arming recorded, so one that fires after the task it was armed for was replaced
 // decides nothing about the task that replaced it.
@@ -4748,11 +4801,30 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // any more, so a turn of the next process's own, after a restart, is never taken for it
 // (unsentNews). The copy goes in memory here and, where it changed, reaches the store at the next
 // write of the delivery, which settle makes before the next decision (unsaved).
+//
+// A confirmation that rests on a send whose answer has not come (sendUnproven) — the task's own
+// send still in flight, or held prompts alone — is taken back here, before the send and the
+// prompts outstanding are forgotten. Only that answer could say whether the turn was the task's
+// (turnAnswers, settle): the turn may have been an Envoy notice's while the send was still adopting
+// the working copy, or while Oh My Pi still held the prompt. Once the send is forgotten its outcome
+// is fenced out (fenceOutcome), so a
+// confirmation left standing would be retired as served by the settle after the let-go, and a
+// suspension that keeps the task — an operator's, a release's — would resume with nothing to send.
+// Taken back, the task is owed and goes again to the next process: told twice where the turn was
+// its own, never not at all, as recordEnd has already untold it (untellInFlight). A path that takes
+// the task back from a turn first (interrupted) leaves no confirmation for this to find. The
+// take-back is memory's until the caller's claim write, which carries the delivery with the claim
+// in one transaction (carriesPending): written apart, a stop between the two writes would restore
+// a stopped claim whose unsent task reads as served.
 func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.recordEnd(ctx, cause)
 	m.disarmAll()
 	m.relaunch, m.podRoundWaiting, m.awaitsPod = nil, false, nil
 	m.wake = nil
+	if m.sendUnproven() {
+		m.takeBackConfirmation(m.claim.Pending)
+		m.unsaved, m.carryPending = true, true
+	}
 	m.forgetSend()
 	m.forgetOutstanding()
 	if p := m.claim.Pending; p != nil && m.copyTurnNews(p) {
@@ -5011,7 +5083,7 @@ func (m *Machine) disarmAll() {
 // forgetSend drops everything the machine knew about talking to the agent it had: a new process,
 // or none, has no memory of the old one's prompts.
 func (m *Machine) forgetSend() {
-	m.send, m.helloDuringSend, m.askFirst = nil, false, false
+	m.send, m.helloDuringSend, m.askFirst, m.heldSend = nil, false, false, ""
 }
 
 // write runs one store write of a decision under the claim-write deadline (bounded), derived from
@@ -5108,7 +5180,18 @@ func (m *Machine) bounded(ctx context.Context) (context.Context, context.CancelF
 // the repair, whichever decision made it. While a project pause's stop is owed, the write is that
 // stop's transaction instead (putStops, Deps.PauseStopped), so no write of the claim lands
 // without the pause's records.
+//
+// After a let-go's take-back of a confirmation the claim is never written alone (carriesPending):
+// the delivery goes in the same transaction (putClaimAndPending), whichever caller writes the
+// claim — a decision's persist, a direct mark (markRound), a pause's stop (persistStop). Written
+// apart, a stop between the writes would restore the stopped claim beside a delivery still
+// confirmed by a turn that may have been another input's, which a restart reads as served. Every
+// other claim write leaves the delivery to its own write, so an outage on the delivery's table
+// does not hold the claim's writes too.
 func (m *Machine) putClaim(ctx context.Context) error {
+	if m.carriesPending() {
+		return m.putClaimAndPending(ctx)
+	}
 	c := m.stored()
 	// Published here as well as when the decision ends: a launch writes the claim before it waits
 	// in the runtime, and View then shows the launch rather than what it replaced.
@@ -5121,6 +5204,32 @@ func (m *Machine) putClaim(ctx context.Context) error {
 	}
 	m.settleOwedWrite("PutClaim")
 	return nil
+}
+
+// carriesPending is the one decision of whether a write of the claim carries the pending
+// delivery in the same transaction: a let-go's take-back of a confirmation obliges it until a
+// write of both lands (letGo, Machine.carryPending, wroteCarried). putClaim, writeCarried and
+// persistStop each read it here.
+func (m *Machine) carriesPending() bool {
+	return m.carryPending && m.claim.Pending != nil
+}
+
+// wroteCarried records that the store took the claim and the pending delivery memory holds in one
+// transaction: the delivery is saved, and no later claim write has to carry it.
+func (m *Machine) wroteCarried() {
+	m.unsaved, m.carryPending = false, false
+}
+
+// writeCarried writes the claim and its pending delivery in one transaction where a let-go's
+// take-back of a confirmation obliges the next claim write to carry the delivery (carriesPending),
+// and writes nothing otherwise. The store calls that write the claim row by themselves — an
+// admission (revive), a release of session names — call it first, so no such write lands the
+// claim beside a delivery the store still holds confirmed. putClaim carries the delivery itself.
+func (m *Machine) writeCarried(ctx context.Context) error {
+	if !m.carriesPending() {
+		return nil
+	}
+	return m.putClaimAndPending(ctx)
 }
 
 // putDelivery writes one delivery of this claim under the claim-write deadline, as putClaim
@@ -5155,13 +5264,15 @@ func (m *Machine) putClaimAndDelivery(ctx context.Context, c Claim, d Delivery) 
 // settles. It marks nothing owed: the callers that owe their claim write say so themselves
 // (confirmCarrying, repair).
 //
-// Its five callers are the decisions that write both of memory's own rows: confirmCarrying,
+// Its seven callers are the decisions that write both of memory's own rows: confirmCarrying,
 // refused where the confirmation it takes back takes its telling back with it (moveTelling),
 // settle's write of a delivery an earlier write left unsaved, repair's branch for a claim that
-// holds a pending delivery, and retirePending's write of a project pause's stop it owes before the
-// retirement. Each has a pending delivery by the time it calls, which is what this reads. While a
-// pause's stop is owed, the two rows go through that stop's transaction instead (putStops,
-// Deps.PauseStopped), the delivery carried on the claim it is handed.
+// holds a pending delivery, retirePending's write of a project pause's stop it owes before the
+// retirement, and putClaim and writeCarried while a let-go's take-back of a confirmation obliges a
+// claim write to carry the delivery (carriesPending). Each has a pending delivery by the time it
+// calls, which is what this reads. While a pause's stop is owed, the two rows go through that
+// stop's transaction instead (putStops, Deps.PauseStopped), the delivery carried on the claim it
+// is handed.
 //
 // It publishes the claim before it writes it, as putClaim does, and publishes what the write
 // takes: stored normalizes the machine's live claim, so the publish follows that call and no
@@ -5177,7 +5288,7 @@ func (m *Machine) putClaimAndPending(ctx context.Context) error {
 		if err := m.putStops(ctx, c); err != nil {
 			return err
 		}
-		m.unsaved = false
+		m.wroteCarried()
 		return nil
 	}
 	c, pending := m.stored(), *m.claim.Pending
@@ -5185,7 +5296,7 @@ func (m *Machine) putClaimAndPending(ctx context.Context) error {
 	if err := m.putClaimAndDelivery(ctx, c, pending); err != nil {
 		return err
 	}
-	m.unsaved = false
+	m.wroteCarried()
 	m.settleOwedWrite("PutClaimAndDelivery")
 	return nil
 }
