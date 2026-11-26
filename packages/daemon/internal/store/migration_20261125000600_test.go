@@ -38,11 +38,15 @@ func TestTheFailedLooksComeAtZeroAndTheirWayBackLetsThemComeAgain(t *testing.T) 
 			values ('` + key + `', 'LEGION-208', 'LEGION', 'done', 'done', 1, 'done', 'A', 1)`)
 	}
 	// The release before's upsert names these columns and no other (record's PutProductionCheck).
+	// A check is keyed by its issue and the moment it opened (20261123154051, below this version, so
+	// that each merge keeps its own check), so the upsert's conflict names both, and each upsert of
+	// one issue's check names one opening, so the second meets the first's row.
 	const releaseBeforesUpsert = `insert into production_checks (issue, project, tree, repo, pr_number, merge_sha, opened_at, bound_at,
-		role, looks, look_open, look_wake_at, last_wake_kind, last_wake_detail, last_wake_at, wake_at, last, closed_at, outcome)
-		values ($1, 'LEGION', 'LEGION-208', 'acme/widgets', 42, 'merge', now(), now() + interval '14 days',
-		'tester', $2, false, null, 'named', '', null, null, false, null, null)
-		on conflict (issue) do update set looks = excluded.looks, look_open = excluded.look_open`
+		role, looks, look_open, look_wake_at, last_wake_kind, last_wake_detail, last_wake_at, wake_at, last, closed_at, outcome,
+		generation, task)
+		values ($1, 'LEGION', 'LEGION-208', 'acme/widgets', 42, 'merge', '2026-11-24T12:00:00Z', '2026-12-08T12:00:00Z',
+		'tester', $2, false, null, 'named', '', null, null, false, null, null, 1, '')
+		on conflict (issue, opened_at) do update set looks = excluded.looks, look_open = excluded.look_open`
 	upsert := func(issue string, looks int) {
 		t.Helper()
 		if _, err := store.Pool().Exec(ctx, releaseBeforesUpsert, issue, looks); err != nil {
