@@ -12,6 +12,7 @@ package delivery
 import (
 	"cmp"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 )
@@ -26,13 +27,35 @@ type Apply struct {
 }
 
 // UnmatchedRun is a successfully concluded run that holds no production job and is not shown to
-// have skipped it, with the name of every job it holds: a misconfigured or renamed
-// production_job_names setting otherwise produces zero deploys forever, silently, so each caller
-// warns about it, naming every job the run actually has (the Python prototype's own
-// `successful_applies` raises for this case).
+// have skipped it, with the name of every job ProductionApplies was given of it: a misconfigured
+// or renamed production_job_names setting otherwise produces zero deploys forever, silently, so
+// each caller warns about it, naming every job the run actually has (the Python prototype's own
+// `successful_applies` raises for this case). A caller that read the run's jobs by
+// Production.JudgedJobNames was given none but its skipped callers, so it reads the run's every
+// job before it names them (api's productionApplies).
 type UnmatchedRun struct {
 	Run      DeliveryRun
 	JobNames []string
+}
+
+// JudgedJobNames is every job name ProductionApplies reads of a run under p: each listed name,
+// and each name GitHub lists a skipped call of a reusable workflow holding a listed job under
+// (skippedCaller), which for a listed `deploy / production / apply` is `deploy / production` and
+// `deploy`. Given only a run's jobs of these names (ListRunJobsForRuns), ProductionApplies answers
+// the deploys, the unmatched runs and the runs missing their apply step it answers given every
+// job: Production.Job and Production.Conclusion read listed jobs alone, `real` records listed
+// names alone, and a skipped call is one of the callers named here. Only an unmatched run's
+// JobNames is narrower.
+func (p Production) JudgedJobNames() []string {
+	names := slices.Clone(p.JobNames)
+	for _, name := range p.JobNames {
+		for i := range len(name) {
+			if strings.HasPrefix(name[i:], " / ") {
+				names = append(names, name[:i])
+			}
+		}
+	}
+	return names
 }
 
 // ProductionRuns is ProductionApplies' verdict on a listing of runs: every deploy, in compareApplies'
@@ -159,6 +182,43 @@ func ContainingRun(pr DeliveryPullRequest, deployRepo string, applies []Apply) *
 		return nil
 	}
 	return FirstShippingApply(*pr.MergedAt, applies)
+}
+
+// ShippingIndex answers ContainingRun over one list of applies for many pull requests, each in the
+// time of a binary search where FirstShippingApply reads every apply: the applies by creation, and
+// for each the earliest-completing (compareApplies) of it and every apply created after it, which
+// is FirstShippingApply's answer for a merge before that apply's creation and at or after the
+// creation of the one before it. The day-row refresher's rewrite of a settings change (evals'
+// rewriteSettings) ships every pull request of the history with one.
+type ShippingIndex struct {
+	byCreated []Apply
+	first     []int
+}
+
+// NewShippingIndex is the index of applies.
+func NewShippingIndex(applies []Apply) ShippingIndex {
+	byCreated := slices.Clone(applies)
+	slices.SortStableFunc(byCreated, func(a, b Apply) int { return a.CreatedAt.Compare(b.CreatedAt) })
+	first := make([]int, len(byCreated))
+	for i := len(byCreated) - 1; i >= 0; i-- {
+		first[i] = i
+		if i+1 < len(byCreated) && compareApplies(byCreated[first[i+1]], byCreated[i]) < 0 {
+			first[i] = first[i+1]
+		}
+	}
+	return ShippingIndex{byCreated: byCreated, first: first}
+}
+
+// Containing is ContainingRun(pr, deployRepo, applies) of the applies the index was made of.
+func (x ShippingIndex) Containing(pr DeliveryPullRequest, deployRepo string) *Apply {
+	if pr.Repo != deployRepo || pr.MergedAt == nil {
+		return nil
+	}
+	at := sort.Search(len(x.byCreated), func(k int) bool { return x.byCreated[k].CreatedAt.After(*pr.MergedAt) })
+	if at == len(x.byCreated) {
+		return nil
+	}
+	return &x.byCreated[x.first[at]]
 }
 
 // ComputeDeployedStatus is the PR's deploy state: DeployedStatusNotTracked for any PR outside the

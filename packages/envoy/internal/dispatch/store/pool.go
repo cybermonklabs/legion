@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/sync/errgroup"
 )
 
 // ErrNestedAcquire is the shared pool refusing a second connection to a caller that already
@@ -113,6 +114,28 @@ func ForConcurrentRead(ctx context.Context) (context.Context, error) {
 		return nil, ErrNestedAcquire
 	}
 	return context.WithValue(ctx, holdingKey{}, &holding{}), nil
+}
+
+// ReadSideBySide runs reads at once and answers the first error. Each runs on a hold mark of its
+// own (ForConcurrentRead), so it takes at most one connection of the pool and one read's open
+// cursor refuses no other; a read holds no lock past its own statements and waits on no other
+// read, so none waits on another: a read opens no transaction, or one of its own that only reads
+// and commits once its statements end (the board's sampled read, legionfacts.Read), or commits a
+// read-only transaction its caller opened on a hold mark of its own (ForConcurrentRead) and hands
+// to that read alone, which runs its statements there and takes no connection of the pool
+// (legion/metrics' read and its readSampled). A caller that holds a connection is refused
+// (ErrNestedAcquire) before any read starts.
+func ReadSideBySide(ctx context.Context, reads ...func(ctx context.Context) error) error {
+	group, groupCtx := errgroup.WithContext(ctx)
+	for _, read := range reads {
+		readCtx, err := ForConcurrentRead(groupCtx)
+		if err != nil {
+			_ = group.Wait()
+			return err
+		}
+		group.Go(func() error { return read(readCtx) })
+	}
+	return group.Wait()
 }
 
 // ForConcurrentWorker returns a context for one of a caller's goroutines that run side by side
@@ -404,19 +427,26 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // architecture import, the delivery reconcile, the edit-notice sweep, the
 // document settlement resumption (docs.Service.RunSettlementResumption), the repair of closed and
 // reopened issues' asks (api.RunIssueAskRepair), the Legion sampler's read of each project's
-// daemon (legion.RunSampler, one pass a minute, one process at a time), one per delivery durable
-// for the intake's take-over (delivery.consumerLease, a name each for delivery-events and
-// delivery-jobs) and the server process registry's prune (processes.RunPrune), the embeddings
-// project_key fill (api.RunEmbeddingProjectKeyFill), the display tree fill
-// (texttreefill.fillLease) and R25's one-time fix of parents' statuses at boot
-// (api.RunParentStatusFixAtBoot, lease parent-status-fix) - one caller each, since each intake
-// takes its own durable's name from its own goroutine, so each of them can be inside Exclusive
-// at once. The fill is the one that is no loop of a cadence: it labels in a single pass of one
-// to two hours, holds its connection for the whole of it, tries for its lease again every five
-// minutes while another process makes that pass, and gives the connection back for good once
-// the rows stored before migration 20261109120000 are labelled, so it is counted here like any
-// other caller. The suggestion outcome sweep is not among them: it takes no lease, since the cursor row
-// each of its pages holds for update serialises two processes by itself
+// daemon (legion.RunSampler, one pass a minute, one process at a time), the per-issue Legion facts
+// (legionfacts.Lease, a pass on each of its three feeds' wakes, one PassRetry after a pass that
+// failed and one soon after a pass whose safe horizon held an event back), the eval day rows
+// (evals.RefresherLease, eval-days, a pass on each of its two feeds' wakes, at each new UTC day
+// and one each RefresherGap while a walk of the days has days left, whose first pass in a process
+// also seeds every project's evals), the production signals (signals.Lease, production-signals, a
+// pass on each of its four wakes, one PassRetry after a pass that failed and one soon after a pass
+// whose safe horizon held an event back), one per delivery durable for the intake's take-over
+// (delivery.consumerLease, a name each for delivery-events and delivery-jobs) and the server
+// process registry's prune (processes.RunPrune), the embeddings project_key fill
+// (api.RunEmbeddingProjectKeyFill), the display tree fill (texttreefill.fillLease) and R25's
+// one-time fix of parents' statuses at boot (api.RunParentStatusFixAtBoot, lease
+// parent-status-fix) - one caller each, since each intake takes its own durable's name from its
+// own goroutine, so each of them can be inside Exclusive at once. The fill is the one that is no
+// loop of a cadence: it labels in a
+// single pass of one to two hours, holds its connection for the whole of it, tries for its lease
+// again every five minutes while another process makes that pass, and gives the connection back
+// for good once the rows stored before migration 20261109120000 are labelled, so it is counted
+// here like any other caller. The suggestion outcome sweep is not among them: it takes no lease,
+// since the cursor row each of its pages holds for update serialises two processes by itself
 // (api/suggestion_outcomes.go).
 //
 // Each of the two intakes also holds its durable's hold, whose every statement is one statement
@@ -442,13 +472,13 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // writes on the compaction pool (Pool.Compaction).
 //
 // The Legion sampler is one of those callers, the keyword fill's hold two more, the CI verify loop
-// one more, R25's boot fix one more and the reference forms drain one more, and that is what the
-// six cost the instance: a serving process opens at most 118 (ConnectionsPerProcess), where it
-// opened 112 without them, and the default tier's 500 connections less PostgreSQL's 3 reserved
-// slots still admit four app pods holding connections at once (472 of 497) and still refuse five
-// (590), exactly as they did at 112 (448 and 560), so none of them moves a replica boundary. A
-// deployment on another tier reads SHOW max_connections against its own roll, as sharedPoolSize's
-// note says.
+// one more, R25's boot fix one more, the reference forms drain one more, and the per-issue Legion
+// facts, the eval day rows and the production signals three more, and that is what the nine cost
+// the instance: a serving process opens at most 121 (ConnectionsPerProcess), where it opened 112
+// without them, and the default tier's 500 connections less PostgreSQL's 3 reserved slots still
+// admit four app pods holding connections at once (484 of 497) and still refuse five (605),
+// exactly as they did at 112 (448 and 560), so none of them moves a replica boundary. A deployment
+// on another tier reads SHOW max_connections against its own roll, as sharedPoolSize's note says.
 //
 // Nothing counts the callers by hand. Each of them reserves one of these connections by name
 // before the server starts any of its loops, whether or not this configuration runs that loop
@@ -462,7 +492,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // goroutine added inside a caller that has reserved already, and one reservation passed to a
 // second consumer, take a connection nothing counted, and the count still matches: each caller
 // that can hold a connection while another does needs a reservation of its own.
-const LeasePoolSize = 27
+const LeasePoolSize = 30
 
 // Leases is the registry of the lease pool's callers. A periodic maintenance loop takes the
 // connection it holds its lease on here, so that only one process runs each pass

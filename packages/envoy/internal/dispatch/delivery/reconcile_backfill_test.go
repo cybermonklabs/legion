@@ -2,6 +2,7 @@ package delivery
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // backfillRun is one deploy run the backfill fake serves, created at created.
@@ -124,7 +126,7 @@ const backfillWorkflow = ".github/workflows/deploy.yml"
 
 func deployBackfill(t *testing.T, reconcile *Reconcile) (through, beganAt time.Time, found bool) {
 	t.Helper()
-	row, err := readBackfillProgress(t.Context(), reconcile.pool, backfillStep(DeliveryRunKindDeploy), runsProgressScope("acme/widgets", backfillWorkflow))
+	row, err := readBackfillProgress(t.Context(), reconcile.pool, backfillStep(DeliveryRunKindDeploy, "acme/widgets"), runsProgressScope("acme/widgets", backfillWorkflow))
 	if err != nil {
 		t.Fatalf("read backfill progress: %v", err)
 	}
@@ -153,14 +155,14 @@ func storedRunIDs(t *testing.T, reconcile *Reconcile) []int64 {
 // on its first pass, for a test that needs a shorter walk than the 28-day window.
 func startBackfill(t *testing.T, reconcile *Reconcile, through, beganAt time.Time) {
 	t.Helper()
-	if err := StartBackfillProgress(t.Context(), reconcile.pool, backfillStep(DeliveryRunKindDeploy), runsProgressScope("acme/widgets", backfillWorkflow), through, beganAt); err != nil {
+	if err := StartBackfillProgress(t.Context(), reconcile.pool, backfillStep(DeliveryRunKindDeploy, "acme/widgets"), runsProgressScope("acme/widgets", backfillWorkflow), through, beganAt); err != nil {
 		t.Fatalf("start backfill: %v", err)
 	}
 }
 
 func (r *Reconcile) backfillDeploys(t *testing.T, now time.Time) {
 	t.Helper()
-	r.backfillRuns(t.Context(), backfillStep(DeliveryRunKindDeploy), "acme", "widgets", "acme/widgets", backfillWorkflow, DeliveryRunKindDeploy, Production{}, now)
+	r.backfillRuns(t.Context(), backfillStep(DeliveryRunKindDeploy, "acme/widgets"), "acme", "widgets", "acme/widgets", backfillWorkflow, DeliveryRunKindDeploy, Production{}, now)
 }
 
 // TestBackfillRunsAdvancesOneFinishedHourAtATime: GitHub lists a window newest first, so the
@@ -264,9 +266,9 @@ func TestBackfillRunsKeepsItsFailuresOutOfTheHealthState(t *testing.T) {
 	reconcile.runOnce(ctx)
 	after := time.Now()
 
-	settings, err := GetSettings(ctx, pool)
+	settings, err := getTestRule(ctx, pool)
 	if err != nil {
-		t.Fatalf("GetSettings: %v", err)
+		t.Fatalf("getTestRule: %v", err)
 	}
 	if settings.LastError != nil {
 		t.Fatalf("last_error = %q, want nil: a backfill failure stays out of the health state", *settings.LastError)
@@ -278,7 +280,7 @@ func TestBackfillRunsKeepsItsFailuresOutOfTheHealthState(t *testing.T) {
 	if !found || through.Before(before.Add(-BackfillWindow-time.Second)) || beganAt.Before(before.Add(-time.Second)) || beganAt.After(after.Add(time.Second)) {
 		t.Fatalf("backfill row = {%v, %v, %t}, want began at this pass and through 28 days before it", through, beganAt, found)
 	}
-	created, err := readBackfillProgress(ctx, pool, createdAtBackfillStep, runsProgressScope("acme/widgets", backfillWorkflow))
+	created, err := readBackfillProgress(ctx, pool, createdAtBackfillStep("acme/widgets"), runsProgressScope("acme/widgets", backfillWorkflow))
 	if err != nil || !created.found || created.beganAt.Before(before.Add(-time.Second)) || created.beganAt.After(after.Add(time.Second)) {
 		t.Fatalf("created_at backfill row = %+v, %v, want one begun at this pass", created, err)
 	}
@@ -337,7 +339,7 @@ func TestBackfillRunsWalksAtMostTwentyFourWindowsAPass(t *testing.T) {
 func TestBackfillProgressNeverMovesBackwards(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
-	step, scope := backfillStep(DeliveryRunKindDeploy), runsProgressScope("acme/widgets", backfillWorkflow)
+	step, scope := backfillStep(DeliveryRunKindDeploy, "acme/widgets"), runsProgressScope("acme/widgets", backfillWorkflow)
 	at := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
 	if err := StartBackfillProgress(ctx, pool, step, scope, at.Add(-time.Hour), at.Add(time.Hour)); err != nil {
 		t.Fatalf("start: %v", err)
@@ -362,7 +364,7 @@ func TestBackfillProgressNeverMovesBackwards(t *testing.T) {
 func TestStartBackfillProgressRacesToOneRow(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
-	step, scope := backfillStep(DeliveryRunKindDeploy), runsProgressScope("acme/widgets", backfillWorkflow)
+	step, scope := backfillStep(DeliveryRunKindDeploy, "acme/widgets"), runsProgressScope("acme/widgets", backfillWorkflow)
 	base := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
 	starts := [2]struct{ through, beganAt time.Time }{
 		{base.Add(-28 * 24 * time.Hour), base},
@@ -436,19 +438,23 @@ func TestStartBackfillProgressRacesToOneRow(t *testing.T) {
 	}
 }
 
-// TestBackfillProgressIsNotRecreatedAfterASettingsChange: a settings change deletes every progress
-// row mid-pass, so the pass's next advance updates nothing and inserts nothing, and the next pass
-// starts the backfill afresh with a new began_at.
+// TestBackfillProgressIsNotRecreatedAfterASettingsChange: a save that moves the repository's rule
+// deletes the repository's progress rows mid-pass (ClearRepositoryProgress), so the pass's next
+// advance updates nothing and inserts nothing, and the next pass starts the backfill afresh with a
+// new began_at.
 func TestBackfillProgressIsNotRecreatedAfterASettingsChange(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
-	seedDeliverySettings(t, ctx, pool)
-	step, scope := backfillStep(DeliveryRunKindDeploy), runsProgressScope("acme/widgets", backfillWorkflow)
+	rule := seedDeliverySettings(t, ctx, pool)
+	step, scope := backfillStep(DeliveryRunKindDeploy, "acme/widgets"), runsProgressScope("acme/widgets", backfillWorkflow)
 	first := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
 	if err := StartBackfillProgress(ctx, pool, step, scope, first.Add(-BackfillWindow), first); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	seedDeliverySettings(t, ctx, pool) // PutSettings deletes every progress row.
+	rule.ProductionJobNames = []string{"widgets-release / production"}
+	if _, err := putTestRule(ctx, pool, rule, model.Actor{Kind: "system", ID: "delivery-test"}); err != nil {
+		t.Fatalf("move the repository's rule: %v", err)
+	}
 	if err := AdvanceBackfillProgress(ctx, pool, step, scope, first.Add(-BackfillWindow+time.Hour)); err != nil {
 		t.Fatalf("advance after the settings change: %v", err)
 	}
@@ -519,11 +525,11 @@ func TestBackfillRunsLeavesTheRegularStepAlone(t *testing.T) {
 	seedDeliverySettings(t, ctx, pool)
 	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
 	scope := runsProgressScope("acme/widgets", backfillWorkflow)
-	if err := StartBackfillProgress(ctx, pool, backfillStep(DeliveryRunKindDeploy), scope, now, now); err != nil {
+	if err := StartBackfillProgress(ctx, pool, backfillStep(DeliveryRunKindDeploy, "acme/widgets"), scope, now, now); err != nil {
 		t.Fatalf("finish the backfill: %v", err)
 	}
 	regularThrough := now.Add(-2 * time.Hour)
-	if err := RecordReconcileProgress(ctx, pool, runsStep(DeliveryRunKindDeploy), scope, regularThrough); err != nil {
+	if err := RecordReconcileProgress(ctx, pool, runsStep(DeliveryRunKindDeploy, "acme/widgets"), scope, regularThrough); err != nil {
 		t.Fatalf("record the regular step's progress: %v", err)
 	}
 	runs := []map[string]any{backfillRun(400, now.Add(-90*time.Minute)), backfillRun(401, now.Add(-30*time.Minute))}
@@ -584,10 +590,10 @@ func TestCreatedAtBackfillFillsDeployRunsAfterTheRunsBackfillFinished(t *testing
 		t.Fatalf("seed a run stored before created_at: %v", err)
 	}
 	scope := runsProgressScope("acme/widgets", backfillWorkflow)
-	if err := StartBackfillProgress(ctx, pool, backfillStep(DeliveryRunKindDeploy), scope, hourA.Add(time.Hour), hourA.Add(time.Hour)); err != nil {
+	if err := StartBackfillProgress(ctx, pool, backfillStep(DeliveryRunKindDeploy, "acme/widgets"), scope, hourA.Add(time.Hour), hourA.Add(time.Hour)); err != nil {
 		t.Fatalf("finish the runs backfill: %v", err)
 	}
-	if err := StartBackfillProgress(ctx, pool, createdAtBackfillStep, scope, hourA, hourA.Add(time.Hour)); err != nil {
+	if err := StartBackfillProgress(ctx, pool, createdAtBackfillStep("acme/widgets"), scope, hourA, hourA.Add(time.Hour)); err != nil {
 		t.Fatalf("start the created_at backfill: %v", err)
 	}
 	fake, github := newBackfillFake(t, []map[string]any{served}, 10)
@@ -602,7 +608,7 @@ func TestCreatedAtBackfillFillsDeployRunsAfterTheRunsBackfillFinished(t *testing
 		t.Fatalf("run before the created_at backfill = %+v, %v: want no created_at, read as its started_at", before, err)
 	}
 
-	reconcile.backfillRuns(ctx, createdAtBackfillStep, "acme", "widgets", "acme/widgets", backfillWorkflow, DeliveryRunKindDeploy, Production{}, hourA.Add(time.Hour))
+	reconcile.backfillRuns(ctx, createdAtBackfillStep("acme/widgets"), "acme", "widgets", "acme/widgets", backfillWorkflow, DeliveryRunKindDeploy, Production{}, hourA.Add(time.Hour))
 	if calls := fake.listingCalls(); !slices.Equal(calls, []string{hourWindow(hourA) + " page 1"}) {
 		t.Fatalf("the created_at backfill listed %v, want hour A once", calls)
 	}
@@ -610,8 +616,67 @@ func TestCreatedAtBackfillFillsDeployRunsAfterTheRunsBackfillFinished(t *testing
 	if err != nil || after.CreatedAt == nil || !after.CreatedAt.Equal(created) || !after.StartedAt.Equal(rerun) {
 		t.Fatalf("run after the created_at backfill = %+v, %v: want created_at %v beside started_at %v", after, err, created, rerun)
 	}
-	row, err := readBackfillProgress(ctx, pool, createdAtBackfillStep, scope)
+	row, err := readBackfillProgress(ctx, pool, createdAtBackfillStep("acme/widgets"), scope)
 	if err != nil || !row.found || row.through.Before(row.beganAt) {
 		t.Fatalf("created_at backfill progress = %+v, %v, want finished", row, err)
+	}
+}
+
+// Each source repository's runs backfill keeps its own progress and finishes on its own
+// (dispatch://INFRA-978, D1): of two repositories under one backfill kind, the one with two hours
+// left to walk finishes in the first pass and lists nothing after, while the one with thirty hours
+// left walks backfillWindowsPerPass of them in the first pass and the rest in the second, each from
+// its own row, which neither pass replaces with the other's.
+func TestEachRepositorysBackfillFinishesOnItsOwn(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	seedProjectRepository(t, ctx, pool, deliveryProject, "Delivery", deliveryRepo)
+	if _, err := saveProjectRules(ctx, pool, deliveryProject, model.Actor{Kind: "system", ID: "delivery-test"}, widgetsRule, gadgetsRule); err != nil {
+		t.Fatalf("save the two sources: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	start := now.Add(-10 * 24 * time.Hour)
+	left := map[string]time.Duration{widgetsRule.DeployRepo: 2 * time.Hour, gadgetsRule.DeployRepo: 30 * time.Hour}
+	for _, rule := range []DeliverySettings{widgetsRule, gadgetsRule} {
+		deployScope, checksScope := runsProgressScope(rule.DeployRepo, rule.DeployWorkflowPath), runsProgressScope(rule.DeployRepo, rule.PRChecksWorkflowPath)
+		// The regular listings have imported through now, so they list from an hour ago, and the
+		// other backfills have finished: every listing older than a day is a deploy backfill's.
+		for step, scope := range map[string]string{runsStep(DeliveryRunKindDeploy, rule.DeployRepo): deployScope, runsStep(DeliveryRunKindPRChecks, rule.DeployRepo): checksScope} {
+			if err := RecordReconcileProgress(ctx, pool, step, scope, now); err != nil {
+				t.Fatalf("record the %s progress: %v", step, err)
+			}
+		}
+		for step, scope := range map[string]string{backfillStep(DeliveryRunKindPRChecks, rule.DeployRepo): checksScope, createdAtBackfillStep(rule.DeployRepo): deployScope} {
+			if err := StartBackfillProgress(ctx, pool, step, scope, now, now); err != nil {
+				t.Fatalf("finish the %s backfill: %v", step, err)
+			}
+		}
+		if err := StartBackfillProgress(ctx, pool, backfillStep(DeliveryRunKindDeploy, rule.DeployRepo), deployScope, start, start.Add(left[rule.DeployRepo])); err != nil {
+			t.Fatalf("begin the deploy backfill of %s: %v", rule.DeployRepo, err)
+		}
+	}
+	fake := newListingsFake(t, nil)
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
+
+	for pass, want := range []map[string]int{
+		{widgetsRule.DeployRepo: 2, gadgetsRule.DeployRepo: backfillWindowsPerPass},
+		{gadgetsRule.DeployRepo: 30 - backfillWindowsPerPass},
+		{},
+	} {
+		reconcile.runOnce(ctx)
+		got := map[string]int{}
+		for _, listing := range fake.take() {
+			if listing.since.Before(now.Add(-24 * time.Hour)) {
+				got[listing.repo]++
+			}
+		}
+		if !maps.Equal(got, want) {
+			t.Fatalf("pass %d's backfill listings by repository = %v, want %v", pass+1, got, want)
+		}
+	}
+	for _, rule := range []DeliverySettings{widgetsRule, gadgetsRule} {
+		row, err := readBackfillProgress(ctx, pool, backfillStep(DeliveryRunKindDeploy, rule.DeployRepo), runsProgressScope(rule.DeployRepo, rule.DeployWorkflowPath))
+		if err != nil || !row.found || !row.beganAt.Equal(start.Add(left[rule.DeployRepo])) || row.through.Before(row.beganAt) {
+			t.Errorf("the deploy backfill of %s = %+v, %v; want its own row finished at %v", rule.DeployRepo, row, err, start.Add(left[rule.DeployRepo]))
+		}
 	}
 }

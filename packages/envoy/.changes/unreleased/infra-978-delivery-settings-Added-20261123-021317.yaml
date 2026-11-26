@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+  Each project has its own delivery settings at `GET` and `PUT /api/v1/projects/{key}/settings/delivery`:
+  an on or off switch, one or more deploy sources, the population rule, the failure sources with
+  the day they count from, and each target, which is a new version of the project's eval row.
+  A `github_workflow` source names the repository of its workflow, or none, and then reads the
+  project's default repository. An `events` source reads the deploys a system posts. A
+  repository is the deploy source of one project with delivery on at most (`409
+  DELIVERY_REPOSITORY_SHARED`). The answer gives each source its `reconciled_through`. The
+  project settings tab edits them. `GET` and `PUT /api/v1/settings/delivery` keep answering in
+  this release and are removed in the next one. Each deploy and each failed change is a row of
+  `production_events`, read, posted and judged at `GET` and `POST
+  /api/v1/projects/{key}/production-events` and `PUT .../{id}/state`. Change fail rate, failed
+  deployment recovery time and the new deployment rework rate read those rows; the pending
+  state, the upper bound and change fail rate's `per_pr` series are removed.
+time: 2026-11-23T02:13:17Z
+custom:
+    Issue: INFRA-978

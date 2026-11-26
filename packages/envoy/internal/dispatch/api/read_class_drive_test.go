@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -72,6 +73,19 @@ const readTime = "the moment the read was answered, which each read takes from i
 // searchTook is why a search's took_ms is volatile: it is how long that search ran.
 const searchTook = "how long the search ran, which each read times on its own clock"
 
+// evalWindowNow is why an eval read's window is volatile: a read that names no `to` reads the
+// window ending at the moment it is answered (parseDeliveryWindow), on its own clock.
+const evalWindowNow = "the default window ends at the moment the read was answered, which each read takes from its own clock"
+
+// evalWindowVolatile is the window of an eval read's answer, which ends at the moment it was
+// answered; evalReadVolatile is that and the refresher's age the list and detail reads state,
+// counted to that moment (evals.RefresherAgeIn).
+var (
+	evalWindowVolatile = []volatileMember{{"window.from", evalWindowNow}, {"window.to", evalWindowNow}}
+	evalReadVolatile   = slices.Concat(evalWindowVolatile,
+		[]volatileMember{{"freshness.refresher_age_seconds", "the refresher's age, counted to the moment the read was answered"}})
+)
+
 // postHistoryStatement is the one read of a post's kept bodies (postHistory): the lateral page of
 // post_body_history, in SQL the statement writes itself, which both history rows run on the
 // post the seed corrected once.
@@ -91,6 +105,23 @@ var readRowDrives = map[string]rowDrive{
 		target:    "/api/v1/projects/$relatedProject/related?title=Drive+every+row&text=The+issue+page+lists+every+open+ask",
 		statement: statementOf(`\btext_lexemes\s+as\s*\(`),
 	},
+	// Every project the seed makes holds its evals (the project write seeds them, evals.Store's
+	// EnsureTx); each read counts the page of them, or the versions or the readings of one.
+	"GET /api/v1/projects/{key}/evals": {target: "/api/v1/projects/$project/evals",
+		statement: statementOf(`\bselect\s+count\(\*\)\s+from\s+evals_current\s+where\s+project_key\s*=\s*any\(\$1::text\[\]\)`),
+		volatile:  evalReadVolatile},
+	"GET /api/v1/projects/{key}/evals/{slug}": {target: "/api/v1/projects/$project/evals/" + evals.SlugDeployFrequency,
+		statement: statementOf(`\bfrom\s+eval_versions\s+where\s+eval_id\s*=\s*\$1\s+order\s+by\s+version\s+desc\b`),
+		volatile:  evalReadVolatile},
+	"GET /api/v1/projects/{key}/evals/{slug}/items": {target: "/api/v1/projects/$project/evals/" + evals.SlugDeployFrequency + "/items",
+		statement: statementOf(`\bselect\s+count\(\*\)\s+from\s+eval_readings\s+where\s+eval_id\s*=\s*\$1\s+and\s+superseded_at\s+is\s+null\b`),
+		volatile:  evalWindowVolatile},
+	"GET /api/v1/evals": {target: "/api/v1/evals?project=$project", statement: statementOf(`\bselect\s+key\s+from\s+projects\s+order\s+by\s+key\b`),
+		volatile: evalReadVolatile},
+	// The delivery reads read the project seedWrites configures (saveDeliveryRule): the list its
+	// page of the record, and the settings its row with each source's reconcile progress.
+	"GET /api/v1/projects/{key}/production-events": {target: "/api/v1/projects/$deliveryProject/production-events",
+		statement: statementOf(`\bwith\s+matched\s+as\s*\(\s*select\s+\*,\s*coalesce\(finished_at,\s*detected_at\)\s+as\s+at\b`)},
 	"GET /api/v1/settings/repo-projects": {target: "/api/v1/settings/repo-projects", statement: statementOf(`\bfrom\s+repo_projects\s+order\s+by\s+repo\b`)},
 	// The handler asks GitHub; its one statement is the GitHub client's read of the rate limit
 	// GitHub last answered, which it reads before it asks.
@@ -105,7 +136,9 @@ var readRowDrives = map[string]rowDrive{
 		statement: statementOf(`\bfrom\s+issues\s+i\s+left\s+join\s+\(\s*workflow_tuples\b`)},
 	"GET /api/v1/settings/project-default-assignees": {target: "/api/v1/settings/project-default-assignees",
 		statement: statementOf(`\bselect\s+key,\s*default_assignee\s+from\s+projects\b`)},
-	"GET /api/v1/settings/new-issue":           {target: "/api/v1/settings/new-issue", fromMemory: "the new-issue settings are the deployment's configuration, held in memory"},
+	"GET /api/v1/settings/new-issue": {target: "/api/v1/settings/new-issue", fromMemory: "the new-issue settings are the deployment's configuration, held in memory"},
+	"GET /api/v1/projects/{key}/settings/delivery": {target: "/api/v1/projects/$deliveryProject/settings/delivery",
+		statement: statementOf(`\bfrom\s+project_delivery_settings\s+s\s+join\s+projects\s+p\s+on\s+p\.key\s*=\s*s\.project_key\b`)},
 	"GET /api/v1/settings/delivery":            {target: "/api/v1/settings/delivery", statement: statementOf(`\bfrom\s+delivery_settings\b`)},
 	"GET /api/v1/projects/{key}/legion/daemon": {target: "/api/v1/projects/$project/legion/daemon", statement: statementOf(`\bfrom\s+legion_settings\s+where\s+project\b`)},
 	"GET /api/v1/projects/{key}/legion/board": {target: "/api/v1/projects/$project/legion/board", statement: statementOf(`\bfrom\s+legion_reads\b`),

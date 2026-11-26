@@ -219,9 +219,7 @@ test("a merge appears without a reload, and the page issues no delivery GET @pr"
   browser,
 }, testInfo) => {
   await seedDeliveryFixture();
-  await sql(
-    `UPDATE delivery_settings SET last_event_at = now(), last_reconcile_at = now() WHERE singleton`
-  );
+  await sql(`UPDATE project_deploy_sources SET last_event_at = now(), last_reconcile_at = now()`);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const deliveryRequests: string[] = [];
@@ -394,8 +392,6 @@ test("after every socket is dropped, the page resumes and equals the GET answer 
 test("an issue title change reaches the page", async ({ browser }) => {
   await seedDeliveryFixture();
   await sql(
-    // Every project names a default assignee; alice is the person this fixture is read as.
-    `INSERT INTO projects (key, name, default_assignee) VALUES ('ACME', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank)
      VALUES ('ACME-690', 'ACME', 690, 'Initial live issue title', 'todo', 1, '{"kind":"system","id":"e2e"}', 'U690')`,
     `INSERT INTO delivery_pull_requests (
@@ -459,9 +455,7 @@ test("the freshness row says Live with the last change, and Reconnecting while d
 }) => {
   await seedDeliveryFixture();
   await seedDeliveryReconcileGithub();
-  await sql(
-    `UPDATE delivery_settings SET last_event_at = now(), last_reconcile_at = now() WHERE singleton`
-  );
+  await sql(`UPDATE project_deploy_sources SET last_event_at = now(), last_reconcile_at = now()`);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -486,9 +480,7 @@ test("on a phone the delivery page shows a merge without a reload", async ({
 }, testInfo) => {
   await seedDeliveryFixture();
   await seedDeliveryReconcileGithub();
-  await sql(
-    `UPDATE delivery_settings SET last_event_at = now(), last_reconcile_at = now() WHERE singleton`
-  );
+  await sql(`UPDATE project_deploy_sources SET last_event_at = now(), last_reconcile_at = now()`);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 

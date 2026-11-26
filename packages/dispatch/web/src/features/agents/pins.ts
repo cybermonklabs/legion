@@ -60,9 +60,11 @@ export function pinnedAgentSessions(states: UserAgentStates | undefined): string
   return pins.sort(comparePins).map((pin) => pin.sessionId);
 }
 
-/** The viewer's pins, oldest first, re-read whenever their agent state changes. */
-export function usePinnedAgents(): readonly string[] {
-  const states = useQuery(userAgentStateQuery()).data;
+/** The viewer's pins, oldest first, re-read whenever their agent state changes. A caller drawn for
+ *  a viewer with no pins of its own to read - an agent, whose bearer may hold no `person` scope -
+ *  passes `enabled` false, and reads none. */
+export function usePinnedAgents(enabled = true): readonly string[] {
+  const states = useQuery({ ...userAgentStateQuery(), enabled }).data;
   return useMemo(() => pinnedAgentSessions(states), [states]);
 }
 

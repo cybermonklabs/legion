@@ -43,12 +43,16 @@ export type IssueRoute =
 
 /** `project` is the bare `/projects/:key`, which opens on `architecture` when the project has
  *  an architecture source and on `issues` otherwise (`ProjectPage`'s open-on rule); the Issues
- *  tab and its `?label=`/`?status=`/`?q=` filter URLs live at `/issues`. */
+ *  tab and its `?label=`/`?status=`/`?q=` filter URLs live at `/issues`, the Evals tab, the
+ *  project's one page of numbers, at `/evals`, and the project's own settings (its delivery
+ *  settings) at `/settings`. */
 export type ProjectRoute =
   | { kind: "project"; project: string }
   | { kind: "architecture"; project: string }
   | { kind: "issues"; project: string }
   | { kind: "documents"; project: string }
+  | { kind: "evals"; project: string }
+  | { kind: "settings"; project: string }
   | ({
       kind: "document";
       project: string;
@@ -252,6 +256,8 @@ export function isProjectRoute(
     route.kind === "architecture" ||
     route.kind === "issues" ||
     route.kind === "documents" ||
+    route.kind === "evals" ||
+    route.kind === "settings" ||
     route.kind === "document"
   );
 }
@@ -541,6 +547,12 @@ export function parseProjectPath(pathname: string, search = ""): ProjectRoute | 
   }
   if (target === "documents") {
     return { kind: "documents", project };
+  }
+  if (target === "evals") {
+    return { kind: "evals", project };
+  }
+  if (target === "settings") {
+    return { kind: "settings", project };
   }
   const document = target.match(/^documents\/([^/?#\s]+)$/);
   if (document === null) {
@@ -1161,7 +1173,13 @@ export function buildProjectPath(route: ProjectRoute): string {
   if (route.kind === "project") {
     return project;
   }
-  if (route.kind === "architecture" || route.kind === "issues" || route.kind === "documents") {
+  if (
+    route.kind === "architecture" ||
+    route.kind === "issues" ||
+    route.kind === "documents" ||
+    route.kind === "evals" ||
+    route.kind === "settings"
+  ) {
     return `${project}/${route.kind}`;
   }
   const document = `${project}/documents/${encodeURIComponent(route.slug)}`;
@@ -1342,6 +1360,10 @@ export const PERSON_PATH = "/people/:login";
 export function buildPersonPath(login: string): string {
   return `/people/${encodeURIComponent(login)}`;
 }
+
+/** Every project's numbers on one page (`EvalsAcrossProjects`), linked from the sidebar and the
+ *  icon rail; a project's own are its Evals tab (`ProjectRoute` `evals`). */
+export const EVALS_PATH = "/evals";
 
 /** The live agent view's route pattern, shared by the router and `routeFillsViewport`. */
 export const AGENT_LIVE_PATH = "/agents/:sessionId/live";

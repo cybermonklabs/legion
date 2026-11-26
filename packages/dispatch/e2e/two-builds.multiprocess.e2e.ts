@@ -290,6 +290,12 @@ function heading(page: Page, name: string): Locator {
   return page.getByRole("heading", { exact: true, level: 1, name });
 }
 
+/** A project's Evals tab, selected: what `/projects/:key/evals` draws, and what `/delivery` and
+ *  `/pipeline` land on. */
+function evalsTab(page: Page): Locator {
+  return page.getByRole("tab", { name: "Evals", selected: true });
+}
+
 /** An issue's own title. The title is not the only `h1` an issue page can hold: the shell shows a
  *  loading skeleton `h1` before the issue arrives, and a document whose text opens on a top-level
  *  heading - as this fixture's spec does - puts that heading on the page too. The header holds the
@@ -491,6 +497,20 @@ function visits(seed: Seeded): readonly Visit[] {
       url: "/projects/CORE/documents",
     },
     {
+      route: "/projects/:key/evals",
+      shows: (page) => [evalsTab(page)],
+      url: "/projects/CORE/evals",
+    },
+    {
+      // The project's settings tab, holding its delivery settings editor.
+      route: "/projects/:key/settings",
+      shows: (page) => [
+        page.locator("#project-settings-panel").getByRole("switch", { name: "Delivery" }),
+      ],
+      url: "/projects/CORE/settings",
+    },
+    { route: "/evals", shows: (page) => [heading(page, "Evals")], url: "/evals" },
+    {
       loads: ["editor"],
       route: "/projects/:key/documents/:slug",
       shows: (page) => openDocument(page, shown.document),
@@ -507,17 +527,10 @@ function visits(seed: Seeded): readonly Visit[] {
       url: "/credentials/machine",
     },
     { route: "/settings", shows: (page) => [heading(page, "Settings")], url: "/settings" },
-    {
-      // ECharts draws the timeline on a canvas it creates inside the chart's host.
-      loads: ["echarts"],
-      route: "/delivery",
-      shows: (page) => [
-        heading(page, "Delivery timeline"),
-        page.getByTestId("delivery-chart").locator("canvas").first(),
-      ],
-      url: `/delivery?${deliveryWindow}`,
-    },
-    { route: "/pipeline", shows: (page) => [heading(page, "Pipeline")], url: "/pipeline" },
+    // The Delivery and Pipeline pages are each project's Evals tab now: both addresses land on
+    // the default project's, the window and filters kept.
+    { route: "/delivery", shows: (page) => [evalsTab(page)], url: `/delivery?${deliveryWindow}` },
+    { route: "/pipeline", shows: (page) => [evalsTab(page)], url: "/pipeline" },
     {
       // The walk is signed in as alice (`signIn` below), and alice is who `seedEveryRoute`
       // writes the issue's comment as (e2e/api.ts's default author), so her page lists that

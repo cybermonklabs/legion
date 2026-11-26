@@ -1,0 +1,277 @@
+package evals
+
+import (
+	"cmp"
+	"context"
+	"fmt"
+	"maps"
+	"slices"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
+	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
+)
+
+// The Legion evals' day rows (dispatch://INFRA-2916, R6, R12, R16, D3 and D5). One project's UTC
+// day is read once (ReadLegionDay): the stored facts of its issues that closed that day
+// (legionfacts.ReadClosedIn, through issue_facts_closed), every one an issue with Legion phase
+// work since only such an issue has a row, and the filings its Legion sessions made that day
+// (legionfacts.ReadFilingsIn, through issue_filings_day). The legion/metrics day builders turn
+// them into parts (LegionDay.Rows), and the refresher writes the parts as the project's rows of
+// the day (a walk's day through refresh.writeLegion and walkWrite, writeProjectDay, or staged by a
+// rebuild; a page's days through writeNamed, writeProjectDays), which the eval routes fold through
+// the six legion/metrics folds the evals' source names.
+//
+// A project's Legion rows of a day are, for each eval with input that day, every series its
+// builder builds in each of its cuts (metrics.CutSeries; every series of the catalogue but the
+// root figures' children cut, which no day holds): the all-repositories row (repo ''),
+// built from every issue and filing of the day, and one row per repository the eval's input is
+// in, built from that repository's alone. An issue's repository, and a filing's, is the one the
+// issue (the filed issue) resolves to by the rule that fills issue_facts.repo
+// (legionfacts.ReadRepos: its own, an ancestor's, else its project's default repository,
+// refs.IssueRepoTerms), resolved when the day is built rather than read from the stored row. An
+// issue or a filing that resolves to no repository is in the all-repositories row alone, so the
+// repositories' rows add up to that row only where every input resolves to one. Every Legion row
+// reached its project through its own issue, so its via_repository is 0.
+//
+// legion-splitting has input on a day with a closed issue or a filing, and the other five on a
+// day with a closed issue. legion-idle-time has none on a day before the first UTC midnight at or
+// after the project's first claim observation, and legion-slot-wait none before the same of its
+// first slot observation (LegionSince): R6 has each read "no data" for a window that starts before
+// that observation, and a row of an earlier day would hold hours read with no claim observed,
+// every one of them idle, or with no slot observed. A day with no input of an eval writes no row
+// of it: the explicit zero rows of a series from its first input day on are the refresher's
+// (ZeroLegionDay, ProjectDay.WithZeros).
+//
+// Each issue counted is an item of the family `legion` in eval_day_members, keyed by its issue
+// key, on its close day with its repository. The day an issue leaves when it closes again on
+// another day is named by the change of its facts itself (t_old, migration 20261117100002); the
+// members say where each issue below an issue whose repository or parent moved was counted
+// (subtreeCloseDays), and a write that moves a member off a day records that day owed a rewrite
+// (eval_days_owed). A filing's day is the time of its `issue.created` event, which never moves,
+// so a filing is no item.
+
+// The slugs of the Legion evals (dispatch://INFRA-2916/artifact/plan-md, "The seeded catalogue"):
+// an eval's id is EvalID(project, slug).
+const (
+	SlugLegionWorkTime  = "legion-work-time"
+	SlugLegionPhaseTime = "legion-phase-time"
+	SlugLegionIdleTime  = "legion-idle-time"
+	SlugLegionSlotWait  = "legion-slot-wait"
+	SlugLegionRework    = "legion-rework"
+	SlugLegionSplitting = "legion-splitting"
+)
+
+// legionDaySlugs is every eval a Legion day's rows are of, and so every eval whose rows a day no
+// longer holds the write of the day deletes (deleteStaleDays).
+var legionDaySlugs = []string{
+	SlugLegionWorkTime, SlugLegionPhaseTime, SlugLegionIdleTime, SlugLegionSlotWait, SlugLegionRework,
+	SlugLegionSplitting,
+}
+
+// legionDayFamilies is the one family of eval_day_members a Legion day records its issues under,
+// the evals' kind.
+var legionDayFamilies = []string{KindLegion}
+
+// legionBuilders is each Legion eval's day builder over one day's finished issues and filings.
+var legionBuilders = map[string]func(day time.Time, finished []metrics.IssueFacts, filed []metrics.IssueFiling) []measures.DayPart{
+	SlugLegionWorkTime: func(day time.Time, finished []metrics.IssueFacts, _ []metrics.IssueFiling) []measures.DayPart {
+		return metrics.WorkTimeDay(day, finished)
+	},
+	SlugLegionPhaseTime: func(day time.Time, finished []metrics.IssueFacts, _ []metrics.IssueFiling) []measures.DayPart {
+		return metrics.PhaseTimeDay(day, finished)
+	},
+	SlugLegionIdleTime: func(day time.Time, finished []metrics.IssueFacts, _ []metrics.IssueFiling) []measures.DayPart {
+		return metrics.IdleTimeDay(day, finished)
+	},
+	SlugLegionSlotWait: func(day time.Time, finished []metrics.IssueFacts, _ []metrics.IssueFiling) []measures.DayPart {
+		return metrics.SlotWaitDay(day, finished)
+	},
+	SlugLegionRework: func(day time.Time, finished []metrics.IssueFacts, _ []metrics.IssueFiling) []measures.DayPart {
+		return metrics.ReworkDay(day, finished)
+	},
+	SlugLegionSplitting: metrics.SplittingDay,
+}
+
+// LegionSince is the first UTC day of the two Legion evals bound to an observation: Claims, the
+// first UTC midnight at or after the project's first `claim.<role>` observation, from which
+// legion-idle-time has input, and Slots, the same of its first `slot` observation, from which
+// legion-slot-wait has. Each is nil while the project has no such observation. A day-aligned
+// window that starts before one starts before that observation (R6).
+type LegionSince struct {
+	Claims *time.Time
+	Slots  *time.Time
+}
+
+// ReadLegionSince reads project's LegionSince from legion_observations. The refresher reads it
+// once a pass and hands it to every day of the project it builds.
+func (s *Store) ReadLegionSince(ctx context.Context, project string) (LegionSince, error) {
+	var claims, slots *time.Time
+	if err := s.database.Pool.QueryRow(ctx, `
+		select (select min(observed_at) from legion_observations where project = $1 and starts_with(field, $2)),
+		       (select min(observed_at) from legion_observations where project = $1 and field = $3)
+	`, project, legion.ClaimFieldPrefix, legion.FieldSlot).Scan(&claims, &slots); err != nil {
+		return LegionSince{}, fmt.Errorf("read the first claim and slot observations of %s: %w", project, err)
+	}
+	return LegionSince{Claims: wholeDayFrom(claims), Slots: wholeDayFrom(slots)}, nil
+}
+
+// wholeDayFrom is the first UTC midnight at or after at, nil for nil.
+func wholeDayFrom(at *time.Time) *time.Time {
+	if at == nil {
+		return nil
+	}
+	day := measures.Midnight(*at)
+	if day.Before(*at) {
+		day = day.AddDate(0, 0, 1)
+	}
+	return &day
+}
+
+// onOrAfter is whether day is on or after first, a nil first being no day at all.
+func onOrAfter(first *time.Time, day time.Time) bool {
+	return first != nil && !day.Before(*first)
+}
+
+// LegionDay is one project's Legion input of one UTC day, read by ReadLegionDay: the stored facts
+// of the issues that closed on it and the filings made on it, with the repository each closed
+// issue and each filed issue resolves to.
+type LegionDay struct {
+	Project string
+	// Day is the day's UTC midnight.
+	Day    time.Time
+	closed []legionfacts.Row
+	filed  []legionfacts.Filing
+	// repos is the repository of each closed issue and each filed issue that resolves to one.
+	repos map[string]string
+}
+
+// ReadLegionDay reads project's Legion input of the UTC day day is on: its issues that closed
+// that day (legionfacts.ReadClosedIn), the filings its Legion sessions made that day
+// (legionfacts.ReadFilingsIn) and the repository each of those issues resolves to now
+// (legionfacts.ReadRepos, one read of them all). Each row is as of the day's end, the moment the
+// day's rows are of: every one is an issue that closed that day, whose facts stopped growing at
+// its close but for the slot hours of a slot it never gave up, which grow to the day's end as the
+// computation's would, and a builder that came to count an open issue would read it closed at the
+// day's end the same way.
+func (s *Store) ReadLegionDay(ctx context.Context, project string, day time.Time) (LegionDay, error) {
+	start := measures.Midnight(day)
+	end := start.AddDate(0, 0, 1)
+	pool := s.database.Pool
+	closed, err := legionfacts.ReadClosedIn(ctx, pool, project, start, end, end)
+	if err != nil {
+		return LegionDay{}, err
+	}
+	filed, err := legionfacts.ReadFilingsIn(ctx, pool, project, start, end)
+	if err != nil {
+		return LegionDay{}, err
+	}
+	keys := make([]string, 0, len(closed)+len(filed))
+	for _, row := range closed {
+		keys = append(keys, row.Issue)
+	}
+	for _, filing := range filed {
+		keys = append(keys, filing.Key)
+	}
+	repos, err := legionfacts.ReadRepos(ctx, pool, keys)
+	if err != nil {
+		return LegionDay{}, err
+	}
+	return LegionDay{Project: project, Day: start, closed: closed, filed: filed, repos: repos}, nil
+}
+
+// legionInput is a day's issues and filings, or one repository's of them, as the builders read
+// them.
+type legionInput struct {
+	finished []metrics.IssueFacts
+	filed    []metrics.IssueFiling
+}
+
+// Rows is the project's Legion rows of the day under since, built by the legion/metrics day
+// builders, and the issues they count; no row and no item for a day with no input.
+func (d LegionDay) Rows(since LegionSince) ProjectDay {
+	result := ProjectDay{Project: d.Project, Day: d.Day}
+	var all legionInput
+	byRepo := map[string]*legionInput{}
+	repoInput := func(repo string) *legionInput {
+		if byRepo[repo] == nil {
+			byRepo[repo] = &legionInput{}
+		}
+		return byRepo[repo]
+	}
+	for _, row := range d.closed {
+		repo := d.repos[row.Issue]
+		all.finished = append(all.finished, row.IssueFacts)
+		if repo != "" {
+			repoInput(repo).finished = append(repoInput(repo).finished, row.IssueFacts)
+		}
+		result.Members = append(result.Members, Member{Family: KindLegion, RowKey: row.Issue, Repo: repo})
+	}
+	for _, filing := range d.filed {
+		all.filed = append(all.filed, filing.IssueFiling)
+		if repo := d.repos[filing.Key]; repo != "" {
+			repoInput(repo).filed = append(repoInput(repo).filed, filing.IssueFiling)
+		}
+	}
+	result.Rows = d.build("", all, since)
+	for _, repo := range slices.Sorted(maps.Keys(byRepo)) {
+		result.Rows = append(result.Rows, d.build(repo, *byRepo[repo], since)...)
+	}
+	slices.SortFunc(result.Members, func(a, b Member) int { return cmp.Compare(a.RowKey, b.RowKey) })
+	return result
+}
+
+// build is the rows of the project's cut repo ("" for all repositories) from input, the evals with
+// input in it alone (legionHasInput).
+func (d LegionDay) build(repo string, input legionInput, since LegionSince) []DayRow {
+	var rows []DayRow
+	for _, slug := range legionDaySlugs {
+		if legionHasInput(slug, len(input.finished) > 0, len(input.filed) > 0, since, d.Day) {
+			rows = append(rows, legionRows(d.Project, repo, slug, legionBuilders[slug](d.Day, input.finished, input.filed))...)
+		}
+	}
+	return rows
+}
+
+// legionHasInput reports whether the Legion eval slug has input on day, where closed says that an
+// issue with Legion phase work closed that day and filed that a Legion session filed an issue on
+// it: legion-splitting on a day with either, the other five on a day with a close, and
+// legion-idle-time and legion-slot-wait only from the first whole day after the project's first
+// claim and slot observation on (since).
+func legionHasInput(slug string, closed, filed bool, since LegionSince, day time.Time) bool {
+	switch slug {
+	case SlugLegionSplitting:
+		return closed || filed
+	case SlugLegionIdleTime:
+		return closed && onOrAfter(since.Claims, day)
+	case SlugLegionSlotWait:
+		return closed && onOrAfter(since.Slots, day)
+	}
+	return closed
+}
+
+// legionRows is parts as project's rows of slug in the cut repo, every one listed.
+func legionRows(project, repo, slug string, parts []measures.DayPart) []DayRow {
+	rows := make([]DayRow, len(parts))
+	for i, part := range parts {
+		rows[i] = DayRow{ProjectKey: project, EvalID: EvalID(project, slug), Repo: repo, Listed: true, DayPart: part}
+	}
+	return rows
+}
+
+// ZeroLegionDay is project's all-repositories row of every series of each eval slugs names on day,
+// as the day builders build a day with no input (n 0, a zero sum, numerator and denominator, no
+// sample, and zero counts): the explicit zero rows the refresher writes for a series from its
+// first input day on, on a day with no input (ProjectDay.WithZeros). A slug of no Legion eval has
+// none, and neither has the children cut of legion-splitting's root figures, which no day holds.
+func ZeroLegionDay(project string, day time.Time, slugs ...string) ProjectDay {
+	result := ProjectDay{Project: project, Day: measures.Midnight(day)}
+	for _, slug := range slugs {
+		if build, ok := legionBuilders[slug]; ok {
+			result.Rows = append(result.Rows, legionRows(project, "", slug, build(result.Day, nil, nil))...)
+		}
+	}
+	return result
+}

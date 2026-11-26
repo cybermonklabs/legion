@@ -1,0 +1,22 @@
+{
+  "type": "subscribe",
+  "sub": "project-timeline-1",
+  "view": {
+    "kind": "project-timeline",
+    "project": "ACME",
+    "window": {
+      "from": "2026-10-01T00:00:00Z",
+      "to": "2026-10-03T00:00:00Z"
+    },
+    "query": "author=octocat&limit=400"
+  },
+  "resume": {
+    "seq": "46",
+    "revs": {
+      "items": {},
+      "maps": {},
+      "counts": {},
+      "fields": {}
+    }
+  }
+}

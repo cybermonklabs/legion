@@ -556,7 +556,7 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		}
 		// The update is the document's own first one over again, which decodes and adds nothing:
 		// what the removal reads of it is its version, above the one the document's version was
-		// stamped at (writeDocumentVersion), which is an edit that has not settled.
+		// stamped at (docs.Ledger.QueueVersion), which is an edit that has not settled.
 		appended, err := appending.Exec(ctx, `
 			insert into doc_updates (artifact_id, version, update, content_changed)
 			select $1::uuid, max(version) + 1, (array_agg(update order by version desc))[1], true

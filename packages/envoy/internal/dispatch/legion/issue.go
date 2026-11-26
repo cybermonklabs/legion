@@ -60,15 +60,15 @@ type RoleClaim struct {
 // expects rather than trusting it. A `null` is the sampler's word for a field the newest good read
 // no longer carries (recordObservations), so it clears the slot, the wait and a role's claim; a
 // claim whose value is not a string names no state, and is no claim either. A field this does not
-// name, such as the issue's `tree`, is not part of its state. The wait keeps value's own bytes, so
-// a caller hands value over and does not write to it again.
+// name, such as the issue's `tree`, is not part of its state. The slot is decoded by the one
+// decode of the field (ParseSlot), which the stored per-issue facts read it by too. The wait keeps
+// value's own bytes, so a caller hands value over and does not write to it again.
 func (s *IssueState) Observe(field string, value []byte, at time.Time) {
 	switch {
 	case field == FieldPhase:
 		s.Phase, s.PhaseSince = JSONString(value), at
 	case field == FieldSlot:
-		var slot *int
-		if err := json.Unmarshal(value, &slot); err == nil {
+		if slot, read := ParseSlot(value); read {
 			s.Slot = slot
 		}
 	case field == FieldWaitingOn:
@@ -145,21 +145,20 @@ func (a *Admission) Place(key string) (place, length int, ok bool) {
 // not decode as one. The board and one issue's read both take the project's `admission` row
 // through it (api/legion_board.go's observeProject, ReadIssue), so both read a value of another
 // shape as no block: the daemon owns the wire shape, and a reader of one names what it expects
-// rather than trusting it.
+// rather than trusting it. It is the one decode of the block (ParseAdmission), which the stored
+// per-issue facts read it by too.
 func AdmissionOf(value []byte) *Admission {
-	var admission Admission
-	if err := json.Unmarshal(value, &admission); err != nil {
-		return nil
-	}
-	return &admission
+	admission, _ := ParseAdmission(value)
+	return admission
 }
 
 // Blockers is the issues `admission.blocked` names as holding each issue, by that issue, each list
 // in the order the daemon stored it, never sorted, and nil for a nil Admission. It is the one rule
 // of which entry names an issue's blockers: the map is filled in the block's stored order, so an
-// issue two entries name, which no daemon sends, takes the last of them. The board reads the whole
-// map once for an answer (api/legion_board.go), and BlockersOf reads one issue's list from it. Each
-// list is the block's own; a caller reads it and does not change it.
+// issue two entries name, which no daemon sends, takes the last of them. The waiting line the
+// board and the stored facts place their issues by reads the whole map once (NewWaitingLine), and
+// BlockersOf reads one issue's list from it. Each list is the block's own; a caller reads it and
+// does not change it.
 func (a *Admission) Blockers() map[string][]string {
 	if a == nil {
 		return nil

@@ -53,11 +53,18 @@ export function leadTimeMinutes(pr: DeliveryPR): number | undefined {
   return (Date.parse(pr.deployed_at) - Date.parse(pr.merged_at)) / 60_000;
 }
 
-/** Minutes as the page shows durations: "45m", "3.5h", "2.1d". */
-export function formatMinutes(minutes: number): string {
-  if (minutes < 60) return `${Math.round(minutes)}m`;
-  if (minutes < 1440) return `${(minutes / 60).toFixed(1)}h`;
-  return `${(minutes / 1440).toFixed(1)}d`;
+/** Minutes written whole, rounded ("45"), or to `extra` decimals ("44.6"). */
+export function wholeMinutes(minutes: number, extra = 0): string {
+  return extra === 0 ? `${Math.round(minutes)}` : minutes.toFixed(extra);
+}
+
+/** Minutes as the page shows durations: "45m", "3.5h", "2.1d"; with `extra` decimals past those
+ *  ("44.6m"), as a toned figure takes them where its usual ones would print it on the other side
+ *  of its target (`lib/target.ts`'s `judgeFigure`). */
+export function formatMinutes(minutes: number, extra = 0): string {
+  if (minutes < 60) return `${wholeMinutes(minutes, extra)}m`;
+  if (minutes < 1440) return `${(minutes / 60).toFixed(1 + extra)}h`;
+  return `${(minutes / 1440).toFixed(1 + extra)}d`;
 }
 
 export function buildPRListRows(
@@ -100,39 +107,4 @@ export function compareIssueSort(a: IssueSortKey, b: IssueSortKey): number {
   return (
     a.priorityRank - b.priorityRank || a.key.localeCompare(b.key, undefined, { numeric: true })
   );
-}
-
-/** Every body row of the list is this tall, so the rows on screen are arithmetic, with no
- *  measuring. The sticky header row is the same height. */
-export const ROW_HEIGHT_PX = 36;
-/** Rows rendered past each edge of the scrolled-to window. */
-export const OVERSCAN_ROWS = 12;
-
-/** The rows `[first, last)` of `rowCount` the list renders when scrolled to `scrollTop` in a
- *  viewport `viewportHeight` tall: those on screen plus OVERSCAN_ROWS each side. */
-export function visibleRowRange(
-  scrollTop: number,
-  viewportHeight: number,
-  rowCount: number
-): { first: number; last: number } {
-  const first = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT_PX) - OVERSCAN_ROWS);
-  const last = Math.min(
-    rowCount,
-    Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT_PX) + OVERSCAN_ROWS
-  );
-  return { first, last };
-}
-
-/** The scroll offset that keeps row `index` fully in view below the sticky header, moving as
- *  little as possible from `scrollTop`. */
-export function scrollTopToShowRow(
-  index: number,
-  scrollTop: number,
-  viewportHeight: number
-): number {
-  const rowTop = index * ROW_HEIGHT_PX;
-  const bodyHeight = Math.max(ROW_HEIGHT_PX, viewportHeight - ROW_HEIGHT_PX);
-  if (rowTop < scrollTop) return rowTop;
-  if (rowTop + ROW_HEIGHT_PX > scrollTop + bodyHeight) return rowTop + ROW_HEIGHT_PX - bodyHeight;
-  return scrollTop;
 }

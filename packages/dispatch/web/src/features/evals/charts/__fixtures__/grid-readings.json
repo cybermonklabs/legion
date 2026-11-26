@@ -1,0 +1,466 @@
+{
+  "comment": "Synthetic items-view rows for grid.test.ts, as GET /api/v1/projects/{key}/evals/{slug}/items answers them (readingItemRow, dayItemRow): an audit read as a grid series (a row for each item, a col for each check, in rows groups core and extra) over a three-day window and the three days before it, the totals of one cell in audit-total, and latency, a series of rows in two units. g2 is item-1's second build reading, g6 is replaced by g7, item-2's proof and item-4 are read only in the compare range, and the day row is no reading.",
+  "window": {
+    "days": 3,
+    "from": "2026-11-01T00:00:00Z",
+    "to": "2026-11-04T00:00:00Z"
+  },
+  "compare": {
+    "days": 3,
+    "from": "2026-10-29T00:00:00Z",
+    "to": "2026-11-01T00:00:00Z"
+  },
+  "items": [
+    {
+      "row_key": "item-1",
+      "row_kind": "row",
+      "cols": {
+        "id": "g1",
+        "series": "audit",
+        "col": "build",
+        "value": 0,
+        "value_absent_reason": "",
+        "unit": "passed",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {
+          "row_group": "core"
+        },
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-01T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "auditor"
+        }
+      },
+      "measured_at": "2026-11-01T09:00:00Z",
+      "source": "auditor",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "item-1",
+      "row_kind": "row",
+      "cols": {
+        "id": "g3",
+        "series": "audit",
+        "col": "proof",
+        "value": 1,
+        "value_absent_reason": "",
+        "unit": "passed",
+        "n": null,
+        "n_unit": "",
+        "ci_low": 0.8,
+        "ci_high": 1,
+        "ci_level": 0.95,
+        "attributes": {
+          "row_group": "core"
+        },
+        "note": "checked by hand",
+        "replaces": "",
+        "recorded_at": "2026-11-01T10:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "auditor"
+        }
+      },
+      "measured_at": "2026-11-01T10:00:00Z",
+      "source": "auditor",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "item-2",
+      "row_kind": "row",
+      "cols": {
+        "id": "g4",
+        "series": "audit",
+        "col": "build",
+        "value": null,
+        "value_absent_reason": "runner lost",
+        "unit": "passed",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {
+          "row_group": "extra"
+        },
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-01T11:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "auditor"
+        }
+      },
+      "measured_at": "2026-11-01T11:00:00Z",
+      "source": "auditor",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "item-3",
+      "row_kind": "row",
+      "cols": {
+        "id": "g5",
+        "series": "audit",
+        "col": "build",
+        "value": 1,
+        "value_absent_reason": "",
+        "unit": "passed",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {
+          "row_group": "core"
+        },
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-02T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "auditor"
+        }
+      },
+      "measured_at": "2026-11-02T09:00:00Z",
+      "source": "auditor",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "item-1",
+      "row_kind": "row",
+      "cols": {
+        "id": "g2",
+        "series": "audit",
+        "col": "build",
+        "value": 1,
+        "value_absent_reason": "",
+        "unit": "passed",
+        "n": 4,
+        "n_unit": "tasks",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {
+          "row_group": "core"
+        },
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-02T10:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "auditor"
+        }
+      },
+      "measured_at": "2026-11-02T10:00:00Z",
+      "source": "auditor",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "item-3",
+      "row_kind": "row",
+      "cols": {
+        "id": "g6",
+        "series": "audit",
+        "col": "proof",
+        "value": 5,
+        "value_absent_reason": "",
+        "unit": "passed",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {
+          "row_group": "core"
+        },
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-03T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "auditor"
+        }
+      },
+      "measured_at": "2026-11-03T09:00:00Z",
+      "source": "auditor",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "item-3",
+      "row_kind": "row",
+      "cols": {
+        "id": "g7",
+        "series": "audit",
+        "col": "proof",
+        "value": 0,
+        "value_absent_reason": "",
+        "unit": "passed",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {
+          "row_group": "core"
+        },
+        "note": "",
+        "replaces": "g6",
+        "recorded_at": "2026-11-03T12:00:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "auditor"
+        }
+      },
+      "measured_at": "2026-11-03T09:00:00Z",
+      "source": "auditor",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "item-1",
+      "row_kind": "row",
+      "cols": {
+        "id": "c1",
+        "series": "audit",
+        "col": "build",
+        "value": 0,
+        "value_absent_reason": "",
+        "unit": "passed",
+        "n": 4,
+        "n_unit": "tasks",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {
+          "row_group": "core"
+        },
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-10-30T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "auditor"
+        }
+      },
+      "measured_at": "2026-10-30T09:00:00Z",
+      "source": "auditor",
+      "href": "",
+      "links": [],
+      "range": "compare"
+    },
+    {
+      "row_key": "item-2",
+      "row_kind": "row",
+      "cols": {
+        "id": "c2",
+        "series": "audit",
+        "col": "proof",
+        "value": 1,
+        "value_absent_reason": "",
+        "unit": "passed",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {
+          "row_group": "extra"
+        },
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-10-30T10:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "auditor"
+        }
+      },
+      "measured_at": "2026-10-30T10:00:00Z",
+      "source": "auditor",
+      "href": "",
+      "links": [],
+      "range": "compare"
+    },
+    {
+      "row_key": "item-4",
+      "row_kind": "row",
+      "cols": {
+        "id": "c3",
+        "series": "audit",
+        "col": "build",
+        "value": 0,
+        "value_absent_reason": "",
+        "unit": "passed",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-10-30T11:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "auditor"
+        }
+      },
+      "measured_at": "2026-10-30T11:00:00Z",
+      "source": "auditor",
+      "href": "",
+      "links": [],
+      "range": "compare"
+    },
+    {
+      "row_key": "item-1",
+      "row_kind": "row",
+      "cols": {
+        "id": "t1",
+        "series": "audit-total",
+        "col": "build",
+        "value": 2,
+        "value_absent_reason": "",
+        "unit": "checks",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-02T10:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "auditor"
+        }
+      },
+      "measured_at": "2026-11-02T10:00:00Z",
+      "source": "auditor",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "item-1",
+      "row_kind": "row",
+      "cols": {
+        "id": "t2",
+        "series": "audit-total",
+        "col": "build",
+        "value": 2,
+        "value_absent_reason": "",
+        "unit": "checks",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-10-30T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "auditor"
+        }
+      },
+      "measured_at": "2026-10-30T09:00:00Z",
+      "source": "auditor",
+      "href": "",
+      "links": [],
+      "range": "compare"
+    },
+    {
+      "row_key": "a",
+      "row_kind": "row",
+      "cols": {
+        "id": "l1",
+        "series": "latency",
+        "col": "",
+        "value": 120,
+        "value_absent_reason": "",
+        "unit": "ms",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-01T09:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "auditor"
+        }
+      },
+      "measured_at": "2026-11-01T09:00:00Z",
+      "source": "auditor",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "b",
+      "row_kind": "row",
+      "cols": {
+        "id": "l2",
+        "series": "latency",
+        "col": "",
+        "value": 2,
+        "value_absent_reason": "",
+        "unit": "s",
+        "n": null,
+        "n_unit": "",
+        "ci_low": null,
+        "ci_high": null,
+        "ci_level": null,
+        "attributes": {},
+        "note": "",
+        "replaces": "",
+        "recorded_at": "2026-11-01T10:05:00Z",
+        "recorded_by": {
+          "kind": "agent",
+          "id": "auditor"
+        }
+      },
+      "measured_at": "2026-11-01T10:00:00Z",
+      "source": "auditor",
+      "href": "",
+      "links": [],
+      "range": "window"
+    },
+    {
+      "row_key": "2026-11-01",
+      "row_kind": "day",
+      "cols": {
+        "series": "audit",
+        "value": 3
+      },
+      "measured_at": "2026-11-01T00:00:00Z",
+      "source": "",
+      "href": "",
+      "links": [],
+      "range": "window"
+    }
+  ]
+}

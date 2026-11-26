@@ -9,7 +9,9 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +23,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -158,11 +161,13 @@ func deliveryTestIntakeLeases(t *testing.T, pool *store.Pool) IntakeLeases {
 	return leases
 }
 
-// seedDeliverySettings writes a delivery_settings row with acme/widgets-shaped placeholders.
+// seedDeliverySettings saves deliveryProject's delivery settings, with deliveryRepo (acme/widgets)
+// its default repository: delivery on and one github_workflow source naming no repository, so it
+// reads the default, with acme/widgets-shaped placeholders. It answers the repository's rule.
 func seedDeliverySettings(t *testing.T, ctx context.Context, pool *store.Pool) DeliverySettings {
 	t.Helper()
-	settings, err := PutSettings(ctx, pool, DeliverySettings{
-		DeployRepo:           "acme/widgets",
+	rule, err := putTestRule(ctx, pool, DeliverySettings{
+		DeployRepo:           deliveryRepo,
 		DeployWorkflowPath:   ".github/workflows/deploy.yml",
 		ProductionJobNames:   []string{"widgets-release / widgets-release"},
 		PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
@@ -170,9 +175,91 @@ func seedDeliverySettings(t *testing.T, ctx context.Context, pool *store.Pool) D
 		ExcludedRepos:        []string{"acme/playground"},
 	}, model.Actor{Kind: "system", ID: "delivery-test"})
 	if err != nil {
-		t.Fatalf("seed delivery_settings: %v", err)
+		t.Fatalf("seed the delivery settings: %v", err)
 	}
-	return settings
+	return rule
+}
+
+// putTestRule saves rule as deliveryProject's one deploy source (saveProjectRules), making the
+// project with deliveryRepo its default repository where it has no row, and answers the rule as
+// the tables hold it.
+func putTestRule(ctx context.Context, pool *store.Pool, rule DeliverySettings, actor model.Actor) (DeliverySettings, error) {
+	if _, err := pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee, default_repo) values ($1, 'Delivery', 'alice', $2)
+		on conflict (key) do nothing
+	`, deliveryProject, deliveryRepo); err != nil {
+		return DeliverySettings{}, err
+	}
+	rules, err := saveProjectRules(ctx, pool, deliveryProject, actor, rule)
+	if err != nil {
+		return DeliverySettings{}, err
+	}
+	return rules[0], nil
+}
+
+// saveProjectRules saves rules as project's delivery settings: delivery on, one github_workflow
+// source per rule, in order, naming the rule's repository, or none where that is the project's
+// default repository, and the first rule's population, as one project holds one. The project must
+// exist. It answers the project's rules as DeployRules gives them, ordered by repository.
+func saveProjectRules(ctx context.Context, pool *store.Pool, project string, actor model.Actor, rules ...DeliverySettings) ([]DeliverySettings, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	var defaultRepo *string
+	if err := tx.QueryRow(ctx, `select default_repo from projects where key = $1`, project).Scan(&defaultRepo); err != nil {
+		return nil, fmt.Errorf("read the default repository of %s: %w", project, err)
+	}
+	input := ProjectSettingsInput{Project: project, Delivery: true}
+	if len(rules) > 0 {
+		input.PopulationAuthors, input.ExcludedRepos = rules[0].PopulationAuthors, rules[0].ExcludedRepos
+	}
+	for _, rule := range rules {
+		source := SourceInput{
+			Kind: SourceKindGitHubWorkflow, DeployWorkflowPath: new(rule.DeployWorkflowPath),
+			ProductionJobNames: rule.ProductionJobNames, ProductionApplyStepName: rule.ProductionApplyStepName,
+			StagingE2EJobName: rule.StagingE2EJobName, StagingApplyJobName: rule.StagingApplyJobName,
+			PRChecksWorkflowPath: new(rule.PRChecksWorkflowPath), PRChecksRollupJobName: rule.PRChecksRollupJobName,
+		}
+		if defaultRepo == nil || !strings.EqualFold(*defaultRepo, rule.DeployRepo) {
+			source.Repo = new(rule.DeployRepo)
+		}
+		input.Sources = append(input.Sources, source)
+	}
+	saved, err := PutProjectSettings(ctx, tx, input, actor)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return DeployRules([]ProjectSettings{saved}), nil
+}
+
+// getTestRule is deliveryProject's rule of its first source as the tables hold it now, its
+// source's bookkeeping included, or ErrNoSettings with none.
+func getTestRule(ctx context.Context, q Querier) (DeliverySettings, error) {
+	settings, err := GetProjectSettings(ctx, q, deliveryProject)
+	if err != nil {
+		return DeliverySettings{}, err
+	}
+	rules := settings.Rules()
+	if len(rules) == 0 {
+		return DeliverySettings{}, ErrNoSettings
+	}
+	return rules[0], nil
+}
+
+// readTestRules is the rules every project's delivery settings hold now, as the settings cache
+// and a reconcile pass read them (ReadSourceRules).
+func readTestRules(t *testing.T, ctx context.Context, q Querier) *SourceRules {
+	t.Helper()
+	rules, err := ReadSourceRules(ctx, q)
+	if err != nil {
+		t.Fatalf("read the projects' delivery settings: %v", err)
+	}
+	return rules
 }
 
 // deliveryProject is the project this package's issue fixtures write their issues in, and
@@ -345,15 +432,15 @@ func capHeadWriteDeliveriesAt(t *testing.T, deliveries uint64) {
 	tuningFor(t).headWriteMaxDeliveries = deliveries
 }
 
-// loadedSettingsCache is a settings cache holding what delivery_settings holds now, read once and
-// never again: what an intake under test routes by when nothing changes its settings meanwhile.
-// With no row it holds nothing, as a server's cache does before the settings are first written.
+// loadedSettingsCache is a settings cache holding the rules the projects' delivery settings hold
+// now, read once and never again: what an intake under test routes by when nothing changes its
+// settings meanwhile. With no delivery-on project it holds no rule, and an intake does not bind.
 // It logs to the test's intake logger (tuningFor), as the cache startIntakes builds does.
 func loadedSettingsCache(t *testing.T, ctx context.Context, pool *store.Pool) *SettingsCache {
 	t.Helper()
-	settings := newSettingsCache(pool, nil, tuningFor(t).log)
+	settings := newSettingsCache(pool, nil, nil, tuningFor(t).log)
 	if !settings.reload(ctx) {
-		t.Fatal("read delivery_settings into the cache")
+		t.Fatal("read the delivery settings into the cache")
 	}
 	return settings
 }
@@ -513,5 +600,173 @@ func deleteProbeConsumer(t *testing.T, natsClient *bus.Client, name string) {
 	t.Helper()
 	if err := natsClient.JS().DeleteConsumer(bus.Stream, name); err != nil {
 		t.Logf("delete probe consumer %s: %v", name, err)
+	}
+}
+
+// The three deploy sources the per-repository tests read (dispatch://INFRA-978, D1): deliveryProject
+// reads its default repository, acme/widgets, through a source that names none, and acme/gadgets
+// through a second source, and toolsProject reads its default, acme/tools. Each repository's rule
+// names workflows and production jobs of its own, and each project a population of its own.
+const toolsProject = "TOOL"
+
+var (
+	widgetsRule = DeliverySettings{
+		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
+		ProductionJobNames: []string{"widgets-release / widgets-release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
+		PopulationAuthors: []string{"octocat"}, ExcludedRepos: []string{"acme/playground"},
+	}
+	gadgetsRule = DeliverySettings{
+		DeployRepo: "acme/gadgets", DeployWorkflowPath: ".github/workflows/ship.yml",
+		ProductionJobNames: []string{"ship"}, ProductionApplyStepName: new("Apply gadgets"), PRChecksWorkflowPath: ".github/workflows/ci.yml",
+	}
+	toolsRule = DeliverySettings{
+		DeployRepo: "acme/tools", DeployWorkflowPath: ".github/workflows/release.yml",
+		ProductionJobNames: []string{"release"}, ProductionApplyStepName: new("Apply tools"), PRChecksWorkflowPath: ".github/workflows/tests.yml",
+		PopulationAuthors: []string{"hubot"}, ExcludedRepos: []string{"acme/sandbox"},
+	}
+)
+
+// seedThreeSources saves the three sources: deliveryProject's two (widgetsRule, gadgetsRule, with
+// widgetsRule's population) and toolsProject's one (toolsRule).
+func seedThreeSources(t *testing.T, ctx context.Context, pool *store.Pool) {
+	t.Helper()
+	actor := model.Actor{Kind: "system", ID: "delivery-test"}
+	seedProjectRepository(t, ctx, pool, deliveryProject, "Delivery", deliveryRepo)
+	seedProjectRepository(t, ctx, pool, toolsProject, "Tools", toolsRule.DeployRepo)
+	if _, err := saveProjectRules(ctx, pool, deliveryProject, actor, widgetsRule, gadgetsRule); err != nil {
+		t.Fatalf("save the delivery settings of %s: %v", deliveryProject, err)
+	}
+	if _, err := saveProjectRules(ctx, pool, toolsProject, actor, toolsRule); err != nil {
+		t.Fatalf("save the delivery settings of %s: %v", toolsProject, err)
+	}
+}
+
+// sourcesByRepo is each source repository's rule as the tables hold it now, its source's
+// bookkeeping included.
+func sourcesByRepo(t *testing.T, ctx context.Context, q Querier) map[string]DeliverySettings {
+	t.Helper()
+	byRepo := map[string]DeliverySettings{}
+	for _, rule := range readTestRules(t, ctx, q).All() {
+		byRepo[rule.DeployRepo] = rule
+	}
+	return byRepo
+}
+
+// An event the intake handles records its time on the source that reads the event's repository,
+// and on no other (dispatch://INFRA-978, D1): with three sources in three repositories, two of one
+// project, an event of a repository no source reads stamps no source, a pull request of acme/gadgets
+// stamps the second source of its project alone, and a run of acme/tools the other project's source.
+func TestAnEventRecordsItsTimeOnItsRepositorysOwner(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	seedThreeSources(t, ctx, pool)
+	natsClient := intakeTestClient(t)
+	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	startIntake(t, intake)
+	awaitBoundDurable(t, natsClient)
+
+	stamped := func() []string {
+		var repos []string
+		for repo, rule := range sourcesByRepo(t, ctx, pool) {
+			if rule.LastEventAt != nil {
+				repos = append(repos, repo)
+			}
+		}
+		slices.Sort(repos)
+		return repos
+	}
+	for _, step := range []struct {
+		what    string
+		publish func()
+		want    []string
+	}{
+		{"a pull request of a repository no source reads", func() {
+			publishPullRequestEnvelope(t, natsClient, "acme", "elsewhere", 3, map[string]string{"kind": "pr", "action": "opened", "repo": "acme/elsewhere", "number": "3", "author": "octocat"})
+		}, nil},
+		{"a pull request of acme/gadgets", func() {
+			publishPullRequestEnvelope(t, natsClient, "acme", "gadgets", 7, map[string]string{"kind": "pr", "action": "opened", "repo": "acme/gadgets", "number": "7", "author": "octocat"})
+		}, []string{"acme/gadgets"}},
+		{"a run of acme/tools", func() {
+			publishWorkflowEnvelope(t, natsClient, "acme", "tools", ".github/workflows/unwatched.yml", 9100)
+		}, []string{"acme/gadgets", "acme/tools"}},
+	} {
+		step.publish()
+		awaitAcknowledged(t, natsClient)
+		if got := stamped(); !slices.Equal(got, step.want) {
+			t.Fatalf("after %s the sources with an event time are %v, want %v", step.what, got, step.want)
+		}
+	}
+}
+
+// A merged pull request is admitted by the union of the delivery-on projects' populations
+// (dispatch://INFRA-978, D1): an author of either project's population merging into any repository
+// is stored, whichever project's source reads the repository, or none; a repository either project
+// excludes is excluded for every author; and a merge outside the union costs no GitHub call.
+func TestAPullRequestIsAdmittedByTheUnionOfThePopulations(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	seedThreeSources(t, ctx, pool)
+	merges := []struct {
+		repo, author string
+		number       int
+		admitted     bool
+	}{
+		{"acme/widgets", "hubot", 11, true},
+		{"acme/tools", "octocat", 12, true},
+		{"acme/elsewhere", "hubot", 13, true},
+		{"acme/sandbox", "octocat", 14, false},
+		{"acme/playground", "hubot", 15, false},
+		{"acme/widgets", "stranger", 16, false},
+	}
+	authorOf := map[string]string{}
+	for _, merge := range merges {
+		authorOf[fmt.Sprintf("%s#%d", merge.repo, merge.number)] = merge.author
+	}
+	var mu sync.Mutex
+	fetched := map[string]bool{}
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/{owner}/{repo}/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
+		key := r.PathValue("owner") + "/" + r.PathValue("repo") + "#" + r.PathValue("number")
+		mu.Lock()
+		fetched[key] = true
+		mu.Unlock()
+		number, _ := strconv.Atoi(r.PathValue("number"))
+		mustEncode(t, w, map[string]any{
+			"number": number, "title": "feat: a change", "html_url": "https://github.com/" + strings.ReplaceAll(key, "#", "/pull/"),
+			"user": map[string]any{"login": authorOf[key]}, "labels": []any{map[string]any{"name": "non-task"}},
+			"created_at": "2024-01-01T00:00:00Z", "merged_at": "2024-01-01T02:00:00Z",
+			"merge_commit_sha": "abc123", "additions": 1, "deletions": 1, "body": "",
+		})
+	})
+	fake.handle("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "2" {
+			mustEncode(t, w, []any{})
+			return
+		}
+		mustEncode(t, w, []any{map[string]any{"commit": map[string]any{"message": "feat: a change", "author": map[string]any{"date": "2024-01-01T00:00:00Z"}}}})
+	})
+	intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), events.NewBroker(), nil, unrenamed())
+	rules := readTestRules(t, ctx, pool)
+
+	for _, merge := range merges {
+		key := fmt.Sprintf("%s#%d", merge.repo, merge.number)
+		wrote, err := intake.handlePullRequestEnvelope(ctx, rules, map[string]string{
+			"kind": "pr", "action": "closed", "merged": "true", "repo": merge.repo, "number": strconv.Itoa(merge.number),
+			"title": "feat: a change", "author": merge.author, "base_ref": "main", "updated_at": "2024-01-01T02:00:00Z",
+			"url": "https://github.com/" + strings.ReplaceAll(key, "#", "/pull/"),
+		})
+		if err != nil || wrote != merge.admitted {
+			t.Errorf("the merge of %s by %s wrote %v (%v), want %v", key, merge.author, wrote, err, merge.admitted)
+		}
+		var stored bool
+		if err := pool.QueryRow(ctx, `select exists (select from delivery_pull_requests where repo = $1 and number = $2)`, merge.repo, merge.number).Scan(&stored); err != nil {
+			t.Fatalf("read whether %s is stored: %v", key, err)
+		}
+		mu.Lock()
+		asked := fetched[key]
+		mu.Unlock()
+		if stored != merge.admitted || asked != merge.admitted {
+			t.Errorf("the merge of %s by %s: stored %v, fetched from GitHub %v; want both %v", key, merge.author, stored, asked, merge.admitted)
+		}
 	}
 }

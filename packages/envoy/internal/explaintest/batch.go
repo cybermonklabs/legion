@@ -34,7 +34,8 @@ type Statement struct {
 	Args []any
 }
 
-// Beginner opens the transaction a plan is read in: a pool, or one connection of it.
+// Beginner opens the transaction a plan is read in: a pool, or one connection of it. It is the
+// one call AnalyzedPlan needs of a pool too: a transaction of its own.
 type Beginner interface {
 	Begin(context.Context) (pgx.Tx, error)
 }

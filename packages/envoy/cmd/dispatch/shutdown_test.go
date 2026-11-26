@@ -702,16 +702,15 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 	// githubAnswersAfterSignal's 3 s).
 	database := storetest.Open(t)
 	// The fetched pull request's author is outside the population, so the handler deletes any row
-	// it has and records the event's time: two writes to the pool once GitHub has answered.
-	if _, err := delivery.PutSettings(context.Background(), database.Pool, delivery.DeliverySettings{
-		DeployRepo:           "acme/deploy",
+	// it has and records the event's time on acme/widgets' source: two writes to the pool once
+	// GitHub has answered.
+	saveDeliveryRule(t, database, delivery.DeliverySettings{
+		DeployRepo:           "acme/widgets",
 		DeployWorkflowPath:   ".github/workflows/deploy.yaml",
 		PRChecksWorkflowPath: ".github/workflows/pr.yaml",
 		ProductionJobNames:   []string{"production"},
 		PopulationAuthors:    []string{"octocat"},
-	}, model.Actor{Kind: "user", ID: dispatchTestLogin}); err != nil {
-		t.Fatalf("seed the delivery settings: %v", err)
-	}
+	})
 	_, natsURL := testnats.Start(t)
 	publisher, err := bus.ConnectOwningStream([]string{natsURL})
 	if err != nil {
@@ -761,7 +760,7 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 
 	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, database.Pool, intakeLeasesOf(t, database.Pool), app, events.NewBroker(), nil, nil, delivery.NewAttributor(refs.Renames{}))
+	}, database.Pool, intakeLeasesOf(t, database.Pool), app, events.NewBroker(), nil, nil, nil, delivery.NewAttributor(refs.Renames{}))
 	if err != nil {
 		t.Fatalf("start the intakes: %v", err)
 	}
@@ -823,7 +822,7 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 	}
 	defer reader.Close(context.Background())
 	var recorded *time.Time
-	if err := reader.QueryRow(context.Background(), `select last_event_at from delivery_settings`).Scan(&recorded); err != nil {
+	if err := reader.QueryRow(context.Background(), `select last_event_at from project_deploy_sources where project_key = $1`, deliveryProject).Scan(&recorded); err != nil {
 		t.Fatalf("read last_event_at: %v", err)
 	}
 	// GitHub answers well inside the intakes' stop, so the handler finishes rather than being given
@@ -878,7 +877,7 @@ func TestAPanicAfterTheIntakesStartEndsTheProcess(t *testing.T) {
 	defer cancel()
 	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, database.Pool, intakeLeasesOf(t, database.Pool), testGitHubApp(t, githubServer.URL), events.NewBroker(), nil, nil, delivery.NewAttributor(refs.Renames{}))
+	}, database.Pool, intakeLeasesOf(t, database.Pool), testGitHubApp(t, githubServer.URL), events.NewBroker(), nil, nil, nil, delivery.NewAttributor(refs.Renames{}))
 	if err != nil {
 		t.Fatalf("start the intakes: %v", err)
 	}
@@ -1035,6 +1034,24 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	process := startDispatchProcess(t, relay.url)
 	process.waitHealthy(t)
 	process.call(t, http.MethodPost, "/api/v1/projects", `{"key":"STOP","name":"Shutdown"}`, http.StatusCreated)
+	// Creating a project seeds its evals and its `evals-md` document, whose tree a settlement has
+	// nothing to write into, so the create records no settlement owed and no settlement loads the
+	// document's room (docs.CreateDocument). The bound below assumes the document service has no
+	// room to visit: Shutdown reads whether each resident room owes a settlement, a read the frozen
+	// database never answers, which would spend the document service's whole drain budget. So
+	// check, on the test's own pool rather than through the relay, that the document owes nothing,
+	// and that the process holds no room.
+	var evalsDocument string
+	if err := database.Pool.QueryRow(ctx, `
+		select id::text from artifacts
+		where project_key = 'STOP' and issue_key is null and session_id is null and slug = 'evals-md'
+	`).Scan(&evalsDocument); err != nil {
+		t.Fatalf("read the project's evals-md: %v", err)
+	}
+	waitForSettlementOwed(t, database, evalsDocument, false)
+	if rooms := process.residentRooms(t); len(rooms) != 0 {
+		t.Fatalf("the process holds rooms %v after the project's create, want none", rooms)
+	}
 
 	// An issue create takes its number from the project's row, so it queues behind this lock.
 	holder, err := database.Pool.Begin(ctx)
@@ -1963,6 +1980,20 @@ func waitForSettlementOwed(t *testing.T, database *store.Store, artifactID strin
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// residentRooms lists the documents the process holds a room of now
+// (GET /api/v1/artifacts/_test/rooms).
+func (p *dispatchProcess) residentRooms(t *testing.T) []string {
+	t.Helper()
+	answer := p.call(t, http.MethodGet, "/api/v1/artifacts/_test/rooms", "", http.StatusOK)
+	var listed struct {
+		Rooms []string `json:"rooms"`
+	}
+	if err := json.Unmarshal(answer, &listed); err != nil {
+		t.Fatalf("decode the resident rooms: %v: %s", err, answer)
+	}
+	return listed.Rooms
 }
 
 // latestVersion is the number, markdown and authors (JSON) of the document's latest version.

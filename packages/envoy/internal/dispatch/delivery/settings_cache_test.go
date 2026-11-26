@@ -1,7 +1,7 @@
 package delivery
 
-// The settings cache both intakes route by: read at start and when its wake is signalled, never
-// on a timer and never per message.
+// The settings cache both intakes route by: read at start and when one of its wakes is signalled,
+// never on a timer and never per message.
 
 import (
 	"context"
@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
@@ -65,11 +66,12 @@ func runSettingsCache(t *testing.T, cache *SettingsCache) {
 	})
 }
 
-// settingsReadCounter counts the statements that read delivery_settings.
+// settingsReadCounter counts the statements that read the projects' delivery settings (the cache's
+// own read, ListProjectSettings; its second statement reads the sources).
 type settingsReadCounter struct{ reads atomic.Int64 }
 
 func (c *settingsReadCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if strings.Contains(data.SQL, "from delivery_settings") {
+	if strings.Contains(data.SQL, "from project_delivery_settings") {
 		c.reads.Add(1)
 	}
 	return ctx
@@ -77,17 +79,18 @@ func (c *settingsReadCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, 
 
 func (c *settingsReadCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-// countedDeliveryPool is a pool of its own on pool's database whose delivery_settings reads are
-// counted, on its lease and listener connections as well, which are opened from its configuration.
+// countedDeliveryPool is a pool of its own on pool's database whose reads of the projects'
+// delivery settings are counted, on its lease and listener connections as well, which are opened
+// from its configuration.
 func countedDeliveryPool(t *testing.T, pool *store.Pool) (*store.Pool, *settingsReadCounter) {
 	t.Helper()
 	counter := &settingsReadCounter{}
 	return storetest.Traced(t, pool, counter, nil), counter
 }
 
-// With both intakes running and bound, and nothing written, delivery_settings is read twice in
-// all -- at the cache's start and on the hub's signal after its LISTEN -- and then not once over
-// three seconds: no timer reads it.
+// With both intakes running and bound, and nothing written, the projects' delivery settings are
+// read twice in all -- at the cache's start and on the hub's signal after its LISTEN -- and then not
+// once over three seconds: no timer reads them.
 func TestTheIntakesReadNoSettingsWhileNothingChanges(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -99,7 +102,7 @@ func TestTheIntakesReadNoSettingsWhileNothingChanges(t *testing.T) {
 	runCtx, cancel := context.WithCancel(ctx)
 	stop, err := StartIntakes(runCtx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, counted, deliveryTestIntakeLeases(t, counted), newFakeGitHub(t).newTestClient(), events.NewBroker(), wake, nil, unrenamed())
+	}, counted, deliveryTestIntakeLeases(t, counted), newFakeGitHub(t).newTestClient(), events.NewBroker(), wake, nil, nil, unrenamed())
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -114,18 +117,18 @@ func TestTheIntakesReadNoSettingsWhileNothingChanges(t *testing.T) {
 		return err == nil && info.PushBound
 	}, func() string { return "the job intake never bound its durable" })
 	waitFor(t, 5*time.Second, func() bool { return counter.reads.Load() >= 2 }, func() string {
-		return fmt.Sprintf("delivery_settings was read %d times, want the start's read and the hub signal's", counter.reads.Load())
+		return fmt.Sprintf("the delivery settings were read %d times, want the start's read and the hub signal's", counter.reads.Load())
 	})
 
 	before := counter.reads.Load()
 	time.Sleep(3 * time.Second)
 	if read := counter.reads.Load() - before; read != 0 || before != 2 {
-		t.Fatalf("delivery_settings read %d times before the idle window and %d times over 3s of it; want 2 and none", before, read)
+		t.Fatalf("the delivery settings were read %d times before the idle window and %d times over 3s of it; want 2 and none", before, read)
 	}
 }
 
-// Ten job events of a tracked deploy run are checked against the cached settings: none of them
-// reads delivery_settings, and they still schedule the run's read.
+// Ten job events of a tracked deploy run are checked against the cached rules: none of them reads
+// the delivery settings, and they still schedule the run's read.
 func TestJobEventsReadNoSettings(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -140,46 +143,109 @@ func TestJobEventsReadNoSettings(t *testing.T) {
 		jobs.receive(ctx, jobPayload("acme/widgets", 500))
 	}
 	if read := counter.reads.Load() - before; read != 0 {
-		t.Fatalf("10 job events read delivery_settings %d times, want none", read)
+		t.Fatalf("10 job events read the delivery settings %d times, want none", read)
 	}
 	if armed := clock.armed(); armed != 1 {
 		t.Fatalf("10 job events of a tracked run armed %d reads, want 1: they did not pass the settings check", armed)
 	}
 }
 
-// A read that finds no row leaves the cache empty; the first settings written are stored; a later
-// read whose deploy repository is malformed keeps the settings before it.
-func TestTheSettingsCacheKeepsTheLastValidSettings(t *testing.T) {
+// A read that finds no delivery-on project holds no rule; the first settings saved are stored; and
+// a project whose delivery is turned off gives no rule again.
+func TestTheSettingsCacheHoldsTheRulesOfDeliveryOnProjects(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
-	cache := newSettingsCache(pool, nil, nil)
-	if !cache.reload(ctx) || cache.Load() != nil {
-		t.Fatalf("a read with no row = %+v, want nothing held", cache.Load())
+	cache := newSettingsCache(pool, nil, nil, nil)
+	if cache.Load() != nil {
+		t.Fatalf("a cache that has read nothing holds %+v, want nothing", cache.Load())
+	}
+	if !cache.reload(ctx) || cache.Load() == nil || len(cache.Load().All()) != 0 {
+		t.Fatalf("a read with no delivery settings holds %+v, want rules with no repository", cache.Load().All())
 	}
 
 	seeded := seedDeliverySettings(t, ctx, pool)
 	if !cache.reload(ctx) {
 		t.Fatal("read the seeded settings")
 	}
-	if held := cache.Load(); held == nil || held.DeployRepo != seeded.DeployRepo {
-		t.Fatalf("held settings = %+v, want deploy repository %s", held, seeded.DeployRepo)
+	if held, ok := cache.Load().For(seeded.DeployRepo); !ok || held.DeployWorkflowPath != seeded.DeployWorkflowPath {
+		t.Fatalf("held rule of %s = %+v (%t), want the seeded rule", seeded.DeployRepo, held, ok)
 	}
 
-	if _, err := pool.Exec(ctx, `update delivery_settings set deploy_repo = 'no-slash' where singleton`); err != nil {
-		t.Fatalf("write a malformed deploy repository: %v", err)
+	if _, err := pool.Exec(ctx, `update project_delivery_settings set delivery = false where project_key = $1`, deliveryProject); err != nil {
+		t.Fatalf("turn the project's delivery off: %v", err)
 	}
 	if !cache.reload(ctx) {
-		t.Fatal("read the malformed settings")
+		t.Fatal("read the settings with delivery off")
 	}
-	if held := cache.Load(); held == nil || held.DeployRepo != seeded.DeployRepo {
-		t.Fatalf("held settings after a malformed deploy repository = %+v, want %s kept", held, seeded.DeployRepo)
+	if len(cache.Load().All()) != 0 {
+		t.Fatalf("held rules with the project's delivery off = %+v, want none", cache.Load().All())
 	}
+}
+
+// The cache reads every project's delivery settings again when a save announces itself on
+// SettingsChannel, and when its projects wake (in the server, the commit of an event: a
+// project.updated is how a write of a default repository shows) finds that a default repository a
+// source reads has moved, since a source that names no repository moves with its project's
+// default. A projects wake that finds no default moved reads the settings no more, and a move of a
+// default alone announces nothing on SettingsChannel, so the save wake would not have caught it.
+func TestTheCacheReloadsOnASaveAndOnADefaultRepositoryMove(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	seeded := seedDeliverySettings(t, ctx, pool)
+	counted, counter := countedDeliveryPool(t, pool)
+	projectsWake := make(chan struct{}, 1)
+	cache := newSettingsCache(counted, settingsWake(t, counted), projectsWake, tuningFor(t).log)
+	runSettingsCache(t, cache)
+	waitFor(t, 5*time.Second, func() bool {
+		_, ok := cache.Load().For(deliveryRepo)
+		return ok
+	}, func() string {
+		return fmt.Sprintf("the cache never held the rule of %s: %+v", deliveryRepo, cache.Load())
+	})
+
+	const release = ".github/workflows/release.yml"
+	seeded.DeployWorkflowPath = release
+	if _, err := putTestRule(ctx, pool, seeded, model.Actor{Kind: "system", ID: "delivery-test"}); err != nil {
+		t.Fatalf("save a new deploy workflow path: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		rule, ok := cache.Load().For(deliveryRepo)
+		return ok && rule.DeployWorkflowPath == release
+	}, func() string {
+		return fmt.Sprintf("the cache holds %+v two seconds after the save, want deploy workflow path %s", cache.Load().All(), release)
+	})
+
+	// The save's notifications are read by now; a projects wake with no default moved reads the
+	// projects' defaults and not the settings.
+	time.Sleep(500 * time.Millisecond)
+	before := counter.reads.Load()
+	projectsWake <- struct{}{}
+	time.Sleep(500 * time.Millisecond)
+	if read := counter.reads.Load() - before; read != 0 {
+		t.Fatalf("a projects wake with no default repository moved read the delivery settings %d times, want none", read)
+	}
+
+	const moved = "acme/moved"
+	if _, err := pool.Exec(ctx, `update projects set default_repo = $2 where key = $1`, deliveryProject, moved); err != nil {
+		t.Fatalf("move the project's default repository: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if _, ok := cache.Load().For(moved); ok {
+		t.Fatalf("the cache read the moved default repository with no projects wake: %+v", cache.Load().All())
+	}
+	projectsWake <- struct{}{}
+	waitFor(t, 2*time.Second, func() bool {
+		rule, ok := cache.Load().For(moved)
+		_, stale := cache.Load().For(deliveryRepo)
+		return ok && rule.DeployWorkflowPath == release && rule.Project == deliveryProject && !stale
+	}, func() string {
+		return fmt.Sprintf("the cache holds %+v two seconds after the projects wake, want the source's rule under %s alone", cache.Load().All(), moved)
+	})
 }
 
 // SettingsCache.Read's channel is closed by the first read that answers, whatever it found, and by
 // no read that failed: a read on a cancelled context fails and leaves it open; a read that finds a
-// deploy repository it refuses answers, holds nothing, and closes it; and a first read that finds
-// no row closes it.
+// project's settings answers, holds its source's rule, and closes it; and a first read that finds
+// no delivery-on project closes it, holding rules with no repository.
 func TestTheSettingsCachesFirstReadIsTheFirstReadThatAnswers(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -192,7 +258,7 @@ func TestTheSettingsCachesFirstReadIsTheFirstReadThatAnswers(t *testing.T) {
 		}
 	}
 
-	cache := newSettingsCache(pool, nil, nil)
+	cache := newSettingsCache(pool, nil, nil, nil)
 	if closed(cache) {
 		t.Fatal("a settings cache that has read nothing has its first read closed")
 	}
@@ -205,25 +271,25 @@ func TestTheSettingsCachesFirstReadIsTheFirstReadThatAnswers(t *testing.T) {
 		t.Fatal("a read that failed closed the settings cache's first read")
 	}
 
-	seedDeliverySettings(t, ctx, pool)
-	if _, err := pool.Exec(ctx, `update delivery_settings set deploy_repo = 'no-slash' where singleton`); err != nil {
-		t.Fatalf("write a malformed deploy repository: %v", err)
-	}
+	seeded := seedDeliverySettings(t, ctx, pool)
 	if !cache.reload(ctx) {
-		t.Fatal("read the malformed settings")
+		t.Fatal("read the seeded settings")
 	}
-	if held := cache.Load(); held != nil {
-		t.Fatalf("held settings after a refused deploy repository = %+v, want nothing", held)
+	if _, ok := cache.Load().For(seeded.DeployRepo); !ok {
+		t.Fatalf("held rules after the first read = %+v, want the rule of %s", cache.Load().All(), seeded.DeployRepo)
 	}
 	if !closed(cache) {
-		t.Fatal("a read that refused the deploy repository left the settings cache's first read open")
+		t.Fatal("a read that found a project's settings left the settings cache's first read open")
 	}
 
-	if _, err := pool.Exec(ctx, `delete from delivery_settings`); err != nil {
-		t.Fatalf("delete the delivery settings: %v", err)
+	if _, err := pool.Exec(ctx, `update project_delivery_settings set delivery = false where project_key = $1`, deliveryProject); err != nil {
+		t.Fatalf("turn the project's delivery off: %v", err)
 	}
-	empty := newSettingsCache(pool, nil, nil)
+	empty := newSettingsCache(pool, nil, nil, nil)
 	if !empty.reload(ctx) || !closed(empty) {
-		t.Fatal("a first read that found no row left the settings cache's first read open")
+		t.Fatal("a first read that found no delivery-on project left the settings cache's first read open")
+	}
+	if held := empty.Load(); held == nil || len(held.All()) != 0 {
+		t.Fatalf("held rules with no delivery-on project = %+v, want rules with no repository", held.All())
 	}
 }

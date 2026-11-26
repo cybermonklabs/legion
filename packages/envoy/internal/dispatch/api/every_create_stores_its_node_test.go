@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -26,17 +27,26 @@ import (
 // a node, with no project, or with another than its row's.
 //
 // A POST row needs a request the route takes. postCalls holds one for every row. A route that can
-// create an issue, a document, an ask or a message gets a body that makes one, which the test
-// holds to a 2xx: a create gets the body that makes its object, and a write of a document's text -
-// a document edit, a suggestion's accept, the rebuild of a document whose stored history does not
-// load - writes a new ask block, whose ask the document's settlement opens (docs'
-// createAskBlock). The rig settles a document an hour on, so the test settles every document the
-// calls left owing a settlement at once, and requires each new block's ask before it reads the
-// census. A named version writes no text and opens no ask, but it gets the body the route takes
-// too, and is held to a 2xx. Every other row gets the empty body, whose answer the test does not
-// read, since it can create nothing of these kinds. A POST row of the table postCalls does not
-// name fails the test by name: a create route added later is caught there and called once its
-// request is written down.
+// create an issue, a document, an ask, a message or a project gets a body that makes one, which
+// the test holds to a 2xx: a create gets the body that makes its object, and a write of a
+// document's text - a document edit, a suggestion's accept, the rebuild of a document whose
+// stored history does not load - writes a new ask block, whose ask the document's settlement
+// opens (docs' createAskBlock). The rig settles a document an hour on, so the test settles every
+// document the calls left owing a settlement at once, and requires each new block's ask before it
+// reads the census. A named version writes no text and opens no ask, but it gets the body the
+// route takes too, and is held to a 2xx. Every other row gets the empty body, whose answer the
+// test does not read, since it can create nothing of these kinds. A POST row of the table
+// postCalls does not name fails the test by name: a create route added later is caught there and
+// called once its request is written down.
+//
+// A project's create seeds its `evals-md` document (evals.Store.EnsureTx), and an eval write adds
+// its section to that document, or creates the document where the project holds none. So the
+// project create is called with a new project's key (seedingProject); the register write is
+// called on a project made by SQL, as one from before the eval registry is, whose first eval
+// write creates the document (unseededProject); and the readings write is called on the
+// fixture's project, whose document it edits. Once the calls are made the test requires both new
+// projects to hold their `evals-md`, so a call that answered 2xx and made none leaves the census
+// nothing to check.
 //
 // The controls are the ask create's node write skipped (api/asks.go) and the settled ask block's
 // node write skipped (docs/ask_blocks.go createAskBlock): either way the test fails, naming the
@@ -64,7 +74,11 @@ func TestEveryCreateStoresItsNode(t *testing.T) {
 			continue
 		}
 		pattern := strings.TrimPrefix(name, http.MethodPost+" ")
-		response := call.send(t, rig.handler, fixture.path(pattern))
+		target := fixture
+		if call.project != "" {
+			target.project = call.project
+		}
+		response := call.send(t, rig.handler, target.path(pattern))
 		if call.succeeds && (response.Code < 200 || response.Code > 299) {
 			t.Errorf("%s answered %d %s, want a 2xx", name, response.Code, response.Body.String())
 			continue
@@ -74,6 +88,18 @@ func TestEveryCreateStoresItsNode(t *testing.T) {
 		}
 	}
 	asks := settledAskBlocks(t, rig, blocks)
+	for _, project := range []string{seedingProject, unseededProject} {
+		var held int
+		if err := rig.database.Pool.QueryRow(ctx, `
+			select count(*) from artifacts where project_key = $1 and issue_key is null and slug = $2
+		`, project, evals.DocumentSlug).Scan(&held); err != nil {
+			t.Fatalf("count the %s documents of project %s: %v", evals.DocumentSlug, project, err)
+		}
+		if held != 1 {
+			t.Errorf("project %s holds %d %s documents after the calls, want the one its create, or the first eval write that named it, made",
+				project, held, evals.DocumentSlug)
+		}
+	}
 
 	incomplete, err := graphcensus.ProjectComplete(ctx, rig.database.Pool)
 	if err != nil {
@@ -102,6 +128,18 @@ const acceptedAskBlock = "every-create-accepted"
 
 // rebuiltAskBlock is the ask block the rebuild of the fixture's unloadable document writes.
 const rebuiltAskBlock = "every-create-rebuilt"
+
+// seedingProject is the key of the project the project create makes, whose seed creates its
+// evals-md.
+const seedingProject = "SEEDED"
+
+// unseededProject is a project made by SQL, as one from before the eval registry is: it holds no
+// evals-md, so the first eval write that names it creates the document (seedEveryKind).
+const unseededProject = "BARE"
+
+// everyCreateEval is the slug of the eval the register write registers, and the one the readings
+// write's path names.
+const everyCreateEval = "every-create-eval"
 
 // seedEveryKind writes the objects postCalls' paths name, through the API.
 func seedEveryKind(t *testing.T, rig *storeWriterRig) everyKindFixture {
@@ -152,6 +190,10 @@ func seedEveryKind(t *testing.T, rig *storeWriterRig) everyKindFixture {
 	if child.Code != http.StatusCreated {
 		t.Fatalf("file the issue's child: status=%d body=%s", child.Code, child.Body.String())
 	}
+	if _, err := rig.database.Pool.Exec(context.Background(),
+		`insert into projects (key, name, default_assignee) values ($1, 'Made by SQL', 'alice')`, unseededProject); err != nil {
+		t.Fatalf("make project %s, which holds no %s, by SQL: %v", unseededProject, evals.DocumentSlug, err)
+	}
 	return fixture
 }
 
@@ -161,8 +203,8 @@ var pathParameter = regexp.MustCompile(`\{([a-z_]+)\}`)
 // path fills a route pattern's parameters from the fixture: a key is the project's under
 // /projects/ and the issue's elsewhere, an id is the object of the collection it follows - the
 // suggestion's for an accept, which only a suggestion takes, and the unloadable document's for a
-// rebuild, which only such a document takes - and a parameter no object answers takes a value
-// that addresses nothing.
+// rebuild, which only such a document takes - a slug under an eval is the eval's, and a parameter
+// no object answers takes a value that addresses nothing.
 func (f everyKindFixture) path(pattern string) string {
 	return pathParameter.ReplaceAllStringFunc(pattern, func(match string) string {
 		at := strings.Index(pattern, match)
@@ -174,6 +216,9 @@ func (f everyKindFixture) path(pattern string) string {
 			}
 			return f.issue
 		case "{slug}":
+			if strings.Contains(pattern, "/evals/{slug}") {
+				return everyCreateEval
+			}
 			if strings.HasPrefix(pattern, "/api/v1/projects/") {
 				return f.documentSlug
 			}
@@ -210,14 +255,17 @@ func (f everyKindFixture) path(pattern string) string {
 
 // postCall is how the test calls one POST row: its body, who sends it, whether it is a file upload
 // rather than a JSON body, whether the route takes the request, which the test then holds to a
-// 2xx, and the ask block the call writes into a document, whose ask that document's settlement
-// opens.
+// 2xx, the ask block the call writes into a document, whose ask that document's settlement
+// opens, the project the route is called on where it is not the fixture's, and the
+// Idempotency-Key the route requires, "" for none.
 type postCall struct {
 	body     any
 	session  bool
 	upload   bool
 	succeeds bool
 	askBlock string
+	project  string
+	key      string
 }
 
 func (c postCall) send(t *testing.T, handler http.Handler, path string) *httptest.ResponseRecorder {
@@ -231,6 +279,9 @@ func (c postCall) send(t *testing.T, handler http.Handler, path string) *httptes
 	}
 	if c.session {
 		return bearerRequest(t, handler, http.MethodPost, path, body)
+	}
+	if c.key != "" {
+		return keyedRequest(t, handler, http.MethodPost, path, body, "alice", c.key)
 	}
 	return dispatchRequest(t, handler, http.MethodPost, path, body, "alice")
 }
@@ -303,7 +354,8 @@ func settledAskBlocks(t *testing.T, rig *storeWriterRig, blocks []string) map[st
 // postCalls is how every POST row of writeClasses is called. The creates make one object each of
 // the kinds whose node names its project, the writes of a document's text one ask block each, and
 // the status change, whose include_children moves the fixture's child, a comment of Dispatch's
-// system actor on the child and one on the issue it names; every other row creates none.
+// system actor on the child and one on the issue it names; the project create and the eval writes
+// make or edit the project's evals-md; every other row creates none.
 var postCalls = map[string]postCall{
 	"POST /api/v1/issues":                       {succeeds: true, body: map[string]any{"project": "LOCK", "title": "Every create stores its node", "spec": "A spec.\n"}},
 	"POST /api/v1/issues/{key}/artifacts":       {succeeds: true, body: map[string]any{"name": "notes.md", "content": "# Notes\n"}},
@@ -322,6 +374,16 @@ var postCalls = map[string]postCall{
 		"actor": map[string]any{"kind": "session", "id": "s1"}, "attempt": 1, "body": "All green."}},
 	"POST /api/v1/artifacts/{id}/approval-requests": {succeeds: true, session: true, body: map[string]any{"actor": map[string]any{"kind": "session", "id": "s1"}}},
 	"POST /api/v1/agents/{session_id}/artifacts":    {succeeds: true, upload: true},
+
+	// The project create, whose seed creates the project's evals-md; the register write, on the
+	// project made by SQL that holds none, whose first eval write creates it; and the readings
+	// write, which adds its eval's section to the fixture's own.
+	"POST /api/v1/projects": {succeeds: true, body: map[string]any{
+		"key": seedingProject, "name": "A project whose create seeds its evals-md"}},
+	"POST /api/v1/projects/{key}/evals": {succeeds: true, project: unseededProject, body: map[string]any{
+		"slug": everyCreateEval, "doc_text": "What the every-create register write counts."}},
+	"POST /api/v1/projects/{key}/evals/{slug}/readings": {succeeds: true, key: "every-create-readings", body: map[string]any{
+		"readings": []any{reading("minutes", 10, time.Now().UTC().Add(-time.Hour))}}},
 
 	"POST /api/v1/artifacts/{id}/edits":                  askBlockEdit("every-create-document-edit", "Does an edited document's ask name its project?"),
 	"POST /api/v1/issues/{key}/artifacts/{slug}/edits":   askBlockEdit("every-create-spec-edit", "Does an edited spec's ask name its project?"),
@@ -363,7 +425,6 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/me/agent-tokens":                                         noObject,
 	"POST /api/v1/me/inbox/read":                                           noObject,
 	"POST /api/v1/me/inbox/dismiss":                                        noObject,
-	"POST /api/v1/projects":                                                noObject,
 	"POST /api/v1/priorities":                                              noObject,
 	"POST /api/v1/delivery/session-groups":                                 noObject,
 	"POST /api/v1/credential-requests/{id}/approve":                        noObject,

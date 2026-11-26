@@ -31,12 +31,15 @@ export const walkRoutes = [
   { page: "ProjectPage", path: "/projects/:key/architecture" },
   { page: "ProjectPage", path: "/projects/:key/issues" },
   { page: "ProjectPage", path: "/projects/:key/documents" },
+  { page: "ProjectPage", path: "/projects/:key/evals" },
+  { page: "ProjectPage", path: "/projects/:key/settings" },
+  { page: "EvalsAcrossProjects", path: "/evals" },
   { page: "DocumentPage", path: "/projects/:key/documents/:slug" },
   { page: "InboxPage", path: "/credentials/*" },
   { page: "MachineLoginRoute", path: "/credentials/machine" },
   { page: "SettingsPage", path: "/settings" },
-  { page: "DeliveryPage", path: "/delivery" },
-  { page: "PipelinePage", path: "/pipeline" },
+  { page: "DefaultProjectRedirect", path: "/delivery" },
+  { page: "DefaultProjectRedirect", path: "/pipeline" },
   { page: "PersonPage", path: "/people/:login" },
   { page: "NotFoundPage", path: "*" },
 ] as const satisfies readonly WalkRoute[];
@@ -45,7 +48,6 @@ export type WalkRoutePath = (typeof walkRoutes)[number]["path"];
 
 /** The chunks a page loads only once it needs them, each named by what shows it has run. */
 export const lazyPieces = {
-  echarts: "the delivery timeline's chart, echarts (features/delivery/Timeline.tsx)",
   editor:
     "the document editor, @legion/proof-editor and its stylesheet (features/doc/editor.ts), " +
     "and the document's Yjs stack: yjs, @hocuspocus/provider, pending-edits and pending-sync " +

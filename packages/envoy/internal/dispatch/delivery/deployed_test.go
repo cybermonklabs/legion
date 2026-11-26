@@ -268,7 +268,7 @@ func TestReconcileWritesTheDeployedEvent(t *testing.T) {
 	if at := deployedEventAt(t, ctx, pool, "acme/widgets", 501); at == nil {
 		t.Fatal("the reconcile left the marker unset")
 	}
-	settings, err := GetSettings(ctx, pool)
+	settings, err := getTestRule(ctx, pool)
 	if err != nil || settings.LastError != nil || settings.LastReconcileAt == nil {
 		t.Fatalf("settings after the pass: %+v, %v; want a healthy pass", settings, err)
 	}
@@ -300,7 +300,7 @@ func TestIntakeWritesTheDeployedEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode the envelope: %v", err)
 	}
-	handled, err := intake.route(ctx, &settings, string(envelope))
+	handled, _, err := intake.route(ctx, readTestRules(t, ctx, pool), string(envelope))
 	if err != nil || !handled {
 		t.Fatalf("route the deploy run's envelope = (%v, %v), want handled without error", handled, err)
 	}

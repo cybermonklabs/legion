@@ -578,12 +578,13 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     reason: "A title is one line of text that holds no markup, so the box takes no picker.",
     write: "issue-title",
   },
-  // Settings' delivery form. These three take no picker, and the spec's exclusion is why.
+  // A project's Settings tab, its delivery section (`DeliverySettingsSection.tsx`). These three
+  // take no picker, and the spec's exclusion is why.
   {
     box: "delivery-production-jobs",
     covered: false,
     delivers: false,
-    files: ["packages/dispatch/web/src/features/delivery/DeliverySettingsForm.tsx"],
+    files: ["packages/dispatch/web/src/features/project/DeliverySettingsSection.tsx"],
     issueRows: false,
     reach: "Production jobs",
     reason: SETTINGS_REASON,
@@ -593,7 +594,7 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     box: "delivery-population-authors",
     covered: false,
     delivers: false,
-    files: ["packages/dispatch/web/src/features/delivery/DeliverySettingsForm.tsx"],
+    files: ["packages/dispatch/web/src/features/project/DeliverySettingsSection.tsx"],
     issueRows: false,
     reach: "Population authors",
     reason: SETTINGS_REASON,
@@ -603,7 +604,7 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     box: "delivery-excluded-repos",
     covered: false,
     delivers: false,
-    files: ["packages/dispatch/web/src/features/delivery/DeliverySettingsForm.tsx"],
+    files: ["packages/dispatch/web/src/features/project/DeliverySettingsSection.tsx"],
     issueRows: false,
     reach: "Excluded repositories",
     reason: SETTINGS_REASON,

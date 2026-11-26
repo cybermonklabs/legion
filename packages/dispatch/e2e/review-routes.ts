@@ -411,6 +411,18 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   },
   {
     kind: "reviewed",
+    // Scanned and not shot: the tab is a form whose first state depends on the seeded
+    // project's stored settings, and its scan reads the DOM, which needs no baseline image.
+    layers: ["scan"],
+    name: "project-settings",
+    path: (seed) => `/projects/${seed.project}/settings`,
+    pattern: "/projects/:key/settings",
+    // The switch is drawn only once the project's settings have answered
+    // (`DeliverySettingsSection.tsx`, "Loading delivery settings…" until then).
+    ready: (page) => [page.locator("#project-settings-panel").getByRole("switch")],
+  },
+  {
+    kind: "reviewed",
     layers: bothLayers,
     name: "project-document",
     path: (seed) => `/projects/${seed.project}/documents/${seed.projectDocumentSlug}`,
@@ -428,28 +440,6 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     path: () => "/settings",
     pattern: "/settings",
     ready: (page) => [page.getByRole("heading", { level: 1, name: "Settings" })],
-  },
-  {
-    kind: "reviewed",
-    layers: bothLayers,
-    name: "delivery",
-    path: (seed) => `/delivery?${seed.deliveryQuery}`,
-    pattern: "/delivery",
-    // The chart's own canvas, which ECharts creates only once the timeline query has answered
-    // (`web/src/features/delivery/Timeline.tsx:550`, as `e2e/two-builds.multiprocess.e2e.ts`
-    // locates it). The page's heading is drawn while that query is still pending, under
-    // "Loading delivery timeline…" (`DeliveryPage.tsx:446`), and that is the whole page the
-    // probe found missing in one run: the measure cards, the facets and the chart all wait on
-    // the same answer.
-    ready: (page) => [page.getByTestId("delivery-chart").locator("canvas").first()],
-  },
-  {
-    kind: "reviewed",
-    layers: bothLayers,
-    name: "pipeline",
-    path: (seed) => `/pipeline?at=${seed.pipelineAt}`,
-    pattern: "/pipeline",
-    ready: (page) => [page.getByRole("heading", { level: 1, name: "Pipeline" })],
   },
   {
     kind: "reviewed",
@@ -498,6 +488,40 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     reason:
       "It needs a fake-GitHub repository and a synced architecture source, and without one the " +
       "tab does not render at all (e2e/architecture.e2e.ts).",
+  },
+  {
+    kind: "excluded",
+    name: "project-evals",
+    pattern: "/projects/:key/evals",
+    reason:
+      "Its sections are drawn by later tasks of dispatch://INFRA-2918 (T8 to T17), and the " +
+      "tab's own browser rows (e2e/evals-inventory.e2e.ts, and the plan's T28) read it; a " +
+      "baseline of the slots it draws now would only be thrown away.",
+  },
+  {
+    kind: "excluded",
+    name: "evals",
+    pattern: "/evals",
+    reason:
+      "It draws every project's evals with the Evals tab's chart, and its own browser row is " +
+      "the plan's T28 (dispatch://INFRA-2918, @evals k11), which seeds the two projects it " +
+      "compares; a baseline taken before that seed would only be thrown away.",
+  },
+  {
+    kind: "excluded",
+    name: "delivery",
+    pattern: "/delivery",
+    reason:
+      "It redirects to the default project's Evals tab, which the project-evals entry stands " +
+      "for; the Delivery page it drew is that tab's now (dispatch://INFRA-2918, R1).",
+  },
+  {
+    kind: "excluded",
+    name: "pipeline",
+    pattern: "/pipeline",
+    reason:
+      "It redirects to the default project's Evals tab, which the project-evals entry stands " +
+      "for; the Pipeline page it drew is that tab's now (dispatch://INFRA-2918, R1).",
   },
   {
     kind: "excluded",

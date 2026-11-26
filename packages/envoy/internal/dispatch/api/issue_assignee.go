@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -212,14 +213,7 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, whoamiUser{Kind: "user", Login: actor.ID, Scopes: scopes})
 		return
 	}
-	var owner *string
-	if actor.Owner != nil {
-		owner = new(model.CanonicalLogin(*actor.Owner))
-	}
-	var session *string
-	if actor.Kind == "session" && actor.ID != "" {
-		session = &actor.ID
-	}
+	agent := agentCallerOf(actor)
 	var projectScope string
 	if actor.Credential != nil {
 		projectScope = actor.Credential.ProjectScope
@@ -232,14 +226,55 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, whoamiAgent{
 		Cut:            cut,
 		Kind:           "agent",
-		Owner:          owner,
+		Owner:          agent.Owner,
 		Project:        actor.Project,
 		Scopes:         scopes,
 		Service:        actor.Service,
-		Session:        session,
+		Session:        agent.Session,
 		ProjectScope:   projectScope,
 		SignInRequired: signInRequired,
 	})
+}
+
+// AgentCaller is a caller GET /api/v1/whoami answers as an agent, as much of it as the dashboard
+// reads (Background.Agent): Owner is the lowercase login of the person its credential acts for,
+// and Session the session that credential proved, each nil where it names none - whoami's own
+// `owner` and `session`.
+type AgentCaller struct {
+	Owner   *string
+	Session *string
+}
+
+// agentCallerOf is the owner and the session whoami answers the agent actor is with.
+func agentCallerOf(actor model.Actor) AgentCaller {
+	var agent AgentCaller
+	if actor.Owner != nil {
+		agent.Owner = new(model.CanonicalLogin(*actor.Owner))
+	}
+	if actor.Kind == "session" && actor.ID != "" {
+		agent.Session = &actor.ID
+	}
+	return agent
+}
+
+// dashboardAgent is Background.Agent: the agent a request's Authorization header proves, decided
+// by optionalActor, the one path every route of the table resolves its caller by and the one GET
+// /api/v1/whoami answers from, and noted on the request's access-log line as that path notes it.
+// It answers false for every request GET /api/v1/whoami answers no agent: one with no
+// Authorization header (optionalActor would read the person a browser credential names, which is
+// not this function's to answer) and one whose credential does not resolve. It answers false for
+// a read-only token too, which GET /api/v1/whoami answers but which can save nothing the
+// dashboard draws, since every route the read list does not name refuses it (refuseReadOnlyToken).
+// It writes no refusal: the caller answers a request it refuses as one that presented no bearer.
+func (s *server) dashboardAgent(r *http.Request) (AgentCaller, bool) {
+	if _, presented := auth.BearerToken(r); !presented {
+		return AgentCaller{}, false
+	}
+	actor, human, err := s.optionalActor(r)
+	if err != nil || human || actor.Credential != nil && actor.Credential.ReadOnly {
+		return AgentCaller{}, false
+	}
+	return agentCallerOf(actor), true
 }
 
 // whoamiScopes is the scopes a credential holds as whoami answers them: an empty array for a

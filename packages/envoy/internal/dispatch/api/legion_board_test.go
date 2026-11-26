@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -145,18 +146,16 @@ func legionColumnKeys(t *testing.T, board legionBoardResponse, id string) []stri
 	return nil
 }
 
-// legionCard is the card for key, wherever it is.
+// legionCard is the card for key, wherever it is, and a failure where the board draws it none.
+// A caller that means to state that the board draws no card for an issue reads legionCardHeld
+// (legion_board_facts_test.go), which this is the asserting form of.
 func legionCard(t *testing.T, board legionBoardResponse, key string) legionBoardCard {
 	t.Helper()
-	for _, column := range board.Columns {
-		for _, card := range column.Cards {
-			if card.Key == key {
-				return card
-			}
-		}
+	card, held := legionCardHeld(board, key)
+	if !held {
+		t.Fatalf("the board holds no card for %s", key)
 	}
-	t.Fatalf("the board holds no card for %s", key)
-	return legionBoardCard{}
+	return card
 }
 
 // TestTheLegionBoardPutsEachIssueInOneColumn: the Queue column is the daemon's own waiting line,
@@ -187,20 +186,20 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 	}
 	// The waiting line's own order, which the view does not re-sort: the answered root first,
 	// though Dispatch's rank would put the queued root there, and the blocked one after both.
-	if got := legionColumnKeys(t, board, legionColumnQueue); !slices.Equal(got, []string{"INFRA-10", "INFRA-1", "INFRA-2"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnQueue); !slices.Equal(got, []string{"INFRA-10", "INFRA-1", "INFRA-2"}) {
 		t.Errorf("the queue holds %v, want the waiting line then the blocked issue", got)
 	}
 	for id, want := range map[string][]string{
-		legionColumnDesign:       {"INFRA-3"},
-		legionColumnImplementing: {"INFRA-4"},
-		legionColumnAwaiting:     {"INFRA-5"},
-		legionColumnHeld:         {"INFRA-6"},
-		legionColumnPlanning:     {},
-		legionColumnTesting:      {},
-		legionColumnReviewing:    {},
-		legionColumnAccepting:    {},
-		legionColumnRetro:        {},
-		legionColumnMerging:      {},
+		legion.ColumnDesign:       {"INFRA-3"},
+		legion.ColumnImplementing: {"INFRA-4"},
+		legion.ColumnAwaiting:     {"INFRA-5"},
+		legion.ColumnHeld:         {"INFRA-6"},
+		legion.ColumnPlanning:     {},
+		legion.ColumnTesting:      {},
+		legion.ColumnReviewing:    {},
+		legion.ColumnAccepting:    {},
+		legion.ColumnRetro:        {},
+		legion.ColumnMerging:      {},
 	} {
 		if got := legionColumnKeys(t, board, id); !slices.Equal(got, want) {
 			t.Errorf("the %s column holds %v, want %v", id, got, want)
@@ -272,14 +271,14 @@ func TestTheMergingColumnHoldsMergingAndAwaitingMerge(t *testing.T) {
 	for index, column := range board.Columns {
 		ids[index] = column.ID
 	}
-	if retro := slices.Index(ids, legionColumnRetro); retro < 1 || retro+1 >= len(ids) ||
-		ids[retro-1] != legionColumnAccepting || ids[retro+1] != legionColumnMerging {
+	if retro := slices.Index(ids, legion.ColumnRetro); retro < 1 || retro+1 >= len(ids) ||
+		ids[retro-1] != legion.ColumnAccepting || ids[retro+1] != legion.ColumnMerging {
 		t.Errorf("the columns are %v, want retro between accepting and merging", ids)
 	}
-	if got := legionColumnKeys(t, board, legionColumnRetro); !slices.Equal(got, []string{"INFRA-1"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnRetro); !slices.Equal(got, []string{"INFRA-1"}) {
 		t.Errorf("the Retro column holds %v, want the issue in retro alone", got)
 	}
-	if got := legionColumnKeys(t, board, legionColumnMerging); !slices.Equal(got, []string{"INFRA-2", "INFRA-3"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnMerging); !slices.Equal(got, []string{"INFRA-2", "INFRA-3"}) {
 		t.Errorf("the Merging column holds %v, want the issues in merging and awaiting_merge", got)
 	}
 }
@@ -303,7 +302,7 @@ func TestTheLegionBoardQueuesByRankUntilADaemonRecordsItsWaitingLine(t *testing.
 	seedLegionRead(t, database, "INFRA", now, "")
 
 	board := legionBoardOf(t, handler, "INFRA")
-	if got := legionColumnKeys(t, board, legionColumnQueue); !slices.Equal(got, []string{"INFRA-2", "INFRA-1"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnQueue); !slices.Equal(got, []string{"INFRA-2", "INFRA-1"}) {
 		t.Fatalf("the queue holds %v, want the two roots in Dispatch's rank order", got)
 	}
 	if board.Header.SlotCap != nil {
@@ -371,10 +370,10 @@ func TestTheLegionBoardReadsADaemonOnTheNewAdmissionShape(t *testing.T) {
 	}
 
 	board := legionBoardOf(t, handler, "INFRA")
-	if got := legionColumnKeys(t, board, legionColumnQueue); !slices.Equal(got, []string{"INFRA-3", "INFRA-4"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnQueue); !slices.Equal(got, []string{"INFRA-3", "INFRA-4"}) {
 		t.Errorf("the queue holds %v, want the waiting root then the blocked child", got)
 	}
-	if got := legionColumnKeys(t, board, legionColumnDesign); !slices.Equal(got, []string{"INFRA-1"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnDesign); !slices.Equal(got, []string{"INFRA-1"}) {
 		t.Errorf("the design column holds %v, want the root holding a slot", got)
 	}
 	child := legionCard(t, board, "INFRA-2")
@@ -497,7 +496,7 @@ func TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries(t *testing.T)
 		"INFRA-2":{"key":"INFRA-2","phase":"testing","workers":{"tester":{"claim":{"state":"working"}}}},
 		"INFRA-3":{"key":"INFRA-3","phase":"planning","workers":{"planner":{"claim":{"state":"working"}}}}}}`)
 	board := legionBoardOf(t, handler, "INFRA")
-	if got := legionColumnKeys(t, board, legionColumnTesting); !slices.Equal(got, []string{"INFRA-2"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnTesting); !slices.Equal(got, []string{"INFRA-2"}) {
 		t.Fatalf("after the first read the testing column holds %v, want INFRA-2", got)
 	}
 	if roles := legionCard(t, board, "INFRA-1").Roles; !slices.Equal(roles, []string{"architect", "implementer"}) {
@@ -528,7 +527,7 @@ func TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries(t *testing.T)
 		t.Errorf("the board puts INFRA-3 in tree %q, want INFRA-1: the middle issue left the daemon's state and is still Legion's", tree)
 	}
 	now := time.Now().UTC()
-	population, err := metrics.Read(t.Context(), database.Pool, nil, "INFRA", now.Add(-14*24*time.Hour), now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}
@@ -566,7 +565,7 @@ func TestOneBoardAnswerReadsItsCardsAndItsTreesFromOneSnapshot(t *testing.T) {
 	if !commits.Fired() {
 		t.Fatal("no statement of the board's answer read legion_current, so no commit landed during it")
 	}
-	if got := legionColumnKeys(t, board, legionColumnPlanning); !slices.Equal(got, []string{"INFRA-2"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnPlanning); !slices.Equal(got, []string{"INFRA-2"}) {
 		t.Errorf("the answer the commit landed in holds %v in planning, want INFRA-2: its card is the first read's", got)
 	}
 	if tree := legionCard(t, board, "INFRA-2").Tree; tree != "INFRA-1" {
@@ -574,7 +573,7 @@ func TestOneBoardAnswerReadsItsCardsAndItsTreesFromOneSnapshot(t *testing.T) {
 	}
 
 	board = legionBoardOf(t, handler, "INFRA")
-	if got := legionColumnKeys(t, board, legionColumnTesting); !slices.Equal(got, []string{"INFRA-2"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnTesting); !slices.Equal(got, []string{"INFRA-2"}) {
 		t.Errorf("the next answer holds %v in testing, want INFRA-2: the commit's", got)
 	}
 	if tree := legionCard(t, board, "INFRA-2").Tree; tree != "INFRA-2" {
@@ -611,7 +610,7 @@ func TestOneBoardAnswerReadsItsHeaderAndItsCardsFromOneSnapshot(t *testing.T) {
 	if board.Header.ReadOK || board.Header.ReadError == nil {
 		t.Errorf("the answer the commit landed in has the header %+v, want the failed read the commit came after", board.Header)
 	}
-	if got := legionColumnKeys(t, board, legionColumnPlanning); !slices.Equal(got, []string{"INFRA-1"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnPlanning); !slices.Equal(got, []string{"INFRA-1"}) {
 		t.Errorf("the answer the commit landed in holds %v in planning, want INFRA-1: the cards under the failed read's header are the good read's before it", got)
 	}
 
@@ -619,7 +618,7 @@ func TestOneBoardAnswerReadsItsHeaderAndItsCardsFromOneSnapshot(t *testing.T) {
 	if !board.Header.ReadOK {
 		t.Errorf("the next answer has the header %+v, want the commit's good read", board.Header)
 	}
-	if got := legionColumnKeys(t, board, legionColumnTesting); !slices.Equal(got, []string{"INFRA-1"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnTesting); !slices.Equal(got, []string{"INFRA-1"}) {
 		t.Errorf("the next answer holds %v in testing, want INFRA-1: the commit's", got)
 	}
 }
@@ -655,10 +654,10 @@ func TestARecordPostgresRefusesIsAFailedReadAndTheBoardKeepsTheLastGoodRead(t *t
 		t.Errorf("the header = %+v (read_error %v), want the read failed, its error the refusal of its record", header, deref(header.ReadError))
 	}
 	for column, want := range map[string][]string{
-		legionColumnImplementing: {"INFRA-1"},
-		legionColumnTesting:      {"INFRA-2"},
-		legionColumnReviewing:    {},
-		legionColumnAwaiting:     {},
+		legion.ColumnImplementing: {"INFRA-1"},
+		legion.ColumnTesting:      {"INFRA-2"},
+		legion.ColumnReviewing:    {},
+		legion.ColumnAwaiting:     {},
 	} {
 		if got := legionColumnKeys(t, board, column); !slices.Equal(got, want) {
 			t.Errorf("the %s column holds %v, want %v: the last good read's cards", column, got, want)
@@ -771,17 +770,17 @@ func TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics(t *testing.T) {
 	legion.NewSampler(database.Pool).Pass(t.Context())
 
 	infraBoard := legionBoardOf(t, handler, "INFRA")
-	if got := legionColumnKeys(t, infraBoard, legionColumnImplementing); !slices.Equal(got, []string{"INFRA-1"}) {
+	if got := legionColumnKeys(t, infraBoard, legion.ColumnImplementing); !slices.Equal(got, []string{"INFRA-1"}) {
 		t.Errorf("INFRA's implementing column holds %v, want INFRA-1 as INFRA's daemon reports it", got)
 	}
-	if got := legionColumnKeys(t, infraBoard, legionColumnReviewing); len(got) != 0 {
+	if got := legionColumnKeys(t, infraBoard, legion.ColumnReviewing); len(got) != 0 {
 		t.Errorf("INFRA's reviewing column holds %v, want none: LINUX's daemon put INFRA-1 there, and it is no source of INFRA's board", got)
 	}
 	if roles := legionCard(t, infraBoard, "INFRA-1").Roles; !slices.Equal(roles, []string{"implementer"}) {
 		t.Errorf("INFRA-1's roles on INFRA's board are %v, want INFRA's implementer alone", roles)
 	}
 	linuxBoard := legionBoardOf(t, handler, "LINUX")
-	if got := legionColumnKeys(t, linuxBoard, legionColumnTesting); !slices.Equal(got, []string{"LINUX-1"}) {
+	if got := legionColumnKeys(t, linuxBoard, legion.ColumnTesting); !slices.Equal(got, []string{"LINUX-1"}) {
 		t.Errorf("LINUX's testing column holds %v, want LINUX-1 as LINUX's daemon reports it", got)
 	}
 	if roles := legionCard(t, linuxBoard, "LINUX-1").Roles; !slices.Equal(roles, []string{"tester"}) {
@@ -800,19 +799,28 @@ func TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics(t *testing.T) {
 		{"INFRA", "INFRA-1", nil},
 		{"LINUX", "LINUX-1", []string{"INFRA-2 by implementer of LINUX-1, " + metrics.ClassOutOfTree}},
 	} {
-		population, err := metrics.Read(t.Context(), database.Pool, nil, one.project, start.Add(-24*time.Hour), now.Add(time.Hour))
+		population, err := metrics.ReadProject(t.Context(), database.Pool, one.project, now)
 		if err != nil {
 			t.Fatalf("read %s's metrics population: %v", one.project, err)
 		}
-		report := metrics.Compute(population, metrics.ScopeAll, now)
-		if report.Finished != 1 || len(report.Rework.Issues) != 1 || report.Rework.Issues[0].Key != one.issue {
-			t.Fatalf("%s's report finished %d issues, %+v, want its own %s alone", one.project, report.Finished, report.Rework.Issues, one.issue)
+		facts := map[string]metrics.IssueFacts{}
+		for key, closed := range metrics.ProjectFactsClosed(population, nil) {
+			facts[key] = closed.FactsAt(population.To)
 		}
-		if rounds := report.Rework.Issues[0].ReviewRounds; rounds != 0 {
+		var finished []string
+		for _, key := range slices.Sorted(maps.Keys(facts)) {
+			if facts[key].ClosedAt != nil {
+				finished = append(finished, key)
+			}
+		}
+		if !slices.Equal(finished, []string{one.issue}) {
+			t.Fatalf("%s's facts finished %v, want its own %s alone", one.project, finished, one.issue)
+		}
+		if rounds := facts[one.issue].ReviewRounds; rounds != 0 {
 			t.Errorf("%s's %s has %d review rounds, want none: %s's daemon never reported it in review", one.project, one.issue, rounds, one.project)
 		}
 		var filed []string
-		for _, row := range report.Splitting.Filed {
+		for _, row := range metrics.ProjectFilings(population) {
 			filed = append(filed, fmt.Sprintf("%s by %s of %s, %s", row.Key, row.Filer, row.FilerIssue, row.Class))
 		}
 		if !slices.Equal(filed, one.filed) {
@@ -821,9 +829,8 @@ func TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics(t *testing.T) {
 	}
 }
 
-// closeLegionIssue closes one seeded issue, which is what brings its whole parent chain into the
-// metrics' read scope (legion/metrics/population.go's scopeKeys: the issues that could have
-// finished in the window and their ancestors).
+// closeLegionIssue closes one seeded issue, the child at the bottom of a chain each of these
+// fixtures hangs a finished issue under.
 func closeLegionIssue(t *testing.T, database *store.Store, key string, at time.Time) {
 	t.Helper()
 	legionExec(t, database, `update issues set status = 'done', closed_at = $2 where key = $1`, key, at)
@@ -850,4 +857,183 @@ func seedSessionEvent(t *testing.T, database *store.Store, issue, session, title
 				'origin', jsonb_build_object('session_title', $3::text)),
 			'{}', false, $4
 		from events where issue_key = $1`, issue, session, title, at)
+}
+
+// TestALegionCardSaysWhatItsSlotHolds: slot_use is the server's one answer for what the slot an
+// issue holds of its own is used for (legion.SlotUse) — a worker in a turn, nobody in a turn, a
+// wait on a person, and a slot held for children who work or do not — and it is null for an
+// issue holding no slot of its own. The Legion tab reads the field and works none of it out.
+func TestALegionCardSaysWhatItsSlotHolds(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
+	now := time.Now().UTC()
+	ago := func(hours float64) time.Time { return now.Add(-time.Duration(hours * float64(time.Hour))) }
+	// seed is one issue of the board: its phase and, where slot is not negative, its own slot.
+	seed := func(number int, title, rank, parent, phase string, slot int) string {
+		key := seedLegionIssue(t, database, "INFRA", number, title, rank, nil, parent)
+		seedLegionObservation(t, database, "INFRA", key, legion.FieldPhase, `"`+phase+`"`, ago(3))
+		if slot >= 0 {
+			seedLegionObservation(t, database, "INFRA", key, legion.FieldSlot, fmt.Sprintf("%d", slot), ago(3))
+		}
+		return key
+	}
+	working := seed(1, "A worker is in a turn", "a", "", legion.PhaseImplementing, 0)
+	seedLegionObservation(t, database, "INFRA", working, legion.ClaimFieldPrefix+"implementer", `"working"`, ago(2))
+	between := seed(2, "Nobody is in a turn", "b", "", legion.PhaseImplementing, 1)
+	children := seed(3, "Held for a child that works", "c", "", legion.PhaseAccepting, 2)
+	seed(4, "The child in review", "d", children, legion.PhaseReviewing, -1)
+	idle := seed(5, "Held for a child not started", "e", "", legion.PhaseAccepting, 3)
+	seed(6, "The child not started", "f", idle, legion.PhaseAdmitted, -1)
+	person := seed(7, "Waits on a person", "g", "", legion.PhaseAwaitingPerson, 4)
+	child := seed(8, "A child holding no slot", "h", working, legion.PhaseImplementing, -1)
+	seedLegionRead(t, database, "INFRA", ago(0.01), "")
+
+	board := legionBoardOf(t, handler, "INFRA")
+	for key, want := range map[string]string{
+		working:  legion.SlotUseWorking,
+		between:  legion.SlotUseBetweenTurns,
+		children: legion.SlotUseHeldChildren,
+		idle:     legion.SlotUseHeldIdle,
+		person:   legion.SlotUseHeldPerson,
+	} {
+		card := legionCard(t, board, key)
+		if card.SlotUse == nil || *card.SlotUse != want {
+			t.Errorf("%s (%s) holds its slot for %v, want %s", key, card.Title, card.SlotUse, want)
+		}
+	}
+	if card := legionCard(t, board, child); card.SlotUse != nil {
+		t.Errorf("an issue holding no slot of its own has slot_use %v, want none", *card.SlotUse)
+	}
+	// Every card of the board answers the rule the same way: a slot of its own carries one of the
+	// five uses, and no card without one carries any.
+	uses := map[string]bool{
+		legion.SlotUseWorking: true, legion.SlotUseBetweenTurns: true, legion.SlotUseHeldChildren: true,
+		legion.SlotUseHeldPerson: true, legion.SlotUseHeldIdle: true,
+	}
+	examined, held := 0, 0
+	for _, column := range board.Columns {
+		for _, card := range column.Cards {
+			examined++
+			switch {
+			case card.Slot == nil && card.SlotUse != nil:
+				t.Errorf("%s holds no slot of its own and carries slot_use %q", card.Key, *card.SlotUse)
+			case card.Slot == nil:
+			case card.SlotUse == nil || !uses[*card.SlotUse]:
+				t.Errorf("%s holds slot %d and carries slot_use %v, want one of the five uses", card.Key, *card.Slot, card.SlotUse)
+			default:
+				held++
+			}
+		}
+	}
+	t.Logf("%d cards examined, %d of them holding a slot of their own with its use", examined, held)
+	if held != 5 {
+		t.Errorf("%d cards carry a slot use, want the five seeded, one per use", held)
+	}
+}
+
+// TestALegionCardSaysWhyItWaits: a card's `waiting` is the server's one answer for why its issue
+// waits, since when, and what holds it (legion.CardWaiting) — ready for the daemon to start it,
+// waiting for a slot to come back, held by a blocker link, or waiting for a person — and it is
+// null for an issue that waits for nothing. The Legion tab's waiting line reads the field.
+func TestALegionCardSaysWhyItWaits(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
+	now := time.Now().UTC()
+	ago := func(hours float64) time.Time { return now.Add(-time.Duration(hours * float64(time.Hour))) }
+	entered := ago(3)
+	seed := func(number int, title, rank, phase string, slot int) string {
+		key := seedLegionIssue(t, database, "INFRA", number, title, rank, nil, "")
+		seedLegionObservation(t, database, "INFRA", key, legion.FieldPhase, `"`+phase+`"`, entered)
+		if slot >= 0 {
+			seedLegionObservation(t, database, "INFRA", key, legion.FieldSlot, fmt.Sprintf("%d", slot), entered)
+		}
+		return key
+	}
+	answered := seed(1, "Its ask was answered", "a", legion.PhaseAwaitingPerson, -1)
+	ready := seed(2, "Ready for a slot", "b", legion.PhaseAdmitted, -1)
+	back := seed(3, "In a working phase, waiting for its slot", "c", legion.PhaseImplementing, -1)
+	blocked := seed(4, "A blocker link holds it", "d", legion.PhaseAdmitted, -1)
+	person := seed(5, "A person has not answered", "e", legion.PhaseAwaitingPerson, -1)
+	held := seed(6, "At work in its slot", "f", legion.PhaseImplementing, 0)
+	asked := "2026-11-03T08:00:00Z"
+	seedLegionObservation(t, database, "INFRA", answered, legion.FieldWaitingOn,
+		`{"kind":"ask","since":"2026-11-03T09:00:00Z","answeredAt":"2026-11-03T10:00:00Z"}`, ago(6))
+	seedLegionObservation(t, database, "INFRA", person, legion.FieldWaitingOn,
+		`{"kind":"gate","since":"`+asked+`"}`, ago(6))
+	seedLegionObservation(t, database, "INFRA", legion.AdmissionKey, legion.FieldAdmission, fmt.Sprintf(`{
+		"cap": 4,
+		"active": [%q],
+		"waiting": [%q, %q, %q],
+		"blocked": [{"issue": %q, "blockedBy": [%q]}]
+	}`, held, answered, ready, back, blocked, "INFRA-99"), ago(3))
+	seedLegionRead(t, database, "INFRA", ago(0.01), "")
+
+	board := legionBoardOf(t, handler, "INFRA")
+	for key, want := range map[string]string{
+		answered: legion.WaitingReady,
+		ready:    legion.WaitingReady,
+		back:     legion.WaitingSlot,
+		blocked:  legion.WaitingBlocked,
+		person:   legion.WaitingPerson,
+	} {
+		card := legionCard(t, board, key)
+		if card.Waiting == nil || card.Waiting.Reason != want {
+			t.Errorf("%s (%s) waits for %v, want %s", key, card.Title, card.Waiting, want)
+		}
+	}
+	if card := legionCard(t, board, held); card.Waiting != nil {
+		t.Errorf("an issue at work in its slot waits for %+v, want nothing", *card.Waiting)
+	}
+	// The issue the line names that has started its work keeps its phase's column, and its place
+	// in the line is on its card: that place is what makes its wait the `slot` one.
+	if card := legionCard(t, board, back); card.WaitingPlace == nil || *card.WaitingPlace != 3 {
+		t.Errorf("the working issue's place in the line = %v, want 3", card.WaitingPlace)
+	}
+	if got := legionColumnKeys(t, board, legion.ColumnImplementing); !slices.Equal(got, []string{back, held}) {
+		t.Errorf("the implementing column holds %v, want the two issues at that phase", got)
+	}
+	// Every card the daemon's line names, every card of the Queue column and every card waiting
+	// on a person says why it waits, since when, and what a blocker link holds it on.
+	reached := map[string]int{}
+	for _, column := range board.Columns {
+		for _, card := range column.Cards {
+			if card.WaitingPlace == nil && column.ID != legion.ColumnQueue && column.ID != legion.ColumnAwaiting {
+				continue
+			}
+			if card.Waiting == nil {
+				t.Errorf("%s is in the line or on the %s column and waits for nothing", card.Key, column.ID)
+				continue
+			}
+			reached[card.Waiting.Reason]++
+			if card.Waiting.Since == nil {
+				t.Errorf("%s waits for %s since nothing, want the moment its wait began", card.Key, card.Waiting.Reason)
+			}
+			if !slices.Equal(card.Waiting.BlockedBy, card.BlockedBy) {
+				t.Errorf("%s waits on %v, want the %v a blocker link holds it on", card.Key, card.Waiting.BlockedBy, card.BlockedBy)
+			}
+		}
+	}
+	for _, reason := range []string{legion.WaitingReady, legion.WaitingSlot, legion.WaitingBlocked, legion.WaitingPerson} {
+		if reached[reason] == 0 {
+			t.Errorf("no card waits for %s, want the seeded one: the reasons the board reaches are %v", reason, reached)
+		}
+	}
+	// What holds the blocked issue is on its wait, and a wait on a person is counted from when
+	// the person was asked; every other wait from the phase entry.
+	if card := legionCard(t, board, blocked); card.Waiting != nil &&
+		!slices.Equal(card.Waiting.BlockedBy, []string{"INFRA-99"}) {
+		t.Errorf("the blocked issue waits on %v, want INFRA-99", card.Waiting.BlockedBy)
+	}
+	if card := legionCard(t, board, person); card.Waiting != nil &&
+		(card.Waiting.Since == nil || card.Waiting.Since.Format(time.RFC3339) != asked) {
+		t.Errorf("the wait on a person began at %v, want the ask's %s", card.Waiting.Since, asked)
+	}
+	// Postgres keeps a time to the microsecond, so the entry read back is the seeded one within
+	// less than a second.
+	if card := legionCard(t, board, ready); card.Waiting != nil &&
+		(card.Waiting.Since == nil || card.Waiting.Since.Sub(entered).Abs() > time.Second) {
+		t.Errorf("the ready issue's wait began at %v, want its phase entry %s", card.Waiting.Since, entered)
+	}
 }

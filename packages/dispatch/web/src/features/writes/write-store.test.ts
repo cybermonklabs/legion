@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, jest, spyOn, test } from "bun:test";
-import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
+import { DISPATCH_LOGIN_HEADER, IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
+import { http } from "msw";
 
 import { onFakeClock, settle } from "../../__tests__/fake-clock";
 import {
@@ -11,6 +12,7 @@ import {
   memoryFiles,
   UnloadTarget,
 } from "../../__tests__/kept-sends-harness";
+import { answerRequests } from "../../__tests__/network";
 import { answerSends, type SendAnswers } from "../../__tests__/send-answers";
 import {
   ApiError,
@@ -2461,4 +2463,52 @@ test("a reload reads back whether each write goes under its key, with no request
       tab.close();
     }
   });
+});
+
+// A person's write names them in `Dispatch-Login`, so Dispatch refuses it under anyone else's
+// session. An agent viewer's names nobody - Dispatch refuses that header from every bearer, `409
+// LOGIN_CHANGED` - and hands its attempt the session it is made as (`agentSession`), which a route
+// that takes its writer in the body names there. The header is read off the request as it reaches
+// the network, through the page's own client.
+test("a person's write sends Dispatch-Login and an agent's sends none, with its session in the bounds", async () => {
+  const sent: { login: string | null; session: string | undefined }[] = [];
+  answerRequests(
+    http.patch("/api/v1/issues/CORE-9", ({ request }) => {
+      sent.push({ login: request.headers.get(DISPATCH_LOGIN_HEADER), session: undefined });
+      return Response.json({ key: "CORE-9" });
+    })
+  );
+  const viewers = [
+    { event_head: "0", kind: "user" as const, login: "alice" },
+    { event_head: "0", kind: "agent" as const, login: "agent", session: "ses_agent" },
+  ];
+  for (const viewer of viewers) {
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    client.setQueryData(["whoami"], viewer);
+    const writes = new Writes(client, keptTab().page(), memoryFiles());
+    // A request of its own, which no answer of this file's registers, so `api.send` sends it.
+    const request: WriteRequest = {
+      body: { status: "done" },
+      method: "PATCH",
+      path: "/api/v1/issues/CORE-9",
+    };
+    let session: string | undefined;
+    await writes.run({
+      detail: null,
+      kind: plainWrite,
+      label: "CORE-9 set to done",
+      method: "PATCH",
+      presentation: "indicator",
+      write: (bounds) => {
+        session = bounds.session;
+        return api.send(request, bounds);
+      },
+    });
+    const last = sent.at(-1);
+    if (last !== undefined) sent[sent.length - 1] = { ...last, session };
+  }
+  expect(sent).toEqual([
+    { login: "alice", session: undefined },
+    { login: null, session: "ses_agent" },
+  ]);
 });

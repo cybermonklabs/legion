@@ -13,10 +13,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
 
-// work recomputes g's dirty views and the expired ones, one at a time, and keeps the freshness
-// verdict on its threshold, until g ends. One timer, re-armed after every pass, wakes it at the
+// work recomputes g's dirty views and the expired ones, and keeps the freshness verdict on its
+// threshold, until g ends: each delivery view, Legion view and expiry itself, one at a time, and
+// each evals view, which its expiry reads again too, on a goroutine of its own, up to
+// evalsRecomputes at once (recomputeAside). One timer, re-armed after every pass, wakes it at the
 // earliest moment a view is due or the reconciled sources cross their threshold; nothing else
-// wakes it but a mark.
+// wakes it but a mark and the end of an evals view's recompute, after which a mark made during it
+// falls due (dueAt).
 func (h *deliveryHub) work(g *hubGeneration) {
 	select {
 	case <-g.ctx.Done():
@@ -52,7 +55,14 @@ func (h *deliveryHub) work(g *hubGeneration) {
 	}
 }
 
-// runDue recomputes, or narrows, the view that is due earliest, and is false when none is due.
+// runDue recomputes, or narrows, the view that is due earliest, and is false when none is due or
+// when g ended while an evals view waited for a slot. An evals view is read again whatever it is
+// due for, its expiry among them, since its expiry is the moment the refresher's age it states
+// moves a step (readEvalsView), which no narrowing reads; it is set computing before the lock is
+// let go, so no later pass picks it while its recompute waits for a slot or runs. A delivery
+// view's expiry narrows the population it holds without a read (expire); any other view holds no
+// population, so its expiry reads it again: pr-ci's failures items view, whose list loses a job as
+// the job's failure leaves the 24 hours (readEvalItemsView).
 func (h *deliveryHub) runDue(g *hubGeneration) bool {
 	now := h.clock.Now()
 	h.mu.Lock()
@@ -65,11 +75,17 @@ func (h *deliveryHub) runDue(g *hubGeneration) bool {
 			due, dueAt, cause = view, at, why
 		}
 	}
+	aside := due != nil && due.spec.classes().reads == viewReadsEvals
+	if aside {
+		due.computing = true
+	}
 	h.mu.Unlock()
 	switch {
 	case due == nil:
 		return false
-	case cause == deliveryCauseExpiry:
+	case aside:
+		return h.recomputeAside(g, due, cause)
+	case cause == deliveryCauseExpiry && due.spec.classes().reads == viewReadsDelivery:
 		h.expire(g, due)
 	default:
 		h.recompute(g, due, cause)
@@ -77,9 +93,38 @@ func (h *deliveryHub) runDue(g *hubGeneration) bool {
 	return true
 }
 
+// recomputeAside recomputes view, an evals view runDue set computing, on a goroutine of its own
+// once one of g's evalsRecomputes slots is free, and is false where g ended first, leaving view
+// computed by none. The goroutine frees its slot once recompute has ended and wakes the worker:
+// a mark made during the recompute left view dirty, and computing kept it due nowhere until then
+// (dueAt). Each recompute's read takes a pool mark of its own (readContext), so the reads that run
+// at once refuse each other no connection. A view is computed by one recompute at a time, which
+// sends its frames in the hold of the lock that ends it, so the deltas of one view go out in the
+// order of its reads.
+func (h *deliveryHub) recomputeAside(g *hubGeneration, view *deliveryView, cause string) bool {
+	select {
+	case g.evalsSlots <- struct{}{}:
+	case <-g.ctx.Done():
+		h.mu.Lock()
+		view.computing = false
+		h.mu.Unlock()
+		return false
+	}
+	h.running.Add(1)
+	go func() {
+		defer h.running.Done()
+		h.recompute(g, view, cause)
+		<-g.evalsSlots
+		signal(g.wakeWork)
+	}()
+	return true
+}
+
 // dueAt is when the view is next due, and why: a dirty view viewQuiet after its last mark or
-// viewMaxWait after its first, whichever is sooner (at once for a subscribe's), not before a
-// failed read's retry; a clean one with an answer at its expiry.
+// viewMaxWait after its first, whichever is sooner, or at once for a mark that waits for no quiet
+// (immediate, markDirtyLocked), never before a failed read's retry; a clean one with an answer at
+// its expiry. A view being computed is not due, so it is never recomputed twice at once: a mark
+// made meanwhile falls due by these rules once that recompute has ended.
 func (view *deliveryView) dueAt() (time.Time, string, bool) {
 	if view.computing {
 		return time.Time{}, "", false
@@ -129,7 +174,7 @@ func (h *deliveryHub) nextWakeLocked(g *hubGeneration, now time.Time) (time.Time
 type deliveryViewRead struct {
 	seq               int64
 	changedAt         *time.Time
-	settings          delivery.DeliverySettings
+	rules             *delivery.SourceRules
 	pop               deliveryPopulation
 	pipe              pipelinePopulation
 	from, at          time.Time
@@ -139,6 +184,9 @@ type deliveryViewRead struct {
 	sessions          map[string]string
 	prs, runs         int
 	unfetchable       int
+	// ageStep is an evals read's coarse refresher age (refresherAgeStep), which its body's
+	// freshness revision holds, and 0 where the body states no age.
+	ageStep int
 }
 
 // recompute answers one dirty view from a fresh read: the newest change position first, which
@@ -187,29 +235,29 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 		view.lastDirty, view.notBefore = now, now.Add(deliveryLiveRetry)
 	default:
 		if g.epoch != epoch {
-			// The change log was reset while it read, so its position names nothing in the new one.
-			read.seq = 0
+			// The change log was reset while it read, so its position names nothing in the new
+			// one, and no change of the new log was recorded at it.
+			read.seq, read.changedAt = 0, nil
 		}
-		view.settings, view.pop, view.pipe, view.readFrom = read.settings, read.pop, read.pipe, read.from
+		view.rules, view.pop, view.pipe, view.readFrom = read.rules, read.pop, read.pipe, read.from
 		view.body, view.seq, view.changedAt = &read.body, read.seq, read.changedAt
 		view.from, view.at, view.expiry = read.from, read.at, read.expiry
 		view.issues, view.ancestors, view.sessions = read.issues, read.ancestors, read.sessions
 		sent = h.sendLocked(g, view)
 		if classes.reads != viewReadsDelivery {
-			// A view that reads no delivery row holds no delivery settings, so it judges no
+			// A view that reads no delivery row holds no delivery rules, so it judges no
 			// freshness: the verdict stays the one the delivery views' own reads set.
 			break
 		}
 		if !g.known {
-			// The first verdict is set silently, from the first settings read.
-			g.fresh = deliveryFreshnessHeard{
-				lastEventAt: read.settings.LastEventAt, lastReconcileAt: read.settings.LastReconcileAt,
-				lastError: read.settings.LastError, unfetchable: read.unfetchable,
-			}
+			// The first verdict is set silently, from the first rules read.
+			g.fresh = deliveryFreshnessHeard{unfetchable: read.unfetchable}
+			g.fresh.heardRules(read.rules)
 			g.sent = g.verdictLocked(now)
 			g.known = true
 		} else {
 			g.fresh.unfetchable = read.unfetchable
+			g.fresh.heardRules(read.rules)
 			h.judgeLocked(g, now)
 		}
 	}
@@ -231,12 +279,13 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 // began leaves dirty set: the position may name the old log, so the marks are taken over only
 // while the generation stands at the epoch the recompute read.
 func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLiveSpec, epoch int64) (deliveryViewRead, error) {
-	ctx, pool := g.readContext(), h.server.deps.Store.Pool
+	ctx := g.readContext()
 	var read deliveryViewRead
-	var err error
-	if read.seq, err = delivery.LatestChangeSeq(ctx, pool); err != nil {
+	head, err := delivery.ChangesHead(ctx, h.server.deps.Store.Pool)
+	if err != nil {
 		return read, err
 	}
+	read.seq, read.changedAt = head.Seq, head.At
 	h.note(deliveryHubNote{what: "recompute position", view: spec.key, through: read.seq})
 	h.mu.Lock()
 	view.readingSeq, view.reading = read.seq, true
@@ -247,33 +296,33 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 		view.dirty, view.immediate = false, false
 	}
 	h.mu.Unlock()
-	if read.seq > 0 {
-		if read.changedAt, err = delivery.ChangeAt(ctx, pool, read.seq); err != nil {
-			return read, err
-		}
-	}
 	now := h.clock.Now()
 	body, err := spec.classes().read(h, ctx, spec, now, &read)
 	if err != nil {
 		return read, err
 	}
 	read.body, err = encodeDeliveryBody(spec.kind, body)
+	if err == nil && read.ageStep > 0 {
+		read.body.foldRefresherAgeStep(read.ageStep)
+	}
 	return read, err
 }
 
 // readLegionBoardView is a Legion board's read: the project's own daemon state as the sampler
-// recorded it. It reads no delivery settings — its own are the project's Legion setting, and a
-// deployment that configured one and not the other still shows the board. A project that does
-// not exist is loadProject's refusal, as GET /api/v1/projects/{key}/legion/board answers it.
+// recorded it, and its stored facts closed at now, the moment the body is answered as of. It
+// reads no delivery settings — its own are the project's Legion setting, and a deployment that
+// configured one and not the other still shows the board. A project that does not exist is
+// loadProject's refusal, as GET /api/v1/projects/{key}/legion/board answers it.
 func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	if _, err := h.server.loadProject(ctx, h.server.deps.Store.Pool, spec.project); err != nil {
 		return nil, err
 	}
-	board, err := h.server.readLegionBoard(ctx, spec.project)
+	board, err := h.server.readLegionBoard(ctx, spec.project, now)
 	if err != nil {
 		return nil, err
 	}
-	// Every issue the board names, so an event about one marks the view (dirtyIssueLocked); the
+	// Every issue the daemon reports, so an event about one marks the view (dirtyIssueLocked); a
+	// stored facts row moves it through the issue_facts change kind (touchedBy) instead, and the
 	// board shows no session, so it names none.
 	read.issues = board.issueKeys()
 	return legionBoardCompute(board, now), nil
@@ -294,24 +343,99 @@ func (h *deliveryHub) readLegionIssueView(ctx context.Context, spec deliveryLive
 	return answer, nil
 }
 
-// readPipelineView is a pipeline view's read: the delivery settings and the runs, jobs and merges
-// of the seven days ending on its at, or on the present for a view that names none.
+// readEvalsView is an evals view's read: the list read of GET /api/v1/projects/{key}/evals, through
+// the function the route answers with (readProjectEvalList), from the query the route would be
+// sent (evalsQuery). So the body is the route's for the same query, byte for byte. A project no
+// row holds is loadProject's errProjectNotFound, which the view refuses as the route answers it
+// (viewReads.refusal, live_frames.go): its subscribers are told so once, with that refusal's code
+// and message, and stay open, since the project's creation seeds its evals and the change rows of
+// those versions mark the view, whose next read answers it.
+//
+// It reads no delivery settings: a window is whole UTC days, which move at midnight, and the
+// refresher's pass at midnight writes every project's rows of the new day, its unowned-p0 row at
+// least, whatever its inputs (evals' walkDaily), whose change marks the view. What moves its rows
+// is a write of its project's readings, versions or day rows, each of which the change log carries
+// (touchedBy). A narrowed view (deliveryLiveSpec.narrowed) builds its evals that count pull
+// requests from the delivery rows themselves, so a change of one marks it too
+// (touchedByDeliveryRow), and it names, as a timeline does (nameShown), each issue those pull
+// requests name, with the ancestors of each, and each session with the title it shows, whose write
+// can move what a facet selects. An unnarrowed view names no issue and no session. The refresher's
+// age the body states moves with the clock, which no change carries: the read keeps its step
+// (refresherAgeStep) in the freshness revision, and the view expires when the age reaches the next
+// step, when runDue reads it again, so its pages hold an age at most one step behind while no write
+// moves it, a refresher that stopped among them. A body that states no age, where no pass has run,
+// sets no expiry.
+func (h *deliveryHub) readEvalsView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
+	answer, narrowing, err := h.server.readProjectEvalList(ctx, spec.evalsQuery(now), spec.project, now)
+	if err != nil {
+		return nil, err
+	}
+	if narrowing != nil && narrowing.issues != nil {
+		read.issues, read.sessions = narrowing.issues, narrowing.sessions
+		if read.ancestors, err = delivery.IssueAncestors(ctx, h.server.deps.Store.Pool, slices.Sorted(maps.Keys(read.issues)), parentDepthCap); err != nil {
+			return nil, err
+		}
+	}
+	if seconds := answer.Freshness.RefresherAgeSeconds; seconds != nil {
+		age := time.Duration(*seconds) * time.Second
+		step, next := refresherAgeStep(age)
+		read.ageStep = step
+		if next > 0 {
+			read.expiry = now.Add(next - age)
+		}
+	}
+	return answer, nil
+}
+
+// readEvalItemsView is an items view's read: the items read of
+// GET /api/v1/projects/{key}/evals/{slug}/items, through the function the route answers with
+// (readProjectEvalItems), from the query the route would be sent (evalsQuery). So the body is the
+// route's for the same query, byte for byte. A project or an eval no row holds is the route's
+// PROJECT_NOT_FOUND or EVAL_NOT_FOUND, which the view refuses as the route answers it
+// (viewReads.refusal): its subscribers are told so once and stay open, and the version change of
+// the eval's registration marks the view, whose next read answers it.
+//
+// It names no issue and no session, and reads the settings its rows stand built under in the items
+// read's own snapshot: what moves it is a write of its eval's readings, versions or day rows and,
+// for pr-ci's run and job rows, a change of a pull-request checks run of its ranges, each of which
+// the change log carries (touchedBy). The one list the clock moves is pr-ci's failures
+// (sort=failures), which counts the jobs that failed in the 24 hours before the range's end, and a
+// preset's range ends at now: a preset failures view expires by the Pipeline's failing-jobs rule
+// (failingJobsNextExpiry) over the runs the window's list was read from, of every deploy
+// repository it reads, and its expiry reads it again (runDue). Every other items view sets no
+// expiry.
+func (h *deliveryHub) readEvalItemsView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
+	answer, err := h.server.readProjectEvalItems(ctx, spec.evalsQuery(now), spec.project, spec.slug)
+	if err != nil {
+		return nil, err
+	}
+	if spec.preset > 0 && spec.query.Get("sort") == evalSortFailures {
+		read.expiry = failingJobsNextExpiry(answer.failing, now)
+	}
+	return answer.body, nil
+}
+
+// readPipelineView is a pipeline view's read: the delivery rules the stored day rows stand built
+// under (readDeliveryRules) and the runs, jobs and merges of the seven days ending on its at, or on
+// the present for a view that names none, with the min_n its slowest jobs are ranked by, through
+// the GET route's own read and compute (readPipelinePopulation, deliveryPipelineCompute), so the
+// view ranks them as the route does.
 func (h *deliveryHub) readPipelineView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	pool := h.server.deps.Store.Pool
 	var err error
-	if read.settings, err = delivery.GetSettings(ctx, pool); err != nil {
+	if read.rules, err = readDeliveryRules(ctx, pool); err != nil {
 		return nil, err
 	}
 	read.at = now
 	if spec.at != nil {
 		read.at = *spec.at
 	}
-	if read.pipe, err = h.server.readPipelinePopulation(ctx, read.settings, read.at); err != nil {
+	if read.pipe, err = h.server.readPipelinePopulation(ctx, read.rules, read.at); err != nil {
 		return nil, err
 	}
-	body := deliveryPipelineCompute(read.settings, read.pipe, read.at, now)
+	body := deliveryPipelineCompute(read.rules, read.pipe, read.at, now)
 	if spec.at == nil {
-		read.expiry = pipelineNextExpiry(read.pipe, now)
+		read.expiry = failingJobsNextExpiry(read.pipe.checks.Runs, now)
 	}
 	read.from = measures.WindowStart(read.at)
 	read.prs, read.runs = len(read.pipe.leadTimes.prs), len(read.pipe.checks.Runs)+len(read.pipe.deploys.Runs)
@@ -319,24 +443,50 @@ func (h *deliveryHub) readPipelineView(ctx context.Context, spec deliveryLiveSpe
 	return body, nil
 }
 
-// readDeliveryView is a timeline or measures view's read: the delivery settings, the population
-// of its window and facets, and the ancestors of every issue that population names.
+// readDeliveryView is a timeline or measures view's read: the delivery rules the stored day rows
+// stand built under (readDeliveryRules), the population of its window and facets, and, where that
+// population is labeled, the ancestors of every issue it names.
 func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	pool := h.server.deps.Store.Pool
 	var err error
-	if read.settings, err = delivery.GetSettings(ctx, pool); err != nil {
+	if read.rules, err = readDeliveryRules(ctx, pool); err != nil {
 		return nil, err
 	}
 	from, to := spec.from, spec.to
 	if spec.preset > 0 {
 		from, to = now.Add(-spec.days()), now
 	}
-	if read.pop, err = h.server.readDeliveryPopulation(ctx, read.settings, from, to, spec.query, spec.kind == deliveryLiveTimeline); err != nil {
+	if read.pop, err = h.server.readDeliveryPopulation(ctx, read.rules, from, to, spec.query, spec.kind == deliveryLiveTimeline); err != nil {
 		return nil, err
 	}
+	if err := h.nameShown(ctx, read); err != nil {
+		return nil, err
+	}
+	body := deliveryLiveCompute(spec, read.rules, read.pop, from, to, now)
+	if spec.preset > 0 {
+		read.expiry = nextExpiry(read.pop, spec.days(), now)
+	}
+	read.from = from
+	read.prs, read.runs = len(read.pop.prs), len(read.pop.applyRuns)+len(read.pop.windowRuns)
+	read.unfetchable = read.pop.unfetchable
+	return body, nil
+}
+
+// nameShown records on read what its population shows that an event can move: each issue its pull
+// requests and waiting entries name, with the ancestors of each, and each session they name with
+// the title it shows. A population read without its labels (a measures view selecting nothing)
+// shows no fact of the issues its pull requests name and no session by its title, so no write of
+// those issues, of their ancestors or of a session's title moves its answer: it records none of
+// them, and so reads no ancestors. The one issue fact it shows, the unowned P0 list, moves with a
+// P0's write, which showsIssue's p0 rule marks every view showing that list for.
+func (h *deliveryHub) nameShown(ctx context.Context, read *deliveryViewRead) error {
 	read.issues = map[string]struct{}{}
 	read.sessions = map[string]string{}
+	labeled := read.pop.labeled()
 	name := func(issue *string, sessions []string) {
+		if !labeled {
+			return
+		}
 		if issue != nil {
 			read.issues[*issue] = struct{}{}
 		}
@@ -350,28 +500,20 @@ func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpe
 	for _, pr := range read.pop.waiting {
 		name(pr.IssueKey, pr.Sessions)
 	}
-	if read.ancestors, err = delivery.IssueAncestors(ctx, pool, slices.Sorted(maps.Keys(read.issues)), parentDepthCap); err != nil {
-		return nil, err
-	}
-	body := deliveryLiveCompute(spec.kind, read.settings, read.pop, from, to, now)
-	if spec.preset > 0 {
-		read.expiry = nextExpiry(read.pop, spec.days(), now)
-	}
-	read.from = from
-	read.prs, read.runs = len(read.pop.prs), len(read.pop.applyRuns)+len(read.pop.windowRuns)
-	read.unfetchable = read.pop.unfetchable
-	return body, nil
+	var err error
+	read.ancestors, err = delivery.IssueAncestors(ctx, h.server.deps.Store.Pool, slices.Sorted(maps.Keys(read.issues)), parentDepthCap)
+	return err
 }
 
 // expire answers a view whose preset window, or whose pipeline day, moved past something it holds,
 // reading nothing: the compute over the population as last read, narrowed to the window now, with
-// the settings that read held. The population and its read's start stay as read, and the next
-// expiry comes from the narrowed population.
+// the rules that read held. The population and its read's start stay as read, and the next expiry
+// comes from the narrowed population.
 func (h *deliveryHub) expire(g *hubGeneration, view *deliveryView) {
 	started := time.Now()
 	h.mu.Lock()
 	view.computing = true
-	spec, settings, pop, pipe := view.spec, view.settings, view.pop, view.pipe
+	spec, rules, pop, pipe := view.spec, view.rules, view.pop, view.pipe
 	h.mu.Unlock()
 	h.note(deliveryHubNote{what: "recompute begin", view: spec.key, cause: deliveryCauseExpiry})
 
@@ -381,15 +523,15 @@ func (h *deliveryHub) expire(g *hubGeneration, view *deliveryView) {
 	var prs, runs int
 	if spec.kind == deliveryLivePipeline {
 		at = now
-		narrowed := pipe.narrowedTo(settings, at)
-		body = deliveryPipelineCompute(settings, narrowed, at, now)
-		expiry = pipelineNextExpiry(narrowed, now)
+		narrowed := pipe.narrowedTo(rules, at)
+		body = deliveryPipelineCompute(rules, narrowed, at, now)
+		expiry = failingJobsNextExpiry(narrowed.checks.Runs, now)
 		from = measures.WindowStart(at)
 		prs, runs = len(narrowed.leadTimes.prs), len(narrowed.checks.Runs)+len(narrowed.deploys.Runs)
 	} else {
 		from = now.Add(-spec.days())
-		narrowed := pop.narrowedTo(settings, from)
-		body = deliveryLiveCompute(spec.kind, settings, narrowed, from, now, now)
+		narrowed := pop.narrowedTo(rules, from)
+		body = deliveryLiveCompute(spec, rules, narrowed, from, now, now)
 		expiry = nextExpiry(narrowed, spec.days(), now)
 		prs, runs = len(narrowed.prs), len(narrowed.applyRuns)+len(narrowed.windowRuns)
 	}
@@ -419,12 +561,18 @@ func (h *deliveryHub) finishRecompute(spec deliveryLiveSpec, cause string, start
 	h.note(deliveryHubNote{what: "recompute end", view: spec.key, cause: cause, sent: sent})
 }
 
-// deliveryLiveCompute is the timeline's or the measures' body for [from, to).
-func deliveryLiveCompute(kind string, settings delivery.DeliverySettings, pop deliveryPopulation, from, to, now time.Time) any {
-	if kind == deliveryLiveTimeline {
-		return deliveryTimelineCompute(settings, pop, from, to, now)
+// deliveryLiveCompute is a timeline's, a measures' or a project timeline's body for [from, to),
+// from a population read for that window or narrowed to it, each source repository's runs judged
+// by its own rule of rules: a project timeline's population is its project's
+// (projectTimelinePopulation), cut to the view's limit from its newest row.
+func deliveryLiveCompute(spec deliveryLiveSpec, rules *delivery.SourceRules, pop deliveryPopulation, from, to, now time.Time) any {
+	switch spec.kind {
+	case deliveryLiveTimeline:
+		return deliveryTimelineCompute(rules, pop, from, to, now)
+	case deliveryLiveProjectTimeline:
+		return projectTimelineCompute(rules, pop, from, to, spec.projectTimelineLimit(), 0)
 	}
-	return deliveryMeasuresCompute(settings, pop, from, to, now)
+	return deliveryMeasuresCompute(rules, pop, from, to, now)
 }
 
 // sendLocked answers every sub of view from its body, and counts the frames it sent.

@@ -716,6 +716,15 @@ func ReplacementRendering(markdown string) (string, error) {
 
 // SeedText writes a new room's first Yjs update inside the caller's artifact
 // creation transaction. A new room is loaded from this update on first use.
+//
+// The seed leaves the document owing a settlement, the one that stamps, indexes and versions what
+// it wrote, which its caller schedules once the transaction has committed, unless ctx marks it
+// CreateDocument's (withVersionedSeed) and its tree needs none (seedOwesSettlement). Such a seed
+// records nothing owed: its append writes no pending-settlement row, as a room's parked bytes
+// write none (withUnowedAppend, AppendParkedUpdate), and its commit records no latest edit source
+// and leaves its room no record (ledgerSeed.owesNothing). So no resumption, room load or Shutdown
+// finds a settlement owed and warms the room for one, and WriteDocumentText answers that the
+// document owes none.
 func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, actor model.Actor) (string, error) {
 	tx, joined := txFromContext(ctx)
 	if !joined {
@@ -740,15 +749,20 @@ func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, act
 	if err != nil {
 		return "", fmt.Errorf("seed live document tree: %w", err)
 	}
-	if _, err := s.persistence.AppendUpdateTx(ctx, tx, artifactID, update, true); err != nil {
+	owes := !isVersionedSeed(ctx) || seedOwesSettlement(seeded.tree)
+	appendCtx := ctx
+	if !owes {
+		appendCtx = withUnowedAppend(ctx)
+	}
+	if _, err := s.persistence.AppendUpdateTx(appendCtx, tx, artifactID, update, true); err != nil {
 		return "", fmt.Errorf("seed live document: %w", err)
 	}
 	// The seeding actor is the caller's own first version author (written directly by the
 	// caller, never through writeVersionTx), so it must not join `pending` - only the
 	// settlement that indexes the seeded ask blocks needs to know who wrote them. The ledger
 	// records it once the transaction commits (Ledger.creditRooms), so a seed that never commits
-	// leaves the document no state.
-	ledgerFrom(ctx).seeded(artifactID, seeded, actor)
+	// leaves the document no state, and a seed that owes no settlement leaves it none either.
+	ledgerFrom(ctx).seeded(artifactID, seeded, actor, owes)
 	// The parse read its markdown back already, to refuse a document that reads back otherwise;
 	// the rest of the request reads the rendering through that parse rather than making a second
 	// one of it (Ledger.ReadBackOf).

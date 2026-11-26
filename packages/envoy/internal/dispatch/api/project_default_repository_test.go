@@ -6,7 +6,10 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -362,4 +365,103 @@ func TestAResultsReadResolvesTheDefaultRepositoryWithRepoProjectsDropped(t *test
 	result := decodeBody[recordedResult](t, recorded)
 	standsAt(t, readResults(t, handler, issue.Key), "k2", result.Result.ID,
 		"a result at a default-branch commit of the default repository", model.CommitAtBasis, false)
+}
+
+// deployRule is a rule of one deploy source reading repo, with job as its production job.
+func deployRule(repo, job string) delivery.DeliverySettings {
+	return delivery.DeliverySettings{
+		DeployRepo: repo, DeployWorkflowPath: ".github/workflows/deploy.yml", ProductionJobNames: []string{job},
+		PRChecksWorkflowPath: ".github/workflows/ci.yml", PopulationAuthors: []string{"octocat"},
+	}
+}
+
+// saveProjectRules saves rules as project's delivery settings (deliverytest.SaveRules: delivery
+// on, a rule whose repository is the project's default names none).
+func saveProjectRules(t *testing.T, database *store.Store, project string, rules ...delivery.DeliverySettings) {
+	t.Helper()
+	if _, err := deliverytest.SaveRules(t.Context(), database.Pool, project, rules...); err != nil {
+		t.Fatalf("save the delivery settings of %s: %v", project, err)
+	}
+}
+
+// progressSteps is the reconcile progress steps the store holds, sorted.
+func progressSteps(t *testing.T, database *store.Store) []string {
+	t.Helper()
+	rows, err := database.Pool.Query(t.Context(), `select step from delivery_reconcile_progress order by step`)
+	if err != nil {
+		t.Fatalf("read the reconcile progress: %v", err)
+	}
+	defer rows.Close()
+	var steps []string
+	for rows.Next() {
+		var step string
+		if err := rows.Scan(&step); err != nil {
+			t.Fatalf("read the reconcile progress: %v", err)
+		}
+		steps = append(steps, step)
+	}
+	return steps
+}
+
+// A delivery-on project whose deploy source names no repository reads its default repository, so
+// its default may not move onto a repository another delivery-on project's source reads (409
+// DELIVERY_REPOSITORY_SHARED naming that project) and may not be cleared (409
+// DELIVERY_NEEDS_REPOSITORY), either leaving the default as it was; a project whose every source
+// names its own repository moves and clears its default freely; and a move the rules allow clears
+// the reconcile progress of the old and the new repository, and no other.
+func TestTheDefaultRepositoryOfADeliveryProjectKeepsEachRepositoryOneProjects(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "ALPHA", "BETA")
+	setDefaultRepository(t, handler, "ALPHA", "acme/alpha")
+	setDefaultRepository(t, handler, "BETA", "acme/beta")
+	saveProjectRules(t, database, "ALPHA", deployRule("acme/alpha", "alpha / release"))
+	saveProjectRules(t, database, "BETA", deployRule("acme/beta-deploy", "beta / release"))
+	put := func(project string, repo any) *http.Response {
+		t.Helper()
+		return dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/"+project+"/default-repository",
+			map[string]any{"repo": repo}, "alice").Result()
+	}
+	refused := func(project string, repo any, code string) delivery.SettingsError {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/"+project+"/default-repository",
+			map[string]any{"repo": repo}, "alice")
+		refusal := refusedSettings(t, response, http.StatusConflict, code)
+		if listed, _ := listedDefaultRepository(t, handler, project); listed != `"acme/alpha"` && project == "ALPHA" {
+			t.Fatalf("the refused write left ALPHA's default %s, want acme/alpha", listed)
+		}
+		return refusal
+	}
+
+	if shared := refused("ALPHA", "acme/beta-deploy", delivery.CodeDeliveryRepositoryShared); shared.Project != "BETA" ||
+		!strings.Contains(shared.Message, "BETA") {
+		t.Fatalf("the move onto BETA's source repository was refused %+v, want BETA named", shared)
+	}
+	if needs := refused("ALPHA", nil, delivery.CodeDeliveryNeedsRepository); needs.Source == nil || *needs.Source != 0 {
+		t.Fatalf("the clear was refused %+v, want ALPHA's source 0 named", needs)
+	}
+	for _, repo := range []any{"acme/beta-two", nil} {
+		if response := put("BETA", repo); response.StatusCode != http.StatusOK {
+			t.Fatalf("BETA, whose source names its own repository, moving its default to %v: status %d", repo, response.StatusCode)
+		}
+	}
+
+	at := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	for _, step := range []string{"runs/deploy/acme/alpha", "runs/deploy/acme/alpha-two", "runs/deploy/acme/beta-deploy"} {
+		if err := delivery.RecordReconcileProgress(t.Context(), database.Pool, step, "scope", at); err != nil {
+			t.Fatalf("record %s: %v", step, err)
+		}
+	}
+	if moved := setDefaultRepository(t, handler, "ALPHA", "acme/alpha-two"); moved.Repo == nil || *moved.Repo != "acme/alpha-two" {
+		t.Fatalf("ALPHA's move answered %+v, want acme/alpha-two", moved)
+	}
+	if steps := progressSteps(t, database); strings.Join(steps, " ") != "runs/deploy/acme/beta-deploy" {
+		t.Fatalf("after ALPHA's move the progress holds %v, want BETA's repository's alone", steps)
+	}
+	rules := seededDeliveryRules(t, database.Pool)
+	if rule, read := rules.For("acme/alpha-two"); !read || rule.Project != "ALPHA" {
+		t.Fatalf("after the move acme/alpha-two is read by %+v (%v), want ALPHA's source", rule, read)
+	}
+	if _, read := rules.For("acme/alpha"); read {
+		t.Fatal("after the move a source still reads acme/alpha")
+	}
 }

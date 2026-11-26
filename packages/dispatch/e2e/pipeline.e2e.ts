@@ -1,4 +1,4 @@
-import { mintAgentToken } from "./api";
+import { createProject, mintAgentToken, registerEval } from "./api";
 import { PIPELINE_AT, seedPipelineFixture } from "./delivery-seed";
 import { sql } from "./psql";
 import { expect, test } from "./test";
@@ -95,9 +95,35 @@ test("the Pipeline page stacks its cards in one column on a phone @phone @phone-
   await context.close();
 });
 
+// The slowest-jobs table ranks a job once it holds the min_n a person set on the pr-ci eval of the
+// deploy repository's project, the one whose deploy source reads it, and its sentence names that
+// number (INFRA-2916, spec R5; dispatch://INFRA-978, D9).
+// With no min_n set the threshold is 50 and build / unit, the fixture's one job with 50 timed
+// results or more, is ranked alone; at min_n 1, lint, with three timed results, is ranked too.
+test("the Pipeline's slowest jobs follow the min_n a person set on pr-ci", async ({ browser }) => {
+  // Made through the API, so its evals are seeded, before the fixture's settings name it.
+  await createProject({ key: "PIPE", name: "Pipeline" });
+  await seedPipelineFixture("PIPE");
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  const slowest = page.locator('[data-section="slowest-jobs"]');
+
+  await page.goto(`/pipeline?at=${PIPELINE_AT}`);
+  await expect(slowest).toContainText("a job needs 50 timed results in the 7 days to be ranked");
+  await expect(slowest.locator('[data-job="build / unit"]')).toBeVisible();
+  await expect(slowest.locator('[data-job="lint"]')).toHaveCount(0);
+
+  await registerEval("PIPE", { series: [{ min_n: 1, series: "job:*" }], slug: "pr-ci" });
+  await page.goto(`/pipeline?at=${PIPELINE_AT}`);
+  await expect(slowest).toContainText("a job needs 1 timed result in the 7 days to be ranked");
+  await expect(slowest.locator('[data-job="build / unit"]')).toBeVisible();
+  await expect(slowest.locator('[data-job="lint"]')).toBeVisible();
+  await context.close();
+});
+
 test("a pipeline with no staging end-to-end gate omits its card", async ({ browser }) => {
   await seedPipelineFixture();
-  await sql("UPDATE delivery_settings SET staging_e2e_job_name = null WHERE singleton");
+  await sql("UPDATE project_deploy_sources SET staging_e2e_job_name = null");
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   await page.goto(`/pipeline?at=${PIPELINE_AT}`);

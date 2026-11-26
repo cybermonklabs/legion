@@ -25,6 +25,7 @@ import { totalUnreadReplies, unreadRepliesLabel } from "./features/agents/unread
 import { draftStoresSignedIn, draftStoresSignedOut } from "./features/conversation/unsent-drafts";
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
 import { TextAskBlockCard } from "./features/doc/AskBlockCard";
+import { DefaultProjectRedirect } from "./features/evals/DefaultProjectRedirect";
 import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
 import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
@@ -184,13 +185,6 @@ const BroadcastPage = lazy(() =>
   import("./features/agents/BroadcastPage").then((module) => ({ default: module.BroadcastPage }))
 );
 
-const DeliveryPage = lazy(() =>
-  import("./features/delivery/DeliveryPage").then((module) => ({ default: module.DeliveryPage }))
-);
-const PipelinePage = lazy(() =>
-  import("./features/delivery/PipelinePage").then((module) => ({ default: module.PipelinePage }))
-);
-
 const AnswersPage = lazy(() =>
   import("./features/answers/AnswersPage").then((module) => ({ default: module.AnswersPage }))
 );
@@ -199,6 +193,11 @@ const PersonPage = lazy(() =>
 );
 const SettingsPage = lazy(() =>
   import("./features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage }))
+);
+const EvalsAcrossProjects = lazy(() =>
+  import("./features/evals/EvalsAcrossProjects").then((module) => ({
+    default: module.EvalsAcrossProjects,
+  }))
 );
 
 function IssuePageFallback(): ReactNode {
@@ -469,29 +468,37 @@ function NavigationContents({
         user={user}
       />
       {/* Identity is chrome: who you are and how to leave are read once, while the navigation
-          above is read on every visit, so the footer sits under it rather than over it. */}
+          above is read on every visit, so the footer sits under it rather than over it. An agent
+          viewer is shown by its label and offered no sign-out: its bearer is no session of this
+          browser's, so `POST /auth/logout` has nothing to end and refuses it. */}
       <div className={`mt-auto border-t pt-4 ${railBorder}`}>
-        {/* The login is the way in to the reader's own page: what they wrote and what reached
-            them, which no other surface lists. The underline is what tells the link from the
-            text around it, which colour alone does not. */}
-        <p className={`px-2 text-sm ${railMutedText}`}>
-          Signed in as{" "}
-          <Link
-            className={`underline ${railAccentText} ${railAccentHoverText}`}
-            onClick={onClose}
-            to={buildPersonPath(user.login)}
-          >
-            {user.login}
-          </Link>
-        </p>
-        <button
-          className={`mt-1 px-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${railAccentText} ${railAccentHoverText}`}
-          disabled={signOutPending}
-          onClick={onSignOut}
-          type="button"
-        >
-          Sign out
-        </button>
+        {user.kind === "user" ? (
+          <>
+            {/* The login is the way in to the reader's own page: what they wrote and what reached
+                them, which no other surface lists. The underline is what tells the link from the
+                text around it, which colour alone does not. */}
+            <p className={`px-2 text-sm ${railMutedText}`}>
+              Signed in as{" "}
+              <Link
+                className={`underline ${railAccentText} ${railAccentHoverText}`}
+                onClick={onClose}
+                to={buildPersonPath(user.login)}
+              >
+                {user.login}
+              </Link>
+            </p>
+            <button
+              className={`mt-1 px-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${railAccentText} ${railAccentHoverText}`}
+              disabled={signOutPending}
+              onClick={onSignOut}
+              type="button"
+            >
+              Sign out
+            </button>
+          </>
+        ) : (
+          <p className={`px-2 text-sm ${railMutedText}`}>Signed in as {user.login}</p>
+        )}
         {signOutError === undefined ? null : (
           // A sign-out Dispatch did not answer as done discarded nothing: every write is as it was.
           <p className={`mt-1 px-2 text-sm ${railDangerText}`} role="alert">
@@ -640,9 +647,9 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const frontLiveView = liveViewSessionOf(location.pathname) ?? null;
   // The person's pins, which the shell owns rather than the rail: the registry keeps a sleeping
   // pinned view and discards a sleeping unpinned one (`live-views.ts`, D8), and the rail is not
-  // on the page while the sidebar is collapsed or its sheet is closed.
+  // on the page while the sidebar is collapsed or its sheet is closed. An agent viewer has none.
   const liveViews = useLiveViews();
-  const pinnedAgents = usePinnedAgents();
+  const pinnedAgents = usePinnedAgents(user.kind === "user");
   useEffect(() => {
     liveViews.setPinned(pinnedAgents);
   }, [liveViews, pinnedAgents]);
@@ -658,10 +665,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // leaves the key whole, so the next load writes the lot again, in the same order. The key the
   // run began under is held here rather than read back from storage, because the key outlives
   // the first write now: an effect that runs again - React runs it twice under StrictMode -
-  // would otherwise write every id a second time.
+  // would otherwise write every id a second time. The pins are a person's: an agent viewer has
+  // none to move, and its bearer may hold no `person` scope to write one with.
   const writePin = useAgentPinWrite();
   const migrated = useRef<string | null>(null);
   useEffect(() => {
+    if (user.kind !== "user") return;
     const key = legacyPinnedAgentsKey(user.login);
     if (migrated.current === key) return;
     const kept = window.localStorage.getItem(key);
@@ -673,12 +682,16 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       }
       window.localStorage.removeItem(key);
     })();
-  }, [user.login, writePin]);
+  }, [user.kind, user.login, writePin]);
   const connection = useLiveSocketPill();
   // One number for the Inbox, composed in one place (`useInboxCount.ts`): the work
   // waiting on the reader plus the threads they have not read.
   const inboxCount = useInboxCount();
-  const unreadReplies = totalUnreadReplies(useQuery(userAgentStateQuery()).data);
+  // The person's conversations with sessions, read under the `person` scope: an agent viewer has
+  // none, and asks for none (`useIsHuman`).
+  const unreadReplies = totalUnreadReplies(
+    useQuery({ ...userAgentStateQuery(), enabled: user.kind === "user" }).data
+  );
 
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);
@@ -1121,12 +1134,17 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<ProjectPage />} path="/projects/:key/architecture" />
                 <Route element={<ProjectPage />} path="/projects/:key/issues" />
                 <Route element={<ProjectPage />} path="/projects/:key/documents" />
+                <Route element={<ProjectPage />} path="/projects/:key/evals" />
+                <Route element={<ProjectPage />} path="/projects/:key/settings" />
+                <Route element={<EvalsAcrossProjects />} path="/evals" />
                 <Route element={<DocumentPage />} path="/projects/:key/documents/:slug" />
                 <Route element={<InboxPage />} path="/credentials/*" />
                 <Route element={<MachineLoginRoute />} path="/credentials/machine" />
                 <Route element={<SettingsPage />} path="/settings" />
-                <Route element={<DeliveryPage />} path="/delivery" />
-                <Route element={<PipelinePage />} path="/pipeline" />
+                {/* The Delivery and Pipeline pages are each project's Evals tab now; an old link
+                    lands on the default project's, its window and filters kept. */}
+                <Route element={<DefaultProjectRedirect />} path="/delivery" />
+                <Route element={<DefaultProjectRedirect />} path="/pipeline" />
                 <Route element={<PersonPage />} path={PERSON_PATH} />
                 <Route element={<NotFoundPage />} path="*" />
               </Routes>

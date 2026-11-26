@@ -70,6 +70,7 @@ const docsCompactionNote = "Writes nothing itself. A cold read of a document who
 // The entries are grouped by class, each group in the order of the table.
 var readClasses = map[string]readEntry{
 	// The GETs that write.
+	"GET /api/v1/projects/{key}/timeline":    {Writes: readWritesState, WriteNote: "As the delivery timeline's, whose population it reads (readDeliveryPopulation): an insert into delivery_run_warnings for a deploy run with no matching production job or apply step, on the request's context, once per process for each run and configuration (firstToWarn)."},
 	"GET /api/v1/delivery/timeline":          {Writes: readWritesState, WriteNote: "When a deploy run has no configured production job, or its production job has no configured apply step, the read inserts a delivery_run_warnings row on the request's context (firstToWarn, on conflict doing nothing), once per process for each run and configuration."},
 	"GET /api/v1/delivery/measures":          {Writes: readWritesState, WriteNote: "As the timeline's: an insert into delivery_run_warnings for a deploy run with no matching production job or apply step, on the request's context, once per process for each run and configuration (firstToWarn)."},
 	"GET /api/v1/delivery/pipeline":          {Writes: readWritesState, WriteNote: "As the timeline's, for the deploy runs on main since the first day it shows: an insert into delivery_run_warnings for a run with no matching production job or apply step, on the request's context, once per process for each run and configuration (firstToWarn)."},
@@ -78,6 +79,7 @@ var readClasses = map[string]readEntry{
 	// The reads whose handler makes the server write on its own context, or whose class a first
 	// reading of the handler would get wrong.
 	"GET /api/v1/projects/{key}/related":                 {Writes: readWritesNothing, WriteNote: "When the project has no search_term_totals row, the related-item check starts a refresh of the project's term statistics on the server's own context (ensureSearchTermStats, once per project and process): it inserts and updates search_term_totals, deletes and inserts search_term_stats, and deletes the project's search_term_queue rows. The statistics are a cache of what the project holds, which every related check reads and the first to find them missing rebuilds; nothing else is written."},
+	"GET /api/v1/projects/{key}/evals/{slug}":            {Writes: readWritesNothing, WriteNote: "The eval's method is read from the project's evals-md document through the document service (evals.Store.Method). " + docsCompactionNote},
 	"GET /api/v1/github/app-installation/{owner}/{repo}": {Writes: readWritesNothing, WriteNote: "Writes nothing itself. When GitHub answers the installation lookup with a rate limit, the GitHub client records that limit in github_rate_limits on a context detached from the request (ratelimit.Record), as it does for every caller that reads GitHub: the row is GitHub's own state, not a fact of Dispatch's."},
 	"GET /api/v1/references":                             {Writes: readWritesNothing, WriteNote: "Writes nothing itself. With ?since=, the read waits on the event horizon, as the event log does, and the horizon's observation, which may run on this request's goroutine, writes event_horizon on a context of its own (writePersisted), at most once a second, after its waiters have their answer: the server's write for every reader alike. Without ?since= it does not read the horizon."},
 	"GET /api/v1/issues/{key}/results":                   {Writes: readWritesNothing, WriteNote: "A read-only caller's read reads GitHub and stores nothing. A writer's read stores what it read from GitHub, as it always has: the pull request heads of a result's commit (pull_request_heads), with the branch commits (branch_commits) and the attribution events (events) that come with them. Like every reader of GitHub, the GitHub client may record GitHub's rate limit in github_rate_limits on a detached context, and the check blocks are read through the document service, whose cold read may queue a compaction (docsCompactionNote)."},
@@ -100,6 +102,10 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/limits":                                                 {Writes: readWritesNothing},
 	"GET /api/v1/projects":                                               {Writes: readWritesNothing},
 	"GET /api/v1/projects/{key}/artifacts":                               {Writes: readWritesNothing},
+	"GET /api/v1/projects/{key}/evals":                                   {Writes: readWritesNothing},
+	"GET /api/v1/projects/{key}/evals/{slug}/items":                      {Writes: readWritesNothing},
+	"GET /api/v1/evals":                                                  {Writes: readWritesNothing},
+	"GET /api/v1/projects/{key}/production-events":                       {Writes: readWritesNothing},
 	"GET /api/v1/settings/repo-projects":                                 {Writes: readWritesNothing},
 	"GET /api/v1/settings/architecture-sources":                          {Writes: readWritesNothing},
 	"GET /api/v1/projects/{key}/architecture-sources":                    {Writes: readWritesNothing},
@@ -108,9 +114,11 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/projects/{key}/plans":                                   {Writes: readWritesNothing},
 	"GET /api/v1/settings/project-default-assignees":                     {Writes: readWritesNothing},
 	"GET /api/v1/settings/new-issue":                                     {Writes: readWritesNothing},
+	"GET /api/v1/projects/{key}/settings/delivery":                       {Writes: readWritesNothing},
 	"GET /api/v1/settings/delivery":                                      {Writes: readWritesNothing},
 	"GET /api/v1/projects/{key}/legion/daemon":                           {Writes: readWritesNothing},
 	"GET /api/v1/projects/{key}/legion/board":                            {Writes: readWritesNothing},
+	"GET /api/v1/projects/{key}/deploy-runs/{id}":                        {Writes: readWritesNothing},
 	"GET /api/v1/delivery/runs/{id}":                                     {Writes: readWritesNothing},
 	"GET /api/v1/ci-reconcile/passes":                                    {Writes: readWritesNothing},
 	"GET /api/v1/me/agent-tokens":                                        {Writes: readWritesNothing},

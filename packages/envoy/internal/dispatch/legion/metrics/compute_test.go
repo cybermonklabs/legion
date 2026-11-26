@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 )
 
@@ -20,17 +21,17 @@ func TestNoQueueOrParkedHourEntersTheWorkTime(t *testing.T) {
 		observeString(legion.FieldPhase, hour(5), "admitted").
 		observeString(legion.FieldPhase, hour(6), "implementing").
 		observeString(legion.FieldPhase, hour(10), "done")
-	report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
-	if report.Finished != 1 || len(report.WorkTime.Issues) != 1 {
-		t.Fatalf("the report counted %d finished issues and %d rows, want one of each", report.Finished, len(report.WorkTime.Issues))
+	w := windowOf(fixture(hour(-24), hour(24), issue), ScopeAll)
+	if len(w.finished) != 1 || len(w.timed()) != 1 {
+		t.Fatalf("the window finished %d issues and timed %d, want one of each", len(w.finished), len(w.timed()))
 	}
-	row := report.WorkTime.Issues[0]
-	if row.Hours != 7 || row.ParkedHours != 2 || row.QueuedHours != 1 {
+	row := w.fact(t, "INFRA-1")
+	if row.WorkHours != 7 || row.ParkedHours != 2 || row.QueuedHours != 1 {
 		t.Fatalf("work time = %g hours (parked %g, queued %g), want 7 of 10 hours with 2 parked and 1 back in the queue",
-			row.Hours, row.ParkedHours, row.QueuedHours)
+			row.WorkHours, row.ParkedHours, row.QueuedHours)
 	}
-	if report.WorkTime.MedianHours != 7 {
-		t.Errorf("the median work time = %g, want 7", report.WorkTime.MedianHours)
+	if median := valueOf(w.workTime().Median); median != 7 {
+		t.Errorf("the median work time = %g, want 7", median)
 	}
 	// Queue time is every observed stretch in `admitted` with no slot, whenever it falls (the
 	// spec's "Rule details — Queue time, one definition"), so this issue's is three hours: the
@@ -51,12 +52,12 @@ func TestTimeInIceboxIsParkedAndOutOfTheWorkTime(t *testing.T) {
 		statusAt(hour(0), "in_progress").
 		statusAt(hour(2), "icebox").
 		statusAt(hour(5), "in_progress")
-	report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
-	if len(report.WorkTime.Issues) != 1 {
-		t.Fatalf("work-time rows = %d, want the one issue", len(report.WorkTime.Issues))
+	w := windowOf(fixture(hour(-24), hour(24), issue), ScopeAll)
+	if timed := w.timed(); len(timed) != 1 {
+		t.Fatalf("work-time rows = %d, want the one issue", len(timed))
 	}
-	if row := report.WorkTime.Issues[0]; row.Hours != 5 || row.ParkedHours != 3 {
-		t.Fatalf("work time = %g hours with %g parked, want 5 with the 3 in icebox parked", row.Hours, row.ParkedHours)
+	if row := w.fact(t, "INFRA-1"); row.WorkHours != 5 || row.ParkedHours != 3 {
+		t.Fatalf("work time = %g hours with %g parked, want 5 with the 3 in icebox parked", row.WorkHours, row.ParkedHours)
 	}
 }
 
@@ -113,24 +114,19 @@ func TestTheSevenBarsOfAnIssueAddUpToItsWorkTime(t *testing.T) {
 		}},
 	} {
 		t.Run(one.issue.Key, func(t *testing.T) {
-			report := Compute(fixture(hour(-24), hour(24), one.issue), ScopeAll, hour(24))
-			row := report.WorkTime.Issues[0]
-			if row.Hours != one.workHours || row.ParkedHours != one.parked || row.QueuedHours != one.queued {
+			w := windowOf(fixture(hour(-24), hour(24), one.issue), ScopeAll)
+			row := w.fact(t, one.issue.Key)
+			if row.WorkHours != one.workHours || row.ParkedHours != one.parked || row.QueuedHours != one.queued {
 				t.Fatalf("the work time = %g hours (parked %g, queued %g), want %g (%g, %g)",
-					row.Hours, row.ParkedHours, row.QueuedHours, one.workHours, one.parked, one.queued)
+					row.WorkHours, row.ParkedHours, row.QueuedHours, one.workHours, one.parked, one.queued)
 			}
-			hoursPerBar := map[string]float64{}
-			var whole float64
-			for _, bar := range report.PhaseTime.Bars {
-				hoursPerBar[bar.Role] = bar.Hours
-				whole += bar.Hours
-			}
+			hoursPerBar, whole := w.hoursPerBar(t)
 			if !reflect.DeepEqual(hoursPerBar, one.bars) {
 				t.Fatalf("the bars are %v, want %v", hoursPerBar, one.bars)
 			}
-			if whole != row.Hours {
+			if whole != row.WorkHours {
 				t.Fatalf("the seven bars hold %g hours against a work time of %g: metric 2's bars and metric 1's work time disagree",
-					whole, row.Hours)
+					whole, row.WorkHours)
 			}
 		})
 	}
@@ -147,18 +143,17 @@ func TestAnIssueThatClosedWithNoLegionWorkIsNotCounted(t *testing.T) {
 	bare := newIssue("INFRA-3").closedAt(hour(4))
 	early := newIssue("INFRA-4").worked("implementer", hour(-100)).closedAt(hour(-50))
 	reported := newIssue("INFRA-5").observeString(legion.FieldPhase, hour(1), "implementing").closedAt(hour(5))
-	report := Compute(fixture(hour(-24), hour(24), worked, handedOff, bare, early, reported), ScopeAll, hour(24))
-	// Finished is every metric's population. The work-time rows below are not: an issue with no
-	// worker event has none, whether or not it is counted.
-	if report.Finished != 2 {
-		t.Fatalf("%d issues finished, want the worked issue and the one with a handoff", report.Finished)
+	w := windowOf(fixture(hour(-24), hour(24), worked, handedOff, bare, early, reported), ScopeAll)
+	// The finished issues are every measure's population. The work-time rows below are not: an
+	// issue with no worker event has none, whether or not it is counted.
+	if !reflect.DeepEqual(w.finished, []string{"INFRA-1", "INFRA-2"}) {
+		t.Fatalf("%v finished, want the worked issue and the one with a handoff", w.finished)
 	}
-	var counted []string
-	for _, row := range report.WorkTime.Issues {
-		counted = append(counted, row.Key)
-	}
-	if !reflect.DeepEqual(counted, []string{"INFRA-1", "INFRA-2"}) {
+	if counted := w.timed(); !reflect.DeepEqual(counted, []string{"INFRA-1", "INFRA-2"}) {
 		t.Fatalf("counted %v, want the worked issue and the one with a handoff", counted)
+	}
+	if n := w.workTime().N; n != 2 {
+		t.Fatalf("legion-work-time counts %d issues, want the worked issue and the one with a handoff", n)
 	}
 }
 
@@ -174,23 +169,23 @@ func TestAHandoffBeforeTheFirstWorkerEventDoesNotStartTheWorkTime(t *testing.T) 
 		handedOff("plan", hour(0)).
 		worked("implementer", hour(5)).
 		closedAt(hour(10))
-	report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
-	if len(report.WorkTime.Issues) != 1 {
-		t.Fatalf("work-time rows = %d, want the one issue", len(report.WorkTime.Issues))
+	w := windowOf(fixture(hour(-24), hour(24), issue), ScopeAll)
+	if timed := w.timed(); len(timed) != 1 {
+		t.Fatalf("work-time rows = %d, want the one issue", len(timed))
 	}
-	if row := report.WorkTime.Issues[0]; row.Hours != 5 || !row.StartedAt.Equal(hour(5)) {
+	if row := w.fact(t, "INFRA-1"); row.WorkHours != 5 || row.StartedAt == nil || !row.StartedAt.Equal(hour(5)) {
 		t.Fatalf("the work time = %g hours from %v, want 5 from the implementer's first event at %v: the handoff before it starts none",
-			row.Hours, row.StartedAt, hour(5))
+			row.WorkHours, row.StartedAt, hour(5))
 	}
-	if bar := barOf(t, report, "implementer"); bar.Hours != 5 {
+	if bar := barOf(t, w, "implementer"); bar.Hours != 5 {
 		t.Fatalf("the implementer's bar = %g hours, want the five of the work time and none before it", bar.Hours)
 	}
 }
 
-// TestTheScopePicksRootsOrChildren: a tree's root and its child, each counted alone under
-// its own scope and both under all. The root is read from the parent chain, since no daemon has
-// sent a `tree` yet.
-func TestTheScopePicksRootsOrChildren(t *testing.T) {
+// TestEachCutCountsRootsOrChildren: a tree's root and its child, each counted alone in its own cut
+// and both in the all cut. The root is read from the parent chain, since no daemon has sent a
+// `tree` yet.
+func TestEachCutCountsRootsOrChildren(t *testing.T) {
 	root := newIssue("INFRA-1").worked("architect", hour(0)).closedAt(hour(9))
 	child := newIssue("INFRA-2").under("INFRA-1").worked("implementer", hour(1)).closedAt(hour(8))
 	// An issue under a parent no Legion session ever worked is a root of its own: a Legion tree
@@ -207,12 +202,12 @@ func TestTheScopePicksRootsOrChildren(t *testing.T) {
 		{ScopeChildren, []string{"INFRA-2"}},
 	} {
 		t.Run(string(one.scope), func(t *testing.T) {
-			var counted []string
-			for _, row := range Compute(population, one.scope, hour(24)).WorkTime.Issues {
-				counted = append(counted, row.Key)
+			w := windowOf(population, one.scope)
+			if counted := w.timed(); !reflect.DeepEqual(counted, one.want) {
+				t.Fatalf("cut %s counted %v, want %v", one.scope, counted, one.want)
 			}
-			if !reflect.DeepEqual(counted, one.want) {
-				t.Fatalf("scope %s counted %v, want %v", one.scope, counted, one.want)
+			if n := w.workTime().N; n != len(one.want) {
+				t.Fatalf("cut %s: legion-work-time counts %d issues, want %d", one.scope, n, len(one.want))
 			}
 		})
 	}
@@ -241,11 +236,8 @@ func TestEachPhaseStartsAtItsRolesFirstEventAndEndsWhereTheNextStarts(t *testing
 	if got := timelineOf(population, root); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the fallback timeline is %v, want %v", got, want)
 	}
-	report := Compute(population, ScopeAll, hour(24))
-	hoursPerBar := map[string]float64{}
-	for _, bar := range report.PhaseTime.Bars {
-		hoursPerBar[bar.Role] = bar.Hours
-	}
+	w := windowOf(population, ScopeAll)
+	hoursPerBar, _ := w.hoursPerBar(t)
 	want2 := map[string]float64{
 		"architect": 2, "planner": 1, "implementer": 3, "tester": 2, "reviewer": 1, "merger": 1, barNoRole: 0,
 	}
@@ -253,8 +245,8 @@ func TestEachPhaseStartsAtItsRolesFirstEventAndEndsWhereTheNextStarts(t *testing
 		t.Fatalf("the bars are %v, want %v: the architect's design and accepting, and the implementer's phase from the plan handoff rather than from its own first event, which leaves the bar of no role empty", hoursPerBar, want2)
 	}
 	// Nothing was observed, so segments 2 and 3 can hold through nothing and every hour is idle.
-	if report.PhaseTime.IdleShare != 1 {
-		t.Errorf("the idle share = %g, want 1 before any observation exists", report.PhaseTime.IdleShare)
+	if share := valueOf(w.phaseTime(t).IdleShare); share != 1 {
+		t.Errorf("the idle share = %g, want 1 before any observation exists", share)
 	}
 }
 
@@ -298,8 +290,8 @@ func TestRetroIsOnTheImplementersBar(t *testing.T) {
 			if got := timelineOf(population, one.issue); !reflect.DeepEqual(got, one.timeline) {
 				t.Fatalf("the timeline is %v, want %v", got, one.timeline)
 			}
-			report := Compute(population, ScopeAll, hour(24))
-			implementer, merger := barOf(t, report, "implementer").Hours, barOf(t, report, "merger").Hours
+			w := windowOf(population, ScopeAll)
+			implementer, merger := barOf(t, w, "implementer").Hours, barOf(t, w, "merger").Hours
 			if implementer != one.implementer || merger != one.merger {
 				t.Fatalf("the implementer's bar = %g hours and the merger's %g, want %g and %g: retro's hours are the implementer's",
 					implementer, merger, one.implementer, one.merger)
@@ -373,10 +365,10 @@ func TestAnIssuesOwnArchitectEventsGiveItADesignPhase(t *testing.T) {
 	}
 	// The child with its own architect holds a design hour and two accepting ones; the one
 	// without holds its two accepting hours and no design hour at all.
-	if bar := barOf(t, Compute(population, ScopeChildren, hour(24)), "architect"); bar.Hours != 5 {
+	if bar := barOf(t, windowOf(population, ScopeChildren), "architect"); bar.Hours != 5 {
 		t.Fatalf("the two children's architect bar = %g hours, want 5: one design hour and two accepting of INFRA-2, and the two accepting of INFRA-3", bar.Hours)
 	}
-	if bar := barOf(t, Compute(fixture(hour(-24), hour(24), root, plain), ScopeChildren, hour(24)), "architect"); bar.Hours != 2 {
+	if bar := barOf(t, windowOf(fixture(hour(-24), hour(24), root, plain), ScopeChildren), "architect"); bar.Hours != 2 {
 		t.Fatalf("the architect bar of a child with no architect events = %g hours, want its two accepting hours", bar.Hours)
 	}
 }
@@ -399,21 +391,16 @@ func TestAHandoffStartsTheNextPhaseAndLeavesNoHourBetweenThem(t *testing.T) {
 	if got := timelineOf(population, root); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the fallback timeline is %v, want %v: each handoff starts the next phase", got, want)
 	}
-	report := Compute(population, ScopeAll, hour(24))
-	hoursPerBar := map[string]float64{}
-	var whole float64
-	for _, bar := range report.PhaseTime.Bars {
-		hoursPerBar[bar.Role] = bar.Hours
-		whole += bar.Hours
-	}
+	w := windowOf(population, ScopeAll)
+	hoursPerBar, whole := w.hoursPerBar(t)
 	want2 := map[string]float64{
 		"architect": 0, "planner": 0, "implementer": 2, "tester": 3, "reviewer": 5, "merger": 0, barNoRole: 0,
 	}
 	if !reflect.DeepEqual(hoursPerBar, want2) {
 		t.Fatalf("the bars are %v, want %v: the two hours after the implement handoff are the tester's and the three after the test handoff are the reviewer's", hoursPerBar, want2)
 	}
-	if row := report.WorkTime.Issues[0]; whole != row.Hours {
-		t.Fatalf("the seven bars hold %g hours against a work time of %g: a handoff left an hour between two phases", whole, row.Hours)
+	if row := w.fact(t, "INFRA-1"); whole != row.WorkHours {
+		t.Fatalf("the seven bars hold %g hours against a work time of %g: a handoff left an hour between two phases", whole, row.WorkHours)
 	}
 }
 
@@ -464,8 +451,8 @@ func TestTheNoRoleBarHoldsAwaitingPersonAndHeldAlone(t *testing.T) {
 		observeString(legion.FieldPhase, hour(2), "held").
 		observeString(legion.FieldPhase, hour(3), "implementing").
 		observeString(legion.FieldPhase, hour(6), "done")
-	report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
-	bar := barOf(t, report, barNoRole)
+	w := windowOf(fixture(hour(-24), hour(24), issue), ScopeAll)
+	bar := barOf(t, w, barNoRole)
 	if bar.Hours != 2 {
 		t.Fatalf("the no-role bar = %g hours, want the awaiting_person hour and the held one", bar.Hours)
 	}
@@ -474,7 +461,7 @@ func TestTheNoRoleBarHoldsAwaitingPersonAndHeldAlone(t *testing.T) {
 	if bar.Segments != (Segments{WaitingOnPerson: 1, Idle: 1}) {
 		t.Fatalf("the no-role bar is %+v, want the awaiting_person hour waiting on a person and the held one idle", bar.Segments)
 	}
-	if hours := barOf(t, report, "implementer").Hours; hours != 4 {
+	if hours := barOf(t, w, "implementer").Hours; hours != 4 {
 		t.Fatalf("the implementer bar = %g hours, want the four hours of implementing", hours)
 	}
 }
@@ -487,10 +474,10 @@ func TestARolesMedianCountsAnIssueItNeverWorkedAsZero(t *testing.T) {
 	tested := newIssue("INFRA-1").worked("implementer", hour(0)).worked("tester", hour(1)).closedAt(hour(4))
 	untested := newIssue("INFRA-2").worked("implementer", hour(0)).closedAt(hour(4))
 	alsoUntested := newIssue("INFRA-3").worked("implementer", hour(0)).closedAt(hour(4))
-	bar := barOf(t, Compute(fixture(hour(-24), hour(24), tested, untested, alsoUntested), ScopeAll, hour(24)), "tester")
-	if bar.Hours != 3 || bar.MedianHoursPerIssue != 0 {
+	bar := barOf(t, windowOf(fixture(hour(-24), hour(24), tested, untested, alsoUntested), ScopeAll), "tester")
+	if bar.Hours != 3 || valueOf(bar.MedianPerIssue) != 0 {
 		t.Fatalf("the tester's bar = %g hours with a median of %g per issue, want 3 hours and a median of 0: two of the three finished issues held no testing hour",
-			bar.Hours, bar.MedianHoursPerIssue)
+			bar.Hours, valueOf(bar.MedianPerIssue))
 	}
 }
 
@@ -527,13 +514,8 @@ func TestAfterASendBackTheDispatchStatusSetsThePhase(t *testing.T) {
 	if got := timelineOf(population, issue); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the fallback timeline is %v, want %v", got, want)
 	}
-	report := Compute(population, ScopeAll, hour(24))
-	hoursPerBar := map[string]float64{}
-	var whole float64
-	for _, bar := range report.PhaseTime.Bars {
-		hoursPerBar[bar.Role] = bar.Hours
-		whole += bar.Hours
-	}
+	w := windowOf(population, ScopeAll)
+	hoursPerBar, whole := w.hoursPerBar(t)
 	// The hour before the first worker event is on no bar, whatever phase named it.
 	want2 := map[string]float64{
 		"architect": 2, "planner": 0, "implementer": 2, "tester": 2, "reviewer": 2, "merger": 0, barNoRole: 0,
@@ -541,16 +523,16 @@ func TestAfterASendBackTheDispatchStatusSetsThePhase(t *testing.T) {
 	if !reflect.DeepEqual(hoursPerBar, want2) {
 		t.Fatalf("the bars are %v, want %v", hoursPerBar, want2)
 	}
-	if row := report.WorkTime.Issues[0]; whole != row.Hours {
-		t.Fatalf("the seven bars hold %g hours against a work time of %g", whole, row.Hours)
+	if row := w.fact(t, "INFRA-1"); whole != row.WorkHours {
+		t.Fatalf("the seven bars hold %g hours against a work time of %g", whole, row.WorkHours)
 	}
-	row := report.Rework.Issues[0]
+	row := w.fact(t, "INFRA-1")
 	if row.ReviewRounds != 2 || !row.SentBack {
 		t.Fatalf("the issue has %d review rounds and sent_back=%t, want two rounds and the send-back its statuses record", row.ReviewRounds, row.SentBack)
 	}
-	if row.ImplementingHoursAfterFirst != 1 || row.TestingHoursAfterFirst != 1 {
+	if row.ImplementingHoursAfterFirstReview != 1 || row.TestingHoursAfterFirstReview != 1 {
 		t.Fatalf("after the first review: %g implementing and %g testing hours, want the hour of each the second round holds",
-			row.ImplementingHoursAfterFirst, row.TestingHoursAfterFirst)
+			row.ImplementingHoursAfterFirstReview, row.TestingHoursAfterFirstReview)
 	}
 }
 
@@ -657,18 +639,13 @@ func TestAfterASendBackARolesFirstEventStartsNoPhase(t *testing.T) {
 			if got := timelineOf(population, one.issue); !reflect.DeepEqual(got, one.timeline) {
 				t.Fatalf("the fallback timeline is %v, want %v", got, one.timeline)
 			}
-			report := Compute(population, ScopeAll, hour(24))
-			hoursPerBar := map[string]float64{}
-			var whole float64
-			for _, bar := range report.PhaseTime.Bars {
-				hoursPerBar[bar.Role] = bar.Hours
-				whole += bar.Hours
-			}
+			w := windowOf(population, ScopeAll)
+			hoursPerBar, whole := w.hoursPerBar(t)
 			if !reflect.DeepEqual(hoursPerBar, one.bars) {
 				t.Fatalf("the bars are %v, want %v", hoursPerBar, one.bars)
 			}
-			if row := report.WorkTime.Issues[0]; whole != row.Hours {
-				t.Fatalf("the seven bars hold %g hours against a work time of %g", whole, row.Hours)
+			if row := w.fact(t, one.issue.Key); whole != row.WorkHours {
+				t.Fatalf("the seven bars hold %g hours against a work time of %g", whole, row.WorkHours)
 			}
 		})
 	}
@@ -692,21 +669,16 @@ func TestPlanningStartsAtTheFirstPlannerEventAndNotTheAdmissionWrite(t *testing.
 	if got := timelineOf(population, issue); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the fallback timeline is %v, want %v", got, want)
 	}
-	report := Compute(population, ScopeAll, hour(24))
-	hoursPerBar := map[string]float64{}
-	var whole float64
-	for _, bar := range report.PhaseTime.Bars {
-		hoursPerBar[bar.Role] = bar.Hours
-		whole += bar.Hours
-	}
+	w := windowOf(population, ScopeAll)
+	hoursPerBar, whole := w.hoursPerBar(t)
 	want2 := map[string]float64{
 		"architect": 0, "planner": 2, "implementer": 2, "tester": 0, "reviewer": 0, "merger": 0, barNoRole: 0,
 	}
 	if !reflect.DeepEqual(hoursPerBar, want2) {
 		t.Fatalf("the bars are %v, want %v", hoursPerBar, want2)
 	}
-	if row := report.WorkTime.Issues[0]; whole != row.Hours {
-		t.Fatalf("the seven bars hold %g hours against a work time of %g", whole, row.Hours)
+	if row := w.fact(t, "INFRA-1"); whole != row.WorkHours {
+		t.Fatalf("the seven bars hold %g hours against a work time of %g", whole, row.WorkHours)
 	}
 }
 
@@ -733,26 +705,21 @@ func TestWorkHoursBeforeTheFirstPhaseMarkAreOnThatPhasesBar(t *testing.T) {
 	if got := timelineOf(population, issue); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the fallback timeline is %v, want %v", got, want)
 	}
-	report := Compute(population, ScopeAll, hour(24))
-	hoursPerBar := map[string]float64{}
-	var whole float64
-	for _, bar := range report.PhaseTime.Bars {
-		hoursPerBar[bar.Role] = bar.Hours
-		whole += bar.Hours
-	}
+	w := windowOf(population, ScopeAll)
+	hoursPerBar, whole := w.hoursPerBar(t)
 	want2 := map[string]float64{
 		"architect": 0, "planner": 0, "implementer": 3, "tester": 2, "reviewer": 0, "merger": 0, barNoRole: 0,
 	}
 	if !reflect.DeepEqual(hoursPerBar, want2) {
 		t.Fatalf("the bars are %v, want %v", hoursPerBar, want2)
 	}
-	row := report.WorkTime.Issues[0]
-	if row.Hours != 5 {
-		t.Fatalf("the work time = %g hours, want the five from the handoff that opened it to the close", row.Hours)
+	row := w.fact(t, "INFRA-1")
+	if row.WorkHours != 5 {
+		t.Fatalf("the work time = %g hours, want the five from the handoff that opened it to the close", row.WorkHours)
 	}
-	if whole != row.Hours {
+	if whole != row.WorkHours {
 		t.Fatalf("the seven bars hold %g hours against a work time of %g: an hour of the work time is on no bar",
-			whole, row.Hours)
+			whole, row.WorkHours)
 	}
 }
 
@@ -774,26 +741,21 @@ func TestWorkHoursBeforeTheFirstObservedMarkAreOnThatPhasesBar(t *testing.T) {
 	if got := timelineOf(population, issue); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the observed timeline is %v, want %v", got, want)
 	}
-	report := Compute(population, ScopeAll, hour(24))
-	hoursPerBar := map[string]float64{}
-	var whole float64
-	for _, bar := range report.PhaseTime.Bars {
-		hoursPerBar[bar.Role] = bar.Hours
-		whole += bar.Hours
-	}
+	w := windowOf(population, ScopeAll)
+	hoursPerBar, whole := w.hoursPerBar(t)
 	want2 := map[string]float64{
 		"architect": 0, "planner": 0, "implementer": 4, "tester": 2, "reviewer": 0, "merger": 0, barNoRole: 0,
 	}
 	if !reflect.DeepEqual(hoursPerBar, want2) {
 		t.Fatalf("the bars are %v, want %v", hoursPerBar, want2)
 	}
-	row := report.WorkTime.Issues[0]
-	if row.Hours != 6 {
-		t.Fatalf("the work time = %g hours, want the six from the handoff that opened it to the close", row.Hours)
+	row := w.fact(t, "INFRA-1")
+	if row.WorkHours != 6 {
+		t.Fatalf("the work time = %g hours, want the six from the handoff that opened it to the close", row.WorkHours)
 	}
-	if whole != row.Hours {
+	if whole != row.WorkHours {
 		t.Fatalf("the seven bars hold %g hours against a work time of %g: an hour of the work time is on no bar",
-			whole, row.Hours)
+			whole, row.WorkHours)
 	}
 }
 
@@ -830,11 +792,8 @@ func TestAnIssueFirstObservedInFlightTakesItsEarlierPhasesFromItsEvents(t *testi
 		t.Fatalf("the timeline is %v, want %v: the event log's phases up to the first observation at hour 4 and the daemon's from it on",
 			got, want)
 	}
-	report := Compute(population, ScopeAll, hour(24))
-	hoursPerBar := map[string]float64{}
-	for _, bar := range report.PhaseTime.Bars {
-		hoursPerBar[bar.Role] = bar.Hours
-	}
+	w := windowOf(population, ScopeAll)
+	hoursPerBar, _ := w.hoursPerBar(t)
 	want2 := map[string]float64{
 		"architect": 1, "planner": 0, "implementer": 3, "tester": 2, "reviewer": 2, "merger": 0, barNoRole: 0,
 	}
@@ -842,14 +801,14 @@ func TestAnIssueFirstObservedInFlightTakesItsEarlierPhasesFromItsEvents(t *testi
 		t.Fatalf("the bars are %v, want %v: the first round's testing and reviewing hours are not the implementing the sampler first saw",
 			hoursPerBar, want2)
 	}
-	row := report.Rework.Issues[0]
+	row := w.fact(t, "INFRA-1")
 	if row.ReviewRounds != 2 || !row.SentBack {
 		t.Fatalf("the issue has %d review rounds and sent_back=%t, want the round and the send-back its statuses record before hour 4 and the round observed after it",
 			row.ReviewRounds, row.SentBack)
 	}
-	if row.ImplementingHoursAfterFirst != 2 || row.TestingHoursAfterFirst != 1 {
+	if row.ImplementingHoursAfterFirstReview != 2 || row.TestingHoursAfterFirstReview != 1 {
 		t.Fatalf("after the first review: %g implementing and %g testing hours, want 2 and 1 from the review at hour 2",
-			row.ImplementingHoursAfterFirst, row.TestingHoursAfterFirst)
+			row.ImplementingHoursAfterFirstReview, row.TestingHoursAfterFirstReview)
 	}
 }
 
@@ -867,14 +826,11 @@ func TestAnAdmittedIssueHoldingASlotIsDesignAndOneHoldingNoneIsQueue(t *testing.
 	if got := timelineOf(population, root); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the observed timeline is %v, want %v", got, want)
 	}
-	report := Compute(population, ScopeAll, hour(24))
-	if bar := barOf(t, report, "architect"); bar.Hours != 2 {
+	w := windowOf(population, ScopeAll)
+	if bar := barOf(t, w, "architect"); bar.Hours != 2 {
 		t.Fatalf("the architect bar = %g hours, want the two design hours and no queue hour", bar.Hours)
 	}
-	var whole float64
-	for _, bar := range report.PhaseTime.Bars {
-		whole += bar.Hours
-	}
+	_, whole := w.hoursPerBar(t)
 	if whole != 3 {
 		t.Fatalf("the bars hold %g hours of a four-hour life, want 3: the queued hour is on no bar", whole)
 	}
@@ -895,10 +851,11 @@ func TestAMedianInterpolatesBetweenTheClosestRanks(t *testing.T) {
 		{"four", []float64{1, 2, 3, 4}, 2.5, 3.7},
 	} {
 		t.Run(one.name, func(t *testing.T) {
-			if got := quantile(one.values, 0.5); got != one.median {
+			sorted := measures.MergedSamples([]measures.DayPart{{Series: "hours", Samples: one.values}}, "hours")
+			if got := quantile(sorted, 0.5); got != one.median {
 				t.Errorf("median of %v = %g, want %g", one.values, got, one.median)
 			}
-			if got := quantile(one.values, 0.9); got != one.p90 {
+			if got := quantile(sorted, 0.9); got != one.p90 {
 				t.Errorf("p90 of %v = %g, want %g", one.values, got, one.p90)
 			}
 		})

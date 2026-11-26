@@ -552,7 +552,7 @@ func derefText(value *string) string {
 // not gone and its row's own but names neither is written again, which states its project or
 // parties alone. A document whose node is not gone but not its row's own is one a build before
 // this one removed and made again at the address: its node is stated gone, by the backfill, and
-// then live, under the row's own event, as this build's create states it (api's queueNewArtifact),
+// then live, under the row's own event, as this build's create states it (docs' QueueNewArtifact),
 // both as the run's own state tuples (stateTuple). A node the store holds is dated one microsecond past
 // the newest statement it holds about it where the row's created_at is no later - a row a build
 // before this one dated at its transaction's start can predate a removal it waited behind - so a

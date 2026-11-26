@@ -1,20 +1,23 @@
 import type { Row } from "@tanstack/react-table";
 import { type RefObject, useLayoutEffect, useRef } from "react";
-import { useKeymap } from "../shell/keymap";
+import { type KeyBinding, useKeymap } from "../shell/keymap";
 import { closestMatching } from "../shell/roving";
 
 /**
  * The keys a reader walks the table's rows with, the same ids and palette rows the list they
  * replace had: `j` and `k` move between rows, `o` and Enter open the row in hand, `x` selects
  * it. A row the virtualizer has not drawn yet is scrolled to first and focused when it lands.
+ * Where `enabled` is false (a table whose rows are no issues) it binds none.
  */
 export function useRowKeymap<TData>({
   displayRows,
+  enabled,
   rowsById,
   scrollRef,
   scrollToIndex,
 }: {
   displayRows: readonly { row: Row<TData> }[];
+  enabled: boolean;
   rowsById: Record<string, Row<TData>>;
   scrollRef: RefObject<HTMLDivElement | null>;
   scrollToIndex: (index: number) => void;
@@ -54,7 +57,7 @@ export function useRowKeymap<TData>({
   });
   const openFocusedRow = () =>
     focusedRow()?.querySelector<HTMLElement>("[data-issue-link]")?.click();
-  useKeymap("project", [
+  const bindings: readonly KeyBinding[] = [
     {
       id: "list-next",
       keys: "j",
@@ -98,5 +101,6 @@ export function useRowKeymap<TData>({
       },
       when: () => focusedRow() !== null,
     },
-  ]);
+  ];
+  useKeymap("project", enabled ? bindings : []);
 }

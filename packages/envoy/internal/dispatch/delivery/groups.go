@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -129,9 +130,11 @@ func ListSessionGroups(ctx context.Context, q Querier) ([]SessionGroup, error) {
 	return groups, rows.Err()
 }
 
+// sessionGroupByID reads one group, by its id, with its sessions (scanSessionGroup).
+const sessionGroupByID = `select ` + sessionGroupColumns + ` ` + sessionGroupFrom + ` where g.id = $1::uuid group by g.id`
+
 func getSessionGroup(ctx context.Context, q Querier, id string) (SessionGroup, error) {
-	group, err := scanSessionGroup(q.QueryRow(ctx, `select `+sessionGroupColumns+` `+sessionGroupFrom+`
-		where g.id = $1::uuid group by g.id`, id))
+	group, err := scanSessionGroup(q.QueryRow(ctx, sessionGroupByID, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SessionGroup{}, ErrSessionGroupNotFound
 	}
@@ -141,11 +144,40 @@ func getSessionGroup(ctx context.Context, q Querier, id string) (SessionGroup, e
 // lockSessionGroups serialises every group write. The members' primary key and the name index
 // already refuse membership and name races; the lock is for the title rule, which reads other
 // groups' rows, so a rename and a removal checked at once cannot together strand a titled session.
+//
+// It is the first thing each group write does in its transaction, before its reads; the change
+// log's lock comes after every read, with the writes (writeSessionGroup). No other transaction
+// takes this lock, so none can hold the change log's lock and wait for it.
 func lockSessionGroups(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('delivery-session-groups'))`); err != nil {
 		return fmt.Errorf("lock session groups: %w", err)
 	}
 	return nil
+}
+
+// writeSessionGroup sends, in one round trip, the change log's lock (lockChangesStatement), then
+// the statements queue adds, then the read of group id as those statements leave it, and answers that
+// group. The write's group and member statements each log a change, so the first of them would
+// take the change log's lock after its row, in the middle of the transaction: the lock is taken
+// first, before any row of the group tables, their one position for it. And it is taken last of
+// all the write's work, after the reads that decide it (the title rule's read of every pull
+// request's sessions, the members it checks), each of which ran under the session groups' own lock
+// (lockSessionGroups) before it, so the write holds the change log's lock for its writes, one round
+// trip, and its commit alone.
+func writeSessionGroup(ctx context.Context, tx pgx.Tx, id string, queue func(*pgx.Batch)) (SessionGroup, error) {
+	batch := &pgx.Batch{}
+	queueLockChanges(batch)
+	queue(batch)
+	var group SessionGroup
+	batch.Queue(sessionGroupByID, id).QueryRow(func(row pgx.Row) error {
+		var err error
+		group, err = scanSessionGroup(row)
+		return err
+	})
+	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
+		return SessionGroup{}, err
+	}
+	return group, nil
 }
 
 // refuseHeldSessions refuses the first of sessions another group than groupID holds (any group,
@@ -234,6 +266,8 @@ func refuseTitleClash(ctx context.Context, tx pgx.Tx, name string, members, remo
 // CreateSessionGroup writes a new group named name holding sessions, in tx, after refusing a
 // session another group holds, a name another group has, and a name that is the title of a
 // session outside the group. name is already trimmed and sessions de-duplicated and non-empty.
+// The group's id is drawn here, a random UUID as the column's default draws one, so its writes and
+// the read of it go in one round trip (writeSessionGroup).
 func CreateSessionGroup(ctx context.Context, tx pgx.Tx, name string, sessions []string, actor model.Actor) (SessionGroup, error) {
 	if len(sessions) == 0 {
 		return SessionGroup{}, ErrSessionGroupEmpty
@@ -254,24 +288,21 @@ func CreateSessionGroup(ctx context.Context, tx pgx.Tx, name string, sessions []
 	if err != nil {
 		return SessionGroup{}, fmt.Errorf("encode session group author: %w", err)
 	}
-	var id string
-	if err := tx.QueryRow(ctx, `
-		insert into delivery_session_groups (name, created_by, updated_by) values ($1, $2, $2)
-		returning id::text
-	`, name, actorJSON).Scan(&id); err != nil {
-		return SessionGroup{}, err
-	}
-	if _, err := tx.Exec(ctx, `
-		insert into delivery_session_group_members (session_id, group_id)
-		select unnest($1::text[]), $2::uuid
-	`, sessions, id); err != nil {
-		return SessionGroup{}, err
-	}
-	return getSessionGroup(ctx, tx, id)
+	id := uuid.NewString()
+	return writeSessionGroup(ctx, tx, id, func(batch *pgx.Batch) {
+		batch.Queue(`
+			insert into delivery_session_groups (id, name, created_by, updated_by) values ($1::uuid, $2, $3, $3)
+		`, id, name, actorJSON)
+		batch.Queue(`
+			insert into delivery_session_group_members (session_id, group_id)
+			select unnest($1::text[]), $2::uuid
+		`, sessions, id)
+	})
 }
 
 // SessionGroupUpdate is one edit of a group: a new name, sessions to add and sessions to remove,
-// each optional. Adding a session the group holds, or removing one it does not, changes nothing.
+// each optional. Adding a session the group holds, or removing one it does not, changes nothing,
+// and neither does naming the group's own name.
 type SessionGroupUpdate struct {
 	Name   *string
 	Add    []string
@@ -280,7 +311,11 @@ type SessionGroupUpdate struct {
 
 // UpdateSessionGroup applies update to the group id in tx, after the same refusals as
 // CreateSessionGroup for what it adds and names, and ErrSessionGroupEmpty for an edit that
-// removes every session.
+// removes every session. An edit that changes neither the name nor the members writes nothing and
+// answers the group as it stands, whoever sends it: the change trigger of delivery_session_groups
+// (migration 0100) logs no update that moves updated_at alone, so writing one would leave a live
+// view answering the old updated_at while the read answers the new. That decision is a read under
+// the session groups' lock, so such an edit never takes the change log's lock.
 func UpdateSessionGroup(ctx context.Context, tx pgx.Tx, id string, update SessionGroupUpdate, actor model.Actor) (SessionGroup, error) {
 	if err := lockSessionGroups(ctx, tx); err != nil {
 		return SessionGroup{}, err
@@ -313,6 +348,9 @@ func UpdateSessionGroup(ctx context.Context, tx pgx.Tx, id string, update Sessio
 	if len(members) == 0 {
 		return SessionGroup{}, ErrSessionGroupEmpty
 	}
+	if !setsName && len(removed) == 0 && len(added) == 0 {
+		return current, nil
+	}
 	if err := refuseHeldSessions(ctx, tx, &id, added); err != nil {
 		return SessionGroup{}, err
 	}
@@ -328,39 +366,39 @@ func UpdateSessionGroup(ctx context.Context, tx pgx.Tx, id string, update Sessio
 	if err != nil {
 		return SessionGroup{}, fmt.Errorf("encode session group editor: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
-		update delivery_session_groups set name = $2, updated_by = $3, updated_at = now() where id = $1::uuid
-	`, id, name, actorJSON); err != nil {
-		return SessionGroup{}, err
-	}
-	if len(removed) > 0 {
-		if _, err := tx.Exec(ctx, `
-			delete from delivery_session_group_members where group_id = $1::uuid and session_id = any($2)
-		`, id, removed); err != nil {
-			return SessionGroup{}, err
+	return writeSessionGroup(ctx, tx, id, func(batch *pgx.Batch) {
+		batch.Queue(`
+			update delivery_session_groups set name = $2, updated_by = $3, updated_at = now() where id = $1::uuid
+		`, id, name, actorJSON)
+		if len(removed) > 0 {
+			batch.Queue(`
+				delete from delivery_session_group_members where group_id = $1::uuid and session_id = any($2)
+			`, id, removed)
 		}
-	}
-	if len(added) > 0 {
-		if _, err := tx.Exec(ctx, `
-			insert into delivery_session_group_members (session_id, group_id)
-			select unnest($2::text[]), $1::uuid
-		`, id, added); err != nil {
-			return SessionGroup{}, err
+		if len(added) > 0 {
+			batch.Queue(`
+				insert into delivery_session_group_members (session_id, group_id)
+				select unnest($2::text[]), $1::uuid
+			`, id, added)
 		}
-	}
-	return getSessionGroup(ctx, tx, id)
+	})
 }
 
 // DeleteSessionGroup deletes the group id and its memberships in tx, so its sessions show as
-// themselves again; ErrSessionGroupNotFound when no group has that id.
+// themselves again; ErrSessionGroupNotFound when no group has that id. Its delete is sent with the
+// change log's lock before it in one round trip, as writeSessionGroup sends a write's statements.
 func DeleteSessionGroup(ctx context.Context, tx pgx.Tx, id string) error {
 	if err := lockSessionGroups(ctx, tx); err != nil {
 		return err
 	}
-	var deleted string
-	err := tx.QueryRow(ctx, `delete from delivery_session_groups where id = $1::uuid returning id::text`, id).Scan(&deleted)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrSessionGroupNotFound
-	}
-	return err
+	batch := &pgx.Batch{}
+	queueLockChanges(batch)
+	batch.Queue(`delete from delivery_session_groups where id = $1::uuid returning id::text`, id).QueryRow(func(row pgx.Row) error {
+		err := row.Scan(new(string))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrSessionGroupNotFound
+		}
+		return err
+	})
+	return tx.SendBatch(ctx, batch).Close()
 }

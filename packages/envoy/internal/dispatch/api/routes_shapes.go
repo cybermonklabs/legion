@@ -16,8 +16,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 )
 
 // routeAnswer is one answer a route can give: a status and a zero value of the Go type its body
@@ -67,7 +69,9 @@ type routeShape struct {
 	// object rather than nesting it: withAdvice and withRawAdvice in write_advice.go,
 	// withSuggestions in suggestions.go); nil for an answer that carries none.
 	Advice any
-	// Refusals are this route's refusal bodies richer than errorBody, each with its status.
+	// Refusals are this route's refusal answers whose body is richer than the errorBody every
+	// route can give, each with its status. A refusal with the plain body is in none, whatever its
+	// status: the default answer covers it, the 405 of a reading's change included.
 	Refusals []routeAnswer
 	// Opaque is why this route's answer carries no schema, for a route that relays or pre-renders
 	// its bytes rather than modelling them; empty for every other route.
@@ -83,13 +87,23 @@ type routeShape struct {
 // --- the query-parameter structs -------------------------------------------------------------
 //
 // One struct per route, or per set of routes reading the same keys, each field carrying the key
-// it is read from. They are declarations: the handlers keep their own reads. Two keys of the API
-// are named by no struct here. `session` is read by actingPerson (server.go) on every route that
-// resolves a person, so it belongs to the whole API rather than to any one operation and the
-// emitter adds it everywhere; the delivery facet of the same name is left out with it. `cursor`
-// on GET /api/v1/issues is read only to refuse it (400 INVALID_QUERY, issue_page.go), and naming
-// it would offer a client a parameter that cannot work. No struct here is ever a request body,
-// and the emitter reads only each field's `query` and `enum` tags and the Go type it carries.
+// it is read from. The handlers keep their own reads of the values; the eval routes read their
+// struct's tags alone, the keys it declares (queryKeysOf, evals.go), to refuse any other key. Two
+// keys of the API are named by no struct here. `session` is read by actingPerson (server.go) on
+// every route that resolves a person, so it belongs to the whole API rather than to any one
+// operation and the emitter adds it everywhere; the delivery facet of the same name is left out
+// with it. `cursor` on GET /api/v1/issues is read only to refuse it (400 INVALID_QUERY,
+// issue_page.go), and naming it would offer a client a parameter that cannot work. No struct here
+// is ever a request body, and the emitter reads only each field's `query` and `enum` tags and the
+// Go type it carries.
+
+// evalRefusals are the eval writes' refusals that carry the registry's own body (evals.Error,
+// writeEvalError): 400, 404 PROJECT_NOT_FOUND and 409 EVALS_DOCUMENT_NOT_A_DOCUMENT.
+var evalRefusals = []routeAnswer{
+	{Status: http.StatusBadRequest, Body: evals.Error{}},
+	{Status: http.StatusNotFound, Body: evals.Error{}},
+	{Status: http.StatusConflict, Body: evals.Error{}},
+}
 
 // projectArtifactsQuery is GET /api/v1/projects/{key}/artifacts's query.
 type projectArtifactsQuery struct {
@@ -156,6 +170,50 @@ type deliveryWindowQuery struct {
 	Deployed []string `query:"deployed"`
 }
 
+// projectTimelineQuery is GET /api/v1/projects/{key}/timeline's query: the delivery timeline's
+// window, search and repeatable facets (deliveryWindowQuery's keys), and the page. The `session`
+// facet is read with the others and named here by no field, as deliveryWindowQuery names none.
+type projectTimelineQuery struct {
+	// From is the window's start, RFC3339; absent it is seven days before To.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive; absent it is now.
+	To string `query:"to"`
+	// Q keeps the merges whose pull request's title or id holds it; like every facet, it keeps
+	// every run.
+	Q string `query:"q"`
+	// Repo selects pull requests of these repositories.
+	Repo []string `query:"repo"`
+	// ParentAgent selects pull requests whose first session belongs to these parents;
+	// __no_session__ selects those whose commits name no session.
+	ParentAgent []string `query:"parent_agent"`
+	// Issue selects pull requests of these issues; __no_issue__ selects those naming none.
+	Issue []string `query:"issue"`
+	// Priority selects P0-P3; __no_priority__ selects an issue with none.
+	Priority []string `query:"priority"`
+	// Component selects these components, a parent including its children;
+	// __no_component__ selects an issue with none.
+	Component []string `query:"component"`
+	// Author selects these pull-request authors.
+	Author []string `query:"author"`
+	// Rework selects by whether the work was rework.
+	Rework []string `query:"rework"`
+	// Deployed selects by deployed_status: deployed, waiting or not_tracked.
+	Deployed []string `query:"deployed"`
+	// Limit is the page size, 1 to 500, default 200.
+	Limit int `query:"limit"`
+	// Offset is where the page starts, from the newest row.
+	Offset int `query:"offset"`
+}
+
+// projectDeployRunQuery is GET /api/v1/projects/{key}/deploy-runs/{id}'s query: the repository the
+// run is in, which the run id alone does not name, since a project's deploy sources read several.
+type projectDeployRunQuery struct {
+	// Repo is the owner/name of the repository the run is in, as the project timeline's deploy and
+	// failed_run rows name it: the repository of a github_workflow deploy source of a project with
+	// delivery on. It is required.
+	Repo string `query:"repo"`
+}
+
 // issueResultsQuery is GET /api/v1/issues/{key}/results's query.
 type issueResultsQuery struct {
 	// At replaces what every check of the issue is compared with by this one commit, 40
@@ -169,6 +227,169 @@ type deliveryPipelineQuery struct {
 	// At fixes the day the seven-day Pipeline window ends on, RFC3339; absent it is now.
 	// A malformed value is 400 INVALID_QUERY.
 	At string `query:"at"`
+}
+
+// evalListQuery is GET /api/v1/projects/{key}/evals's query: the window and the compare range,
+// which kind of eval, which repositories' day rows, the delivery timeline's search and repeatable
+// facets, which narrow the evals that count pull requests (dispatch://INFRA-2918, R21), and the
+// page (parseEvalListQuery). The `session` facet is read with the others and named here by no
+// field, as deliveryWindowQuery names none.
+type evalListQuery struct {
+	// From is the window's start, RFC3339; absent it is seven days before To. The window is the
+	// UTC days [from, to) covers.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive; absent it is now. The window spans at most 84
+	// days.
+	To string `query:"to"`
+	// CompareFrom is the compare range's start, RFC3339, named with CompareTo or not at all.
+	CompareFrom string `query:"compare_from"`
+	// CompareTo is the compare range's end, RFC3339, exclusive; the range spans at most 84 days
+	// and need not be as long as the window.
+	CompareTo string `query:"compare_to"`
+	// Kind keeps the evals of one kind.
+	Kind string `query:"kind" enum:"delivery,legion,ci,experiment"`
+	// Repo, repeatable, folds these repositories' day rows in place of the project's own; with a
+	// facet or the search it narrows the pull requests counted to these repositories too.
+	Repo []string `query:"repo"`
+	// Q, as the delivery timeline reads it, keeps the pull requests whose title or id holds it:
+	// the evals that count pull requests are then computed when read, from the pull requests it
+	// keeps, and name it in `narrowed`.
+	Q string `query:"q"`
+	// ParentAgent narrows the pull-request evals to pull requests whose first session belongs to
+	// these parents; __no_session__ to those whose commits name no session.
+	ParentAgent []string `query:"parent_agent"`
+	// Issue narrows the pull-request evals to pull requests of these issues.
+	Issue []string `query:"issue"`
+	// Priority narrows the pull-request evals to issues of P0-P3; __no_priority__ to an issue with
+	// none, __no_issue__ to a pull request naming none.
+	Priority []string `query:"priority"`
+	// Component narrows the pull-request evals to these components, a parent including its
+	// children; __no_component__ to an issue with none, __no_issue__ to a pull request naming none.
+	Component []string `query:"component"`
+	// Author narrows the pull-request evals to these pull-request authors.
+	Author []string `query:"author"`
+	// Rework narrows the pull-request evals by whether the work was rework.
+	Rework []string `query:"rework"`
+	// Deployed narrows the pull-request evals by deployed_status: deployed, waiting or
+	// not_tracked.
+	Deployed []string `query:"deployed"`
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
+}
+
+// evalsQuery is GET /api/v1/evals's query: the projects read, and every key the project read
+// takes, the `session` facet among them.
+type evalsQuery struct {
+	// Project, repeatable, names the projects read, in the order named; absent, every project is
+	// read, by key. A key no project holds is 404 PROJECT_NOT_FOUND.
+	Project []string `query:"project"`
+	// From is the window's start, RFC3339; absent it is seven days before To.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive; absent it is now.
+	To string `query:"to"`
+	// CompareFrom is the compare range's start, RFC3339, named with CompareTo or not at all.
+	CompareFrom string `query:"compare_from"`
+	// CompareTo is the compare range's end, RFC3339, exclusive.
+	CompareTo string `query:"compare_to"`
+	// Kind keeps the evals of one kind.
+	Kind string `query:"kind" enum:"delivery,legion,ci,experiment"`
+	// Repo, repeatable, folds these repositories' day rows in place of each project's own; with a
+	// facet or the search it narrows the pull requests counted to these repositories too.
+	Repo []string `query:"repo"`
+	// Q keeps the pull requests whose title or id holds it, as the project read takes it.
+	Q string `query:"q"`
+	// ParentAgent narrows the pull-request evals by parent agent, as the project read does.
+	ParentAgent []string `query:"parent_agent"`
+	// Issue narrows the pull-request evals by issue, as the project read does.
+	Issue []string `query:"issue"`
+	// Priority narrows the pull-request evals by priority, as the project read does.
+	Priority []string `query:"priority"`
+	// Component narrows the pull-request evals by component, as the project read does.
+	Component []string `query:"component"`
+	// Author narrows the pull-request evals by author, as the project read does.
+	Author []string `query:"author"`
+	// Rework narrows the pull-request evals by rework, as the project read does.
+	Rework []string `query:"rework"`
+	// Deployed narrows the pull-request evals by deployed_status, as the project read does.
+	Deployed []string `query:"deployed"`
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts, counted across the projects.
+	Offset int `query:"offset"`
+}
+
+// evalDetailQuery is GET /api/v1/projects/{key}/evals/{slug}'s query: the list read's window,
+// compare range and repositories, which the newest version's values are folded over, and the
+// page of versions.
+type evalDetailQuery struct {
+	// From is the window's start, RFC3339; absent it is seven days before To.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive; absent it is now.
+	To string `query:"to"`
+	// CompareFrom is the compare range's start, RFC3339, named with CompareTo or not at all.
+	CompareFrom string `query:"compare_from"`
+	// CompareTo is the compare range's end, RFC3339, exclusive.
+	CompareTo string `query:"compare_to"`
+	// Repo, repeatable, folds these repositories' day rows in place of the project's own.
+	Repo []string `query:"repo"`
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
+}
+
+// evalItemsQuery is GET /api/v1/projects/{key}/evals/{slug}/items's query: the window and the
+// compare range, the filters, the order of pr-ci's jobs and the page (parseEvalItemsQuery).
+type evalItemsQuery struct {
+	// From is the window's start, RFC3339; absent it is seven days before To.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive; absent it is now.
+	To string `query:"to"`
+	// CompareFrom is the compare range's start, RFC3339, named with CompareTo or not at all.
+	CompareFrom string `query:"compare_from"`
+	// CompareTo is the compare range's end, RFC3339, exclusive.
+	CompareTo string `query:"compare_to"`
+	// Series narrows the rows to one series: a reading's or a day row's series, a Legion
+	// series' cut (`:roots`, `:children`) or `filed:<class>`, or one job's `job:<name>`.
+	Series string `query:"series"`
+	// RowKind narrows the rows to one row kind.
+	RowKind string `query:"row_kind"`
+	// Row narrows the rows to one row key.
+	Row string `query:"row"`
+	// Repo, repeatable, narrows the rows to these repositories'.
+	Repo []string `query:"repo"`
+	// Sort answers pr-ci's job rows alone: median, the jobs with their series' min_n timed
+	// results, slowest first; failures, the jobs that failed in the 24 hours before the range's
+	// end, most failures first.
+	Sort string `query:"sort" enum:"median,failures"`
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
+}
+
+// productionEventsQuery is GET /api/v1/projects/{key}/production-events's query: the window, one
+// kind, one state and the page (parseProductionEventsQuery).
+type productionEventsQuery struct {
+	// From is the window's start, RFC3339; absent it is seven days before To. A deploy is in the
+	// window by its finished_at, a failure by its detected_at.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive; absent it is now. The window spans at most 84
+	// days.
+	To string `query:"to"`
+	// Kind keeps the rows of one kind.
+	Kind string `query:"kind" enum:"deploy,failure"`
+	// State keeps the rows of one state; a deploy is always counted.
+	State string `query:"state" enum:"counted,rejected"`
+	// DeployID keeps the project's failures that blame this deploy, a row's uuid: the
+	// drill-down's read of one deploy. An id of no row answers an empty page.
+	DeployID string `query:"deploy_id"`
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
 }
 
 // issueListQuery is GET /api/v1/issues's query: the filters and the offset page.
@@ -616,6 +837,53 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/projects/{key}/related": {
 		Status: http.StatusOK, Response: model.Suggestions{}, Request: relatedRequest{},
 	},
+	"GET /api/v1/projects/{key}/evals": {
+		Status: http.StatusOK, Response: evalListResponse{}, Params: evalListQuery{},
+	},
+	"POST /api/v1/projects/{key}/evals": {
+		Status: http.StatusCreated, Response: evalRegisterResponse{}, Request: evalRegisterInput{},
+		// A body that changes no field of the definition or of a series answers the versions that
+		// stand, 200.
+		Also: []routeAnswer{{Status: http.StatusOK, Body: evalRegisterResponse{}}},
+		// The registry's refusals (writeEvalError): a field the tables would refuse, or a version
+		// past evals.MaxVersionBytes, 400; a project no row holds, 404 PROJECT_NOT_FOUND; a
+		// project whose evals-md slug names a file, 409 EVALS_DOCUMENT_NOT_A_DOCUMENT.
+		Refusals: evalRefusals,
+	},
+	"GET /api/v1/projects/{key}/evals/{slug}": {
+		Status: http.StatusOK, Response: evalDetailResponse{}, Params: evalDetailQuery{},
+	},
+	"GET /api/v1/projects/{key}/evals/{slug}/items": {
+		Status: http.StatusOK, Response: evalItemsResponse{}, Params: evalItemsQuery{},
+	},
+	"POST /api/v1/projects/{key}/evals/{slug}/readings": {
+		Status: http.StatusCreated, Response: evalReadingsResponse{}, Request: evalReadingsInput{},
+		// A refused batch names every refused row by its index beside the code of the first; a
+		// slug that is no slug, an empty batch and a first reading whose writer would pass
+		// evals.MaxVersionBytes are 400 too, a project no row holds 404 and a project whose
+		// evals-md slug names a file 409, each the registry's own body (writeEvalError); every
+		// other refusal is errorBody's.
+		Refusals: evalRefusals,
+	},
+	// The two rows that refuse every change of a reading answer no success: 204 is the shape a
+	// success with no body would take, and the one answer either gives is the 405, with the plain
+	// error body the default answer covers.
+	"PUT /api/v1/projects/{key}/evals/{slug}/readings/{id}":    {Status: http.StatusNoContent},
+	"DELETE /api/v1/projects/{key}/evals/{slug}/readings/{id}": {Status: http.StatusNoContent},
+	"GET /api/v1/evals": {
+		Status: http.StatusOK, Response: evalListResponse{}, Params: evalsQuery{},
+	},
+	"GET /api/v1/projects/{key}/production-events": {
+		Status: http.StatusOK, Response: productionEventList{}, Params: productionEventsQuery{},
+	},
+	// A repeat of a source_ref the project holds answers that row, 200, and writes nothing.
+	"POST /api/v1/projects/{key}/production-events": {
+		Status: http.StatusCreated, Response: prodevents.Event{}, Request: productionEventInput{},
+		Also: []routeAnswer{{Status: http.StatusOK, Body: prodevents.Event{}}},
+	},
+	"PUT /api/v1/projects/{key}/production-events/{id}/state": {
+		Status: http.StatusOK, Response: prodevents.Event{}, Request: productionEventStateInput{},
+	},
 	"GET /api/v1/settings/repo-projects":                 {Status: http.StatusOK, Response: []model.RepoProject{}},
 	"GET /api/v1/github/app-installation/{owner}/{repo}": {Status: http.StatusOK, Response: appInstallationResponse{}},
 	"GET /api/v1/settings/architecture-sources":          {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
@@ -654,8 +922,27 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: model.Project{}, Request: actorInput{}, OptionalRequest: true,
 	},
 	"DELETE /api/v1/projects/{key}/proven-sessions": {Status: http.StatusOK, Response: model.Project{}},
+	// A move a delivery-on project's source refuses answers the settings save's own refusal body
+	// (delivery.SettingsError, defaultRepositoryMove), naming the project that reads the repository.
 	"PUT /api/v1/projects/{key}/default-repository": {
 		Status: http.StatusOK, Response: projectDefaultRepository{}, Request: projectDefaultRepositoryInput{},
+		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: delivery.SettingsError{}}},
+	},
+	"GET /api/v1/projects/{key}/settings/delivery": {
+		Status: http.StatusOK, Response: projectDeliverySettings{},
+		// A project with no delivery settings answers 200 and the JSON literal `null`
+		// (project_settings_delivery.go).
+		Nullable: true,
+	},
+	// A refused save answers its own body (delivery.SettingsError: the code, the reason, and the
+	// field, the source's index and the other project where it names them), 400 for its input and
+	// 409 for every other refusal (writeSettingsRefusal).
+	"PUT /api/v1/projects/{key}/settings/delivery": {
+		Status: http.StatusOK, Response: projectDeliverySettings{}, Request: projectDeliverySettingsInput{},
+		Refusals: []routeAnswer{
+			{Status: http.StatusBadRequest, Body: delivery.SettingsError{}},
+			{Status: http.StatusConflict, Body: delivery.SettingsError{}},
+		},
 	},
 	"GET /api/v1/settings/delivery": {
 		Status: http.StatusOK, Response: delivery.DeliverySettings{},
@@ -682,6 +969,12 @@ var routeShapes = map[string]routeShape{
 	"DELETE /api/v1/projects/{key}/legion/daemon": {Status: http.StatusNoContent},
 	"GET /api/v1/projects/{key}/legion/board": {
 		Status: http.StatusOK, Response: legionBoardResponse{},
+	},
+	"GET /api/v1/projects/{key}/timeline": {
+		Status: http.StatusOK, Response: projectTimelineResponse{}, Params: projectTimelineQuery{},
+	},
+	"GET /api/v1/projects/{key}/deploy-runs/{id}": {
+		Status: http.StatusOK, Response: projectDeployRunView{}, Params: projectDeployRunQuery{},
 	},
 	"GET /api/v1/delivery/timeline": {
 		Status: http.StatusOK, Response: deliveryTimelineWithMeasures{}, Params: deliveryWindowQuery{},

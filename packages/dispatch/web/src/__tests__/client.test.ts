@@ -964,14 +964,12 @@ test(
       ).fetch
     );
     const serverError = createApiClient(stubFetch(() => new Response(null, { status: 503 })).fetch);
-    const deliveryUnset = createApiClient(
-      stubFetch(() =>
-        Response.json(
-          { error: "delivery is not configured", code: "DELIVERY_NOT_CONFIGURED" },
-          { status: 404 }
-        )
-      ).fetch
-    );
+    // The merge timeline's live view refuses with 404 DELIVERY_NOT_CONFIGURED while no project
+    // has delivery on, and the live socket raises that refusal as this error (`failDelivery`).
+    const deliveryUnsetError = new ApiError(404, {
+      code: "DELIVERY_NOT_CONFIGURED",
+      error: "delivery is not configured",
+    });
     const referencesTimeout = createApiClient(
       stubFetch(() =>
         Response.json(
@@ -989,15 +987,12 @@ test(
       featureOffError,
       documentSchemaError,
       serverErrorResult,
-      deliveryUnsetError,
       referencesTimeoutError,
     ] = await Promise.all([
       unauthorized.whoAmI().catch((error: unknown) => error),
       featureOff.getCredentialGrants().catch((error: unknown) => error),
       documentSchema.getArtifactText("artifact-1").catch((error: unknown) => error),
       serverError.whoAmI().catch((error: unknown) => error),
-      // The run route answers 404 DELIVERY_NOT_CONFIGURED while no settings row exists.
-      deliveryUnset.getDeliveryRun(7).catch((error: unknown) => error),
       referencesTimeout.getIssueReferences("CORE-1").catch((error: unknown) => error),
     ]);
 
@@ -1189,15 +1184,22 @@ test("API client reaches every remaining documented endpoint", async () => {
   await api.whoAmI();
   await api.logout();
   await api.githubRest("repos/acme/dispatch");
-  await api.getDeliverySettings();
-  await api.putDeliverySettings(
+  await api.getProjectDeliverySettings("CORE");
+  await api.putProjectDeliverySettings(
+    "CORE",
     {
-      deploy_repo: "acme/widgets",
-      deploy_workflow_path: ".github/workflows/deploy.yml",
-      excluded_repos: [],
+      delivery: true,
+      sources: [
+        {
+          kind: "github_workflow",
+          repo: null,
+          deploy_workflow_path: ".github/workflows/deploy.yml",
+          production_job_names: ["widgets-release"],
+          pr_checks_workflow_path: ".github/workflows/pr-checks.yml",
+        },
+      ],
       population_authors: ["octocat"],
-      pr_checks_workflow_path: ".github/workflows/pr-checks.yml",
-      production_job_names: ["widgets-release"],
+      targets: { "deploy-frequency": 20, "failed-deploy-recovery": "off" },
     },
     keyed("put-4")
   );
@@ -1242,8 +1244,8 @@ test("API client reaches every remaining documented endpoint", async () => {
     ["GET", "/auth/whoami"],
     ["POST", "/auth/logout"],
     ["GET", "/api/github/rest/repos/acme/dispatch"],
-    ["GET", "/api/v1/settings/delivery"],
-    ["PUT", "/api/v1/settings/delivery"],
+    ["GET", "/api/v1/projects/CORE/settings/delivery"],
+    ["PUT", "/api/v1/projects/CORE/settings/delivery"],
   ]);
 });
 

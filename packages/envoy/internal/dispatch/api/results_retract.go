@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents/signals"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -21,7 +23,9 @@ import (
 //
 // It is taken on a closed issue, and for a check of any `when`, which is what the record route
 // refuses (ISSUE_CLOSED in results.go). A closed issue's results are the production record,
-// and a false one there is exactly the one that must be correctable.
+// and a false one there is exactly the one that must be correctable. A retracted fail of an
+// after_merge check takes the failure it made out of the record's numbers once it commits: that
+// row is rejected with the retraction's reason and actor (signals.RejectRetractedCheck).
 
 // checkResultRetractionInput is the body POST /api/v1/results/{id}/retract takes.
 type checkResultRetractionInput struct {
@@ -32,13 +36,15 @@ type checkResultRetractionInput struct {
 // retractedResult is what the write reads about the result it is asked to retract: the issue
 // the result was recorded on, whose claim is one of the three credentials that may retract it,
 // the check's issue, which the event is appended on and whose owner lock the route takes before
-// it reads anything else, and the session that recorded it.
+// it reads anything else, the session that recorded it, and its verdict, a fail of which may have
+// made a check_fail row.
 type retractedResult struct {
 	IssueKey      string
 	CheckIssueKey string
 	CheckBlockID  string
 	CommitSHA     string
 	Session       string
+	Verdict       string
 }
 
 // POST /api/v1/results/{id}/retract  (the recording session, the claimant, or a person)
@@ -151,6 +157,17 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.publish(r.Context(), event)
+	// dispatch://INFRA-978, R7: a retracted fail of an after_merge check rejects the check_fail row
+	// it made, with the retraction's reason and actor, in a transaction of its own once the
+	// retraction has committed. A failure of that write is logged and fails nothing: the production
+	// signals' loop reads the result.retracted event after it and rejects the row then. A retracted
+	// pass made no row.
+	if result.Verdict == "fail" {
+		if _, err := signals.RejectRetractedCheck(r.Context(), s.deps.Store.Pool, resultID, reason, actor, retraction.CreatedAt); err != nil {
+			slog.Warn("dispatch: reject the check_fail of a retracted result; the production signals' loop rejects it later",
+				"result", resultID, "error", err)
+		}
+	}
 	WriteJSON(w, http.StatusCreated, retraction)
 }
 
@@ -217,10 +234,10 @@ func claimingSession(ctx context.Context, q queryer, key string) (string, error)
 func readRetractedResult(ctx context.Context, tx pgx.Tx, id string) (retractedResult, error) {
 	var result retractedResult
 	err := tx.QueryRow(ctx, `
-		select issue_key, check_issue_key, check_block_id, commit_sha, session
+		select issue_key, check_issue_key, check_block_id, commit_sha, session, verdict
 		from check_results where id = $1
 	`, id).Scan(&result.IssueKey, &result.CheckIssueKey, &result.CheckBlockID,
-		&result.CommitSHA, &result.Session)
+		&result.CommitSHA, &result.Session, &result.Verdict)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return retractedResult{}, errorf(http.StatusNotFound, "RESULT_NOT_FOUND", "result not found")
 	}

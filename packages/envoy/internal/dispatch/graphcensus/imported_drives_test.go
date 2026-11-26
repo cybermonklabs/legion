@@ -252,11 +252,12 @@ func (r *writersRig) settledAttempts(t *testing.T, comment, state string) {
 }
 
 // importedDrives are the drives of every site the register of the store's writers lists in api,
-// docs and asks, each the real site reached as its own lock-step driver reaches it: the API's
-// through its HTTP routes, the settle of a delivery through the send the stand-in listener
-// answers, and the settlement and the block-index tick through the document service. They run in
-// this order over one database, each needing what the ones before it wrote: an issue with its
-// spec, an upload and an edit of a document, a comment on the issue and one anchored to the
+// docs, evals and asks, each the real site reached as its own lock-step driver reaches it: the
+// API's and the eval registry's through the HTTP routes, the settle of a delivery through the send
+// the stand-in listener answers, and the settlement and the block-index tick through the document
+// service. They run in this order over one database, each needing what the ones before it wrote:
+// an issue with its spec, an upload and an edit of a document, a register write that adds a
+// section to the project's evals-md, a comment on the issue and one anchored to the
 // document mentioning a session whose send is held, that send's settle, a reply to a mention whose
 // send was refused, a targeted message's delivery, an ask a session opens, a follow of it, the
 // spec's approval request renewed on a retry and handed back, a settlement opening an ask a
@@ -286,7 +287,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Counts: merged(newBlockCounted, objectNodeCounted(graphstore.KindIssue), objectNodeCounted(graphstore.KindArtifact)),
 	}, {
 		Name: "api/artifacts.go#storeArtifact", Database: r.database,
-		Sites: []string{"api/artifacts.go#storeArtifact", "api/artifacts.go#queueNewArtifact", "refs/blocks.go#Queue"},
+		Sites: []string{"api/artifacts.go#storeArtifact", "docs/new_document.go#QueueNewArtifact", "refs/blocks.go#Queue"},
 		Drive: func(t *testing.T) {
 			notes := decoded[struct {
 				Artifact model.Artifact `json:"artifact"`
@@ -303,6 +304,18 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			r.request(t, http.MethodPost, "/api/v1/artifacts/"+r.notes+"/edits", map[string]any{
 				"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": "A paragraph the edit adds."}},
 			}, "alice", http.StatusOK)
+		},
+		Counts: newBlockCounted,
+	}, {
+		// A register write of a new eval whose method the registry adds to the project's evals-md,
+		// which the project's create seeded: a section, its heading and its method block, written
+		// as an edit of the document is, and indexed under the version's artifact.version event.
+		Name: "evals/document.go#queueDocumentEvent", Database: r.database,
+		Sites: []string{"evals/document.go#queueDocumentEvent", "refs/blocks.go#Queue"},
+		Drive: func(t *testing.T) {
+			r.request(t, http.MethodPost, "/api/v1/projects/SIZE/evals", map[string]any{
+				"slug": "sizing-register", "doc_text": "What the sizing's register write counts.",
+			}, "alice", http.StatusCreated)
 		},
 		Counts: newBlockCounted,
 	}, {

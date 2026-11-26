@@ -265,6 +265,45 @@ var statusLabelsOrParentWriters = []struct{ path, reason string }{
 	{judgedIssueWriter, "the PATCH's write core, whose every write R26 judges: it calls " + issueWritePlanCheck + ", which opens with " + legionStatusGuard + ", before its first write"},
 	{"internal/dispatch/api/issue_create.go", "the creation of an issue, which R26 never refuses: it writes the new issue's parent and labels, and no status"},
 	{"cmd/dispatch-seed/", "the seeding tool, which fills an empty database before a server runs on it, and which no request reaches"},
+	{"internal/dispatch/delivery/deliverytest/", "the delivery history fixture, which tests and the eval fixture loader (evals/evalfixture) write into a database for a check to count over, " +
+		serverImportsNone},
+	{"internal/dispatch/evals/evalfixture/", "the eval checks' fixture loader, which tests, its command (cmd) and the bench loader (evals/evalbench) run against a database for a check to read, " +
+		serverImportsNone},
+	{"internal/dispatch/legion/legiontest/", "the Legion history fixture, which tests and the two eval loaders (evals/evalfixture, evals/evalbench) write into a database for a check to count over, " +
+		serverImportsNone},
+}
+
+// serverImportsNone ends the reason of each writer of statusLabelsOrParentWriters that no request
+// reaches because the server does not import it, which TestNoServerPackageImportsTheFixtureWriters
+// holds to the server's own packages.
+const serverImportsNone = "and which no request reaches: no package of the server imports it"
+
+// TestNoServerPackageImportsTheFixtureWriters holds the claim three writers of
+// statusLabelsOrParentWriters are exempt on, that no package of the server imports them: no
+// function of the server's call graph (copyLockGraph, every package of the module that `go list
+// -deps ./cmd/dispatch` lists, read from its source) is declared under any of their directories.
+// A server package that imported one would let a request reach writes R26 never judges.
+func TestNoServerPackageImportsTheFixtureWriters(t *testing.T) {
+	t.Parallel()
+	graph := copyLockGraph(t)
+	exempt := 0
+	for _, writer := range statusLabelsOrParentWriters {
+		if !strings.HasSuffix(writer.reason, serverImportsNone) {
+			continue
+		}
+		exempt++
+		dir := filepath.Join(graph.root, filepath.FromSlash(writer.path)) + string(filepath.Separator)
+		for _, fn := range graph.functions {
+			if strings.HasPrefix(fn.source.path, dir) {
+				t.Errorf("the server's call graph holds %s, declared in %s, which statusLabelsOrParentWriters exempts as imported by no package of the server",
+					fn.name, writer.path)
+				break
+			}
+		}
+	}
+	if exempt != 3 {
+		t.Fatalf("statusLabelsOrParentWriters names %d writers as imported by no package of the server, want the three fixtures", exempt)
+	}
 }
 
 // statusLabelsOrParentWriter answers the index in statusLabelsOrParentWriters of the writer that

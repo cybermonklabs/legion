@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -394,20 +395,43 @@ func readStreamMessagesFrom(t *testing.T, js natsgo.JetStreamContext, head uint6
 // deliveryDurables are the two push durables the delivery intakes bind, one subscriber each.
 var deliveryDurables = []string{"delivery-events", "delivery-jobs"}
 
-// seedDeliverySettings writes the one delivery_settings row, the same write
-// PUT /api/v1/settings/delivery makes (delivery.PutSettings). The intakes read it on their first
-// poll and bind nothing until it is there, so a row about the durables seeds it before the
-// processes start rather than driving the route, which would first have the GitHub App prove it
-// can read the repository.
+// seedDeliverySettings saves acme/deploy's rule (saveDeliveryRule). The intakes read the settings
+// as they start and bind nothing until a source repository has a rule, so a row about the durables
+// seeds them before the processes start rather than driving the route, which would first have the
+// GitHub App prove it can read the repository.
 func seedDeliverySettings(t *testing.T, database *store.Store) {
 	t.Helper()
-	if _, err := delivery.PutSettings(context.Background(), database.Pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, database, delivery.DeliverySettings{
 		DeployRepo:           "acme/deploy",
 		DeployWorkflowPath:   ".github/workflows/deploy.yaml",
 		PRChecksWorkflowPath: ".github/workflows/pr.yaml",
 		ProductionJobNames:   []string{"production"},
-	}, model.Actor{Kind: "user", ID: dispatchTestLogin}); err != nil {
+	})
+}
+
+// deliveryProject is the project whose deploy source saveDeliveryRule saves.
+const deliveryProject = "DPLY"
+
+// saveDeliveryRule saves rule as the delivery settings both builds of a roll route by: the one
+// delivery_settings row the release before this one reads, the write PUT /api/v1/settings/delivery
+// makes (delivery.PutSettings), and deliveryProject's delivery settings, which this release reads
+// (dispatch://INFRA-978): one deploy source that names rule's repository. The project has no
+// default repository, so no reader of the projects' default repositories (the CI reconcile among
+// them) reads rule's repository for it.
+func saveDeliveryRule(t *testing.T, database *store.Store, rule delivery.DeliverySettings) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := delivery.PutSettings(ctx, database.Pool, rule, model.Actor{Kind: "user", ID: dispatchTestLogin}); err != nil {
 		t.Fatalf("seed the delivery settings: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee) values ($1, 'Deploys', 'alice')
+		on conflict (key) do nothing
+	`, deliveryProject); err != nil {
+		t.Fatalf("seed the project whose source reads %s: %v", rule.DeployRepo, err)
+	}
+	if _, err := deliverytest.SaveRules(ctx, database.Pool, deliveryProject, rule); err != nil {
+		t.Fatalf("seed the delivery settings of %s: %v", deliveryProject, err)
 	}
 }
 

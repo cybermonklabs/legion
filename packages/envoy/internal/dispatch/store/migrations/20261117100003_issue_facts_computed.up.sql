@@ -1,0 +1,67 @@
+-- 20261117100003_issue_facts_computed.up.sql
+--
+-- What the Legion facts consumer's last whole read of each project answered, and which build made
+-- it (dispatch://INFRA-2915, R9). The consumer reads a project whole (legionfacts.ComputeProject)
+-- the first time a build works that project, and after that it computes the issues its feeds name.
+-- This table is the record that the whole read happened, of how many rows it wrote and of the
+-- build that made it.
+--
+-- "This project has never been computed" is not read from "this project holds no issue_facts
+-- row", which a project whose issues carry no Legion phase work can never clear: the computation
+-- of such a project answers no row, so the pass writes none, and the next pass would read the
+-- whole project again, on every pass for as long as the project holds no worked issue. A
+-- whole-project read is the cost this consumer exists to remove, so the mark is written rather
+-- than inferred from an absence.
+--
+-- The mark is not a row of issue_facts_cursor (20261117100000). That table holds one row per
+-- named feed and a position in it: a number the next pass reads on from. A project's whole
+-- computation has no position. It is a fact about a project, keyed by the project, read as a yes
+-- or a no, so a row of it would leave `name` holding two kinds of thing and `position` meaning
+-- nothing for one of them.
+--
+--   project_key     the project, and the row's identity: one mark per project.
+--   computed_at     the moment the pass that read the project whole computed as of. It is
+--                   written in the same transaction as that pass's rows and its cursors, so a
+--                   pass that failed leaves no mark and the next pass reads the project whole
+--                   again.
+--   computed_rows   how many rows that whole read answered. A project whose mark counts rows
+--                   and which now holds none has lost them to something outside this consumer,
+--                   and is read whole again; a project whose mark counts none is the project
+--                   with no worked issue, and is left alone. Both answers settle after one
+--                   whole read, because the read writes the count it answered.
+--   computed_build  the build that made the whole read: the commit the image build stamped into
+--                   the binary, 40 hex characters, and for a build no release stamped, a
+--                   string of that one process (cmd/dispatch's processBuild, which hands it to
+--                   the consumer). It is written in the same transaction as computed_at, as
+--                   that pass's rows and as its cursors, so a pass that failed leaves the
+--                   build of the pass before it. A pass whose build is not the one the column
+--                   holds reads that project whole again (legionfacts.legionProjects). The
+--                   consumer refuses an empty build where its loop starts and writes the build
+--                   the pass ran under (legionfacts.Deps.Build, legionfacts.markComputedWhole),
+--                   so no pass writes null or ''. The pass compares with `is not distinct
+--                   from`, which holds null equal to no build string, so a row that holds null,
+--                   which no pass writes, is read whole by the next pass, as R9 asks of a project
+--                   whose mark names no build the running process is.
+--
+-- The rule that decides which issues carry Legion phase work lives in the build: the role names
+-- and the title shape of legion/session_title.go, which legion.ParseSessionTitle reads, and
+-- legion.PhaseWorkKeys's reading of handoffs. A release that gives an issue phase work by that
+-- rule writes no event at all. No feed names such an issue, and the consumer's mirror read of
+-- the stale rows finds only the losses, because an issue that gains work holds no row to be
+-- read. The whole-project read is the one pass that reaches it. It costs one whole read per
+-- build per project, and two releases are built from two commits, so each release pays that
+-- read once.
+--
+-- One new table: nothing existing is read, locked or rewritten, and the release before this one
+-- neither reads nor writes it, so the two builds roll together (cmd/dispatch/README.md,
+-- "Database migrations"). The census answers 0, and rolling back past it is an image rollback
+-- alone. While a release after this one rolls, the old build and the new one take the consumer's
+-- lease in turn and computed_build holds one build, so each pass reads the projects whole again
+-- under its own build until the older process stops (legionfacts.legionProjects says what that
+-- costs).
+create table issue_facts_computed (
+    project_key text primary key,
+    computed_at timestamptz not null,
+    computed_rows integer not null,
+    computed_build text
+);

@@ -37,6 +37,16 @@ type State struct {
 	// bytes the daemon sent: the board carries them and Dispatch models none of them, so a key
 	// added to legion.yaml is recorded the day a daemon sends it.
 	Settings map[string]json.RawMessage `json:"settings,omitempty"`
+	// ControllerLocator is the daemon's record of the session registered as the project's
+	// controller (packages/contracts/src/legion-api.ts, legionControllerLocator), absent until a
+	// session registers. Dispatch keeps its session alone: the reject of a production event
+	// (dispatch://INFRA-978, R8) proves the project's controller by that session.
+	ControllerLocator *ControllerLocator `json:"controllerLocator,omitempty"`
+}
+
+// ControllerLocator is the members of the daemon's controllerLocator that Dispatch records.
+type ControllerLocator struct {
+	SessionID string `json:"sessionId,omitempty"`
 }
 
 // Admission is the admission block in the members Dispatch records. Every member is optional and
@@ -115,6 +125,9 @@ const (
 	// admission block: they belong to the project's daemon, not to an issue, and the board
 	// carries them (api/legion_board.go).
 	FieldSettings = "settings"
+	// FieldController is the session the daemon names as the project's registered controller,
+	// observed under AdmissionKey: `null` while no session is registered (ControllerSession).
+	FieldController = "controller"
 	// ClaimFieldPrefix starts the field of one role's claim state: `claim.architect`,
 	// `claim.implementer`.
 	ClaimFieldPrefix = "claim."
@@ -150,7 +163,7 @@ func JSONString(raw []byte) string {
 }
 
 // AdmissionKey is the issue key every project-level observation is written under — the admission
-// block and the settings: the empty string, which no issue key can be
+// block, the settings and the controller session: the empty string, which no issue key can be
 // (legion_observations.issue_key is free text with no foreign key, so the rows cost no issue).
 const AdmissionKey = ""
 
@@ -163,9 +176,9 @@ type Observation struct {
 }
 
 // Observations is every observed field of every issue the read carries, by issue key and then by
-// field, so two reads of one state produce one list. The project's own two come first, under
-// AdmissionKey: the admission block and the settings the daemon reports, neither of which belongs
-// to an issue.
+// field, so two reads of one state produce one list. The project's own three come first, under
+// AdmissionKey: the admission block, the settings the daemon reports and the session it names as
+// its registered controller, none of which belongs to an issue.
 //
 // Phase, slot and the wait are observed on every issue, `null` where the issue carries none, so a
 // slot released or a wait answered is a change like any other; a first `null` writes no row
@@ -179,14 +192,19 @@ type Observation struct {
 // (metrics' readStatusMarks).
 func (s State) Observations() []Observation {
 	keys := slices.Sorted(maps.Keys(s.Issues))
-	// The three fields every issue carries and one claim each, and the project's two.
-	observations := make([]Observation, 0, len(keys)*4+2)
+	// The three fields every issue carries and one claim each, and the project's three.
+	observations := make([]Observation, 0, len(keys)*4+3)
+	var controller *string
+	if s.ControllerLocator != nil && s.ControllerLocator.SessionID != "" {
+		controller = &s.ControllerLocator.SessionID
+	}
 	for _, project := range []struct {
 		field string
 		value any
 	}{
 		{FieldAdmission, s.Admission},
 		{FieldSettings, s.Settings},
+		{FieldController, controller},
 	} {
 		observations = append(observations, Observation{
 			IssueKey: AdmissionKey, Field: project.field, Value: encodeValue(project.value),

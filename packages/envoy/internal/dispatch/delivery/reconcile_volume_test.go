@@ -324,9 +324,9 @@ func TestReconcileResumesWorkflowRunsWhereAFailedPassStopped(t *testing.T) {
 	// listing it records is the regular step's.
 	finished := time.Now().UTC()
 	for _, backfill := range []struct{ step, path string }{
-		{backfillStep(DeliveryRunKindDeploy), ".github/workflows/deploy.yml"},
-		{backfillStep(DeliveryRunKindPRChecks), ".github/workflows/pr-checks.yml"},
-		{createdAtBackfillStep, ".github/workflows/deploy.yml"},
+		{backfillStep(DeliveryRunKindDeploy, "acme/widgets"), ".github/workflows/deploy.yml"},
+		{backfillStep(DeliveryRunKindPRChecks, "acme/widgets"), ".github/workflows/pr-checks.yml"},
+		{createdAtBackfillStep("acme/widgets"), ".github/workflows/deploy.yml"},
 	} {
 		if err := StartBackfillProgress(ctx, pool, backfill.step, runsProgressScope("acme/widgets", backfill.path), finished, finished); err != nil {
 			t.Fatalf("finish the %s backfill: %v", backfill.step, err)
@@ -368,9 +368,9 @@ func TestReconcileResumesWorkflowRunsWhereAFailedPassStopped(t *testing.T) {
 	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 
-	settings, err := GetSettings(ctx, pool)
+	settings, err := getTestRule(ctx, pool)
 	if err != nil {
-		t.Fatalf("GetSettings after the failed pass: %v", err)
+		t.Fatalf("getTestRule after the failed pass: %v", err)
 	}
 	if settings.LastError == nil || !strings.Contains(*settings.LastError, "deploy workflow runs") {
 		t.Fatalf("settings.LastError = %v, want the failed deploy-run step named", settings.LastError)
@@ -389,9 +389,9 @@ func TestReconcileResumesWorkflowRunsWhereAFailedPassStopped(t *testing.T) {
 	mu.Unlock()
 	reconcile.runOnce(ctx)
 
-	settings, err = GetSettings(ctx, pool)
+	settings, err = getTestRule(ctx, pool)
 	if err != nil {
-		t.Fatalf("GetSettings after the resumed pass: %v", err)
+		t.Fatalf("getTestRule after the resumed pass: %v", err)
 	}
 	if settings.LastError != nil {
 		t.Fatalf("settings.LastError = %q, want nil once the pass succeeded", *settings.LastError)
@@ -440,8 +440,8 @@ func countRuns(t *testing.T, ctx context.Context, pool *store.Pool) int {
 func TestReconcilePrunesProgressOfAnInstallationThatNoLongerExists(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
-	settings := seedDeliverySettings(t, ctx, pool)
-	scope := searchProgressScope(settings)
+	seedDeliverySettings(t, ctx, pool)
+	scope := searchProgressScope(readTestRules(t, ctx, pool))
 
 	live, removed := int64(1), int64(999)
 	for _, installationID := range []int64{live, removed} {

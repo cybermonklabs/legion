@@ -81,9 +81,9 @@ func TestTheFillContinuesFromItsCursorAfterARestart(t *testing.T) {
 	}
 	textversionstest.RequireOnlyRowsOf(t, database, want)
 	end := readCursorRow(t, database)
-	if end.eventID != want[len(want)-1].ID || end.rules != rulesVersion {
+	if end.eventID != want[len(want)-1].ID || end.rules != RulesVersion {
 		t.Fatalf("the cursor row ends at event %d with rules %d; want event %d and rules %d",
-			end.eventID, end.rules, want[len(want)-1].ID, rulesVersion)
+			end.eventID, end.rules, want[len(want)-1].ID, RulesVersion)
 	}
 }
 
@@ -615,9 +615,9 @@ func TestTheCursorKeepsTheLowestRulesVersionThatWroteUpToIt(t *testing.T) {
 	if err := fill.toHorizon(ctx); err != nil {
 		t.Fatalf("fill the first events: %v", err)
 	}
-	if created := readCursorRow(t, database); created.eventID != first[len(first)-1].ID || created.rules != rulesVersion {
+	if created := readCursorRow(t, database); created.eventID != first[len(first)-1].ID || created.rules != RulesVersion {
 		t.Fatalf("the cursor row the fill created is at event %d with rules %d; want event %d and rules %d",
-			created.eventID, created.rules, first[len(first)-1].ID, rulesVersion)
+			created.eventID, created.rules, first[len(first)-1].ID, RulesVersion)
 	}
 
 	older := testFiller(database, horizon, io.Discard)
@@ -647,9 +647,9 @@ func TestTheCursorKeepsTheLowestRulesVersionThatWroteUpToIt(t *testing.T) {
 		t.Fatalf("fill the new log: %v", err)
 	}
 	textversionstest.RequireOnlyRowsOf(t, database, after)
-	if got := readCursorRow(t, database); got.eventID != after[len(after)-1].ID || got.rules != rulesVersion {
+	if got := readCursorRow(t, database); got.eventID != after[len(after)-1].ID || got.rules != RulesVersion {
 		t.Fatalf("after a reset the cursor row is at event %d with rules %d; want event %d and rules %d",
-			got.eventID, got.rules, after[len(after)-1].ID, rulesVersion)
+			got.eventID, got.rules, after[len(after)-1].ID, RulesVersion)
 	}
 }
 

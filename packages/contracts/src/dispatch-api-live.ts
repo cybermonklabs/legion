@@ -3,8 +3,11 @@ import type {
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
   DeliveryTimelineWithMeasures,
+  EvalItemsResponse,
+  EvalListResponse,
   LegionBoardResponse,
   LegionIssueResponse,
+  ProjectTimelineResponse,
 } from "./dispatch-api.generated";
 import type { DispatchEvent } from "./dispatch-api-events";
 
@@ -25,23 +28,70 @@ export type DeliveryLiveWindow =
  *  carry a `LegionBoardResponse`. A legion_issue view names one issue and nothing else, which is
  *  all `GET /api/v1/issues/{key}/legion` reads, and its snapshot and deltas carry a
  *  `LegionIssueResponse`. It is never refused for a project that names no daemon: its body says
- *  `configured` false. Its one refusal is `NOT_FOUND`, for a key Dispatch holds no issue of. */
+ *  `configured` false. Its one refusal is `NOT_FOUND`, for a key Dispatch holds no issue of. An
+ *  evals view names the project whose evals it shows, its window, and the rest of what
+ *  `GET /api/v1/projects/{key}/evals` would be sent as its `query`: the compare range
+ *  (`compare_from`, `compare_to`), the repositories (`repo`), the kind (`kind`) and the page
+ *  (`limit`, `offset`). Its snapshot and deltas carry an `EvalListResponse`, its evals sent by
+ *  id. An items view names the project and the `slug` of the eval whose rows it shows, its
+ *  window, and the rest of what `GET /api/v1/projects/{key}/evals/{slug}/items` would be sent as
+ *  its `query`: the compare range, the series (`series`), the row kind and row (`row_kind`,
+ *  `row`), the repositories, the order (`sort`) and the page. Its snapshot and deltas carry an
+ *  `EvalItemsResponse`, every field of it sent whole, since its rows carry no id. A
+ *  project-timeline view names the project whose timeline rows it shows, its window, and the rest
+ *  of what `GET /api/v1/projects/{key}/timeline` would be sent as its `query`: the search, the
+ *  facets and `limit`, the rows it holds from the newest, 1 up to the window's total (never
+ *  `offset`). Its snapshot and deltas carry a `ProjectTimelineResponse`, its rows sent by id; a
+ *  page grows it by subscribing the same `sub` again with a higher `limit` and a resume, and is
+ *  sent only the rows it lacks. */
 export type DeliveryLiveView =
   | { readonly kind: "timeline"; readonly window: DeliveryLiveWindow; readonly query: string }
   | { readonly kind: "measures"; readonly window: DeliveryLiveWindow; readonly query: string }
   | { readonly kind: "pipeline"; readonly at?: string }
   | { readonly kind: "legion"; readonly project: string }
-  | { readonly kind: "legion_issue"; readonly issue: string };
+  | { readonly kind: "legion_issue"; readonly issue: string }
+  | {
+      readonly kind: "evals";
+      readonly project: string;
+      readonly window: DeliveryLiveWindow;
+      readonly query: string;
+    }
+  | {
+      readonly kind: "items";
+      readonly project: string;
+      readonly slug: string;
+      readonly window: DeliveryLiveWindow;
+      readonly query: string;
+    }
+  | {
+      readonly kind: "project-timeline";
+      readonly project: string;
+      readonly window: DeliveryLiveWindow;
+      readonly query: string;
+    };
 
-/** The timeline's lists sent item by item, by id. */
-export type DeliveryLiveList = "prs" | "runs" | "session_groups";
-/** The timeline's maps sent entry by entry, by key. */
+/** Each list a view sends item by item, by id, as its body holds it: the timeline's pull
+ *  requests, runs and session groups, an evals view's evals, by eval id, and a project-timeline
+ *  view's rows, by a merge's pull request id or a run's id, and its session groups. */
+interface DeliveryLiveLists {
+  readonly prs: NonNullable<DeliveryTimelineWithMeasures["prs"]>;
+  readonly runs: NonNullable<DeliveryTimelineWithMeasures["runs"]>;
+  readonly session_groups: NonNullable<DeliveryTimelineWithMeasures["session_groups"]>;
+  readonly items:
+    | NonNullable<EvalListResponse["items"]>
+    | NonNullable<ProjectTimelineResponse["items"]>;
+}
+
+/** The lists sent item by item, by id. */
+export type DeliveryLiveList = keyof DeliveryLiveLists;
+/** The maps of a timeline and of a project-timeline view, sent entry by entry, by key. */
 export type DeliveryLiveMap =
   | "issue_titles"
   | "session_titles"
   | "session_pr_counts"
   | "components";
-/** The timeline's two-level count maps, sent count by count: `{facet: {value: count}}`. */
+/** The two-level count maps of a timeline and of a project-timeline view, sent count by count:
+ *  `{facet: {value: count}}`. */
 export type DeliveryLiveCounts = "facet_counts" | "color_counts";
 
 /** What a page holds, as revisions (16 hex digits each) in the frame's own sections. */
@@ -125,7 +175,10 @@ export type DeliveryLiveBody =
   | DeliveryMeasuresResponse
   | DeliveryPipelineResponse
   | LegionBoardResponse
-  | LegionIssueResponse;
+  | LegionIssueResponse
+  | EvalListResponse
+  | EvalItemsResponse
+  | ProjectTimelineResponse;
 
 export interface DeliveryLiveSnapshot {
   readonly type: "snapshot";
@@ -140,7 +193,7 @@ export interface DeliveryLiveSnapshot {
 }
 /** One list's changes: its items that are new or changed, whole, and the ids of those that left. */
 export interface DeliveryLiveItemChanges<L extends DeliveryLiveList> {
-  readonly upsert: NonNullable<DeliveryTimelineWithMeasures[L]>;
+  readonly upsert: DeliveryLiveLists[L];
   readonly remove: readonly string[];
 }
 export interface DeliveryLiveDelta {
@@ -148,7 +201,8 @@ export interface DeliveryLiveDelta {
   readonly sub: string;
   readonly seq: string;
   readonly changed_at: string | null;
-  /** Fields replaced whole. `window` is here whenever it moved, and never alone. */
+  /** Fields replaced whole. A timeline's or measures view's `window` is here whenever it moved,
+   *  and never alone. */
   readonly set: Readonly<Record<string, unknown>>;
   readonly items: { readonly [L in DeliveryLiveList]?: DeliveryLiveItemChanges<L> };
   /** A key's new value, or null when it left. */

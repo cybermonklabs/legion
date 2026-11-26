@@ -57,6 +57,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs/crafted"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
@@ -214,20 +215,6 @@ func authenticateEditor(t *testing.T, editor *docstest.Peer) string {
 		t.Fatalf("authenticate the editor: %v", err)
 	}
 	return scope
-}
-
-// residentRooms lists the documents the process holds a room of now
-// (GET /api/v1/artifacts/_test/rooms).
-func (p *dispatchProcess) residentRooms(t *testing.T) []string {
-	t.Helper()
-	answer := p.call(t, http.MethodGet, "/api/v1/artifacts/_test/rooms", "", http.StatusOK)
-	var listed struct {
-		Rooms []string `json:"rooms"`
-	}
-	if err := json.Unmarshal(answer, &listed); err != nil {
-		t.Fatalf("decode the resident rooms: %v: %s", err, answer)
-	}
-	return listed.Rooms
 }
 
 // roomCounters is what the process did with the document's rooms and owed settlement since it
@@ -3023,15 +3010,13 @@ const mergedPullRequestAuthor = "octocat"
 // GitHub call at all, so no handling could be counted.
 func seedMergedPullRequestSettings(t *testing.T, database *store.Store) {
 	t.Helper()
-	if _, err := delivery.PutSettings(context.Background(), database.Pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, database, delivery.DeliverySettings{
 		DeployRepo:           "acme/deploy",
 		DeployWorkflowPath:   ".github/workflows/deploy.yaml",
 		PRChecksWorkflowPath: ".github/workflows/pr.yaml",
 		ProductionJobNames:   []string{"production"},
 		PopulationAuthors:    []string{mergedPullRequestAuthor},
-	}, model.Actor{Kind: "user", ID: dispatchTestLogin}); err != nil {
-		t.Fatalf("seed the delivery settings: %v", err)
-	}
+	})
 }
 
 // mergedPullRequestFake is the loopback GitHub the pair's intakes read while they handle a
@@ -3447,11 +3432,11 @@ const deliveryEnvelopeFetchWithin = 30 * time.Second
 const deliverySecondFetchWindow = time.Second
 
 // addPopulationAuthor adds author to the delivery settings' population, leaving every other
-// setting as it is: the row is read back and written whole, which is the write the Delivery page's
-// own save makes (delivery.PutSettings). seedDeliverySettings names no population author, and a
-// merge by an author outside the population costs no GitHub call
-// (Intake.handlePullRequestEnvelope), so a row that counts the fetch of a merged pull request puts
-// its author in the population before the processes start.
+// setting as it is: the rule is read back and saved whole (saveDeliveryRule), which is the write
+// the settings tab's own save makes. seedDeliverySettings names no population author, and a merge
+// by an author outside the population costs no GitHub call (Intake.handlePullRequestEnvelope), so
+// a row that counts the fetch of a merged pull request puts its author in the population before
+// the processes start.
 func addPopulationAuthor(t *testing.T, database *store.Store, author string) {
 	t.Helper()
 	settings, err := delivery.GetSettings(context.Background(), database.Pool)
@@ -3459,10 +3444,7 @@ func addPopulationAuthor(t *testing.T, database *store.Store, author string) {
 		t.Fatalf("read the delivery settings to add %s to the population: %v", author, err)
 	}
 	settings.PopulationAuthors = append(settings.PopulationAuthors, author)
-	if _, err := delivery.PutSettings(context.Background(), database.Pool, settings,
-		model.Actor{Kind: "user", ID: dispatchTestLogin}); err != nil {
-		t.Fatalf("add %s to the delivery population: %v", author, err)
-	}
+	saveDeliveryRule(t, database, settings)
 }
 
 // deliveryOutcome is what one process has logged for one delivery durable: its binds of it and
@@ -4087,7 +4069,7 @@ const (
 // waitOutABucketBoundary sees to. reference-excerpts is a woken loop
 // (docs.RunReferenceExcerptReconciliation) that runs a pass at start and again on the
 // pglisten.Hub wake after its first LISTEN: the process that found the lease held retries (every
-// two seconds, its MinGap) until it runs a pass of its own, because the other's pass may have
+// two seconds, its Retry) until it runs a pass of its own, because the other's pass may have
 // read before whatever woke it, so after the release each process runs at least one pass and no
 // count is held to one. The other ten are not observable, and this row says so rather than
 // pretending: refs-forms is a timer loop whose passes, on a database owing nothing, are one read
@@ -8747,11 +8729,36 @@ func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 	}
 	kept := keywordRowsThrough(t, database, left)
 
+	booted := databaseClock(t, database)
 	second := startDispatchProcessWith(t, url, dispatchOptions{SigningKey: multiprocessSigningKey})
 	secondHolder := keywordFillHolder(t, second, patience())
+	// The server writes an event of its own as it boots: the eval registry's seed of a project
+	// creates the project's evals-md document, an artifact.created that starts no keyword version,
+	// so the fill's cursor ends past the last comment. The wait reads the newest event once the eval
+	// refresher's events cursor is stamped after the second boot: the second process's first pass,
+	// which seeds every project, has committed by then, and the first process is dead, its
+	// uncommitted transactions gone with it, so every event either boot writes is in the log. It
+	// then asks for the fill's cursor at the newest event exactly, which a fill that skipped past
+	// the end of the log would not satisfy.
+	testwait.UntilPolling(t, 200*time.Millisecond, "the new process's first eval refresher pass, which seeds every project, to commit", func() (bool, bool) {
+		passed := refresherPassedSince(t, database, booted)
+		return passed, passed
+	})
+	var newest int64
+	if err := database.Pool.QueryRow(context.Background(), `select max(id) from events`).Scan(&newest); err != nil {
+		t.Fatalf("read the newest event: %v", err)
+	}
+	booting := eventsAfter(t, database, last)
+	for _, event := range booting {
+		if !event.seedOf(textversionstest.Project) {
+			t.Fatalf("the events after the last comment %d are %v; want each the artifact.created of %s's %s, the seed's",
+				last, booting, textversionstest.Project, evals.DocumentSlug)
+		}
+	}
+	t.Logf("the last comment is event %d and the newest event %d; the events after the last comment: %v", last, newest, booting)
 	testwait.UntilPolling(t, 200*time.Millisecond, "the new process to write every event's rows", func() (int64, bool) {
 		cursor := textversionstest.Cursor(t, database)
-		return cursor, cursor == last
+		return cursor, cursor == newest
 	})
 
 	recorded := writes()
@@ -8770,6 +8777,8 @@ func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 		t.Errorf("the rows of the events through the cursor %d were %s when the first process was killed and are %s now: the new process wrote them again",
 			left, kept, got)
 	}
+	// Every comment has its one row, written once, and no other event has any: the seed's
+	// artifact.created, which the cursor passed, started none.
 	textversionstest.RequireOnlyRowsOf(t, database, textversionstest.OneEach(ids...))
 }
 

@@ -100,11 +100,8 @@ func (f *failingCrossProjectRead) fail(err error) {
 	f.err = err
 }
 
-// crossProjectAsker seeds the project that asks: a target issue the check can only find by
-// meaning, since it shares no word with the question, a host issue the question is written on,
-// and an answered question of the asking project's own, nearer the question than anything the
-// other project holds. That last one is what the leg's project rule has to leave out: without
-// it, a leg reading its own project too would answer exactly as this one does.
+// crossProjectAsker seeds the project that asks, which it creates through the route
+// (crossProjectAskerIn).
 //
 // It answers the target's key, the own-question issue's key, the host's key and the host's
 // primary document.
@@ -113,6 +110,21 @@ func crossProjectAsker(
 ) (target, own, host, hostArtifact string) {
 	t.Helper()
 	createSuggestionProject(t, handler, project)
+	return crossProjectAskerIn(t, handler, database, embedder, project)
+}
+
+// crossProjectAskerIn seeds the asking project's issues in project, which the caller made: a
+// target issue the check can only find by meaning, since it shares no word with the question, a
+// host issue the question is written on, and an answered question of the asking project's own,
+// nearer the question than anything the other project holds. That last one is what the leg's
+// project rule has to leave out: without it, a leg reading its own project too would answer
+// exactly as this one does.
+//
+// It answers what crossProjectAsker answers.
+func crossProjectAskerIn(
+	t *testing.T, handler http.Handler, database *store.Store, embedder *crossProjectEmbedder, project string,
+) (target, own, host, hostArtifact string) {
+	t.Helper()
 	const targetTitle, targetSpec = "Harbour crane rota drifts", "The crane rota slips by one shift each month."
 	embedder.vectors[issueEmbeddingText(targetTitle, targetSpec)] = angledVector(0.85, 9)
 	target = createSearchIssue(t, handler, project, targetTitle, targetSpec)
@@ -248,7 +260,18 @@ func TestCrossProjectRelatedOffersAnAnsweredQuestionToQuestionWritesOnly(t *test
 		embedder.vectors[text] = queryVector()
 	}
 	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder, relatedBound: meaningVerdictBound(t)})
-	target, own, host, hostArtifact := crossProjectAsker(t, handler, database, embedder, "XASK")
+	// XASK is made by SQL, as a project made before the eval registry, or by SQL since the evals
+	// refresher's last pass, still is (evals.Store.UnseededProjects): it holds no evals-md. A
+	// project the route creates holds its seeded evals-md (dispatch://INFRA-2916, R5), whose
+	// methods hold the question's "first" and "backlog": it would be a same-project item of every
+	// check here, and the check below that leaves XASK's issues out would find it and answer found
+	// whatever XOTH offers, where that check is the one that shows the outcome is the same-project
+	// result's alone. TestANewProjectsEvalsDocumentIsFoundByItsOwnWords reads that document.
+	if _, err := database.Pool.Exec(context.Background(),
+		`insert into projects (key, name, default_assignee) values ('XASK', 'XASK project', 'alice')`); err != nil {
+		t.Fatalf("make XASK by SQL: %v", err)
+	}
+	target, own, host, hostArtifact := crossProjectAskerIn(t, handler, database, embedder, "XASK")
 	createSuggestionProject(t, handler, "XOTH")
 	owner := createSearchIssue(t, handler, "XOTH", "Backlog runbook", "What to do when the backlog grows.")
 	offered := seedAnsweredQuestion(t, handler, database, embedder, owner,

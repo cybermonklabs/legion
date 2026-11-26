@@ -437,13 +437,15 @@ func TestAWarmGzipReadOfAListIsCompressedOnce(t *testing.T) {
 // emptyIssuesAsAScenarioResetDoes leaves the database as the browser harness leaves it between
 // scenarios (packages/dispatch/e2e/seed.ts): every issue and everything keyed to one is gone, and
 // each project numbers from 1 again, so the issues of what follows take the keys of what came
-// before. comment_watermarks is not emptied here for the same reason the reset does not empty it:
-// it carries no foreign key into anything the reset names, so nothing reaches it (migration
-// 20261106020619).
+// before. comment_watermarks is emptied beside them because the reset empties it too: the reset
+// empties every table it does not name as kept, and it keeps no comment list's count. Nothing
+// else here would reach that table, since it carries no foreign key into anything (migration
+// 20261106020619), so every key's count starts again from nothing, as it does in the harness.
 func emptyIssuesAsAScenarioResetDoes(t *testing.T, database *store.Store) {
 	t.Helper()
 	for _, statement := range []string{
 		`truncate table issues cascade`,
+		`truncate table comment_watermarks`,
 		`update projects set next_number = 1`,
 	} {
 		if _, err := database.Pool.Exec(context.Background(), statement); err != nil {
@@ -453,16 +455,14 @@ func emptyIssuesAsAScenarioResetDoes(t *testing.T, database *store.Store) {
 }
 
 // A key a new issue takes from an old one is never answered either of the old issue's lists.
-// Both validators stand on counters a new issue of the key can reach again: the feed's on
-// issues.last_seq, a counter of the issue row that starts again with it, and the comment list's
-// on that and on the list's watermark, which a new issue with no comment keeps at the old count
-// and a database restored under a running server starts again. So two issues of one key, each
-// with one comment over a watermark that started again, stand at one sequence and one count and
-// would otherwise be given one ETag: the second issue's reader would be answered 304, or
-// written the bytes this server kept for the first. The issue's created_at is hashed in beside
-// the counters so neither can happen, which is what the browser harness needs of it - it empties
-// `issues` and restarts each project's numbering between scenarios, under a server process that
-// keeps running - and what a database restored under a running server needs of it.
+// Both validators stand on counters that start again with the new issue: the feed's on
+// issues.last_seq, a counter of the issue row, and the comment list's on that and on the list's
+// watermark, whose row the reset empties beside the issue. So two issues of one key, each with
+// one comment, stand at one sequence and one count and would otherwise be given one ETag: the
+// second issue's reader would be answered 304, or written the bytes this server kept for the
+// first. The issue's created_at is hashed in beside the counters so neither can happen, which is
+// what the browser harness needs of it - it empties every table and restarts each project's
+// numbering between scenarios, under a server process that keeps running.
 func TestANewIssueUnderARecycledKeyIsNeverAnsweredTheOldIssuesLists(t *testing.T) {
 	t.Parallel()
 	// A settlement of the first issue's spec writes to the tables the reset below empties, and a

@@ -575,3 +575,44 @@ type inOrder struct {
 func (q inOrder) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 	return q.db.Query(ctx, "select * from ("+sql+") as unordered order by "+q.order, args...)
 }
+
+// The reject of a production event proves a project's controller by the session its daemon names
+// (dispatch://INFRA-978, R8), so ControllerSession answers the newest good read's: the session a
+// read names, another session once a later read names it, and none once a read names none, since
+// the daemon's controller left (a `null` row) and an older session would let it reject again.
+func TestControllerSessionIsTheOneTheNewestReadNames(t *testing.T) {
+	database := storetest.Open(t)
+	seedLegionProject(t, database, "INFRA", "http://127.0.0.1:1")
+	at := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
+	read := func(minute int, controller *string) {
+		t.Helper()
+		state := State{Issues: map[string]Issue{}}
+		if controller != nil {
+			state.ControllerLocator = &ControllerLocator{SessionID: *controller}
+		}
+		if _, err := RecordRead(t.Context(), database.Pool, "INFRA", at.Add(time.Duration(minute)*time.Minute), 42, state.Observations()); err != nil {
+			t.Fatalf("record read %d: %v", minute, err)
+		}
+	}
+	want := func(step, session string, ok bool) {
+		t.Helper()
+		got, found, err := ControllerSession(t.Context(), database.Pool, "INFRA")
+		if err != nil {
+			t.Fatalf("%s: read the controller session: %v", step, err)
+		}
+		if got != session || found != ok {
+			t.Errorf("%s: controller session = %q (found %v), want %q (found %v)", step, got, found, session, ok)
+		}
+	}
+
+	want("before any read", "", false)
+	read(0, new("ses_a"))
+	want("after a read naming ses_a", "ses_a", true)
+	read(1, new("ses_b"))
+	want("after a read naming ses_b", "ses_b", true)
+	read(2, nil)
+	want("after a read naming no controller", "", false)
+	if _, found, err := ControllerSession(t.Context(), database.Pool, "LINUX"); err != nil || found {
+		t.Errorf("a project Dispatch read no state of answered found %v (err %v), want none", found, err)
+	}
+}

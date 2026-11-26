@@ -242,20 +242,32 @@ func testClientPermissions() core.Permissions {
 	return client
 }
 
+// seedDispatchDeliverySettings migrates a fresh Postgres and saves the delivery settings the
+// intakes route by: a project of its own, WIDGETS, with delivery on and one github_workflow source
+// reading acme/widgets, the repository the fake GitHub App answers for (newDispatchGitHub), saved
+// through delivery.PutProjectSettings as the settings route saves a project's.
 func seedDispatchDeliverySettings(t *testing.T, databaseURL string) {
 	t.Helper()
+	const project = "WIDGETS"
 	database, err := store.Open(t.Context(), databaseURL)
 	require.NoError(t, err)
 	defer database.Pool.Close()
 	require.NoError(t, database.Migrate(t.Context()))
-	_, err = delivery.PutSettings(t.Context(), database.Pool, delivery.DeliverySettings{
-		DeployRepo:           "acme/widgets",
-		DeployWorkflowPath:   ".github/workflows/deploy.yml",
-		ProductionJobNames:   []string{"release"},
-		PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
-		PopulationAuthors:    []string{"octocat"},
+	_, err = database.Pool.Exec(t.Context(), `insert into projects (key, name, default_assignee) values ($1, $1, $2)`, project, dispatchPerson)
+	require.NoError(t, err)
+	tx, err := database.Pool.Begin(t.Context())
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	_, err = delivery.PutProjectSettings(t.Context(), tx, delivery.ProjectSettingsInput{
+		Project: project, Delivery: true, PopulationAuthors: []string{"octocat"},
+		Sources: []delivery.SourceInput{{
+			Kind: delivery.SourceKindGitHubWorkflow, Repo: new("acme/widgets"),
+			DeployWorkflowPath: new(".github/workflows/deploy.yml"), ProductionJobNames: []string{"release"},
+			PRChecksWorkflowPath: new(".github/workflows/pr-checks.yml"),
+		}},
 	}, model.Actor{Kind: "system", ID: "dispatch-permissions-test"})
 	require.NoError(t, err)
+	require.NoError(t, tx.Commit(t.Context()))
 }
 
 // startDispatch runs the Dispatch binary against databaseURL and natsURL on a held loopback port,

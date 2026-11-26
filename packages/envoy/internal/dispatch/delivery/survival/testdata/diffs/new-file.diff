@@ -1,0 +1,44 @@
+diff --git a/packages/daemon/.changes/unreleased/pr5556-Fixed-20261125-200935.yaml b/packages/daemon/.changes/unreleased/pr5556-Fixed-20261125-200935.yaml
+new file mode 100644
+index 00000000000..10e4738bcc5
+--- /dev/null
++++ b/packages/daemon/.changes/unreleased/pr5556-Fixed-20261125-200935.yaml
+@@ -0,0 +1,9 @@
++kind: Fixed
++body: |-
++    The live proof of the daemon's Dispatch writes under the secrets broker
++    (`scripts/e2e/dispatch-broker.sh`) now calls `PutStepExperiment` with the daemon's broker token.
++    Its check K4 requires a call of each method of the daemon's Dispatch client. #5014 added this
++    method, and until this change the proof failed on each run.
++time: 2026-11-25T20:09:35Z
++custom:
++    Issue: pr5556
+diff --git a/packages/daemon/internal/daemon/dispatch_broker_live_test.go b/packages/daemon/internal/daemon/dispatch_broker_live_test.go
+index e2f84c09b0b..888ba0207f6 100644
+--- a/packages/daemon/internal/daemon/dispatch_broker_live_test.go
++++ b/packages/daemon/internal/daemon/dispatch_broker_live_test.go
+@@ -1555,10 +1555,11 @@ type daemonRefs struct {
+ }
+ 
+ // daemonScript is K4's script through the daemon's client: one call of each method of
+-// internal/dispatch's HTTPClient, its twelve writes and every read, Whoami among them, on the
++// internal/dispatch's HTTPClient, its thirteen writes and every read, Whoami among them, on the
+ // daemon's issue of P. The step record PutStep writes is a fresh one at each run of the script,
+ // the first write of its run, so it names the run's whole identity; PutStepRating rates that same
+-// record, a retro's, and PutPlan writes a fresh default plan of the run.
++// record, a retro's, PutStepExperiment writes on it the experiment and the variant of its issue,
++// and PutPlan writes a fresh default plan of the run.
+ func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daemonRefs, since time.Time) []rigWrite {
+ 	r.t.Helper()
+ 	ctx := context.Background()
+@@ -1610,6 +1611,10 @@ func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daem
+ 		return client.PutStepRating(ctx, issueKey, stepID, step,
+ 			dispatch.PlanRating{Rating: 4, Reason: "The rig's retro rates the plan its issue ran."})
+ 	})
++	call("PutStepExperiment", false, func() error {
++		return client.PutStepExperiment(ctx, issueKey, stepID, step,
++			dispatch.StepExperiment{Experiment: "planning", Variant: "b"})
++	})
+ 	call("PutPlan", false, func() error {
+ 		return client.PutPlan(ctx, issueKey, uuid.NewString(), dispatch.PlanWrite{Generation: 1, Source: "default",
+ 			Tasks: []dispatch.PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}})

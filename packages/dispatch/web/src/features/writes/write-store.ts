@@ -2,6 +2,7 @@ import { DISPATCH_LOGIN_CHANGED } from "@legion/contracts";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useRef, useSyncExternalStore } from "react";
 
+import { agentSession } from "../../api/agent-session";
 import {
   ApiError,
   api,
@@ -1175,9 +1176,16 @@ export class Writes {
             }
           }, SEND_DEADLINE_MS)
         : undefined;
+    // A person's write names them (`Dispatch-Login`), so Dispatch refuses it under anyone else's
+    // session. An agent viewer's names no person, since Dispatch refuses that header from any
+    // bearer (`409 LOGIN_CHANGED`), and names the session it is made as instead (`agentSession`).
+    // Both are read from who is signed in now: a write goes out only under the login it was
+    // pressed by (`signedIn`).
+    const viewer = this.#client.getQueryData<AuthenticatedUser>(["whoami"]);
     writeUnderKey(entry.attempt, entry.write.key, {
       carried: this.#carried.get(entry.write.key) ?? null,
-      login: entry.write.login,
+      login: viewer?.kind === "agent" ? undefined : entry.write.login,
+      session: agentSession(viewer),
       planned: entry.request ?? undefined,
       sent: (request) => {
         // The request is going out under this key now, whatever becomes of this entry.

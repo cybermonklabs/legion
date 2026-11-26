@@ -55,15 +55,16 @@ func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 // one validator.
 //
 // created_at is there because an issue key comes back, and neither counter tells the issue that
-// held it from the one that holds it now. The browser harness empties issues between scenarios
-// and restarts each project's numbering, under a server process that keeps running
-// (packages/dispatch/e2e/seed.ts), and it leaves comment_watermarks in place: a new issue under
-// an old key with no comment of its own stands at the old list's count, and the two validators
-// meet once its last_seq reaches the one the old list was read at. A database restored under a
-// running process starts both counters again, and gives it the same reading. Either way its
-// reader would be answered 304, or written the old issue's comments this server kept. The feed
-// hashes the same stamp for the same reason (eventFeedETag). A document's list needs none, since
-// its owner is a uuid that never comes back.
+// held it from the one that holds it now. The browser harness empties every table between
+// scenarios, comment_watermarks included, and restarts each project's numbering, under a server
+// process that keeps running (packages/dispatch/e2e/seed.ts), and a database restored under a
+// running process gives it the same reading: a new issue under an old key, given as many
+// comments, stands at the count and the last_seq the old one's list was read at, and its reader
+// would be answered 304, or written the old issue's comments this server kept. Keeping the
+// counter row through the reset would not close that: a new issue with no comment of its own
+// stands at the old count, and the two validators meet once its last_seq reaches the one the old
+// list was read at. The feed hashes the same stamp for the same reason (eventFeedETag). A
+// document's list needs none, since its owner is a uuid that never comes back.
 //
 // name is the owner as the request spells it: the key the kept answer is filed under beside its
 // ETag, and the subject the display tree read is logged against.

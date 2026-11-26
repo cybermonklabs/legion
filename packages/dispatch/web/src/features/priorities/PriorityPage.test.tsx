@@ -19,6 +19,7 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { ApiError, api, priorityPatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type {
+  AuthenticatedUser,
   IssueSummary,
   PatchPriorityInput,
   Priorities,
@@ -160,10 +161,10 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
   const state = spyOn(api, "getMyState").mockResolvedValue({});
   const agents = spyOn(api, "listAgents").mockResolvedValue([]);
   // A reader who may not write a priority is any principal that is not a person
-  // (`useIsHuman`): the contract types only the person's answer, so the other is cast.
-  const whoami = writer
-    ? { event_head: "0", kind: "user" as const, login: "alice" }
-    : ({ event_head: "0", kind: "token", login: "ci" } as never);
+  // (`useIsHuman`): here an agent viewer, the shared token's.
+  const whoami: AuthenticatedUser = writer
+    ? { event_head: "0", kind: "user", login: "alice" }
+    : { event_head: "0", kind: "agent", login: "agent", session: null };
   const viewer = spyOn(api, "whoAmI").mockResolvedValue(whoami);
   // A change of a priority goes on its priority's line, made from its request alone
   // (`priorityPatchRequest`), so it is answered on its route.

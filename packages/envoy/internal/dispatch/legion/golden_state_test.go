@@ -3,6 +3,7 @@ package legion
 //ci:reads packages/contracts/fixtures/daemon-api/state.json TestTheDecodeReadsTheStateDocumentTheDaemonWrote os.ReadFile (goldenStatePath, ../../../../contracts/fixtures/daemon-api): the state document the daemon's own internal/api/state_golden_test.go writes, which the sampler's decode must read
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,13 +52,24 @@ func TestTheDecodeReadsTheStateDocumentTheDaemonWrote(t *testing.T) {
 		t.Fatalf("the golden carries no issue, so this test proves nothing")
 	}
 
-	// The observations a read of this document writes: the two project rows the board's header
-	// and its settings are read from, a phase for each issue, and nothing of the pull request.
+	// The observations a read of this document writes: the three project rows the board's header,
+	// its settings and the reject of a production event are read from, a phase for each issue, and
+	// nothing of the pull request.
 	fields := map[string]int{}
+	controller := ""
 	for _, observation := range state.Observations() {
 		fields[observation.Field]++
+		if observation.Field == FieldController {
+			if err := json.Unmarshal(observation.Value, &controller); err != nil {
+				t.Fatalf("the controller observation holds %s, want the session as a string: %v", observation.Value, err)
+			}
+		}
 	}
-	for _, field := range []string{FieldAdmission, FieldSettings} {
+	// The session the daemon wrote as its registered controller (controllerLocator.sessionId).
+	if controller != "ses_controller" {
+		t.Errorf("controller observation = %q, want ses_controller, the golden's controllerLocator.sessionId", controller)
+	}
+	for _, field := range []string{FieldAdmission, FieldSettings, FieldController} {
 		if fields[field] != 1 {
 			t.Errorf("observations of %s = %d, want exactly one project row", field, fields[field])
 		}

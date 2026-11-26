@@ -7,10 +7,18 @@ import type { WhoamiAgent, WhoamiUser } from "./dispatch-api.generated";
  * one of them moved.
  */
 
-/** `GET /auth/whoami`'s answer for a person signed in to the dashboard. */
+/** `GET /auth/whoami`'s answer: who the dashboard is drawn for. A person signed in to it is
+ *  `kind: "user"`, `login` their lowercase email, and their answer carries no `session`. A request
+ *  with no sign-in whose bearer Dispatch takes for an agent is `kind: "agent"`, and `login` is then
+ *  the label the dashboard keeps that viewer's own state under: the lowercase email of the person
+ *  its credential acts for where it names one, else `agent:<session>` where it proved a session,
+ *  else `agent`. A Dispatch older than agent viewers answers a person alone, as it always did. */
 export interface AuthenticatedUser {
-  readonly kind: "user";
+  readonly kind: "user" | "agent";
   readonly login: string;
+  /** The session an agent's credential proved (an access token the secrets broker issued), or
+   *  `null` where it proved none: present for an agent, absent for a person. */
+  readonly session?: string | null;
   /** The decimal id at or below which every event is final (committed or rolled back for good)
    *  when Dispatch answered. Every read the page makes after this answer holds every event at or
    *  below it, so the event feed resumes from it on its first

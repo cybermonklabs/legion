@@ -1,0 +1,558 @@
+diff --git a/bun.lock b/bun.lock
+index 4beccbca2ce..feff57d8afa 100644
+--- a/bun.lock
++++ b/bun.lock
+@@ -83,7 +83,7 @@
+         "@milkdown/preset-gfm": "^7.18.0",
+         "@milkdown/prose": "^7.18.0",
+         "@milkdown/theme-nord": "^7.18.0",
+-        "@sjawhar/proof-editor": "0.3.12",
++        "@sjawhar/proof-editor": "0.3.13",
+         "@tailwindcss/typography": "^0.5.20",
+         "@tailwindcss/vite": "^4.3.3",
+         "@tanstack/react-query": "^5",
+@@ -178,7 +178,7 @@
+   },
+   "patchedDependencies": {
+     "@milkdown/preset-gfm@7.22.1": "patches/@milkdown%2Fpreset-gfm@7.22.1.patch",
+-    "@sjawhar/proof-editor@0.3.12": "patches/@sjawhar%2Fproof-editor@0.3.12.patch",
++    "@sjawhar/proof-editor@0.3.13": "patches/@sjawhar%2Fproof-editor@0.3.13.patch",
+   },
+   "packages": {
+     "@ampproject/remapping": ["@ampproject/remapping@2.3.0", "", { "dependencies": { "@jridgewell/gen-mapping": "^0.3.5", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-30iZtAPgz+LTIYoeivqYo853f02jBYSd5uGnGpkFV0M3xOt9aN73erkgYAmZU43x4VfqcnLxW9Kpg3R5LC4YYw=="],
+@@ -603,7 +603,7 @@
+ 
+     "@sjawhar/pi-legion-envoy": ["@sjawhar/pi-legion-envoy@workspace:packages/pi-envoy"],
+ 
+-    "@sjawhar/proof-editor": ["@sjawhar/proof-editor@0.3.12", "", { "dependencies": { "@aws-sdk/client-s3": "^3.879.0", "@fontsource/ibm-plex-sans": "^5.2.8", "@handlewithcare/prosemirror-suggest-changes": "^0.1.8", "@hocuspocus/provider": "^2.15.2", "@hocuspocus/server": "^2.15.2", "@milkdown/core": "^7.5.0", "@milkdown/kit": "^7.5.0", "@milkdown/plugin-clipboard": "^7.5.0", "@milkdown/plugin-collab": "^7.18.0", "@milkdown/plugin-cursor": "^7.5.0", "@milkdown/plugin-history": "^7.5.0", "@milkdown/plugin-listener": "^7.5.0", "@milkdown/plugin-prism": "^7.18.0", "@milkdown/preset-commonmark": "^7.5.0", "@milkdown/preset-gfm": "^7.5.0", "@milkdown/theme-nord": "^7.5.0", "@resvg/resvg-js": "^2.6.2", "beautiful-mermaid": "^1.1.3", "better-sqlite3": "^12.6.2", "express": "^5.2.1", "mdast-util-directive": "^3.1.0", "micromark-extension-directive": "^4.0.0", "prismjs": "^1.30.0", "remark-frontmatter": "^5.0.0", "remark-gfm": "^4.0.1", "satori": "^0.24.1", "web-haptics": "^0.0.6", "wink-eng-lite-web-model": "^1.2.1", "wink-nlp": "^2.1.0", "ws": "^8.19.0", "y-indexeddb": "^9.0.12", "y-prosemirror": "^1.2.19", "y-websocket": "^3.0.0", "yjs": "^13.6.20", "zod": "^3.22.0" }, "peerDependencies": { "@milkdown/prose": "^7.5.0", "@milkdown/transformer": "^7.5.0", "remark-parse": "^11.0.0", "remark-stringify": "^11.0.0", "unified": "^11.0.0", "y-protocols": "^1.0.5" }, "optionalPeers": ["@milkdown/transformer", "remark-parse", "remark-stringify", "unified", "y-protocols"] }, "sha512-ftTZssbIba817gU9jYuTSx/m2pu6A+u3hNX9SCy/iF/UBw1Dn+29GxAxm4GmZDvyj6TQOsLLgD6nXeoM6n9yQg=="],
++    "@sjawhar/proof-editor": ["@sjawhar/proof-editor@0.3.13", "", { "dependencies": { "@aws-sdk/client-s3": "^3.879.0", "@fontsource/ibm-plex-sans": "^5.2.8", "@handlewithcare/prosemirror-suggest-changes": "^0.1.8", "@hocuspocus/provider": "^2.15.2", "@hocuspocus/server": "^2.15.2", "@milkdown/core": "^7.5.0", "@milkdown/kit": "^7.5.0", "@milkdown/plugin-clipboard": "^7.5.0", "@milkdown/plugin-collab": "^7.18.0", "@milkdown/plugin-cursor": "^7.5.0", "@milkdown/plugin-history": "^7.5.0", "@milkdown/plugin-listener": "^7.5.0", "@milkdown/plugin-prism": "^7.18.0", "@milkdown/preset-commonmark": "^7.5.0", "@milkdown/preset-gfm": "^7.5.0", "@milkdown/theme-nord": "^7.5.0", "@resvg/resvg-js": "^2.6.2", "beautiful-mermaid": "^1.1.3", "better-sqlite3": "^12.6.2", "express": "^5.2.1", "mdast-util-directive": "^3.1.0", "micromark-extension-directive": "^4.0.0", "prismjs": "^1.30.0", "remark-frontmatter": "^5.0.0", "remark-gfm": "^4.0.1", "satori": "^0.24.1", "web-haptics": "^0.0.6", "wink-eng-lite-web-model": "^1.2.1", "wink-nlp": "^2.1.0", "ws": "^8.19.0", "y-indexeddb": "^9.0.12", "y-prosemirror": "^1.2.19", "y-websocket": "^3.0.0", "yjs": "^13.6.20", "zod": "^3.22.0" }, "peerDependencies": { "@milkdown/prose": "^7.5.0", "@milkdown/transformer": "^7.5.0", "remark-parse": "^11.0.0", "remark-stringify": "^11.0.0", "unified": "^11.0.0", "y-protocols": "^1.0.5" }, "optionalPeers": ["@milkdown/transformer", "remark-parse", "remark-stringify", "unified", "y-protocols"] }, "sha512-zPLNZ2EduJNe6DIZMxms0kvvig/MQBYg6T44GKtTkb5GUjXBwAJHBM+vmq0MfCAUvJjq/Oc80BSCxRCcHSbkYw=="],
+ 
+     "@smithy/core": ["@smithy/core@3.33.3", "", { "dependencies": { "@smithy/types": "^4.17.2", "tslib": "^2.6.2" } }, "sha512-CsOeKq/9kA3y6VJHt+/+VTCtBaxJ4OTFpgrjIUhPpDIKxBci1k2bJaQASF2h/ELWrulGp+t97DZ0mevfAD8idg=="],
+ 
+diff --git a/package.json b/package.json
+index 2e217e2f953..621845c5341 100644
+--- a/package.json
++++ b/package.json
+@@ -28,7 +28,7 @@
+     "@biomejs/biome": "^2.3.14"
+   },
+   "patchedDependencies": {
+-    "@sjawhar/proof-editor@0.3.12": "patches/@sjawhar%2Fproof-editor@0.3.12.patch",
++    "@sjawhar/proof-editor@0.3.13": "patches/@sjawhar%2Fproof-editor@0.3.13.patch",
+     "@milkdown/preset-gfm@7.22.1": "patches/@milkdown%2Fpreset-gfm@7.22.1.patch"
+   }
+ }
+diff --git a/packages/dispatch/AGENTS.md b/packages/dispatch/AGENTS.md
+index 1dac3e0013e..2fe5dc2a725 100644
+--- a/packages/dispatch/AGENTS.md
++++ b/packages/dispatch/AGENTS.md
+@@ -157,7 +157,7 @@ new entry chunk offers a dismissible **Reload** notice.
+ 
+ `ask` is the host-rendered decision type. A live document's open block decisions appear in one compact, cycling `#b-<blockId>` navigation link beneath the tab row. There is one ask component on every surface: a decision block *hosts* the Inbox's `AskCard` (compact variant, thread collapsed, `frame="block"`) for its indexed ask row, so answering, **Ask back** (a clarification posted as a reply on the ask — `createComment` on an issue document's ask, `createArtifactComment` on a project document's — which leaves the decision open), the folded reply-count disclosure over the exchange, the question-shaped-answer prompt, the `ASK_EDITED` reload, the answered and resolved records (`AskCompletionCard`), and the retryable save error all behave exactly as they do in the Inbox, and a reply or answer made in either place shows in the other. An ask block marked `invalid`, or one with a missing question or option label, renders its raw content as a malformed decision without a card until the block text is repaired. The editor library supplies its schema-aware Insert and Turn into block-menu entries; Dispatch passes the server schema rather than duplicating those commands.
+ 
+-A decision block is a card whose chrome is React and whose question text stays the editor's. `features/doc/ask-block.ts` mounts a ProseMirror `NodeView` for `ask` (`installAskBlockView`, merged into the library's node views right after the editor is created, in both `ProofDocument` and `VersionView`): it owns only the shell — the urgency accent and tint (`askUrgencyAccent`, `askBlockTint`, `askBlockPill` in `theme/classes.ts`), a `contenteditable="false"` header slot, the content hole, and a `contenteditable="false"` footer slot — and registers each mounted block as an `AskBlockHost` (slots + node) in React state; `update()` swaps the node and re-registers without remounting the content hole. `ignoreMutation` excludes the slots so ProseMirror never re-parses the card as an edit, and `stopEvent` keeps keystrokes in the answer controls away from the editor's keymaps. `features/doc/AskBlockCard.tsx` is the host: it portals into the two slots (the same `createPortal` pattern `MarkdownBody` uses for reference anchors) and renders nothing the card already has. The header names the block type — the urgency pill (`URGENCY_LABELS` from `features/inbox/ask-urgency.ts`) and "Decision" — and the footer is `<AskCard frame="block" variant="compact" thread="collapsed">` once the server has indexed the block into an ask row and the surface is live; `frame="block"` drops the card's own frame, urgency accent and notch, question, and block link, since the block shell draws the frame, the editor shows the question, and the block is the link's target (the card's metadata line still says who asked and when, with the `dispatch://` reference; `AskCompletionCard` takes the same `frame` and skips the question). Until the row exists, and on a read-only surface (closed issue, version view), the block reads its own attributes instead: the header adds who asked and when (from the row, if any), "Answered by … · when", and a Resolved / Closed pill, and the footer shows the options with the chosen ones ticked (`AskOptionList`) and the note — no composer, no Ask back. `ProofDocument` passes the card an `onAnswered` that invalidates `["artifact", id]`, since the server writes the outcome into the block. `@sjawhar/proof-editor`'s stylesheet is unlayered, so its element typography (`.milkdown h1-h3`, `p`, `ul`/`ol`, `li`, `code`, `pre`, `blockquote`, `a`, `hr`) reaches the slots and outranks the card's layered utilities — `space-y-*` is a `margin-block-end` that `.milkdown li { margin-bottom }` would beat. Inside the slots, `styles.css` rolls those declarations back with `revert-layer` (the cascade falls through to preflight, the card's utilities, and `prose`, as in the Inbox), so the card's own spacing and type are intact and it needs no `gap` workaround. The slots themselves are `not-prose` (`AskBlockView` sets it on both, so everything React renders into them — the open card, the answered or resolved record, and the thread beside it — is kept off the editor root's `prose`), and Typography cannot re-enter `prose` inside `not-prose`, so a `MarkdownBody` in the footer (a reply, an answer note) gets its `prose-sm` essentials — paragraph and list spacing, markers and indent, link, inline code, the fenced-code box, quote styling, and the surrounding text colour — from scoped rules in `styles.css` instead. Importing the library into a cascade layer below utilities would remove both workarounds but would also let the root's `prose` restyle every document; that doc-theme decision is open. The rows render the options, so the source `- Option: description` list is folded by default (`styles.css`, under `[data-dispatch-ask-options="rows"]`); it is the only place a human edits or adds options, so `askBlockEditingPlugin` (a view plugin `installAskBlockView` adds) marks the block whose range holds `selection.$from` with `data-dispatch-ask-editing="true"` on every state update, and the list shows on that block alone — click into the question to reveal it, click elsewhere to fold it — and never where nothing can be edited (a read-only render) or once the decision is no longer open.
++A decision block is a card whose chrome is React and whose question text stays the editor's. `features/doc/ask-block.ts` mounts a ProseMirror `NodeView` for `ask` (`installTypedBlocks`, merged into the library's node views right after the editor is created, in both `ProofDocument` and `VersionView`, which also mounts `renderTypedBlock`'s node view for every other typed type, so the header it draws is never in the document's HTML, and removes that header from pasted HTML an older build copied): it owns only the shell — the urgency accent and tint (`askUrgencyAccent`, `askBlockTint`, `askBlockPill` in `theme/classes.ts`), a `contenteditable="false"` header slot, the content hole, and a `contenteditable="false"` footer slot — and registers each mounted block as an `AskBlockHost` (slots + node) in React state; `update()` swaps the node and re-registers without remounting the content hole. `ignoreMutation` excludes the slots so ProseMirror never re-parses the card as an edit, and `stopEvent` keeps keystrokes in the answer controls away from the editor's keymaps. `features/doc/AskBlockCard.tsx` is the host: it portals into the two slots (the same `createPortal` pattern `MarkdownBody` uses for reference anchors) and renders nothing the card already has. The header names the block type — the urgency pill (`URGENCY_LABELS` from `features/inbox/ask-urgency.ts`) and "Decision" — and the footer is `<AskCard frame="block" variant="compact" thread="collapsed">` once the server has indexed the block into an ask row and the surface is live; `frame="block"` drops the card's own frame, urgency accent and notch, question, and block link, since the block shell draws the frame, the editor shows the question, and the block is the link's target (the card's metadata line still says who asked and when, with the `dispatch://` reference; `AskCompletionCard` takes the same `frame` and skips the question). Until the row exists, and on a read-only surface (closed issue, version view), the block reads its own attributes instead: the header adds who asked and when (from the row, if any), "Answered by … · when", and a Resolved / Closed pill, and the footer shows the options with the chosen ones ticked (`AskOptionList`) and the note — no composer, no Ask back. `ProofDocument` passes the card an `onAnswered` that invalidates `["artifact", id]`, since the server writes the outcome into the block. `@sjawhar/proof-editor`'s stylesheet is unlayered, so its element typography (`.milkdown h1-h3`, `p`, `ul`/`ol`, `li`, `code`, `pre`, `blockquote`, `a`, `hr`) reaches the slots and outranks the card's layered utilities — `space-y-*` is a `margin-block-end` that `.milkdown li { margin-bottom }` would beat. Inside the slots, `styles.css` rolls those declarations back with `revert-layer` (the cascade falls through to preflight, the card's utilities, and `prose`, as in the Inbox), so the card's own spacing and type are intact and it needs no `gap` workaround. The slots themselves are `not-prose` (`AskBlockView` sets it on both, so everything React renders into them — the open card, the answered or resolved record, and the thread beside it — is kept off the editor root's `prose`), and Typography cannot re-enter `prose` inside `not-prose`, so a `MarkdownBody` in the footer (a reply, an answer note) gets its `prose-sm` essentials — paragraph and list spacing, markers and indent, link, inline code, the fenced-code box, quote styling, and the surrounding text colour — from scoped rules in `styles.css` instead. Importing the library into a cascade layer below utilities would remove both workarounds but would also let the root's `prose` restyle every document; that doc-theme decision is open. The rows render the options, so the source `- Option: description` list is folded by default (`styles.css`, under `[data-dispatch-ask-options="rows"]`); it is the only place a human edits or adds options, so `askBlockEditingPlugin` (a view plugin `installTypedBlocks` adds) marks the block whose range holds `selection.$from` with `data-dispatch-ask-editing="true"` on every state update, and the list shows on that block alone — click into the question to reveal it, click elsewhere to fold it — and never where nothing can be edited (a read-only render) or once the decision is no longer open.
+ 
+ 
+ ## Commands
+diff --git a/packages/dispatch/e2e/ask-blocks.e2e.ts b/packages/dispatch/e2e/ask-blocks.e2e.ts
+index 4f7ed12667c..895d6858e24 100644
+--- a/packages/dispatch/e2e/ask-blocks.e2e.ts
++++ b/packages/dispatch/e2e/ask-blocks.e2e.ts
+@@ -1,4 +1,4 @@
+-import { expect, type Locator, type Page, test } from "@playwright/test";
++import { type Browser, expect, type Locator, type Page, test } from "@playwright/test";
+ 
+ import {
+   answerAsk,
+@@ -7,12 +7,13 @@ import {
+   createIssueArtifact,
+   createProject,
+   editArtifact,
++  getArtifactText,
+   getAsk,
+   getIssue,
+   patchIssue,
+   resolveAsk,
+ } from "./api";
+-import { documentEditor } from "./editor";
++import { actionBar, documentEditor, selectEditorText } from "./editor";
+ import { resetDatabase } from "./seed";
+ import { asUser } from "./users";
+ 
+@@ -55,6 +56,80 @@ async function indexedBlockAsk(issueKey: string, blockId: string) {
+   return blockAsk;
+ }
+ 
++interface Clipboard {
++  html: string;
++  text: string;
++}
++
++/** Copies the whole document through the editor's own copy handler: ProseMirror serializes the
++ * selection into the copy event's clipboardData, which is what a browser's clipboard receives. */
++async function copyWholeDocument(page: Page): Promise<Clipboard> {
++  const editor = documentEditor(page);
++  await editor.click();
++  await page.keyboard.press("ControlOrMeta+A");
++  return editor.evaluate((root) => {
++    const data = new DataTransfer();
++    root.dispatchEvent(
++      new ClipboardEvent("copy", { bubbles: true, cancelable: true, clipboardData: data })
++    );
++    return { html: data.getData("text/html"), text: data.getData("text/plain") };
++  });
++}
++
++/** Pastes clipboard contents at the caret, through the editor's own paste handler. */
++async function paste(page: Page, clipboard: Clipboard): Promise<void> {
++  await documentEditor(page).evaluate((root, { html, text }) => {
++    const data = new DataTransfer();
++    data.setData("text/html", html);
++    data.setData("text/plain", text);
++    root.dispatchEvent(
++      new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: data })
++    );
++  }, clipboard);
++}
++
++/** Pastes clipboard contents at the start of the text `quote`. */
++async function pasteBefore(page: Page, quote: string, clipboard: Clipboard): Promise<void> {
++  await selectEditorText(page, quote);
++  await page.keyboard.press("ArrowLeft");
++  await paste(page, clipboard);
++}
++
++const answeredDecisionSpec =
++  'Intro.\n\n:::ask{#decision urgency="med" multiple="false"}\nWhich one?\n\n- A\n- B\n:::\n\nAfter.\n';
++
++/** Seeds a spec holding the decision `decision`, answers it with A, and opens it as alice. */
++async function openAnsweredDecision(browser: Browser) {
++  await createProject({ key: "CORE", name: "Core" });
++  const issue = await createIssue({
++    project: "CORE",
++    spec: answeredDecisionSpec,
++    title: "Copied ask",
++  });
++  const blockAsk = await indexedBlockAsk(issue.key, "decision");
++  await answerAsk(blockAsk.id, { expected_edited_at: null, selected: ["A"], text: "Go A." });
++  const alice = await asUser(browser, "alice");
++  const page = await alice.newPage();
++  await page.goto(`/issues/${issue.key}`);
++  const decision = documentEditor(page).locator('[data-dispatch-ask-block="decision"]');
++  await expect((await expectHosted(decision)).getByText("Go A.")).toBeVisible();
++  return { alice, blockAsk, issue, page };
++}
++
++/** Opens a spec holding "End." as alice, with the caret collapsed at the end of it: the selection
++ * bar is gone once the selection collapses, and a paste before that replaces the selected text. */
++async function openAtEndOfEnd(browser: Browser, title: string) {
++  await createProject({ key: "CORE", name: "Core" });
++  const issue = await createIssue({ project: "CORE", spec: "End.\n", title });
++  const alice = await asUser(browser, "alice");
++  const page = await alice.newPage();
++  await page.goto(`/issues/${issue.key}`);
++  await selectEditorText(page, "End.");
++  await page.keyboard.press("ArrowRight");
++  await expect(actionBar(page)).toBeHidden();
++  return { alice, issue, page };
++}
++
+ async function alertsIn(page: Page): Promise<Locator> {
+   return page.getByRole("article", { name: "Document" }).getByRole("alert");
+ }
+@@ -559,3 +634,118 @@ test("decision blocks read as urgency-accented cards in the document and its ver
+     await alice.close();
+   }
+ });
++
++// A typed block goes onto the clipboard as its content. The editor's block renderer draws the
++// block's attributes as a header inside its DOM, and the clipboard once carried it: pasted back,
++// the block's parse rule read the header too, so a copied decision's question became its
++// attribute list ("ask urgency med multiple false state answered ... blockId decision Which
++// one?"). HTML an older tab copied still carries that header, and a paste drops it.
++test("a copied decision block carries its content, not its attribute header", async ({
++  browser,
++}) => {
++  const { alice, issue, page } = await openAnsweredDecision(browser);
++  try {
++    const clipboard = await copyWholeDocument(page);
++    expect(clipboard.html).toContain("Which one?");
++    expect(clipboard.html).not.toContain("data-proof-block-summary");
++    expect(clipboard.html).not.toContain("answered_by");
++
++    const header =
++      '<header data-proof-block-summary=""><span data-proof-block-name="">ask</span>' +
++      '<dl data-proof-block-attributes=""><dt>urgency</dt><dd data-proof-block-attribute="urgency">med</dd>' +
++      '<dt>answer</dt><dd data-proof-block-attribute="answer">Go A.</dd></dl></header>';
++    const olderTab = clipboard.html.replace(
++      /(<section[^>]*data-proof-block-type="ask"[^>]*>)/,
++      `$1${header}`
++    );
++    expect(olderTab).toContain("data-proof-block-summary");
++    await pasteBefore(page, "Intro.", { html: olderTab, text: clipboard.text });
++
++    await expect
++      .poll(async () => (await getIssue(issue.key)).open_asks.map((ask) => ask.question))
++      .toEqual(["Which one?"]);
++  } finally {
++    await alice.close();
++  }
++});
++
++// A copy of an answered decision pasted above it is a new block. The editor keeps a block's id on
++// the block that held it before the paste and mints one for the copy, so the answered ask stays
++// on the original and the copy is indexed as a fresh open ask with the same question. The editor
++// once kept the id on whichever of the two came first, so the copy took the original's ask, its
++// answer with it, and the original came back as a fresh ask.
++test("a copy of an answered decision pasted above it leaves the answer on the original", async ({
++  browser,
++}) => {
++  const { alice, blockAsk, issue, page } = await openAnsweredDecision(browser);
++  try {
++    await pasteBefore(page, "Intro.", await copyWholeDocument(page));
++
++    await expect
++      .poll(async () => (await getIssue(issue.key)).open_asks.map((ask) => ask.question))
++      .toEqual(["Which one?"]);
++    const copy = (await getIssue(issue.key)).open_asks[0];
++    expect(copy?.block_id).not.toBe("decision");
++    // Both asks read "Which one?", so only the stored order tells the copy from the original.
++    const stored = (await getArtifactText(issue.primary_artifact_id)).markdown;
++    expect([...stored.matchAll(/:::ask\{#([^ }]+)/g)].map((match) => match[1])).toEqual([
++      copy?.block_id,
++      "decision",
++    ]);
++    const held = (await getAsk(blockAsk.id)).ask;
++    expect({ block: held.block_id, question: held.question, state: held.state }).toEqual({
++      block: "decision",
++      question: "Which one?",
++      state: "answered",
++    });
++  } finally {
++    await alice.close();
++  }
++});
++
++// The editor's own HTML cleanup still runs on a paste: a paste from Google Docs arrives wrapped in
++// <b id="docs-internal-guid-…">, which the editor unwraps, so the text pastes as written rather
++// than bold. The typed-block header strip runs after it and replaced it once.
++test("a paste from Google Docs keeps the editor's own cleanup of its wrapper", async ({
++  browser,
++}) => {
++  const { alice, issue, page } = await openAtEndOfEnd(browser, "Pasted wrapper");
++  try {
++    await paste(page, {
++      html: '<b id="docs-internal-guid-4a1b2c3d-7fff"><p>Wrapped words</p></b>',
++      text: "Wrapped words",
++    });
++
++    await expect
++      .poll(async () => (await getArtifactText(issue.primary_artifact_id)).markdown)
++      .toBe("End.Wrapped words\n");
++  } finally {
++    await alice.close();
++  }
++});
++
++// Typed blocks pasted as plain text are read as markdown, and the editor renders what it parsed
++// to HTML before parsing that back: the rendering carries a typed block's section and content
++// only, so a pasted decision's question and a callout's text arrive as written, never with the
++// block's attribute list in front of them.
++test("an ask and a callout pasted together as plain text arrive as written", async ({
++  browser,
++}) => {
++  const { alice, issue, page } = await openAtEndOfEnd(browser, "Plain text paste");
++  try {
++    await paste(page, {
++      html: "",
++      text:
++        ':::ask{#d2 urgency="med" multiple="false"}\nWhich one?\n\n- A\n- B\n:::\n\n' +
++        ':::callout{#c2 kind="warning" title="Risk"}\nCareful.\n:::\n',
++    });
++
++    await expect
++      .poll(async () => (await getIssue(issue.key)).open_asks.map((ask) => ask.question))
++      .toEqual(["Which one?"]);
++    const stored = (await getArtifactText(issue.primary_artifact_id)).markdown;
++    expect(stored).toMatch(/:::callout\{#c2[^}]*\}\nCareful\.\n:::/);
++  } finally {
++    await alice.close();
++  }
++});
+diff --git a/packages/dispatch/package.json b/packages/dispatch/package.json
+index 2637d44b4f7..f5a0d6d5bbc 100644
+--- a/packages/dispatch/package.json
++++ b/packages/dispatch/package.json
+@@ -31,7 +31,7 @@
+     "@dnd-kit/core": "^6.3.1",
+     "@dnd-kit/sortable": "^10.0.0",
+     "@hocuspocus/provider": "^2.15.2",
+-    "@sjawhar/proof-editor": "0.3.12",
++    "@sjawhar/proof-editor": "0.3.13",
+     "@legion/contracts": "workspace:*",
+     "@milkdown/core": "^7.18.0",
+     "@milkdown/kit": "^7.18.0",
+diff --git a/packages/dispatch/web/src/features/doc/ProofDocument.tsx b/packages/dispatch/web/src/features/doc/ProofDocument.tsx
+index 0375e12053b..6ae5e011823 100644
+--- a/packages/dispatch/web/src/features/doc/ProofDocument.tsx
++++ b/packages/dispatch/web/src/features/doc/ProofDocument.tsx
+@@ -32,7 +32,7 @@ import {
+   parseDispatchReference,
+ } from "../refs/routes";
+ import { AskBlockCard } from "./AskBlockCard";
+-import { type AskBlockHost, installAskBlockView, renderTypedBlock } from "./ask-block";
++import { type AskBlockHost, installTypedBlocks } from "./ask-block";
+ import type { ConnectionState, DocumentConnection } from "./connection";
+ import { colorForLogin } from "./connection";
+ import { bindRemoteMarks, type EditorHandle } from "./editor";
+@@ -385,7 +385,6 @@ export function ProofDocument({
+               onMarkClick: (markId) => marginRef.current.focusItemForMark(markId),
+               onMarkHover: (markId) => marginRef.current.hoverItemForMark(markId),
+               readOnly: isClosedRef.current || schemaReadOnlyRef.current,
+-              renderBlock: renderTypedBlock,
+               user: {
+                 color: colorForLogin(userRef.current.login),
+                 name: userRef.current.login,
+@@ -400,7 +399,7 @@ export function ProofDocument({
+                 }
+                 editor = handle;
+                 editorRef.current = handle;
+-                installAskBlockView(handle.view, setAskBlockHosts);
++                installTypedBlocks(handle.view, blockSchema, setAskBlockHosts);
+                 const blockLink = window.location.hash;
+                 if (blockLink.startsWith("#b-")) {
+                   handle.focusBlock(decodeURIComponent(blockLink.slice(3)));
+diff --git a/packages/dispatch/web/src/features/doc/VersionView.tsx b/packages/dispatch/web/src/features/doc/VersionView.tsx
+index 2feba9b3d53..074b7275749 100644
+--- a/packages/dispatch/web/src/features/doc/VersionView.tsx
++++ b/packages/dispatch/web/src/features/doc/VersionView.tsx
+@@ -7,7 +7,7 @@ import { whoAmIQuery } from "../../api/queries";
+ import type { Ask, BlockSchema } from "../../api/types";
+ import { Timestamp } from "../refs/Timestamp";
+ import { AskBlockCard } from "./AskBlockCard";
+-import { type AskBlockHost, installAskBlockView, renderTypedBlock } from "./ask-block";
++import { type AskBlockHost, installTypedBlocks } from "./ask-block";
+ import { colorForLogin } from "./connection";
+ import { createDoc, type EditorHandle } from "./editor";
+ import type { Highlight } from "./highlight";
+@@ -78,7 +78,6 @@ export function VersionView({
+         blockSchema,
+         heatMapMode: "hidden",
+         readOnly: true,
+-        renderBlock: renderTypedBlock,
+         user: { color: colorForLogin(user.login), name: user.login },
+         ydoc: doc,
+       });
+@@ -87,7 +86,7 @@ export function VersionView({
+         editor.destroy();
+         return;
+       }
+-      installAskBlockView(editor.view, setAskBlockHosts);
++      installTypedBlocks(editor.view, blockSchema, setAskBlockHosts);
+       const embedded = highlight === undefined ? undefined : embedHighlight(markdown, highlight);
+       editor.setMarkdown(embedded ?? markdown);
+       setHighlightMissing(highlight !== undefined && embedded === undefined);
+diff --git a/packages/dispatch/web/src/features/doc/ask-block.ts b/packages/dispatch/web/src/features/doc/ask-block.ts
+index f6b1e1ebd15..832b32961e3 100644
+--- a/packages/dispatch/web/src/features/doc/ask-block.ts
++++ b/packages/dispatch/web/src/features/doc/ask-block.ts
+@@ -1,9 +1,12 @@
+-import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
++import {
++  type DOMOutputSpec,
++  DOMSerializer,
++  type Node as ProseMirrorNode,
++} from "@milkdown/kit/prose/model";
+ import { type EditorState, Plugin, PluginKey } from "@milkdown/kit/prose/state";
+ import type { EditorView, NodeView, ViewMutationRecord } from "@milkdown/kit/prose/view";
+-import type { HostBlockRenderer } from "@sjawhar/proof-editor";
+ 
+-import type { AskOption, AskUrgency } from "../../api/types";
++import type { AskOption, AskUrgency, BlockSchema } from "../../api/types";
+ import {
+   askBlockTint,
+   askUrgencyAccent,
+@@ -13,32 +16,74 @@ import {
+ } from "../../theme/classes";
+ import { URGENCY_LABELS } from "../inbox/ask-urgency";
+ 
+-/** Renders a document's host-owned typed blocks other than `ask`, which `AskBlockView` owns. */
+-export const renderTypedBlock: HostBlockRenderer = (node) => [
+-  "section",
+-  {
+-    class: `proof-typed-block proof-typed-block-${node.type.name}`,
+-    "data-proof-block-type": node.type.name,
+-  },
+-  [
+-    "header",
+-    { "data-proof-block-summary": "" },
+-    ["span", { "data-proof-block-name": "" }, node.type.name],
++/**
++ * Draws a document's host-owned typed blocks other than `ask`, which `AskBlockView` owns: the
++ * block's name and attributes as a header the reader sees, above its content. It is the node
++ * view's drawing (`typedBlockView`), never the node's `toDOM`: HTML of the document - a copy, a
++ * drag, or the editor's plain-text paste, which renders the markdown it parsed through `toDOM` -
++ * carries only the block's section and content, which is all its parse rule reads.
++ */
++export function renderTypedBlock(node: ProseMirrorNode): DOMOutputSpec {
++  return [
++    "section",
++    {
++      class: `proof-typed-block proof-typed-block-${node.type.name}`,
++      "data-proof-block-type": node.type.name,
++    },
+     [
+-      "dl",
+-      { "data-proof-block-attributes": "" },
+-      ...Object.entries(node.attrs).flatMap(([name, value]) => [
+-        ["dt", {}, name],
+-        [
+-          "dd",
+-          { "data-proof-block-attribute": name },
+-          Array.isArray(value) ? JSON.stringify(value) : String(value),
+-        ],
+-      ]),
++      "header",
++      { contenteditable: "false", "data-proof-block-summary": "" },
++      ["span", { "data-proof-block-name": "" }, node.type.name],
++      [
++        "dl",
++        { "data-proof-block-attributes": "" },
++        ...Object.entries(node.attrs).flatMap(([name, value]) => [
++          ["dt", {}, name],
++          [
++            "dd",
++            { "data-proof-block-attribute": name },
++            Array.isArray(value) ? JSON.stringify(value) : String(value),
++          ],
++        ]),
++      ],
+     ],
+-  ],
+-  ["div", { "data-proof-block-content": "" }, 0],
+-];
++    ["div", { "data-proof-block-content": "" }, 0],
++  ];
++}
++
++/** The node view of a host-owned typed block other than `ask`: `renderTypedBlock`'s drawing,
++ * under the block's id. It stamps `data-block-id` the way `AskBlockView` does, from the node's
++ * attribute, since a value import from the editor library would pull the library out of
++ * `editor.ts`'s lazy chunk into every page that loads this module. */
++function typedBlockView(node: ProseMirrorNode, document: Document): NodeView {
++  const { dom, contentDOM } = DOMSerializer.renderSpec(document, renderTypedBlock(node));
++  const blockId = node.attrs.blockId;
++  if (typeof blockId === "string" && blockId !== "") {
++    (dom as HTMLElement).dataset.blockId = blockId;
++  }
++  return { contentDOM, dom };
++}
++
++/** The header `renderTypedBlock` draws inside a typed block's section. */
++const typedBlockHeader = "section[data-proof-block-type] > header[data-proof-block-summary]";
++
++/**
++ * Pasted HTML without the attribute header `renderTypedBlock` draws, which a tab on an older build
++ * copies: a typed block's parse rule reads every child of its section as content, so a pasted
++ * header would come back as the block's first paragraphs.
++ */
++function withoutTypedBlockHeaders(html: string, document: Document): string {
++  const template = document.createElement("template");
++  template.innerHTML = html;
++  const headers = template.content.querySelectorAll(typedBlockHeader);
++  if (headers.length === 0) {
++    return html;
++  }
++  for (const header of headers) {
++    header.remove();
++  }
++  return template.innerHTML;
++}
+ 
+ /** What an `ask` node says about itself, read once per render from its attributes and content. */
+ export interface AskBlockFacts {
+@@ -258,13 +303,18 @@ export const askBlockEditingPlugin = new Plugin({
+   },
+ });
+ 
+-/** Mounts `AskBlockView` for every `ask` node in the editor, keeping the library's other node
+- * views, adds `askBlockEditingPlugin`, and reports the live set of hosts (in document order)
+- * whenever it changes. Call once per editor, right after it is created. */
+-export function installAskBlockView(
++/** Installs the document's typed blocks in the editor: `AskBlockView` for every `ask` node,
++ * reporting the live set of hosts (in document order) whenever it changes, and
++ * `renderTypedBlock`'s node view for every other type in the block schema, keeping the library's
++ * other node views; `askBlockEditingPlugin`; and the removal of `renderTypedBlock`'s header from
++ * pasted HTML, after the editor's own cleanup of it (a Google Docs wrapper, for one). Call once
++ * per editor, right after it is created. */
++export function installTypedBlocks(
+   view: EditorView,
++  blockSchema: BlockSchema,
+   onHostsChange: (hosts: readonly AskBlockHost[]) => void
+ ): void {
++  const previousTransform = view.props.transformPastedHTML;
+   const registry = new Map<number, AskBlockHost>();
+   const publish = () => {
+     onHostsChange(
+@@ -278,8 +328,21 @@ export function installAskBlockView(
+   view.setProps({
+     nodeViews: {
+       ...view.props.nodeViews,
++      ...Object.fromEntries(
++        blockSchema.types
++          .filter((type) => type.name !== "ask")
++          .map((type) => [
++            type.name,
++            (node: ProseMirrorNode) => typedBlockView(node, view.dom.ownerDocument),
++          ])
++      ),
+       ask: (node) => new AskBlockView(node, view.dom.ownerDocument, registry, publish),
+     },
+     plugins: [...(view.props.plugins ?? []), askBlockEditingPlugin],
++    transformPastedHTML: (pasted, pastedView) =>
++      withoutTypedBlockHeaders(
++        previousTransform ? previousTransform(pasted, pastedView) : pasted,
++        view.dom.ownerDocument
++      ),
+   });
+ }
+diff --git a/packages/envoy/internal/dispatch/pmdoc/gen/bun.lock b/packages/envoy/internal/dispatch/pmdoc/gen/bun.lock
+index da9b55efca3..7b4a428808a 100644
+--- a/packages/envoy/internal/dispatch/pmdoc/gen/bun.lock
++++ b/packages/envoy/internal/dispatch/pmdoc/gen/bun.lock
+@@ -5,7 +5,7 @@
+     "": {
+       "name": "pmdoc-fixtures",
+       "dependencies": {
+-        "@sjawhar/proof-editor": "0.3.12",
++        "@sjawhar/proof-editor": "0.3.13",
+         "prosemirror-model": "^1.25.11",
+         "prosemirror-transform": "^1.12.1",
+         "y-prosemirror": "^1.3.7",
+@@ -172,7 +172,7 @@
+ 
+     "@shuding/opentype.js": ["@shuding/opentype.js@1.4.0-beta.0", "", { "dependencies": { "fflate": "^0.7.3", "string.prototype.codepointat": "^0.2.1" }, "bin": { "ot": "bin/ot" } }, "sha512-3NgmNyH3l/Hv6EvsWJbsvpcpUba6R8IREQ83nH83cyakCw7uM1arZKNfHwv1Wz6jgqrF/j4x5ELvR6PnK9nTcA=="],
+ 
+-    "@sjawhar/proof-editor": ["@sjawhar/proof-editor@0.3.12", "", { "dependencies": { "@aws-sdk/client-s3": "^3.879.0", "@fontsource/ibm-plex-sans": "^5.2.8", "@handlewithcare/prosemirror-suggest-changes": "^0.1.8", "@hocuspocus/provider": "^2.15.2", "@hocuspocus/server": "^2.15.2", "@milkdown/core": "^7.5.0", "@milkdown/kit": "^7.5.0", "@milkdown/plugin-clipboard": "^7.5.0", "@milkdown/plugin-collab": "^7.18.0", "@milkdown/plugin-cursor": "^7.5.0", "@milkdown/plugin-history": "^7.5.0", "@milkdown/plugin-listener": "^7.5.0", "@milkdown/plugin-prism": "^7.18.0", "@milkdown/preset-commonmark": "^7.5.0", "@milkdown/preset-gfm": "^7.5.0", "@milkdown/theme-nord": "^7.5.0", "@resvg/resvg-js": "^2.6.2", "beautiful-mermaid": "^1.1.3", "better-sqlite3": "^12.6.2", "express": "^5.2.1", "mdast-util-directive": "^3.1.0", "micromark-extension-directive": "^4.0.0", "prismjs": "^1.30.0", "remark-frontmatter": "^5.0.0", "remark-gfm": "^4.0.1", "satori": "^0.24.1", "web-haptics": "^0.0.6", "wink-eng-lite-web-model": "^1.2.1", "wink-nlp": "^2.1.0", "ws": "^8.19.0", "y-indexeddb": "^9.0.12", "y-prosemirror": "^1.2.19", "y-websocket": "^3.0.0", "yjs": "^13.6.20", "zod": "^3.22.0" }, "peerDependencies": { "@milkdown/prose": "^7.5.0", "@milkdown/transformer": "^7.5.0", "remark-parse": "^11.0.0", "remark-stringify": "^11.0.0", "unified": "^11.0.0", "y-protocols": "^1.0.5" }, "optionalPeers": ["@milkdown/transformer", "remark-parse", "remark-stringify", "unified", "y-protocols"] }, "sha512-ftTZssbIba817gU9jYuTSx/m2pu6A+u3hNX9SCy/iF/UBw1Dn+29GxAxm4GmZDvyj6TQOsLLgD6nXeoM6n9yQg=="],
++    "@sjawhar/proof-editor": ["@sjawhar/proof-editor@0.3.13", "", { "dependencies": { "@aws-sdk/client-s3": "^3.879.0", "@fontsource/ibm-plex-sans": "^5.2.8", "@handlewithcare/prosemirror-suggest-changes": "^0.1.8", "@hocuspocus/provider": "^2.15.2", "@hocuspocus/server": "^2.15.2", "@milkdown/core": "^7.5.0", "@milkdown/kit": "^7.5.0", "@milkdown/plugin-clipboard": "^7.5.0", "@milkdown/plugin-collab": "^7.18.0", "@milkdown/plugin-cursor": "^7.5.0", "@milkdown/plugin-history": "^7.5.0", "@milkdown/plugin-listener": "^7.5.0", "@milkdown/plugin-prism": "^7.18.0", "@milkdown/preset-commonmark": "^7.5.0", "@milkdown/preset-gfm": "^7.5.0", "@milkdown/theme-nord": "^7.5.0", "@resvg/resvg-js": "^2.6.2", "beautiful-mermaid": "^1.1.3", "better-sqlite3": "^12.6.2", "express": "^5.2.1", "mdast-util-directive": "^3.1.0", "micromark-extension-directive": "^4.0.0", "prismjs": "^1.30.0", "remark-frontmatter": "^5.0.0", "remark-gfm": "^4.0.1", "satori": "^0.24.1", "web-haptics": "^0.0.6", "wink-eng-lite-web-model": "^1.2.1", "wink-nlp": "^2.1.0", "ws": "^8.19.0", "y-indexeddb": "^9.0.12", "y-prosemirror": "^1.2.19", "y-websocket": "^3.0.0", "yjs": "^13.6.20", "zod": "^3.22.0" }, "peerDependencies": { "@milkdown/prose": "^7.5.0", "@milkdown/transformer": "^7.5.0", "remark-parse": "^11.0.0", "remark-stringify": "^11.0.0", "unified": "^11.0.0", "y-protocols": "^1.0.5" }, "optionalPeers": ["@milkdown/transformer", "remark-parse", "remark-stringify", "unified", "y-protocols"] }, "sha512-zPLNZ2EduJNe6DIZMxms0kvvig/MQBYg6T44GKtTkb5GUjXBwAJHBM+vmq0MfCAUvJjq/Oc80BSCxRCcHSbkYw=="],
+ 
+     "@smithy/core": ["@smithy/core@3.33.3", "", { "dependencies": { "@smithy/types": "^4.17.2", "tslib": "^2.6.2" } }, "sha512-CsOeKq/9kA3y6VJHt+/+VTCtBaxJ4OTFpgrjIUhPpDIKxBci1k2bJaQASF2h/ELWrulGp+t97DZ0mevfAD8idg=="],
+ 
+diff --git a/packages/envoy/internal/dispatch/pmdoc/gen/package.json b/packages/envoy/internal/dispatch/pmdoc/gen/package.json
+index 08160c772ac..1bcd4efdcbe 100644
+--- a/packages/envoy/internal/dispatch/pmdoc/gen/package.json
++++ b/packages/envoy/internal/dispatch/pmdoc/gen/package.json
+@@ -7,7 +7,7 @@
+     "check": "bun run gen.ts --check"
+   },
+   "dependencies": {
+-    "@sjawhar/proof-editor": "0.3.12",
++    "@sjawhar/proof-editor": "0.3.13",
+     "prosemirror-model": "^1.25.11",
+     "prosemirror-transform": "^1.12.1",
+     "y-prosemirror": "^1.3.7",
+diff --git a/patches/@sjawhar%2Fproof-editor@0.3.12.patch b/patches/@sjawhar%2Fproof-editor@0.3.13.patch
+similarity index 100%
+rename from patches/@sjawhar%2Fproof-editor@0.3.12.patch
+rename to patches/@sjawhar%2Fproof-editor@0.3.13.patch

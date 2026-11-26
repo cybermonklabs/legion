@@ -11,7 +11,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -28,18 +27,15 @@ const narrowWindow = 7 * 24 * time.Hour
 // shipped), a run that failed, and run 304, which ships nothing new. #5 and #6 name issues and
 // sessions, so their titles
 // leave with them.
-func seedNarrowingFixture(t *testing.T, database *store.Store) delivery.DeliverySettings {
+func seedNarrowingFixture(t *testing.T, database *store.Store) *delivery.SourceRules {
 	t.Helper()
 	ctx := t.Context()
 	pool := database.Pool
-	settings, err := delivery.PutSettings(ctx, pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, pool, delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
 		ProductionJobNames: []string{"release / release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 		PopulationAuthors: []string{"octocat", "hubot"},
-	}, model.Actor{Kind: "system", ID: "test"})
-	if err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
+	})
 	seedDeliveryIssueFacts(t, database)
 	recordSessionTitles(t, database, narrowFrom.Add(-time.Hour), map[string]string{"s1": "Planner", "s2": "Reviewer"})
 
@@ -105,7 +101,7 @@ func seedNarrowingFixture(t *testing.T, database *store.Store) delivery.Delivery
 			t.Fatalf("seed run %d's jobs: %v", run.id, err)
 		}
 	}
-	return settings
+	return seededDeliveryRules(t, pool)
 }
 
 // asJSONTree is v as decoded JSON, without its computed_at fields: what the routes answer, compared
@@ -166,7 +162,7 @@ func assertSameTree(t *testing.T, what string, got, want map[string]any) {
 func TestANarrowedPopulationComputesWhatAFreshReadReturns(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
-	settings := seedNarrowingFixture(t, database)
+	rules := seedNarrowingFixture(t, database)
 	s := directServer(deps)
 	ctx := t.Context()
 	from, to := narrowFrom, narrowFrom.Add(narrowWindow)
@@ -178,11 +174,11 @@ func TestANarrowedPopulationComputesWhatAFreshReadReturns(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse %q: %v", rawQuery, err)
 		}
-		timeline, err := s.readDeliveryPopulation(ctx, settings, from, to, query, true)
+		timeline, err := s.readDeliveryPopulation(ctx, rules, from, to, query, true)
 		if err != nil {
 			t.Fatalf("read the timeline population: %v", err)
 		}
-		measured, err := s.readDeliveryPopulation(ctx, settings, from, to, query, false)
+		measured, err := s.readDeliveryPopulation(ctx, rules, from, to, query, false)
 		if err != nil {
 			t.Fatalf("read the measures population: %v", err)
 		}
@@ -194,10 +190,10 @@ func TestANarrowedPopulationComputesWhatAFreshReadReturns(t *testing.T) {
 			}
 			label := window
 
-			got := deliveryTimelineCompute(settings, timeline.narrowedTo(settings, narrowedFrom), narrowedFrom, narrowedTo, narrowedTo)
+			got := deliveryTimelineCompute(rules, timeline.narrowedTo(rules, narrowedFrom), narrowedFrom, narrowedTo, narrowedTo)
 			assertSameTree(t, "timeline "+label, asJSONTree(t, got), asJSONTree(t, getRaw(t, handler, "/api/v1/delivery/timeline?"+window)))
 
-			gotMeasures := deliveryMeasuresCompute(settings, measured.narrowedTo(settings, narrowedFrom), narrowedFrom, narrowedTo, narrowedTo)
+			gotMeasures := deliveryMeasuresCompute(rules, measured.narrowedTo(rules, narrowedFrom), narrowedFrom, narrowedTo, narrowedTo)
 			assertSameTree(t, "measures "+label, asJSONTree(t, gotMeasures), asJSONTree(t, getRaw(t, handler, "/api/v1/delivery/measures?"+window)))
 		}
 	}
@@ -207,12 +203,12 @@ func TestANarrowedPopulationComputesWhatAFreshReadReturns(t *testing.T) {
 	// without joining the waiting line (#4 and #5 shipped three hours in by run 302, whose head
 	// follows their merges; #6 is another repository's); by from+3d only #7 remains, and #6's issue
 	// and session titles have gone.
-	timeline, err := s.readDeliveryPopulation(ctx, settings, from, to, url.Values{}, true)
+	timeline, err := s.readDeliveryPopulation(ctx, rules, from, to, url.Values{}, true)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
 	narrowedBody := func(at time.Time) deliveryTimelineWithMeasures {
-		return deliveryTimelineCompute(settings, timeline.narrowedTo(settings, at), at, to.Add(at.Sub(from)), at)
+		return deliveryTimelineCompute(rules, timeline.narrowedTo(rules, at), at, to.Add(at.Sub(from)), at)
 	}
 	shipsAt := func(waiting delivery.DeliveryWaitingPRView, merged, deployed time.Duration) bool {
 		return waiting.MergedAt.Equal(narrowFrom.Add(merged)) && waiting.DeployedAt != nil && waiting.DeployedAt.Equal(narrowFrom.Add(deployed))
@@ -247,12 +243,8 @@ func TestANarrowedPopulationComputesWhatAFreshReadReturns(t *testing.T) {
 func TestANarrowedPipelinePopulationComputesWhatAFreshReadReturns(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
-	settings := pipelineSettings()
-	seedPipelineFixture(t, database, settings)
-	settings, err := delivery.GetSettings(t.Context(), database.Pool)
-	if err != nil {
-		t.Fatalf("read settings: %v", err)
-	}
+	seedPipelineFixture(t, database, pipelineSettings())
+	rules := seededDeliveryRules(t, database.Pool)
 	for _, pr := range []struct {
 		number          int
 		created, merged time.Time
@@ -272,14 +264,14 @@ func TestANarrowedPipelinePopulationComputesWhatAFreshReadReturns(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	pop, err := directServer(deps).readPipelinePopulation(t.Context(), settings, at)
+	pop, err := directServer(deps).readPipelinePopulation(t.Context(), rules, at)
 	if err != nil {
 		t.Fatalf("read the pipeline population: %v", err)
 	}
 	// The earliest timed run completed in the 24 hours before at is run 3, at 13:30 on Oct 1.
 	failingEdge := pipelineFixtureTime(31, 13, 30).Add(measures.FailingWindow + time.Second)
 	for _, later := range []time.Time{failingEdge, time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)} {
-		got := deliveryPipelineCompute(settings, pop.narrowedTo(settings, later), later, later)
+		got := deliveryPipelineCompute(rules, pop.narrowedTo(rules, later), later, later)
 		want := getRaw(t, handler, "/api/v1/delivery/pipeline?at="+later.Format(time.RFC3339))
 		assertSameTree(t, "pipeline at "+later.Format(time.RFC3339), asJSONTree(t, got), asJSONTree(t, want))
 	}
@@ -319,9 +311,9 @@ func TestNextExpiryIsMidnightWhenNothingLeavesSooner(t *testing.T) {
 	}
 }
 
-// TestPipelineNextExpiryIsTheFailingWindowEdge: the Pipeline's next expiry is just past the
-// earliest timed PR-checks result's completion plus FailingWindow when that comes before the next
-// UTC midnight, and the midnight otherwise.
+// TestPipelineNextExpiryIsTheFailingWindowEdge: the Pipeline's next expiry (failingJobsNextExpiry
+// over its PR-checks runs) is just past the earliest timed PR-checks result's completion plus
+// FailingWindow when that comes before the next UTC midnight, and the midnight otherwise.
 func TestPipelineNextExpiryIsTheFailingWindowEdge(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
@@ -331,11 +323,11 @@ func TestPipelineNextExpiryIsTheFailingWindowEdge(t *testing.T) {
 		{RunID: 2, StartedAt: now.Add(-time.Hour), CompletedAt: new(now.Add(-30 * time.Minute)), Conclusion: new(delivery.DeliveryRunConclusionSuccess)},
 	}}}
 	want := completed.Add(measures.FailingWindow).Add(time.Nanosecond)
-	if got := pipelineNextExpiry(pop, now); !got.Equal(want) {
-		t.Fatalf("pipelineNextExpiry = %v, want %v (run 1 leaving the failing window)", got, want)
+	if got := failingJobsNextExpiry(pop.checks.Runs, now); !got.Equal(want) {
+		t.Fatalf("failingJobsNextExpiry = %v, want %v (run 1 leaving the failing window)", got, want)
 	}
 	late := time.Date(2026, 9, 10, 22, 0, 0, 0, time.UTC)
-	if got, midnight := pipelineNextExpiry(pop, late), time.Date(2026, 9, 11, 0, 0, 0, 0, time.UTC); !got.Equal(midnight) {
-		t.Fatalf("pipelineNextExpiry at 22:00 = %v, want the next UTC midnight %v", got, midnight)
+	if got, midnight := failingJobsNextExpiry(pop.checks.Runs, late), time.Date(2026, 9, 11, 0, 0, 0, 0, time.UTC); !got.Equal(midnight) {
+		t.Fatalf("failingJobsNextExpiry at 22:00 = %v, want the next UTC midnight %v", got, midnight)
 	}
 }

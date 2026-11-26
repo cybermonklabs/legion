@@ -762,6 +762,13 @@ test("parses and builds project, documents, and document routes with version and
     kind: "documents",
     project: "CORE",
   });
+  // The project's own settings, its delivery settings among them, live at /settings.
+  expect(parseProjectPath("/projects/CORE/settings")).toEqual({
+    kind: "settings",
+    project: "CORE",
+  });
+  expect(buildProjectPath({ kind: "settings", project: "CORE" })).toBe("/projects/CORE/settings");
+  expect(parseProjectPath("/projects/CORE/settings/delivery")).toBeUndefined();
   expect(
     parseProjectPath("/projects/CORE/documents/design-notes", "?version=3&comment=note-1")
   ).toEqual({
@@ -780,6 +787,15 @@ test("parses and builds project, documents, and document routes with version and
       version: 2,
     })
   ).toBe("/projects/CORE/documents/design-notes?version=2&ask=ask-1");
+});
+
+test("parses and builds the Evals tab, whose window and filters are no part of the route", () => {
+  expect(parseProjectPath("/projects/CORE/evals")).toEqual({ kind: "evals", project: "CORE" });
+  expect(
+    parseProjectPath("/projects/CORE/evals", "?window=84d&compare=off&repo=acme%2Fwidgets")
+  ).toEqual({ kind: "evals", project: "CORE" });
+  expect(buildProjectPath({ kind: "evals", project: "CORE" })).toBe("/projects/CORE/evals");
+  expect(parseProjectPath("/projects/CORE/evals/deploy-frequency")).toBeUndefined();
 });
 
 test("maps dispatch project artifact references onto the document path and back", () => {

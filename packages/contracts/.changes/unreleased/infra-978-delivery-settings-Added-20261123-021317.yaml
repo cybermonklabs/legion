@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  The contract carries the per-project delivery settings route (`/api/v1/projects/{key}/settings/delivery`,
+  with its deploy sources and each source's `reconciled_through`) and the record of deploys and
+  failed changes (`/api/v1/projects/{key}/production-events`, `ProductionEvent`). The delivery
+  measures' `change_failure_rate` is now `{failed, total, rate}` and `time_to_restore`
+  `{n, median_minutes, not_restored}`, each null where no day part of it was folded, and
+  `deployment_rework_rate` (`{restoring, total, rate}`, null alike) is added beside them. The
+  change fail rate's `upper_bound` and `per_pr` parts, the pending flag counts, the measures
+  answer's `flags_source` and `status.change_failure_rate_upper_bound` are removed.
+time: 2026-11-23T02:13:17Z
+custom:
+    Issue: INFRA-978

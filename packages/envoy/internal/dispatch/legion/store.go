@@ -293,7 +293,7 @@ type Current struct {
 // state keeps its `phase` row, written `null` when it left: it stays a Legion issue, so a child of
 // it climbs through it to the tree above, while it carries no card and no tree, since its `tree`
 // was written `null` with the rest. The rows under AdmissionKey belong to no issue — the admission
-// block and the daemon's settings — so they report nothing.
+// block, the daemon's settings and its controller session — so they report nothing.
 func ReadCurrent(ctx context.Context, db Queryer, project string) (Current, error) {
 	rows, err := db.Query(ctx, `
 		select issue_key, field, nullif(value, 'null'::jsonb), observed_at
@@ -329,4 +329,29 @@ func ReadCurrent(ctx context.Context, db Queryer, project string) (Current, erro
 		return Current{}, fmt.Errorf("read the current Legion state of %s: %w", project, err)
 	}
 	return current, nil
+}
+
+// ControllerSession is the session project's daemon names as its registered controller, from the
+// newest good read (FieldController), and false where the daemon names none or Dispatch has read
+// no state of it. The reject of a production event proves the project's controller by it
+// (dispatch://INFRA-978, R8): a caller whose own session a credential proved and equals it.
+func ControllerSession(ctx context.Context, db Queryer, project string) (string, bool, error) {
+	rows, err := db.Query(ctx, `
+		select value #>> '{}' from legion_current
+		where project = $1 and issue_key = $2 and field = $3 and jsonb_typeof(value) = 'string'
+	`, project, AdmissionKey, FieldController)
+	if err != nil {
+		return "", false, fmt.Errorf("read %s's controller session: %w", project, err)
+	}
+	defer rows.Close()
+	session := ""
+	for rows.Next() {
+		if err := rows.Scan(&session); err != nil {
+			return "", false, fmt.Errorf("read %s's controller session: %w", project, err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", false, fmt.Errorf("read %s's controller session: %w", project, err)
+	}
+	return session, session != "", nil
 }

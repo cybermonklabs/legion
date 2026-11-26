@@ -30,7 +30,6 @@ function renderPage() {
  *  loading states. */
 function stubUnrelatedQueries() {
   return {
-    getDeliverySettings: spyOn(api, "getDeliverySettings").mockResolvedValue(null),
     getLegionDaemon: spyOn(api, "getLegionDaemon").mockResolvedValue(null),
     getSignIns: spyOn(api, "getSignIns").mockResolvedValue({ signins: [] }),
     listAgentTokens: spyOn(api, "listAgentTokens").mockResolvedValue([]),
@@ -57,6 +56,48 @@ test("hides the Live grants section on a Dispatch with no secrets broker", async
   } finally {
     cleanup();
     getCredentialPending.mockRestore();
+    for (const spy of Object.values(unrelated)) {
+      spy.mockRestore();
+    }
+  }
+});
+
+// Each project's delivery settings live on its own settings tab (`DeliverySettingsSection`), so the
+// deployment's Settings page holds no delivery form and reads no delivery settings.
+test("holds no delivery settings form and reads no project's delivery settings", async () => {
+  const unrelated = stubUnrelatedQueries();
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
+  const getProjectDeliverySettings = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(
+    null
+  );
+
+  // One project, drawn before the check, so a per-project read of its delivery settings would
+  // have been made by then.
+  unrelated.listProjects.mockResolvedValue([
+    {
+      created_at: "2026-09-10T00:00:00Z",
+      gated_steps: [],
+      key: "ACME",
+      name: "Acme",
+      open_asks: 0,
+      proven_sessions: false,
+    },
+  ]);
+
+  try {
+    renderPage();
+
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeDefined();
+    expect((await screen.findAllByText("ACME")).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("heading", { name: "Delivery timeline" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Save delivery settings" })
+    ).not.toBeInTheDocument();
+    expect(getProjectDeliverySettings).not.toHaveBeenCalled();
+  } finally {
+    cleanup();
+    getCredentialPending.mockRestore();
+    getProjectDeliverySettings.mockRestore();
     for (const spy of Object.values(unrelated)) {
       spy.mockRestore();
     }

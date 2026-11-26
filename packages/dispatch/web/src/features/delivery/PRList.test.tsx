@@ -1,9 +1,10 @@
-import { expect, test } from "bun:test";
-import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import type { DeliveryPR } from "../../api/types";
-import { OVERSCAN_ROWS, ROW_HEIGHT_PX, scrollTopToShowRow, visibleRowRange } from "./lib/prList";
+import { SORT_MARK_WIDTH } from "../../components/DataTable";
+import { tableStorageKey } from "../project/issues-table-storage";
 import { PRList } from "./PRList";
 
 const base: DeliveryPR = {
@@ -32,13 +33,22 @@ const base: DeliveryPR = {
   url: "https://github.com/acme/widgets/pull/1",
 };
 
-/** `count` pull requests, newest merge first by number, so the default sort (merged, newest
- *  first) lists them as #1, #2, ... */
+/** Where the list keeps the reader's widths, order and visibility of its columns. */
+const LAYOUT_KEY = tableStorageKey("delivery-pr-list");
+
+const restores: (() => void)[] = [];
+afterEach(() => {
+  cleanup();
+  for (const restore of restores.splice(0)) restore();
+  localStorage.removeItem(LAYOUT_KEY);
+});
+
+/** `count` pull requests, oldest merge first, each a minute after the one before. */
 function prs(count: number): DeliveryPR[] {
   return Array.from({ length: count }, (_, i) => ({
     ...base,
     id: `acme/widgets#${i + 1}`,
-    merged_at: new Date(Date.parse("2024-06-02T00:00:00Z") - (i + 1) * 60_000).toISOString(),
+    merged_at: new Date(Date.parse("2024-06-01T00:00:00Z") + (i + 1) * 60_000).toISOString(),
     number: i + 1,
     title: `feat: widget ${i + 1}`,
     url: `https://github.com/acme/widgets/pull/${i + 1}`,
@@ -48,7 +58,8 @@ function prs(count: number): DeliveryPR[] {
 function renderList(
   rows: DeliveryPR[],
   onSelect = (_id: string) => {},
-  onSelectRun = (_id: number) => {}
+  onSelectRun = (_id: number) => {},
+  selectedId: string | undefined = undefined
 ) {
   return render(
     <PRList
@@ -59,103 +70,126 @@ function renderList(
       onSelect={onSelect}
       onSelectRun={onSelectRun}
       prs={rows}
-      selectedId={undefined}
+      selectedId={selectedId}
     />
   );
 }
 
-/** The body rows rendered, by their 1-based row number (the header is row 1). */
-function renderedRowIndexes(): number[] {
-  return [...document.querySelectorAll("tbody tr[aria-rowindex]")].map((row) =>
-    Number(row.getAttribute("aria-rowindex"))
+/** The rows the list draws, by their pull request, in order. */
+function listed(): string[] {
+  const table = screen.getByRole("table", { name: "Merged pull requests" });
+  return [...table.querySelectorAll("tbody [data-row]")].map(
+    (row) => row.getAttribute("data-row") ?? ""
   );
 }
 
-test("the window holds the rows on screen plus the overscan, clamped at both ends", () => {
-  const viewport = 10 * ROW_HEIGHT_PX;
-  expect(visibleRowRange(0, viewport, 1000)).toEqual({ first: 0, last: 10 + OVERSCAN_ROWS });
-  // Scrolled to the very end: the last row is inside the window, and nothing past it.
-  const end = (1000 - 10) * ROW_HEIGHT_PX;
-  expect(visibleRowRange(end, viewport, 1000)).toEqual({ first: 990 - OVERSCAN_ROWS, last: 1000 });
-  // A taller viewport after a resize widens the window by the rows it now shows.
-  expect(visibleRowRange(0, 20 * ROW_HEIGHT_PX, 1000).last).toBe(20 + OVERSCAN_ROWS);
-  expect(visibleRowRange(0, viewport, 5)).toEqual({ first: 0, last: 5 });
-});
-
-test("scrolling to a row moves only as far as it takes to show it below the header", () => {
-  const viewport = 11 * ROW_HEIGHT_PX; // the header plus ten body rows
-  expect(scrollTopToShowRow(3, 0, viewport)).toBe(0);
-  expect(scrollTopToShowRow(10, 0, viewport)).toBe(ROW_HEIGHT_PX);
-  expect(scrollTopToShowRow(2, 5 * ROW_HEIGHT_PX, viewport)).toBe(2 * ROW_HEIGHT_PX);
-});
-
-test("the list renders only its first window of rows, and a taller viewport renders more", () => {
-  const innerHeight = window.innerHeight;
-  window.innerHeight = 10 * ROW_HEIGHT_PX;
-  try {
-    renderList(prs(200));
-    const shown = renderedRowIndexes();
-    expect(shown[0]).toBe(2);
-    expect(shown.length).toBe(10 + OVERSCAN_ROWS);
-  } finally {
-    cleanup();
-    window.innerHeight = innerHeight;
-  }
-});
-
-test("arrowing past the last rendered row renders and focuses the next, and Home and End jump to the ends", async () => {
+test("the list is a table of the one table core: a row per PR, newest merge first, and a header sorts it", async () => {
   const user = userEvent.setup();
-  const innerHeight = window.innerHeight;
-  window.innerHeight = 10 * ROW_HEIGHT_PX;
-  const opened: string[] = [];
-  try {
-    renderList(prs(200), (id) => opened.push(id));
-    const lastRendered = 10 + OVERSCAN_ROWS; // 0-based index of the first row not rendered
-    const rows = () => document.querySelectorAll<HTMLElement>("tbody tr[aria-rowindex]");
-    expect([...rows()].filter((row) => row.tabIndex === 0).length).toBe(1);
+  renderList(prs(3));
+  expect(listed()).toEqual(["acme/widgets#3", "acme/widgets#2", "acme/widgets#1"]);
+  // No row of the list is an issue's.
+  expect(document.querySelector("[data-issue-row]")).toBeNull();
+  const merged = screen.getByRole("columnheader", { name: /^Merged/ });
+  expect(merged).toHaveAttribute("aria-sort", "descending");
 
-    rows()[0]?.focus();
-    for (let i = 0; i < lastRendered; i += 1) {
-      await user.keyboard("{ArrowDown}");
-    }
-    // Row number `lastRendered + 2` (1-based, after the header) was outside the first window.
-    expect(document.activeElement?.getAttribute("aria-rowindex")).toBe(String(lastRendered + 2));
-    expect(document.activeElement?.textContent).toContain(`feat: widget ${lastRendered + 1}`);
-
-    await user.keyboard("{End}");
-    expect(document.activeElement?.getAttribute("aria-rowindex")).toBe("201");
-    await user.keyboard("{Home}");
-    expect(document.activeElement?.getAttribute("aria-rowindex")).toBe("2");
-
-    await user.keyboard("{Enter}");
-    expect(opened).toEqual(["acme/widgets#1"]);
-  } finally {
-    cleanup();
-    window.innerHeight = innerHeight;
-  }
+  await user.click(within(merged).getByRole("button"));
+  expect(listed()).toEqual(["acme/widgets#1", "acme/widgets#2", "acme/widgets#3"]);
 });
 
-test("a deployed row's 'deployed' opens its deploy run, and the row's own click opens the PR", async () => {
+test("a list with no PR says so", () => {
+  renderList([]);
+  expect(screen.getByText("No PRs in the current filter/window.")).toBeInTheDocument();
+});
+
+test("the rows are one keyboard stop: arrows move between them, Home and End jump to the ends, and Enter opens the focused row", async () => {
+  const user = userEvent.setup();
+  const opened: string[] = [];
+  renderList(prs(5), (id) => opened.push(id));
+  const rows = () => [...document.querySelectorAll<HTMLElement>("tbody [data-row]")];
+  expect(rows().filter((row) => row.tabIndex === 0)).toEqual([rows()[0]]);
+
+  rows()[0]?.focus();
+  await user.keyboard("{ArrowDown}{ArrowDown}");
+  expect(document.activeElement?.getAttribute("data-row")).toBe("acme/widgets#3");
+  expect(rows().filter((row) => row.tabIndex === 0)).toEqual([rows()[2]]);
+  await user.keyboard("{End}");
+  expect(document.activeElement?.getAttribute("data-row")).toBe("acme/widgets#1");
+  await user.keyboard("{ArrowDown}");
+  expect(document.activeElement?.getAttribute("data-row")).toBe("acme/widgets#1");
+  await user.keyboard("{Home}");
+  expect(document.activeElement?.getAttribute("data-row")).toBe("acme/widgets#5");
+
+  await user.keyboard("{Enter}");
+  expect(opened).toEqual(["acme/widgets#5"]);
+});
+
+test("a deployed row's 'deployed' opens its deploy run, the row's own click opens the PR, and the open PR's row is selected", async () => {
   const user = userEvent.setup();
   const opened: string[] = [];
   const runs: number[] = [];
-  try {
-    renderList(
-      [
-        {
-          ...base,
-          deploy_run: 500,
-          deployed_at: "2024-06-01T01:40:00Z",
-          deployed_status: "deployed",
-        },
-      ],
-      (id) => opened.push(id),
-      (id) => runs.push(id)
+  renderList(
+    [
+      {
+        ...base,
+        deploy_run: 500,
+        deployed_at: "2024-06-01T01:40:00Z",
+        deployed_status: "deployed",
+      },
+    ],
+    (id) => opened.push(id),
+    (id) => runs.push(id),
+    "acme/widgets#1"
+  );
+  await user.click(screen.getByRole("button", { name: "Open deploy run #500" }));
+  expect(runs).toEqual([500]);
+  expect(opened).toEqual([]);
+
+  await user.click(screen.getByText("feat: widget 1"));
+  expect(opened).toEqual(["acme/widgets#1"]);
+  expect(document.querySelector('[data-row="acme/widgets#1"]')).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+});
+
+// dispatch://INFRA-2918/spec#b-r7: on 2026-11-17 the list cut three headers even unsorted, drawn
+// at 60, 68 and 20 px against their natural 92, 71 and 55. Here the reader's stored widths are
+// those cut ones (Rework's at 36, the narrowest a layout stores), and each header still draws its
+// label and its sort mark's slot whole, sorted or not. happy-dom lays nothing out: each label is
+// given its natural width where the header reads it, a range over what it holds.
+test("its Parent agent, Lead time and Rework headers draw at their natural width, sorted and unsorted", async () => {
+  const user = userEvent.setup();
+  const natural: Readonly<Record<string, number>> = {
+    "Lead time": 71,
+    "Parent agent": 92,
+    Rework: 55,
+  };
+  const range = spyOn(Range.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Range
+  ) {
+    return new DOMRect(0, 0, natural[this.startContainer.textContent ?? ""] ?? 0, 16);
+  });
+  restores.push(() => range.mockRestore());
+  localStorage.setItem(
+    LAYOUT_KEY,
+    JSON.stringify({
+      order: [],
+      sizing: { leadTime: 68, parentAgent: 60, rework: 36 },
+      visibility: {},
+    })
+  );
+  renderList(prs(2));
+
+  const widths = () =>
+    Object.keys(natural).map(
+      (label) => screen.getByRole("columnheader", { name: new RegExp(`^${label}`) }).style.width
     );
-    await user.click(screen.getByRole("button", { name: "Open deploy run #500" }));
-    expect(runs).toEqual([500]);
-    expect(opened).toEqual([]);
-  } finally {
-    cleanup();
+  const whole = Object.values(natural).map((width) => `${width + SORT_MARK_WIDTH}px`);
+  expect(widths()).toEqual(whole);
+  for (const label of Object.keys(natural)) {
+    const header = screen.getByRole("columnheader", { name: new RegExp(`^${label}`) });
+    await user.click(within(header).getByRole("button"));
+    expect(header).toHaveAttribute("aria-sort");
+    expect(widths()).toEqual(whole);
   }
 });

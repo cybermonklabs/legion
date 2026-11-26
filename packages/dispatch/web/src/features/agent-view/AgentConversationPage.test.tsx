@@ -33,7 +33,13 @@ import { answerAgentMessages, answerAgentStates } from "../../__tests__/send-ans
 import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api, NetworkError } from "../../api/client";
 import { liveSocketFor } from "../../api/live-socket";
-import type { Agent, Message, MessageRead, UserAgentStates } from "../../api/types";
+import type {
+  Agent,
+  AuthenticatedUser,
+  Message,
+  MessageRead,
+  UserAgentStates,
+} from "../../api/types";
 import { messageDeliveryFields } from "../agents/delivery-fixture";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -153,18 +159,21 @@ function newClient(): QueryClient {
   return client;
 }
 
-/** Dispatch's reads, signed in as sami, with `agents` the live sessions. */
+/** Dispatch's reads, signed in as sami unless `viewer` names who else `/auth/whoami` answers, with
+ *  `agents` the live sessions. */
 function mockDispatch({
   agentState,
   agents,
   messages,
   putAgentState,
+  viewer = { event_head: "0", kind: "user", login: "sami" },
 }: {
   agentState: UserAgentStates;
   /** The live sessions, or an Error the agent registry read rejects with. */
   agents: Agent[] | Error;
   messages: () => MessageRead[];
   putAgentState: Mock<typeof api.putAgentState>;
+  viewer?: AuthenticatedUser;
 }): void {
   const listAgents = spyOn(api, "listAgents");
   if (agents instanceof Error) {
@@ -173,7 +182,7 @@ function mockDispatch({
     listAgents.mockResolvedValue(agents);
   }
   spies.push(
-    spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "sami" }),
+    spyOn(api, "whoAmI").mockResolvedValue(viewer),
     listAgents,
     spyOn(api, "listAgentMessages").mockImplementation(async () => messages()),
     spyOn(api, "getMyAgentState").mockResolvedValue(agentState),
@@ -261,6 +270,7 @@ function renderLiveView({
   putAgentState,
   replay,
   responding,
+  viewer,
 }: {
   agentState: UserAgentStates;
   /** What the agent list answers in place of SESSION alone: another list, or a failure. */
@@ -271,6 +281,8 @@ function renderLiveView({
   putAgentState: Mock<typeof api.putAgentState>;
   replay?: AgentStreamFrame[];
   responding?: boolean;
+  /** Who `/auth/whoami` answers in place of sami. */
+  viewer?: AuthenticatedUser;
 }): QueryClient & LiveView {
   let thread = messages;
   mockDispatch({
@@ -281,6 +293,7 @@ function renderLiveView({
     ],
     messages: () => thread,
     putAgentState,
+    viewer,
   });
   const queryClient = newClient();
   renderPage(queryClient, SESSION, true, other !== undefined);
@@ -479,6 +492,35 @@ test("the live view attributes other people's messages to the session to their a
     "href",
     "/agents/reviewer-session-id/live"
   );
+});
+
+// An agent viewer of the dashboard wrote none of a session's messages as "you", even when its
+// login label is a person's own - a personal token's owner: every message names its author.
+test("an agent viewer reads no message as its own, each naming its author", async () => {
+  renderLiveView({
+    agentState: {},
+    messages: [
+      { message: message("m1", "Sami: where is the dashboard?"), replies: [] },
+      {
+        message: message("m2", "Alice here: status?", {
+          author: { id: "alice", kind: "user" },
+          created_at: "2026-09-27T21:18:00Z",
+        }),
+        replies: [],
+      },
+    ],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    viewer: { event_head: "0", kind: "agent", login: "sami", session: null },
+  });
+
+  const thread = await screen.findByTestId("agent-thread");
+  await expect(within(thread).findByText("Alice here: status?")).resolves.toBeTruthy();
+  expect(within(thread).queryAllByTestId("agent-message-user")).toEqual([]);
+  expect(
+    within(thread)
+      .getAllByTestId("agent-message-other")
+      .map((node) => node.textContent)
+  ).toEqual(["samiSami: where is the dashboard?", "aliceAlice here: status?"]);
 });
 
 // The header is the agent's own live conversation (exclusion E3): `AgentName` names it by its

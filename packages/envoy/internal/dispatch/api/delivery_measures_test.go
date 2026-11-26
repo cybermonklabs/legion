@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"reflect"
 	"strconv"
@@ -15,7 +16,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -74,6 +74,10 @@ type measuresFixture struct {
 
 const measuresFixtureWindow = "from=2026-08-30T00:00:00Z&to=2026-09-27T20:00:00Z"
 
+// noFailureMeasuresJSON is a measures answer's three failure measures where no one delivery-on
+// project counts a failure source: each null, "no data", which no target judges.
+const noFailureMeasuresJSON = `"change_failure_rate":null,"time_to_restore":null,"deployment_rework_rate":null`
+
 // seedMeasuresFixture writes the fixture's settings, issues, pull requests, runs and jobs through
 // the same store calls intake and reconcile use, so Dispatch derives each PR's deploy from the
 // stored rows (containment.go FirstShippingApply) as it does in production.
@@ -90,13 +94,11 @@ func seedMeasuresFixture(t *testing.T, database *store.Store) measuresFixture {
 		t.Fatalf("decode fixture: %v", err)
 	}
 
-	if _, err := delivery.PutSettings(ctx, pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, pool, delivery.DeliverySettings{
 		DeployRepo: fixture.Settings.DeployRepo, DeployWorkflowPath: fixture.Settings.DeployWorkflowPath,
 		ProductionJobNames: fixture.Settings.ProductionJobNames, PRChecksWorkflowPath: fixture.Settings.PRChecksWorkflowPath,
 		PopulationAuthors: fixture.Settings.PopulationAuthors,
-	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
+	})
 
 	if _, err := pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('ACME', 'Acme', 'alice') on conflict do nothing`); err != nil {
 		t.Fatalf("seed project: %v", err)
@@ -205,13 +207,11 @@ func assertMeasuresSpread(t *testing.T, name string, got measures.Spread, median
 
 func seedMeasuresSettings(t *testing.T, database *store.Store) {
 	t.Helper()
-	if _, err := delivery.PutSettings(t.Context(), database.Pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, database.Pool, delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
 		ProductionJobNames: []string{"widgets-release / widgets-release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 		PopulationAuthors: []string{"octocat"},
-	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
+	})
 }
 
 func TestGetDeliveryMeasuresWithoutSettingsIs404(t *testing.T) {
@@ -237,6 +237,117 @@ func TestGetDeliveryMeasuresRejectsMalformedWindow(t *testing.T) {
 		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_QUERY"`) {
 			t.Errorf("GET %s: status = %d, body = %s, want 400 INVALID_QUERY", target, response.Code, response.Body.String())
 		}
+	}
+}
+
+// TestADeliveryWindowOutsideTheYearsAReadAnswersIsRefused: the delivery routes read their window
+// with the parser the eval reads share (parseOptionalRFC3339), so a from, a to or the Pipeline's
+// at whose UTC year is after 9999 or before 1 is refused 400 INVALID_QUERY naming that parameter,
+// as any other malformed window is, rather than answered with an empty 200 (R18): a to past the
+// year 9999, a to of the year 0, and a from of the year 0 before a to of the year 1, whose year
+// only the from's check reads. A window ending in the year 9999's last hour is answered, as is a
+// Pipeline at in it. The Pipeline's window is at alone, so it is read by at and the others by from
+// and to.
+func TestADeliveryWindowOutsideTheYearsAReadAnswersIsRefused(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	seedMeasuresSettings(t, database)
+	routes := []string{"/api/v1/delivery/timeline", "/api/v1/delivery/measures"}
+	type refusedRead struct{ target, names string }
+	var refused []refusedRead
+	for _, route := range routes {
+		for _, window := range []struct {
+			query url.Values
+			names string
+		}{
+			{url.Values{"from": {"9999-12-30T00:00:00Z"}, "to": {"9999-12-31T23:00:00-14:00"}}, "to"},
+			{url.Values{"from": {"0000-01-01T00:00:00+01:00"}, "to": {"0000-01-03T00:00:00Z"}}, "to"},
+			{url.Values{"from": {"0000-12-31T00:00:00Z"}, "to": {"0001-01-02T00:00:00Z"}}, "from"},
+		} {
+			refused = append(refused, refusedRead{route + "?" + window.query.Encode(), window.names})
+		}
+	}
+	for _, at := range []string{"9999-12-31T23:00:00-14:00", "0000-01-01T00:00:00+01:00"} {
+		refused = append(refused, refusedRead{"/api/v1/delivery/pipeline?" + url.Values{"at": {at}}.Encode(), "at"})
+	}
+	for _, read := range refused {
+		response := dispatchRequest(t, handler, http.MethodGet, read.target, nil, "alice")
+		var refusal evalRefusal
+		if response.Code != http.StatusBadRequest || json.Unmarshal(response.Body.Bytes(), &refusal) != nil || refusal.Code != "INVALID_QUERY" ||
+			!strings.HasPrefix(refusal.Error, read.names+" must be a moment of the UTC years 1 to 9999") {
+			t.Errorf("GET %s: status = %d, body = %.200s, want 400 INVALID_QUERY saying %s must be a moment of the UTC years 1 to 9999", read.target, response.Code, response.Body.String(), read.names)
+		}
+	}
+	answered := []string{"/api/v1/delivery/pipeline?" + url.Values{"at": {"9999-12-31T23:00:00Z"}}.Encode()}
+	for _, route := range routes {
+		answered = append(answered, route+"?"+url.Values{"from": {"9999-12-30T00:00:00Z"}, "to": {"9999-12-31T23:00:00Z"}}.Encode())
+	}
+	for _, target := range answered {
+		if response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice"); response.Code != http.StatusOK || response.Body.Len() == 0 {
+			t.Errorf("GET %s: status = %d, body = %.200s, want 200 with its answer", target, response.Code, response.Body.String())
+		}
+	}
+}
+
+// TestAWindowWhoseDefaultFromFallsBeforeYearOneIsRefused: a read whose query names to and no from
+// reads the window from to less the default 7 days (parseDeliveryWindow), and that from was held
+// to no year, so ?to=0001-01-03T00:00:00Z was answered 200 from 0000-12-27, a moment of the year
+// 0, which R18 refuses in a named from. Each read that takes its window there, the delivery
+// timeline and measures and the four eval reads, refuses it 400 INVALID_QUERY naming the from it
+// derived and that it is to less the default window; a to with an offset is held to the UTC year
+// as a named from is. The first to whose default window starts in the year 1 is answered.
+func TestAWindowWhoseDefaultFromFallsBeforeYearOneIsRefused(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	seedMeasuresSettings(t, database)
+	createTestProject(t, handler, "EVL")
+	registerReviewTime(t, handler)
+	reads := []string{
+		"/api/v1/delivery/timeline", "/api/v1/delivery/measures",
+		"/api/v1/projects/EVL/evals", "/api/v1/evals", "/api/v1/projects/EVL/evals/review-time", "/api/v1/projects/EVL/evals/review-time/items",
+	}
+	for _, read := range reads {
+		for _, refused := range []struct{ to, from string }{
+			{"0001-01-03T00:00:00Z", "0000-12-27T00:00:00Z"},
+			{"0001-01-07T23:59:59Z", "0000-12-31T23:59:59Z"},
+			{"0001-01-08T00:00:00+01:00", "0000-12-31T23:00:00Z"},
+		} {
+			target := read + "?" + url.Values{"to": {refused.to}}.Encode()
+			response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+			var refusal evalRefusal
+			if response.Code != http.StatusBadRequest || json.Unmarshal(response.Body.Bytes(), &refusal) != nil || refusal.Code != "INVALID_QUERY" ||
+				!strings.Contains(refusal.Error, refused.from) || !strings.Contains(refusal.Error, "to less the default 7 days") {
+				t.Errorf("GET %s: status = %d, body = %.300s, want 400 INVALID_QUERY naming the from %s it derived as to less the default 7 days",
+					target, response.Code, response.Body.String(), refused.from)
+			}
+		}
+		target := read + "?" + url.Values{"to": {"0001-01-08T00:00:00Z"}}.Encode()
+		if response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice"); response.Code != http.StatusOK || response.Body.Len() == 0 {
+			t.Errorf("GET %s: status = %d, body = %.300s, want 200: its window starts at 0001-01-01T00:00:00Z", target, response.Code, response.Body.String())
+		}
+	}
+}
+
+// TestAPipelineWhoseShownDaysStartBeforeYearOneIsRefused: the Pipeline answers the seven days
+// that end at at, so an at in the first six days of the year 1 shows days of the year 0. R18
+// refuses a read whose window falls outside the years 1 to 9999, as the eval and delivery routes
+// refuse a from in the year 0; here the Pipeline answered 200 with days from 0000-12-26
+// (dispatch://INFRA-2916, the testing round of 2026-11-17 at 5e24362a). The first at whose days
+// all lie in the year 1 is answered.
+func TestAPipelineWhoseShownDaysStartBeforeYearOneIsRefused(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	seedMeasuresSettings(t, database)
+	for _, at := range []string{"0001-01-01T12:00:00Z", "0001-01-06T23:59:59Z"} {
+		target := "/api/v1/delivery/pipeline?" + url.Values{"at": {at}}.Encode()
+		response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_QUERY"`) {
+			t.Errorf("GET %s: status = %d, body = %.200s, want 400 INVALID_QUERY: its shown days start before the year 1", target, response.Code, response.Body.String())
+		}
+	}
+	target := "/api/v1/delivery/pipeline?" + url.Values{"at": {"0001-01-07T00:00:00Z"}}.Encode()
+	if response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice"); response.Code != http.StatusOK {
+		t.Errorf("GET %s: status = %d, body = %.200s, want 200: its shown days are 0001-01-01 to 0001-01-07", target, response.Code, response.Body.String())
 	}
 }
 
@@ -282,6 +393,9 @@ func TestGetDeliveryTimelineCarriesTheMeasuresOfItsWindow(t *testing.T) {
 			t.Fatalf("timeline?%s carries no measures", query)
 		}
 		got, want := *timeline.Measures, getDeliveryMeasures(t, handler, query)
+		if !strings.Contains(response.Body.String(), noFailureMeasuresJSON) {
+			t.Errorf("timeline?%s carries no %s with no stored row of the failure measures", query, noFailureMeasuresJSON)
+		}
 		if got.ComputedAt.IsZero() {
 			t.Errorf("timeline?%s: measures.computed_at is zero", query)
 		}
@@ -303,7 +417,11 @@ func TestGetDeliveryMeasuresComputesTheFixture(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	fixture := seedMeasuresFixture(t, database)
 
-	body := getDeliveryMeasures(t, handler, measuresFixtureWindow)
+	raw := getBody(t, handler, "/api/v1/delivery/measures?"+measuresFixtureWindow)
+	var body deliveryMeasuresResponse
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("decode measures?%s: %v, body=%s", measuresFixtureWindow, err, raw)
+	}
 	result := body.Measures
 	if f := result.DeployFrequency; f.SuccessfulDeploys != 5 || f.DeploysWithPRs != 5 {
 		t.Errorf("deploy_frequency = %+v, want {5, 5}", f)
@@ -324,30 +442,30 @@ func TestGetDeliveryMeasuresComputesTheFixture(t *testing.T) {
 		t.Errorf("len(daily) = %d, want 29", len(result.Daily))
 	}
 
-	if body.FlagsSource != "none" {
-		t.Errorf("flags_source = %q, want none", body.FlagsSource)
+	// No row of the three failure measures' evals is stored, so each reads no value: a 0 would be
+	// a measured rate, which a target would judge met.
+	if result.ChangeFailureRate != nil || result.TimeToRestore != nil || result.DeploymentReworkRate != nil {
+		t.Errorf("the failure measures = %+v, %+v, %+v with no stored row, want each null", result.ChangeFailureRate, result.TimeToRestore, result.DeploymentReworkRate)
 	}
-	if got := result.ChangeFailureRate.PerPR; got.Confirmed != 0 || got.Total != 14 {
-		t.Errorf("change_failure_rate.per_pr = %+v, want no confirmed flags of 14", got)
-	}
-	if result.TimeToRestore.MedianMinutes != nil {
-		t.Errorf("time_to_restore.median_minutes = %v, want null", *result.TimeToRestore.MedianMinutes)
+	if !strings.Contains(string(raw), noFailureMeasuresJSON) {
+		_, answered, _ := strings.Cut(string(raw), `"change_failure_rate"`)
+		t.Errorf("the answer carries no %s with no stored row; it answers %.400s", noFailureMeasuresJSON, answered)
 	}
 	if len(body.UnownedP0) != 1 || body.UnownedP0[0] != (delivery.UnownedIssue{Key: "ACME-103", Title: "Production deploy gate flakes"}) {
 		t.Errorf("unowned_p0 = %+v, want [{ACME-103 Production deploy gate flakes}]", body.UnownedP0)
 	}
-	if body.Status.UnownedP0 {
-		t.Error("status.unowned_p0 = true, want false (ACME-103 has no owner)")
+	if body.Status.UnownedP0 == nil || *body.Status.UnownedP0 {
+		t.Errorf("status.unowned_p0 = %v, want false (ACME-103 has no owner)", body.Status.UnownedP0)
 	}
-	if body.Targets != measures.DefaultTargets {
-		t.Errorf("targets = %+v, want %+v", body.Targets, measures.DefaultTargets)
+	if want := catalogueTargets(); !reflect.DeepEqual(body.Targets, want) {
+		t.Errorf("targets = %s, want the catalogue's %s", showTargets(body.Targets), showTargets(want))
 	}
-	if body.Status.DeploysPerDay || body.Status.MergeToProduction == nil || *body.Status.MergeToProduction {
+	if body.Status.DeploysPerDay == nil || *body.Status.DeploysPerDay || body.Status.MergeToProduction == nil || *body.Status.MergeToProduction {
 		t.Errorf("status = %+v, want the fixture to miss deploys a day and merge to production", body.Status)
 	}
-	if body.Status.ChangeFailureRate == nil {
-		// flags_source none still has 5 successful deploys to judge the per-deploy rate over.
-		t.Error("status.change_failure_rate = null, want a verdict over 5 deploys")
+	if body.Status.ChangeFailureRate != nil {
+		// No stored row measures the change failure rate, so there is nothing to judge, met or missed.
+		t.Errorf("status.change_failure_rate = %v, want no verdict with no stored row", *body.Status.ChangeFailureRate)
 	}
 	timeline := getDeliveryTimeline(t, handler, measuresFixtureWindow)
 	if body.Freshness != timeline.Freshness {

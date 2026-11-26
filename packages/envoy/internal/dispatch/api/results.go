@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents/signals"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -42,12 +43,10 @@ var checkResultRole = regexp.MustCompile(`^[a-z-]{1,32}$`)
 // resultCommitSHA is the commit a result ran at, as the column's own check spells it.
 var resultCommitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
-// The two values of a check's `when`, beside before_merge (docs.CheckWhenBeforeMerge), that the
-// closed enum pmdoc/schema/blocks.json declares under `choices`.
-const (
-	checkWhenAfterMerge    = "after_merge"
-	checkWhenDefaultBranch = "default_branch"
-)
+// checkWhenDefaultBranch is a value of a check's `when`, beside before_merge
+// (docs.CheckWhenBeforeMerge) and after_merge (model.CheckWhenAfterMerge), that the closed enum
+// pmdoc/schema/blocks.json declares under `choices`.
+const checkWhenDefaultBranch = "default_branch"
 
 // checkResultReadingRunes is how much of the role's reading the pull-request body line carries,
 // and how much of the check's own words the line of a derived result carries (ciVerdictLine),
@@ -179,12 +178,29 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	s.readThroughPullRequests(r.Context(), request.check.IssueKey, written.result.CommitSHA, readThrough)
 	s.publish(r.Context(), written.event)
 	s.storeDisplayTrees(r.Context(), written.result.ID, written.result.Observed)
+	s.recordCheckFailure(r.Context(), written)
 	WriteJSON(w, http.StatusCreated, checkResultRecorded{
 		// The check as the transaction that wrote the row saw it, which after a redo is not the
 		// one resolveCheck read: the line names the `when` the result was judged by.
 		Line:   checkResultLine(written.check, written.result, request.words),
 		Result: written.result,
 	})
+}
+
+// recordCheckFailure writes the check_fail signal of a fail of an after_merge check once its result
+// has committed (dispatch://INFRA-978, R7 and D5): a failure of the deploy that first shipped the
+// result's commit, in a transaction of its own (signals.RecordCheckFailure). A failure of the
+// write is logged and fails nothing: the production signals' loop reads the result.recorded event
+// after it and writes the same row, and a result whose commit no deploy row holds yet makes its
+// row when one lands.
+func (s *server) recordCheckFailure(ctx context.Context, written recordedCheckResult) {
+	if written.result.Verdict != "fail" || written.check.Attributes.When != model.CheckWhenAfterMerge {
+		return
+	}
+	if _, err := signals.RecordCheckFailure(ctx, s.deps.Store.Pool, written.result.ID); err != nil {
+		slog.Warn("dispatch: write the check_fail of a result; the production signals' loop writes it later",
+			"result", written.result.ID, "error", err)
+	}
 }
 
 // POST /api/v1/issues/{key}/results/dry-run  (any authenticated actor)
@@ -466,7 +482,7 @@ func (s *server) recordResultUnderOwnerLocks(
 	// branch: such a check can only be proved once the issue has closed, so refusing it would make
 	// the production check unrecordable. A result for a pre-merge check stays refused there, as a
 	// document version does; a comment and a message are the other writes a closed issue takes.
-	if (!recordingOpen || !checkOpen) && resolved.Attributes.When != checkWhenAfterMerge && resolved.Attributes.When != checkWhenDefaultBranch {
+	if (!recordingOpen || !checkOpen) && resolved.Attributes.When != model.CheckWhenAfterMerge && resolved.Attributes.When != checkWhenDefaultBranch {
 		return recordedCheckResult{}, indexedCheck{}, errorf(http.StatusConflict, "ISSUE_CLOSED",
 			"issue is closed: only a result for a check whose when is after_merge or default_branch is recorded there, and %s is %s", check.BlockID, resolved.Attributes.When)
 	}
@@ -708,8 +724,8 @@ func (s *server) requireIssueExists(ctx context.Context, key string) error {
 // this package goes through here — the results routes, the check resolver and the approval
 // request's second document.
 func (s *server) verificationDocument(ctx context.Context, q queryer, issueKey, slug string) (model.Artifact, bool, error) {
-	artifact, err := scanArtifact(q.QueryRow(ctx, `
-		select `+artifactColumns+` from artifacts
+	artifact, err := docs.ScanArtifact(q.QueryRow(ctx, `
+		select `+docs.ArtifactColumns+` from artifacts
 		where issue_key = $1 and `+verificationRolePredicate+` and ($2 = '' or slug = $2)
 		limit 1
 	`, issueKey, slug))

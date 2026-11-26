@@ -292,10 +292,11 @@ type searchPullRequestsPage struct {
 // searchMergedPullRequests reads. A search result that is not a pull request (the query's `is:pr`
 // qualifier should prevent this, but GraphQL's inline fragment simply omits every field when the
 // node is some other type) decodes as its zero value and is skipped by requiring a non-zero Number.
-// Carries no `body`: the field is large enough on its own (a long PR description, times up to 100
-// results per page) to push a page over the 1 MiB response limit on its own, and nothing in this
-// path reads it -- reconcile's search-found PRs are stored Partial until a later per-PR
-// FetchPullRequest completes them, which is also where their issue-reference body text is read.
+// The merged-PR search asks for no `body`: the field is large enough on its own (a long PR
+// description, times up to 100 results per page) to push a page over the 1 MiB response limit on
+// its own, and nothing in that path reads it -- reconcile's search-found PRs are stored Partial
+// until a later per-PR FetchPullRequest completes them, which is also where their issue-reference
+// body text is read. The revert search asks for it (Body).
 //
 // Author.Typename is GraphQL's own discriminator ("User", "Bot", "Organization", ...) for the
 // `Actor` interface `author` resolves to. GitHub's GraphQL login for a bot-authored pull request
@@ -318,14 +319,17 @@ type searchPullRequestNode struct {
 	} `json:"labels"`
 	CreatedAt time.Time  `json:"createdAt"`
 	MergedAt  *time.Time `json:"mergedAt"`
+	// Body is asked for by the revert search alone (searchRevertsQuery), whose few results each
+	// carry the line that says what they revert; the merged-PR search leaves it empty.
+	Body string `json:"body"`
 }
 
 func fetchedPullRequestFromSearchNode(node searchPullRequestNode) FetchedPullRequest {
 	pr := FetchedPullRequest{
 		Number: node.Number, Title: node.Title, URL: node.URL,
-		CreatedAt: node.CreatedAt, MergedAt: node.MergedAt,
-		// Body, MergeCommitSHA, Additions, Deletions and FirstCommitAt stay nil/empty: this
-		// search response never carries them.
+		CreatedAt: node.CreatedAt, MergedAt: node.MergedAt, Body: node.Body,
+		// MergeCommitSHA, Additions, Deletions and FirstCommitAt stay nil: this search response
+		// never carries them, and Body only for the revert search.
 	}
 	if node.Author != nil {
 		pr.Author = node.Author.Login
@@ -481,23 +485,30 @@ func searchOneInstallation(ctx context.Context, client *githubapp.Client, instal
 // window is its pages and no more.
 const searchMergedPullRequestsWindow = githubResultCap
 
-// searchMergedPullRequests walks a GraphQL search query over [since, until] through walkWindowed
-// (windowed.go), handing each completed window to visit. newFetcher builds a fresh query string
-// and a fresh (nil) cursor for every window walkWindowed asks for -- the original call and each
-// recursive half -- so GitHub's own cursor, not a REST page number, is this fetcher's only
-// pagination state. Each page asks token for its own installation token, by readGitHubPage's
-// rule; walkWindowed's error names the scope and the window, and each page's names its cursor.
+// searchMergedPullRequests is the merged-PR search of repos by authors over [since, until]
+// (searchPullRequests).
 func searchMergedPullRequests(ctx context.Context, client *githubapp.Client, token func() (string, error), repos, authors []string, since, until time.Time, visit func(time.Time, []FetchedPullRequest) error) error {
-	scope := searchScopeLabel(repos)
+	return searchPullRequests(ctx, client, token, searchPullRequestsQuery, "search merged PRs for "+searchScopeLabel(repos),
+		func(since, until time.Time) string { return mergedPullRequestQuery(repos, authors, since, until) },
+		since, until, visit)
+}
+
+// searchPullRequests walks the GraphQL search graphql over [since, until] through walkWindowed
+// (windowed.go), handing each completed window to visit, query building each window's search
+// string. The fetcher of each window walkWindowed asks for (the original call and each recursive
+// half) starts with a fresh (nil) cursor, so GitHub's own cursor, not a REST page number, is its
+// only pagination state. Each page asks token for its own installation token, by readGitHubPage's
+// rule; walkWindowed's error names scope and the window, and each page's names its cursor.
+func searchPullRequests(ctx context.Context, client *githubapp.Client, token func() (string, error), graphql, scope string, query func(since, until time.Time) string, since, until time.Time, visit func(time.Time, []FetchedPullRequest) error) error {
 	newFetcher := func(since, until time.Time) func() ([]FetchedPullRequest, int, error) {
-		query := mergedPullRequestQuery(repos, authors, since, until)
+		search := query(since, until)
 		var cursor string
 		return func() ([]FetchedPullRequest, int, error) {
 			current, err := token()
 			if err != nil {
 				return nil, 0, fmt.Errorf("page after %q: mint installation token: %w", cursor, err)
 			}
-			result, err := fetchSearchPage(ctx, client, current, query, cursor)
+			result, err := fetchSearchPage(ctx, client, current, graphql, search, cursor)
 			if err != nil {
 				return nil, 0, err
 			}
@@ -505,7 +516,27 @@ func searchMergedPullRequests(ctx context.Context, client *githubapp.Client, tok
 			return result.items, result.issueCount, nil
 		}
 	}
-	return walkWindowed(since, until, "search merged PRs for "+scope, searchMergedPullRequestsWindow, newFetcher, visit)
+	return walkWindowed(since, until, scope, searchMergedPullRequestsWindow, newFetcher, visit)
+}
+
+// SearchMergedReverts finds every pull request merged in [since, until] into owner/repo whose body
+// holds the word Reverts, whoever authored it, with its body (searchRevertsQuery): the candidates of
+// the line GitHub's revert button writes (ParseRevert), which the reconcile reads a deploy
+// repository's merged reverts from (reconcileReverts). A search does not match a line, so a
+// caller parses each body.
+func SearchMergedReverts(ctx context.Context, client *githubapp.Client, owner, repo string, since, until time.Time, visit func(time.Time, []FetchedPullRequest) error) error {
+	token := func() (string, error) { return client.RepositoryToken(ctx, owner, repo) }
+	full := owner + "/" + repo
+	return searchPullRequests(ctx, client, token, searchRevertsQuery, "search merged reverts of "+full,
+		func(since, until time.Time) string { return mergedRevertQuery(full, since, until) },
+		since, until, visit)
+}
+
+// mergedRevertQuery is the search string of the pull requests merged into repo in [since, until]
+// whose body holds the word Reverts.
+func mergedRevertQuery(repo string, since, until time.Time) string {
+	return fmt.Sprintf(`repo:%s is:pr is:merged in:body "Reverts" merged:%s..%s`, repo,
+		since.UTC().Format(time.RFC3339), until.UTC().Format(time.RFC3339))
 }
 
 // searchScopeLabel is what an error message calls the search scope.
@@ -548,23 +579,45 @@ const searchPullRequestsQuery = `query($q: String!, $after: String) {
   }
 }`
 
+// searchRevertsQuery is the revert search's GraphQL query (SearchMergedReverts): the merged-PR
+// search's fields but the labels, and the body, which says what a pull request reverts. Its
+// results are the few pull requests of one repository whose body holds the word Reverts, so the
+// bodies do not swell a page as the merged-PR search's hundred would (searchPullRequestNode).
+const searchRevertsQuery = `query($q: String!, $after: String) {
+  search(query: $q, type: ISSUE, first: 100, after: $after) {
+    issueCount
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      ... on PullRequest {
+        number
+        title
+        url
+        author { login __typename }
+        createdAt
+        mergedAt
+        body
+      }
+    }
+  }
+}`
+
 type searchPage struct {
 	items      []FetchedPullRequest
 	endCursor  string
 	issueCount int
 }
 
-// fetchSearchPage runs one page of query, after cursor ("" for the first page), returning the
-// page's pull requests, its own pagination cursor, and the connection's total issueCount (the
-// 1,000-result cap walkWindowed checks).
-func fetchSearchPage(ctx context.Context, client *githubapp.Client, token, query, after string) (searchPage, error) {
+// fetchSearchPage runs one page of the GraphQL search graphql for query, after cursor ("" for the
+// first page), returning the page's pull requests, its own pagination cursor, and the
+// connection's total issueCount (the 1,000-result cap walkWindowed checks).
+func fetchSearchPage(ctx context.Context, client *githubapp.Client, token, graphql, query, after string) (searchPage, error) {
 	var variables map[string]any
 	if after == "" {
 		variables = map[string]any{"q": query, "after": nil}
 	} else {
 		variables = map[string]any{"q": query, "after": after}
 	}
-	body, status, header, err := queryGitHubPage(ctx, client, token, searchPullRequestsQuery, variables)
+	body, status, header, err := queryGitHubPage(ctx, client, token, graphql, variables)
 	if err != nil {
 		return searchPage{}, fmt.Errorf("page after %q (%s): %w", after, pageAttemptsNote(), err)
 	}

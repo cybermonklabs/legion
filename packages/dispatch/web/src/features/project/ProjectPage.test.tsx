@@ -13,6 +13,7 @@ import { http } from "msw";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
+import { installFakeLiveSockets } from "../../__tests__/live-socket-harness";
 import { answerRequests } from "../../__tests__/network";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
@@ -298,6 +299,127 @@ test("renders header, tabs, and the Issues panel; /documents selects Documents",
     expect(screen.getByRole("tab", { name: "Documents" })).toHaveAttribute("aria-selected", "true");
   } finally {
     documents.restore();
+  }
+});
+
+test("the Evals tab shows on a project with no source, and /evals selects it", async () => {
+  const user = userEvent.setup();
+  // The tab subscribes its evals views over the live socket and reads the project's Legion
+  // daemon and its delivery settings; this project has neither.
+  const sockets = installFakeLiveSockets();
+  const getLegionDaemon = spyOn(api, "getLegionDaemon").mockResolvedValue(null);
+  const getProjectDeliverySettings = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(
+    null
+  );
+  try {
+    const issues = renderPage("/projects/CORE/issues");
+    try {
+      await screen.findByRole("heading", { name: "Core" });
+      expect(screen.queryByRole("tab", { name: "Architecture" })).not.toBeInTheDocument();
+      await user.click(screen.getByRole("tab", { name: "Evals" }));
+      expect(screen.getByTestId("location").textContent).toBe("/projects/CORE/evals");
+    } finally {
+      issues.restore();
+    }
+
+    const evals = renderPage("/projects/CORE/evals");
+    try {
+      await screen.findByRole("heading", { name: "Core" });
+      expect(screen.getByRole("tab", { name: "Evals" })).toHaveAttribute("aria-selected", "true");
+      const panel = screen.getByRole("tabpanel", { name: "Evals" });
+      // With no source, the tab holds the one line naming both settings, and no section.
+      expect(await within(panel).findByRole("link", { name: "Legion daemon" })).toHaveAttribute(
+        "href",
+        "/settings"
+      );
+      expect(within(panel).getByRole("link", { name: "delivery settings" })).toHaveAttribute(
+        "href",
+        "/projects/CORE/settings"
+      );
+      expect(panel.querySelector("[data-section]")).toBeNull();
+      expect(screen.queryByRole("tabpanel", { name: "Issues" })).not.toBeInTheDocument();
+      expect(getLegionDaemon).toHaveBeenCalledWith("CORE");
+      expect(getProjectDeliverySettings).toHaveBeenCalledWith("CORE");
+    } finally {
+      evals.restore();
+    }
+  } finally {
+    getLegionDaemon.mockRestore();
+    getProjectDeliverySettings.mockRestore();
+    sockets.restore();
+  }
+});
+
+test("/settings selects the Settings tab, which holds the project's delivery settings", async () => {
+  const user = userEvent.setup();
+  const getProjectDeliverySettings = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(
+    null
+  );
+  // A project that names a default repository, which the section shows read-only.
+  const core = {
+    created_at: "2026-09-10T00:00:00Z",
+    default_repo: "acme/core",
+    gated_steps: [],
+    key: "CORE",
+    name: "Core",
+    open_asks: 0,
+    proven_sessions: false,
+  };
+  const page = renderPage("/projects/CORE", [core]);
+  try {
+    await screen.findByRole("heading", { name: "Core" });
+    await user.click(screen.getByRole("tab", { name: "Settings" }));
+    expect(screen.getByTestId("location").textContent).toBe("/projects/CORE/settings");
+    expect(screen.getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "true");
+    const panel = screen.getByRole("tabpanel", { name: "Settings" });
+    expect(await within(panel).findByRole("heading", { name: "Delivery" })).toBeDefined();
+    // The section reads the project's own settings, and shows its default repository.
+    expect(await within(panel).findByRole("switch", { name: "Delivery" })).not.toBeChecked();
+    expect(within(panel).getByLabelText("Default repository")).toHaveValue("acme/core");
+    expect(getProjectDeliverySettings).toHaveBeenCalledWith("CORE");
+  } finally {
+    page.restore();
+    getProjectDeliverySettings.mockRestore();
+  }
+});
+
+test("another project's settings tab shows nothing of the last project's save", async () => {
+  const user = userEvent.setup();
+  const getProjectDeliverySettings = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(
+    null
+  );
+  const refusal = "acme/core cannot be read by the Dispatch GitHub App";
+  const putProjectDeliverySettings = spyOn(api, "putProjectDeliverySettings").mockRejectedValue(
+    new ApiError(409, { code: "DELIVERY_SETTINGS_ACCESS", error: refusal })
+  );
+  const project = (key: string, name: string) => ({
+    created_at: "2026-09-10T00:00:00Z",
+    gated_steps: [],
+    key,
+    name,
+    open_asks: 0,
+    proven_sessions: false,
+  });
+  // The reader came from OTHER's settings tab to CORE's, and goes back to OTHER's.
+  const page = renderPage(
+    ["/projects/OTHER/settings", "/projects/CORE/settings"],
+    [project("CORE", "Core"), project("OTHER", "Other")]
+  );
+  try {
+    await screen.findByRole("heading", { name: "Core" });
+    await user.click(await screen.findByRole("button", { name: "Save delivery settings" }));
+    expect(await screen.findByText(refusal)).toBeInTheDocument();
+    expect(putProjectDeliverySettings.mock.calls[0]?.[0]).toBe("CORE");
+
+    await user.click(screen.getByRole("button", { name: "Go back" }));
+    await screen.findByRole("heading", { name: "Other" });
+    expect(await screen.findByRole("switch", { name: "Delivery" })).not.toBeChecked();
+    expect(getProjectDeliverySettings).toHaveBeenCalledWith("OTHER");
+    expect(screen.queryByText(refusal)).not.toBeInTheDocument();
+  } finally {
+    page.restore();
+    getProjectDeliverySettings.mockRestore();
+    putProjectDeliverySettings.mockRestore();
   }
 });
 

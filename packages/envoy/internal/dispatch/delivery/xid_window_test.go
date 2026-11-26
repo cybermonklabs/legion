@@ -20,12 +20,12 @@ import (
 // A production run has shipped a merged pull request, so the pass records its issue's
 // issue.deployed and marks the row, each pull request in a transaction of its own
 // (recordDeployedEvent). That transaction writes its row inline, so its window holds three
-// statements: the row's marking update, the batch appending issue.deployed (the issue owner's
-// lock, which this transaction already holds, the issue's row and the insert), and the COMMIT
-// ending them. Everything that comes before the first of them holds no transaction id - the
-// shipped rows with the run that shipped each of them, read by the pass itself outside any
-// transaction (listUnrecordedShipped), and the issue's owner lock, which the append would
-// otherwise be the first to take and which is advisory (store.LockOwner).
+// statements: the batch appending issue.deployed (the issue owner's lock, which this transaction
+// already holds, the issue's row and the insert), the row's marking update, and the COMMIT ending
+// them. Everything that comes before the first of them holds no transaction id - the shipped rows
+// with the run that shipped each of them, read by the pass itself outside any transaction
+// (listUnrecordedShipped), and the issue's owner lock, which the append would otherwise be the
+// first to take and which is advisory (store.LockOwner).
 func TestXidWindowDeployedEventRecorded(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	tracer := storetest.NewXidTracer()
@@ -50,7 +50,7 @@ func TestXidWindowDeployedEventRecorded(t *testing.T) {
 	}
 	requireDeployedEvent(t, ctx, traced, deployedIssue, "acme/widgets", 601, 910, "2024-01-01T02:10:00Z")
 	storetest.AssertXidWindows(t, report, storetest.XidWindowOf(3,
-		"the pull request's marking update, the batch appending issue.deployed and the COMMIT ending them"))
+		"the batch appending issue.deployed, the pull request's marking update and the COMMIT ending them"))
 }
 
 // A head write moves a pull request from one issue to another, so it records the move on both

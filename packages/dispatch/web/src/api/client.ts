@@ -286,13 +286,16 @@ export interface WriteRequest<T = unknown> {
  *  every attempt of it, and what the store keeps it under; sent as `Idempotency-Key` on a `POST`
  *  and a `PATCH`, and never on a `PUT` or a `DELETE`, which are the same however often they are
  *  made - the login of the person who pressed it (`Dispatch-Login`, sent on every write, so
- *  Dispatch refuses it under anyone else's session), the attempt's silence deadline, `sent`, told
- *  the request as it goes out, for a caller that keeps it to make again, and `progress`, told how
- *  much of an upload's body has gone up. Every write method takes these, so a write made outside
- *  the store does not type-check. */
+ *  Dispatch refuses it under anyone else's session), none for an agent viewer, whose bearer names
+ *  no person; `session`, the session an agent viewer's write is made as (`agentSession`), which a
+ *  route that takes a writer in its body names there; the attempt's silence deadline, `sent`,
+ *  told the request as it goes out, for a caller that keeps it to make again, and `progress`,
+ *  told how much of an upload's body has gone up. Every write method takes these, so a write made
+ *  outside the store does not type-check. */
 export interface WriteBounds extends RequestBounds {
   readonly key: string;
   readonly login?: string;
+  readonly session?: string;
   readonly sent?: (request: WriteRequest) => void;
   readonly progress?: (loaded: number, total: number) => void;
 }
@@ -413,8 +416,8 @@ export function isCredentialFeatureOff(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404 && error.code === "FEATURE_OFF";
 }
 
-// The delivery timeline answers this 404 until someone sets its configuration: definitive like the
-// two above, since retrying changes nothing until the settings form is saved.
+// The merge timeline's live view answers this 404 while no project has delivery on: definitive
+// like the two above, since retrying changes nothing until a project's delivery settings are saved.
 export function isDeliveryNotConfigured(error: unknown): boolean {
   return (
     error instanceof ApiError && error.status === 404 && error.code === "DELIVERY_NOT_CONFIGURED"
@@ -1847,20 +1850,118 @@ export class DispatchApiClient {
     return this.read("/api/v1/references/questions", {}, { id, kind });
   }
 
-  /** One deploy-repository run with every job it ran, for the drill-down's job lists. */
-  getDeliveryRun(id: number) {
-    return this.read("/api/v1/delivery/runs/{id}", { id: String(id) });
+  /** One run of a project's deploy source with every job it ran, and its record: the deploy row
+   *  written for it (`deploy`, null where none was) and every failure that blames that row
+   *  (`failures`), for the drill-down. `repo` is the repository the run is in, which the project
+   *  timeline's deploy and failed_run rows name; a run that counts for no project with this key
+   *  is `404 NOT_FOUND`. */
+  getProjectDeployRun(project: string, id: number, repo: string) {
+    return this.read(
+      "/api/v1/projects/{key}/deploy-runs/{id}",
+      { key: project, id: String(id) },
+      { repo }
+    );
   }
 
-  /** The delivery timeline's configuration record, or `null` until someone sets it. */
-  getDeliverySettings() {
-    return this.read("/api/v1/settings/delivery", {});
+  /** One eval's versions, newest first, `{items, total, limit, offset}` with `doc_text`, the method
+   *  its section of the project's evals document holds (null for none); `limit` 1 reads the
+   *  newest version alone. */
+  getEval(
+    project: string,
+    slug: string,
+    query: Query<"/api/v1/projects/{key}/evals/{slug}", "get"> = {}
+  ) {
+    return this.read("/api/v1/projects/{key}/evals/{slug}", { key: project, slug }, query);
   }
 
-  /** Replaces the delivery timeline's configuration (human callers only). The server first proves
-   *  the GitHub App can read `deploy_repo`, answering `409 DELIVERY_SETTINGS_ACCESS` when not. */
-  putDeliverySettings(input: Body<"/api/v1/settings/delivery", "put">, bounds: WriteBounds) {
-    return this.put("/api/v1/settings/delivery", {}, input, bounds);
+  /** One page of every project's evals in the project read's item shape and envelope `{items,
+   *  total, limit, offset}`, by project and then by slug, the page running across projects:
+   *  `project`, repeated, names the projects read, and with none named every project the reader
+   *  may read is read. The window, compare range, kind, repo and page keys are the project
+   *  read's. */
+  listEvals(query: Query<"/api/v1/evals", "get"> = {}) {
+    return this.read("/api/v1/evals", {}, query);
+  }
+
+  /** One page of the rows behind an eval's numbers over a window and a compare range, `{items,
+   *  total, limit, offset}`: each row's `row_key`, `row_kind`, `cols` and `href`. `row_kind` keeps
+   *  one kind (`issue` for unowned-p0's open P0 issues with no owner); `limit` is 1 to 200. */
+  listEvalItems(
+    project: string,
+    slug: string,
+    query: Query<"/api/v1/projects/{key}/evals/{slug}/items", "get"> = {}
+  ) {
+    return this.read("/api/v1/projects/{key}/evals/{slug}/items", { key: project, slug }, query);
+  }
+
+  /** One page of the project's deploys and failed changes, newest first, `{items, total, limit,
+   *  offset}`: a deploy by its `finished_at` and a failure by its `detected_at` within
+   *  `[from, to)` (the last 7 days by default, at most 84). `kind` and `state` narrow it, and
+   *  `deploy_id` keeps the failures that blame one deploy, the drill-down's read. */
+  listProductionEvents(
+    project: string,
+    query: Query<"/api/v1/projects/{key}/production-events", "get"> = {}
+  ) {
+    return this.read("/api/v1/projects/{key}/production-events", { key: project }, query);
+  }
+
+  /** Posts one deploy or failure: `201` for a new row, and `200` with the row the project holds
+   *  under the same `source_ref`, which writes nothing. A person's credential posts a failure
+   *  alone, the drill-down's flag, keyed by the server as `person:<deploy id>:<login>`; a failure
+   *  whose deploy no row matches is `409 PRODUCTION_EVENT_NO_DEPLOY`. */
+  postProductionEvent(
+    project: string,
+    input: Body<"/api/v1/projects/{key}/production-events", "post">,
+    bounds: WriteBounds
+  ) {
+    return this.post("/api/v1/projects/{key}/production-events", { key: project }, input, bounds);
+  }
+
+  /** Rejects, re-counts or restores (Mark restored) one failure of the project, answering the
+   *  row; a reject and a re-count need a `reason`. A person writes every state, the project's
+   *  controller a reject and a re-count, and anyone else is `403
+   *  PRODUCTION_EVENT_STATE_FORBIDDEN`. */
+  putProductionEventState(
+    project: string,
+    id: string,
+    input: Body<"/api/v1/projects/{key}/production-events/{id}/state", "put">,
+    bounds: WriteBounds
+  ) {
+    return this.put(
+      "/api/v1/projects/{key}/production-events/{id}/state",
+      { key: project, id },
+      input,
+      bounds
+    );
+  }
+
+  /** One project's delivery settings, or `null` for a project with none: the switch, its deploy
+   *  sources (each with its `id`, the repository it reads as `resolved_repo`, and
+   *  `reconciled_through`, null until that repository's import has run), the population, the
+   *  failure sources with `failures_measured_since`, and the targets of its seven delivery evals,
+   *  each a number or `"off"`. Every reader of the project reads them. */
+  getProjectDeliverySettings(project: string) {
+    return this.read("/api/v1/projects/{key}/settings/delivery", { key: project });
+  }
+
+  /** Replaces one project's delivery settings and sets the targets it names, each a new version
+   *  of the project's eval, in one write, and answers them as `getProjectDeliverySettings` does.
+   *  An agent viewer's save names the session it is made as (`bounds.session`) as its `actor`,
+   *  which a bearer whose credential proves no session must (`400 ACTOR_KIND`); a person's names
+   *  none, their cookie naming them. A refusal names its field and source
+   *  (`400 DELIVERY_SETTINGS_INPUT`, `409 DELIVERY_SETTINGS_ACCESS`, `409
+   *  DELIVERY_NO_DEFAULT_REPOSITORY`) or the other project (`409 DELIVERY_REPOSITORY_SHARED`), and
+   *  writes nothing. */
+  putProjectDeliverySettings(
+    project: string,
+    input: Body<"/api/v1/projects/{key}/settings/delivery", "put">,
+    bounds: WriteBounds
+  ) {
+    const body =
+      bounds.session === undefined
+        ? input
+        : { ...input, actor: { id: bounds.session, kind: "session" } };
+    return this.put("/api/v1/projects/{key}/settings/delivery", { key: project }, body, bounds);
   }
 
   /** One project's Legion daemon: the base URL its state is read from, the actor that first named

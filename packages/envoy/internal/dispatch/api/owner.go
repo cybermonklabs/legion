@@ -73,6 +73,13 @@ func (s *server) documentOwnerFromRequest(ctx context.Context, q queryer, r *htt
 	return artifact, documentOwner(artifact.ID), nil
 }
 
+// errProjectNotFound is loadProject's refusal of a key no project row holds: 404
+// PROJECT_NOT_FOUND. It is an *apiError, so a caller that answers it otherwise than a route does
+// (the live hub tells a Legion board's or an evals view's subscribers once and keeps the view
+// open) finds it with errors.As (viewReads.refusal) and reads its code and message from it rather
+// than spelling them again.
+var errProjectNotFound = errorf(http.StatusNotFound, "PROJECT_NOT_FOUND", "project not found")
+
 // loadProject reads the project row, every column model.Project carries but the open-ask count,
 // which only the project list reads. A project.updated event carries what this answers, so its
 // payload is the whole row a reader of the project list sees. An unknown key is 404
@@ -90,7 +97,7 @@ func (s *server) loadProject(ctx context.Context, q queryer, key string) (model.
 		&project.CreatedAt,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return model.Project{}, errorf(http.StatusNotFound, "PROJECT_NOT_FOUND", "project not found")
+			return model.Project{}, errProjectNotFound
 		}
 		return model.Project{}, err
 	}

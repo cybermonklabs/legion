@@ -1,0 +1,29 @@
+diff --git a/packages/dispatch/web/src/features/credentials/SignInsSection.tsx b/packages/dispatch/web/src/features/credentials/SignInsSection.tsx
+index 1e964594892..75b9e9c0990 100644
+--- a/packages/dispatch/web/src/features/credentials/SignInsSection.tsx
++++ b/packages/dispatch/web/src/features/credentials/SignInsSection.tsx
+@@ -5,8 +5,8 @@ import { api } from "../../api/client";
+ import type { PersonSignInResp } from "../../api/types";
+ import { textSecondaryOnSurface } from "../../theme/classes";
+ import { Timestamp } from "../refs/Timestamp";
++import { shortThumbprint, signInsQuery } from "./logic/signins";
+ import { type RevocableColumn, RevocableList } from "./RevocableList";
+-import { shortThumbprint, signInsQuery } from "./signins";
+ 
+ const columns: readonly RevocableColumn<PersonSignInResp>[] = [
+   {
+diff --git a/packages/dispatch/web/src/features/credentials/signins.ts b/packages/dispatch/web/src/features/credentials/logic/signins.ts
+similarity index 96%
+rename from packages/dispatch/web/src/features/credentials/signins.ts
+rename to packages/dispatch/web/src/features/credentials/logic/signins.ts
+index 6480441f453..36f311d84ca 100644
+--- a/packages/dispatch/web/src/features/credentials/signins.ts
++++ b/packages/dispatch/web/src/features/credentials/logic/signins.ts
+@@ -1,6 +1,6 @@
+ import { queryOptions } from "@tanstack/react-query";
+ 
+-import { api } from "../../api/client";
++import { api } from "../../../api/client";
+ 
+ /** The viewer's own sign-ins on their machines (`agent-secrets login`), as `SignInsSection` lists
+  *  them; its key is the one revoking a sign-in invalidates. */

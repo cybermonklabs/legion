@@ -1344,27 +1344,28 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: false,
     surface: "write-label",
   },
-  // Settings' delivery form. The same three lists `DISPATCH_WRITING_BOXES` excludes from the
-  // picker are excluded from the renderer, for the same reason.
+  // A project's Settings tab, its delivery section. The same three lists
+  // `DISPATCH_WRITING_BOXES` excludes from the picker are excluded from the renderer, for the
+  // same reason.
   {
-    files: ["packages/dispatch/web/src/features/delivery/DeliverySettingsForm.tsx"],
-    reach: "/settings, the Production jobs box",
+    files: ["packages/dispatch/web/src/features/project/DeliverySettingsSection.tsx"],
+    reach: "/projects/<PROJECT>/settings, the Production jobs box",
     reason: SETTINGS_REASON,
     record: false,
     rendered: false,
     surface: "delivery-production-jobs",
   },
   {
-    files: ["packages/dispatch/web/src/features/delivery/DeliverySettingsForm.tsx"],
-    reach: "/settings, the Population authors box",
+    files: ["packages/dispatch/web/src/features/project/DeliverySettingsSection.tsx"],
+    reach: "/projects/<PROJECT>/settings, the Population authors box",
     reason: SETTINGS_REASON,
     record: false,
     rendered: false,
     surface: "delivery-population-authors",
   },
   {
-    files: ["packages/dispatch/web/src/features/delivery/DeliverySettingsForm.tsx"],
-    reach: "/settings, the Excluded repositories box",
+    files: ["packages/dispatch/web/src/features/project/DeliverySettingsSection.tsx"],
+    reach: "/projects/<PROJECT>/settings, the Excluded repositories box",
     reason: SETTINGS_REASON,
     record: false,
     rendered: false,

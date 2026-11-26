@@ -2,34 +2,42 @@ package api
 
 import (
 	"encoding/json"
+	"maps"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 )
 
 // parseDeliveryLiveView resolves a subscribed view as the matching GET route reads its query, or
 // answers the error frame refusing it: INVALID_FRAME for a view of no known shape, and for one the
 // route would refuse, the code that route answers. What each kind reads of a view is its own
 // entry's `parse` (live_frames.go), so the only things decided here are what every kind shares:
-// that the kind is one of the five, and that only a kind that reads a project's daemon
-// (viewReadsLegion) is given a project; a legion_issue view, the one such kind that names no
-// project, refuses one itself (parseLegionIssueLiveView).
+// that the kind is one of the eight, that only a kind that is one project's
+// (deliveryLiveClasses.namesProject: a project's daemon, its evals, an eval's items or its
+// timeline) is given a project, and that only an items view is given a slug; a legion_issue view,
+// the one such kind that names no project, refuses one itself (parseLegionIssueLiveView).
 //
 // An issue is refused by nothing here. The socket's decode (decodeSocketClientFrame, a plain
 // json.Unmarshal, which type-checks every member its struct declares) accepts an `issue` member
 // of any JSON type, since DeliveryLiveView holds it raw, and only legion_issue's parse reads it
-// (parseLegionIssueLiveView). The timeline, measures, pipeline and legion kinds ignore it whatever
-// its type, as they did before any kind read one, so a frame a deployed page sends with one is
-// answered exactly as it was and never becomes INVALID_FRAME.
+// (parseLegionIssueLiveView). The timeline, measures, pipeline, legion, evals, items and
+// project-timeline kinds ignore it whatever its type, as they did before any kind read one, so a
+// frame a deployed page sends with one is answered exactly as it was and never becomes
+// INVALID_FRAME.
 func parseDeliveryLiveView(view DeliveryLiveView) (deliveryLiveSpec, *LiveError) {
 	classes, known := deliveryLiveKinds[view.Kind]
 	if !known {
-		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "view.kind must be timeline, measures, pipeline, legion or legion_issue")
+		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "view.kind must be timeline, measures, pipeline, legion, legion_issue, evals, items or project-timeline")
 	}
-	if view.Project != nil && classes.reads != viewReadsLegion {
-		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "only a legion view names a project")
+	if view.Project != nil && !classes.namesProject() {
+		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "only a legion, an evals, an items or a project-timeline view names a project")
+	}
+	if view.Slug != nil && !classes.reads.namesEval() {
+		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "only an items view names a slug")
 	}
 	spec := deliveryLiveSpec{kind: view.Kind}
 	if refusal := classes.parse(&spec, view); refusal != nil {
@@ -45,47 +53,59 @@ func invalidLiveView(code, message string) *LiveError {
 }
 
 // parseDeliveryWindowView reads a timeline or measures view: its window, and the query the
-// matching GET route reads everything but the window from.
+// matching GET route reads everything but the window from, refused where that route would refuse
+// it for naming a key it reads one value of more than once (repeatedQueryKey).
 func parseDeliveryWindowView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
+	named, refusal := spec.readWindowAndQuery(view, "a "+view.Kind+" view")
+	if refusal != nil {
+		return refusal
+	}
+	if err := repeatedQueryKey(spec.query, deliveryWindowOneValueKeys); err != nil {
+		return invalidLiveView("INVALID_QUERY", err.Error())
+	}
+	spec.key = view.Kind + "|" + named + "|" + spec.query.Encode()
+	return nil
+}
+
+// readWindowAndQuery reads a view that names a window and a query, as what names it: its window
+// into spec, and its query without from and to, which the window names. It answers how the key
+// names the window (readWindow).
+func (spec *deliveryLiveSpec) readWindowAndQuery(view DeliveryLiveView, what string) (string, *LiveError) {
 	if view.At != nil {
-		return invalidLiveView("INVALID_FRAME", "a "+view.Kind+" view names a window, not an at")
+		return "", invalidLiveView("INVALID_FRAME", what+" names a window, not an at")
 	}
 	if view.Window == nil {
-		return invalidLiveView("INVALID_FRAME", "a "+view.Kind+" view names its window")
+		return "", invalidLiveView("INVALID_FRAME", what+" names its window")
 	}
 	spec.query = url.Values{}
 	if view.Query != nil {
 		query, err := url.ParseQuery(*view.Query)
 		if err != nil {
-			return invalidLiveView("INVALID_QUERY", "query does not parse: "+err.Error())
+			return "", invalidLiveView("INVALID_QUERY", "query does not parse: "+err.Error())
 		}
 		spec.query = query
 	}
 	// The window names from and to; the query is everything else the GET route reads.
 	spec.query.Del("from")
 	spec.query.Del("to")
-	named, refusal := spec.readWindow(view.Window)
-	if refusal != nil {
-		return refusal
-	}
-	spec.key = view.Kind + "|" + named + "|" + spec.query.Encode()
-	return nil
+	return spec.readWindow(view.Window)
 }
 
 // parsePipelineLiveView reads a pipeline view: it names at most an at, which is the seven days
 // ending on that day; with none it is the seven days ending at the present. It reads no window
-// and no query, since the Pipeline page follows neither the timeline's window nor its facets.
+// and no query, since the Pipeline page follows neither the timeline's window nor its facets. The
+// at is read as the route reads it (parsePipelineAt), so an at the route refuses, one whose first
+// shown day falls before the year 1 among them, is refused here before the view is held.
 func parsePipelineLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
 	if view.Window != nil || view.Query != nil {
 		return invalidLiveView("INVALID_FRAME", "a pipeline view names at most an at")
 	}
 	spec.key = "pipeline|now|"
 	if view.At != nil {
-		at, err := parseOptionalRFC3339(url.Values{"at": {*view.At}}, "at", time.Time{})
+		at, err := parsePipelineAt(url.Values{"at": {*view.At}}, time.Time{})
 		if err != nil {
 			return invalidLiveView("INVALID_QUERY", err.Error())
 		}
-		at = at.UTC()
 		spec.at = &at
 		spec.key = "pipeline|" + at.Format(time.RFC3339Nano) + "|"
 	}
@@ -93,25 +113,110 @@ func parsePipelineLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveE
 }
 
 // parseLegionLiveView reads a legion view: it names the project whose board it shows and nothing
-// else, since the board has no window and the project is all GET /api/v1/projects/{key}/legion/board reads.
+// else, since the board has no window and the project is the whole of what
+// GET /api/v1/projects/{key}/legion/board reads. A badly spelled key is refused with the code and
+// the words the board route answers it with (legionProject), which are every project route's
+// (INVALID_PROJECT, projectKeyProblem), so a person who meets the mistake at either door learns
+// one name for it. A project that does not exist is the read's to refuse, as the route's is
+// (readLegionBoardView, loadProject).
 func parseLegionLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
 	if view.Window != nil || view.At != nil || view.Query != nil {
 		return invalidLiveView("INVALID_FRAME", "a legion view names a project, not a window, an at or a query")
 	}
-	if view.Project == nil {
-		return invalidLiveView("INVALID_FRAME", "a legion view names its project")
-	}
-	project := strings.TrimSpace(*view.Project)
-	// A badly spelled key is refused with the code and the words the board route answers it with
-	// (legionProject), which are every project route's (INVALID_PROJECT, projectKeyProblem), so a
-	// person who meets the mistake at either door learns one name for it. A project that does not
-	// exist is the read's to refuse, as the route's is (readLegionBoardView, loadProject).
-	if !projectKeyPattern.MatchString(project) {
-		return invalidLiveView("INVALID_PROJECT", projectKeyProblem("project", project))
+	project, refusal := readLiveProject(view, "a legion view", "INVALID_PROJECT")
+	if refusal != nil {
+		return refusal
 	}
 	spec.project = project
 	spec.key = legionBoardView + "|" + project + "|"
 	return nil
+}
+
+// parseEvalsLiveView reads an evals view: the project whose evals it shows, its window, as a
+// timeline view names one, and its query, the query string GET /api/v1/projects/{key}/evals
+// would be sent without from and to: the compare range (compare_from and compare_to), the
+// repositories (repo), the delivery timeline's facets and its search, the kind (kind) and the
+// page (limit and offset). A project that is no project key is refused PROJECT_NOT_FOUND, as the
+// route answers it, since no project row holds such a key (loadProject); one the key's shape
+// allows and no row holds is the read's to refuse. A query the route refuses, a key it does not
+// take among them, is refused here, by the route's own reading of the query the view's read sends
+// it (evalsQuery, parseEvalListQuery), before the view is held. That query holds the view's own
+// from and to: a custom window readWindow takes can still end its days past the year 9999, which
+// the route refuses (evalDaysAnswerable), and a view held with it would read and fail every
+// deliveryLiveRetry for as long as it stood, its subscribers told nothing. A view whose query sets
+// a facet but the repository, or the search, is narrowed (deliveryLiveSpec.narrowed), and one whose
+// kind is delivery carries its project's deploy sources' freshness (deliveryLiveSpec.freshness).
+func parseEvalsLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
+	project, refusal := readLiveProject(view, "an evals view", errProjectNotFound.code)
+	if refusal != nil {
+		return refusal
+	}
+	named, refusal := spec.readWindowAndQuery(view, "an evals view")
+	if refusal != nil {
+		return refusal
+	}
+	request, err := parseEvalListQuery(spec.evalsQuery(time.Now().UTC()), evalListQueryKeys)
+	if err != nil {
+		return invalidLiveView("INVALID_QUERY", err.Error())
+	}
+	spec.project, spec.narrowed, spec.freshness = project, request.narrowing != nil, request.kind == evals.KindDelivery
+	spec.key = evalsView + "|" + project + "|" + named + "|" + spec.query.Encode()
+	return nil
+}
+
+// parseEvalItemsLiveView reads an items view: the project and the slug of the eval whose rows it
+// shows, its window, as a timeline view names one, and its query, the query string
+// GET /api/v1/projects/{key}/evals/{slug}/items would be sent without from and to: the compare
+// range (compare_from and compare_to), the series, the row kind and row (row_kind, row), the
+// repositories (repo), the order (sort) and the page (limit and offset). A query the route refuses
+// is refused here, by the route's own reading of the query the view's read sends it (evalsQuery,
+// parseEvalItemsQuery), before the view is held, as an evals view's is (parseEvalsLiveView). A
+// project or a slug no row holds is the read's to refuse, as the route's is (readEvalItems).
+func parseEvalItemsLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
+	project, refusal := readLiveProject(view, "an items view", "INVALID_QUERY")
+	if refusal != nil {
+		return refusal
+	}
+	if view.Slug == nil || *view.Slug == "" {
+		return invalidLiveView("INVALID_FRAME", "an items view names the slug of its eval")
+	}
+	named, refusal := spec.readWindowAndQuery(view, "an items view")
+	if refusal != nil {
+		return refusal
+	}
+	if _, err := parseEvalItemsQuery(spec.evalsQuery(time.Now().UTC())); err != nil {
+		return invalidLiveView("INVALID_QUERY", err.Error())
+	}
+	spec.project, spec.slug = project, *view.Slug
+	spec.key = evalItemsView + "|" + project + "|" + url.PathEscape(spec.slug) + "|" + named + "|" + spec.query.Encode()
+	return nil
+}
+
+// evalsQuery is the query an evals or items view's read sends its GET route at now: the view's own
+// query, with its window's from and to, a preset's ending at now.
+func (spec deliveryLiveSpec) evalsQuery(now time.Time) url.Values {
+	from, to := spec.from, spec.to
+	if spec.preset > 0 {
+		from, to = now.Add(-spec.days()), now
+	}
+	query := maps.Clone(spec.query)
+	query.Set("from", from.Format(time.RFC3339Nano))
+	query.Set("to", to.Format(time.RFC3339Nano))
+	return query
+}
+
+// readLiveProject reads the project a view names, as the project routes read the key in their
+// path, or answers the refusal of the view, which what names in its message. A key that is no
+// project key is refused with badKey, the code the view's own refusal of it carries.
+func readLiveProject(view DeliveryLiveView, what, badKey string) (string, *LiveError) {
+	if view.Project == nil {
+		return "", invalidLiveView("INVALID_FRAME", what+" names its project")
+	}
+	project := strings.TrimSpace(*view.Project)
+	if !projectKeyPattern.MatchString(project) {
+		return "", invalidLiveView(badKey, projectKeyProblem("project", project))
+	}
+	return project, nil
 }
 
 // parseLegionIssueLiveView reads a legion_issue view: it names the issue whose Legion state it

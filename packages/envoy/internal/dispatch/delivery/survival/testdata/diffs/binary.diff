@@ -1,0 +1,51 @@
+diff --git a/.gitignore b/.gitignore
+index 58db9af78fb..95b497d472d 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -271,3 +271,6 @@ packages/dispatch/e2e/test-results/
+ packages/dispatch/e2e/playwright-report/
+ 
+ .superpowers/sdd/
++
++# PR screenshots live on detached bookmarks built off root(), never in main history.
++/pr-screenshots/
+diff --git a/pr-screenshots/agents-after-1280.png b/pr-screenshots/agents-after-1280.png
+deleted file mode 100644
+index 9b7ae68666a..00000000000
+Binary files a/pr-screenshots/agents-after-1280.png and /dev/null differ
+diff --git a/pr-screenshots/agents-after-390.png b/pr-screenshots/agents-after-390.png
+deleted file mode 100644
+index 77f0257ba53..00000000000
+Binary files a/pr-screenshots/agents-after-390.png and /dev/null differ
+diff --git a/pr-screenshots/agents-before-1280.png b/pr-screenshots/agents-before-1280.png
+deleted file mode 100644
+index e4ed60e0d7f..00000000000
+Binary files a/pr-screenshots/agents-before-1280.png and /dev/null differ
+diff --git a/pr-screenshots/agents-before-390.png b/pr-screenshots/agents-before-390.png
+deleted file mode 100644
+index 32dbbe64459..00000000000
+Binary files a/pr-screenshots/agents-before-390.png and /dev/null differ
+diff --git a/pr-screenshots/composer-reply-after-1280.png b/pr-screenshots/composer-reply-after-1280.png
+deleted file mode 100644
+index 5577ce14f16..00000000000
+Binary files a/pr-screenshots/composer-reply-after-1280.png and /dev/null differ
+diff --git a/pr-screenshots/composer-reply-after-390.png b/pr-screenshots/composer-reply-after-390.png
+deleted file mode 100644
+index f86436c63e9..00000000000
+Binary files a/pr-screenshots/composer-reply-after-390.png and /dev/null differ
+diff --git a/pr-screenshots/conversation-after-1280.png b/pr-screenshots/conversation-after-1280.png
+deleted file mode 100644
+index 96032c1b969..00000000000
+Binary files a/pr-screenshots/conversation-after-1280.png and /dev/null differ
+diff --git a/pr-screenshots/conversation-after-390.png b/pr-screenshots/conversation-after-390.png
+deleted file mode 100644
+index 25766b32709..00000000000
+Binary files a/pr-screenshots/conversation-after-390.png and /dev/null differ
+diff --git a/pr-screenshots/conversation-before-1280.png b/pr-screenshots/conversation-before-1280.png
+deleted file mode 100644
+index 5ac9f94e58e..00000000000
+Binary files a/pr-screenshots/conversation-before-1280.png and /dev/null differ
+diff --git a/pr-screenshots/conversation-before-390.png b/pr-screenshots/conversation-before-390.png
+deleted file mode 100644
+index 066c2d1bf44..00000000000
+Binary files a/pr-screenshots/conversation-before-390.png and /dev/null differ

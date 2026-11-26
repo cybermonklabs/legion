@@ -260,6 +260,96 @@ func TestADueTimeWaitsOutTheMinimumGap(t *testing.T) {
 	})
 }
 
+// With no MinGap a leased loop runs at most one pass at a time and owes at most one: five wakes
+// during a pass of one second earn one pass, which starts as that pass ends, and a wake after both
+// passes runs a pass at once. A lease no other process holds makes no retry, so Retry, ten seconds
+// here, holds nothing, and a leased loop with no MinGap runs.
+func TestWakesDuringAPassMakeOneOwedPassAtItsEnd(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var passes passClock
+		wake := make(chan struct{}, 1)
+		lease := &fakeLease{}
+		booted := time.Now()
+		cancel, done := runLoop(duty.WokenLoop{
+			Lease: "eval-days",
+			Wake:  wake,
+			Retry: 10 * time.Second,
+			Pass: func(context.Context) time.Time {
+				passes.record()
+				time.Sleep(time.Second)
+				return time.Time{}
+			},
+		}, lease.exclusive)
+		for range 5 {
+			time.Sleep(150 * time.Millisecond)
+			signal(wake)
+		}
+		time.Sleep(2500*time.Millisecond - time.Since(booted))
+		signal(wake)
+		time.Sleep(time.Hour)
+		stop(cancel, done)
+		wantPassesAt(t, &passes, booted, 0, time.Second, 2500*time.Millisecond)
+	})
+}
+
+// A pass sees a wake that arrives while it runs (duty.WakeOwed) without taking it: the first pass
+// reads no wake owed at its start and one owed after the wake, and the loop still runs the pass that
+// wake earns, which reads none owed. A context no loop gave its wake reads none.
+func TestAPassSeesAWakeOwedWithoutTakingIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var passes passClock
+		wake := make(chan struct{}, 1)
+		var before, after []bool
+		booted := time.Now()
+		cancel, done := runLoop(duty.WokenLoop{
+			Wake: wake,
+			Pass: func(ctx context.Context) time.Time {
+				passes.record()
+				before = append(before, duty.WakeOwed(ctx))
+				if len(before) == 1 {
+					time.Sleep(time.Second)
+				}
+				after = append(after, duty.WakeOwed(ctx))
+				return time.Time{}
+			},
+		}, noLease(t))
+		time.Sleep(500 * time.Millisecond)
+		signal(wake)
+		time.Sleep(time.Hour)
+		stop(cancel, done)
+		wantPassesAt(t, &passes, booted, 0, time.Second)
+		if want := []bool{false, false}; !slices.Equal(before, want) {
+			t.Errorf("the passes read a wake owed at their start %v, want %v", before, want)
+		}
+		if want := []bool{true, false}; !slices.Equal(after, want) {
+			t.Errorf("the passes read a wake owed at their end %v, want %v: the first after the wake, the second after none", after, want)
+		}
+		if duty.WakeOwed(context.Background()) {
+			t.Error("a context no loop gave its wake reads a wake owed")
+		}
+	})
+}
+
+// A Backoff's waits begin at First and double up to Max, and Reset begins them again at First:
+// 250 ms doubling to the 10 s the refresher and the Legion facts consumer retry a held-back event
+// by at most.
+func TestABackoffDoublesFromItsFirstWaitToItsMaxUntilReset(t *testing.T) {
+	b := duty.Backoff{First: 250 * time.Millisecond, Max: 10 * time.Second}
+	want := []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second, 2 * time.Second,
+		4 * time.Second, 8 * time.Second, 10 * time.Second, 10 * time.Second}
+	got := make([]time.Duration, len(want))
+	for i := range got {
+		got[i] = b.Next()
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("the waits are %v, want %v", got, want)
+	}
+	b.Reset()
+	if first := b.Next(); first != want[0] {
+		t.Errorf("after Reset the wait is %v, want %v", first, want[0])
+	}
+}
+
 // fakeLease is Exclusive's shape over a lease the test controls: it refuses the first refusals
 // attempts, as a lease held by another process (or one that could not be taken) does, and runs the
 // pass on every attempt after. It records each attempt's time, name, due time and period.
@@ -287,22 +377,22 @@ func (f *fakeLease) exclusive(ctx context.Context, _ *slog.Logger, _ duty.Leases
 	return true
 }
 
-// A pass refused its lease is retried every MinGap, plus up to a tenth again, until a pass of
-// its own runs, with no wake: the process holding the lease may have read before the change that
-// woke this loop. Once it has run, the loop is idle again. Every attempt goes through the lease
-// named for the loop, with no period and no due time.
+// A pass refused its lease is retried every Retry, plus up to a tenth again, until a pass of its
+// own runs, with no wake: the process holding the lease may have read before the change that woke
+// this loop. Once it has run, the loop is idle again. Every attempt goes through the lease named
+// for the loop, with no period and no due time.
 func TestARefusedLeaseIsRetriedUntilAPassOfItsOwnRuns(t *testing.T) {
-	const minGap = 2 * time.Second
+	const retry = 2 * time.Second
 	fixJitter(t, func(n time.Duration) time.Duration { return n - 1 })
 	synctest.Test(t, func(t *testing.T) {
 		var passes passClock
 		lease := &fakeLease{refusals: 3}
 		booted := time.Now()
 		cancel, done := runLoop(duty.WokenLoop{
-			Lease:  "suggestion-outcomes",
-			Wake:   make(chan struct{}, 1),
-			MinGap: minGap,
-			Pass:   func(context.Context) time.Time { passes.record(); return time.Time{} },
+			Lease: "suggestion-outcomes",
+			Wake:  make(chan struct{}, 1),
+			Retry: retry,
+			Pass:  func(context.Context) time.Time { passes.record(); return time.Time{} },
 		}, lease.exclusive)
 		time.Sleep(time.Hour)
 		stop(cancel, done)
@@ -313,8 +403,8 @@ func TestARefusedLeaseIsRetriedUntilAPassOfItsOwnRuns(t *testing.T) {
 			t.Fatalf("attempts = %d, want 3 refused and the one that ran", len(lease.attempts))
 		}
 		for i := 1; i < len(lease.attempts); i++ {
-			if gap := lease.attempts[i].Sub(lease.attempts[i-1]); gap < minGap || gap >= minGap+minGap/10 {
-				t.Errorf("retry %d came %v after the refusal, want within [%v, %v)", i, gap, minGap, minGap+minGap/10)
+			if gap := lease.attempts[i].Sub(lease.attempts[i-1]); gap < retry || gap >= retry+retry/10 {
+				t.Errorf("retry %d came %v after the refusal, want within [%v, %v)", i, gap, retry, retry+retry/10)
 			}
 		}
 		for i := range lease.attempts {
@@ -352,7 +442,7 @@ func TestAWokenLoopReturnsAtOnceWhenItsContextEnds(t *testing.T) {
 	t.Run("waiting to retry a refused lease", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			lease := &fakeLease{refusals: 1 << 30}
-			cancel, done := runLoop(duty.WokenLoop{Lease: "l", MinGap: time.Hour, Pass: idlePass}, lease.exclusive)
+			cancel, done := runLoop(duty.WokenLoop{Lease: "l", Retry: time.Hour, Pass: idlePass}, lease.exclusive)
 			returnsAtOnce(t, cancel, done)
 		})
 	})
@@ -374,7 +464,7 @@ func TestAWokenLoopReturnsAtOnceWhenItsContextEnds(t *testing.T) {
 				cancel()
 				return false
 			}
-			loop := duty.WokenLoop{Lease: "l", MinGap: time.Second, Pass: idlePass}
+			loop := duty.WokenLoop{Lease: "l", Retry: time.Second, Pass: idlePass}
 			loop.Run(ctx, cutShort)
 			if attempts != 1 {
 				t.Errorf("attempts = %d, want the one shutdown cut short", attempts)
@@ -410,7 +500,7 @@ func TestRunWokenRetriesALeaseHeldElsewhereUntilThePassRuns(t *testing.T) {
 			Lease:  name,
 			Leases: leases,
 			Wake:   make(chan struct{}, 1),
-			MinGap: 50 * time.Millisecond,
+			Retry:  50 * time.Millisecond,
 			Pass:   func(context.Context) time.Time { ran <- struct{}{}; return time.Time{} },
 		})
 	}()

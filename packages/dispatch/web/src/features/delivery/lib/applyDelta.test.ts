@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
 import after from "../../../../../../contracts/fixtures/live/after.json";
 import delta from "../../../../../../contracts/fixtures/live/delta.json";
+import evalsAfter from "../../../../../../contracts/fixtures/live/evals_after.json";
+import evalsDelta from "../../../../../../contracts/fixtures/live/evals_delta.json";
+import evalsSnapshot from "../../../../../../contracts/fixtures/live/evals_snapshot.json";
+import timelineAfter from "../../../../../../contracts/fixtures/live/project_timeline_after.json";
+import timelineDelta from "../../../../../../contracts/fixtures/live/project_timeline_delta.json";
+import timelineSnapshot from "../../../../../../contracts/fixtures/live/project_timeline_snapshot.json";
 import snapshot from "../../../../../../contracts/fixtures/live/snapshot.json";
 import type {
   DeliveryLiveDelta,
@@ -10,6 +16,8 @@ import type {
   DeliveryRun,
   DeliverySessionGroup,
   DeliveryTimelineWithMeasures,
+  EvalListResponse,
+  ProjectTimelineResponse,
 } from "../../../api/types";
 import { applyDelta, applyRevs } from "./applyDelta";
 
@@ -246,5 +254,47 @@ test("the server's delta applied to its snapshot is the snapshot a page subscrib
   ) as DeliveryTimelineWithMeasures;
   const { freshness: _next, ...expected } = next.body as DeliveryTimelineWithMeasures;
   expect(applied).toEqual(expected);
+  expect(applyRevs(held.revs, change.revs)).toEqual(next.revs);
+});
+
+test("an evals view's delta lands its evals by id, in slug order, on the snapshot that follows it", () => {
+  // The frames Dispatch's own diff writes: a reading moved pr-size's numbers and lead-time was
+  // registered, which sorts between deploy-frequency and pr-size; the rows' new age moved the
+  // freshness, which an evals delta carries whole, so the two bodies are equal in every field.
+  const held = evalsSnapshot as unknown as DeliveryLiveSnapshot;
+  const next = evalsAfter as unknown as DeliveryLiveSnapshot;
+  const change = evalsDelta as unknown as DeliveryLiveDelta;
+  const applied = applyDelta(held.body, change) as EvalListResponse;
+  expect(applied).toEqual(next.body as EvalListResponse);
+  expect((applied.items ?? []).map((item) => item.id)).toEqual([
+    "ACME/deploy-frequency",
+    "ACME/lead-time",
+    "ACME/pr-size",
+    "ACME/review-time",
+  ]);
+  // An eval no delta named is the very object it was.
+  const before = (held.body as EvalListResponse).items ?? [];
+  expect((applied.items ?? [])[0]).toBe(before[0]);
+  expect(applyRevs(held.revs, change.revs)).toEqual(next.revs);
+});
+
+test("a project-timeline view's growth lands the rows it lacked, newest first, on the snapshot that follows it", () => {
+  // The frames Dispatch's own diff writes: a view of the two newest rows grown to four, which
+  // sends the two it lacked and the waiting line, which reaches the window's start once the view
+  // holds every row.
+  const held = timelineSnapshot as unknown as DeliveryLiveSnapshot;
+  const next = timelineAfter as unknown as DeliveryLiveSnapshot;
+  const change = timelineDelta as unknown as DeliveryLiveDelta;
+  const applied = applyDelta(held.body, change) as ProjectTimelineResponse;
+  expect(applied).toEqual(next.body as ProjectTimelineResponse);
+  expect((applied.items ?? []).map((row) => row.id)).toEqual([
+    "acme/widgets#5",
+    42,
+    "acme/widgets#2",
+    "acme/widgets#1",
+  ]);
+  // A row the page held is the very object it was.
+  const before = (held.body as ProjectTimelineResponse).items ?? [];
+  expect((applied.items ?? [])[1]).toBe(before[1]);
   expect(applyRevs(held.revs, change.revs)).toEqual(next.revs);
 });

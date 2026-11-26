@@ -7,23 +7,37 @@ import { sql } from "./psql";
 
 const SEED_ACTOR = `'{"kind":"system","id":"e2e-seed"}'`;
 
-const SETTINGS = `INSERT INTO delivery_settings (
-     singleton, deploy_repo, deploy_workflow_path, production_job_names,
-     pr_checks_workflow_path, population_authors, excluded_repos, updated_by
-   ) VALUES (
-     true, 'acme/widgets', '.github/workflows/deploy.yml', ARRAY['widgets-release / widgets-release'],
-     '.github/workflows/pr-checks.yml', ARRAY['octocat'], ARRAY[]::text[], ${SEED_ACTOR}
-   )`;
+/** The statements that give `project` the delivery settings every delivery fixture reads: the
+ *  project (made, under `name`, where it does not exist yet) with `acme/widgets` as its default
+ *  repository, its settings row with delivery on, and one `github_workflow` source that names no
+ *  repository, so it reads the default. Every project names a default assignee: alice, the person
+ *  every row of these fixtures is read as. */
+function deliverySettingsSql(project = "ACME", name = "Acme"): string[] {
+  return [
+    `INSERT INTO projects (key, name, default_assignee, default_repo)
+     VALUES ('${project}', '${name}', 'alice', 'acme/widgets')
+     ON CONFLICT (key) DO UPDATE SET default_repo = excluded.default_repo`,
+    `INSERT INTO project_delivery_settings (
+       project_key, delivery, population_authors, excluded_repos, updated_by
+     ) VALUES ('${project}', true, ARRAY['octocat'], ARRAY[]::text[], ${SEED_ACTOR})`,
+    `INSERT INTO project_deploy_sources (
+       project_key, position, kind, repo, deploy_workflow_path, production_job_names,
+       pr_checks_workflow_path
+     ) VALUES (
+       '${project}', 0, 'github_workflow', null, '.github/workflows/deploy.yml',
+       ARRAY['widgets-release / widgets-release'], '.github/workflows/pr-checks.yml'
+     )`,
+  ];
+}
+
+const SETTINGS = deliverySettingsSql();
 
 /** The slice 1 timeline's fixture, in 2024-06-01: two population pull requests (#1 shipped by
  *  deploy run 500 and attributed to ACME-1, a P0 issue; #2 waiting, a rework, with no issue),
  *  the deploy run with its jobs, and a failed run (501). */
 export async function seedDeliveryFixture(): Promise<void> {
   await sql(
-    SETTINGS,
-    // Every project names a default assignee, so the column takes none of these rows without
-    // one; alice is the person every row of this fixture is read as.
-    `INSERT INTO projects (key, name, default_assignee) VALUES ('ACME', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
+    ...SETTINGS,
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank)
      VALUES ('ACME-1', 'ACME', 1, 'Ship the widgets', 'todo', 0, ${SEED_ACTOR}, 'U')`,
     `INSERT INTO delivery_pull_requests (
@@ -64,8 +78,7 @@ export const TIMELINE_FIXTURE_QUERY = "from=2024-06-01T00%3A00%3A00Z&to=2024-06-
  *  wrote with its origin's `session_title` (delivery/agents.go's ResolveSessionTitles). */
 export async function seedSessionGroupsFixture(): Promise<void> {
   await sql(
-    SETTINGS,
-    `INSERT INTO projects (key, name, default_assignee) VALUES ('ACME', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
+    ...SETTINGS,
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank)
      VALUES ('ACME-7', 'ACME', 7, 'Group the planners', 'todo', 1, ${SEED_ACTOR}, 'U')`,
     `INSERT INTO delivery_pull_requests (
@@ -98,8 +111,7 @@ export const FIXTURE_WINDOW = { from: "2026-08-30T00:00:00Z", to: "2026-09-27T20
  *  by its own containment (LEGION-567 slice 2 plan, "How the expected values are produced"). */
 export async function seedMeasuresFixture(): Promise<void> {
   await sql(
-    SETTINGS,
-    `INSERT INTO projects (key, name, default_assignee) VALUES ('ACME', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
+    ...SETTINGS,
     `INSERT INTO issues (key, project_key, number, title, status, priority, route, claimed_by, claimed_at, created_by, rank) VALUES
        ('ACME-100', 'ACME', 100, 'Build timeline UI', 'in_progress', 1, null,
         '{"kind":"session","id":"01a1-e2e-session"}', now(), ${SEED_ACTOR}, 'U100'),
@@ -212,7 +224,7 @@ function pipelineRun(run: {
 /** The Pipeline page's rows: the ones the prototype's collector/tests/test_pipeline.py builds in
  *  code, with placeholder job names (the API test `api/delivery_pipeline_test.go` seeds the same
  *  rows), dated so `?at=PIPELINE_AT` shows them, and the three job names set on the stored
- *  settings row. PR checks: the failing-jobs runs (today, two failures and a cancelled run;
+ *  deploy source. PR checks: the failing-jobs runs (today, two failures and a cancelled run;
  *  yesterday, a success and a failure before the 24 hours) and 50 build / unit results to rank
  *  among the slowest jobs, every one a `pull_request` run, plus a `merge_group` run no card
  *  counts. Deploys (run ids 601-606, clear of the measures fixture's 501-508, so the docs harness
@@ -304,9 +316,9 @@ export async function seedPipelineRows(): Promise<void> {
     ]),
   ];
   await sql(
-    `UPDATE delivery_settings SET staging_e2e_job_name = 'staging-e2e / run',
+    `UPDATE project_deploy_sources SET staging_e2e_job_name = 'staging-e2e / run',
        staging_apply_job_name = 'staging-release / apply', pr_checks_rollup_job_name = 'checks-complete'
-     WHERE singleton`,
+     WHERE kind = 'github_workflow'`,
     `INSERT INTO delivery_pull_requests (
        repo, number, title, url, author, created_at, merged_at, additions, deletions, rework, issue_key, sessions, partial
      ) VALUES
@@ -322,8 +334,9 @@ export async function seedPipelineRows(): Promise<void> {
   );
 }
 
-/** The Pipeline page's fixture on a reset database: the delivery settings, then its rows. */
-export async function seedPipelineFixture(): Promise<void> {
-  await sql(SETTINGS);
+/** The Pipeline page's fixture on a reset database: the delivery settings, of `project` (the
+ *  fixture's ACME unless named), then its rows. */
+export async function seedPipelineFixture(project = "ACME"): Promise<void> {
+  await sql(...deliverySettingsSql(project, project === "ACME" ? "Acme" : project));
   await seedPipelineRows();
 }

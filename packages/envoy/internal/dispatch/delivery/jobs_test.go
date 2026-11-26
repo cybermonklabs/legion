@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -229,7 +231,7 @@ func TestAJobIntakeRecordsTheConfiguredProductionApplyStep(t *testing.T) {
 	settings := seedDeliverySettings(t, ctx, pool)
 	const step = "Run ./.github/actions/apply"
 	settings.ProductionApplyStepName = new(step)
-	if _, err := PutSettings(ctx, pool, settings, model.Actor{Kind: "system", ID: "test"}); err != nil {
+	if _, err := putTestRule(ctx, pool, settings, model.Actor{Kind: "system", ID: "test"}); err != nil {
 		t.Fatalf("set production apply step: %v", err)
 	}
 	seedRunningDeployRun(t, ctx, pool)
@@ -277,8 +279,8 @@ func TestAJobOfAnUntrackedRunCostsNoGitHubCall(t *testing.T) {
 	}
 }
 
-// TestAJobOfAnotherRepositoryIsIgnored: a job of a repository other than the deploy repository
-// schedules nothing, even when a run of that number is stored.
+// TestAJobOfAnotherRepositoryIsIgnored: a job of a repository no deploy source reads schedules
+// nothing, even when a run of that number is stored.
 func TestAJobOfAnotherRepositoryIsIgnored(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -291,6 +293,83 @@ func TestAJobOfAnotherRepositoryIsIgnored(t *testing.T) {
 	clock.Advance(jobMaxWait)
 	if armed, calls, mints := clock.armed(), fake.calls.Load(), fake.tokenMints.Load(); armed != 0 || calls != 0 || mints != 0 {
 		t.Fatalf("another repository's job: %d timers, %d jobs reads, %d token mints, want none", armed, calls, mints)
+	}
+}
+
+// Each job event is routed by its own repository's rule (dispatch://INFRA-978, D1): with three
+// sources in three repositories, two of one project, a job of a tracked run of each source
+// repository has that run's jobs read once, under the repository's name as its rule holds it
+// whatever case the event writes it in, and the run's production job judged by that repository's
+// own production rule, whose apply step it records; a job of a stored run of a repository no
+// source reads schedules nothing and asks GitHub for nothing.
+func TestAJobIsRoutedByItsRepositorysOwnRule(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	seedThreeSources(t, ctx, pool)
+	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	runs := map[string]int64{"acme/widgets": 500, "acme/gadgets": 600, "acme/tools": 700, "acme/elsewhere": 800}
+	for repo, id := range runs {
+		run := changeTestRun(id, DeliveryRunKindDeploy, started.Add(-time.Minute), started)
+		run.Repo = repo
+		if err := UpsertRun(ctx, pool, run); err != nil {
+			t.Fatalf("seed run %d of %s: %v", id, repo, err)
+		}
+	}
+	// Every repository's listing holds every rule's production job, each with both apply steps, so
+	// only the run's own rule decides which job is its production job and which step it records.
+	var mu sync.Mutex
+	read := map[string]int{}
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		read[r.PathValue("owner")+"/"+r.PathValue("repo")+"#"+r.PathValue("run_id")]++
+		mu.Unlock()
+		steps := []map[string]any{{"name": "Apply gadgets", "conclusion": "success"}, {"name": "Apply tools", "conclusion": "failure"}}
+		var jobs []map[string]any
+		for _, name := range []string{"widgets-release / widgets-release", "ship", "release"} {
+			jobs = append(jobs, map[string]any{
+				"name": name, "started_at": "2026-09-03T12:05:00Z", "completed_at": "2026-09-03T12:09:00Z",
+				"conclusion": "success", "steps": steps,
+			})
+		}
+		mustEncode(t, w, map[string]any{"total_count": len(jobs), "jobs": jobs})
+	})
+	clock := newFakeJobClock()
+	jobs := newJobIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
+	for _, repo := range []string{"acme/widgets", "Acme/Gadgets", "acme/tools", "acme/elsewhere"} {
+		jobs.receive(ctx, jobPayload(repo, runs[strings.ToLower(repo)]))
+	}
+	if armed := clock.armed(); armed != 3 {
+		t.Fatalf("four job events armed %d reads, want one for each source repository's run", armed)
+	}
+	clock.Advance(jobMaxWait)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if want := map[string]int{"acme/widgets#500": 1, "acme/gadgets#600": 1, "acme/tools#700": 1}; !maps.Equal(read, want) {
+		t.Fatalf("jobs reads = %v, want %v", read, want)
+	}
+	for repo, want := range map[string]map[string]string{
+		"acme/widgets": {},
+		"acme/gadgets": {"ship": "Apply gadgets success"},
+		"acme/tools":   {"release": "Apply tools failure"},
+	} {
+		stored, err := ListRunJobs(ctx, pool, repo, runs[repo])
+		if err != nil || len(stored) != 3 {
+			t.Fatalf("the jobs of %s's run = %+v, %v; want the three listed", repo, stored, err)
+		}
+		got := map[string]string{}
+		for _, job := range stored {
+			if job.ApplyStep != nil && job.ApplyStepConclusion != nil {
+				got[job.Name] = *job.ApplyStep + " " + string(*job.ApplyStepConclusion)
+			}
+		}
+		if !maps.Equal(got, want) {
+			t.Errorf("the apply steps recorded on %s's run = %v, want its own rule's, %v", repo, got, want)
+		}
+	}
+	if stored, err := ListRunJobs(ctx, pool, "acme/elsewhere", runs["acme/elsewhere"]); err != nil || len(stored) != 0 {
+		t.Errorf("the jobs of the run of a repository no source reads = %+v, %v; want none", stored, err)
 	}
 }
 

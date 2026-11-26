@@ -31,8 +31,8 @@ type JobIntake struct {
 	pool   *store.Pool
 	github *githubapp.Client
 	clock  jobClock
-	// settings is the delivery settings a job event is checked against, shared with the intake
-	// (StartIntakes): a message reads them from memory, not from delivery_settings.
+	// settings is the rules a job event is checked against, shared with the intake (StartIntakes):
+	// a message reads them from memory, not from the settings tables.
 	settings *SettingsCache
 	// heldDurable is this intake's delivery from bus.DispatchJobDurable under the durable's own
 	// hold and consumer lease, one name each per durable, so that a take-over stuck on the other
@@ -181,9 +181,11 @@ func (j *JobIntake) deliver(d *intakeDelivery, message intakeMessage) {
 	j.receive(ctx, envelope.Payload)
 }
 
-// receive schedules a read of the run a job event names, when it is a run of the deploy repository
-// Dispatch already tracks: the repository is checked against the cached settings, and any other
-// event costs at most one indexed read (RunTracked).
+// receive schedules a read of the run a job event names, when it is a run of a source repository
+// Dispatch already tracks: the repository is checked against the cached rules, and its own rule's
+// production rule reads the run's jobs (dispatch://INFRA-978, D1); any other event costs at most one
+// indexed read (RunTracked). The run is keyed by the repository's name as its rule holds it, which
+// is the name its run row is stored under.
 func (j *JobIntake) receive(ctx context.Context, payload string) {
 	var job struct {
 		Kind  string `json:"kind"`
@@ -193,8 +195,8 @@ func (j *JobIntake) receive(ctx context.Context, payload string) {
 	if err := json.Unmarshal([]byte(payload), &job); err != nil || job.Kind != "job" {
 		return
 	}
-	settings := j.settings.Load()
-	if settings == nil || job.Repo != settings.DeployRepo {
+	rule, ok := j.settings.Load().For(job.Repo)
+	if !ok {
 		return
 	}
 	runID, err := strconv.ParseInt(job.RunID, 10, 64)
@@ -202,15 +204,15 @@ func (j *JobIntake) receive(ctx context.Context, payload string) {
 		j.tuning.log.Warn("dispatch delivery: job event with a malformed run_id", "run_id", job.RunID)
 		return
 	}
-	tracked, err := RunTracked(ctx, j.pool, job.Repo, runID)
+	tracked, err := RunTracked(ctx, j.pool, rule.DeployRepo, runID)
 	if err != nil {
-		j.tuning.log.Error("dispatch delivery: read whether a job's run is tracked", "repo", job.Repo, "run_id", runID, "error", err)
+		j.tuning.log.Error("dispatch delivery: read whether a job's run is tracked", "repo", rule.DeployRepo, "run_id", runID, "error", err)
 		return
 	}
 	if !tracked {
 		return
 	}
-	j.schedule(runKey{repo: job.Repo, runID: runID}, settings.Production())
+	j.schedule(runKey{repo: rule.DeployRepo, runID: runID}, rule.Production())
 }
 
 // schedule starts a run's burst or moves its read to jobQuiet after this event, but never past

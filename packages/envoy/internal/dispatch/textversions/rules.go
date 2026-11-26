@@ -28,6 +28,10 @@ import (
 // by the roll that brought them or later, and a read of them all up to the cursor misses none.
 const rulesVersion = 2
 
+// RulesVersion is rulesVersion, exported for evalbench's load, which writes the cursor row as
+// caught up with the log it loaded, as this build's fill would leave it.
+const RulesVersion = rulesVersion
+
 // Where a version's body came from, the values of search_text_versions.body_from this build
 // writes: the event's payload, whole, which is also where a deleted post's empty body comes from
 // (deletedPostVersion); the item's present row, which shows no later change; the post's body

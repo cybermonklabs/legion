@@ -218,9 +218,11 @@ var itemRowWriters = map[string]map[string]string{
 			"its tables are refs and the item block-ref tables, no item row",
 	},
 	"internal/dispatch/store/repo_rename_pass.go": {
-		"collisions": repoRenamePassException,
-		"nameWrite":  repoRenamePassException,
-		"urlWrite":   repoRenamePassException,
+		"collisions":      repoRenamePassException,
+		"nameWrite":       repoRenamePassException,
+		"ownerCollisions": repoRenamePassException,
+		"ownerWrite":      repoRenamePassException,
+		"urlWrite":        repoRenamePassException,
 	},
 	"internal/pgmigrate/identity.go": {
 		"Record":     versionTableException,
@@ -245,10 +247,11 @@ const seedLoaderException = "none, and none to take: cmd/dispatch-seed is a comm
 	"there is no other writer for a lock to serialise it against; pointed at a database a " +
 	"server serves it would take the owner lock like every serving writer"
 
-// repoRenamePassException is why the boot rename pass's three statement builders are on the
+// repoRenamePassException is why the boot rename pass's five statement builders are on the
 // census with no lock. They build the statements of store.RewriteRenamedRepositories from a table
 // name, which is the shape this scan cannot read (unspelledTableWrites), and every table they are
-// given holds one of the stored repository fields repoRenameLines lists, none of them an item
+// given holds one of the stored repository fields repoRenameLines lists, or the eval day rows'
+// owner keys that name a repository (ownerWrite, ownerCollisions), none of them an item
 // row: the pass writes no comment, message or ask and no block-state row of one, so there is no
 // owner lock for it to take. The only advisory lock it takes is its own, one line at a time
 // (repoRenameLockNamespace), and cmd/dispatch runs it once at boot, before the process serves.
@@ -468,9 +471,11 @@ var itemRowLockNoRow = map[string]map[string]string{
 		"settleOwedStatement": itemRowCallersTransaction,
 	},
 	"internal/dispatch/store/repo_rename_pass.go": {
-		"collisions": itemRowNoOwnerLock,
-		"nameWrite":  itemRowNoOwnerLock,
-		"urlWrite":   itemRowNoOwnerLock,
+		"collisions":      itemRowNoOwnerLock,
+		"nameWrite":       itemRowNoOwnerLock,
+		"ownerCollisions": itemRowNoOwnerLock,
+		"ownerWrite":      itemRowNoOwnerLock,
+		"urlWrite":        itemRowNoOwnerLock,
 	},
 }
 

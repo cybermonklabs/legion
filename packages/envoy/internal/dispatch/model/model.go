@@ -1924,6 +1924,11 @@ type CheckBlock struct {
 	PassStands      CheckPassStands `json:"pass_stands"`
 }
 
+// CheckWhenAfterMerge is the `when` of a check run after its change merged (CheckBlock.When, the
+// enum pmdoc/schema/blocks.json declares): a fail of one is a failure of the deploy that shipped
+// its commit, the record of production events' check_fail signal.
+const CheckWhenAfterMerge = "after_merge"
+
 // CIStatePass, CIStateFail, CIStateNoResult and CIStateUnread are what the read of a check CI
 // proves answered (CheckCI.State): the named run passed, it failed, nothing the read found proves
 // the check either way, or GitHub could not be read. Only a pass and a fail carry a result.

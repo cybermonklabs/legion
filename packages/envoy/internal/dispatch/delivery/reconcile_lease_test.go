@@ -44,7 +44,7 @@ func TestAReconcilePassWhoseLeaseIsHeldElsewhereAsksGitHubNothing(t *testing.T) 
 	if mints := fake.tokenMints.Load(); mints != 0 {
 		t.Fatalf("the pass minted %d installation tokens under a lease held elsewhere; want none", mints)
 	}
-	settings, err := GetSettings(ctx, pool)
+	settings, err := getTestRule(ctx, pool)
 	if err != nil {
 		t.Fatalf("read the settings after the skipped pass: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestAReconcilePassWhoseLeaseIsHeldElsewhereAsksGitHubNothing(t *testing.T) 
 
 	// The lease is the pass's, not the process's: the next pass takes it and reconciles.
 	reconcile.leasedPass(ctx, leases, time.Now())
-	settings, err = GetSettings(ctx, pool)
+	settings, err = getTestRule(ctx, pool)
 	if err != nil {
 		t.Fatalf("read the settings after the pass that ran: %v", err)
 	}

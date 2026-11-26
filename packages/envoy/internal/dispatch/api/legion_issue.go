@@ -89,7 +89,7 @@ type legionIssueState struct {
 	// sampler stored it, null where it waits on nothing. It stays bytes, as legion.IssueState holds
 	// it, so a field a later daemon adds reaches the page. rawFieldSchemas names the fields the
 	// daemon writes today (its WaitingOnView), which give the generated type its members, and the
-	// card of the board takes three of them (legionBoardWaitOf). The emitter leaves a field that
+	// card of the board takes three of them (legion.ParseWait, card). The emitter leaves a field that
 	// table names out of `required` unless its tag says otherwise, since absent is one of the
 	// three states of a request's raw field; this one is always written, null or an object, so its
 	// tag says so.

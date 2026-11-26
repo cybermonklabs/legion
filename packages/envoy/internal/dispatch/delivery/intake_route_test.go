@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -104,11 +105,11 @@ func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
 	// deliver records the event's time only once the handler that stored the row has returned
 	// (intake.go deliver), so the row can be read before the freshness is: wait for it on a
 	// deadline of its own rather than reading it once.
-	got, err := GetSettings(ctx, pool)
+	got, err := getTestRule(ctx, pool)
 	freshnessDeadline := time.Now().Add(10 * time.Second)
 	for err == nil && got.LastEventAt == nil && time.Now().Before(freshnessDeadline) {
 		time.Sleep(50 * time.Millisecond)
-		got, err = GetSettings(ctx, pool)
+		got, err = getTestRule(ctx, pool)
 	}
 	if err != nil || got.LastEventAt == nil {
 		t.Errorf("settings.LastEventAt not recorded after intake processed an event: %+v, %v", got, err)
@@ -153,7 +154,7 @@ func TestIntakeAcksAKindItDoesNotRecordWithoutLoggingOrWriting(t *testing.T) {
 			t.Errorf("intake logged an ERROR for a kind it does not record: %v", record)
 		}
 	}
-	settings, err := GetSettings(ctx, pool)
+	settings, err := getTestRule(ctx, pool)
 	if err != nil {
 		t.Fatalf("read settings: %v", err)
 	}
@@ -195,7 +196,7 @@ func TestIntakeAcksAnEnvelopeWithNoPayloadSilently(t *testing.T) {
 			t.Errorf("intake logged an ERROR for an envelope with no payload: %v", record)
 		}
 	}
-	settings, err := GetSettings(ctx, pool)
+	settings, err := getTestRule(ctx, pool)
 	if err != nil {
 		t.Fatalf("read settings: %v", err)
 	}
@@ -255,7 +256,7 @@ func TestIntakeHandlesAMergedPullRequestEnvelopeWithAMemberItDoesNotRead(t *test
 	if pr.Partial || pr.Additions == nil || *pr.Additions != 10 {
 		t.Errorf("stored pull request = %+v, want the completed fetch (not partial, 10 additions)", pr)
 	}
-	settings, err := GetSettings(ctx, pool)
+	settings, err := getTestRule(ctx, pool)
 	if err != nil {
 		t.Fatalf("read settings: %v", err)
 	}
@@ -296,7 +297,7 @@ func TestIntakeWarnsOfAWorkflowRunWhoseRunIDIsNotAString(t *testing.T) {
 	if !warned {
 		t.Errorf("no WARN \"dispatch delivery: process event\" naming the malformed run_id for %s; logged %v", topic, logs())
 	}
-	settings, err := GetSettings(ctx, pool)
+	settings, err := getTestRule(ctx, pool)
 	if err != nil {
 		t.Fatalf("read settings: %v", err)
 	}
@@ -337,7 +338,7 @@ func TestIntakeLogsAMalformedEnvelopePayload(t *testing.T) {
 			if !logged {
 				t.Errorf("no ERROR \"dispatch delivery: decode envelope payload\" for %s; logged %v", topic, logs())
 			}
-			settings, err := GetSettings(ctx, pool)
+			settings, err := getTestRule(ctx, pool)
 			if err != nil {
 				t.Fatalf("read settings: %v", err)
 			}
@@ -437,21 +438,21 @@ func TestIntakeRoutesByTheSettingsInForceWhenAnEnvelopeArrives(t *testing.T) {
 	})
 
 	natsClient := intakeTestClient(t)
-	settingsCache := newSettingsCache(pool, settingsWake(t, pool), tuningFor(t).log)
+	settingsCache := newSettingsCache(pool, settingsWake(t, pool), nil, tuningFor(t).log)
 	runSettingsCache(t, settingsCache)
 	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), settingsCache, unrenamed())
 	startIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
 
 	settings.DeployWorkflowPath = newPath
-	if _, err := PutSettings(ctx, pool, settings, model.Actor{Kind: "system", ID: "delivery-test"}); err != nil {
+	if _, err := putTestRule(ctx, pool, settings, model.Actor{Kind: "system", ID: "delivery-test"}); err != nil {
 		t.Fatalf("change the deploy workflow path: %v", err)
 	}
 	waitFor(t, 2*time.Second, func() bool {
-		held := settingsCache.Load()
-		return held != nil && held.DeployWorkflowPath == newPath
+		held, ok := settingsCache.Load().For(settings.DeployRepo)
+		return ok && held.DeployWorkflowPath == newPath
 	}, func() string {
-		return fmt.Sprintf("the running intake's settings = %+v two seconds after the write, want deploy workflow path %s", settingsCache.Load(), newPath)
+		return fmt.Sprintf("the running intake's rules = %+v two seconds after the write, want deploy workflow path %s", settingsCache.Load().All(), newPath)
 	})
 
 	const onNewPath, onOldPath = int64(8001), int64(8002)
@@ -480,5 +481,89 @@ func TestIntakeRoutesByTheSettingsInForceWhenAnEnvelopeArrives(t *testing.T) {
 	run, err := ScanRun(pool.QueryRow(ctx, `select `+RunColumns+` from delivery_runs where repo = 'acme/widgets' and run_id = $1`, onNewPath))
 	if err != nil || run.CreatedAt == nil || !run.CreatedAt.Equal(created) || !run.StartedAt.Equal(rerun) {
 		t.Fatalf("stored run = %+v, %v: want created_at %v beside started_at %v", run, err, created, rerun)
+	}
+}
+
+// Each workflow run is routed by its own repository's rule (dispatch://INFRA-978, D1): with three
+// sources in three repositories, two of one project, a run of a file a repository's rule names is
+// fetched and stored as the kind that rule gives the file, under the repository's name as the rule
+// holds it whatever case the envelope writes it in; a run of a file only another repository's rule
+// names is dropped, and so is every run of a repository no source reads, with no GitHub call.
+func TestEachRunIsRoutedByItsRepositorysOwnRule(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	seedThreeSources(t, ctx, pool)
+	created := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	var mu sync.Mutex
+	var fetched []string
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/{owner}/{repo}/actions/runs/{run_id}", func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(r.PathValue("run_id"), 10, 64)
+		if err != nil {
+			t.Errorf("parse run id %q: %v", r.PathValue("run_id"), err)
+		}
+		mu.Lock()
+		fetched = append(fetched, fmt.Sprintf("%s/%s#%d", r.PathValue("owner"), r.PathValue("repo"), id))
+		mu.Unlock()
+		mustEncode(t, w, smallRun(id, created))
+	})
+	intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), events.NewBroker(), nil, unrenamed())
+	rules := readTestRules(t, ctx, pool)
+
+	runs := []struct {
+		repo, path string
+		runID      int64
+		want       DeliveryRunKind
+	}{
+		{"acme/widgets", widgetsRule.DeployWorkflowPath, 1, DeliveryRunKindDeploy},
+		{"acme/widgets", widgetsRule.PRChecksWorkflowPath, 2, DeliveryRunKindPRChecks},
+		{"acme/gadgets", gadgetsRule.DeployWorkflowPath, 3, DeliveryRunKindDeploy},
+		{"Acme/Gadgets", gadgetsRule.PRChecksWorkflowPath, 4, DeliveryRunKindPRChecks},
+		{"acme/tools", toolsRule.DeployWorkflowPath, 5, DeliveryRunKindDeploy},
+		{"acme/gadgets", widgetsRule.DeployWorkflowPath, 6, ""},
+		{"acme/tools", gadgetsRule.PRChecksWorkflowPath, 7, ""},
+		{"acme/elsewhere", widgetsRule.DeployWorkflowPath, 8, ""},
+	}
+	var wantFetched, wantStored []string
+	for _, run := range runs {
+		envelope, err := json.Marshal(map[string]string{
+			"kind": "workflow", "action": "in_progress", "repo": run.repo, "path": run.path, "run_id": strconv.FormatInt(run.runID, 10),
+		})
+		if err != nil {
+			t.Fatalf("encode the envelope: %v", err)
+		}
+		handled, repo, err := intake.route(ctx, rules, string(envelope))
+		if err != nil || !handled || repo != run.repo {
+			t.Fatalf("route the run of %s %s = (%v, %q, %v), want handled as %s's", run.repo, run.path, handled, repo, err, run.repo)
+		}
+		if run.want != "" {
+			wantFetched = append(wantFetched, fmt.Sprintf("%s#%d", strings.ToLower(run.repo), run.runID))
+			wantStored = append(wantStored, fmt.Sprintf("%s#%d %s", strings.ToLower(run.repo), run.runID, run.want))
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(fetched, wantFetched) {
+		t.Errorf("runs fetched from GitHub = %v, want %v", fetched, wantFetched)
+	}
+	rows, err := pool.Query(ctx, `select repo, run_id, kind from delivery_runs order by run_id`)
+	if err != nil {
+		t.Fatalf("read the stored runs: %v", err)
+	}
+	defer rows.Close()
+	var stored []string
+	for rows.Next() {
+		var repo, kind string
+		var runID int64
+		if err := rows.Scan(&repo, &runID, &kind); err != nil {
+			t.Fatalf("read a stored run: %v", err)
+		}
+		stored = append(stored, fmt.Sprintf("%s#%d %s", repo, runID, kind))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the stored runs: %v", err)
+	}
+	if !slices.Equal(stored, wantStored) {
+		t.Errorf("stored runs = %v, want %v", stored, wantStored)
 	}
 }

@@ -15,12 +15,62 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
+
+// deliveryRuleProject is the project a delivery route test saves its one rule under
+// (saveDeliveryRule): a project of its own, with no default repository and no evals, so the routes
+// judge by the catalogue's targets, as they judged the one delivery_settings row's.
+const deliveryRuleProject = "DELIVERY"
+
+// saveDeliveryRule saves rule as the delivery settings the delivery routes read
+// (readDeliveryRules): deliveryRuleProject's, with delivery on and one github_workflow source naming
+// rule's repository under rule (deliverytest.SaveRules), the project made where it does not exist.
+// A second save replaces the source. It fails the test unless the routes then read a rule of
+// rule's repository.
+func saveDeliveryRule(t testing.TB, pool *store.Pool, rule delivery.DeliverySettings) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `insert into projects (key, name, default_assignee) values ($1, $1, 'alice') on conflict (key) do nothing`, deliveryRuleProject); err != nil {
+		t.Fatalf("make the project %s: %v", deliveryRuleProject, err)
+	}
+	if _, err := deliverytest.SaveRules(t.Context(), pool, deliveryRuleProject, rule); err != nil {
+		t.Fatalf("save the delivery settings of %s: %v", deliveryRuleProject, err)
+	}
+	if _, read := seededDeliveryRules(t, pool).For(rule.DeployRepo); !read {
+		t.Fatalf("no deploy source reads %s once saved", rule.DeployRepo)
+	}
+}
+
+// seededDeliveryRules is the rules the delivery routes read now (readDeliveryRules).
+func seededDeliveryRules(t testing.TB, pool *store.Pool) *delivery.SourceRules {
+	t.Helper()
+	rules, err := readDeliveryRules(t.Context(), pool)
+	if err != nil {
+		t.Fatalf("read the delivery rules: %v", err)
+	}
+	return rules
+}
+
+// sourceRulesOf is the rules of one delivery-on project, deliveryRuleProject, holding one
+// github_workflow source of each of rules naming its repository, as readDeliveryRules reads them
+// once saved (delivery.NewSourceRules), for a compute a test hands rows it made itself.
+func sourceRulesOf(rules ...delivery.DeliverySettings) *delivery.SourceRules {
+	project := delivery.ProjectSettings{Project: deliveryRuleProject, Delivery: true}
+	for _, rule := range rules {
+		project.PopulationAuthors = append(project.PopulationAuthors, rule.PopulationAuthors...)
+		project.Sources = append(project.Sources, delivery.DeploySource{
+			Kind: delivery.SourceKindGitHubWorkflow, Repo: new(rule.DeployRepo), DeployWorkflowPath: new(rule.DeployWorkflowPath),
+			ProductionJobNames: rule.ProductionJobNames, ProductionApplyStepName: rule.ProductionApplyStepName,
+			StagingE2EJobName: rule.StagingE2EJobName, StagingApplyJobName: rule.StagingApplyJobName,
+			PRChecksWorkflowPath: new(rule.PRChecksWorkflowPath), PRChecksRollupJobName: rule.PRChecksRollupJobName,
+		})
+	}
+	return delivery.NewSourceRules([]delivery.ProjectSettings{project})
+}
 
 func TestGetDeliveryTimelineWithoutSettingsIs404(t *testing.T) {
 	t.Parallel()
@@ -34,13 +84,11 @@ func TestGetDeliveryTimelineWithoutSettingsIs404(t *testing.T) {
 func TestGetDeliveryTimelineRejectsMalformedWindow(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
-	if _, err := delivery.PutSettings(t.Context(), database.Pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, database.Pool, delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
 		ProductionJobNames: []string{"widgets-release / widgets-release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 		PopulationAuthors: []string{"octocat"},
-	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
+	})
 
 	for _, target := range []string{
 		"/api/v1/delivery/timeline?from=not-a-date",
@@ -61,13 +109,11 @@ func TestGetDeliveryTimelineComputesDeployedStatusAndFacets(t *testing.T) {
 	pool := database.Pool
 	ctx := t.Context()
 
-	if _, err := delivery.PutSettings(ctx, pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, pool, delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
 		ProductionJobNames: []string{"widgets-release / widgets-release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 		PopulationAuthors: []string{"octocat"},
-	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
+	})
 
 	merged := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 	deployedAt := merged.Add(2 * time.Hour)
@@ -203,9 +249,7 @@ func TestDeliveryProductionRuleSelectsLaterAppliedListedJob(t *testing.T) {
 		ProductionJobNames: []string{stoodDownName, appliedName}, ProductionApplyStepName: new(step),
 		PRChecksWorkflowPath: ".github/workflows/pr-checks.yml", PopulationAuthors: []string{"octocat"},
 	}
-	if _, err := delivery.PutSettings(ctx, pool, settings, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
+	saveDeliveryRule(t, pool, settings)
 	merged := time.Date(2024, 4, 1, 10, 0, 0, 0, time.UTC)
 	created, started := merged.Add(time.Minute), merged.Add(2*time.Hour)
 	stoodDownAt, appliedAt := started.Add(time.Hour), started.Add(2*time.Hour)
@@ -265,13 +309,11 @@ func TestGetDeliveryTimelineAnswersThePullRequestsStillWaitingAtFrom(t *testing.
 	handler, database := newTestHandlerWithStore(t)
 	pool := database.Pool
 	ctx := t.Context()
-	if _, err := delivery.PutSettings(ctx, pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, pool, delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
 		ProductionJobNames: []string{"release / release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 		PopulationAuthors: []string{"octocat", "hubot"},
-	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
+	})
 
 	from := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
 	at := func(d time.Duration) *time.Time { v := from.Add(d); return &v }
@@ -358,13 +400,11 @@ func TestGetDeliveryTimelineCreditsAMergeQueueMergeToTheDeployCreatedAfterIt(t *
 	handler, database := newTestHandlerWithStore(t)
 	pool := database.Pool
 	ctx := t.Context()
-	if _, err := delivery.PutSettings(ctx, pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, pool, delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
 		ProductionJobNames: []string{"release / release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 		PopulationAuthors: []string{"octocat"},
-	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
+	})
 	merged := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	opened := merged.Add(-time.Hour)
 	if err := delivery.UpsertPullRequest(ctx, pool, delivery.DeliveryPullRequest{
@@ -468,13 +508,11 @@ func TestGetDeliveryTimelineJoinsIssueFactsAndCountsFacets(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := t.Context()
-	if _, err := delivery.PutSettings(ctx, database.Pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, database.Pool, delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
 		ProductionJobNames: []string{"release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 		PopulationAuthors: []string{"octocat", "hubot"},
-	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
+	})
 	seedDeliveryIssueFacts(t, database)
 
 	merged := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -585,13 +623,11 @@ func TestGetDeliveryTimelineFacetsComponentsOfEverySource(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := t.Context()
-	if _, err := delivery.PutSettings(ctx, database.Pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, database.Pool, delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
 		ProductionJobNames: []string{"release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 		PopulationAuthors: []string{"octocat"},
-	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
+	})
 	seedDeliveryIssueFacts(t, database)
 	for _, statement := range []string{
 		`update issue_components set mode = 'explicit', reason = null where issue_key = 'ACME-3'`,
@@ -645,13 +681,11 @@ func TestGetDeliveryRunListsEveryJob(t *testing.T) {
 	if response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/delivery/runs/7", nil, "alice"); response.Code != http.StatusNotFound {
 		t.Fatalf("unconfigured: status = %d, body = %s, want 404 DELIVERY_NOT_CONFIGURED", response.Code, response.Body.String())
 	}
-	if _, err := delivery.PutSettings(ctx, database.Pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, database.Pool, delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
 		ProductionJobNames: []string{"release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 		PopulationAuthors: []string{"octocat"},
-	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
+	})
 	start := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 	failure := delivery.DeliveryRunConclusionFailure
 	if err := delivery.UpsertRun(ctx, database.Pool, delivery.DeliveryRun{
@@ -715,13 +749,11 @@ func TestGetDeliveryRunListsEveryJob(t *testing.T) {
 func TestDeliveryReadsWarnOnceForAMainRunWithNoProductionJob(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	ctx := t.Context()
-	if _, err := delivery.PutSettings(ctx, database.Pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, database.Pool, delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
 		ProductionJobNames: []string{"production / production-apply", "production-apply / production-apply"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 		PopulationAuthors: []string{"octocat"},
-	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
+	})
 	data, err := os.ReadFile("../delivery/testdata/dev-only-run-jobs.json")
 	if err != nil {
 		t.Fatalf("read the recorded job list: %v", err)
@@ -799,13 +831,11 @@ func TestAConfigurationWarningIsLoggedOnceAcrossServers(t *testing.T) {
 	const applyStep = "Run ./.github/actions/apply"
 	configure := func(names ...string) {
 		t.Helper()
-		if _, err := delivery.PutSettings(ctx, database.Pool, delivery.DeliverySettings{
+		saveDeliveryRule(t, database.Pool, delivery.DeliverySettings{
 			DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
 			ProductionJobNames: names, ProductionApplyStepName: new(applyStep),
 			PRChecksWorkflowPath: ".github/workflows/pr-checks.yml", PopulationAuthors: []string{"octocat"},
-		}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-			t.Fatalf("configure %v: %v", names, err)
-		}
+		})
 	}
 	configure("production / production-apply")
 
@@ -881,14 +911,12 @@ func TestGetDeliveryTimelineSurfacesReconcileErrorOnFreshness(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := t.Context()
-	if _, err := delivery.PutSettings(ctx, database.Pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, database.Pool, delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
 		ProductionJobNames: []string{"widgets-release / widgets-release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 		PopulationAuthors: []string{"octocat"},
-	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
-	if err := delivery.RecordReconcileError(ctx, database.Pool, "the installation lacks Actions: read on acme/widgets"); err != nil {
+	})
+	if err := delivery.RecordReconcileError(ctx, database.Pool, "acme/widgets", "the installation lacks Actions: read on acme/widgets"); err != nil {
 		t.Fatalf("seed reconcile error: %v", err)
 	}
 

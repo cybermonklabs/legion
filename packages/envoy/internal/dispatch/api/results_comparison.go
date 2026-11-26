@@ -794,7 +794,7 @@ func (c *comparisonReader) measuredBranches(
 	check model.CheckBlock, defaultBranch string, readMerge func() (string, bool),
 ) ([]string, bool) {
 	var branches []string
-	if check.When == checkWhenAfterMerge {
+	if check.When == model.CheckWhenAfterMerge {
 		merged, read := readMerge()
 		if !read {
 			return nil, false

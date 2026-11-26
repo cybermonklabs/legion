@@ -147,44 +147,51 @@ func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time
 }
 
 // runOnce performs one reconcile pass: the pull-request head refresh, then — where delivery is
-// configured — a permission check (so a missing Actions or Pull-requests grant is named, never
-// confused with a transient failure), the population pull-request search, the deploy and
-// PR-checks workflows' runs and jobs, and any partial row left over from a completing fetch that
-// failed earlier. Each windowed step keeps its own progress
-// (delivery_reconcile_progress), so a step that fails part way through resumes where it stopped
-// rather than restarting its whole window: a 28-day backfill of a busy deploy repository is tens
-// of thousands of GitHub requests, well past one installation's hourly rate limit, so no single
-// pass can finish one and a pass that forgets what it did could never converge. last_reconcile_at
-// advances ONLY when every step that ran succeeded; any failure (a missing permission, a rate
-// limit, any other GitHub or store error) is recorded by name in last_error instead, and the
-// previous last_reconcile_at is left untouched -- so the freshness row can never report a healthy
-// timestamp for a pass that silently did nothing.
+// configured — for each source repository a permission check (so a missing Actions or
+// Pull-requests grant is named, never confused with a transient failure), the population
+// pull-request search, each source repository's deploy and PR-checks workflows' runs and jobs under
+// its own rule and its merged reverts (reconcileReverts), and any partial row left over from a
+// completing fetch that failed earlier. Each windowed step keeps its own progress
+// (delivery_reconcile_progress), each run and revert step per repository (runsStep, backfillStep,
+// revertsStep), so a step that fails part way through resumes where it stopped rather
+// than restarting its whole window: a 28-day backfill of a busy deploy repository is tens of
+// thousands of GitHub requests, well past one installation's hourly rate limit, so no single pass
+// can finish one and a pass that forgets what it did could never converge.
+//
+// The outcome is recorded on each source repository's own source (dispatch://INFRA-978, D1): its
+// last_reconcile_at advances ONLY when every step that ran for it succeeded -- its own steps and
+// the steps every repository's numbers read (the merged pull-request search, the partial rows,
+// the head pass, the attribution); any failure (a missing permission, a rate limit, any other
+// GitHub or store error) is recorded by name in its last_error instead, and its previous
+// last_reconcile_at is left untouched -- so the freshness can never report a healthy timestamp
+// for a pass that silently did nothing. A repository whose name does not split or whose
+// permission check fails records that failure and is not walked; every other repository is.
 //
 // The head pass (reconcilePullRequestHeads) runs first and whatever the settings say.
 // pull_request_heads is not delivery's own table: it is what a recorded check result's commit
 // is compared with (api/results_comparison.go), and that reader is served in every deployment,
 // delivery configured or not, so a deployment with no delivery settings refreshes its heads
 // and a result recorded at a head a later push replaced stands at no basis there too. It is
-// outside the deploy repository's permission check for the same reason: that check asks about
-// the deploy repository's Actions and Pull-requests grants, while the head pass reads each
-// row's own repository with that row's own token.
+// outside the source repositories' permission checks for the same reason: those checks ask about
+// a source repository's Actions and Pull-requests grants, while the head pass reads each row's
+// own repository with that row's own token.
 //
-// Every other step stays gated on the settings and on that check, in that order: the merged
-// pull-request search, the partial rows, both workflows' runs, the runs backfills, the
-// attribution of stored pull requests and RecordDeployedEvents all read a setting (the
-// population, the deploy repository, its workflow paths) or run against the deploy repository's
-// own grants.
+// Every other step stays gated on the settings and on those checks, in that order, and runs only
+// while at least one source repository passed its check: the merged pull-request search, the
+// partial rows, the workflows' runs, the runs backfills, the attribution of stored pull requests
+// and RecordDeployedEvents all read a setting (the population, a source repository, its workflow
+// paths) or run against a source repository's own grants.
 //
 // The intake's NATS consumer follows the same split: it binds its durable and writes every
 // `pull_request` envelope's head row whatever the settings say, and hands its delivery-timeline
-// work to the settings (Intake.Run, route). Its first bind starts at the stream's next sequence,
-// so turning the intake on hands it none of the stream's 72-hour retained history
+// work to the source repositories' rules (Intake.Run, route). Its first bind starts at the stream's
+// next sequence, so turning the intake on hands it none of the stream's 72-hour retained history
 // (heldDurable.takeOver, takeOverStart).
 //
 // It is the pass the lease runs (leasedPass), so it is one attempt at reading GitHub
 // (githubreads), recorded through RecordGitHubReads' recorder when it ends: the GitHub client
 // notes on it each request and each failure no caller takes as data, and the pass notes each part
-// of its read it gives up on an answer the client leaves to it: the permission check, a step that
+// of its read it gives up on an answer the client leaves to it: a permission check, a step that
 // reads GitHub and fails (recordRead), and a row of such a step it logs and skips
 // (reconcilePullRequestHeads, attributeHead, completePartialPullRequest, readAttributionInputs).
 // An answer a step takes as data is no failure, and neither are the steps that read no GitHub nor
@@ -198,10 +205,9 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 	now := time.Now()
 	headErr := r.reconcilePullRequestHeads(ctx, now)
 	// Where the pass returns before record() below exists, the head pass's failure can only be
-	// logged. At the GetSettings arm there is no delivery_settings row to write it in, or none
-	// that could be read; at the deploy_repo split and permission arms below, r.fail does write
-	// last_error into that row, but last_error holds the one failure that ended the pass and the
-	// step list that would carry a second one (failures, record) does not exist yet. It is a
+	// logged: with no settings there is no source to write it in, and where every source repository
+	// failed its check, r.fail writes that check's failure, which ended the repository's pass, and
+	// the step list that would carry a second one (failures, record) does not exist yet. It is a
 	// step that reads GitHub all the same, so the pass's attempt notes it, as recordRead does.
 	logHeadFailure := func() {
 		if headErr != nil {
@@ -209,22 +215,15 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 			githubreads.NoteFailuref(ctx, "reconcile pull request heads: %w", headErr)
 		}
 	}
-	settings, err := GetSettings(ctx, r.pool)
+	rules, err := ReadSourceRules(ctx, r.pool)
 	if err != nil {
 		logHeadFailure()
-		if errors.Is(err, ErrNoSettings) {
-			slog.Info("dispatch delivery: delivery is not configured — its steps are idle and the pull request head pass has run")
-			return
-		}
 		slog.Error("dispatch delivery: read settings for reconcile", "error", err)
 		return
 	}
-	production := settings.Production()
-	owner, repo, err := refs.SplitGitHubRepo(settings.DeployRepo)
-	if err != nil {
+	if len(rules.All()) == 0 {
 		logHeadFailure()
-		slog.Error("dispatch delivery: deploy_repo setting", "error", err)
-		r.fail(ctx, err)
+		slog.Info("dispatch delivery: delivery is not configured — its steps are idle and the pull request head pass has run")
 		return
 	}
 
@@ -232,80 +231,122 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 	// failure below: a missing Actions or Pull-requests permission would otherwise fail every
 	// GitHub call those steps make in exactly the same shape as a transient 5xx, which this
 	// slice's acceptance bar (LEGION-567) requires surfacing loudly and by name, not folding into
-	// a generic fetch failure.
-	if _, err := r.github.DeliveryPermissions(ctx, owner, repo); err != nil {
+	// a generic fetch failure. One repository's failure is that repository's alone.
+	type walk struct {
+		rule        DeliverySettings
+		owner, name string
+	}
+	var walks []walk
+	for _, rule := range rules.All() {
+		owner, name, err := refs.SplitGitHubRepo(rule.DeployRepo)
+		if err != nil {
+			slog.Error("dispatch delivery: a source's repository", "repo", rule.DeployRepo, "error", err)
+			r.fail(ctx, rule.DeployRepo, err)
+			continue
+		}
+		if _, err := r.github.DeliveryPermissions(ctx, owner, name); err != nil {
+			slog.Error("dispatch delivery: GitHub App permission check", "repo", rule.DeployRepo, "error", err)
+			// The App not installed on the source repository, or lacking a grant, is an answer
+			// the client leaves to its caller, and it ends every step of that repository: the
+			// pass notes it.
+			githubreads.NoteFailure(ctx, err)
+			r.fail(ctx, rule.DeployRepo, err)
+			continue
+		}
+		walks = append(walks, walk{rule: rule, owner: owner, name: name})
+	}
+	if len(walks) == 0 {
 		logHeadFailure()
-		slog.Error("dispatch delivery: GitHub App permission check", "error", err)
-		// The App not installed on the deploy repository, or lacking a grant, is an answer the
-		// client leaves to its caller, and it ends every step below: the pass notes it.
-		githubreads.NoteFailure(ctx, err)
-		r.fail(ctx, err)
 		return
 	}
 
-	searchScope := searchProgressScope(settings)
-
-	var failures []string
-	record := func(step string, err error) {
+	// failures is every failed step in the order the pass ran them, each with the repository it
+	// was of, or none for a step every repository's numbers read.
+	type failure struct{ repo, text string }
+	var failures []failure
+	record := func(repo, step string, err error) {
 		if err == nil {
 			return
 		}
-		slog.Error("dispatch delivery: "+step, "error", err)
-		failures = append(failures, fmt.Sprintf("%s: %s", step, err))
+		if repo == "" {
+			slog.Error("dispatch delivery: "+step, "error", err)
+		} else {
+			slog.Error("dispatch delivery: "+step, "repo", repo, "error", err)
+		}
+		failures = append(failures, failure{repo: repo, text: fmt.Sprintf("%s: %s", step, err)})
 	}
 	// recordRead is record for a step that reads GitHub: its failure gives up part of the pass's
 	// read, which the pass's attempt notes as well, whatever failed inside the step (a database
 	// error inside a step that reads GitHub ends that read too). The two steps that read no
 	// GitHub, the attribution of stored pull requests and the issue.deployed events, go through
 	// record alone.
-	recordRead := func(step string, err error) {
+	recordRead := func(repo, step string, err error) {
 		if err != nil {
 			githubreads.NoteFailuref(ctx, "%s: %w", step, err)
 		}
-		record(step, err)
+		record(repo, step, err)
 	}
 
-	recordRead("reconcile merged pull requests", r.reconcileMergedPullRequests(ctx, settings, searchScope, now))
-	recordRead("reconcile partial pull requests", r.reconcilePartialPullRequests(ctx))
+	recordRead("", "reconcile merged pull requests", r.reconcileMergedPullRequests(ctx, rules, searchProgressScope(rules), now))
+	recordRead("", "reconcile partial pull requests", r.reconcilePartialPullRequests(ctx))
 	// The head pass ran at the top of the pass, before the settings were read; its failure is
 	// recorded here, so last_error names the steps in this list's order.
-	recordRead("reconcile pull request heads", headErr)
-	recordRead("reconcile deploy workflow runs", r.reconcileWorkflow(ctx, owner, repo, settings.DeployRepo, settings.DeployWorkflowPath, DeliveryRunKindDeploy, production, now))
-	if settings.PRChecksWorkflowPath != settings.DeployWorkflowPath {
-		recordRead("reconcile PR-checks workflow runs", r.reconcileWorkflow(ctx, owner, repo, settings.DeployRepo, settings.PRChecksWorkflowPath, DeliveryRunKindPRChecks, production, now))
+	recordRead("", "reconcile pull request heads", headErr)
+	for _, w := range walks {
+		rule, production := w.rule, w.rule.Production()
+		recordRead(rule.DeployRepo, "reconcile deploy workflow runs", r.reconcileWorkflow(ctx, w.owner, w.name, rule.DeployRepo, rule.DeployWorkflowPath, DeliveryRunKindDeploy, production, now))
+		if rule.PRChecksWorkflowPath != rule.DeployWorkflowPath {
+			recordRead(rule.DeployRepo, "reconcile PR-checks workflow runs", r.reconcileWorkflow(ctx, w.owner, w.name, rule.DeployRepo, rule.PRChecksWorkflowPath, DeliveryRunKindPRChecks, production, now))
+		}
+		recordRead(rule.DeployRepo, "reconcile merged reverts", r.reconcileReverts(ctx, w.owner, w.name, rule.DeployRepo, now))
+		// The runs backfills log and resume their own failures and never reach record(): a rate
+		// limit one meets must not hold last_reconcile_at or set last_error while every regular
+		// step succeeded. Each walks at most backfillWindowsPerPass hours a pass. The created_at
+		// backfill reads deploy runs alone, since containment is the one reader of a run's
+		// creation.
+		r.backfillRuns(ctx, backfillStep(DeliveryRunKindDeploy, rule.DeployRepo), w.owner, w.name, rule.DeployRepo, rule.DeployWorkflowPath, DeliveryRunKindDeploy, production, now)
+		if rule.PRChecksWorkflowPath != rule.DeployWorkflowPath {
+			r.backfillRuns(ctx, backfillStep(DeliveryRunKindPRChecks, rule.DeployRepo), w.owner, w.name, rule.DeployRepo, rule.PRChecksWorkflowPath, DeliveryRunKindPRChecks, production, now)
+		}
+		r.backfillRuns(ctx, createdAtBackfillStep(rule.DeployRepo), w.owner, w.name, rule.DeployRepo, rule.DeployWorkflowPath, DeliveryRunKindDeploy, production, now)
 	}
-	// The runs backfills log and resume their own failures and never reach record(): a rate limit
-	// one meets must not hold last_reconcile_at or set last_error while every regular step
-	// succeeded. Each walks at most backfillWindowsPerPass hours a pass. The created_at backfill
-	// reads deploy runs alone, since containment is the one reader of a run's creation.
-	r.backfillRuns(ctx, backfillStep(DeliveryRunKindDeploy), owner, repo, settings.DeployRepo, settings.DeployWorkflowPath, DeliveryRunKindDeploy, production, now)
-	if settings.PRChecksWorkflowPath != settings.DeployWorkflowPath {
-		r.backfillRuns(ctx, backfillStep(DeliveryRunKindPRChecks), owner, repo, settings.DeployRepo, settings.PRChecksWorkflowPath, DeliveryRunKindPRChecks, production, now)
-	}
-	r.backfillRuns(ctx, createdAtBackfillStep, owner, repo, settings.DeployRepo, settings.DeployWorkflowPath, DeliveryRunKindDeploy, production, now)
 	// The attribution backfill runs last, within its own call budget: it is the one step whose
 	// work can wait a pass, so the timeline's own facts take the rate limit first.
-	recordRead("read attribution inputs of stored pull requests", r.reconcileAttributionInputs(ctx))
+	recordRead("", "read attribution inputs of stored pull requests", r.reconcileAttributionInputs(ctx))
 	if changed, err := r.attributor.AttributePullRequests(ctx, r.pool, AttributionResolveBatch); err != nil {
-		record("attribute stored pull requests", err)
+		record("", "attribute stored pull requests", err)
 	} else if changed > 0 {
 		slog.Info("dispatch delivery: attributed stored pull requests", "changed", changed)
 	}
 	// Last, over everything this pass stored and what intake stored since the previous one: the
-	// issue.deployed of every pull request whose shipping run is now known. Its failure is the
-	// pass's, so last_error names it, and the rows it did not reach wait for the next pass.
-	if written, err := RecordDeployedEvents(ctx, r.pool, settings, r.events); err != nil {
-		record("record issue.deployed events", err)
-	} else if written > 0 {
-		slog.Info("dispatch delivery: recorded issue.deployed", "events", written, "by", "reconcile")
+	// issue.deployed of every pull request whose shipping run is now known, each repository's by
+	// its own rule. Its failure is that repository's, so its last_error names it, and the rows it
+	// did not reach wait for the next pass.
+	for _, w := range walks {
+		if written, err := RecordDeployedEvents(ctx, r.pool, w.rule, r.events); err != nil {
+			record(w.rule.DeployRepo, "record issue.deployed events", err)
+		} else if written > 0 {
+			slog.Info("dispatch delivery: recorded issue.deployed", "events", written, "repo", w.rule.DeployRepo, "by", "reconcile")
+		}
 	}
 
-	if len(failures) > 0 {
-		r.fail(ctx, errors.New(strings.Join(failures, "; ")))
-		return
+	for _, w := range walks {
+		var texts []string
+		for _, failed := range failures {
+			if failed.repo == "" || failed.repo == w.rule.DeployRepo {
+				texts = append(texts, failed.text)
+			}
+		}
+		if len(texts) > 0 {
+			r.fail(ctx, w.rule.DeployRepo, errors.New(strings.Join(texts, "; ")))
+			continue
+		}
+		if err := RecordReconcileSuccess(ctx, r.pool, w.rule.DeployRepo, now); err != nil {
+			slog.Error("dispatch delivery: record reconcile success", "repo", w.rule.DeployRepo, "error", err)
+		}
 	}
-	if err := RecordReconcileSuccess(ctx, r.pool, now); err != nil {
-		slog.Error("dispatch delivery: record reconcile success", "error", err)
+	if len(failures) > 0 || len(walks) < len(rules.All()) {
+		return
 	}
 	// The change log keeps a day (ChangeRetention): a page away longer reads its window once. A
 	// failed prune leaves the rows for the next pass and fails nothing else.
@@ -314,32 +355,45 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 	}
 }
 
-// maxLastErrorLength bounds what fail() writes to delivery_settings.last_error: a reconcile pass
-// with many failing items (every rate-limited run in a reconcileWorkflow pass before Rev's
+// maxLastErrorLength bounds what fail() writes to a source's last_error: a reconcile pass with
+// many failing items (every rate-limited run in a reconcileWorkflow pass before Rev's
 // probe-driven stop-at-first-rate-limit fix, 197 of 200 requests, each contributing its own
 // error text) could otherwise grow this column without bound. Generous enough to still name
 // several distinct failures, not just one.
 const maxLastErrorLength = 4000
 
-// fail records a reconcile pass's failure reason in delivery_settings.last_error without
-// advancing last_reconcile_at (RecordReconcileError's own contract).
-func (r *Reconcile) fail(ctx context.Context, cause error) {
+// fail records a reconcile pass's failure reason for repo in last_error of repo's source without
+// advancing its last_reconcile_at (RecordReconcileError's own contract).
+func (r *Reconcile) fail(ctx context.Context, repo string, cause error) {
 	message := cause.Error()
 	if len(message) > maxLastErrorLength {
 		message = message[:maxLastErrorLength] + fmt.Sprintf(" ... (truncated from %d bytes)", len(message))
 	}
-	if err := RecordReconcileError(ctx, r.pool, message); err != nil {
-		slog.Error("dispatch delivery: record reconcile error", "error", err)
+	if err := RecordReconcileError(ctx, r.pool, repo, message); err != nil {
+		slog.Error("dispatch delivery: record reconcile error", "repo", repo, "error", err)
 	}
 }
 
 // searchProgressScope names what the merged-PR search's recorded progress was measured against:
-// a change to the population, the exclusions or the deploy repository (which decides how a
-// result is classified) makes a window imported under the old settings say nothing about the new
-// ones, so the step backfills afresh rather than resuming it.
-func searchProgressScope(settings DeliverySettings) string {
+// the population (the delivery-on projects' authors and excluded repositories) and the source
+// repositories, whose rules decide how a result is classified (IsTaskPR), as rules' read found
+// them (NewSourceRules). A change to either, a new order of a project's sources included, makes a
+// window imported under the old settings say nothing about the new ones, so each installation's
+// step backfills afresh rather than resuming it. A nil rules is the scope of no settings.
+func searchProgressScope(rules *SourceRules) string {
+	if rules == nil {
+		return searchProgressScopeOf(nil, nil, nil)
+	}
+	return rules.searchScope
+}
+
+// searchProgressScopeOf is the search's progress scope of the authors, excluded repositories and
+// source repositories, each list in its order. Each repository is written as a token a rename pass
+// rewrites in place (store/repo_rename_pass.go): after `=`, `,` or a space, and before a space, a
+// `,` or the end.
+func searchProgressScopeOf(authors, excluded, repos []string) string {
 	return fmt.Sprintf("authors=%s excluded=%s deploy=%s",
-		strings.Join(settings.PopulationAuthors, ","), strings.Join(settings.ExcludedRepos, ","), settings.DeployRepo)
+		strings.Join(authors, ","), strings.Join(excluded, ","), strings.Join(repos, ","))
 }
 
 // runsProgressScope names what a run listing's recorded progress was measured against.
@@ -383,21 +437,23 @@ const mergedPullRequestsStepPrefix = "merged_pull_requests/installation/"
 
 // reconcileMergedPullRequests searches every population pull request merged since each
 // installation's own recorded progress across every installation the App has (LEGION-294's
-// population spans any repository the three authors merge into, not just the deploy
-// repository), classifies each with the labels the search result already carries, and upserts
-// the ones that belong -- complete, except for MergeCommitSHA, Additions, Deletions and
-// FirstCommitAt, which the search response never carries.
+// population spans any repository its authors merge into, not just the source repositories, and
+// with per-project settings it is the union of the delivery-on projects' populations,
+// SourceRules.Population), classifies each with the labels the search result already carries,
+// each by its own repository's rule (IsPopulationPR), and upserts the ones that belong --
+// complete, except for MergeCommitSHA, Additions, Deletions and FirstCommitAt, which the search
+// response never carries.
 //
 // Each completed search window records that installation's progress, but only while every
 // window before it in this pass succeeded: a pull request this pass could not classify (a
-// deploy-repo PR GitHub's own classifier workflow has not labelled yet, IsTaskPR's "neither
+// source-repository PR GitHub's own classifier workflow has not labelled yet, IsTaskPR's "neither
 // label") must be reachable again on a later pass, so progress stops at the window holding it
 // while every later window is still imported. The search's own error and every per-PR
 // classify/upsert failure are errors.Joined into one returned error -- not stringified into a
 // plain errors.New, so a *githubapp.RateLimitError among them still answers errors.As for a
 // caller that needs to tell it apart from an ordinary failure, the same reason
 // reconcileWorkflow's own per-run aggregation keeps its typed error with %w.
-func (r *Reconcile) reconcileMergedPullRequests(ctx context.Context, settings DeliverySettings, scope string, until time.Time) error {
+func (r *Reconcile) reconcileMergedPullRequests(ctx context.Context, rules *SourceRules, scope string, until time.Time) error {
 	var mu sync.Mutex
 	var failures []error
 	blocked := map[int64]bool{}
@@ -433,7 +489,7 @@ func (r *Reconcile) reconcileMergedPullRequests(ctx context.Context, settings De
 				windowFailures = append(windowFailures, fmt.Errorf("pull request #%d: %w", pr.Number, err))
 				continue
 			}
-			if err := r.reconcilePullRequest(ctx, settings, repoFull, pr); err != nil {
+			if err := r.reconcilePullRequest(ctx, rules, repoFull, pr); err != nil {
 				slog.Warn("dispatch delivery: reconcile pull request", "repo", repoFull, "number", pr.Number, "error", err)
 				windowFailures = append(windowFailures, fmt.Errorf("%s#%d: %w", repoFull, pr.Number, err))
 			}
@@ -454,7 +510,7 @@ func (r *Reconcile) reconcileMergedPullRequests(ctx context.Context, settings De
 		return nil
 	}
 
-	if err := SearchMergedPullRequestsAcrossInstallation(ctx, r.github, settings.PopulationAuthors, since, until, listed, visit); err != nil {
+	if err := SearchMergedPullRequestsAcrossInstallation(ctx, r.github, rules.Population().Authors, since, until, listed, visit); err != nil {
 		mu.Lock()
 		failures = append(failures, fmt.Errorf("search merged pull requests: %w", err))
 		mu.Unlock()
@@ -489,9 +545,9 @@ func (r *Reconcile) searchResultRepo(pr FetchedPullRequest) (string, error) {
 // since the search itself filtered on it)/repository/task-label, then the row. A deploy-repo PR
 // the label rule cannot classify yet (IsTaskPR's "neither label" error) is logged and left for a
 // later pass, exactly as intake does.
-func (r *Reconcile) reconcilePullRequest(ctx context.Context, settings DeliverySettings, repoFull string, pr FetchedPullRequest) error {
+func (r *Reconcile) reconcilePullRequest(ctx context.Context, rules *SourceRules, repoFull string, pr FetchedPullRequest) error {
 	raw := RawPullRequest{Repo: repoFull, Number: pr.Number, Title: pr.Title, Author: pr.Author, Labels: pr.Labels, MergedAt: *pr.MergedAt}
-	isPopulation, err := IsPopulationPR(raw, settings, TimeWindow{Start: time.Unix(0, 0), End: time.Now().Add(time.Hour)})
+	isPopulation, err := IsPopulationPR(raw, rules, TimeWindow{Start: time.Unix(0, 0), End: time.Now().Add(time.Hour)})
 	if err != nil {
 		return fmt.Errorf("classify: %w", err)
 	}
@@ -808,9 +864,10 @@ func (r *Reconcile) completePartialPullRequest(ctx context.Context, pr DeliveryP
 // an hour and a rate limit part way through would throw all of it away.
 const runsWindow = 100
 
-// runsStep names one workflow kind's run-listing progress.
-func runsStep(kind DeliveryRunKind) string {
-	return "runs/" + string(kind)
+// runsStep names one source repository's run-listing progress of one workflow kind:
+// runs/<kind>/<repo> (repoStep), so each repository keeps its own row.
+func runsStep(kind DeliveryRunKind, repo string) string {
+	return repoStep("runs/"+string(kind), repo)
 }
 
 // completedRunIDs is the ids of runs that have concluded: the only runs whose jobs a pass lists,
@@ -823,6 +880,62 @@ func completedRunIDs(runs []FetchedRun) []int64 {
 		}
 	}
 	return ids
+}
+
+// revertsStep names one deploy repository's progress of the search for its merged reverts
+// (reconcileReverts): reverts/<repo> (repoStep). A save that changes the repository's rule leaves
+// it, since ClearRepositoryProgress clears the run steps alone: which pull request reverts which is
+// no rule's to say.
+func revertsStep(repo string) string {
+	return repoStep("reverts", repo)
+}
+
+// reconcileReverts records the merged reverts of the deploy repository repoFull that the intake
+// missed (dispatch://INFRA-978, R7): it searches the pull requests merged since the step's own
+// recorded progress whose body holds the word Reverts, whoever authored them (SearchMergedReverts),
+// and records each whose body holds GitHub's revert-button line (ParseRevert) from GitHub's own
+// answer for it and for the pull request it reverts (recordRevertFromGitHub). A pull request whose
+// body only mentions the word costs no call. Each completed window records the step's progress
+// while every window before it in this pass succeeded, as reconcileWorkflow's do, so a revert this
+// pass could not read is searched again on a later pass; a rate limit stops the walk.
+func (r *Reconcile) reconcileReverts(ctx context.Context, owner, name, repoFull string, until time.Time) error {
+	step := revertsStep(repoFull)
+	since, err := r.stepSince(ctx, step, repoFull, until)
+	if err != nil {
+		return err
+	}
+	var failures []string
+	blocked := false
+	visit := func(windowUntil time.Time, prs []FetchedPullRequest) error {
+		for _, pr := range prs {
+			if _, _, says := ParseRevert(pr.Body); !says || pr.MergedAt == nil {
+				continue
+			}
+			if err := recordRevertFromGitHub(ctx, r.pool, r.github, repoFull, pr.Number); err != nil {
+				slog.Warn("dispatch delivery: reconcile a merged revert", "repo", repoFull, "number", pr.Number, "error", err)
+				failures = append(failures, fmt.Sprintf("#%d: %s", pr.Number, err))
+				blocked = true
+				if limited, ok := githubapp.AsRateLimit(err); ok {
+					return fmt.Errorf("a rate limit stopped the reverts' walk: %s: %w", strings.Join(failures, "; "), limited)
+				}
+			}
+		}
+		if blocked {
+			return nil
+		}
+		if err := RecordReconcileProgress(ctx, r.pool, step, repoFull, windowUntil); err != nil {
+			blocked = true
+			failures = append(failures, fmt.Sprintf("record the reverts' progress: %s", err))
+		}
+		return nil
+	}
+	if err := SearchMergedReverts(ctx, r.github, owner, name, since, until, visit); err != nil {
+		return fmt.Errorf("search merged reverts: %w", err)
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("%d merged reverts failed: %s", len(failures), strings.Join(failures, "; "))
+	}
+	return nil
 }
 
 // reconcileWorkflow walks kind's workflow runs created since this step's own recorded progress,
@@ -840,7 +953,7 @@ func completedRunIDs(runs []FetchedRun) []int64 {
 // majority of runs were never marked, and this package already bulk-fetches this way one
 // function away (ListPartialPullRequests feeding reconcilePartialPullRequests).
 func (r *Reconcile) reconcileWorkflow(ctx context.Context, owner, repo, repoFull, workflowPath string, kind DeliveryRunKind, production Production, until time.Time) error {
-	step, scope := runsStep(kind), runsProgressScope(repoFull, workflowPath)
+	step, scope := runsStep(kind, repoFull), runsProgressScope(repoFull, workflowPath)
 	since, err := r.stepSince(ctx, step, scope, until)
 	if err != nil {
 		return err

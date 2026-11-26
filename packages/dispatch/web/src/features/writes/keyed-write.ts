@@ -322,7 +322,9 @@ function pause(
 }
 
 /** How one keyed write is tried: `login` is the person who pressed it, sent on every attempt so
- *  Dispatch refuses it under anyone else's session; `carried` is the method of the request that
+ *  Dispatch refuses it under anyone else's session, and `session` the session an agent viewer
+ *  pressed it as, handed to every attempt for a route that names its writer in the body
+ *  (`WriteBounds.session`); `carried` is the method of the request that
  *  has already gone out under this write's key, which whoever holds the page's writes knows and
  *  this loop cannot (`Writes`), and is required so that every caller says which it means:
  *  `null` is the answer that the key has carried nothing, not one reached by leaving it out.
@@ -338,6 +340,7 @@ export interface KeyedWriteOptions {
   readonly login?: string;
   readonly planned?: WriteRequest;
   readonly sent?: (request: WriteRequest) => void;
+  readonly session?: string;
   readonly signal?: AbortSignal;
   readonly unauthorized?: () => Promise<boolean>;
   readonly uploading?: (loaded: number, total: number) => void;
@@ -389,7 +392,17 @@ export class OneRequestPerWriteError extends Error {
 export async function writeUnderKey<T>(
   attempt: (bounds: WriteBounds) => Promise<T>,
   key: string,
-  { carried, failed, login, planned, sent, signal, unauthorized, uploading }: KeyedWriteOptions
+  {
+    carried,
+    failed,
+    login,
+    planned,
+    sent,
+    session,
+    signal,
+    unauthorized,
+    uploading,
+  }: KeyedWriteOptions
 ): Promise<T | null> {
   let backoff = FIRST_BACKOFF_MS;
   let first: WriteRequest | undefined = planned;
@@ -438,6 +451,7 @@ export async function writeUnderKey<T>(
           login,
           progress: uploading,
           sent: told,
+          ...(session === undefined ? {} : { session }),
         });
       } catch (error) {
         if (isKeyCommitted(error) || error instanceof AnswerNotKeptError) return null;

@@ -3,7 +3,7 @@ import { useCallback, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 
 import { api, type WriteBounds } from "../../api/client";
-import { inboxQuery, userStateQuery } from "../../api/queries";
+import { inboxQuery, userStateQuery, whoAmIQuery } from "../../api/queries";
 import type {
   Actor,
   Anchor,
@@ -351,7 +351,10 @@ export function useMarginItems(
       : owner?.kind === "document"
         ? ["artifact", owner.artifactId, "comments"]
         : ["comments", undefined];
-  const asks = useQuery(inboxQuery());
+  // The margin is mounted on every route, so this read is made on every page; it needs the
+  // `person` scope, which an agent viewer's bearer may not hold, so nothing is asked for one.
+  const agentViewer = useQuery(whoAmIQuery()).data?.kind === "agent";
+  const asks = useQuery({ ...inboxQuery(), enabled: !agentViewer });
   const inboxOpenAsks = useMemo(
     () =>
       (asks.data ?? []).filter(

@@ -569,7 +569,7 @@ var indexPasses = map[string]string{
 	// project or between the parties it belongs to, and caused by the event the create appends.
 	"api/reviews.go#openApprovalAsk":             "the approval request the request opens and the ask.opened it appended",
 	"docs/ask_blocks.go#createAskBlock":          "the ask block the settlement opens and the document that holds it",
-	"api/artifacts.go#queueNewArtifact":          "the document the upload creates, the node the store holds at its address, and the event the upload appends",
+	"docs/new_document.go#QueueNewArtifact":      "the document the write creates, the node the store holds at its address, and the event its caller appends",
 	"api/messages.go#createStoredMessage":        "the message the request stores and the event it appended",
 	"api/message_delivery.go#insertSessionReply": "the session's reply the request stores and the event it appended",
 	"api/broadcasts.go#writeBroadcast":           "each copy the broadcast stores and the event it appended for it",
@@ -584,6 +584,10 @@ var indexPasses = map[string]string{
 	"api/issue_create.go#createIssue":               "the facts the spec's index pass stated, the issue the request creates and the issue's own event",
 	"cmd/dispatch-seed/write_docs.go#writeDocument": "the facts the seeded version's index pass stated and the seed's own plan",
 	"docs/block_index.go#indexOwedDocument":         "the facts the tick's index pass stated and the event that recorded the version",
+	// The eval registry's write of a project's evals-md (its creation, by the seed or a first
+	// registration, and each edit of a method) appends what the version's index pass stated under
+	// the artifact.created or artifact.version event it appends, as an upload and an edit do.
+	"evals/document.go#queueDocumentEvent": "the facts the evals-md version's index pass stated and the event that recorded the version",
 	// The seed's comments: their nodes, their author's person node and each comment's
 	// authored_by tuple, all drawn from the plan before any row is written (commentStoreWrite).
 	"cmd/dispatch-seed/write_items.go#writeComments": "the seed's own plan",

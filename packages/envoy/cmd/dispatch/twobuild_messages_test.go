@@ -28,7 +28,6 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -198,19 +197,18 @@ func (f *pullRequestFake) handled() (done map[int][]handling, abandoned map[int]
 	return done, maps.Clone(f.abandoned)
 }
 
-// seedPullRequestSettings writes the delivery settings the intakes route by: acme/deploy as the
-// deploy repository and octocat as the one author whose merged pull requests are read.
+// seedPullRequestSettings saves the delivery settings both builds' intakes route by
+// (saveDeliveryRule): acme/deploy as the deploy repository and octocat as the one author whose
+// merged pull requests are read.
 func seedPullRequestSettings(t *testing.T, builds *twoBuilds) {
 	t.Helper()
-	if _, err := delivery.PutSettings(context.Background(), builds.database.Pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, builds.database, delivery.DeliverySettings{
 		DeployRepo:           "acme/deploy",
 		DeployWorkflowPath:   ".github/workflows/deploy.yaml",
 		PRChecksWorkflowPath: ".github/workflows/pr.yaml",
 		ProductionJobNames:   []string{"production"},
 		PopulationAuthors:    []string{"octocat"},
-	}, model.Actor{Kind: "user", ID: dispatchTestLogin}); err != nil {
-		t.Fatalf("seed the delivery settings: %v", err)
-	}
+	})
 }
 
 // publishMergedPullRequest publishes a GitHub-shaped message, a merge of pull request number of

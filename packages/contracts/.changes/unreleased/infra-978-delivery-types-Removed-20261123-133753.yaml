@@ -1,0 +1,10 @@
+kind: Removed
+body: |-
+  The exported types `ChangeFailureRate`, `DeliveryDeployFlagCounts`, `DeliveryFlagCounts` and
+  `TimeToRestore` are removed, with the pending flag state and the change fail rate's upper bound
+  they described. A consumer that imports one of them no longer compiles: read the delivery
+  measures' `change_failure_rate`, `time_to_restore` and `deployment_rework_rate` from the
+  generated `DeliveryMeasuresResponse` instead.
+time: 2026-11-23T13:37:53Z
+custom:
+    Issue: INFRA-978

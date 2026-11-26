@@ -1114,7 +1114,7 @@ the multiprocess job has a step that builds the same binary.
 
 The containerised visual review: every page of packages/dispatch/e2e/review-routes.ts's shot
 set compared against a committed baseline, in light and in dark, at a desktop width and two
-of them again at a phone width. Eighteen pages and two, so forty comparisons, which is the
+of them again at a phone width. Twenty pages and two, so forty-four comparisons, which is the
 number of PNGs under `packages/dispatch/e2e/__screenshots__`.
 
 The full lane only. A snapshot difference holds the merge queue, which is the point: a palette
