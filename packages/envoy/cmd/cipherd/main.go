@@ -1131,9 +1131,8 @@ func publicURLPortZero(publicURL string) bool {
 	return err == nil && port == 0
 }
 
-// refuseAirlockTestSettingsInProduction refuses every one of the local stack's test-only
 // refuseAirlockTestSettingsInProduction refuses every setting of the airlock's local stand-ins:
-// the eight BROKER_AIRLOCK_TEST_* ones, the proxy chain's three and the judge's one, unless
+// the ten BROKER_AIRLOCK_TEST_* ones, the proxy chain's three and the judge's one, unless
 // BROKER_FAKE_SECRETS_FILE makes this a local run, as the port-0 refusal above does and for the
 // same reason: each points the broker at a stand-in, lets it dial an address no production proxy
 // may dial, moves its clock, or turns off a check the proxy or the judge is made of. One reaching

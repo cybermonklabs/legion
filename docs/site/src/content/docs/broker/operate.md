@@ -2142,7 +2142,7 @@ goes on serving every other route, but Kubernetes takes a pod that fails its rea
 of every Service that selects it, and the edge's `GET /healthz` answers from the same check. So a
 pool outage longer than the 2 days a pod renews ahead, a lost `privateca` IAM grant, or a policy
 whose every answer the pods refuse takes down the whole broker once each pod's intermediate ends,
-releases of names no proxy block holds included. Alert on the `proxy intermediate request failed`
+releases of names no kind binds included. Alert on the `proxy intermediate request failed`
 log line, which a pod writes for each failed request from the first one, well before its
 intermediate ends. From the signal that stops it, it answers `503 SHUTTING_DOWN` instead, for the
 whole drain, while every other route goes on being served exactly as before. Use it as a

@@ -284,7 +284,7 @@ cat <<REPORT
     "model": {"address": "127.0.0.1:1007", "url": "http://127.0.0.1:1007", "records_url": "http://127.0.0.1:$$/records/model"},
     "dispatch": {"address": "127.0.0.1:1008", "url": "http://127.0.0.1:1008", "records_url": "http://127.0.0.1:$$/records/dispatch"},
     "metadata": {"address": "127.0.0.1:1009", "url": "http://127.0.0.1:1009", "records_url": "http://127.0.0.1:$$/records/metadata"},
-    "ca": {"address": "127.0.0.1:1011", "url": "http://127.0.0.1:1011", "records_url": "http://127.0.0.1:$$/records/ca"},
+    "ca": {"address": "127.0.0.1:1013", "url": "http://127.0.0.1:1013", "records_url": "http://127.0.0.1:$$/records/ca"},
     "anthropic": {"address": "127.0.0.6:443", "url": "https://127.0.0.6:443", "records_url": "http://127.0.0.1:$$/records/anthropic"},
     "anthropic-token": {"address": "127.0.0.1:1011", "url": "http://127.0.0.1:1011", "records_url": "http://127.0.0.1:$$/records/anthropic-token"},
     "iam": {"address": "127.0.0.1:1012", "url": "http://127.0.0.1:1012", "records_url": "http://127.0.0.1:$$/records/iam"}
@@ -438,8 +438,8 @@ printf 'PASS: two broker processes are started, each with the profiles file and 
 ca_url="$(exported PROXY_CA_URL)"
 clock_file="$(exported PROXY_CLOCK_OFFSET_FILE)"
 mapfile -t proxy_lines < <(grep -o 'fake broker proxy: .*' "$log" | grep -F "profiles=$profiles_file ")
-if [[ "${#proxy_lines[@]}" -ne 2 || "$ca_url" != http://127.0.0.1:1011 ]]; then
-  echo "FAIL: ${#proxy_lines[@]} broker(s) logged their proxy settings and the ca stand is exported as ${ca_url:-nothing}; want 2 and http://127.0.0.1:1011" >&2
+if [[ "${#proxy_lines[@]}" -ne 2 || "$ca_url" != http://127.0.0.1:1013 ]]; then
+  echo "FAIL: ${#proxy_lines[@]} broker(s) logged their proxy settings and the ca stand is exported as ${ca_url:-nothing}; want 2 and http://127.0.0.1:1013" >&2
   exit 1
 fi
 for line in "${proxy_lines[@]}"; do

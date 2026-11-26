@@ -24,18 +24,17 @@
 #   (h) judge-check.sh's report says UNKNOWN, and fails, when the run evaluated no property, and
 #       counts a run with one property failing as failed;
 #   (i) log_records returns the complete JSON lines of its named message alone, omits malformed
-#       lines and answers one empty array for a missing log.
-# The lib is sourced into this shell and its functions run here. Needs bash, jq and Linux's /proc.
-#   (f) k10's base-control guard (k10_base_control) reports UNKNOWN, naming JUDGE_CHECK_BASE, and
+#       lines and answers one empty array for a missing log;
+#   (j) k10's base-control guard (k10_base_control) reports UNKNOWN, naming JUDGE_CHECK_BASE, and
 #       builds nothing, for a base whose policy.go defines TagJudge: that broker reads the judge
 #       from the key's tags, so it is no control, whatever its profiles.go holds. A base that
 #       reads the judge from the proxy block and defines no TagJudge passes the guard and is built;
-#   (g) page_of and post_decision, the approval k10's card case makes, post back each
+#   (k) page_of and post_decision, the approval k10's card case makes, post back each
 #       profile_digest field the page prints, against a stand-in page that refuses an approval
 #       naming none, as the broker does (403 Profile changed); with page_of's profile_digest taken
 #       out, the same approval is refused.
-# Each function is read out of the script that defines it and run in this shell. Needs bash, jq
-# and Linux's /proc.
+# The lib is sourced into this shell, each other function is read out of the script that defines
+# it, and all of them run here. Needs bash, jq and Linux's /proc.
 set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/judge-check-test.XXXXXX")"
@@ -264,7 +263,7 @@ check "judge-check.sh's report fails a run with one property of two failing" \
   test "$(judge_report 0 1)" = "1:check test: failed (1 of 2)"
 check "judge-check.sh's report passes a run whose every property passed" \
   test "$(judge_report 0 0)" = "0:check test: passed"
-# --- (f) k10_base_control's guard, against two fixture bases in a git repository of their own,
+# --- (j) k10_base_control's guard, against two fixture bases in a git repository of their own,
 # read through JUDGE_CHECK_BASE. Each base holds the two files the guard reads; the stand-in go
 # records that a build was started and fails it, so neither case goes on to start a broker. ---
 definition="$(sed -n '/^k10_base_control() {/,/^}/p' "$script_dir/judge-check.sh")"
@@ -311,7 +310,7 @@ said="$(guard_run "$file_base")"
 check "k10's base control builds a base that reads the judge from the proxy block and defines no TagJudge" \
   test -e "$work/base-go-ran"
 
-# --- (g) page_of and post_decision against a stand-in approval page: it prints a form with two
+# --- (k) page_of and post_decision against a stand-in approval page: it prints a form with two
 # profile_digest fields, each "<record> <name> <digest>" with spaces, as the broker prints one for
 # each profile a request names, and holds the POST to the broker's rule (approval.profilesMoved):
 # every printed fingerprint must come back as printed, or the answer is 403 and nothing is decided.

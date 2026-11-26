@@ -247,15 +247,15 @@ const intermediateLifeSlack = 5 * time.Minute
 // checkBounds holds the certificate a pod signs leaves with, unless it is the root itself, to what
 // a pod's CSR asks for: path length 0, certificate-signing key usage, serverAuth as its one
 // extended key usage, and a lifetime no longer than the requested week and the issuer's time
-// slack. Its critical name constraints permit exactly the bound DNS names, permit no IP range,
-// and exclude every IPv4 and IPv6 address.
+// slack. Its critical name constraints permit exactly the DNS names of the bound hosts, each
+// kind's hosts and each dpop block's, permit no IP range, and exclude every IPv4 and IPv6 address.
 //
 // Name constraints apply to each name type separately, so permitted DNS names alone would not
 // constrain IP addresses. A certificate wider than these bounds would make a leaked pod key an
-// authority for other authorities, for longer, for names no profile binds, or for any IP address,
-// under a root commands trust. `docs/site/src/content/docs/broker/concepts.md`, "The proxy's
-// chain", records the client measurements and their common-name limits; this check enforces the
-// bounds those measurements leave in place.
+// authority for other authorities, for longer, for names no kind or dpop block binds, or for any
+// IP address, under a root commands trust. `docs/site/src/content/docs/broker/concepts.md`, "The
+// proxy's chain", records the client measurements and their common-name limits; this check
+// enforces the bounds those measurements leave in place.
 func checkBounds(cert *x509.Certificate, hosts []string) error {
 	if !cert.BasicConstraintsValid || cert.MaxPathLen != 0 || !cert.MaxPathLenZero {
 		return fmt.Errorf("its path length is %s, not 0, so it could sign other authorities", pathLength(cert))

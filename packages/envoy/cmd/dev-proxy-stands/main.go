@@ -149,7 +149,7 @@ const exitUsageError = 2
 
 // The stands this command serves. s, t and anthropic are the services a call behind the airlock
 // reaches; github-tls is the GitHub stand as a call behind the airlock reaches it, over TLS
-// under a bound host's name; the other twelve stand in for the endpoints the broker itself calls.
+// under a bound host's name; the other ten stand in for the endpoints the broker itself calls.
 const (
 	standS              = "s"
 	standT              = "t"
@@ -173,7 +173,7 @@ var stands = []string{
 	standModel, standDispatch, standMetadata, standCA, standAnthropic, standAnthropicToken, standIAM,
 }
 
-// plainStands are the nine served over http rather than https. The broker mints a type's value
+// plainStands are the eight served over http rather than https. The broker mints a type's value
 // with an HTTP client that trusts the host's own roots and nothing else, so a minter endpoint
 // behind TLS would need a root in the pod's trust store - the GitHub, Google, Anthropic and IAM
 // stands are four such endpoints - and the three the model judge calls and the certificate

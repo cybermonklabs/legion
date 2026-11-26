@@ -10,11 +10,14 @@
 #       certificate that signed it - from a transcript shaped like `openssl s_client -showcerts`
 #       output, holding a chain made here, and a call whose client failed reads as failed;
 #   (c) intermediates reads each "proxy intermediate" line of a broker's log, and await_count
-#       answers a count the log already holds at once, with no wait;
+#       answers a count the log already holds at once, with no wait, and gives up on a count the
+#       log never reaches once its seconds pass;
 #   (d) set_clock_at writes the offset that makes clock_now read the moment asked for, through a
 #       file renamed over the clock file, and serial_norm reads openssl's serial as the broker's;
 #   (e) report says UNKNOWN, and fails, when the run evaluated no property, and names how many
-#       of how many failed.
+#       of how many failed;
+#   (f) policy_of, the ca stand's policy, names each kind's hosts and each dpop block's hosts,
+#       the hosts the broker asks its intermediate to permit, in a file of either alone or both.
 # Each function is read out of the script that defines it and run in this shell. Needs bash,
 # jq and openssl.
 set -euo pipefail
@@ -50,7 +53,8 @@ check "--help exits 0" usage_exit 0 --help
 check "--help prints the usage" grep -q '^usage: proxy-chain-check.sh' "$work/usage.out"
 check "a usage error leaves no work directory behind" test -z "$(find "$work" -mindepth 1 -maxdepth 1 -name 'proxy-chain-check-*' -print -quit)"
 
-for function in serial_norm set_clock_at clock_now intermediates intermediate_count await_count call assert report digest shape; do
+SCRIPT_DIR="$script_dir"
+for function in serial_norm set_clock_at clock_now intermediates intermediate_count await_count policy_of call assert report digest shape; do
 	# A one-line function is its one line; any other runs to the first line that is a lone "}".
 	definition="$(grep -E "^${function}\(\) \{.*\}$" "$script" || true)"
 	if [ -z "$definition" ]; then
@@ -144,6 +148,13 @@ check "intermediate_count of a log with none is 0" test "$(intermediate_count /d
 AWAITED="unset"
 check "await_count answers an already-reached count" await_count intermediate_count "$work/broker.log" 2 1
 check "await_count answers an already-reached count without waiting" test "$AWAITED" = 0
+# A count the log never reaches gives up once the seconds pass, and AWAITED reads every second
+# given: each await_intermediates and await_failed_requests caller fails a property on this path.
+AWAITED="unset"
+gave_up=0
+await_count intermediate_count /dev/null 1 1 || gave_up=$?
+check "await_count gives up on a count the log never reaches" test "$gave_up" = 1
+check "await_count's give-up reads the seconds given as waited" test "$AWAITED" = 1
 
 # --- (d) the clock file and the serials. ---
 PROXY_CLOCK_OFFSET_FILE="$work/clock-offset"
@@ -168,6 +179,32 @@ assert 1 "another property" "not seen"
 report_status=0
 report >"$work/report.out" || report_status=$?
 check "a run with one property of two failing says so and fails" test "$report_status:$(tail -n1 "$work/report.out")" = "1:check test: failed (1 of 2)"
+
+# --- (f) policy_of. A kind's hosts and a dpop block's are both bound, and boundHosts
+# (cmd/cipherd/main.go) asks the intermediate to permit exactly them, so a policy without a dpop
+# block's host is one the pod refuses. A profile whose proxy is a kind's name binds nothing of its
+# own. ---
+cat >"$work/kind-and-dpop.json" <<'EOF'
+{"kinds": [{"name": "deel", "hosts": ["api.deel.com", "*.deel.example"], "ways": ["swap"]}],
+ "profiles": [{"name": "DEEL_KEY", "proxy": "deel"},
+  {"name": "RESULTS_TOKEN", "proxy": {"hosts": ["dispatch.test"], "headers": ["Authorization"], "allow": [{"method": "POST", "pathPrefix": "/api/v1/"}], "kind": "dpop"}}]}
+EOF
+cat >"$work/dpop-only.json" <<'EOF'
+{"profiles": [{"name": "RESULTS_TOKEN", "proxy": {"hosts": ["dispatch.test"], "headers": ["Authorization"], "allow": [{"method": "POST", "pathPrefix": "/api/v1/"}], "kind": "dpop"}},
+  {"name": "FIRST_TOKEN", "proxy": {"hosts": ["results.test"], "headers": ["Authorization"], "allow": [{"method": "POST", "pathPrefix": "/api/v1/"}], "kind": "dpop"}}]}
+EOF
+printf '%s\n' '{"kinds": [{"name": "deel", "hosts": ["api.deel.com"], "ways": ["swap"]}]}' >"$work/kinds-only.json"
+policy_read() { # <file>: the policy, or the exit status of a policy_of that failed
+	local status=0 got
+	got="$(policy_of "$1" 2>/dev/null)" || status=$?
+	printf '%s:%s' "$status" "$got"
+}
+check "policy_of names each kind's hosts and each dpop block's, a \"*.\" pattern as its domain" \
+	test "$(policy_read "$work/kind-and-dpop.json")" = '0:{"names":["api.deel.com","deel.example","dispatch.test"]}'
+check "policy_of of a file of dpop blocks alone names their hosts" \
+	test "$(policy_read "$work/dpop-only.json")" = '0:{"names":["dispatch.test","results.test"]}'
+check "policy_of of a file of kinds alone names the kinds' hosts" \
+	test "$(policy_read "$work/kinds-only.json")" = '0:{"names":["api.deel.com"]}'
 
 if [[ "$failed" -ne 0 ]]; then
 	echo "proxy-chain-check.test: $failed failed" >&2

@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -113,6 +115,66 @@ func TestABrokerOnAPoolIsNotReadyUntilItHoldsAnIntermediate(t *testing.T) {
 			t.Fatalf("the stand-in was sent the credential %q; want none", got[:min(len(got), 12)])
 		}
 	}
+}
+
+// caPolicyNames is the names scripts/lib/ca-policy.jq gives the profiles file at path: the policy
+// dev-airlock.sh and proxy-chain-check.sh apply to the ca stand before a broker starts on the file.
+func caPolicyNames(t *testing.T, path string) []string {
+	t.Helper()
+	filter := filepath.Join("..", "..", "scripts", "lib", "ca-policy.jq")
+	out, err := exec.Command("jq", "-c", "-f", filter, path).Output()
+	if err != nil {
+		t.Fatalf("jq -c -f %s %s: %v", filter, path, err)
+	}
+	var policy struct {
+		Names []string `json:"names"`
+	}
+	if err := json.Unmarshal(out, &policy); err != nil {
+		t.Fatalf("%s answered %q, no policy: %v", filter, out, err)
+	}
+	return policy.Names
+}
+
+// TestABrokerWithADpopBlockIsReadyUnderTheLocalCAPolicy: for a profiles file of a kind and a dpop
+// block, the ca stand's policy scripts/lib/ca-policy.jq gives names both hosts, which boundHosts
+// asks the intermediate to permit, so the broker takes the stand's answer, logs an intermediate of
+// both names and is ready. Control: under a policy of the kind's hosts alone, the policy a filter
+// that read no dpop block gave, the broker refuses every answer and answers 503 NO_INTERMEDIATE.
+func TestABrokerWithADpopBlockIsReadyUnderTheLocalCAPolicy(t *testing.T) {
+	profiles := profilesFile(t, withKinds(mintedProfiles(`"dispatch.test"`, []string{"RESULTS_TOKEN"}),
+		`[{"name": "deel", "hosts": ["api.deel.com"], "ways": ["swap"]}]`))
+	names := caPolicyNames(t, profiles)
+	if !slices.Equal(names, []string{"api.deel.com", "dispatch.test"}) {
+		t.Fatalf("ca-policy.jq names %v for a kind of api.deel.com and a dpop block of dispatch.test; want both", names)
+	}
+	start := func(t *testing.T, policy []string) *brokerProcess {
+		t.Helper()
+		_, service := caStandService(t, proxyrulestest.CAOptions{Names: policy})
+		return startBroker(t, brokerOptions{Env: append(localProxyEnv(t, storetest.URL(t)),
+			"BROKER_PROFILES_FILE="+profiles,
+			mintedDestination,
+			"BROKER_PROXY_CA_POOL="+testProxyPool,
+			"BROKER_PROXY_TEST_CA_URL="+service.URL(),
+		)})
+	}
+	t.Run("the policy ca-policy.jq gives", func(t *testing.T) {
+		broker := start(t, names)
+		broker.AwaitRecord(t, "proxy intermediate", map[string]any{"names": "api.deel.com dispatch.test"})
+		testwait.Until(t, "GET /healthz to answer 200 once the broker holds its intermediate", func() (string, bool) {
+			status, body := healthz(t, broker.Addr)
+			return body, status == http.StatusOK
+		})
+	})
+	t.Run("control: the kind's hosts alone", func(t *testing.T) {
+		broker := start(t, []string{"api.deel.com"})
+		broker.AwaitRecord(t, "proxy intermediate request failed", map[string]any{"pool": testProxyPool})
+		if status, body := healthz(t, broker.Addr); status != http.StatusServiceUnavailable || !strings.Contains(body, `"code":"NO_INTERMEDIATE"`) {
+			t.Fatalf("GET /healthz under a policy without the dpop block's host = %d %s; want 503 NO_INTERMEDIATE", status, body)
+		}
+		if strings.Contains(broker.Log(), `"message":"proxy intermediate",`) {
+			t.Fatalf("the broker took an intermediate that does not permit the dpop block's host:\n%s", broker.Log())
+		}
+	})
 }
 
 // TestABrokerRenewsAThreeDayIntermediateWithTwoDaysLeft: the broker binary, on a pool that answers
