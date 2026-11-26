@@ -19,7 +19,14 @@ import {
 import { priorityTriggerName } from "../web/src/features/priorities/IssuePriorityLine";
 import { buildDispatchReference, buildIssuePath } from "../web/src/features/refs/routes";
 import { setLiveSessions } from "./agents";
-import { createPriority, getIssue, patchIssue, putProjectDefaultRepository } from "./api";
+import {
+  createIssue,
+  createPriority,
+  createProject,
+  getIssue,
+  patchIssue,
+  putProjectDefaultRepository,
+} from "./api";
 import { nextFrames } from "./frames";
 import {
   closeDetails,
@@ -58,7 +65,7 @@ import {
   TWENTY_LABELS,
   UNPINNED_COMMENT,
 } from "./issue-page-h";
-import { expect, type Locator, type Page, type Request, test } from "./test";
+import { expect, type Locator, type Page, type Request, type Route, test } from "./test";
 import { assertWhole } from "./unclipped";
 
 /**
@@ -1900,6 +1907,130 @@ test("Details' priority picker's removal of an issue's last priority keeps the f
       addPriority,
       "once the new read moved the line back beside Add, the focus is not on its add control"
     ).toBeFocused();
+  });
+});
+
+/** What a row holds of the reads the page makes of one route: `hold` keeps every later GET the
+ *  route names unanswered, and `out` counts how many are kept. A kept GET is never answered, so
+ *  the page gives it up at its own 30 s deadline. */
+interface BoundReads {
+  readonly hold: () => void;
+  readonly out: () => number;
+}
+
+/** Routes the page's GETs that `matches` names, which go through until `hold` is called. */
+async function routeBoundReads(page: Page, matches: (url: URL) => boolean): Promise<BoundReads> {
+  let holding = false;
+  let kept = 0;
+  await page.route(matches, async (route: Route) => {
+    if (!holding || route.request().method() !== "GET") return route.fallback();
+    kept += 1;
+    return undefined;
+  });
+  return {
+    hold: () => {
+      holding = true;
+    },
+    out: () => kept,
+  };
+}
+
+/** The two priorities the row below's issue advances, each distinct enough that its whole title
+ *  typed into the picker's text box leaves that priority alone in the list. */
+const ADVANCED_PRIORITIES = ["Ledger replay budget", "Mirror cutover window"] as const;
+
+/** An issue that advances both priorities of its own and inherits none. Dispatch takes a write
+ *  with no revision one relation at a time (`ADVANCES_REVISION`), so each is written alone. */
+async function seedIssueAdvancingTwo(): Promise<string> {
+  await createProject({ key: "CORE", name: "Core" });
+  const first = await createPriority({ owner: "alice", title: ADVANCED_PRIORITIES[0] });
+  const second = await createPriority({ owner: "alice", title: ADVANCED_PRIORITIES[1] });
+  const issue = await createIssue({ project: "CORE", title: "Work under two priorities" });
+  await patchIssue(issue.key, { advances: [first.id] });
+  await patchIssue(issue.key, { advances: [first.id, second.id] });
+  return issue.key;
+}
+
+// The tester's red row of round 21 (read-bound.ts:40-47: "why the latest read handed to
+// `waitWithinBound` has not settled"; the architect's ruling of 2026-11-26T04:19Z). Details draws
+// the priorities' line in the Advances row while the issue advances a priority, and beside Add
+// once it advances none: two places in IssueMargin.tsx (:552-561 and :798-801), switched on
+// `advances.length === 0`, each its own `IssuePriorityLine` with its own `useReadBound`
+// (IssuePriorityLine.tsx:154). The removal of the last priority takes the line from the first
+// place to the second as it lands, so the hold it starts is in an instance that is gone and the
+// page never says why its read of the priorities has not settled. At c3b536cc the line of the
+// first removal shows at its bound and the last removal's shows nothing for the whole 15 s the
+// row waits; with three priorities, where the last removal never comes, it shows. Measured in
+// Chromium and Firefox, twice each.
+// SLOW(>=2s): one issue page open, two priorities removed from it with the priorities' read held,
+// and the page's clock moved twice past the 30 s bound.
+// @firefox: the timers of a read's own deadline and of the bound a held control waits on, which
+// each engine runs.
+test("Details' priority line says why the priorities are not read at the bound of the removal of an issue's last priority, once @firefox", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedIssueAdvancingTwo, async (page, key) => {
+    const step = (text: string) =>
+      `Details' priority line of an issue advancing two priorities: ${text}`;
+    const unreadWords = `${ANSWER_LINES.priorities_unreadable} Dispatch did not answer within 30 seconds.`;
+    const priorityReads = await routeBoundReads(
+      page,
+      (url) => url.pathname === "/api/v1/priorities"
+    );
+    await page.clock.install();
+    await gotoIssue(page, `/issues/${key}`);
+    await openDetails(page);
+    const advances = marginSlot(page).getByTestId("issue-advances");
+    const trigger = advances.getByRole("button", {
+      name: new RegExp(`${priorityTriggerName(key, false)}|${priorityTriggerName(key, true)}`),
+    });
+    const chips = advances.getByRole("link");
+    await expect(chips, step("the Advances row names both priorities.")).toHaveCount(2);
+    const unreadLine = marginSlot(page)
+      .getByRole("alert")
+      .filter({ hasText: /did not answer within 30 seconds/ });
+    const written = () =>
+      page.waitForResponse(
+        (response) =>
+          response.request().method() === "PATCH" &&
+          new URL(response.url()).pathname === `/api/v1/issues/${key}`
+      );
+
+    priorityReads.hold();
+    const firstAnswer = written();
+    await togglePriority(page, trigger, ADVANCED_PRIORITIES[0], false);
+    expect((await firstAnswer).ok(), step("the first removal lands at Dispatch.")).toBe(true);
+    await expect
+      .poll(priorityReads.out, {
+        message: step("the read of the priorities the first removal starts is out."),
+      })
+      .toBeGreaterThan(0);
+    await page.clock.fastForward(30_000);
+    await expect(
+      unreadLine,
+      step(
+        "at the 30 s bound after the first removal the line says why the priorities are not read."
+      )
+    ).toHaveText([unreadWords]);
+    await expect(
+      chips,
+      step("once the first removal is drawn the Advances row names the second priority alone.")
+    ).toHaveCount(1);
+
+    const secondAnswer = written();
+    await togglePriority(page, trigger, ADVANCED_PRIORITIES[1], false);
+    expect(
+      (await secondAnswer).ok(),
+      step("the removal of the last priority lands at Dispatch.")
+    ).toBe(true);
+    await page.clock.fastForward(30_000);
+    await expect(
+      unreadLine,
+      step(
+        "at the 30 s bound after the removal of the last priority the line says why the priorities are not read, once."
+      )
+    ).toHaveText([unreadWords]);
   });
 });
 
