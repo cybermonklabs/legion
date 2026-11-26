@@ -359,7 +359,7 @@ const (
 	// A verified sign-in the Workspace rule refuses (oidc.WorkspaceLogin).
 	codeSignInAccountRefused = "SIGN_IN_ACCOUNT_REFUSED"
 	// A verified sign-in by a Google account that no longer holds the person's address, which
-	// Dispatch named replaced when another account took it (store.ErrBrowserSessionSubjectReplaced).
+	// Dispatch named replaced when another account took it (store.ErrSubjectReplaced).
 	codeSignInAccountReplaced = "SIGN_IN_ACCOUNT_REPLACED"
 )
 

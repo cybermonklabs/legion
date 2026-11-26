@@ -26,7 +26,7 @@ const (
 // tradeSignIn makes one sign-in trade of person on a box key of its own as account, the two
 // writes the token exchange makes in its transaction: the sign-in (RecordPersonSignIn) and the
 // launcher credential it holds (IssueTokenLoginTx). It answers the key's thumbprint and the
-// trade's error, store.ErrSignInSubjectReplaced among them.
+// trade's error, store.ErrSubjectReplaced among them.
 func tradeSignIn(ctx context.Context, svc *Service, person string, account store.IssuerSubject) (string, error) {
 	key, err := proof.NewKey()
 	if err != nil {
@@ -101,7 +101,7 @@ func TestARevokeAndATradeOfTheReplacedAccountNeverLeaveItALiveSignIn(t *testing.
 		switch {
 		case tradeErr == nil:
 			tradedFirst++
-		case errors.Is(tradeErr, store.ErrSignInSubjectReplaced):
+		case errors.Is(tradeErr, store.ErrSubjectReplaced):
 			refused++
 		default:
 			t.Fatalf("round %d: the trade: %v", i, tradeErr)
@@ -163,7 +163,7 @@ func TestARevokeAndAPageSignInOfTheReplacedAccountNeverLeaveItALiveSession(t *te
 		switch {
 		case signInErr == nil:
 			signedInFirst++
-		case errors.Is(signInErr, store.ErrBrowserSessionSubjectReplaced):
+		case errors.Is(signInErr, store.ErrSubjectReplaced):
 			refused++
 		default:
 			t.Fatalf("round %d: the sign-in: %v", i, signInErr)
@@ -228,8 +228,8 @@ func TestALateRevokeBelowTheAppliedGenerationChangesNothing(t *testing.T) {
 	if _, err := tradeSignIn(ctx, svc, person, a); err != nil {
 		t.Errorf("after the late revoke, A's trade = %v, want it recorded: A holds the address", err)
 	}
-	if _, err := tradeSignIn(ctx, svc, person, b); !errors.Is(err, store.ErrSignInSubjectReplaced) {
-		t.Errorf("after the late revoke, B's trade = %v, want %v: A took the address from B", err, store.ErrSignInSubjectReplaced)
+	if _, err := tradeSignIn(ctx, svc, person, b); !errors.Is(err, store.ErrSubjectReplaced) {
+		t.Errorf("after the late revoke, B's trade = %v, want %v: A took the address from B", err, store.ErrSubjectReplaced)
 	}
 	var live int
 	if err := svc.Store.Pool.QueryRow(ctx, `select count(*) from person_signins where person = $1 and subject = $2 and revoked_at is null`,

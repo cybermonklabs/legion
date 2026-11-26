@@ -366,11 +366,11 @@ func personLoginCheck(dpopJKT string) func(record.RequestObject) error {
 // account is the identity provider's account the deciding human signed in to Dispatch as, which
 // the approve carries beside login, and the zero value for an approve that names none, which is
 // every approve Dispatch relays in this tree. An approval records it on the credential it mints,
-// and is ErrApproverReplaced, minting nothing, when that account no longer holds login's address
-// (store.SubjectReplaced). It reads that after taking login's lock (store.LockPerson), which the
-// revoke of a replaced account takes too (enroll.Service.RevokePersonSubject): an approval that
-// took it first has committed its credential before the revoke reads login's machine logins, and
-// the revoke ends it; one that waited reads what the revoke recorded, and is refused.
+// and is ErrApproverReplaced, minting nothing, when that account no longer holds login's address,
+// which it reads after taking login's lock (store.LockPersonAs). The revoke of a replaced account
+// takes that lock too (enroll.Service.RevokePersonSubject): an approval that took it first has
+// committed its credential before the revoke reads login's machine logins, and the revoke ends it;
+// one that waited reads what the revoke recorded, and is refused.
 //
 // generation is the session generation of login's address at the caller, as that caller's check of
 // the approver read it (approver_session_generation), and nil for an approve carrying none, which
@@ -482,15 +482,11 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 		if body.LifetimeSeconds == nil {
 			return "", "", fmt.Errorf("machine login record has no credential lifetime")
 		}
-		if err := store.LockPerson(ctx, tx, login); err != nil {
-			return "", "", err
-		}
-		replaced, err := store.SubjectReplaced(ctx, tx, login, account)
-		if err != nil {
-			return "", "", err
-		}
-		if replaced {
+		switch err := store.LockPersonAs(ctx, tx, login, account); {
+		case errors.Is(err, store.ErrSubjectReplaced):
 			return "", "", ErrApproverReplaced
+		case err != nil:
+			return "", "", err
 		}
 		switch {
 		case generation != nil:
