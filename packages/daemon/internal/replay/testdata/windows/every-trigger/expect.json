@@ -200,8 +200,8 @@
       },
       "waits": {
         "child_done": {
-          "count": 1,
-          "hours": 2.1666666666666665
+          "count": 2,
+          "hours": 3.8333333333333335
         }
       },
       "slotHoursInTurn": 5.333333333333333,

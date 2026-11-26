@@ -338,10 +338,12 @@ func (a *Admission) cover(ctx context.Context, tx pgx.Tx, waiter, holder string,
 const CoverTakenLine = "admission: an issue holds the slot of a waiter that waits on it"
 
 // coverReason is the path the pass's record names for the slot waiter gave to holder (cover): a
-// wait on its open children where holder is one of them, and a wait on a blocked_by link
-// otherwise.
+// wait on its open children where holder is one of them, the children its first phase waits for
+// (record.LineFacts.ChildWaits) or, its phases started, the children that hold its next start
+// (record.LineFacts.StartedParentWaits), both waits a cover reads (blockers.CoverWaits); and a
+// wait on a blocked_by link otherwise.
 func coverReason(waiter, holder string, facts record.LineFacts) record.SlotTakenReason {
-	if openChildOf(facts, waiter, holder) {
+	if openChildOf(facts.ChildWaits, waiter, holder) || openChildOf(facts.StartedParentWaits, waiter, holder) {
 		return record.TakenChildrenWait
 	}
 	return record.TakenLinkWait

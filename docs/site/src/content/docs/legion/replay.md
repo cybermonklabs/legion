@@ -1448,6 +1448,8 @@ At a moment with no pair, each share is 0.
 - `waits[<word>]`: the `.count` and `.hours` of the waits on other issues, by what ended each.
   A wait runs while an issue in flight, before its review, waits on an unfinished `blocked_by` link, or, at admitted under an open design gate, on an open child.
   A started parent that the admission pass moves into `awaiting_children` (cybermonklabs/legion#4592) waits there on its open children, from the move until the last of them closes or moves out.
+  Under `cover` a started parent with an open child keeps its phase instead, and its wait on its open children counts in each phase from `planning` through `accepting`, from the first pass that reads an open child under it until the last of them closes or moves out.
+  That is the wait that a cover takes, whether or not a child starts on the parent's slot.
   A child at admitted that has not started has no wait here: its wait is the line's.
   A wait goes on while the root of its tree lingers.
 

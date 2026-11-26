@@ -110,7 +110,7 @@ func ReadSignalRecord(w Window, idleAfter time.Duration, tokenLimit int64) (*Sig
 	r := &SignalRecord{window: w, idleAfter: idleAfter, tokenLimit: tokenLimit, minutes: make(map[int64]ProviderMinute, len(w.Provider))}
 	for _, key := range slices.Sorted(maps.Keys(trace.Issues)) {
 		if iss := trace.Issues[key]; iss.Project == trace.Project {
-			r.holders = append(r.holders, indexIssue(iss, trace.GateLines))
+			r.holders = append(r.holders, indexIssue(iss, trace.GateLines, trace.ruleAt))
 		}
 	}
 	kills, err := launcherKills(w.Launcher)

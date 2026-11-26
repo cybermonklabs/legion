@@ -101,15 +101,17 @@ func waitReason(issue string, waits []string, facts record.LineFacts) record.Slo
 		return record.TakenChildrenWait
 	}
 	for _, key := range waits {
-		if !openChildOf(facts, issue, key) {
+		if !openChildOf(facts.ChildWaits, issue, key) {
 			return record.TakenLinkWait
 		}
 	}
 	return record.TakenChildrenWait
 }
 
-// openChildOf says whether key is one of the open children issue's first phase waits for
-// (record.LineFacts.ChildWaits).
-func openChildOf(facts record.LineFacts, issue, key string) bool {
-	return slices.ContainsFunc(facts.ChildWaits[issue].Open, func(child record.OpenChild) bool { return child.Key == key })
+// openChildOf says whether key is one of issue's open children in waits, one judgement of the
+// parents' open Dispatch children by parent key: the children-first wait of a first phase
+// (record.LineFacts.ChildWaits) or the wait of a parent whose phases have started
+// (record.LineFacts.StartedParentWaits).
+func openChildOf(waits map[string]record.ChildWait, issue, key string) bool {
+	return slices.ContainsFunc(waits[issue].Open, func(child record.OpenChild) bool { return child.Key == key })
 }

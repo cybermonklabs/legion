@@ -355,9 +355,13 @@ type issueIndex struct {
 	// flight is its stretches in flight (IssueTrace.inFlight).
 	flight [][2]time.Time
 	// inFlight, slots, turns, waits, person and held count its stretches in flight, its slots,
-	// its workers' turns, its waits on other issues (link and children), its waits on a person and
-	// its holds.
+	// its workers' turns, its waits on other issues (link and children, and its started waits),
+	// its waits on a person and its holds.
 	inFlight, slots, turns, waits, person, held stretchCount
+	// started is its waits on its open children while its phases have started
+	// (IssueTrace.StartedChildren) that the rule the daemon ran at each one's start counts
+	// (coverTakesStartedParents), in the order they began.
+	started []Wait
 	// restarts is each moment a hold of it ended with its worker sent the held phase again
 	// (Wait.released), in order: the held phase's retry writes that worker's start.
 	restarts []time.Time
@@ -365,8 +369,10 @@ type issueIndex struct {
 	gate gateSteps
 }
 
-// indexIssue indexes iss, the gate of the tree it roots read as gateStepsOf reads it.
-func indexIssue(iss *IssueTrace, gateLines bool) *issueIndex {
+// indexIssue indexes iss, the gate of the tree it roots read as gateStepsOf reads it, and its waits
+// on its open children while its phases have started read by rule, the rule the daemon ran at each
+// moment.
+func indexIssue(iss *IssueTrace, gateLines bool, rule func(time.Time) record.SlotRule) *issueIndex {
 	x := &issueIndex{iss: iss, shown: shownOf(iss), flight: iss.inFlight(), gate: gateStepsOf(iss, gateLines)}
 	done, rank, priority := false, "", record.NoPriority
 	for i, state := range x.shown.states {
@@ -399,6 +405,12 @@ func indexIssue(iss *IssueTrace, gateLines bool) *issueIndex {
 			if wait.released() && !wait.End.IsZero() {
 				x.restarts = append(x.restarts, wait.End)
 			}
+		}
+	}
+	for _, wait := range iss.StartedChildren {
+		if coverTakesStartedParents(rule(wait.Start)) {
+			x.started = append(x.started, wait)
+			waits = append(waits, [2]time.Time{wait.Start, wait.End})
 		}
 	}
 	slices.SortFunc(x.restarts, time.Time.Compare)
@@ -448,7 +460,7 @@ func (r *lineReader) of(key string) *issueIndex {
 	if !ok {
 		return nil
 	}
-	x := indexIssue(iss, r.t.GateLines)
+	x := indexIssue(iss, r.t.GateLines, r.rule)
 	r.index[key] = x
 	return x
 }
@@ -498,7 +510,7 @@ func lineTimeline(t Trace, ranks rankFunc, priorities resolvedPriorities, rule f
 			}
 			c.set(at, state)
 		}
-		moves, waits := iss.Moves(), issueWaits(iss, x.flight)
+		moves, waits := iss.Moves(), issueWaits(iss, x.flight, x.started)
 		if c == nil && len(moves)+len(waits)+len(iss.MergeForwards) > 0 {
 			c = tl.course(key)
 		}
@@ -602,23 +614,29 @@ func recordedWaitStarts(t Trace, ranks rankFunc, at time.Time, keys []string) ma
 
 // issueWaits is iss's waits on other issues as the measures count them (`replay.md`, "The
 // measures": a stretch in which an issue in flight, standing before its review or in
-// awaiting_children, waits on another issue): each stretch of its link and children waits in which
-// it stands in flight (flight) and in such a phase (measuredStretches), in the order they began,
-// each run of them that overlap
-// or touch read as one wait, from the first one's start to the last one's end, ended by what ended
-// the last. A wait that begins where another ends is the same stretch of waiting, as the snapshot
-// timeline reads it, whose wait goes on at a settle where something is left to wait on whatever
-// ended and began there (snapshots.waitAt): a blocker done at the moment another is linked, or a
-// children wait the trace ends where the daemon's next line of a children wait of the issue begins
-// (IssueTrace.nextWaitStart). A wait cut by its stretch's end ends as that stretch does: its move
-// past its review (moved_on), where the daemon judges no wait of it any longer (blockers' waitsOf)
-// and the snapshot timeline ends it too (waitEnd), or its leave (left_workflow). So a children
-// wait the daemon tells of a child that has not started, the line's hold on its first phase, is
-// none of them, as the snapshot timeline, which reads the waits of the issues in flight alone,
-// counts none.
-func issueWaits(iss *IssueTrace, flight [][2]time.Time) []CourseWait {
+// awaiting_children, waits on another issue, and in which a started parent waits on its open
+// children in the phase it stands in under a rule whose cover takes that wait): each stretch of its
+// link and children waits in which it stands in flight (flight) and in such a phase
+// (measuredStretches), and each of its waits on its open children while its phases have started
+// that the rule counts (started, issueIndex.started), which the trace bounds by its run and those
+// phases itself (traceBuilder.startedChildren), in the order they began, each run of them that
+// overlap or touch read as one wait, from the first one's start to the last one's end, ended by
+// what ended the last. A wait that begins where another ends is the same stretch of waiting, as the
+// snapshot timeline reads it, whose wait goes on at a settle where something is left to wait on
+// whatever ended and began there (snapshots.waitAt): a blocker done at the moment another is
+// linked, or a children wait the trace ends where the daemon's next line of a children wait of the
+// issue begins (IssueTrace.nextWaitStart). A wait cut by its stretch's end ends as that stretch
+// does: its move past its review (moved_on), where the daemon judges no wait of it any longer
+// (blockers' waitsOf) and the snapshot timeline ends it too (waitEnd), or its leave
+// (left_workflow). So a children wait the daemon tells of a child that has not started, the line's
+// hold on its first phase, is none of them, as the snapshot timeline, which reads the waits of the
+// issues in flight alone, counts none.
+func issueWaits(iss *IssueTrace, flight [][2]time.Time, started []Wait) []CourseWait {
 	stretches := measuredStretches(iss, flight)
 	var pieces []CourseWait
+	for _, wait := range started {
+		pieces = append(pieces, CourseWait{Start: wait.Start, End: wait.End, EndedBy: wait.EndedBy})
+	}
 	for _, wait := range iss.Waits {
 		if wait.Kind != WaitLink && wait.Kind != WaitChildren {
 			continue
@@ -838,12 +856,13 @@ func (r *lineReader) stateAt(x *issueIndex, at time.Time) IssueState {
 //   - a release for a wait: the loop places an issue that carries the mark of a pass that took
 //     its slot back for a wait on another issue (record.Issue.ReleasedForWaitAt, which
 //     record.Store.ReleaseSlotForWait writes with the release) as LineWaitingOnIssue, whatever it
-//     owes, until a pass gives it a slot and clears the mark. Its last slot's SlotSpan.ForWait
-//     reads that release: the reason the pass's record line gives, or a link or children wait of
-//     the issue that stands where the slot went back. A pass clears the mark too where the issue
-//     needs no slot (admit's releaseSlots): a move into a phase the rule keeps no slot in, whose
-//     move back owes its start, and a tree that stopped being live, so a mark stands only while
-//     the tree has stood live since the release.
+//     owes, until a pass gives it a slot and clears the mark. Its last slot's release reads so
+//     (issueIndex.forWait): the reason the pass's record line gives, or a link or children wait
+//     of the issue that stands where the slot went back, a wait on its open children while its
+//     phases have started that the rule counts among them. A pass clears the mark too where the
+//     issue needs no slot (admit's releaseSlots): a move into a phase the rule keeps no slot in,
+//     whose move back owes its start, and a tree that stopped being live, so a mark stands only
+//     while the tree has stood live since the release.
 //
 // The issue's place in that part is the caller's: blocked while a link or children wait of it
 // stands, as the promotion passes over an entry while what it waits on is unfinished
@@ -861,7 +880,7 @@ func (r *lineReader) returnedAt(x *issueIndex, tree string, visit *Visit, at tim
 	if i := sort.Search(len(slots), func(i int) bool { return slots[i].Start.After(at) }); i > 0 {
 		last = &slots[i-1]
 	}
-	if last != nil && last.ForWait && !liveSince.After(last.End) {
+	if last != nil && x.forWait(last) && !liveSince.After(last.End) {
 		return true
 	}
 	var written time.Time
@@ -872,6 +891,21 @@ func (r *lineReader) returnedAt(x *issueIndex, tree string, visit *Visit, at tim
 		written = x.restarts[i-1]
 	}
 	return !written.IsZero() && (last == nil || last.End.Before(written))
+}
+
+// forWait says whether span, a slot of x's issue, went back for a wait on another issue: as the
+// trace reads it (SlotSpan.ForWait), or, where no record line names why it went back, for a wait of
+// the issue on its open children while its phases have started that the rule counts (started)
+// standing where it went back, as the trace reads a link or children wait that stands there
+// (traceBuilder.forWait): the trace holds no rule's reading of that wait, so only the line reader,
+// which reads by the rule, can read the release so.
+func (x *issueIndex) forWait(span *SlotSpan) bool {
+	if span.ForWait || span.Reason != "" || span.End.IsZero() || span.Inferred {
+		return span.ForWait
+	}
+	return slices.ContainsFunc(x.started, func(wait Wait) bool {
+		return !wait.Start.After(span.End) && (wait.End.IsZero() || wait.End.After(span.End))
+	})
 }
 
 // treeLiveAt says whether tree is live at at and its root does not linger (NeedsSlot's tree half:
