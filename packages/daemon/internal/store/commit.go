@@ -26,6 +26,16 @@ type TxPool interface {
 	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
 }
 
+// logOf is where TransactWith and its watcher write their lines about a commit over pool: a
+// guarded pool's own log (Pool.log) when pool is a *Pool, and the process's default logger for any
+// other TxPool, a test's wrapper of a *Pool included.
+func logOf(pool TxPool) *slog.Logger {
+	if guarded, ok := pool.(*Pool); ok {
+		return guarded.logger()
+	}
+	return slog.Default()
+}
+
 // ErrCommitOutcomeUnknown is TransactWith's answer for a commit whose reply was lost while the
 // store could not say whether the transaction committed. A warning names the transaction, and its
 // hooks wait for the store's answer (watchOutcome).
@@ -235,8 +245,9 @@ func scopeOf(ctx context.Context) *commitScope {
 // orders it against every other write; a store write the watcher runs late has no such order and
 // can change what a newer write wrote. So a hook's effects are log lines, wakes and in-process
 // state, and in-process state only behind a fence a late run cannot cross: admission's held
-// release clears only the holds it applied, and a controller mint's hook revokes only the grants
-// of generations below the one it confirms.
+// release clears only the holds it applied, admission's memory of its held-retro reads takes a
+// hook's write only while no later pass has begun, and a controller mint's hook revokes only the
+// grants of generations below the one it confirms.
 //
 // The hook list is not goroutine-safe: OnCommit is called only on the goroutine that runs
 // TransactWith's write. It panics on a context no TransactWith scopes, since a write made outside
@@ -485,14 +496,14 @@ func settleLostReply(ctx context.Context, pool TxPool, xid string, hooks []func(
 	result, statusErr := readOutcome(reading, pool, xid)
 	switch result {
 	case outcomeCommitted:
-		slog.Warn("store: a commit's reply was lost; the store says the transaction committed",
+		logOf(pool).Warn("store: a commit's reply was lost; the store says the transaction committed",
 			"transaction", xid, "error", lost)
 		runHooks(hooks)
 		return nil
 	case outcomeAborted:
 		return &notCommittedError{xid: xid, lost: lost}
 	default:
-		slog.Warn("store: a commit's reply was lost and the store cannot say whether it landed; its commit hooks wait until it can",
+		logOf(pool).Warn("store: a commit's reply was lost and the store cannot say whether it landed; its commit hooks wait until it can",
 			"transaction", xid, "hooks", len(hooks), "error", lost, "status_error", statusErr)
 		go watchOutcome(ForConcurrentWorker(context.WithoutCancel(ctx)), pool, xid, hooks)
 		return &outcomeUnknownError{xid: xid, lost: lost, status: statusErr}
@@ -661,16 +672,17 @@ func readOutcome(ctx context.Context, pool TxPool, xid string) (outcome, error) 
 // other time limit and is not joined at stop: a status the server does not keep leaves it reading
 // every outcomeRetryMax until the pool closes.
 func watchOutcome(ctx context.Context, pool TxPool, xid string, hooks []func()) {
+	log := logOf(pool)
 	switch result, _ := pollOutcome(ctx, pool, xid, outcomeRetryFirst); result {
 	case outcomeCommitted:
-		slog.Warn("store: a transaction whose outcome was unknown committed; its commit hooks run now",
+		log.Warn("store: a transaction whose outcome was unknown committed; its commit hooks run now",
 			"transaction", xid, "hooks", len(hooks))
-		runWatchedHooks(xid, hooks)
+		runWatchedHooks(log, xid, hooks)
 	case outcomeAborted:
-		slog.Info("store: a transaction whose outcome was unknown did not commit; its commit hooks are dropped",
+		log.Info("store: a transaction whose outcome was unknown did not commit; its commit hooks are dropped",
 			"transaction", xid, "hooks", len(hooks))
 	default:
-		slog.Error("store: the pool closed before the store said whether a transaction committed; its commit hooks did not run",
+		log.Error("store: the pool closed before the store said whether a transaction committed; its commit hooks did not run",
 			"transaction", xid, "hooks", len(hooks))
 	}
 }
@@ -706,13 +718,13 @@ func pollOutcome(ctx context.Context, pool TxPool, xid string, first time.Durati
 
 // runWatchedHooks runs hooks in order on the watcher's goroutine, each under a recover. Nothing
 // above the watcher recovers a panic, as net/http does for a route's goroutine, so a hook that
-// panics there is logged with its transaction and its stack, and the next hook still runs.
-func runWatchedHooks(xid string, hooks []func()) {
+// panics there is logged to log with its transaction and its stack, and the next hook still runs.
+func runWatchedHooks(log *slog.Logger, xid string, hooks []func()) {
 	for _, hook := range hooks {
 		func() {
 			defer func() {
 				if recovered := recover(); recovered != nil {
-					slog.Error("store: a commit hook the watcher ran panicked",
+					log.Error("store: a commit hook the watcher ran panicked",
 						"transaction", xid, "panic", fmt.Sprint(recovered), "stack", string(debug.Stack()))
 				}
 			}()

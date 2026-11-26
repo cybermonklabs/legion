@@ -175,11 +175,15 @@ environment:
   AGENT_SECRETS_MACHINE_IDENTITY
                                the identity this machine proves at the broker's token exchange:
                                kubernetes (AGENT_SECRETS_MACHINE_TOKEN_FILE), metadata
-                               (AGENT_SECRETS_MACHINE_AUDIENCE) or pool (both, with
-                               AGENT_SECRETS_POOL_AUDIENCE and AGENT_SECRETS_POOL_ACCOUNT).
-                               With it the helper's launcher credential is the one that exchange
-                               mints, traded again before it lapses with the key it kept, and no
-                               person approves this machine; unset, a person logs it in as before
+                               (AGENT_SECRETS_MACHINE_AUDIENCE), pool (both, with
+                               AGENT_SECRETS_POOL_AUDIENCE and AGENT_SECRETS_POOL_ACCOUNT) or
+                               github-actions (ACTIONS_ID_TOKEN_REQUEST_URL,
+                               ACTIONS_ID_TOKEN_REQUEST_TOKEN and AGENT_SECRETS_MACHINE_AUDIENCE).
+                               With metadata or pool the helper's launcher credential is the one
+                               that exchange mints, traded again before it lapses with the key it
+                               kept, and no person approves this machine; the broker mints none
+                               for kubernetes or github-actions, so with either the helper has no
+                               launcher credential. Unset, a person logs it in as before
   AGENT_SECRETS_KEY_DIR        where this user's session identity lives; install writes it into
                                the unit when set (default $XDG_RUNTIME_DIR/agent-secrets)
   AGENT_SECRETS_SIGNIN_DIR     where agent-secrets login keeps this user's sign-ins, which the

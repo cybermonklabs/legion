@@ -53,6 +53,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -128,6 +129,16 @@ type Runtime struct {
 	// keptVolumeBound is how long a launch gives a pod with a kept volume to start where the boot
 	// timeout is shorter (startBound): keptVolumeAttachWait, which a test sets short.
 	keptVolumeBound time.Duration
+	// clock is what the runtime's polled waits run on: each await's budget and recheck (every wait
+	// of the probe, a role launcher's, a pod's end, a new pod's, a Sandbox's deletion and a
+	// repository cache's Service), the deadlines awaitRoleLauncher, ensureSandbox and
+	// ensureCacheSandbox measure against, and the deadline relaunch gives a role's start after its
+	// launcher's wait. clock.Real outside the tests; a test that asserts which of those deadlines a
+	// launch meets sets a clocktest.Fake here before it starts the launch. The launch try's own
+	// bound (launchBound), resend's backoff, awaitSandboxDeleted and stopIssuedChild's wait for a
+	// stop stay on the wall clock, and now (Options.Now) is a time source of its own: the present
+	// the runtime reads a pod's or a Sandbox's age against.
+	clock clock.Clock
 	// helloBindBound is how long a binding of a pod's launchers at a hello may hold the pod's
 	// launch turn (bindCurrentPod): apiTimeout, the longest a hello waits for it, which a test sets
 	// short.
@@ -150,6 +161,13 @@ type Runtime struct {
 	// a live pod a launch would keep has ended (relaunch), nil for a runtime that keeps every such
 	// pod.
 	roundPodEnds runtime.RoundPodEnds
+	// launchTakes is Options.LaunchTakes: the daemon's record of what a launch's own replacement
+	// of an issue pod is about to take (relaunch), nil for a runtime that records nothing.
+	launchTakes runtime.LaunchTakes
+	// launchTook is Options.LaunchTook: the daemon's word of a launch's own replacement of an
+	// issue pod, with what the read of its workspace found (relaunch, R7 of
+	// #5285), nil for a runtime that tells nobody.
+	launchTook runtime.LaunchTook
 	// podShapes is the configuration each kind of pod is built from now in each sandbox it can
 	// run in (podShape), by kind and sandbox (podShapeKey), encoded once here (podShapes). Every
 	// input of a shape — the image, the kind's reservation, the operator's volumes and mounts, the
@@ -466,11 +484,11 @@ func configureProber(opts Options) (*Runtime, error) {
 		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,
 		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels),
-		bootTimeout: opts.BootTimeout, keptVolumeBound: keptVolumeAttachWait, helloBindBound: apiTimeout, registrationIntervals: opts.RegistrationIntervals,
+		bootTimeout: opts.BootTimeout, keptVolumeBound: keptVolumeAttachWait, clock: clock.Real(), helloBindBound: apiTimeout, registrationIntervals: opts.RegistrationIntervals,
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
 		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
-		testPostgres: opts.TestPostgres, leakCheck: opts.LeakCheckSetting, roundPodEnds: opts.RoundPodEnds,
+		testPostgres: opts.TestPostgres, leakCheck: opts.LeakCheckSetting, roundPodEnds: opts.RoundPodEnds, launchTakes: opts.LaunchTakes, launchTook: opts.LaunchTook,
 		memoryGuard: opts.MemoryGuard, controllerMemoryGuard: opts.ControllerMemoryGuard, volumeTrim: opts.VolumeTrim,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
@@ -737,31 +755,43 @@ func (r *Runtime) notify(obj any) {
 	}
 }
 
-// await re-checks done after every informer event, and every recheck interval, until it reports
-// true, fails, or budget passes; what names the wait in the timeout. done is handed ctx bounded by
-// budget, and that one bound is the wait's: a request done makes, a launch's waiting out an
-// overloaded server included (resend), ends with the wait rather than up to a boot timeout past it.
+// await checks done, again after every informer event and recheckInterval after each check began
+// (at once after a check that took longer), until it reports true, fails, or budget passes; what
+// names the wait in the timeout. done is handed ctx bounded by budget, and that one bound is the
+// wait's: a request done makes, a launch's waiting out an overloaded server included (resend),
+// ends with the wait rather than up to a boot timeout past it. The budget and the recheck run on
+// r.clock, and each recheck is armed for the moment its check began, read before the check, plus
+// recheckInterval: so on a test's fake clock a recheck pending one recheckInterval past the fake's
+// moment says a check began at that moment, and a check that began before the fake moved, however
+// late it arms, arms a recheck the move has already reached, which fires at once (step).
 func (r *Runtime) await(ctx context.Context, budget time.Duration, what string, done func(context.Context) (bool, error)) error {
-	bounded, cancel := context.WithTimeout(ctx, budget)
+	bounded, cancel := r.clock.WithTimeout(ctx, budget)
 	defer cancel()
-	recheck := time.NewTicker(recheckInterval)
-	defer recheck.Stop()
 	for {
 		r.mu.Lock()
 		changed := r.changed
 		r.mu.Unlock()
+		began := r.clock.Now()
 		ok, err := done(bounded)
 		if err != nil || ok {
 			return err
 		}
+		// The recheck's own context: one derived from bounded would end with it and race its end
+		// in the select below.
+		recheck, stop := r.clock.WithDeadline(context.WithoutCancel(ctx), began.Add(recheckInterval))
+		ended := false
 		select {
 		case <-bounded.Done():
+			ended = true
+		case <-changed:
+		case <-recheck.Done():
+		}
+		stop()
+		if ended {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			return fmt.Errorf("timed out after %s waiting for %s", budget, what)
-		case <-changed:
-		case <-recheck.C:
 		}
 	}
 }
@@ -972,7 +1002,12 @@ func (r *Runtime) ProvisionsWorkspaces() bool { return true }
 // every other resident role shares that pod and stays reachable until its own explicit stop or
 // issue-level lifecycle effect. A recorded process its pod or launcher shows already ended — the
 // pod replaced or gone, or the launcher running no child or another generation — is stopped
-// already, and nothing is sent.
+// already, and nothing is sent. So is one whose launcher is not connected from a pod still in, or
+// failed in, an init container (beforeLaunchers): no launcher of that pod connected since its init
+// containers last ran, and none can until they end, so there is no answer to wait for. Waiting for
+// one held the stop for the boot timeout and the termination grace and then failed it, while the
+// claim it stops stayed held behind it. Only a stop a launcher can answer is waited on: a
+// connected launcher's, and the reconnect of one of a pod past its init containers.
 func (r *Runtime) Suspend(ctx context.Context, loc runtime.Locator) error {
 	if err := r.checkLocator(loc); err != nil {
 		return err
@@ -990,7 +1025,14 @@ func (r *Runtime) Suspend(ctx context.Context, loc runtime.Locator) error {
 		r.forgetIf(loc)
 		return nil
 	}
-	if state, connected := r.launchers.state(loc.Claim, loc.Sandbox.PodUID); connected && (state.Child == nil || state.Child.Generation != loc.Sandbox.Generation) {
+	state, connected := r.launchers.state(loc.Claim, loc.Sandbox.PodUID)
+	if connected && (state.Child == nil || state.Child.Generation != loc.Sandbox.Generation) {
+		r.forgetIf(loc)
+		return nil
+	}
+	if !connected && beforeLaunchers(pod) {
+		r.log.Info("sandbox runtime: suspend sends no stop: the pod is in or failed in an init container, so no launcher of it is connected",
+			"claim", loc.Claim, "sandbox", loc.Sandbox.Name, "pod", loc.Sandbox.PodUID, "generation", loc.Sandbox.Generation)
 		r.forgetIf(loc)
 		return nil
 	}

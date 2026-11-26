@@ -85,6 +85,9 @@ var settingRoles = map[string]settingRole{
 	"BROKER_ENVOY_URL":                     givesNone("an Envoy listener's URL"),
 	"BROKER_TRUSTED_PROXY_HEADER":          givesNone("a header name"),
 
+	"BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL": givesNone("a test-only URL"),
+	"BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL": givesNone("a test-only URL"),
+
 	"BROKER_AIRLOCK_TEST_DIAL_ALLOW":      givesNone("test-only addresses"),
 	"BROKER_AIRLOCK_TEST_RESOLVE":         givesNone("test-only addresses"),
 	"BROKER_AIRLOCK_TEST_KEEP_VALUES":     givesNone("a test-only switch"),
@@ -106,14 +109,15 @@ var settingRoles = map[string]settingRole{
 		"a BROKER_SESSION_ACCOUNT_PAIRS pair names it as the first account",
 		"a BROKER_SESSION_ACCOUNT_PAIRS pair names it as the second account",
 	),
-	"BROKER_SERVICE_ACCOUNT_SECRETS": givesNone("a Google account for each secret"),
-	"BROKER_DIRECTORY_URL":           givesNone("the Directory API's URL"),
-	"BROKER_DIRECTORY_ACCOUNT":       givesNone("a Google account the group read mints for"),
-	"BROKER_SIGNIN_DEVICE_AUDIENCE":  givesNone("an audience"),
-	"BROKER_VM_SERVICES":             givesARole("a BROKER_VM_SERVICES entry names its login service"),
-	"BROKER_VM_PROJECTS":             givesNone("a Google account's project"),
-	"BROKER_VM_INSTANCES":            givesNone("a Google account's instance names"),
-	"BROKER_VM_EXCHANGE_ACCOUNTS":    givesNone("a Google account's person and project"),
+	"BROKER_SERVICE_ACCOUNT_SECRETS":  givesNone("a Google account for each secret"),
+	"BROKER_DIRECTORY_URL":            givesNone("the Directory API's URL"),
+	"BROKER_DIRECTORY_ACCOUNT":        givesNone("a Google account the group read mints for"),
+	"BROKER_SIGNIN_DEVICE_AUDIENCE":   givesNone("an audience"),
+	"BROKER_VM_SERVICES":              givesARole("a BROKER_VM_SERVICES entry names its login service"),
+	"BROKER_VM_PROJECTS":              givesNone("a Google account's project"),
+	"BROKER_VM_INSTANCES":             givesNone("a Google account's instance names"),
+	"BROKER_VM_EXCHANGE_ACCOUNTS":     givesNone("a Google account's person and project"),
+	"BROKER_VM_EXCHANGE_JOB_ACCOUNTS": givesNone("a Google account's projects"),
 
 	"BROKER_API_ACCOUNTS":             givesARole("a BROKER_API_ACCOUNTS entry names it"),
 	"BROKER_EXCHANGE_GITHUB_ISSUER":   givesNone("an issuer"),
@@ -121,7 +125,9 @@ var settingRoles = map[string]settingRole{
 	"BROKER_EXCHANGE_K8S_AUDIENCE":    givesNone("an audience"),
 	"BROKER_EXCHANGE_ACCOUNTS":        givesARole("a BROKER_EXCHANGE_ACCOUNTS entry maps it to another person"),
 	"BROKER_EXCHANGE_READ_ACCOUNTS":   givesARole("a BROKER_EXCHANGE_READ_ACCOUNTS entry names it"),
+	"BROKER_EXCHANGE_JOB_ACCOUNTS":    givesARole("a BROKER_EXCHANGE_JOB_ACCOUNTS entry names it"),
 	"BROKER_EXCHANGE_WORKFLOWS":       givesNone("a GitHub workflow"),
+	"BROKER_EXCHANGE_JOB_WORKFLOWS":   givesNone("a GitHub workflow"),
 	"BROKER_PRIVATE_PROJECTS":         givesNone("project keys"),
 	"BROKER_ENVOY_ACCOUNT_TOKEN_FILE": givesNone("a file path"),
 
@@ -133,7 +139,13 @@ var settingRoles = map[string]settingRole{
 	"BROKER_NATS_K8S_AUDIENCE":     givesNone("an audience"),
 	"BROKER_NATS_GOOGLE_AUDIENCE":  givesNone("an audience"),
 	"BROKER_NATS_URLS":             givesNone("the NATS hub's URLs"),
-	"BROKER_NATS_ACCOUNT":          givesNone("the hub account admitted clients are placed in"),
+	// loadNATSHold's: the operator BROKER_NATS_HOLD_READ needs is a BROKER_NATS_SERVICES entry, which
+	// that setting's row marks.
+	"BROKER_NATS_HOLD_READ":         givesNone("a switch"),
+	"BROKER_NATS_HOLD_SIGNING_KEYS": givesNone("public keys"),
+	// Load's int.
+	"BROKER_NATS_HOLD_POOL_SIZE": givesNone("a number of connections"),
+	"BROKER_NATS_ACCOUNT":        givesNone("the hub account admitted clients are placed in"),
 
 	"BROKER_POD_REGISTRARS":            givesARole("a BROKER_POD_REGISTRARS entry names it as its registrar"),
 	"BROKER_POD_REGISTRATION_AUDIENCE": givesNone("an audience"),

@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+    The Go broker client reads a trade the broker, or a proxy before it, answers 408 with an OAuth
+    error as an outage, as it reads a 429: `RefusedError.Permanent` is false, so `Client.Token`
+    keeps the token in hand and `Client.Run` trades again. Before, a 408 was a refusal no retry
+    cures, which stopped `agent-secrets-helper` trading its machine identity until it restarted.
+time: 2026-11-23T10:44:18Z
+custom:
+    Issue: pr5212

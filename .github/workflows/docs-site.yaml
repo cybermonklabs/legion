@@ -73,7 +73,7 @@ jobs:
     env:
       JOB_TIMEOUT_MINUTES: 25 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # The screenshots step boots Dispatch on the e2e harness, which needs a database it may
-    # truncate. The step before it turns the service's crash safety off.
+    # truncate. The service starts with crash safety off, and the step before it reads that back.
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -81,8 +81,13 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
         options: >-
-          --health-cmd "pg_isready -U postgres"
+          --shm-size=1g
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -147,34 +152,15 @@ jobs:
         # intermittently failed `apt-get update` and took `--with-deps` down with it.
         run: bunx playwright install chromium
         working-directory: docs/site
-      # The service with crash safety off (fsync, full_page_writes, synchronous_commit), as the
+      # The service with crash safety off (.github/scripts/postgres-service-settings.sh), as the
       # e2e harness's own Postgres runs (packages/dispatch/e2e/harness-postgres.ts), so no commit
-      # waits for the runner's disk. With them on, a write a closed page left in flight can hold a
+      # waits for the runner's disk. With it on, a write a closed page left in flight can hold a
       # table past the reset each shot set starts with (docs/site/media/shot-runner.ts), which
       # waits at most 5 s for it: dispatch-browser.yaml's multiprocess job failed so, a read mark
-      # holding user_document_reads while the disk was slow. A service container takes no server
-      # arguments, so `alter system` writes the three, as .github/scripts/pg-connection-ceiling.sh
-      # writes max_connections on a service, and a reload applies them: max_connections needs that
-      # script's restart, and these three need only the reload, synchronous_commit reaching every
-      # session that starts after it. The step reads them back from a new session and fails unless
-      # each is off.
-      - name: Turn crash safety off on the screenshots' Postgres
+      # holding user_document_reads while the disk was slow. This reads the settings back.
+      - name: Read the service's settings back
         timeout-minutes: 2
-        run: |
-          container="${{ job.services.postgres.id }}"
-          docker exec "$container" psql -U postgres -v ON_ERROR_STOP=1 -q \
-            -c 'alter system set fsync = off' \
-            -c 'alter system set full_page_writes = off' \
-            -c 'alter system set synchronous_commit = off' \
-            -c 'select pg_reload_conf()'
-          for _ in $(seq 1 20); do
-            settings=$(docker exec "$container" psql -U postgres -Atc \
-              "select current_setting('fsync') || ' ' || current_setting('full_page_writes') || ' ' || current_setting('synchronous_commit')")
-            [ "$settings" = "off off off" ] && break
-            sleep 0.5
-          done
-          echo "fsync, full_page_writes, synchronous_commit: $settings"
-          [ "$settings" = "off off off" ] || { echo "::error::the service's fsync, full_page_writes and synchronous_commit read '$settings' after the reload, not 'off off off'"; exit 1; }
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
       - name: Take the screenshots
         run: bun run docs:media
         # A step of the run that hangs fails it within two minutes (STEP_TIMEOUT_MS in

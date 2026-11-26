@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config";
-import { resolveIssueDocumentId } from "@legion/envoy-client/dispatch-execute";
 import { DispatchClient } from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory as dispatchSessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { writeSessionTitle } from "@legion/envoy-client/dispatch-session-state";
@@ -86,6 +86,12 @@ import {
   workspaceRecreatedMessage,
   workspaceRecreatedNotice,
 } from "../src/workspace-recreated";
+
+// The daemon API contract this build speaks, read once as the module loads (`daemonContract`):
+// the manifest of the module this process loaded names it once a pack has written it, and a
+// checkout's own fixtures decide it for a plugin run from the checkout. A bundle installed with
+// neither refuses to load here rather than speak a number it guessed.
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir);
 
 // Fatal bootstrap failures call this instead of `process.exit` directly, so a
 // test can substitute a throwing stand-in without killing the test runner. The stall watch's
@@ -374,12 +380,11 @@ export default function legionExtension(pi: PiApi): void {
 
   let daemonClient: LegionDaemonClient | undefined;
   const roleDaemon = (): LegionDaemonClient => {
-    // This build's own `legion.daemonApiVersion`, read from the manifest of the module this
-    // process loaded, as the claim's registration reads it. The daemon serves each answer in
-    // the shape the contract the caller states describes.
+    // This build's own contract, as the claim's registration states it. The daemon serves each
+    // answer in the shape the contract the caller states describes.
     daemonClient ??= createLegionDaemonClient(
       requiredEnvironment(process.env, "LEGION_DAEMON_URL"),
-      { pluginContract: pkg.legion.daemonApiVersion }
+      { pluginContract: PLUGIN_CONTRACT }
     );
     return daemonClient;
   };
@@ -387,11 +392,15 @@ export default function legionExtension(pi: PiApi): void {
   // Reports every turn this pane's claim ends to the daemon, refused or not (`src/turn-outcome.ts`).
   // It runs for an architect's claim as well as a phase worker's: a provider that refuses turn
   // after turn ends either of them the same way, and a `task` subagent, whose instance registers
-  // no claim of its own, reports nothing.
+  // no claim of its own, reports nothing. A refused turn is classed with the host's own
+  // classifier, read as a string-literal import when the first refusal comes, since the module
+  // exists only inside Oh My Pi and `bun test` has no loader for it.
   const turnOutcomes = createTurnOutcomeReporter({
     daemon: roleDaemon,
     claim: (sessionID) => claimSession.capability(sessionID),
     log: logger,
+    cyberPolicyRefusal: async (message) =>
+      (await import("@oh-my-pi/pi-ai/error")).isCyberPolicyRefusal(message),
   });
 
   // A root architect's or phase worker's claim, and the operator-launched controller's.
@@ -974,8 +983,8 @@ export default function legionExtension(pi: PiApi): void {
             currentSessionID()
           )(phase, role),
         branchHead: () => findPushedBranchHead({ env: process.env }),
-        resolveDocument: async (issue, reference) => {
-          // The file pi-envoy's session reads: Oh My Pi's rule, in the same process.
+        // The file pi-envoy's session reads: Oh My Pi's rule, in the same process.
+        dispatch: async () => {
           const config = activeDispatchSettings(
             (
               await sessionDispatchSettings(sessionConfigFile("omp", process.env), process.env, {
@@ -984,22 +993,9 @@ export default function legionExtension(pi: PiApi): void {
               })
             ).dispatch
           );
-          if (config === null) {
-            throw new Error(
-              `register_gate cannot look up document "${reference}" on ${issue}: this pane has no Dispatch configured; pass the document's id`
-            );
-          }
-          try {
-            return await resolveIssueDocumentId(
-              new DispatchClient(config.url, config.credential, fetch),
-              issue,
-              reference
-            );
-          } catch (error) {
-            throw new Error(
-              `register_gate could not look up document "${reference}" on ${issue} in Dispatch: ${messageFor(error)}`
-            );
-          }
+          return config === null
+            ? undefined
+            : new DispatchClient(config.url, config.credential, fetch);
         },
       })
     );

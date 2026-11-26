@@ -161,7 +161,7 @@ func assertRetriesRefused(t *testing.T, pool *pgxpool.Pool, admission *Admission
 
 // A retry of a parent held before its retro for its children is refused, and where nothing
 // beneath the parent is open, the retro waits only for the parent's tree to run (workflow's
-// startHeldRetro). Then the refusal says why the tree runs nothing, and lists no issue:
+// StartHeldRetro). Then the refusal says why the tree runs nothing, and lists no issue:
 //   - the last issue beneath it left while the tree lingers after its root's close;
 //   - the parent, handed over as a root of its own with its hold and its plan, waits in the line
 //     for its tree to be opened while its project is paused, which promotes nothing.
@@ -179,7 +179,7 @@ func TestARetryOfAParentHeldForItsChildrenSaysWhyItsRetroWaits(t *testing.T) {
 		}
 		assertHeldForChildren(t, pool, inRetro, "while its tree lingers")
 
-		assertRetriesRefused(t, pool, admission, engine, inRetro, inRetro+" waits before its retro, and nothing beneath it is open: its tree "+finishedRoot+
+		assertRetriesRefused(t, pool, admission, engine, inRetro, inRetro+" waits before its retro, and no issue holds it any longer: its tree "+finishedRoot+
 			" lingers after its root left the workflow, and Legion starts the retro once the tree runs again. This retry changed nothing.")
 	})
 
@@ -229,7 +229,7 @@ func TestARetryOfAParentHeldForItsChildrenSaysWhyItsRetroWaits(t *testing.T) {
 		}
 		assertHeldForChildren(t, pool, parent, "while it waits in the line")
 
-		waits := parent + " waits before its retro, and nothing beneath it is open: its tree " + parent +
+		waits := parent + " waits before its retro, and no issue holds it any longer: its tree " + parent +
 			" waits in the line to be opened, and Legion starts the retro once the tree runs."
 		assertRetriesRefused(t, pool, admission, engine, parent, waits+" This retry changed nothing.")
 

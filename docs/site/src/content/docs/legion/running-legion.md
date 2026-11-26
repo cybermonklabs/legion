@@ -311,14 +311,15 @@ Dispatch read them, delete the files, then install every App from
   only). Each takes `cpu` and `memory` (the limits), `cpu_request` and `memory_request` (what the
   scheduler reserves of them), `ephemeral_storage` (the disk limit) and
   `ephemeral_storage_request` (what the scheduler reserves of it), each optional, each request at
-  most its limit, and the daemon's defaults fill the rest: `issue` 3 CPU and 19Gi, request and
+  most its limit, and the daemon's defaults fill the rest: `issue` 2 CPU and 8Gi, request and
   limit alike, 80Gi of disk over a 6Gi request; `controller` 1 CPU and 4Gi, 10Gi of disk over 1Gi.
   A workflow role's key is refused (`runtime.kubernetes.resources.<role> is gone: an issue pod has
   one reservation, runtime.kubernetes.resources.issue`). Under gVisor every process of a pod already
-  used whatever the pod had free, so the pod's peak must fit its reservation: an issue pod measured
-  at 1-minute resolution used its whole 19Gi for minutes while its reviewer ran a review
-  (2026-10-21). A cpu or memory request the file leaves out equals the limit, so a deployment that
-  sets none runs only `Guaranteed` pods. A lower request — `issue: {memory: 32Gi, memory_request:
+  used whatever the pod had free, so the pod's peak must fit its reservation: an issue pod that
+  still ran its own builds, measured at 1-minute resolution, used its whole 19Gi for minutes while
+  its reviewer ran a review (2026-10-21). A cpu or memory request the file leaves out equals the
+  limit, so a deployment that sets none runs only `Guaranteed` pods.
+  A lower request — `issue: {memory: 32Gi, memory_request:
   8Gi}` for issues whose memory comes in bursts — makes the issue pod `Burstable`: more pods fit a
   node and a cluster that bills by requests bills less, but under node memory pressure the kubelet
   evicts a `Burstable` pod using more than its request before any `Guaranteed` one, or the kernel
@@ -348,8 +349,8 @@ Dispatch read them, delete the files, then install every App from
   stays Pending Unschedulable, it logs `boot probe is waiting on capacity` with the scheduler's
   reason and tries again every 5 minutes, serving nothing until the probe passes, and the
   `pool-capacity` row of `legion state`'s capability report then records how many attempts waited
-  and why, open until `capabilities.decided.pool-capacity` names a reason. A six-role issue pod
-  sums to 3 CPU and 19 GiB at the defaults, its disk limits to 80Gi over 6Gi requested. A container
+  and why, open until `capabilities.decided.pool-capacity` names a reason. An issue pod reserves
+  2 CPU and 8 GiB at the defaults, with a disk limit of 80Gi over a 6Gi request. A container
   past its disk limit has its own pod evicted, the offending issue's alone, rather than the node
   reaching `DiskPressure` where another tree's pod can go; the 1Gi request reserves almost no disk,
   so a node's root volume can be oversubscribed by the pods' limits — an operator who knows the
@@ -358,9 +359,11 @@ Dispatch read them, delete the files, then install every App from
   Autopilot adds its own to an issue or controller pod): an issue pod carries a disk of its own and
   shares none, so the
   scheduler places it wherever the pool has room and Karpenter
-  adds nodes under the pool's limits. Concurrent issue pods are bounded by what the pool's
-  `limits.cpu` and `limits.memory` leave for pods of that sum (two per 8-vCPU floor node, about 80
-  at `limits.cpu: 256`, or `limits.memory` / 19 GiB when that is smaller) once the probe pod and,
+  adds nodes under the pool's limits. Concurrent issue pods are bounded by the nodes the pool's
+  `limits.cpu` and `limits.memory` let Karpenter make, since Karpenter counts each node's whole
+  capacity against those limits (three pods per 8-vCPU floor node, so about 96 on the 32 floor
+  nodes of `limits.cpu: 256`, or three on each of `limits.memory` / 64 GiB floor nodes when that is
+  smaller) once the probe pod and,
   under `controller: daemon`, the controller's pod are counted; `admission_cap` counts the issues
   the daemon has started rather than the pods, since an issue keeps its pod where it holds no slot —
   through `accepting`, `retro` and `merging`, which hold none, on to its own close — and an issue
@@ -518,8 +521,8 @@ What each part is for:
   nothing, so its own first open draws it like any other new tree.
   The launch follows the record, not the mode: a tree the daemon drew into the memory group keeps
   its overlays and its instructions while the block still names them, whatever the mode is now, so
-  `mode: off` stops new draws and takes memory from no tree already running with it, and taking
-  the files away is removing them from the block.
+  `mode: off` gives every new tree no arm and takes memory from no tree already running with it,
+  and taking the files away is removing them from the block.
   That is why the overlay rules — the Kubernetes mount check, the readability check at boot, and
   the refusal of a block that names overlays while `worker_backends` puts an issue role on Claude
   Code — hold whatever the mode is.
@@ -547,8 +550,13 @@ What each part is for:
 
   An experiment's name is 1 to 32 characters of `a-z`, `0-9` and `-`, and the project names it
   once.
-  `mode` is `off`, the default, which draws for no unit, `on`, which gives every new unit the arm
-  `on_variant` names, or `random`, which draws among the arms by their weights.
+  `mode` is `off`, `on` or `random`, and `off` is the default.
+  `off` gives every new unit no arm, and the daemon records that unit at the empty arm, with the
+  mode `off` and the instant.
+  The record keeps that arm as `""`, and `legion state --json` shows `""` too.
+  The plain `legion state` line prints it as `none`.
+  `on` gives every new unit the arm `on_variant` names, and `random` draws among the arms by their
+  weights.
   `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the
   same arm, or `issue`, which draws for each issue on its own.
   `roles` lists the issue roles whose launches load the experiment's arms (`architect`, `planner`,
@@ -577,7 +585,7 @@ What each part is for:
   The draw is made once, when the unit is opened, and is recorded with the arm, its `plan` where it
   names one, the mode in force and the instant; the launch then follows that record and not the
   mode, so moving a mode to `off`
-  stops new draws and takes nothing from a unit already running.
+  gives every new unit no arm and takes nothing from a unit already running.
   Under `runtime: kubernetes` each overlay must be a file one of the operator's pod mounts
   carries, and the day a project declares an arm with overlay files every live issue pod of the
   deployment is replaced, since a role cannot read a file its pod does not mount
@@ -828,7 +836,7 @@ What each part is for:
   may be quiet — no issue of it moving and no agent of it stepping — before the project's
   controller is told once about that tree, decimals allowed; a tree with a role at work is never
   told, nor is one every quiet issue of which waits by design — on a person, on a `blocked_by`
-  link, on its open children, or for a slot it needs and does not hold — while the project's line
+  link, on its open children (before its first phase or in `awaiting_children`), or for a slot it needs and does not hold — while the project's line
   can still move — some issue of the project holds a slot and waits by no such rule, some claim of it is
   at work, or an issue of the line that waits on no other issue can start — nor, whether or not
   the line can move, one whose only quiet issues gave their slot back to wait on work outside
@@ -854,7 +862,16 @@ What each part is for:
   Anthropic organization refuses the calls over its per-minute uncached-input cap. The rate is a
   ceiling, not the rate a wave keeps: each wake waits its turn and then a random part of up to one
   interval more, so a long wave sustains about two thirds of the rate, which is about 5 a minute at
-  the default of 8. The arithmetic behind the defaults: 8 a minute with a burst of 1 holds any
+  the default of 8. Each paced wake waits in one of two queues. The first holds the wake of a role
+  that has an Envoy message waiting, which Envoy keeps for one hour, and the relaunch of a role
+  whose own process died; the second holds every other paced wake. At each turn the pacing lets
+  out the head of the first queue, except that while both hold wakes the turn after three
+  first-queue wakes in a row goes to the second, which so keeps one turn in four. No two wakes go
+  out in one turn, so the queues change the order of a wave and never its rate. The daemon's line
+  `supervise: wake ran` names the `queue` each paced wake came from (`message` or `other`) and the
+  turns it waited (`turnsWaited`), and is a warning with `lateForMessage` for a message wake let
+  out more than 45 minutes after the message that marked it. The arithmetic behind the defaults: 8
+  a minute with a burst of 1 holds any
   minute to 9 paced wakes, which at the mean is 5.2M tokens, split over the two Anthropic
   organizations one gateway key reaches, against an acceptance bar of 8M an organization a minute.
   They also leave room beside the pod-update round rate: one round opening a minute costs up to
@@ -1040,10 +1057,10 @@ answer. A pre-registration states seven things.
    to widen — more projects, or a larger weight — or not to run.
 
 5. **The date it stops.** A calendar date, fixed before the first draw. On that date read the
-   outcome and set `mode: off`, which stops new draws and leaves every unit already drawn running
-   as it was. Reading the numbers early and stopping because they look good is how a null result
-   becomes a positive one, so if you will look early, say in the pre-registration what an early
-   look may and may not decide.
+   outcome and set `mode: off`, which gives every new unit no arm and leaves every unit already
+   drawn running as it was. Reading the numbers early and stopping because they look good is how a
+   null result becomes a positive one, so if you will look early, say in the pre-registration what
+   an early look may and may not decide.
 
 6. **That the analysis groups by tree.** The issues of one tree are not independent draws: they
    share a repository, a spec, an architect and each other's work, so two issues of one tree
@@ -1439,10 +1456,10 @@ Closing the terminal leaves the project without one, and the daemon logs
   memory: 6 issues — 3 memory (random), 2 none (off), 1 none (random)
   plan-length: 4 issues — 2 control (random), 2 long (random)
   roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
-  open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-03T14:15:02Z
+  open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-17T10:15:02Z
   merge waits: 2; the oldest head, WIDGETS-11 #38, head 9c1f0be, GitHub said blocked, read 2026-10-03T10:40:11Z
   open update rounds: none
-  agents in a tool call: 1 — WIDGETS-12 implementer "bash toolu_01F3 since 2026-10-03T10:41:07Z"
+  agents in a tool call: 1 — WIDGETS-12 tester "bash toolu_01F3 since 2026-10-03T10:41:07Z"
   pending Dispatch status writes: none
   held lifecycle rows: none
   claims nothing will wake: none
@@ -1522,8 +1539,13 @@ Closing the terminal leaves the project without one, and the daemon logs
   fields the `memory` experiment fills — `memoryGroup` (`memory` or `none`), `memoryDrawMode`
   (the mode in force at the draw) and `memoryDrawnAt` — are still on every issue and answer
   exactly as they did, absent together where nothing was drawn for that tree. Read
-  `assignments` for a measurement: a declared experiment that is not `memory` appears nowhere
-  else.
+  `assignments` for a measurement: no other field of an issue in the state names its answer for
+  a declared experiment that is not `memory`.
+  Dispatch holds that answer too where the draw put the issue in the experiment's group, by an arm
+  that sets `plan`: each step record of the issue names the experiment and the variant, so
+  `dispatch steps --issue <KEY>` prints `Experiment <experiment>: variant <variant>.` above its
+  runs, the issue's **Steps** tab shows that line, and `dispatch plans --project <KEY>` ends the
+  issue's line with `variant <experiment>/<variant>`.
 
   The `roots waiting on a person` line counts the roots in phase `awaiting_person`, each holding
   the slot it took when the daemon started it, how many of them a person
@@ -1588,12 +1610,17 @@ Closing the terminal leaves the project without one, and the daemon logs
   it is — `launch`, a role process about to start; `plugin-refresh`, the relaunch of a session
   whose plugin speaks an earlier daemon contract, which the daemon replaces at that one wake and
   asks nothing of first; `catch-up`, the notice a start writes to an
-  architect that is already running — and the moment the pacing gave it (`wakes waiting: 2 —
-  legion-widgets-widgets-12-implementer launch due 2026-10-03T09:13:08Z; …`).
+  architect that is already running — and the pacing's estimate, at the read, of the moment it
+  lets that wake out, by its place in the queues (`wakes waiting: 2 —
+  legion-widgets-widgets-12-implementer launch due 2026-10-03T09:13:08Z; …`). A waiting wake
+  holds a place and no moment of its own. A change to the queues or to the pace can move that
+  moment earlier or later, so two reads can name two moments: for example, a wake ahead of it in
+  its own queue that leaves moves it earlier, and a wake that joins and is let out ahead of it
+  moves it later.
   Nothing waits outside a restart, a re-admission or a stale-plugin wave, which is why an
   ordinary read has no such line.
-  It is what says whether a wave is still going out, and the last `due` on it is when
-  the last of that wave goes.
+  It is what says whether a wave is still going out, and the latest `due` on it is the pacing's
+  estimate of when the last of that wave goes.
 
   The plain line does not say how much of a stale-plugin wave is still to come, and the JSON body
   does: `legion state --json | jq .claimsToRefresh` is how many sessions the lane still has to
@@ -1633,7 +1660,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   says what each reason means and what to do.
 
   `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, and `blocked`), each
-  issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), `repo` and `defaultBranch`, `holdReason`,
+  issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), on a root
+  `treeRuns` (true when the root's tree runs: its lifecycle is open, the root does not linger, and
+  the root does not wait in the line for its tree to open), `repo` and `defaultBranch`, `holdReason`,
   `priority` (the issue's own Dispatch priority, 0 for P0 to 3 for P3, or null for none; absent on an
   issue the workflow does not record, and absent, with the `priority` of each member of the line
   below, for a caller below contract 250),
@@ -1642,7 +1671,14 @@ Closing the terminal leaves the project without one, and the daemon logs
   made none), `pullRequest` (`repo`, `number`, `head`, `state`, `mergeState`, `reviewDecision`),
   `designGate` (`currentVersion`, `approvedVersion`) with `gatedSteps` beside it
   (one entry per gated step: `step`, `artifactId`, `currentVersion`, `approvedVersion`, `status`
-  — `unregistered`, `waiting`, `approved` or `changes_requested` — and `changesReason`), for a root in `awaiting_person`
+  — `unregistered`, `waiting`, `approved`, `changes_requested`, `open_on_basis` or
+  `pending_on_basis` — `changesReason`, and on the last two words `basis`: the ancestor `issue`,
+  its `artifactId`, the `version`, and `approver` and `approvedAt` for an approval or `askId` for a
+  request; `open_on_basis` is a step open on a person's approval of an ancestor's document, and its
+  `approvedVersion` is the root's version that its architect registered, which no person approved;
+  `pending_on_basis` is a step closed until a person approves the ancestor's version that the open
+  request names; a pod whose plugin is older than these fields gets no `treeRuns`, and no
+  `gatedSteps` on an issue with a step on a basis), for a root in `awaiting_person`
   `waitingOn` (`kind` `ask` with its `ask`, or `gate` with `gateVersion` and `artifactId`; `since`; and
   `answeredAt` with `answeredBy` once it was answered), for an issue `admission.waiting` names
   `waitingLine` (`place`, 1 being first in the line, and `length`, the line's length at this
@@ -1677,7 +1713,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   `heldOutboxRows` ([An issue's stop or start waits behind its own launch](/legion/legion/troubleshooting/#an-issues-stop-or-start-waits-behind-its-own-launch)),
   `strandedClaims` ([A tree does not move after a restart](/legion/legion/troubleshooting/#a-tree-does-not-move-after-a-restart)),
   `wakesWaiting` (each wake the pacing holds until its turn, in claim order: `claim`, `issue`,
-  `role`, `kind` and `dueAt`; an array, never null, and empty at every moment outside a wave),
+  `role`, `kind` and `dueAt`, the pacing's estimate, at the read, of the moment it lets the wake
+  out, which a later read can name earlier or later; an array, never null, and empty at every
+  moment outside a wave),
   `repositories` (`live`, one entry for each repository the project's live records name, sorted:
   its `repo`, as the records keep it; `servedAs`, the other name of its `repository_renames` pair
   where the daemon calls GitHub under that one; `apps` — `{"implement": bool, "review": bool}`,

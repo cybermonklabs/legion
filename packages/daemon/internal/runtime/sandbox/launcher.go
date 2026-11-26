@@ -3,12 +3,16 @@ package sandbox
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
 	"net"
+	"os"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -89,6 +93,10 @@ type launcherSession struct {
 	// and resume the file it finds (shimwire.LauncherHello.ResumesBySession). A launcher built
 	// before it could says nothing, and relaunch names it no session by its id alone.
 	resumesBySession bool
+	// readsWorkspace is whether this launcher's hello said it answers the workspace read on its
+	// own connection (shimwire.LauncherHello.ReadsWorkspace). A launcher built before it closes
+	// its connection on that frame, so the daemon asks only one that said so (workspaceReader).
+	readsWorkspace bool
 
 	mu      sync.Mutex
 	conn    net.Conn
@@ -118,7 +126,8 @@ func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, keptStar
 func (d *launchers) accept(token claim.Token, issue string, keptSince time.Time, hello shimwire.LauncherHello) *launcherSession {
 	s := &launcherSession{owner: d, token: token, issue: issue, keptSince: keptSince, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
-		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled, resumesBySession: hello.ResumesBySession}
+		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled, resumesBySession: hello.ResumesBySession,
+		readsWorkspace: hello.ReadsWorkspace}
 	d.mu.Lock()
 	old := d.sessions[token]
 	d.sessions[token] = s
@@ -167,6 +176,8 @@ func (s *launcherSession) ServeLauncher(conn net.Conn, reader *bufio.Reader, wri
 			s.mu.Unlock()
 			s.deliver(value.ID, value)
 		case shimwire.LauncherStopResult:
+			s.deliver(value.ID, value)
+		case shimwire.WorkspaceWorkResult:
 			s.deliver(value.ID, value)
 		case shimwire.LauncherLeakCheckResult:
 			s.deliver(sliceWaiter(value.ID, value.Index), value)
@@ -258,6 +269,94 @@ func (d *launchers) resumesBySession(token claim.Token, podUID string) bool {
 	return !session.closed && session.resumesBySession
 }
 
+// workspaceReader is a connected, ready launcher session of issue's pod podUID whose hello said it
+// reads the issue workspace (launcherSession.readsWorkspace), and nil where there is none. Every
+// role of a pod has a launcher connection of its own, and each of them reads the one workspace the
+// pod's roles share, so any of them answers the same; the one whose token sorts first is asked, so
+// two reads of one pod go to the same launcher while it stays connected.
+func (d *launchers) workspaceReader(issue, podUID string) *launcherSession {
+	d.mu.Lock()
+	candidates := make([]*launcherSession, 0, len(d.sessions))
+	for _, session := range d.sessions {
+		if session.issue == issue && session.podUID == podUID && session.readsWorkspace {
+			candidates = append(candidates, session)
+		}
+	}
+	d.mu.Unlock()
+	slices.SortFunc(candidates, func(a, b *launcherSession) int { return strings.Compare(string(a.token), string(b.token)) })
+	for _, session := range candidates {
+		session.mu.Lock()
+		closed := session.closed
+		session.mu.Unlock()
+		if closed {
+			continue
+		}
+		select {
+		case <-session.ready:
+			return session
+		default:
+		}
+	}
+	return nil
+}
+
+var _ runtime.PodWorkspaceReader = (*Runtime)(nil)
+
+// PodWorkspaceWork has the launcher of issue's pod read whether the issue workspace holds work that
+// no branch or tag on origin holds, where no role process runs to read through
+// (runtime.PodWorkspaceReader, R6 of #5285). The pod is the one the runtime holds
+// for the issue now (IssuePod); the launcher is a connected one of that pod whose hello said it
+// reads a workspace (launchers.workspaceReader). The read is bounded by the read's own budget
+// (runtime.WorkspaceWorkTimeout) and one API call's time for the frame each way. The answer names
+// the pod read (runtime.WorkspaceWork.PodUID), and so does the error of a read once it has chosen
+// the pod. A pod the runtime cannot name or holds none of, a pod with no such launcher, a
+// connection that closes before the answer and a launcher that refuses are each an error, which
+// the caller reads as a read that could not be made, never as no work.
+func (r *Runtime) PodWorkspaceWork(ctx context.Context, issue string) (runtime.WorkspaceWork, error) {
+	pod, read := r.IssuePod(issue)
+	switch {
+	case !read:
+		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace: the runtime cannot say which pod holds it", issue)
+	case pod == "":
+		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace: the runtime holds no pod of the issue", issue)
+	}
+	return r.launcherWorkspaceWork(ctx, issue, pod)
+}
+
+// launcherWorkspaceWork is PodWorkspaceWork's read of pod, the issue's pod the caller chose: every
+// answer, an error's included, names pod.
+func (r *Runtime) launcherWorkspaceWork(ctx context.Context, issue, pod string) (runtime.WorkspaceWork, error) {
+	none := runtime.WorkspaceWork{PodUID: pod}
+	session := r.launchers.workspaceReader(issue, pod)
+	if session == nil {
+		return none, fmt.Errorf("read %s's workspace: no launcher of pod %s that reads a workspace is connected", issue, pod)
+	}
+	id := rand.Text()
+	frame := shimwire.WorkspaceWork{ID: id, Issue: issue, TimeoutMs: int(runtime.WorkspaceWorkTimeout.Milliseconds())}
+	if err := frame.Validate(); err != nil {
+		return none, fmt.Errorf("read %s's workspace: %w", issue, err)
+	}
+	bounded, cancel := context.WithTimeout(ctx, runtime.WorkspaceWorkTimeout+apiTimeout)
+	defer cancel()
+	answer, _, err := r.launchers.requestSession(bounded, session, frame, id)
+	if err != nil {
+		return none, fmt.Errorf("read %s's workspace through launcher %s of pod %s: %w", issue, session.token, pod, err)
+	}
+	result, ok := answer.(shimwire.WorkspaceWorkResult)
+	if !ok {
+		return none, fmt.Errorf("read %s's workspace through launcher %s: answered by a %s frame", issue, session.token, answer.FrameType())
+	}
+	work, refused, err := runtime.WorkspaceWorkOf(result)
+	switch {
+	case err != nil:
+		return none, fmt.Errorf("read %s's workspace through launcher %s: %w", issue, session.token, err)
+	case refused != "":
+		return none, fmt.Errorf("read %s's workspace through launcher %s: the launcher refused: %s", issue, session.token, refused)
+	}
+	work.PodUID = pod
+	return work, nil
+}
+
 func (d *launchers) await(ctx context.Context, token claim.Token, podUID string) (*launcherSession, error) {
 	for {
 		d.mu.Lock()
@@ -303,9 +402,11 @@ func (d *launchers) requestSession(ctx context.Context, session *launcherSession
 		return nil, nil, errors.New("launcher connection closed")
 	}
 	session.waiters[id] = waiter
+	// The write's deadline is apiTimeout's, or ctx's when ctx ends first (ctxBound).
 	deadline := time.Now().Add(apiTimeout)
+	ctxBound := false
 	if until, ok := ctx.Deadline(); ok && until.Before(deadline) {
-		deadline = until
+		deadline, ctxBound = until, true
 	}
 	err := session.conn.SetWriteDeadline(deadline)
 	if err == nil {
@@ -322,6 +423,16 @@ func (d *launchers) requestSession(ctx context.Context, session *launcherSession
 	}()
 	if err != nil {
 		session.close()
+		// A write the launcher never took ends at its deadline with the connection's timeout
+		// rather than ctx's error, and when that deadline is ctx's, ctx's own timer, set for the
+		// same instant, may not have ended ctx yet. Such a write ended because ctx did: it is
+		// reported as ctx's end, as the wait for the answer below reports it, so a caller telling
+		// its own bound from another (serveLeakCheck's hop, boundRanOut) reads the same error
+		// whichever of the two the bound caught.
+		if ctxBound && errors.Is(err, os.ErrDeadlineExceeded) {
+			<-ctx.Done()
+			return nil, nil, fmt.Errorf("%w: %w", ctx.Err(), err)
+		}
 		return nil, nil, err
 	}
 	select {
@@ -867,7 +978,7 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 		shim = append(shim, "--provider-env-dir", ProvidersDir)
 	}
 	if l.enrolls(r) {
-		shim = append(shim, "--agent-secrets-key-dir", AgentSecretsKeyDir, "--pod-token-file", AgentSecretsTokenDir+"/"+AgentSecretsTokenFile, "--agent-secrets-bin", r.tools.AgentSecrets)
+		shim = append(shim, "--agent-secrets-key-dir", AgentSecretsKeyDir, "--pod-token-file", AgentSecretsTokenDir+"/"+AgentSecretsTokenFile, "--"+shimwire.AgentSecretsBinFlag, r.tools.AgentSecrets)
 	}
 	_, values := r.launchEnvironment(l)
 	values = append(values, bootTokenKey+"_FILE="+dir+"/"+bootTokenKey)

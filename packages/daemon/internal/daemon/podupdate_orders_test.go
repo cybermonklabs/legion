@@ -6,17 +6,24 @@ package daemon
 // disk, because an agent of it registered a session in P, P's disk holds work from before P (a
 // kept volume that an earlier pod of the issue mounted) and the member has a session or a pod in
 // its set, or a restart left its set unknown. Each row of the table brings the implementer, as one
-// kind of member, to one end of the round over P, and holds the issue's message and the end's log
-// line to naming the implementer, or to naming nobody.
+// kind of member, to one end of the round over P, and holds the end's notice or message and its
+// log line to naming the implementer, or to naming nobody: the issue's architect's workspace-taken
+// notice at an end that replaces P (R7 of #5285), and the message on the issue at an end where P
+// went on its own.
 //
 // The ends (roundPodEnd): the sweep replaces P through a claim whose launch waits on it
-// (replacePodForRound); the sweep replaces P through another claim's process, the tester's, whose
-// read of the workspace finds work (readRoundWorkspace); P goes on its own, and the runtime
-// answers it gone while the claims still record it (endRoundOverAGonePod); P is recreated with
-// the exchange identity, and the claims record the pod in its place (endRoundWhosePodWent); P is
-// recreated without it, and the runtime refuses each retry again for the pod in its place, which
-// the claims then wait on; a launch replaces P (roundPodEndsAtLaunch, endRoundALaunchReplaced);
-// and the sweep replaces P by issue while no claim records a pod (replaceIssuePodForRound).
+// (replacePodForRound); the sweep replaces P through another claim's process, the tester's
+// (replacePodForRound); P goes on its own, and the runtime answers it gone while the claims still
+// record it (endRoundOverAGonePod); P is recreated with the exchange identity, and the claims
+// record the pod in its place (endRoundWhosePodWent); P is recreated without it, and the runtime
+// refuses each retry again for the pod in its place, which the claims then wait on; a launch
+// replaces P (roundPodEndsAtLaunch, endRoundALaunchReplaced); and the sweep replaces P by issue
+// while no claim records a pod (replaceIssuePodForRound). Every end that replaces P reads the
+// workspace first (readPodWorkspace), through the tester where it is replaced through the tester's
+// process and through P's launcher otherwise, and the runtime is scripted to find work there. The
+// round is opened over a drift that breaks the pod and over the exchange drift, which breaks it as
+// well (orderDrifts), so each such end replaces P whatever the read found (roundKeeps), and tells
+// the issue's architect what it took.
 //
 // The members (memberKind): an agent of it registered in P and it answered; an agent of it
 // registered in P and it did not answer; an agent of it registered in P, and it lost that
@@ -77,8 +84,8 @@ package daemon
 // or is recreated. A role that failed before the release is no member of the round over P
 // (noticeClaims: its machine ignores the round's post), so no end names it as a member that lost
 // work (lostClaims), and the table has no row for it; the line of the replacement through a
-// process names a failed claim with a session the round did not wait for (notWaitedFor), and no
-// read is made for it.
+// process names a failed claim with a session the round did not wait for (notWaitedFor), and the
+// read before the replacement is made whomever the line names (readPodWorkspace).
 //
 // Then the orders of a kept volume, which INFRA-1484's architect also ruled on
 // (dispatch://INFRA-4425/comment/65c8b607-a452-4d88-9bcd-624fd7ab8b27). A kept volume outlives its
@@ -161,6 +168,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
 // orderPause is the project's pause flag as the order table drives it (supervise.Deps.Paused):
@@ -179,11 +187,11 @@ type roundPodEnd int
 const (
 	// endBySweep is the sweep's own replacement of P through a claim whose launch waits on it
 	// (replacePodForRound), the implementer, or the tester where the implementer stays released: no
-	// role process runs in P, so no read of the workspace is made.
+	// role process runs in P, so P's launcher reads the workspace.
 	endBySweep roundPodEnd = iota
 	// endThroughAProcess is the sweep's own replacement of P through the tester's process, once the
-	// tester answered, after one read of the workspace through the tester where a member's work is
-	// on P's disk, which the runtime is scripted to find work in (readRoundWorkspace).
+	// tester answered, after one read of the workspace through the tester, which the runtime is
+	// scripted to find work in (readPodWorkspace).
 	endThroughAProcess
 	// endPodGone is P going on its own, which the runtime answers gone while the claims still record
 	// it, as a process or as the pod a launch waits on (endRoundOverAGonePod).
@@ -427,6 +435,7 @@ func (k memberKind) woken() memberKind {
 // P's disk, at every end. named is the role and the state each row's message and line name, ""
 // for none.
 func TestPodUpdateNamesWhatTheRoundsPodTookAtEachEndOfEachMember(t *testing.T) {
+	t.Parallel()
 	const launching, ready, suspended = "implementer (launching)", "implementer (ready)", "implementer (suspended)"
 	for _, row := range []struct {
 		end   roundPodEnd
@@ -566,6 +575,17 @@ func TestPodUpdateNamesWhatTheRoundsPodTookAtEachEndOfEachMember(t *testing.T) {
 	}
 }
 
+// orderDrifts is the drift the order table opens its round over P for: a drift that breaks the pod
+// (roundBreakingDrift), and P's exchange drift (podUpdateExchangeDrift), which breaks it as well.
+// The table's claims wait on P because a launch into it is refused: the deployment sets
+// dispatch_token_broker, names no transition file, and P carries no identity the exchange trades,
+// the one case in which a drift of the exchange identity breaks the pod (R7 of #5285, spec v26).
+// The runtime is scripted to find work in the workspace, and a read that finds work keeps a pod
+// only over a drift its roles can keep working under (roundKeeps), so each end that replaces P
+// replaces it whatever the read found, and tells the issue's architect whom the replacement may
+// have taken work from.
+var orderDrifts = []string{roundBreakingDrift, podUpdateExchangeDrift}
+
 // orderedTo brings a round over podUpdatePod, with the implementer of kind as its member, to end,
 // and answers the rig once the implementer's machine has taken the end of the round. The
 // implementer is queued with no session at the rig's boot, so its machine knows every pod an agent
@@ -595,7 +615,7 @@ func orderedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 	}
 	rig := newPodUpdateRigWith(t, opts, roles...)
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
-	rig.drifts(podUpdateExchangeDrift)
+	rig.drifts(orderDrifts...)
 	refusals := rig.refuseLaunches()
 
 	switch kind {
@@ -751,7 +771,7 @@ func firstOfVolumeTo(t *testing.T, end roundPodEnd) *podUpdateRig {
 	rig := newPodUpdateRigWith(t, podUpdateRigOptions{}, podUpdateRole{role: implementer, state: supervise.StateQueued},
 		podUpdateRole{role: tester, state: supervise.StateQueued})
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
-	rig.drifts(podUpdateExchangeDrift)
+	rig.drifts(orderDrifts...)
 	refusals := rig.refuseLaunches()
 	rig.ownsKeptVolume(roundPodMadeAt)
 	rig.startInPod(tester, podUpdatePod)
@@ -796,20 +816,27 @@ func (r *podUpdateRig) wantReplacedAtLaunch(role claim.Role, pod string) {
 }
 
 // wantRoundEnd holds the end of the round over podUpdatePod that orderedTo brought about to the
-// issue's message and the end's log line, which name the implementer, as named renders it, or
-// nobody where named is "". kind is the implementer's: whether it answered the round is what the
-// line of a pod that went says where it names nobody; one the round passes over is named under
-// notWaitedFor where a replacement's line names claims the round did not wait for, and at the
-// sweep's replacement through a waiting claim that claim is the tester; and on a kept volume the
-// line and the message say the work is still on that volume (roundKeptVolume).
+// end's notice or message and its log line, which name the implementer, as named renders it, or
+// nobody where named is "". At an end that replaces P, that is the issue's architect's one
+// workspace-taken notice, since the read before the replacement found work (wantToldTaken, R7 of
+// #5285); where P went on its own, the message on the issue. kind is the implementer's: whether it
+// answered the round is what the line of a pod that went says where it names nobody; one the round
+// passes over is named under notWaitedFor where a replacement's line names claims the round did
+// not wait for, and at the sweep's replacement through a waiting claim that claim is the tester;
+// and on a kept volume the line, the notice and the message say the work is still on that volume
+// (roundKeptVolume).
 func wantRoundEnd(t *testing.T, rig *podUpdateRig, end roundPodEnd, kind memberKind, named string) {
 	t.Helper()
 	implementer := claim.RoleImplementer
 	answered, kept := kind == answeredInPod, kind.keptVolume() && !kind.losesKeptVolume()
 	var namedRoles []claim.Role
+	var namedStates []string
 	if named != "" {
-		namedRoles = []claim.Role{implementer}
+		namedRoles, namedStates = []claim.Role{implementer}, []string{named}
 	}
+	// keptTaken is the workspace-taken notice's sentence that the pod's disk is a kept volume that
+	// is still there (workspaceTakenMessage).
+	const keptTaken = "The pod is gone. Its disk is a kept volume, and the volume is still there."
 	messages := rig.messages()
 	replaced := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
 	switch end {
@@ -835,28 +862,16 @@ func wantRoundEnd(t *testing.T, rig *podUpdateRig, end roundPodEnd, kind memberK
 		if value, logged := line["keptVolume"]; (value == true) != kept || logged != kept {
 			t.Errorf("the replacement's line says keptVolume=%v, want it there (true) only where the pod's disk is a kept volume (%t)", value, kept)
 		}
-		switch {
-		case end == endBySweep:
-			if line["workspaceRead"] != "not made" || line["workspaceNotReadBecause"] != noProcessRead {
-				t.Errorf("the replacement's line names the read %+v, want one not made because %q", line, noProcessRead)
+		if end == endBySweep {
+			if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) != 0 || line["workspaceRead"] != "found work" || line["workspaceReadBy"] != "launcher" {
+				t.Errorf("the workspace was read %+v through a role and the line names the read %+v, want no read through a role and the launcher's read, which found work: no role process runs in the pod",
+					reads, line)
 			}
-			if named != "" {
-				wantToldUnanswered(t, messages, named)
-				return
-			}
-		case named != "":
+		} else {
 			wantReadThroughTheTester(t, rig, line, "found work")
-			if len(messages) != 1 || !strings.Contains(messages[0], toldNotWaitedForRoles+named+".") || !strings.Contains(messages[0], passedOverCommit) {
-				t.Fatalf("the issue was written %q, want one message that names %s under %q, and the commit %s", messages, named, toldNotWaitedForRoles, passedOverCommit)
-			}
-			wantKeptSaid(t, messages[0], kept, "The pod is gone. Its disk is a kept volume, and the volume is still there.")
-			return
-		default:
-			if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) != 0 || line["workspaceRead"] != "not made" ||
-				line["workspaceNotReadBecause"] != nothingUnaskedRead {
-				t.Errorf("the workspace was read %+v and the line names the read %+v, want no read, not made because %q", reads, line, nothingUnaskedRead)
-			}
 		}
+		wantKeptSaid(t, wantToldTaken(t, rig, namedStates...), kept, keptTaken)
+		return
 	case endAtALaunch, endByIssue:
 		by := "atLaunch"
 		if end == endByIssue {
@@ -872,10 +887,11 @@ func wantRoundEnd(t *testing.T, rig *podUpdateRig, end roundPodEnd, kind memberK
 			t.Fatalf("the replacement was logged %+v, want one line of a replacement with %s", replaced, by)
 		}
 		wantField(t, replaced[0], "unansweredMembers", namedRoles...)
-		if named != "" {
-			wantToldUnanswered(t, messages, named)
-			return
+		if line := replaced[0]; line["workspaceRead"] != "found work" || line["workspaceReadBy"] != "launcher" {
+			t.Errorf("the replacement's line names the read %+v, want the launcher's read, which found work", line)
 		}
+		wantKeptSaid(t, wantToldTaken(t, rig, namedStates...), kept, keptTaken)
+		return
 	default:
 		if calls := rig.replacements(); len(calls) != 0 || len(replaced) != 0 {
 			t.Errorf("ReplacePod called %+v and logged %+v, want no replacement: the round's pod went on its own", calls, replaced)
@@ -988,12 +1004,14 @@ func (r *podUpdateRig) refuseLaunches() *launchRefusals {
 
 // restarted is the daemon restarting (restart), with the sweep of the rig it answers writing its
 // lines where this rig's do, and that rig's runtime refusing launches as refuseLaunches makes it,
-// over the drift of the pod the round is over.
+// over the drift of the pod the round is over (orderDrifts), with the workspace the order table's
+// runtime finds work in.
 func (r *podUpdateRig) restarted() (*podUpdateRig, *launchRefusals) {
 	r.t.Helper()
 	next := r.restart()
 	next.s.log = r.log
-	next.drifts(podUpdateExchangeDrift)
+	next.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
+	next.drifts(orderDrifts...)
 	return next, next.refuseLaunches()
 }
 
@@ -1141,20 +1159,41 @@ var (
 // (wokenParked, parkingPace): ten minutes into the round, before its bound.
 var parkedWakeLetOut = podUpdateStart.Add(10 * time.Minute)
 
-// parkingPace is a wake pacing that lets every paced launch out at once until park is set, and
-// from then on lets each out at parkedWakeLetOut (supervise.WakePace): the tester's wakes before
-// the round run as each is raised, and the woken implementer's launch waits in the pacing with no
-// process and no pod, as a wave of wakes leaves it.
-type parkingPace struct{ park atomic.Bool }
+// parkingPace is a wake pacing that lets every paced launch out at once until park, and from then
+// on lets the next out at parkedWakeLetOut: the tester's wakes before the round run as each is
+// raised, and the woken implementer's launch waits in the pacing with no process and no pod, as a
+// wave of wakes leaves it. It is a pacer on the rig's clock over a limiter whose burst holds every
+// launch before the park (parkingBurst); park spends what is left of the burst and spreads the
+// release after it to that moment. A fixed-moment Reserve, which these tests once handed the
+// machines, has no pacer equal.
+type parkingPace struct {
+	clock   supervise.Clock
+	limiter *wakepace.Limiter
+	spread  atomic.Int64
+}
 
-// pace is the pacing a rig's machines read (podUpdateRigOptions.wakePace).
-func (p *parkingPace) pace() supervise.WakePace {
-	return supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time {
-		if p.park.Load() {
-			return parkedWakeLetOut
-		}
-		return now
-	}}
+// parkingBurst is how many launches parkingPace lets out at once before its park.
+const parkingBurst = 64
+
+// pace builds the pacing a rig's machines read (podUpdateRigOptions.wakePace) on the rig's clock.
+func (p *parkingPace) pace(clock supervise.Clock) supervise.WakePace {
+	p.clock = clock
+	p.limiter = wakepace.New(1, parkingBurst, func(time.Duration) time.Duration { return time.Duration(p.spread.Load()) })
+	pace := wakePaceOf(p.limiter, clock)
+	pace.Rate, pace.Burst = 1, parkingBurst
+	return pace
+}
+
+// park spends what is left of the burst at the clock's now, and spreads the next paced release to
+// parkedWakeLetOut. The first reservation past the burst is a paced release at the bucket's base,
+// and the one after it comes one interval later, which the spread moves to the let-out.
+func (p *parkingPace) park() {
+	now := p.clock.Now()
+	first := p.limiter.Reserve(now)
+	for !first.After(now) {
+		first = p.limiter.Reserve(now)
+	}
+	p.spread.Store(int64(parkedWakeLetOut.Sub(first.Add(p.limiter.Interval()))))
 }
 
 // suspendedTo is orderedTo for a member the daemon or the operator suspended before the round's
@@ -1201,7 +1240,7 @@ func suspendedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 	var opts podUpdateRigOptions
 	pacing := &parkingPace{}
 	if kind == wokenParked {
-		opts.wakePace = pacing.pace()
+		opts.wakePace = pacing.pace
 	}
 	rig := newPodUpdateRigWith(t, opts, podUpdateRole{role: implementer, state: supervise.StateQueued}, podUpdateRole{role: tester, state: supervise.StateQueued})
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
@@ -1254,7 +1293,7 @@ func suspendedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 		// (podlessRound).
 		rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
 	}
-	rig.drifts(podUpdateExchangeDrift)
+	rig.drifts(orderDrifts...)
 
 	rig.tick()
 	rig.awaitRound(implementer, podUpdateRound)
@@ -1310,7 +1349,7 @@ func suspendedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 			t.Fatalf("the resumed implementer is %s at %+v, want it launching in pod %s, its agent not registered", c.State, c.Locator, podUpdatePod)
 		}
 	case wokenParked:
-		pacing.park.Store(true)
+		pacing.park()
 		rig.intoPod(implementer, podUpdatePod)
 		launched := len(rig.launchesOf(implementer))
 		rig.handle(implementer, rig.wakeFor(implementer))

@@ -78,27 +78,27 @@ const (
 	CheckedNothing = "it held no name to free, so no broker was asked"
 )
 
-// ErrCarryUnanswered is a release the secrets broker did not answer: the release frees nothing,
-// since nothing else can say that no grant follows a name it would free. A run again can change
-// it.
+// ErrCarryUnanswered is a release the secrets broker did not answer, or answered with an outage
+// (a 5xx, a 408 or a 429) or another refusal a retry can change: the release frees nothing, since
+// nothing else can say that no grant follows a name it would free. A run again can change it.
 var ErrCarryUnanswered = errors.New("the secrets broker did not answer which of the names it still carries")
 
 // ErrCarryRefused is a release whose question the secrets broker refused for good (a
-// PermanentError, a 4xx): the release frees nothing, and a run again answers the same until the
-// refusal is fixed, but for a broker from before the question, which answers it 404 or 405 and
-// may be one replica of several while the broker rolls.
+// PermanentError, a 4xx other than a 408 or a 429): the release frees nothing, and a run again
+// answers the same until the refusal is fixed, but for a broker from before the question, which
+// answers it 404 or 405 and may be one replica of several while the broker rolls.
 var ErrCarryRefused = errors.New("the secrets broker refused the question of which of the names it still carries")
 
 // ErrReleaseUnanswered is a release the secrets broker did not answer that it released the claim's
-// session names (Registrar.ReleasePodSessions) at any attempt: no answer, a 5xx, a 429, or a 404 or
-// 405 from a broker of a build before the release route, which may be one replica of several while
-// the broker rolls. The release frees nothing, since a registration of this daemon's may still
-// admit its pod's trade under a name it frees. A run again can change it.
+// session names (Registrar.ReleasePodSessions) at any attempt: no answer, a 5xx, a 408, a 429, or a
+// 404 or 405 from a broker of a build before the release route, which may be one replica of several
+// while the broker rolls. The release frees nothing, since a registration of this daemon's may
+// still admit its pod's trade under a name it frees. A run again can change it.
 var ErrReleaseUnanswered = errors.New("the secrets broker did not answer that it released the claim's session names")
 
 // ErrReleaseRefused is a release whose session names the secrets broker refused for good to
-// release (a PermanentError that is no RouteUnservedError: any 4xx but a 404, a 405 and a 429):
-// the release frees nothing, and a run again answers the same until the refusal is fixed.
+// release (a PermanentError that is no RouteUnservedError: any 4xx but a 404, a 405, a 408 and a
+// 429): the release frees nothing, and a run again answers the same until the refusal is fixed.
 var ErrReleaseRefused = errors.New("the secrets broker refused to release the claim's session names")
 
 // RouteUnservedError is a broker answer that it serves no such route (cipher's
@@ -163,11 +163,11 @@ func (e *NamesCarriedError) Error() string {
 // it would free name an enrollment of this daemon's that is live or still carries something
 // (Enroller.Carried), and any answer refuses the whole release with a RefusedError holding a
 // NamesCarriedError, naming each enrollment and when its lease or its carry ends, or saying the
-// answer was too long to list (UnlistedCarryError); a broker that does not answer refuses it with
-// ErrCarryUnanswered, and one that refuses the question for good with ErrCarryRefused. Nothing is
-// freed in any of them. The broker's own rows answer every case a time window only estimated: a
-// revoke the daemon missed, a lease a broker outage held live, a sweep that ran late or kept
-// failing, a longer BROKER_SESSION_CARRY_SECONDS.
+// answer was too long to list (UnlistedCarryError); a broker that does not answer, or answers with
+// an outage, refuses it with ErrCarryUnanswered, and one that refuses the question for good with
+// ErrCarryRefused. Nothing is freed in any of them. The broker's own rows answer every case a
+// time window only estimated: a revoke the daemon missed, a lease a broker outage held live, a
+// sweep that ran late or kept failing, a longer BROKER_SESSION_CARRY_SECONDS.
 //
 // Nor can a pod trade under a name it frees. The broker honours a pod-session registration of this
 // daemon's (Deps.Registrar, exchange_audience) for a day past its last write, whether or not its
@@ -290,6 +290,11 @@ func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 		if err := m.releaseSessions(ctx, free); err != nil {
 			return ReleasedNames{}, err
 		}
+	}
+	// The release writes the claim row alone, so a take-back the claim must carry goes first
+	// (carryPending, writeCarried).
+	if err := m.writeCarried(ctx); err != nil {
+		return ReleasedNames{}, err
 	}
 	c := m.stored()
 	if mark {

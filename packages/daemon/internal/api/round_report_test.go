@@ -36,7 +36,7 @@ func roundReportServed(t *testing.T, body []byte) (carried map[string]int, views
 // them. A caller at this daemon's own contract, a pod whose claims record no contract, and a
 // caller the daemon cannot place in a pod are served both.
 func TestTheStateRouteServesAPodItsPluginContractsRoundReport(t *testing.T) {
-	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(DaemonAPIVersion))
+	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(DaemonAPIVersion()))
 	wantCarried, wantViews := roundReportServed(t, full)
 	if _, carried := lowestServed(t, full); !carried {
 		t.Fatalf("the fixture's state %s reports no lowest plugin contract; this test proves nothing", full)
@@ -55,10 +55,10 @@ func TestTheStateRouteServesAPodItsPluginContractsRoundReport(t *testing.T) {
 		served bool
 	}{
 		{name: "a pod at the floor", remote: statePodAddr + ":41000", claims: podClaims(ServingFloor)},
-		{name: "a caller that states the floor", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion), stated: ServingFloor},
+		{name: "a caller that states the floor", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion()), stated: ServingFloor},
 		{name: "a pod whose plugin is the contract before this one", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(shapedAnswersContract - 1)},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), served: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion()), served: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), served: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(shapedAnswersContract - 1), served: true},
 	} {
@@ -117,11 +117,11 @@ func TestTheStateServedBelowThisContractLeavesTheNextCallersStateWhole(t *testin
 // answers and version.go's own entry, each of them the constant itself, so nothing here pins it
 // to a literal: a renumber moves one constant.
 func TestTheShapedAnswersContractIsAContractThisDaemonServes(t *testing.T) {
-	if shapedAnswersContract > DaemonAPIVersion {
+	if shapedAnswersContract > DaemonAPIVersion() {
 		t.Fatalf("shapedAnswersContract = %d, above DaemonAPIVersion %d: no caller could be served the keys",
-			shapedAnswersContract, DaemonAPIVersion)
+			shapedAnswersContract, DaemonAPIVersion())
 	}
-	if !slices.Contains(SupportedContracts, shapedAnswersContract) {
+	if !slices.Contains(SupportedContracts(), shapedAnswersContract) {
 		t.Fatalf("shapedAnswersContract = %d, which SupportedContracts does not record: the contract that adds a key is a contract this daemon describes a shape for",
 			shapedAnswersContract)
 	}

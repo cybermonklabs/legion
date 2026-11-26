@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  `dispatch project-update --project <KEY> --proven-sessions on|off` turns a project's
+  proven-sessions setting on or off. `off` needs a credential that holds the person scope.
+  `dispatch projects` prints `proven sessions on` after each project whose setting is on.
+time: 2026-11-20T23:22:35Z
+custom:
+    Issue: INFRA-4764

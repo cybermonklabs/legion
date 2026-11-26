@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // reconnectWaitFixture is a client that reaches NATS through a proxy the test can cut, a subscriber
@@ -71,25 +72,19 @@ func (f *reconnectWaitFixture) startPublishWhileReconnecting(t *testing.T, ctx c
 	t.Helper()
 	f.proxy.refuse.Store(true)
 	f.proxy.drop()
-	waitFor(t, 5*time.Second, "the client to start reconnecting", f.client.Conn.IsReconnecting)
+	waitFor(t, "the client to start reconnecting", f.client.Conn.IsReconnecting)
 	f.onTick.Store(&onTick)
 	answer := make(chan error, 1)
 	go func() { answer <- f.client.PublishWithin(ctx, f.envelope) }()
 	return answer
 }
 
-// awaitAnswer returns the publish's answer and clears onTick, failing the test if the publish has
-// not answered within 15 s.
+// awaitAnswer returns the publish's answer and clears onTick, failing the test if the publish never
+// answers: the wait is bounded only by the test binary's deadline (testwait.Receive).
 func (f *reconnectWaitFixture) awaitAnswer(t *testing.T, answer <-chan error) error {
 	t.Helper()
 	defer f.onTick.Store(nil)
-	select {
-	case err := <-answer:
-		return err
-	case <-time.After(15 * time.Second):
-		t.Fatal("the publish never returned")
-		return nil
-	}
+	return testwait.Receive(t, "the publish to return", answer)
 }
 
 // requireNothingReceived fails the test if the subscriber receives anything from the publisher.
@@ -135,13 +130,13 @@ func TestAPublishCancelledWhileWaitingForAReconnectSendsNothing(t *testing.T) {
 		case <-waiting:
 		case err := <-answer:
 			t.Fatalf("the publish answered %v without entering the reconnect wait", err)
-		case <-time.After(5 * time.Second):
-			t.Fatal("the publish never entered the reconnect wait")
+		case <-testwait.Context(t).Done():
+			t.Fatal("the publish had not entered the reconnect wait by the test's deadline")
 		}
 		release()
 		f.proxy.refuse.Store(false)
 		err := f.awaitAnswer(t, answer)
-		waitFor(t, 10*time.Second, "the client to reconnect", f.client.Conn.IsConnected)
+		waitFor(t, "the client to reconnect", f.client.Conn.IsConnected)
 		return err
 	}
 
