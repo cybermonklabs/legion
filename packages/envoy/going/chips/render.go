@@ -2,6 +2,7 @@ package chips
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -16,8 +17,9 @@ import (
 // the web's dispatch-time.tsx) shows its words and its full date on hover, so the judge reads
 // both; a time link whose words are an issue's key shows the issue's chip in place of its words
 // (the web's timeLinkIssue), so the judge reads the chip and the date. The server counts the
-// words of an answer as the bar draws them (internal/dispatch/api's going_link_words.go), which
-// holds the answer's bound of 120 words: the date on a time link's hover is no word it draws.
+// words of an answer as the bar draws them (internal/dispatch/api's going_agent_words.go), which
+// holds the answer's bound of 120 words: the date on a time link's hover is no word it draws, an
+// issue is its chip at its first link alone, and a link that reads as its own words is those.
 
 // RenderAnswer is answer, an answer's markdown, with each link the bar draws as an item written in
 // place as the words the bar draws for it, read from items (Target.Words), between square
@@ -44,12 +46,15 @@ func RenderAnswer(answer string, items Items) string {
 }
 
 // DrawnWords is how many words the bar draws of answer, an answer's markdown, with each item it
-// links read from items: the answer written as RenderAnswer writes it, each link to an item as
-// the words the bar draws for it - an issue's chip its key, its status and its title - but each
-// time link as its words alone, or its issue's chip, since the date on its hover is not drawn;
-// then split on white space, each piece that holds a letter or a digit one word. So the marks of
-// markdown that stand alone, a list's dash or a heading's hashes, and a chip's separators (·) are
-// no words, and a word with marks around it, **Done**, is one.
+// links read from items: the answer written as the bar draws it (render where hover is not set) -
+// the first link to each issue as its chip, its key, its status and its title, a later link to
+// the same issue and a link to another item that reads as its own words as those words, every
+// other link to an item as the words the bar draws for it, and each time link as its words alone,
+// or its issue's chip, since the date on its hover is not drawn; then split on white space, each
+// piece that holds a letter or a digit one word. So the marks of markdown that stand alone, a
+// list's dash or a heading's hashes, and a chip's separators (·) are no words, and a word with
+// marks around it, **Done**, is one. packages/contracts/fixtures/drawn-words.json holds answers
+// with the words the bar draws of each, which a test of the web's MarkdownBody holds it to too.
 func DrawnWords(answer string, items Items) int {
 	words := 0
 	for piece := range strings.FieldsSeq(render(answer, items, false)) {
@@ -60,10 +65,16 @@ func DrawnWords(answer string, items Items) int {
 	return words
 }
 
-// render is answer as RenderAnswer writes it, each time link with the date its hover shows where
-// hover is set, and as its words alone where it is not.
+// render is answer as RenderAnswer writes it where hover is set, each time link with the date its
+// hover shows. Where hover is not set, it is the answer as the bar draws it: each time link as its
+// words alone, and each link whose own words the bar draws (drawnLinks.ownWords) as those words.
 func render(answer string, items Items, hover bool) string {
+	var drawn drawnLinks
 	return RewriteLinks(answer, func(out *strings.Builder, written, words, href string) {
+		if !hover && drawn.ownWords(words, href) {
+			out.WriteString(words)
+			return
+		}
 		if timed, ok := timeLinkWords(words, href, items, hover); ok {
 			out.WriteString(timed)
 			return
@@ -75,6 +86,45 @@ func render(answer string, items Items, hover bool) string {
 		}
 		out.WriteString("[" + named.Words(items) + "]")
 	})
+}
+
+// drawnLinks is what the bar drew of an answer's links so far, read in the order the answer holds
+// them: the key of each issue whose chip it drew.
+type drawnLinks struct {
+	chipped []string
+}
+
+// ownWords reports whether the bar draws the next link of the answer, whose words are words and
+// whose address is href, as those words, as the web's MarkdownBody with chips draws it. The bar
+// draws the first link to each issue as the issue's chip (takeIssueLinks): a link to the issue
+// itself, by its reference or its dashboard path, and a time link whose words are its key
+// (timeLinkKey); a later link to the same issue it draws as the words it was written with. A link
+// to another item - an issue's spec, a tab of its page, a document, an ask, a comment, a message,
+// a block - it draws as its own words where they are not its address (RefLink, which reads such
+// words as the author's by @legion/contracts' referenceReading), and as the item's name where
+// they are. Every other link, a time's words included, is no item's link and is drawn as it is.
+func (d *drawnLinks) ownWords(words, href string) bool {
+	var key string
+	if isTimeAddress(href) {
+		key = shownWords(words)
+		if !timeLinkKey.MatchString(key) {
+			return false
+		}
+	} else {
+		target, ok := ParseTarget(href)
+		if !ok {
+			return false
+		}
+		if target.ref.Kind != "issue" || target.tab != "" {
+			return shownWords(words) != href
+		}
+		key = target.ref.IssueKey
+	}
+	if slices.Contains(d.chipped, key) {
+		return true
+	}
+	d.chipped = append(d.chipped, key)
+	return false
 }
 
 // timeScheme is the scheme of the address of a time the model writes as a link.
@@ -119,10 +169,10 @@ func shownWords(words string) string {
 // too where it has some. For an address that names none, such as dispatch-time:last week, and
 // where hover is not set, the words alone, as the bar draws them.
 func timeLinkWords(words, href string, items Items, hover bool) (string, bool) {
-	href = strings.TrimSpace(href)
-	if len(href) < len(timeScheme) || !strings.EqualFold(href[:len(timeScheme)], timeScheme) {
+	if !isTimeAddress(href) {
 		return "", false
 	}
+	href = strings.TrimSpace(href)
 	if key := shownWords(words); timeLinkKey.MatchString(key) {
 		if issue, ok := ParseTarget("dispatch://" + key); ok {
 			words = "[" + issue.Words(items) + "]"
@@ -140,6 +190,13 @@ func timeLinkWords(words, href string, items Items, hover bool) (string, bool) {
 		layout = "2 Jan 2006, 15:04:05 UTC"
 	}
 	return words + " (" + at.Format(layout) + ")", true
+}
+
+// isTimeAddress reports whether href is a time's address, of any case and spaces around it, as
+// the web's isTimeAddress reads it.
+func isTimeAddress(href string) bool {
+	href = strings.TrimSpace(href)
+	return len(href) >= len(timeScheme) && strings.EqualFold(href[:len(timeScheme)], timeScheme)
 }
 
 // linkInstant is the instant written, a time link's address after its scheme, names, in UTC, and

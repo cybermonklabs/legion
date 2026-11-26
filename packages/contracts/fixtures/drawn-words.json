@@ -1,0 +1,55 @@
+{
+  "description": "Answers of the command bar's agent in markdown, as the server stores them, with the issues they link and the words the bar draws of each answer. The bar draws an answer with chips (MarkdownBody with chips in packages/dispatch/web/src/features/refs/MarkdownBody.tsx): the first link to each issue, a time link whose words are the issue's key included, is the issue's chip, its key, its status and its title (ItemChip, whose status a screen reader reads); a later link to the same issue keeps the words it was written with (takeIssueLinks); a link to another item, such as an issue's spec, is its own words where they are not its address, and the item's name where they are (RefLink); and a time link is its words. The words are every text node of the drawn answer, split on white space, each piece that holds a letter or a digit one word. Written by hand from the bar's rules, not from either side's code. The server counts an answer's words so (DrawnWords in packages/envoy/going/chips/render.go) to hold it to 120: render_test.go holds the server to these counts, and MarkdownBody.drawn-words.test.tsx holds the bar to them.",
+  "issues": [
+    { "key": "DEMO-7", "status": "done", "title": "Map the lunar craters" },
+    { "key": "DEMO-12", "status": "in_progress", "title": "Export: CSV and PDF" },
+    { "key": "DEMO-17", "status": "backlog", "title": "PDF export: fonts missing on mobile" }
+  ],
+  "answers": [
+    {
+      "name": "one issue linked once",
+      "markdown": "The craters are mapped: [DEMO-7](dispatch://DEMO-7) is done.",
+      "words": 12
+    },
+    {
+      "name": "the same issue linked twice, the later link as its words",
+      "markdown": "[DEMO-7](dispatch://DEMO-7) mapped the craters, and [the crater work](dispatch://DEMO-7) is done.",
+      "words": 15
+    },
+    {
+      "name": "two issues each linked twice, by reference and by dashboard path",
+      "markdown": "[DEMO-12](dispatch://DEMO-12) waits on [DEMO-17](/issues/DEMO-17). Once [DEMO-17](dispatch://DEMO-17) lands, [the export](/issues/DEMO-12) ships.",
+      "words": 23
+    },
+    {
+      "name": "a time link whose words are an issue's key, then a plain link to that issue",
+      "markdown": "Nothing has moved on [DEMO-17](dispatch-time:2026-10-10T09:00:00Z); [DEMO-17](dispatch://DEMO-17) waits on fonts.",
+      "words": 16
+    },
+    {
+      "name": "a link to an issue's spec by its address, then a link to the issue",
+      "markdown": "[dispatch://DEMO-12/spec](dispatch://DEMO-12/spec) says why [DEMO-12](dispatch://DEMO-12) waits.",
+      "words": 14
+    },
+    {
+      "name": "a link to an issue's spec in words of its own, then a link to the issue",
+      "markdown": "[The spec](dispatch://DEMO-12/spec) of [DEMO-12](dispatch://DEMO-12) names both formats.",
+      "words": 13
+    },
+    {
+      "name": "a link to an issue, then a link to its spec as KeepLinkWords writes words beside it",
+      "markdown": "[DEMO-12](dispatch://DEMO-12) waits, as the spec ([DEMO-12 spec](dispatch://DEMO-12/spec)) says.",
+      "words": 14
+    },
+    {
+      "name": "a time link with plain words",
+      "markdown": "The fonts broke [5 days ago](dispatch-time:2026-11-18T11:35:00Z).",
+      "words": 6
+    },
+    {
+      "name": "a list with dashes",
+      "markdown": "Open work:\n\n- [DEMO-12](dispatch://DEMO-12), held by the implementer\n- [DEMO-17](dispatch://DEMO-17), which [DEMO-12](dispatch://DEMO-12) waits on",
+      "words": 25
+    }
+  ]
+}

@@ -1317,12 +1317,15 @@ func TestAReadTheRulesNameNeedsNoLookup(t *testing.T) {
 // address is the time the read gives, which the page shows with its full date on hover, and its
 // words are the time itself, with its zone and year, where the words ask when. The eval's answers
 // wrote a comment's words as the words of its link, which its chip hides as it hides an issue's
-// (c13 at 9ae5605b), so the prompt names comments and messages in that rule too.
+// (c13 at 9ae5605b), so the prompt names comments and messages in that rule too. At 8fc4d59f an
+// answer wrote P3 as "no priority above the default", so the rule asks for the priority_shown
+// value word for word; and the bar draws a second link to an item as its words, with no chip.
 func TestTheAnswerReadsAsTheIssuePageShowsIt(t *testing.T) {
 	for _, said := range []string{
 		"the direct answer in one or two sentences, then at most a short list",
 		"under 120 words unless the person asks for more",
 		"Name each item once, by its link alone",
+		"A second link to the same item adds its words to the answer and draws no chip.",
 		"never what it shows, such as an issue's title or status",
 		"The words of a link to a comment or a message are not shown either: its author and what it says go outside the link, never into its words.",
 		"never a correction of yourself or your working",
@@ -1331,6 +1334,7 @@ func TestTheAnswerReadsAsTheIssuePageShowsIt(t *testing.T) {
 		"a priority as P0, P1, P2 or P3",
 		"The reads give each priority and each time also as the page shows it, in the field after it named for it with _shown",
 		"as its priority_shown says, never its raw value",
+		`that value word for word: "P3", never "no priority above the default" or "no priority above P3"`,
 		`a status, where no chip shows it, by its words, such as "In progress" for in_progress`,
 		`never as the result's raw value, and never in parentheses: "an ask of medium urgency", not "(medium)"`,
 		"each time as a link the page shows with its full date on hover, such as [5 days ago](dispatch-time:2026-11-18T11:35:00Z): its words the _shown form",

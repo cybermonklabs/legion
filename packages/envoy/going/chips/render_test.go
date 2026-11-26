@@ -1,6 +1,10 @@
 package chips
 
+//ci:reads packages/contracts/fixtures/drawn-words.json os.ReadFile (../../../contracts/fixtures/drawn-words.json): TestDrawnWordsCountsEachAnswerOfTheFixtureAsTheBarDrawsIt holds the server's count to the words the web's MarkdownBody draws
+
 import (
+	"encoding/json"
+	"os"
 	"reflect"
 	"testing"
 )
@@ -36,6 +40,51 @@ func TestDrawnWordsCountsAnAnswerAsTheBarDrawsIt(t *testing.T) {
 	const timed = "Moved [5 days ago](dispatch-time:2026-11-18T11:35:00Z)."
 	if got, want := RenderAnswer(timed, keptItems), "Moved 5 days ago (18 Nov 2026, 11:35 UTC)."; got != want {
 		t.Errorf("RenderAnswer(%q) = %q, want %q: the judge reads the date its hover shows", timed, got, want)
+	}
+}
+
+// TestDrawnWordsCountsEachAnswerOfTheFixtureAsTheBarDrawsIt: the bar draws an issue's chip at the
+// first link to the issue alone, and a later link to it as the words it was written with, so in a
+// preview at 8fc4d59f the server counted 96 to 111 words of answers the page drew in 71 to 87,
+// each later link counted as a whole chip, and held answers back on counts of 175 to 266. The bar
+// also draws a link to another item, such as an issue's spec, as its own words where they are not
+// its address. packages/contracts/fixtures/drawn-words.json holds answers with the issues they
+// link and the words the bar draws of each, which the web's MarkdownBody.drawn-words.test.tsx
+// holds the bar to: DrawnWords counts each answer's words as the fixture says, so a change to
+// either side fails a test.
+func TestDrawnWordsCountsEachAnswerOfTheFixtureAsTheBarDrawsIt(t *testing.T) {
+	raw, err := os.ReadFile("../../../contracts/fixtures/drawn-words.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Issues []struct {
+			Key    string `json:"key"`
+			Status string `json:"status"`
+			Title  string `json:"title"`
+		} `json:"issues"`
+		Answers []struct {
+			Name     string `json:"name"`
+			Markdown string `json:"markdown"`
+			Words    int    `json:"words"`
+		} `json:"answers"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.Answers) == 0 {
+		t.Fatal("the fixture holds no answers")
+	}
+	items := held{issues: map[string][2]string{}}
+	for _, issue := range fixture.Issues {
+		items.issues[issue.Key] = [2]string{issue.Status, issue.Title}
+	}
+	for _, answer := range fixture.Answers {
+		t.Run(answer.Name, func(t *testing.T) {
+			if got := DrawnWords(answer.Markdown, items); got != answer.Words {
+				t.Errorf("DrawnWords(%q) = %d, want %d: the bar draws %q", answer.Markdown, got, answer.Words, render(answer.Markdown, items, false))
+			}
+		})
 	}
 }
 

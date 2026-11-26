@@ -4,8 +4,9 @@ body: |-
   issue page shows it. Each `priority` that holds 0 to 3 or null is followed by
   `priority_shown`, `P0` to `P3` or `No priority`, and each field that holds an RFC 3339 time by
   `<field>_shown`, the time relative to the time now the person's message names, as the web writes
-  it: "5 minutes ago", "yesterday", "2 weeks ago". The system prompt says to write that form. The
-  model had written priority 1 as P0 and a time 13 days old as "12 days ago". The step still
+  it: "5 minutes ago", "yesterday", "2 weeks ago". The system prompt says to write that form, a
+  priority word for word. The model had written priority 1 as P0, a time 13 days old as "12 days
+  ago", and P3 as "no priority above the default". The step still
   saves the result as the server answered it, which `draw_block` counts over. Those words count
   against the 32 KiB of a result the model is given: a result given whole stays whole, with as
   many of the words as fit, a priority's first, and a result already cut to its first 32 KiB is cut
