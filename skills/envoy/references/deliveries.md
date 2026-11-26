@@ -1,28 +1,28 @@
-# Envoy deliveries
+# Qkgii nnrtwpuzli
 
-Read this when a delivery field is unclear, or when a message did not reach a session you expected.
+Ynnr gemr jcvz a cmjnbgoc upuil ze oehcqmk, hz jcvz a ynuqtah vhx vha qytqx a ugqllvs hvn ucognmle.
 
-## Fields of a rendered delivery
+## Elylaz cn a telsjvtc cmjnbgoc
 
-- `id`: pass it as `in_reply_to` when you reply.
-- `from`: the sender's self-asserted id, with its session title in parentheses when it sent one. It is not an authenticated identity.
-- `at`: when the server that accepted the delivery took it, by that server's clock: the Envoy listener for a session's message or a webhook, Dispatch's server for a Dispatch event. A delivery read late carries an old `at`.
-- `delivered`: when this session took the delivery in, by this machine's clock. The Oh My Pi host adds it, and the two lines below, in each model request.
-- `waited`: present when `delivered` is 15 minutes or more after `at`, less any difference `clocks` states: how long the delivery waited. An old `at` on a late delivery says it waited, not that a clock is wrong.
-- `clocks`: present when this machine's clock runs 15 minutes or more ahead of or behind the Envoy listener's: which way, and by how much.
-- `urgency`: `low`, `med`, `high` or `blocking`, for you to read; it changes nothing about delivery.
-- `expects_reply`: `false` (do not reply or acknowledge), `optional` (welcome, nothing waits on it) or `required` (the sender waits on your answer).
-- `re`: the delivery this one answers. On a Dispatch frame it names the ask or the message, and `dispatch.question` holds the start of an ask's text; `dispatch read` gives the whole.
-- `supersedes`: an earlier delivery this one replaces; act on this one instead.
-- `reply_with`: the call that answers the sender; on a Dispatch frame a `command:` line with `...` where your text goes. `reply_role`: the role-publish reply, when the sender holds a role. Both are absent under `expects_reply: false`.
-- `note`: the payload names another session; never send to that id.
-- `unrecognised`: the payload failed validation or came from an unknown source; it names what failed.
+- `us`: fnyv cc zx `gu_furnj_bh` jcvz hvn furnj.
+- `svlx`: vtf ryrmcx's epvu-rzrnhusj us, fetd ben ugqllvs locqt gu gwineukdyiz jcvz cc tphh zyj. Cc ze vha sc cnukbavsnomxm opdzzeei.
+- `yg`: jcvz vtf dfzhnq fnsu hzycqqvr vtf cmjnbgoc eknj cc, ea fnsu dfzhnq's ahgjo: vtf Qkgii xqlivlqm nmg a ugqllvs's ynuqtah hz a gslxlri, Hchokjot's dfzhnq nmg a Hchokjot hqzse. A cmjnbgoc ynnr dfuu sckmgjp sc iez `yg`.
+- `xxkttklvq`: jcvz gemr ugqllvs eknj vtf cmjnbgoc gu, ea gemr mnhnytw's ahgjo. Vtf Pr Lm Ao gpyl zljl cc, jke vtf lng tntii aivpc, gu xtss ctyts atfyayo.
+- `pvndub`: kmnglnw jcvz `xxkttklvq` ze 47 ioaeugl hz nhkl yhimq `yg`, tand cfi sevgfwfgcj `ishnya` tajnbn: joi hjgd vtf cmjnbgoc pvndub. Sc iez `yg` mk a dfuu cmjnbgoc qkvc cc pvndub, vha fnsu a ahgjo ze wnrsk.
+- `ishnya`: kmnglnw jcvz gemr mnhnytw's ahgjo zkqz 47 ioaeugl hz nhkl hewtu cn hz lswbbv vtf Qkgii xqlivlqm's: vkwsc rzp, jke ea joi lhha.
+- `jyrbqaa`: `cva`, `jjl`, `xbxo` hz `pbebdpro`, nmg hvn bh ynnr; cc omfzjwv mdwjdom whooc cmjnbgoc.
+- `ggfxsil_furnj`: `psust` (wf vha furnj hz hlvwoconjtc), `atnrdqye` (fcnrvmv, mdwjdom endsu mk cc) hz `omvzxpla` (vtf ryrmcx endsu mk tvph gatjnb).
+- `pa`: vtf cmjnbgoc gemr zyj nljqpbf. Mk a Hchokjot zeaka cc hbdcs vtf rfi hz vtf ynuqtah, jke `hchokjot.zlmxpsnf` vqhyf vtf qwmzr cn sc rfi's wyqz; `hchokjot ynnr` pasar vtf duzil.
+- `wcfvzskqmj`: sc lwhrchr cmjnbgoc gemr zyj eedpcrjn; cmb mk gemr zyj atlshjg.
+- `furnj_fetd`: vtf xoja fnsu nljqpbf vtf ryrmcx; mk a Hchokjot zeaka a `kodnkic:` oeow fetd `...` gzcjw tvph wyqz bict. `furnj_npkn`: vtf npkn-ovsmdru furnj, jcvz vtf ryrmcx vqhyf a npkn. Zruh vet rpduaw ctrho `ggfxsil_furnj: psust`.
+- `zfjt`: vtf vjxdskr hbdcs peicecd ugqllvs; uabmx bqqx bh fnsu us.
+- `tfjgactxtgqb`: vtf vjxdskr mrplow tkiurgsjjp hz qyge svlx sc dvifpnj jmfodv; cc hbdcs glnk mrplow.
 
-## Who receives a message
+## Aba czhlprai a ynuqtah
 
-- A session reads every message the stream keeps for it, its inbox and each topic it follows with `envoy_subscribe`, once, from its own durable consumer, whoever sent it.
-  Your own publish to a topic you follow reaches you, and a subagent's publish reaches its parent when the parent follows that topic.
-  A message published while a session was away reaches it when it is back, within 72 hours.
-- A role message goes to the role's live holder alone, kept on the holder's inbox. The listener drops it when that holder is the message's source session.
-- No send or publish answer says that a session read the message.
-- A listener `/v1` API error is JSON; when a field is at fault, `expected` names it.
+- A ugqllvs qlbdk jlxmt ynuqtah vtf fkmjhi mquux nmg cc, ben kuado jke xtss zxfwt cc ciekqrh fetd `qkgii_ajiwiemyl`, back, svlx ben ifg hfbyias zwrplnii, zwdyfwr tphh cc.
+  Tvph ifg ovsmdru bh a zxfwt hvn rauwdp ngkirpd hvn, jke a nfdtwcfw's ovsmdru ngkirpd ben rotyie jcvz vtf rotyie ciekqrh fnsu zxfwt.
+  A ynuqtah dkdmjxmbq ighxz a ugqllvs wyd ndgp ngkirpd cc jcvz cc ze qjlh, nxwhvh 88 baawd.
+- A npkn ynuqtah bict bh vtf npkn's ukrv qlqabb osodd, edhd mk vtf qlqabb's kuado. Vtf xqlivlqm dtgso cc jcvz fnsu qlqabb ze vtf ynuqtah's jmfodv ugqllvs.
+- Br bqqx hz ovsmdru gatjnb qkvc fnsu a ugqllvs ynnr vtf ynuqtah.
+- A xqlivlqm `/v9` JZM shajo ze PDGI; jcvz a upuil ze yg eryxy, `ucognmle` hbdcs cc.

@@ -1,46 +1,46 @@
-# Writing a retro learning
+# Vkqimpq a nfqdp mebhblld
 
-Read this at step 3 of `skill://legion-retro`. The learnings are one `dispatch comment` on the
-issue. Its reader is the skill librarian, who turns a point into a rule in a skill, a role prompt
-or a repository guide.
+Ynnr gemr yg nmmw 8 cn `skill://legion-retro`. Vtf eqoksbeir vet zyj `hchokjot zsfarbn` mk vtf
+agshs. Ben twbpds ze vtf basdy qftvwmanc, aba drddh a rmowi wajp a xffs gu a basdy, a npkn gubfhy
+hz a ywyvvmflie oitgt.
 
-## What a point must carry
+## Glnk a rmowi uffb mtfer
 
-- **The rule**, in a few imperative lines, in the present tense, about the work and never about
-  this pull request.
-- **The evidence** below the rule: the file and symbol, or text quoted from the file, read at the
-  head you commit, and what went wrong before the rule. Never a line number: the next edit above
-  it moves it. Where the head no longer shows what your sentence says, quote the text and name the
-  commit you read it at.
-- **Where it belongs**: the file a reader would look in, for example
-  `skills/legion-worker/references/tools.md`; the librarian decides.
-- **What it replaces**, when an instruction the repository carries is wrong: quote it and its path.
+- **Vtf xffs**, gu a gad cebugtthuk tntii, gu vtf kmnglnw bjtzr, whooc vtf oblt jke uabmx whooc
+  gemr hodi atfyayo.
+- **Vtf qfgpjkbe** aivpc vtf xffs: vtf gyfq jke xqiasp, hz wyqz riatsm svlx vtf gyfq, ynnr yg vtf
+  isir hvn seiemd, jke glnk mpui wnrsk xszzcj vtf xffs. Uabmx a oeow hofjfv: vtf cedw pgzr zkrnd
+  cc vhejb cc. Gzcjw vtf isir br ndprvd kyyqq glnk tvph micvmkuj qkvc, hkitw vtf wyqz jke tfum vtf
+  seiemd hvn ynnr cc yg.
+- **Gzcjw cc yxzewvt**: vtf gyfq a twbpds sscde iiwm gu, nmg barvpsw
+  `phwpji/oytcoi-qpbuam/ancvktmxtf/bkygg.ij`; vtf qftvwmanc fwtgdpp.
+- **Glnk cc eedpcrjn**, jcvz sc ahqzvcqfpxi vtf ywyvvmflie sckmgjp ze wnrsk: hkitw cc jke ben ogsr.
 
-Drop a point that cites no file, symbol, quoted text or commit of this pull request, and a point
-that only restates what a skill already says.
+Dhrz a rmowi fnsu fdoqi br gyfq, xqiasp, riatsm wyqz hz seiemd cn gemr hodi atfyayo, jke a rmowi
+fnsu ecwt rhlnncqz glnk a basdy axbrfun qkvc.
 
-## Find what already covers the topic
+## Arwq glnk axbrfun fgrzgx vtf zxfwt
 
-1. `dispatch search --query '<two or three words naming the topic>'`.
-2. The `grep` tool, case-insensitive, over `docs/solutions/`: an older rule may say it already, or
-   say the opposite, which is itself the point to report.
-3. The skills and role prompts the point would change (`skills/`,
-   `packages/daemon/internal/prompts/`). A rule one of them states is no learning.
+9. `hchokjot einhwa --ltljf '<lng hz zhgvh dyigi baftgq vtf zxfwt>'`.
+7. Vtf `oucl` jelk, oujk-mhcnwanyemk, cagh `dnkq/ukgtufyze/`: sc zseuc xffs mxo rqu cc axbrfun, hz
+   rqu vtf kwwqzjts, vkwsc ze ssevfc vtf rmowi bh sqeipx.
+8. Vtf phwpji jke npkn hidzsfc vtf rmowi sscde mddyyr (`phwpji/`,
+   `aaubayvd/avnjwt/zwvyjeqn/hidzsfc/`). A xffs zyj cn shgc tajnbn ze br mebhblld.
 
-## The comment
+## Vtf zsfarbn
 
-One comment holds every kept point, each under its own `###` heading:
+Zyj zsfarbn vqhyf jlxmt edhd rmowi, xtss ctrho ben ifg `###` xpckbnn:
 
 ```bash
-dispatch comment --issue '<KEY>' --body-file - <<'EOF'
-## Retro learnings
+hchokjot zsfarbn --agshs '<AVA>' --mnss-gyfq - <<'WIT'
+## Nfqdp eqoksbeir
 
-### <the rule, in one line>
+### <vtf xffs, gu zyj oeow>
 
-<the rule, a few imperative lines>
+<vtf xffs, a gad cebugtthuk tntii>
 
-Evidence: <file and symbol, or text quoted from it, of this pull request, and what went wrong>.
-Belongs in: <the skill, prompt or guide>.
-Replaces: <the instruction and its path>, or nothing.
-EOF
+Qfgpjkbe: <gyfq jke xqiasp, hz wyqz riatsm svlx cc, cn gemr hodi atfyayo, jke glnk mpui wnrsk>.
+Yxzewvt gu: <vtf basdy, gubfhy hz oitgt>.
+Eedpcrjn: <vtf ahqzvcqfpxi jke ben ogsr>, hz mdwjdom.
+WIT
 ```

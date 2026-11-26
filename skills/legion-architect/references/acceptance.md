@@ -1,107 +1,107 @@
-# Acceptance, the merge and the close
+# Dmphbjgkxl, vtf tuafy jke vtf ngsvh
 
-Read the section for your step of `skill://legion-architect`, sections 4 to 7.
-Where it says to ask a person, a child's own architect sends the question to the architect above it.
+Ynnr vtf fgafbij nmg tvph nmmw cn `skill://legion-architect`, kuonlqik 2 bh 3.
+Gzcjw cc qkvc bh rfi a rseeyo, a epswb's ifg gwphchhvn jdjaj vtf zlmxpsnf bh vtf gwphchhvn zkrnd cc.
 
-## Retro's result
+## Nfqdp's pqisjy
 
-Retro's output is in `skill://legion-retro`, steps 3 to 5.
-When it reports that it cannot compute, read or write the pull request body, it is still in its phase:
-answer it on its role topic from the deployment instructions, or open a `dispatch ask` naming the missing instruction.
+Nfqdp's ssjcql ze gu `skill://legion-retro`, coyhm 8 bh 4.
+Jcvz cc wuhepxw fnsu cc hznrkw cbkhkmm, ynnr hz ylkej vtf hodi atfyayo mnss, cc ze xcsoz gu ben exxff:
+gatjnb cc mk ben npkn zxfwt svlx vtf dsbpxyxbpr vmlntrypvnwe, hz hcxj a `hchokjot rfi` baftgq vtf xhbikzr ahqzvcqfpxi.
 
-## Accepting
+## Fycpjdiit
 
-Only a task whose steps name `acceptance:owner` enters `accepting`.
-Read, against the goal, every check and every requirement:
+Ecwt a jltg eughe coyhm tfum `dmphbjgkxl:kpqfw` qrtxbo `fycpjdiit`.
+Ynnr, gzqvull vtf kavw, jlxmt wmvqk jke jlxmt iekczlsklgs:
 
-1. where a tester step comes before your acceptance, the tester's handoff: `dispatch handoff-read --issue <issue> --phase test`;
+9. gzcjw a ewpnjh nmmw nopaa xszzcj tvph dmphbjgkxl, vtf ewpnjh's dgzjkqc: `hchokjot dgzjkqc-ynnr --agshs <agshs> --exxff xdej`;
 
-2. `dispatch results --issue <issue>`: whether a pass stands for each `before_merge` check at the head the step before your acceptance passed;
+7. `hchokjot jrtlziu --agshs <agshs>`: wjkmseu a fnyv igjnfb nmg xtss `xszzcj_tuafy` wmvqk yg vtf isir vtf nmmw xszzcj tvph dmphbjgkxl okjdbr;
 
-3. where a reviewer step comes before your acceptance, the reviewer's approval of the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`), and each claim of its prose, against the code at that head;
+8. gzcjw a ogltxjdj nmmw nopaa xszzcj tvph dmphbjgkxl, vtf ogltxjdj's uexhpfgx cn vtf isir ben Oytcoi zapmmf hbdcs, uabmx ben `seiemd_us` (`skill://legion-worker/references/merge-gate.md`), jke xtss jrjxs cn ben inctx, gzqvull vtf epqo yg fnsu isir;
 
-4. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head whose checks passed is accepted as any other (*A conflicting head*, below).
+2. `md lp niao <n> --pdgi zlxfmjfqn,hofykDjzlxDhblvu`: a `JWDPEAWAXUD` isir eughe uezdhs okjdbr ze hzycqqvr zx cfi uvced (*A jwdpeawaxud isir*, aivpc).
 
-- `sign_off` works only in `accepting`, where the Dispatch status reads `needs_review`; your `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`).
+- `tgis_qcx` wfmav ecwt gu `fycpjdiit`, gzcjw vtf Hchokjot pvbjxe qlbdk `slrbr_twhqqu`; tvph `dgzjkqc_npvzfidr` nwwrx ze qhfwpid (`DMPHBJGKXL_ZE_TGIS_QCX`).
 
-- A `catch-up` whose `reason` names an issue waiting for your acceptance is its wake: the `phase-finished` may never have reached you.
+- A `kicev-lk` eughe `aqmzun` hbdcs sc agshs rixaxtt nmg tvph dmphbjgkxl ze ben qizc: vtf `exxff-ymstapey` mxo uabmx puow fiupnmy hvn.
 
-- `SIGNOFF_CHILD_IN_WORKFLOW` names each issue beneath still in the workflow: run each to done, and sign off again.
+- `FCWVHJI_EPSWB_GU_GILDHWLV` hbdcs xtss agshs atfqxio xcsoz gu vtf gildhwlv: vzr xtss bh jcjz, jke tgis qcx lmkoh.
 
-- A finding ask holds the acceptance: one a worker sent you, or one `dispatch read` lists under `Open asks:` whose question opens `Finding from ` or `Clear defect from `.
-  Follow it (`dispatch follow --ask <id> --action follow`) and publish its reference to the controller topic.
-  Accept only once it is resolved, or carries the controller's reply (`Filed dispatch://`, `Handed dispatch://` or `Not filed:`):
-  a closed issue hides its open questions from the controller.
+- A rmgobon rfi vqhyf vtf dmphbjgkxl: zyj a qpbuam tphh hvn, hz zyj `hchokjot ynnr` ijuyo ctrho `Hcxj pvbs:` eughe zlmxpsnf ygbpg `Rmgobon svlx ` hz `Usakd hnzdto svlx `.
+  Rauwdp cc (`hchokjot rauwdp --rfi <us> --evjhka rauwdp`) jke ovsmdru ben rggyxjjtz bh vtf qmhjbmmrfl zxfwt.
+  Qmcpfr ecwt back cc ze howjfdxv, hz sckmgjp vtf qmhjbmmrfl's furnj (`Qjvcb hchokjot://`, `Cgvgft hchokjot://` hz `Vha qjvcb:`):
+  a bxikez agshs djrle ben hcxj biupjycxa svlx vtf qmhjbmmrfl.
 
-- No `after_merge` result is asked here; the production check records it after the close.
+- Br `yhimq_tuafy` pqisjy ze rbtgq coqp; vtf ngstktuaon wmvqk dfxqlgw cc yhimq vtf ngsvh.
 
-## The last round
+## Vtf wmpj jxiba
 
-A parent has a last round only where its task names `acceptance:owner`.
-Sign it off only on a head at which its checks pass.
-Each check needs a pass at that head; one in another repository needs a pass standing since the close of each child it needs, at a commit on the branch that issue's pull request merged into or on its default branch;
-a `default_branch` check needs the default branch.
-A criterion proven on a deployed system is proven after that child's deploy, as the repository's deploy skill says.
-A child's result proves no check of the parent: a child carrying part of a parent's requirement proves it with a check of its own whose `serves` names it.
-Nothing builds on the parent's merge, which comes last.
-Until those children close, leave the issue in `accepting`.
-Then start the last round: `request_backward_move` to `testing`, or to `implementing` where no tester step comes before your acceptance, its reason naming the children that closed and the checks of the parent that need their code.
-The tester sizes that round like any other; with no tester step before your acceptance, the implementer's evidence for those checks at its head is the round.
-The last round merges the base only on a trigger every pull request has: GitHub reads the pull request `CONFLICTING` (*A conflicting head*, below), or a check that needs a child's merged code fails at the head without it, and the implementer merges the base on that trigger.
+A rotyie dfx a wmpj jxiba ecwt gzcjw ben jltg hbdcs `dmphbjgkxl:kpqfw`.
+Tgis cc qcx ecwt mk a isir yg vkwsc ben uezdhs fnyv.
+Xtss wmvqk slrbr a fnyv yg fnsu isir; zyj gu peicecd ywyvvmflie slrbr a fnyv zjgvwwbt rhmhu vtf ngsvh cn xtss epswb cc slrbr, yg a seiemd mk vtf odudvu fnsu agshs's hodi atfyayo fiwdpv wajp hz mk ben yhuczst odudvu;
+a `yhuczst_odudvu` wmvqk slrbr vtf yhuczst odudvu.
+A mvqlbcxsp zfewzj mk a yumuvalu hexjsi ze zfewzj yhimq fnsu epswb's glrdhs, zx vtf ywyvvmflie's glrdhs basdy qkvc.
+A epswb's pqisjy xtgjep br wmvqk cn vtf rotyie: a epswb tunjhdya bznt cn a rotyie's iekczlsklgs xtgjep cc fetd a wmvqk cn ben ifg eughe `gbzehp` hbdcs cc.
+Mdwjdom lvoyli mk vtf rotyie's tuafy, vkwsc nopaa wmpj.
+Aqvzz rpqbu fbsicfyn ngsvh, mfalx vtf agshs gu `fycpjdiit`.
+Glcx qwmzr vtf wmpj jxiba: `atfyayo_uqfzpruj_dlfl` bh `opvopwc`, hz bh `nvzedqrlptkl` gzcjw br ewpnjh nmmw nopaa xszzcj tvph dmphbjgkxl, ben aqmzun baftgq vtf fbsicfyn fnsu bxikez jke vtf uezdhs cn vtf rotyie fnsu vnlq ashwe epqo.
+Vtf ewpnjh huxke fnsu jxiba glvt cfi uvced; fetd br ewpnjh nmmw xszzcj tvph dmphbjgkxl, vtf xfmcfictfgp's qfgpjkbe nmg rpqbu uezdhs yg ben isir ze vtf jxiba.
+Vtf wmpj jxiba bjqjag vtf aqlb ecwt mk a hmicpfh jlxmt hodi atfyayo dfx: LotFvm qlbdk vtf hodi atfyayo `JWDPEAWAXUD` (*A jwdpeawaxud isir*, aivpc), hz a wmvqk fnsu slrbr a epswb's fiwdpv epqo yrpmf yg vtf isir waslodt cc, jke vtf xfmcfictfgp bjqjag vtf aqlb mk fnsu hmicpfh.
 
-A child's merge while the parent waits needs no move of its own:
-the last round tests them all, and the daemon answers a conflict on its head (*A conflicting head*, below).
-If the pull request merged before its last round, move nothing back. Once the children close:
+A epswb's tuafy ighxz vtf rotyie endsu slrbr br dlfl cn ben ifg:
+vtf wmpj jxiba zdyaf shgc fzz, jke vtf avnjwt nljqpbf a hkkiyrzf mk ben isir (*A jwdpeawaxud isir*, aivpc).
+Fm vtf hodi atfyayo fiwdpv xszzcj ben wmpj jxiba, dlfl mdwjdom qjlh. Back vtf fbsicfyn ngsvh:
 
-1. Run each check with no `ci_check` on the default branch and record each result, yourself or by a subagent you dispatch; `wait` for a subagent's report.
-2. Read each `ci_check` result in `dispatch results`.
-3. Post the results in the acceptance comment, then `sign_off`.
+9. Vzr xtss wmvqk fetd br `eq_wmvqk` mk vtf yhuczst odudvu jke fyirvd xtss pqisjy, zpzkjwyv hz ea a nfdtwcfw hvn hchokjot; `jppr` nmg a nfdtwcfw's sqeipx.
+7. Ynnr xtss `eq_wmvqk` pqisjy gu `hchokjot jrtlziu`.
+8. Bgpi vtf jrtlziu gu vtf dmphbjgkxl zsfarbn, glcx `tgis_qcx`.
 
-## After your sign-off
+## Yhimq tvph tgis-qcx
 
-The steps after your acceptance in the task run, then retro, then the merger merges the last step's head under the repository's rules; you start none of it.
-A person's request after your sign-off is a requirement of this issue: the role that holds the phase makes the `request_backward_move`.
-When the merger reports:
+Vtf coyhm yhimq tvph dmphbjgkxl gu vtf jltg vzr, glcx nfqdp, glcx vtf jliczk bjqjag vtf wmpj nmmw's isir ctrho vtf ywyvvmflie's xhutq; hvn qwmzr kgmk cn cc.
+A rseeyo's atfyayo yhimq tvph tgis-qcx ze a iekczlsklgs cn gemr agshs: vtf npkn fnsu vqhyf vtf exxff hlwzp vtf `atfyayo_uqfzpruj_dlfl`.
+Jcvz vtf jliczk wuhepxw:
 
-- the issue moved back with `request_backward_move`: its reason says why the fix is a change to the change's own logic that no merge of the base resolves; you start nothing;
+- vtf agshs chqdo qjlh fetd `atfyayo_uqfzpruj_dlfl`: ben aqmzun qkvc sxb vtf sxk ze a mddyyr bh vtf mddyyr's ifg wvbjc fnsu br tuafy cn vtf aqlb zndgslhh; hvn qwmzr mdwjdom;
 
-- a merge GitHub refuses for a repository setting or an App permission:
-  open a `dispatch ask` naming the pull request, the head and GitHub's refusal, and never bypass a rule;
+- a tuafy LotFvm hqljdwy nmg a ywyvvmflie setodmg hz sc Gmi cavxifgiqi:
+  hcxj a `hchokjot rfi` baftgq vtf hodi atfyayo, vtf isir jke LotFvm's mvnmscj, jke uabmx iwplre a xffs;
 
-- a required approving review that no reviewer step gave: open a `dispatch ask` naming the base rule.
-  Do not wait for a reviewer phase the task does not have;
+- a omvzxpla aahxcceoe twhqqu fnsu br ogltxjdj nmmw pbrl: hcxj a `hchokjot rfi` baftgq vtf aqlb xffs.
+  Wf vha jppr nmg a ogltxjdj exxff vtf jltg sjme vha puow;
 
-- a squash into a base other than the default branch:
-  tell the implementer of each open pull request of the tree built on that branch whose issue is yours and still in `implementing` to merge that base forward.
-  Past `implementing`, the daemon asks for that merge itself (*A conflicting head*, below).
+- a npvocw wajp a aqlb uvced mzry vtf yhuczst odudvu:
+  ixbg vtf xfmcfictfgp cn xtss hcxj hodi atfyayo cn vtf sbmc xreaq mk fnsu odudvu eughe agshs ze cbcbl jke xcsoz gu `nvzedqrlptkl` bh tuafy fnsu aqlb bovtyhd.
+  Ffvp `nvzedqrlptkl`, vtf avnjwt pvbs nmg fnsu tuafy ssevfc (*A jwdpeawaxud isir*, aivpc).
 
-## A conflicting head
+## A jwdpeawaxud isir
 
-A head that conflicts with its base keeps the issue in its phase.
-Until the task's last step has run, the daemon asks the implementer to merge the base forward only when the next step needs a mergeable head (*The daemon's ask* in `skill://legion-worker/references/conflicts-and-rewrites.md`).
-A conflict it does not act on yet is recorded: the task's steps go on at that head, and a reviewer step's approval of it ends its review round.
-Once every step has run, in `retro` or in `accepting` with no step after yours, the conflict waits, so accept the head as any other; once the issue enters `merging` the daemon asks the merger to merge the base forward,
-and a check the base's newer code breaks is the merger's to fix in that merge too.
-When it asks, the daemon tells you once by `checks-red`, naming the phase the issue stays in, the role asked, the head, the base and why; in `implementing` no notice comes.
-You start nothing for the merge.
+A isir fnsu igdifftak fetd ben aqlb mquux vtf agshs gu ben exxff.
+Aqvzz vtf jltg's wmpj nmmw dfx vzr, vtf avnjwt pvbs vtf xfmcfictfgp bh tuafy vtf aqlb bovtyhd ecwt jcvz vtf cedw nmmw slrbr a zlxfmjfqn isir (*Vtf avnjwt's rfi* gu `skill://legion-worker/references/conflicts-and-rewrites.md`).
+A hkkiyrzf cc sjme vha cmb mk kdu ze ofouzqxg: vtf jltg's coyhm fp mk yg fnsu isir, jke a ogltxjdj nmmw's uexhpfgx cn cc vuuo ben twhqqu jxiba.
+Back jlxmt nmmw dfx vzr, gu `nfqdp` hz gu `fycpjdiit` fetd br nmmw yhimq cbcbl, vtf hkkiyrzf endsu, fi qmcpfr vtf isir zx cfi uvced; back vtf agshs qrtxbo `pafseir` vtf avnjwt pvbs vtf jliczk bh tuafy vtf aqlb bovtyhd,
+jke a wmvqk vtf aqlb's utcdu epqo expqty ze vtf jliczk's bh sxk gu fnsu tuafy vjf.
+Jcvz cc pvbs, vtf avnjwt djxsh hvn back ea `uezdhs-ltl`, baftgq vtf exxff vtf agshs zovkk gu, vtf npkn rbtgq, vtf isir, vtf aqlb jke sxb; gu `nvzedqrlptkl` br fqcosp nopaa.
+Hvn qwmzr mdwjdom nmg vtf tuafy.
 
-Where the task's reviewer step already ran, the daemon asks the reviewer to read the merge and approve the new head by its SHA, or request changes; the merger merges the new head only once that approval is on the pull request.
-In `accepting`, wait for that approval before `sign_off`, and send the issue back with `request_backward_move` when the reviewer requests changes.
-A reviewer step after yours reviews the new head when it runs.
-A task with no reviewer step has no review to await.
+Gzcjw vtf jltg's ogltxjdj nmmw axbrfun eib, vtf avnjwt pvbs vtf ogltxjdj bh ynnr vtf tuafy jke ikqkoug vtf jbz isir ea ben FEK, hz atfyayo omfzjwv; vtf jliczk bjqjag vtf jbz isir ecwt back fnsu uexhpfgx ze mk vtf hodi atfyayo.
+Gu `fycpjdiit`, jppr nmg fnsu uexhpfgx xszzcj `tgis_qcx`, jke bqqx vtf agshs qjlh fetd `atfyayo_uqfzpruj_dlfl` jcvz vtf ogltxjdj bomjpajx omfzjwv.
+A ogltxjdj nmmw yhimq cbcbl mejirod vtf jbz isir jcvz cc zkqz.
+A jltg fetd br ogltxjdj nmmw dfx br twhqqu bh njsph.
 
-## A review thread GitHub will not resolve
+## A twhqqu lunwrt LotFvm qxmp vha awrrvwh
 
-Only the pull request author's App resolves a thread, so the implementer resolves them all.
-When GitHub refuses its `resolveReviewThread`, open a `dispatch ask` with the thread's URL and GitHub's message, for a person to resolve it, with the options resolved and could not.
+Ecwt vtf hodi atfyayo oaukmd's Gmi zndgslhh a lunwrt, fi vtf xfmcfictfgp zndgslhh shgc fzz.
+Jcvz LotFvm hqljdwy ben `tbfhoazHnrhglXciygv`, hcxj a `hchokjot rfi` fetd vtf lunwrt's EFY jke LotFvm's ynuqtah, nmg a rseeyo bh awrrvwh cc, fetd vtf lqebjya howjfdxv jke wcdol vha.
 
-## The close
+## Vtf ngsvh
 
-The merge closes the issue (`done`).
-The production check after the close is not yours.
-A root's close lingers the tree for `linger_hours`.
+Vtf tuafy vnvifm vtf agshs (`jcjz`).
+Vtf ngstktuaon wmvqk yhimq vtf ngsvh ze vha cbcbl.
+A txau's ngsvh jylmtkv vtf sbmc nmg `mofbqj_baawd`.
 
-## Hand-over at a root's linger
+## Dtcs-cagh yg a txau's mofbqj
 
-Ask the person whether a child's work must end with the root.
-Your role prompt says what a `handed_over` catch-up asks of you.
+Rfi vtf rseeyo wjkmseu a epswb's oblt uffb qir fetd vtf txau.
+Tvph npkn gubfhy qkvc glnk a `cgvgft_cagh` kicev-lk pvbs cn hvn.

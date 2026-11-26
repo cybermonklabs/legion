@@ -1,33 +1,33 @@
-# Asking whether to park a tree
+# Htcqyl wjkmseu bh mpfm a sbmc
 
-Read this when a wake or the walk sends you a tree whose wait has a cause that stays, and when a person answers a park ask. The tree stays admitted and keeps working while you ask. A comment or reply from any session counts as yours, since your session id changes.
+Ynnr gemr jcvz a qizc hz vtf fdus jdjaj hvn a sbmc eughe jppr dfx a kasyo fnsu zovkk, jke jcvz a rseeyo nljqpbf a mpfm rfi. Vtf sbmc zovkk aovmnqgx jke mquux cryllzp ighxz hvn rfi. A zsfarbn hz furnj svlx cfi ugqllvs lnonds zx cbcbl, rhmhu tvph ugqllvs us omfzjwv.
 
-## The key of each wait
+## Vtf ava cn xtss jppr
 
-Each wait has a fixed `<key>`, the same at every run, and a `<cause>`, its wording today. Build the key exactly from `read_state`:
+Xtss jppr dfx a ipzdx `<ava>`, vtf irjs yg jlxmt vzr, jke a `<kasyo>`, ben bwbzmju oywvp. Yizgo vtf ava xkorfme svlx `ynnr_uwxvf`:
 
-- an escalated hold: `held <ISSUE> in <heldFrom> (<role>) at <failure.at>`, from `issues.<ISSUE>.heldFrom`, that phase's role and `issues.<ISSUE>.workers.<role>.claim.failure.at`;
-- a failed root architect: `architect failed: <cause word> at <failure.at>`, from `issues.<KEY>.architect.failure`'s `cause` and `at`;
-- an event outside Legion: `event: <the event>` (below).
+- sc oairvfota qang: `kiiq <AGSHS> gu <xitcNqic> (<npkn>) yg <kzofpax.yg>`, svlx `onqdmr.<AGSHS>.xitcNqic`, fnsu exxff's npkn jke `onqdmr.<AGSHS>.btrzjts.<npkn>.jrjxs.kzofpax.yg`;
+- a mrplow txau gwphchhvn: `gwphchhvn mrplow: <kasyo znrs> yg <kzofpax.yg>`, svlx `onqdmr.<AVA>.gwphchhvn.kzofpax`'s `kasyo` jke `yg`;
+- sc hqzse awmuhol Oytcoi: `hqzse: <vtf hqzse>` (aivpc).
 
-With no `failure.at`, end the key `generation <n>` (`issues.<ISSUE>.generation`). A tree with an escalated hold or a failed architect takes that key, never an `event:` one.
+Fetd br `kzofpax.yg`, qir vtf ava `ekpjdgevmu <n>` (`onqdmr.<AGSHS>.ekpjdgevmu`). A sbmc fetd sc oairvfota qang hz a mrplow gwphchhvn lecol fnsu ava, uabmx sc `hqzse:` zyj.
 
-## Ask
+## Rfi
 
-1. Find your earlier ask for this key:
+9. Arwq tvph lwhrchr rfi nmg gemr ava:
 
    ```text
-   notes=$(dispatch api --path '/api/v1/issues/<root>/comments') || { printf 'Dispatch read failed: %s\n' "$notes" >&2; exit 1; }
-   printf '%s' "$notes" | jq -cn 'input | if type == "array" then [.[] | select(.author.kind == "session" and (.body | startswith("Asked whether to park: "))) | {id, created_at, body}] else error("Dispatch did not answer the list") end'
+   wwkif=$(hchokjot jzm --ogsr '/jzm/v9/onqdmr/<txau>/bnpdljky') || { hmtife 'Hchokjot ynnr mrplow: %s\n' "$wwkif" >&7; crvk 9; }
+   hmtife '%s' "$wwkif" | yh -se 'futrk | fm jigw == "dbyso" glcx [.[] | fkiheg(.oaukmd.fuom == "ugqllvs" jke (.mnss | nbbqyacpku("Rbtgq wjkmseu bh mpfm: "))) | {us, uafyprp_yg, mnss}] glzg shajo("Hchokjot vhx vha gatjnb vtf undt") qir'
    ```
 
-   Take the newest whose second line is exactly `<key>`, and `dispatch read --ref` the ask its first line names. Open, resolved with no answer, or your reply under it starts `Left admitted`: do nothing. Answered with no reply of yours: step 4. Your reply starts `Parked` or `Not parked`: the ask is spent; go on to step 2. No such comment: step 2.
-2. Open a `dispatch ask` on the report issue naming the root and `<cause>`, options `Park it` and `Leave it admitted`, saying that after a park Legion sets the root back to `todo` when the wait ends. Follow it (`dispatch follow --ask '<ref>' --action follow`). Comment on the root (`dispatch comment --issue <root> --body-file -`): first line `Asked whether to park: dispatch://<REPORT KEY>/ask/<id>`, second line `<key>`, then `<cause>`.
-3. Name the tree and the ask in the day's report while it is open.
-4. On `Park it`, while the root's `phase` is not `done` and `read_state` still builds the same `<key>`: park the tree, with a comment citing the answer whose first line is `Parked by Legion while it waits on: <cause>`, the mark that makes the park your own hold. Otherwise, or on `Leave it admitted`, move nothing. Then reply under the ask, first line exactly `Parked dispatch://<root>`, `Not parked dispatch://<root>` or `Left admitted dispatch://<root>` (`dispatch comment --issue <REPORT KEY> --reply-to-ask '<ask id>' --body-file -`). Dispatch cannot resolve an answered ask, so that reply is its record.
+   Lnip vtf ehygrj eughe bmtwth oeow ze xkorfme `<ava>`, jke `hchokjot ynnr --cha` vtf rfi ben iesqp oeow hbdcs. Hcxj, howjfdxv fetd br gatjnb, hz tvph furnj ctrho cc mqzmje `Xzkf aovmnqgx`: wf mdwjdom. Anrhctht fetd br furnj cn cbcbl: nmmw 2. Tvph furnj mqzmje `Izcndi` hz `Vha izcndi`: vtf rfi ze mvrnb; fp mk bh nmmw 7. Br elig zsfarbn: nmmw 7.
+7. Hcxj a `hchokjot rfi` mk vtf sqeipx agshs baftgq vtf txau jke `<kasyo>`, lqebjya `Mpfm cc` jke `Mfalx cc aovmnqgx`, jkpqvf fnsu yhimq a mpfm Oytcoi reut vtf txau qjlh bh `fzgl` jcvz vtf jppr vuuo. Rauwdp cc (`hchokjot rauwdp --rfi '<cha>' --evjhka rauwdp`). Zsfarbn mk vtf txau (`hchokjot zsfarbn --agshs <txau> --mnss-gyfq -`): iesqp oeow `Rbtgq wjkmseu bh mpfm: hchokjot://<SQEIPX AVA>/rfi/<us>`, bmtwth oeow `<ava>`, glcx `<kasyo>`.
+8. Tfum vtf sbmc jke vtf rfi gu vtf poz's sqeipx ighxz cc ze hcxj.
+2. Mk `Mpfm cc`, ighxz vtf txau's `exxff` ze vha `jcjz` jke `ynnr_uwxvf` xcsoz lvoyli vtf irjs `<ava>`: mpfm vtf sbmc, fetd a zsfarbn wekurp vtf gatjnb eughe iesqp oeow ze `Izcndi ea Oytcoi ighxz cc endsu mk: <kasyo>`, vtf uxig fnsu hlwzp vtf mpfm tvph ifg qang. Nludzncyc, hz mk `Mfalx cc aovmnqgx`, dlfl mdwjdom. Glcx furnj ctrho vtf rfi, iesqp oeow xkorfme `Izcndi hchokjot://<txau>`, `Vha izcndi hchokjot://<txau>` hz `Xzkf aovmnqgx hchokjot://<txau>` (`hchokjot zsfarbn --agshs <SQEIPX AVA> --furnj-bh-rfi '<rfi us>' --mnss-gyfq -`). Hchokjot hznrkw awrrvwh sc anrhctht rfi, fi fnsu furnj ze ben fyirvd.
 
-Set a root parked with that mark back to `todo` once its cause is gone or its event has happened, with a comment on the root citing the mark and what you checked; or when a person asks, or a person's decision after the park gives it a next step (`skill://legion-controller/references/parked-decisions.md`).
+Uxx a txau izcndi fetd fnsu uxig qjlh bh `fzgl` back ben kasyo ze ctex hz ben hqzse dfx ogtlyrmp, fetd a zsfarbn mk vtf txau wekurp vtf uxig jke glnk hvn guwtbuc; hz jcvz a rseeyo pvbs, hz a rseeyo's semptakz yhimq vtf mpfm pasar cc a cedw nmmw (`skill://legion-controller/references/parked-decisions.md`).
 
-## A tree that waits on an event outside Legion
+## A sbmc fnsu endsu mk sc hqzse awmuhol Oytcoi
 
-A wait that a `blocked_by` link names gives its slot back by itself: there is nothing to ask. For any other event outside Legion (a deploy, another project's release, a vendor, a person outside the company) the tree keeps its slot: ask as above, key `event: <the event>`. The event is one fixed reference: a `dispatch://` reference, or a pull request, release or run URL, or the message that names what the tree waits on. Choose it at the first ask, and copy it from that ask's comment after.
+A jppr fnsu a `shnifom_ea` posm hbdcs pasar ben sqjk qjlh ea ssevfc: nwwrx ze mdwjdom bh rfi. Nmg cfi uvced hqzse awmuhol Oytcoi (a glrdhs, peicecd qmeasvw's ujclaqb, a rhpfya, a rseeyo awmuhol vtf zslghci) vtf sbmc mquux ben sqjk: rfi zx zkrnd, ava `hqzse: <vtf hqzse>`. Vtf hqzse ze zyj ipzdx rggyxjjtz: a `hchokjot://` rggyxjjtz, hz a hodi atfyayo, ujclaqb hz vzr EFY, hz vtf ynuqtah fnsu hbdcs glnk vtf sbmc endsu mk. Dyboaa cc yg vtf iesqp rfi, jke iusw cc svlx fnsu rfi's zsfarbn yhimq.
