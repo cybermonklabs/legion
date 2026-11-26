@@ -136,10 +136,11 @@ func TestTheEdgeBoundsTheDeviceAuthorizationsOfEveryCallerTogether(t *testing.T)
 // another address is then served, and so are two more; the fourth valid login is refused 429
 // RATE_LIMITED, so valid logins still spend the bucket.
 //
-// The named reverts: spend the shared bucket before the request is judged, and the first valid
-// login is refused 429; judge a request only by its object's signature and fields
-// (record.VerifyRequestObject), and the dpop_jkt mismatch and the service's login spend two
-// tokens, so the second valid login is refused 429.
+// The named reverts: spend the shared bucket before the request is judged, and the first three
+// refused requests spend its three tokens, so the fourth, the dpop_jkt that is not the object's
+// key, answers 429 where the test wants a refusal that is no 429; judge a request only by its
+// object's signature and fields (record.VerifyRequestObject), and the dpop_jkt mismatch and the
+// service's login spend two tokens, so the second valid login is refused 429.
 func TestTheEdgeSpendsItsSharedBucketOnlyOnALoginItCanOpen(t *testing.T) {
 	rig := ciphertest.NewRig(t, ciphertest.WithEdgeDeviceLimit(ratelimit.Limit{Every: time.Hour, Burst: 3}))
 	before := loginRows(t, rig)

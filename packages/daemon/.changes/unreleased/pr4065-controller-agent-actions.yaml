@@ -1,0 +1,23 @@
+kind: Added
+body: |-
+  Of the actions on an agent (stop, retry, suspend, resume_agent, compact and fresh session of one
+  agent, named by its issue and role), the daemon serves the controller four beside the two it
+  had, `POST /legion/v1/agents/stop`, `retry`, `suspend` and `resume`, behind the controller's grant
+  and refused for the controller's own agent. Every other grant, an architect's included, is
+  refused `403 CONTROLLER_REQUIRED` at all six, as `claims/fresh-session` and `claims/compact`
+  refuse it. A controller's suspension is recorded under its own source, `controller`: it holds
+  against every daemon rule, the controller's `resume_agent` or the operator's resume lifts it,
+  and `legion claims list` prints it as `suspended:controller`. While the operator's own
+  suspension holds an agent, the controller's `stop`, `retry`, `suspend`, `resume_agent` and
+  `fresh_session` are refused `409 SUSPENDED_BY_OPERATOR` and nothing of the claim changes; before
+  this, the controller's `fresh_session` lifted that suspension. A store migration widens
+  `claims_suspended_by_check` for `controller`. While the project is paused, the controller's
+  `agents/retry` and `agents/resume` are refused `409 PROJECT_PAUSED`, as its `fresh-session` and
+  `compact` are, and nothing of the claim changes; its `agents/stop` and `agents/suspend` still
+  run. Every `PROJECT_PAUSED` refusal now ends by naming what lifts the pause: the controller's
+  `resume` operation, which names no issue, or the operator's `legion project resume`. A pause
+  stops no agent that a suspension of the controller's or the operator's already holds, and such a
+  suspension that takes over an agent the pause stopped holds it through the project's resume.
+time: 2026-11-20T16:00:00.000000000Z
+custom:
+    Issue: pr4065
