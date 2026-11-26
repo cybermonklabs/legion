@@ -28,7 +28,10 @@ owns the document.
    and what each would cost.
 3. **A requirement nothing can check.** A `requirement` block of the spec that no `check` block of
    the issue's Verification document serves, and a check with no command, test or request whose
-   expected output decides it.
+   expected output decides it. A requirement whose text starts `Delivered by` after its number and
+   any title and names the issue that delivers it needs no plan task and no check in this issue's
+   own documents, whatever that issue's parent, since that issue's checks serve it, and a view's
+   requirements are the parts of its ancestor's requirements that its `Delivers:` line names.
 4. **Claims and requirements with no source.** A statement about how a system works today that the
    code, its documentation or a read-only command does not show. Also, when the caller gave you the
    owner's words to check the document against, a requirement that traces to neither them nor a
