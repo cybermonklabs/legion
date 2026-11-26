@@ -81,6 +81,30 @@ of the module and of its tests is served from the trees; with one tree removed f
 that cache it failed, naming the module it had to download, and on the entry with zips the same
 removal passed, since the zip extracted the tree again.
 
+The other four families, measured in scratch run 45743937976: each fill ran as written here, and
+for each family one job restored main's newest entry before any fill there saved (before) and
+one restored the entry the fill saved (after), on the same runner type. Saved entries, in bytes:
+
+| family | runner | zips deleted | before | after | restore, before / after |
+|---|---|---|---|---|---|
+| go-daemon | x64 | 202, 275 MB | 1,240,276,083 | 972,221,494 | 34 s / 15 s |
+| go-daemon | arm64 | 202, 275 MB | 811,184,022 | 543,878,606 | |
+| go-notices | arm64 | 306, 485 MB | 2,444,774,162 | 1,974,345,271 | 63 s / 61 s |
+| go-envoy | x64 | 32, 65 MB | 185,401,062 | 122,633,397 | 3 s / 3 s |
+| go-envoy | arm64 | 39, 77 MB | 201,671,639 | 129,748,341 | |
+| go-envoy-infra | x64 | 202, 310 MB | 1,465,443,294 | 1,167,226,291 | 28 s / 26 s |
+| go-envoy-infra | arm64 | 202, 310 MB | 1,892,710,447 | 1,594,620,716 | |
+
+Each restore is one sample. go-notices' restore is mostly the extraction of its 12 GB build
+cache, so its zips' 470 MB moved it little. On each entry without zips the fill's own set listed
+with GOPROXY=off: `go list -deps -test ./...` with and without the e2e tag for go-daemon,
+go-release-notices.sh itself for go-notices, `go list -deps` of the listener and natsd for
+go-envoy, and `go list -deps -test ./...` plain, with pulumilive,natslive and for darwin/arm64 for
+go-envoy-infra. That set, not `./...` of the module, since go-envoy holds only the listener's and
+natsd's modules. On a hardlinked copy of each entry with one of those modules' trees removed, the
+same command failed, naming the module (jobs 139656698136, 139656780003, 139655579434 and
+139659218601); on each entry with zips it passed, since the zip extracted the tree again.
+
 The zips are not left out by a `!` line in the save's path list. actions/cache resolves its path
 list with @actions/glob and `implicitDescendants: false`
 (@actions/cache's internal/cacheUtils.ts, resolvePaths), so `~/go/pkg/mod` yields that one
