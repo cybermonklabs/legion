@@ -344,6 +344,11 @@ const tipCommits = {
   secondOpened: "d2".repeat(20),
   secondPushed: "d3".repeat(20),
 } as const;
+/** Whether #22's texts hold its commit messages: `read`, `not read` (commit_messages null, as a
+ *  read whose higher source named the issue stores them), or `no texts`. */
+const tipMessagesOfTheSecond = `select coalesce((select case when commit_messages is null
+  then 'not read' else 'read' end from pull_request_texts
+  where repo = '${tipRepo}' and number = 22), 'no texts')`;
 /** first-start-tip's negative control (VERIFICATION_RESULTS_E2E_TIP_CONTROL=1): the durable made
  *  before the first start, to deliver from the stream's first message. */
 const tipControl = process.env.VERIFICATION_RESULTS_E2E_TIP_CONTROL === "1";
@@ -4424,11 +4429,14 @@ async function limitAfterOnePass(pass: string): Promise<string | undefined> {
 //                    there, with its body naming the issue: #22's row is open at secondPushed within
 //                    5 seconds of the push, #21 has none, and `dispatch results` compares the check
 //                    with #22 at secondPushed.
-//   stopped          while no server runs: where the durable stands, and the fake's log emptied.
+//   stopped          while no server runs: where the durable stands, whether #22's texts hold its
+//                    commit messages, and the fake's log emptied.
 //   second-start     after a second start, the same three facts. T3: the bind right after the ack
 //                    floor the first start left, no event redelivered, no head row of #21, no read
 //                    of a pull request by the REST routes the intake reads with, and no call to
-//                    GitHub but those of the reconcile pass's facts line (tipCallOfTheFactsLine).
+//                    GitHub but those of the reconcile pass's facts line (tipCallOfTheFactsLine):
+//                    its one GraphQL query asking for #22 is that line's only where #22's commit
+//                    messages were not stored before the second start and are after its pass.
 //   control-durable  while no server runs: the durable deleted and created again at the stream's
 //                    first message.
 //   control-start    after one more start: it binds at or below the floor the second start found,
@@ -4436,13 +4444,15 @@ async function limitAfterOnePass(pass: string): Promise<string | undefined> {
 //                    reading of the calls can each see a start that reads an event again.
 
 /** What one half of first-start-tip leaves a later one, in the state file under its name: the
- *  stream's last sequence before the first start, the durable's ack floor before the second, and
- *  the length of the server's log and its count of attribution lines before the start to come. */
+ *  stream's last sequence before the first start, the durable's ack floor and whether #22's commit
+ *  messages are stored before the second, and the length of the server's log and its count of
+ *  attribution lines before the start to come. */
 interface TipState {
   readonly floor?: number;
   readonly lastSeq?: number;
   readonly linesBefore?: number;
   readonly logOffset?: number;
+  readonly messagesBefore?: string;
 }
 
 function writeTipState(change: TipState): void {
@@ -4677,7 +4687,7 @@ async function firstStartTipHalf(half: string): Promise<never> {
       );
       break;
     case "second-start": {
-      const { floor, linesBefore, logOffset } = state;
+      const { floor, linesBefore, logOffset, messagesBefore } = state;
       if (floor === undefined || linesBefore === undefined || logOffset === undefined) {
         setupFailed(
           "first-start-tip",
@@ -4687,7 +4697,9 @@ async function firstStartTipHalf(half: string): Promise<never> {
       const pass = await awaitOnePass(linesBefore);
       const bind = await bindSince(logOffset, "the second start's bind");
       const settled = await tipDurableSettled("the second start's durable");
-      await runCase("first-start-tip", () => tipSecondStart(floor, pass, bind, settled));
+      await runCase("first-start-tip", () =>
+        tipSecondStart(floor, messagesBefore ?? "not recorded", pass, bind, settled)
+      );
       return summarise();
     }
     case "control-durable":
@@ -4854,23 +4866,29 @@ async function tipFirstStart(
 }
 
 /** first-start-tip's read while no server runs after the first start: where the durable stands,
- *  which the second start must bind right after, and the fake's log emptied. */
+ *  which the second start must bind right after, whether #22's texts hold its commit messages, and
+ *  the fake's log emptied. */
 async function tipStopped(): Promise<void> {
   const info = await tipDurable();
   if (info === undefined) throw new Error("the first start left no durable");
+  const messagesBefore = await sql(tipMessagesOfTheSecond);
   await resetPullReads();
   const fixtureAt = await prepareOnePass();
   writeTipState({
     floor: info.ack_floor.stream_seq,
     linesBefore: attributionLines().length,
     logOffset: logLength(),
+    messagesBefore,
   });
-  note(`after the first start: ${durableText(info)}; no pass is recorded, at ${fixtureAt}`);
+  note(
+    `after the first start: ${durableText(info)}; #22's commit messages: ${messagesBefore}; no pass is recorded, at ${fixtureAt}`
+  );
 }
 
 /** T3, after the second start (the section "first-start-tip"). */
 async function tipSecondStart(
   floor: number,
+  messagesBefore: string,
   pass: string,
   bind: { readonly line: string; readonly seq: number },
   settled: ConsumerInfo
@@ -4908,6 +4926,23 @@ async function tipSecondStart(
   if (others.length > 0) {
     failures.push(
       `T3: the second start called GitHub for more than the facts line's read of #22: ${others.map(callText).join("; ")}`
+    );
+  }
+  // The facts line's read is the one GraphQL query asking for #22, and it is that read only where
+  // #22's texts held no commit messages before it and hold them after the pass.
+  const messagesAfter = await sql(tipMessagesOfTheSecond);
+  const factsReads = calls.filter((call) => call.route === "POST /graphql").length;
+  note(
+    `T3 #22's commit messages: ${messagesBefore} before the second start, ${messagesAfter} after its pass`
+  );
+  if (factsReads > 0 && (messagesBefore !== "not read" || messagesAfter !== "read")) {
+    failures.push(
+      `T3: the second start sent ${factsReads} GraphQL query(ies) asking for #22, whose commit messages were ${messagesBefore} before it and ${messagesAfter} after it: no read of messages the push's read left unread`
+    );
+  }
+  if (messagesBefore === "not read" && messagesAfter !== "read") {
+    failures.push(
+      `T3: the second start's pass left #22's commit messages ${messagesAfter}, which its facts line reads`
     );
   }
   return failures.length === 0 ? undefined : failures.join("\n   ");
