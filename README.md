@@ -163,12 +163,19 @@ bun run dispatch:local                                       # Dispatch, seeded 
 ```
 
 The Bun test scripts that run a package's files side by side name their worker count:
-`--parallel=4` in `packages/pi-legion`, and `--parallel=8` in `packages/dispatch`'s `test:web` and
-`test:harness`. A bare `--parallel` starts one worker per CPU. On a 180-CPU machine whose user may
-run 4,096 tasks, that failed every file of `test:web` (176 workers, each ended by SIGABRT) and 27
-rows of pi-legion's (threads refused with EAGAIN). On CI's 4-CPU runners eight workers take no
-longer than four: `test:web` 100 s against 101 s, `test:harness` 78 s against 113 s (medians of
-three runs on a 4-CPU pod, 2026-11-26). pi-legion keeps four, CI's count. Most of its tasks are
+`--parallel=4` in `packages/pi-legion`, and in `packages/dispatch`'s `test:web` and `test:harness`
+one worker per CPU up to eight (`packages/dispatch/e2e/tools/test-workers.ts`). A bare
+`--parallel` starts one worker per CPU. On a 180-CPU machine whose user may run 4,096 tasks, that
+failed every file of `test:web` (176 workers, each ended by SIGABRT) and 27 rows of pi-legion's
+(threads refused with EAGAIN). On CI's 4-CPU runners eight workers took no longer than four for
+`test:web`, 100 s against 101 s, and less for `test:harness`, 78 s against 113 s (medians of three
+runs on a 4-CPU pod, 2026-11-26), so Dispatch's count costs `test:harness` about 35 s there. It
+keeps a Legion issue pod whole, which has 2 CPUs and shares its memory with every agent in it:
+there eight workers saved at most 22 s over two and held up to 2,681 MiB more (`test:web web/src`
+439 s at a peak of 4,774 MiB in use against 438 s at 2,093 MiB, `test:harness e2e/__tests__` 520 s
+at 3,985 MiB against 542 s at 2,715 MiB; one run each at fef6c148, 2026-11-26), and a
+`bun run test` in a Job of 2 CPUs and 6 GiB ran out of memory under eight. pi-legion keeps four,
+CI's count. Most of its tasks are
 the Oh My Pi processes its tests start, and Oh My Pi sizes each of its thread pools to the
 machine's CPU count, so the harness that starts it (`packages/pi-shared/test/omp-harness.ts`,
 `ompEnv`) sets each pool to four, the size CI's runners give it: one such omp held 269 threads
