@@ -2016,6 +2016,139 @@ test("a keyboard press of the history's last Show more leaves the focus in view"
   expect(failures, failures.join("; ")).toEqual([]);
 });
 
+/** The start of the title of the issue `seedApprovalUnderFirstPage` cites, which the link to it
+ *  reads once the names of the references are read. */
+const CITED_TITLE = "Cited:";
+
+/**
+ * An issue whose history's first Show more draws, as its first entry, the line of a person's
+ * approval request whose question cites another issue by its address: that issue's title is long
+ * enough to wrap over several lines of Details, and the person's name is no control, so the link
+ * to it is the line's first control. `PAGE_SIZE` notes of the Legion daemon's, each a thread of
+ * its own, are newer than the request. Answers the issue's key, the cited issue's key, and the
+ * sequence of the request's `ask.opened`.
+ */
+async function seedApprovalUnderFirstPage(): Promise<{ cited: string; key: string; seq: number }> {
+  await createProject({ key: "CORE", name: "Core" });
+  const cited = await createIssue({
+    project: "CORE",
+    title: `${CITED_TITLE} ${"a title long enough to wrap over several lines of Details ".repeat(3)}`,
+  });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: "The plan.",
+    title: "An approval request under Show more",
+  });
+  const requested = withOpenedAsk(
+    await requestApproval(
+      issue.primary_artifact_id,
+      { summary: `Follows dispatch://${cited.key} closely.` },
+      { login: "bob" }
+    )
+  );
+  for (let index = 0; index < PAGE_SIZE; index += 1) {
+    await createMessage(issue.key, { body: `The daemon's note ${index}.` }, asDaemon);
+  }
+  const opened = (await getIssueEvents(issue.key, { limit: 200 })).find(
+    (event) => event.type === "ask.opened" && event.payload.id === requested.ask.id
+  );
+  if (opened === undefined) throw new Error(`the seed recorded no ask.opened for ${issue.key}`);
+  return { cited: cited.key, key: issue.key, seq: opened.seq };
+}
+
+// A keyboard press of Show more hands the focus to the first control of the first entry it drew,
+// brought into Details' view by the least scroll (`IssueHistory.tsx`'s `handTo`). That control
+// can be a reference in the entry's line, drawn by its address until the names of the references
+// are read, then by its target's name, which can wrap over several lines and so grow the link
+// after the hand-on. Found by the tester on a running build of 9bcd9f18 with a copy of a large
+// real issue: about 120 ms after the press the focused link grew from 15 px to 51 px, and its
+// foot stood 35 px below Details' view at 1440 px, 9 px at 390. Here the names are read late, as
+// a slow answer is: the batched read of the references' names, and the cited issue's summary,
+// which names a reference to an issue, are held back until the press has landed and the focus is
+// read. The reader's own scroll puts Show more at the foot of Details' view before the press, so
+// the hand-on brings the link in by its foot.
+// SLOW(>=2s): two issues, an approval request and 20 notes written, and at each of two widths a
+// sign-in and one load of the history.
+test("a keyboard press of the history's Show more keeps the reference link it focused wholly in Details' view as the link's target's long name lands and wraps it", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const seeded = await seedApprovalUnderFirstPage();
+  for (const size of [DESKTOP, PHONE]) {
+    const context = await reader(browser, "alice");
+    const names = Promise.withResolvers<void>();
+    try {
+      const page = await context.newPage();
+      await page.setViewportSize(size);
+      for (const read of [
+        "**/api/v1/reference-targets?**",
+        `**/api/v1/issues/${seeded.cited}/summary`,
+      ]) {
+        await page.route(read, async (route) => {
+          await names.promise;
+          await route.continue();
+        });
+      }
+      await gotoIssue(page, `/issues/${seeded.key}/activity`);
+      await expect(marginShell(page), "/activity did not open Details").toBeVisible();
+      await newestHistoryEntry(page);
+      const more = historyShowMore(page);
+      await more.focus();
+      const view = await historyViewport(page);
+      const reached = await boxOf(more, CONTROL_LABELS.show_more);
+      await scrollHistoryBy(page, reached.y + reached.height - view.bottom);
+      await detailsStandStill(page, "the reader's scroll");
+      await expect(more, "the reader's scroll took the focus off Show more").toBeFocused();
+
+      await page.keyboard.press("Enter");
+      const first = historyEntries(page).nth(PAGE_SIZE);
+      await expect(
+        first,
+        "the press did not draw the approval request's line first, so the row proves nothing"
+      ).toHaveAttribute("data-event-seq", String(seeded.seq));
+      const link = first.locator(`.dispatch-markdown a[href="/issues/${seeded.cited}"]`);
+      await expect(
+        link,
+        `at ${size.width} px the press did not hand the focus to the reference in the line it drew first`
+      ).toBeFocused();
+      await detailsStandStill(page, `the press of ${CONTROL_LABELS.show_more}`);
+      await expect(
+        link,
+        "the cited issue's name landed before the press, so the row proves nothing"
+      ).not.toContainText(CITED_TITLE);
+      // Read once Details' box has stood still after the press: where the hand-on left the link.
+      const handed = await link.evaluate((element) => element.getBoundingClientRect().top);
+
+      names.resolve();
+      await expect(link, "the cited issue's name never landed").toContainText(CITED_TITLE);
+      await detailsStandStill(page, "the cited issue's name landing");
+      // Two reads once Details' box has stood still for two frames: the link, and the view.
+      const landed = await link.evaluate((element) => {
+        const at = element.getBoundingClientRect();
+        return {
+          bottom: at.bottom,
+          focused: element === document.activeElement,
+          height: at.height,
+          top: at.top,
+        };
+      });
+      const shown = await historyViewport(page);
+      expect(
+        handed + landed.height > shown.bottom + 1,
+        `at ${size.width} px the link, ${Math.round(landed.height)} px tall once its target's name landed, fits under the top the hand-on left it at (${Math.round(handed)} px, the view ending at ${Math.round(shown.bottom)}), so the row proves nothing`
+      ).toBe(true);
+      expect(landed.focused, `at ${size.width} px the focus left the link`).toBe(true);
+      expect(
+        landed.top >= shown.top - 1 && landed.bottom <= shown.bottom + 1,
+        `at ${size.width} px once the cited issue's name landed, the focused link stood at ${Math.round(landed.top)} to ${Math.round(landed.bottom)} px, out of Details' view (${Math.round(shown.top)} to ${Math.round(shown.bottom)})`
+      ).toBe(true);
+    } finally {
+      names.resolve();
+      await context.close();
+    }
+  }
+});
+
 /** The words of a long agents' turn: `parts` paragraphs, each `TURN_PARAGRAPH`. */
 function longTurnBody(parts: number): string {
   return Array.from({ length: parts }, (_, part) => `Part ${part}: ${TURN_PARAGRAPH}`).join("\n\n");

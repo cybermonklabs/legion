@@ -18,7 +18,7 @@ import { writePin } from "../issue/pin-write";
 import { eventItemId, isPinnedEvent, stateForIssue } from "../issue/pins";
 import { HISTORY_ENTRY_ATTRIBUTE } from "../margin/details-focus-keeper";
 import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
-import { ViewportAnchor } from "../shell/ViewportAnchor";
+import { overlaps, ViewportAnchor } from "../shell/ViewportAnchor";
 import { DetailsErrorLine, retryRead } from "./details-error";
 import { ENTRY_CONTROLS, SHOW_MORE_CONTROL, ShowMoreWords } from "./details-leaves";
 import { Entry, runKeys } from "./history-entries";
@@ -398,10 +398,11 @@ export function IssueHistory({
   // its reads settle, Details keeps the place of the entry next to the pressed control
   // (`keepEntryBeside`), so the entries drawn under it leave that entry where the reader saw it.
   // The one move of Details a hand-on makes is to bring the element it gives the focus to into
-  // Details' view, by the least scroll (`handTo`): the first entry a press draws can stand below
-  // the view, as under a new day's line, where a keyboard reader would not see the focus. The
-  // entry the focus moved to is then the place Details holds as the entries above it change
-  // height (`ViewportAnchor` records the place at every focus moved into its rows).
+  // Details' view, by the least scroll (`handTo`), and keep it wholly there as it grows
+  // (`keepFocusedInView`): the first entry a press draws can stand below the view, as under a new
+  // day's line, where a keyboard reader would not see the focus. The entry the focus moved to is
+  // then the place Details holds as the entries above it change height (`ViewportAnchor` records
+  // the place at every focus moved into its rows).
   const pressed = useRef<
     | {
         /** The controls and the entries drawn as the press was made. */
@@ -461,6 +462,10 @@ export function IssueHistory({
       olderRead.current = null;
     });
   };
+  // What ends the keeping of the element the last hand-on gave the focus to in Details' view
+  // (`keepFocusedInView`): the next hand-on ends it, and so does the history going.
+  const focusKept = useRef<(() => void) | null>(null);
+  useEffect(() => () => focusKept.current?.(), []);
   useLayoutEffect(() => {
     const press = pressed.current;
     const reads = press?.kind === "retry" || press?.reads === true;
@@ -475,8 +480,13 @@ export function IssueHistory({
     // the page under it, and the history's anchor takes it for its own (`scrollBox`), so its
     // event records no place. It comes before the focus, which then scrolls nothing
     // (`preventScroll`), so that the focus moving into the entries, which the anchor records as
-    // the reader's place, is recorded where the reader sees it.
+    // the reader's place, is recorded where the reader sees it. The element can grow after the
+    // focus, as a reference in an entry's line does once its target's name is read, so it is kept
+    // wholly in Details' view by the same least scroll until the reader acts
+    // (`keepFocusedInView`).
     const handTo = (element: HTMLElement) => {
+      focusKept.current?.();
+      focusKept.current = null;
       const box = scroller.current;
       if (box !== null) {
         const at = element.getBoundingClientRect();
@@ -485,6 +495,9 @@ export function IssueHistory({
         if (by !== 0) anchor.current?.scrollBox(by);
       }
       element.focus({ preventScroll: true });
+      if (box !== null) {
+        focusKept.current = keepFocusedInView(element, box, (by) => anchor.current?.scrollBox(by));
+      }
     };
     if (press.kind === "retry") {
       const retried = failure.current?.querySelector("button") ?? heading.current;
@@ -688,4 +701,49 @@ export function IssueHistory({
 interface HeldParts {
   readonly controls: ReadonlySet<HTMLElement>;
   readonly entries: ReadonlySet<HTMLElement>;
+}
+
+/**
+ * Keeps `element`, which a hand-on of the history just gave the focus to, wholly in the view of
+ * `box`, Details' own, through its own later changes of height, by the least scroll
+ * (`nearestScroll`), which `scrollBy` makes. The element can grow after the hand-on: a reference
+ * in an entry's line is drawn by its address until the names of the references are read, then by
+ * its target's name, which can wrap over several lines and take the focused link's foot below the
+ * view, where a keyboard reader no longer sees the whole focus. An element taller than the view,
+ * or one that lies wholly outside it, is left where it is: the reader's place went elsewhere then.
+ * Chromium's resize observer reports no change of an element drawn inline, as a link in a line of
+ * words is, so the entry the element stands in is watched, else the element itself. A browser
+ * calls resize observers back in the order they were made, so the history's anchor, whose
+ * observer is made as the list mounts, first puts back the element's top where a growth moved it
+ * (`ViewportAnchor`'s `contentResized`), and this then brings the element's foot into the view.
+ * The keeping ends as the focus leaves the element, at the reader's first act that scrolls or
+ * names a place (the press that made the hand-on came before it), and at the next hand-on.
+ * Returns what ends it.
+ */
+function keepFocusedInView(
+  element: HTMLElement,
+  box: HTMLElement,
+  scrollBy: (by: number) => void
+): () => void {
+  const acts = ["keydown", "wheel", "pointerdown", "touchstart"];
+  const sizes = new ResizeObserver(() => {
+    if (document.activeElement !== element) {
+      end();
+      return;
+    }
+    const at = element.getBoundingClientRect();
+    const view = box.getBoundingClientRect();
+    if (at.height > view.height || !overlaps(at, view)) return;
+    const by = nearestScroll(at, view);
+    if (by !== 0) scrollBy(by);
+  });
+  function end(): void {
+    sizes.disconnect();
+    element.removeEventListener("focusout", end);
+    for (const type of acts) window.removeEventListener(type, end, true);
+  }
+  sizes.observe(element.closest(`[${HISTORY_ENTRY_ATTRIBUTE}]`) ?? element);
+  element.addEventListener("focusout", end);
+  for (const type of acts) window.addEventListener(type, end, { capture: true, passive: true });
+  return end;
 }
