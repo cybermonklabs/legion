@@ -15,13 +15,6 @@ import type { PartWords } from "./page-words-parts";
 
 export default {
   add: {
-    NODE_TYPE_NAMES: {
-      /** A `criterion`: what a person wants to be able to do, written under the question,
-       *  comment or message that asked for it. */
-      criterion: "criterion",
-      /** A `reading`: an agent's account of what a decision or an answered question means. */
-      reading: "reading",
-    },
     VERIFICATION_WORDS: {
       /** A check's own control, which opens its facts where they are shut and shuts them where
        *  they are open, and keeps them so once the focus leaves the check. */
@@ -44,12 +37,6 @@ export default {
       /** The act of a focused question, comment or message that aims the box's criterion
        *  line. */
       write_criterion: "Write a criterion",
-    },
-    GLYPH_TOKENS: {
-      types: {
-        criterion: "criterion",
-        reading: "reading",
-      },
     },
   },
   unasked: [],

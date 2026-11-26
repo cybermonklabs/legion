@@ -1,5 +1,9 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, renderHook } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
 
+import { api } from "../../../api/client";
 import type { Artifact } from "../../../api/types";
 import { parseNodeReference } from "../../refs/routes";
 import type { DocumentAdmissions } from "../document-admission";
@@ -7,8 +11,16 @@ import { documentOfNode } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
 import type { NodeType } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
+import { treeAnswer } from "../tree-read/tree-fixtures";
+import { outlineQuery, viewKey } from "../tree-read/tree-read";
 import { nodeEditable } from "../useNodeEditing";
-import { type RoomFacts, type RoomTarget, roomTarget, takesCaret } from "./room-target";
+import {
+  type RoomFacts,
+  type RoomTarget,
+  roomTarget,
+  takesCaret,
+  useRoomFacts,
+} from "./room-target";
 
 /**
  * Where Enter puts the caret on a node: on a converted issue, in the one room, through the
@@ -219,5 +231,148 @@ test("a node written into the issue takes a caret", () => {
         );
       }
     }
+  }
+});
+
+/** A criterion and a paragraph written into the issue's own tree, as the tree read names a block
+ *  of the tree artifact: by its place in the issue's tree, `<KEY>/tree#<block id>`, and with no
+ *  address, since no document holds it. */
+const TREE_CRITERION = node(`${KEY}/tree#k2`, "criterion");
+const TREE_PROSE = node(`${KEY}/tree#p1`, "prose");
+
+/** A paragraph of the issue's own tree the read names by its bare block id. */
+const BARE_PROSE = node("p2", "prose");
+
+/** A paragraph of another issue's tree. */
+const OTHER_TREE_PROSE = node("CORE-2/tree#p9", "prose");
+
+test("a criterion and a prose block of the issue's own tree edit in its tree artifact at their block id", () => {
+  expect(roomTarget(TREE_CRITERION, ARTIFACTS, room(true))).toEqual({
+    artifactId: TREE,
+    blockId: "k2",
+  });
+  expect(roomTarget(TREE_PROSE, ARTIFACTS, room(true))).toEqual({
+    artifactId: TREE,
+    blockId: "p1",
+  });
+  expect(roomTarget(BARE_PROSE, ARTIFACTS, room(true))).toEqual({
+    artifactId: TREE,
+    blockId: "p2",
+  });
+  // A block of another issue's tree is that issue's, read-only here.
+  expect(roomTarget(OTHER_TREE_PROSE, ARTIFACTS, room(true))).toEqual({ report: "issue_above" });
+  // With no tree artifact, or on an issue the conversion has not reached, no fragment holds it.
+  for (const one of [TREE_CRITERION, TREE_PROSE]) {
+    expect(roomTarget(one, ARTIFACTS, room(true, null))).toEqual({ report: "no_text" });
+    expect(roomTarget(one, ARTIFACTS, room(false))).toEqual({ report: "no_text" });
+  }
+  // A prose block of a document is edited in that document's fragment.
+  expect(roomTarget(block(SPEC, "p3", "prose"), ARTIFACTS, room(true))).toEqual({
+    artifactId: "artifact-spec",
+    blockId: "p3",
+  });
+});
+
+test("a criterion and a prose block of the issue's own tree take a caret", () => {
+  const none: DocumentAdmissions = new Map();
+  for (const one of [TREE_CRITERION, TREE_PROSE, BARE_PROSE]) {
+    expect(takesCaret(one, ARTIFACTS, room(true), false, none), one.id).toBe(true);
+    expect(takesCaret(one, ARTIFACTS, room(true), true, none), one.id).toBe(false);
+    expect(takesCaret(one, ARTIFACTS, room(true), false, new Map([[TREE, true]])), one.id).toBe(
+      false
+    );
+    // With no room no document holds it, so it takes no typing.
+    expect(takesCaret(one, ARTIFACTS, undefined, false, none), one.id).toBe(false);
+  }
+  expect(takesCaret(OTHER_TREE_PROSE, ARTIFACTS, room(true), false, none)).toBe(false);
+});
+
+/** A converted issue's tree read, as the page holds it: its tree artifact and a view of no other
+ *  issue. */
+const HELD = treeAnswer([], [], { converted: true, issue: KEY, tree: TREE, view_of: null });
+
+/** `useRoomFacts` of `issue` under `client`, its issue changed by `rerender`. */
+function roomFactsOf(client: QueryClient, issue: string | undefined = KEY) {
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client }, children);
+  return renderHook<RoomFacts | undefined, { key: string | undefined }>(
+    ({ key }) => useRoomFacts(key),
+    { initialProps: { key: issue }, wrapper }
+  );
+}
+
+test("the room facts are those of the tree read the cache holds, one object while they stand", () => {
+  const client = new QueryClient();
+  const read = spyOn(api, "getIssueTree");
+  try {
+    const hook = roomFactsOf(client);
+    expect(hook.result.current, "facts with no tree read held").toBeUndefined();
+    const graph = outlineQuery(KEY, "graph").queryKey;
+    act(() => {
+      client.setQueryData(graph, HELD);
+    });
+    expect(hook.result.current).toEqual({
+      converted: true,
+      issueKey: KEY,
+      tree: TREE,
+      viewOf: null,
+    });
+    const first = hook.result.current;
+    // A new answer that leaves the facts as they were keeps the same object.
+    act(() => {
+      client.setQueryData(graph, { ...HELD, version: 3 });
+    });
+    expect(hook.result.current, "an answer with the same facts drew new facts").toBe(first);
+    // One that changes them draws new facts.
+    act(() => {
+      client.setQueryData(graph, { ...HELD, view_of: "CORE-0" });
+    });
+    expect(hook.result.current).toEqual({
+      converted: true,
+      issueKey: KEY,
+      tree: TREE,
+      viewOf: "CORE-0",
+    });
+    // No tree read of another issue is held, and no issue has none.
+    hook.rerender({ key: "CORE-2" });
+    expect(hook.result.current).toBeUndefined();
+    hook.rerender({ key: undefined });
+    expect(hook.result.current).toBeUndefined();
+    hook.unmount();
+    expect(read, "the room facts read the tree themselves").not.toHaveBeenCalled();
+  } finally {
+    read.mockRestore();
+    client.clear();
+  }
+});
+
+test("the room facts are read from Conversation's read or a view where Graph's is not held", () => {
+  const client = new QueryClient();
+  try {
+    const hook = roomFactsOf(client);
+    // A query under the tree's key whose answer is no tree read gives no facts.
+    act(() => {
+      client.setQueryData(viewKey(KEY, "spec"), { nodes: [] });
+    });
+    expect(hook.result.current).toBeUndefined();
+    act(() => {
+      client.setQueryData(viewKey(KEY, "plan"), { ...HELD, tree: "artifact-view-tree" });
+    });
+    expect(hook.result.current?.tree).toBe("artifact-view-tree");
+    act(() => {
+      client.setQueryData(outlineQuery(KEY, "conversation").queryKey, HELD);
+    });
+    expect(hook.result.current?.tree, "Conversation's read is read before a view").toBe(TREE);
+    act(() => {
+      client.setQueryData(outlineQuery(KEY, "graph").queryKey, { ...HELD, converted: false });
+    });
+    expect(hook.result.current?.converted, "Graph's read is read first").toBe(false);
+    act(() => {
+      client.removeQueries({ exact: true, queryKey: outlineQuery(KEY, "graph").queryKey });
+    });
+    expect(hook.result.current?.converted).toBe(true);
+    hook.unmount();
+  } finally {
+    client.clear();
   }
 });

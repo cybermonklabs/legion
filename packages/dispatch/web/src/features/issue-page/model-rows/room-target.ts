@@ -1,26 +1,25 @@
-import { notifyManager, type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useRef, useSyncExternalStore } from "react";
 
 import { api } from "../../../api/client";
-import { conversationTreeKey, issueTreeKey, TREE_FILTERS } from "../../../api/queries";
-import type { Artifact } from "../../../api/types";
+import { conversationTreeKey, issueTreeKey } from "../../../api/queries";
+import type { Artifact, IssueTreeRead } from "../../../api/types";
 import { isBlockItemKind } from "../../refs/block-reference";
 import { parseNodeReference } from "../../refs/routes";
 import type { DocumentAdmissions } from "../document-admission";
 import { documentOfNode } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
-import { type TreeAnswer, viewKey } from "../tree-read/tree-read";
 
 /**
  * The room a node's text is edited in.
  *
  * An issue the conversion has reached is one room, and a node is edited through the fragment
  * that holds its text: its document's, or for a node written into the issue, such as a
- * criterion, the fragment of the tree artifact the tree read's `tree` names. A result's text is
- * no fragment's, this issue's result or a borrowed one, so it takes no caret. A node of another
- * issue, such as a borrowed check, is read-only here and edited in its own issue's room. On an
- * issue the conversion has not reached, a node is edited in its document's room, as
- * `useNodeEditing.ts` does without this.
+ * criterion or a prose block, the fragment of the tree artifact the tree read's `tree` names. A
+ * result's text is no fragment's, this issue's result or a borrowed one, so it takes no caret. A
+ * node of another issue, such as a borrowed check, is read-only here and edited in its own
+ * issue's room. On an issue the conversion has not reached, a node is edited in its document's
+ * room, as `useNodeEditing.ts` does without this.
  *
  * `roomTarget` is pure. It answers the key of `KEY_REPORTS` a key reports, never its sentence.
  */
@@ -56,11 +55,12 @@ const NO_TEXT: RoomTarget = { report: "no_text" };
  * node's id can carry the slug of one of this issue's own documents. On a converted issue an ask,
  * a comment or a message takes no caret, an ask written as a block of a document too: its text
  * is the conversation's, which no fragment holds. A node of a document is edited in that
- * document's fragment. A criterion no document holds and with no address was written into the
- * issue: the tree read names it by its read id, which is its block id, and gives it no address,
- * so it is edited in the tree artifact's own fragment at its own id. Any other node whose
- * address names a block of this issue was written into the issue too, and is edited there at
- * that block.
+ * document's fragment. A criterion or a prose block no document holds and with no address was
+ * written into the issue: the tree read names it by its block id in the tree artifact, bare or
+ * after its place in the issue's tree (`<KEY>/tree#<block id>`), and gives it no address, so it is
+ * edited in the tree artifact's own fragment at that block id; one whose id names another issue's
+ * tree is that issue's. Any other node whose address names a block of this issue was written into
+ * the issue too, and is edited there at that block.
  */
 export function roomTarget(
   node: Pick<TreeNode, "id" | "reference" | "type">,
@@ -78,8 +78,11 @@ export function roomTarget(
   if (isBlockItemKind(node.type) || isBlockItemKind(route?.kind)) return NO_TEXT;
   if (place !== undefined) return inDocument;
   if (room.tree === null) return NO_TEXT;
-  if (node.type === "criterion" && node.reference === undefined) {
-    return { artifactId: room.tree, blockId: node.id };
+  if ((node.type === "criterion" || node.type === "prose") && node.reference === undefined) {
+    const hash = node.id.indexOf("#");
+    const owner = node.id.slice(0, Math.max(hash, 0));
+    if (owner.includes("/") && !owner.startsWith(`${room.issueKey}/`)) return ISSUE_ABOVE;
+    return { artifactId: room.tree, blockId: node.id.slice(hash + 1) };
   }
   const block = ofIssue !== undefined && "block" in ofIssue ? ofIssue.block : undefined;
   return block === undefined ? NO_TEXT : { artifactId: room.tree, blockId: block.id };
@@ -97,10 +100,10 @@ export function roomTarget(
  * `nodeEditable`'s rule read over the room's artifact id rather than a document's, written here
  * because `useNodeEditing.ts` imports this file, so the two agree.
  *
- * A criterion written into the issue is why it exists: no document holds one, so `nodeEditable`
- * says it takes no typing, while Enter puts the caret in it in the tree artifact's own fragment.
- * That artifact is read only at the first Enter or press (`useEditedTree`), so the rule reads the
- * tree read's `tree` id and never an artifact.
+ * A node written into the issue - a criterion, a prose block of the tree - is why it exists: no
+ * document holds one, so `nodeEditable` says it takes no typing, while Enter puts the caret in it
+ * in the tree artifact's own fragment. That artifact is read only at the first Enter or press
+ * (`useEditedTree`), so the rule reads the tree read's `tree` id and never an artifact.
  */
 export function takesCaret(
   node: Pick<TreeNode, "id" | "reference" | "type">,
@@ -125,47 +128,60 @@ export function takesCaret(
 
 /**
  * The room facts of an issue's tree read, by the issue's key, read from the query cache with no
- * fetch of its own: the `converted`, `tree` and `view_of` the tree read of the issue answers,
- * from any read of it the cache holds under `issueTreeKey` (`heldTreeRead`), and `undefined` for
- * an issue whose tree read the cache does not hold, so its nodes are edited as
- * `useNodeEditing.ts` edits them without a room. It draws its caller again as the cache changes,
- * and answers the same object while the three facts stand, whatever else a new answer changed.
+ * fetch of its own: from the outline read the page holds of the issue - Graph's, under the tree's
+ * own key (`issueTreeKey`), else Conversation's (`conversationTreeKey`), the two keys
+ * `tree-read/tree-read.ts`' `outlineQuery` reads under - else any view of the tree held under the
+ * tree's key, each of which answers the issue's `converted`, `tree` and `view_of`. It answers
+ * `undefined` for an issue whose tree read the cache does not hold, so its nodes are edited as
+ * `useNodeEditing.ts` edits them without a room. It listens to the cache, so a tree read that
+ * lands draws its caller again, and it answers the same object while the facts stay the same,
+ * whatever else a new answer changes, so a caller may depend on it.
  */
 export function useRoomFacts(issueKey: string | undefined): RoomFacts | undefined {
-  const client = useQueryClient();
+  const queryClient = useQueryClient();
+  const held = useRef<RoomFacts | undefined>(undefined);
   const subscribe = useCallback(
-    (onChange: () => void) => client.getQueryCache().subscribe(notifyManager.batchCalls(onChange)),
-    [client]
+    (changed: () => void) =>
+      queryClient.getQueryCache().subscribe((event) => {
+        if (event.type === "updated" || event.type === "removed") changed();
+      }),
+    [queryClient]
   );
-  const answer = useSyncExternalStore(subscribe, () =>
-    issueKey === undefined ? undefined : heldTreeRead(client, issueKey)
-  );
-  const converted = answer?.converted;
-  const tree = answer?.tree ?? null;
-  const viewOf = answer?.view_of ?? null;
-  return useMemo(
-    () =>
-      issueKey === undefined || converted === undefined
-        ? undefined
-        : { converted, issueKey, tree, viewOf },
-    [converted, issueKey, tree, viewOf]
-  );
+  const snapshot = (): RoomFacts | undefined => {
+    const answer = issueKey === undefined ? undefined : heldTreeRead(queryClient, issueKey);
+    if (answer === undefined || issueKey === undefined) {
+      held.current = undefined;
+      return undefined;
+    }
+    const tree = answer.tree ?? null;
+    const viewOf = answer.view_of ?? null;
+    const last = held.current;
+    if (
+      last?.issueKey === issueKey &&
+      last.converted === answer.converted &&
+      last.tree === tree &&
+      last.viewOf === viewOf
+    ) {
+      return last;
+    }
+    held.current = { converted: answer.converted, issueKey, tree, viewOf };
+    return held.current;
+  };
+  return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
 
-/**
- * The answer of a read of issue `key`'s tree the cache holds, which says how the issue stands
- * whichever read it is: Graph's, else Conversation's, else a view's at no version, the one the
- * page reads on Spec before the outline's (each under `issueTreeKey`). A view read at a version
- * is the tree as it stood then, so it is never asked.
- */
-function heldTreeRead(client: QueryClient, key: string): TreeAnswer | undefined {
-  const outline =
-    client.getQueryData<TreeAnswer>(issueTreeKey(key)) ??
-    client.getQueryData<TreeAnswer>(conversationTreeKey(key));
-  if (outline !== undefined) return outline;
-  for (const filter of TREE_FILTERS) {
-    const view = client.getQueryData<TreeAnswer>(viewKey(key, filter));
-    if (view !== undefined) return view;
+/** The tree read of issue `key` the cache holds an answer of, as `useRoomFacts` reads it: Graph's
+ *  outline read, else Conversation's, else any view of the tree; undefined where it holds none.
+ *  An answer is a tree read's where it says whether the issue converted. */
+function heldTreeRead(queryClient: QueryClient, key: string): IssueTreeRead | undefined {
+  const cache = queryClient.getQueryCache();
+  for (const queryKey of [issueTreeKey(key), conversationTreeKey(key)]) {
+    const answer = cache.find<IssueTreeRead>({ exact: true, queryKey })?.state.data;
+    if (answer?.converted !== undefined) return answer;
+  }
+  for (const query of cache.findAll({ queryKey: issueTreeKey(key) })) {
+    const answer = query.state.data as IssueTreeRead | undefined;
+    if (answer?.converted !== undefined) return answer;
   }
   return undefined;
 }
