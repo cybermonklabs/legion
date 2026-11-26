@@ -10,15 +10,18 @@
 -- The check is dropped and added again in one statement, so no moment passes with the column
 -- unchecked, and the new one admits everything the old one did. Its name stays
 -- agent_tokens_scopes_check, which api's TestNoMintHoldsLegionStatus reads. Widening it is safe
--- beside the release before this migration: that release mints `person` and `approve` alone, each
--- of which the wider check admits, and it reads the column without asking what words it may hold.
--- It is this release that writes `p0`, and by then every server runs with this check
--- (internal/dispatch/store/README.md).
+-- beside the release before this migration, which reads the column without asking what words it
+-- may hold. That release writes `p0` in one case, while the release rolls: a mint that names no
+-- scopes gives the new token its caller's whole set (its callerScopes), so a mint, by a token that
+-- holds `p0`, that reaches a server of that release gives the new token `p0` too, and the wider
+-- check takes it. No credential gets a scope its maker does not hold, and the window ends when the
+-- last server of that release stops (internal/dispatch/store/README.md).
 --
--- The column's default stays `array['person','approve']`: a mint that names no scope, of either
--- release, gives no `p0`. No row is backfilled and no row is rewritten, so no stored token gains
--- `p0`; a person gives it to a token in Settings. agent_read_tokens' check does not change: a
--- read-only token holds `read`, and `person` where it reads as its person, never `p0`.
+-- The column's default stays `array['person','approve']`, and this release's mint that names no
+-- scopes gives every scope its maker holds but `p0`. No row is backfilled and no row is rewritten,
+-- so no stored token gains `p0`; a person gives it to a token in Settings. agent_read_tokens' check
+-- does not change: a read-only token holds `read`, and `person` where it reads as its person,
+-- never `p0`.
 --
 -- The add records the check in the catalog and scans no stored row (`not valid`), which is the
 -- rule for a constraint a migration adds to a table that already has rows

@@ -333,8 +333,9 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// asks to is known now.
 	closes := input.Status != nil && status == "done"
 	// A close that makes the issue's own priority 0 from a credential without p0 is refused here,
-	// before the settlement below writes the issue's document versions and asks: a refused write
-	// writes nothing of its request (refuseP0BeforeSettlement).
+	// on a read of that priority, before the settlement below writes the issue's document versions
+	// and asks; the check under the owner lock decides each close this read lets through
+	// (refuseP0BeforeSettlement).
 	if closes {
 		if err := s.refuseP0BeforeSettlement(ctx, call.writer.credential, key, priority); err != nil {
 			return issueWriteResult{}, err

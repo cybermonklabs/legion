@@ -33,21 +33,30 @@ const p0ScopeRefusal = "this request's credential does not hold the p0 scope, wh
 // priority of 0 is refused here like any other. R25's fix has no credential, and a status
 // change's steps carry the request's; neither names a priority, so neither reaches a refusal.
 func refuseP0WithoutScope(credential *model.Credential, named, stored *int) error {
-	if named == nil || *named != 0 || (stored != nil && *stored == 0) || credential.Holds(model.ScopeP0) {
+	if !makesP0WithoutScope(credential, named, stored) {
 		return nil
 	}
 	return missingScopeError(model.ScopeP0, p0ScopeRefusal)
 }
 
+// makesP0WithoutScope is the rule of refuseP0WithoutScope as a predicate: whether a write that
+// names named, on an issue whose own priority is stored, makes that priority 0 from a credential
+// that does not hold p0. It builds no refusal, so a caller that only asks whether a write could be
+// refused allocates nothing.
+func makesP0WithoutScope(credential *model.Credential, named, stored *int) bool {
+	return named != nil && *named == 0 && (stored == nil || *stored != 0) && !credential.Holds(model.ScopeP0)
+}
+
 // refuseP0BeforeSettlement is refuseP0WithoutScope for a PATCH that closes the issue key, asked
 // before the close settles the issue's documents (settleIssueBeforeClose), which writes document
-// versions and asks: a close refused for p0 writes nothing of its request. It reads the issue's own
-// priority on the pool only where the write names 0 from a credential without p0, and with no
-// lock held, so it only spares the settlement: the check under the owner lock decides every case,
-// and answers each write this read let through. An issue that is not there is left to the lock
-// step's own answer.
+// versions and asks. Where the write names 0 from a credential without p0, it reads the issue's
+// own priority on the pool, with no lock held, and answers the 403 itself where that priority is
+// not 0, so such a close settles nothing. The check under the owner lock decides each write this
+// read lets through: a close whose own priority moves away from 0 between the two reads settles
+// the documents and is then refused there, as a close judgeSpecWriter refuses can be. An issue that
+// is not there is left to the lock step's own answer.
 func (s *server) refuseP0BeforeSettlement(ctx context.Context, credential *model.Credential, key string, named *int) error {
-	if refuseP0WithoutScope(credential, named, nil) == nil {
+	if !makesP0WithoutScope(credential, named, nil) {
 		return nil
 	}
 	pool, err := s.readyPool()

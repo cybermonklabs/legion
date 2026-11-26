@@ -4,9 +4,12 @@ body: |-
   A new issue at priority 0, or a change of an issue's own priority to 0 from another value or
   from none, is refused to a credential without `p0` with `403 OAUTH_SCOPE_REQUIRED` and
   `WWW-Authenticate: Bearer error="insufficient_scope", scope="p0"`, before every refusal that
-  reads the issue, such as `409 ISSUE_CLOSED`, and the request writes nothing. A change that keeps an issue at P0, lowers it or clears
-  it, and a priority of 1 to 3, need no scope. The issue's own priority decides, whatever priority it
-  inherits from an issue above it. A browser sign-in holds `p0`. A personal token holds it only where
+  reads the issue, such as `409 ISSUE_CLOSED`, and the request writes no field and no event. A close
+  refused for `p0` settles no document where the issue's own priority, read before the settlement,
+  is not 0; a close that races a write lowering it from 0 can settle the documents and is then
+  refused. A change that keeps an issue at P0, lowers it or clears it, and a priority of 1 to 3,
+  need no scope. The issue's own priority decides, whatever priority it inherits from an issue
+  above it. A browser sign-in holds `p0`. A personal token holds it only where
   its maker gave it, at the mint or at a later change of its scopes (`POST /api/v1/me/agent-tokens`,
   `PATCH /api/v1/me/agent-tokens/{id}`), and may hold it alone; a credential gives a token only the
   scopes it holds, so one without `p0` that names it gets `403 OAUTH_SCOPE_REQUIRED`, and `read`

@@ -44,10 +44,12 @@ A priority of 0 on `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` needs 
 Keeping P0, lowering it, clearing it and priorities 1 to 3 need no scope, and a priority that an issue above the issue has is none of its own.
 `refuseP0WithoutScope` (`p0_scope.go`) is the one rule, because the route table names a route and not what a request writes.
 The create asks it after it parses the priority and before the near-copy gate.
-`writeIssue` asks it right after it loads the issue under the owner's lock, before every refusal that reads the issue (`409 ISSUE_CHANGED` and `409 ISSUE_CLOSED` among them), and for a close that names priority 0 it asks it before the close settles the issue's documents, so a refused close writes no document version and no ask.
+`writeIssue` asks it right after it loads the issue under the owner's lock, before every refusal that reads the issue (`409 ISSUE_CHANGED` and `409 ISSUE_CLOSED` among them), and for a close that names priority 0 it asks it first on a read of the issue's own priority before the close settles the issue's documents (`refuseP0BeforeSettlement`), so such a close refused there writes no document version and no ask.
+A close whose own priority moves away from 0 between that read and the owner's lock settles the documents and is then refused under the lock, as a close `judgeSpecWriter` refuses can be.
 A credential without `p0` is refused `403 OAUTH_SCOPE_REQUIRED` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="p0"` (`missingScopeError`), and the write writes nothing.
 A browser sign-in holds `p0` with `person` and `approve` (`model.Scopes`), and a personal token holds it only where its maker gave it, at the mint or at a later change of its scopes, and may hold it alone.
 A mint that names no scopes gives every scope its maker holds but `p0` (`callerScopes`).
+A server of the release before copies its caller's whole set into such a mint, so while the release rolls a token that holds `p0` can mint another holding `p0` without naming it; no credential gets a scope its maker does not hold, and the window ends with the last server of the release before.
 `tokenScopes` refuses `read` beside `p0` as `400 TOKEN_SCOPES_INPUT`, and refuses a `p0` that the caller does not hold as `403 OAUTH_SCOPE_REQUIRED`, also in a set that changes a token that holds `p0` already.
 No broker-issued token, shared token or service-account token holds `p0`.
 

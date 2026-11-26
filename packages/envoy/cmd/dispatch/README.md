@@ -235,6 +235,7 @@ A credential without `p0` is refused `403 OAUTH_SCOPE_REQUIRED` with `WWW-Authen
 A person's browser sign-in holds `person`, `approve` and `p0`.
 A personal token holds `p0` only where its maker gave it, at the mint or at a later change of its scopes, and may hold it alone.
 A mint that names no scopes gives every scope its maker holds except `p0`, for a browser and for a token alike.
+While the release that brings `p0` rolls, a server of the release before gives a mint that names no scopes its caller's whole set, so such a mint by a token that holds `p0` gives the new token `p0` too: no credential gets a scope its maker does not hold, and this ends when the last server of the release before stops.
 No broker-issued token, shared token or service-account token holds `p0`.
 
 A read-only token is any token that holds `read`, and it may only read.
@@ -5348,7 +5349,8 @@ Each item below names a path with its method and identity, then its purpose.
   - A priority of `0` needs the `p0` scope when the write makes the issue's own priority `0`, from none or from another value.
     A credential without `p0` is refused `403 OAUTH_SCOPE_REQUIRED` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="p0"`, before every refusal that reads the issue (`409 ISSUE_CHANGED` and `409 ISSUE_CLOSED` among them), and the write writes nothing.
     A write that keeps priority `0` on an issue that holds it, lowers it, clears it or sets `1` to `3` needs no scope, and a priority that an issue above the issue has is none of its own.
-    A close (`status: done`) that also makes the issue's own priority `0` is refused for `p0` before the documents settle, so it writes no document version and no ask.
+    For a close (`status: done`) that names priority `0` from a credential without `p0`, the `PATCH` reads the issue's own priority before it settles the documents, and refuses the close there, with no document version and no ask, where that priority is not `0`.
+    A close whose own priority moves away from `0` between that read and the owner's lock settles the documents and is then refused, as a close the spec-writer check refuses can be.
 
   - With `DISPATCH_LEGION_STATUS_SCOPE` on, three writes of a Legion issue need a credential that holds the `person` scope or `legion-status`: a status write, the removal of its `legion` label, and a move after which it is no longer a Legion issue.
     A Legion issue carries the `legion` label, in any letter case, or is under an issue of its own project that carries it, and Dispatch judges the issue before the call and after it.
@@ -5356,7 +5358,7 @@ Each item below names a path with its method and identity, then its purpose.
     The one exception is the owning architect's status write: a broker-issued token whose session the Legion daemon's own token published as the architect of an issue above the issue, of the issue's own project, before the call and after it, writes the status `done`, `backlog`, `icebox` or `triage`.
     The same call's removal of the `legion` label and its move out from under every labelled issue stay refused to it.
     A refused close (`status: done`) can still settle the issue's documents: the `PATCH` settles them before its transaction (`settleIssueBeforeClose`), and Dispatch judges the write after that.
-    A close refused for `p0` settles nothing: the `PATCH` checks `p0` before that settlement too.
+    A close refused for `p0` settles nothing where the read before the settlement already refuses it (above).
     A Legion daemon's own broker token holds `legion-status`, and the shared token, a personal token without `person` and a project's other broker tokens hold neither scope.
 
   - With `DISPATCH_PARENT_STATUS_RULE` on, a `status` or a `parent` that leaves a parent's status out of line with its children's is `409 PARENT_STATUS_CONFLICT` `{code, error, issues}`, as `POST /api/v1/issues/{key}/status-change` (below) describes it.
