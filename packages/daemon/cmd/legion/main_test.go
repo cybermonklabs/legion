@@ -1630,7 +1630,7 @@ func TestConfigCheckRefusesARequestItCannotRender(t *testing.T) {
 		{"a memory request past its limit", "    resources: {issue: {memory: 32Gi, memory_request: 40Gi}}\n",
 			"legion config check: runtime.kubernetes.resources.issue.memory_request 40Gi exceeds memory 32Gi\n"},
 		{"a cpu request past the default limit", "    resources: {issue: {cpu_request: 4}}\n",
-			"legion config check: runtime.kubernetes.resources.issue.cpu_request 4 exceeds cpu 3\n"},
+			"legion config check: runtime.kubernetes.resources.issue.cpu_request 4 exceeds cpu 2\n"},
 		{"a request that is no quantity", "    resources: {issue: {memory_request: lots}}\n",
 			"legion config check: runtime.kubernetes.resources.issue.memory_request must be a positive Kubernetes quantity (e.g. 20Gi or 500m)\n"},
 	} {

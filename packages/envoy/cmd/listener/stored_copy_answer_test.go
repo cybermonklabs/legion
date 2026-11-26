@@ -43,7 +43,7 @@ func resendUnderClose(t *testing.T, server *testnats.Server, closing *natsgo.Con
 		serve(recorder)
 		answered <- recorder
 	}()
-	waitFor(t, 3*time.Second, "the publish to go out on the frozen connection", func() bool {
+	waitFor(t, "the publish to go out on the frozen connection", func() bool {
 		return closing.Stats().OutMsgs > before
 	})
 	closing.Close()
@@ -51,7 +51,7 @@ func resendUnderClose(t *testing.T, server *testnats.Server, closing *natsgo.Con
 	select {
 	case recorder := <-answered:
 		return recorder
-	case <-time.After(15 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("the publish whose connection closed under it did not answer")
 		return nil
 	}

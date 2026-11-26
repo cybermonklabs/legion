@@ -347,8 +347,12 @@ jobs:
           job-status: ${{ job.status }}
 
   # The race step's legs, each over its share of .github/go-legs.yaml's daemon-go-race packages,
-  # beside the plain legs.
-  # why: .github/ci-notes/ci-job-daemon-go.md#why-the-race-step-is-a-job-of-its-own
+  # beside the plain legs. Three of them run a group of internal/daemon's tests each, from
+  # .github/go-legs/packages/daemon/internal/daemon.yaml, which go_legs.py prints as the leg's
+  # own -run before the package: that package alone took 616 s on this runner where the four
+  # other packages took 290 s together, and its tests wait rather than compute (the step's CPU
+  # was 60.4% busy of four cores), so its legs are more test slots and not more cores.
+  # why: .github/ci-notes/ci-job-daemon-go.md#why-internaldaemons-tests-run-in-three-legs
   # Its setup is the plain legs', less what only the plain step and Stage 1 read: no uv
   # (internal/runtime/sandbox's), no LEGION_E2E_PG_DSN (Stage 1's) and no LEGION_RUN_FUZZ_ITERS
   # (internal/classify's). The comment
@@ -360,7 +364,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        leg: [1, 2]
+        leg: [1, 2, 3, 4]
     # A step's worst case is its largest measured green duration plus its own -timeout, as
     # daemon-go's says: over the same 158 green daemon-go jobs, the setup's 1.7 min
     # at most, then the Postgres sizing step's 19 s (its cold build of the connections command
@@ -523,7 +527,7 @@ jobs:
       - name: Test the concurrent packages under the race detector
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go-race ${{ matrix.leg }} ${{ strategy.job-total }} | xargs go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$'
+          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go-race ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$'
         working-directory: packages/daemon
 
       - name: Report the service's peak connections
