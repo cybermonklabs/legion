@@ -19,7 +19,8 @@ import {
   sentenceCase,
 } from "../page-words";
 import { ROW_LINK } from "../row-references";
-import { type RunPart, runView, useRun } from "./run-page";
+import { namedFirstLine, useRunNames } from "../run-references/run-references";
+import { type RunChange, type RunPart, runView, useRun } from "./run-page";
 
 /** The page's heading: the word for what a run is. */
 const RUN_WORD = sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction);
@@ -140,40 +141,61 @@ function RunAnswer({
             {CONTROL_LABELS.none}
           </p>
         ) : (
-          <ul className="flex min-w-0 flex-col gap-0.5">
-            {view.changed.map((node) => {
-              // A node is named by its first line, beside its kind's word where the page has
-              // one; a node whose read carries no words is named by the word alone, which is
-              // then its link. A node with neither is no entry (`runView`).
-              const named = node.line !== "";
-              const text = named ? node.line : node.kind;
-              return (
-                <li className="flex min-w-0 items-baseline gap-2 text-sm" key={node.key}>
-                  {named && node.kind !== "" ? (
-                    <span className={`shrink-0 text-xs ${pageQuietText}`} {...pageChrome}>
-                      {node.kind}
-                    </span>
-                  ) : null}
-                  {node.href === undefined ? (
-                    <span className="min-w-0 truncate" {...(named ? authorText : pageChrome)}>
-                      {text}
-                    </span>
-                  ) : (
-                    <Link
-                      className={`min-w-0 truncate ${LINK}`}
-                      to={node.href}
-                      {...(named ? authorText : pageChrome)}
-                    >
-                      {text}
-                    </Link>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+          <ChangedNodes changed={view.changed} />
         )}
       </section>
     </article>
+  );
+}
+
+/**
+ * The nodes the run changed (`RunChange`), each by its first line, beside its kind's word where
+ * the page has one, as a link to the page it opens where it opens one. The line is cut by R1's
+ * first-line rule and each reference in it named as every one-line place of the page names one
+ * (`namedFirstLine`): an issue by its key, any other target by the page's name for it, and by its
+ * short form where the page knows none, never as the address its author typed. A node whose words
+ * hold none is named by its kind's word alone, which is then its link.
+ */
+function ChangedNodes({ changed }: { changed: readonly RunChange[] }): ReactNode {
+  const words = useMemo(() => changed.map((node) => node.words), [changed]);
+  const { nameOf, reads } = useRunNames(words);
+  const lines = useMemo(
+    () => changed.map((node) => namedFirstLine(node.words, nameOf)),
+    [changed, nameOf]
+  );
+  return (
+    <ul className="flex min-w-0 flex-col gap-0.5">
+      {reads}
+      {changed.map((node, at) => {
+        const line = lines[at] ?? "";
+        const named = line !== "";
+        const text = named ? line : node.kind;
+        return (
+          <li className="flex min-w-0 items-baseline gap-2 text-sm" key={node.key}>
+            {named && node.kind !== "" ? (
+              <span className={`shrink-0 text-xs ${pageQuietText}`} {...pageChrome}>
+                {node.kind}
+              </span>
+            ) : null}
+            {node.href === undefined ? (
+              <span className="min-w-0 truncate" {...(named ? authorText : pageChrome)}>
+                {/* The node's first line: the reading list's `run-page-changed-line`. */}
+                {text}
+              </span>
+            ) : (
+              <Link
+                className={`min-w-0 truncate ${LINK}`}
+                to={node.href}
+                {...(named ? authorText : pageChrome)}
+              >
+                {/* The node's first line: the reading list's `run-page-changed-line`. */}
+                {text}
+              </Link>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

@@ -40,10 +40,11 @@ function answerOf(
   };
 }
 
-/** The words of the issue's node the run changed, as its edge's excerpt carries them, and their
- *  first line as the page draws it: its marks gone, to the end of its first sentence. */
+/** The words of the issue's node the run changed, as its edge's excerpt carries them, and the
+ *  words its one line is cut from: its marks gone. The page cuts and names the line
+ *  (`RunPage.test.tsx`). */
 const CHANGED_ISSUE_TEXT = "Ship the **release** on Friday. Then rest.";
-const CHANGED_ISSUE_LINE = "Ship the release on Friday.";
+const CHANGED_ISSUE_WORDS = "Ship the release on Friday. Then rest.";
 
 /** An edge from the issue CORE-1, which the run changed. */
 const CHANGED_ISSUE: GraphEdge = {
@@ -90,13 +91,14 @@ test("the view holds the question, the time, each frame in order with its drawin
       words: `${STATE_LINES.run_changed.before}2${STATE_LINES.run_changed.after}`,
     },
   ]);
-  // The issue it changed, by its kind's word and the first line of its words, linked to it.
+  // The issue it changed, by its kind's word and the words its one line is cut from, linked to
+  // it.
   expect(view.changed).toEqual([
     {
       href: "/issues/CORE-1",
       key: "dispatch://CORE-1",
       kind: sentenceCase(NODE_REFERENCES_WORDS.kinds.issue),
-      line: CHANGED_ISSUE_LINE,
+      words: CHANGED_ISSUE_WORDS,
     },
   ]);
 
@@ -116,7 +118,7 @@ test("the view holds the question, the time, each frame in order with its drawin
       },
     },
   };
-  expect(runView(answerOf([], [read])).changed.map((node) => node.line)).toEqual([
+  expect(runView(answerOf([], [read])).changed.map((node) => node.words)).toEqual([
     "Ship the release on Monday.",
   ]);
   // A count that is no number draws as 0.
@@ -151,7 +153,6 @@ test("the view holds the question, the time, each frame in order with its drawin
 
 test("a changed node is named by the page's words alone, and an edge the page does not know is left out", () => {
   const riskText = "Drop the **release** if the checks fail. Then wait.";
-  const riskLine = "Drop the release if the checks fail.";
   const risk: GraphEdge = {
     ...CHANGED_ISSUE,
     excerpt: { text: riskText },
@@ -171,14 +172,14 @@ test("a changed node is named by the page's words alone, and an edge the page do
     node: graphNode({ id: "9f8e7d6c", kind: "widget" as GraphEdge["node"]["kind"] }),
   };
 
-  // Only the risk is drawn: by its first line, with no kind word, since the page has no word for
-  // its kind and the kind's schema token is none.
+  // Only the risk is drawn: by its words, with no kind word, since the page has no word for its
+  // kind and the kind's schema token is none.
   expect(runView(answerOf([], [newerEdge, risk, newerNode, silent])).changed).toEqual([
     {
       href: undefined,
       key: "risk:4d1e2f3a-6b5c-4d7e-8f90-a1b2c3d4e5f6",
       kind: "",
-      line: riskLine,
+      words: "Drop the release if the checks fail. Then wait.",
     },
   ]);
 });

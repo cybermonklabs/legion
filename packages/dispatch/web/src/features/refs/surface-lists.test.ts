@@ -2375,6 +2375,10 @@ const UNTREED_ROWS: readonly UntreedRow[] = [
     surface: "person-node-title",
     why: "A node's line on a person's page reaches the page with no tree: the person nodes read (`api/person_nodes.go`) sends the first line of the node's text, cut to 240 runes, and no reading of it, so the preview parses that line on the page. A tree for it is carried to cybermonklabs/legion#4105.",
   },
+  {
+    surface: "run-page-answer",
+    why: "A command bar run's answer is the model's words, which Dispatch stores as the run's `text` frames and reads no tree of: the run's read sends each frame's data as its stream wrote it (`GraphFrame`), with no reading of a `text` frame, so the renderer parses the answer on the page.",
+  },
 ];
 
 /** Where a text or a tree a mount hands on comes from, where it is the props of the component the

@@ -909,6 +909,9 @@ export function IssueMarginPanel({
               them, whose Retry reads the tree again. */}
           {referencesDrawn ? (
             <>
+              {/* The reads of what the runs' questions cite that the page names nothing for
+                  (`useRunRows`), which draw nothing. */}
+              {runs.reads}
               <ReferencedBy
                 className="w-full"
                 extraRows={runs.rows}

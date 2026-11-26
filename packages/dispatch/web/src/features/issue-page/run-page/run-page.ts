@@ -20,7 +20,7 @@ import { drawsEdge } from "../../refs/ReferencedBy";
 import { referencesQuery } from "../../refs/reference-target";
 import { parseNodeReference, referenceHref } from "../../refs/routes";
 import { storeAddressReference } from "../../refs/store-address";
-import { drawnLine, firstLineOf, lineWordsRaw } from "../issue-tree";
+import { lineWordsRaw } from "../issue-tree";
 import {
   EMPTY_STATE_LINES,
   NODE_REFERENCES_WORDS,
@@ -143,9 +143,12 @@ export interface RunChange {
   /** The page's word for the node's kind, sentence-cased; `""` where the page has none, since a
    *  kind's schema token is no word a reader reads. */
   readonly kind: string;
-  /** The first line of the node's words, as every place that draws one line for a node cuts it
-   *  (`lineWordsRaw`, `firstLineOf`, `drawnLine`); `""` where the read carries none. */
-  readonly line: string;
+  /** The words the node's one line is cut from (`lineWordsRaw`): the first block of the server's
+   *  reading of the references read's excerpt (`text_tree`), and of the excerpt as stored where
+   *  the read sent none, each bare address as written; `""` where the excerpt holds none. The
+   *  page cuts its line from them and names each reference in it (`run-references.ts`'s
+   *  `namedFirstLine`). */
+  readonly words: string;
   /** The page that opens the node; none where its address names no page. */
   readonly href?: string;
 }
@@ -258,12 +261,11 @@ function partsOf(frames: readonly GraphFrame[]): RunPart[] {
   return parts;
 }
 
-/** The nodes `edges` name, once each, in the read's order: each by its kind's word, the first
- *  line of its words, and the page its address opens. The words are those of the server's
- *  reading of the edge's excerpt (`text_tree`), and of the excerpt as stored where the read sent
- *  none (`lineWordsRaw`). An edge of a kind, or to a node of a kind, that this page does not know
- *  is left out, as every list of a node's references leaves it (`drawsEdge`), and so is a node
- *  with neither a word for its kind nor a line, which the page could name by nothing. */
+/** The nodes `edges` name, once each, in the read's order: each by its kind's word, the words its
+ *  one line is cut from (`lineWordsRaw`), and the page its address opens. An edge of a kind, or
+ *  to a node of a kind, that this page does not know is left out, as every list of a node's
+ *  references leaves it (`drawsEdge`), and so is a node with neither a word for its kind nor any
+ *  words, which the page could name by nothing. */
 function changedOf(edges: readonly ReadEdge[]): RunChange[] {
   const kinds: Readonly<Partial<Record<string, string>>> = NODE_REFERENCES_WORDS.kinds;
   const types: Readonly<Partial<Record<string, string>>> = NODE_TYPE_NAMES;
@@ -275,17 +277,15 @@ function changedOf(edges: readonly ReadEdge[]): RunChange[] {
     if (changed.has(key)) continue;
     const word = kinds[kind] ?? types[kind];
     const excerpt = edge.excerpt;
-    const line =
-      excerpt === undefined
-        ? ""
-        : drawnLine(firstLineOf(lineWordsRaw({ text: excerpt.text, tree: excerpt.text_tree })));
-    if (word === undefined && line === "") continue;
+    const words =
+      excerpt === undefined ? "" : lineWordsRaw({ text: excerpt.text, tree: excerpt.text_tree });
+    if (word === undefined && words.trim() === "") continue;
     const route = ref === undefined ? undefined : parseNodeReference(ref);
     changed.set(key, {
       href: route === undefined ? undefined : referenceHref(route),
       key,
       kind: word === undefined ? "" : sentenceCase(word),
-      line,
+      words,
     });
   }
   return [...changed.values()];

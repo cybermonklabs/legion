@@ -22,8 +22,9 @@ import { graphNode } from "../../../__tests__/graph-fixture";
 import { ApiError, api } from "../../../api/client";
 import { queryRetry } from "../../../api/query-client";
 import type { GraphEdge, GraphReferences } from "../../../api/types";
+import { ReferenceNamesProvider } from "../../refs/reference-names";
 import { referencesQuery } from "../../refs/reference-target";
-import { RUN_PATH } from "../../refs/routes";
+import { parseNodeReference, RUN_PATH, shortForm } from "../../refs/routes";
 import { NotFoundPage } from "../../shell/NotFoundPage";
 import {
   ANSWER_LINES,
@@ -34,6 +35,7 @@ import {
   sentenceCase,
   wordsIn,
 } from "../page-words";
+import { Publisher, publishedNames } from "../projection-fixture";
 import { RunPage } from "./RunPage";
 
 const RUN = "3f2b8c1e-5d4a-4b6f-9e2d-1a7c0b9e8f43";
@@ -503,4 +505,84 @@ test("a changed node of a kind the page has no word for is named by its line alo
   const entry = within(what).getByRole("listitem");
   expect(entry.textContent).toBe(excerpt);
   expect(wordsIn(entry.textContent ?? "")).not.toContain("risk");
+});
+
+/** An edge from the issue CORE-1, which the run changed, whose excerpt is `excerpt`. */
+function changedIssue(
+  excerpt: NonNullable<NonNullable<GraphReferences["edges"]>[number]["excerpt"]>
+): NonNullable<GraphReferences["edges"]>[number] {
+  return {
+    created_at: "2026-11-17T09:00:05Z",
+    direction: "in",
+    excerpt,
+    kind: "changed_by_run",
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: "dispatch://CORE-1" }),
+    source_seq: null,
+  };
+}
+
+// The line is drawn from the server's reading of the node's words where the read sent one, and
+// reads nothing of the words as stored where it has that reading.
+test("a changed node's line is drawn from the reading the read sends beside its words", async () => {
+  const changed = changedIssue({
+    text: "Ship the **release** on Friday.",
+    text_tree: {
+      content: [
+        { content: [{ text: "Ship the release on Monday.", type: "text" }], type: "paragraph" },
+      ],
+      type: "doc",
+    },
+  });
+  draw(() => Promise.resolve(answerOf([], [changed])));
+  await screen.findByRole("heading", { level: 1, name: RUN_WORD });
+  const what = screen.getByRole("region", { name: RUN_PAGE_WORDS.what_changed });
+  expect(
+    await within(what).findByRole("link", { name: "Ship the release on Monday." })
+  ).toHaveAttribute("href", "/issues/CORE-1");
+});
+
+// A changed node's line is a one-line place (the reading list's `run-page-changed-line`): each
+// reference it cites is named as every one-line place names one (`referenceStandIns`) - an issue
+// by its key, any other target by the page's name for it where the page knows one, and by its
+// short form where it does not - and never as the address its author typed.
+test("a changed node's line names each reference as one-line places do, never as the address typed", async () => {
+  const named = "dispatch://CORE-1/comment/7d1e4c2a-9b3f-4e8d-a6c5-2f0b1d9e7a34";
+  const unnamed = "dispatch://CORE-1/comment/8e2f5d3b-0c4a-4f9e-b7d6-3a1c2e0f8b45";
+  const route = parseNodeReference(unnamed);
+  if (route === undefined) throw new Error(`${unnamed} names no node`);
+  const changed = changedIssue({
+    text: `Close dispatch://CORE-2 once ${named} and ${unnamed} land. Then rest.`,
+  });
+  // The page's batched read names the first comment, and has been asked for the second and holds
+  // no answer for it.
+  const published = publishedNames(new Map([[named, "Warm the cache first"]]), {
+    asked: [unnamed],
+  });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(answerOf([], [changed]));
+  const client = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } });
+  const view = render(
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>
+        <Publisher published={published} />
+        <MemoryRouter initialEntries={[`/runs/${RUN}`]}>
+          <Routes>
+            <Route element={<RunPage />} path={RUN_PATH} />
+          </Routes>
+        </MemoryRouter>
+      </ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  restore = () => {
+    getReferences.mockRestore();
+    view.unmount();
+    client.clear();
+  };
+  await screen.findByRole("heading", { level: 1, name: RUN_WORD });
+  const what = screen.getByRole("region", { name: RUN_PAGE_WORDS.what_changed });
+  expect(
+    await within(what).findByRole("link", {
+      name: `Close CORE-2 once Warm the cache first and ${shortForm(route)} land.`,
+    })
+  ).toHaveAttribute("href", "/issues/CORE-1");
+  expect(what.textContent).not.toContain("dispatch://");
 });

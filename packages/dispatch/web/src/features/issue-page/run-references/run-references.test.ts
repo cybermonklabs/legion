@@ -1,9 +1,21 @@
 import { expect, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderHook, waitFor } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
 
+import { ReferenceNamesProvider } from "../../refs/reference-names";
+import { parseNodeReference, shortForm } from "../../refs/routes";
+import { issueDetails } from "../decisions-filter/decisions-fixtures";
 import { NODE_REFERENCES_WORDS, sentenceCase } from "../page-words";
+import { Publisher, publishedNames } from "../projection-fixture";
 import { treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
-import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
-import { runRows } from "./run-references";
+import {
+  issueTreeQuery,
+  type TreeAnswer,
+  type TreeAnswerNode,
+  type TreeTuple,
+} from "../tree-read/tree-read";
+import { runRows, useRunRows } from "./run-references";
 
 /** The issue the tree read answers, as `treeAnswer` answers it. */
 const KEY = "CORE-1";
@@ -81,6 +93,50 @@ test("a run's row reads its question's words from the reading the tree read send
     ),
   ]);
   expect(rows.map((row) => row.excerpt)).toEqual(["Who ships the release?"]);
+});
+
+// A run's question is a one-line place (the reading list's `referenced-by-run-question`): each
+// reference it cites is named as every one-line place names one (`referenceStandIns`) - an issue
+// by its key, any other target by the page's name for it where the page knows one, and by its
+// short form where it does not - and never as the address its asker typed.
+test("a run's row names each reference in its question as one-line places do, never as the address typed", async () => {
+  const named = `dispatch://${KEY}/comment/${COMMENT}`;
+  const unnamed = `dispatch://${KEY}/comment/${SECOND_COMMENT}`;
+  const route = parseNodeReference(unnamed);
+  if (route === undefined) throw new Error(`${unnamed} names no node`);
+  const question = `Does dispatch://CORE-2 wait on ${named} or on ${unnamed}?`;
+  const issue = issueDetails();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(
+    issueTreeQuery(issue.key).queryKey,
+    treeOf(
+      [ISSUE_NODE, commentNode(COMMENT), runNode(RUN, ASKED_AT, question)],
+      [changedBy(COMMENT, RUN)]
+    )
+  );
+  // The page's batched read names the first comment, and has been asked for the second and
+  // holds no answer for it.
+  const published = publishedNames(new Map([[named, "Warm the cache first"]]), {
+    asked: [unnamed],
+  });
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(
+      QueryClientProvider,
+      { client },
+      createElement(ReferenceNamesProvider, null, createElement(Publisher, { published }), children)
+    );
+  const { result, unmount } = renderHook(() => useRunRows(issue, false), { wrapper });
+  try {
+    await waitFor(() =>
+      expect(result.current.rows.map((row) => row.excerpt)).toEqual([
+        `Does CORE-2 wait on Warm the cache first or on ${shortForm(route)}?`,
+      ])
+    );
+    expect(result.current.rows[0]?.excerpt).not.toContain("dispatch://");
+  } finally {
+    unmount();
+    client.clear();
+  }
 });
 
 test("one run is one row however many writes it made", () => {

@@ -1,13 +1,17 @@
 import { useQuery } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { type ReactNode, useMemo } from "react";
 
 import type { GraphEdge, IssueDetails } from "../../../api/types";
+import { useReferenceNames } from "../../refs/plain-text";
 import type { ExtraReferenceRow } from "../../refs/ReferencedBy";
 import { standsFailed } from "../../refs/reference-target";
 import { buildRunPath } from "../../refs/routes";
 import { wordsOf } from "../../refs/tree-fragment";
 import { retryRead } from "../details-error";
+import { drawnLine, firstLineOf } from "../issue-tree";
+import { referenceStandIns } from "../one-line";
 import { NODE_REFERENCES_WORDS, sentenceCase } from "../page-words";
+import { rowReferences } from "../row-references";
 import { storedReading } from "../stored-reading";
 import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
 
@@ -51,9 +55,9 @@ function newestFirst(a: DatedRun, b: DatedRun): number {
  *  when it was made - no `at` where the read answers no time, so the row draws none - and the
  *  run's own page. Only the key and the link hold the run's id. The question's plain words are
  *  the words of the server's reading of it (`text_tree`), and of its stored text's reading where
- *  the read sent none (`storedReading`), on one line: its formatting gone and each reference as
- *  its asker wrote it, which the list draws as the characters they are (the reading list's
- *  `referenced-by-run-question`). */
+ *  the read sent none (`storedReading`), on one line, with each bare address as its asker wrote
+ *  it: `useRunRows` names each reference in them as a one-line place names one
+ *  (`namedWords`). */
 function runRow(run: TreeAnswerNode): ExtraReferenceRow {
   const excerpt = wordsOf(run.text_tree ?? storedReading(run.text, run))
     .replace(/\s+/gu, " ")
@@ -66,6 +70,49 @@ function runRow(run: TreeAnswerNode): ExtraReferenceRow {
     key: run.id,
     kind: sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction),
   };
+}
+
+/** How a run's words name a reference they cite, by its `dispatch://` reference: the page's name
+ *  for it where the page knows one, and undefined where it does not. */
+export type RunNameOf = (reference: string) => string | undefined;
+
+/** The references of `words` a one-line place names by the page's name for each
+ *  (`referenceStandIns`): every one it names but an issue, which it names by its key. These are
+ *  the references the page is asked to name (`useRunNames`). */
+export function namedReferences(words: string): string[] {
+  return rowReferences(words, []).flatMap((one) =>
+    one.route.kind === "issue" ? [] : [one.reference]
+  );
+}
+
+/** The names the page knows for the references `texts` cite (`namedReferences`), by the one rule
+ *  every plain line names a reference by (`refs/plain-text.tsx`'s `useReferenceNames`): what the
+ *  page published from its batched read, and else the target's own read. `reads` draws nothing,
+ *  and the caller mounts it where it draws the words. A run is on no issue, so no role is read by
+ *  one. */
+export function useRunNames(texts: readonly string[]): { nameOf: RunNameOf; reads: ReactNode } {
+  const addresses = useMemo(() => [...new Set(texts.flatMap(namedReferences))], [texts]);
+  const { names, reads } = useReferenceNames(addresses, undefined);
+  const nameOf = useMemo<RunNameOf>(() => (reference) => names.get(reference)?.name, [names]);
+  return { nameOf, reads };
+}
+
+/** `words`, a run's words on one line with each bare address as written, with each reference
+ *  they cite named as a one-line place names one (`referenceStandIns`, decisions 140 and 491): an
+ *  issue by its key, any other target by the page's name for it (`nameOf`), and by its short form
+ *  where the page knows none (`shortForm`) - never as the address that was typed. */
+export function namedWords(words: string, nameOf: RunNameOf): string {
+  const references = referenceStandIns(nameOf);
+  return references.named(references.standIn(words));
+}
+
+/** The first line of `words`, a node's words with each bare address as written
+ *  (`lineWordsRaw`), cut by R1's first-line rule (`firstLineOf`, `drawnLine`) with each reference
+ *  in it unnamed, and then named as `namedWords` names one, so no cut falls inside a name: the
+ *  shape every one-line place of the page draws a node's line in (`IssueContents.tsx`). */
+export function namedFirstLine(words: string, nameOf: RunNameOf): string {
+  const references = referenceStandIns(nameOf);
+  return references.named(drawnLine(firstLineOf(references.standIn(words))));
 }
 
 /** One row for each run whose node some page holds and that a `changed_by_run` tuple of some page
@@ -104,9 +151,12 @@ function answerRows(answer: TreeAnswer): readonly ExtraReferenceRow[] {
 /** The run rows of the issue's tree read, and how that read stands, as Details says a read of
  *  its own failed (`DetailsErrorLine`). */
 export interface RunRowsRead {
-  /** The rows (`runRows`), the same value until the read's answer changes; none while the read
-   *  holds no answer. */
+  /** The rows (`runRows`), each question's references named (`namedWords`): made anew only where
+   *  the read's answer or the names the page knows change; none while the read holds no answer. */
   readonly rows: readonly ExtraReferenceRow[];
+  /** The reads of the references the questions cite that the page has no name for, which draw
+   *  nothing: the caller mounts them where it draws the rows (`useRunNames`). */
+  readonly reads: ReactNode;
   /** Whether the rows are known: the read holds an answer, or stands failed. */
   readonly settled: boolean;
   /** Whether the read stands failed (`standsFailed`): it holds no answer, and a read of it has
@@ -139,13 +189,29 @@ export interface RunRowsRead {
  * an answer nor a refusal (`mayReadNow`): a first opening while a write is out sends the read,
  * and the tree's freshness asks for it again once the last write settles
  * (`subscribeTreeFreshness`). Only the asker's tree read holds a run, so another reader's rows
- * are none.
+ * are none. Each question is a one-line place: each reference it cites is named by the page's
+ * name for it where the page knows one, and else by its short form, never as the address its
+ * asker typed (`namedWords`, the reading list's `referenced-by-run-question`).
  */
 export function useRunRows(issue: IssueDetails, open: boolean): RunRowsRead {
   const tree = issueTreeQuery(issue.key);
   const read = useQuery({ ...tree, enabled: false, select: answerRows });
   useQuery({ ...tree, subscribed: open });
   const { data: rows, errorUpdateCount, refetch } = read;
+  const questions = useMemo(
+    () => (rows ?? NO_ROWS).flatMap((row) => (row.excerpt === undefined ? [] : [row.excerpt])),
+    [rows]
+  );
+  const { nameOf, reads } = useRunNames(questions);
+  const named = useMemo(
+    () =>
+      rows === undefined || rows.length === 0
+        ? NO_ROWS
+        : rows.map((row) =>
+            row.excerpt === undefined ? row : { ...row, excerpt: namedWords(row.excerpt, nameOf) }
+          ),
+    [nameOf, rows]
+  );
   const failed = standsFailed(read);
   // `isFetching` is read only while the read stands failed, the one time its Retry is drawn.
   const retrying = failed && read.isFetching;
@@ -153,11 +219,12 @@ export function useRunRows(issue: IssueDetails, open: boolean): RunRowsRead {
     () => ({
       failed,
       failure: errorUpdateCount,
+      reads,
       retry: retryRead({ refetch }),
       retrying,
-      rows: rows ?? NO_ROWS,
+      rows: named,
       settled: rows !== undefined || failed,
     }),
-    [errorUpdateCount, failed, refetch, retrying, rows]
+    [errorUpdateCount, failed, named, reads, refetch, retrying, rows]
   );
 }
