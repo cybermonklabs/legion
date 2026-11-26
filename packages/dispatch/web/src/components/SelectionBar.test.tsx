@@ -1083,10 +1083,13 @@ test("a landing the commit dropped to the page's body takes the focus again once
   const view = render(
     <PlacedList count={2} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
   );
+  let answered: () => void = () => undefined;
   try {
     // The bar goes with the marks, and its hand-off lands on the mark of the row that will stand
     // at the place once the two rows a press is taking away have gone.
     pressInBar("Dismiss");
+    // The host holds the press through its write, as the Inbox and the List hold theirs.
+    answered = holdHandOff();
     view.rerender(
       <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
     );
@@ -1102,6 +1105,8 @@ test("a landing the commit dropped to the page's body takes the focus again once
     );
     expect(rowBox("CORE-14")).toHaveFocus();
   } finally {
+    answered();
+    disarm();
     view.unmount();
     laidOut();
   }
@@ -1118,8 +1123,11 @@ test("a landing dropped to the body in the frame after the commit takes the focu
   const view = render(
     <PlacedList count={2} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
   );
+  let answered: () => void = () => undefined;
   try {
     pressInBar("Dismiss");
+    // The host holds the press through its write, as the Inbox and the List hold theirs.
+    answered = holdHandOff();
     view.rerender(
       <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
     );
@@ -1139,6 +1147,8 @@ test("a landing dropped to the body in the frame after the commit takes the focu
     });
     expect(rowBox("CORE-14")).toHaveFocus();
   } finally {
+    answered();
+    disarm();
     view.unmount();
     laidOut();
   }
@@ -1156,8 +1166,11 @@ test("a landing the view moved away from under the reader is shown whole again b
   );
   const scroll = spyOn(window, "scrollBy").mockImplementation(() => {});
   const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  let answered: () => void = () => undefined;
   try {
     pressInBar("Dismiss");
+    // The host holds the press through its write, as the Inbox and the List hold theirs.
+    answered = holdHandOff();
     view.rerender(
       <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
     );
@@ -1174,6 +1187,8 @@ test("a landing the view moved away from under the reader is shown whole again b
     expect(rowBox("CORE-14")).toHaveFocus();
     expect<readonly unknown[]>(scroll.mock.calls).toEqual([[{ top: 1200 - window.innerHeight }]]);
   } finally {
+    answered();
+    disarm();
     if (scrollY === undefined) Reflect.deleteProperty(window, "scrollY");
     else Object.defineProperty(window, "scrollY", scrollY);
     scroll.mockRestore();
@@ -1196,8 +1211,11 @@ test("a landing the box's own edges left out of sight is passed over, and the pl
   );
   const scroll = spyOn(window, "scrollBy").mockImplementation(() => {});
   const height = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  let answered: () => void = () => undefined;
   try {
     pressInBar("Dismiss");
+    // The host holds the press through its write, as the Inbox and the List hold theirs.
+    answered = holdHandOff();
     view.rerender(
       <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
     );
@@ -1211,6 +1229,8 @@ test("a landing the box's own edges left out of sight is passed over, and the pl
     expect(focusedName()).toBe("Select CORE-11");
     expect<readonly unknown[]>(scroll.mock.calls).toEqual([[{ top: 200 - 150 }]]);
   } finally {
+    answered();
+    disarm();
     if (height === undefined) Reflect.deleteProperty(window, "innerHeight");
     else Object.defineProperty(window, "innerHeight", height);
     scroll.mockRestore();

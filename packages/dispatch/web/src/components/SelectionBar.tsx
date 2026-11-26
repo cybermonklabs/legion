@@ -3,6 +3,7 @@ import {
   type ReactNode,
   type Ref,
   type RefObject,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -128,17 +129,26 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
   // The ids of the list's rows, in order, as the last commit that drew the bar with the row
   // marked last in the list read them.
   const before = useRef<readonly string[]>([]);
-  // The landing the hand-off last made, until the commit that takes the press's rows away has
-  // run: the mark's row, the row marked last that chose it, and how far the view the reader saw
-  // it through was scrolled once it landed (`viewScrollOf`). Null while no landing is owed that
-  // reading.
+  // The landing the hand-off last made, until the commit that takes the press's rows and the bar
+  // away has run: the mark's row, the row marked last that chose it, and how far the view the
+  // reader saw it through was scrolled once it landed (`viewScrollOf`). Null while no landing is
+  // owed that reading.
   const landed = useRef<{ at: number; id: string; last: string | null } | null>(null);
-  // The frame that reads the landing's focus once more, after the commit that finished it. Null
-  // while none waits.
+  // What takes the reading back once the reader acts, and the frame that reads the landing's focus
+  // once more after the commit that finished it. Null while neither waits.
+  const watch = useRef<(() => void) | null>(null);
   const frame = useRef<number | null>(null);
+  /** Forgets the landing owed a reading, with whatever waits on it. */
+  const forget = useCallback(() => {
+    landed.current = null;
+    watch.current?.();
+    watch.current = null;
+  }, []);
   useEffect(
     () => () => {
       if (frame.current !== null) window.cancelAnimationFrame(frame.current);
+      watch.current?.();
+      watch.current = null;
     },
     []
   );
@@ -150,14 +160,14 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
     const order = list.order();
     if (order.includes(last)) before.current = order;
   });
-  // The landing is read again once the press's rows have gone. A press's rows are drawn until its
-  // write's optimistic apply lands, and the bar stands over the list until the marks clear, so the
-  // landing was measured against a list and a box that the commit after it changes: the rows above
-  // the mark move up by the space they took, the box's own edges move with what the page draws in
-  // the bar's place, and the row the mark is in is drawn again, which an engine can answer by
-  // dropping the focus to the page's body. So in the first commit after a landing in which the
-  // list names no row as leaving, that landing is finished, against the list and the box as they
-  // now stand:
+  // The landing is read again once the press's rows and the bar itself have gone. A press's rows
+  // are drawn until its write's optimistic apply lands, and the bar stands over the list until the
+  // marks clear, so the landing was measured against a list and a box that the commits after it
+  // change: the rows above the mark move up by the space they took, the box's own edges move with
+  // what the page draws where the bar stood, and the row the mark is in is drawn again, which an
+  // engine can answer by dropping the focus to the page's body. So in the first commit after a
+  // landing in which the bar is gone and the list names no row as leaving, that landing is
+  // finished, against the list and the box as they now stand:
   //  - the mark takes the focus again where the focus fell to the body;
   //  - a mark out of the reader's sight that the view moved away from under them - an engine's own
   //    anchoring holding the box where the rows went from, which `ViewportAnchor` reads as the
@@ -169,14 +179,17 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
   // A mark the commit leaves cut is shown whole by the landing's own least scroll, or by the
   // list's anchor where the landing took it with no scroll of its own (`ViewportAnchor`), and
   // nothing here moves the view for it; a mark the reader has left for another control is theirs,
-  // and nothing here takes the focus back from it.
+  // and nothing here takes the focus back from it. The reading is owed only until the reader's own
+  // next action (`READER_ACTS`): a press, a key or a wheel of theirs means they have moved on, and
+  // nothing of this follows them.
   useLayoutEffect(() => {
     const landing = landed.current;
     if (landing === null) return;
+    if (list.shown) return;
     const { leaving } = list;
     const order = list.order();
     if (leaving !== undefined && order.some((row) => leaving(row))) return;
-    landed.current = null;
+    forget();
     const mark = list.control(landing.id);
     if (mark === null || !mark.isConnected) return;
     const lost = focusOnDocument();
@@ -232,10 +245,20 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
     const mark = id === null ? null : list.control(id);
     if (id !== null && mark !== null) {
       landMark(mark, landing.moves.get(id), head);
-      // The landing is finished once this press's rows have gone (above), and only a press that
-      // is taking rows away has a commit to finish it in: where the list keeps every row it holds,
-      // nothing of the list or the box changes under the landing, and it is whole as it stands.
-      landed.current = kept.length < order.length ? { at: viewScrollOf(mark), id, last } : null;
+      // The landing is finished once this press's rows and the bar have gone (above), and the
+      // reader's own next action takes that reading back: a press, a key or a wheel of theirs
+      // means they have moved on, and where they are is theirs.
+      forget();
+      landed.current = { at: viewScrollOf(mark), id, last };
+      const acted = () => forget();
+      for (const kind of READER_ACTS) {
+        document.addEventListener(kind, acted, { capture: true, passive: true });
+      }
+      watch.current = () => {
+        for (const kind of READER_ACTS) {
+          document.removeEventListener(kind, acted, { capture: true });
+        }
+      };
       return true;
     }
     if (listed) return false;
@@ -243,6 +266,10 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
     return true;
   };
 }
+
+/** What the reader does that ends a landing's owed reading (`useLastMarkedPlace`): a press, a key
+ *  or a wheel of theirs, read on the document's capture so nothing can stop it on the way. */
+const READER_ACTS = ["pointerdown", "keydown", "wheel"] as const;
 
 /** The landing of a list no press is taking a row away from: no row moves up, and no element
  *  stands in for one that has yet to move. The hand-off reads it when it finishes a landing, once
