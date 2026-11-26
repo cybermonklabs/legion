@@ -20,6 +20,12 @@
  *       [--route-id <arm>=<uuid>]... (screen, confirm and control only)
  *   bun scripts/skill-cuts/cli.ts behaviour audit-mixed --config <file> --out <dir> --old <dir>
  *       --new <dir> --cases <file> [--cache-dir <dir>] [--scratch <dir>]
+ *   bun scripts/skill-cuts/cli.ts behaviour continue-mixed --config <file> --key-file <file>
+ *       --from <saved out> --out <new dir> --old <dir> --new <dir> --cases <file>
+ *       [--allow-runners <digest>[,<digest>...]] [--only <file>] [--further-rounds <n>]
+ *       [--probe <case id>/<arm>/<run number>] [--budget-usd <n>] [--concurrency <n>]
+ *       [--cache-dir <dir>] [--scratch <dir>] [--request-log <file>] [--after-case <command>]
+ *       [--repos <dir>] [--models <models.yml>] [--omp <binary>]
  *   bun scripts/skill-cuts/cli.ts read --config <file> --key-file <file> --prompt <name>
  *       --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>]
  *       [--concurrency <n>]
@@ -201,14 +207,59 @@
  *   once (`<stage> deployments by arm: old <id> <n>, <id> <n>; new ...`, gateway.ts's
  *   `deploymentWords`; `not recorded` for results made before runs recorded them), and, for a
  *   kind with runs an arm's `--route-id` pin sent, `<stage> routing pinned: <arm>=<id>, ...` with
- *   their cases: such runs are a diagnostic, never a test result.
+ *   their cases: such runs are a diagnostic, never a test result. For results `continue-mixed`
+ *   wrote it also prints how many stages it wrote, from which `--from`, and which it selected; its
+ *   runs of each kind by stage and arm (continued, waiting at the further-round limit, run again
+ *   fresh, the fresh runs in their place, unchanged); and the continuations' spend and the fresh
+ *   runs' apart (`continuedLines`).
  * - `audit-mixed` (no model call, no capture, no network; `auditMixedCommand`) applies the
  *   replay's mixed-reply rule (replay.ts's `replyBoundary` under the case's act, `caseAct`) to
  *   the judged reply of each saved run, its arms built from `--old` and `--new` and its installed
- *   copies read from its stage's saved capture under `--cache-dir`, and prints and writes to
- *   `<out>/audit-mixed.json`, per case, stage and arm, the runs judged at a mixed reply with an
+ *   copies read from its stage's saved capture under `--cache-dir`, or, where that capture is not
+ *   saved, from the copies the case's saved profile installs (`profileInstalledCopies`, the cache
+ *   entries a capture of it records), and prints and writes to `<out>/audit-mixed.json`, per
+ *   case, stage and arm, where its copies came from, the runs judged at a mixed reply with an
  *   act, those it would continue now, those it would leave with no verdict, past the last round
  *   or undecided, each with its run number, blind id and session id: ids, counts and tool names.
+ *   A case whose profile copy the cache does not hold or cannot read is not audited, and is listed
+ *   under `skipped` with why; the other cases are audited.
+ * - `continue-mixed` (`continueMixedCommand`) continues the saved runs of `--from`, a saved
+ *   `--out`, that `audit-mixed` sorts `continues`, into a new `--out`: INFRA-323's rule counts a
+ *   saved case only once those runs are continued. `--from` is only read, and `--out` may not be
+ *   it. Before any model call it refuses a saved stage of another runner unless `--allow-runners`
+ *   names it, as the stage commands do, and an `--only` line that names a stage no saved result
+ *   holds. A judged run the rule continues is continued from its saved reply when its record holds
+ *   every part its next request needs: the reply is the first of its run (`skillRounds` 0: a
+ *   saved step drops earlier rounds' thinking and text), it has a session id, its arm's saved
+ *   capture is on disk, and the deployment that answered it is known (the run's last
+ *   `deployments` entry, or for a run saved before runs recorded one, the one deployment that
+ *   answered every request of its session id in `<from>/requests.jsonl`, with that log's path and
+ *   SHA-256; never a per-arm `--route-id`). The continuation is replay.ts's `resumeReplay`, the
+ *   live replay's own code: replayOnce's first body with the run's own session id, the saved
+ *   reply whole (its thinking signatures or encrypted reasoning) less the calls it left out, one
+ *   answer per read, the capture's headers and the run's own routing id (none on the Responses
+ *   route); later rounds follow the live rules, or stop after `--further-rounds <n>` requests,
+ *   where a reply that would be continued again leaves the run with no verdict, its reason
+ *   beginning `further-round-limit` (score.ts's FURTHER_ROUND_LIMIT), its reads and spend kept,
+ *   and no fresh run in its place. Each request must be answered by the deployment that answered
+ *   the saved reply (`x-litellm-model-id`). Each stage's continued replies are judged blind by the
+ *   case's judge under a new seed, the stage's next round. A run that lacks a part, one a request
+ *   of which another deployment answered, one whose request failed or was refused, and a judged
+ *   run the rule leaves undecided, get no verdict and the stage's extra-run rule runs them again
+ *   fresh; a judged run past the last round gets no verdict as `reads-past-last-round`. With
+ *   `--only <file>` (each line `<case id>`, a tab, and `screen`, `control` or `confirm <n>`, the
+ *   confirms numbered as `audit-mixed` numbers them) only the stages it names are continued; every
+ *   run of the others is kept. Each case result in `--out` holds every stage of the saved one: the
+ *   unchanged runs as saved, each continued run in its saved run's place naming that run (its
+ *   number, blind id, round, verdict and runner), this runner, the deployment and where it came
+ *   from, and its continuation's request ids (`continueMixed`), and the fresh runs; each stage
+ *   records the `--from` it came from, its saved rounds and whether it was selected
+ *   (`continued`). The saved captures its fresh runs replay are copied to `--out`, so the stage
+ *   commands and `report` work on it. `--probe <case id>/<arm>/<run number>` rebuilds that one
+ *   run's continuation and sends only its next request, with no later round and no judgement,
+ *   and prints and writes to `<out>/probe.json` its request ids, its status or error, the
+ *   deployment that answered it, its usage and its cost at list price; it refuses, before any
+ *   call, a run the rule does not continue or whose record lacks a part, saying which.
  *
  * Every round of a stage sends the runs of all its arms in one order, seeded by the round's
  * recorded seed (replay.ts's `replayInterleaved`), each run with a session id of its own, and its
@@ -309,6 +360,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -331,6 +383,7 @@ import {
   type ArmName,
   buildArm,
   InjectionRefused,
+  type InstalledCopy,
   injectionFaults,
 } from "./arms";
 import {
@@ -379,6 +432,7 @@ import {
   ghSource,
   installedCopies,
   localSource,
+  profileCopies,
   type RepoSource,
   UNREADABLE_DIRECTORY,
   UnreadableDirectory,
@@ -389,14 +443,17 @@ import {
   BudgetSpent,
   bodyIdentity,
   createGateway,
+  deploymentOf,
   deploymentWords,
   type Gateway,
   isUuid,
   PRICE_SOURCE,
   PRICES,
+  type Reply,
   type RequestBody,
   ROUTING_HEADER,
   type Sent,
+  type Spent,
   SpentRecord,
   STREAM_FAILED,
   usdOf,
@@ -438,15 +495,21 @@ import {
   type Boundary,
   type CallPart,
   caseAct,
+  FurtherRoundLimit,
   LeftOutCall,
   MAX_SKILL_ROUNDS,
   MIXED_UNDECIDED,
   type MixedRule,
+  NotResumable,
   READS_PAST_LAST_ROUND,
   ReadsPastLastRound,
   type Replayed,
   replayInterleaved,
   replyBoundary,
+  resumeReplay,
+  type SkillRead,
+  type SortedCall,
+  sendOrder,
   UndecidedReply,
 } from "./replay";
 import {
@@ -455,6 +518,7 @@ import {
   type CaseScore,
   FLAG_GAP,
   FRESH_RUNS,
+  FURTHER_ROUND_LIMIT,
   INFORMATIVE_GAP,
   isControlLoss,
   isFalseLoss,
@@ -911,6 +975,46 @@ async function controlCommand(argv: readonly string[], io: CliIo): Promise<numbe
 
 // `behaviour`: the results of a case.
 
+/** Where the deployment that answered a saved run's reply comes from (`behaviour
+ *  continue-mixed`): the run's own record (its last `deployments` entry), or, for a run saved
+ *  before runs recorded one, its saved `--out`'s request log, the one deployment every logged
+ *  request of its session id was answered by, with the log's path and SHA-256. */
+const SavedDeployment = z.union([
+  z.strictObject({ id: z.string(), from: z.literal("run") }),
+  z.strictObject({
+    id: z.string(),
+    from: z.literal("request log"),
+    file: z.string(),
+    sha256: z.string(),
+  }),
+]);
+type SavedDeployment = z.infer<typeof SavedDeployment>;
+
+/** What `behaviour continue-mixed` made of the saved run in a run's place: `continued`, the run
+ *  is its continuation from its saved reply; or `run again`, the saved run gets no verdict and the
+ *  stage's extra-run rule runs it again fresh (the run's reason says why). `saved` names the saved
+ *  run (its number in its arm and stage, its blind id, its round, its verdict, and the runner
+ *  that made it); `runner` is the runner that continued it (`runnerDigest`); `deployment` the
+ *  deployment that answered its saved reply and where that came from, or null where none was
+ *  taken; `requestIds` the provider request id of each continuation request that got an answer,
+ *  in the order sent (null where an answer carried none); and `usd` the dollars at list price of
+ *  the continuation's answered requests and of its judgement. */
+const ContinueMixedRun = z.strictObject({
+  kind: z.enum(["continued", "run again"]),
+  saved: z.strictObject({
+    run: z.int().positive(),
+    id: z.string().nullable(),
+    round: z.int().positive(),
+    verdict: z.enum(["pass", "fail"]).nullable(),
+    runner: z.string(),
+  }),
+  runner: z.string(),
+  deployment: SavedDeployment.nullable(),
+  requestIds: z.array(z.string().nullable()),
+  usd: z.number(),
+});
+type ContinueMixedRun = z.infer<typeof ContinueMixedRun>;
+
 /** One run of one arm of a case in one stage: score.ts's RunRecord, and what the run did. */
 const Run = z.strictObject({
   ...RunRecord.shape,
@@ -963,6 +1067,9 @@ const Run = z.strictObject({
   /** The runner that made the run (`runnerDigest`); absent from a run made before runs recorded
    *  it, which takes its stage's (`stageRunners`). */
   runner: z.string().optional(),
+  /** What `behaviour continue-mixed` made of the saved run in this run's place
+   *  (ContinueMixedRun); absent on every other run. */
+  continueMixed: ContinueMixedRun.optional(),
 });
 type Run = z.infer<typeof Run>;
 
@@ -997,7 +1104,12 @@ export const SENDS = "each run its own session id; a round's arms interleaved in
  *  (`runnerDigest`), absent in a stage started before the runner was recorded; each of its runs
  *  records its own. `confirmFlagged` is true in a confirm that `behaviour
  *  confirm --confirm-flagged` ran, in any of its rounds, and absent otherwise: report then gives
- *  no skill verdict (CONFIRM_FLAGGED_VERDICT). */
+ *  no skill verdict (CONFIRM_FLAGGED_VERDICT). `continued` is set on a stage `behaviour
+ *  continue-mixed` wrote from a saved one: the saved `--out` it came from (`from`, as an absolute
+ *  path), how many rounds the saved stage held (`savedRounds`), so a run of a later round that
+ *  names no ContinueMixedRun is a fresh run made after it, and whether a run of the command
+ *  selected it (`selected`: `--only` named it, or no `--only` was given), so its saved runs were
+ *  continued, where false they were all kept; absent on every other stage. */
 const StageResult = z.strictObject({
   state: StageState,
   sends: z.literal(SENDS),
@@ -1009,6 +1121,13 @@ const StageResult = z.strictObject({
   usd: z.number(),
   runner: z.string().optional(),
   confirmFlagged: z.literal(true).optional(),
+  continued: z
+    .strictObject({
+      from: z.string(),
+      savedRounds: z.int().nonnegative(),
+      selected: z.boolean(),
+    })
+    .optional(),
 });
 type StageResult = z.infer<typeof StageResult>;
 
@@ -1441,6 +1560,54 @@ function confirmStages(result: CaseResult): StageResult[] {
   return [...(result.earlierConfirms ?? []), ...(latest === undefined ? [] : [latest])];
 }
 
+/** Where one stage of a case result is: its kind, its number among the case's confirms (from 1,
+ *  oldest first; confirms only), how it is read from a result, and a result with a new state of it
+ *  in its place. */
+interface StagePlace {
+  readonly stage: Stage;
+  readonly confirm?: number;
+  get(result: CaseResult): StageResult | undefined;
+  put(result: CaseResult, state: StageResult): CaseResult;
+}
+
+/** The place of the latest stage of kind `stage`, `result.stages[stage]`. */
+function latestPlace(stage: Stage, confirm?: number): StagePlace {
+  return {
+    stage,
+    ...(confirm === undefined ? {} : { confirm }),
+    get: (result) => result.stages[stage],
+    put: (result, state) => ({ ...result, stages: { ...result.stages, [stage]: state } }),
+  };
+}
+
+/** The place of each stage `result` ran, in the order screen, each confirm oldest first (its
+ *  earlier ones, then its latest, numbered from 1), control. */
+function stagePlaces(result: CaseResult): StagePlace[] {
+  const earlier = result.earlierConfirms ?? [];
+  const { screen, confirm, control } = result.stages;
+  return [
+    ...(screen === undefined ? [] : [latestPlace("screen")]),
+    ...earlier.map(
+      (_, at): StagePlace => ({
+        stage: "confirm",
+        confirm: at + 1,
+        get: (each) => each.earlierConfirms?.[at],
+        put: (each, state) => ({
+          ...each,
+          earlierConfirms: (each.earlierConfirms ?? []).map((kept, k) => (k === at ? state : kept)),
+        }),
+      })
+    ),
+    ...(confirm === undefined ? [] : [latestPlace("confirm", earlier.length + 1)]),
+    ...(control === undefined ? [] : [latestPlace("control")]),
+  ];
+}
+
+/** A stage's place in words: `screen`, `confirm 2`, `control`. */
+function placeWords(place: Pick<StagePlace, "stage" | "confirm">): string {
+  return place.confirm === undefined ? place.stage : `${place.stage} ${place.confirm}`;
+}
+
 /** The texts of `stage` (or of a runner's `texts`) as score.ts's MadeConfirm holds them: the two
  *  digests in one string. */
 const textsOf = (stage: { readonly texts: { readonly old: string; readonly new: string } }) =>
@@ -1686,23 +1853,46 @@ function stageDone(r: Runner, result: CaseResult | undefined, stage: Stage): boo
  *  each such case, its runners, and this runner, and advises an `--allow-runners` that names the
  *  runners it names already and those, since a new value replaces the old one. */
 function checkRunners(r: Runner, results: Iterable<CaseResult>, stage: Stage): void {
+  refuseOtherRunners(
+    r,
+    r.out,
+    [...results].flatMap((result) => {
+      const state = result.stages[stage];
+      return state === undefined ? [] : [{ caseId: result.caseId, label: stage, state }];
+    }),
+    "a stage command takes a saved stage as done, or goes on with it,",
+    "to take those stages as they are, or use another --out"
+  );
+}
+
+/** The refusal of `checkRunners` and of `behaviour continue-mixed`, over `stages` (each a stage of
+ *  case `caseId`'s result under `out`, named `label`): refuses each some run of which (or which,
+ *  with no run) a runner made that is neither `r.runner` nor one `--allow-runners` names, naming
+ *  each, its runners, this runner and the rule (`rule`, what takes such a stage), and advising an
+ *  `--allow-runners` that names the runners it names already and those, `advice` after it. */
+function refuseOtherRunners(
+  r: Pick<Runner, "runner" | "allowRunners">,
+  out: string,
+  stages: readonly { caseId: string; label: string; state: StageResult }[],
+  rule: string,
+  advice: string
+): void {
   const others = new Set<string>();
-  const foreign = [...results].flatMap((result) => {
-    const saved = result.stages[stage];
-    const theirs = [...(saved === undefined ? [] : stageRunners(saved).keys())].filter(
+  const foreign = stages.flatMap(({ caseId, label, state }) => {
+    const theirs = [...stageRunners(state).keys()].filter(
       (runner) => runner !== r.runner && !r.allowRunners.includes(runner)
     );
     for (const runner of theirs) others.add(runner);
     return theirs.length === 0
       ? []
       : [
-          `case ${result.caseId}'s ${stage} in ${caseResultFile(r.out, result.caseId)} was made by runner ${theirs.join(" and ")}`,
+          `case ${caseId}'s ${label} in ${caseResultFile(out, caseId)} was made by runner ${theirs.join(" and ")}`,
         ];
   });
   if (foreign.length === 0) return;
   const allow = new Set([...r.allowRunners, ...others]);
   throw new Refused(
-    `${foreign.join("; ")}, and this runner is ${r.runner}: a stage command takes a saved stage as done, or goes on with it, only when this runner made it or --allow-runners names its runner. Give --allow-runners ${[...allow].join(",")} to take those stages as they are, or use another --out`
+    `${foreign.join("; ")}, and this runner is ${r.runner}: ${rule} only when this runner made it or --allow-runners names its runner. Give --allow-runners ${[...allow].join(",")} ${advice}`
   );
 }
 
@@ -1889,16 +2079,21 @@ async function runRound(
  * draws its own), and a pinned arm's runs with its `--route-id` pin (`r.routePins`): so round n
  * of runs, old's, new's and none's run n (minus's and twin's in a control), goes to the one
  * deployment its id pins, every arm alike, and the rounds fall on the deployments as their ids
- * hash. Throws Stopped, after saving, when the budget refused a call.
+ * hash. Throws Stopped, after saving, when the budget refused a call. The stage is the one `place`
+ * names (StagePlace): the case's latest of its kind by default, or one of its earlier confirms,
+ * whose runs `behaviour continue-mixed` gives fresh runs in place of those it runs again. A stage
+ * whose arms lack no run but those that wait for the next decision (score.ts's
+ * FURTHER_ROUND_LIMIT) is returned running, with no round started for them.
  */
 async function runStage(
   r: Runner,
   c: Case,
   stage: Stage,
   result: CaseResult,
-  phases: Phases
+  phases: Phases,
+  place: StagePlace = latestPlace(stage)
 ): Promise<CaseResult> {
-  const existing = result.stages[stage];
+  const existing = place.get(result);
   let state: StageResult = existing ?? {
     state: "running",
     sends: SENDS,
@@ -1917,7 +2112,7 @@ async function runStage(
     const now = r.gateway.spend().usd;
     state = { ...next, usd: next.usd + now - spentAt };
     spentAt = now;
-    current = { ...current, stages: { ...current.stages, [stage]: state } };
+    current = place.put(current, state);
   };
   const save = (next: StageResult): string => {
     update(next);
@@ -2001,6 +2196,12 @@ async function runStage(
           ? (readsPastDrop(state.runs, stage) ?? refusedDrop(state.runs, stage))
           : undefined;
       return dropped === undefined ? current : { ...current, dropped, droppedAt: stage };
+    }
+    // A stage whose arms hold their runs but for those that wait (FURTHER_ROUND_LIMIT) starts
+    // none: it stays running until the next decision.
+    if (Object.values(outcome.toStart).every((count) => count === 0)) {
+      update({ ...state, state: "running" });
+      return current;
     }
     const seed = newSeed();
     const round = await runRound(
@@ -2407,9 +2608,16 @@ function savedRefusal(result: CaseResult, stage: Stage): CaseResult | undefined 
   return dropped === undefined ? undefined : { ...result, dropped, droppedAt: stage };
 }
 
+/** Whether `run` waits for the next decision at continue-mixed's further-round limit: no verdict,
+ *  its reason beginning score.ts's FURTHER_ROUND_LIMIT, so no fresh run takes its place. */
+function waits(run: Run): boolean {
+  return run.verdict === null && run.reason.startsWith(FURTHER_ROUND_LIMIT);
+}
+
 /** Case `caseId`'s stage `state` of `stage` as one line, under `label`: each arm's passes and what
  *  they say, and how many runs got no verdict, those that read skill files past the last answered
- *  round counted by arm. */
+ *  round counted by arm; a stage not finished says what it still starts and, by arm, the runs
+ *  that wait at continue-mixed's further-round limit (score.ts's FURTHER_ROUND_LIMIT). */
 function stageLine(
   caseId: string,
   stage: Stage,
@@ -2437,7 +2645,14 @@ function stageLine(
       const toStart = Object.entries(outcome.toStart)
         .map(([arm, count]) => `${arm} ${count}`)
         .join(", ");
-      return `${label}: not finished, still to start: ${toStart}`;
+      const waiting = STAGE_ARMS[stage].map((arm) => ({
+        arm,
+        count: state.runs.filter((run) => run.arm === arm && waits(run)).length,
+      }));
+      const waitWords = waiting.some(({ count }) => count > 0)
+        ? `; waiting at the further-round limit for the next decision: ${armCounts(waiting)}`
+        : "";
+      return `${label}: not finished, still to start: ${toStart}${waitWords}`;
     }
   }
 }
@@ -2843,15 +3058,15 @@ function spendLines(b: Behaviour, spend: RecordedSpend): string[] {
 
 /**
  * The report's lines on the request log `file` (`loggedGateway`'s lines of `behaviour`: kinds
- * `judge`, `replay` and `hint`), set against the spend the case results record (`spend`): the
- * log's dollars and calls by kind, and its difference from the results' sum in two parts that sum
- * to it, each with its cause: the judge calls against the results' judge controls and judgements,
- * and the replay and hint calls against the results' replays and the calls no run records. A
- * replay call goes with its run's session id, which the run records (`userId`), so the replay
- * calls of runs no result holds, and the runs of the results no replay call of the log holds, are
- * counted exactly; a judge or hint call names no run. A line that is no JSON (the end of a line a
- * process was stopped in the middle of) is counted and left out. Where the file does not exist,
- * one line says so.
+ * `judge`, `replay`, `hint`, and `behaviour continue-mixed`'s `continuation` and `probe`), set
+ * against the spend the case results record (`spend`): the log's dollars and calls by kind, and
+ * its difference from the results' sum in two parts that sum to it, each with its cause: the judge
+ * calls against the results' judge controls and judgements, and the other calls against the
+ * results' replays and the calls no run records. A replay or continuation call goes with its
+ * run's session id, which the run records (`userId`), so the replay calls of runs no result holds,
+ * and the runs of the results no replay call of the log holds, are counted exactly; a judge or
+ * hint call names no run. A line that is no JSON (the end of a line a process was stopped in the
+ * middle of) is counted and left out. Where the file does not exist, one line says so.
  */
 function requestLogLines(
   file: string,
@@ -2874,7 +3089,7 @@ function requestLogLines(
     const amount = typeof usd === "number" ? usd : 0;
     const each = kinds.get(kind) ?? { calls: 0, usd: 0 };
     kinds.set(kind, { calls: each.calls + 1, usd: each.usd + amount });
-    if (kind === "replay") {
+    if (kind === "replay" || kind === "continuation") {
       const userId = field(line, "userId");
       replays.push({ userId: typeof userId === "string" ? userId : null, usd: amount });
     }
@@ -2987,6 +3202,78 @@ function routingLines(stage: Stage, runs: readonly Run[]): string[] {
   return lines;
 }
 
+/**
+ * The report's lines on the stages `behaviour continue-mixed` wrote (StageResult's `continued`),
+ * none where no stage holds it: how many there are, the saved `--out`s they came from, and which
+ * a run of the command selected (`--only`; the others' runs were all kept); their runs by stage
+ * and arm, each kind apart: continued (a ContinueMixedRun of kind `continued` that does not wait),
+ * waiting at the further-round limit (one that waits, `waits`), run again fresh (kind `run
+ * again`), the fresh runs made in their place (a run of a later round than the saved stage held,
+ * with no ContinueMixedRun), and unchanged (every other run: the saved runs kept as they were);
+ * and, apart, the dollars of the continuations (ContinueMixedRun's `usd`: their requests and
+ * judgements, a continuation discarded among them) and of the fresh runs (their replays and
+ * judgements), each by stage kind. Counts only: they change no verdict.
+ */
+function continuedLines(results: ReadonlyMap<string, CaseResult>): string[] {
+  type Kind = "continued" | "waiting" | "again" | "fresh" | "unchanged";
+  const rows: { stage: Stage; arm: ArmName; kind: Kind; usd: number }[] = [];
+  const froms = new Set<string>();
+  const selected: string[] = [];
+  let stages = 0;
+  for (const result of results.values()) {
+    for (const place of stagePlaces(result)) {
+      const state = place.get(result);
+      const continued = state?.continued;
+      if (state === undefined || continued === undefined) continue;
+      stages += 1;
+      froms.add(continued.from);
+      if (continued.selected) selected.push(`${result.caseId} ${placeWords(place)}`);
+      for (const run of state.runs) {
+        const mark = run.continueMixed;
+        const kind: Kind =
+          mark?.kind === "run again"
+            ? "again"
+            : mark !== undefined
+              ? waits(run)
+                ? "waiting"
+                : "continued"
+              : run.round > continued.savedRounds
+                ? "fresh"
+                : "unchanged";
+        const usd =
+          mark?.usd ?? (kind === "fresh" ? usdOf(run.replaySpent) + usdOf(run.judgeSpent) : 0);
+        rows.push({ stage: place.stage, arm: run.arm, kind, usd });
+      }
+    }
+  }
+  if (stages === 0) return [];
+  const byStage = (kind: Kind) =>
+    Stage.options
+      .map((stage) => {
+        const count = (arm: ArmName) =>
+          rows.filter((row) => row.stage === stage && row.arm === arm && row.kind === kind).length;
+        return `${stage} ${armCounts(STAGE_ARMS[stage].map((arm) => ({ arm, count: count(arm) })))}`;
+      })
+      .join("; ");
+  const spent = (kinds: readonly Kind[]) => {
+    const own = rows.filter((row) => kinds.includes(row.kind));
+    const sum = (each: readonly { usd: number }[]) => each.reduce((all, row) => all + row.usd, 0);
+    const parts = Stage.options.map(
+      (stage) => `${stage} ${dollars(sum(own.filter((row) => row.stage === stage)))}`
+    );
+    return `${dollars(sum(own))} over ${counted(own.length, "run")} (${parts.join(", ")})`;
+  };
+  return [
+    `continue-mixed: ${counted(stages, "case stage")} written from ${[...froms].join(", ")}, ${selected.length === stages ? "every one selected" : `${selected.length} of them selected by --only${selected.length === 0 ? "" : ` (${selected.join(", ")})`}, the others' runs all kept as saved`}`,
+    `continue-mixed continued (a saved run judged at a mixed reply whose other calls only prepare, continued from that reply and judged again), runs by stage and arm: ${byStage("continued")}`,
+    `continue-mixed waiting (${FURTHER_ROUND_LIMIT}: a continued run stopped with no verdict at the further-round limit, whose reply would be continued again, which no fresh run replaces until the next round is decided), runs by stage and arm: ${byStage("waiting")}`,
+    `continue-mixed run again fresh (a saved run the rule gives no verdict, or whose continuation its record could not rebuild, failed, or another deployment answered), runs by stage and arm: ${byStage("again")}`,
+    `continue-mixed fresh runs (made by the stage's extra-run rule in place of the runs with no verdict), runs by stage and arm: ${byStage("fresh")}`,
+    `continue-mixed unchanged (saved runs kept as they were), runs by stage and arm: ${byStage("unchanged")}`,
+    `continue-mixed spend at list price: the continuations ${spent(["continued", "waiting", "again"])}, their requests and judgements, a discarded one's among them; the fresh runs ${spent(["fresh"])}, their replays and judgements`,
+  ];
+}
+
 /** `behaviour report`: prints the runners of the results (`runnerLine`, which refuses results of
  *  more than one runner unless told), each case's passes, the skill's verdict and the run's
  *  figures, its spend among them (`spendLines`, and `requestLogLines` for the request log
@@ -2995,7 +3282,9 @@ function routingLines(stage: Stage, runs: readonly Run[]): string[] {
  *  their session's recorded system prompt whole that read a skill outside that listing
  *  (`outsideListing`): a count only, which drops no case and changes no verdict. Its
  *  `deployments by arm` line of each stage kind, and `routing pinned` line of a kind with pinned
- *  runs (`routingLines`), say where the runs went; they change no verdict either. */
+ *  runs (`routingLines`), say where the runs went; they change no verdict either. Its
+ *  `continue-mixed` lines (`continuedLines`), printed only for results continue-mixed wrote, count
+ *  the runs of each kind it made, by stage and arm, and their spend apart. */
 function reportCommand(b: Behaviour, requestLog: string): void {
   const results = readResults(b);
   const runners = runnerLine(b, results);
@@ -3083,6 +3372,8 @@ function reportCommand(b: Behaviour, requestLog: string): void {
   // Where each stage kind's runs went: the deployment that answered each arm's runs, and any
   // arm whose runs went with a `--route-id` pin.
   lines.push(...runsByStage.flatMap(([stage, runs]) => routingLines(stage, runs)));
+  // What `behaviour continue-mixed` made of the stages it wrote, and what that cost.
+  lines.push(...continuedLines(results));
   const pooled = score.cases.flatMap(({ caseId, confirm }) =>
     confirm?.state === "counted" && confirm.pooled !== undefined
       ? [
@@ -3208,13 +3499,130 @@ interface AuditedRun {
   readonly tools: readonly string[];
 }
 
+/** Where the installed copies of the profile's other skills an arm's runs are sorted with come
+ *  from, as `behaviour audit-mixed` and `behaviour continue-mixed` read them: its stage's saved
+ *  capture's record (`capture`, context.ts's `installedCopies`), or, where that capture is not
+ *  saved, the case's saved profile (`profile`, `profileInstalledCopies`). */
+type CopiesFrom = "capture" | "profile";
+
+/** The installed copies of `arm`'s profile's repository skills (context.ts's `profileCopies`, the
+ *  skills a context of the arm installs from their repositories): each under the name the profile
+ *  lists it under, from its cache entry `<cacheDir>/skills/<key>`, exactly as `installedCopies`
+ *  gives a saved capture record's copies, since a capture's record names those copies. What a
+ *  read of another skill is answered from where the arm's capture is not saved. Exported for
+ *  cli.test.ts. */
+export function profileInstalledCopies(
+  arm: Pick<Arm, "skill" | "skillDir" | "profileSkills">,
+  cacheDir: string
+): InstalledCopy[] {
+  const skills = profileCopies(arm).flatMap(({ record }) => (record === undefined ? [] : [record]));
+  return installedCopies({ skills }, cacheDir);
+}
+
+/** Why the cache cannot give the profile's installed copies `copies`, or undefined: the first one
+ *  whose directory it does not hold, or whose directory cannot be read. */
+function unreadableCopy(copies: readonly InstalledCopy[]): string | undefined {
+  for (const copy of copies) {
+    try {
+      const stat = statSync(copy.dir, { throwIfNoEntry: false });
+      if (stat === undefined) {
+        return `the profile's copy of ${copy.name}, ${copy.dir}, is not in the cache`;
+      }
+      if (!stat.isDirectory()) {
+        return `the profile's copy of ${copy.name}, ${copy.dir}, is not a directory`;
+      }
+      readdirSync(copy.dir);
+    } catch (error) {
+      return `the profile's copy of ${copy.name}, ${copy.dir}, cannot be read: ${messageFor(error)}`;
+    }
+  }
+  return undefined;
+}
+
+/** The files of the saved capture of case `caseId`'s arm `arm` in stage `state` under `out`: the
+ *  directory of the body file its CaptureNote names, else where `armCaptureDir` puts one. */
+function stageCaptureFiles(
+  out: string,
+  caseId: string,
+  arm: Arm,
+  state: StageResult,
+  texts: { readonly old: string; readonly new: string }
+): { readonly body: string; readonly record: string } {
+  const note = state.captures[arm.name];
+  return capturePaths(
+    note === undefined
+      ? armCaptureDir(out, arm, texts)
+      : path.dirname(path.resolve(out, note.bodyFile)),
+    caseId,
+    arm.name
+  );
+}
+
+/** What the mixed-reply rule makes of a saved run's judged reply (`sortRun`): no reply saved (a
+ *  replay that failed), answered rounds a run saved before `skillReads` cannot tell, a reply that
+ *  holds no mixed reply (`ends`) or only reads skill files (`skillRound`); or a mixed reply, with
+ *  its answered reads, its other calls sorted and its text's part: an act among them (`acts`),
+ *  only preparation (`continues`, or `pastLastRound` after MAX_SKILL_ROUNDS answered rounds), or
+ *  an undecided call (`unresolved`). */
+type RunSort =
+  | { readonly kind: "noReply" }
+  | { readonly kind: "unrecorded" }
+  | { readonly kind: "ends" }
+  | { readonly kind: "skillRound" }
+  | {
+      readonly kind: "acts" | "continues" | "pastLastRound" | "unresolved";
+      readonly reads: readonly SkillRead[];
+      readonly others: readonly SortedCall[];
+      readonly text: CallPart | undefined;
+    };
+
+/** replay.ts's mixed-reply rule (`replyBoundary` under `rule`) applied to saved run `run`'s judged
+ *  reply, its `reply` less its answered rounds' read calls (its first N blocks, N the reads its
+ *  `skillReads` holds), for `arm` answering a read of another skill from `copies` (RunSort): the
+ *  one sort `behaviour audit-mixed` and `behaviour continue-mixed` apply. Throws as
+ *  `replyBoundary` throws, after `label` and the run's number. */
+function sortRun(
+  run: Run,
+  arm: Arm,
+  copies: readonly InstalledCopy[],
+  rule: MixedRule,
+  label: string
+): RunSort {
+  const answered = run.skillReads?.flat().length ?? (run.skillRounds === 0 ? 0 : null);
+  if (run.reply === null) return { kind: "noReply" };
+  if (answered === null) return { kind: "unrecorded" };
+  let boundary: Boundary;
+  try {
+    boundary = replyBoundary(run.reply.slice(answered), arm, copies, rule);
+  } catch (error) {
+    throw new Error(`${label} run ${run.run}: ${messageFor(error)}`);
+  }
+  switch (boundary.kind) {
+    case "ends":
+      return { kind: "ends" };
+    case "skill round":
+      return { kind: "skillRound" };
+    case "acts":
+      return { ...boundary, kind: "acts" };
+    case "undecided":
+      return { ...boundary, kind: "unresolved" };
+    case "continue":
+      return {
+        ...boundary,
+        kind: (run.skillRounds ?? 0) >= MAX_SKILL_ROUNDS ? "pastLastRound" : "continues",
+      };
+  }
+}
+
 /** What `behaviour audit-mixed` finds of one arm's runs in one stage of a case (see
- *  `auditMixedCommand`). `confirm` numbers a case's confirms from 1, oldest first. */
+ *  `auditMixedCommand`). `confirm` numbers a case's confirms from 1, oldest first; `copiesFrom`
+ *  says where the installed copies its runs were sorted with came from (CopiesFrom). */
 interface ArmAudit {
   readonly caseId: string;
   readonly stage: Stage;
   readonly confirm?: number;
   readonly arm: ArmName;
+  readonly copiesFrom: CopiesFrom;
   readonly runs: number;
   readonly judged: number;
   noReply: number;
@@ -3225,6 +3633,17 @@ interface ArmAudit {
   readonly continues: AuditedRun[];
   readonly pastLastRound: AuditedRun[];
   readonly unresolved: AuditedRun[];
+}
+
+/** A stage or a case `behaviour audit-mixed` leaves unaudited, and why: a stage run with other
+ *  texts, or a case one of whose arms' copies come from its profile where a copy cannot be read
+ *  (with the stage and the arm where it was found). */
+interface AuditSkip {
+  readonly caseId: string;
+  readonly stage: Stage;
+  readonly confirm?: number;
+  readonly arm?: ArmName;
+  readonly why: string;
 }
 
 /** An audit's runs in words: their count, and each one's number, blind id (a behaviour run's,
@@ -3245,22 +3664,25 @@ function auditedWords(
 
 /**
  * `behaviour audit-mixed` (no model call, no capture, no network): replay.ts's mixed-reply rule
- * (`replyBoundary` under the case's act, `caseAct`) applied to the judged reply of each saved run
- * of each stage of `b`'s cases, earlier confirms included: the run's `reply` less its answered
- * rounds' read calls (its first N blocks, N the reads its `skillReads` holds). Each arm is built
- * from `dirs` (`--old`, `--new`, and a control's planted line from its stage) in a scratch
- * directory of its own under `scratchRoot`, removed after, and answers a read of another skill
- * from the installed copies its stage's saved capture names under `cacheDir`, which no read
- * restores. A stage run with other texts than `dirs` is skipped and listed. For each case, stage
- * and arm it prints, and writes as JSON to `<out>/audit-mixed.json`, which it names, the runs and
- * the judged runs, and each run whose judged reply read skill files beside other calls: judged at
- * it, an act among them (`acts`); continued now, its other calls only preparation
- * (`continues`); no verdict, as such a reply after the last round (`pastLastRound`); or no
- * verdict, a call undecided (`unresolved`); and counts the runs whose reply only reads skill
- * files (`skillRound`), holds no such mix (`ends`), is not saved (`noReply`, a replay that
- * failed), or whose answered rounds a run saved before `skillReads` cannot tell (`unrecorded`).
- * Its output holds ids, counts and tool names, never a request's or a reply's text. Throws for an
- * arm whose capture is not saved, and as `replyBoundary` throws for a read of a skill whose
+ * (`sortRun`: `replyBoundary` under the case's act, `caseAct`) applied to the judged reply of each
+ * saved run of each stage of `b`'s cases, earlier confirms included. Each arm is built from `dirs`
+ * (`--old`, `--new`, and a control's planted line from its stage) in a scratch directory of its
+ * own under `scratchRoot`, removed after, and answers a read of another skill from the installed
+ * copies its stage's saved capture names under `cacheDir`, which no read restores; where that
+ * capture is not saved, from the copies the case's saved profile installs
+ * (`profileInstalledCopies`), the cache entries a capture of the arm records. A stage run with
+ * other texts than `dirs` is skipped and listed, and so is a case one of whose arms' copies come
+ * from its profile where the cache does not hold one of them or cannot read it (`unreadableCopy`):
+ * no stage of that case is audited, and the audit goes on with the other cases. For each case,
+ * stage and arm it prints, and writes as JSON to `<out>/audit-mixed.json`, which it names, where
+ * its copies came from (`copiesFrom`), the runs and the judged runs, and each run whose judged
+ * reply read skill files beside other calls: judged at it, an act among them (`acts`); continued
+ * now, its other calls only preparation (`continues`); no verdict, as such a reply after the last
+ * round (`pastLastRound`); or no verdict, a call undecided (`unresolved`); and counts the runs
+ * whose reply only reads skill files (`skillRound`), holds no such mix (`ends`), is not saved
+ * (`noReply`, a replay that failed), or whose answered rounds a run saved before `skillReads`
+ * cannot tell (`unrecorded`). Its output holds ids, counts, tool names and paths, never a
+ * request's or a reply's text. Throws as `replyBoundary` throws for a read of a skill whose
  * installed copy the cache lacks, naming the run.
  */
 function auditMixedCommand(
@@ -3274,113 +3696,103 @@ function auditMixedCommand(
   mkdirSync(scratchRoot, { recursive: true });
   const scratch = mkdtempSync(path.join(scratchRoot, "audit-mixed-"));
   const audits: ArmAudit[] = [];
-  const skipped: { caseId: string; stage: Stage; confirm?: number; why: string }[] = [];
+  const skipped: AuditSkip[] = [];
+  /** The audit of each arm of each stage of case `c`'s `result`, or, where an arm's copies come
+   *  from its profile and one cannot be read, the skip of the whole case. */
+  const auditCase = (c: Case, result: CaseResult): ArmAudit[] | AuditSkip => {
+    const found: ArmAudit[] = [];
+    const rule: MixedRule = { kind: "case", act: caseAct(c) };
+    const armScratch = path.join(
+      scratch,
+      createHash("sha256").update(c.id).digest("hex").slice(0, 16)
+    );
+    for (const place of stagePlaces(result)) {
+      const state = place.get(result);
+      if (state === undefined || state.runs.length === 0) continue;
+      const { stage, confirm } = place;
+      const where = { caseId: c.id, stage, ...(confirm === undefined ? {} : { confirm }) };
+      if (state.texts.old !== texts.old || state.texts.new !== texts.new) {
+        skipped.push({
+          ...where,
+          why: `run with the texts old ${state.texts.old} and new ${state.texts.new}, not --old ${texts.old} and --new ${texts.new}`,
+        });
+        continue;
+      }
+      const armDirs = {
+        ...dirs,
+        ...(state.plantedLine === null ? {} : { plantedLine: state.plantedLine }),
+      };
+      for (const name of STAGE_ARMS[stage]) {
+        const runs = state.runs.filter((run) => run.arm === name);
+        if (runs.length === 0) continue;
+        const arm = buildArm(c, name, armDirs, armScratch);
+        const files = stageCaptureFiles(b.out, c.id, arm, state, texts);
+        const capture = savedCapture(files);
+        const copiesFrom: CopiesFrom = capture === undefined ? "profile" : "capture";
+        const copies =
+          capture === undefined
+            ? profileInstalledCopies(arm, cacheDir)
+            : installedCopies(capture.record.context, cacheDir);
+        const unreadable = capture === undefined ? unreadableCopy(copies) : undefined;
+        if (unreadable !== undefined) {
+          return {
+            ...where,
+            arm: name,
+            why: `the ${name} arm's capture of its ${placeWords(place)} is not saved (${files.record}), so its copies come from the case's profile, and ${unreadable}: no stage of the case is audited`,
+          };
+        }
+        const audit: ArmAudit = {
+          ...where,
+          arm: name,
+          copiesFrom,
+          runs: runs.length,
+          judged: runs.filter((run) => run.verdict !== null).length,
+          noReply: 0,
+          unrecorded: 0,
+          ends: 0,
+          skillRound: 0,
+          acts: [],
+          continues: [],
+          pastLastRound: [],
+          unresolved: [],
+        };
+        for (const run of runs) {
+          const sorted = sortRun(run, arm, copies, rule, `case ${c.id} ${stage} ${name}`);
+          if (sorted.kind === "noReply") audit.noReply += 1;
+          else if (sorted.kind === "unrecorded") audit.unrecorded += 1;
+          else if (sorted.kind === "ends") audit.ends += 1;
+          else if (sorted.kind === "skillRound") audit.skillRound += 1;
+          else {
+            const part: CallPart =
+              sorted.kind === "acts"
+                ? "act"
+                : sorted.kind === "unresolved"
+                  ? "undecided"
+                  : "preparation";
+            audit[sorted.kind].push({
+              run: run.run,
+              id: run.id,
+              userId: run.userId,
+              verdict: run.verdict,
+              tools: [
+                ...sorted.others.flatMap((call) => (call.part === part ? [call.tool] : [])),
+                ...(sorted.text === part ? ["(text)"] : []),
+              ],
+            });
+          }
+        }
+        found.push(audit);
+      }
+    }
+    return found;
+  };
   try {
     for (const c of b.cases) {
       const result = results.get(c.id);
       if (result === undefined) continue;
-      const rule: MixedRule = { kind: "case", act: caseAct(c) };
-      const armScratch = path.join(
-        scratch,
-        createHash("sha256").update(c.id).digest("hex").slice(0, 16)
-      );
-      const { screen, control } = result.stages;
-      const stages: { stage: Stage; state: StageResult; confirm?: number }[] = [
-        ...(screen === undefined ? [] : [{ stage: "screen" as const, state: screen }]),
-        ...confirmStages(result).map((state, index) => ({
-          stage: "confirm" as const,
-          state,
-          confirm: index + 1,
-        })),
-        ...(control === undefined ? [] : [{ stage: "control" as const, state: control }]),
-      ];
-      for (const { stage, state, confirm } of stages) {
-        if (state.runs.length === 0) continue;
-        const where = { caseId: c.id, stage, ...(confirm === undefined ? {} : { confirm }) };
-        if (state.texts.old !== texts.old || state.texts.new !== texts.new) {
-          skipped.push({
-            ...where,
-            why: `run with the texts old ${state.texts.old} and new ${state.texts.new}, not --old ${texts.old} and --new ${texts.new}`,
-          });
-          continue;
-        }
-        const armDirs = {
-          ...dirs,
-          ...(state.plantedLine === null ? {} : { plantedLine: state.plantedLine }),
-        };
-        for (const name of STAGE_ARMS[stage]) {
-          const runs = state.runs.filter((run) => run.arm === name);
-          if (runs.length === 0) continue;
-          const arm = buildArm(c, name, armDirs, armScratch);
-          const note = state.captures[name];
-          const files = capturePaths(
-            note === undefined
-              ? armCaptureDir(b.out, arm, texts)
-              : path.dirname(path.resolve(b.out, note.bodyFile)),
-            c.id,
-            name
-          );
-          const capture = savedCapture(files);
-          if (capture === undefined) {
-            throw new Error(
-              `case ${c.id}: the ${name} arm's capture ${files.record} is not saved, and the audit reads its installed copies from it`
-            );
-          }
-          const copies = installedCopies(capture.record.context, cacheDir);
-          const audit: ArmAudit = {
-            ...where,
-            arm: name,
-            runs: runs.length,
-            judged: runs.filter((run) => run.verdict !== null).length,
-            noReply: 0,
-            unrecorded: 0,
-            ends: 0,
-            skillRound: 0,
-            acts: [],
-            continues: [],
-            pastLastRound: [],
-            unresolved: [],
-          };
-          for (const run of runs) {
-            const answered = run.skillReads?.flat().length ?? (run.skillRounds === 0 ? 0 : null);
-            if (run.reply === null) {
-              audit.noReply += 1;
-              continue;
-            }
-            if (answered === null) {
-              audit.unrecorded += 1;
-              continue;
-            }
-            let boundary: Boundary;
-            try {
-              boundary = replyBoundary(run.reply.slice(answered), arm, copies, rule);
-            } catch (error) {
-              throw new Error(`case ${c.id} ${stage} ${name} run ${run.run}: ${messageFor(error)}`);
-            }
-            if (boundary.kind === "ends") audit.ends += 1;
-            else if (boundary.kind === "skill round") audit.skillRound += 1;
-            else {
-              const { others, text } = boundary;
-              const named = (part: CallPart): AuditedRun => ({
-                run: run.run,
-                id: run.id,
-                userId: run.userId,
-                verdict: run.verdict,
-                tools: [
-                  ...others.flatMap((call) => (call.part === part ? [call.tool] : [])),
-                  ...(text === part ? ["(text)"] : []),
-                ],
-              });
-              if (boundary.kind === "acts") audit.acts.push(named("act"));
-              else if (boundary.kind === "undecided") audit.unresolved.push(named("undecided"));
-              else if ((run.skillRounds ?? 0) >= MAX_SKILL_ROUNDS) {
-                audit.pastLastRound.push(named("preparation"));
-              } else audit.continues.push(named("preparation"));
-            }
-          }
-          audits.push(audit);
-        }
-      }
+      const audited = auditCase(c, result);
+      if (Array.isArray(audited)) audits.push(...audited);
+      else skipped.push(audited);
     }
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -3397,17 +3809,20 @@ function auditMixedCommand(
     unresolved: sum((audit) => audit.unresolved.length),
   };
   for (const audit of audits) {
-    const confirm = audit.confirm === undefined ? "" : ` ${audit.confirm}`;
     const unrecorded =
       audit.unrecorded === 0 ? "" : `; answered rounds not recorded ${audit.unrecorded}`;
+    const copies =
+      audit.copiesFrom === "capture"
+        ? "copies from the saved capture"
+        : "copies from the case's profile, its capture not saved";
     say(
       b,
-      `case ${audit.caseId} ${audit.stage}${confirm} ${audit.arm}: ${audit.runs} runs, ${audit.judged} judged; judged at a mixed reply with an act ${auditedWords(audit.acts)}; continued now ${auditedWords(audit.continues)}; no verdict past the last round ${auditedWords(audit.pastLastRound)}; unresolved ${auditedWords(audit.unresolved)}; only skill reads ${audit.skillRound}; no mixed reply ${audit.ends}; no reply ${audit.noReply}${unrecorded}`
+      `case ${audit.caseId} ${placeWords(audit)} ${audit.arm}: ${audit.runs} runs, ${audit.judged} judged; judged at a mixed reply with an act ${auditedWords(audit.acts)}; continued now ${auditedWords(audit.continues)}; no verdict past the last round ${auditedWords(audit.pastLastRound)}; unresolved ${auditedWords(audit.unresolved)}; only skill reads ${audit.skillRound}; no mixed reply ${audit.ends}; no reply ${audit.noReply}${unrecorded}; ${copies}`
     );
   }
   for (const each of skipped) {
-    const confirm = each.confirm === undefined ? "" : ` ${each.confirm}`;
-    say(b, `case ${each.caseId} ${each.stage}${confirm}: skipped: ${each.why}`);
+    const arm = each.arm === undefined ? "" : ` ${each.arm}`;
+    say(b, `case ${each.caseId} ${placeWords(each)}${arm}: skipped: ${each.why}`);
   }
   writeWhole(
     file,
@@ -3427,12 +3842,967 @@ function auditMixedCommand(
   );
 }
 
+// `behaviour continue-mixed`: the saved runs the mixed-reply rule continues, continued.
+
+/** How the reason begins of a saved run `behaviour continue-mixed` runs again fresh because its
+ *  record lacks a part its continuation needs, or because another deployment than the one that
+ *  answered its saved reply answered its continuation. */
+const CONTINUE_MIXED = "continue-mixed";
+
+/** The file `behaviour continue-mixed --probe` writes under `--out`. */
+const PROBE_FILE = "probe.json";
+
+/** A saved `--out`'s request log as continue-mixed reads it (`readSavedLog`): its path, its
+ *  SHA-256, and the deployments that answered the logged requests of each session id. */
+interface SavedLog {
+  readonly file: string;
+  readonly sha256: string;
+  readonly byUser: ReadonlyMap<string, ReadonlySet<string>>;
+}
+
+/** The request log `file` (`loggedGateway`'s lines), or undefined where it does not exist: under
+ *  the session id (`userId`) of each line that holds the gateway's headers of its answer (`gateway`,
+ *  a request that got one), the deployment that answered it (gateway.ts's `deploymentOf` of its
+ *  `x-litellm-model-id`; "" where it names none). A line that is no JSON, or that names no session
+ *  id or no answer, is left out. */
+function readSavedLog(file: string): SavedLog | undefined {
+  if (!existsSync(file)) return undefined;
+  const byUser = new Map<string, Set<string>>();
+  for (const { value } of jsonLines(file)) {
+    const userId = field(value, "userId");
+    const headers = field(value, "gateway");
+    if (typeof userId !== "string" || typeof headers !== "object" || headers === null) continue;
+    const model = field(headers, "x-litellm-model-id");
+    const deployment = deploymentOf({
+      gatewayHeaders: typeof model === "string" ? { "x-litellm-model-id": model } : {},
+    });
+    const each = byUser.get(userId) ?? new Set<string>();
+    each.add(deployment);
+    byUser.set(userId, each);
+  }
+  const sha256 = createHash("sha256").update(readFileSync(file)).digest("hex");
+  return { file, sha256, byUser };
+}
+
+/** The deployment that answered saved run `run`'s saved reply (SavedDeployment), or why none can
+ *  be taken: its last `deployments` entry, where it records them; else (a run saved before runs
+ *  recorded them) the one deployment that answered every logged request of its session id in its
+ *  saved `--out`'s request log (`log()`, read from `logFile`). A log that is missing, that holds
+ *  no answered request of that id, or that names more than one deployment for it, or none, gives
+ *  none: a per-arm `--route-id` is never read for one, since the arms of one stage were split
+ *  across deployments. */
+function savedDeployment(
+  run: Run,
+  log: () => SavedLog | undefined,
+  logFile: string
+): SavedDeployment | { readonly missing: string } {
+  if (run.deployments !== undefined) {
+    const last = run.deployments.at(-1);
+    return last === undefined || last === ""
+      ? { missing: "the deployment that answered its saved reply, which its record does not name" }
+      : { id: last, from: "run" };
+  }
+  const saved = log();
+  if (saved === undefined) {
+    return {
+      missing: `the deployment that answered its saved reply: it was saved before runs recorded one, and the saved --out holds no request log (${logFile})`,
+    };
+  }
+  const found = [...(run.userId === null ? [] : (saved.byUser.get(run.userId) ?? []))];
+  const [only] = found;
+  if (found.length === 1 && only !== undefined && only !== "") {
+    return { id: only, from: "request log", file: saved.file, sha256: saved.sha256 };
+  }
+  return {
+    missing:
+      found.length === 0
+        ? `the deployment that answered its saved reply: it was saved before runs recorded one, and the request log ${saved.file} holds no answered request of its session id`
+        : `the deployment that answered its saved reply: it was saved before runs recorded one, and the request log ${saved.file} names ${found.map((each) => each || "no deployment").join(" and ")} for its session id's requests, not one`,
+  };
+}
+
+/** What one continuation's requests got, each answered one in the order sent: its provider
+ *  request id (gateway.ts's Reply `providerRequestId`, null where the answer carried none), the
+ *  deployment that answered it (`deploymentOf`), and what it used. */
+interface ContinuationCalls {
+  readonly requestIds: (string | null)[];
+  readonly deployments: string[];
+  readonly spent: Spent[];
+}
+
+/** What a continuation rejects with when another deployment than `saved`, the one that answered
+ *  the run's saved reply, answered one of its requests (`pinnedTo`). */
+class OtherDeployment extends Error {
+  constructor(
+    readonly answered: string,
+    readonly saved: string
+  ) {
+    super(
+      `its continuation was answered by deployment ${answered === "" ? "none named" : answered}, not ${saved}, the one that answered its saved reply`
+    );
+  }
+}
+
+/** `gateway` for one continuation: each answer is recorded in `calls`, then rejected with
+ *  OtherDeployment where the deployment that gave it (`deploymentOf`, its `x-litellm-model-id`) is
+ *  not `deployment`, so a continuation answered elsewhere goes no further. */
+function pinnedTo(gateway: Gateway, deployment: string, calls: ContinuationCalls): Gateway {
+  return {
+    async send(body, options) {
+      const reply = await gateway.send(body, options);
+      const answered = deploymentOf(reply);
+      calls.requestIds.push(reply.providerRequestId);
+      calls.deployments.push(answered);
+      calls.spent.push(reply.spent);
+      if (answered !== deployment) throw new OtherDeployment(answered, deployment);
+      return reply;
+    },
+    spend: () => gateway.spend(),
+  };
+}
+
+/** One arm of a saved stage as continue-mixed reads it (`savedArm`): the arm, the files of its
+ *  stage's saved capture and that capture (undefined where it is not saved), and the installed
+ *  copies its runs are sorted and answered with, and where they came from. */
+interface SavedArm {
+  readonly arm: Arm;
+  readonly files: { readonly body: string; readonly record: string };
+  readonly capture: Capture | undefined;
+  readonly copies: readonly InstalledCopy[];
+  readonly copiesFrom: CopiesFrom;
+}
+
+/** The arms of `stage` of case `c` as the saved stage `state` under `from` ran them: each built
+ *  from `r.dirs` with the stage's own planted line in `scratch` (as runStage builds them), with its
+ *  saved capture (`savedCapture`), whose installed copies are made again where the cache lacks
+ *  them (capture.ts's `restoreCopies`, which refuses a capture whose record names other copies
+ *  than the profile now gives), or, where the capture is not saved, the copies of the case's
+ *  profile (`profileInstalledCopies`); or why the case cannot be continued, a profile copy the
+ *  cache does not hold or cannot read. */
+async function savedArms(
+  r: Runner,
+  c: Case,
+  stage: Stage,
+  state: StageResult,
+  from: string,
+  scratch: string
+): Promise<Map<ArmName, SavedArm> | { readonly unreadable: string }> {
+  const dirs = {
+    old: r.dirs.old,
+    new: r.dirs.new,
+    ...(state.plantedLine === null ? {} : { plantedLine: state.plantedLine }),
+  };
+  const arms = new Map<ArmName, SavedArm>();
+  for (const name of STAGE_ARMS[stage]) {
+    const arm = buildArm(c, name, dirs, scratch);
+    const files = stageCaptureFiles(from, c.id, arm, state, r.texts);
+    const capture = savedCapture(files, arm);
+    if (capture !== undefined) {
+      await restoreCopies(c, arm, capture, {
+        source: r.source,
+        cacheDir: r.cacheDir,
+        scratchDir: path.join(r.scratch, "captures"),
+      });
+      const copies = installedCopies(capture.record.context, r.cacheDir);
+      arms.set(name, { arm, files, capture, copies, copiesFrom: "capture" });
+      continue;
+    }
+    const copies = profileInstalledCopies(arm, r.cacheDir);
+    const unreadable = unreadableCopy(copies);
+    if (unreadable !== undefined) {
+      return {
+        unreadable: `the ${name} arm's capture is not saved (${files.record}), so its copies come from the case's profile, and ${unreadable}`,
+      };
+    }
+    arms.set(name, { arm, files, capture, copies, copiesFrom: "profile" });
+  }
+  return arms;
+}
+
+/** What `behaviour continue-mixed` does with one saved run (`planRun`): leaves it as saved
+ *  (`keep`, and why); continues it from its saved reply (`continue`, with the deployment that
+ *  answered that reply); or gives it no verdict, so its stage's extra-run rule runs it again fresh
+ *  (`again`, with the reason it then holds, and the deployment taken for it, where one was). */
+type RunPlan =
+  | { readonly kind: "keep"; readonly why: string }
+  | { readonly kind: "continue"; readonly deployment: SavedDeployment }
+  | { readonly kind: "again"; readonly reason: string };
+
+/** What continue-mixed does with saved run `run`, which the rule sorts `sorted` (`sortRun`) in an
+ *  arm whose saved capture is `saved.capture` (RunPlan): a run it made already, and a run with no
+ *  verdict (its stage ran it again already, live), are kept; a judged run whose reply the rule
+ *  continues is continued when its record holds every part its next request needs (its reply comes
+ *  first in its run, `skillRounds` 0, since a saved step drops earlier rounds' thinking and text;
+ *  a session id; the arm's saved capture; and the deployment that answered it, `deployment()`),
+ *  and else run again fresh under CONTINUE_MIXED, naming each part it lacks; a judged run past the
+ *  last round gets no verdict as READS_PAST_LAST_ROUND, and an undecided one as MIXED_UNDECIDED,
+ *  each run again fresh; every other run is kept. */
+function planRun(
+  run: Run,
+  sorted: RunSort,
+  saved: SavedArm,
+  deployment: () => SavedDeployment | { readonly missing: string }
+): RunPlan {
+  if (run.continueMixed !== undefined) {
+    return { kind: "keep", why: `continue-mixed made it already (${run.continueMixed.kind})` };
+  }
+  if (run.verdict === null) {
+    return { kind: "keep", why: "it has no verdict, so its stage ran it again already" };
+  }
+  if (
+    sorted.kind !== "continues" &&
+    sorted.kind !== "pastLastRound" &&
+    sorted.kind !== "unresolved"
+  ) {
+    return { kind: "keep", why: `the rule leaves it as it was (${sorted.kind})` };
+  }
+  const files = sorted.reads.map(({ read }) => `${read.skill} ${read.file}`).join(", ");
+  if (sorted.kind === "unresolved") {
+    const what = [
+      ...sorted.others.flatMap((call) => (call.part === "undecided" ? [call.tool] : [])),
+      ...(sorted.text === "undecided" ? ["its text"] : []),
+    ].join(", ");
+    return {
+      kind: "again",
+      reason: `${MIXED_UNDECIDED}: its saved reply, judged before the mixed-reply rule, reads skill files (${files}) beside what the rule sorts neither as an act nor as preparation (${what}), so it gets no verdict and is run again fresh`,
+    };
+  }
+  const tools = sorted.others.map((call) => call.tool).join(", ");
+  if (sorted.kind === "pastLastRound") {
+    return {
+      kind: "again",
+      reason: `${READS_PAST_LAST_ROUND}: after ${run.skillRounds} answered rounds of skill reads, its saved reply, judged before the mixed-reply rule, still reads skill files (${files}) beside calls that only prepare (${tools}), so it gets no verdict`,
+    };
+  }
+  const found = run.skillRounds === 0 && run.userId !== null ? deployment() : undefined;
+  const lacks = [
+    ...(run.skillRounds === 0
+      ? []
+      : [
+          `its saved reply comes after ${run.skillRounds} answered rounds, whose thinking and text its saved step drops`,
+        ]),
+    ...(run.userId === null ? ["a session id"] : []),
+    ...(saved.capture === undefined ? [`the arm's saved capture (${saved.files.body})`] : []),
+    ...(found !== undefined && "missing" in found ? [found.missing] : []),
+  ];
+  if (found !== undefined && !("missing" in found) && lacks.length === 0) {
+    return { kind: "continue", deployment: found };
+  }
+  return {
+    kind: "again",
+    reason: `${CONTINUE_MIXED}: the rule continues its saved reply, and its record lacks a part its next request needs (${lacks.join("; ")}), so it is run again fresh`,
+  };
+}
+
+/** Saved run `run` of stage `state` as a ContinueMixedRun names it: its number, blind id, round,
+ *  verdict, and the runner that made it (its own, else its stage's, else UNRECORDED_RUNNER). */
+function savedRunNote(run: Run, state: StageResult): ContinueMixedRun["saved"] {
+  return {
+    run: run.run,
+    id: run.id,
+    round: run.round,
+    verdict: run.verdict,
+    runner: run.runner ?? state.runner ?? UNRECORDED_RUNNER,
+  };
+}
+
+/** What continue-mixed continues each stage with (`continueStage`): the saved `--out` it reads
+ *  (`from`); the gateway its continuations go through (`continuations`, logged as
+ *  `continuation`); the saved request log (`log()`, read from `logFile`), from which a run saved
+ *  before runs recorded their deployments takes the one that answered it; the stages `--only`
+ *  selects, each `<case id>\t<stage>` (`placeWords`; undefined: every stage); and the most further
+ *  rounds a continuation sends (`--further-rounds`; undefined: the live rule's). */
+interface ContinueOptions {
+  readonly from: string;
+  readonly continuations: Gateway;
+  readonly log: () => SavedLog | undefined;
+  readonly logFile: string;
+  readonly only: ReadonlySet<string> | undefined;
+  readonly furtherRounds: number | undefined;
+}
+
+/**
+ * Continues the saved stage at `place` of case `c`'s `result` (see `continueMixedCommand`). A
+ * stage `o.only` does not select is written as saved, every run of it kept, and marked so
+ * (`continued.selected` false). In a selected one each saved run is planned (`planRun`, after
+ * `sortRun`); the runs to continue are resumed from their saved replies (replay.ts's
+ * `resumeReplay`, the live replay's own code, with each arm's saved capture's body and headers,
+ * the run's own session id and routing id, the installed copies, and `o.furtherRounds`), all at
+ * once in one order seeded by a fresh seed recorded as the stage's next round (`sendOrder`;
+ * `o.continuations`, whose calls the gateway bounds), each request through `pinnedTo` the
+ * deployment that answered the saved reply; and the continued replies are judged blind with the
+ * case's judge under that seed (`judgeBlind`). A continued run takes its saved run's place and
+ * number, in the new round, with the continuation's step, reads, left-out calls and verdict, the
+ * saved run's spends and deployments then the continuation's, this runner, and its
+ * ContinueMixedRun; a continuation the rule leaves with no verdict (ReadsPastLastRound,
+ * UndecidedReply) is a continued run with no verdict, as a live run would be, and one stopped at
+ * its further rounds (FurtherRoundLimit) a continued run that waits (score.ts's
+ * FURTHER_ROUND_LIMIT). A continuation a request of which another deployment answered, or that
+ * failed (its reason `<REPLAY_FAILED>: <why>`, as a live replay's), and a run planned `again`,
+ * keep the saved run with no verdict and their reason, the calls the continuation got added. A
+ * continuation or a judgement the budget refused leaves its saved run as it was. The stage is
+ * then written in its place with the new seed, its runs, its spend, `continued`, and the state its
+ * runs now give (score.ts's `stageOutcome`; one left unscreened drops the case as runStage drops
+ * one, `readsPastDrop`, then `refusedDrop`); where the budget refused a call it throws Stopped
+ * after the write, so a command started again goes on from it. Where an arm then lacks runs it can
+ * start, runStage runs them, fresh, by the stage's extra-run rule, which replaces no run that waits
+ * (its captures copied to `r.out` before, `copyCaptures`). `arms` are the stage's arms as
+ * `savedArms` read them, which `continueMixedCommand` reads for every stage it continues before
+ * it writes any of the case. Gives the result, and says what it did.
+ */
+async function continueStage(
+  r: Runner,
+  c: Case,
+  place: StagePlace,
+  result: CaseResult,
+  phases: Phases,
+  o: ContinueOptions,
+  arms: ReadonlyMap<ArmName, SavedArm> | undefined
+): Promise<CaseResult> {
+  const state = place.get(result);
+  const where = `case ${c.id} ${placeWords(place)}`;
+  if (state === undefined || state.runs.length === 0) return result;
+  if (!sameTexts(r, state)) {
+    say(
+      r,
+      `${where}: left as saved: run with the texts old ${state.texts.old} and new ${state.texts.new}, not --old ${r.texts.old} and --new ${r.texts.new}`
+    );
+    return result;
+  }
+  const marked = state.continued ?? {
+    from: path.resolve(o.from),
+    savedRounds: state.seeds.length,
+    selected: false,
+  };
+  if (!selectedBy(o, c, place)) {
+    const current = place.put(result, { ...state, continued: marked });
+    const file = writeResult(r, current, phases);
+    say(r, `${where}: not selected by --only, every run left as saved; written to ${file}`);
+    return current;
+  }
+  if (arms === undefined) throw new Error(`${where}: its arms were not read`);
+  const { stage } = place;
+  const rule: MixedRule = { kind: "case", act: caseAct(c) };
+  const plans = state.runs.map((run): RunPlan => {
+    const saved = arms.get(run.arm);
+    if (saved === undefined) throw new Error(`${where}: no arm ${run.arm} in the stage`);
+    const sorted = sortRun(run, saved.arm, saved.copies, rule, `${where} ${run.arm}`);
+    return planRun(run, sorted, saved, () => savedDeployment(run, o.log, o.logFile));
+  });
+
+  // The continuations, sent at once in one seeded order of their arms' runs.
+  const seed = newSeed();
+  const round = state.seeds.length + 1;
+  const byArm = new Map<ArmName, { at: number; deployment: SavedDeployment }[]>();
+  for (const [at, plan] of plans.entries()) {
+    const run = state.runs[at];
+    if (plan.kind !== "continue" || run === undefined) continue;
+    byArm.set(run.arm, [...(byArm.get(run.arm) ?? []), { at, deployment: plan.deployment }]);
+  }
+  const order = sendOrder(
+    [...byArm].map(([key, each]) => ({ key, runs: each.length })),
+    seed
+  ).flatMap(({ key, run }, sendPlace) => {
+    const each = byArm.get(key)?.[run];
+    return each === undefined ? [] : [{ ...each, sendPlace }];
+  });
+  const spentBefore = r.gateway.spend().usd;
+  const replaysStarted = performance.now();
+  const sent = order.map(({ at, deployment, sendPlace }) => {
+    const run = state.runs[at] as Run;
+    const { arm, capture, copies } = arms.get(run.arm) as SavedArm;
+    if (capture === undefined) throw new Error(`${where}: run ${run.run} has no capture`);
+    const calls: ContinuationCalls = { requestIds: [], deployments: [], spent: [] };
+    const replayed = resumeReplay(
+      capture.body,
+      { userId: run.userId, routingId: run.routingId ?? null, content: run.reply ?? [] },
+      arm,
+      pinnedTo(o.continuations, deployment.id, calls),
+      {
+        headers: capture.record.requestHeaders,
+        copies,
+        mixed: rule,
+        ...(o.furtherRounds === undefined ? {} : { furtherRounds: o.furtherRounds }),
+      }
+    );
+    return { at, run, deployment, sendPlace, calls, replayed };
+  });
+  const outcomes = await Promise.allSettled(sent.map((each) => each.replayed));
+  const judgeStarted = performance.now();
+  phases.replaysMs += judgeStarted - replaysStarted;
+  for (const outcome of outcomes) {
+    if (outcome.status === "rejected" && outcome.reason instanceof NotResumable) {
+      throw outcome.reason;
+    }
+  }
+  const replies: ArmReply[] = sent.flatMap(({ run }, index) => {
+    const outcome = outcomes[index];
+    return outcome?.status === "fulfilled"
+      ? [{ arm: run.arm, run: run.run, content: outcome.value.step.message.content }]
+      : [];
+  });
+  const judged = replies.length === 0 ? [] : (await judgeBlind(c, replies, r.judge, seed)).judged;
+  phases.judgeMs += performance.now() - judgeStarted;
+  const judgements = new Map(judged.map((each) => [`${each.arm}:${each.run}`, each]));
+
+  const runs = [...state.runs];
+  let budgetSpent = false;
+  /** Saved run `run` with no verdict, `reason` its reason, run again fresh. */
+  const again = (
+    run: Run,
+    reason: string,
+    deployment: SavedDeployment | null,
+    calls: ContinuationCalls
+  ): Run => ({
+    ...run,
+    verdict: null,
+    reason,
+    id: null,
+    replaySpent: [...run.replaySpent, ...calls.spent],
+    ...(run.deployments === undefined
+      ? {}
+      : { deployments: [...run.deployments, ...calls.deployments] }),
+    continueMixed: {
+      kind: "run again",
+      saved: savedRunNote(run, state),
+      runner: r.runner,
+      deployment,
+      requestIds: [...calls.requestIds],
+      usd: usdOf(calls.spent),
+    },
+  });
+  for (const [at, plan] of plans.entries()) {
+    const run = state.runs[at];
+    if (run !== undefined && plan.kind === "again") {
+      runs[at] = again(run, plan.reason, null, { requestIds: [], deployments: [], spent: [] });
+    }
+  }
+  for (const [index, each] of sent.entries()) {
+    const outcome = outcomes[index] as PromiseSettledResult<Replayed>;
+    if (outcome.status === "rejected") {
+      const error: unknown = outcome.reason;
+      if (error instanceof BudgetSpent) {
+        budgetSpent = true;
+        continue;
+      }
+      const stopped =
+        error instanceof ReadsPastLastRound ||
+        error instanceof UndecidedReply ||
+        error instanceof FurtherRoundLimit
+          ? error
+          : undefined;
+      runs[each.at] =
+        stopped === undefined
+          ? again(
+              each.run,
+              error instanceof OtherDeployment
+                ? `${CONTINUE_MIXED}: ${error.message}, so it is run again fresh`
+                : `${REPLAY_FAILED}: ${messageFor(error)}`,
+              each.deployment,
+              each.calls
+            )
+          : continuedRun(r, state, round, each, stopped.replayed, {
+              verdict: null,
+              reason: stopped.message,
+              id: null,
+              spent: [],
+            });
+      continue;
+    }
+    const judgement = judgements.get(`${each.run.arm}:${each.run.run}`);
+    if (judgement === undefined || judgement.budgetRefused) {
+      budgetSpent = true;
+      continue;
+    }
+    runs[each.at] = continuedRun(r, state, round, each, outcome.value, {
+      verdict: judgement.verdict,
+      reason: judgement.reason,
+      id: judgement.id,
+      spent: [...judgement.spent],
+    });
+  }
+  // The stage's state as its runs now stand; a stage left unscreened drops its case as runStage
+  // would, and only a stage with runs to start needs runStage and its captures.
+  const standing = stageOutcome(runs, c.id, stage);
+  const toStart =
+    standing.state === "running" && Object.values(standing.toStart).some((count) => count > 0);
+  const next: StageResult = {
+    ...state,
+    state: standing.state,
+    seeds: order.length === 0 ? state.seeds : [...state.seeds, seed],
+    runs,
+    usd: state.usd + r.gateway.spend().usd - spentBefore,
+    continued: { ...marked, selected: true },
+  };
+  const dropped =
+    standing.state === "unscreened"
+      ? (readsPastDrop(runs, stage) ?? refusedDrop(runs, stage))
+      : undefined;
+  let current = place.put(result, next);
+  if (dropped !== undefined) current = { ...current, dropped, droppedAt: stage };
+  const file = writeResult(r, current, phases);
+  // The runs it changed, in the stage's order, by what it made of each.
+  const changed = runs.filter((run, at) => run !== state.runs[at]);
+  const of = (kind: "continued" | "waiting" | "run again") => {
+    const own = changed.filter((run) =>
+      kind === "run again"
+        ? run.continueMixed?.kind === "run again"
+        : run.continueMixed?.kind === "continued" && waits(run) === (kind === "waiting")
+    );
+    const each = own.map((run) => `${run.arm} run ${run.run}`).join(", ");
+    const what =
+      kind === "waiting"
+        ? "waiting at the further-round limit"
+        : kind === "run again"
+          ? "run again fresh"
+          : "continued";
+    return `${own.length} ${what}${own.length === 0 ? "" : ` (${each})`}`;
+  };
+  say(
+    r,
+    `${where}: continue-mixed: ${of("continued")}, ${of("waiting")}, ${of("run again")}, ${runs.length - changed.length} left as saved; written to ${file}`
+  );
+  if (budgetSpent) {
+    throw new Stopped(
+      `the budget is spent: the replies so far cost $${r.gateway.spend().usd.toFixed(4)} at list price, so no new model call starts; ${where}'s continuations so far are saved in ${file}, and a continue-mixed started again goes on from them`
+    );
+  }
+  if (toStart) {
+    copyCaptures(r, c, stage, next, arms, o.from);
+    const stageRunner: Runner = {
+      ...r,
+      dirs: {
+        old: r.dirs.old,
+        new: r.dirs.new,
+        ...(next.plantedLine === null ? {} : { plantedLine: next.plantedLine }),
+      },
+    };
+    current = await runStage(stageRunner, c, stage, current, phases, place);
+  }
+  return current;
+}
+
+/** Saved run `each.run` of stage `state`, continued (see `continueStage`): in its place and
+ *  number, in round `round` at `each.sendPlace`, with the continuation's step `replayed`, the
+ *  calls it got (`each.calls`), the deployment that answered its saved reply
+ *  (`each.deployment`), and its judgement. */
+function continuedRun(
+  r: Runner,
+  state: StageResult,
+  round: number,
+  each: {
+    readonly run: Run;
+    readonly sendPlace: number;
+    readonly deployment: SavedDeployment;
+    readonly calls: ContinuationCalls;
+  },
+  replayed: Replayed,
+  judgement: { verdict: "pass" | "fail" | null; reason: string; id: string | null; spent: Spent[] }
+): Run {
+  const { run, sendPlace, deployment, calls } = each;
+  return {
+    caseId: run.caseId,
+    arm: run.arm,
+    stage: run.stage,
+    run: run.run,
+    round,
+    sendPlace,
+    userId: run.userId,
+    ...(run.routingId === undefined ? {} : { routingId: run.routingId }),
+    ...(run.routePinned === true ? { routePinned: true as const } : {}),
+    verdict: judgement.verdict,
+    reason: judgement.reason,
+    id: judgement.id,
+    skillRounds: replayed.rounds,
+    skillReads: replayed.reads.map((each) => [...each]),
+    leftOut: [...replayed.leftOut],
+    ...(replayed.mixedAct ? { mixedAct: true as const } : {}),
+    reply: replayed.step.message.content,
+    replaySpent: [...run.replaySpent, ...calls.spent],
+    deployments: [...(run.deployments ?? [deployment.id]), ...calls.deployments],
+    judgeSpent: [...run.judgeSpent, ...judgement.spent],
+    runner: r.runner,
+    continueMixed: {
+      kind: "continued",
+      saved: savedRunNote(run, state),
+      runner: r.runner,
+      deployment,
+      requestIds: [...calls.requestIds],
+      usd: usdOf([...calls.spent, ...judgement.spent]),
+    },
+  };
+}
+
+/** Copies to `r.out` each saved capture (its body and its record) of the arms `arms` of case
+ *  `c`'s `stage` under `from`, where runStage reads a capture back (`armCaptureDir` under `r.out`,
+ *  at the stage's texts), unless one is there already: the fresh runs of a continued stage, and
+ *  the stage commands later run on `r.out`, replay the captures its saved runs replayed. The saved
+ *  `--out` is only read. */
+function copyCaptures(
+  r: Runner,
+  c: Case,
+  stage: Stage,
+  state: StageResult,
+  arms: ReadonlyMap<ArmName, SavedArm>,
+  from: string
+): void {
+  for (const name of STAGE_ARMS[stage]) {
+    const saved = arms.get(name);
+    if (saved?.capture === undefined) continue;
+    const target = capturePaths(armCaptureDir(r.out, saved.arm, state.texts), c.id, name);
+    for (const part of ["body", "record"] as const) {
+      const inside = path.resolve(saved.files[part]).startsWith(path.resolve(from));
+      if (existsSync(target[part]) || !inside) continue;
+      mkdirSync(path.dirname(target[part]), { recursive: true });
+      copyFileSync(saved.files[part], target[part]);
+    }
+  }
+}
+
+/** Whether stage `state` was run with this command's texts (`--old`, `--new`), so its arms can be
+ *  built again: a stage run with others is left as saved. */
+function sameTexts(r: Runner, state: StageResult): boolean {
+  return state.texts.old === r.texts.old && state.texts.new === r.texts.new;
+}
+
+/** Whether `--only` (`o.only`) selects case `c`'s stage at `place`: every stage without it. */
+function selectedBy(o: Pick<ContinueOptions, "only">, c: Case, place: StagePlace): boolean {
+  return o.only === undefined || o.only.has(`${c.id}\t${placeWords(place)}`);
+}
+
+/** The stages `--only <file>` selects: each line, blank lines aside, `<case id>`, a tab, and
+ *  `screen`, `control` or `confirm <n>` (a case's confirms numbered from 1, oldest first, as
+ *  `behaviour audit-mixed` numbers them), each as `<case id>\t<stage>`. Refuses a line of another
+ *  form, naming the file and the line. */
+function readOnly(file: string): Set<string> {
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch (error) {
+    throw new Refused(`--only ${file} cannot be read: ${messageFor(error)}`);
+  }
+  const selected = new Set<string>();
+  for (const [index, line] of text.split("\n").entries()) {
+    if (line.trim() === "") continue;
+    const tab = line.indexOf("\t");
+    const stage = line.slice(tab + 1).trim();
+    if (tab <= 0 || !/^(screen|control|confirm [1-9][0-9]*)$/.test(stage)) {
+      throw new Refused(
+        `--only ${file}:${index + 1} is not <case id>, a tab, and screen, control or confirm <n>: ${JSON.stringify(line)}`
+      );
+    }
+    selected.add(`${line.slice(0, tab)}\t${stage}`);
+  }
+  return selected;
+}
+
+/**
+ * `behaviour continue-mixed`: INFRA-323's rule counts a saved case only once the saved runs the
+ * mixed-reply rule continues are continued, and this does it, from the saved `--out` `from`,
+ * which it only reads, into `r.out`. Before any model call it refuses a saved stage (or one it
+ * wrote in `r.out` before) of a runner that is neither this one nor one `--allow-runners` names
+ * (`refuseOtherRunners`), and an `--only` (`onlyFile`, `readOnly`) that names a case the file
+ * lacks or a stage its result does not hold. Then per case in the file's order: a case with no
+ * saved result is skipped, and a dropped one (`caseDrop`) is written as saved; any other gets,
+ * for each stage its saved result holds (screen, each confirm, control), the stage
+ * `continueStage` makes (only the stages `--only` names are continued, the others written as
+ * saved; a continuation sends at most `furtherRounds` requests where given), its result written
+ * to `r.out` (`finishCase`). A case `r.out` holds a result of already is taken from there, so a
+ * command started again goes on from what it saved: a run it continued or ran again is kept as it
+ * is, and a stage still running gets its fresh runs. A case one of whose continued stages has an
+ * arm whose copies come from its profile where one cannot be read (`savedArms`) is not written at
+ * all, and says why.
+ */
+async function continueMixedCommand(
+  r: Runner,
+  from: string,
+  logFile: string,
+  onlyFile: string | undefined,
+  furtherRounds: number | undefined
+): Promise<void> {
+  const saved: Behaviour = { ...r, out: from };
+  const savedLogFile = path.join(from, REQUEST_LOG);
+  let savedLog: SavedLog | undefined | null = null;
+  const o: ContinueOptions = {
+    from,
+    continuations: loggedGateway(r.gateway, logFile, "continuation"),
+    log: () => {
+      if (savedLog === null) savedLog = readSavedLog(savedLogFile);
+      return savedLog;
+    },
+    logFile: savedLogFile,
+    only: onlyFile === undefined ? undefined : readOnly(onlyFile),
+    furtherRounds,
+  };
+  /** Case `c`'s result to continue, from `r.out` where it holds one, else from `from`. */
+  const input = (c: Case): { result: CaseResult; out: string } | undefined => {
+    const own = readResult(r, c.id);
+    if (own !== undefined) return { result: own, out: r.out };
+    const result = readResult(saved, c.id);
+    return result === undefined ? undefined : { result, out: from };
+  };
+  const held = new Set<string>();
+  const checked = r.cases.flatMap((c) => {
+    const each = input(c);
+    if (each === undefined) return [];
+    const places = stagePlaces(each.result);
+    for (const place of places) held.add(`${c.id}\t${placeWords(place)}`);
+    if (caseDrop(c, each.result) !== undefined) return [];
+    return places.flatMap((place) => {
+      const state = place.get(each.result);
+      return state === undefined
+        ? []
+        : [{ caseId: c.id, label: placeWords(place), state, out: each.out }];
+    });
+  });
+  const unheld = [...(o.only ?? [])].filter((each) => !held.has(each));
+  if (unheld.length > 0) {
+    throw new Refused(
+      `--only ${onlyFile} names stages no case result of ${r.casesFile} under ${from} holds: ${unheld.map((each) => each.replace("\t", " ")).join(", ")}`
+    );
+  }
+  for (const out of new Set(checked.map((each) => each.out))) {
+    refuseOtherRunners(
+      r,
+      out,
+      checked.filter((each) => each.out === out),
+      "behaviour continue-mixed continues a saved stage, or goes on with one it wrote,",
+      "to continue those stages, or use another --from"
+    );
+  }
+  say(
+    r,
+    `${r.cases.length} cases of the skill ${r.cases[0]?.skill} in ${r.casesFile}; the saved runs in ${from} the mixed-reply rule continues are continued into ${r.out}, ${o.only === undefined ? "every stage selected" : `the ${counted(o.only.size, "stage")} --only ${onlyFile} names selected`}, ${furtherRounds === undefined ? "each continuation as far as the live rule goes" : `each continuation at most ${counted(furtherRounds, "further round")}`}; old text ${r.texts.old}, new text ${r.texts.new}`
+  );
+  for (const c of r.cases) {
+    const phases = newPhases();
+    const each = input(c);
+    if (each === undefined) {
+      say(r, `case ${c.id}: no saved result in ${from}, skipped`);
+      continue;
+    }
+    let result = each.result;
+    const drop = caseDrop(c, result);
+    if (drop !== undefined) {
+      const file = writeResult(r, result, phases);
+      say(r, `case ${c.id}: dropped at ${drop.stage}, written as saved to ${file}: ${drop.reason}`);
+      continue;
+    }
+    // The arms of every stage it continues, read before any of the case is written.
+    const places = stagePlaces(result);
+    const armsOf = new Map<StagePlace, ReadonlyMap<ArmName, SavedArm>>();
+    const scratch = path.join(
+      r.scratch,
+      "arms",
+      createHash("sha256").update(c.id).digest("hex").slice(0, 16)
+    );
+    let unreadable: string | undefined;
+    for (const place of places) {
+      const state = place.get(result);
+      if (state === undefined || state.runs.length === 0) continue;
+      if (!sameTexts(r, state) || !selectedBy(o, c, place)) continue;
+      const armed = await savedArms(r, c, place.stage, state, from, scratch);
+      if (!(armed instanceof Map)) {
+        unreadable = `its ${placeWords(place)}: ${armed.unreadable}`;
+        break;
+      }
+      armsOf.set(place, armed);
+    }
+    if (unreadable !== undefined) {
+      say(r, `case ${c.id}: not continued, and not written: ${unreadable}`);
+      continue;
+    }
+    for (const place of places) {
+      result = await continueStage(r, c, place, result, phases, o, armsOf.get(place));
+      // A stage that drops the case leaves the stages after it as saved, as a stage command does.
+      if (result.dropped !== null) break;
+    }
+    const last = places.at(-1)?.stage ?? "screen";
+    await finishCase(r, result, last, phases);
+  }
+}
+
+/**
+ * `behaviour continue-mixed --probe <case id>/<arm>/<run number>`: rebuilds the continuation of
+ * that one saved run under `from` as `continueStage` would (the run of that arm and number in the
+ * case's stages the rule continues, `planRun`), and sends only its next request: one call, through
+ * the request log as kind `probe`, with no later round and no judgement. It refuses (Refused, exit
+ * 2), before any call, a value that is not of that form, a case the file or `from` lacks, and a
+ * run the rule does not continue or whose record lacks a part, saying which; where two stages of
+ * the case hold a run of that arm and number the rule continues, it refuses naming them. It
+ * prints, and writes to `<out>/probe.json`, the probe: the run, both runners, its session and
+ * routing ids, the deployment that answered its saved reply and where that came from, the one
+ * that answered the probe and whether they are the same, the request's ids, its HTTP status (`ok`
+ * for an answer, which the gateway gives only for a 2xx status and keeps no other figure of; a
+ * refusal's status; null for a failure with none) or its error, the usage and the dollars at list
+ * price. Gives 0 for an answer from the saved reply's deployment, 1 for any other outcome.
+ */
+async function probeCommand(
+  r: Runner,
+  from: string,
+  probe: string,
+  logFile: string
+): Promise<number> {
+  const at = probe.lastIndexOf("/");
+  const armAt = probe.lastIndexOf("/", at - 1);
+  const caseId = probe.slice(0, Math.max(0, armAt));
+  const armName = probe.slice(armAt + 1, at);
+  const number = Number(probe.slice(at + 1));
+  const arms: readonly string[] = Stage.options.flatMap((stage) => STAGE_ARMS[stage]);
+  if (armAt <= 0 || !arms.includes(armName) || !Number.isInteger(number) || number < 1) {
+    throw new Refused(
+      `--probe ${probe} is not <case id>/<arm>/<run number>, an arm of ${[...new Set(arms)].join(", ")} and a run number from 1`
+    );
+  }
+  const c = r.cases.find((each) => each.id === caseId);
+  if (c === undefined)
+    throw new Refused(`--probe ${probe}: ${r.casesFile} holds no case ${caseId}`);
+  const result = readResult({ ...r, out: from }, caseId);
+  if (result === undefined) {
+    throw new Refused(`--probe ${probe}: ${from} holds no result of case ${caseId}`);
+  }
+  const savedLogFile = path.join(from, REQUEST_LOG);
+  const log = (() => {
+    let read: SavedLog | undefined | null = null;
+    return () => {
+      if (read === null) read = readSavedLog(savedLogFile);
+      return read;
+    };
+  })();
+  const scratch = path.join(r.scratch, "probe", createHash("sha256").update(c.id).digest("hex"));
+  const rule: MixedRule = { kind: "case", act: caseAct(c) };
+  const found: {
+    place: StagePlace;
+    state: StageResult;
+    run: Run;
+    saved: SavedArm;
+    plan: Extract<RunPlan, { kind: "continue" }>;
+  }[] = [];
+  const notes: string[] = [];
+  for (const place of stagePlaces(result)) {
+    const state = place.get(result);
+    const run = state?.runs.find((each) => each.arm === armName && each.run === number);
+    if (state === undefined || run === undefined) continue;
+    const words = placeWords(place);
+    if (state.texts.old !== r.texts.old || state.texts.new !== r.texts.new) {
+      notes.push(`${words}: its stage was run with other texts than --old and --new`);
+      continue;
+    }
+    const armed = await savedArms(r, c, place.stage, state, from, scratch);
+    if (!(armed instanceof Map)) {
+      notes.push(`${words}: ${armed.unreadable}`);
+      continue;
+    }
+    const saved = armed.get(run.arm) as SavedArm;
+    const sorted = sortRun(run, saved.arm, saved.copies, rule, `case ${c.id} ${words} ${run.arm}`);
+    const plan = planRun(run, sorted, saved, () => savedDeployment(run, log, savedLogFile));
+    if (plan.kind === "continue") found.push({ place, state, run, saved, plan });
+    else notes.push(`${words}: ${plan.kind === "keep" ? plan.why : plan.reason}`);
+  }
+  const [chosen, ...more] = found;
+  if (chosen === undefined) {
+    throw new Refused(
+      `--probe ${probe}: the rule continues no saved run ${number} of case ${caseId}'s ${armName} arm${notes.length === 0 ? `: no stage of it holds one in ${from}` : `: ${notes.join("; ")}`}`
+    );
+  }
+  if (more.length > 0) {
+    throw new Refused(
+      `--probe ${probe}: ${found.map((each) => placeWords(each.place)).join(" and ")} of case ${caseId} each hold a run ${number} of the ${armName} arm the rule continues, so the probe would not name one`
+    );
+  }
+  const { place, state, run, saved, plan } = chosen;
+  refuseOtherRunners(
+    r,
+    from,
+    [{ caseId, label: placeWords(place), state }],
+    "behaviour continue-mixed --probe continues a saved stage's run",
+    "to probe it, or use another --from"
+  );
+  const capture = saved.capture as Capture;
+  const gateway = loggedGateway(r.gateway, logFile, "probe");
+  let reply: Reply | undefined;
+  let failure: unknown;
+  const watched: Gateway = {
+    async send(body, options) {
+      try {
+        reply = await gateway.send(body, options);
+        return reply;
+      } catch (error) {
+        failure = error;
+        throw error;
+      }
+    },
+    spend: () => gateway.spend(),
+  };
+  try {
+    await resumeReplay(
+      capture.body,
+      { userId: run.userId, routingId: run.routingId ?? null, content: run.reply ?? [] },
+      saved.arm,
+      watched,
+      {
+        headers: capture.record.requestHeaders,
+        copies: saved.copies,
+        mixed: rule,
+        endsAt: () => true,
+      }
+    );
+  } catch (error) {
+    if (failure === undefined) throw error;
+  }
+  const answered = reply === undefined ? null : deploymentOf(reply);
+  const same = answered === plan.deployment.id;
+  const messageId: unknown = reply?.message.id;
+  const written = {
+    probe,
+    caseId,
+    stage: place.stage,
+    ...(place.confirm === undefined ? {} : { confirm: place.confirm }),
+    arm: run.arm,
+    run: run.run,
+    id: run.id,
+    runners: { saved: savedRunNote(run, state).runner, probe: r.runner },
+    userId: run.userId,
+    routingId: run.routingId ?? null,
+    deployment: { saved: plan.deployment, answered, same },
+    request: {
+      requestId: reply?.requestId ?? null,
+      providerRequestId: reply?.providerRequestId ?? null,
+      messageId: typeof messageId === "string" ? messageId : null,
+      status:
+        reply !== undefined
+          ? "ok"
+          : failure instanceof MessagesApiError
+            ? (failure.status ?? null)
+            : null,
+      error: failure === undefined ? null : messageFor(failure),
+    },
+    usage: reply?.spent ?? null,
+    usd: reply?.spent.usd ?? 0,
+  };
+  const file = path.join(r.out, PROBE_FILE);
+  writeWhole(file, json(written));
+  const outcome =
+    reply === undefined
+      ? `failed (${written.request.status === null ? "no status" : `status ${written.request.status}`}): ${written.request.error}`
+      : `answered by deployment ${answered || "none named"}, ${same ? "the one" : `not ${plan.deployment.id}, the one`} that answered its saved reply (from ${plan.deployment.from === "run" ? "the run's record" : `the request log ${plan.deployment.file}`}); request id ${written.request.providerRequestId ?? "none"}; ${dollars(written.usd)} at list price`;
+  say(r, `probe ${probe} (${placeWords(place)}): one request, ${outcome}; written to ${file}`);
+  return reply !== undefined && same ? EXIT.ok : EXIT.failed;
+}
+
 // `behaviour`: the command.
 
-const BEHAVIOUR_COMMANDS = ["screen", "confirm", "control", "report", "audit-mixed"] as const;
+const BEHAVIOUR_COMMANDS = [
+  "screen",
+  "confirm",
+  "control",
+  "report",
+  "audit-mixed",
+  "continue-mixed",
+] as const;
 
 const BEHAVIOUR_USAGE = [
-  "usage: cli.ts behaviour <screen|confirm|control|report|audit-mixed> --config <skill-cuts.json> --key-file <file> --out <dir> --old <dir> --new <dir> --cases <file>",
+  "usage: cli.ts behaviour <screen|confirm|control|report|audit-mixed|continue-mixed> --config <skill-cuts.json> --key-file <file> --out <dir> --old <dir> --new <dir> --cases <file>",
   "  [--planted-line <text>] [--budget-usd <n>] [--concurrency <n>] [--after-case <command>] [--request-log <file>]",
   "  [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>]",
   "  [--reading-models <file>] (the skill's <cut id>/models/<skill>.json, written by attribute)",
@@ -3443,6 +4813,10 @@ const BEHAVIOUR_USAGE = [
   "  [--route-id <arm>=<uuid>]... (screen, confirm, control: a diagnostic: every run of that arm, in every round, goes with that routing id in place of its round's)",
   "  report needs only --config, --out, --old and --cases; its --request-log is the log it sets the spend against, <out>/requests.jsonl by default",
   `  audit-mixed needs only --config, --out, --old, --new and --cases, and reads --cache-dir and --scratch; it makes no model call and writes <out>/${AUDIT_FILE}`,
+  "  continue-mixed --from <saved out> (required) continues the saved runs of --from the mixed-reply rule continues into a new --out, which it never makes --from:",
+  "    [--only <file>] (each line <case id>, a tab, and screen, control or confirm <n>: only those stages are continued; the others are kept as saved)",
+  "    [--further-rounds <n>] (a continuation sends at most n requests; a reply it would continue again then waits with no verdict, further-round-limit)",
+  `    [--probe <case id>/<arm>/<run number>] (send only that run's next request, with no judge, and write <out>/${PROBE_FILE}; not with --only or --further-rounds)`,
 ].join("\n");
 
 /** The routing id each arm `--route-id <arm>=<uuid>` names is pinned to in `behaviour
@@ -3523,6 +4897,10 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       "allow-runners": { type: "string" },
       "store-only": { type: "string" },
       "route-id": { type: "string", multiple: true },
+      from: { type: "string" },
+      probe: { type: "string" },
+      only: { type: "string" },
+      "further-rounds": { type: "string" },
     },
     BEHAVIOUR_USAGE
   );
@@ -3540,6 +4918,22 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       `--store-only goes with behaviour report only: no stage command reads it. ${BEHAVIOUR_USAGE}`
     );
   }
+  const continuing = command === "continue-mixed";
+  for (const name of ["from", "probe", "only", "further-rounds"] as const) {
+    if (values[name] !== undefined && !continuing) {
+      throw new Refused(`--${name} goes with behaviour continue-mixed only. ${BEHAVIOUR_USAGE}`);
+    }
+  }
+  if (values.probe !== undefined && (values.only ?? values["further-rounds"]) !== undefined) {
+    throw new Refused(
+      `--probe sends one run's next request alone, so it takes no --only and no --further-rounds. ${BEHAVIOUR_USAGE}`
+    );
+  }
+  const furtherGiven = values["further-rounds"];
+  const furtherRounds = furtherGiven === undefined ? undefined : Number(furtherGiven);
+  if (furtherRounds !== undefined && (!Number.isInteger(furtherRounds) || furtherRounds < 1)) {
+    throw new Refused(`--further-rounds ${furtherGiven} is not a whole number of 1 or more`);
+  }
   const allowRunners = values["allow-runners"]?.split(",").map((each) => each.trim()) ?? [];
   if (allowRunners.includes("")) {
     throw new Refused(
@@ -3555,7 +4949,9 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       ? ["config", "out", "old", "cases"]
       : audit
         ? ["config", "out", "old", "new", "cases"]
-        : ["config", "key-file", "out", "old", "new", "cases"],
+        : continuing
+          ? ["config", "key-file", "out", "from", "old", "new", "cases"]
+          : ["config", "key-file", "out", "old", "new", "cases"],
     BEHAVIOUR_USAGE
   );
   // A stage command writes the cases' session text under --out; `report` writes nothing, and
@@ -3613,6 +5009,19 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
 
   if (!statSync(given.new, { throwIfNoEntry: false })?.isDirectory()) {
     throw new Refused(`--new ${given.new} is not a directory`);
+  }
+  const from = values.from;
+  if (continuing) {
+    if (from === undefined || !statSync(from, { throwIfNoEntry: false })?.isDirectory()) {
+      throw new Refused(
+        `--from ${from ?? ""} is not a directory: give the saved --out to continue`
+      );
+    }
+    if (path.resolve(from) === path.resolve(given.out)) {
+      throw new Refused(
+        `--out ${given.out} is the --from it continues, and continue-mixed never writes the saved --out: give a new --out`
+      );
+    }
   }
   const unpriced = [
     ...new Set(
@@ -3703,7 +5112,10 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       `routing pinned: ${pins}: every run of a pinned arm goes with that routing id in every round, in place of its round's, so these runs are a diagnostic, not a test result`
     );
   }
-  if (command === "screen") await screenCommand(runner);
+  if (continuing && from !== undefined) {
+    if (values.probe !== undefined) return await probeCommand(runner, from, values.probe, log);
+    await continueMixedCommand(runner, from, log, values.only, furtherRounds);
+  } else if (command === "screen") await screenCommand(runner);
   else if (command === "confirm") await confirmCommand(runner);
   else await controlStageCommand(runner);
   say(
@@ -3916,7 +5328,7 @@ function loadAuditCommand(argv: readonly string[], io: CliIo): number {
 
 const USAGE = [
   "usage: cli.ts <command> ...",
-  "  behaviour <screen|confirm|control|report|audit-mixed> --config <skill-cuts.json> --key-file <file> --out <dir> --old <dir> --new <dir> --cases <file> ...",
+  "  behaviour <screen|confirm|control|report|audit-mixed|continue-mixed> --config <skill-cuts.json> --key-file <file> --out <dir> --old <dir> --new <dir> --cases <file> ...",
   "  read --prompt <name> --in <input.json> --out <answer.json> ...",
   "  control <map|attack|same-job|sentence> --in <input.json> --out <result.json> ...",
   "  count-sql --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>] [--query count|models]",

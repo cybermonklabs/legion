@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   copyFileSync,
@@ -30,13 +30,14 @@ import {
   main,
   noVerdict,
   ompBinary,
+  profileInstalledCopies,
   runAfterCase,
   runnerDigest,
   SENDS,
   textDigest,
 } from "./cli";
 import { loadConfig } from "./config";
-import { cacheKey, skillFrontmatter } from "./context";
+import { cacheKey, installedCopies, skillFrontmatter } from "./context";
 import { countSql } from "./countsql";
 import { GATEWAY_TRIES } from "./gateway";
 import { NOTHING_REPLY } from "./judge";
@@ -49,9 +50,16 @@ import {
   sseResponse,
   startRecorder,
 } from "./recorder";
-import { caseAct, MIXED_UNDECIDED, READS_PAST_LAST_ROUND, sendOrder } from "./replay";
+import {
+  caseAct,
+  MIXED_UNDECIDED,
+  READS_PAST_LAST_ROUND,
+  sendOrder,
+  withCacheBreakpoint,
+} from "./replay";
 import {
   FRESH_RUNS,
+  FURTHER_ROUND_LIMIT,
   LISTING_MEASURE_ITEM,
   listingStanding,
   MAX_EXTRA_RUNS,
@@ -3496,6 +3504,7 @@ describe("behaviour: a reply that reads skill files beside other calls", () => {
         caseId: "c04",
         stage: "screen",
         arm: "old",
+        copiesFrom: "capture",
         runs: 8,
         judged: 4,
         noReply: 1,
@@ -3518,7 +3527,7 @@ describe("behaviour: a reply that reads skill files beside other calls", () => {
     });
     expect(written.skipped).toEqual([]);
     expect(audited.stdout).toContain(
-      "behaviour audit-mixed: case c04 screen old: 8 runs, 4 judged; judged at a mixed reply with an act 1 (run 2 id blind1: bash); continued now 1 (run 1 id blind0: glob); no verdict past the last round 1 (run 6: glob); unresolved 1 (run 5: bash); only skill reads 1; no mixed reply 2; no reply 1\n"
+      "behaviour audit-mixed: case c04 screen old: 8 runs, 4 judged; judged at a mixed reply with an act 1 (run 2 id blind1: bash); continued now 1 (run 1 id blind0: glob); no verdict past the last round 1 (run 6: glob); unresolved 1 (run 5: bash); only skill reads 1; no mixed reply 2; no reply 1; copies from the saved capture\n"
     );
     expect(audited.stdout).toContain(`; written to ${file}\n`);
     // Ids, counts and tool names: no reply's text.
@@ -3603,6 +3612,754 @@ describe("behaviour: a reply that reads skill files beside other calls", () => {
       ["-c", "create", "database"],
     ]);
   });
+
+  // Catches (INFRA-4676's architect, 2026-11-26T08:26Z, item 3): an audit that fails the whole
+  // directory when one stage's capture is not on disk; one that sorts such an arm's read of
+  // another skill with no copy to answer it, or with copies other than the ones a capture of its
+  // profile installs; one that does not say where an arm's copies came from; and one that audits
+  // a case whose profile copy the cache cannot give, or stops at it, where it should skip that
+  // case with its reason and audit the others.
+  test("audit-mixed sorts an arm whose capture is not saved with its case's profile copies, the ones a capture of it records, and says so; a case whose profile copy the cache lacks is skipped with its reason, and the other cases are audited", async () => {
+    const s = scenario("mixed-audit-profile", LOSS_SKILL(), [
+      { id: "c04" },
+      { id: "c05" },
+      { id: "c06" },
+    ]);
+    // c06's profile installs beta from another commit, which the cache does not hold.
+    const elsewhere = "fedcba9876543210";
+    writeFileSync(
+      s.casesFile,
+      `${s.cases
+        .map((c) =>
+          JSON.stringify(
+            c.id !== "c06"
+              ? c
+              : {
+                  ...c,
+                  profile: {
+                    ...c.profile,
+                    skills: c.profile.skills.map((skill) =>
+                      skill.name === "beta" ? { ...skill, commit: elsewhere } : skill
+                    ),
+                  },
+                }
+          )
+        )
+        .join("\n")}\n`
+    );
+    recordCaptures(s, ["old"]);
+    const texts = { old: textDigest(s.old), new: textDigest(s.new) };
+    const cache = path.join(s.dir, "cache");
+    const armOf = (c: Case) =>
+      buildArm(c, "old", { old: s.old, new: s.new }, path.join(s.dir, "arms", c.id));
+    const captureOf = (c: Case) => capturePaths(armCaptureDir(s.out, armOf(c), texts), c.id, "old");
+    // The copies of c04's profile are the copies a capture of it records (c05's, one profile).
+    const [c04, c05, c06] = s.cases as [Case, Case, Case];
+    const record = JSON.parse(readFileSync(captureOf(c05).record, "utf8"));
+    expect(profileInstalledCopies(armOf(c04), cache)).toEqual(
+      installedCopies(record.context, cache)
+    );
+    expect(profileInstalledCopies(armOf(c04), cache).map((copy) => copy.name)).toEqual(["beta"]);
+    for (const c of [c04, c06]) {
+      for (const file of Object.values(captureOf(c))) rmSync(file);
+    }
+    // Each case's one run read beta, which only an installed copy answers, beside a glob call.
+    for (const c of s.cases) {
+      const run = {
+        ...plantedRun(c.id, "old", "screen", 0, "fail", "planted"),
+        id: "blind0",
+        userId: "user-0",
+        skillRounds: 0,
+        skillReads: [],
+        reply: [
+          { type: "tool_use", id: "b0", name: "read", input: { path: "skill://beta" } },
+          { type: "tool_use", id: "g0", name: "glob", input: { path: "src/**/*.ts" } },
+        ],
+      };
+      plantResult(s, c.id, {
+        stages: {
+          screen: { ...plantedStage(s, c.id, "screen", {}), state: "running", runs: [run] },
+        },
+      });
+    }
+    const { config } = setup();
+    const from = recorder.requests.length;
+    const audited = await cli([
+      ...["behaviour", "audit-mixed", "--config", config, "--out", s.out],
+      ...["--old", s.old, "--new", s.new, "--cases", s.casesFile],
+      ...["--cache-dir", cache, "--scratch", path.join(s.dir, "scratch")],
+    ]);
+    expect({ code: audited.code, stderr: audited.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(recorder.requests.length).toBe(from);
+    const written = JSON.parse(readFileSync(path.join(s.out, "audit-mixed.json"), "utf8"));
+    // The case's act is its text, so the reply's blank text only prepares too.
+    const continues = [
+      { run: 1, id: "blind0", userId: "user-0", verdict: "fail", tools: ["glob", "(text)"] },
+    ];
+    expect(
+      written.arms.map((each: Record<string, unknown>) => [
+        each.caseId,
+        each.copiesFrom,
+        each.continues,
+      ])
+    ).toEqual([
+      ["c04", "profile", continues],
+      ["c05", "capture", continues],
+    ]);
+    const betaElsewhere = path.join(
+      cache,
+      "skills",
+      cacheKey("acme/skills", elsewhere, "skills/beta")
+    );
+    expect(written.skipped).toEqual([
+      {
+        caseId: "c06",
+        stage: "screen",
+        arm: "old",
+        why: `the old arm's capture of its screen is not saved (${captureOf(c06).record}), so its copies come from the case's profile, and the profile's copy of beta, ${betaElsewhere}, is not in the cache: no stage of the case is audited`,
+      },
+    ]);
+    expect(audited.stdout).toContain(
+      "behaviour audit-mixed: case c04 screen old: 1 runs, 1 judged; judged at a mixed reply with an act 0; continued now 1 (run 1 id blind0: glob (text)); no verdict past the last round 0; unresolved 0; only skill reads 0; no mixed reply 0; no reply 0; copies from the case's profile, its capture not saved\n"
+    );
+    expect(audited.stdout).toContain(
+      "; no reply 0; copies from the saved capture\nbehaviour audit-mixed: case c06 screen old: skipped: the old arm's capture"
+    );
+  }, 120_000);
+});
+
+// `behaviour continue-mixed` (INFRA-4676's architect, 2026-11-26T08:08Z and 08:09:54Z; INFRA-323's
+// architect, 08:41Z): the saved runs audit-mixed sorts `continues` are continued from their saved
+// replies with the live replay's own code, against the stand-in, into a new --out; the saved
+// --out is only read. Every saved run here was judged before the mixed-reply rule.
+describe("behaviour continue-mixed", () => {
+  /** An older runner, whose saved runs continue-mixed continues only when told. */
+  const OLDER = "0123456789abcdef";
+  /** The deployment the stand-in names for each Responses answer. */
+  const RESPONSES_DEPLOYMENT = "9c8d7e6f";
+  /** The session id whose continuation the stand-in refuses. */
+  const REFUSED_USER = JSON.stringify({ session_id: "00000000-0000-4000-8000-0000000000aa" });
+  /** A case's two steps whose act is a `bash` call, as the audit-mixed row's. */
+  const BASH_STEPS = {
+    realStep: {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "call_which",
+          name: "bash",
+          arguments: { i: "Finding the client", command: "docker exec db which psql" },
+        },
+      ],
+    },
+    violatingStep: {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "call_create",
+          name: "bash",
+          arguments: { command: "docker exec db psql -c 'CREATE DATABASE review'" },
+        },
+      ],
+    },
+  };
+  const X = { skill: "alpha", file: "references/x.md", by: "skill", from: "arm", isError: false };
+  const THINKING = {
+    type: "thinking",
+    thinking: "Read the reference, then look.",
+    signature: "sig",
+  };
+  const NOTE = { type: "text", text: "Reading the reference first." };
+  const read = (id: string) => ({
+    type: "tool_use" as const,
+    id,
+    name: "read",
+    input: { path: "skill://alpha/references/x.md" },
+  });
+  const glob = (id: string) => ({
+    type: "tool_use" as const,
+    id,
+    name: "glob",
+    input: { path: "src/**/*.ts" },
+  });
+  /** A Responses `function_call` item of `name` with `args`, as the gateway reads one back. */
+  const call = (callId: string, name: string, args: Record<string, unknown>) => ({
+    type: "function_call",
+    id: `fc_${callId}`,
+    status: "completed",
+    call_id: callId,
+    name,
+    arguments: JSON.stringify(args),
+  });
+  const REASONING = { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "enc-saved" };
+  const MESSAGE = {
+    type: "message",
+    id: "msg_1",
+    role: "assistant",
+    status: "completed",
+    content: [{ type: "output_text", text: "Reading the reference first.", annotations: [] }],
+  };
+  /** The other of the stand-in's two deployments. */
+  const otherThan = (deployment: string) => (deployment === "0a1b2c3d" ? "4e5f6a7b" : "0a1b2c3d");
+  /** Report lines' counts of the stage kinds no row here runs. */
+  const NONE_ELSE = "confirm old 0, new 0; control old 0, minus 0, twin 0";
+  /** Dollars as the report prints them. */
+  const dollars = (amount: number) => `$${(Math.abs(amount) < 0.00005 ? 0 : amount).toFixed(4)}`;
+  const usdSum = (spent: readonly { usd: number }[]) =>
+    spent.reduce((all, each) => all + each.usd, 0);
+
+  /** A scenario of `cases` whose act is a `bash` call, with the captures of its screen's arms. */
+  function savedScenario(name: string, cases: Parameters<typeof scenario>[2]): Scenario {
+    const s = scenario(name, LOSS_SKILL(), cases);
+    writeFileSync(
+      s.casesFile,
+      `${s.cases.map((c) => JSON.stringify({ ...c, ...BASH_STEPS })).join("\n")}\n`
+    );
+    recordCaptures(s, ["old", "new", "none"]);
+    return s;
+  }
+
+  /** Plants case `caseId`'s counted screen under `s.out`, made by `runner`: ten runs of each arm,
+   *  old's passing and the others' failing, each with its own session and routing ids, answered
+   *  by 0a1b2c3d, and `special`'s fields over the run each names (`<arm> <n>`, n from 0). */
+  function plantSaved(
+    s: Scenario,
+    caseId: string,
+    special: Record<string, Record<string, unknown>>,
+    runner: string
+  ): void {
+    const runs = (["old", "new", "none"] as const).flatMap((arm) =>
+      Array.from({ length: SCREEN_RUNS }, (_, n) => {
+        const verdict = arm === "old" ? "pass" : "fail";
+        return {
+          ...plantedRun(caseId, arm, "screen", n, verdict, "planted"),
+          id: `blind-${caseId}-${arm}-${n}`,
+          userId: JSON.stringify({ session_id: randomUUID() }),
+          routingId: randomUUID(),
+          skillRounds: 0,
+          skillReads: [],
+          leftOut: [],
+          reply: [{ type: "text", text: verdict === "pass" ? PASS_STEP : FAIL_STEP }],
+          deployments: ["0a1b2c3d"],
+          runner,
+          ...special[`${arm} ${n}`],
+        };
+      })
+    );
+    plantResult(s, caseId, {
+      stages: { screen: { ...plantedStage(s, caseId, "screen", {}, runner), runs } },
+    });
+  }
+
+  /** The stand-in of a continuation: the judge as behaviourStandIn's; a refusal (400) of a body
+   *  that goes with REFUSED_USER; and otherwise behaviourStandIn's step for the arm text the body
+   *  holds, a Responses one named as answered by RESPONSES_DEPLOYMENT. */
+  const continuationStandIn = (body: { model: string; [field: string]: unknown }) => {
+    if (isJudgement(body)) return behaviourStandIn(body);
+    if (Object(body.metadata).user_id === REFUSED_USER) {
+      return Response.json(
+        {
+          type: "error",
+          error: { type: "invalid_request_error", message: "the stand-in refuses" },
+        },
+        { status: 400 }
+      );
+    }
+    const said = String(behaviourStandIn(body));
+    if (body.input === undefined) return said;
+    const reply = sseResponse(
+      responseSse({
+        id: "resp_continued",
+        model: body.model,
+        output: [{ type: "message", text: said }],
+        inputTokens: usage.input,
+        outputTokens: usage.output,
+      }),
+      "req_responses_continued"
+    );
+    const headers = new Headers(reply.headers);
+    headers.set("x-litellm-model-id", `${RESPONSES_DEPLOYMENT}-stand-in`);
+    return new Response(reply.body, { status: reply.status, headers });
+  };
+
+  test("continues each saved run the rule continues from its saved reply, a Messages run's thinking and a Responses run's reasoning kept, its first request replayOnce's, on the deployment that answered it (from its record, or the saved request log); runs again fresh a run that lacks a part, one another deployment answers, one the gateway refuses and an unresolved one; leaves the saved --out as it was; and report counts each kind and its spend apart", async () => {
+    const s = savedScenario("continue-mixed", [
+      { id: "c04" },
+      { id: "c05", model: "openai/gpt-6.1-sol" },
+    ]);
+    const texts = { old: textDigest(s.old), new: textDigest(s.new) };
+    const user = JSON.stringify({ session_id: randomUUID() });
+    const [route, elsewhere, refused] = [randomUUID(), randomUUID(), randomUUID()];
+    plantSaved(
+      s,
+      "c04",
+      {
+        "old 0": {
+          verdict: "fail",
+          userId: user,
+          routingId: route,
+          deployments: [pinnedTo(route)],
+          reply: [THINKING, NOTE, read("r1"), glob("g1")],
+        },
+        "old 1": {
+          verdict: "fail",
+          skillRounds: 1,
+          skillReads: [[X]],
+          reply: [read("a2"), read("r2"), glob("g2")],
+        },
+        "new 0": {
+          routingId: elsewhere,
+          deployments: [otherThan(pinnedTo(elsewhere))],
+          reply: [read("r3"), glob("g3")],
+        },
+        "new 1": {
+          userId: REFUSED_USER,
+          routingId: refused,
+          deployments: [pinnedTo(refused)],
+          reply: [read("r4"), glob("g4")],
+        },
+        "none 0": {
+          reply: [
+            read("u1"),
+            { type: "tool_use", id: "u2", name: "bash", input: { command: "make test" } },
+          ],
+        },
+      },
+      OLDER
+    );
+    // c05's runs 1 and 2 went to the Responses route, with no routing id; run 2 was saved before
+    // runs recorded their deployments, so the saved request log names the one that answered it.
+    const [key1, key2] = [randomUUID(), randomUUID()];
+    const responsesReply = [
+      REASONING,
+      MESSAGE,
+      call("call_r", "read", { path: "skill://alpha/references/x.md" }),
+      call("call_g", "glob", { path: "src/**/*.ts" }),
+    ];
+    plantSaved(
+      s,
+      "c05",
+      {
+        "old 0": {
+          verdict: "fail",
+          userId: key1,
+          routingId: null,
+          deployments: [RESPONSES_DEPLOYMENT],
+          reply: responsesReply,
+        },
+        "old 1": {
+          verdict: "fail",
+          userId: key2,
+          routingId: undefined,
+          deployments: undefined,
+          reply: responsesReply,
+        },
+      },
+      OLDER
+    );
+    const savedLog = path.join(s.out, "requests.jsonl");
+    writeFileSync(
+      savedLog,
+      `${[
+        {
+          kind: "replay",
+          userId: key2,
+          gateway: { "x-litellm-model-id": `${RESPONSES_DEPLOYMENT}-x` },
+        },
+        { kind: "judge", userId: "another", gateway: { "x-litellm-model-id": "4e5f6a7b-x" } },
+      ]
+        .map((line) => JSON.stringify(line))
+        .join("\n")}\n`
+    );
+    const saved = textDigest(s.out);
+    const out = path.join(s.dir, "continued");
+    const args = behaviour("continue-mixed", { ...s, out }, "--from", s.out);
+    answer = continuationStandIn;
+    usage = { input: 10, output: 3 };
+    pinDeployments = true;
+    try {
+      // Catches: saved runs of an older runner continued with no word, pooling two runners' code.
+      let from = recorder.requests.length;
+      const unallowed = await cli(args);
+      expect(unallowed.code).toBe(2);
+      expect(unallowed.stderr).toContain(`was made by runner ${OLDER}`);
+      expect(unallowed.stderr).toContain(`Give --allow-runners ${OLDER}`);
+      expect(requestsSince(from)).toHaveLength(0);
+
+      from = recorder.requests.length;
+      const ran = await cli([...args, "--allow-runners", OLDER]);
+      expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+      const requests = requestsSince(from);
+      // Catches: a command that writes the saved --out it continues.
+      expect(textDigest(s.out)).toBe(saved);
+      const bodyOf = (request: RecordedRequest) => JSON.parse(request.body);
+
+      // Catches: a first request rebuilt otherwise than replayOnce sends it (no cache breakpoint,
+      // a fresh session id), a saved reply sent back less its thinking or text or with the call it
+      // left out, and a continuation without the run's routing id or the capture's headers.
+      const messages = requests.filter((request) => bodyOf(request).metadata?.user_id === user);
+      expect(messages).toHaveLength(1);
+      const sent = bodyOf(messages[0] as RecordedRequest);
+      const arm = (c: Case) =>
+        buildArm(c, "old", { old: s.old, new: s.new }, path.join(s.dir, "arms", c.id));
+      const [c04Case, c05Case] = s.cases as [Case, Case];
+      const capturedOf = (c: Case) =>
+        JSON.parse(
+          readFileSync(capturePaths(armCaptureDir(s.out, arm(c), texts), c.id, "old").body, "utf8")
+        );
+      const captured = capturedOf(c04Case);
+      expect({ ...sent, messages: sent.messages.slice(0, -2) }).toEqual({
+        ...withCacheBreakpoint(captured),
+        metadata: { ...captured.metadata, user_id: user },
+      });
+      expect(sent.messages.at(-2)).toEqual({
+        role: "assistant",
+        content: [THINKING, NOTE, read("r1")],
+      });
+      expect(
+        sent.messages
+          .at(-1)
+          .content.map((block: Record<string, unknown>) => [
+            block.type,
+            block.tool_use_id,
+            block.is_error,
+          ])
+      ).toEqual([["tool_result", "r1", false]]);
+      expect(messages[0]?.headers["x-litellm-session-id"]).toBe(route);
+      expect(messages[0]?.headers["anthropic-beta"]).toBe(F2_HEADERS["anthropic-beta"] ?? "");
+      // Catches: a Responses continuation that drops the reasoning's encrypted content or the
+      // message item, reorders them, draws a fresh prompt_cache_key or sends a routing header.
+      const capturedResponses = capturedOf(c05Case);
+      for (const key of [key1, key2]) {
+        const each = requests.filter(
+          (request) => request.path === "/v1/responses" && bodyOf(request).prompt_cache_key === key
+        );
+        expect(each).toHaveLength(1);
+        const body = bodyOf(each[0] as RecordedRequest);
+        const before = capturedResponses.input.length;
+        expect({ ...body, input: body.input.slice(0, before) }).toEqual({
+          ...capturedResponses,
+          prompt_cache_key: key,
+        });
+        const added = body.input.slice(before);
+        expect(added.map((item: Record<string, unknown>) => item.type)).toEqual([
+          "reasoning",
+          "message",
+          "function_call",
+          "function_call_output",
+        ]);
+        expect(added[0]).toEqual(REASONING);
+        expect(added[2].call_id).toBe("call_r");
+        expect(each[0]?.headers["x-litellm-session-id"]).toBeUndefined();
+      }
+
+      // Catches: a continued run that does not name its saved run, its continuation's request
+      // ids, both runners or where its deployment came from; and a run run again fresh that
+      // keeps its saved verdict, or whose reason does not say why.
+      const c04 = result(out, "c04").stages.screen;
+      const runOf = (stage: typeof c04, arm: string, n: number) =>
+        stage?.runs.find((run) => run.arm === arm && run.run === n);
+      expect(runOf(c04, "old", 1)).toMatchObject({
+        verdict: "pass",
+        round: 2,
+        userId: user,
+        routingId: route,
+        skillRounds: 1,
+        skillReads: [[X]],
+        leftOut: [{ round: 1, tool: "glob", argument: "src/**/*.ts" }],
+        deployments: [pinnedTo(route), pinnedTo(route)],
+        runner: RUNNER,
+        continueMixed: {
+          kind: "continued",
+          saved: { run: 1, id: "blind-c04-old-0", round: 1, verdict: "fail", runner: OLDER },
+          runner: RUNNER,
+          deployment: { id: pinnedTo(route), from: "run" },
+          requestIds: [`req_standin_${messages[0]?.n}`],
+        },
+      });
+      expect(runOf(c04, "old", 1)?.reply?.map((block) => block.id ?? block.text)).toEqual([
+        "r1",
+        PASS_STEP,
+      ]);
+      const voided = (arm: string, n: number) => {
+        const run = runOf(c04, arm, n);
+        expect(run).toMatchObject({
+          verdict: null,
+          id: null,
+          continueMixed: { kind: "run again", saved: { run: n, verdict: "fail", runner: OLDER } },
+        });
+        return run?.reason ?? "";
+      };
+      expect(voided("old", 2)).toStartWith(
+        "continue-mixed: the rule continues its saved reply, and its record lacks a part its next request needs (its saved reply comes after 1 answered rounds, whose thinking and text its saved step drops)"
+      );
+      expect(voided("new", 1)).toBe(
+        `continue-mixed: its continuation was answered by deployment ${pinnedTo(elsewhere)}, not ${otherThan(pinnedTo(elsewhere))}, the one that answered its saved reply, so it is run again fresh`
+      );
+      expect(runOf(c04, "new", 1)?.continueMixed?.requestIds).toHaveLength(1);
+      expect(voided("new", 2)).toStartWith("the replay failed: ");
+      expect(voided("none", 1)).toStartWith(
+        `${MIXED_UNDECIDED}: its saved reply, judged before the mixed-reply rule`
+      );
+      // The stage's extra-run rule ran each again fresh, in a round after the continuation's.
+      const fresh = (c04?.runs ?? []).filter(
+        (run) => run.continueMixed === undefined && run.round > 1
+      );
+      expect(fresh.map((run) => `${run.arm} ${run.run} ${run.round}`).sort()).toEqual([
+        "new 11 3",
+        "new 12 3",
+        "none 11 3",
+        "old 11 3",
+      ]);
+      expect(c04?.state).toBe("counted");
+      expect(passes(result(out, "c04"), "screen")).toEqual({ old: SCREEN_RUNS, new: 0, none: 0 });
+      expect(c04?.continued).toEqual({ from: path.resolve(s.out), savedRounds: 1, selected: true });
+      const c05 = result(out, "c05").stages.screen;
+      expect(runOf(c05, "old", 1)).toMatchObject({
+        verdict: "pass",
+        routingId: null,
+        continueMixed: {
+          kind: "continued",
+          deployment: { id: RESPONSES_DEPLOYMENT, from: "run" },
+          requestIds: ["req_responses_continued"],
+        },
+      });
+      expect(runOf(c05, "old", 2)).toMatchObject({
+        verdict: "pass",
+        continueMixed: {
+          kind: "continued",
+          deployment: {
+            id: RESPONSES_DEPLOYMENT,
+            from: "request log",
+            file: savedLog,
+            sha256: createHash("sha256").update(readFileSync(savedLog)).digest("hex"),
+          },
+        },
+      });
+      expect(runOf(c05, "old", 2)?.routingId).toBeUndefined();
+
+      // Catches: a report that pools continued, run-again and unchanged runs, or their spend.
+      const reported = await cli([
+        ...report({ ...s, out }),
+        "--allow-runners",
+        `${OLDER},${RUNNER}`,
+      ]);
+      expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+      const lines = reported.stdout.split("\n");
+      const runs = [...(c04?.runs ?? []), ...(c05?.runs ?? [])];
+      const continuations = usdSum(runs.flatMap((run) => run.continueMixed ?? []));
+      const freshUsd = usdSum(fresh.flatMap((run) => [...run.replaySpent, ...run.judgeSpent]));
+      for (const line of [
+        `continue-mixed: 2 case stages written from ${path.resolve(s.out)}, every one selected`,
+        `continue-mixed continued (a saved run judged at a mixed reply whose other calls only prepare, continued from that reply and judged again), runs by stage and arm: screen old 3, new 0, none 0; ${NONE_ELSE}`,
+        `continue-mixed waiting (${FURTHER_ROUND_LIMIT}: a continued run stopped with no verdict at the further-round limit, whose reply would be continued again, which no fresh run replaces until the next round is decided), runs by stage and arm: screen old 0, new 0, none 0; ${NONE_ELSE}`,
+        `continue-mixed run again fresh (a saved run the rule gives no verdict, or whose continuation its record could not rebuild, failed, or another deployment answered), runs by stage and arm: screen old 1, new 2, none 1; ${NONE_ELSE}`,
+        `continue-mixed fresh runs (made by the stage's extra-run rule in place of the runs with no verdict), runs by stage and arm: screen old 1, new 2, none 1; ${NONE_ELSE}`,
+        `continue-mixed unchanged (saved runs kept as they were), runs by stage and arm: screen old 16, new 18, none 19; ${NONE_ELSE}`,
+        `continue-mixed spend at list price: the continuations ${dollars(continuations)} over 7 runs (screen ${dollars(continuations)}, confirm $0.0000, control $0.0000), their requests and judgements, a discarded one's among them; the fresh runs ${dollars(freshUsd)} over 4 runs (screen ${dollars(freshUsd)}, confirm $0.0000, control $0.0000), their replays and judgements`,
+      ]) {
+        expect(lines).toContain(line);
+      }
+      expect(continuations).toBeGreaterThan(0);
+      expect(freshUsd).toBeGreaterThan(0);
+    } finally {
+      pinDeployments = false;
+    }
+  }, 240_000);
+
+  test("--probe sends only the next request of the one run it names, with no judge call and no case result, and writes its request id, status, deployment, usage and cost; a run the rule does not continue, or whose record lacks a part, is refused before any call, saying which", async () => {
+    const s = savedScenario("continue-mixed-probe", [{ id: "c04" }]);
+    const user = JSON.stringify({ session_id: randomUUID() });
+    const route = randomUUID();
+    plantSaved(
+      s,
+      "c04",
+      {
+        "old 0": {
+          verdict: "fail",
+          userId: user,
+          routingId: route,
+          deployments: [pinnedTo(route)],
+          reply: [THINKING, read("r1"), glob("g1")],
+        },
+        "old 1": {
+          verdict: "fail",
+          skillRounds: 1,
+          skillReads: [[X]],
+          reply: [read("a2"), read("r2"), glob("g2")],
+        },
+      },
+      RUNNER
+    );
+    const out = path.join(s.dir, "probe");
+    const probe = (run: string) =>
+      cli(behaviour("continue-mixed", { ...s, out }, "--from", s.out, "--probe", run));
+    answer = continuationStandIn;
+    usage = { input: 10, output: 3 };
+    pinDeployments = true;
+    try {
+      // Catches: a probe of a run whose record lacks a part, or that the rule does not continue,
+      // sent and paid all the same.
+      let from = recorder.requests.length;
+      const lacking = await probe("c04/old/2");
+      expect(lacking.code).toBe(2);
+      expect(lacking.stderr).toContain(
+        "lacks a part its next request needs (its saved reply comes after 1 answered rounds, whose thinking and text its saved step drops)"
+      );
+      const judged = await probe("c04/new/1");
+      expect(judged.code).toBe(2);
+      expect(judged.stderr).toContain("screen: the rule leaves it as it was (ends)");
+      expect(requestsSince(from)).toHaveLength(0);
+
+      // Catches: a probe that sends more than its one request, calls the judge, or writes a case.
+      from = recorder.requests.length;
+      const probed = await probe("c04/old/1");
+      expect({ code: probed.code, stderr: probed.stderr }).toEqual({ code: 0, stderr: "" });
+      const sent = requestsSince(from);
+      expect(sent).toHaveLength(1);
+      const body = JSON.parse(sent[0]?.body ?? "{}");
+      expect(isJudgement(body)).toBe(false);
+      expect(body.metadata.user_id).toBe(user);
+      expect(body.messages.at(-2)).toEqual({ role: "assistant", content: [THINKING, read("r1")] });
+      expect(sent[0]?.headers["x-litellm-session-id"]).toBe(route);
+      const file = path.join(out, "probe.json");
+      const written = JSON.parse(readFileSync(file, "utf8"));
+      expect(written).toMatchObject({
+        probe: "c04/old/1",
+        caseId: "c04",
+        stage: "screen",
+        arm: "old",
+        run: 1,
+        id: "blind-c04-old-0",
+        runners: { saved: RUNNER, probe: RUNNER },
+        userId: user,
+        routingId: route,
+        deployment: {
+          saved: { id: pinnedTo(route), from: "run" },
+          answered: pinnedTo(route),
+          same: true,
+        },
+        request: {
+          requestId: `req_standin_${sent[0]?.n}`,
+          providerRequestId: `req_standin_${sent[0]?.n}`,
+          status: "ok",
+          error: null,
+        },
+        usage: { input: 10, output: 3 },
+      });
+      expect(written.usd).toBeGreaterThan(0);
+      expect(existsSync(caseResultFile(out, "c04"))).toBe(false);
+      expect(probed.stdout).toContain(
+        `probe c04/old/1 (screen): one request, answered by deployment ${pinnedTo(route)}, the one that answered its saved reply (from the run's record); request id req_standin_${sent[0]?.n}; `
+      );
+    } finally {
+      pinDeployments = false;
+    }
+  }, 120_000);
+
+  test("--only continues only the stages it names, every other run kept as saved, and says so; --further-rounds 1 stops a continuation whose reply after that round would be continued again, with no verdict, its reads and spend kept, no judge call and no fresh run in its place; report counts it apart", async () => {
+    const s = savedScenario("continue-mixed-only", [{ id: "c04" }, { id: "c06" }]);
+    const users: Record<string, string> = {};
+    for (const id of ["c04", "c06"]) {
+      const route = randomUUID();
+      users[id] = JSON.stringify({ session_id: randomUUID() });
+      plantSaved(
+        s,
+        id,
+        {
+          "old 0": {
+            verdict: "fail",
+            userId: users[id],
+            routingId: route,
+            deployments: [pinnedTo(route)],
+            reply: [read("r1"), glob("g1")],
+          },
+        },
+        RUNNER
+      );
+    }
+    const only = path.join(s.dir, "only.tsv");
+    const out = path.join(s.dir, "continued");
+    const args = (...extra: string[]) =>
+      behaviour("continue-mixed", { ...s, out }, "--from", s.out, "--only", only, ...extra);
+    // Every continuation's reply reads the reference again beside a call that only prepares.
+    answer = (body) =>
+      isJudgement(body)
+        ? behaviourStandIn(body)
+        : sseResponse(
+            messageSse({
+              id: "msg_again",
+              model: body.model,
+              content: [read("again"), glob("again-glob")],
+              stopReason: "tool_use",
+            }),
+            "req_again"
+          );
+    pinDeployments = true;
+    try {
+      // Catches: an --only that names a stage no saved result holds, taken as selecting nothing.
+      writeFileSync(only, "c04\tcontrol\n");
+      let from = recorder.requests.length;
+      const unheld = await cli(args("--further-rounds", "1"));
+      expect(unheld.code).toBe(2);
+      expect(unheld.stderr).toContain(`holds: c04 control`);
+      expect(requestsSince(from)).toHaveLength(0);
+
+      writeFileSync(only, "c04\tscreen\n");
+      from = recorder.requests.length;
+      const ran = await cli(args("--further-rounds", "1"));
+      expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+      // Catches: a continuation that runs a second further round, a judge call for a run with no
+      // verdict, or a fresh run made in the place of a run that waits for the next decision.
+      const sent = requestsSince(from);
+      expect(sent).toHaveLength(1);
+      expect(JSON.parse(sent[0]?.body ?? "{}").metadata.user_id).toBe(users.c04);
+      const c04 = result(out, "c04").stages.screen;
+      const waiting = c04?.runs.find((run) => run.arm === "old" && run.run === 1);
+      expect(waiting?.reason).toStartWith(`${FURTHER_ROUND_LIMIT}: after 1 further rounds`);
+      expect(waiting).toMatchObject({
+        verdict: null,
+        id: null,
+        skillRounds: 1,
+        skillReads: [[X]],
+        leftOut: [{ round: 1, tool: "glob", argument: "src/**/*.ts" }],
+        continueMixed: { kind: "continued", requestIds: ["req_again"] },
+      });
+      expect(waiting?.reply?.map((block) => block.id)).toEqual(["r1", "again", "again-glob"]);
+      expect(waiting?.replaySpent).toHaveLength(1);
+      expect(c04?.runs).toHaveLength(3 * SCREEN_RUNS);
+      expect(c04?.state).toBe("running");
+      expect(c04?.continued).toEqual({ from: path.resolve(s.out), savedRounds: 1, selected: true });
+      // Catches: a stage --only does not name continued, or a run of it changed, all the same.
+      const c06 = result(out, "c06").stages.screen;
+      expect(c06?.runs.find((run) => run.arm === "old" && run.run === 1)).toMatchObject({
+        verdict: "fail",
+        id: "blind-c06-old-0",
+      });
+      expect(c06?.runs.some((run) => run.continueMixed !== undefined)).toBe(false);
+      expect(c06?.continued).toEqual({
+        from: path.resolve(s.out),
+        savedRounds: 1,
+        selected: false,
+      });
+
+      const reported = await cli(report({ ...s, out }));
+      expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+      const lines = reported.stdout.split("\n");
+      expect(lines).toContain(
+        `continue-mixed: 2 case stages written from ${path.resolve(s.out)}, 1 of them selected by --only (c04 screen), the others' runs all kept as saved`
+      );
+      expect(lines).toContain(
+        `continue-mixed waiting (${FURTHER_ROUND_LIMIT}: a continued run stopped with no verdict at the further-round limit, whose reply would be continued again, which no fresh run replaces until the next round is decided), runs by stage and arm: screen old 1, new 0, none 0; ${NONE_ELSE}`
+      );
+      expect(lines.find((line) => line.startsWith("case c04: "))).toContain(
+        "waiting at the further-round limit for the next decision: old 1, new 0, none 0"
+      );
+    } finally {
+      pinDeployments = false;
+    }
+  }, 120_000);
 });
 
 // The provider's content policy (the architect, 2026-11-24): a case whose every replay the provider

@@ -90,6 +90,19 @@
  * one from the task and the run number. A Responses body goes with none (`Replayed.routingId`
  * null). Each run records the deployment that answered each of its replies
  * (`Replayed.deployments`, gateway.ts's `deploymentOf`).
+ *
+ * A saved run is resumed from the reply its first send got (`resumeReplay`; cli.ts's `behaviour
+ * continue-mixed`, for a run judged before the mixed-reply rule at a reply the rule continues).
+ * The one function that runs a replay from its first send runs it (`replaySent`): the body before
+ * the saved reply is the one `replayOnce` sends first (its cache breakpoint, the capture's
+ * headers) with the run's own session id and routing id, the saved reply is sorted by the same
+ * rule and goes back as any continued reply does (its thinking and text, or its reasoning and
+ * message items, kept whole; its unanswered calls left out and recorded), and the first request
+ * sent is that body, the reply and its answers; later rounds follow the live rules, the saved
+ * round counting toward the round limit. A resume given the most requests it sends
+ * (`furtherRounds`) stops a run whose reply after them would be sent on again with no verdict
+ * (FurtherRoundLimit, score.ts's FURTHER_ROUND_LIMIT), so the next round can be priced before it
+ * runs. A saved reply no replay sends back is refused before any send (NotResumable).
  */
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
@@ -121,6 +134,7 @@ import {
   type ToolCall,
   toolCalls,
 } from "./gateway";
+import { FURTHER_ROUND_LIMIT } from "./score";
 
 /** The most rounds of skill reads a replay answers before a reply that holds another call or none.
  *  Three: of 3,680 posted runs of the behaviour test, 137 had one round answered and none had two;
@@ -308,6 +322,31 @@ export class UndecidedReply extends Error {
   }
 }
 
+/** What a resumed replay rejects with when the reply after its last further round
+ *  (`resumeReplay`'s `furtherRounds`) would be sent on again (a skill round, or a mixed reply whose
+ *  other calls only prepare, `beside`) before the last answered round: the run stops there with
+ *  no verdict, and waits for the next decision (score.ts's FURTHER_ROUND_LIMIT, which the
+ *  extra-run rule does not replace). `replayed` is the run as it stood, its `step` the answered
+ *  rounds' calls and that reply as it came, its reads and spend those of its rounds. Its message
+ *  begins FURTHER_ROUND_LIMIT, and names the reply's reads and the calls beside them. */
+export class FurtherRoundLimit extends Error {
+  constructor(
+    readonly replayed: Replayed,
+    furtherRounds: number,
+    last: readonly AnsweredRead[],
+    beside: readonly SortedCall[]
+  ) {
+    const files = last.map((read) => `${read.skill} ${read.file}`).join(", ");
+    const others =
+      beside.length === 0
+        ? ""
+        : ` beside calls that only prepare (${beside.map(callWords).join(", ")})`;
+    super(
+      `${FURTHER_ROUND_LIMIT}: after ${furtherRounds} further rounds of the continued run (${replayed.rounds} answered rounds in all), its reply still reads skill files (${files})${others}, so it would be continued again: it stops with no verdict until the next round is decided`
+    );
+  }
+}
+
 /** How a replay runs: the most rounds of skill reads it answers; the installed copies of the
  *  arm's other skills, which a read of one is answered from (arms.ts's `InstalledCopy`,
  *  context.ts's `installedCopies` of the arm's capture's record; none by default, and a read of a
@@ -319,10 +358,11 @@ export class UndecidedReply extends Error {
  *  sorts a mixed reply's other calls (`mixed`, MixedRule; without one a mixed reply ends the
  *  run, as any reply with another call); and `endsAt`, which is told each reply's content and the
  *  answers the replay would make to its reads (`round`; undefined unless `replyBoundary` makes it
- *  a skill round or continues it), before the reply after the last answered round is refused.
+ *  a skill round or continues it), before the reply after the last answered round is refused:
+ *  each reply a send got, never the saved reply a resumed run starts from (`resumeReplay`).
  *  When it gives true, the run ends at that reply: the reply is the judged step, its answers are
  *  not sent, and they are in no round of `reads`. Without it, a run ends only as the file's
- *  header says. load.ts's load test uses it. */
+ *  header says. load.ts's load test uses it, and cli.ts's continue-mixed probe. */
 export interface ReplayOptions extends SendOptions {
   readonly maxSkillRounds?: number;
   readonly copies?: readonly InstalledCopy[];
@@ -868,36 +908,119 @@ function answered(
   };
 }
 
-/** Sends `sent` for `arm`, the body with its cache breakpoint as `replayOnce` makes it (see the
- *  file's header), the run's own session id `userId` (`freshIdentity`) and its routing id
- *  `routingId` (`routingFor`; none when null), which every round of the run keeps; answers its
- *  skill reads as `replyBoundary` says under `options.mixed`, and returns the judged step, or
- *  rejects with ReadsPastLastRound or UndecidedReply. `sent` is never changed, and every round's
- *  body shares its parts. `firstSettled` is told once the run's first send has its reply or its
- *  failure. */
-async function replaySent(
+/** The body every run of `body` sends first, before its session id: a Messages body with its
+ *  cache breakpoint (`withCacheBreakpoint`), a Responses body as it is (see the file's header).
+ *  `replayInterleaved` makes it once for all the runs of an arm. */
+function sendable(body: RequestBody): RequestBody {
+  return isResponsesBody(body) ? body : withCacheBreakpoint(body);
+}
+
+/** `sent` (a body as `sendable` makes it) with a run's session id, and that id: a fresh one
+ *  (`freshIdentity`) when `userId` is undefined; else `userId` itself, a saved run's own, in the
+ *  field `freshIdentity` draws one in (a Messages body's `metadata.user_id`, a Responses body's
+ *  `prompt_cache_key`), its other fields and their order kept; and for null the body as it is,
+ *  with none. */
+function withIdentity(
   sent: RequestBody,
-  userId: string | null,
-  routingId: string | null,
+  userId?: string | null
+): { readonly body: RequestBody; readonly id: string | null } {
+  if (userId === undefined) return freshIdentity(sent);
+  if (userId === null) return { body: sent, id: null };
+  if (isResponsesBody(sent)) return { body: { ...sent, prompt_cache_key: userId }, id: userId };
+  const kept = isObject(sent.metadata) ? sent.metadata : {};
+  return { body: { ...sent, metadata: { ...kept, user_id: userId } }, id: userId };
+}
+
+/** Where a run starts (`replaySent`): the body its first request is made of, its session id in it
+ *  already (`withIdentity`; `userId` null for a body that names none), and the routing id every
+ *  request of the run goes with (`routingFor`; null for none); and, for a run resumed from a
+ *  saved reply (`resumeReplay`), that reply's content, which stands for the reply to `sent`, so
+ *  `sent` itself is never sent, and the most requests it sends before a reply it would send on
+ *  stops it (`furtherRounds`, FurtherRoundLimit; no limit but the live rule's when undefined). */
+interface RunStart {
+  readonly sent: RequestBody;
+  readonly userId: string | null;
+  readonly routingId: string | null;
+  readonly saved?: readonly ContentBlock[];
+  readonly furtherRounds?: number;
+}
+
+/** What a resume rejects with, before any send, when the saved reply it is given is none a replay
+ *  sends back (`replyBoundary` makes it neither a skill round nor a continued mixed reply, or it
+ *  comes after the last answered round): there is nothing to continue from it. */
+export class NotResumable extends Error {}
+
+/** Runs `start` for `arm`: sends its body with the run's own session id and routing id, which
+ *  every round of the run keeps, answers its skill reads as `replyBoundary` says under
+ *  `options.mixed`, and returns the judged step, or rejects with ReadsPastLastRound or
+ *  UndecidedReply. A run resumed from a saved reply (`start.saved`) takes that reply as its first
+ *  round's: the same rule sorts it and the same code answers its reads and leaves out its other
+ *  calls as a reply a send got, so its first send is the request the live run sent after that
+ *  reply; it rejects with NotResumable, sending nothing, for a saved reply no replay sends back.
+ *  `start.sent` is never changed, and every round's body shares its parts. `firstSettled` is told
+ *  once the run's first send has its reply or its failure, and `options.endsAt` is told each
+ *  reply a send got (never a saved one). */
+async function replaySent(
+  start: RunStart,
   arm: Arm,
   gateway: Gateway,
   { maxSkillRounds = MAX_SKILL_ROUNDS, copies = [], headers, mixed, endsAt }: ReplayOptions,
   firstSettled?: () => void
 ): Promise<Replayed> {
+  const { userId, routingId } = start;
   const sendHeaders = routingId === null ? headers : { ...headers, [ROUTING_HEADER]: routingId };
-  let body = sent;
+  let body = start.sent;
   const usage: Spent[] = [];
   const deployments: string[] = [];
   const reads: AnsweredRead[][] = [];
   const leftOut: LeftOutCall[] = [];
   // The answered rounds' read calls, which the judged step holds before the reply that ends it.
   const calls: ContentBlock[] = [];
-  for (let rounds = 0; ; rounds += 1) {
+  /** Answers round `rounds` (from 0) of `content`, a reply every read of which `answers` holds
+   *  answered and whose other calls `others` only prepare (none for a skill round): records its
+   *  reads and the calls it leaves out, and makes the next body, which holds the reply less those
+   *  calls and one answer per read. */
+  const answerRound = (
+    rounds: number,
+    content: readonly ContentBlock[],
+    answers: readonly SkillRead[],
+    others: readonly SortedCall[]
+  ): void => {
+    reads.push(answers.map(({ read }) => read));
+    leftOut.push(...others.map(({ tool, argument }) => ({ round: rounds + 1, tool, argument })));
+    // The reply holding only the read calls the replay answers: no other call goes back.
+    const answeredIds = new Set(answers.map(({ id }) => id));
+    const kept = content.filter(
+      (block) => !isToolCallBlock(block) || answeredIds.has(toolCalls([block])[0]?.id ?? "")
+    );
+    calls.push(...kept.filter(isToolCallBlock));
+    body = answered(body, kept, answers);
+  };
+  let first = 0;
+  if (start.saved !== undefined) {
+    const boundary = replyBoundary(start.saved, arm, copies, mixed);
+    if (boundary.kind !== "skill round" && boundary.kind !== "continue") {
+      throw new NotResumable(
+        `the saved reply is not one a replay sends back: the rule makes it ${boundary.kind === "ends" ? "the end of the run" : `a mixed reply that ${boundary.kind === "acts" ? "acts" : "is undecided"}`}`
+      );
+    }
+    if (maxSkillRounds < 1) {
+      throw new NotResumable(`the saved reply is past the last of ${maxSkillRounds} rounds`);
+    }
+    answerRound(
+      0,
+      start.saved,
+      boundary.reads,
+      boundary.kind === "continue" ? boundary.others : []
+    );
+    first = 1;
+  }
+  for (let rounds = first; ; rounds += 1) {
     let reply: Reply;
     try {
       reply = await gateway.send(body, { headers: sendHeaders });
     } finally {
-      if (rounds === 0) firstSettled?.();
+      if (rounds === first) firstSettled?.();
     }
     usage.push(reply.spent);
     deployments.push(deploymentOf(reply));
@@ -932,19 +1055,11 @@ async function replaySent(
         boundary.kind === "continue" ? boundary.others : []
       );
     }
-    reads.push(last);
-    if (boundary.kind === "continue") {
-      leftOut.push(
-        ...boundary.others.map(({ tool, argument }) => ({ round: rounds + 1, tool, argument }))
-      );
+    const others = boundary.kind === "continue" ? boundary.others : [];
+    if (start.furtherRounds !== undefined && rounds - first + 1 >= start.furtherRounds) {
+      throw new FurtherRoundLimit(replayed, start.furtherRounds, last, others);
     }
-    // The reply holding only the read calls the replay answers: no other call goes back.
-    const answeredIds = new Set(boundary.reads.map(({ id }) => id));
-    const kept = content.filter(
-      (block) => !isToolCallBlock(block) || answeredIds.has(toolCalls([block])[0]?.id ?? "")
-    );
-    calls.push(...kept.filter(isToolCallBlock));
-    body = answered(body, kept, boundary.reads);
+    answerRound(rounds, content, boundary.reads, others);
   }
 }
 
@@ -962,9 +1077,69 @@ export function replayOnce(
   options: ReplayOptions = {},
   firstSettled?: () => void
 ): Promise<Replayed> {
-  const own = freshIdentity(isResponsesBody(body) ? body : withCacheBreakpoint(body));
+  const own = withIdentity(sendable(body));
   const routingId = routingFor(body, options.routingId);
-  return replaySent(own.body, own.id, routingId, arm, gateway, options, firstSettled);
+  return replaySent(
+    { sent: own.body, userId: own.id, routingId },
+    arm,
+    gateway,
+    options,
+    firstSettled
+  );
+}
+
+/** A saved run a replay resumes (`resumeReplay`): the session id and the routing id every request
+ *  of it went with (null for none: a body that names no session id, a Responses body, or a run
+ *  saved before runs recorded a routing id, which went with none), and the content of the reply
+ *  its first send got, whole: a Messages reply's thinking blocks with their signatures and its
+ *  text, a Responses reply's reasoning items with their encrypted content and its message items. */
+export interface SavedReply {
+  readonly userId: string | null;
+  readonly routingId: string | null;
+  readonly content: readonly ContentBlock[];
+}
+
+/**
+ * Goes on with the saved run `saved` of `body` for `arm` from its saved reply, as the live replay
+ * of the run would have (`replaySent`): the body before that reply is the one `replayOnce` sends
+ * first (`sendable`), with the run's own session id in place of a fresh one (`withIdentity`), and
+ * every request goes with the run's own routing id (`routingFor`) and `options.headers`. The saved
+ * reply is that body's reply, its first round: it goes back as the live replay keeps a continued
+ * reply, less the calls it does not answer (recorded in `leftOut`, round 1), with one answer per
+ * read, and that is the first request sent; later rounds follow the live rules, the saved round
+ * counting toward `options.maxSkillRounds`. With `options.furtherRounds`, a reply that would be
+ * sent on after that many requests stops the run with FurtherRoundLimit (a reply after the last
+ * answered round is ReadsPastLastRound all the same). The judged step and `reads` hold the saved
+ * round's read calls and reads first; `usage` and `deployments` are the sends' alone. Rejects as
+ * `replayOnce` does, and with NotResumable, before any send, for a saved reply no replay sends
+ * back. `options.endsAt` is told each reply a send got: true ends the run there.
+ */
+export function resumeReplay(
+  body: RequestBody,
+  saved: SavedReply,
+  arm: Arm,
+  gateway: Gateway,
+  {
+    furtherRounds,
+    ...options
+  }: Omit<ReplayOptions, "routingId"> & {
+    readonly furtherRounds?: number;
+  } = {}
+): Promise<Replayed> {
+  const own = withIdentity(sendable(body), saved.userId);
+  const routingId = routingFor(body, saved.routingId ?? undefined);
+  return replaySent(
+    {
+      sent: own.body,
+      userId: own.id,
+      routingId,
+      saved: saved.content,
+      ...(furtherRounds === undefined ? {} : { furtherRounds }),
+    },
+    arm,
+    gateway,
+    options
+  );
 }
 
 /** One arm's runs in a round: its arm, its captured body, the headers that go with it (its
@@ -1052,8 +1227,7 @@ export async function replayInterleaved(
         `the arm ${each.arm.name} makes ${each.runs} runs and is given ${each.routingIds.length} routing ids`
       );
     }
-    const sent = isResponsesBody(each.body) ? each.body : withCacheBreakpoint(each.body);
-    byName.set(each.arm.name, { ...each, sent });
+    byName.set(each.arm.name, { ...each, sent: sendable(each.body) });
   }
   const order: Slot[] = sendOrder(
     arms.map((each) => ({ key: each.arm.name, runs: each.runs })),
@@ -1074,12 +1248,10 @@ export async function replayInterleaved(
     const nth = started.get(slot.arm) ?? 0;
     started.set(slot.arm, nth + 1);
     const settled = Promise.withResolvers<void>();
-    const own = freshIdentity(each.sent);
+    const own = withIdentity(each.sent);
     const routingId = routingFor(each.sent, each.routingIds?.[nth]);
     const replayed = replaySent(
-      own.body,
-      own.id,
-      routingId,
+      { sent: own.body, userId: own.id, routingId },
       each.arm,
       gateway,
       {

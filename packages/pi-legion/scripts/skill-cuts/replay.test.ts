@@ -24,21 +24,25 @@ import { messageSse, responseSse, sseResponse } from "./recorder";
 import {
   callPart,
   caseAct,
+  FurtherRoundLimit,
   LOAD_RULE,
   MAX_BREAKPOINTS,
   MAX_SKILL_ROUNDS,
   MIXED_UNDECIDED,
   type MixedRule,
+  NotResumable,
   READS_PAST_LAST_ROUND,
   ReadsPastLastRound,
   type Replayed,
   readOnlyCommand,
   replayInterleaved,
   replayOnce,
+  resumeReplay,
   sendOrder,
   UndecidedReply,
   withCacheBreakpoint,
 } from "./replay";
+import { FURTHER_ROUND_LIMIT } from "./score";
 import { f9Completed, fixtureReply } from "./testdata/fixtures";
 
 // The replay of an arm, on F5 and F9 (testdata/): the model gateway's replies to request bodies
@@ -1796,6 +1800,203 @@ test("on a Responses body: a mixed reply whose other calls only prepare goes bac
     "read",
     "message",
   ]);
+});
+
+// The resume of a saved run (INFRA-4676's architect, 2026-11-26T08:08Z: "Rebuild each next request
+// with the live replay's own code. Use the saved reply whole, with its thinking signatures or
+// encrypted reasoning, and the run's own session id and routing id"): resumeReplay runs through
+// the one function replayOnce runs through, from a saved first reply.
+
+/** The headers of a request as the gateway sent them, less the key, which the two gateways of a
+ *  row draw alike but each from its own key file. */
+const sentHeaders = (headers: Headers | undefined) =>
+  Object.fromEntries([...(headers ?? [])].filter(([name]) => name !== "x-api-key"));
+
+// Catches: a continuation built by a second body builder that drifts from the live replay's: a
+// first request that is not replayOnce's (no cache breakpoint, a fresh session id in place of the
+// run's), a saved reply sent back less its thinking or its text, or with the call it left out, or
+// a request without the run's routing id or the capture's headers.
+test("resumeReplay of a saved Messages run sends, as its one request, the live replay's second: replayOnce's first body with the run's own session id, the saved reply whole but for its left-out call, its thinking and text kept, and one answer, with the run's routing id", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const thinking = {
+    type: "thinking",
+    thinking: "Read the reference, then look.",
+    signature: "sig",
+  };
+  const note = { type: "text", text: "Reading the reference first." };
+  const saved = [thinking, note, X_READ, DOCKER_PS];
+  const body = { ...BODY, stream: false };
+  const shared = { mixed: { kind: "case", act: DOCKER_ACT } as const, headers: CAPTURED_HEADERS };
+  const routingId = randomUUID();
+  const live = scripted([saved, [WHICH_PSQL]]);
+  const replayed = await replayOnce(body, arm, live.gateway, { ...shared, routingId });
+  expect(live.bodies).toHaveLength(2);
+
+  const resumed = scripted([[WHICH_PSQL]]);
+  const continued = await resumeReplay(
+    body,
+    { userId: replayed.userId, routingId: replayed.routingId, content: saved },
+    arm,
+    resumed.gateway,
+    shared
+  );
+  expect(resumed.bodies).toEqual([live.bodies[1] as MessagesBody]);
+  const first = resumed.bodies[0] as MessagesBody;
+  // The body before the saved reply is replayOnce's first, its breakpoint and the run's id in it.
+  const before: MessagesBody = { ...first, messages: first.messages.slice(0, -2) };
+  expect(before).toEqual(live.bodies[0] as MessagesBody);
+  expect(first.messages.at(-2)).toEqual({ role: "assistant", content: [thinking, note, X_READ] });
+  expect(first.messages.at(-1)).toEqual({
+    role: "user",
+    content: [toolResult("toolu_x", X_ANSWER, false)],
+  });
+  expect(bodyIdentity(first)).toBe(replayed.userId);
+  expect(sentHeaders(resumed.headers[0])).toEqual(sentHeaders(live.headers[1]));
+  expect(resumed.headers[0]?.get("x-litellm-session-id")).toBe(routingId);
+  // The run as the live replay ends it: the saved round answered, its call left out, the act.
+  expect({
+    rounds: continued.rounds,
+    reads: continued.reads,
+    leftOut: continued.leftOut,
+    step: continued.step.message.content,
+    userId: continued.userId,
+    routingId: continued.routingId,
+    sends: continued.usage.length,
+  }).toEqual({
+    rounds: replayed.rounds,
+    reads: replayed.reads,
+    leftOut: replayed.leftOut,
+    step: replayed.step.message.content,
+    userId: replayed.userId,
+    routingId: replayed.routingId,
+    sends: 1,
+  });
+});
+
+// Catches: a Responses continuation that drops the saved reply's encrypted reasoning or its
+// message item, reorders them, sends the call it left out, draws a fresh prompt_cache_key, or
+// sends a routing header the Responses route refuses.
+test("resumeReplay of a saved Responses run sends the live replay's second request: the saved output items in order, the reasoning's encrypted content kept, less the left-out call, with one output, and no routing header", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const mixedReply = () =>
+    sseResponse(
+      responseSse({
+        id: "resp_mixed",
+        model: "gpt-6.1-sol",
+        output: [
+          { type: "reasoning", encryptedContent: "enc-mixed" },
+          { type: "message", text: "Reading the reference, and running the tests." },
+          {
+            type: "function_call",
+            callId: "call_x",
+            name: "read",
+            arguments: { path: "skill://alpha/references/x.md" },
+          },
+          {
+            type: "function_call",
+            callId: "call_go",
+            name: "bash",
+            arguments: { command: "go test ./..." },
+          },
+        ],
+      })
+    );
+  const done = () =>
+    sseResponse(
+      responseSse({
+        id: "resp_after",
+        model: "gpt-6.1-sol",
+        output: [{ type: "message", text: "Done." }],
+      })
+    );
+  const mixed: MixedRule = { kind: "case", act: TASK_ACT };
+  // The reply as a run saves it: the output items the gateway read, whole.
+  const saved = (await world(mixedReply).gateway.send(RESPONSES_BODY)).message.content;
+  const live = world((n) => (n === 1 ? mixedReply() : done()));
+  const replayed = await replayOnce(RESPONSES_BODY, arm, live.gateway, {
+    mixed,
+    routingId: randomUUID(),
+  });
+  const resumed = world(done);
+  const continued = await resumeReplay(
+    RESPONSES_BODY,
+    { userId: replayed.userId, routingId: replayed.routingId, content: saved },
+    arm,
+    resumed.gateway,
+    { mixed }
+  );
+  const sent = resumed.bodies as readonly unknown[] as readonly ResponsesBody[];
+  expect(sent).toEqual([live.bodies[1] as unknown as ResponsesBody]);
+  const first = sent[0] as ResponsesBody;
+  const before: ResponsesBody = {
+    ...first,
+    input: first.input.slice(0, RESPONSES_BODY.input.length),
+  };
+  expect(before).toEqual(live.bodies[0] as unknown as ResponsesBody);
+  const added = first.input.slice(RESPONSES_BODY.input.length) as Record<string, unknown>[];
+  expect(added.map((item) => [item.type, item.name ?? item.call_id ?? null])).toEqual([
+    ["reasoning", null],
+    ["message", null],
+    ["function_call", "read"],
+    ["function_call_output", "call_x"],
+  ]);
+  expect(added[0]?.encrypted_content).toBe("enc-mixed");
+  expect(bodyIdentity(first)).toBe(replayed.userId);
+  expect(replayed.routingId).toBeNull();
+  expect(resumed.headers[0]?.get("x-litellm-session-id")).toBeNull();
+  expect(continued.leftOut).toEqual(replayed.leftOut);
+  expect(continued.step.message.content).toEqual(replayed.step.message.content);
+});
+
+// Catches: a resume that sends a request for a saved reply the live replay would never have sent
+// back (one that acts, one with no read it answers), so a continuation is paid that no run made.
+test("resumeReplay refuses, before any send, a saved reply no replay sends back", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const mixed: MixedRule = { kind: "case", act: DOCKER_ACT };
+  for (const content of [[X_READ, WHICH_PSQL], [ACT], [X_READ, PSQL_VERSION]]) {
+    const { gateway, bodies } = scripted([[WHICH_PSQL]]);
+    const refused = await refusalOf(
+      resumeReplay(BODY, { userId: null, routingId: null, content }, arm, gateway, { mixed })
+    );
+    expect(refused).toBeInstanceOf(NotResumable);
+    expect(bodies).toHaveLength(0);
+  }
+});
+
+// Catches: a continuation that runs every further round the live rule allows when one is asked
+// for, so the next round is paid before it is priced; or one stopped at the limit whose record
+// lacks what it read and spent, or that is stopped though its reply acts.
+test("resumeReplay with furtherRounds 1 stops a run whose reply after that round would be continued again, with no verdict, its reads and spend kept, and ends one that acts as the live rules say", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const mixed: MixedRule = { kind: "case", act: DOCKER_ACT };
+  const saved = { userId: null, routingId: null, content: [X_READ, DOCKER_PS] };
+  const again = scripted([[X_READ, DOCKER_PS], [WHICH_PSQL]]);
+  const stopped = await refusalOf(
+    resumeReplay({ ...BODY, stream: false }, saved, arm, again.gateway, {
+      mixed,
+      furtherRounds: 1,
+    })
+  );
+  expect(again.bodies).toHaveLength(1);
+  expect(stopped).toBeInstanceOf(FurtherRoundLimit);
+  const limit = stopped as FurtherRoundLimit;
+  expect(limit.message.startsWith(`${FURTHER_ROUND_LIMIT}: after 1 further rounds`)).toBe(true);
+  expect({
+    rounds: limit.replayed.rounds,
+    reads: limit.replayed.reads.length,
+    sends: limit.replayed.usage.length,
+    step: limit.replayed.step.message.content,
+  }).toEqual({ rounds: 1, reads: 1, sends: 1, step: [X_READ, X_READ, DOCKER_PS] });
+  const acts = scripted([[WHICH_PSQL]]);
+  const judged = await resumeReplay({ ...BODY, stream: false }, saved, arm, acts.gateway, {
+    mixed,
+    furtherRounds: 1,
+  });
+  expect(judged.step.message.content).toEqual([X_READ, WHICH_PSQL]);
+  // Without a limit the live rule continues it past that reply.
+  const live = scripted([[X_READ, DOCKER_PS], [WHICH_PSQL]]);
+  const ran = await resumeReplay({ ...BODY, stream: false }, saved, arm, live.gateway, { mixed });
+  expect({ sends: live.bodies.length, rounds: ran.rounds }).toEqual({ sends: 2, rounds: 2 });
 });
 
 test.each([
