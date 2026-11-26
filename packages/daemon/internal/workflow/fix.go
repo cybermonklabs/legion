@@ -1204,14 +1204,22 @@ func moveToOf(ctx context.Context) string {
 
 // copyMoveAfterFix is the head a start of a step of w's task moves the task's working copy to
 // where a fix left that copy behind: the head the task's latest fix ended at, where that fix has
-// ended with commits of its own (its end is not the head it started at) and no step of the task has
-// started since it ended. The fix pushes from a working copy of its own, so until a step starts
-// after it the task's copy stands where the fix started; the first start after it moves the copy,
-// and a later start finds the copy there or past it, where a move could take it back from a commit
-// pushed since. That is every start a fix's end leads to outside the way after it (moveToOf): a
-// restart of the task after a stop ended the fix, the retro after the end hold, a step after a way
-// that left each step its result. It answers "" for every other start, and for each task that has
-// had no fix.
+// ended with commits of its own (its end is not the head it started at) and no start since has
+// carried that move. The fix pushes from a working copy of its own, so until a step starts after it
+// the task's copy stands where the fix started; the first start after it moves the copy, and a
+// later start finds the copy there or past it, where a move could take it back from a commit made
+// since.
+//
+// Where the fix's way returned the task or ran the steps after the fix again (wayReturn,
+// wayAfterFix), the way's own start carried the move (moveToOf), and the fix's Way, which afterFix
+// writes in that start's transaction, is the record of it: every later start answers "", whatever
+// the clock read. Every other start a fix's end leads to is the one read that still decides by the
+// clock, from the step starts' moments: no step of the task started after the fix ended
+// (record.StepStart.StartedAt after record.TaskFix.EndedAt), which a clock that does not advance or
+// steps back reads wrongly. Those starts are a restart of the task after a stop, a leave or a new
+// generation ended the fix (wayNone), the retro after the end hold or a step after a way that left
+// each step its result (wayOn), and a start while the way is pending. It answers "" for every
+// other start, and for each task that has had no fix.
 func (e *Engine) copyMoveAfterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (string, error) {
 	if !w.Stored {
 		return "", nil
@@ -1219,6 +1227,9 @@ func (e *Engine) copyMoveAfterFix(ctx context.Context, tx pgx.Tx, issue record.I
 	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
 	if err != nil || fix == nil || fix.State != record.FixEnded || fix.EndedAt == nil || fix.EndHead == "" || fix.EndHead == fix.Head {
 		return "", err
+	}
+	if fix.Way == wayReturn || fix.Way == wayAfterFix {
+		return "", nil
 	}
 	for place := range w.Steps {
 		start, err := e.store.StepStarts(ctx, tx, issue.Key, record.StepPlace{Task: w.Task, Kind: record.PlaceStep, Place: place + 1})
