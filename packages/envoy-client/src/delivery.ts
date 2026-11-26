@@ -979,9 +979,10 @@ const DISPATCH_BOOKKEEPING: ReadonlySet<string> = new Set([
  * change is the news.
  *
  * A field repeats the card when the card already says it: `issue_key` is the card's `owner`,
- * `author` or `actor` the card's `actor` when each of its fields is the actor's, `created_at` the
- * card's `at` when it is less than a second from `issuedAt` (the two differ by milliseconds,
- * often across a second's edge), and a `target` that names this session the card's `to:`, which
+ * `author` or `actor` the card's `actor` when each of its fields is the event's actor's (whole,
+ * before the card cuts a session actor's `origin` to its title), `created_at` the card's `at`
+ * when it is less than a second from `issuedAt` (the two differ by milliseconds, often across a
+ * second's edge), and a `target` that names this session the card's `to:`, which
  * `toReader` says the card prints. On a comment, `thread_root_id` always names the comment
  * `reply_to` names, and `answers` names it on a reply to a thread's root.
  *
