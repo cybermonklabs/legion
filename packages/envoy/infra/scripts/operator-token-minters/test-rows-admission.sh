@@ -603,8 +603,12 @@ worker_cap_row() {
       ;;
     later-refused | later-short)
       REVIEW_WORKERS=4 run
+      # The witness's line is the first of its batch, so `cut | grep -q` under pipefail could fail
+      # with cut's SIGPIPE once grep matched it, and read the witness's batch as a later one: the
+      # item would then refuse batch 0, and pass a reviews.sh that waits on batch 0's call alone.
+      # grep reads the subjects through a process substitution instead.
       for file in "$dir"/review-requests-*.tsv; do
-        if ! cut -f7 "$file" | grep -qxF group:system:masters; then later="$(cut -f7 "$file" | sed -n 1p)"; break; fi
+        if ! grep -qxF group:system:masters < <(cut -f7 "$file"); then later="$(cut -f7 "$file" | sed -n 1p)"; break; fi
       done
       [ -n "$later" ] || fail "no batch of the first run went without the witness, so the item ($1) proves nothing"
       rm -f "$dir"/review-call-*.json "$dir"/review-requests-*.tsv "$dir/review-calls"
