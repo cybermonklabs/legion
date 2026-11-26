@@ -813,10 +813,13 @@ function PaletteDialog({
   const dialog = useDialog<HTMLDivElement>({ initialFocusRef: inputRef, onClose, open: true });
   // The conversation the bar holds, which outlives this open of it (`features/going`), and what
   // its box does with Enter and Esc there (`useAsk`), with the chip's context. The bar reads the
-  // parts of it it draws here, so a frame of a run draws only the conversation again. Once Enter
-  // starts a run, or a conversation is open in the bar, the bar is that conversation (design v2,
-  // state 2): the search parts leave it, it grows to 80% of the window's height, and the box moves
-  // under the conversation. New brings the search back.
+  // parts of it it draws here, so a frame of a run draws only the conversation again. Once a
+  // conversation is open in the bar - the run Enter on Do starts, one Continue or History opens,
+  // or one the bar opens on or takes back from the side (`setPlace`, `movePanel`) - the bar is
+  // that conversation (design v2, state 2): the search parts leave it, it grows to 80% of the
+  // window's height, and the box moves under the conversation. New brings the search back. Enter
+  // on Ask, and Open in panel on the answer's card, open no conversation here: they start the
+  // run, hand it to the panel at the side (`handOffToPanel`) and close the bar.
   const refusal = useGoingValue((of) => of.refusal);
   const talking = useGoingValue((of) => of.conversation !== undefined || of.starting !== undefined);
   const asksBack = useGoingValue(asksPerson);
@@ -1171,8 +1174,10 @@ function PaletteDialog({
   // A conversation takes the list's place, and the search that New brings back is a new list:
   // the arrows the reader pressed on the old one are let go with it, as new words let them go.
   // So Continue takes the empty box's highlight again, whichever row Enter opened the
-  // conversation from - Ask after an arrow, or Continue itself - rather than the head, which a
-  // filing still out holds and where Enter does nothing.
+  // conversation in the bar from - Do after an arrow, or Continue itself - rather than the head,
+  // which a filing still out holds and where Enter does nothing. Enter on Ask after an arrow
+  // opens none here: it hands the run to the panel at the side and closes the bar, whose next
+  // open is mounted anew, with no arrow pressed.
   if (talking && arrowed) {
     setArrowed(false);
   }
@@ -1227,7 +1232,10 @@ function PaletteDialog({
   const selectRow = (row: PaletteRow) => {
     if (row.kind === "offer" || row.kind === "line") {
       // Continue and the line on top, pressed through the row they carry rather than through
-      // what they start: a conversation or a filing, which the bar stays open to show.
+      // what they start, and the bar is not closed here: Continue opens its conversation in the
+      // bar and Do starts one there, which the bar stays open to show; a filing is the line's
+      // first row while it is out or once it failed, and the bar closes once it is filed; and Ask
+      // hands its run to the panel at the side (`useAsk.openInPanel`), which closes the bar.
       row.select();
       return;
     }

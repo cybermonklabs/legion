@@ -90,7 +90,7 @@ test("opens over the Inbox", async ({ browser }) => {
   });
 });
 
-// SLOW(>=2s): the pause's short answer, a keyboard press on the card's button, and one run.
+// SLOW(>=2s): the pause's short answer, Tab from the box to the card's button and Enter, one run.
 test("Open in panel on the card, pressed from the keyboard, starts one run and hands it to the panel beside the usable page", async ({
   browser,
 }) => {
@@ -118,7 +118,13 @@ test("Open in panel on the card, pressed from the keyboard, starts one run and h
       bar(page).getByRole("option").getByRole("button", { name: "Open in panel" })
     ).toHaveCount(0);
 
-    await open.focus();
+    // The person reaches the button from where they are, the bar's box, with Tab: the box's own
+    // Filters button, then the card under the box, whose answer cites nothing, so its one control
+    // is Open in panel.
+    await expect(searchBox(page)).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(bar(page).getByTestId("search-filters-button")).toBeFocused();
+    await page.keyboard.press("Tab");
     await expect(open).toBeFocused();
     await page.keyboard.press("Enter");
     await expectHandedToThePanel(page);

@@ -811,8 +811,8 @@ test("the short answer is a card above the hits, its text at most 3 lines, with 
 // An answer to words the person has typed past is no question any more: its card, drawn as it
 // stood, offers no button, so an old preview cannot submit an old query. The card of the words in
 // the box now does, and its button is the line Ask's Enter: one run, of the words typed now, with
-// the line "ask", and the conversation handed to the panel at the side. Receiving the answer
-// started no run and opened no panel.
+// the line "ask", and the conversation handed to the panel at the side, one run for a double press
+// too. Receiving the answer started no run and opened no panel.
 test("Open in panel is offered only on the answer to the words in the box, and submits those words once", async () => {
   await warmMarkdownRenderer();
   const user = userOnFakeClock();
@@ -859,13 +859,18 @@ test("Open in panel is offered only on the answer to the words in the box, and s
     expect(screen.queryByRole("button", { name: "Open in panel" })).toBeNull();
     expect(start).not.toHaveBeenCalled();
 
-    // The answer to the words now brings the button back, and it submits those words.
+    // The answer to the words now brings the button back, and a double press of it submits those
+    // words once. Both presses reach the button's handler before the bar draws again, so the
+    // second runs against the store the first left, its start out, and starts nothing.
     await tick(MEANING_PAUSE_MS);
     await waitFor(() => expect(streams).toHaveLength(2));
     send(streams[1], { data: { text: "The second answer" }, event: "text" });
     const open = await screen.findByRole("button", { name: "Open in panel" });
-    await user.click(open);
-    await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      open.click();
+      open.click();
+    });
+    expect(start).toHaveBeenCalledTimes(1);
     expect(start.mock.calls[0]?.[0]).toMatchObject({
       level: "standard",
       line: "ask",
