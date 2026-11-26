@@ -109,8 +109,11 @@ left() { echo $((LIMIT - ($(date +%s) - started))); }
 
 base=${CI_FILTERS_BASE:-}
 [ -n "$base" ] || exit 0
+# CI's checkout is one commit deep, so the base is fetched when it is not there. The fetch goes
+# through fetch-depth-if-shallow.sh: one commit deep in that shallow checkout, and with no depth in
+# a whole clone, such as a developer's, which a depth would make shallow.
 if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-  timeout -k 5 60 git fetch -q --no-tags --depth=1 origin "$base" 2>&1 | tail -3
+  timeout -k 5 60 .github/scripts/fetch-depth-if-shallow.sh --depth=1 -q --no-tags origin "$base" 2>&1 | tail -3
 fi
 # --no-renames: a renamed file is its old path deleted and its new one added, so a tsconfig moved
 # away is counted as touched by its old name too.

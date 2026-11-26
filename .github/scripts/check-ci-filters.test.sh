@@ -52,7 +52,8 @@
 # root package.json with one workspace, and a ci_job_reads.py that loads them - and symlinks the
 # real script, its engine (ci_filter_coverage.py), the loader of the gates and the //ci: lines
 # (ci_filter_sources.py), the rules of ci.yaml it runs (ci_workflow_rules.py), the path model they
-# import (workflow_paths.py) and the generation's fail-open wrapper (ci-filters-generate.sh) into it,
+# import (workflow_paths.py), the generation's fail-open wrapper (ci-filters-generate.sh) and the
+# fetch it takes a base it lacks through (fetch-depth-if-shallow.sh) into it,
 # so the code under test is the code CI runs. It needs go and a python3 with PyYAML.
 #
 # Run from anywhere: .github/scripts/check-ci-filters.test.sh
@@ -200,7 +201,7 @@ fixture() {
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/.github/ci-gates" "$root/mod/cmd/app" \
     "$root/mod/lib" "$root/mod/other" "$root/fixtures" "$root/docs" "$root/packages/widget"
   for linked in check-ci-filters.sh ci_filter_coverage.py ci_filter_sources.py ci_workflow_rules.py workflow_paths.py \
-    go_build_tags.py ci-filters-generate.sh ci_ts_listing.py; do
+    go_build_tags.py ci-filters-generate.sh fetch-depth-if-shallow.sh ci_ts_listing.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   printf 'PROGRAMS = []\nBUNDLES = []\nLISTED = []\n' > "$root/.github/scripts/ci_ts_programs.py"
@@ -731,6 +732,52 @@ run_generate "$root" PATH="$root/bin:$PATH" CI_FILTERS_BASE="$base_commit"
 check "the wrapper exits 0" "$(is "$status" 0)"
 check "names the old tsconfig as touched" "$(contains "$out" '^  pkg/lib/tsconfig.json$')"
 check "the paths-filter step reads app as every path" "$(is "$(filter_of app | tr '\n' ' ')" '** ')"
+
+# CI's checkout is one commit deep, so the generation fetches a base it does not hold, through
+# fetch-depth-if-shallow.sh: one commit deep in a shallow checkout, and with no depth in a whole
+# clone, which a depth would make shallow. Here the base is a commit of the origin that the tree
+# under test lacks: a sibling of the head, on the commit the head grew from, so no fetch of the
+# head brings it. The base keeps the shared read the head drops, as in the first base case.
+echo "case: a base a whole clone does not hold is fetched with no depth, and the clone stays whole"
+root=$(fixture base-fetched-whole)
+shared_read "$root"
+commit_all "$root" start >/dev/null
+git clone -q --bare "$root" "$root.origin.git"
+git -C "$root.origin.git" config uploadpack.allowReachableSHA1InWant true
+git -C "$root" remote add origin "file://$root.origin.git"
+git clone -q "file://$root.origin.git" "$work/base-fetched-sibling"
+echo 'changed' > "$work/base-fetched-sibling/docs/readme.md"
+base_commit=$(commit_all "$work/base-fetched-sibling" base)
+git -C "$work/base-fetched-sibling" push -q origin HEAD:refs/heads/base
+replace "$root/.github/scripts/ci_job_reads.py" 'SHARED = [Read("docs/**", "the shared helper reads the docs")]' 'SHARED = []'
+head_commit=$(commit_all "$root" head)
+git -C "$root" push -q origin HEAD:refs/heads/main
+check "the clone does not hold the base before the run" \
+  "$(is "$(git -C "$root" cat-file -e "$base_commit^{commit}" 2>/dev/null && echo held || echo absent)" absent)"
+run_generate "$root" CI_FILTERS_BASE="$base_commit"
+check "the wrapper exits 0" "$(is "$status" 0)"
+check "the base tree's filters are computed: the paths-filter step reads app as every path" \
+  "$(is "$(filter_of app | tr '\n' ' ')" '** ')"
+check "  and the pattern only the base tree has is printed" \
+  "$(contains "$out" '^app: 1 pattern(s) only in the base tree, 0 only in this one$')"
+check "the clone is still not shallow" "$(is "$(git -C "$root" rev-parse --is-shallow-repository)" false)"
+check "  the head's whole history still reads: 2 commits" "$(is "$(git -C "$root" rev-list --count "$head_commit")" 2)"
+check "  and so does the base's, fetched with its parent: 2 commits" "$(is "$(git -C "$root" rev-list --count "$base_commit")" 2)"
+
+echo "case: a base a shallow checkout does not hold is fetched one commit deep, as in CI's checkout"
+shallow="$work/base-fetched-shallow"
+git clone -q --depth=1 --branch main "file://$root.origin.git" "$shallow"
+check "the checkout is shallow and does not hold the base before the run" \
+  "$(is "$(git -C "$shallow" rev-parse --is-shallow-repository)$(git -C "$shallow" cat-file -e "$base_commit^{commit}" 2>/dev/null && echo held || echo absent)" trueabsent)"
+run_generate "$shallow" CI_FILTERS_BASE="$base_commit"
+check "the wrapper exits 0" "$(is "$status" 0)"
+check "the base tree's filters are computed: the paths-filter step reads app as every path" \
+  "$(is "$(filter_of app | tr '\n' ' ')" '** ')"
+check "  and the pattern only the base tree has is printed" \
+  "$(contains "$out" '^app: 1 pattern(s) only in the base tree, 0 only in this one$')"
+check "the checkout is still shallow" "$(is "$(git -C "$shallow" rev-parse --is-shallow-repository)" true)"
+check "  and the base came one commit deep: its history reads 1 commit" \
+  "$(is "$(git -C "$shallow" rev-list --count "$base_commit")" 1)"
 
 # The go commands run in a pool (CI_FILTERS_JOBS); each answer is keyed by what it asks, so the
 # filters are one text whatever the pool's size, and a command that fails in the pool fails the

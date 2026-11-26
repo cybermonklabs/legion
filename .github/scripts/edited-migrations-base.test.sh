@@ -11,7 +11,9 @@
 # the second fetch, or than the third, beside a short path to an older one; a merge-group entry on
 # top of main's tip; and a history that shares no commit with main. One case breaks the checkout's
 # object store once the fetch has written main's ref, so git merge-base fails with 128 rather than
-# answers.
+# answers. The last cases run the script in a whole clone, as a developer's clone or worktree is,
+# where a fetch with a depth would make the clone shallow: each finds the same base and leaves the
+# clone whole.
 #
 # Run from anywhere: .github/scripts/edited-migrations-base.test.sh
 # CI runs it in ci.yaml's test job.
@@ -359,5 +361,49 @@ check "the base is the commit named" "$(is "$out" "$early")"
 check "it names the base and why" \
   "$(contains "$err" "^edited-migrations base: $early, the migration-base this workflow_dispatch run on refs/heads/main names\$")"
 check "the base is in the checkout" "$(holds "$dir" "$early")"
+
+# whole_clone <branch>: a whole clone of <branch>, its every commit with its parents, as a
+# developer's clone, and each worktree that shares it, holds the history; prints the directory.
+whole_clone() {
+  local dir
+  dir=$(mktemp -d "$work/whole.XXXXXX")
+  git_fixture clone -q --no-tags --single-branch --branch "$1" "file://$origin" "$dir"
+  echo "$dir"
+}
+
+# stays_whole <clone> <commit>: true when the clone is not shallow and the commit's whole history,
+# as the origin counts it, still reads in the clone, for the check to read.
+stays_whole() {
+  [ "$(git -C "$1" rev-parse --is-shallow-repository)" = false ] &&
+    [ "$(git -C "$1" rev-list --count "$2")" = "$(git_fixture -C "$origin" rev-list --count "$2")" ] &&
+    echo true || echo false
+}
+
+echo "case: in a whole clone, a push compares with the tip's first parent and the clone stays whole"
+dir=$(whole_clone main)
+pick "$dir" push refs/heads/main "$main_tip" ''
+check "it answers" "$(is "$status" 0)"
+check "the base is the tip's first parent" "$(is "$out" "$main_parent")"
+check "the clone is not shallow, and main's 1200 commits all still read" "$(stays_whole "$dir" "$main_tip")"
+
+echo "case: in a whole clone, a migration-base named on a branch's dispatch is the base and the clone stays whole"
+dir=$(whole_clone feature)
+pick "$dir" workflow_dispatch refs/heads/feature "$feature" "$early"
+check "it answers" "$(is "$status" 0)"
+check "the base is the commit named" "$(is "$out" "$early")"
+check "the clone is not shallow, and the branch's whole history still reads" "$(stays_whole "$dir" "$feature")"
+
+# The two-path branch, whose base a shallow checkout settles at the third fetch while still
+# shallow: a fetch with a depth would leave the whole clone shallow too, as a real main, far longer
+# than any of the fetches, leaves it.
+echo "case: in a whole clone, a branch's dispatch compares with the merge base of the whole histories and the clone stays whole"
+dir=$(whole_clone two-paths)
+pick "$dir" workflow_dispatch refs/heads/two-paths "$two_paths" ''
+check "it answers" "$(is "$status" 0)"
+check "the base is the newer commit of main" "$(is "$out" "$newer")"
+check "it names the base and why" \
+  "$(contains "$err" "^edited-migrations base: $newer, the merge base of HEAD $two_paths with main $main_tip: ")"
+check "main is fetched whole: its 1200 commits all read" "$(stays_whole "$dir" "$main_tip")"
+check "the clone is not shallow, and the branch's whole history still reads" "$(stays_whole "$dir" "$two_paths")"
 
 summary "the base the edited-migrations check compares each run's tree with"
