@@ -4700,6 +4700,21 @@ func (r *outbox) seedReparent(ctx context.Context, row record.OutboxRow, payload
 	if r.dispatch == nil {
 		return errors.New("re-parent seed executor has no Dispatch client")
 	}
+	// Wait before reading Dispatch. The workflow checks again when the fact applies,
+	// because the copy can change while this executor is reading the parent.
+	if payload.Parent != "" {
+		var pending bool
+		if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+			var err error
+			pending, err = workflow.ReparentChainPending(ctx, tx, r.records, row.Issue, payload)
+			return err
+		}); err != nil {
+			return fmt.Errorf("read the chain for the re-parent seed of %s: %w", row.Issue, err)
+		}
+		if pending {
+			return wait.Errorf("re-parent seed of %s waits for the chain of %s: %w", row.Issue, payload.Parent, record.ErrChainUnknown)
+		}
+	}
 	var version int
 	if payload.Parent != "" {
 		var err error

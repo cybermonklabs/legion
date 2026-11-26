@@ -178,27 +178,26 @@ func (e *Engine) reparentSeed(ctx context.Context, tx pgx.Tx, issue record.Issue
 // changed (intake.ReparentRead, R18 of dispatch://INFRA-3320): one reparented notice
 // (record.ReparentedNotice) for each distinct architect among the issue's own, the one above it
 // before and the one above it now, each naming the one it tells (record.Notice.To) and each
-// reading the same words (reparentedWords). Only a move the record is still told of is told: a
-// move under another parent since queued a seed of its own.
-//
-// The architects are read on the Dispatch chain in this transaction, by the owner walk over the
-// claims the store records (record.OwnerWalkOver): the issue's own is told where the store records
-// an architect claim of it; the one above it now is the walk from its parent on the chain the copy
-// holds now, where an issue above it is in Legion's work; the one above it before is the walk from
-// the old parent, where that parent, or an issue above it, is in Legion's work. A walk that meets
-// an unknown chain names nobody, and the line the telling writes says so.
+// reading the same words (reparentedWords). The seed's parents, not the issue's current parent,
+// identify the two owner walks, so a later move does not erase the telling of an earlier one.
+// When the latest move's new chain is unknown, no notices are queued until the chain is known
+// (R16). Deferring them together keeps the words and the deduplication across recipients intact.
 //
 // A seed of INFRA-4728's shape, which a daemon of that release queued for a root that ran when a
 // person made it a child of a live tree and left at this release's first boot, names no run: its
 // old parent is the record's, where the record names one other than the seed's new parent, and
-// what goes on is read from the record now.
+// what goes on is read from the record now. A later move makes that reconstruction unreliable,
+// so only a seed of this older shape still requires its parent to match ToldParent.
 func (e *Engine) reparentRead(ctx context.Context, tx pgx.Tx, fact intake.ReparentRead) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
-	if err != nil || issue == nil || issue.ToldParent != fact.Seed.Parent {
+	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
 	seed := fact.Seed
 	if seed.ReleaseBefore() {
+		if issue.ToldParent != seed.Parent {
+			return intake.Result{}, nil
+		}
 		var old string
 		if issue.Parent != nil && *issue.Parent != seed.Parent {
 			old = *issue.Parent
@@ -206,6 +205,18 @@ func (e *Engine) reparentRead(ctx context.Context, tx pgx.Tx, fact intake.Repare
 		if seed, err = e.reparentSeed(ctx, tx, *issue, old, seed.Parent); err != nil {
 			return intake.Result{}, err
 		}
+	} else if seed.OldParent == seed.Parent {
+		// A seed that names no change has nothing to tell.
+		return intake.Result{}, nil
+	}
+	architects, err := e.reparentArchitects(ctx, tx, *issue, seed)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if architects.waits {
+		// A fact applied while the chain is still unknown must leave the telling owed.
+		// The outbox waits on the replacement row until R16's re-read fills the copy.
+		return intake.Result{}, e.enqueue(ctx, tx, issue.Key, seed)
 	}
 	version := fact.BasisVersion
 	if seed.Parent != "" && version != 0 {
@@ -217,11 +228,13 @@ func (e *Engine) reparentRead(ctx context.Context, tx pgx.Tx, fact intake.Repare
 			version = 0
 		}
 	}
-	architects, err := e.reparentArchitects(ctx, tx, *issue, seed.OldParent)
-	if err != nil {
-		return intake.Result{}, err
+	now := architects.now
+	if issue.ToldParent != seed.Parent {
+		// Still tell the recipients of that move, but don't ask them to act on it as if
+		// the issue were still under that parent.
+		now, version = "", 0
 	}
-	told := reparentedWords(*issue, seed, architects.now, version)
+	told := reparentedWords(*issue, seed, now, version)
 	for _, to := range architects.distinct() {
 		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: record.ReparentedNotice, Phase: issue.Phase, To: to, Reason: told}); err != nil {
 			return intake.Result{}, err
@@ -233,15 +246,38 @@ func (e *Engine) reparentRead(ctx context.Context, tx pgx.Tx, fact intake.Repare
 	return intake.Result{}, nil
 }
 
-// reparentArchitects is the issues whose architects a change of parent tells (R18): the issue's
-// own, "" where the store records no architect claim of it; the architect above it before, the
-// owner walk from oldParent, "" where neither oldParent nor an issue above it is in Legion's work,
-// and "" where oldParent is of another project, which was no issue above the issue
-// (record.InProjectParent): the issue stood under it as a root, its own architect's; and the
-// architect above it now, the owner walk from the issue's parent, "" where no issue above it is in
-// Legion's work. A walk that meets an unknown chain is "" too.
+// reparentWaitParent is the parent whose chain the seed may wait for. R16 re-reads the
+// chains of issues in work, not the historical chains of moves that have since been superseded.
+func reparentWaitParent(issue record.Issue, seed record.ReparentSeed) string {
+	if issue.ToldParent != seed.Parent || !record.InLegionsWork(issue) {
+		return ""
+	}
+	return record.InProjectParent(issue.Key, seed.Parent)
+}
+
+// ReparentChainPending lets the outbox keep the same seed on backoff while R16's re-read
+// repairs the copy, rather than running the Dispatch read and queuing a replacement every time.
+func ReparentChainPending(ctx context.Context, tx pgx.Tx, store record.Store, key string, seed record.ReparentSeed) (bool, error) {
+	issue, err := store.Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		return false, err
+	}
+	parent := reparentWaitParent(*issue, seed)
+	if parent == "" {
+		return false, nil
+	}
+	chains, err := record.ReadChainsOf(ctx, tx, store, issue.Project, []string{parent})
+	if err != nil {
+		return false, err
+	}
+	return !chains.Chain(parent).Known(), nil
+}
+
+// reparentArchitects names the issue's own architect claim and the owners reached from the
+// seed's two parents. Parents in another project are not part of the walk.
 type reparentArchitects struct {
 	own, before, now string
+	waits            bool
 }
 
 // distinct is each architect the telling names, once, in the order own, before, now.
@@ -255,19 +291,25 @@ func (a reparentArchitects) distinct() []string {
 	return told
 }
 
-func (e *Engine) reparentArchitects(ctx context.Context, tx pgx.Tx, issue record.Issue, oldParent string) (reparentArchitects, error) {
+func (e *Engine) reparentArchitects(ctx context.Context, tx pgx.Tx, issue record.Issue, seed record.ReparentSeed) (reparentArchitects, error) {
 	project, err := claim.ProjectToken(issue.Project)
 	if err != nil {
 		return reparentArchitects{}, err
 	}
-	above := record.InProjectParent(issue.Key, oldParent)
-	keys := []string{issue.Key}
-	if above != "" {
-		keys = append(keys, above)
+	before := record.InProjectParent(issue.Key, seed.OldParent)
+	now := record.InProjectParent(issue.Key, seed.Parent)
+	var keys []string
+	for _, key := range []string{before, now} {
+		if key != "" {
+			keys = append(keys, key)
+		}
 	}
-	chains, err := record.ReadChains(ctx, tx, e.store, issue.Project, keys)
+	chains, err := record.ReadChainsOf(ctx, tx, e.store, issue.Project, keys)
 	if err != nil {
 		return reparentArchitects{}, err
+	}
+	if parent := reparentWaitParent(issue, seed); parent != "" && !chains.Chain(parent).Known() {
+		return reparentArchitects{waits: true}, nil
 	}
 	walk, err := record.OwnerWalkOver(ctx, e.store, tx, project, chains, keys)
 	if err != nil {
@@ -285,16 +327,18 @@ func (e *Engine) reparentArchitects(ctx context.Context, tx pgx.Tx, issue record
 	if claims[own] != nil {
 		told.own = issue.Key
 	}
-	if above != "" {
-		if parent, recorded := chains.Record(above); recorded && record.InLegionsWork(parent) {
-			told.before = walk.Owner(above, false)
-		} else if len(chains.Above(above)) > 0 {
-			told.before = walk.Owner(above, true)
+	ownerFrom := func(parent string) string {
+		if parent != "" {
+			if rec, recorded := chains.Record(parent); recorded && record.InLegionsWork(rec) {
+				return walk.Owner(parent, false)
+			}
+			if len(chains.Above(parent)) > 0 {
+				return walk.Owner(parent, true)
+			}
 		}
+		return ""
 	}
-	if len(chains.Above(issue.Key)) > 0 {
-		told.now = walk.Owner(issue.Key, true)
-	}
+	told.before, told.now = ownerFrom(before), ownerFrom(now)
 	return told, nil
 }
 
