@@ -892,34 +892,54 @@ func TestBothSocketsAskOneBrokerTokenHeartbeatCheck(t *testing.T) {
 // the source address's introspection bucket (ciphertoken.Verifier.LiveUntil), so a stranger who
 // empties the bucket of an address every client behind one load balancer shares closes no socket
 // opened from it. The verifier's bucket holds one introspection, refilled one an hour of its
-// clock, which moves past ciphertoken.AffirmativeCacheTTL at each read, so no answer it remembers
-// is still good when it looks again, each heartbeat asks the broker, and the row's reads move that
-// clock minutes, never an hour. A live socket and a document socket open with one live token; a
-// live answer gives back what it took from the bucket (Verifier.known), so neither admission
-// empties it. Then a token the broker does not hold live is presented from the same address, at
-// the document socket's door: it is refused 401 BROKER_TOKEN_NOT_ACTIVE, and that refusal keeps
-// the bucket's one introspection, so the bucket is empty. Both sockets stay open across three
-// heartbeats, which ask the broker again, and then a fresh live token from the same address is
-// refused 429 BROKER_TOKEN_RATE_LIMITED: the bucket stayed empty while the heartbeats asked. Every
-// request comes from the address the rig's server sees its sockets dial from. The heartbeats are on
-// the server's clock, a fake the row moves once both sockets have armed each one: both arming the
-// fifth proves both first three checks found the token live.
+// clock. That clock counts the heartbeats of the server's clock, a fake the row moves: every read
+// in one heartbeat gives the same time, and each heartbeat is ciphertoken.AffirmativeCacheTTL and
+// a second past the one before, so no answer remembered at one heartbeat is still good at the
+// next, each heartbeat asks the broker at least once (the second socket to check may take the
+// first one's fresh answer), and the row's three heartbeats move that clock seconds, never an
+// hour. A live socket and a document socket open with one live token; a live answer gives back
+// what it took from the bucket (Verifier.known), so neither admission empties it. Then a token the
+// broker does not hold live is presented from the same address, at the document socket's door: it
+// is refused 401 BROKER_TOKEN_NOT_ACTIVE, and that refusal keeps the bucket's one introspection,
+// so the bucket is empty. Both sockets stay open across three heartbeats, which ask the broker
+// again, and then a fresh live token from the same address is refused 429
+// BROKER_TOKEN_RATE_LIMITED: the bucket stayed empty while the heartbeats asked. Every request
+// comes from the address the rig's server sees its sockets dial from.
+//
+// The row stands a counter in front of the heartbeat's check (brokerTokenStillLive), on the server
+// register mounted, and moves the fake to a heartbeat only once both sockets have armed it and
+// both checks of the heartbeat before it have found the token live. A socket arms its next
+// heartbeat before it checks (driveHeartbeats), so a move made as soon as both had armed it could
+// come while a check still ran; that check would then remember its answer at the next heartbeat's
+// time, the next heartbeat would take that answer without asking the broker, and the count would
+// fall short. Waiting for both checks keeps every read of one heartbeat at that heartbeat's time,
+// so the count does not depend on how the two sockets' checks interleave.
 //
 // Control: the heartbeat spending the bucket finds it empty once the remembered answer has run
-// out, both sockets close at their first heartbeat, and the row fails at its wait for the second.
+// out, both sockets close at their first heartbeat, and the row fails at its wait for both first
+// checks to find the token live.
 func TestATokenSocketOutlivesAnEmptiedAddressBucket(t *testing.T) {
 	t.Parallel()
 	const heartbeat = time.Second
 	fake := clocktest.New(time.Now())
 	opened := fake.Now()
 	from := time.Now()
-	var reads atomic.Int64
 	rig := newDocumentSocketTokenRig(t, heartbeat, fake, brokerTokenOptions(func(o *ciphertoken.Options) {
 		o.AddressLimit = ratelimit.Limit{Every: time.Hour, Burst: 1}
 		o.Now = func() time.Time {
-			return from.Add(time.Duration(reads.Add(1)) * (ciphertoken.AffirmativeCacheTTL + time.Second))
+			beats := fake.Now().Sub(opened) / heartbeat
+			return from.Add(beats * (ciphertoken.AffirmativeCacheTTL + time.Second))
 		}
 	}))
+	// stillLive counts the sockets' heartbeat checks that found the token live.
+	var stillLive atomic.Int64
+	rig.served.brokerTokenHeartbeat = func(r *http.Request) error {
+		err := rig.served.brokerTokenStillLive(r)
+		if err == nil {
+			stillLive.Add(1)
+		}
+		return err
+	}
 	door := openedDoor(t, rig.server, rig.artifactID, rig.cookie)
 	caller := newBrokerCaller(t)
 	const token = "a-token-holding-both-sockets-open"
@@ -933,8 +953,15 @@ func TestATokenSocketOutlivesAnEmptiedAddressBucket(t *testing.T) {
 	}
 	asked := rig.tokens.broker.Count()
 
-	fifth := driveHeartbeats(t, fake, opened.Add(heartbeat), 4, heartbeat, 2)
-	awaitArmedCountAt(t, fake, "both sockets' fifth heartbeat", fifth, 2)
+	for beat := 1; beat <= 3; beat++ {
+		at := opened.Add(time.Duration(beat) * heartbeat)
+		awaitArmedCountAt(t, fake, "both sockets' heartbeat", at, 2)
+		fake.Set(at)
+		testwait.Until(t, fmt.Sprintf("both sockets' checks at heartbeat %d to find the token live", beat), func() (int64, bool) {
+			checked := stillLive.Load()
+			return checked, checked >= int64(2*beat)
+		})
+	}
 	if again := rig.tokens.broker.Count() - asked; again < 3 {
 		t.Fatalf("over three heartbeats the sockets asked the broker %d times, want at least once a heartbeat: the row does not hold the bucket against the heartbeat's own introspections", again)
 	}
