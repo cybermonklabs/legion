@@ -17,7 +17,7 @@ import {
   setGatedSteps,
 } from "./api";
 import { listOf, pickFromList } from "./filters";
-import { closeDetails, gotoIssue, phase } from "./issue-page";
+import { closeDetails, gotoIssue, openDetails, phase } from "./issue-page";
 import { expectOpeningLanded, focusThePage } from "./issue-page-g";
 import { withIssuePage } from "./issue-page-option";
 import {
@@ -2621,6 +2621,60 @@ test("the header's menu closes once Tab takes the focus out of it, leaving the f
       }
       expect(reached, `six Tabs did not take the focus on to ${what} at 390 px`).toBe(true);
     }
+  });
+});
+
+// The tester's red row of round 21 (one Escape closes two layers, the header's Issue actions menu
+// and Details beside it. Both hear the press on the document, in the bubble phase: Details'
+// `closeOnEscape` (Margin.tsx:319-329), added as Details opens and so before the menu's, finds no
+// `[role="menu"]` in its own box (:325) - the menu is in the header, and a group of buttons, no
+// `role="menu"` (IssueActionsMenu.tsx:22) - marks the press `defaultPrevented` and closes Details;
+// then the menu's `closeOnEscape` (IssueActionsMenu.tsx:73-79, added at :91), which reads no
+// `defaultPrevented`, closes the menu and gives the focus to Issue actions; the architect's
+// ruling of 2026-11-26T05:17Z). The row opens Details by Shift+M, the menu by Enter on Issue
+// actions, Tabs onto its first action, the pin, and presses Escape once. At c3b536cc that one
+// Escape closes the menu and Details both, at 1440 px, in Chromium (4 of 4) and Firefox (2 of 2).
+// SLOW(>=2s): one seeded issue page open at 1440 px, Details opened by Shift+M, the menu opened by
+// Enter, one Tab and one Escape; no write.
+// @firefox: the engine's focus after the element that held it is removed (playwright.config.ts names the clause).
+test("one Escape in the header's Issue actions menu closes the menu alone and leaves Details open @firefox", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    const step = (text: string) => `Issue actions menu with Details open: ${text}`;
+    await page.setViewportSize(DESKTOP);
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
+    await expectHeaderDrawn(page);
+    await openDetails(page);
+    const header = issueHeader(page);
+    const trigger = header.getByRole("button", { exact: true, name: CONTROL_LABELS.issue_actions });
+    const pin = header.locator('button[data-issue-action="pin"]');
+    await trigger.focus();
+    await expect(trigger, step("Issue actions takes the focus.")).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(trigger, step("Enter on Issue actions opens its menu.")).toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    await page.keyboard.press("Tab");
+    await expect(
+      pin,
+      step("Tab puts the focus on the menu's first action, the pin.")
+    ).toBeFocused();
+    await expect(details(page), step("Details is open under the menu.")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(trigger, step("one Escape closes the menu.")).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    await expect(pin, step("one Escape hides the menu's actions.")).toBeHidden();
+    await expect(trigger, step("one Escape gives the focus back to Issue actions.")).toBeFocused();
+    await expect(
+      details(page),
+      step("after one Escape, which the open menu takes, the Details drawer is still open.")
+    ).toBeVisible();
   });
 });
 
