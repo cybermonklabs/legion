@@ -134,6 +134,13 @@ type outbox struct {
 	// update's ReplacePod, which starts the next pod at once. Set by attach after newOutbox; a test
 	// that builds the outbox by hand leaves it nil, and the end of a pod then runs nothing.
 	podEnded func(context.Context, []string)
+	// updatePushes answers, for each role of an issue, where it pushes at an update round's ask
+	// (supervise.UpdatePush): the sweep's own read (supervision.updatePushes), which the workflow
+	// sets where it attaches. updateAsk reads it again before it publishes an ask, so an ask is
+	// published only while the role's push is the one the ask names. nil, in a test that builds
+	// the outbox by hand, reads the zero push for every role, as the sweep of a deployment with no
+	// workflow does.
+	updatePushes func(ctx context.Context, issue string) (map[claim.Role]supervise.UpdatePush, error)
 	// now is the moment a row is listed, claimed, renewed and retried at; clock arms the lanes'
 	// timers — the sweep's, a lane's wait for its next due row, a running row's lease renewal.
 	// Both are the wall clock in production, and a test holds both still (heldClock). A test that
