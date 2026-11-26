@@ -1,6 +1,8 @@
 package workspace
 
 import (
+	"bufio"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -22,6 +24,8 @@ import (
 	"time"
 
 	"golang.org/x/sync/errgroup"
+
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
 // PackManifest is the repository cache's answer to GET /packs, one JSON object, where its packs are
@@ -63,6 +67,30 @@ type PackObject struct {
 	URL    string `json:"url"`
 }
 
+// CloudStorageHost is the one host a production signed address names: Cloud Storage's own, path
+// style (https://storage.googleapis.com/<bucket>/<object>), over HTTPS. The repository cache signs
+// each download for it, and a fetch takes an address at no other host, but for a test's or the
+// burst Job's loopback double (PackManifest.check).
+const CloudStorageHost = "storage.googleapis.com"
+
+// PackPrefix is the prefix of every object of repo's in the repository cache's bucket,
+// <owner>/<repo>/objects/pack/: its owner and its name lower-cased, since GitHub takes a
+// repository's names in any case and the cache must write one prefix for one repository whatever
+// case its configuration wrote them in. A bucket serves the repositories of one deployment's
+// project: each cache writes under its own repository's prefix alone, and a fetch takes no object
+// outside its own (PackManifest.check).
+func PackPrefix(repo ghrepo.Repository) string {
+	return strings.ToLower(repo.Owner()) + "/" + strings.ToLower(repo.Name()) + "/objects/pack/"
+}
+
+// PackFileName reports whether file, an object's name past its PackPrefix, is the name of a pack or
+// an index that the clone's tar streams in objects/pack and a feed takes there: one path segment
+// that FeedEntry takes in objects/pack, so that the object's name past the prefix is the file's own
+// name in the clone.
+func PackFileName(file string) bool {
+	return file != "" && !strings.Contains(file, "/") && FeedEntry("objects/pack/"+file, false)
+}
+
 // BucketFetchTimeout bounds a fetch's one attempt to fill a fresh feed from its repository cache's
 // bucket, all of it: the ask of the cache's GET /packs, every download from a signed address, and
 // the git verification of what those brought (FetchReport.fromBucket). It is the life of the
@@ -74,7 +102,7 @@ const BucketFetchTimeout = 15 * time.Minute
 
 // SourceBucket and SourceTar are where a fresh feed's history came from when a repository cache is
 // named (FetchReport.Source): the cache's bucket, through the signed addresses its GET /packs gave,
-// or its GET /tar, as before the bucket.
+// or its GET /tar, which streams the clone's refs and packs from the cache itself.
 const (
 	SourceBucket = "bucket"
 	SourceTar    = "/tar"
@@ -92,8 +120,8 @@ type BucketObject struct {
 
 // The short reasons a fetch gives for filling a fresh feed from the cache's /tar rather than its
 // bucket (FetchReport.TarReason), each the start of the reason's text: /packs not served at all (a
-// cache with no bucket, or of a release before the bucket, which answers the mux's plain 404 naming
-// no repository); an answer that is no manifest to use (unavailable: not 200, or not read); a
+// cache with no bucket, or of a release that has no /packs, which answers the mux's plain 404
+// naming no repository); an answer that is no manifest to use (unavailable: not 200, or not read); a
 // manifest that does not hold (invalid: a member the fetch refuses, before any object is asked for);
 // a download that failed or stalled; an object of another size or SHA-256 than the manifest's; a
 // write of what the bucket gave to the volume that failed; and a git verification of the result
@@ -123,10 +151,6 @@ func (f *bucketFailure) Error() string {
 	}
 	return f.reason + ": " + f.err.Error()
 }
-
-// cloudStorageHost is the one host a production signed address may name: Cloud Storage's own, path
-// style (https://storage.googleapis.com/<bucket>/<object>), which the cache signs for.
-const cloudStorageHost = "storage.googleapis.com"
 
 // packsAsk bounds the ask of a repository cache's GET /packs and the read of its answer, within
 // BucketFetchTimeout: the cache signs one address per object on the request, so an answer takes
@@ -289,10 +313,10 @@ var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 //   - the bucket is a bucket's name;
 //   - each ref is a file a feed takes from its cache (FeedEntry), outside objects/pack/, its path
 //     slash-separated, clean and inside the repository, named once, and no other ref's directory;
-//   - each object is a pack or an index of request's repository, <owner>/<repo>/objects/pack/ (the
-//     two lower-cased) then one file name a feed takes there, named once, of a size of 0 or more and
-//     a SHA-256 of 64 lower-case hex digits, each pack listed with its index and each index with its
-//     pack;
+//   - each object is a pack or an index of request's repository, its PackPrefix,
+//     <owner>/<repo>/objects/pack/ (the two lower-cased), then one file name a feed takes there
+//     (PackFileName), named once, of a size of 0 or more and a SHA-256 of 64 lower-case hex digits,
+//     each pack listed with its index and each index with its pack;
 //   - each object's address is a GET of that object in that bucket with a query, at Cloud Storage
 //     over HTTPS, or, only where the cache itself is on a loopback address (a test, or the burst
 //     Job, which run the cache and a double of Cloud Storage beside each other), over HTTP at a
@@ -320,12 +344,12 @@ func (m PackManifest) check(request FetchRequest) error {
 			}
 		}
 	}
-	prefix := strings.ToLower(request.Repo.Owner()) + "/" + strings.ToLower(request.Repo.Name()) + "/objects/pack/"
+	prefix := PackPrefix(request.Repo)
 	loopback := onLoopback(request.CacheURL)
 	objects := map[string]bool{}
 	for _, object := range m.Objects {
 		file, ours := strings.CutPrefix(object.Name, prefix)
-		if !ours || strings.Contains(file, "/") || !FeedEntry("objects/pack/"+file, false) {
+		if !ours || !PackFileName(file) {
 			return fmt.Errorf("it lists the object %q, which is no pack or index of %s (%spack-<id>.pack or .idx)", object.Name, request.Repo, prefix)
 		}
 		if objects[object.Name] {
@@ -380,14 +404,14 @@ func addressRefusal(address, bucket, name string, loopback bool) string {
 		return "is not a signed GET of " + bucket + "/" + name
 	}
 	switch {
-	case u.Scheme == "https" && u.Host == cloudStorageHost:
+	case u.Scheme == "https" && u.Host == CloudStorageHost:
 		return ""
 	case loopback && u.Scheme == "http" && loopbackHostPort(u.Host):
 		return ""
 	case loopback:
-		return "is neither at https://" + cloudStorageHost + " nor at http:// on a loopback address"
+		return "is neither at https://" + CloudStorageHost + " nor at http:// on a loopback address"
 	}
-	return "is not at https://" + cloudStorageHost
+	return "is not at https://" + CloudStorageHost
 }
 
 // onLoopback reports whether the repository cache's address names a loopback host.
@@ -429,13 +453,7 @@ func downloadObjects(ctx context.Context, manifest PackManifest, staging string)
 			}
 			return 1
 		}
-		switch {
-		case first.Size > second.Size:
-			return -1
-		case first.Size < second.Size:
-			return 1
-		}
-		return 0
+		return cmp.Compare(second.Size, first.Size)
 	})
 	verified := make([]BucketObject, len(manifest.Objects))
 	group, downloading := errgroup.WithContext(ctx)
@@ -492,8 +510,13 @@ func downloadObject(ctx context.Context, object PackObject, target string) (Buck
 		return failed(reasonWrite, err)
 	}
 	stream.reader = response.Body
-	sink := &objectSink{file: file, digest: sha256.New()}
+	// A body arrives a TLS record, at most 16 KiB, at a time: the buffer writes the file in 256 KiB
+	// writes rather than one per record.
+	sink := &objectSink{file: bufio.NewWriterSize(file, 256<<10), digest: sha256.New()}
 	n, err := io.Copy(sink, io.LimitReader(stream, object.Size+1))
+	if err == nil {
+		sink.err = sink.file.Flush()
+	}
 	closed := file.Close()
 	switch {
 	case sink.err != nil:
@@ -514,11 +537,11 @@ func downloadObject(ctx context.Context, object PackObject, target string) (Buck
 	return BucketObject{Name: object.Name, Size: n, SHA256: sum}, nil
 }
 
-// objectSink is where a download's bytes go: the object's file and the SHA-256 of what was
-// written to it. err is the file's failure, which tells a write to the volume that failed from a
-// read from the bucket that did.
+// objectSink is where a download's bytes go: the object's file, through a buffer, and the SHA-256
+// of what was written to it. err is the file's failure, a write's or the buffer's last flush's,
+// which tells a write to the volume that failed from a read from the bucket that did.
 type objectSink struct {
-	file   *os.File
+	file   *bufio.Writer
 	digest hash.Hash
 	err    error
 }

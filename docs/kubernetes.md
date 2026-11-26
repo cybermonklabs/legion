@@ -6147,8 +6147,12 @@ It serves, on port 8418:
   on 2026-10-26 one cache sent a 4.0 GB clone (51 packs) at about 400 MB/s in all over 290 streams, about 48 minutes before any reached its last byte, past the fetch's 30-minute `FetchTimeout`, and every fetch failed and started over.
   Bounded, each stream takes its share among 32 and the queue drains at the same total rate.
 
-`/tar` answers only a request whose `Authorization: Bearer` is the cache's own token; any other is 401 and names nothing.
-`/healthz` and `/tar` name their repository in a `Legion-Repository` header on every answer.
+- `GET /packs`: served only where the cache's bucket is on ("The bucket", below): the listed set's refs, each with its file's exact bytes, and each of its packs and indexes with an address signed for it at this answer, good for 15 minutes (`workspace.PackManifest`).
+  It answers 503 while no set is listed, and when an address cannot be signed.
+  A cache with no bucket serves no `/packs`: it answers the mux's plain 404 there, which names no repository.
+
+`/tar` and `/packs` answer only a request whose `Authorization: Bearer` is the cache's own token; any other is 401 and names nothing.
+`/healthz`, `/tar` and `/packs` name their repository in a `Legion-Repository` header on every answer.
 Each fetch also points the clone's `HEAD` at the branch GitHub names as the default now, once the fetch has brought that branch, so a default branch renamed on GitHub is the one the cache publishes and its tar's `HEAD` names from the next tick.
 A fetch that fails is logged and tried at the next tick, and the cache stays ready on what it last fetched;
 a restarted cache whose volume holds its clone fetches into it, and serves it as it is when GitHub cannot be reached;
@@ -6240,6 +6244,7 @@ With the bucket on, the cache publishes its packs after each fetch that succeeds
 Each pack and its index go to `<owner>/<repo>/objects/pack/pack-<id>.pack` and `.idx`, the owner and the repository lower-cased, created only where no object of that name exists: one already there is taken only where its size, CRC32C and SHA-256 are the file's, and never replaced.
 The cache keeps one listed set, the refs and every pack with its index of one snapshot of its clone, which `/packs` answers from, and switches it to the clone's newest snapshot only once every pack and index of that snapshot is in the bucket whole.
 Until then, and when an upload fails, `/packs` answers the set before, whose refs are a refresh or more older; a fetch brings what they lack from GitHub.
+A refresh whose snapshot lists exactly the listed set's refs and objects keeps that set, so an answer being signed from it meanwhile is still served.
 A pack in the clone without its index, or an index without its pack, which a killed git can leave and git reads nothing of, is left out of the set and not uploaded, logged once by the process, while the rest of the snapshot is listed; no object of its name is deleted from the bucket while the clone holds it.
 Each publication is bounded by the shorter of `refresh_minutes` and 30 minutes, and a failure, a bucket the cache cannot open included, is logged as `publish the packs to bucket <bucket> failed; …` and tried again at the next refresh, while `/tar` and `/healthz` answer as they do with no bucket.
 An object of the repository's prefix that neither the clone nor the listed set holds is deleted, matching the generation the cache listed, no sooner than 30 minutes after the switch that first left it out, twice an address's life, so a download already under way keeps its object; a restarted cache counts those 30 minutes from its own first switch, never from an object's creation, and a delete that fails is tried again at the next refresh.

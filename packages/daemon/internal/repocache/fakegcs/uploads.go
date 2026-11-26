@@ -2,6 +2,7 @@ package fakegcs
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/md5"
 	"crypto/rand"
 	"encoding/base64"
@@ -86,13 +87,7 @@ func readUploadAttrs(w http.ResponseWriter, bucket string, query url.Values, res
 		writeStorageError(w, http.StatusBadRequest, invalid(fmt.Sprintf("Invalid object name: %q", name)))
 		return uploadAttrs{}, false
 	}
-	contentType := res.ContentType
-	if contentType == "" {
-		contentType = mediaType
-	}
-	if contentType == "" {
-		contentType = defaultContentType
-	}
+	contentType := cmp.Or(res.ContentType, mediaType, defaultContentType)
 	return uploadAttrs{
 		bucket:       bucket,
 		name:         name,

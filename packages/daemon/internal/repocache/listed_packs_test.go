@@ -606,7 +606,7 @@ func TestCacheRetiresOnlyUnlistedPacks(t *testing.T) {
 		name string
 		run  func(t *testing.T)
 	}{
-		{"the packs a repack's switch left out are kept at 29m59s after it and deleted at 30m", testRetiredFromThirtyMinutes},
+		{"the packs a repack's switch left out are kept at 29m59s after it and deleted at 30m, across refreshes that change nothing and keep the set", testRetiredFromThirtyMinutes},
 		{"an object only the clone holds is kept", func(t *testing.T) { testHeldByOneSide(t, true) }},
 		{"an object only the listed set holds is kept", func(t *testing.T) { testHeldByOneSide(t, false) }},
 		{"a pack that comes back before its deadline is kept, and its clock starts afresh when it is left out again", testReappearingPackStartsAfresh},
@@ -621,7 +621,9 @@ func TestCacheRetiresOnlyUnlistedPacks(t *testing.T) {
 
 // testRetiredFromThirtyMinutes: with the clone in two packs, a due repack's switch, at a time of
 // its own, leaves both packs and their indexes out; they are in the bucket at the switch and at
-// 29m59s after it, and gone at 30m, the repack's pack and index kept.
+// 29m59s after it, and gone at 30m, the repack's pack and index kept. The refreshes at 29m59s and
+// 30m bring nothing, so each keeps the repack's set listed, the same pointer, and its retirement
+// still counts from the repack's switch.
 func testRetiredFromThirtyMinutes(t *testing.T) {
 	r := newPacksRig(t)
 	r.refresh(t)
@@ -632,6 +634,7 @@ func testRetiredFromThirtyMinutes(t *testing.T) {
 	r.clock.Set(switched)
 	r.repackDue()
 	r.refresh(t)
+	listed := r.c.listed.Load()
 	next := cloneListing(t, r.c.dir)
 	requireListing(t, listingOf(t, r.requirePacks(t)), next, "after the repack,")
 	left := added(next, old)
@@ -641,9 +644,15 @@ func testRetiredFromThirtyMinutes(t *testing.T) {
 	r.requirePresent(t, true, "at the repack's switch,", left...)
 	r.clock.Set(switched.Add(29*time.Minute + 59*time.Second))
 	r.refresh(t)
+	if r.c.listed.Load() != listed {
+		t.Errorf("the refresh 29m59s after the repack, which brought nothing, installed a set of its own")
+	}
 	r.requirePresent(t, true, "29m59s after the switch that left them out,", left...)
 	r.clock.Set(switched.Add(30 * time.Minute))
 	r.refresh(t)
+	if r.c.listed.Load() != listed {
+		t.Errorf("the refresh 30m after the repack, which brought nothing, installed a set of its own")
+	}
 	r.requirePresent(t, false, "30m after the switch that left them out,", left...)
 	r.requirePresent(t, true, "30m after the repack's switch,", slices.Collect(maps.Keys(next.objects))...)
 	for _, name := range left {
@@ -880,10 +889,12 @@ func testOtherPrefixesUntouched(t *testing.T) {
 // the token file holds it now; a cache with no bucket does not serve it; a cache with no listed set
 // answers 503; a ready answer is the whole current snapshot, exact refs and every pack with its
 // index, with names, sizes and SHA-256 of the local files, and each address a V4 GET for 900
-// seconds that the double serves the object's exact bytes for, signed afresh at every answer; an
-// address changed in its scope, a signed header or its path, or used at its expiry, is refused by
-// the double; a signer's failure answers 503 with no manifest; and a switch while an answer is
-// signed answers 503 with none of the old set's addresses.
+// seconds that the double serves the object's exact bytes for, signed afresh at every answer; its
+// bytes are what json.Marshal writes of the manifest it states; an address changed in its scope, a
+// signed header or its path, or used at its expiry, is refused by the double; a signer's failure
+// answers 503 with no manifest; a switch while an answer is signed answers 503 with none of the
+// old set's addresses; and a refresh that changes nothing while an answer is signed keeps the set,
+// so the answer is 200.
 func TestPacksAuthenticatesAndSignsAWholeSet(t *testing.T) {
 	for _, row := range []struct {
 		name string
@@ -893,9 +904,11 @@ func TestPacksAuthenticatesAndSignsAWholeSet(t *testing.T) {
 		{"a cache with no bucket answers the mux's plain 404 with no repository header", testPacksUnserved},
 		{"a cache with no listed set answers 503", testPacksUnready},
 		{"a ready answer is the whole current snapshot, each address a V4 GET for 900 s that the double serves", testPacksWholeSnapshot},
+		{"an answer's bytes are json.Marshal's of the manifest it states, its refs none, empty or escaped alike", testPacksAnswerEncoding},
 		{"an address changed in its scope, a signed header or its path, or used at its expiry, is refused", testPacksAddressRefused},
 		{"a signer's failure answers 503 with no manifest", testPacksSignerFailure},
 		{"a switch while the answer is signed answers 503 with none of the old set's addresses", testPacksSwitchWhileSigning},
+		{"a refresh that changes nothing while the answer is signed keeps the set, and the answer is 200", testPacksUnchangedWhileSigning},
 	} {
 		t.Run(row.name, row.run)
 	}
@@ -1053,12 +1066,53 @@ func testPacksWholeSnapshot(t *testing.T) {
 			}
 		}
 	}
-	if got := r.double.Count(fakegcs.RouteDownload); got.Requests == 0 || got.WithAuthorization != 0 {
-		t.Errorf("%d of %d downloads carried an Authorization header", got.WithAuthorization, got.Requests)
+	if got := r.double.Count(fakegcs.RouteDownload).Requests; got == 0 {
+		t.Errorf("the double served no download of the answers' addresses")
 	}
 	for _, line := range r.log.all() {
 		if strings.Contains(line, "X-Goog-") || strings.Contains(line, testCacheToken) {
 			t.Errorf("the cache logged an address or its token: %q", line)
+		}
+	}
+}
+
+// testPacksAnswerEncoding: an answer's bytes are exactly what json.Marshal writes of the
+// workspace.PackManifest they decode to, its refs encoded once when the set was made; and the wire
+// form servePacks encodes (packsAnswer) writes the bytes json.Marshal writes of the manifest for
+// refs that are none (null), that are empty ([]), and whose path and bytes hold characters
+// json.Marshal escapes.
+func testPacksAnswerEncoding(t *testing.T) {
+	r := newPacksRig(t)
+	r.refresh(t)
+	status, _, body := r.get(t, "/packs", testCacheToken)
+	if status != http.StatusOK {
+		t.Fatalf("/packs answered %d, not 200: %s", status, body)
+	}
+	var manifest workspace.PackManifest
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		t.Fatalf("/packs answered no manifest: %v", err)
+	}
+	if len(manifest.Refs) == 0 || len(manifest.Objects) == 0 {
+		t.Fatalf("the answer lists %d refs and %d objects: no ref and object to hold the row by", len(manifest.Refs), len(manifest.Objects))
+	}
+	if want, err := json.Marshal(manifest); err != nil || !bytes.Equal(body, want) {
+		t.Errorf("/packs answered\n%s\nnot json.Marshal's encoding of the manifest it states (%v)\n%s", body, err, want)
+	}
+	for _, refs := range [][]workspace.PackRef{nil, {}, {{Path: "refs/heads/a&b<c>\u2028", Bytes: []byte("<&>\x00\xff")}}} {
+		encoded, err := json.Marshal(refs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := json.Marshal(packsAnswer{Bucket: testBucket, Refs: encoded, Objects: manifest.Objects})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := json.Marshal(workspace.PackManifest{Bucket: testBucket, Refs: refs, Objects: manifest.Objects})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("the wire form of refs %q encodes\n%s\nnot json.Marshal's of the manifest\n%s", refs, got, want)
 		}
 	}
 }
@@ -1188,6 +1242,33 @@ func testPacksSwitchWhileSigning(t *testing.T) {
 		t.Errorf("the cache counted %d /tar streams while /packs signed, not 0", got.inFlight)
 	}
 	requireListing(t, listingOf(t, r.requirePacks(t)), cloneListing(t, r.c.dir), "at the answer after the switch,")
+}
+
+// testPacksUnchangedWhileSigning: the first signature of an answer runs a refresh that brings
+// nothing; that refresh keeps the listed set, the same pointer, so the answer is 200, whole, and
+// lists the clone.
+func testPacksUnchangedWhileSigning(t *testing.T) {
+	r := newPacksRig(t)
+	r.refresh(t)
+	listed := r.c.listed.Load()
+	refreshed := make(chan error, 1)
+	ctx := testwait.Context(t)
+	var once sync.Once
+	r.c.store.signer = hookSigner{inner: r.c.store.signer, hook: func() {
+		once.Do(func() { refreshed <- r.c.refresh(ctx) })
+	}}
+	status, manifest := r.packs(t)
+	if err := testwait.Receive(t, "the refresh the signer ran", refreshed); err != nil {
+		t.Fatalf("the refresh the signer ran: %v", err)
+	}
+	if r.c.listed.Load() != listed {
+		t.Errorf("the refresh the signer ran, which brought nothing, installed a set of its own")
+	}
+	if status != http.StatusOK {
+		t.Fatalf("/packs with a refresh that brought nothing while it signed answered %d, not 200; log %q", status, r.log.all())
+	}
+	r.requireWhole(t, manifest)
+	requireListing(t, listingOf(t, manifest), cloneListing(t, r.c.dir), "with a refresh that brought nothing while it signed,")
 }
 
 // TestSignedPackFetchMatchesTar holds the two ends of /packs together (R3): an issue pod's

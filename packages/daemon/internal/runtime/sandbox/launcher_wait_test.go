@@ -731,7 +731,8 @@ func TestAKeptVolumePodWaitsOutADetach(t *testing.T) {
 		}
 		on, off := at(keptMicroVM()), at(testMicroVM())
 		// 6 h 4 min 41 s: launchBound at the default boot timeout and grace over ProvisionBound's 295
-		// minutes, 15 more than before the fetch's attempt on the cache's bucket joined its budget.
+		// minutes, the fetch's whole budget, its attempt on the cache's bucket among its terms, with
+		// the shared clone's bound and the checkout's.
 		if got, want := off.LaunchBound(), launchBound(boot, boot, off.ProvisionBound(), grace); got != want || want != 6*time.Hour+4*time.Minute+41*time.Second {
 			t.Fatalf("LaunchBound with keep_volume off = %s, want %s (6h4m41s)", got, want)
 		}

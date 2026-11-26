@@ -1253,8 +1253,7 @@ func TestAPodOfATreeLaunchesWhileAnotherIsStillInitializing(t *testing.T) {
 // provisioning from the feed onto the pod's own disk waits on no other pod, so no lock wait is
 // added to it. The cache's stream holds the low-speed bound and no clock, so a stream that keeps
 // receiving runs on into the slack this bound holds over what its fetch actually waited and
-// checked. Pinned to a literal, 295 minutes (280 before the bucket attempt's 15 joined the fetch's
-// budget), since no test can wait the real bound out.
+// checked. Pinned to a literal, 295 minutes, since no test can wait the real bound out.
 func TestProvisionBoundIsTheFetchsWholeBudgetTheClonesBoundAndTheCheckouts(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil)

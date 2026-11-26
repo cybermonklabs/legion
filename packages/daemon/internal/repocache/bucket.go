@@ -44,12 +44,6 @@ const signedLife = 15 * time.Minute
 // readings and is cut away, so the address states 900, counted from its X-Goog-Date.
 const expiresRounding = time.Second / 2
 
-// storageHost is the host a production signed download names: Cloud Storage's own, path style
-// (https://storage.googleapis.com/<bucket>/<object>), over HTTPS. sign sets it as the address's
-// Hostname, so that no environment variable moves an address elsewhere: storage.SignedURL takes
-// STORAGE_EMULATOR_HOST's host where no Hostname is set.
-const storageHost = "storage.googleapis.com"
-
 // emulatorHostEnv names the variable that puts a bucket in emulator mode, the name Google's
 // clients read for a Cloud Storage emulator: for the real-binary harness and the burst Job, which
 // run the cache against package fakegcs's double. The daemon never sets it on a cache pod.
@@ -72,8 +66,8 @@ const sha256Metadata = "sha256"
 const packContentType = "application/octet-stream"
 
 // packDir is the clone's directory of packs, relative to the clone, and the last part of every
-// object name's prefix (packPrefix), so that an object's name past the prefix is the pack's or the
-// index's own file name.
+// object name's prefix (workspace.PackPrefix), so that an object's name past the prefix is the
+// pack's or the index's own file name.
 const packDir = "objects/pack/"
 
 // tokenScope is the OAuth scope the cache asks the metadata server's token for: cloud-platform,
@@ -93,11 +87,11 @@ var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 
 // bucket is the cache's one view of the Cloud Storage bucket it keeps each pack it serves in
 // (runtime.kubernetes.repository_cache.bucket, told it in BucketEnv): the objects under its
-// repository's prefix (packPrefix), each a pack or an index of the clone under the clone's own file
-// name, which it lists, uploads, deletes and signs downloads of. A pack's name is its checksum, so
-// an object is written once and never changed: put creates and never replaces, and delete removes
-// only the generation its caller listed. Its methods may be called at once from several
-// goroutines.
+// repository's prefix (workspace.PackPrefix), each a pack or an index of the clone under the
+// clone's own file name, which it lists, uploads, deletes and signs downloads of. A pack's name is
+// its checksum, so an object is written once and never changed: put creates and never replaces,
+// and delete removes only the generation its caller listed. Its methods may be called at once from
+// several goroutines.
 //
 // The cache's Google identity needs these permissions, and this code grants none of them; the
 // deployment grants them to the account the cache pods alone run as
@@ -183,7 +177,7 @@ type bucketAccess struct {
 // carries. No credential is looked for anywhere else: no application default credentials, which
 // would read the key file GOOGLE_APPLICATION_CREDENTIALS names or gcloud's, no key file of any
 // kind and no impersonation chain; and nothing is uploaded through a signed address. A signed
-// download is HTTPS on storageHost, path style.
+// download is HTTPS on workspace.CloudStorageHost, path style.
 //
 // Where STORAGE_EMULATOR_HOST is set, it must be a loopback host:port (emulatorHost), refused
 // before any request otherwise. Storage and IAM Credentials requests then go to http://<host> with
@@ -225,7 +219,9 @@ func openBucketAt(ctx context.Context, name string, repo ghrepo.Repository, at g
 		return nil, errors.New("the metadata server names no Google service account for the cache")
 	}
 	tokens := option.WithTokenSource(oauth2.ReuseTokenSourceWithExpiry(nil, metadataTokens{identity}, tokenEarlyExpiry))
-	production := bucketAccess{email: email, hostname: storageHost, storage: []option.ClientOption{tokens}, iam: []option.ClientOption{tokens}}
+	// The address's Hostname is set, so that no environment variable moves a production address
+	// elsewhere: storage.SignedURL takes STORAGE_EMULATOR_HOST's host where no Hostname is set.
+	production := bucketAccess{email: email, hostname: workspace.CloudStorageHost, storage: []option.ClientOption{tokens}, iam: []option.ClientOption{tokens}}
 	if at.storage != "" {
 		production.storage = append(production.storage, option.WithEndpoint(at.storage))
 	}
@@ -251,7 +247,7 @@ func newBucket(ctx context.Context, name string, repo ghrepo.Repository, through
 	}
 	return &bucket{
 		name:     name,
-		prefix:   packPrefix(repo),
+		prefix:   workspace.PackPrefix(repo),
 		client:   client,
 		handle:   client.Bucket(name),
 		email:    through.email,
@@ -340,22 +336,14 @@ func (s iamSigner) Sign(ctx context.Context, payload []byte) ([]byte, error) {
 	return signature, nil
 }
 
-// packPrefix is the prefix of every object of repo's in the bucket: its owner and its name lower
-// cased, since GitHub takes a repository's names in any case and the cache must write one prefix
-// for one repository whatever case its configuration wrote them in, then packDir. A bucket serves
-// the repositories of one deployment's project, and each writes under its own prefix alone.
-func packPrefix(repo ghrepo.Repository) string {
-	return strings.ToLower(repo.Owner()) + "/" + strings.ToLower(repo.Name()) + "/" + packDir
-}
-
 // clonePath maps an object name to the clone-relative path of the pack or index it holds,
 // objects/pack/<file>, where name is the bucket's prefix then one file name the clone's tar
-// streams there, pack-<id>.pack or pack-<id>.idx (workspace.FeedEntry), and refuses any other
+// streams there, pack-<id>.pack or pack-<id>.idx (workspace.PackFileName), and refuses any other
 // name: no object the cache did not write is taken for a pack, and no name outside the prefix is
 // uploaded, deleted or signed.
 func (b *bucket) clonePath(name string) (string, error) {
 	file, ok := strings.CutPrefix(name, b.prefix)
-	if !ok || !packFileName(file) {
+	if !ok || !workspace.PackFileName(file) {
 		return "", fmt.Errorf("%q is no object of the cache's in bucket %s: it writes only %spack-<id>.pack and pack-<id>.idx", name, b.name, b.prefix)
 	}
 	return packDir + file, nil
@@ -365,16 +353,10 @@ func (b *bucket) clonePath(name string) (string, error) {
 // clone, refusing a path that is no pack or index the clone's tar streams.
 func (b *bucket) objectName(path string) (string, error) {
 	file, ok := strings.CutPrefix(path, packDir)
-	if !ok || !packFileName(file) {
+	if !ok || !workspace.PackFileName(file) {
 		return "", fmt.Errorf("%q is no pack or index of the clone: the bucket holds only %spack-<id>.pack and pack-<id>.idx", path, packDir)
 	}
 	return b.prefix + file, nil
-}
-
-// packFileName reports whether file is the name of a pack or an index in the clone's packDir that
-// the clone's tar streams: one path segment that workspace.FeedEntry takes there.
-func packFileName(file string) bool {
-	return file != "" && !strings.Contains(file, "/") && workspace.FeedEntry(packDir+file, false)
 }
 
 // list is every pack and index of the repository in the bucket, by object name: the objects under

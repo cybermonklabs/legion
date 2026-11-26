@@ -6,9 +6,9 @@
 # caller names by digest, under gVisor, runs the image's own `legion workspace-init cache` and
 # `workspace-init fetch` against a double of Cloud Storage, IAM signBlob and the metadata server
 # (packages/daemon/internal/repocache/fakegcs), because no identity a Job may use can sign an
-# address (measured on 2026-11-25 for 7 service accounts, each refused iam.serviceAccounts.signBlob).
-# What this proves is the cache's CPU and each fetch's source; that Cloud Storage accepts a real
-# signature is proved after the merge, in production, and is no claim of this run.
+# address (iam.serviceAccounts.signBlob). What this proves is the cache's CPU and each fetch's
+# source; that Cloud Storage accepts a real signature is the production check's to prove, and is no
+# claim of this run.
 #
 # It is three files: this harness, which renders the Job, creates it and reads its verdict;
 # `repository-cache-burst-probe.sh` beside it, the text the Job's containers run, whose header says
@@ -137,6 +137,8 @@ terminated_wait=300      # for the newest pod's cache container to have terminat
 poll=10                  # how often the wait reads the Job and its pods
 script_limit=120000      # bytes of one container's script: one argument is at most 128 KiB (131072)
 ephemeral_storage=2Gi    # each container's own disk; every tree goes on the volume
+cache_cpu=1              # the cache container's CPU and memory, each request equal to its limit: the
+cache_memory=4Gi         # production default (runtime.kubernetes.repository_cache.resources)
 
 namespace_file=/var/run/secrets/kubernetes.io/serviceaccount/namespace
 run_label_key=repository-cache-burst-run
@@ -411,9 +413,47 @@ if command -v crane > /dev/null 2>&1; then
   fi
 fi
 
-work=$(mktemp -d "${TMPDIR:-/tmp}/repository-cache-burst-job.XXXXXX")
+# The clean-up is installed before anything it removes is made, so a refusal from here on leaves
+# nothing behind.
+work=""
+workload=""
+run_label=""
+
+# shellcheck disable=SC2317 # the EXIT trap below is what runs it
+cleanup() {
+  status=$?
+  trap - EXIT INT TERM HUP
+  trap '' INT TERM HUP                        # this shell ignores any further stop
+  set +e
+  # Each kubectl runs under `setsid -w`, in a session of its own, out of this group: kubectl dies
+  # of a SIGTERM it inherited ignored, and its waits catch SIGINT and SIGHUP too.
+  if [ -n "$workload" ]; then
+    echo "== cleanup: deleting Job $workload"
+    setsid -w kubectl -n "$namespace" delete job "$workload" --cascade=foreground --ignore-not-found ||
+      { echo "cleanup: the Job's delete failed"; [ "$status" -ne 0 ] || status=2; }
+    setsid -w kubectl -n "$namespace" get job "$workload" --ignore-not-found
+  elif [ -n "$run_label" ]; then
+    echo "== cleanup: no Job name was read; deleting by label $run_label_key=$run_label"
+    setsid -w kubectl -n "$namespace" delete job -l "$run_label_key=$run_label" --cascade=foreground --ignore-not-found ||
+      { echo "cleanup: the Job's delete failed"; [ "$status" -ne 0 ] || status=2; }
+    # An empty listing is no proof that none is left: a create the API server stored after this
+    # listing leaves a Job this never saw. List it again once this script has ended, and delete it
+    # with `kubectl -n <namespace> delete job -l repository-cache-burst-run=<the printed value>
+    # --cascade=foreground`.
+    setsid -w kubectl -n "$namespace" get jobs -l "$run_label_key=$run_label"
+  fi
+  [ -z "$work" ] || rm -rf "$work"
+  echo "repository-cache-burst-job: exit $status"
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
 # Outside the checkout on purpose: a workspace is a jj working copy of this public repository, so
 # a manifest written there would be snapshotted into the role's own commit.
+work=$(mktemp -d "${TMPDIR:-/tmp}/repository-cache-burst-job.XXXXXX")
 
 # The two scripts written into the Job's init containers, each file by a heredoc whose terminator is
 # no line of it. The first stages the double's module, the second the probe and the run's tokens.
@@ -462,41 +502,6 @@ for script in "$work/stage-double.sh" "$work/stage-probe.sh"; do
   size=$(wc -c < "$script")
   [ "$size" -lt "$script_limit" ] || refuse "$(basename "$script") is $size bytes, over $script_limit: a container argument over 131072 bytes is not executed"
 done
-
-workload=""
-run_label=""
-
-# shellcheck disable=SC2317 # the EXIT trap below is what runs it
-cleanup() {
-  status=$?
-  trap - EXIT INT TERM HUP
-  trap '' INT TERM HUP                        # this shell ignores any further stop
-  set +e
-  # Each kubectl runs under `setsid -w`, in a session of its own, out of this group: kubectl dies
-  # of a SIGTERM it inherited ignored, and its waits catch SIGINT and SIGHUP too.
-  if [ -n "$workload" ]; then
-    echo "== cleanup: deleting Job $workload"
-    setsid -w kubectl -n "$namespace" delete job "$workload" --cascade=foreground --ignore-not-found ||
-      { echo "cleanup: the Job's delete failed"; [ "$status" -ne 0 ] || status=2; }
-    setsid -w kubectl -n "$namespace" get job "$workload" --ignore-not-found
-  elif [ -n "$run_label" ]; then
-    echo "== cleanup: no Job name was read; deleting by label $run_label_key=$run_label"
-    setsid -w kubectl -n "$namespace" delete job -l "$run_label_key=$run_label" --cascade=foreground --ignore-not-found ||
-      { echo "cleanup: the Job's delete failed"; [ "$status" -ne 0 ] || status=2; }
-    # An empty listing is no proof that none is left: a create the API server stored after this
-    # listing leaves a Job this never saw. List it again once this script has ended, and delete it
-    # with `kubectl -n <namespace> delete job -l repository-cache-burst-run=<the printed value>
-    # --cascade=foreground`.
-    setsid -w kubectl -n "$namespace" get jobs -l "$run_label_key=$run_label"
-  fi
-  rm -rf "$work"
-  echo "repository-cache-burst-job: exit $status"
-  exit "$status"
-}
-trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-trap 'exit 129' HUP
 
 # indent_script <file>: the script as the lines of a YAML block scalar 14 spaces in, blank lines
 # kept blank.
@@ -627,10 +632,10 @@ YAML
     init_container stage-double "$work/stage-double.sh"
     init_container stage-probe "$work/stage-probe.sh"
     echo "      containers:"
-    # The cache's reservation is the production default (runtime.kubernetes.repository_cache.resources:
-    # cpu 1, memory 4Gi), request equal to limit, the same in both arms because both run in this pod.
+    # The cache's reservation is the production default (cache_cpu and cache_memory), request equal
+    # to limit, the same in both arms because both run in this pod.
     container double "$double_cpu" "$double_memory" double
-    container cache 1 4Gi cache
+    container cache "$cache_cpu" "$cache_memory" cache
     container fetchers "$fetch_cpu" "$fetch_memory" fetchers
     cat << YAML
       volumes:
@@ -683,9 +688,9 @@ cache_cpu_read() {
   jq -r '.spec.template.spec.containers[] | select(.name == "cache") | "\(.resources.requests.cpu // "none") \(.resources.limits.cpu // "none")"' "$1"
 }
 
-# cache_cpu_holds <request> <limit>: both are 1 CPU, whatever their spelling.
+# cache_cpu_holds <request> <limit>: both are cache_cpu, whatever their spelling.
 cache_cpu_holds() {
-  [ "$(cpu_milli "$1")" = 1000 ] && [ "$(cpu_milli "$2")" = 1000 ]
+  [ "$(cpu_milli "$1")" = "$(cpu_milli "$cache_cpu")" ] && [ "$(cpu_milli "$2")" = "$(cpu_milli "$cache_cpu")" ]
 }
 
 echo "== repository-cache-burst-job"
@@ -708,9 +713,9 @@ echo "go directive:  $go_directive, as packages/daemon/go.mod holds it"
 echo "init scripts:  stage-double $(wc -c < "$work/stage-double.sh") bytes, stage-probe $(wc -c < "$work/stage-probe.sh") bytes (a container argument is at most 131072)"
 echo "service acct:  ${service_account:-namespace default}, no token mounted"
 echo "disk:          $disk of class $storage_class, deadline $deadline s"
-total_milli=$(($(cpu_milli 1) + $(cpu_milli "$double_cpu") + $(cpu_milli "$fetch_cpu")))
-total_mib=$((4096 + $(mem_mib "$double_memory") + $(mem_mib "$fetch_memory")))
-echo "requests:      cache 1 CPU 4Gi (the production default), double $double_cpu CPU $double_memory, fetchers $fetch_cpu CPU $fetch_memory, each request = limit"
+total_milli=$(($(cpu_milli "$cache_cpu") + $(cpu_milli "$double_cpu") + $(cpu_milli "$fetch_cpu")))
+total_mib=$(($(mem_mib "$cache_memory") + $(mem_mib "$double_memory") + $(mem_mib "$fetch_memory")))
+echo "requests:      cache $cache_cpu CPU $cache_memory (the production default), double $double_cpu CPU $double_memory, fetchers $fetch_cpu CPU $fetch_memory, each request = limit"
 echo "pod requests:  $((total_milli / 1000)).$(printf '%03d' $((total_milli % 1000))) CPU, $((total_mib / 1024)) GiB memory, $disk disk (the init containers' 250m each run before the others and add nothing)"
 echo "selector:"
 printf '%s' "$selector_yaml"
@@ -726,20 +731,17 @@ if [ "$dry_run" -eq 1 ]; then
   # whether this manifest would be admitted. Where this pod may not create a Job, the client dry
   # run is what is left: it validates the manifest against kubectl's own schema and asks nothing.
   if [ "$(kubectl -n "$namespace" auth can-i create jobs 2> /dev/null || true)" = yes ]; then
-    echo "== kubectl -n $namespace create --dry-run=server -f <the manifest above>"
-    kubectl -n "$namespace" create --dry-run=server -f "$manifest" || {
+    echo "== kubectl -n $namespace create --dry-run=server -o json -f <the manifest above>"
+    # One dry run, read back: the manifest as admission leaves it, mutations included.
+    kubectl -n "$namespace" create --dry-run=server -o json -f "$manifest" > "$work/admitted.json" || {
       echo "repository-cache-burst-job: the namespace's admission refused the manifest" >&2
       exit 2
     }
-    # The same dry run, read back: the manifest as admission leaves it, mutations included.
-    kubectl -n "$namespace" create --dry-run=server -o json -f "$manifest" > "$work/admitted.json" || {
-      echo "repository-cache-burst-job: the admitted manifest could not be read back" >&2
-      exit 2
-    }
+    echo "job.batch/$(jq -r '.metadata.name // .metadata.generateName' "$work/admitted.json") created (server dry run)"
     read -r cache_request cache_limit <<< "$(cache_cpu_read "$work/admitted.json")"
     echo "== the cache container as admitted: CPU request $cache_request, limit $cache_limit"
     if ! cache_cpu_holds "$cache_request" "$cache_limit"; then
-      echo "repository-cache-burst-job: admission left the cache container a CPU request of $cache_request and a limit of $cache_limit, not 1 and 1: pass the deployment's pod-template label that keeps a CPU request (--label), and run it again" >&2
+      echo "repository-cache-burst-job: admission left the cache container a CPU request of $cache_request and a limit of $cache_limit, not $cache_cpu and $cache_cpu: pass the deployment's pod-template label that keeps a CPU request (--label), and run it again" >&2
       exit 2
     fi
     echo "== the other containers as admitted (a lowered request there costs the measurement nothing, since only the cache's counter is read):"
@@ -793,7 +795,7 @@ echo "workload: $workload (uid $(jq -r .metadata.uid "$work/created.json"))"
 read -r cache_request cache_limit <<< "$(cache_cpu_read "$work/created.json")"
 echo "the cache container as admitted: CPU request $cache_request, limit $cache_limit"
 if ! cache_cpu_holds "$cache_request" "$cache_limit"; then
-  echo "repository-cache-burst-job: admission left the cache container a CPU request of $cache_request and a limit of $cache_limit, not 1 and 1, so the run is deleted: pass the deployment's pod-template label that keeps a CPU request (--label)" >&2
+  echo "repository-cache-burst-job: admission left the cache container a CPU request of $cache_request and a limit of $cache_limit, not $cache_cpu and $cache_cpu, so the run is deleted: pass the deployment's pod-template label that keeps a CPU request (--label)" >&2
   exit 2
 fi
 

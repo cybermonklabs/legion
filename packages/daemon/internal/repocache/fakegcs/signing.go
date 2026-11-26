@@ -1,6 +1,7 @@
 package fakegcs
 
 import (
+	"cmp"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -149,10 +150,7 @@ func v4Canonical(method, host, path string, query url.Values) (canonical, toSign
 		}
 	}
 	slices.SortFunc(pairs, func(a, b pair) int {
-		if c := strings.Compare(a.name, b.name); c != 0 {
-			return c
-		}
-		return strings.Compare(a.value, b.value)
+		return cmp.Or(strings.Compare(a.name, b.name), strings.Compare(a.value, b.value))
 	})
 	encoded := make([]string, len(pairs))
 	for i, p := range pairs {

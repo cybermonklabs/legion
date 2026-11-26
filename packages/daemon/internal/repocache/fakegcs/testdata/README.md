@@ -6,7 +6,7 @@ It does not compare the values.
 
 An issue pod of a Legion deployment captured the answers on 2026-11-25, between 22:17Z and 22:25Z.
 The pod used its own read-only identity for build input and output, and `curl` with the token of the pod's metadata server.
-The commands were the capture commands of the change's implementation plan, with one change for the last list page (below).
+Each file is the answer to one `curl` request, the request its section below names, and the last list page listed a narrower prefix than the first (below).
 No command wrote to the bucket.
 A script then replaced each bucket name, object name, id, generation, size, checksum, page token and timestamp with a placeholder.
 It also removed the links (`selfLink`, `mediaLink`) and other fields that the double does not use.

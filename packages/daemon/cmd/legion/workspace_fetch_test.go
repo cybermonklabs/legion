@@ -910,12 +910,16 @@ var bucketSummaryLine = regexp.MustCompile(`^workspace-init fetch: ([0-9,]+) byt
 // packsCacheRun is a `workspace-init cache` a test runs in-process on its volume's root, beside a
 // double of Cloud Storage and IAM (fakegcs) on a loopback address of its own that
 // STORAGE_EMULATOR_HOST names, as the real-binary harness runs it: the cache's address, the
-// double, and how far the double's clock runs ahead of the test's, which a signed download's expiry
-// reads.
+// double, how far the double's clock runs ahead of the test's, which a signed download's expiry
+// reads, what the command printed on its standard output and error, and stop, which ends the
+// command with its context and answers its exit; a run the test does not stop is stopped when the
+// test ends, and fails the test there unless it exits 0.
 type packsCacheRun struct {
-	base   string
-	double *fakegcs.Server
-	skew   atomic.Int64
+	base           string
+	double         *fakegcs.Server
+	skew           atomic.Int64
+	stdout, stderr *lockedBuffer
+	stop           func() int
 }
 
 // startPacksCache plants a branch on the volume's remote, whose commit it answers, packs the remote
@@ -928,8 +932,11 @@ func (v *issueVolume) startPacksCache(t *testing.T, bucket bool) (*packsCacheRun
 	remote := v.env["WINIT_REMOTE"]
 	v.commitAddingAFile(t, remote, "refs/heads/main", "refs/heads/planted", "planted.txt", "planted\n")
 	planted := v.git(t, "--git-dir="+remote, "rev-parse", "refs/heads/planted")
+	// The volume's git clones the remote by its path, which copies the remote's objects as they
+	// are, so the remote is packed first: the cache's clone then holds a pack and its index, as a
+	// clone from GitHub does.
 	v.git(t, "--git-dir="+remote, "repack", "-a", "-d", "--quiet")
-	cache := &packsCacheRun{}
+	cache := &packsCacheRun{stdout: &lockedBuffer{}, stderr: &lockedBuffer{}}
 	double, err := fakegcs.New(fakegcs.Options{Root: t.TempDir(), Email: repocache.EmulatorEmail, Now: func() time.Time { return time.Now().Add(time.Duration(cache.skew.Load())) }})
 	if err != nil {
 		t.Fatal(err)
@@ -951,14 +958,25 @@ func (v *issueVolume) startPacksCache(t *testing.T, bucket bool) (*packsCacheRun
 		fixtureenv.Unset(t, repocache.BucketEnv)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	var stdout, stderr lockedBuffer
+	stdout, stderr := cache.stdout, cache.stderr
 	exited := make(chan int, 1)
 	go func() {
-		exited <- run(ctx, append([]string{"legion", "workspace-init"}, v.cacheArgs()...), &stdout, &stderr)
+		exited <- run(ctx, append([]string{"legion", "workspace-init"}, v.cacheArgs()...), stdout, stderr)
 	}()
+	stopped, code := false, 0
+	cache.stop = func() int {
+		if !stopped {
+			stopped = true
+			cancel()
+			code = testwait.Receive(t, "the cache to stop with its context", exited)
+		}
+		return code
+	}
 	t.Cleanup(func() {
-		cancel()
-		if code := testwait.Receive(t, "the cache to stop with its context", exited); code != 0 {
+		if stopped {
+			return
+		}
+		if code := cache.stop(); code != 0 {
 			t.Errorf("cache exited %d once stopped, stderr %q", code, stderr.String())
 		}
 	})
@@ -994,18 +1012,23 @@ func (v *issueVolume) startPacksCache(t *testing.T, bucket bool) (*packsCacheRun
 	return cache, planted
 }
 
-// cacheObjectLines is the line `fetch` prints for each pack and index of the volume's cache clone
-// when it downloaded and verified it from the bucket: its object name under the repository's
-// lower-case prefix, its size and the SHA-256 of the clone's own file, sorted.
-func (v *issueVolume) cacheObjectLines(t *testing.T) ([]string, int64) {
+// cachePack is one pack or index of the volume's cache clone: its size and the SHA-256 of its
+// bytes, in hex.
+type cachePack struct {
+	size   int64
+	sha256 string
+}
+
+// cachePacks is each pack and index of the volume's cache clone that a feed takes
+// (workspace.FeedEntry), by its object name under the repository's lower-case prefix.
+func (v *issueVolume) cachePacks(t *testing.T) map[string]cachePack {
 	t.Helper()
 	packs := filepath.Join(v.root, "acme", "widgets.git", "objects", "pack")
 	entries, err := os.ReadDir(packs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var lines []string
-	var size int64
+	files := map[string]cachePack{}
 	for _, entry := range entries {
 		if !workspace.FeedEntry("objects/pack/"+entry.Name(), false) {
 			continue
@@ -1015,8 +1038,21 @@ func (v *issueVolume) cacheObjectLines(t *testing.T) ([]string, int64) {
 			t.Fatal(err)
 		}
 		sum := sha256.Sum256(content)
-		lines = append(lines, fmt.Sprintf("workspace-init fetch: bucket object=acme/widgets/objects/pack/%s size=%d sha256=%s", entry.Name(), len(content), hex.EncodeToString(sum[:])))
-		size += int64(len(content))
+		files["acme/widgets/objects/pack/"+entry.Name()] = cachePack{size: int64(len(content)), sha256: hex.EncodeToString(sum[:])}
+	}
+	return files
+}
+
+// cacheObjectLines is the line `fetch` prints for each pack and index of the volume's cache clone
+// when it downloaded and verified it from the bucket: its object name under the repository's
+// lower-case prefix, its size and the SHA-256 of the clone's own file, sorted.
+func (v *issueVolume) cacheObjectLines(t *testing.T) ([]string, int64) {
+	t.Helper()
+	var lines []string
+	var size int64
+	for name, file := range v.cachePacks(t) {
+		lines = append(lines, fmt.Sprintf("workspace-init fetch: bucket object=%s size=%d sha256=%s", name, file.size, file.sha256))
+		size += file.size
 	}
 	if len(lines) != 2 {
 		t.Fatalf("the cache's clone holds %q, not one pack and its index", lines)

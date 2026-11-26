@@ -205,8 +205,9 @@ var maxStreams = 32
 // restart whose first fetch fails publishes the clone it serves as it was. Each sync uploads the
 // packs and indexes the listed set lacks, then switches the listed set to the clone's snapshot, so
 // /packs answers the set before it until every object of the new one is in the bucket whole, and
-// then retires what no set names any more (retire). A sync holds no lock /tar takes and fails on
-// its own: the cache serves /tar and /healthz as it would with no bucket.
+// then retires what no set names any more (retire); a snapshot that lists what the listed set
+// lists already keeps that set. A sync holds no lock /tar takes and fails on its own: the cache
+// serves /tar and /healthz as it would with no bucket.
 func Serve(ctx context.Context, opts Options) error {
 	if err := opts.check(); err != nil {
 		return err
@@ -307,13 +308,13 @@ func (opts Options) check() error {
 // sent or waiting for a token, which /healthz reports as Health.Streams.
 //
 // Where Options.Bucket names a bucket: listed is the listed set every /packs answer is signed from,
-// nil until a sync installed one, swapped whole by each sync that succeeds; and, under maint,
-// store is the bucket a sync opened (nil until one did), digests the figures of each pack and
-// index file the last snapshot held (packDigest), absent the objects no set names any more, each
-// since the switch that first left it out (absence), foreign the names under the prefix the cache
-// does not write that it has logged, and lone the names of the clone's packs without an index, and
-// indexes without a pack, that it has logged leaving out of the set (leaveOut). clock is the time
-// the switches and retirement read, the real one but in a test.
+// nil until a sync installed one, swapped whole by each sync that succeeds and finds the clone's
+// snapshot changed; and, under maint, store is the bucket a sync opened (nil until one did),
+// digests the figures of each pack and index file the last snapshot held (packDigest), absent the
+// objects no set names any more, each since the sync that first left it out (absence), foreign the
+// names under the prefix the cache does not write that it has logged, and lone the names of the
+// clone's packs without an index, and indexes without a pack, that it has logged leaving out of the
+// set (leaveOut). clock is the time the switches and retirement read, the real one but in a test.
 type cache struct {
 	opts       Options
 	dir        string

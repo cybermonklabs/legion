@@ -314,10 +314,10 @@ func moved(t *testing.T, address, host string) string {
 }
 
 // A fresh feed comes from the cache's bucket only when every part of it holds, and from the
-// cache's /tar otherwise, as before the bucket. The control row fills the feed from the bucket, its
-// downloads carrying no Authorization, and asks no /tar. Each other row breaks one part, and the
-// fetch then asks /tar afresh with the cache's token, on a staging repository holding nothing the
-// bucket's attempt wrote, says why in its report's TarReason, and ends with the /tar's feed: a
+// cache's /tar otherwise. The control row fills the feed from the bucket, its downloads carrying
+// no Authorization, and asks no /tar. Each other row breaks one part, and the fetch then asks /tar
+// afresh with the cache's token, on a staging repository holding nothing the bucket's attempt
+// wrote, says why in its report's TarReason, and ends with the /tar's feed: a
 // cache of an earlier release or with no bucket (a 404 naming no repository); a 503; an answer that
 // is no manifest; a manifest listing a pack without its index, a pack and its index twice, a ref a
 // feed does not take, an object of another repository, or an address at another host; an object of
@@ -353,13 +353,13 @@ func TestFetchFallsBackFromPacksToTar(t *testing.T) {
 		{name: "a cache with no bucket answers the mux's plain 404", edit: func(_ *testing.T, _ *recordingRunner, c *packsCache) { c.answer(http.NotFound) },
 			source: SourceTar, reason: reasonNotServed},
 		{name: "a cache with no listed set answers 503", edit: func(_ *testing.T, _ *recordingRunner, c *packsCache) { c.answer(unavailable) },
-			source: SourceTar, reason: "unavailable manifest: GET ", says: "/packs answered 503 Service Unavailable"},
+			source: SourceTar, reason: reasonUnavailable + ": GET ", says: "/packs answered 503 Service Unavailable"},
 		{name: "an answer that is no manifest", edit: func(_ *testing.T, _ *recordingRunner, c *packsCache) {
 			c.answer(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set(CacheRepositoryHeader, "acme/widgets")
 				_, _ = w.Write([]byte(`{"bucket":"` + testPacksBucket + `","refs":[`))
 			})
-		}, source: SourceTar, reason: "invalid manifest: GET ", says: "/packs answered no manifest"},
+		}, source: SourceTar, reason: reasonInvalid + ": GET ", says: "/packs answered no manifest"},
 		{name: "a pack listed without its index", edit: func(_ *testing.T, _ *recordingRunner, c *packsCache) {
 			c.edit(func(m *PackManifest) {
 				m.Objects = slices.DeleteFunc(m.Objects, func(o PackObject) bool { return strings.HasSuffix(o.Name, ".idx") })

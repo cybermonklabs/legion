@@ -6,11 +6,11 @@
 // addresses with; and the GCE metadata server's paths, which the cache takes its identity and its
 // token from.
 //
-// It exists because no identity that a pod or a builds Job here may use can sign an address: on
-// 2026-11-25 each of 7 service accounts was refused iam.serviceAccounts.signBlob. So the cache's
-// tests and the burst Job that runs before the merge run the real cache and the real fetch against
-// this double, which signs with an RSA key it makes at its start, and a real bucket's signed
-// addresses are proven after the merge, in production.
+// It exists because no identity that a pod or a Job of a deployment may use, but the cache pods'
+// own, is allowed to call iam.serviceAccounts.signBlob for the cache's account, so no test and no
+// Job can sign a real address. The double stands for Cloud Storage and IAM in the cache's tests and
+// in the burst Job, which run the real cache and the real fetch against it; it signs with an RSA
+// key it makes at its start, and a real bucket's signed addresses are proven in production alone.
 //
 // No package of the production binary imports it, and the daemon passes no setting that leads to
 // it: a test, or the burst Job, points the cache at it with a loopback STORAGE_EMULATOR_HOST and
@@ -43,6 +43,7 @@
 package fakegcs
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -191,10 +192,7 @@ func New(opts Options) (*Server, error) {
 	if opts.Root == "" {
 		return nil, errors.New("fakegcs: no scratch directory (Options.Root) to keep objects in")
 	}
-	email := opts.Email
-	if email == "" {
-		email = DefaultEmail
-	}
+	email := cmp.Or(opts.Email, DefaultEmail)
 	now := opts.Now
 	if now == nil {
 		now = time.Now
@@ -446,17 +444,24 @@ func objectPath(rest string) (bucket, name string, hasName, ok bool) {
 	return bucket, name, true, true
 }
 
-// validBucket reports whether name is a bucket name of Cloud Storage's form: 3 to 63 lower-case
-// letters, digits, dashes, underscores and dots, starting and ending with a letter or a digit. The
-// double holds any bucket so named, making it on its first upload.
+// validBucket reports whether name is a bucket name of Cloud Storage's form, the shape the daemon's
+// configuration holds the cache's bucket to (config's cloudStorageBucketName) and a fetch holds a
+// manifest's bucket to (workspace's validBucketName): 3 to 222 lower-case letters, digits, dashes,
+// underscores and dots, starting and ending with a letter or a digit, with 1 to 63 of them between
+// two dots. The double holds any bucket so named, making it on its first upload.
 func validBucket(name string) bool {
-	if len(name) < 3 || len(name) > 63 {
+	if len(name) < 3 || len(name) > 222 {
 		return false
 	}
 	for i := range len(name) {
 		c := name[i]
 		alnum := c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
 		if !alnum && (i == 0 || i == len(name)-1 || c != '-' && c != '_' && c != '.') {
+			return false
+		}
+	}
+	for part := range strings.SplitSeq(name, ".") {
+		if part == "" || len(part) > 63 {
 			return false
 		}
 	}

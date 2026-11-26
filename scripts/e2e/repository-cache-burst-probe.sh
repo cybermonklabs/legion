@@ -5,9 +5,9 @@
 # the cache's CPU below 0.2 CPU, each logging the bucket as its source; with it off, the same 20 read
 # /tar and drive the cache's CPU above 0.5 CPU. Cloud Storage is a double (package fakegcs of
 # packages/daemon/internal/repocache, compiled in the Job from the tested checkout), because no
-# identity a Job may use can sign an address (measured 2026-11-25, seven accounts each refused
-# iam.serviceAccounts.signBlob): what the burst proves is the cache's CPU and every fetch's source,
-# and a real bucket's signed addresses are proven after the merge, in production.
+# identity a Job may use can sign an address (iam.serviceAccounts.signBlob): what the burst proves
+# is the cache's CPU and every fetch's source, and a real bucket's signed addresses are the
+# production check's to prove.
 #
 # One text, three roles, chosen by the first argument; the container's name says which:
 #
@@ -46,41 +46,42 @@
 #      each interval's CPU is its counter's change over its wall seconds, the final partial
 #      interval included. PASS needs, in the enabled arm, 20 fetches that exit 0, each with
 #      `source=bucket`, the object lines of the manifest it was given (name, size, SHA-256), no
-#      `source=/tar`, no /tar stream in flight at any sample, and every interval below 0.2 CPU; and,
-#      in the disabled arm, 20 fetches that exit 0, each with `source=/tar reason=/packs is not
-#      served`, /packs answering 404, and at least one FULL interval (9.5 s or more) above 0.5 CPU.
+#      `source=/tar`, at least one sample whose /healthz read answered and no /tar stream in
+#      flight at any sample, and every interval below 0.2 CPU; and, in the disabled arm, 20
+#      fetches that exit 0, each with `source=/tar reason=/packs is not served`, /packs answering
+#      404, and at least one FULL interval (9.5 s or more) above 0.5 CPU.
 #      A disabled arm with no such interval is VOID, not a pass: the run is too short to tell the
 #      arms apart. A fetch's output is searched for X-Goog-Signature, Bearer, Authorization and both
 #      tokens before anything of it is printed; one hit fails the run and prints nothing of that
 #      file. The last line is `JOB-RESULT pass`, `JOB-RESULT fail` or `JOB-RESULT void`, and the
 #      probe exits 0 on each: the harness reads the line, and a non-zero exit would have the Job
-#      start the whole run again.
+#      start the whole run again. A leak fails the run even where it stopped before any arm ended.
 #
-# `self-test` runs, with plain bash on any host and no Job, the checks that need no cluster: the
-# cgroup parser against the files under testdata/repository-cache-burst (cgroup-v1.* is the shape of
-# a gVisor pod as measured, with the container id made up; cgroup-v2.* is the unified layout of a
-# containerd pod, written from the documented format, not captured), the counter reads, the
-# manifest check, and the verdict against synthetic series: one passing, an enabled interval at
-# 0.25, one at exactly 0.2, a disabled arm that never crosses 0.5 in a full interval (void), one
-# that crosses it only in a partial interval (void), a wrong source, a leak and a failed
-# attribution.
+# `self-test` runs, with no Job, on any Linux host with bash 4 or later, GNU coreutils, jq and awk,
+# the checks that need no cluster: the cgroup parser against the files under
+# testdata/repository-cache-burst (cgroup-v1.* is the shape of a gVisor pod as measured, with the
+# container id made up; cgroup-v2.* is the unified layout of a containerd pod, written from the
+# documented format, not captured), the counter reads, the manifest check, and the verdict against
+# synthetic series: one passing, an enabled interval at 0.25, one at exactly 0.2, a disabled arm
+# that never crosses 0.5 in a full interval (void), one that crosses it only in a partial interval
+# (void), a wrong source, an enabled arm whose /healthz was never read (fail) and one read once
+# (pass), a leak, a run stopped void before any arm ended with a leak (fail) and without one
+# (void), and a failed attribution.
 #
 # Environment (set by the harness): BURST_REPO (owner/name), BURST_IMAGE, BURST_IMAGE_REVISION,
 # BURST_REVISION (the tested checkout's commit), BURST_DEADLINE (the Job's deadline, seconds).
-# BURST_SCRATCH (default /scratch) and BURST_FIXTURES (default testdata/repository-cache-burst
-# beside this file) exist for the self-test and a local trial and are never set in the Job.
 set -u
 
 export TZ=UTC
 export LC_ALL=C
 
-scratch=${BURST_SCRATCH:-/scratch}
+scratch=/scratch
 run=$scratch/run
 burst=$scratch/burst
 double_dir=$scratch/double
 cache_dir=$scratch/cache
 fetch_dir=$scratch/fetchers
-fixtures=${BURST_FIXTURES:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/testdata/repository-cache-burst}
+fixtures=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/testdata/repository-cache-burst
 
 repo=${BURST_REPO:-mozilla-firefox/firefox}
 double_listen=127.0.0.1:8480
@@ -352,8 +353,9 @@ above() { awk -v a="$1" -v b="$2" 'BEGIN { exit !(a + 0 > b + 0) }'; }
 # arms named (both by default), then sets verdict_word to fail (a property did not hold), void
 # (nothing is proved: the control did not discriminate or attribution failed) or pass; fail
 # outranks void. The facts file is `key=value` lines: attribution (pass|fail), leak (0|1), and for
-# each arm `<arm>.fetches`, `.ok` (exit 0), `.timeout`, and for enabled `.bucket`, `.tar`,
-# `.objects_match`, `.streams_max`, `.packs_complete`, for disabled `.unserved`, `.packs_status`.
+# each arm `<arm>.fetches`, `.ok` (exit 0), `.timeout`, `.streams_reads` (the samples whose /healthz
+# read answered), and for enabled `.bucket`, `.tar`, `.objects_match`, `.streams_max`,
+# `.packs_complete`, for disabled `.unserved`, `.packs_status`.
 verdict_word=""
 compute_verdict() {
   local -A fact=()
@@ -389,7 +391,12 @@ compute_verdict() {
     check "enabled: no fetch logs source=/tar" "$([ "${fact[enabled.tar]:-1}" = 0 ] && echo pass || echo fail)" "${fact[enabled.tar]:-unread}" "0"
     check "enabled: every fetch verified the manifest's objects, name, size and SHA-256" "$([ "${fact[enabled.objects_match]:-0}" = "$fetch_count" ] && echo pass || echo fail)" \
       "${fact[enabled.objects_match]:-0} of $fetch_count" "$fetch_count of $fetch_count"
-    check "enabled: no /tar stream was in flight at any sample" "$([ "${fact[enabled.streams_max]:-1}" = 0 ] && echo pass || echo fail)" "largest ${fact[enabled.streams_max]:-unread}" "0"
+    if [ "${fact[enabled.streams_reads]:-0}" -ge 1 ] && [ "${fact[enabled.streams_max]:-1}" = 0 ]; then
+      check "enabled: no /tar stream was in flight at any sample" pass "largest ${fact[enabled.streams_max]:-unread} over ${fact[enabled.streams_reads]:-0} /healthz reads" "0, over at least 1 read"
+    else
+      check "enabled: no /tar stream was in flight at any sample" fail "largest ${fact[enabled.streams_max]:-unread} over ${fact[enabled.streams_reads]:-0} /healthz reads" "0, over at least 1 read" \
+        "a sample whose /healthz was never read shows nothing in flight"
+    fi
   fi
 
   if [[ " ${judged[*]} " == *" disabled "* ]]; then
@@ -417,6 +424,17 @@ compute_verdict() {
     verdict_word=void
   else
     verdict_word=pass
+  fi
+}
+
+# stopped_verdict <fail|void> <facts file>: sets verdict_word for a run that stopped before any arm
+# took its end sample, which leaves no arm to judge: the stop's own word, or fail where the facts
+# record a leak, since an output that holds a credential fails the run whatever else it proved.
+stopped_verdict() {
+  verdict_word=$1
+  if grep -qx 'leak=1' "$2" 2> /dev/null; then
+    check "no credential, signed address or token in any output" fail 1 "0 hits"
+    verdict_word=fail
   fi
 }
 
@@ -463,7 +481,7 @@ manifest_complete() {
 }
 
 # --------------------------------------------------------------------------------------------
-# self-test: everything here runs on any host with bash, jq, awk and sort.
+# self-test: everything here runs on any Linux host with bash 4 or later, GNU coreutils, jq and awk.
 # --------------------------------------------------------------------------------------------
 self_failures=0
 expect() { # expect <name> <got> <want>
@@ -485,14 +503,14 @@ mk_facts() {
   local out=$1 k
   shift
   local -A f=([attribution]=pass [leak]=0
-    [enabled.fetches]=20 [enabled.ok]=20 [enabled.timeout]=0 [enabled.bucket]=20 [enabled.tar]=0 [enabled.objects_match]=20 [enabled.streams_max]=0 [enabled.packs_complete]=1
-    [disabled.fetches]=20 [disabled.ok]=20 [disabled.timeout]=0 [disabled.unserved]=20 [disabled.packs_status]=404)
+    [enabled.fetches]=20 [enabled.ok]=20 [enabled.timeout]=0 [enabled.streams_reads]=3 [enabled.bucket]=20 [enabled.tar]=0 [enabled.objects_match]=20 [enabled.streams_max]=0 [enabled.packs_complete]=1
+    [disabled.fetches]=20 [disabled.ok]=20 [disabled.timeout]=0 [disabled.streams_reads]=3 [disabled.unserved]=20 [disabled.packs_status]=404)
   for k in "$@"; do f[${k%%=*}]=${k#*=}; done
   for k in "${!f[@]}"; do printf '%s=%s\n' "$k" "${f[$k]}"; done > "$out"
 }
 
 self_test() {
-  local dir out samples_file facts_file want got
+  local dir out samples_file facts_file
   dir=$(mktemp -d "${TMPDIR:-/tmp}/burst-self.XXXXXX") || exit 2
   # shellcheck disable=SC2064 # the directory is this call's own
   trap "rm -rf '$dir'" EXIT
@@ -685,6 +703,14 @@ SERIES
   mk_facts "$facts_file" enabled.streams_max=1
   compute_verdict "$samples_file" "$facts_file" > /dev/null
   expect "a /tar stream in flight in the enabled arm fails" "$verdict_word" fail
+  mk_facts "$facts_file" enabled.streams_reads=0
+  compute_verdict "$samples_file" "$facts_file" > "$dir/verdict.out"
+  out=$(<"$dir/verdict.out")
+  expect "an enabled arm whose /healthz was never read fails" "$verdict_word" fail
+  expect "and says no stream count was read" "$(grep -c 'no /tar stream was in flight at any sample: got \[largest 0 over 0 /healthz reads\].*FAIL' <<< "$out")" 1
+  mk_facts "$facts_file" enabled.streams_reads=1
+  compute_verdict "$samples_file" "$facts_file" > /dev/null
+  expect "an enabled arm whose /healthz was read once, with no stream in flight, passes" "$verdict_word" pass
   mk_facts "$facts_file" disabled.unserved=19
   compute_verdict "$samples_file" "$facts_file" > /dev/null
   expect "a disabled fetch with another reason fails" "$verdict_word" fail
@@ -703,6 +729,15 @@ SERIES
   mk_facts "$facts_file" enabled.packs_complete=0
   compute_verdict "$samples_file" "$facts_file" > /dev/null
   expect "an incomplete manifest at the release fails" "$verdict_word" fail
+  mk_facts "$facts_file" leak=1
+  stopped_verdict void "$facts_file" > /dev/null
+  expect "a run stopped void before any arm ended, with a leak, fails" "$verdict_word" fail
+  mk_facts "$facts_file"
+  stopped_verdict void "$facts_file" > /dev/null
+  expect "a run stopped void before any arm ended, with no leak, is void" "$verdict_word" void
+  : > "$facts_file"
+  stopped_verdict void "$facts_file" > /dev/null
+  expect "a run stopped void before the leak scan ran is void" "$verdict_word" void
   # A counter that fell is unreadable, which fails.
   mk_samples "$samples_file" << 'SERIES'
 enabled start 0 100
@@ -883,6 +918,7 @@ packs_status_disabled=""
 release_us=0
 arm_timeout=0
 streams_max=0
+streams_reads=0
 streams_now=""
 leak_hit=0
 ready_health=""
@@ -1074,7 +1110,7 @@ collect_fetches() {
 # stopped, stop_kind says how).
 run_arm() {
   local arm=$1 started=$SECONDS released next target k rc avail double_bytes need name size sha
-  arm_timeout=0 streams_max=0
+  arm_timeout=0 streams_max=0 streams_reads=0
   mkdir -p "$run/$arm" "$fetch_dir/$arm"
   say "================ the $arm arm"
   start_cache "$arm"
@@ -1157,6 +1193,7 @@ run_arm() {
     done
     take_sample "$arm" tick
     if read_streams; then
+      streams_reads=$((streams_reads + 1))
       [ "$streams_now" -le "$streams_max" ] || streams_max=$streams_now
       echo "STREAMS $arm tick $k: $streams_now /tar streams in flight"
     fi
@@ -1192,7 +1229,7 @@ record_arm_facts() {
   local arm=$1
   collect_fetches "$arm"
   {
-    printf '%s.fetches=%s\n%s.ok=%s\n%s.timeout=%s\n' "$arm" "$f_fetches" "$arm" "$f_ok" "$arm" "$arm_timeout"
+    printf '%s.fetches=%s\n%s.ok=%s\n%s.timeout=%s\n%s.streams_reads=%s\n' "$arm" "$f_fetches" "$arm" "$f_ok" "$arm" "$arm_timeout" "$arm" "$streams_reads"
     if [ "$arm" = enabled ]; then
       printf 'enabled.bucket=%s\nenabled.tar=%s\nenabled.objects_match=%s\nenabled.streams_max=%s\nenabled.packs_complete=%s\n' "$f_bucket" "$f_tar" "$f_match" "$streams_max" "$packs_complete"
     else
@@ -1301,7 +1338,6 @@ attribution() {
   started_us=${EPOCHREALTIME/./}
   limit=$((started_us + sampler_idle_s * 1000000))
   while [ "${EPOCHREALTIME/./}" -lt "$limit" ]; do
-    [ ! -e "$run/never-created" ] || break
     nap 0.05
   done
   read_counter
@@ -1373,7 +1409,8 @@ role_cache_finish() {
     if has_sample disabled end; then judged+=(disabled); fi
   fi
   if [ -n "$stop_kind" ] && [ "${#judged[@]}" -eq 0 ]; then
-    word=$stop_kind
+    stopped_verdict "$stop_kind" "$facts"
+    word=$verdict_word
   else
     compute_verdict "$samples" "$facts" "${judged[@]}"
     word=$verdict_word

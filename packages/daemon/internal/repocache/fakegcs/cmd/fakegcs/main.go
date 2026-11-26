@@ -1,8 +1,8 @@
 // Command fakegcs serves package fakegcs's double of Cloud Storage, IAM signBlob and the GCE
-// metadata server on one address, for a process that is no Go test: the burst Job that runs before
-// the merge runs it in a container of its own beside the cache and the fetches, points the cache at
-// it with STORAGE_EMULATOR_HOST and GCE_METADATA_HOST, and compiles it, with the package, from the
-// tested head with the worker image's Go, as package fakegcs's documentation says.
+// metadata server on one address, for a process that is no Go test: the burst Job runs it in a
+// container of its own beside the cache and the fetches, points the cache at it with
+// STORAGE_EMULATOR_HOST and GCE_METADATA_HOST, and compiles it, with the package, from the tested
+// head with the worker image's Go, as package fakegcs's documentation says.
 //
 // It listens on -listen (a loopback address and a port the kernel chooses, by default), keeps its
 // objects under -root, which must exist or be creatable and which it never removes, answers as the

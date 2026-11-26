@@ -70,12 +70,13 @@ func workspaceFetch(ctx context.Context, repo, feed, cacheURL string, stdout io.
 		return err
 	}
 	switch {
-	case report.Source == workspace.SourceBucket:
-		fmt.Fprintf(stdout, "workspace-init fetch: %s bytes from the repository cache %s (bucket) in %s, its history verified in %s; %s bytes from GitHub for the delta (%s)\n",
-			groupedBytes(report.BucketBytes), cacheURL, report.BucketDuration.Round(time.Millisecond), report.VerifyDuration.Round(time.Millisecond), groupedBytes(report.GitHubBytes), refCount(report.Refs))
-	case report.CacheBytes > 0:
+	case report.Source == workspace.SourceBucket || report.CacheBytes > 0:
+		cache, size, took := cacheURL, report.CacheBytes, report.CacheDuration
+		if report.Source == workspace.SourceBucket {
+			cache, size, took = cacheURL+" (bucket)", report.BucketBytes, report.BucketDuration
+		}
 		fmt.Fprintf(stdout, "workspace-init fetch: %s bytes from the repository cache %s in %s, its history verified in %s; %s bytes from GitHub for the delta (%s)\n",
-			groupedBytes(report.CacheBytes), cacheURL, report.CacheDuration.Round(time.Millisecond), report.VerifyDuration.Round(time.Millisecond), groupedBytes(report.GitHubBytes), refCount(report.Refs))
+			groupedBytes(size), cache, took.Round(time.Millisecond), report.VerifyDuration.Round(time.Millisecond), groupedBytes(report.GitHubBytes), refCount(report.Refs))
 	case report.Cloned:
 		fmt.Fprintf(stdout, "workspace-init fetch: no repository cache named: cloned %s from GitHub (%s bytes)\n", inputs.repository, groupedBytes(report.GitHubBytes))
 	default:

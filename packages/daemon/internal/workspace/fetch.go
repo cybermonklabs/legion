@@ -186,17 +186,17 @@ type FetchReport struct {
 // With a cache named, it comes from the cache alone: Fetch waits for the cache to be ready
 // (waitForCache), then fills the feed from the cache's bucket where the cache serves GET /packs
 // and everything the bucket gave verifies (FetchReport.fromBucket), and otherwise from the cache's
-// tar, as before the bucket: it removes whatever the bucket's attempt wrote, asks /tar afresh with
-// the cache's token, unpacks it (unpackCache) and verifies it (verifyCache), recording why the
-// bucket was not used (fromCache). It then fetches from GitHub, by name, the default branch GitHub
-// names and the issue's recorded default, and the Legion issue branches, which is what the issue's
-// clone is made from, after deleting every other branch that is not exactly GitHub's tip
-// (pruneToGitHub, fetchInto); a cache that is not ready within CacheWaitTimeout, that refuses the
-// pod's token or names another repository, or whose tar a feed does not take, fails the fetch, and
-// nothing is cloned from GitHub instead, so the cache's own first clone is the one full download
-// of the repository. With none, the feed is cloned bare from GitHub, or has every branch fetched
-// into it and the ones GitHub deleted pruned: what the cache's own process does. Provision then
-// clones the shared clone from the feed with no credential.
+// tar: it removes whatever the bucket's attempt wrote, asks /tar afresh with the cache's token,
+// unpacks it (unpackCache) and verifies it (verifyCache), recording why the bucket was not used
+// (fromCache). It then fetches from GitHub, by name, the default branch GitHub names and the
+// issue's recorded default, and the Legion issue branches, which is what the issue's clone is made
+// from, after deleting every other branch that is not exactly GitHub's tip (pruneToGitHub,
+// fetchInto); a cache that is not ready within CacheWaitTimeout, that refuses the pod's token or
+// names another repository, or whose tar a feed does not take, fails the fetch, and nothing is
+// cloned from GitHub instead, so the cache's own first clone is the one full download of the
+// repository. With none, the feed is cloned bare from GitHub, or has every branch fetched into it
+// and the ones GitHub deleted pruned: what the cache's own process does. Provision then clones the
+// shared clone from the feed with no credential.
 //
 // Each size-following stage of a fetch that holds a clock gets its own bound, FetchTimeout unless
 // the request sets Bound (the repository cache's own first clone), and none starts past the one it
@@ -342,15 +342,15 @@ func (r FetchReport) failed(err error) (FetchReport, error) {
 }
 
 // fromCache fills staging, the feed's temporary sibling, from the repository cache once it is
-// ready: from its bucket where that attempt succeeds (fromBucket), and otherwise from its tar, as
-// before the bucket. Before /tar it removes staging whole, with everything the bucket's attempt
-// wrote, and makes it again empty, so /tar starts from nothing, and records why the bucket was not
-// used (TarReason); a caller's context that ended is the fetch's end, and no /tar starts. /tar is
-// then asked afresh with the cache's token, unpacked (unpackCache) and verified (verifyCache) within
-// its own FetchTimeout, counted from the stream's end: the stream holds the low-speed bound rather
-// than a clock, and the bucket's attempt held a bound of its own, so neither leaves the verification
-// less than its whole bound. A pack the tar streamed without its index is indexed here, as before. A
-// refusal of the bucket's answer (a 401, another repository) is the fetch's failure, as /tar's is.
+// ready: from its bucket where that attempt succeeds (fromBucket), and otherwise from its tar.
+// Before /tar it removes staging whole, with everything the bucket's attempt wrote, and makes it
+// again empty, so /tar starts from nothing, and records why the bucket was not used (TarReason); a
+// caller's context that ended is the fetch's end, and no /tar starts. /tar is then asked afresh
+// with the cache's token, unpacked (unpackCache) and verified (verifyCache) within its own
+// FetchTimeout, counted from the stream's end: the stream holds the low-speed bound rather than a
+// clock, and the bucket's attempt held a bound of its own, so neither leaves the verification less
+// than its whole bound. A pack the tar streamed without its index is indexed here. A refusal of
+// the bucket's answer (a 401, another repository) is the fetch's failure, as /tar's is.
 func (r *FetchReport) fromCache(ctx context.Context, run Runner, request FetchRequest, staging string) error {
 	err := r.fromBucket(ctx, run, request, staging)
 	var failure *bucketFailure
@@ -844,14 +844,14 @@ func unpackCache(ctx context.Context, run Runner, request FetchRequest, staging 
 // 3.2 GB cache, 8 to 12 minutes in every issue pod, the verification nine of them ran out of their
 // bound in (sjawhar/legion#2235).
 //
-// A pack the tar streamed without its index is indexed here when indexHere is set (/tar), as every
-// pack was before: then the feed, and not the cache, writes the index git reads. From the bucket
-// (indexHere unset) such a pack is refused, and nothing is indexed: each index comes from the
-// bucket. A pack that does not verify and a history that is not whole (errHistoryNotWhole) are
-// refused, naming what failed. Each git command runs within what remains before deadline, the
-// verification's own bound, which is bound long: for /tar, FetchTimeout counted from the stream's
-// end (fromCache); for the bucket, what is left of its attempt's BucketFetchTimeout (fromBucket).
-// One with nothing left fails, naming the bound.
+// A pack the tar streamed without its index, as a cache of a release that streams no index sends
+// every pack, is indexed here when indexHere is set (/tar): then the feed, and not the cache,
+// writes the index git reads. From the bucket (indexHere unset) such a pack is refused, and nothing
+// is indexed: each index comes from the bucket. A pack that does not verify and a history that is
+// not whole (errHistoryNotWhole) are refused, naming what failed. Each git command runs within
+// what remains before deadline, the verification's own bound, which is bound long: for /tar,
+// FetchTimeout counted from the stream's end (fromCache); for the bucket, what is left of its
+// attempt's BucketFetchTimeout (fromBucket). One with nothing left fails, naming the bound.
 func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging string, deadline time.Time, bound time.Duration, indexHere bool) error {
 	packs, err := filepath.Glob(filepath.Join(staging, "objects", "pack", "pack-*.pack"))
 	if err != nil {

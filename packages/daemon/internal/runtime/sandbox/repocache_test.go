@@ -1235,9 +1235,8 @@ func TestEnsureRepositoryCacheReplacesACachePodRunningAnotherServiceAccount(t *t
 			routes = map[string]string{"10.0.0.5:8418": served.Listener.Addr().String()}
 		}
 		logs := &logBuffer{}
-		shared := func(o *Options) { o.Pod.ServiceAccount = otherAccount }
-		written := cacheObjectOf(t, configuredRuntime(t, shared), cacheRepo, "uid-cache", modeRunning, "")
-		g := newRig(t, []k8sruntime.Object{written, live}, withLog(logs), withOptions(shared))
+		written := cacheObjectOf(t, configuredRuntime(t, sharedAccount), cacheRepo, "uid-cache", modeRunning, "")
+		g := newRig(t, []k8sruntime.Object{written, live}, withLog(logs), withOptions(sharedAccount))
 		if routes != nil {
 			g.r.cacheDial = (&podNetwork{routes: routes}).dial
 		}
