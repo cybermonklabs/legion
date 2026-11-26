@@ -23,8 +23,8 @@ func credentialed(address string) string {
 	return strings.Replace(address, "://", "://"+redacttest.User+":"+redacttest.Password+"@", 1) + "/?access" + "_token=" + redacttest.Token
 }
 
-// stdoutOf is what run writes to the process's standard output.
-func stdoutOf(t *testing.T, run func()) string {
+// printedBy is what run writes to the process's standard output.
+func printedBy(t *testing.T, run func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -72,7 +72,7 @@ func TestARegistrationPrintsNoCredentialItsListenerURLCarries(t *testing.T) {
 	})
 	t.Run("registered", func(t *testing.T) {
 		var err error
-		said := stdoutOf(t, func() {
+		said := printedBy(t, func() {
 			err = runRegister([]string{"-url", credentialed(listener.URL), "-sets", "words=1", "-concurrency", "1"})
 		})
 		if err != nil {
