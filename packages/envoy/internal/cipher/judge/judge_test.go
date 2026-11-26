@@ -626,26 +626,46 @@ func TestConsiderRunsTheJudgeOffTheRunnersContext(t *testing.T) {
 func TestTheWorstCaseStillWritesItsJudgedRow(t *testing.T) {
 	t.Parallel()
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
-	// The phase's three reads — the project check's and the issue's two GETs — each take a
-	// third of its bound, less a twentieth of a second for the round trips themselves: the
-	// phase has to spend its bound and still answer, since a read the bound cut short would
-	// hand the request over and the model would never be asked. The ask read, under a bound
-	// of its own, takes a third of it.
-	machine.projectTakes = dispatchBound/3 - 50*time.Millisecond
+	// The run's Dispatch phase is held (holdPhase), so the wall clock does not end it. Its three
+	// reads, the project check's and the issue's two GETs, answer a third of the bound apart and
+	// the last at the phase's deadline itself, so the phase spends its whole bound. Before, the
+	// phase ended on the wall clock, and a read that answered a fixed margin before the deadline
+	// still lost the race on a loaded runner: the judge took the answer after the deadline (119 ms
+	// at p99 over 225 loaded runs, past 300 ms in 4 of 450), the issue check failed, and the run
+	// wrote its row after 7 s, the model unasked. The row holds the deadline instead: the judge
+	// gave the phase dispatchBound from when it made it, and the phase's first read saw that same
+	// deadline, which a judge that cut the phase before its first read would not show; a cut made
+	// later cuts the last read, which answers at the deadline itself, and the model goes unasked.
+	// The ask read, under a bound of its own, takes a third of it.
+	runner := New(t.Context(), testOptions(t, dispatch, model, machine))
+	runner.dispatchPhase = machine.holdPhase
+	machine.projectBeforeEnd = 2 * dispatchBound / 3
+	dispatch.answerAt = func(earlier int) time.Time {
+		return machine.phaseTimes().end.Add(-time.Duration(1-earlier) * dispatchBound / 3)
+	}
 	dispatch.delay = dispatchBound/3 - 50*time.Millisecond
 	// The model never answers, so the call ends on modelBound.
 	model.delay = runBudget
 	// The row's own transaction, which has to commit inside what is left of the budget.
 	machine.writeTakes = 2 * time.Second
 	started := time.Now()
-	New(t.Context(), testOptions(t, dispatch, model, machine)).Consider(citedPending())
+	runner.Consider(citedPending())
 
 	waitFor(t, "the slowest run there is to write its row", runBudget+5*time.Second, func() bool {
 		_, logged := machine.rows()
 		return len(logged) == 1
 	})
-	if took := time.Since(started); took < dispatchBound+modelBound-time.Second {
+	if took := time.Since(started); took < dispatchBound+modelBound {
 		t.Errorf("the run wrote its row after %s; want it to have spent both bounds, %s", took, dispatchBound+modelBound)
+	}
+	phase := machine.phaseTimes()
+	switch {
+	case phase.end.IsZero():
+		t.Error("the judge made no Dispatch phase with a deadline")
+	case phase.end.Before(phase.before.Add(dispatchBound)) || phase.end.After(phase.after.Add(dispatchBound)):
+		t.Errorf("the judge gave its Dispatch phase a deadline %s after it made the phase; want dispatchBound, %s", phase.end.Sub(phase.before), dispatchBound)
+	case !phase.seen.Equal(phase.end):
+		t.Errorf("the phase's first read saw a deadline %s after the phase was made; want the one the judge gave the phase, %s after", phase.seen.Sub(phase.before), phase.end.Sub(phase.before))
 	}
 	row := theOneRow(t, machine)
 	if row["asked"] != true {
