@@ -29,6 +29,7 @@ func recordedKeys(process *Importer) int {
 // flight's answer: one head lookup in all, where a call that enters the key only after its stamp
 // finds nothing recorded and makes a second.
 func TestACallTakesAFlightThatLookedAfterItsStampThoughThatFlightsStarterHungUp(t *testing.T) {
+	t.Parallel()
 	rig := newRefusersRig(t, 0)
 	installation := rig.holdNextInstallation(t)
 	var stamped atomic.Int32
@@ -85,6 +86,7 @@ func TestACallTakesAFlightThatLookedAfterItsStampThoughThatFlightsStarterHungUp(
 // at the same instant as the lookup must take the flight, or a refuser of it starts one more.
 // Once the key's last call has left, the record hands nothing back.
 func TestARecordedFlightIsFreshForACallAtTheInstantOfItsHeadLookup(t *testing.T) {
+	t.Parallel()
 	var ended endedFlights
 	at := time.Now()
 	looked := &syncFlight{startedAt: at.Add(-time.Second), headAt: at}
@@ -123,6 +125,7 @@ func TestARecordedFlightIsFreshForACallAtTheInstantOfItsHeadLookup(t *testing.T)
 // grow nothing that outlives them. A sync of a source that exists, whose flight loads the row
 // and imports it, leaves none either.
 func TestSyncsOfRepositoriesNoSourceReadsLeaveNoEntryOnceAnswered(t *testing.T) {
+	t.Parallel()
 	branch := newMovingBranch(t, commitOne, map[string]map[string]string{commitOne: validFiles()})
 	client := newGitHubClient(t, branch.handler())
 	database := storetest.Open(t)

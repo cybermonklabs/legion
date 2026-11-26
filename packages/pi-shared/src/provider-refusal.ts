@@ -74,7 +74,7 @@ const BEDROCK_FILTER_TEXTS = [
 
 /** What the host puts in front of the provider's own error text when it names why it walked the
  * fallback chain: ``const reason = `Request failed: ${failedMessage.errorMessage ?? "provider
- * returned an error without details"}` `` (`packages/coding-agent/src/session/turn-recovery.ts:3121`
+ * returned an error without details"}` `` (`packages/coding-agent/src/session/turn-recovery.ts:3174`
  * at the pinned tag). It is taken off before the texts above are read, so one list of patterns
  * reads both a message's own error text and that reason. */
 const REQUEST_FAILED = /^Request failed: /;

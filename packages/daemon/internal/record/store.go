@@ -477,7 +477,7 @@ func (s *Postgres) queueStateChange(ctx context.Context, tx pgx.Tx, state *state
 // (NewOutboxRow, which holds a state row to stateevent's) and the insert every outbox row takes
 // (Enqueue). Its issue column is change's project, the bare Dispatch project key, so it runs on the
 // project's one state lane (LaneState), and the commit trigger of migration
-// 20261122163303_state_events gives it its sequence and its time when tx commits. It tells
+// 20261126163320_state_events gives it its sequence and its time when tx commits. It tells
 // nothing: the writer wakes the lane once tx commits.
 //
 // It is the one queue of a state change; package stateevent's comment says whose writes use it and
@@ -3938,12 +3938,13 @@ var (
 // none (PauseHeldRow). project is the project token and role the payload's `role`. A start, a
 // phase-ended message, a hook's words, an update ask and a merge forward's message name the role of
 // the row's own issue, as the executors read it (the daemon's roleToken); the merge-queue message
-// goes to the issue's merger; a role message names the claim's token itself
-// (record.RoleMessage.Role).
+// and the message that the project's merge holds changed go to the issue's merger, whose token
+// their executors build (the daemon's mergeQueueRemoval and mergeHoldsChanged); a role message
+// names the claim's token itself (record.RoleMessage.Role).
 func pauseHeldClaim(project string, row OutboxRow, role string) claim.Token {
 	switch row.Kind {
 	case OutboxKindSupervise, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeForward:
-	case OutboxKindMergeQueueRemoval:
+	case OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged:
 		role = string(claim.RoleMerger)
 	case OutboxKindRoleMessage:
 		if _, ok := claim.Token(role).Role(); ok {
@@ -4483,7 +4484,7 @@ func scanOutbox(row scanner, extra ...any) (OutboxRow, error) {
 }
 
 // StatePublication reads project's counter row (state_publication), which the commit trigger of
-// migration 20261122163303_state_events makes at the project's first state row and steps once for
+// migration 20261126163320_state_events makes at the project's first state row and steps once for
 // each state row the project's daemon commits: its last_seq and its store_id, which the state route
 // serves as `daemon.stateSeq` and `daemon.stateId` (api.DaemonInfo says what each tells a reader).
 // A project with no state row reads sequence 0 and no id.
@@ -4504,7 +4505,7 @@ func (s *Postgres) StatePublication(ctx context.Context, tx pgx.Tx, project stri
 // (OutboxRow.StateTx) with a sequence above head's, in sequence order: the rows the project's state
 // lane publishes after head, in head's message or, past the message bound, in the next ones
 // (internal/daemon's stateEvents). They hold the sequences that follow head's, since the commit
-// trigger of migration 20261122163303_state_events takes the lock of the project's counter row at
+// trigger of migration 20261126163320_state_events takes the lock of the project's counter row at
 // the transaction's commit and holds it until the commit ends, so no other transaction's row takes
 // a sequence between them. None of them is leased: the lane rule (outboxInOrder) makes a state row
 // claimable only while no unfinished state row of its project has a lower sequence, and head is

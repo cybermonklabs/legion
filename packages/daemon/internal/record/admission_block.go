@@ -71,7 +71,7 @@ func (b AdmissionBlock) MarshalJSON() ([]byte, error) {
 // the transaction's own now(). A pass that leaves the block as it was runs the one statement. The
 // row's issue column is project, the bare Dispatch project key, so it runs on the project's one
 // state lane (LaneState) as a StateChange does (queueStateChange), and the commit trigger of
-// migration 20261122163303_state_events gives it its sequence and its time when tx commits.
+// migration 20261126163320_state_events gives it its sequence and its time when tx commits.
 func (s *Postgres) QueueAdmissionBlock(ctx context.Context, tx pgx.Tx, project string, block AdmissionBlock) (bool, error) {
 	state := s.state.Load()
 	if state == nil {

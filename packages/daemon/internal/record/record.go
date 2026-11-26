@@ -2121,7 +2121,7 @@ type OutboxRow struct {
 	HeldByPause int64
 	// StateSeq, StateAt and StateTx are a state row's sequence, time and transaction (LaneState),
 	// which the row takes when the transaction that inserted it commits (the commit trigger of
-	// migration 20261122163303_state_events): the project's next sequence, the time every state
+	// migration 20261126163320_state_events): the project's next sequence, the time every state
 	// row of that transaction shares, and that transaction's id. They are zero on a row of any
 	// other kind, and on a state row read inside the transaction that inserted it.
 	StateSeq int64
@@ -2130,7 +2130,7 @@ type OutboxRow struct {
 }
 
 // StatePublication is a project's counter of its state events (state_publication, migration
-// 20261122163303_state_events): Seq, the sequence of the newest state row the project's daemon
+// 20261126163320_state_events): Seq, the sequence of the newest state row the project's daemon
 // committed, and StateID, the id of the store those events are counted in. The commit trigger
 // makes StateID once, at the project's first state row, and nothing changes it after; a reader
 // applies only the messages that carry its starting point's id (api.DaemonInfo.StateID). Seq is 0

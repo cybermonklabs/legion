@@ -55,11 +55,11 @@ type stateEventsStep struct {
 var stateGoldenStart = time.Date(2026, 11, 18, 16, 0, 0, 0, time.UTC)
 
 // stateGoldenSchemaVersion is the schema version the fixture's states and its boot event carry: the
-// version of the migration that gave the daemon its state events (20261122163303_state_events). A
+// version of the migration that gave the daemon its state events (20261126163320_state_events). A
 // state serves the newest migration's version, which every later migration moves, so the file
 // carries this one rather than change with each migration, in the boot event as in every state,
 // since a reader compares the boot's version with the one its starting point holds.
-const stateGoldenSchemaVersion = 20261122163303
+const stateGoldenSchemaVersion = 20261126163320
 
 // stateGoldenStateID is the store id the fixture's messages and states carry. The commit trigger
 // makes a random one with the project's counter row (state_publication.store_id), so the file

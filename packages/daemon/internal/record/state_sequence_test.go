@@ -74,7 +74,7 @@ func stateSeqs(rows []OutboxRow) []int64 {
 }
 
 // A state row takes its sequence, its time and its transaction's id when the transaction that
-// queued it commits, from its project's counter row (migration 20261122163303_state_events). So the
+// queued it commits, from its project's counter row (migration 20261126163320_state_events). So the
 // sequence is the order the transactions committed in, whatever order they queued their rows in;
 // a transaction that rolls back, or that deleted its own row, takes no step, so the sequence has
 // no gap; every row of one transaction shares its time and its transaction; and the time never

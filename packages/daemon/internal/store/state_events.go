@@ -19,7 +19,7 @@ import (
 // (PublishState), the claim write that moves the state the route serves queues one state_change
 // row in that write's own transaction, so the change and its event commit together or not at all,
 // and the row takes its sequence and its time when the transaction commits (the commit trigger of
-// migration 20261122163303_state_events). This package computes the change and hands it to the
+// migration 20261126163320_state_events). This package computes the change and hands it to the
 // queue PublishState was given (StateQueue); package stateevent's comment says whose queue that is
 // and why it is handed in.
 

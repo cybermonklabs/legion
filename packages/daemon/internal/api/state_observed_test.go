@@ -54,7 +54,7 @@ func (s *observingSource) ObservedState(_ context.Context, tx pgx.Tx) (State, []
 func observedFixture() State {
 	seq := int64(41)
 	return State{
-		Daemon: DaemonInfo{Project: "LEGION", SchemaVersion: 20261122163303, Boots: 3,
+		Daemon: DaemonInfo{Project: "LEGION", SchemaVersion: 20261126163320, Boots: 3,
 			FirstBootAt: time.Date(2026, 11, 18, 16, 0, 0, 0, time.UTC), StartedAt: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC),
 			StateSeq: &seq, StateID: "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47", StateRun: "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"},
 		Admission: Admission{Cap: 2, Active: []string{"LEGION-1"}, Waiting: []string{}, Trees: []string{"LEGION-1"}},
@@ -73,7 +73,7 @@ func observedFixture() State {
 func observedViewFixture() ObservedState {
 	seq := int64(41)
 	return ObservedState{
-		Daemon: DaemonInfo{Project: "LEGION", SchemaVersion: 20261122163303, Boots: 3,
+		Daemon: DaemonInfo{Project: "LEGION", SchemaVersion: 20261126163320, Boots: 3,
 			FirstBootAt: time.Date(2026, 11, 18, 16, 0, 0, 0, time.UTC), StartedAt: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC),
 			StateSeq: &seq, StateID: "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47", StateRun: "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"},
 		Admission: Admission{Cap: 2, Active: []string{"LEGION-1"}, Waiting: []string{}, Trees: []string{"LEGION-1"}},

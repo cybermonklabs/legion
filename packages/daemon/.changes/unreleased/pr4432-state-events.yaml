@@ -10,7 +10,7 @@ body: |-
   900 KB goes out as consecutive messages, split between events, and every one of them but the
   last carries `more: true`, so a reader applies the transaction only once its last message has
   arrived. A commit trigger gives each row its sequence and its time when its transaction commits
-  (migration `20261122163303_state_events`), so the sequence follows commit order and has no gap.
+  (migration `20261126163320_state_events`), so the sequence follows commit order and has no gap.
   The same counter row makes one id for the store's count at the project's first state event, and
   every message carries it as `stateId`. The boot event carries the daemon's settings and its
   store's schema version (`schemaVersion`), read after the boot's migrations ran. The admission
