@@ -26,6 +26,13 @@ const podWaitRigRole = claim.Role("checker")
 // role in every issue pod it builds from then on (sandboxOptions' DeploymentApps), and none it
 // built before. The checker launches with its own prompt file (prompt_file), as every role of the
 // deployment does (prompts.Composer.ComposeStep).
+//
+// It returns once the launcher of the issue's pod has connected to the restarted daemon, on the
+// worker stream port the rig holds across the restart (idleWakeRig.streamSocket), as a deployment's
+// launcher does once its daemon is back. A pod no role runs in is deleted only once its launcher
+// reads its disk clean (#5285's unowned release), and a read made before that launcher is back
+// fails and keeps the pod for pods.DeclineUnreadRetry, so no step after this one makes the pod
+// idle before the launcher can read it.
 func (r *idleWakeRig) defineChecker(issue idleRigIssue) {
 	r.t.Helper()
 	prompt := filepath.Join(r.t.TempDir(), "checker.md")
@@ -33,8 +40,29 @@ func (r *idleWakeRig) defineChecker(issue idleRigIssue) {
 		r.t.Fatal(err)
 	}
 	r.cfg.Roles = append(r.cfg.Roles, config.Role{Name: podWaitRigRole, Type: "testing", PromptFile: prompt})
+	connected := r.launcherConnections(issue)
 	r.restart()
 	r.awaitListenerReady()
+	idleRigEventually(r.t, idleRigPodWait, "the launcher of "+issue.key+"'s pod connected to the restarted daemon", func() bool {
+		return r.launcherConnections(issue) > connected
+	})
+}
+
+// launcherConnections is how many times a launcher of the issue's pod has said it connected to a
+// daemon, by the line each connection's acknowledged hello logs, which names the pod's uid.
+func (r *idleWakeRig) launcherConnections(issue idleRigIssue) int {
+	r.t.Helper()
+	uid := r.kube.podUID(issue.pod)
+	if uid == "" {
+		r.t.Fatalf("the pod of %s has no uid, so no launcher of it can be counted", issue.key)
+	}
+	var n int
+	for line := range strings.SplitSeq(r.pods.log(), "\n") {
+		if strings.Contains(line, "launcher: connected to the daemon at ") && strings.Contains(line, ", pod "+uid+")") {
+			n++
+		}
+	}
+	return n
 }
 
 // roleToken is the claim token of role on the issue.
