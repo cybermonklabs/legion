@@ -22,13 +22,23 @@
 #     the resource host an access token is spent at; a stand-in AWS service that verifies
 #     Signature Version 4; the three the model judge calls - a model endpoint, a Dispatch
 #     holding one open issue and one done one, and a Compute Engine metadata server, which also
-#     answers the machine's access token; and the anthropic kind's three - its Admin API at
-#     api.anthropic.com, a recording HTTPS service like S, IAM's generateIdToken, where an
-#     anthropic-federation secret's Google identity token is minted, and Anthropic's token
-#     exchange, where that token is traded for an sk-ant-oat01- token. It writes the certificate
-#     authority the proxy signs each bound host with, the AWS key pair its own stand verifies,
-#     and the GitHub App key its GitHub stand mints for; this script reads all of it out of the
-#     JSON report that command prints.
+#     answers the machine's access token; the stand-in of Certificate Authority Service (the ca
+#     stand), which answers each broker's request for its proxy's intermediate under a test root
+#     of its own; and the anthropic kind's three - its Admin API at api.anthropic.com, a recording
+#     HTTPS service like S, IAM's generateIdToken, where an anthropic-federation secret's Google
+#     identity token is minted, and Anthropic's token exchange, where that token is traded for an
+#     sk-ant-oat01- token. It writes the authority behind the stands' own certificates, that test
+#     root, the AWS key pair its own stand verifies, and the GitHub App key its GitHub stand mints
+#     for; this script reads all of it out of the JSON report that command prints.
+#   - The proxy's chain, as production's runs: each broker names a pool (BROKER_PROXY_CA_POOL)
+#     and the ca stand as where its requests go (BROKER_PROXY_TEST_CA_URL), makes its
+#     intermediate's key in memory, signs each bound host's leaf with the intermediate the stand
+#     answers, and is not ready until it holds one. The stand's policy names the hosts of the
+#     profiles file, applied before the brokers start, as a deploy applies the pool's issuance
+#     policy before it rolls them. So every call a check makes through the proxy verifies a
+#     chain of test root, test intermediate and leaf. Both brokers and the stand read one clock
+#     file (BROKER_PROXY_TEST_CLOCK_OFFSET_FILE), "0s" until a check writes another duration
+#     into it to move their certificates' days on.
 #   - The model judge, on every broker: the six BROKER_JUDGE_* settings pointed at the model
 #     and Dispatch stands, and GCE_METADATA_HOST at the metadata stand, so a human-tier request
 #     whose key's judge tag gives the judge seconds of it is decided by the model rather than by
@@ -104,6 +114,11 @@
 # Everything this script makes lives under ${TMPDIR:-/tmp}, as dev-broker.sh's work directory
 # now does: in a Legion pod /tmp is the container's own small disk, and one run of the checks
 # fills it.
+#
+# What a client trusts the stack by (AIRLOCK_CA_CERT_FILE) is one file holding both of its
+# roots: the proxy's test root, which every bound host's leaf chains to, and the stands'
+# authority, which a host tunnelled past the proxy presents. PROXY_ROOT_FILE is the
+# proxy's test root alone, for a check about the chain itself.
 #
 # Options:
 #   --keep-values     BROKER_AIRLOCK_TEST_KEEP_VALUES=true (check k5's negative control: the
@@ -200,6 +215,13 @@ API_BACKENDS="$WORK_DIR/api-backends"
 PROXY_FRONT_JSON="$WORK_DIR/proxy-front.json"
 PROXY_FRONT_LOG="$WORK_DIR/proxy-front.log"
 PROXY_BACKENDS="$WORK_DIR/proxy-backends"
+# The clock both brokers' proxies and the ca stand date certificates by, and the one file a
+# client trusts the stack by (the header).
+CLOCK_OFFSET_FILE="$WORK_DIR/clock-offset"
+TRUST_FILE="$WORK_DIR/trust.pem"
+# The pool every broker names: a pool's resource name in Google's documentation shape, which
+# nothing here asks Google for, since BROKER_PROXY_TEST_CA_URL sends its requests to the ca stand.
+CA_POOL="projects/example-project/locations/us-west1/caPools/proxy"
 
 # The namespace and the key this run's fake secrets sit under. The key is an example ARN in AWS's
 # documentation account, and nothing here calls AWS; a secret on any other key is refused by the
@@ -510,7 +532,8 @@ DISPLAY_URL="$(pg_url_without_password "$POSTGRES_URL")"
 # stand carries api.anthropic.com, the Admin API a call behind the proxy reaches. ---
 echo "dev-airlock: starting dev-airlock-stands..." >&2
 : >"$STANDS_LOG"
-"$STANDS_BIN" --dir "$STANDS_DIR" \
+printf '0s\n' >"$CLOCK_OFFSET_FILE"
+"$STANDS_BIN" --dir "$STANDS_DIR" --clock-offset-file "$CLOCK_OFFSET_FILE" \
   --address "s=$S_ADDRESS" --host "s=$S_HOST" \
   --address "t=$T_ADDRESS" --host "t=$T_HOST" \
   --address "microsoft=$MICROSOFT_ADDRESS" \
@@ -528,6 +551,14 @@ await "dev-airlock-stands" 60 "$STANDS_LOG" 'stands listening records=' "$STANDS
 stand() { jq -r "$1" "$STANDS_JSON"; }
 CA_CERT_FILE="$(stand .ca_cert_file)"
 CA_KEY_FILE="$(stand .ca_key_file)"
+PROXY_ROOT_FILE="$(stand .proxy_root_file)"
+# The ca stand is reached by the broker itself, as the minters are, so it too is named by address.
+CA_URL="$(stand '.stands.ca.url')"
+if [ -z "$PROXY_ROOT_FILE" ] || [ "$PROXY_ROOT_FILE" = null ] || [ -z "$CA_URL" ] || [ "$CA_URL" = null ]; then
+  echo "dev-airlock: dev-airlock-stands reported no ca stand or proxy root (see $STANDS_JSON)" >&2
+  exit 1
+fi
+cat "$PROXY_ROOT_FILE" "$CA_CERT_FILE" >"$TRUST_FILE"
 RECORDS_URL="$(stand .records_url)"
 AWS_KEY_ID="$(stand .aws_key_id)"
 AWS_SECRET_KEY="$(stand .aws_secret_key)"
@@ -599,6 +630,17 @@ cat >"$PROFILES_FILE" <<EOF
   {"name": "$ANTHROPIC_NARROWED_SECRET", "allow": $ANTHROPIC_ALLOW}
 ]}
 EOF
+
+# --- The ca stand's policy: the names of the profiles file's hosts, a "*." pattern as its
+# domain, applied before any broker starts, as a deploy applies the pool's issuance policy before
+# it rolls the brokers. Each broker refuses an intermediate that would sign no trusted leaf for
+# one of its bound hosts. ---
+POLICY="$(jq -c -f "$SCRIPT_DIR/lib/ca-policy.jq" "$PROFILES_FILE")"
+if ! curl -sSf -o /dev/null -X POST -H 'Content-Type: application/json' --data "$POLICY" "$CA_URL/policy"; then
+  echo "dev-airlock: the ca stand at $CA_URL refused its policy $POLICY" >&2
+  exit 1
+fi
+echo "dev-airlock: the ca stand's policy names $POLICY" >&2
 
 # --- The fake Secrets Manager the brokers read, written with jq so the GitHub App's PEM and
 # each object value are escaped once and correctly. Every value here is this stack's own and
@@ -718,6 +760,11 @@ PROXY_FRONT_URL="$(jq -r .url "$PROXY_FRONT_JSON")"
 # two of them never collide. BROKER_DRAIN_SECONDS=0 as dev-broker.sh does: the five-second default
 # exists to outlast a Kubernetes EndpointSlice propagation nothing here has.
 #
+# Each takes its proxy's intermediate from the ca stand (BROKER_PROXY_CA_POOL,
+# BROKER_PROXY_TEST_CA_URL) rather than a mounted authority, and dates its certificates by the
+# clock file the stand reads too (BROKER_PROXY_TEST_CLOCK_OFFSET_FILE), so a check moves both at
+# once.
+#
 # BROKER_AIRLOCK_TEST_AZURE_AUTHORITY makes the Microsoft stand-in the token authority the
 # azure exchange is held to, in place of login.microsoftonline.com: the proxy refuses an
 # exchange at any other host, and the stand-in is where this stack's az signs in.
@@ -768,8 +815,9 @@ start_broker() {
   BROKER_PROFILES_FILE="$PROFILES_FILE" \
   BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" \
   BROKER_AIRLOCK_PROXY_URL="$PROXY_FRONT_URL" \
-  BROKER_AIRLOCK_CA_CERT_FILE="$CA_CERT_FILE" \
-  BROKER_AIRLOCK_CA_KEY_FILE="$CA_KEY_FILE" \
+  BROKER_PROXY_CA_POOL="$CA_POOL" \
+  BROKER_PROXY_TEST_CA_URL="$CA_URL" \
+  BROKER_PROXY_TEST_CLOCK_OFFSET_FILE="$CLOCK_OFFSET_FILE" \
   BROKER_AIRLOCK_IDLE_SECONDS="$IDLE_SECONDS" \
   BROKER_AIRLOCK_TEST_GITHUB_API_BASE="$GITHUB_URL" \
   BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL="$GOOGLE_URL/token" \
@@ -805,6 +853,8 @@ for n in $(seq 1 "$BROKER_COUNT"); do
 done
 for n in $(seq 1 "$BROKER_COUNT"); do
   await "broker $n" 120 "${BROKER_LOGS[n]}" '"message":"airlock proxy listening"' "${BROKER_PIDS[n]}"
+  # A broker on a pool is not ready until the ca stand has answered its first request.
+  await "broker $n's intermediate" 60 "${BROKER_LOGS[n]}" '"message":"proxy intermediate"' "${BROKER_PIDS[n]}"
   BROKER_API_ADDRS[n]="$(logged_addr 'broker listening' "${BROKER_LOGS[n]}")"
   BROKER_PROXY_ADDRS[n]="$(logged_addr 'airlock proxy listening' "${BROKER_LOGS[n]}")"
   if [ -z "${BROKER_API_ADDRS[n]}" ] || [ -z "${BROKER_PROXY_ADDRS[n]}" ]; then
@@ -884,8 +934,13 @@ dev-airlock: ready.
   export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$ACCOUNT_TOKEN_FILE
   export AIRLOCK_PROXY_URL=$PROXY_FRONT_URL
   export AIRLOCK_DIR=$WORK_DIR
-  export AIRLOCK_CA_CERT_FILE=$CA_CERT_FILE
-  export AIRLOCK_CA_KEY_FILE=$CA_KEY_FILE
+  export AIRLOCK_CA_CERT_FILE=$TRUST_FILE
+  export PROXY_ROOT_FILE=$PROXY_ROOT_FILE
+  export PROXY_STANDS_CA_CERT_FILE=$CA_CERT_FILE
+  export PROXY_STANDS_CA_KEY_FILE=$CA_KEY_FILE
+  export PROXY_CA_URL=$CA_URL
+  export PROXY_CA_POOL=$CA_POOL
+  export PROXY_CLOCK_OFFSET_FILE=$CLOCK_OFFSET_FILE
   export AIRLOCK_PROFILES_FILE=$PROFILES_FILE
   export AIRLOCK_FAKE_SECRETS_FILE=$FAKE_SECRETS_FILE
   export AIRLOCK_RECORDS_URL=$RECORDS_URL
@@ -987,7 +1042,10 @@ $BROKER_BANNER
                        the sign-in at $ISSUER_URL signs that person in with no page to fill in,
                        and a POST to ${API_FRONT_URL}/approve needs an Origin header or the page answers 403
   database:            $DISPLAY_URL  (this instance's own; created and dropped by this script)
-  stand-ins:           $STANDS_DIR  (each one's certificate; the authority is $CA_CERT_FILE)
+  stand-ins:           $STANDS_DIR  (each one's certificate; their authority is $CA_CERT_FILE)
+  proxy chain:         each broker's intermediate from the ca stand at $CA_URL, under the test root
+                       $PROXY_ROOT_FILE; certificates dated by $CLOCK_OFFSET_FILE (now "0s");
+                       a client of this stack trusts $TRUST_FILE, both roots
   dev-broker.sh:       $BASE_DIR  (its own broker, issuer, tokens and database, logged to $DEV_BROKER_LOG)
 
   A command behind the airlock gets a placeholder, not a value: ask for one with

@@ -365,7 +365,7 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 	// requires: every other input configures Dispatch itself, which clusterOnly does not build.
 	require.ElementsMatch(t, []string{"region", "hostname"}, dispatch.RequiredInputs)
 	require.True(t, dispatch.Properties["agentToken"].Secret)
-	for _, output := range []string{"serviceAccountIssuer", "serviceAccountSubject"} {
+	for _, output := range []string{"serviceAccountIssuer", "serviceAccountSubject", "serviceAccountUid"} {
 		require.Equal(t, "string", dispatch.Properties[output].Type, output)
 		require.False(t, dispatch.Properties[output].Secret, output)
 	}

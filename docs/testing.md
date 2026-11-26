@@ -84,6 +84,21 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   The package documentation is the whole list and the rule each check holds.
   It does not check what a command does with its arguments, its other exit codes or the shape of its tree, which each conversion's own tests hold, and it builds no binary: the caller hands it one.
 
+## A test database's teardown waits for its binary
+
+`packages/daemon/internal/testpg/testdb.Drop` retries PostgreSQL's 42501
+(`insufficient_privilege`) and 55006 (`object_in_use`) refusals until its context ends. A test
+that creates one database (`testdb.PlainDatabase` and `internal/store`'s `emptyStore`) takes
+`testwait.TeardownContext(t)` in its cleanup, bounded to stay before go test's alarm and finite
+under `-timeout 0`. A clone teardown after `testpg.Main` takes `testwait.TeardownDeadline`: the
+binary's parsed `-timeout` plus its post-test grace, because Go stops its own alarm when `m.Run`
+returns.
+
+Never give `Drop` `context.Background()`. A correct backend can take longer than an arbitrary
+retry span to exit under load. When the binary's bound does end, the error names the database and
+the backends still attached from `pg_stat_activity`; clear those backends rather than retrying the
+test.
+
 
 ## Bun tests
 
@@ -260,7 +275,7 @@ itself, whose tests import its sources by relative path.
   `packages/claude-envoy/tests/transpiler-cache.ts`).
 
 - Two caches stay where their tool puts them, under the user's cache directory, and this is the one
-  rule here that holds only under a condition. Oh My Pi's native modules, about 124 MiB a pin, are
+  rule here that holds only under a condition. Oh My Pi's native modules, about 125 MiB a pin, are
   hardlinked into each test's fresh HOME from one copy per binary at
   `$XDG_CACHE_HOME/legion/test-omp-natives`, or `$HOME/.cache/legion/test-omp-natives` where
   `XDG_CACHE_HOME` is unset (`nativesCacheRoot` in `packages/pi-shared/test/omp-natives.ts`);
@@ -404,6 +419,22 @@ printed an act message, naming each message with its component and the frames th
   the row. Under a lane's load that is rare, and the file alone does not show it:
   `web/src/features/conversation/ConversationTab.test.tsx`'s row "a scroll event measures the
   reader position in O(1) rect reads" failed 1 run in 20 that way.
+
+- A row whose tree can still hold a real timer when its body ends, such as the 150 ms debounce of
+  a composer's draft pills (`useSettled`), ends its body by unmounting inside `act`: `cleanup()` in
+  a `finally` around the body, as `web/src/features/delivery/DeliveryPage.test.tsx` and
+  `web/src/features/inbox/ThreadBody.test.tsx` wrap their rows. Bun gives the event loop a turn
+  between a row's body and its `afterEach`, so a timer due then fires with the act environment on
+  and no act scope open, and an `afterEach` that unmounts comes after that turn. Only a loaded run
+  ends the body before the timer: `ThreadBody.test.tsx`'s row "an Agent card whose thread moves on
+  under a refused reply says what its box can do" failed 1 run in 20 that way. A row that reads
+  what the timer does lets it run out inside `act` instead (`settleRefPickerSearch` in
+  `web/src/features/refs/ref-picker-fixture.ts`).
+
+- Bun drops the frame of an arrow whose whole body is the call that sets the state, as in
+  `setTimeout(() => setValue(next), ms)`: JavaScriptCore runs that call as a tail call. The act
+  rule then names the component and no frame of `web/src`, so look in that component's own hooks
+  for a timer or a promise that ends in such a call.
 
 - `web/src/__tests__/act-warnings.test.ts` runs the act rule's six fixtures,
   `web/src/__tests__/act-rule*.fixture.tsx`. Four draw React's act messages.

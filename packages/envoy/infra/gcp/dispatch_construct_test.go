@@ -662,6 +662,22 @@ func TestConstructOutputsTheServiceAccountIssuerAndSubject(t *testing.T) {
 	}
 }
 
+// The app's ServiceAccount's uid is an output, so a consumer grants the app's pods by uid rather
+// than rebuilding a member from the account's name, which every cluster of the pool can make an
+// account under. It is no secret, and it is the uid the API server gave the account the app's
+// pods run as, not the listener's or the front door's.
+func TestConstructOutputsTheServiceAccountUid(t *testing.T) {
+	m, response, err := constructDispatch(t, dispatchConstructBaseInputs(), false)
+	require.NoError(t, err)
+	uid, ok := response.State.GetOk("serviceAccountUid")
+	require.True(t, ok, "serviceAccountUid is in the state")
+	require.False(t, uid.Secret())
+	require.Equal(t, mockServiceAccountUID("example-dispatch"), uid.AsString(),
+		"serviceAccountUid is the uid of ServiceAccount example-dispatch, the one the app's pods run as")
+	pod := deploymentPodTemplate(t, m, "example-dispatch")["spec"].(map[string]any)
+	require.Equal(t, "example-dispatch", pod["serviceAccountName"])
+}
+
 // Pulumi decodes an integer input into a Go int by conversion, so a typed SDK or YAML program
 // sending 2.5 replicas would get 2 with no error. Each integer input of a gcp:Dispatch whose other
 // inputs are all valid refuses a number that is not a whole number within int64's range, naming
@@ -713,10 +729,10 @@ func constructDispatchClusterOnly(t *testing.T, dryRun bool) (*pulumitest.Mocks,
 	}, dryRun, map[tokens.Package]p.ProviderReference{"gcp": dispatchConstructGCP})
 }
 
-// A cluster-only component answers with all eight outputs. Three carry the cluster's own values,
+// A cluster-only component answers with all nine outputs. Three carry the cluster's own values,
 // which a consumer reads to reach it: the cluster's name, the service-account token issuer built
 // from the project, the location and the name, and the exec-plugin kubeconfig rendered from the
-// cluster the mocks compute. The five Dispatch would decide are an explicit empty string, present
+// cluster the mocks compute. The six Dispatch would decide are an explicit empty string, present
 // and known: a field left unset would await as unknown, one value in preview and another in
 // update, while "" is the same in both and is what a consumer already reads as "not applied".
 // Hence the preview row: an empty string must be the same value there as in an update.
@@ -737,6 +753,7 @@ func TestConstructOutputsTheClusterOnlyState(t *testing.T) {
 				"principal":             "",
 				"agentToken":            "",
 				"serviceAccountSubject": "",
+				"serviceAccountUid":     "",
 			} {
 				value, ok := response.State.GetOk(output)
 				require.True(t, ok, "%s is in the state", output)
@@ -765,10 +782,10 @@ func TestConstructRefusesADispatchInputWithClusterOnly(t *testing.T) {
 }
 
 // existingCluster reaches the plugin as the object a consumer's SDK sends, in an update and in a
-// preview. The component looks the cluster up, registers no Cluster, and answers with all eight
+// preview. The component looks the cluster up, registers no Cluster, and answers with all nine
 // outputs: the three the cluster decides name the existing cluster, and are known in the preview
 // too, since they wait on the lookup's plain values, the project and the component's Network's
-// name alone; the five Dispatch decides are there as on the component's own cluster. In the update
+// name alone; the six Dispatch decides are there as on the component's own cluster. In the update
 // the principal output is existingClusterPrincipal, the one the component's own cluster gives,
 // since a cluster in the same project shares its Workload Identity pool.
 func TestConstructTakesAnExistingCluster(t *testing.T) {
@@ -794,7 +811,7 @@ func TestConstructTakesAnExistingCluster(t *testing.T) {
 				require.True(t, value.IsString(), "%s is a known string, not %s", output, value)
 				require.Equal(t, want, value.AsString(), output)
 			}
-			for _, output := range []string{"url", "databaseInstance", "principal", "agentToken", "serviceAccountSubject"} {
+			for _, output := range []string{"url", "databaseInstance", "principal", "agentToken", "serviceAccountSubject", "serviceAccountUid"} {
 				_, ok := response.State.GetOk(output)
 				require.True(t, ok, "%s is in the state", output)
 			}
