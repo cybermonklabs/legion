@@ -31,21 +31,15 @@ var probeCandidates = []struct {
 	// Names: no shell or revset characters, since each names a temporary directory the shim's
 	// recording jj writes to unquoted.
 	{"P1 duplicate base", workspace.BesideTakeCommands},
-	{"P2 rebase b onto heads of beside and task", func(dir, prefix, own, task string) []string {
-		onto := `heads((` + besideHeads(prefix, own) + `) | remote_bookmarks(exact:"` + task + `", exact:"origin"))`
-		return []string{fetchBeside(dir, prefix), shellprefix.Command([]string{"jj", "-R", dir, "rebase", "-b", "@", "--onto", onto})}
-	}},
-	{"P3 new A at-parent A beside not under at B at", func(dir, prefix, own, task string) []string {
-		after := `heads(` + besideHeads(prefix, own) + `) ~ ::@`
-		return []string{fetchBeside(dir, prefix), shellprefix.Command([]string{"jj", "-R", dir, "new", "--insert-after", "@-", "--insert-after", after, "--insert-before", "@", "--message", "merge: the steps beside the fix"})}
-	}},
-	{"P4 new A heads of at-parent and beside B at", func(dir, prefix, own, task string) []string {
-		after := `heads(@- | (` + besideHeads(prefix, own) + `))`
-		return []string{fetchBeside(dir, prefix), shellprefix.Command([]string{"jj", "-R", dir, "new", "--insert-after", after, "--insert-before", "@", "--message", "merge: the steps beside the fix"})}
-	}},
 	{"P5 rebase b onto heads of what origin holds but own", func(dir, prefix, own, task string) []string {
 		onto := `heads((::@ | remote_bookmarks(glob:"` + prefix + `*", exact:"origin")) & ::(remote_bookmarks(glob:"*", exact:"origin") ~ remote_bookmarks(exact:"` + own + `", exact:"origin")))`
 		return []string{fetchBeside(dir, prefix), shellprefix.Command([]string{"jj", "-R", dir, "rebase", "-b", "@", "--onto", onto})}
+	}},
+	{"P6 P5 with own tracked first", func(dir, prefix, own, task string) []string {
+		onto := `heads((::@ | remote_bookmarks(glob:"` + prefix + `*", exact:"origin")) & ::(remote_bookmarks(glob:"*", exact:"origin") ~ remote_bookmarks(exact:"` + own + `", exact:"origin")))`
+		return []string{fetchBeside(dir, prefix),
+			shellprefix.Command([]string{"jj", "-R", dir, "bookmark", "track", "exact:" + own, "--remote", "exact:origin"}),
+			shellprefix.Command([]string{"jj", "-R", dir, "rebase", "-b", "@", "--onto", onto})}
 	}},
 }
 
@@ -56,6 +50,8 @@ type probeCase struct {
 	noOwn        bool // the fix commits nothing of its own
 	mergeForward bool // main moves on origin and the fix's first act is a merge of it
 	promptRebase bool // before each take, the fix runs its prompt's fetch and rebase onto the task's head
+	later        bool // after F's push, the tester commits red2.txt and pushes B again, before the second take
+	pushAgain    bool // after the second take, the fix that ran it pushes F
 }
 
 var probeCases = []probeCase{
@@ -72,6 +68,8 @@ var probeCases = []probeCase{
 	{takeCase: takeCase{name: "K: no commit of the fix's own, two steps beside, then the take again", tester: true}, noOwn: true, second: true},
 	{takeCase: takeCase{name: "M: the prompt's rebase before each take", tester: true}, promptRebase: true},
 	{takeCase: takeCase{name: "N: I with the prompt's rebase before each take", tester: true}, mergeForward: true, promptRebase: true},
+	{takeCase: takeCase{name: "O: C with a later tester commit, then the fresh pod's take and its push of F", tester: true, push: true, fresh: true}, later: true, pushAgain: true},
+	{takeCase: takeCase{name: "Q: B with a later tester commit, then the take and a push of F", tester: true, push: true}, later: true, pushAgain: true},
 }
 
 func TestProbeTakes(t *testing.T) {
@@ -185,6 +183,11 @@ func probeRun(t *testing.T, jj string, take takeCommands, c probeCase) string {
 	if c.push {
 		pushOwn(pod)
 	}
+	standing := red
+	if c.later {
+		standing = pod.commit(pod.workspace, "red2.txt", "test: the later red test")
+		run(pod, pod.workspace, workspace.BesidePushCommand(tester))
+	}
 	taker := pod
 	if c.fresh {
 		taker = newPodRig(t, jj, origin, key)
@@ -196,6 +199,9 @@ func probeRun(t *testing.T, jj string, take takeCommands, c probeCase) string {
 	before, opBefore := stackOf(taker), opOf(taker)
 	runTake(taker)
 	after, opAfter := stackOf(taker), opOf(taker)
+	if c.pushAgain {
+		pushOwn(taker)
+	}
 	graph, _ := taker.try(taker.fixDir, "log", "-r", `remote_bookmarks(exact:"`+taskBranch+`", exact:"origin")::`)
 	t.Logf("after the second take:\n%s\njj log:\n%s", strings.Join(after, "\n"), graph)
 	testers := ""
@@ -231,7 +237,7 @@ func probeRun(t *testing.T, jj string, take takeCommands, c probeCase) string {
 	shared := "fresh"
 	if status, err := pod.try(pod.workspace, "status"); err != nil || strings.Contains(status, "stale") {
 		shared = "STALE: " + status
-	} else if parent, _ := pod.try(pod.workspace, "log", "-r", "@-", "--no-graph", "-T", "commit_id"); parent != red {
+	} else if parent, _ := pod.try(pod.workspace, "log", "-r", "@-", "--no-graph", "-T", "commit_id"); parent != standing {
 		shared = "MOVED to " + parent
 	}
 	ownAt, _ := taker.try(taker.fixDir, "file", "list", "-r", own+"@origin")
@@ -260,6 +266,10 @@ func probeFacts(t *testing.T, jj string) {
 	t.Logf("rebase -b @ --onto @-- (already in place): %v\n%s", err, out)
 	out, err = r.try(r.fixDir, "rebase", "-b", "@", "--onto", "none()")
 	t.Logf("rebase -b @ --onto none(): %v\n%s", err, out)
+	out, err = r.try(r.fixDir, "log", "-r", "predecessors(@-)")
+	t.Logf("a predecessors revset: %v\n%s", err, out)
+	out, err = r.try(r.fixDir, "bookmark", "track", "exact:legion-beside/ACME-42/1/a/fix-1/implementer", "--remote", "exact:origin")
+	t.Logf("bookmark track of a branch origin does not hold: %v\n%s", err, out)
 	out, err = r.try(r.fixDir, "op", "log", "-n3")
 	t.Logf("op log: %v\n%s", err, out)
 }
