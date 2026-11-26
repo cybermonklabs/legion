@@ -71,7 +71,7 @@ func (e *Engine) openCheck(ctx context.Context, tx pgx.Tx, issue record.Issue, m
 	if err != nil {
 		return err
 	}
-	if existing != nil && existing.Generation == issue.Generation && existing.MergeSHA == merge.SHA {
+	if existing != nil && existing.MergeSHA == merge.SHA {
 		state := "open"
 		if !existing.Open() {
 			state = "closed as " + string(existing.Outcome)
