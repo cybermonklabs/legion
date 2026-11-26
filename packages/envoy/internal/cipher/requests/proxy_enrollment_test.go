@@ -98,6 +98,41 @@ func TestProxyGrantsOfEnrollmentAnswersEveryLiveGrantOfTheEnrollment(t *testing.
 	if none, err := m.ProxyGrantsOfEnrollment(t.Context(), empty, "", both); err != nil || len(none) != 0 {
 		t.Fatalf("an enrollment with no grant answered %v, %v; want none", grantIDs(none), err)
 	}
+
+	// An enrollment with no operator — a pod's own session — reads the same empty Operator from
+	// both functions. main populated AirlockConnection's Operator and not ProxyGrantsOfEnrollment's,
+	// so the two disagreed on a field until the fix; the empty case is the one mintedConnection has
+	// no operator to set, and the one the direct-read tests cover but this parity check did not.
+	pod, podKey := newEnrollment(t, m.Store, "session", "box-pod-"+t.Name(), nil, nil)
+	// A pod session's own request is not granted at once - a person approves it - but the grant
+	// is still the pod enrollment's, which names no operator.
+	podReq, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, "a pod session asks for AUTO_TOKEN", "AUTO_TOKEN"), "")
+	if err != nil || podReq.RecordID == nil {
+		t.Fatalf("Create on a no-operator enrollment = %+v, %v; want a pending record", podReq, err)
+	}
+	podDecision, err := m.ApplyDecision(t.Context(), *podReq.RecordID, true, fixtureOperator)
+	if err != nil || podDecision.GrantID == "" {
+		t.Fatalf("ApplyDecision on a no-operator enrollment = %+v, %v; want a grant", podDecision, err)
+	}
+	podGrant := podDecision.GrantID
+	podRelease, err := m.Values(t.Context(), podGrant, pod, ReleaseCall{})
+	if err != nil {
+		t.Fatalf("Values(%s) on a no-operator enrollment: %v", podGrant, err)
+	}
+	podLive, err := m.ProxyGrantsOfEnrollment(t.Context(), pod, "", both)
+	if err != nil || len(podLive) != 1 {
+		t.Fatalf("a no-operator enrollment's live grants = %v, %v; want one", grantIDs(podLive), err)
+	}
+	if podLive[0].Operator != "" {
+		t.Errorf("a no-operator enrollment's grant carries Operator %q; want it empty", podLive[0].Operator)
+	}
+	podOpened, err := m.AirlockConnection(t.Context(), podRelease.Airlock.ProxyPassword)
+	if err != nil {
+		t.Fatalf("AirlockConnection(the pod grant's placeholder): %v", err)
+	}
+	if !reflect.DeepEqual(podLive[0], podOpened) {
+		t.Errorf("a no-operator grant = %+v; want what a connection opened with its placeholder answers, %+v", podLive[0], podOpened)
+	}
 }
 
 // TestAGrantHoldingNoBoundNameIsNotCheckedWhileDispatchIsDown: the proxy reads the session's other
