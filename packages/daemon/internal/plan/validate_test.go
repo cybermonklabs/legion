@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/steprecord"
+
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // yet ends each refusal of something a later release carries out.
@@ -533,34 +535,24 @@ func TestAReasonQuotesAWordOfThePlanWithinABound(t *testing.T) {
 			}
 		})
 	}
-	// The bound's edges. A need of MostQuotedBytes-1 bytes is quoted whole, and one of
-	// MostQuotedBytes+1 or +2 bytes is cut to MostQuotedBytes. A character of each width UTF-8
-	// holds, at each place where it holds byte MostQuotedBytes, cuts the need where that character
-	// starts. The faults are a cut one byte late, which keeps a need of MostQuotedBytes+1 whole,
-	// and a cut that splits a character of three or four bytes. The cases above let both pass:
-	// their shortest word past the bound has 201 bytes, and their character has two.
-	edges := []struct{ name, word, kept string }{
-		{"one byte under the bound", strings.Repeat("x", MostQuotedBytes-1), ""},
-		{"one byte past the bound", strings.Repeat("x", MostQuotedBytes+1), strings.Repeat("x", MostQuotedBytes)},
-		{"two bytes past the bound", strings.Repeat("x", MostQuotedBytes+2), strings.Repeat("x", MostQuotedBytes)},
-	}
-	for _, char := range []string{"é", "€", "𝄞"} {
-		for start := MostQuotedBytes - len(char) + 1; start <= MostQuotedBytes; start++ {
-			prefix := strings.Repeat("a", start)
-			edges = append(edges, struct{ name, word, kept string }{
-				fmt.Sprintf("a %d-byte character at byte %d", len(char), start), prefix + char + "z", prefix,
-			})
-		}
-	}
-	for _, edge := range edges {
+	// This table is the whole boundary, rather than examples someone picked. For each total byte
+	// length from eight below through eight above the bound, each character width 1 to 4 starts at
+	// every byte that can end at or straddle it. `wholePrefixAtMost` is the independent invariant:
+	// after URL redaction, quoted keeps the longest whole-character prefix at most the bound. A
+	// malformed-byte row holds the loop to its bounded look-back, and a URL row holds it to decide
+	// the length after redaction, so it never indexes past a redacted string.
+	for _, edge := range quoteBoundaryCases() {
 		t.Run("a need "+edge.name, func(t *testing.T) {
-			want := "needs " + edge.word + ","
-			if edge.kept != "" {
-				want = fmt.Sprintf("%s… (cut from %d bytes),", edge.kept, len(edge.word))
+			redacted := redact.URLCredentials(edge.word)
+			kept, cut := wholePrefixAtMost(redacted, MostQuotedBytes)
+			want := "needs " + kept + ","
+			if cut {
+				want = fmt.Sprintf("%s… (cut from %d bytes),", kept, len(redacted))
 			}
 			got := Validate(planOf(t, 1, taskNeeding("a", edge.word)), d)
 			if len(got) == 0 || got[0].Task != "a" || !strings.Contains(got[0].Reason, want) {
-				t.Fatalf("Validate of a need of %d bytes = %.400q, want a reason of task a quoting %q", len(edge.word), got, want)
+				t.Fatalf("Validate of %s, %d bytes before redaction and %d after, = %.400q, want a reason of task a quoting %q",
+					edge.name, len(edge.word), len(redacted), got, want)
 			}
 		})
 	}
@@ -598,6 +590,70 @@ func TestAReasonQuotesAWordOfThePlanWithinABound(t *testing.T) {
 			}
 		})
 	}
+}
+
+type quoteBoundaryCase struct {
+	name string
+	word string
+}
+
+// quoteBoundaryCases generates each valid word at the quote's boundary: every total byte length
+// from eight below through eight above it, every character width, and each position where that
+// character ends at or crosses it. The malformed row proves Bytes looks back only as far as it
+// promises. The URL row is longer than the bound before redaction and shorter after it.
+func quoteBoundaryCases() []quoteBoundaryCase {
+	const boundarySpan = 8
+	cases := []quoteBoundaryCase{}
+	for total := MostQuotedBytes - boundarySpan; total <= MostQuotedBytes+boundarySpan; total++ {
+		for _, char := range []string{"x", "é", "€", "𝄞"} {
+			if total < MostQuotedBytes && total >= len(char) {
+				start := total - len(char)
+				cases = append(cases, quoteBoundaryCase{
+					name: fmt.Sprintf("%d bytes, a %d-byte character ending at byte %d", total, len(char), total),
+					word: strings.Repeat("a", start) + char,
+				})
+			}
+			for start := max(0, MostQuotedBytes-len(char)); start <= MostQuotedBytes; start++ {
+				suffix := total - start - len(char)
+				if suffix < 0 {
+					continue
+				}
+				cases = append(cases, quoteBoundaryCase{
+					name: fmt.Sprintf("%d bytes, a %d-byte character at byte %d", total, len(char), start),
+					word: strings.Repeat("a", start) + char + strings.Repeat("z", suffix),
+				})
+			}
+		}
+	}
+	cases = append(cases,
+		quoteBoundaryCase{
+			name: "a malformed-byte run at the bound",
+			word: strings.Repeat("a", MostQuotedBytes-boundarySpan) + strings.Repeat("\x80", boundarySpan*2),
+		},
+		quoteBoundaryCase{
+			name: "a URL redacted under the bound",
+			word: "https://" + strings.Repeat("u", MostQuotedBytes+boundarySpan*2) + "@h.example/p",
+		},
+	)
+	return cases
+}
+
+// wholePrefixAtMost is the longest whole-character prefix of text whose bytes fit limit. It uses
+// Go's range positions, not redact.Bytes, so quoteBoundaryCases holds the result to the invariant
+// rather than restating Bytes' look-back loop. A malformed byte is one range item, so its prefix
+// stays as long as the limit lets it.
+func wholePrefixAtMost(text string, limit int) (string, bool) {
+	if len(text) <= limit {
+		return text, false
+	}
+	end := 0
+	for at := range text {
+		if at > limit {
+			break
+		}
+		end = at
+	}
+	return text[:end], true
 }
 
 // The daemon holds a task block's id to Dispatch's own form, and to no form of its own: the one
