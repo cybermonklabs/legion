@@ -1,6 +1,7 @@
 // Package bootprobe is what Legion's boot probes share: the retry that waits out a probe's
-// transient failures, and the OK line `legion probe-image` prints inside the worker image, which
-// the daemon's probe Sandbox reads back from the pod's log (internal/runtime/sandbox/probe.go). The
+// transient failures, and the OK line `legion probe-image` prints inside the worker image, with the
+// line naming what the image ships before it, which the daemon's probe Sandbox reads back from the
+// pod's log (internal/runtime/sandbox/probe.go). The
 // daemon's plugin gate, the image's own probe, and the probe Sandbox all run through Run, so a
 // probe's verdict means the same thing wherever it ran.
 package bootprobe
@@ -11,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -280,8 +282,9 @@ func OKLine(omp string, contract int, agentModels, capabilities, modelFallback, 
 		capabilitiesMark, capabilities, modelFallbackMark, modelFallback, ompVersionMark, ompVersion, sessionIDFlagMark, sessionIDFlag, contract)
 }
 
-// ImageReport is what the daemon keeps of a passed probe: its OK line's model-fallback mark, and
-// what the run itself saw of the pool on the way to that line.
+// ImageReport is what the daemon keeps of a passed probe: its OK line's model-fallback mark, the
+// agents and skills the image ships from the line before it, and what the run itself saw of the
+// pool on the way to that line.
 type ImageReport struct {
 	// ModelFallback is the line's model-fallback mark, ModelFallbackOn, ModelFallbackOff, or
 	// ModelFallbackUnread when the probe could not read retry.modelFallback: whether the image's
@@ -297,6 +300,11 @@ type ImageReport struct {
 	// CapacityReason is what the last such attempt waited on — the scheduler's own message, naming
 	// the nodes and the resource they lacked; "" when no attempt waited.
 	CapacityReason string
+	// Shipped is every agent and every skill the image ships, as its ShippedLine says (Shipped):
+	// what a launch of an arm's folder of texts holds the folder's agents and skills to. Nil when
+	// the log carries no such line, from a legion CLI that predates it, and the names are then
+	// unknown.
+	Shipped *ShippedNames
 }
 
 // markThenContract ends an OK-line pattern after a mark: whatever later marks the line carries,
@@ -403,6 +411,66 @@ func NATSUser(output string) string {
 		return ""
 	}
 	return match[1]
+}
+
+// ShippedNames are the agents and the skills a worker image ships, as the load probe's own
+// discovery finds them over the plugin roots a pod loads (internal/daemon's probe.mjs under
+// LEGION_PROMPT_LIST), Oh My Pi's bundled agents among them, since a text may name one. Each list
+// is sorted and holds a name once (NewShippedNames).
+type ShippedNames struct {
+	Agents, Skills []string
+}
+
+// NewShippedNames is agents and skills as ShippedNames: each list sorted, each name once, the
+// empty name left out.
+func NewShippedNames(agents, skills []string) ShippedNames {
+	return ShippedNames{Agents: sortedOnce(agents), Skills: sortedOnce(skills)}
+}
+
+// sortedOnce is a sorted copy of names, each name once and the empty name left out; nil when
+// that leaves none.
+func sortedOnce(names []string) []string {
+	sorted := slices.Compact(slices.Sorted(slices.Values(names)))
+	if len(sorted) > 0 && sorted[0] == "" {
+		sorted = sorted[1:]
+	}
+	if len(sorted) == 0 {
+		return nil
+	}
+	return sorted
+}
+
+// shippedPrefix begins a ShippedLine.
+const shippedPrefix = "LEGION_SHIPPED"
+
+// ShippedLine is the line `legion probe-image` prints just before its OK line, naming every agent
+// and every skill the image ships: `LEGION_SHIPPED agents=<a,b,…> skills=<x,y,…>`, each list
+// sorted and comma-joined. The daemon's probe Sandbox reads it back from the tail of the pod's log
+// (Shipped), which ends with the OK line, so the line before it is in that tail whatever the
+// capability table holds. A name holding a comma or white space would break its list; no
+// reference a text writes can name such a name (promptrefs), so the line leaves it out.
+func ShippedLine(names ShippedNames) string {
+	return shippedPrefix + " agents=" + shippedList(names.Agents) + " skills=" + shippedList(names.Skills)
+}
+
+// shippedList is names as one list of a ShippedLine.
+func shippedList(names []string) string {
+	return strings.Join(slices.DeleteFunc(sortedOnce(names), func(name string) bool {
+		return strings.ContainsAny(name, ", \t\n\v\f\r")
+	}), ",")
+}
+
+// shippedLine is a ShippedLine.
+var shippedLine = regexp.MustCompile(`(?m)^` + shippedPrefix + ` agents=(\S*) skills=(\S*)$`)
+
+// Shipped is the names the ShippedLine in output carries, and false when output holds none: a
+// legion CLI that predates the line, whose image's names are then unknown.
+func Shipped(output string) (ShippedNames, bool) {
+	match := shippedLine.FindStringSubmatch(output)
+	if match == nil {
+		return ShippedNames{}, false
+	}
+	return NewShippedNames(strings.Split(match[1], ","), strings.Split(match[2], ",")), true
 }
 
 // RoleConfigFilesFlag is the `legion probe-image` flag the daemon's probe Sandbox passes once per

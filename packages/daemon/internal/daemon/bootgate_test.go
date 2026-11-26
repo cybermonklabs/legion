@@ -283,7 +283,8 @@ func TestPluginManifestPathRefusesAProfileOhMyPiRefuses(t *testing.T) {
 // yes-* step prints interface 1 for pi-legion, and 1 for pi-envoy except the steps that test a
 // missing or mismatched pi-envoy, whatever the release's own number is, on purpose: the gate
 // compares the number pi-legion speaks with the one pi-envoy publishes, never either with a
-// release.
+// release. The yes-listing step is yes with, under the LEGION_PROMPT_LIST=1 the gate sets, the
+// lines of the file $LEGION_TEST_SHIPPED names: the probe's list of the names the launch ships.
 type fakeOmp struct {
 	dir, path, prefix string
 }
@@ -317,6 +318,7 @@ legion="LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=file://$installed/di
 with_envoy="LEGION_ENVOY_INTERFACE=1\nLEGION_ENVOY_LOADED_FROM=file://$envoy/dist/envoy.js?mtime=1\n"
 case "$step" in
 yes) printf "$legion$with_envoy" >&2; exit 0 ;;
+yes-listing) printf "$legion$with_envoy" >&2; [ "${LEGION_PROMPT_LIST:-}" != 1 ] || cat "$LEGION_TEST_SHIPPED" >&2; exit 0 ;;
 # A pass that takes its time, as Oh My Pi does on a loaded machine: longer than a budget of a
 # second or two, and far inside the rig's.
 yes-slowly) sleep 2; printf "$legion$with_envoy" >&2; exit 0 ;;
@@ -429,7 +431,7 @@ func TestTheGateRefusesAPluginOfAnotherContractBeforeRunningOhMyPi(t *testing.T)
 			f := newFakeOmp(t, "yes")
 			gate, _ := gateUnder(t, f, testCase.legion)
 
-			err := gate.verify(context.Background())
+			_, err := gate.verify(context.Background())
 
 			if err == nil {
 				t.Fatal("the gate passed a plugin of another contract")
@@ -455,7 +457,7 @@ func TestTheGateRefusesAPluginFromBeforeTheRename(t *testing.T) {
 	f := newFakeOmp(t, "yes")
 	gate, _ := gateUnder(t, f, `{"daemonApiVersion":9,"goDaemonApiVersion":3}`)
 
-	err := gate.verify(context.Background())
+	_, err := gate.verify(context.Background())
 
 	if err == nil {
 		t.Fatal("the gate passed a plugin that declares this contract only under the field before the rename")
@@ -482,7 +484,7 @@ func TestTheGateRefusesAManifestItCannotRead(t *testing.T) {
 
 	for name, env := range map[string]string{"absent": missing, "gate": manifest} {
 		gate.env["OMP_PROFILE"] = name
-		err := gate.verify(context.Background())
+		_, err := gate.verify(context.Background())
 		if err == nil || !strings.Contains(err.Error(), "pi-legion manifest at "+env+" could not be read") {
 			t.Errorf("profile %s: err = %v, want the unreadable-manifest refusal naming %s", name, err, env)
 		}
@@ -501,7 +503,7 @@ func TestTheLoadProbeRunsWhatAPaneRunsAndPassesOnTheLoadedMarker(t *testing.T) {
 	gate, logged := gateUnder(t, f, contractCurrent)
 	t.Setenv("LEGION_DAEMON_ONLY_SECRET", "the daemon's own")
 
-	if err := gate.verify(context.Background()); err != nil {
+	if _, err := gate.verify(context.Background()); err != nil {
 		t.Fatalf("the gate refused a loaded plugin of its contract: %v", err)
 	}
 
@@ -547,6 +549,51 @@ func TestTheLoadProbeRunsWhatAPaneRunsAndPassesOnTheLoadedMarker(t *testing.T) {
 	}
 }
 
+// The pane lane's gate answers the names the launch ships off its own load probe's stderr: every
+// agent and skill the probe lists under the LEGION_PROMPT_LIST=1 the gate sets on its run, here the
+// names a real Oh My Pi lists over both packed plugins (testdata/texts/shipped-names.txt), printed
+// in another order and one of them twice, read back sorted and each once. A probe that lists none,
+// one of an older shape, passes as before and leaves the names unknown: no refusal, and no empty
+// list a launch would read as an image that ships nothing.
+func TestTheBootGateReadsTheShippedNames(t *testing.T) {
+	t.Parallel()
+	agents, skills := shippedNamesFixture(t)
+	var lines []string
+	for _, name := range agents {
+		lines = append(lines, shippedAgentMarker+name)
+	}
+	for _, name := range skills {
+		lines = append(lines, shippedSkillMarker+name)
+	}
+	slices.Reverse(lines)
+	lines = append(lines, shippedAgentMarker+agents[0])
+	listed := filepath.Join(t.TempDir(), "listed")
+	if err := os.WriteFile(listed, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := newFakeOmp(t, "yes-listing")
+	gate, _ := gateUnder(t, f, contractCurrent)
+	gate.env["LEGION_TEST_SHIPPED"] = listed
+	shipped, err := gate.verify(context.Background())
+	if err != nil {
+		t.Fatalf("the gate refused a loaded plugin of its contract: %v", err)
+	}
+	if shipped == nil || !slices.Equal(shipped.Agents, agents) || !slices.Equal(shipped.Skills, skills) {
+		t.Fatalf("the gate answered %+v, want the names of shipped-names.txt: agents %v, skills %v", shipped, agents, skills)
+	}
+	if env := envlisting.Vars(f.read(t, "env.1")); env["LEGION_PROMPT_LIST"] != "1" {
+		t.Errorf("the load probe ran with LEGION_PROMPT_LIST=%q, want 1: the gate asks every run for the list", env["LEGION_PROMPT_LIST"])
+	}
+
+	older := newFakeOmp(t, "yes")
+	gate, _ = gateUnder(t, older, contractCurrent)
+	shipped, err = gate.verify(context.Background())
+	if err != nil || shipped != nil {
+		t.Fatalf("the gate over a probe that lists no name = (%+v, %v), want a pass that knows no name", shipped, err)
+	}
+}
+
 // Exit 0 with LEGION_PLUGIN_LOADED=yes already written is an answer, whatever the launch started
 // that is still running when Oh My Pi itself exits: a process it left behind (sleep 30 &, standing
 // in for whatever a real tmux pane's launch can leave running) holds the probe's output pipe open
@@ -566,7 +613,7 @@ func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutpu
 	gate.timeout = 10 * time.Second
 	t.Cleanup(func() { killPIDFile(t, filepath.Join(f.dir, "lingering.pid")) })
 
-	if err := gate.verify(context.Background()); err != nil {
+	if _, err := gate.verify(context.Background()); err != nil {
 		t.Fatalf("the gate refused a plugin that answered yes before a lingering child outlived it: %v", err)
 	}
 
@@ -646,7 +693,7 @@ func TestTheLoadProbeRefusesAPluginLoadedFromAnotherRoot(t *testing.T) {
 			gate, _ := gateUnder(t, f, contractCurrent)
 			writeManifest(t, filepath.Join(gate.env["HOME"], "elsewhere", "package.json"), contractCurrent)
 
-			err := gate.verify(context.Background())
+			_, err := gate.verify(context.Background())
 
 			if err == nil {
 				t.Fatal("the gate passed a plugin loaded from a root it did not read")
@@ -672,7 +719,7 @@ func TestTheLoadProbeRefusesAPluginOhMyPiDidNotLoad(t *testing.T) {
 			f := newFakeOmp(t, step)
 			gate, _ := gateUnder(t, f, contractCurrent)
 
-			err := gate.verify(context.Background())
+			_, err := gate.verify(context.Background())
 
 			want := "pi-legion 1.57.0 is installed but not loaded by omp (disabled or unregistered): run OMP_PROFILE=gate omp plugin list"
 			if err == nil || err.Error() != want {
@@ -692,7 +739,7 @@ func TestTheLoadProbeRefusesAPluginWithoutTheEnvoyPlugin(t *testing.T) {
 	f := newFakeOmp(t, "yes-no-envoy")
 	gate, _ := gateUnder(t, f, contractCurrent)
 
-	err := gate.verify(context.Background())
+	_, err := gate.verify(context.Background())
 
 	want := "pi-legion 1.57.0 is loaded in a pane of OMP profile gate, but no pi-envoy is: install the @sjawhar/pi-envoy release built from this daemon's commit into OMP profile gate"
 	if err == nil || err.Error() != want {
@@ -711,7 +758,7 @@ func TestTheLoadProbeRefusesAPluginAtAnotherEnvoyInterface(t *testing.T) {
 	f := newFakeOmp(t, "yes-envoy-mismatch")
 	gate, _ := gateUnder(t, f, contractCurrent)
 
-	err := gate.verify(context.Background())
+	_, err := gate.verify(context.Background())
 
 	envoy, _ := filepath.EvalSymlinks(filepath.Dir(envoyManifestAt(filepath.Join(gate.env["HOME"], ".omp", "profiles", "gate"))))
 	want := "pi-envoy at file://" + envoy + "/dist/envoy.js?mtime=1 publishes plugin interface 2; pi-legion speaks 1: install both releases built from this daemon's commit into OMP profile gate"
@@ -731,7 +778,7 @@ func TestTheLoadProbeRefusesAPluginBesideTheOldPackage(t *testing.T) {
 	f := newFakeOmp(t, "yes-legacy")
 	gate, _ := gateUnder(t, f, contractCurrent)
 
-	err := gate.verify(context.Background())
+	_, err := gate.verify(context.Background())
 
 	want := "a pane of OMP profile gate still loads @sjawhar/pi-legion-envoy from file://" + gate.env["HOME"] + "/legacy/dist/legion.js?mtime=1: run `OMP_PROFILE=gate omp plugin uninstall @sjawhar/pi-legion-envoy`"
 	if err == nil || err.Error() != want {
@@ -762,7 +809,7 @@ func TestTheLoadProbeHoldsTheEnvoyPluginToAManifestOfItsName(t *testing.T) {
 				writeEnvoyManifest(t, filepath.Join(gate.env["HOME"], "envoy-elsewhere", "package.json"))
 			}
 
-			err := gate.verify(context.Background())
+			_, err := gate.verify(context.Background())
 
 			if testCase.want == "" && err != nil {
 				t.Fatalf("the gate refused a pi-envoy an @sjawhar/pi-envoy manifest owns: %v", err)
@@ -784,7 +831,7 @@ func TestTheGateRefusesAMissingEnvoyBeforeTheMissingSkills(t *testing.T) {
 	gate.roleReferences = promptrefs.New()
 	gate.roleReferences.Text("roles/implementer.md", []byte("Read skill://dispatch before you file anything.\n"))
 
-	err := gate.verify(context.Background())
+	_, err := gate.verify(context.Background())
 
 	if err == nil || !strings.Contains(err.Error(), "but no pi-envoy is: install the @sjawhar/pi-envoy release") {
 		t.Fatalf("err = %v, want the missing-pi-envoy refusal", err)
@@ -807,7 +854,7 @@ func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
 			f := newFakeOmp(t, step)
 			gate, _ := gateUnder(t, f, contractCurrent)
 
-			err := gate.verify(context.Background())
+			_, err := gate.verify(context.Background())
 
 			if err == nil {
 				t.Fatal("the gate passed a launch that failed")
@@ -836,7 +883,7 @@ func TestTheLoadProbeRetriesWhatSaysNothingAboutThePlugin(t *testing.T) {
 			f := newFakeOmp(t, step, step, "yes-slowly", "yes")
 			gate, logged := gateUnder(t, f, contractCurrent)
 
-			if err := gate.verify(context.Background()); err != nil {
+			if _, err := gate.verify(context.Background()); err != nil {
 				t.Fatalf("the gate refused after transient failures: %v", err)
 			}
 			if n := f.attempts(t); n != 3 {
@@ -860,7 +907,7 @@ func TestTheLoadProbeGivesUpOnAProbeCutOffEveryTime(t *testing.T) {
 	gate, logged := gateUnder(t, f, contractCurrent)
 	hangsUnder(&gate, plan, 3)
 
-	err := gate.verify(context.Background())
+	_, err := gate.verify(context.Background())
 
 	for _, want := range []string{"never completed within its retry budget (3 attempts)", "timed out after " + hangBudget.String()} {
 		if err == nil || !strings.Contains(err.Error(), want) {
@@ -898,7 +945,7 @@ func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
 	}()
 
 	started := time.Now()
-	err := gate.verify(ctx)
+	_, err := gate.verify(ctx)
 
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want the daemon's cancellation", err)

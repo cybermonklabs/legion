@@ -113,7 +113,7 @@ func TestTheTmuxBootRefusesARoleOverlayOhMyPiCannotParse(t *testing.T) {
 	if p.gate == nil {
 		t.Fatal("prepare built no boot gate")
 	}
-	if err := p.gate(context.Background()); err == nil || err.Error() != want {
+	if _, err := p.gate(context.Background()); err == nil || err.Error() != want {
 		t.Fatalf("the boot gate = %v, want %q", err, want)
 	}
 }

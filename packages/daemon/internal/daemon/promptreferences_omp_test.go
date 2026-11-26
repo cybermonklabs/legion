@@ -85,12 +85,12 @@ func TestThePromptReferenceProbeOnTheRealOhMyPi(t *testing.T) {
 			log := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
 			var err error
 			if testCase.onPod {
-				err = ProbeImage(context.Background(), ImageProbe{Omp: omp, Contract: 3, Env: env, WorkDir: dir, PluginRoot: root, EnvoyPluginRoot: envoyRoot, RoleReferences: promptrefs.New(), Log: log})
+				_, err = ProbeImage(context.Background(), ImageProbe{Omp: omp, Contract: 3, Env: env, WorkDir: dir, PluginRoot: root, EnvoyPluginRoot: envoyRoot, RoleReferences: promptrefs.New(), Log: log})
 			} else {
 				installPlugins(t, omp, environ, envoyRoot, root)
 				// A pane loads the plugins through discovery, as the daemon's boot gate on tmux
 				// probes it.
-				err = pluginGate{env: env, workDir: dir, invocation: omp, timeout: defaultProbeTimeout, retry: bootprobe.Image,
+				_, err = pluginGate{env: env, workDir: dir, invocation: omp, timeout: defaultProbeTimeout, retry: bootprobe.Image,
 					contract: 3, log: log}.verify(context.Background())
 			}
 
@@ -185,7 +185,7 @@ func TestTheRealPluginsOnTheRealOhMyPi(t *testing.T) {
 			// the profile configures none of the roles the shipped agents name.
 			gate := pluginGate{env: env, workDir: dir, invocation: omp, timeout: defaultProbeTimeout, retry: bootprobe.Image,
 				contract: api.DaemonAPIVersion(), skipAgentModels: true, log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
-			err := gate.verify(context.Background())
+			_, err := gate.verify(context.Background())
 			switch {
 			case testCase.refusal == "" && err != nil:
 				t.Fatalf("the gate = %v, want a pass on both packed plugins", err)
@@ -201,6 +201,10 @@ func TestTheRealPluginsOnTheRealOhMyPi(t *testing.T) {
 	// rather than packing them again (texts_omp_test.go).
 	t.Run("every reference form in Legion's texts is collected", func(t *testing.T) {
 		everyReferenceFormInLegionsTextsIsCollected(t, envoy, legion)
+	})
+	// The same packs are what the probe's list of shipped names is held to (texts_omp_test.go).
+	t.Run("TestTheProbeListOnTheRealOhMyPi", func(t *testing.T) {
+		theProbeListOnTheRealOhMyPi(t, omp, envoy, legion)
 	})
 }
 

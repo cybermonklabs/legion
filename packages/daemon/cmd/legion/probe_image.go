@@ -72,7 +72,10 @@ var digits = regexp.MustCompile(`^[0-9]+$`)
 // the failure on stderr when its read fails before the deadline, since only a daemon that sets an
 // exchange audience needs the flag and refuses the image without it; a read the deadline cut has
 // no verdict, like every other check. When every check passes, it prints
-// bootprobe.OKLine with the capabilities, model-fallback, omp-version and omp-session-id marks; a
+// bootprobe.OKLine with the capabilities, model-fallback, omp-version and omp-session-id marks,
+// and right before it bootprobe.ShippedLine, every agent and skill the load probe's discovery
+// found over the two roots (daemon.ProbeImage), which a launch of an arm's folder of texts is
+// checked against; a
 // failed capability is the probe's message, exit 1, so a broken image never publishes. Each check
 // is judged as it returns, by the deadline --probe-budget sets: what it saw fail before the
 // deadline is exit 1, while a check the deadline cut, a capability row among them
@@ -264,7 +267,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	// names each step with no verdict; where nothing failed, they make the exit
 	// bootprobe.NoVerdictExit.
 	var noVerdict []string
-	err = daemon.ProbeImage(ctx, daemon.ImageProbe{
+	shipped, err := daemon.ProbeImage(ctx, daemon.ImageProbe{
 		Omp: invocation, Contract: expected, Env: env, WorkDir: workDir, PluginRoot: f.pluginRoot, EnvoyPluginRoot: f.envoyPluginRoot,
 		ClaudeRoot: f.claudeRoot, ClaudeCodePin: f.claudeCodePin,
 		RoleReferences: references, SkipAgentModels: f.skipAgentModels,
@@ -356,6 +359,12 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	}
 	if natsUser != "" {
 		fmt.Fprintln(stdout, bootprobe.NATSUserLine(natsUser))
+	}
+	// What the image ships, the line right before the OK line, so it is in the tail of the pod's log
+	// the daemon's probe Sandbox reads; none when the load probe listed no name, and the daemon then
+	// knows none.
+	if shipped != nil {
+		fmt.Fprintln(stdout, bootprobe.ShippedLine(*shipped))
 	}
 	fmt.Fprintln(stdout, bootprobe.OKLine(omp, expected, agentModels, checked, modelFallback, ompVersion, sessionIDFlag))
 	return 0

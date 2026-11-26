@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -499,5 +500,46 @@ func TestNoVerdictReadsOnlyALineOfItsOwn(t *testing.T) {
 				t.Fatalf("NoVerdict = (%q, %t), want (%q, %t)", got, ok, testCase.detail, testCase.ok)
 			}
 		})
+	}
+}
+
+// What the image ships crosses the probe pod's log as one line before the OK line: what ShippedLine
+// writes, Shipped reads back, sorted, each name once, whatever order or repeats the probe's
+// discovery gave. A log with no such line, from a legion CLI that predates it, is no empty image:
+// Shipped says it read nothing, and the daemon then knows no name. A line that is not one, or the
+// prefix inside another line, is no such line either.
+func TestTheShippedLineRoundTripsAndItsAbsenceIsUnknown(t *testing.T) {
+	names := NewShippedNames([]string{"scout", "deep-worker", "reviewer", "scout"}, []string{"legion-worker", "dispatch-first", "dispatch"})
+	line := ShippedLine(names)
+	if want := "LEGION_SHIPPED agents=deep-worker,reviewer,scout skills=dispatch,dispatch-first,legion-worker"; line != want {
+		t.Fatalf("ShippedLine = %q, want %q", line, want)
+	}
+	ok := OKLine("/opt/omp/bin/omp", 3, AgentModelsResolved, CapabilitiesAll, ModelFallbackOff, "omp/18.18.6", SessionIDFlagTaken)
+	for _, testCase := range []struct {
+		name, output string
+		want         ShippedNames
+		ok           bool
+	}{
+		{"the line right before the OK line", "probe-image: capability browser: present (chromium)\n" + line + "\n" + ok + "\n", names, true},
+		{"the line last, with no line break", line, names, true},
+		{"a line with no skill", ShippedLine(NewShippedNames([]string{"scout"}, nil)), NewShippedNames([]string{"scout"}, nil), true},
+		{"a line naming nothing", ShippedLine(ShippedNames{}), ShippedNames{}, true},
+		{"a CLI that predates the line", "probe-image: capability browser: present (chromium)\n" + ok + "\n", ShippedNames{}, false},
+		{"the prefix inside another line", "probe-image: quoted " + line + "\n" + ok + "\n", ShippedNames{}, false},
+		{"a line without its skills", "LEGION_SHIPPED agents=scout\n" + ok + "\n", ShippedNames{}, false},
+		{"nothing", "", ShippedNames{}, false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			got, read := Shipped(testCase.output)
+			if read != testCase.ok || !slices.Equal(got.Agents, testCase.want.Agents) || !slices.Equal(got.Skills, testCase.want.Skills) {
+				t.Fatalf("Shipped = (%+v, %t), want (%+v, %t)", got, read, testCase.want, testCase.ok)
+			}
+		})
+	}
+	// A name the line's lists cannot carry whole is left out rather than read back as two names;
+	// no reference a text writes can name it.
+	odd := ShippedLine(NewShippedNames([]string{"scout", "two words", "a,b"}, []string{"dispatch"}))
+	if got, read := Shipped(odd); !read || !slices.Equal(got.Agents, []string{"scout"}) || !slices.Equal(got.Skills, []string{"dispatch"}) {
+		t.Fatalf("Shipped(%q) = (%+v, %t), want scout and dispatch alone", odd, got, read)
 	}
 }

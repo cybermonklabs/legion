@@ -22,10 +22,12 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/client-go/rest"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -39,6 +41,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // kubernetesConfig is testConfig under runtime: kubernetes, its client a kubeconfig whose current
@@ -325,6 +328,100 @@ func TestAKubernetesDaemonRefusesTheBootItsWorkerImageProbeRefuses(t *testing.T)
 	}
 	if count, _ := boots(t, cfg); count != 0 {
 		t.Errorf("a boot whose image was refused was recorded %d times", count)
+	}
+}
+
+// Under kubernetes the image probe answers only once openSupervision has built the launch builder,
+// so every launch reads what the image ships through the accessor specs holds (specs.shipped),
+// which the boot binds to the probe's report before any claim's machine exists: a report naming
+// the image's agents and skills reaches it whole, with one INFO line counting them, and a report
+// with none, from an image whose `legion probe-image` predates the line, leaves every name
+// unknown, with one INFO line saying so. `legion probe-boot` answers the same report, names and
+// all (probeBoot).
+func TestKubernetesBootHandsTheShippedNamesToTheLaunch(t *testing.T) {
+	names := bootprobe.NewShippedNames([]string{"deep-worker", "reviewer", "scout"}, []string{"dispatch-first", "legion-worker"})
+	t.Run("legion probe-boot answers the report's names", func(t *testing.T) {
+		// Not parallel: it sets environment variables of the whole process (probeBootConfig).
+		var mu sync.Mutex
+		var requested []string
+		cfg, _ := probeBootConfig(t, agentSandboxCluster(t, &requested, &mu).URL)
+		prober := &recordedProber{report: bootprobe.ImageReport{ModelFallback: "off", Shipped: &names}}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		report, err := probeBoot(ctx, cfg, lookup(nil), quietLogger(), func(context.Context, *rest.Config, sandbox.Options) (imageProber, error) {
+			return prober, nil
+		})
+		if err != nil || report.Shipped == nil || !reflect.DeepEqual(*report.Shipped, names) {
+			t.Fatalf("probeBoot = (%+v, %v), want the probe's report with its names %+v", report, err, names)
+		}
+	})
+	for _, testCase := range []struct {
+		name    string
+		shipped *bootprobe.ShippedNames
+		want    texts.Shipped
+		line    string
+	}{
+		{"a report naming what the image ships", &names, texts.ShippedNames(names.Agents, names.Skills),
+			`"msg":"legion daemon read the agents and skills the worker image ships","from":"the image probe","agents":3,"skills":2`},
+		{"a report from a probe that predates the names", nil, texts.Shipped{},
+			`"msg":"legion daemon read no agent or skill names the worker image ships; a launch of an arm's folder of texts that names an agent or a skill falls back (names-unread)","from":"the image probe"`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := workflowConfigOn(t, workflowNATS(t), func(t *testing.T, project string) string {
+				return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
+					switch {
+					case servedBootCall(t, w, r, project):
+					case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
+						w.Header().Set("Content-Type", "application/json")
+						_, _ = w.Write([]byte("[]"))
+					default:
+						t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
+						http.NotFound(w, r)
+					}
+				})
+			})
+			cfg.Runtime = kubernetesConfig(t, "https://127.0.0.1:1").Runtime
+			o := fakeRuntime(fake.NewRuntime(), &built{})
+			o.workflowTokens, o.githubAPI = &workflowTokenRecorder{}, repositoriesGitHub(t)
+			o.probe = func(context.Context, runtime.Runtime) (bootprobe.ImageReport, error) {
+				return bootprobe.ImageReport{ModelFallback: "off", Shipped: testCase.shipped}, nil
+			}
+			handed := make(chan supervise.Specs, 1)
+			o.supervising = func(sup *supervisor, _ func(context.Context, string, string, intake.Fact) (intake.Result, error)) {
+				handed <- sup.deps.Specs
+			}
+			var logged syncBuffer
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() { done <- run(ctx, cfg, slog.New(slog.NewJSONHandler(&logged, nil)), o) }()
+			defer func() {
+				cancel()
+				if err := <-done; err != nil {
+					t.Errorf("run: %v", err)
+				}
+			}()
+
+			var launches supervise.Specs
+			select {
+			case launches = <-handed:
+			case err := <-done:
+				done <- err
+				t.Fatalf("run returned %v before it handed over its supervisor", err)
+			case <-time.After(2 * time.Minute):
+				t.Fatal("run did not hand over its supervisor within two minutes")
+			}
+			launchSpecs, ok := launches.(specs)
+			if !ok || launchSpecs.shipped == nil {
+				t.Fatalf("the machines build their launches with %T, want the daemon's specs with its shipped accessor", launches)
+			}
+			if got := launchSpecs.shipped(); !reflect.DeepEqual(got, testCase.want) {
+				t.Errorf("the launches read the shipped set %+v, want %+v, the image probe's report", got, testCase.want)
+			}
+			if strings.Count(logged.String(), "the worker image ships") != 1 || !strings.Contains(logged.String(), testCase.line) {
+				t.Errorf("the boot's log holds no one line %s:\n%s", testCase.line, logged.String())
+			}
+		})
 	}
 }
 

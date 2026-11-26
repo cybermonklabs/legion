@@ -37,7 +37,7 @@ func TestTheGateRefusesAClaudeEnvoyRootOfAnotherContract(t *testing.T) {
 			root := capabilitiestest.ClaudeRoot(t, testCase.declared)
 			var logged bytes.Buffer
 
-			err := ProbeImage(context.Background(), ImageProbe{
+			_, err := ProbeImage(context.Background(), ImageProbe{
 				Omp: f.path, Contract: 3, Env: imageEnv(home), WorkDir: t.TempDir(),
 				PluginRoot: legionRootOf(home), EnvoyPluginRoot: envoyRootOf(home),
 				ClaudeRoot: root, ClaudeCodePin: capabilitiestest.ClaudeCodePin(t),

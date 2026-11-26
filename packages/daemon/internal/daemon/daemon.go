@@ -56,6 +56,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -221,7 +222,10 @@ type overrides struct {
 	entrySweep time.Duration
 	// gate stands in for the plugin gate when runtime is replaced: nil is none, since a replaced
 	// runtime launches no Oh My Pi to gate. With the tmux runtime, the gate is always the real one.
-	gate func(ctx context.Context) error
+	// It answers the agents and skills the launch ships, as the real gate's load probe lists them
+	// (pluginGate.verify), nil for none: a live proof sets it to a real pane-lane gate over its own
+	// profile, so its boot reads the names as a production boot does.
+	gate func(ctx context.Context) (*bootprobe.ShippedNames, error)
 	// probe stands in for the worker image probe when runtime is replaced under kubernetes: nil is
 	// none. With the Agent Sandbox runtime, the probe is always the real one.
 	probe func(ctx context.Context, rt runtime.Runtime) (bootprobe.ImageReport, error)
@@ -368,14 +372,21 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if cfg.DispatchURL != "" {
 		log.Info("legion workflow boot stage", "stage", "prompts")
 	}
+	// The agents and skills the worker image ships, as this boot reads them: under tmux the plugin
+	// gate's own discovery, here; under kubernetes the image probe's report, once the supervision is
+	// open (below). Nil is a boot that read none.
+	var shipped *bootprobe.ShippedNames
+	shippedFrom := "no plugin gate or image probe"
 	if plan.gate != nil {
-		if err := plan.gate(ctx); err != nil {
+		names, err := plan.gate(ctx)
+		if err != nil {
 			if ctx.Err() != nil {
 				log.Info("legion daemon stopped before its plugin gate passed", "project", cfg.Project)
 				return nil
 			}
 			return err
 		}
+		shipped, shippedFrom = names, "the plugin gate"
 	}
 	// The credential every Dispatch call of the daemon's presents: the bearer dispatch_token_file
 	// names, or, under dispatch_token_broker, the daemon's own pod identity traded at the secrets
@@ -627,6 +638,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 			return err
 		}
 		s.imageReport, s.probed = report, true
+		shipped, shippedFrom = s.imageReport.Shipped, "the image probe"
 		// The probe waits out a cold node and an image pull, which the boot budget does not bound,
 		// as it does not bound the plugin gate: the work after the probe has a budget of its own.
 		var cancelAfterProbe context.CancelFunc
@@ -637,6 +649,10 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// under the gate's environment now that the gate has passed.
 		s.imageReport.ModelFallback = plan.modelFallback(ctx)
 	}
+	// Every launch from here on reads what the image ships through the one holder specs was built
+	// over (shippedNames): bound now that the gate or the probe has answered, and before any claim's
+	// machine exists, so no launch reads it unbound.
+	plan.shipped.bind(shipped, shippedFrom, log)
 	// The deployment's capability report (LEGION-578, "The check"): a gap is logged here, shown in
 	// `legion state` and named to the controller on every tick, and never refused.
 	s.reportCapabilities()
@@ -1143,6 +1159,10 @@ type plan struct {
 	// open hold the one holder. Nil under tmux, whose panes run in no pod, and for a replaced
 	// runtime, which is handed no such reading.
 	launchRounds *launchRounds
+	// shipped is the holder of the agents and skills the worker image ships, as the boot reads them
+	// (shippedNames): made in prepare, read by every launch's spec (specs.shipped), and bound once
+	// the gate or the image probe has answered (run). Never nil once prepare has made the plan.
+	shipped *shippedNames
 	// taskConfirmed tells the workflow each agent that took its task; nil without a workflow.
 	taskConfirmed func(c supervise.Claim)
 	// sessionLost and sessionStoreFault tell the workflow that a claim forgot its recorded session
@@ -1181,9 +1201,10 @@ type plan struct {
 	// it, or advertise_host at its port when the file sets one (shimAddress).
 	stream     string
 	newRuntime runtimeFactory
-	// gate is the plugin gate run before anything is opened (pluginGate); nil under a runtime with
-	// no host Oh My Pi, and for a replaced runtime without one.
-	gate func(ctx context.Context) error
+	// gate is the plugin gate run before anything is opened (pluginGate), answering the agents and
+	// skills the launch ships (pluginGate.verify), nil for none; nil under a runtime with no host
+	// Oh My Pi, and for a replaced runtime without one.
+	gate func(ctx context.Context) (*bootprobe.ShippedNames, error)
 	// probe proves the runtime's worker image once the runtime is built and before the boot is
 	// recorded, answering what its OK line reported of the image; nil under tmux, and for a
 	// replaced runtime without one.
@@ -1366,7 +1387,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
-		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision, streamListen: o.streamListen,
+		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision, streamListen: o.streamListen, shipped: &shippedNames{},
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)
@@ -1432,9 +1453,9 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 		image := capabilities.Image{Launch: omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation), Env: environPairs(env), WorkDir: cfg.StateDir}
 		// The role overlays first: a cheap read whose refusal names the operator's file, before the
 		// plugin gate's slower load probes.
-		p.gate = func(ctx context.Context) error {
+		p.gate = func(ctx context.Context) (*bootprobe.ShippedNames, error) {
 			if err := checkPaneRoleOverlays(ctx, cfg, image, log); err != nil {
-				return err
+				return nil, err
 			}
 			return gate.verify(ctx)
 		}
@@ -2023,7 +2044,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
-			variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir),
+			variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir), shipped: p.shipped.read,
 		},
 		Identity:                adoptIdentity(p.identity, p.repository),
 		IssueInTurn:             sup.claimInTurn,
@@ -2092,6 +2113,40 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	// any machine exists, as the workflow sets enqueue where it attaches.
 	sup.deps.StallBackstopped = supervisionOf.stallBackstopped
 	return supervisionOf, nil
+}
+
+// shippedNames is the seam between the launch builder, which openSupervision builds (specs.shipped),
+// and the boot's read of the agents and skills the worker image ships, which under kubernetes comes
+// after it: the image probe runs once the supervision is open (plan.probe, run). Under tmux the
+// plugin gate read them before anything opened. The boot binds it once, in its own goroutine,
+// before any claim's machine exists and so before any launch reads it, as it fills launchRounds:
+// there is nothing to lock, and nothing ever replaces what was bound.
+type shippedNames struct {
+	set texts.Shipped
+}
+
+// bind holds names, what the boot read (nil: none), as the set every launch reads, and logs it in
+// one line naming where it came from: how many agents and skills it read, or that it read none, in
+// which case every launch of an arm's folder of texts that names an agent or a skill falls back,
+// since no such name can be held to the image.
+func (h *shippedNames) bind(names *bootprobe.ShippedNames, from string, log *slog.Logger) {
+	if names == nil {
+		log.Info("legion daemon read no agent or skill names the worker image ships; a launch of an arm's folder of texts that names an agent or a skill falls back (names-unread)",
+			"from", from)
+		return
+	}
+	h.set = texts.ShippedNames(names.Agents, names.Skills)
+	log.Info("legion daemon read the agents and skills the worker image ships",
+		"from", from, "agents", len(names.Agents), "skills", len(names.Skills))
+}
+
+// read is the set the boot bound: the zero texts.Shipped, every name unknown, before the bind and
+// after a boot that read none. A nil holder, a test's plan that made none, reads the same.
+func (h *shippedNames) read() texts.Shipped {
+	if h == nil {
+		return texts.Shipped{}
+	}
+	return h.set
 }
 
 // cleanSessionStop is what a machine calls once a claim's agent process has ended — a probe

@@ -493,6 +493,58 @@ func TestProbeImageReportsTheModelFallbackMark(t *testing.T) {
 	}
 }
 
+// A passing probe reports what the image ships, as the line `legion probe-image` prints just before
+// its OK line names it, read from the tail of the pod's log the daemon reads: probeLogLines lines,
+// the capability table's rows and whatever else the probe printed first, the shipped line and the
+// OK line last. An image whose legion CLI predates the line reports none, which is no empty image
+// but names the daemon does not know.
+func TestTheImageProbeReportCarriesTheShippedNames(t *testing.T) {
+	names := bootprobe.NewShippedNames([]string{"deep-worker", "reviewer", "scout"}, []string{"dispatch", "dispatch-first", "legion-worker"})
+	for _, testCase := range []struct {
+		name    string
+		shipped bool
+	}{
+		{"the line before the OK line", true},
+		{"a CLI that predates the line", false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			g := newProbeRig(t, nil)
+			last := []string{okLine(3)}
+			if testCase.shipped {
+				last = []string{bootprobe.ShippedLine(names), okLine(3)}
+			}
+			var log strings.Builder
+			for row := range probeLogLines - len(last) {
+				fmt.Fprintf(&log, "probe-image: capability row-%d: present (a row of the table)\n", row)
+			}
+			for _, line := range last {
+				log.WriteString(line + "\n")
+			}
+			if lines := strings.Count(log.String(), "\n"); lines != probeLogLines {
+				t.Fatalf("the log holds %d lines, want the %d of the tail the daemon reads", lines, probeLogLines)
+			}
+			g.succeeds(log.String())
+
+			report, err := g.r.ProbeImage(g.ctx, probeOptions(t))
+
+			if err != nil {
+				t.Fatalf("ProbeImage = %v, want a pass", err)
+			}
+			switch {
+			case !testCase.shipped && report.Shipped != nil:
+				t.Errorf("report.Shipped = %+v, want none: the log carries no shipped line", *report.Shipped)
+			case testCase.shipped && report.Shipped == nil:
+				t.Errorf("report.Shipped = nil, want %+v", names)
+			case testCase.shipped && (!slices.Equal(report.Shipped.Agents, names.Agents) || !slices.Equal(report.Shipped.Skills, names.Skills)):
+				t.Errorf("report.Shipped = %+v, want %+v", *report.Shipped, names)
+			}
+			if report.ModelFallback != "off" {
+				t.Errorf("report.ModelFallback = %q, want the OK line's off beside the names", report.ModelFallback)
+			}
+		})
+	}
+}
+
 // ompLine is okLine(3) with the omp-version mark version and the omp-session-id mark sessionID.
 func ompLine(version, sessionID string) string {
 	return bootprobe.OKLine("/opt/omp/bin/omp", 3, bootprobe.AgentModelsResolved, bootprobe.CapabilitiesAll, "off", version, sessionID)

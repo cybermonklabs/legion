@@ -202,7 +202,7 @@ func TestProbeImageLoadsThePluginTheWayAPodDoes(t *testing.T) {
 	home := imageHome(t, contractCurrent)
 	root, envoyRoot := legionRootOf(home), envoyRootOf(home)
 
-	err := ProbeImage(context.Background(), ImageProbe{
+	_, err := ProbeImage(context.Background(), ImageProbe{
 		Omp: f.path, Contract: 3, Env: imageEnv(home), WorkDir: t.TempDir(), PluginRoot: root, EnvoyPluginRoot: envoyRoot,
 		RoleReferences: promptrefs.New(), Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
 	})
@@ -236,7 +236,7 @@ func TestProbeImageLoadsThePluginTheWayAPodDoes(t *testing.T) {
 		probe := testCase.probe
 		probe.Omp, probe.Contract, probe.Env, probe.WorkDir = f.path, 3, imageEnv(home), t.TempDir()
 		probe.RoleReferences, probe.Log = promptrefs.New(), slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
-		err = ProbeImage(context.Background(), probe)
+		_, err = ProbeImage(context.Background(), probe)
 		if err == nil || !strings.Contains(err.Error(), testCase.want) {
 			t.Fatalf("ProbeImage with %s = %v, want it refused saying %q", testCase.name, err, testCase.want)
 		}
@@ -253,7 +253,7 @@ func TestTheImageProbeRequiresTheRolePromptsReferences(t *testing.T) {
 	f := newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 	home := imageHome(t, contractCurrent)
 
-	err := ProbeImage(context.Background(), ImageProbe{
+	_, err := ProbeImage(context.Background(), ImageProbe{
 		Omp: f.path, Contract: 3, Env: imageEnv(home), WorkDir: t.TempDir(), PluginRoot: legionRootOf(home), EnvoyPluginRoot: envoyRootOf(home),
 		Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
 	})
@@ -274,7 +274,7 @@ func TestTheImageProbeResolvesARelativePluginRoot(t *testing.T) {
 	home := imageHome(t, contractCurrent)
 	t.Chdir(home)
 
-	err := ProbeImage(context.Background(), ImageProbe{
+	_, err := ProbeImage(context.Background(), ImageProbe{
 		Omp: f.path, Contract: 3, Env: imageEnv(home), WorkDir: home,
 		PluginRoot: filepath.Join("opt-legion", "pi-legion"), EnvoyPluginRoot: filepath.Join("opt-legion", "pi-envoy"),
 		RoleReferences: promptrefs.New(), Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
@@ -324,7 +324,7 @@ func TestTheImageProbesRefusalsNameThePluginRootAPodLoads(t *testing.T) {
 			writeEnvoyManifest(t, filepath.Join(f.dir, "elsewhere", "pi-envoy", "package.json"))
 			gate, _ := imageGateUnder(t, f, testCase.legion, 0)
 
-			err := gate.verifyImage(context.Background())
+			_, err := gate.verifyImage(context.Background())
 
 			if err == nil {
 				t.Fatal("verifyImage passed, want a refusal")
@@ -353,7 +353,7 @@ func TestProbeImageRunsTheThreeProbesUnderTheImagesEnvironment(t *testing.T) {
 	home := imageHome(t, contractCurrent)
 	env := imageEnv(home)
 
-	err := ProbeImage(context.Background(), ImageProbe{
+	_, err := ProbeImage(context.Background(), ImageProbe{
 		Omp: f.path, Contract: 3, Env: env, WorkDir: t.TempDir(), PluginRoot: legionRootOf(home), EnvoyPluginRoot: envoyRootOf(home),
 		RoleReferences: promptrefs.New(), Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
 	})
@@ -396,13 +396,13 @@ func TestTheImageProbeHoldsThePluginToTheContractItIsGiven(t *testing.T) {
 	f := newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 	gate, _ := imageGateUnder(t, f, contractPrevious, 0)
 	gate.contract = 2
-	if err := gate.verifyImage(context.Background()); err != nil {
+	if _, err := gate.verifyImage(context.Background()); err != nil {
 		t.Fatalf("a plugin declaring contract 2 against contract 2: %v", err)
 	}
 
 	f = newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 	gate, _ = imageGateUnder(t, f, contractPrevious, 0)
-	err := gate.verifyImage(context.Background())
+	_, err := gate.verifyImage(context.Background())
 
 	if err == nil || !strings.Contains(err.Error(), "speaks daemon API contract 2; this daemon requires 3") {
 		t.Fatalf("verifyImage = %v, want the contract refusal naming 2 and 3", err)
@@ -435,7 +435,7 @@ func TestTheAgentsProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 			f := newImageOmp(t, testCase.plan, []string{"yes"}, []string{"refuses"})
 			gate, logged := imageGateUnder(t, f, contractCurrent, 0)
 
-			err := gate.verifyImage(context.Background())
+			_, err := gate.verifyImage(context.Background())
 
 			if testCase.refusal == nil && err != nil {
 				t.Fatalf("verifyImage = %v, want a pass", err)
@@ -521,7 +521,7 @@ func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
 			gate, logged := imageGateUnder(t, f, contractCurrent, 3)
 			hangsUnder(&gate, testCase.agents, 3)
 
-			err := gate.verifyImage(context.Background())
+			_, err := gate.verifyImage(context.Background())
 
 			for _, want := range append(testCase.want, f.path) {
 				if err == nil || !strings.Contains(err.Error(), want) {

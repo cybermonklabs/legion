@@ -27,7 +27,10 @@ import (
 // pi.agents is there, the Envoy and Legion plugins handed to it as its two explicit extensions
 // beside its discovery load from those roots, pi-envoy publishing the interface pi-legion speaks
 // from the one module instance, and Oh My Pi finds every task agent and skill Legion's prompts
-// name; and the session-storage setting refuses a value it does not know, naming the variable.
+// name, and, under the LEGION_PROMPT_LIST=1 the gate sets and with $LEGION_TEST_SHIPPED naming a
+// file, lists what that file holds, its LEGION_SHIPPED_AGENT and LEGION_SHIPPED_SKILL lines, as the
+// probe's own discovery lists every agent and skill; and the session-storage setting refuses a
+// value it does not know, naming the variable.
 // Asked for task agents, it resolves their models too, unless told to skip them. It answers the
 // capability check's two commands as this pod's omp does: `setup python --check --json` says
 // Python is available when python3 is on its PATH and $LEGION_TEST_NO_PYTHON is unset, else
@@ -67,7 +70,10 @@ case "$*" in
   printf 'LEGION_ENVOY_INTERFACE=1\nLEGION_ENVOY_LOADED_FROM=file://%s/dist/envoy.js\nLEGION_ENVOY_PUBLISHER=file://%s/dist/envoy.js\n' "$envoy" "$envoy" >&2
   if [ -n "${LEGION_PROMPT_AGENTS:-}" ]; then echo LEGION_PROMPT_AGENTS=resolved >&2; fi
   if [ -n "${LEGION_PROMPT_AGENTS:-}" ] && [ -z "${LEGION_SKIP_AGENT_MODELS:-}" ]; then echo LEGION_AGENT_MODELS=resolved >&2; fi
-  if [ -n "${LEGION_PROMPT_SKILLS:-}" ]; then echo LEGION_PROMPT_SKILLS=resolved >&2; fi ;;
+  if [ -n "${LEGION_PROMPT_SKILLS:-}" ]; then echo LEGION_PROMPT_SKILLS=resolved >&2; fi
+  if [ "${LEGION_PROMPT_LIST:-}" = 1 ] && [ -n "${LEGION_TEST_SHIPPED:-}" ]; then
+    while IFS= read -r line; do printf '%s\n' "$line" >&2; done <"$LEGION_TEST_SHIPPED"
+  fi ;;
 "models --no-extensions --extension "*" --json") echo LEGION_OMP_AGENTS=available >&2 ;;
 "setup python --check --json")
   if [ -n "${LEGION_TEST_NO_PYTHON:-}" ] || ! command -v python3 >/dev/null 2>&1; then
@@ -272,6 +278,41 @@ func TestProbeImagePrintsTheTableAndTheOKLineWithThisBinarysContract(t *testing.
 	okLine := "probe-image: OK (" + omp + ") session-storage=probed extensions=discovered agent-models=resolved" + capabilityMarks + thisBinarysContract + "\n"
 	if want := strings.Join(table, "\n") + "\n" + okLine; stdout != want {
 		t.Fatalf("stdout = %q, want the table, then the OK line %q, and nothing else", stdout, okLine)
+	}
+}
+
+// The load probe lists every agent and skill its discovery finds over the image's two roots, under
+// the LEGION_PROMPT_LIST the gate sets itself (the fake omp lists only under it), and the command
+// prints them as one line, sorted, each name once, right before the OK line: the last two lines of
+// the pod's log, inside the tail the daemon's probe Sandbox reads, which reads the line back
+// (bootprobe.Shipped). An image whose probe lists no name prints no such line (the test above).
+func TestProbeImagePrintsTheShippedNamesBeforeItsOKLine(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	listed := filepath.Join(t.TempDir(), "listed")
+	list := "LEGION_SHIPPED_AGENT=scout\nLEGION_SHIPPED_AGENT=deep-worker\nLEGION_SHIPPED_AGENT=reviewer\n" +
+		"LEGION_SHIPPED_SKILL=legion-worker\nLEGION_SHIPPED_SKILL=dispatch-first\nLEGION_SHIPPED_SKILL=legion-worker\n"
+	if err := os.WriteFile(listed, []byte(list), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LEGION_TEST_SHIPPED", listed)
+
+	code, stdout, stderr := probeImage(img.flags()...)
+
+	if code != 0 {
+		t.Fatalf("probe-image exited %d: %s", code, stderr)
+	}
+	names := bootprobe.NewShippedNames([]string{"deep-worker", "reviewer", "scout"}, []string{"dispatch-first", "legion-worker"})
+	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+	okLine := "probe-image: OK (" + omp + ") session-storage=probed extensions=discovered agent-models=resolved" + capabilityMarks + thisBinarysContract
+	if len(lines) < 2 || lines[len(lines)-2] != bootprobe.ShippedLine(names) || lines[len(lines)-1] != okLine {
+		t.Fatalf("stdout = %q, want it to end with the shipped line %q, then the OK line %q", stdout, bootprobe.ShippedLine(names), okLine)
+	}
+	if got, ok := bootprobe.Shipped(stdout); !ok || !slices.Equal(got.Agents, names.Agents) || !slices.Equal(got.Skills, names.Skills) {
+		t.Errorf("bootprobe.Shipped(stdout) = (%+v, %t), want (%+v, true)", got, ok, names)
+	}
+	if table := tableLines(stdout); len(table) != len(capabilities.Table) || !slices.Equal(lines[:len(table)], table) {
+		t.Errorf("stdout = %q, want the capability table first, as before", stdout)
 	}
 }
 

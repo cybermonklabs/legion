@@ -1,16 +1,23 @@
 package daemon
 
 import (
+	"bytes"
+	"context"
 	"io/fs"
+	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
+	"github.com/sjawhar/legion/daemon/internal/testbin"
 )
 
 // The folder of texts an experiment arm names is checked against the agents and
@@ -192,4 +199,100 @@ func referencesIn(body string) []namedReference {
 		}
 	}
 	return found
+}
+
+// The load probe's own list is what the image ships. On the real Oh My Pi over both packed plugins,
+// loaded as a pod loads them — the two roots explicit, discovery on, LEGION_PROMPT_ROOTS naming
+// them — and run as capture-names.sh runs its stand-alone module, probe.mjs under
+// LEGION_PROMPT_LIST=1 prints exactly the agents and skills testdata/texts/shipped-names.txt holds,
+// Oh My Pi's bundled agents among them, though no name was asked of it. The gate's pod lane, which
+// sets the variable itself, answers the same names (pluginGate.verify), as a live proof's gate
+// answers its boot. A difference after a change to a skill, an agent or the Oh My Pi pin is the
+// fixture's to capture again, with capture-names.sh.
+func theProbeListOnTheRealOhMyPi(t *testing.T, omp, envoy, legion string) {
+	wantAgents, wantSkills := shippedNamesFixture(t)
+	dir := t.TempDir()
+	home, work := filepath.Join(dir, "home"), filepath.Join(dir, "work")
+	testbin.OMPHome(t, omp, home)
+	// The profile capture-names.sh writes: one operator provider nothing listens on, since `omp
+	// models` loads its extensions only for a profile with a model.
+	writeTree(t, filepath.Join(home, ".omp", "agent"), map[string]string{
+		"models.yml": "providers:\n  operator:\n    baseUrl: http://127.0.0.1:9\n    auth: apiKey\n    api: anthropic-messages\n" +
+			"    apiKey: unused\n    models:\n      - id: probe-test\n        name: Probe test\n",
+		"config.yml": "modelRoles:\n  default: operator/probe-test\n",
+	})
+	mkdir(t, work)
+	probe := filepath.Join(dir, "probe.mjs")
+	if err := os.WriteFile(probe, pluginLoadProbe, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	environ := []string{"HOME=" + home, "PATH=/usr/local/bin:/usr/bin:/bin", "AWS_EC2_METADATA_DISABLED=true"}
+	models := exec.Command(omp, "models", "--extension", envoy, "--extension", legion, "--extension", probe, "--json")
+	models.Env = append(slices.Clone(environ), "LEGION_PROMPT_ROOTS="+envoy+":"+legion, "LEGION_PROMPT_LIST=1")
+	models.Dir = work
+	var stderr bytes.Buffer
+	models.Stderr = &stderr
+	if err := models.Run(); err != nil {
+		t.Fatalf("omp models with the probe: %v\n%s", err, stderr.String())
+	}
+	var listed []string
+	for line := range strings.Lines(stderr.String()) {
+		line = strings.TrimSpace(line)
+		if name, ok := strings.CutPrefix(line, shippedAgentMarker); ok {
+			listed = append(listed, "agent "+name)
+		} else if name, ok := strings.CutPrefix(line, shippedSkillMarker); ok {
+			listed = append(listed, "skill "+name)
+		}
+	}
+	slices.Sort(listed)
+	var want []string
+	for _, name := range wantAgents {
+		want = append(want, "agent "+name)
+	}
+	for _, name := range wantSkills {
+		want = append(want, "skill "+name)
+	}
+	if !slices.Equal(listed, want) {
+		t.Fatalf("probe.mjs under LEGION_PROMPT_LIST=1 listed\n%s\nwant testdata/texts/shipped-names.txt\n%s\n"+
+			"(a change to a skill, an agent or the Oh My Pi pin: capture the file again with testdata/texts/capture-names.sh)\nstderr:\n%s",
+			strings.Join(listed, "\n"), strings.Join(want, "\n"), stderr.String())
+	}
+
+	env := map[string]string{}
+	for _, pair := range environ {
+		name, value, _ := strings.Cut(pair, "=")
+		env[name] = value
+	}
+	gate := pluginGate{env: env, workDir: work, invocation: omp, timeout: defaultProbeTimeout, retry: bootprobe.Image,
+		contract: api.DaemonAPIVersion(), pluginRoot: legion, envoyPluginRoot: envoy, skipAgentModels: true,
+		log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
+	shipped, err := gate.verify(context.Background())
+	if err != nil {
+		t.Fatalf("the gate's pod lane over both packed plugins = %v, want a pass", err)
+	}
+	if shipped == nil || !slices.Equal(shipped.Agents, wantAgents) || !slices.Equal(shipped.Skills, wantSkills) {
+		t.Fatalf("the gate's pod lane answered %+v, want the names of testdata/texts/shipped-names.txt: agents %v, skills %v", shipped, wantAgents, wantSkills)
+	}
+}
+
+// shippedNamesFixture is testdata/texts/shipped-names.txt: the agents and the skills a real Oh My
+// Pi at the pin discovers over both packed plugins, each list in the file's sorted order.
+func shippedNamesFixture(t *testing.T) (agents, skills []string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("testdata", "texts", "shipped-names.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for line := range strings.Lines(string(raw)) {
+		kind, name, ok := strings.Cut(strings.TrimSpace(line), " ")
+		switch {
+		case ok && kind == "agent":
+			agents = append(agents, name)
+		case ok && kind == "skill":
+			skills = append(skills, name)
+		default:
+			t.Fatalf("shipped-names.txt holds %q, which is no `agent <name>` or `skill <name>` line", line)
+		}
+	}
+	return agents, skills
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 var _ supervise.Specs = specs{}
@@ -124,6 +125,13 @@ type specs struct {
 	// through the workflow); nil for a daemon with no workflow, whose launches work no repository.
 	hostWorkspaces  bool
 	ensureWorkspace func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
+	// shipped is the agents and skills the worker image ships, as the boot read them: the plugin
+	// gate's under tmux, the image probe's report under kubernetes (shippedNames). It is read at
+	// each launch, never copied when specs is built, since under kubernetes the probe answers only
+	// after openSupervision has built this. Its zero texts.Shipped is a boot that read none, and a
+	// folder of texts that names an agent or a skill then falls back. Boot always sets it; it is nil
+	// only in a test whose specs literal leaves it out.
+	shipped func() texts.Shipped
 }
 
 // rolePromptPath is where a claim's role prompt is kept for every launch of it.

@@ -1217,8 +1217,9 @@ var undefinedFlag = regexp.MustCompile(`(?:unknown flag|flag provided but not de
 // My Pi role of such a deployment starts with: a help that lists no such flag, a help the probe
 // could not read, and a line from a CLI of this contract that predates the mark are each refused
 // (sessionIDRefusal); with none, the mark is never judged. The passing outcome's Report carries the
-// line's model-fallback mark, which the daemon keeps; the pass's log line carries that mark and the
-// omp-version and omp-session-id marks.
+// line's model-fallback mark, which the daemon keeps, and the agents and skills the line before it
+// names (bootprobe.Shipped), none when the tail holds no such line; the pass's log line carries the
+// model-fallback mark and the omp-version and omp-session-id marks.
 func (r *Runtime) judge(name, digest string, pod *corev1.Pod, logTail string, logErr error, contract int) bootprobe.Outcome {
 	if why := kubeletFailure(pod); why != "" {
 		// Whatever the container wrote before the kubelet ended it is quoted when it could be read.
@@ -1297,6 +1298,11 @@ func (r *Runtime) judge(name, digest string, pod *corev1.Pod, logTail string, lo
 		return imageRefusal(digest, "%s — log tail: %s", sessionIDRefusal(name, version, flag), logTail)
 	}
 	report := bootprobe.ImageReport{ModelFallback: bootprobe.ModelFallback(logTail)}
+	// The line before the OK line names what the image ships; a legion CLI that predates it prints
+	// none, and the names are then unknown, which no launch reads as an empty image.
+	if names, ok := bootprobe.Shipped(logTail); ok {
+		report.Shipped = &names
+	}
 	r.log.Info("sandbox runtime: the worker image passed its probe", "image", r.image, "sandbox", name, "model-fallback", report.ModelFallback,
 		"omp-version", version, "omp-session-id", flag, "log", logTail)
 	return bootprobe.Outcome{Passed: true, Report: report}

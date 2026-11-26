@@ -45,16 +45,12 @@ export default async function probeLegionPluginLoaded(pi) {
       }
     : undefined;
   const cwd = process.cwd();
-  const agents = await resolve("LEGION_PROMPT_AGENTS", async () => {
+  // Each discovery runs once at most, for the first of the answers below that asks for it.
+  const discoveredAgents = once(async () => {
     const { discoverAgents } = await import("@oh-my-pi/pi-coding-agent/task/discovery");
     return (await discoverAgents(cwd, undefined, roots)).agents;
   });
-  // Each of those agents' models, resolved once the session's model registry exists: Oh My Pi hands
-  // it to extensions only in an event, and `omp models` emits session_shutdown.
-  if (agents && !process.env.LEGION_SKIP_AGENT_MODELS) {
-    pi.on("session_shutdown", (_event, ctx) => agentModels(agents, ctx));
-  }
-  await resolve("LEGION_PROMPT_SKILLS", async () => {
+  const discoveredSkills = once(async () => {
     const { loadSkills } = await import("@oh-my-pi/pi-coding-agent/extensibility/skills");
     const { cfgDisabledExtensions, cfgSkills } = await import(
       "@oh-my-pi/pi-coding-agent/extensibility/settings"
@@ -68,6 +64,43 @@ export default async function probeLegionPluginLoaded(pi) {
     };
     return (await loadSkills(options)).skills;
   });
+  const agents = await resolve("LEGION_PROMPT_AGENTS", discoveredAgents);
+  // Each of those agents' models, resolved once the session's model registry exists: Oh My Pi hands
+  // it to extensions only in an event, and `omp models` emits session_shutdown.
+  if (agents && !process.env.LEGION_SKIP_AGENT_MODELS) {
+    pi.on("session_shutdown", (_event, ctx) => agentModels(agents, ctx));
+  }
+  await resolve("LEGION_PROMPT_SKILLS", discoveredSkills);
+  // Every agent and every skill the same discovery finds, whatever names were asked for: what the
+  // launch ships, which the daemon holds a folder of texts' agents and skills to (bootgate.go,
+  // readLoadAnswer).
+  if (process.env.LEGION_PROMPT_LIST) await list(discoveredAgents, discoveredSkills);
+}
+
+// once is discover run once at most: every call answers the promise of its first run.
+function once(discover) {
+  let discovered;
+  return () => {
+    discovered ??= discover();
+    return discovered;
+  };
+}
+
+// list prints every agent and every skill discovery finds, one LEGION_SHIPPED_AGENT or
+// LEGION_SHIPPED_SKILL line each, all of them or none: a discovery that fails prints
+// LEGION_SHIPPED_UNRESOLVABLE with its first line and no name, so the gate never reads part of the
+// list for the whole of it.
+async function list(discoveredAgents, discoveredSkills) {
+  try {
+    const agents = await discoveredAgents();
+    const skills = await discoveredSkills();
+    process.stderr.write(
+      agents.map((agent) => `LEGION_SHIPPED_AGENT=${agent.name}\n`).join("") +
+        skills.map((skill) => `LEGION_SHIPPED_SKILL=${skill.name}\n`).join("")
+    );
+  } catch (error) {
+    process.stderr.write(`LEGION_SHIPPED_UNRESOLVABLE=${firstLine(error)}\n`);
+  }
 }
 
 // resolve answers, under variable, which of the names it lists Oh My Pi's discovery finds, and

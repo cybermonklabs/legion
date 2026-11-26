@@ -129,10 +129,10 @@ func TestTheAgentModelCheckOnTheRealOhMyPi(t *testing.T) {
 				installPlugins(t, omp, environ, envoyRoot, root)
 				// A pane loads the plugins through discovery, as the daemon's boot gate on tmux
 				// probes it.
-				err = pluginGate{env: env, workDir: dir, invocation: omp, timeout: defaultProbeTimeout, retry: bootprobe.Image,
+				_, err = pluginGate{env: env, workDir: dir, invocation: omp, timeout: defaultProbeTimeout, retry: bootprobe.Image,
 					contract: 3, roleReferences: references, skipAgentModels: testCase.skip, log: log}.verify(context.Background())
 			} else {
-				err = ProbeImage(context.Background(), ImageProbe{Omp: omp, Contract: 3, Env: env, WorkDir: dir, PluginRoot: root, EnvoyPluginRoot: envoyRoot,
+				_, err = ProbeImage(context.Background(), ImageProbe{Omp: omp, Contract: 3, Env: env, WorkDir: dir, PluginRoot: root, EnvoyPluginRoot: envoyRoot,
 					SkipAgentModels: testCase.skip, RoleReferences: references, Log: log})
 			}
 
@@ -211,8 +211,9 @@ func TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName(t *testing.T) {
 	daemonReferences := references("Consult `task(agent=\"oracle\")`, then `task(agent=\"daemon-only\")`.\n")
 	env := map[string]string{"HOME": home, "OMP_PROFILE": "legion", "PATH": "/usr/local/bin:/usr/bin:/bin", "AWS_EC2_METADATA_DISABLED": "true"}
 	probe := func(references promptrefs.Names) error {
-		return ProbeImage(context.Background(), ImageProbe{Omp: omp, Contract: 3, Env: env, WorkDir: dir, PluginRoot: root, EnvoyPluginRoot: envoyRoot,
+		_, err := ProbeImage(context.Background(), ImageProbe{Omp: omp, Contract: 3, Env: env, WorkDir: dir, PluginRoot: root, EnvoyPluginRoot: envoyRoot,
 			RoleReferences: references, Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))})
+		return err
 	}
 	if err := probe(imageReferences); err != nil {
 		t.Fatalf("ProbeImage on the image's own roles = %v, want a pass: they name only agents the plugin ships", err)
