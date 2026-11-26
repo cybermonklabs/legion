@@ -154,10 +154,12 @@ function namedFirstLine(words: string, nameOf: (reference: string) => string | u
 /**
  * The nodes the run changed (`RunChange`), each by its first line, beside its kind's word where
  * the page has one, as a link to the page it opens where it opens one. The line is cut by R1's
- * first-line rule and each reference in it named as every one-line place of the page names one
- * (`namedFirstLine`): an issue by its key, any other target by the page's name for it, and by its
- * short form where the page knows none, never as the address its author typed. A node whose words
- * hold none is named by its kind's word alone, which is then its link, or left out if it has neither.
+ * first-line rule and each reference in it named as a run's one-line place names one
+ * (`namedFirstLine`, `RunReferenceNames`): an issue by its key, any other target by its name once
+ * the page's batched read has named it, and by the words its author wrote until then and wherever
+ * Dispatch answers that it has none, that the reader may not see it or that it is ambiguous, never
+ * by its short form. A node whose words hold none is named by its kind's word alone, which is then
+ * its link, or left out if it has neither.
  */
 function ChangedNodes({ changed }: { changed: readonly RunChange[] }): ReactNode {
   const words = useMemo(() => changed.map((node) => node.words), [changed]);

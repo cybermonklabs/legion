@@ -1,8 +1,10 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
+import { ApiError, api } from "../../../api/client";
+import type { ReferenceTarget, ReferenceTargets } from "../../../api/types";
 import { ReferenceNamesProvider } from "../../refs/reference-names";
 import { parseNodeReference, shortForm } from "../../refs/routes";
 import { issueDetails } from "../decisions-filter/decisions-fixtures";
@@ -96,10 +98,10 @@ test("a run's row reads its question's words from the reading the tree read send
 });
 
 // A run's question is a one-line place (the reading list's `referenced-by-run-question`): each
-// reference it cites is named as every one-line place names one (`referenceStandIns`) - an issue
-// by its key, any other target by the page's name for it where the page knows one, and by its
-// short form where it does not - and never as the address its asker typed.
-test("a run's row names each reference in its question as one-line places do, never as the address typed", async () => {
+// reference it cites is named as decision 350 names one there - an issue by its key, any other
+// target by the page's name for it once the page's batched read has named it, and as its asker
+// wrote it until then - and never by its short form.
+test("a run's row names each reference in its question by its name once read, and as its asker wrote it until then", async () => {
   const named = `dispatch://${KEY}/comment/${COMMENT}`;
   const unnamed = `dispatch://${KEY}/comment/${SECOND_COMMENT}`;
   const route = parseNodeReference(unnamed);
@@ -135,13 +137,84 @@ test("a run's row names each reference in its question as one-line places do, ne
   }
   const { container, unmount } = render(createElement(Questions), { wrapper });
   try {
-    const expected = `Does CORE-2 wait on Warm the cache first or on ${shortForm(route)}?`;
+    const expected = `Does CORE-2 wait on Warm the cache first or on ${unnamed}?`;
     const excerpt = await screen.findByText(expected);
     expect([...container.querySelectorAll("p")].map((row) => row.textContent)).toEqual([expected]);
-    expect(excerpt.textContent).not.toContain("dispatch://");
+    expect(excerpt.textContent).not.toContain(shortForm(route));
   } finally {
     unmount();
     client.clear();
+  }
+});
+
+// Decision 350: where the batched read answers that nothing answers to a target a run's question
+// cites, or answers with no words to name it by, the question draws the reference as its asker
+// wrote it and reads it no more, as it draws every reference the read has not answered yet.
+test("a run's reference the batch answers gone or with no name reads as its author wrote it", async () => {
+  const named = "dispatch://CORE-2/comment/4a6c8e0b-2d4f-4a6c-8e0b-2d4f6a8c0e1a";
+  const gone = "dispatch://CORE-2/comment/5b7d9f1c-3e5a-4b7d-9f1c-3e5a7b9d1f2b";
+  // A block of another issue, whose words the read sends no reading of, so the page has no words
+  // to name it by (`tree-drafts.ts`'s `readingOf`) and publishes it unnamed.
+  const block = "dispatch://CORE-2/spec#b-r4";
+  const question = `Does ${named} wait on ${gone} or on ${block} first?`;
+  const targets = [
+    { gone: false, kind: "comment", name: "Warm the cache first", ref: named },
+    { gone: true, kind: "comment", name: "", ref: gone },
+    { gone: false, kind: "block", name: ":::requirement{#r4}\nShip it.\n:::", ref: block },
+  ] satisfies ReferenceTarget[];
+  const answer = Promise.withResolvers<ReferenceTargets>();
+  const batch = spyOn(api, "getReferenceTargets").mockReturnValue(answer.promise);
+  const comments = spyOn(api, "getComment").mockRejectedValue(new ApiError(404, {}));
+  const blocks = spyOn(api, "getReferences").mockRejectedValue(new ApiError(404, {}));
+  const issue = issueDetails();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(
+    issueTreeQuery(issue.key).queryKey,
+    treeOf(
+      [ISSUE_NODE, commentNode(COMMENT), runNode(RUN, ASKED_AT, question)],
+      [changedBy(COMMENT, RUN)]
+    )
+  );
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(
+      QueryClientProvider,
+      { client },
+      createElement(ReferenceNamesProvider, null, children)
+    );
+  function Questions(): ReactNode {
+    const { rows } = useRunRows(issue, false);
+    return createElement(NamedRunRows, {
+      draw: (named) => named.map((row) => createElement("p", { key: row.key }, row.excerpt)),
+      issue,
+      rows,
+    });
+  }
+  const { container, unmount } = render(createElement(Questions), { wrapper });
+  const drawn = () => [...container.querySelectorAll("p")].map((row) => row.textContent ?? "");
+  const shortForms = [named, gone, block].map((reference) => {
+    const route = parseNodeReference(reference);
+    if (route === undefined) throw new Error(`${reference} names no node`);
+    return shortForm(route);
+  });
+  try {
+    // While the batch is out, each of the three reads as its asker wrote it.
+    await screen.findByText(question);
+    expect(drawn()).toEqual([question]);
+    expect(batch.mock.calls).toEqual([[[named, gone, block].sort()]]);
+    await act(async () => answer.resolve({ targets }));
+    const expected = `Does Warm the cache first wait on ${gone} or on ${block} first?`;
+    await screen.findByText(expected);
+    expect(drawn()).toEqual([expected]);
+    for (const short of shortForms) expect(drawn()[0]).not.toContain(short);
+    expect(batch).toHaveBeenCalledTimes(1);
+    expect(comments, "a comment read of its own").toHaveBeenCalledTimes(0);
+    expect(blocks, "a block read of its own").toHaveBeenCalledTimes(0);
+  } finally {
+    unmount();
+    client.clear();
+    batch.mockRestore();
+    comments.mockRestore();
+    blocks.mockRestore();
   }
 });
 

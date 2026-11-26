@@ -573,19 +573,21 @@ test("a changed node's line reads three comment names in one batch", async () =>
 });
 
 // A changed node's line is a one-line place (the reading list's `run-page-changed-line`): each
-// reference it cites is named as every one-line place names one (`referenceStandIns`) - an issue
-// by its key, any other target by the page's name for it where the page knows one, and by its
-// short form where it does not - and never as the address its author typed.
-test("a changed node's line names each reference as one-line places do, never as the address typed", async () => {
+// reference it cites is named as decision 350 names one there - an issue by its key, any other
+// target by the page's name for it once the page's batched read has named it, and as its author
+// wrote it until then - and never by its short form.
+test("a changed node's line names each reference by its name once read, and as its author wrote it until then", async () => {
   const named = "dispatch://CORE-1/comment/7d1e4c2a-9b3f-4e8d-a6c5-2f0b1d9e7a34";
-  const unnamed = "dispatch://CORE-1/comment/8e2f5d3b-0c4a-4f9e-b7d6-3a1c2e0f8b45";
+  // A block's address, which the line holds whole within R1's 100 characters once the comment is
+  // named: a comment's address, with its whole id, would be cut off.
+  const unnamed = "dispatch://CORE-1/spec#b-r2";
   const route = parseNodeReference(unnamed);
   if (route === undefined) throw new Error(`${unnamed} names no node`);
   const changed = changedIssue({
     text: `Close dispatch://CORE-2 once ${named} and ${unnamed} land. Then rest.`,
   });
-  // The page's batched read names the first comment, and has been asked for the second and holds
-  // no answer for it.
+  // The page's batched read names the comment, and has been asked for the block and holds no
+  // answer for it.
   const published = publishedNames(new Map([[named, "Warm the cache first"]]), {
     asked: [unnamed],
   });
@@ -612,8 +614,8 @@ test("a changed node's line names each reference as one-line places do, never as
   const what = screen.getByRole("region", { name: RUN_PAGE_WORDS.what_changed });
   expect(
     await within(what).findByRole("link", {
-      name: `Close CORE-2 once Warm the cache first and ${shortForm(route)} land.`,
+      name: `Close CORE-2 once Warm the cache first and ${unnamed} land.`,
     })
   ).toHaveAttribute("href", "/issues/CORE-1");
-  expect(what.textContent).not.toContain("dispatch://");
+  expect(what.textContent).not.toContain(shortForm(route));
 });

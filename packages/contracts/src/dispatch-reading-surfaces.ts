@@ -303,7 +303,7 @@ const EDITOR_REASON =
 /** Why a command bar run's question in Details and the line of a node it changed on its own page
  *  are drawn as they are: each is a one-line place of the new issue page. */
 const RUN_ONE_LINE_REASON =
-  "It is a one-line place, so it is drawn as plain words, the formatting gone, with each reference named as every one-line place of the new issue page names one (`issue-page/one-line.ts`'s `referenceStandIns`, decisions 140 and 491): an issue by its key, any other target by the page's name for it where the page knows one (`refs/plain-text.tsx`'s `useReferenceNames`), and by its short form where it does not (`shortForm`), never as the address that was typed.";
+  "It is a one-line place, so it is drawn as plain words, the formatting gone, with each reference named as a run's one-line place names one (`issue-page/run-references/run-references.ts`'s `RunNameOf`, through `issue-page/one-line.ts`'s `referenceStandIns`, decisions 140, 350 and 491): an issue by its key; any other target by its name once the page's one batched read of reference targets has named it, and by the words its author wrote until then and wherever Dispatch answers that it has none, that the reader may not see it or that it is ambiguous, never by its short form and never by a read of its own; and a party, which that read does not name, by its own read's name (`refs/plain-text.tsx`'s `useReferenceNames`), and by its short form until that read answers.";
 
 export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   // An issue's Activity tab: one event's body, which is an ask's question, its answer, its
@@ -768,7 +768,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     ],
     proof: {
       file: "packages/dispatch/web/src/features/issue-page/run-page/RunPage.test.tsx",
-      test: "a changed node's line names each reference as one-line places do, never as the address typed",
+      test: "a changed node's line names each reference by its name once read, and as its author wrote it until then",
     },
     reach:
       "/runs/<RUN> with the new issue page on, as the person who asked the run, the line of each node it changed",
@@ -1232,7 +1232,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     ],
     proof: {
       file: "packages/dispatch/web/src/features/issue-page/run-references/run-references.test.ts",
-      test: "a run's row names each reference in its question as one-line places do, never as the address typed",
+      test: "a run's row names each reference in its question by its name once read, and as its asker wrote it until then",
     },
     reach:
       "/issues/<ISSUE> with the new issue page on, as the person who asked a command bar run that changed the issue, Details' Referenced by, the run's row",
