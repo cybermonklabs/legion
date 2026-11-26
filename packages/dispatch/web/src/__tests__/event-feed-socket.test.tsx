@@ -402,7 +402,7 @@ test("an event this page cannot read is skipped and refreshes everything", async
 test("a map chunk that fails to download refreshes everything for the event waiting on it, and a later event loads the map again", async () => {
   const queryClient = newClient({ staleTime: Number.POSITIVE_INFINITY });
   // A list an `issue.updated` of CORE-1 refreshes through the map, and no whole-cache probe.
-  const projectIssues = ["issues", "CORE"] as const;
+  const projectIssues = ["issues", "project", "CORE"] as const;
   queryClient.setQueryData(projectIssues, { loaded: true });
   const listIsStale = () =>
     queryClient.getQueryCache().find({ queryKey: projectIssues, exact: true })?.isStale();
