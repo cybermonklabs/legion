@@ -3390,11 +3390,15 @@ func (s *Postgres) OwedStarts(ctx context.Context, tx pgx.Tx, project string) ([
 // outboxUnleasedDue is a row due at $1 that no live lease holds.
 const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null or outbox.lease_until <= $1)`
 
-// outboxInOrder is the three rules that hold a due row back behind something else of its issue. An
+// outboxInOrder is the four rules that hold a due row back behind something else of its issue. An
 // issue's Dispatch status writes run one at a time in the order they were made: a status row waits
 // while an older one for the same issue is unfinished, because each carries the status its
 // predecessor leaves, and a newer write run first would find the board short of it and finish
-// unwritten as though a human had moved it. A start of an issue's role waits while an older
+// unwritten as though a human had moved it. A status row also waits while an older
+// close_wait_publish row of the issue is unfinished: the close on the checks queues close-wait.md's
+// last version before the done (CloseWaitPublish), and Dispatch refuses an upload to a closed
+// issue, so a done run while the publish backs off for its retry would leave the document saying
+// the closed issue still waits. A start of an issue's role waits while an older
 // issue_branch row of the issue is unfinished, so no role starts before its issue's branch exists
 // on GitHub (IssueBranch), and a create GitHub keeps refusing holds the issue's roles back while
 // the row retries. And a start marked as waiting for the issue's admission slot
@@ -3408,12 +3412,16 @@ const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null 
 // (claims.last_start_row), so ordering them here would buy nothing that survives a retry the
 // runtime delayed.
 //
-// None of the three holds an issue's later rows back. A row that is merely unclaimable takes no
+// None of the four holds an issue's later rows back. A row that is merely unclaimable takes no
 // lease, and the lane rule (outboxLaneFree) blocks only on a live lease, so an issue whose worker
 // start waits for a slot still runs its close's suspend, its Dispatch status writes and its
 // notices as they come due. That is what lets a transition apply at once and hold only the start.
-const outboxInOrder = `not (outbox.kind = $2 and exists (select 1 from outbox older
+// The publish kind is written in as an SQL literal, as the pause rule's kinds are
+// (pauseFreeClause), so no statement's parameters move.
+var outboxInOrder = `not (outbox.kind = $2 and exists (select 1 from outbox older
 			where older.kind = $2 and older.issue = outbox.issue and older.id < outbox.id))
+		and not (outbox.kind = $2 and exists (select 1 from outbox publish
+			where publish.kind = ` + sqlText(string(OutboxKindCloseWaitPublish)) + ` and publish.issue = outbox.issue and publish.id < outbox.id))
 		and not (outbox.kind = $3 and outbox.payload->>'op' = 'start' and exists (select 1 from outbox branch
 			where branch.kind = $4 and branch.issue = outbox.issue and branch.id < outbox.id))
 		and not (outbox.kind = $3 and outbox.payload->>'op' = 'start' and coalesce(outbox.payload->>'needsSlot', '') = 'true'
