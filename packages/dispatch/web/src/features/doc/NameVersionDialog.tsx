@@ -43,12 +43,13 @@ export function NameVersionDialog({
   const [summary, setSummary] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const dialog = useDialog<HTMLDivElement>({ initialFocusRef: inputRef, onClose, open });
-  // Inside the new issue page's `NoTooltips`, the one place that draws this dialog in a
-  // document opened in place (decisions 223, 245 and 362), a name being saved leaves Save and the
-  // text box focusable: the lines spread after their kept `disabled` below mark them busy and
-  // refused, and `commit` ignores their press. A disabled control drops the focus to the page's
-  // body. The caller keeps `saving` until the versions' re-read is drawn, and the dialog's close
-  // then gives the focus back once, to its opener (`useDialog`). Today's pages keep `disabled`.
+  // Inside the new issue page's `NoTooltips`, where a document opened in place and the view row's
+  // version control (`issue-page/VersionControl.tsx`) each draw this dialog (decisions 223, 245
+  // and 362), a name being saved leaves Save and the text box focusable: the lines spread after
+  // their kept `disabled` below mark them busy and refused, and `commit` ignores their press. A
+  // disabled control drops the focus to the page's body. The caller keeps `saving` until the
+  // versions' re-read is drawn, and the dialog's close then gives the focus back once, to its
+  // opener (`useDialog`). Today's pages keep `disabled`.
   const tooltips = useTooltips();
 
   if (!open) {

@@ -70,7 +70,7 @@ test("AskRecipients folds its routing list at rest and still names the count", a
 });
 
 // Part N's R13: the new issue page draws the Reaches control in its own colours, and only where
-// it asks (`page`); every other surface keeps today's.
+// it asks (`palette="page"`); every other surface keeps today's.
 test("AskRecipients draws its Reaches control in today's colours, and the page's only where the new page asks", async () => {
   const classesOf = (element: Element | null) => (element?.getAttribute("class") ?? "").split(" ");
   const expectClasses = (element: Element | null, classes: string, where: string) =>
@@ -79,7 +79,7 @@ test("AskRecipients draws its Reaches control in today's colours, and the page's
       `${where} lacks classes`
     ).toEqual([]);
   for (const page of [false, true]) {
-    const drawn = await renderRecipients({ props: page ? { page } : {} });
+    const drawn = await renderRecipients({ props: page ? { palette: "page" } : {} });
     try {
       const toggle = within(screen.getByRole("region", { name: "Recipients" })).getByRole(
         "button",

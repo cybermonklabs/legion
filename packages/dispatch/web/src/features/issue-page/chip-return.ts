@@ -42,16 +42,16 @@ function documentPath(link: HTMLAnchorElement, issueKey: string): string | undef
 /**
  * The record of the chip whose follow opened the document the location draws now
  * (`ChipRecord`), kept by the page. A chip that names a document is drawn by part G's
- * `RowText.tsx`, whose follow navigates in place and hands the location no state, and which this
- * part does not change (root R39 loads it in Dashboard's chunk), so the page hears the follow
- * itself: a listener on the page's root, in the capture phase - before the row's own follow
- * moves the router - records each plain activation of a link inside a row to a document of this
- * issue, with the address it was pressed at. The record is the location's that the follow then
- * draws, held by that location's key, so it is read again on Back to the document and on no
- * other location: the same document opened from Documents' list, a version of it opened from its
- * own controls, or a link with a key held, which the browser follows elsewhere, reads none. A
- * link outside every row - Documents' list's, the header's - records nothing, and its document's
- * way back is Documents' list (`document-address.ts`).
+ * `RowText.tsx`, whose follow navigates in place and hands the location no state, and whose
+ * follow this part leaves as it is (root R39 loads `RowText.tsx` in Dashboard's chunk), so the
+ * page hears the follow itself: a listener on the page's root, in the capture phase - before the
+ * row's own follow moves the router - records each plain activation of a link inside a row to a
+ * document of this issue, with the address it was pressed at. The record is the location's that
+ * the follow then draws, held by that location's key, so it is read again on Back to the
+ * document and on no other location: the same document opened from Documents' list, a version of
+ * it opened from its own controls, or a link with a key held, which the browser follows
+ * elsewhere, reads none. A link outside every row - Documents' list's, the header's - records
+ * nothing, and its document's way back is Documents' list (`document-address.ts`).
  */
 export function useChipRecord(issueKey: string): () => ChipRecord | undefined {
   const location = useLocation();

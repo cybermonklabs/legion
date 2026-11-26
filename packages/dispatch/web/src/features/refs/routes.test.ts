@@ -543,13 +543,13 @@ test("a link to an issue's Documents address has no page to preview", () => {
   }
 });
 
-test("the issue's Documents route names the issue's artifacts as its reference", () => {
+test("the issue's Documents route is written as its issue, as today's Artifacts tab is", () => {
   const route = { key: "CORE-1", kind: "issue-documents" as const };
 
-  expect(buildDispatchReference(route)).toBe("dispatch://CORE-1/artifacts");
+  expect(buildDispatchReference(route)).toBe("dispatch://CORE-1");
   expect(parseDispatchReference(buildDispatchReference(route))).toEqual({
     key: "CORE-1",
-    kind: "artifacts",
+    kind: "issue",
   });
   expect(shortForm(route)).toBe("CORE-1 artifacts");
   expect(buildReferencePath(route)).toBe("/issues/CORE-1/documents");

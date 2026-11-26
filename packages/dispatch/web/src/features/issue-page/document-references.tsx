@@ -23,8 +23,9 @@ import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
  * every other node by the word of its tie or of its kind, with its issue and its time. The read's
  * excerpt is the markup its author typed, and is drawn nowhere.
  *
- * Unlike Details' list, this one keeps what the issue's own questions, comments and messages cite
- * of the document: no outline stands beside an opened document to hold them.
+ * Unlike the new page's Referenced by panel, whose edges `ReferencedBy`'s `listedEdges` reads,
+ * this list keeps what the issue's own questions, comments and messages cite of the document: no
+ * outline stands beside an opened document to hold them.
  *
  * The read is `referencesQuery` of the document's address, under the key every Referenced-by panel
  * reads, kept fresh by events as the new page's reads are (`useNewIssuePageFreshness`), and its

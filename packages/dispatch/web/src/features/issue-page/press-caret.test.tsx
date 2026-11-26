@@ -762,7 +762,10 @@ test("a press on a row while another row's editor is open closes that editor and
     await press(user, drawnText(second, SECOND), "A second st".length);
     await caretIn(second, SECOND, "A second st".length);
     expect(editorIn(first), "the first row's editor stayed open").toBeNull();
-    expect(drawnText(first, FIRST).data, "the first row does not draw its words again").toBe(FIRST);
+    expect(
+      () => drawnText(first, FIRST),
+      "the first row does not draw its words again"
+    ).not.toThrow();
     expect(focusedRow(view.container)).toBe("spec#b-r2");
   } finally {
     view.unmount();

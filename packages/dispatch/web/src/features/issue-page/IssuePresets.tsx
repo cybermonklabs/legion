@@ -129,20 +129,20 @@ export function IssuePresets({
   const toggleId = (preset: Preset) => `${ids}-toggle-${preset}`;
   // Part N's version control opens its panel, and the page still opens at most one menu at a
   // time: opening the panel shuts the row's own, and the row's shuts the panel.
-  const [small, setSmall] = useState<SmallMenu>(undefined);
+  const [versionOpen, setVersionOpen] = useState(false);
   const versionPanelId = `${ids}-version`;
   useEffect(() => {
-    if (open !== undefined) setSmall(undefined);
+    if (open !== undefined) setVersionOpen(false);
   }, [open]);
   useEffect(() => {
-    if (small === undefined) return;
+    if (!versionOpen) return;
     setOpen(undefined);
     const inDialog = (target: EventTarget | null) =>
       target instanceof Element && target.closest('[role="dialog"]') !== null;
     const closeOutside = (event: PointerEvent) => {
       if (inDialog(event.target)) return;
       if (!(event.target instanceof Node) || wrapper.current?.contains(event.target) !== true) {
-        setSmall(undefined);
+        setVersionOpen(false);
       }
     };
     // The press is the open menu's alone: the page's own Escape - which closes a document
@@ -150,7 +150,7 @@ export function IssuePresets({
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape" || inDialog(event.target)) return;
       event.preventDefault();
-      setSmall(undefined);
+      setVersionOpen(false);
     };
     document.addEventListener("pointerdown", closeOutside);
     document.addEventListener("keydown", closeOnEscape);
@@ -158,7 +158,7 @@ export function IssuePresets({
       document.removeEventListener("pointerdown", closeOutside);
       document.removeEventListener("keydown", closeOnEscape);
     };
-  }, [small]);
+  }, [versionOpen]);
 
   useEffect(() => {
     const opened = wasOpen.current === undefined && open === "presets";
@@ -229,21 +229,21 @@ export function IssuePresets({
     ) {
       return;
     }
+    // Part N's words (its R4) go with the reader, as `?q=`, to the control they press.
+    const words =
+      filter === undefined || filter === "" ? "" : `?${new URLSearchParams({ q: filter })}`;
     // Part N's Documents (its R4): its list goes back to the address it was opened from on
-    // Escape (the location's `outline`, `escape-order.ts`), and the words go with the reader.
+    // Escape (the location's `outline`, `escape-order.ts`).
     if (preset === "documents" && active !== "documents") {
-      const words =
-        filter === undefined || filter === "" ? "" : `?${new URLSearchParams({ q: filter })}`;
       navigate(`${presetPath(issueKey, "documents")}${words}`, {
         state: { outline: `${pathname}${search}` },
       });
       return;
     }
-    // Part N's words go with the reader to the view they press, which draws with them, and the
-    // box keeps them (its R4).
-    if (filter !== undefined && filter !== "") {
+    // The view pressed draws with the words, and the box keeps them.
+    if (words !== "") {
       const to = preset === active && preset !== "conversation" ? "conversation" : preset;
-      navigate(`${presetPath(issueKey, to)}?${new URLSearchParams({ q: filter })}`);
+      navigate(`${presetPath(issueKey, to)}${words}`);
       return;
     }
     navigate(
@@ -308,9 +308,9 @@ export function IssuePresets({
         <div className="relative flex shrink-0">
           <button
             aria-controls={versionPanelId}
-            aria-expanded={small === "version"}
+            aria-expanded={versionOpen}
             className={pageHeaderControl}
-            onClick={() => setSmall((shown) => (shown === "version" ? undefined : "version"))}
+            onClick={() => setVersionOpen((shown) => !shown)}
             type="button"
             {...pageChrome}
           >
@@ -321,7 +321,7 @@ export function IssuePresets({
               a comparison they opened outlive the control closing. */}
           <div
             className={`absolute top-full right-0 z-30 mt-1 w-max max-w-[min(480px,calc(100vw-24px))] rounded-[10px] border p-2 shadow-[0_12px_30px_rgba(28,25,23,0.18)] ${pageHairBorder} ${pagePaperBg}`}
-            hidden={small !== "version"}
+            hidden={!versionOpen}
             id={versionPanelId}
           >
             {toolbar}
@@ -533,9 +533,6 @@ export function MenuMark(): ReactNode {
 
 /** Which of the row's menus is open; the page opens at most one at a time. */
 type OpenMenu = "presets" | undefined;
-
-/** Whether part N's version control has its panel open. */
-type SmallMenu = "version" | undefined;
 
 /** The widths the row is one control at: below 1280 px, from which R2 has the views one row.
  *  1279 px, not `80rem`: the row's widths are the reader's pixels, as the header's are. */

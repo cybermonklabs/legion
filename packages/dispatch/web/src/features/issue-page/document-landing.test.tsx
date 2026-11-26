@@ -127,8 +127,8 @@ beforeEach(() => {
         }),
       } satisfies GraphReferences)
     ),
-    ...documentSurfaceHandlers(),
-    artifactRecordHandler((id) => (ISSUE.artifacts ?? []).find((one) => one.id === id))
+    artifactRecordHandler((id) => (ISSUE.artifacts ?? []).find((one) => one.id === id)),
+    ...documentSurfaceHandlers()
   );
 });
 afterEach(() => {

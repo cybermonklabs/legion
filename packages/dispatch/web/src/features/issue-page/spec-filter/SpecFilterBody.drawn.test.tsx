@@ -495,7 +495,10 @@ test("a refetch of a drawn view draws no loading line", async () => {
       void client.invalidateQueries({ queryKey: key });
     });
     expect(read.coverage).toHaveBeenCalledTimes(2);
-    expect(view.getAllByRole("treeitem").length).toBeGreaterThan(0);
+    expect(
+      view.queryAllByRole("treeitem").length,
+      "the refetch took the view's rows"
+    ).toBeGreaterThan(0);
     expect(specLoading(view)).toBeNull();
   } finally {
     view.unmount();

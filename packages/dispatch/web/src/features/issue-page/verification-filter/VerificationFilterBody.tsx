@@ -97,8 +97,8 @@ export type VerificationRead = (typeof VERIFICATION_READS)[number];
 
 /** How the reads the body is drawn from stand: one or more still out, all of them answered, or
  *  one or more failed before they first answered, each by its name (`FailedRead`). The body
- *  says the failed ones, and the ones still out, in an order of its own (`VERIFICATION_READS`),
- *  whatever order they are given in. */
+ *  says the failed ones in an order of its own (`VERIFICATION_READS`), whatever order they are
+ *  given in, and names the ones still out in the order `out` gives them. */
 export type VerificationReads =
   | {
       /** Each read that holds no answer yet, which the loading line names (`ViewLoadingLine`);
@@ -402,15 +402,18 @@ export function VerificationFilterBody({
   // The row of a node the address names takes the stop once for each node named, in the render
   // that first draws it, as the stop is handed back above, and only where the reader has not
   // acted since they followed the address, read in that render alone as the address's row reads
-  // it above; the reader's own moves keep it after.
+  // it above; the reader's own moves keep it after. The named row is looked for only until the
+  // render that first draws it.
   const [startedOn, setStartedOn] = useState<string | undefined>(undefined);
-  const startRow = startsOn === undefined ? undefined : namedRow(startsOn, shown, loose, others);
   const startKey = startsOn === undefined ? undefined : [...startsOn].join(" ");
-  if (startRow !== undefined && startedOn !== startKey && rows.includes(startRow)) {
-    setStartedOn(startKey);
-    const acted =
-      actsFollowing.current === following && addressActs?.current?.signal.aborted === true;
-    if (!acted) setRovingId(startRow);
+  if (startsOn !== undefined && startedOn !== startKey) {
+    const startRow = namedRow(startsOn, shown, loose, others);
+    if (startRow !== undefined && rows.includes(startRow)) {
+      setStartedOn(startKey);
+      const acted =
+        actsFollowing.current === following && addressActs?.current?.signal.aborted === true;
+      if (!acted) setRovingId(startRow);
+    }
   }
   // The row the reader's focus is on is F's focused node, as the outline's row is, so Details'
   // facts of the row they are on follow it (part N's R14): a statement, a check, a result or

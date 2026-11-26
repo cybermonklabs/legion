@@ -19,7 +19,9 @@ import type { PartWords } from "./page-words-parts";
  * load (part N's R19, `view-loading-line.tsx`): "Loading the statements and the results…". The
  * line is `loading`, then the words of each read still out in the view's own order, as the view
  * names them here, one key per view, joined by commas and the last by `and`. Each read is named
- * as the line that says it failed names it (`STATE_LINES`), without "Could not load".
+ * as the line that says it failed names it (`STATE_LINES`), without "Could not load", but the
+ * decisions, whose failed line says "this issue's decisions" and which a loading line calls "the
+ * decisions".
  */
 export const VIEW_LOADING_LINES = freeze({
   and: "and",

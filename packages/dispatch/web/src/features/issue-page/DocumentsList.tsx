@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
-import type { Artifact } from "../../api/types";
+import type { Artifact, Version } from "../../api/types";
 import { inputMethodKey } from "../../lib/input-method-key";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
@@ -16,7 +16,7 @@ import {
   pageQuietText,
   pageRowBorder,
 } from "../../theme/classes";
-import { artifactVersionUrl, versionsNewestFirst } from "../artifacts/ArtifactHeader";
+import { artifactVersionUrl } from "../artifacts/ArtifactHeader";
 import {
   ArtifactUploadRow,
   ArtifactUploadStatus,
@@ -31,6 +31,7 @@ import {
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { buildIssuePath, documentRoute } from "../refs/routes";
 import { useListPages } from "./details-leaves";
+import { presetPath } from "./issue-address";
 import { shortDay } from "./node-time";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, EMPTY_STATE_LINES, FILE_WORDS } from "./page-words";
@@ -41,6 +42,21 @@ export const DOCUMENTS_LIST_ATTRIBUTE = "data-documents-list";
 /** The mark of each row's link to its document: the first row's takes the focus `t a` gives the
  *  list (`useIssueKeymap.ts`). */
 export const DOCUMENT_OPEN_ATTRIBUTE = "data-document-open";
+
+/** The word a row draws for an artifact's kind (`FILE_WORDS`): "document", "image", or "file" for
+ *  any kind the page has no word of its own for. The filter matches the kind by this word, the one
+ *  the reader sees, and never by the token the server stores. */
+function fileKindWord(kind: string): string {
+  return kind === "doc" || kind === "image" ? FILE_WORDS[kind] : FILE_WORDS.file;
+}
+
+/** The newest of `versions`, by number: the first of `versionsNewestFirst`, found in one pass. */
+function latestVersion(versions: readonly Version[] | null): Version | undefined {
+  return (versions ?? []).reduce<Version | undefined>(
+    (newest, one) => (newest === undefined || one.number > newest.number ? one : newest),
+    undefined
+  );
+}
 
 /**
  * Documents' list (dispatch://INFRA-1196 part N's R1, R2): every document and file of the issue,
@@ -94,22 +110,28 @@ export function DocumentsList({
   const newDocumentRefusalId = useId();
   const [filter, setFilter] = useState("");
   const wanted = filter.trim().toLocaleLowerCase();
+  // Sorted once for each list of artifacts: the filter keeps the order, so a word typed sorts
+  // nothing again.
+  const sorted = useMemo(
+    () =>
+      [...artifacts].sort((left, right) => {
+        if (left.primary !== right.primary) return left.primary ? -1 : 1;
+        const leftUpdated = (left.versions ?? []).at(-1)?.created_at ?? left.created_at;
+        const rightUpdated = (right.versions ?? []).at(-1)?.created_at ?? right.created_at;
+        return compareTimestamps(rightUpdated, leftUpdated) || left.id.localeCompare(right.id);
+      }),
+    [artifacts]
+  );
   const listed = useMemo(
     () =>
-      [...artifacts]
-        .sort((left, right) => {
-          if (left.primary !== right.primary) return left.primary ? -1 : 1;
-          const leftUpdated = (left.versions ?? []).at(-1)?.created_at ?? left.created_at;
-          const rightUpdated = (right.versions ?? []).at(-1)?.created_at ?? right.created_at;
-          return compareTimestamps(rightUpdated, leftUpdated) || left.id.localeCompare(right.id);
-        })
-        .filter(
-          (artifact) =>
-            wanted === "" ||
-            artifact.name.toLocaleLowerCase().includes(wanted) ||
-            artifact.kind.toLocaleLowerCase().includes(wanted)
-        ),
-    [artifacts, wanted]
+      wanted === ""
+        ? sorted
+        : sorted.filter(
+            (artifact) =>
+              artifact.name.toLocaleLowerCase().includes(wanted) ||
+              fileKindWord(artifact.kind).toLocaleLowerCase().includes(wanted)
+          ),
+    [sorted, wanted]
   );
   const titleForm = useRef<HTMLDivElement>(null);
   // The form New document opens takes the control's place, so the caret goes where the reader
@@ -152,15 +174,15 @@ export function DocumentsList({
   }, []);
 
   const control = `${pageHeaderControl} refused:cursor-not-allowed`;
-  // A refused control draws its reason inside it, a sentence about as long as a phone is wide, and
-  // the header control's own `shrink-0` keeps it one line: at 390 px that line was 430 px, wider
-  // than the page. A refused control takes at most the row's width and wraps what it holds, the
-  // label and then its reason whole, as the row wraps its controls; an open one is as it was.
-  // New document's control sits in the title form's strip, which holds its idle control `shrink-0`
-  // at its max-content width (`TitleForm.tsx`), so the strip, and not the control, was the box
-  // that ran off the page: below `sm` a refused one's place is a one-column grid as wide as the
-  // row, whose track the strip fills and whose width the control's own `max-w-full` then bounds.
-  // From `sm` up, and while the control is open, the place draws no box, as it always did.
+  // A refused control draws its reason inside it, a sentence about as long as a phone is wide,
+  // which the header control's own `shrink-0` would keep on one line: at 390 px a line of 430 px,
+  // wider than the page. So a refused control takes at most the row's width and wraps what it
+  // holds, the label and then its reason whole, as the row wraps its controls; an open one keeps
+  // the header control's look. New document's control sits in the title form's strip, which holds
+  // its idle control `shrink-0` at its max-content width (`TitleForm.tsx`), so the strip, and not
+  // the control, would run off the page: below `sm` a refused one's place is a one-column grid as
+  // wide as the row, whose track the strip fills and whose width the control's own `max-w-full`
+  // then bounds. From `sm` up, and while the control is open, the place draws no box.
   const refusedControl = `${control} max-w-full flex-wrap text-left`;
   // A refused control stays where it is with `aria-disabled`, so a reader on the keyboard reaches
   // it and hears why: its name is its label and the reason, drawn inside it, its description.
@@ -273,15 +295,14 @@ function DocumentRows({
   issueKey: string;
   listed: readonly Artifact[];
 }): ReactNode {
-  const list = useRef<HTMLUListElement>(null);
-  const pages = useListPages();
+  const pages = useListPages<HTMLUListElement>();
   // The list's own address, which a document opened from it goes back to (the location's
   // `outline`, `document-address.ts`).
-  const back = buildIssuePath({ key: issueKey, kind: "issue-documents" });
+  const back = presetPath(issueKey, "documents");
   if (listed.length === 0) return null;
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      <ul className={`min-w-0 border-t ${pageHairBorder}`} ref={list}>
+      <ul className={`min-w-0 border-t ${pageHairBorder}`} ref={pages.list}>
         {listed.slice(0, pages.drawn).map((artifact) => (
           <DocumentRow
             artifact={artifact}
@@ -292,7 +313,7 @@ function DocumentRows({
           />
         ))}
       </ul>
-      {pages.more(listed.length, (index) => list.current?.children[index])}
+      {pages.more(listed.length)}
     </div>
   );
 }
@@ -315,7 +336,7 @@ function DocumentRow({
   isClosed: boolean;
   issueKey: string;
 }): ReactNode {
-  const latest = versionsNewestFirst(artifact.versions)[0];
+  const latest = latestVersion(artifact.versions);
   const day = shortDay(latest?.created_at ?? artifact.created_at);
   return (
     <li className={`flex min-w-0 flex-col gap-1 border-b py-2 ${pageRowBorder}`}>
@@ -331,9 +352,7 @@ function DocumentRow({
       </Link>
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
         <span className={pageMutedText} {...pageChrome}>
-          {artifact.kind === "doc" || artifact.kind === "image"
-            ? FILE_WORDS[artifact.kind]
-            : FILE_WORDS.file}
+          {fileKindWord(artifact.kind)}
         </span>
         {artifact.primary ? (
           <span

@@ -793,9 +793,9 @@ export function buildDispatchReference(route: DispatchReferenceRoute): string {
     return `${issue}/artifact/${DECISIONS_DOCUMENT_SLUG}`;
   }
   // An issue's Documents is the new page's list of what today's Artifacts tab lists, so it is
-  // referenced as that tab is.
+  // the issue, as that tab and every other tab is.
   if (route.kind === "issue-documents") {
-    return `${issue}/artifacts`;
+    return issue;
   }
   if (route.kind === "artifact") {
     return `${issue}/artifact/${encodeURIComponent(route.slug)}${

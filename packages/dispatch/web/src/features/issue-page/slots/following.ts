@@ -18,12 +18,15 @@ import { useLocation } from "react-router-dom";
  */
 export function useFollowing(): string {
   const { hash, key, pathname, search, state } = useLocation();
-  return wordsFollowing(state) ?? `${key} ${pathname}${search}${hash}`;
+  return stateString(state, "words") ?? `${key} ${pathname}${search}${hash}`;
 }
 
-/** The following a write of the filter by words marked its entry with, or undefined for an entry
- *  the box did not write. */
-function wordsFollowing(state: unknown): string | undefined {
-  if (typeof state !== "object" || state === null || !("words" in state)) return undefined;
-  return typeof state.words === "string" ? state.words : undefined;
+/** The string the location's `state` holds under `field`, or undefined where it holds none: the
+ *  following a write of the filter by words marked its entry with (`words`, none for an entry the
+ *  box did not write), and the address Documents' list or a document was opened from (`outline`,
+ *  `document-address.ts`). */
+export function stateString(state: unknown, field: "outline" | "words"): string | undefined {
+  if (typeof state !== "object" || state === null || !(field in state)) return undefined;
+  const value: unknown = Reflect.get(state, field);
+  return typeof value === "string" ? value : undefined;
 }

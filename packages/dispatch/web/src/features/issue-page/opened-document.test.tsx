@@ -468,7 +468,6 @@ test("a Rebuild that succeeds puts the focus on the opened document's heading", 
     await waitFor(() => expect(rebuildArtifact).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(rebuild.isConnected).toBe(false));
     await waitFor(() => expect(heading).toHaveFocus());
-    expect(document.activeElement).not.toBe(document.body);
     expect(
       screen.queryByRole("button", { name: "Rebuild from the latest version" })
     ).not.toBeInTheDocument();

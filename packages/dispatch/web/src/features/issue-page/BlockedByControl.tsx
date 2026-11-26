@@ -152,7 +152,15 @@ export function BlockedByControl({
           onKeyDown={(event) => {
             // A press that ends an IME composition gives up what the reader was composing, not
             // the editor: the form leaves it alone, unmarked, as the key registry does.
-            if (event.key !== "Escape" || inputMethodKey(event.nativeEvent)) return;
+            if (event.key !== "Escape") return;
+            if (inputMethodKey(event.nativeEvent)) {
+              // The input method's Escape that arrives after its compositionend (Safari's keyCode
+              // 229, `isComposing` false) is marked with preventDefault, so the key registry, which
+              // skips only a press still composing (`shell/keymap.ts`), leaves it alone too, and
+              // the form is not cancelled. A press still composing is the input method's alone.
+              if (!event.nativeEvent.isComposing) event.preventDefault();
+              return;
+            }
             // Escape anywhere in the editor, its box, its Save or its Cancel, is Cancel's, and is
             // held as Cancel is while the save is out. It is marked taken: the page's own Escape,
             // which closes Details and the phone's Details sheet with it, passes over a press a

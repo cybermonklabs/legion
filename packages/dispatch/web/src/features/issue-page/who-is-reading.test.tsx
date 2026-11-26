@@ -18,7 +18,7 @@ import {
 import { api } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
 import { whoAmIQuery } from "../../api/queries";
-import type { IssueDetails } from "../../api/types";
+import type { AskThread, IssueAskRow, IssueDetails } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
 import { stateForIssue } from "../issue/pins";
 import { MarginProvider } from "../margin/margin-context";
@@ -281,6 +281,81 @@ test("a who-is-reading answer 31 seconds old sends no request: Details' facts of
       </ProvidersSlot>
     );
     expect(asked, "the focused row's facts asked who is reading").toBe(0);
+  } finally {
+    who.mockRestore();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+/** A question on the issue, as the issue's questions read holds it with its thread, whose facts
+ *  draw who a person's answer reaches (`AskRecipients`). */
+const QUESTION: IssueAskRow = {
+  anchor: null,
+  answer: null,
+  artifact_id: null,
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
+  author: { id: "planner-session-0001", kind: "session" },
+  block_id: null,
+  created_at: "2026-11-15T10:00:00Z",
+  edited_at: null,
+  id: "ask-7",
+  issue_key: ISSUE.key,
+  kind: "question",
+  last_reply: null,
+  multiple: false,
+  options: null,
+  question: "Which store holds the drafts?",
+  state: "open",
+  urgency: "med",
+};
+
+/** That question's thread: the session that follows it, whom a person's answer reaches. */
+const QUESTION_THREAD: AskThread = {
+  answers: [],
+  claimant: null,
+  edits: [],
+  followers: [{ session_id: "planner-session-0001", since: "2026-11-15T10:00:00Z" }],
+  replies: [],
+  route: null,
+  route_holder: null,
+  route_status: null,
+  route_status_reason: null,
+};
+
+test("a who-is-reading answer 31 seconds old sends no request: Details' facts of a focused question", async () => {
+  // The outline's reads the row's controls are drawn from, answered empty, and the issue's
+  // subscribers, which who the question reaches reads once the reader is a person.
+  const reads = [
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "getIssueSubscribers").mockResolvedValue([]),
+  ];
+  const who = countWhoIsReading();
+  const client = answeredPastStaleness();
+  client.setQueryData(["asks", ISSUE.key, "thread"], [{ ...QUESTION, thread: QUESTION_THREAD }]);
+  try {
+    const asked = await askedWhileDrawing(
+      who,
+      client,
+      <ProvidersSlot issue={ISSUE} route={ROUTE}>
+        <FocusedNodeFacts
+          issueKey={ISSUE.key}
+          issueTitle={ISSUE.title}
+          node={{
+            author: QUESTION.author,
+            id: QUESTION.id,
+            item: { id: QUESTION.id, kind: "ask" },
+            text: QUESTION.question,
+            type: "ask",
+          }}
+          state={undefined}
+        />
+      </ProvidersSlot>
+    );
+    expect(asked, "the focused question's facts asked who is reading").toBe(0);
   } finally {
     who.mockRestore();
     for (const read of reads) read.mockRestore();

@@ -4,11 +4,13 @@ import { useLocation, useNavigate } from "react-router-dom";
 
 import { artifactBlocksQuery } from "../../api/queries";
 import type { Artifact, IssueDetails } from "../../api/types";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath, type IssueRoute } from "../refs/routes";
 import type { ChipRecord } from "./chip-return";
 import { DOCUMENT_OPEN_ATTRIBUTE, DOCUMENTS_LIST_ATTRIBUTE } from "./DocumentsList";
 import { type IssueAddress, issueAddress, presetPath } from "./issue-address";
 import { NODE_TYPES } from "./page-words";
+import { stateString } from "./slots/following";
 import { nodeRowSelectorOf, rowSelectorOf } from "./tree-focus";
 import { useIssueDetail } from "./useIssueDetail";
 import { treeDocumentIds } from "./useIssueTree";
@@ -21,13 +23,6 @@ export interface OpenedAddress {
   readonly route: Extract<IssueRoute, { kind: "artifact" }>;
 }
 
-/** The location's `outline`, if it carries one: the address Documents' list or a document was
- *  opened from (`DocumentsList.tsx`' rows hand over the list's own). */
-function outlineOf(state: unknown): string | undefined {
-  if (typeof state !== "object" || state === null || !("outline" in state)) return undefined;
-  return typeof state.outline === "string" ? state.outline : undefined;
-}
-
 /**
  * Whether the address opens its document in place of the outline (dispatch://INFRA-1196 R3,
  * R20). A document's own address opens the document, with one exception: an address naming a
@@ -37,9 +32,9 @@ function outlineOf(state: unknown): string | undefined {
  * the block: a paragraph of the document's own text, and every block of a document the outline is
  * not built from, a typed one included (decision 449: a task of a document of tasks that is no
  * plan). Which blocks of an outlined document are typed is the blocks read the outline is built
- * from, so this asks it under the same key and sends nothing of its own, and none for a document
- * the outline is not built from; until it answers, the address draws the outline it most likely
- * names.
+ * from, so this asks it under the same key, kept fresh by events as the outline keeps it, and
+ * sends nothing of its own, and none for a document the outline is not built from; until it
+ * answers, the address draws the outline it most likely names.
  */
 function useOpensDocument(
   address: IssueAddress,
@@ -50,6 +45,7 @@ function useOpensDocument(
   const asksBlocks = outlined && address.document !== undefined && block !== undefined;
   const blocks = useQuery({
     ...artifactBlocksQuery(artifact?.id ?? ""),
+    ...EVENT_FRESH,
     enabled: asksBlocks && artifact?.kind === "doc",
   });
   if (address.document === undefined) return false;
@@ -91,12 +87,7 @@ export function useOpenedDocument(
  *  (`escape-order.ts`), and each write that keeps the reader's place - the filter by words, a
  *  version picked - hands it on to the location it writes. */
 export function useOutlineAddress(key: string): string {
-  return outlineOf(useLocation().state) ?? presetPath(key, "conversation");
-}
-
-/** Documents' list's own address, `/issues/<key>/documents` (part N's R2). */
-export function documentsAddress(key: string): string {
-  return buildIssuePath({ key, kind: "issue-documents" });
+  return stateString(useLocation().state, "outline") ?? presetPath(key, "conversation");
 }
 
 /**
@@ -122,7 +113,7 @@ export interface WayBack {
 export function backToDocuments(key: string, slug: string): WayBack {
   return {
     focus: { href: buildIssuePath({ key, kind: "artifact", slug }) },
-    to: documentsAddress(key),
+    to: presetPath(key, "documents"),
   };
 }
 
@@ -141,8 +132,8 @@ export function escapeWayBack(
   chip: ChipRecord | undefined
 ): WayBack {
   if (chip !== undefined) return { focus: { href: chip.href, row: chip.row }, to: chip.address };
-  if (outline === documentsAddress(key)) return backToDocuments(key, slug);
-  return { focus: {}, to: documentsAddress(key) };
+  if (outline === presetPath(key, "documents")) return backToDocuments(key, slug);
+  return { focus: {}, to: presetPath(key, "documents") };
 }
 
 /** Follows a way back: a push, as a link's follow is, so the browser's Back returns to the

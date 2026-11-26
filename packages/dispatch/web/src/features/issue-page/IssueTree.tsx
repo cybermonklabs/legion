@@ -13,6 +13,7 @@ import type { Artifact } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { isViewer } from "../refs/actor";
 import { EditedMark } from "../refs/PostMarks";
+import { isPlainClick } from "../refs/picture-lightbox";
 import { postDeletion } from "../refs/post-marks";
 import { PublishedReferenceNames, type PublishedReferences } from "../refs/reference-names";
 import { buildIssuePath } from "../refs/routes";
@@ -1316,13 +1317,9 @@ export function IssueTree({
         // A press in the tree, whose focus the row takes once the press is over (`press`).
         onMouseDown={press.onMouseDown}
         onMouseDownCapture={(event) => {
-          const plain =
-            event.button === 0 &&
-            !event.altKey &&
-            !event.ctrlKey &&
-            !event.metaKey &&
-            !event.shiftKey;
-          pressedWords.current = plain ? statementWordsAt(event.target, ROW_WORDS) : null;
+          pressedWords.current = isPlainClick(event.nativeEvent)
+            ? statementWordsAt(event.target, ROW_WORDS)
+            : null;
         }}
         ref={body}
         role="tree"

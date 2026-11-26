@@ -113,8 +113,8 @@ interface FocusRecord {
   madeFocusable: boolean;
   /** The nearest element around the control that held the focus as the dialog opened that
    *  carries `DIALOG_RETURN_ATTRIBUTE`, which takes the focus back at close where that control
-   *  has gone by then; undefined where none does. */
-  returnTo?: HTMLElement | null;
+   *  has gone by then; null where none does. */
+  returnTo: HTMLElement | null;
 }
 
 // Every open dialog's focus record, by its element. A dialog's layout effect adds its own entry
@@ -271,8 +271,6 @@ export function useDialog<T extends HTMLElement>({
     const record: FocusRecord = {
       giveBackTo: active instanceof HTMLElement && active !== document.body ? active : null,
       madeFocusable: false,
-      // The nearest element around the control that held the focus that carries the return
-      // mark, which takes the focus back at close where that control has gone by then.
       returnTo:
         active instanceof HTMLElement
           ? (active.parentElement?.closest<HTMLElement>(`[${DIALOG_RETURN_ATTRIBUTE}]`) ?? null)

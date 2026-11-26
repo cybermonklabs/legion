@@ -5,7 +5,6 @@ import { primarySpec } from "../../../api/issue-cache";
 import { pageLineBorder, pagePaperBg } from "../../../theme/classes";
 import { useMediaQuery } from "../../shell/useDialog";
 import { CONTENTS_PANE_QUERY, OutlineSheet, PAGE_INSET } from "../contents-frame";
-import { useOpenedDocument } from "../document-address";
 import { IssuePresets } from "../IssuePresets";
 import { HEADER_SCROLLS_QUERY } from "../identity-block";
 import { issueAddress } from "../issue-address";
@@ -60,8 +59,8 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
   useViewRowHeight(row);
   useIssueKeymap(issue.key);
-  const tools = useViewRowTools(props);
-  const opened = useOpenedDocument(issue, route);
+  // The document the address opens comes with the tools, and is no prop of `IssuePresets`.
+  const { opened, ...tools } = useViewRowTools(props);
   // Below 1024 px, where root R14 opens the Contents list as the Outline sheet, the sheet holds
   // the row's two small controls, with a view on too (part N's R4). Documents draws no outline,
   // so no sheet: its version control stands at the row's end. Nor does a document drawn as the

@@ -365,6 +365,39 @@ test("Documents' list's filter narrows the items by name and by kind", async () 
   }
 });
 
+// The kind a reader filters by is the word the row draws for it: "document" for a document, and
+// "file" for a kind the page has no word of its own for, never the token the server stores.
+test("Documents' list's filter matches each item's kind by the word its row draws", async () => {
+  const handbook = {
+    ...background,
+    id: "artifact-handbook",
+    kind: "pdf",
+    name: "Handbook",
+    ref_key: "CORE-1/handbook",
+    slug: "handbook",
+  } satisfies Artifact;
+  const user = userEvent.setup();
+  const view = renderList(false, [background, picture, handbook]);
+  try {
+    expect(rowOf("Handbook")).toHaveTextContent(FILE_WORDS.file);
+    const filter = screen.getByRole("searchbox", { name: CONTROL_LABELS.filter_files });
+    await user.type(filter, FILE_WORDS.doc);
+    expect(rows().map((row) => within(row).getAllByRole("link")[0]?.textContent)).toEqual([
+      "Background",
+    ]);
+    await user.clear(filter);
+    await user.type(filter, FILE_WORDS.file);
+    expect(rows().map((row) => within(row).getAllByRole("link")[0]?.textContent)).toEqual([
+      "Handbook",
+    ]);
+    await user.clear(filter);
+    await user.type(filter, "pdf");
+    expect(screen.getByText(EMPTY_STATE_LINES.files_filtered)).toBeInTheDocument();
+  } finally {
+    view.unmount();
+  }
+});
+
 // Remove asks for nothing first: Dispatch removes only a document that holds nothing, so the
 // press goes straight out. A file, the spec and a role document are refused whatever they hold,
 // so no row offers it for one; on a closed issue it is refused, with its reason.

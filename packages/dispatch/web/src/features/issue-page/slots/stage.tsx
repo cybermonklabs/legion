@@ -13,7 +13,7 @@ import {
   ADDRESS_LANDING,
   isAddressedRow,
   LANDING_MARKS,
-  useAddressLanding,
+  useLandingMarks,
   useStageLanding,
   ViewNodeKeeper,
   type ViewTold,
@@ -73,7 +73,7 @@ import { ViewVerificationSlot } from "./view-verification";
  * Until the view has told the stage whether its tree draws the node an address names - beside the
  * view's own address, or a block of the spec on the Spec view's address - the address's landing
  * is undecided (dispatch://INFRA-1196 decision 413): the stage marks the box it draws the view in
- * so (`useAddressLanding`), and the view's tab stop takes no focus meanwhile but where it is the
+ * so (`useLandingMarks`), and the view's tab stop takes no focus meanwhile but where it is the
  * row of that node, whose focus is the landing (`ViewStage`), so the focus moves once, onto where
  * the address lands.
  */
@@ -114,7 +114,7 @@ export function StageSlot({
   // What the view told the stage first for this following, and whether the reader had acted by
   // then: until it has, the landing of an address that names a node is undecided, and the stage
   // marks the view's box so, with the node where the address names it whole, which the view's
-  // tab stop reads (`useAddressLanding`, below, once the reader's acts are watched). A view tells
+  // tab stop reads (`useLandingMarks`, below, once the reader's acts are watched). A view tells
   // it whether or not the node is beside its own address, and each call but the first of a
   // following leaves it as it is.
   const [viewTold, setViewTold] = useState<ViewTold>();
@@ -142,7 +142,7 @@ export function StageSlot({
   // body is drawn: the stage hands that body none, and it watches from its own first draw, so it
   // lands as it does where the reader made no act, a press on blank space included.
   const acts = useRef<AbortController | undefined>(undefined);
-  useAddressLanding(viewBox, address.target, following, viewTold, acts);
+  useLandingMarks(viewBox, address.target, following, viewTold, acts);
   const swapped = undrawn?.following === following;
   const outline = beside && (!filled[preset] || swapped);
   const View = outline ? undefined : views[preset];
@@ -275,7 +275,7 @@ const SLOT_TREE = '[role="tree"]';
  * view, keyed on it, so a view turned on is a new one, which takes the focus once.
  *
  * An address that names a node lands once (decision 413): while the stage marks the box
- * undecided (`ADDRESS_LANDING`, `useAddressLanding`), the take gives no row the focus but the
+ * undecided (`ADDRESS_LANDING`, `useLandingMarks`), the take gives no row the focus but the
  * row of the node the address names (`isAddressedRow`), whose focus is the landing itself: a
  * view that draws that row as its tab stop while its other reads are out, as the Spec view draws
  * a comment the address names, has the focus on it at once. It gives the focus to a failed

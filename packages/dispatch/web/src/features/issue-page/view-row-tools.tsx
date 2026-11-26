@@ -3,8 +3,8 @@ import { useLocation, useNavigate } from "react-router-dom";
 
 import type { Artifact } from "../../api/types";
 import { buildIssuePath } from "../refs/routes";
-import { documentsAddress, useOpenedDocument, useOutlineAddress } from "./document-address";
-import { issueAddress } from "./issue-address";
+import { type OpenedAddress, useOpenedDocument, useOutlineAddress } from "./document-address";
+import { issueAddress, presetPath } from "./issue-address";
 import type { Preset } from "./page-words";
 import type { SlotProps } from "./slot-props";
 import { useFollowing } from "./slots/following";
@@ -27,17 +27,44 @@ export interface ViewRowTools {
 }
 
 /**
- * The view row's two small controls, as `IssuePresets` props (dispatch://INFRA-1196 part N's
- * R3, R4): the filter by words, which writes `?q=` in place; and the version control, which reads
- * the opened document's versions, else the view's document's, else is not drawn. Below 1024 px
- * the row draws the two in the Outline sheet (`slots/view-row.tsx`). Documents, on while its list
- * or a document opened from the list is drawn, draws no Filter, and neither does Dashboard.
+ * How the filter by words writes `?q=`, the words it holds (part N's R4): in place, keeping the
+ * rest of the address, by a replace marked with the following the words were typed in
+ * (`slots/following.ts`), so the stage never swaps a view for the outline while the reader types
+ * (decision 368). The mark keeps the outline an opened document goes back to. No words take `?q=`
+ * out, as Escape's `words-clear` does (`escape-order.ts`).
  */
-export function useViewRowTools(props: SlotProps): ViewRowTools {
-  const { issue, route } = props;
+export function useWriteWords(issueKey: string): (words: string) => void {
   const navigate = useNavigate();
   const { hash, pathname, search } = useLocation();
   const following = useFollowing();
+  const outline = useOutlineAddress(issueKey);
+  return (words) => {
+    const query = new URLSearchParams(search);
+    if (words === "") query.delete("q");
+    else query.set("q", words);
+    const rest = query.toString();
+    navigate(`${pathname}${rest === "" ? "" : `?${rest}`}${hash}`, {
+      replace: true,
+      state: { outline, words: following },
+    });
+  };
+}
+
+/**
+ * The view row's two small controls, as `IssuePresets` props (dispatch://INFRA-1196 part N's
+ * R3, R4): the filter by words, which writes `?q=` in place (`useWriteWords`); and the version
+ * control, which reads the opened document's versions, else the view's document's, else is not
+ * drawn. Below 1024 px the row draws the two in the Outline sheet (`slots/view-row.tsx`).
+ * Documents, on while its list or a document opened from the list is drawn, draws no Filter, and
+ * neither does Dashboard. With them, the document the address opens (`useOpenedDocument`), which
+ * the row reads too and which is no prop of `IssuePresets`.
+ */
+export function useViewRowTools(
+  props: SlotProps
+): ViewRowTools & { readonly opened: OpenedAddress | undefined } {
+  const { issue, route } = props;
+  const navigate = useNavigate();
+  const { hash, pathname, search } = useLocation();
   const { planArtifact, primaryArtifact, verificationArtifact } = useIssueDetail(issue, route);
   const address = issueAddress(route, search, hash, primaryArtifact?.slug);
   const opened = useOpenedDocument(issue, route);
@@ -47,22 +74,9 @@ export function useViewRowTools(props: SlotProps): ViewRowTools {
   // location's `outline`, which the list's rows hand over), as it is while the list is.
   const documentsOn =
     address.preset === "documents" ||
-    (opened !== undefined && outline === documentsAddress(issue.key));
+    (opened !== undefined && outline === presetPath(issue.key, "documents"));
   const isClosed = issue.closed_at !== null;
-  // What the filter by words holds is `?q=`, which the box writes in place, keeping the rest of
-  // the address, by a replace marked with the following it was typed in (`slots/following.ts`),
-  // so the stage never swaps a view for the outline while the reader types (decision 368). The
-  // mark keeps the outline an opened document goes back to.
-  const onFilterChange = (next: string) => {
-    const query = new URLSearchParams(search);
-    if (next === "") query.delete("q");
-    else query.set("q", next);
-    const rest = query.toString();
-    navigate(`${pathname}${rest === "" ? "" : `?${rest}`}${hash}`, {
-      replace: true,
-      state: { outline, words: following },
-    });
-  };
+  const onFilterChange = useWriteWords(issue.key);
   // A document opened at a version of its own: its own address at that version, which keeps the
   // outline it was opened from to go back to.
   const openDocumentAt = (artifact: Artifact, version: number | undefined) =>
@@ -126,6 +140,7 @@ export function useViewRowTools(props: SlotProps): ViewRowTools {
     ...(documentsOn && address.preset !== "documents" ? { active: "documents" as const } : {}),
     filter: address.filter,
     ...(documentsOn || address.preset === "dashboard" ? {} : { onFilterChange }),
+    opened,
     toolbar,
   };
 }

@@ -198,7 +198,7 @@ export const CHORDS: readonly {
 export function useIssueKeymap(issueKey: string): void {
   const navigate = useNavigate();
   const { hash, pathname, search } = useLocation();
-  // Where `t a` and `t f` leave from (part N's R4).
+  // Where `t a` leaves from (part N's R4).
   const outline = useOutlineAddress(issueKey);
   // The view the address has on, which a view's chord toggles from: the issue's own address is
   // Dashboard's unless it names a node or words, so the whole address is read.

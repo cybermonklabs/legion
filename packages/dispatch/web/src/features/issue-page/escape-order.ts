@@ -1,22 +1,17 @@
 import { type RefObject, useEffect, useRef } from "react";
 import { flushSync } from "react-dom";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
 import type { IssueRoute } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
 import { useChipRecord } from "./chip-return";
 import { DOCUMENTS_LIST_ATTRIBUTE } from "./DocumentsList";
-import {
-  escapeWayBack,
-  useFollowWayBack,
-  useOutlineAddress,
-  useReturnFocus,
-} from "./document-address";
+import { escapeWayBack, useFollowWayBack, useOutlineAddress } from "./document-address";
 import { WORDS_FILTER_ATTRIBUTE } from "./IssuePresets";
 import { presetPath } from "./issue-address";
 import { CONTROL_LABELS } from "./page-words";
-import { useFollowing } from "./slots/following";
 import { nodeRowSelectorOf } from "./tree-focus";
+import { useWriteWords } from "./view-row-tools";
 
 /** The filter by words open as its box, and the small control it shuts into (`IssuePresets.tsx`). */
 const WORDS_BOX = `input[${WORDS_FILTER_ATTRIBUTE}]`;
@@ -25,10 +20,13 @@ const WORDS_CONTROL = `button[${WORDS_FILTER_ATTRIBUTE}]`;
 /** A row of the outline or of a view. */
 const ROW = "[data-node-row]";
 
-/** The stage's own tab stop: the tab-stop row of the outline, or of the view drawn in its place,
- *  each a tree named as the outline is, which the Contents pane's list is not (`t c` reaches the
- *  same row, `useIssueKeymap.ts`). */
-const STAGE_TAB_STOP = `[role="tree"][aria-label="${CONTROL_LABELS.tree}"] ${ROW}[tabindex="0"]`;
+/** The outline, by its name: the Contents pane's list is a tree too. A view drawn in the outline's
+ *  place is a tree named as the outline is. */
+export const OUTLINE_TREE = `[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`;
+
+/** The stage's own tab stop: the tab-stop row of the outline, or of the view drawn in its place
+ *  (`t c` reaches the same row, `useIssueKeymap.ts`). */
+const STAGE_TAB_STOP = `${OUTLINE_TREE} ${ROW}[tabindex="0"]`;
 
 /** The Verification view's body, which binds no Escape of its own (`VerificationFilterBody.tsx`):
  *  nothing gives a row of it back from a control inside it, so the view's Escape is next there. */
@@ -79,9 +77,8 @@ const TYPING = "input, textarea, select";
  * version control's panel, the Outline sheet and a dialog each take their own Escape before any of
  * these, as on today's page: the keymap answers no press one of them has taken.
  *
- * The way back from a document a chip opened is the page's to keep (`useChipRecord`), and the
- * focus a way back names is placed where the page draws it (`useReturnFocus`): both are the page's
- * while it is drawn, as this is.
+ * The way back from a document a chip opened is the page's to keep (`useChipRecord`) while it is
+ * drawn, as this is.
  */
 export function useEscapeOrder({
   documents,
@@ -101,25 +98,12 @@ export function useEscapeOrder({
   viewOn: boolean;
 }): void {
   const navigate = useNavigate();
-  const { hash, pathname, search } = useLocation();
-  const following = useFollowing();
   const outline = useOutlineAddress(issueKey);
   const chip = useChipRecord(issueKey);
   const followWayBack = useFollowWayBack();
-  useReturnFocus();
   const before = useRowBeforeWords();
-  // Clearing the words is the box's own write (`view-row-tools.tsx`): `?q=` taken out in place,
-  // by a replace marked with the following the words were typed in, which keeps the outline an
-  // opened document goes back to.
-  const clearWords = () => {
-    const query = new URLSearchParams(search);
-    query.delete("q");
-    const rest = query.toString();
-    navigate(`${pathname}${rest === "" ? "" : `?${rest}`}${hash}`, {
-      replace: true,
-      state: { outline, words: following },
-    });
-  };
+  // Clearing the words is the box's own write of none (`view-row-tools.tsx`' `useWriteWords`).
+  const writeWords = useWriteWords(issueKey);
   const pageEscapes = () => {
     if (opened !== undefined || document.querySelector('[role="menu"]') !== null) return false;
     const active = document.activeElement;
@@ -194,7 +178,7 @@ export function useEscapeOrder({
       keys: "Escape",
       label: "Clear the filter by words",
       palette: false,
-      run: clearWords,
+      run: () => writeWords(""),
       when: () => filter !== "" && pageEscapes(),
     },
     {

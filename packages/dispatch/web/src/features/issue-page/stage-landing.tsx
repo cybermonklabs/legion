@@ -1,6 +1,7 @@
 import { isIdPrefix, itemFromSearch } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import {
+  type ComponentProps,
   type ReactNode,
   type RefObject,
   useEffect,
@@ -10,20 +11,18 @@ import {
 } from "react";
 import { Navigate, useLocation, useNavigate, useNavigationType } from "react-router-dom";
 
-import { api } from "../../api/client";
 import { useAddressedItem } from "../artifacts/ArtifactDocument";
-import { useWholeRouteRead } from "../refs/reference-target";
+import { EVENT_FRESH, useWholeRouteRead } from "../refs/reference-target";
 import { buildIssuePath, type IssueRoute } from "../refs/routes";
 import { claimBox, rewatch, watchedIn } from "../shell/ViewportAnchor";
-import { useOpenedDocument, useOutlineAddress } from "./document-address";
-import { useEscapeOrder } from "./escape-order";
+import { useOpenedDocument, useOutlineAddress, useReturnFocus } from "./document-address";
+import { OUTLINE_TREE, useEscapeOrder } from "./escape-order";
 import { useFocusedNode } from "./focused-node";
 import { type AddressTarget, issueAddress } from "./issue-address";
 import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
 import { OpenedDocument } from "./OpenedDocument";
-import { wholeOnScreen } from "./on-screen";
+import { screenBand, wholeIn } from "./on-screen";
 import { useAskOutline, useFocusBranch } from "./outline-request";
-import { CONTROL_LABELS } from "./page-words";
 import { isFilter } from "./presets";
 import { scrollingAncestor } from "./scroll-box";
 import type { SlotProps } from "./slot-props";
@@ -32,6 +31,7 @@ import { blockNodeId } from "./statement-rules";
 import { nodeRowSelectorOf } from "./tree-focus";
 import { useDocumentToolbars } from "./useDocumentToolbars";
 import { useIssueDetail } from "./useIssueDetail";
+import { issueCommentsQuery } from "./useIssueTree";
 import { type ItemLanding, isItemRoute, useItemLanding } from "./useItemLanding";
 import { abortOnReaderAct } from "./useNodeEditing";
 
@@ -49,7 +49,8 @@ import { abortOnReaderAct } from "./useNodeEditing";
  * outline's own landing (`slots/body.tsx`), which this does not do again.
  *
  * It also binds the page's own Escape steps between a caret and the outline (R1,
- * `escape-order.ts`), keeps the outline's scroll place across a round trip through a view or a
+ * `escape-order.ts`), puts the focus where an opened document's way back says once the page draws
+ * it (`useReturnFocus`), keeps the outline's scroll place across a round trip through a view or a
  * document, puts the focus on an approval request's entry in the header when the address names
  * one, and opens Details at the issue's steps on `/steps`.
  */
@@ -64,8 +65,6 @@ export function useStageLanding({ issue, route }: SlotProps): {
   const landing = useItemLanding(route);
   const opened = useOpenedDocument(issue, route);
   const outline = useOutlineAddress(issue.key);
-  const navigate = useNavigate();
-  const { diffs, showDiff, toolbarSink } = useDocumentToolbars();
   // The ask or comment an address's `?ask=` or `?comment=` names for the outline to open on. An
   // id written short is resolved as a document's address resolves one, and the address is
   // replaced with the whole id under the same parameter, which names the node
@@ -85,14 +84,15 @@ export function useStageLanding({ issue, route }: SlotProps): {
   // `?mark=` names an ask or a comment by its id alone: a comment when the issue's comments hold
   // that id - or, for an id written short, one starting with it - and an ask otherwise. Only an
   // address that opens its document reads them here (a view's address draws the view), under the
-  // key the outline reads them by, so it costs no request of its own. A short id is resolved here
-  // and written whole under `?mark=`, so the document lands on the item under its whole id.
+  // key the outline reads them by and kept fresh by events as it keeps them, so it costs no request
+  // of its own. A short id is resolved here and written whole under `?mark=`, so the document lands
+  // on the item under its whole id.
   const listed = opened === undefined ? undefined : address.documentItem;
   const marked = listed?.kind === "mark" ? listed.id : undefined;
   const comments = useQuery({
+    ...issueCommentsQuery(issue.key),
+    ...EVENT_FRESH,
     enabled: marked !== undefined,
-    queryFn: () => api.listComments(issue.key),
-    queryKey: ["comments", issue.key],
   });
   const markedItem =
     marked === undefined || comments.data === undefined
@@ -115,8 +115,9 @@ export function useStageLanding({ issue, route }: SlotProps): {
         : markedItem;
   useApprovalFocus(landing);
   useStepsAddress(route);
+  useReturnFocus();
   useEscapeOrder({
-    documents: address.preset === "documents" && opened === undefined,
+    documents: address.preset === "documents",
     filter: address.filter,
     issueKey: issue.key,
     opened: opened?.route,
@@ -150,35 +151,71 @@ export function useStageLanding({ issue, route }: SlotProps): {
   if (landing?.kind === "approval") return { outline: { key: issue.key, kind: "issue" } };
   if (!askAnswered) return { instead: null };
   if (opened === undefined) return {};
-  const openedId = opened.artifact?.id ?? "";
   return {
     document: (
-      <OpenedDocument
+      <OpenedDocumentSlot
         artifact={opened.artifact}
         artifactRoute={opened.route}
         highlightTerm={highlightTerm}
         isClosed={issue.closed_at !== null}
         issueKey={issue.key}
         item={documentItem}
-        onShowDiff={(next) => showDiff(openedId, next)}
-        onToolbarChange={toolbarSink(openedId)}
-        // A version picked in the document's own editor opens it at that version, keeping the
-        // outline it was opened from, which its way back reads.
-        onVersionChange={(version) =>
-          navigate(
-            buildIssuePath({
-              key: issue.key,
-              kind: "artifact",
-              slug: opened.route.slug,
-              ...(version === null ? {} : { version }),
-            }),
-            { state: { outline } }
-          )
-        }
-        showDiff={diffs.has(openedId)}
+        outline={outline}
       />
     ),
   };
+}
+
+/**
+ * The document the address opens (`useStageLanding`'s `document`), with the page's toolbars and
+ * diffs. It is an element of its own, so a toolbar an editor publishes as the reader types
+ * (`useDocumentToolbars`) draws it alone, and not the stage with the outline and each of its
+ * rows, whose editors report through the sink alone for that reason (`useToolbarSink`).
+ */
+function OpenedDocumentSlot({
+  artifact,
+  artifactRoute,
+  highlightTerm,
+  isClosed,
+  issueKey,
+  item,
+  outline,
+}: Pick<
+  ComponentProps<typeof OpenedDocument>,
+  "artifact" | "artifactRoute" | "highlightTerm" | "isClosed" | "issueKey" | "item"
+> & {
+  /** The address the document was opened from, which a version picked in it keeps. */
+  readonly outline: string;
+}): ReactNode {
+  const navigate = useNavigate();
+  const { diffs, showDiff, toolbarSink } = useDocumentToolbars();
+  const openedId = artifact?.id ?? "";
+  return (
+    <OpenedDocument
+      artifact={artifact}
+      artifactRoute={artifactRoute}
+      highlightTerm={highlightTerm}
+      isClosed={isClosed}
+      issueKey={issueKey}
+      item={item}
+      onShowDiff={(next) => showDiff(openedId, next)}
+      onToolbarChange={toolbarSink(openedId)}
+      // A version picked in the document's own editor opens it at that version, keeping the
+      // outline it was opened from, which its way back reads.
+      onVersionChange={(version) =>
+        navigate(
+          buildIssuePath({
+            key: issueKey,
+            kind: "artifact",
+            slug: artifactRoute.slug,
+            ...(version === null ? {} : { version }),
+          }),
+          { state: { outline } }
+        )
+      }
+      showDiff={diffs.has(openedId)}
+    />
+  );
 }
 
 /**
@@ -245,25 +282,27 @@ export function ViewNodeKeeper({
   return null;
 }
 
-/** The outline, by its name: the Contents pane's list is a tree too. */
-const OUTLINE_TREE = `[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`;
-
 /**
  * Puts the focus, without scrolling, on a row of `node` in the outline where the page shows it
  * whole, else on the outline's first row that the page shows whole, and on nothing where it
- * shows none (`wholeOnScreen`). A row the outline draws already is reached by its own focus, as
- * the outline reaches one (`IssueTree.tsx`'s `reach`), in this task: an ask of the outline goes
- * through two renders, and could come after the frame in which a chord back puts the focus on
- * the outline's tab stop (`useIssueKeymap.ts`'s `reachPart`), which this row then is.
+ * shows none (`wholeIn`, against the band the page shows, read once). A row the outline draws
+ * already is reached by its own focus, as the outline reaches one (`IssueTree.tsx`'s `reach`), in
+ * this task: an ask of the outline goes through two renders, and could come after the frame in
+ * which a chord back puts the focus on the outline's tab stop (`useIssueKeymap.ts`'s
+ * `reachPart`), which this row then is.
  */
 function focusOnScreen(node: string): void {
   const tree = document.querySelector(OUTLINE_TREE);
   if (tree === null) return;
-  const rows = [
-    ...tree.querySelectorAll<HTMLElement>(nodeRowSelectorOf(node)),
-    ...tree.querySelectorAll<HTMLElement>("[data-node-row]"),
-  ];
-  rows.find(wholeOnScreen)?.focus({ preventScroll: true });
+  const band = screenBand();
+  for (const rows of [nodeRowSelectorOf(node), "[data-node-row]"]) {
+    for (const row of tree.querySelectorAll<HTMLElement>(rows)) {
+      if (wholeIn(row, band)) {
+        row.focus({ preventScroll: true });
+        return;
+      }
+    }
+  }
 }
 
 /** What the stage keeps of the first thing a view told it for a following of an address that
@@ -274,7 +313,7 @@ export interface ViewTold {
   readonly reader: boolean;
 }
 
-/** The mark the stage sets on the box it draws a view in (`useAddressLanding`), which the box's
+/** The mark the stage sets on the box it draws a view in (`useLandingMarks`), which the box's
  *  take of the focus reads (`ViewStage`), with the values it takes (`LANDING_MARKS`). */
 export const ADDRESS_LANDING = "data-address-landing";
 
@@ -283,7 +322,7 @@ export const ADDRESS_LANDING = "data-address-landing";
  *  address was followed (`acted`). */
 export const LANDING_MARKS = { acted: "acted", undecided: "undecided" } as const;
 
-/** What the stage sets on the box beside the `undecided` mark (`useAddressLanding`): the id of
+/** What the stage sets on the box beside the `undecided` mark (`useLandingMarks`): the id of
  *  the node the address names, where the address says that id whole (`wholeNodeId`), until the
  *  reader's first act since the address was followed. The box's take reads it
  *  (`isAddressedRow`). */
@@ -305,6 +344,20 @@ function wholeNodeId(target: AddressTarget | undefined): string | undefined {
   return undefined;
 }
 
+/** The mark the stage sets on the view's box for an address that names `target`, by what the view
+ *  told it of `following` (`told`): none for an address that names no node; `undecided` until the
+ *  view has told it; `acted` where it told it after the reader's first act; and none where it told
+ *  it before. */
+function landingMark(
+  target: AddressTarget | undefined,
+  following: string,
+  told: ViewTold | undefined
+): (typeof LANDING_MARKS)[keyof typeof LANDING_MARKS] | undefined {
+  if (target === undefined) return undefined;
+  if (told?.following !== following) return LANDING_MARKS.undecided;
+  return told.reader ? LANDING_MARKS.acted : undefined;
+}
+
 /**
  * An address that names a node moves the focus once, onto where it lands (dispatch://INFRA-1196
  * decision 413): the row the view draws for the node, the outline's row drawn in the view's place,
@@ -324,28 +377,24 @@ function wholeNodeId(target: AddressTarget | undefined): string | undefined {
  * node (`target`) leaves the box unmarked, so the view's tab stop takes the focus as its rows
  * are drawn.
  */
-export function useAddressLanding(
+export function useLandingMarks(
   box: RefObject<HTMLElement | null>,
   target: AddressTarget | undefined,
   following: string,
   told: ViewTold | undefined,
   acts: RefObject<AbortController | undefined>
 ): void {
-  const mark =
-    target === undefined
-      ? undefined
-      : told?.following !== following
-        ? LANDING_MARKS.undecided
-        : told.reader
-          ? LANDING_MARKS.acted
-          : undefined;
+  const mark = landingMark(target, following, told);
   const node = mark === LANDING_MARKS.undecided ? wholeNodeId(target) : undefined;
-  // At every commit of the stage, so a box drawn anew for another view takes the marks too.
+  // At every commit of the stage, so a box drawn anew for another view takes the marks too. A mark
+  // that stands is not set again: each set is a change the box's take observes (`ViewStage`).
   useLayoutEffect(() => {
     const element = box.current;
     if (element === null) return;
     if (mark === undefined) element.removeAttribute(ADDRESS_LANDING);
-    else element.setAttribute(ADDRESS_LANDING, mark);
+    else if (element.getAttribute(ADDRESS_LANDING) !== mark) {
+      element.setAttribute(ADDRESS_LANDING, mark);
+    }
     // The following's watch of the reader's acts (`ReaderActsWatch`), which the stage draws and
     // which starts it in a layout effect of the same commit, before this one: an act ends it,
     // and the node's mark with it, though the act draws nothing.
@@ -363,7 +412,7 @@ export function useAddressLanding(
 
 /** Whether `row`, the tab-stop row of the view drawn in `box`, is the row of the node the address
  *  names while the stage marks the box undecided and the reader has not acted since the address
- *  was followed (`useAddressLanding`): its focus is then the landing itself, the one move. */
+ *  was followed (`useLandingMarks`): its focus is then the landing itself, the one move. */
 export function isAddressedRow(box: HTMLElement, row: Element): boolean {
   const node = box.getAttribute(ADDRESS_NODE);
   return node !== null && row.matches(nodeRowSelectorOf(node));
@@ -421,7 +470,7 @@ const HISTORY_DRAWN = `aside[${DETAILS_ATTRIBUTE}] [data-testid="issue-history"]
 function holdSteps(heading: HTMLElement, landing: AbortSignal): void {
   const box = scrollingAncestor(heading);
   if (box === null) return;
-  const acts = abortOnReaderAct(() => release());
+  const acts = abortOnReaderAct(release);
   let watched: ReadonlySet<Element> = new Set();
   const watch = () => {
     const now = watchedIn(heading, box);
@@ -436,7 +485,7 @@ function holdSteps(heading: HTMLElement, landing: AbortSignal): void {
     watch();
     heading.scrollIntoView({ block: "start" });
   });
-  const unclaim = claimBox(box, () => release());
+  const unclaim = claimBox(box, release);
   function release(): void {
     landing.removeEventListener("abort", release);
     acts.abort();

@@ -42,7 +42,7 @@ import { conversationItemId, isPinnedConversation, stateForIssue } from "../issu
 import { type PressWatch, watchPresses } from "../margin/details-focus-keeper";
 import { useCommentActionQueue } from "../margin/useCommentActionQueue";
 import { type AgentPart, AgentParts, useAgentText } from "../refs/AgentName";
-import { standsFailed } from "../refs/reference-target";
+import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
 import type { FocusedNode } from "./focused-node";
@@ -270,8 +270,9 @@ function AskThreadFacts({
             askId={ask.id}
             claimant={thread.claimant}
             followers={thread.followers ?? []}
+            freshness={EVENT_FRESH}
             owner={ask}
-            page
+            palette="page"
             route={thread.route}
             routeHolder={thread.route_holder}
             routeStatus={thread.route_status}

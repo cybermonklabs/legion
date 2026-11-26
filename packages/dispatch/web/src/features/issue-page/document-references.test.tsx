@@ -153,8 +153,9 @@ function draw(edges: readonly GraphEdge[], comments: readonly CommentWithTrees[]
 test("an opened document's Referenced by keeps the issue's own comment", async () => {
   const { getReferences } = draw([OWN_EDGE]);
   const list = screen.getByRole("region", { name: "Referenced by" });
-  // The comment is of the document's own issue, which Details' list leaves to the outline; it
-  // is named by its words, as the outline's row names it, with the marks its author typed gone.
+  // The comment is of the document's own issue, which the new page's Referenced by panel leaves to
+  // the outline (`listedEdges`); it is named by its words, as the outline's row names it, with the
+  // marks its author typed gone.
   const own = await within(list).findByRole("link", { name: OWN_WORDS });
   expect(own).toHaveAttribute("href", `/issues/${KEY}/comments/${OWN_COMMENT}`);
   expect(own, "the comment's words are not marked as an author's text").toHaveAttribute(
@@ -181,7 +182,7 @@ test("an opened document's list of what references it names each row as Details'
   };
   // An edge of a kind this page does not know, which a newer Dispatch can answer with, is left
   // out, as every list of a node's references leaves it.
-  const unknown = { ...check, kind: "verifies" } as unknown as GraphEdge;
+  const unknown = { ...checkEdge(2), kind: "verifies" } as unknown as GraphEdge;
   draw([OWN_EDGE, check, elsewhere, unknown]);
   const list = screen.getByRole("region", { name: "Referenced by" });
   await within(list).findByRole("link", { name: OWN_WORDS });

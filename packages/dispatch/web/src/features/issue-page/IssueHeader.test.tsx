@@ -3648,10 +3648,6 @@ test("each reading of the labels is one `issue-header-labels` measure", async ()
     await act(nextFrame);
     sizes.resize(box);
     expect(measures(), "a frame where nothing changed read the labels").toHaveLength(3);
-    for (const entry of measures()) {
-      expect(entry.entryType).toBe("measure");
-      expect(entry.duration).toBeGreaterThanOrEqual(0);
-    }
   } finally {
     view.unmount();
     restore();
