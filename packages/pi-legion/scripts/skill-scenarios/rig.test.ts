@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -9,12 +10,13 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
-import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
 import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
 import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
@@ -1670,6 +1672,77 @@ sleep() { command sleep 0.05; }`;
   });
 });
 
+describe("launch environment", () => {
+
+  // Catches: a pane variable in a process's arguments, where every user of the machine reads it:
+  // a tester's pane carries the batch's NATS URL, credential included, and launch once handed the
+  // pane to `env -i` as arguments. Every `env` launch runs after the pane's PATH is set records
+  // its arguments here. The clean re-exec starts with no PATH, so it can call the system `env`, not
+  // this row's stand-in: launch.sh itself must contain the export loop and not the forbidden form.
+  test("the pane's variables reach the launcher, mise, in its environment alone, never in an argument", () => {
+    const run = freshDir("launch-env-run");
+    const bin = freshDir("launch-env-bin");
+    for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir));
+    const realEnv = Bun.which("env", { PATH: callerPath });
+    const token = fixtureSecret("tok");
+    const url = new URL("nats://127.0.0.1:4222");
+    url.username = token;
+    const pane = [`PATH=${bin}:${callerPath}`, `ENVOY_NATS_URL=${url.href}`, "NOTE=two words"];
+    writeFileSync(path.join(run, "prompt.txt"), "Test it.\n");
+    writeFileSync(path.join(run, "pane.env"), `${pane.join("\n")}\n`);
+    mkdirSync(path.join(bin, "pin", "bin"), { recursive: true });
+    writeFileSync(path.join(bin, "pin", "bin", "omp"), "#!/bin/sh\n", { mode: 0o755 });
+    writeFileSync(
+      path.join(bin, "env"),
+      `#!/bin/sh\nprintf '%s\n' "$@" >>${JSON.stringify(path.join(run, "argv.log"))}\nexec ${JSON.stringify(realEnv)} "$@"\n`,
+      { mode: 0o755 }
+    );
+    writeFileSync(
+      path.join(bin, "mise"),
+      `#!/bin/sh\nif [ "$1" = where ]; then echo "${bin}/pin"; exit 0; fi\n${JSON.stringify(realEnv)} >${JSON.stringify(path.join(run, "launcher-env"))}\n`,
+      { mode: 0o755 }
+    );
+    const standIns = `
+tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
+sleep() { command sleep 0.05; }`;
+    const result = bash(
+      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("rig_omp")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nlaunch tester-proof-s1-1`,
+      [run],
+      { PATH: `${bin}:${callerPath}` }
+    );
+    const argv = existsSync(path.join(run, "argv.log"))
+      ? readFileSync(path.join(run, "argv.log"), "utf8")
+      : "";
+    const launcherEnv = existsSync(path.join(run, "launcher-env"))
+      ? readFileSync(path.join(run, "launcher-env"), "utf8")
+          .trim()
+          .split("\n")
+          .filter((line) => !line.startsWith("PWD="))
+          .sort()
+      : [];
+    const launcher = readFileSync(path.join(run, "launch.sh"), "utf8");
+    expect({
+      code: result.code,
+      envRan: argv.length > 0,
+      leaked: argv
+        .split("\n")
+        .filter((line) => line.includes(token))
+        .map((line) => line.replaceAll(token, "<token>")),
+      launcherPassesPaneAsArguments: launcher.includes('exec env -i "${vars[@]}"'),
+      launcherExportsPane: launcher.includes('for var in "${vars[@]}"; do export "$var"; done'),
+      launcherEnv,
+    }).toEqual({
+      code: 0,
+      envRan: true,
+      leaked: [],
+      launcherPassesPaneAsArguments: false,
+      launcherExportsPane: true,
+      launcherEnv: [...pane].sort(),
+    });
+  });
+});
+
+
 // The tester-proof world's gh routes (worker_routes), answered by the run's gh stand-in. A tester
 // finds its pull request with the worker prompt's lookup, `gh pr list --repo <the issue's
 // repository> --head legion/<issue> --state open --json number --jq '.[0].number'`
@@ -2245,6 +2318,150 @@ describe("launch_env", () => {
     );
     expect({ code: stalled.code, stdout: stalled.stdout }).toEqual({ code: 1, stdout: "" });
     expect(stalled.stderr).toContain("the launch's environment holds LEGION_STALL_REMINDER_MS");
+  });
+});
+
+/** An owner-walk world request with one owner issue, and its world answer, in DIR. */
+function ownerWorld(dir: string) {
+  writeFileSync(
+    path.join(dir, "world-request.json"),
+    JSON.stringify({
+      project: "LWEVAL",
+      repository: "example/csv-importer",
+      defaultBranch: "main",
+      issues: [{ key: "LWEVAL-4", tree: "LWEVAL-4" }],
+      subject: "LWEVAL-4",
+      role: "architect",
+    })
+  );
+  writeFileSync(path.join(dir, "world-answer.json"), JSON.stringify({ starts: [], notices: [] }));
+}
+
+/** A NATS URL whose user info is a fixture token, and that token, for the rows that look for it. */
+function natsWithToken() {
+  const token = fixtureSecret("tok");
+  const url = new URL("nats://127.0.0.1:4222");
+  url.username = token;
+  return { token, url: url.href };
+}
+
+describe("launch_request", () => {
+  // Catches: the batch's NATS URL, credential included, in jq's arguments, where every user of the
+  // machine reads it: launch_request once handed it to jq as `--arg nats`. A stand-in jq first on
+  // PATH records every argument and runs the real one.
+  test("the batch's NATS URL reaches the launch request through jq's environment, never an argument", () => {
+    const R = freshDir("launch-request");
+    const bin = freshDir("launch-request-bin");
+    const argvLog = path.join(R, "argv.log");
+    const realJq = Bun.which("jq", { PATH: callerPath });
+    writeFileSync(
+      path.join(bin, "jq"),
+      `#!/bin/sh\nprintf '%s\n' "$@" >>${JSON.stringify(argvLog)}\nexec ${JSON.stringify(realJq)} "$@"\n`,
+      { mode: 0o755 }
+    );
+    const { token, url } = natsWithToken();
+    const services = path.join(R, "services-env");
+    writeFileSync(
+      services,
+      `ENVOY_URL=http://127.0.0.1:1\nENVOY_NATS_URL=${url}\nENVOY_TOKEN_FILE=/rig/envoy-token\n`
+    );
+    ownerWorld(R);
+    const result = bash(
+      `${defs("service_value", "launch_request")}\nR=$1 services_env=$2\nlaunch_request "$R/world-request.json" "$R/world-answer.json" http://127.0.0.1:1`,
+      [R, services],
+      { PATH: `${bin}:${callerPath}` }
+    );
+    const argv = existsSync(argvLog) ? readFileSync(argvLog, "utf8") : "";
+    expect({
+      code: result.code,
+      stderr: result.stderr.replaceAll(token, "<token>"),
+      jqRan: argv.length > 0,
+      leaked: argv
+        .split("\n")
+        .filter((line) => line.includes(token))
+        .map((line) => line.replaceAll(token, "<token>")),
+      natsUrls: result.code === 0 ? JSON.parse(result.stdout).natsUrls : [],
+    }).toEqual({ code: 0, stderr: "", jqRan: true, leaked: [], natsUrls: [url] });
+  });
+});
+
+describe("owner_launch", () => {
+  // Catches: the request, answer or pane readable by other users while it names the batch's NATS
+  // URL. Each starts as a file from an earlier run at 0644. The row runs under umask 022: the label
+  // removes and recreates the answer, so a mode set before that write would prove nothing.
+  test("the launch request, the launch answer and the pane are their owner's alone", () => {
+    const R = freshDir("owner-launch");
+    const co = freshDir("owner-launch-label");
+    const work = freshDir("owner-launch-work");
+    const entry = path.join(co, "packages/pi-legion/scripts/skill-scenarios/label-texts.sh");
+    mkdirSync(path.dirname(entry), { recursive: true });
+    writeFileSync(
+      entry,
+      [
+        "#!/usr/bin/env bash",
+        '[ "$1" = launch ] || exit 1',
+        'rm -f -- "$3"',
+        `jq '{systemPromptFile: "/rig/system.md", env: {ENVOY_NATS_URL: .natsUrls[0], LEGION_ROLE: "architect"}, published: []}' "$2" >"$3"`,
+        "",
+      ].join("\n"),
+      { mode: 0o755 }
+    );
+    const { token, url } = natsWithToken();
+    const services = path.join(work, "services-env");
+    writeFileSync(
+      services,
+      `ENVOY_URL=http://127.0.0.1:1\nENVOY_NATS_URL=${url}\nENVOY_TOKEN_FILE=/rig/envoy-token\n`
+    );
+    mkdirSync(path.join(work, "profiles/head/home"), { recursive: true });
+    for (const dir of ["texts", "logs"]) mkdirSync(path.join(R, dir));
+    writeFileSync(path.join(R, "logs/proxy.log"), "listening on http://127.0.0.1:2\n");
+    ownerWorld(path.join(R, "texts"));
+    const files = ["texts/launch-request.json", "texts/launch-answer.json", "pane.env"];
+    for (const file of files) {
+      writeFileSync(path.join(R, file), "an earlier run's\n");
+      chmodSync(path.join(R, file), 0o644);
+    }
+    const result = bash(
+      [
+        "umask 022",
+        defs(
+          "fail",
+          "owner_only",
+          "base_env",
+          "service_value",
+          "launch_request",
+          "label_texts",
+          "launch_env",
+          "owner_launch"
+        ),
+        "R=$1 co=$2 work=$3 P=$3/profiles/head services_env=$4 pg_url=postgres://127.0.0.1:1/postgres profile=skills-head",
+        "base_env",
+        "owner_launch http://127.0.0.1:1",
+      ].join("\n"),
+      [R, co, work, services],
+      { USER: "rig" }
+    );
+    expect({
+      code: result.code,
+      stderr: result.stderr.replaceAll(token, "<token>"),
+      files: Object.fromEntries(
+        files.map((file) => [
+          file,
+          {
+            mode: (statSync(path.join(R, file)).mode & 0o777).toString(8),
+            namesTheURL: readFileSync(path.join(R, file), "utf8").includes(token),
+          },
+        ])
+      ),
+    }).toEqual({
+      code: 0,
+      stderr: "",
+      files: {
+        "texts/launch-request.json": { mode: "600", namesTheURL: true },
+        "texts/launch-answer.json": { mode: "600", namesTheURL: true },
+        "pane.env": { mode: "600", namesTheURL: true },
+      },
+    });
   });
 });
 
@@ -2853,15 +3070,19 @@ interface FakeOmpPlan {
 }
 
 /** launch_rpc BOUND START... -- THEN... on the fake Oh My Pi with PLAN, its rpc_poll 0.3 s, in a
- * run directory of its own; TRANSCRIPT, when given, is the session's transcript beforehand. */
+ * run directory of its own; TRANSCRIPT, when given, is the session's transcript beforehand. PANE's
+ * lines, when given, go into the pane after the run's own, and its bin goes first on the pane's
+ * PATH and on the rig's. */
 function rpcRun(
   name: string,
   plan: FakeOmpPlan,
   starts: string[],
   thens: string[] = [],
   bound = 30,
-  transcript?: object[]
+  transcript?: object[],
+  pane: { bin?: string; lines?: string[] } = {}
 ) {
+  const panePath = pane.bin === undefined ? callerPath : `${pane.bin}:${callerPath}`;
   const R = freshDir(name);
   const bin = path.join(R, "omp-install/bin");
   mkdirSync(bin, { recursive: true });
@@ -2878,9 +3099,10 @@ function rpcRun(
     path.join(R, "pane.env"),
     [
       `HOME=${R}`,
-      `PATH=${callerPath}`,
+      `PATH=${panePath}`,
       `SKILL_SCENARIO_RUN=${R}`,
       `FAKE_OMP_PLAN=${path.join(R, "plan.json")}`,
+      ...(pane.lines ?? []),
       "",
     ].join("\n")
   );
@@ -2923,6 +3145,7 @@ function rpcRun(
     [root, R, String(bound), ...files("start", starts), "--", ...files("then", thens)],
     {
       SKILL_SCENARIOS_OMP: path.join(bin, "omp"),
+      ...(pane.bin === undefined ? {} : { PATH: panePath }),
     }
   );
   const events = jsonLines(path.join(R, "fake-omp.jsonl"));
@@ -2962,6 +3185,53 @@ describe("launch_rpc", () => {
     ).toEqual([task]);
     expect(run.at("ready", true)).toBeLessThan(run.prompts[0]?.at as number);
     expect(jsonLines(path.join(run.R, "rpc.jsonl")).length).toBeGreaterThan(run.sent.length);
+  });
+
+  // Catches: a pane variable in a process's arguments, where every user of the machine reads it:
+  // an owner's pane carries its launch answer's NATS URL, credential included, and the RPC launch
+  // file once handed the pane to `env -i` as arguments. Every `env` the run starts records its
+  // arguments here, and Oh My Pi's environment must be the pane's lines and nothing else.
+  test("the pane's variables reach Oh My Pi in its environment alone, never in an argument", () => {
+    const bin = freshDir("rpc-env-bin");
+    const argvLog = path.join(bin, "argv.log");
+    const realEnv = Bun.which("env", { PATH: callerPath });
+    writeFileSync(
+      path.join(bin, "env"),
+      `#!/bin/sh\nprintf '%s\n' "$@" >>${JSON.stringify(argvLog)}\nexec ${JSON.stringify(realEnv)} "$@"\n`,
+      { mode: 0o755 }
+    );
+    const { token, url } = natsWithToken();
+    const run = rpcRun(
+      "rpc-env",
+      { reports: [{ running: false }] },
+      ["Do the work.\n"],
+      [],
+      30,
+      undefined,
+      { bin, lines: [`ENVOY_NATS_URL=${url}`, "NOTE=two words"] }
+    );
+    const argvLines = existsSync(argvLog) ? readFileSync(argvLog, "utf8").trimEnd().split("\n") : [];
+    const fakeOmp = path.join(run.R, "fake-omp.env");
+    const fakeOmpLines = existsSync(fakeOmp)
+      ? readFileSync(fakeOmp, "utf8").trimEnd().split("\n")
+      : [];
+    const paneLines = readFileSync(path.join(run.R, "pane.env"), "utf8").trimEnd().split("\n");
+    const ompEnv = fakeOmpLines.filter((line) => !/^(PWD|OLDPWD|SHLVL|_)=/.test(line)).sort();
+    expect({
+      code: run.code,
+      out: run.out,
+      envRan: existsSync(argvLog),
+      leaked: argvLines
+        .filter((line) => line.includes(token))
+        .map((line) => line.replaceAll(token, "<token>")),
+      ompEnv: ompEnv.map((line) => line.replaceAll(token, "<token>")),
+    }).toEqual({
+      code: 0,
+      out: "exit=0\n",
+      envRan: true,
+      leaked: [],
+      ompEnv: paneLines.sort().map((line) => line.replaceAll(token, "<token>")),
+    });
   });
 
   // Catches: a run ended while the session's own job runs: in RPC mode that job's end starts a

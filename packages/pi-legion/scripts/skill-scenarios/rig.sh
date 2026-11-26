@@ -869,9 +869,16 @@ install_superpowers() {
   : >"$P/superpowers"
 }
 
+# owner_only FILE writes standard input to FILE, readable and writable by its owner alone. It removes
+# FILE first, since a write onto an existing file keeps that file's mode, whatever the umask. The
+# owner run's pane, request and answer can carry the batch's NATS URL, including a credential.
+owner_only() {
+  (umask 077 && rm -f -- "$1" && cat >"$1")
+}
+
 # Writes the variables every agent gets to $R/pane.env: a HOME copied from the label's, the
 # label's profile, the run's stand-ins first on PATH, its own TMPDIR, and nothing else from the
-# caller's environment.
+# caller's environment. The file is its owner's alone, and later appends keep that mode.
 base_env() {
   mkdir -p "$R/tmp"
   cp -a "$P/home" "$R/home"
@@ -886,7 +893,7 @@ base_env() {
     echo "PI_NO_TITLE=1"
     echo "SKILL_SCENARIO_RUN=$R"
     echo "PATH=$R/bin:$PATH"
-  } >"$R/pane.env"
+  } | owner_only "$R/pane.env"
 }
 
 # The run's stand-ins in $R/bin: `gh`, which records the call and answers from $R/fixtures.json,
@@ -917,7 +924,10 @@ EOF
 # when it exists, as the tmux session <tag>-<name>. It waits for the session to exit or time out. A
 # timeout is the run's result (`exit=timeout`), not a rig failure, so this wait is not an
 # until_true. A spec run's later turn passes --continue. Each launch starts out.txt again, so its
-# wait reads only its own exit line.
+# wait reads only its own exit line. The pane's variables reach mise, which starts omp, through the
+# launch file's environment, never through process arguments: the pane can carry the batch's NATS
+# URL, including a credential. The file starts itself again with an empty environment, exports each
+# pane line, then execs the launcher with the pane's lines as its whole environment.
 launch() {
   local system='' extra='' omp run
   omp=$(rig_omp "$pin") || exit 1
@@ -931,9 +941,12 @@ launch() {
   [ ! -f "$R/system-args" ] || system=" $(<"$R/system-args")"
   cat >"$R/launch.sh" <<EOF
 #!/usr/bin/env bash
+[ "\${1:-}" = clean ] || exec env -i "\$BASH" "\$0" clean
 cd $(printf %q "$R/cwd")
+export -n PWD OLDPWD
 mapfile -t vars <$(printf %q "$R/pane.env")
-exec env -i "\${vars[@]}" $run -p "\$(cat $(printf %q "$R/prompt.txt"))"$extra$system --session-dir $(printf %q "$R/sessions") >$(printf %q "$R/out.txt") 2>&1
+for var in "\${vars[@]}"; do export "\$var"; done
+exec env -u SHLVL $run -p "\$(cat $(printf %q "$R/prompt.txt"))"$extra$system --session-dir $(printf %q "$R/sessions") >$(printf %q "$R/out.txt") 2>&1
 EOF
   chmod +x "$R/launch.sh"
   : >"$R/out.txt"
@@ -1291,7 +1304,7 @@ services_up() {
     echo "ENVOY_URL=http://127.0.0.1:$envoy_port"
     echo "ENVOY_NATS_URL=$nats_url"
     echo "ENVOY_TOKEN_FILE=$S/envoy-token"
-  } >"$services_env"
+  } | owner_only "$services_env"
   note "services up: listener :$envoy_port, NATS $(safe_url "$nats_url"), Postgres $(safe_url "$pg_url")"
 }
 
@@ -2031,7 +2044,7 @@ run_tester_proof() {
     echo "JJ_EMAIL=rig@example.invalid"
     echo "JJ_CONFIG=$R/jj.toml"
     echo "GH_REPO=$worker_repo"
-  } >"$R/pane.env"
+  } | owner_only "$R/pane.env"
   launch "$name"
   # What the run left on its issue: every handoff record, each with its body, for testerProof.
   seed_ts capture-handoffs "$R/fixture.json" "$R"
@@ -2099,15 +2112,17 @@ world_request() {
 # the gh stand-in, the pane's PATH (base_env's), the architect's claim on the owner's issue in R's
 # tree, an empty file of deployment instructions (the rig is no deployment and writes none), every
 # notice of the world's answer, and planGuidanceFile for a world with guidance (forms A, C and D).
+# The batch's NATS URL can carry a credential, so jq reads it from LAUNCH_NATS_URL, its environment,
+# never from argv, which every user of this machine reads.
 launch_request() {
   : >"$R/instructions.md"
-  jq -n --slurpfile world "$1" --slurpfile answer "$2" --arg daemon "$3" --arg guidance "${4:-}" \
+  LAUNCH_NATS_URL=$(service_value ENVOY_NATS_URL) jq -n --slurpfile world "$1" --slurpfile answer "$2" --arg daemon "$3" --arg guidance "${4:-}" \
     --arg state "$R/state" --arg workspace "$R/cwd" --arg envoy "$(service_value ENVOY_URL)" \
-    --arg envoyToken "$(service_value ENVOY_TOKEN_FILE)" --arg nats "$(service_value ENVOY_NATS_URL)" \
+    --arg envoyToken "$(service_value ENVOY_TOKEN_FILE)" \
     --arg boot "$R/secrets/boot" --arg gh "$R/bin/gh" --arg path "$R/bin:$PATH" --arg instructions "$R/instructions.md" '
     $world[0] as $w
     | {project: $w.project, stateDir: $state, workspace: $workspace, daemonUrl: $daemon, envoyUrl: $envoy,
-       envoyTokenFile: $envoyToken, natsUrls: [$nats], bootTokenFile: $boot, ghToken: "rig-gh-token",
+       envoyTokenFile: $envoyToken, natsUrls: [$ENV.LAUNCH_NATS_URL], bootTokenFile: $boot, ghToken: "rig-gh-token",
        ghPath: $gh, path: $path, claim: {tree: $w.issues[0].tree, issue: $w.subject, role: $w.role},
        repository: $w.repository, defaultBranch: $w.defaultBranch, instructionsFile: $instructions,
        notices: $answer[0].notices}
@@ -2132,6 +2147,20 @@ launch_env() {
   jq -e '[.env[] | test("\n")] | any | not' "$1" >/dev/null ||
     fail "a variable of the launch answer $1 holds a line break, which a pane file cannot carry"
   jq -r '.env | to_entries[] | "\(.key)=\(.value)"' "$1"
+}
+
+# owner_launch DAEMON_URL [GUIDANCE] composes the owner's launch through the label's composer and
+# runtime. The request, answer and pane can name the batch's NATS URL, including a credential, so
+# each is owner-only: the request through owner_only; the answer under umask 077, because the label
+# removes and recreates it; the pane through base_env, whose appends keep its mode.
+owner_launch() {
+  launch_request "$R/texts/world-request.json" "$R/texts/world-answer.json" "$1" "${2:-}" | owner_only "$R/texts/launch-request.json"
+  (umask 077 && label_texts launch "$R/texts/launch-request.json" "$R/texts/launch-answer.json")
+  launch_env "$R/texts/launch-answer.json" >>"$R/pane.env"
+  {
+    echo "DISPATCH_URL=$(sed -n 's|^listening on ||p' "$R/logs/proxy.log")"
+    echo "DISPATCH_TOKEN_FILE=$work/services/dispatch-token"
+  } >>"$R/pane.env"
 }
 
 # pod_standins puts pod-standin.ts first on the run's PATH for each pod tool (POD_TOOLS of
@@ -2329,11 +2358,14 @@ rpc_end() {
 
 # launch_rpc BOUND [START...] -- [THEN...] runs the label's Oh My Pi as the runtime starts a
 # pane: `--model @default --mode rpc --append-system-prompt $R/system-prompt.md`, with the run's
-# --session-dir, in $R/cwd under $R/pane.env alone (`env -i`). Once the stand-in's log shows the
-# claim's claims/ready, it sends each START file's text, a start task, as one RPC prompt, and then
-# each THEN file's, each once the turn before it has ended (rpc_settled); a run with no start task
-# first waits for the turn a notice starts. Each turn has BOUND seconds. The run's last line of
-# out.txt is `exit=0` once the last turn has ended, or `exit=bound` (rpc_bound).
+# --session-dir, in $R/cwd under $R/pane.env alone. The pane's variables reach Oh My Pi through the
+# launch file's environment, never through process arguments: an owner's pane can carry the launch
+# answer's NATS URL, including a credential. The file starts itself again with an empty environment,
+# exports each pane line, and execs Oh My Pi with the pane's lines as its whole environment. The
+# frame loop takes TZ=UTC for itself alone. Once the stand-in's log shows claims/ready, it sends
+# each START file's text as one RPC prompt, and then each THEN file's once the turn before it ended.
+# A run with no start task waits for a notice turn. Each turn has BOUND seconds. Its last out.txt
+# line is `exit=0` once the last turn ended, or `exit=bound` (rpc_bound).
 launch_rpc() {
   local bound=$1 starts=() thens=() omp file since launched
   local -x TZ=UTC
@@ -2356,18 +2388,23 @@ launch_rpc() {
   exec {rpc_fd}<>"$R/rpc.in"
   cat >"$R/launch-rpc.sh" <<EOF
 #!/usr/bin/env bash
+[ "\${1:-}" = clean ] || exec env -i "\$BASH" "\$0" clean
 exec $rpc_fd>&-
 cd $(printf %q "$R/cwd") || exit 1
+export -n PWD OLDPWD
 mapfile -t vars <$(printf %q "$R/pane.env")
-export TZ=UTC
-env -i "\${vars[@]}" $(printf %q "$omp") --model @default --mode rpc --append-system-prompt $(printf %q "$R/system-prompt.md") \\
-  --session-dir $(printf %q "$R/sessions") <$(printf %q "$R/rpc.in") 2>>$(printf %q "$R/omp-stderr.txt") |
-  while IFS= read -r frame || [ -n "\$frame" ]; do
-    [ -n "\$frame" ] || continue
-    t=\$EPOCHREALTIME s=\${t%.*} u=\${t#*.}
-    case \$frame in '{'*) ;; *) frame=\$(jq -Rn --arg f "\$frame" '\$f') ;; esac
-    printf '{"at":"%(%Y-%m-%dT%H:%M:%S)T.%sZ","ms":%s,"got":%s}\n' "\$s" "\$u" "\$s\${u:0:3}" "\$frame"
-  done >>$(printf %q "$R/rpc-events.jsonl")
+for var in "\${vars[@]}"; do export "\$var"; done
+{ exec env -u SHLVL $(printf %q "$omp") --model @default --mode rpc --append-system-prompt $(printf %q "$R/system-prompt.md") \
+  --session-dir $(printf %q "$R/sessions"); } <$(printf %q "$R/rpc.in") 2>>$(printf %q "$R/omp-stderr.txt") |
+  {
+    export TZ=UTC
+    while IFS= read -r frame || [ -n "\$frame" ]; do
+      [ -n "\$frame" ] || continue
+      t=\$EPOCHREALTIME s=\${t%.*} u=\${t#*.}
+      case \$frame in '{'*) ;; *) frame=\$(jq -Rn --arg f "\$frame" '\$f') ;; esac
+      printf '{"at":"%(%Y-%m-%dT%H:%M:%S)T.%sZ","ms":%s,"got":%s}\n' "\$s" "\$u" "\$s\${u:0:3}" "\$frame"
+    done
+  } >>$(printf %q "$R/rpc-events.jsonl")
 EOF
   launched=$(rpc_now)
   launched=${launched#* }
@@ -2388,8 +2425,8 @@ EOF
       return 0
     fi
   done
-  echo exit=0 >>"$R/out.txt"
   rpc_end
+  echo "exit=0" >>"$R/out.txt"
 }
 
 # scored_session runs the owner of owner-walk's world, seeded by seed.ts owner-walk into
@@ -2428,13 +2465,7 @@ scored_session() {
     guidance=$R/guidance.md
     bun "$here/owner-walk.ts" guidance "$R/world.json" "$guidance" || fail "owner-walk.ts guidance failed"
   fi
-  launch_request "$texts/world-request.json" "$texts/world-answer.json" "http://127.0.0.1:$port" "$guidance" >"$texts/launch-request.json"
-  label_texts launch "$texts/launch-request.json" "$texts/launch-answer.json"
-  launch_env "$texts/launch-answer.json" >>"$R/pane.env"
-  {
-    echo "DISPATCH_URL=$(sed -n 's|^listening on ||p' "$R/logs/proxy.log")"
-    echo "DISPATCH_TOKEN_FILE=$work/services/dispatch-token"
-  } >>"$R/pane.env"
+  owner_launch "http://127.0.0.1:$port" "$guidance"
   cp "$(jq -r .systemPromptFile "$texts/launch-answer.json")" "$R/system-prompt.md"
   # The model stand-in, for a label whose model line names it.
   if grep -qxF "model $model_standin" "$R/built-from"; then
