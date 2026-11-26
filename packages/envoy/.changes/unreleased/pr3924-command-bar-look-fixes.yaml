@@ -8,7 +8,8 @@ body: |-
   chip, in its text where the text writes the key, and beneath it otherwise. A plan row of a
   document change names the issue whose document it changes by its chip ("Suggest a change to
   spec on DEMO-15"). A value now in a plan row, and "Done" under an answer, are the page's grey,
-  not a link's blue. A list of chips in an answer draws no bullet beside them. A chart by status
-  puts its places in the order of the board's columns. The side panel moves back over the page
-  with an icon whose tooltip says so, and its context chip stands inside its box, as the bar's
-  does.
+  not a link's blue. In a list in an answer, a line whose first word is a chip draws no bullet,
+  whatever is written after the chip (a colon, a comma, a full stop or a word), and a line of
+  words keeps its bullet, whether or not a chip follows its words. A chart by status puts its
+  places in the order of the board's columns. The side panel moves back over the page with an
+  icon whose tooltip says so, and its context chip stands inside its box, as the bar's does.

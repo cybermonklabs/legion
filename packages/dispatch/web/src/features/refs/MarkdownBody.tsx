@@ -274,13 +274,15 @@ const CLOSING_PUNCTUATION = /^[.,;:!?…)\]}"'”’]+/u;
  * (`ItemChip`), and a line may end after a box where it may not end after a word, so without this
  * the full stop after a chip at the end of a line went on alone to the next one. The punctuation
  * stands against the chip, one pixel nearer than its glyph does: a full stop's own side bearing
- * reads as nothing after a letter, and as a gap after the chip's rule (review R4).
+ * reads as nothing after a letter, and as a gap after the chip's rule (review R4). Answers what
+ * stands for the chip in its line from now on: that span, or `anchor` itself where no
+ * punctuation follows it.
  */
-function holdPunctuation(anchor: HTMLElement): void {
+function holdPunctuation(anchor: HTMLElement): HTMLElement {
   const after = anchor.nextSibling;
   const closing = after instanceof Text ? CLOSING_PUNCTUATION.exec(after.data)?.[0] : undefined;
   if (!(after instanceof Text) || closing === undefined) {
-    return;
+    return anchor;
   }
   // What follows the punctuation stays where it was; `after` keeps the punctuation alone.
   after.splitText(closing.length);
@@ -293,6 +295,38 @@ function holdPunctuation(anchor: HTMLElement): void {
   mark.setAttribute("data-chip-mark", "");
   mark.append(after);
   line.append(anchor, mark);
+  return line;
+}
+
+/** The first child of `parent` that is not white space: what a reader reads first in it. */
+function firstContent(parent: Node): ChildNode | undefined {
+  for (const child of parent.childNodes) {
+    if (!(child instanceof Text) || child.data.trim() !== "") {
+      return child;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Marks the line of a list that a chip begins: its `li` takes `data-chip-leads` where the first
+ * thing in the line that is not white space is `chip`, which is what stands for the chip there -
+ * its link, the time link it is the whole of, or the span that holds either with the punctuation
+ * written after it (`holdPunctuation`). A loose list's line holds its words in paragraphs, so
+ * there the chip begins the line's first paragraph. A line whose words come before its chip is
+ * not marked, whatever follows them. The command bar's answer draws a marked line with no list
+ * mark, since the chip marks the line as a bullet would (design v3, state 4).
+ */
+function markChipLine(chip: HTMLElement): void {
+  const holder = chip.parentElement;
+  const line = holder?.tagName === "P" ? holder.parentElement : holder;
+  if (line?.tagName !== "LI") {
+    return;
+  }
+  const first = firstContent(line);
+  if ((first?.nodeName === "P" ? firstContent(first) : first) === chip) {
+    line.setAttribute("data-chip-leads", "");
+  }
 }
 
 /**
@@ -340,7 +374,8 @@ function inBodyOrder(first: ReferenceAnchor, second: ReferenceAnchor): number {
  *  surface drawing it says about it. One shape for the public body and for the painted one it
  *  hands its props to (`PaintedBody`). */
 interface MarkdownBodyProps {
-  /** Draw the first link to each issue as its chip in a host that permits links. */
+  /** Draw the first link to each issue as its chip in a host that permits links, and mark each
+   *  line of a list that a chip begins (`markChipLine`). */
   chips?: boolean;
   /** Issues the server already identified in this text, such as a short answer's item frames. */
   knownIssueKeys?: readonly string[];
@@ -429,7 +464,11 @@ interface MarkdownBodyProps {
  * its words name it. Every other reference keeps its `RefLink`. The punctuation written right
  * after a chip stays against it, on its line (`holdPunctuation`). A time link whose words are an
  * issue's key is a link to the issue too (`timeLinkAnchors`), and a chip inside a time link shows
- * the time on hover, in place of the issue's title.
+ * the time on hover, in place of the issue's title. A line of a list whose first word is a chip -
+ * the first word of its first paragraph, in a loose list - carries `data-chip-leads` on its `li`
+ * (`markChipLine`), whatever is written after the chip, so the surface can draw the chip as the
+ * line's mark: the command bar's answer draws such a line with no bullet, and a line of words
+ * with its bullet.
  *
  * A body that is nothing but references draws a card for each of them under itself
  * (`Unfurl`): one renderer draws the record and everything that hangs off it, so no surface
@@ -495,8 +534,9 @@ function PaintedBody({
           issue: reference.route.key,
           key: reference.key,
         });
-        // A time link that is the chip and nothing else keeps what follows it on its line whole.
-        holdPunctuation(time?.textContent === "" ? time : reference.anchor);
+        // A time link that is the chip and nothing else keeps what follows it on its line whole,
+        // and a line of a list it begins is marked as the chip's.
+        markChipLine(holdPunctuation(time?.textContent === "" ? time : reference.anchor));
       }
     }
     setChipAnchors(chips.length === 0 ? NO_CHIPS : chips);

@@ -457,11 +457,13 @@ function RunTurn({
         </p>
       ) : null}
       {answer === undefined ? null : (
-        // An item that leads its line of a list - a line of a tight list, or the first paragraph
-        // of a loose list's line - is its chip, which marks the line as a bullet would: a list
-        // of chips draws no bullet beside each (design v3, state 4).
+        // A line of a list whose first word is a chip - a line of a tight list, or the first
+        // paragraph of a loose list's line - is marked so by the body (`data-chip-leads`,
+        // MarkdownBody's `markChipLine`) whatever follows the chip, and draws no list mark, since
+        // the chip marks the line as a bullet would: a list of chips draws no bullet beside each
+        // (design v3, state 4). A line of words keeps its bullet, whatever chip its words reach.
         <div
-          className={`text-sm ${undone ? textMutedOnSurface : textPrimaryOnSurface} [&_li:has(>a:first-child>[data-testid=item-chip])]:list-none [&_li:has(>p:first-child>a:first-child>[data-testid=item-chip])]:list-none`}
+          className={`text-sm ${undone ? textMutedOnSurface : textPrimaryOnSurface} [&_li[data-chip-leads]]:list-none`}
           data-cut={cut ? "true" : undefined}
           data-testid="going-run-answer"
           data-undone={undone ? "true" : undefined}

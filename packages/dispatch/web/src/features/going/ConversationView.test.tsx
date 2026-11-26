@@ -1862,36 +1862,77 @@ test("each issue the answer links is a chip: its key, a status dot and its title
 });
 
 // A chip that leads a line of a list marks it as a bullet would, so the answer's list of chips
-// draws no bullet beside them (design v3, state 4); a line of words keeps its bullet.
+// draws no bullet beside them (design v3, state 4); a line of words keeps its bullet. The body
+// marks each line a chip leads (`data-chip-leads`), which the answer draws with no list mark. The
+// lines are the rows of going-agent-answer-list.e2e.ts, where the browser reads each line's mark,
+// and a line that is a chip alone. A chip with punctuation after it shares a span with that
+// punctuation (`holdPunctuation`), and its line is still the chip's; a line whose words come
+// first is not, even where a chip with no punctuation after it follows them. A line of the loose
+// list holds a second paragraph, so its words stay in paragraphs and its chip begins the first.
 test("a list of chips in the answer draws no bullet before each chip, and a list of words keeps its bullets", async () => {
+  const chip = (key: string) => `[${key}](/issues/${key})`;
+  const text = [
+    "Four are open:",
+    "",
+    `- ${chip("DEMO-1")}: the mount is aligned again tonight`,
+    `- ${chip("DEMO-2")}, with nobody on it yet`,
+    `- ${chip("DEMO-3")} waits on clear weather`,
+    `- ${chip("DEMO-4")}`,
+    "",
+    "Three more, at length:",
+    "",
+    `- ${chip("DEMO-5")}: the mount is aligned again tonight`,
+    "",
+    "  It drifts by morning.",
+    "",
+    `- ${chip("DEMO-6")}. Nobody is on it yet`,
+    "",
+    "  The frost holds it.",
+    "",
+    `- ${chip("DEMO-7")} waits on clear weather`,
+    "",
+    "  The sky is clouded.",
+    "",
+    "By state:",
+    "",
+    `- Aligning: ${chip("DEMO-8")} is in hand tonight`,
+    `- Stalled: ${chip("DEMO-9")}, since the frost`,
+    "- Nothing else is open there",
+  ].join("\n");
   const restore = await showRun("done", [
-    [
-      "reply",
-      {
-        labels: [],
-        text: "Two are open:\n\n- [DEMO-1](dispatch://DEMO-1)\n- [DEMO-2](dispatch://DEMO-2)\n\nAnd one more:\n\n- [DEMO-3](dispatch://DEMO-3)\n\n- a word",
-        tools: [],
-      },
-    ],
+    ["reply", { labels: [], text, tools: [] }],
     ["end", { offers: [], reason: "", state: "done" }],
   ]);
   try {
     const answer = await screen.findByTestId("going-run-answer");
-    await waitFor(() => expect(within(answer).getAllByTestId("item-chip")).toHaveLength(3));
-    // The answer's rules: a line whose first word is a chip, in a tight list or a loose one,
-    // takes no list mark.
-    const chipLines = [
-      "li:has(>a:first-child>[data-testid=item-chip])",
-      "li:has(>p:first-child>a:first-child>[data-testid=item-chip])",
-    ];
-    for (const line of chipLines) expect(answer.className).toContain(`[&_${line}]:list-none`);
+    await waitFor(() => expect(within(answer).getAllByTestId("item-chip")).toHaveLength(9));
     const lines = [...answer.querySelectorAll("li")];
-    expect(lines.map((line) => chipLines.some((chipLine) => line.matches(chipLine)))).toEqual([
+    // The first list's four lines, then the loose list's three, then the three lines of words.
+    expect(lines.map((line) => line.firstElementChild?.tagName === "P")).toEqual([
+      false,
+      false,
+      false,
+      false,
       true,
       true,
       true,
       false,
+      false,
+      false,
     ]);
+    expect(lines.map((line) => line.hasAttribute("data-chip-leads"))).toEqual([
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+    ]);
+    expect(answer.querySelectorAll("[data-chip-line]")).toHaveLength(5);
   } finally {
     restore();
   }
