@@ -2995,15 +2995,55 @@ off_pin() {
     "$(contains "$out" "^::error file=.github/scripts/release.sh::.github/scripts/release.sh is off the text VERSION_ARGS in ci_job_reads.py pins for .github/workflows/release.yaml's LEGION_VERSION_ARGS: ")"
   check "judges no list against a build it cannot stand for" "$(is "$(contains "$out" 'listed paths cover none')" false)"
 }
-off_pin 'GOFLAGS before the build' '  CGO_ENABLED=0 GOOS=' '  GOFLAGS=-tags=extra CGO_ENABLED=0 GOOS='
-off_pin 'GOWORK before the build' '  CGO_ENABLED=0 GOOS=' '  GOWORK=off CGO_ENABLED=0 GOOS='
-off_pin 'GOOS fixed to windows' 'GOOS="${target%/*}"' 'GOOS=windows'
 off_pin 'a target added' 'linux/amd64 darwin/arm64; do' 'linux/amd64 darwin/arm64 windows/amd64; do'
-off_pin 'a second build line' 'done' $'  go -C mod build -tags extra -o out/extra ./cmd/app\ndone'
 off_pin 'an export before the loop' 'for target in' $'export GOWORK=off GOFLAGS=-tags=extra\nfor target in'
 off_pin 'a file sourced inside an if' 'for target in' $'if [ -f build.env ]; then source build.env; fi\nfor target in'
 off_pin 'an export of what a command prints' 'for target in' $'export $(grep -v "^#" build.env | xargs)\nfor target in'
 off_pin 'set -e -a' 'for target in' $'set -e -a\nfor target in'
+
+# The step that runs the script is pinned too, as an Exact entry pins a step: its run: is the
+# script's path alone, from the repository's root, and no other step names the script. Each
+# off_step case changes only that step, or adds one beside it.
+# off_step <name> <old> <new>: a fixture whose release.yaml has <old> replaced by <new>, which the
+# check must refuse, naming what moves the build, and judge no list.
+off_step() {
+  echo "case: the release build's step with $1"
+  root=$(fixture "version-args-off-step-${1// /-}")
+  release_args "$root"
+  replace "$root/.github/workflows/release.yaml" "$2" "$3"
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "names what moves the build" "$(contains "$out" "$4")"
+  check "judges no list against a build it cannot stand for" "$(is "$(contains "$out" 'listed paths cover none')" false)"
+}
+pinned_run='        run: .github/scripts/release.sh'
+off_by_run="^::error file=.github/workflows/release.yaml::.github/workflows/release.yaml's job build step \"Build the app\" is off the run: VERSION_ARGS pins it to, \`.github/scripts/release.sh\` alone from the repository's root: "
+off_step 'an env prefix' "$pinned_run" '        run: GOFLAGS=-tags=extra .github/scripts/release.sh' "${off_by_run}its line 1 reads"
+off_step 'an export before the script' "$pinned_run" $'        run: |\n          export GOFLAGS=-tags=extra\n          .github/scripts/release.sh' "${off_by_run}its line 1 reads"
+off_step 'a file sourced before the script' "$pinned_run" $'        run: |\n          source build.env\n          .github/scripts/release.sh' "${off_by_run}its line 1 reads"
+off_step 'env in front of the script' "$pinned_run" '        run: env GOEXPERIMENT=boringcrypto .github/scripts/release.sh' "${off_by_run}its line 1 reads"
+off_step 'the script named only in a comment' "$pinned_run" $'        run: |\n          make release  # .github/scripts/release.sh' "${off_by_run}its line 1 reads"
+off_step 'another working directory' "$pinned_run" $'        working-directory: mod\n        run: ../.github/scripts/release.sh' "${off_by_run}.*it runs in mod, not the repository's root"
+off_step 'a second step naming the script' "$pinned_run" $'        run: .github/scripts/release.sh\n      - name: Build again\n        run: bash .github/scripts/release.sh' \
+  "job build step \"Build again\" names .github/scripts/release.sh too, where one step of job build runs it"
+off_step 'an earlier step running go env -w' '      - name: Build the app' $'      - name: Set the go flags\n        run: go env -w GOFLAGS=-tags=extra\n      - name: Build the app' \
+  "^::error file=.github/workflows/release.yaml::.github/workflows/release.yaml's job build: step \"Set the go flags\" runs \`go env -w\`, which every later step inherits, which can change what .github/scripts/release.sh compiles where no pin holds it; .*Remove the write, or make it inside the pinned script$"
+off_step 'an earlier step writing $GITHUB_ENV' '      - name: Build the app' $'      - name: Set the version\n        run: echo VERSION=1 >> "$GITHUB_ENV"\n      - name: Build the app' \
+  "step \"Set the version\" runs \`\$GITHUB_ENV\`, which every later step inherits, which can change what .github/scripts/release.sh compiles where no pin holds it; .*Remove the write, or make it inside the pinned script$"
+off_step 'a shell of its own' "$pinned_run" $'        shell: sh\n        run: .github/scripts/release.sh' \
+  "step \"Build the app\" runs under shell: \`sh\`, which can change what .github/scripts/release.sh compiles where no pin holds it; .*Remove it: the pinned script runs under GitHub's default bash, on the runner$"
+
+# What the step pin is for, end to end: a prefix that makes the release build compile a package the
+# list does not name. Without the step pin this run passes, reporting the list covers the build.
+echo "case: a release step whose GOFLAGS makes the build compile a package the list does not name"
+root=$(fixture version-args-step-prefix-compiles)
+release_args "$root"
+printf '//go:build extra\n\npackage main\n\nimport _ "example.com/m/other"\n' > "$root/mod/cmd/app/extra.go"
+replace "$root/.github/workflows/release.yaml" "$pinned_run" '        run: GOFLAGS=-tags=extra .github/scripts/release.sh'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step off its pin" "$(contains "$out" "${off_by_run}its line 1 reads")"
+check "reports no list as covering the build" "$(is "$(contains "$out" '0 no listed path covers')" false)"
 
 echo "case: a release job whose env sets a name go reads"
 root=$(fixture version-args-step-env)
@@ -3012,7 +3052,7 @@ replace "$root/.github/workflows/release.yaml" '        run: .github/scripts/rel
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the step, the name and ENV_ALLOWED" \
-  "$(contains "$out" "^::error file=.github/workflows/release.yaml::.github/workflows/release.yaml's job build: step \"Build the app\"'s env sets GOFLAGS, a setting that can change what .github/scripts/release.sh compiles where no pin holds it; .*ENV_ALLOWED$")"
+  "$(contains "$out" "^::error file=.github/workflows/release.yaml::.github/workflows/release.yaml's job build: step \"Build the app\"'s env sets GOFLAGS, which can change what .github/scripts/release.sh compiles where no pin holds it; .*ENV_ALLOWED$")"
 
 # Another release's list in the workflow's env: is a name go never reads, which ENV_ALLOWED takes.
 echo "case: a release workflow whose env: gains another release's list"
@@ -3022,7 +3062,7 @@ replace "$root/.github/workflows/release.yaml" '  LEGION_VERSION_ARGS: >-' $'  O
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the name and says it goes in ENV_ALLOWED" \
-  "$(contains "$out" "the workflow's env sets OTHER_VERSION_ARGS, a setting that can change what .github/scripts/release.sh compiles where no pin holds it; .* a name go never reads, such as another release's list in the workflow's env:, goes in ENV_ALLOWED$")"
+  "$(contains "$out" "the workflow's env sets OTHER_VERSION_ARGS, which can change what .github/scripts/release.sh compiles where no pin holds it; .* a name go never reads, such as another release's list in the workflow's env:, goes in ENV_ALLOWED$")"
 
 echo "case: a release workflow that is gone, a script that is gone, a job that runs the script no more, no list, a pathspec with magic"
 root=$(fixture version-args-no-workflow)

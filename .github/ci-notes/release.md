@@ -127,9 +127,14 @@ job runs it on the pull request, on every change to a Go file, a module file or 
 - The entry pins release-build-legion.sh whole, as an Exact entry pins a step, and its go
   commands say what that text compiles: ./cmd/legion for each legion target, with CGO_ENABLED=0.
   Any change to the script fails the check, naming the first line that differs, until the entry's
-  pinned text, and its go commands where the build moves, change with it. An env: of the job or
-  the workflow that can move what go compiles fails too; a name go never reads, such as another
-  release's list in the workflow's env:, goes in ENV_ALLOWED.
+  pinned text, and its go commands where the build moves, change with it.
+- The step that runs it is pinned the same way: legion_build's "Build legion" runs the script's
+  path alone, from the repository's root, and no other step of the workflow names it, so a
+  prefix, an export or a source before it, or a mention in a comment fails. An env: of the step,
+  the job or the workflow that can move what go compiles fails, and a name go never reads, such
+  as another release's list in the workflow's env:, goes in ENV_ALLOWED. A step before it that
+  writes $GITHUB_ENV or $GITHUB_PATH, or runs `go env -w`, fails too, and so does a shell or a
+  container. A step that writes go's env file by its path is not read.
 
 The envoy part of the list for the host's target, by hand, from packages/daemon:
   go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |

@@ -387,14 +387,20 @@
 #      list, over a scratch index holding the tree's files and a new file in each package
 #      directory, from the repository's root, as release-bump.sh's git log does. A path wider
 #      than the build (packages/) is not refused. The build is the entry's go commands, one per
-#      target, listed as every closure here is; they stand for the build while its script is the
-#      whole text the entry pins, compared as an Exact entry's (pin_difference), so any change to
-#      the script - another flag, target or build line, an export, a sourced file - fails naming
-#      the first line that differs until the entry changes with it, and while no env:, shell,
-#      container or environment write of the release's job can move what it compiles. Each of
-#      those fails, and so does a workflow or a script that is absent, a job that runs no step
-#      naming the script, a list the workflow does not hold, a path with pathspec magic, which
-#      this rule does not read, and a build that lists no first-party package or module file.
+#      target, listed as every closure here is. They stand for the build while two pins hold,
+#      each compared as an Exact entry's (pin_difference): the script is the whole text the
+#      entry pins, so any change to it - another flag, target or build line, an export, a
+#      sourced file - fails naming the first line that differs until the entry changes with it;
+#      and one step of the release's job runs it, that step's run: the script's path alone, from
+#      the repository's root, with no other step of the workflow naming it, so a prefix, an
+#      export or a source before it, an `env` in front of it or a mention in a comment fails.
+#      Around that step, as refuse_off_pin reads around a pinned step: an env: of the
+#      workflow, the job or the step naming anything outside ENV_ALLOWED, a step before it
+#      writing $GITHUB_ENV or $GITHUB_PATH or running `go env -w`, and a shell or a container
+#      fail too. (A step that writes go's env file by its path is not read, and is the review's
+#      to catch.) So does a workflow or a script that is absent, a job that runs no step naming
+#      the script, a list the workflow does not hold, a path with pathspec magic, which this
+#      rule does not read, and a build that lists no first-party package or module file.
 #
 # A branch made before the gates and the //ci: lines moved out of ci_job_reads.py keeps its old
 # RULES and GATES there, and .github/ci-filters.yaml, when it merges main: the table refuses to
