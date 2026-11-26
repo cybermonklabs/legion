@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -57,7 +58,7 @@ type shortTimeoutRunner struct {
 func (r *shortTimeoutRunner) Timeout() time.Duration { return r.run.Timeout() }
 
 func (r *shortTimeoutRunner) Run(ctx context.Context, command Command) (Result, error) {
-	if commandWith(command.Argv, "git", "clone", "--bare", "--quiet", "https://github.com/acme/widgets") {
+	if command.Argv[0] == "git" && slices.Contains(command.Argv, "clone") && slices.Contains(command.Argv, "https://github.com/acme/widgets") {
 		rewritten := append([]string(nil), command.Argv...)
 		for i, arg := range rewritten {
 			if arg == "https://github.com/acme/widgets" {

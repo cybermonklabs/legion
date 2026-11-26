@@ -31,40 +31,27 @@ import (
 // checkout, under CheckoutTimeout (all below), and the cache's repack (repocache.repackTimeout, through FeedGitWithin).
 const CommandTimeout = 5 * time.Minute
 
-// FetchTimeout is the bound of each clocked stage of a fetch whose duration follows the
-// repository's size and the network's speed, once it may start (Fetch): a feed filled from the
-// repository cache gets one for the verification of what was streamed, counted from the stream's
-// end, and another for the delta from GitHub, every attempt of it included; a clone or a fetch
-// from GitHub alone gets one. It is long enough for a large repository's slow but steadily
-// progressing transfer to finish. A request may set its own (FetchRequest.Bound), which the
-// repository cache does for its first clone alone (CacheFetchTimeout). The stream from the
-// repository cache is no stage of this kind: it is held to its own speed instead
-// (CacheStreamLowSpeedBytes).
+// FetchTimeout bounds each clocked size-following transfer stage. For an issue-pod fill,
+// StreamCache verifies its cache tar within one FetchTimeout and the subsequent GitHub delta gets
+// another. The repository cache's refresh uses one; its first clone uses CacheFetchTimeout. The
+// cache tar itself is held by its low-speed rule, not a clock.
 const FetchTimeout = 30 * time.Minute
 
-// CacheStreamLowSpeedBytes and CacheStreamLowSpeedTime bound the stream a feed is filled from the
-// repository cache with, in place of a clock: the stream ends once a whole CacheStreamLowSpeedTime
-// has passed in which fewer than CacheStreamLowSpeedBytes arrived, and one that keeps receiving
-// more than that runs for as long as the repository needs (countingReader.watchStall). The rule
-// is git's own for the transfers it makes, http.lowSpeedLimit over http.lowSpeedTime, here 1 MiB
-// in 5 minutes: about 3.5 KiB/s, far under the share of a cache's sending rate a pod gets even
-// when every stream the cache allows at once is running (repocache.maxStreams), so only a
-// transfer that has stopped falls below it. A clock in its place threw away a download that was
-// still arriving, killed at 30 minutes with the feed it had written, and launched the issue again
-// into the same wait (INFRA-495): what tells a dead transfer from a long one is its speed, not
-// how long it has run.
+// CacheStreamLowSpeedBytes and CacheStreamLowSpeedTime bound the repository-cache tar stream into
+// an issue clone. The stream ends once a whole CacheStreamLowSpeedTime has passed in which fewer
+// than CacheStreamLowSpeedBytes arrived, and one that keeps receiving more runs for as long as the
+// repository needs (countingReader.watchStall). The rule is git's own for transfers it makes,
+// http.lowSpeedLimit over http.lowSpeedTime, here 1 MiB in 5 minutes: about 3.5 KiB/s, far under
+// the share of a cache's sending rate a pod gets even when every stream the cache allows at once
+// is running (repocache.maxStreams), so only a transfer that has stopped falls below it.
 const (
 	CacheStreamLowSpeedBytes = 1 << 20
 	CacheStreamLowSpeedTime  = 5 * time.Minute
 )
 
-// CloneTimeout is the one bound ensureRepoClone gives its size-following steps, together, as the
-// fetch's share FetchTimeout: from GitHub, a `jj git clone` that copies and imports every object;
-// from a pod's feed, a shared local `git clone` that copies no object (feedClone), then jj's
-// import of every commit. A 3.4 GB repository (816k objects, 421 refs) cloned from a local feed by
-// `jj git clone` in 253 s with four cores and 281 s with two on a 64-core devbox, using no more
-// than about two cores either way, so CommandTimeout's fixed 5 minutes is no bound for it once a
-// sandbox slows it at all.
+// CloneTimeout is the one bound ensureRepoClone gives the Jujutsu setup after an issue clone's
+// GitHub delta: `jj git init --colocate`, the sparse clear and abandon, and default bookmark
+// tracking. FetchBudget separately bounds the cache wait and data transfers before those steps.
 const CloneTimeout = 30 * time.Minute
 
 // CheckoutTimeout is the bound of a command that writes a whole working copy — every file of the
@@ -868,6 +855,30 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 			return err
 		}
 	}
+	if source.issue != nil {
+		if _, err := runCheckedOnClone(ctx, run, cloneDir, "config", "set", "--repo", "remotes.origin.fetch-tags", "~*"); err != nil {
+			return err
+		}
+		if source.issue.fetched {
+			return nil
+		}
+		bytes, refs, _, err := fetchIssuePod(ctx, run, cloneDir, source, false)
+		if err != nil {
+			return err
+		}
+		if _, err := runCheckedOnClone(ctx, run, cloneDir, "git", "import"); err != nil {
+			return err
+		}
+		for _, ref := range source.issue.defaults {
+			if _, err := runCheckedOnClone(ctx, run, cloneDir, "bookmark", "track", originRow(strings.TrimPrefix(ref, "refs/heads/"))); err != nil {
+				return err
+			}
+		}
+		source.issue.fetched = true
+		source.issue.log(fmt.Sprintf("the clone holds %s already: %s bytes from GitHub for the delta (%s)",
+			source.issue.repository, groupedBytes(bytes), refCount(refs)))
+		return nil
+	}
 	// The fetch takes no snapshot of the clone's working copy: a snapshot runs the working-copy
 	// filter, fsmonitor, and signing programs jj's configuration names, which a tree agent can set,
 	// and on the tmux runtime this fetch holds the one-shot credential. A failed fetch returns its
@@ -970,6 +981,19 @@ func configureCloneReads(ctx context.Context, run Runner, cloneDir string) error
 	argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "core.warnAmbiguousRefs", "false"}
 	_, err := RunChecked(ctx, run, argv, nil, cloneDir)
 	return err
+}
+
+// configureIssueCloneMaintenance persists the two settings that prevent a role's ordinary git or
+// Jujutsu command from starting automatic maintenance in its issue pod. The tmux shared clone is
+// intentionally unchanged.
+func configureIssueCloneMaintenance(ctx context.Context, run Runner, cloneDir string) error {
+	for _, pair := range [][2]string{{"gc.auto", "0"}, {"maintenance.auto", "false"}} {
+		argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "--replace-all", pair[0], pair[1]}
+		if _, err := RunChecked(ctx, run, argv, nil, cloneDir); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // packWindowConfig is the git configuration that bounds how much of a repository's packs one git

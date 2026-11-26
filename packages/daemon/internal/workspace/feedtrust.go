@@ -55,6 +55,13 @@ func ownFeedRepository(gitDir string, repo ghrepo.Repository, now time.Time, log
 	return true, nil
 }
 
+// OwnCacheRepository takes the cache's bare repository before any cache git runs. A clone in a
+// foreign shape is removed because issue pods only ever receive a tar of it; a clone this cache
+// made has its interrupted locks and partial packs cleared and is reused.
+func OwnCacheRepository(gitDir string, repo ghrepo.Repository, now time.Time, log func(string)) (bool, error) {
+	return ownFeedRepository(gitDir, repo, now, log, true)
+}
+
 // refuseOrRemove is what becomes of path, the part of a feed named what that is foreign for why:
 // an issue pod's fetch refuses the feed and keeps it (foreignFeedError), and the repository
 // cache's (replace) removes path whole, a link at it and never what the link names
@@ -171,11 +178,9 @@ func feedEntryRefusal(name string, dir bool) string {
 // renames the file into place.
 var serverInfoLeftover = regexp.MustCompile(`^(?:info/refs|objects/info/packs)_[A-Za-z0-9]{6}$`)
 
-// feedConfigKeys are the configuration a feed repository may hold, each key (section.key, or
-// section.subsection.key, with git's case rules: section and key lower-cased) with the values it may
-// take: what git's bare init and clone write, and feedConfiguration. remote.origin.url is the one key
-// a clone writes whose value is not fixed; Fetch names GitHub's URL in every command it runs and
-// never the remote origin, so its value steers nothing.
+// feedConfigKeys are the configuration a repository cache may hold. Git's bare,
+// single-branch no-tags clone writes remote.origin.url and remote.origin.tagopt. Cache refreshes
+// name their URL and refspec on the command line, so no persistent fetch refspec belongs here.
 var feedConfigKeys = map[string][]string{
 	"core.repositoryformatversion": {"0", "1"},
 	"core.filemode":                {"true", "false"},
@@ -185,6 +190,7 @@ var feedConfigKeys = map[string][]string{
 	"maintenance.auto":             {"false"},
 	"fetch.unpacklimit":            {"1"},
 	"remote.origin.url":            nil,
+	"remote.origin.tagopt":         {"--no-tags"},
 }
 
 // feedConfigHeader and feedConfigPair are the only lines git writes in a configuration file: a

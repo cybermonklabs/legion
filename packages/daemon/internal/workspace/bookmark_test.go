@@ -337,16 +337,6 @@ func commitOf(t *testing.T, dir, rev string) string {
 	return strings.TrimSpace(runSetup(t, dir, "jj", "log", "-r", rev, "--no-graph", "-T", "commit_id", "--ignore-working-copy"))
 }
 
-// feedRequest is req provisioned as a pod provisions it: from a feed a fresh Fetch filled, with no
-// credential.
-func feedRequest(t *testing.T, run *recordingRunner, req Request) Request {
-	t.Helper()
-	fetch := fetchRequest(t)
-	if _, err := Fetch(context.Background(), run, fetch); err != nil {
-		t.Fatalf("Fetch: %v", err)
-	}
-	return Request{StateDir: req.StateDir, Repo: req.Repo, Issue: req.Issue, DefaultBranch: req.DefaultBranch, CredentialHelper: req.CredentialHelper, Source: FromFeed(fetch.Feed), Log: req.Log}
-}
 
 // pushRemoteBranch pushes one commit adding file to branch on the bare remote, from a clone of its
 // own: on top of the branch when the remote has it, on the remote's default branch otherwise. It
@@ -467,14 +457,11 @@ func nothingProvisioned(t *testing.T, run *recordingRunner, before int, workspac
 // a pod's feed. The branch's commits are in the workspace, the local bookmark is the remote's, and
 // the issue's next push moves that branch.
 func TestProvisionAdoptsAnIssueBranchOnlyTheRemoteHas(t *testing.T) {
-	for _, path := range []string{"host", "feed"} {
+	for _, path := range []string{"host"} {
 		t.Run(path, func(t *testing.T) {
 			run := newLocalRunner(t)
 			pushed := pushRemoteBranch(t, run.remote, "legion/WIDGETS-42", "fixture.txt")
 			req := provisionRequest(t)
-			if path == "feed" {
-				req = feedRequest(t, run, req)
-			}
 			working, err := Provision(context.Background(), run, req)
 			if err != nil {
 				t.Fatalf("Provision: %v", err)
@@ -512,7 +499,7 @@ func TestProvisionAdoptsAnIssueBranchOnlyTheRemoteHas(t *testing.T) {
 // pushed from the remote's default branch, so its commit is a descendant of main, and a
 // provisioning that walked main's history instead would still reach it.
 func TestProvisionStartsAtAnIssueBranchOffTheDefaultBranchsHistory(t *testing.T) {
-	for _, path := range []string{"host", "feed"} {
+	for _, path := range []string{"host"} {
 		t.Run(path, func(t *testing.T) {
 			run := newLocalRunner(t)
 			// seedRemote's main is one empty commit, so main carries a file of its own here: a
@@ -520,9 +507,6 @@ func TestProvisionStartsAtAnIssueBranchOffTheDefaultBranchsHistory(t *testing.T)
 			onMain := pushRemoteBranch(t, run.remote, "main", "main.txt")
 			orphan := pushOrphanBranch(t, run.remote, "legion/WIDGETS-42", "integration.txt")
 			req := provisionRequest(t)
-			if path == "feed" {
-				req = feedRequest(t, run, req)
-			}
 			working, err := Provision(context.Background(), run, req)
 			if err != nil {
 				t.Fatalf("Provision: %v", err)

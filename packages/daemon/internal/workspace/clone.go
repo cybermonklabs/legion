@@ -47,16 +47,14 @@ const provisioningHelper = `#!/bin/sh
 printf 'username=x-access-token\npassword=%s\n' "$(cat "$LEGION_PROVISIONING_TOKEN_FILE")"
 `
 
-// remote is how a clone or fetch reaches the repository: the environment it runs with, the
-// directory of the one-shot credential that environment names, if any, removed once it is done,
-// the token that credential was made with, the bookmarks a fetch brings (every one when empty),
-// and, for a pod's feed, the local feed directory the clone starts from.
+// remote is how a clone or fetch reaches the repository: its environment, one-shot credential
+// directory and token, ordinary tmux branches, and optional Kubernetes issue-pod fill state.
 type remote struct {
 	env      []string
 	dir      string
 	token    string
 	branches []string
-	feed     string
+	issue    *issuePod
 }
 
 // scrub is text with the credential's token replaced by ***, so that nothing a run under the
@@ -151,9 +149,9 @@ func (r remote) remove() error {
 	return nil
 }
 
-// Source is how provisioning reaches the repository for the shared clone's clone and fetch: from a
-// pod's feed with no credential (FromFeed), or from GitHub with the one-shot credential
-// (FromGitHub). Only this package's two constructors make one.
+// Source is how provisioning reaches the repository. The tmux runtime uses FromGitHub; a
+// Kubernetes issue pod uses ForIssuePod, which fills its one clone from its repository cache and
+// GitHub under the provisioning token.
 type Source interface {
 	// check refuses a Source that cannot reach repository, before provisioning runs anything.
 	check(repository ghrepo.Repository) error
@@ -162,24 +160,78 @@ type Source interface {
 	open(repository ghrepo.Repository, bookmark, defaultBranch string) (remote, error)
 }
 
-// FromFeed is a pod's feed directory, where Fetch cloned the repository in the pod's first init
-// container: the shared clone clones and fetches from it with no credential, in the second, which
-// the provisioning Secret is not mounted in.
-func FromFeed(dir string) Source { return feedSource(dir) }
-
-type feedSource string
-
-func (dir feedSource) check(repository ghrepo.Repository) error {
-	_, err := CacheRepository(string(dir), repository)
-	return err
+// issuePod is the state ForIssuePod carries for one Kubernetes issue pod. fetched records that the
+// clone path already fetched GitHub, so the configuration step does not repeat that transfer.
+type issuePod struct {
+	repository ghrepo.Repository
+	bookmark   string
+	defaultRef string
+	token      func() (string, error)
+	cacheURL   string
+	cacheToken string
+	clock      Clock
+	log        func(string)
+	fetched    bool
+	defaults   []string
 }
 
-func (dir feedSource) open(repository ghrepo.Repository, bookmark, defaultBranch string) (remote, error) {
-	feed, err := CacheRepository(string(dir), repository)
+// ForIssuePod reaches GitHub with the mounted provisioning token and, when cacheURL is non-empty,
+// starts the clone from the repository cache. The cache's bearer token is separate from the GitHub
+// token and is needed only for its tar stream.
+func ForIssuePod(token func() (string, error), credentialDir, cacheURL, cacheToken string, clock Clock, log func(string)) Source {
+	return issuePodSource{
+		gitHubSource: gitHubSource{token: token, credentialDir: credentialDir},
+		cacheURL:     cacheURL,
+		cacheToken:   cacheToken,
+		clock:        clock,
+		log:          log,
+	}
+}
+
+type issuePodSource struct {
+	gitHubSource
+	cacheURL   string
+	cacheToken string
+	clock      Clock
+	log        func(string)
+}
+
+func (s issuePodSource) check(repository ghrepo.Repository) error {
+	if err := s.gitHubSource.check(repository); err != nil {
+		return err
+	}
+	if s.cacheURL != "" && s.cacheToken == "" {
+		return errors.New("workspace provision: a repository cache needs its token")
+	}
+	if s.clock == nil {
+		return errors.New("workspace provision clock is required")
+	}
+	if s.log == nil {
+		return errors.New("workspace provision log is required")
+	}
+	return nil
+}
+
+func (s issuePodSource) open(repository ghrepo.Repository, bookmark, defaultBranch string) (remote, error) {
+	token, err := s.token()
+	if err != nil {
+		return remote{}, OutsideVolume(err)
+	}
+	r, err := newProvisioningCredential(s.credentialDir, token)
 	if err != nil {
 		return remote{}, err
 	}
-	return feedRemote(feed, repository, bookmark, defaultBranch), nil
+	r.issue = &issuePod{
+		repository: repository,
+		bookmark:   bookmark,
+		defaultRef: defaultBranch,
+		token:      s.token,
+		cacheURL:   s.cacheURL,
+		cacheToken: s.cacheToken,
+		clock:      s.clock,
+		log:        s.log,
+	}
+	return r, nil
 }
 
 // FromGitHub is GitHub itself, reached with the one-shot credential holding the token that token
@@ -269,38 +321,17 @@ func CacheEntry(name string, dir bool) bool {
 // SHA-256 id.
 var packFile = regexp.MustCompile(`^pack-([0-9a-f]{40}|[0-9a-f]{64})\.(pack|idx)$`)
 
-// GitHubURL is the repository's GitHub remote: the URL the shared clone is cloned from and Fetch
-// clones into the feed, and so the URL feedRemote rewrites to the feed.
+// GitHubURL is the repository's GitHub remote.
 func GitHubURL(repository ghrepo.Repository) string {
 	return "https://github.com/" + repository.String()
 }
 
-// feedRemote reaches GitHubURL, the remote the clone's origin names, at the feed repository instead,
-// over git's file transport alone: no credential, and no network. The feed is GitHub as it stood
-// when the pod's workspace-fetch ran, and a tree agent may have pushed since, so a fetch from it
-// brings the repository's default branch and the issue's own bookmark alone, each by its exact
-// name: every other bookmark keeps its target and its tracking. The clone reads the feed's objects
-// through its alternates (feedClone), and Fetch never replaces a feed it finds present, so no
-// object its refs need goes from under it.
-func feedRemote(feed string, repo ghrepo.Repository, bookmark, defaultBranch string) remote {
-	return remote{
-		env: []string{
-			"GIT_ALLOW_PROTOCOL=file",
-			"GIT_CONFIG_COUNT=1",
-			"GIT_CONFIG_KEY_0=url." + feed + ".insteadOf",
-			"GIT_CONFIG_VALUE_0=" + GitHubURL(repo),
-		},
-		branches: []string{defaultBranch, bookmark},
-		feed:     feed,
-	}
-}
-
-// ensureRepoClone ports workspace.ts's ensureRepoClone: clone into a temporary sibling, verify it
-// contains .jj, then rename it into place. A killed clone can therefore never appear to be a final
-// clone. From GitHub the clone is `jj git clone`; from a pod's feed (source.feed) it is a shared
-// local git clone (feedClone) followed by Jujutsu's import of every commit. The size-following
-// steps share one CloneTimeout, counted on clock from the first's start, each given what remains
-// of it (cloneSteps), not the runner's slow-command budget.
+// ensureRepoClone makes a clone in a temporary sibling, verifies its Jujutsu repository, then
+// renames it into place. A Kubernetes issue pod initializes a Git repository, optionally unpacks
+// the repository cache into its .git directory, and fetches the default and issue refs from GitHub.
+// The tmux runtime keeps its existing GitHub clone behaviour. The size-following steps share one
+// CloneTimeout, counted on clock from the first's start, each given what remains of it
+// (cloneSteps), not the runner's slow-command budget.
 func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, remote, defaultBranch string, source remote) error {
 	jjDir := filepath.Join(cloneDir, ".jj")
 	if exists, err := pathExists(cloneDir); err != nil {
@@ -319,7 +350,13 @@ func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, rem
 	if err := os.MkdirAll(filepath.Dir(cloneDir), 0o700); err != nil {
 		return fmt.Errorf("create clone parent: %w", err)
 	}
-	temporary, err := os.MkdirTemp(filepath.Dir(cloneDir), filepath.Base(cloneDir)+".clone-")
+	var temporary string
+	var err error
+	if source.issue != nil {
+		temporary, err = stageBeside(cloneDir, source.issue.log)
+	} else {
+		temporary, err = os.MkdirTemp(filepath.Dir(cloneDir), filepath.Base(cloneDir)+".clone-")
+	}
 	if err != nil {
 		return fmt.Errorf("create temporary clone directory: %w", err)
 	}
@@ -332,8 +369,8 @@ func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, rem
 	// steps themselves and then renamed or removed.
 	bound := programbound.Of(&CloneBound)
 	steps := cloneSteps{clock: clock, deadline: clock.Now().Add(bound), bound: bound, dir: filepath.Dir(cloneDir), credential: source}
-	if source.feed != "" {
-		if err := feedClone(ctx, run, steps, temporary, remote, defaultBranch, source); err != nil {
+	if source.issue != nil {
+		if err := issuePodClone(ctx, run, steps, temporary, source); err != nil {
 			return err
 		}
 	} else if err := steps.run(ctx, run, []string{"jj", "git", "clone", remote, temporary}, source.env); err != nil {
@@ -358,44 +395,34 @@ func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, rem
 	return nil
 }
 
-// feedClone makes the colocated clone at temporary from a pod's feed. It is a shared local clone
-// (`git clone --shared`): the clone's objects/info/alternates names the feed's objects on the feed's
-// own path, which every container of an issue pod that runs git or jj in the clone mounts
-// read-only, so the clone reads the feed's objects in place and holds only what it writes itself,
-// and the pod's disk holds the repository once. A plain local clone copied every feed object, since
-// a hard link cannot cross the pod's two mounts of the disk, and a 19 GiB feed and its copy filled a
-// 50 GiB disk. The feed's automatic maintenance stays off (feedConfiguration), Fetch never removes
-// or replaces a feed it finds present (ownFeedRepository), and the clone's own `git gc` and
-// `jj util gc` repack only its local objects, so no object the clone borrows goes. Origin is then
-// set to remote, GitHub, as a `jj git clone` of it would leave it; `jj git init --colocate` makes it
-// jj's; and the default branch's bookmark tracks origin's, as jj's own clone tracks it, so a later
-// fetch moves it.
-// The clone takes no working tree (`git clone --no-checkout`), so the pod writes the repository's
-// working copy once, in the issue's own jj workspace: nothing reads the shared clone's working
-// copy, so it is never written. The two jj steps that follow keep jj's
-// first snapshot from recording that absent tree as deleted — `jj sparse set --clear` leaves the
-// clone's working copy with no file in it, and `jj abandon @` drops the snapshot `jj git init`
-// already took. The order is load-bearing, and was measured both ways: clearing the patterns
-// afterwards does not undo that first snapshot, and abandoning before the clear makes jj
-// materialize the whole tree again, which only moves the write. Neither is built by onClone, since
-// --ignore-working-copy is what onClone adds and both of these must act on the working copy. Both
-// name a working directory of their own, temporary, where the other steps run in the clone's
-// parent: a jj command that opens a repository is safe because its working directory is its -R
-// target (runCheckedOnClone states that invariant, and docs/testing.md states it too, under "A
-// test that starts jj or git names a working directory": jj 0.45.1 loads the repository its
-// working directory sits in before it applies -R), while the parent is the right directory for the
-// two commands that open no repository, `jj git clone` and `jj git init --colocate`. A
-// default branch the feed lacks is left untracked, for the base's own refusal to name (baseCommit).
-func feedClone(ctx context.Context, run Runner, steps cloneSteps, temporary, remote, defaultBranch string, source remote) error {
-	if err := steps.run(ctx, run, []string{"git", "clone", "--quiet", "--no-checkout", "--shared", source.feed, temporary}, source.env); err != nil {
-		return err
-	}
+// issuePodClone fills the pod's only repository. Cached refs are unpacked solely for Git's pack
+// negotiation; the GitHub fetch and the cleanup below establish every ref the clone keeps.
+func issuePodClone(ctx context.Context, run Runner, steps cloneSteps, temporary string, source remote) error {
+	issue := source.issue
 	gitDir := filepath.Join(temporary, ".git")
-	// The clone above made temporary, so this git and the rev-parse below run in the repository
-	// their --git-dir names.
-	if _, err := RunChecked(ctx, run, []string{"git", "--git-dir=" + gitDir, "remote", "set-url", "origin", remote}, nil, temporary); err != nil {
+	if err := steps.run(ctx, run, []string{"git", "init", "--quiet", temporary}, source.env); err != nil {
 		return err
 	}
+
+	var stream StreamReport
+	if issue.cacheURL != "" {
+		var err error
+		stream, err = StreamCache(ctx, run, CacheStream{
+			Repo: issue.repository, URL: issue.cacheURL, Token: issue.cacheToken,
+			Log: issue.log, Clock: issue.clock,
+		}, gitDir)
+		if err != nil {
+			return err
+		}
+	}
+
+	bytes, refs, _, err := fetchIssuePod(ctx, run, temporary, source, true)
+	if err != nil {
+		return err
+	}
+	// Cache readiness, streaming, verification and GitHub each have their own bounds.
+	// Only the Jujutsu setup below spends this clone budget.
+	steps.deadline = steps.clock.Now().Add(steps.bound)
 	if err := steps.run(ctx, run, []string{"jj", "git", "init", "--colocate", temporary}, nil); err != nil {
 		return err
 	}
@@ -405,16 +432,190 @@ func feedClone(ctx context.Context, run Runner, steps cloneSteps, temporary, rem
 	if err := steps.runIn(ctx, run, temporary, []string{"jj", "abandon", "@", "--color=never", "-R", temporary}, nil); err != nil {
 		return err
 	}
-	revParse := []string{"git", "--git-dir=" + gitDir, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/" + defaultBranch}
-	present, err := runCommand(ctx, run, revParse, nil, temporary)
-	if err := answered(revParse, present, err); err != nil {
+	for _, ref := range issue.defaults {
+		track, err := onClone(temporary, "bookmark", "track", originRow(strings.TrimPrefix(ref, "refs/heads/")))
+		if err != nil {
+			return err
+		}
+		if err := steps.runIn(ctx, run, temporary, track, nil); err != nil {
+			return err
+		}
+	}
+	issue.fetched = true
+	if issue.cacheURL == "" {
+		issue.log(fmt.Sprintf("no repository cache named: fetched the default branch of %s from GitHub (%s bytes)", issue.repository, groupedBytes(bytes)))
+	} else {
+		issue.log(fmt.Sprintf("%s bytes from the repository cache %s in %s, its history verified in %s; %s bytes from GitHub for the delta (%s)",
+			groupedBytes(stream.Bytes), issue.cacheURL, stream.Duration.Round(time.Millisecond), stream.VerifyDuration.Round(time.Millisecond), groupedBytes(bytes), refCount(refs)))
+	}
+	return nil
+}
+
+// fetchIssuePod configures origin's persistent narrow refspecs and fetches them without tags.
+// Only a fresh clone drops cache refs outside this issue; kept clones retain their legacy refs.
+func fetchIssuePod(ctx context.Context, run Runner, cloneDir string, source remote, fresh bool) (int64, int, string, error) {
+	issue := source.issue
+	gitDir := filepath.Join(cloneDir, ".git")
+	request := FetchRequest{Repo: issue.repository, Token: issue.token, Log: issue.log, Clock: issue.clock}
+	held := &fetchCredential{remote: source, env: merge(source.env, isolatedGitConfig), read: issue.token, held: []string{source.token}}
+	deadline := issue.clock.Now().Add(request.bound())
+	defaults, err := issuePodDefaults(ctx, run, request, gitDir, issue.defaultRef, held, deadline)
+	if err != nil {
+		return 0, 0, "", err
+	}
+	if len(defaults) == 0 {
+		return 0, 0, "", fmt.Errorf("GitHub names no default branch for %s", issue.repository)
+	}
+	issue.defaults = defaults
+	defaultBranch := strings.TrimPrefix(defaults[0], "refs/heads/")
+	configured := issuePodRefspecs(defaultBranch, issue.bookmark)
+	fetchRefs := append([]string{}, configured...)
+	for _, ref := range defaults[1:] {
+		name := strings.TrimPrefix(ref, "refs/heads/")
+		fetchRefs = append(fetchRefs, "+"+ref+":refs/remotes/origin/"+name)
+	}
+	if err := configureIssueOrigin(ctx, run, cloneDir, issue.repository, configured); err != nil {
+		return 0, 0, "", err
+	}
+	before, err := objectsSize(gitDir)
+	if err != nil {
+		return 0, 0, "", err
+	}
+	argv := append(append([]string{}, feedGit...), "--git-dir="+gitDir, "fetch", "--no-tags", "--prune", "--quiet", GitHubURL(issue.repository))
+	argv = append(argv, fetchRefs...)
+	if _, err := transferWithRetries(ctx, run, request, feedTransfer{verb: "fetch", argv: argv, dir: cloneDir}, held, deadline); err != nil {
+		return 0, 0, "", err
+	}
+	after, err := objectsSize(gitDir)
+	if err != nil {
+		return 0, 0, "", err
+	}
+	if err := setIssueHeads(ctx, run, gitDir, defaultBranch, defaults); err != nil {
+		return 0, 0, "", err
+	}
+	if fresh {
+		if err := keepIssueRefs(ctx, run, gitDir, defaultBranch, defaults, issue.bookmark); err != nil {
+			return 0, 0, "", err
+		}
+	}
+	return after - before, len(fetchRefs), defaultBranch, nil
+}
+
+// issuePodDefaults reads GitHub's HEAD and keeps the admission-time default when GitHub still
+// advertises it. This lets an unpushed issue start at the branch it was admitted against.
+func issuePodDefaults(ctx context.Context, run Runner, request FetchRequest, gitDir, recordedDefault string, held *fetchCredential, deadline time.Time) ([]string, error) {
+	head, branches, err := remoteRefs(ctx, run, request, gitDir, held, deadline, "refs/heads/*")
+	if err != nil {
+		return nil, err
+	}
+	if head != "" && branches[head] == "" {
+		return nil, fmt.Errorf("GitHub's HEAD of %s names %q, not a branch", request.Repo, head)
+	}
+	defaults := []string{}
+	if head != "" {
+		defaults = append(defaults, head)
+	}
+	recorded := "refs/heads/" + recordedDefault
+	if recordedDefault != "" && branches[recorded] != "" && recorded != head {
+		defaults = append(defaults, recorded)
+	}
+	return defaults, nil
+}
+
+// issuePodRefspecs is the persistent fetch configuration of an issue clone: GitHub's current
+// default branch, the issue's wildcard, and the ten exclusions that stop LEGION-10 matching
+// LEGION-1. The recorded default is deliberately fetched only by provision, because an exact
+// configured refspec for a deleted branch makes a later plain git fetch fail.
+func issuePodRefspecs(defaultBranch, bookmark string) []string {
+	branch := "refs/heads/" + bookmark
+	refspecs := []string{
+		"+refs/heads/" + defaultBranch + ":refs/remotes/origin/" + defaultBranch,
+		"+" + branch + "*:refs/remotes/origin/" + bookmark + "*",
+	}
+	for digit := '0'; digit <= '9'; digit++ {
+		refspecs = append(refspecs, "^"+branch+string(digit)+"*")
+	}
+	return refspecs
+}
+
+func configureIssueOrigin(ctx context.Context, run Runner, cloneDir string, repository ghrepo.Repository, refspecs []string) error {
+	gitDir := filepath.Join(cloneDir, ".git")
+	commands := [][]string{
+		{"git", "--git-dir=" + gitDir, "config", "--replace-all", "remote.origin.url", GitHubURL(repository)},
+		{"git", "--git-dir=" + gitDir, "config", "--replace-all", "remote.origin.fetch", refspecs[0]},
+		{"git", "--git-dir=" + gitDir, "config", "--replace-all", "remote.origin.tagOpt", "--no-tags"},
+	}
+	for _, refspec := range refspecs[1:] {
+		commands = append(commands, []string{"git", "--git-dir=" + gitDir, "config", "--add", "remote.origin.fetch", refspec})
+	}
+	for _, argv := range commands {
+		if _, err := RunChecked(ctx, run, argv, nil, cloneDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func setIssueHeads(ctx context.Context, run Runner, gitDir, current string, defaults []string) error {
+	for _, ref := range defaults {
+		branch := strings.TrimPrefix(ref, "refs/heads/")
+		if _, err := CacheGit(ctx, run, gitDir, "update-ref", "refs/heads/"+branch, "refs/remotes/origin/"+branch); err != nil {
+			return err
+		}
+	}
+	_, err := CacheGit(ctx, run, gitDir, "symbolic-ref", "HEAD", "refs/heads/"+current)
+	return err
+}
+
+func keepIssueRefs(ctx context.Context, run Runner, gitDir, current string, defaults []string, bookmark string) error {
+	refs, err := feedRefs(ctx, run, gitDir, true)
+	if err != nil {
 		return err
 	}
-	if present.ExitCode != 0 {
-		return nil
+	defaultsByName := map[string]bool{}
+	for _, ref := range defaults {
+		defaultsByName[strings.TrimPrefix(ref, "refs/heads/")] = true
 	}
-	_, err = runCheckedOnClone(ctx, run, temporary, "bookmark", "track", originRow(defaultBranch))
-	return err
+	for ref := range refs {
+		keep := false
+		if name, ok := strings.CutPrefix(ref, "refs/remotes/origin/"); ok {
+			keep = defaultsByName[name] || issueBranch(name, bookmark)
+		} else {
+			keep = ref == "refs/heads/"+current
+		}
+		if !keep {
+			if _, err := CacheGit(ctx, run, gitDir, "update-ref", "--no-deref", "-d", ref); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// issueBranch is whether name is one the issue's configured refspecs bring (issuePodRefspecs):
+// bookmark itself or bookmark followed by anything but a digit.
+func issueBranch(name, bookmark string) bool {
+	rest, ok := strings.CutPrefix(name, bookmark)
+	return ok && (rest == "" || rest[0] < '0' || rest[0] > '9')
+}
+
+func groupedBytes(n int64) string {
+	value := fmt.Sprintf("%d", n)
+	first := len(value) % 3
+	if first == 0 {
+		first = 3
+	}
+	for at := first; at < len(value); at += 4 {
+		value = value[:at] + "," + value[at:]
+	}
+	return value
+}
+
+func refCount(n int) string {
+	if n == 1 {
+		return "1 ref"
+	}
+	return fmt.Sprintf("%d refs", n)
 }
 
 // cloneSteps is the one CloneTimeout the shared clone's size-following steps share, ending at

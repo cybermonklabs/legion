@@ -55,5 +55,4 @@ legion version	--contracts bool
 legion worker-shim	hidden	--agent-secrets-bin string	--agent-secrets-key-dir string	--boot-token-file string	--connect string	--pod-safety bool	--pod-token-file string	--provider-env-dir string	--stop-grace duration	--warm-codegraph bool
 legion workspace-init	hidden
 legion workspace-init cache	hidden	--listen string	--refresh duration	--repo string	--root string
-legion workspace-init fetch	hidden	--cache-url string	--feed string	--repo string
-legion workspace-init provision	hidden	--credential-helper string	--default-branch string	--feed string	--issue string	--repo string	--root string
+legion workspace-init provision	hidden	--credential-helper string	--default-branch string	--issue string	--repo string	--root string

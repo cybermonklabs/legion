@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
@@ -239,14 +238,6 @@ func (r timesOut) Run(_ context.Context, command Command) (Result, error) {
 // read of its HEAD as a HEAD that names nothing, which rewrote HEAD. Each is now refused as the
 // timeout it is.
 func TestAReadItsBudgetEndedIsRefusedNotReadAsAnAnswer(t *testing.T) {
-	t.Run("the feed clone's rev-parse of the default branch", func(t *testing.T) {
-		dir := t.TempDir()
-		steps := cloneSteps{clock: clock.Real(), deadline: time.Now().Add(time.Hour), dir: dir}
-		err := feedClone(context.Background(), timesOut{argv: []string{"git", "--git-dir=" + dir + "/clone/.git", "rev-parse"}}, steps, dir+"/clone", "https://github.com/acme/widgets", "main", remote{feed: dir + "/feed"})
-		if err == nil || !strings.HasPrefix(err.Error(), "command timed out: git --git-dir="+dir+"/clone/.git rev-parse --verify --quiet refs/remotes/origin/main") {
-			t.Errorf("feedClone with its rev-parse timed out = %v, want the timeout refused", err)
-		}
-	})
 	t.Run("the shared clone's credential read", func(t *testing.T) {
 		dir := t.TempDir()
 		rewrote, err := ConfigureRepositoryCredential(context.Background(), timesOut{argv: []string{"git", "--git-dir=" + dir + "/.git", "config", "--get-all"}}, dir)
@@ -297,14 +288,6 @@ func (r killsOne) Run(_ context.Context, command Command) (Result, error) {
 func TestAReadASignalEndedNamesItsCommandAndWhatItPrinted(t *testing.T) {
 	killed := exec.Command("sh", "-c", "kill -KILL $$").Run()
 	const said = "fatal: could not read .git/packed-refs: Input/output error"
-	t.Run("the feed clone's rev-parse of the default branch", func(t *testing.T) {
-		dir := t.TempDir()
-		steps := cloneSteps{clock: clock.Real(), deadline: time.Now().Add(time.Hour), dir: dir}
-		err := feedClone(context.Background(), killsOne{argv: []string{"git", "--git-dir=" + dir + "/clone/.git", "rev-parse"}, said: said, end: killed}, steps, dir+"/clone", "https://github.com/acme/widgets", "main", remote{feed: dir + "/feed"})
-		if want := "run git --git-dir=" + dir + "/clone/.git rev-parse --verify --quiet refs/remotes/origin/main: signal: killed\n" + said; err == nil || err.Error() != want {
-			t.Errorf("feedClone = %v, want %q", err, want)
-		}
-	})
 	t.Run("the shared clone's credential read", func(t *testing.T) {
 		dir := t.TempDir()
 		_, err := ConfigureRepositoryCredential(context.Background(), killsOne{argv: []string{"git", "--git-dir=" + dir + "/.git", "config", "--get-all"}, said: said, end: killed}, dir)

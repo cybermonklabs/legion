@@ -490,9 +490,9 @@ func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 		bound = workspace.FetchTimeout
 	}
 	if _, err := workspace.Fetch(ctx, c.opts.Run, workspace.FetchRequest{
-		Repo: c.opts.Repo, CredentialDir: c.opts.CredentialDir, Feed: c.opts.Root,
+		Repo: c.opts.Repo, CredentialDir: c.opts.CredentialDir, Root: c.opts.Root,
 		Token: func() (string, error) { return config.ReadSecretPointer(tokenFileEnv, c.opts.TokenFile) },
-		Log:   c.opts.Log, Clock: clock.Real(), Bound: bound, ReplaceForeign: true,
+		Log:   c.opts.Log, Clock: clock.Real(), Bound: bound,
 	}); err != nil {
 		return time.Time{}, !cloned, err
 	}
