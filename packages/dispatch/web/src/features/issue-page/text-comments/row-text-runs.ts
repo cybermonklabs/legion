@@ -1,4 +1,4 @@
-import { type DispatchReferenceRoute, parseNodeReference, shortForm } from "../../refs/routes";
+import { type DispatchReferenceRoute, parseNodeReference } from "../../refs/routes";
 import { AUTHOR_TEXT_ATTRIBUTE, PAGE_CHROME_ATTRIBUTE } from "../page-structure";
 
 /**
@@ -14,8 +14,8 @@ import { AUTHOR_TEXT_ATTRIBUTE, PAGE_CHROME_ATTRIBUTE } from "../page-structure"
  * (`data-page-chrome`), a deleted line (`data-post-deleted`), the row's trail of ties and marks
  * (`data-node-trail`), and what a reference's link draws in place of the address the text holds
  * (`row-references.ts`' link pass): the name of its target, a chip's words and " · edited".
- * Where such a link draws the address short (an issue by its key, a block by its short form), the
- * short words are a run that stands for the whole address.
+ * Where such a link draws the address's own words (an issue by its key, and any target as its
+ * author wrote it until it is named), those words are a run that stands for the whole address.
  */
 
 /** One run of a node's own text: the text node that holds it, and where it starts and ends in
@@ -24,9 +24,10 @@ export interface TextRun {
   readonly end: number;
   readonly node: Text;
   readonly start: number;
-  /** Set where the run is an address the row draws short (a reference's link that names its
-   *  target by its key or its short form): `text` holds the address as the node's text writes
-   *  it, and a selection that takes part of the run takes all of it. */
+  /** Set where the run is an address the row draws by its own words (a reference's link that
+   *  names its target by its key, or one not yet named, drawn as its author wrote it): `text`
+   *  holds the address as the node's text writes it, and a selection that takes part of the run
+   *  takes all of it. */
   readonly whole?: true;
 }
 
@@ -224,14 +225,17 @@ export function textRuns(element: HTMLElement): TextRuns {
     }
   };
   // A reference's link: the address it stands for, as the text writes it, and where it draws the
-  // address short, a run that stands for all of it; what it draws besides is the target's name.
+  // address's own words, a run that stands for all of it; what it draws besides is the target's
+  // name.
   const reference = (anchor: Element): void => {
     const drawn = textNodesIn(anchor);
-    const short = shortWords(
+    const marked = anchor.getAttribute(WRITTEN_ATTRIBUTE);
+    const short = ownWords(
       parseNodeReference(anchor.getAttribute(REFERENCE_ATTRIBUTE) ?? ""),
-      drawn
+      drawn,
+      marked
     );
-    const written = anchor.getAttribute(WRITTEN_ATTRIBUTE) ?? short?.data ?? "";
+    const written = marked ?? short?.data ?? "";
     const named = drawn.some((one) => one !== short && one.data.trim() !== "");
     if (written === "") {
       if (named) foreign.push({ end: text.length, node: anchor, start: text.length });
@@ -310,17 +314,19 @@ function textNodesIn(element: Element): Text[] {
   return found;
 }
 
-/** The text node of a reference's link that draws its address short, where one does: an issue's
- *  key, which leads the link before its title (`row-references.ts`' `nameAnchor`), and any other
- *  target's short form where the link draws nothing else, its target not yet named. */
-function shortWords(
+/** The text node of a reference's link that draws the address's own words, where one does: an
+ *  issue's key, which leads the link before its title (`row-references.ts`' `nameReference`), and
+ *  the words its author wrote (`written`) where the link draws nothing else, its target not yet
+ *  named (`rowReferenceWords`). */
+function ownWords(
   route: DispatchReferenceRoute | undefined,
-  drawn: readonly Text[]
+  drawn: readonly Text[],
+  written: string | null
 ): Text | undefined {
   if (route === undefined) return undefined;
   const first = drawn[0];
-  if (route.kind === "issue") return first?.data === route.key ? first : undefined;
-  return drawn.length === 1 && first?.data === shortForm(route) ? first : undefined;
+  if (drawn.length === 1 && written !== null && first?.data === written) return first;
+  return route.kind === "issue" && first?.data === route.key ? first : undefined;
 }
 
 /** Whether `node`, inside `root`, stands in what a row draws apart from its node's text: a

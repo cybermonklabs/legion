@@ -15,7 +15,7 @@ import {
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
-import { regionOrigin } from "../../margin/ThreadList";
+import { regionOrigin } from "../../margin/card-stack";
 import { parseIssuePath } from "../../refs/routes";
 import { useMediaQuery } from "../../shell/useDialog";
 import { outlineItemRoute } from "../address-target";

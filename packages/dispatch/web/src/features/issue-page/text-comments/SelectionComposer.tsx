@@ -189,6 +189,9 @@ export function SelectionComposer({
       <blockquote className="border-l-2 pl-2 text-sm">{quoteLine(words.quote)}</blockquote>
       <MentionComposer
         autoFocus
+        // The writing list's box of a margin's composer opened from a selection, which writes a
+        // comment on the words it quotes, as this one does.
+        box="margin-composer"
         kind="comment"
         mutationKey={["text-comment", issue.key, wordsKeyOf(words)]}
         onClose={onLeave}

@@ -31,6 +31,12 @@ export type ReadMessage = MessageRead["message"];
 /** A block of an item that a reply answers, as the comments and messages reads answer it. */
 type ReplyBlock = NonNullable<ReadComment["reply_block"] | ReadMessage["reply_block"]>;
 
+/** The anchor the tree read answers on a comment's node (`IssueTreeAnchor`): a document anchor's
+ *  members, which a node anchor leaves out, or the node a node anchor names (`node`, G2,
+ *  INFRA-1253 R31), each with the match of its quote (`occurrence`, G2 for a node anchor, G3b
+ *  for a document anchor). */
+export type TreeAnchor = NonNullable<TreeAnswerNode["anchor"]>;
+
 /** An item the rule is asked about: a comment or a message, by its id and its kind as the tree
  *  read names it. An item of any other kind is on no text. */
 export type OnTextItem = Pick<TreeAnswerNode, "id" | "supertag">;
@@ -87,15 +93,11 @@ export interface OnTextReads {
   readonly nodes: ReadonlyMap<string, TreeAnswerNode>;
 }
 
-/** The members of a tree read's `anchor` that this base's contract does not declare, each read
- *  where the server answers it: `node`, the node a node anchor names (G2, INFRA-1253 R31);
- *  `occurrence`, the match of the quote the anchor names (G2 for a node anchor, G3b for a
- *  document anchor); `container_node_id`, the node id of the nearest typed block that holds an
- *  orphaned document anchor's paragraph (INFRA-1253). */
+/** The member of a tree read's `anchor` that this base's contract does not declare, read where
+ *  the server answers it: `container_node_id`, the node id of the nearest typed block that holds
+ *  an orphaned document anchor's paragraph (INFRA-1253). */
 interface AnchorExtras {
   readonly container_node_id?: string;
-  readonly node?: { readonly id: string };
-  readonly occurrence?: number | null;
 }
 
 /** A comment of the comments read as a caller that sends `?node_anchor=true` reads it (G2,
@@ -162,21 +164,24 @@ export function onTextReads(
  * (`e2e/issue-page-q.e2e.ts`), which change at G5, read them as rows.
  */
 export function onTextOf(item: OnTextItem, reads: OnTextReads): OnText | null {
-  return ruleOf(item, reads, new Set());
+  return ruleOf(item, reads);
 }
 
-function ruleOf(item: OnTextItem, reads: OnTextReads, passed: Set<string>): OnText | null {
-  if ((item.supertag !== "comment" && item.supertag !== "message") || passed.has(item.id)) {
+/** `onTextOf`, with the items the walk up a chain of answers has passed (`passed`), made only
+ *  once the walk takes its first step up, so an item the rule answers by itself makes none. */
+function ruleOf(item: OnTextItem, reads: OnTextReads, passed?: Set<string>): OnText | null {
+  if ((item.supertag !== "comment" && item.supertag !== "message") || passed?.has(item.id)) {
     return null;
   }
-  passed.add(item.id);
   const anchored = item.supertag === "comment" ? anchorPlace(item.id, reads) : undefined;
   if (anchored !== undefined) {
     return rowUntilComposer(item.id, anchored, reads) ? null : { kind: "root", place: anchored };
   }
   const answered = answeredOf(item, reads);
   if (answered === undefined) return null;
-  const above = ruleOf(answered, reads, passed);
+  const seen = passed ?? new Set<string>();
+  seen.add(item.id);
+  const above = ruleOf(answered, reads, seen);
   if (above !== null) {
     return { kind: "reply", root: above.kind === "root" ? answered.id : above.root };
   }
@@ -188,14 +193,14 @@ function ruleOf(item: OnTextItem, reads: OnTextReads, passed: Set<string>): OnTe
  *  read's `anchor`, else, from G2, its `node_anchor`; undefined where none names a block or a
  *  node. */
 function anchorPlace(id: string, reads: OnTextReads): TextPlace | undefined {
-  const anchor = reads.nodes.get(id)?.anchor;
-  if (anchor !== undefined) return anchorPlaceOf(anchor);
+  const held = reads.nodes.get(id)?.anchor;
+  if (held !== undefined) return treeAnchorPlace(held);
   const comment = reads.comments.get(id);
   if (comment === undefined) return undefined;
-  if (comment.anchor !== null) return anchorPlaceOf(comment.anchor);
+  if (comment.anchor !== null) return blockPlace(comment.anchor, undefined, undefined);
   if (!GATES.NODE_ANCHOR) return undefined;
-  const held: ReadComment & NodeAnchored = comment;
-  const named = held.node_anchor;
+  const read: ReadComment & NodeAnchored = comment;
+  const named = read.node_anchor;
   return named === undefined
     ? undefined
     : {
@@ -207,27 +212,46 @@ function anchorPlace(id: string, reads: OnTextReads): TextPlace | undefined {
       };
 }
 
-/** The place `anchor` names: from G2 the node a node anchor names, else the block of a document
- *  anchor that names one; undefined for an anchor that names neither. */
-function anchorPlaceOf(anchor: Anchor): TextPlace | undefined {
-  const extras: Anchor & AnchorExtras = anchor;
-  if (GATES.NODE_ANCHOR && extras.node !== undefined) {
+/** The place the tree read's anchor of a comment's node names: from G2 the node a node anchor
+ *  names, else the block a document anchor names (`blockPlace`). */
+function treeAnchorPlace(anchor: TreeAnchor & AnchorExtras): TextPlace | undefined {
+  if (GATES.NODE_ANCHOR && anchor.node !== undefined) {
     return {
       kind: "node",
-      node: extras.node.id,
-      occurrence: extras.occurrence ?? 0,
+      node: anchor.node.id,
+      occurrence: anchor.occurrence ?? 0,
       orphaned: anchor.orphaned,
       quote: anchor.quote,
     };
   }
+  return blockPlace(commentAnchorOf(anchor), anchor.container_node_id, anchor.occurrence);
+}
+
+/** The place of a document anchor that names a block, with the node of the nearest typed block
+ *  that holds an orphaned anchor's paragraph (`container`) and the match of its quote
+ *  (`occurrence`) where the tree read names them; undefined for an anchor that names no block. */
+function blockPlace(
+  anchor: Anchor,
+  container: string | undefined,
+  occurrence: number | undefined
+): TextPlace | undefined {
   if (anchor.artifact_id === "" || anchor.block_id === null || anchor.block_id === "") {
     return undefined;
   }
+  return { anchor, container, kind: "block", occurrence };
+}
+
+/** The tree read's anchor of a comment's node as the comments read writes an anchor (`Anchor`),
+ *  which the card draws: a document member a node anchor leaves out reads as none (an empty
+ *  document and mark, no block, version 0), as the card's anchor of a node's words does. */
+export function commentAnchorOf(anchor: TreeAnchor): Anchor {
   return {
-    anchor,
-    container: extras.container_node_id,
-    kind: "block",
-    occurrence: extras.occurrence ?? undefined,
+    artifact_id: anchor.artifact_id ?? "",
+    block_id: anchor.block_id ?? null,
+    mark_id: anchor.mark_id ?? "",
+    orphaned: anchor.orphaned,
+    quote: anchor.quote,
+    version: anchor.version ?? 0,
   };
 }
 

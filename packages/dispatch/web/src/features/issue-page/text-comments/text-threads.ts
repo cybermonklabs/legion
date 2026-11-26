@@ -3,11 +3,13 @@ import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 import type { Thread, ThreadComment } from "../../margin/useMarginItems";
 import { wordsOf } from "../../refs/tree-fragment";
 import { assemble, type IssueTreeReads, type TreeNode, treeWordsOf } from "../issue-tree";
-import { type Draft, plainWords } from "../tree-drafts";
+import { storedWords } from "../lenses/lens-drafts";
+import type { Draft } from "../tree-drafts";
 import { readingOf, treeDraftsFrom, treeIdOf } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 import { GATES } from "./gates";
 import {
+  commentAnchorOf,
   ITEM_KINDS,
   type OnTextItem,
   type OnTextReads,
@@ -141,10 +143,13 @@ export function textThreadsOf(
     if (at === undefined || record === undefined) continue;
     let held = words.get(at);
     if (held === undefined) {
-      // The node's words as `plainWords` reads them: one space between words.
+      // The node's words as a stored text's plain words read (`storedWords`): one space between
+      // words, each address as its author wrote it, as the server's quote holds it.
       const reading = readingOf(at);
       held =
-        reading === undefined ? plainWords(at.text) : wordsOf(reading).replace(/\s+/gu, " ").trim();
+        reading === undefined
+          ? storedWords(at.text)
+          : wordsOf(reading).replace(/\s+/gu, " ").trim();
       words.set(at, held);
     }
     const entries = (replies.get(id) ?? []).sort(
@@ -208,7 +213,8 @@ function placedThread(
       : place.kind === "node"
         ? place.orphaned
         : place.block.removed;
-  const from = place.kind === "item" ? Math.max(0, words.indexOf(plainWords(place.block.text))) : 0;
+  const from =
+    place.kind === "item" ? Math.max(0, words.indexOf(storedWords(place.block.text))) : 0;
   const at = orphaned ? undefined : quotedAt(words, quote, occurrence, from);
   const anchor = cardAnchorOf(place);
   const own = new Map(
@@ -308,7 +314,7 @@ function nodeRecord(node: TreeAnswerNode, key: string): ThreadComment | undefine
       ? parent.id
       : null;
   return {
-    anchor: node.anchor ?? null,
+    anchor: node.anchor === undefined ? null : commentAnchorOf(node.anchor),
     answers: answered,
     artifact_id: null,
     ask_id: null,
@@ -419,7 +425,7 @@ function cardAnchorOf(place: TextPlace): Anchor {
 }
 
 /** Where match `occurrence` of `quote` starts in `words`, counting from `from` and overlapping
- *  matches included, as `quoteAnchor` counts, with the quote's white space read as `plainWords`
+ *  matches included, as `quoteAnchor` counts, with the quote's white space read as `storedWords`
  *  reads it; undefined where there is no such match or the quote holds no words. */
 function quotedAt(
   words: string,

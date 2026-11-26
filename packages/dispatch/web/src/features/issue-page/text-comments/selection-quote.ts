@@ -1,6 +1,7 @@
-import { referenceSpans } from "../../refs/reference-spans";
+import { referenceSpans } from "@legion/contracts";
+
 import { wordsOf } from "../../refs/tree-fragment";
-import { addressesAsShortForms } from "../tree-drafts";
+import { storeKindText } from "../lenses/lens-drafts";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 import { ITEM_KINDS } from "./on-text";
 import { asRead, rowTextOf, type TextRuns, textRuns } from "./row-text-runs";
@@ -13,13 +14,14 @@ import { asRead, rowTextOf, type TextRuns, textRuns } from "./row-text-runs";
  * The selection is read in the words the row draws (`row-text-runs.ts`), and the quote is taken
  * from the node's own text as the tree read answers it, at the place the selection names. Where
  * the row draws that text as it is - every node with a reading - the two are one string. Where it
- * draws it read to plain words (`plainWords`: a lens's verdict, a risk's heading, a constraint's
- * words), it writes white space as one space and a bare address as its short form, so the place
- * is found by reading the two side by side, and a selection over part of a short form quotes the
- * whole address. Where the drawn words run on past the node's text, or differ from it, the place
- * past that point is in no text the server holds, and the selection takes no quote there: the
- * page offers the control only on words whose plain text it reads as the server does (decision
- * 6; the fixtures of `quotes.json` hold it for each inline kind a row draws).
+ * draws it read to plain words (`lens-drafts.ts`' `storedWords`: a lens's verdict, a risk's
+ * heading, a constraint's words), it writes white space as one space and a store address as its
+ * kind's word, so the place is found by reading the two side by side, and a selection over part
+ * of that word quotes the whole address. Where the drawn words run on past the node's text, or
+ * differ from it, the place past that point is in no text the server holds, and the selection
+ * takes no quote there: the page offers the control only on words whose plain text it reads as
+ * the server does (decision 6; the fixtures of `quotes.json` hold it for each inline kind a row
+ * draws).
  */
 
 /** A block of an item's text: a block node the tree read hangs under an ask, a comment or a
@@ -48,7 +50,7 @@ export interface TextQuote<Block extends ItemBlock = ItemBlock> {
  *  which `quoteAnchor` leaves out of a quote. */
 const HEADING_MARKER = /^#{1,6} +/u;
 
-/** One character of white space, as `plainWords` reads it. */
+/** One character of white space, as `storedWords` reads it. */
 const SPACE = /\s/u;
 
 /**
@@ -222,8 +224,8 @@ function drawnSelection(
 
 /** How the drawn words stand for the node's text: for each of the first `length` characters of
  *  the drawn words, the span of the text it stands for. A character the row writes as it stands
- *  stands for itself; a run of white space the row writes otherwise, or a short form, stands for
- *  the whole run or the whole address. */
+ *  stands for itself; a run of white space the row writes otherwise, or a store address's kind
+ *  word, stands for the whole run or the whole address. */
 interface Alignment {
   readonly from: Int32Array;
   readonly length: number;
@@ -232,10 +234,10 @@ interface Alignment {
 
 /**
  * The drawn words `drawn` read beside the node's text `source`, from their starts, as far as they
- * agree: a character the same in both, a run of white space in both (`plainWords` writes one
- * space for each run, and leaves out a run that opens the text), and a bare address in `source`
- * that `drawn` writes as its short form (`addressesAsShortForms`). Past the first place they part,
- * no drawn character stands for any of the text.
+ * agree: a character the same in both, a run of white space in both (`storedWords` writes one
+ * space for each run, and leaves out a run that opens the text), and a store address in `source`
+ * that `drawn` writes as its kind's word (`storeKindText`). Past the first place they part, no
+ * drawn character stands for any of the text.
  */
 function aligned(drawn: string, source: string): Alignment {
   const from = new Int32Array(drawn.length);
@@ -249,7 +251,7 @@ function aligned(drawn: string, source: string): Alignment {
   }
   const addresses = new Map<number, { readonly end: number; readonly short: string }>();
   for (const { start, value } of referenceSpans(source, "dispatch://")) {
-    const short = addressesAsShortForms(value);
+    const short = storeKindText(value);
     if (short !== value && short !== "") addresses.set(start, { end: start + value.length, short });
   }
   const stand = (

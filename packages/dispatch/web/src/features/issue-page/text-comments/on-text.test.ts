@@ -24,6 +24,7 @@ import {
   onTextReads,
   type QuotedReplyBlock,
   type ReadMessage,
+  type TreeAnchor,
 } from "./on-text";
 import { textThreadsOf } from "./text-threads";
 
@@ -331,10 +332,11 @@ test.skipIf(!GATES.REPLY_QUOTE)(
 // R1 (G2): a comment anchored on a node is the root of a thread on text: by the tree read's
 // `anchor.node`, and by the comments read's `node_anchor` where the tree node carries none.
 test.skipIf(!GATES.NODE_ANCHOR)("a comment anchored on a node is on text", () => {
-  const onNode: Anchor & { readonly node: { readonly id: string }; readonly occurrence: number } = {
-    ...anchorIn({ id: "" }, "", { block_id: null, quote: "holds" }),
-    node: { id: "lens-1" },
+  const onNode: TreeAnchor = {
+    node: { id: "lens-1", kind: "lens", state: "live" },
     occurrence: 1,
+    orphaned: false,
+    quote: "holds",
   };
   const byTree = readComment("by-tree", 1);
   const byRead: Comment & { readonly node_anchor: unknown } = {

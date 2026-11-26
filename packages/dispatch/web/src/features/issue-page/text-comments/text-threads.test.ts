@@ -25,6 +25,7 @@ import {
   STATEMENT,
   seededIssue,
   seededNodes,
+  treeAnchorOf,
 } from "./margin-fixtures";
 import type { QuotedReplyBlock } from "./on-text";
 import { type NodeThreads, textThreadsOf } from "./text-threads";
@@ -69,7 +70,7 @@ function onStatement(id: string, at: number, quote: string, extra: Partial<Ancho
  *  comments read gives it. */
 function nodeOf(comment: Comment, parent: string, extra: TreeNodeExtra = {}): TreeAnswerNode {
   return treeNode(comment.id, "comment", parent, {
-    ...(comment.anchor === null ? {} : { anchor: comment.anchor }),
+    ...(comment.anchor === null ? {} : { anchor: treeAnchorOf(comment.anchor) }),
     author: [comment.author],
     made_at: comment.created_at,
     text: comment.body,
@@ -376,7 +377,7 @@ test.skipIf(!GATES.OTHER_ISSUE_COMMENTS)(
       text: "The other issue's words.",
     });
     const remark = treeNode("c-x", "comment", "x1", {
-      anchor: anchorOn(document, "x1", "other issue"),
+      anchor: treeAnchorOf(anchorOn(document, "x1", "other issue")),
       author: [{ id: "alice", kind: "user" }],
       issue: "CORE-2",
       made_at: "2026-11-05T03:00:00Z",

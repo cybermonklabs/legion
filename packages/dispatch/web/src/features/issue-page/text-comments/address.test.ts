@@ -23,6 +23,7 @@ import {
   STATEMENT,
   seededNodes,
   threadOn,
+  treeAnchorOf,
   VERIFICATION_DOCUMENT,
 } from "./margin-fixtures";
 
@@ -143,7 +144,9 @@ test("a thread on the 55th child draws that child's page", async () => {
         [
           ...checks(41, 60),
           treeNode(thread.comment.id, "comment", "ck55", {
-            ...(thread.comment.anchor === null ? {} : { anchor: thread.comment.anchor }),
+            ...(thread.comment.anchor === null
+              ? {}
+              : { anchor: treeAnchorOf(thread.comment.anchor) }),
             author: [thread.comment.author],
             made_at: thread.comment.created_at,
             text: thread.comment.body,
@@ -192,7 +195,7 @@ test("an address whose node no view draws opens the issue's address with no line
         [
           ...seededNodes([]),
           treeNode(orphan.id, "comment", "paged-away", {
-            anchor,
+            anchor: treeAnchorOf(anchor),
             author: [orphan.author],
             made_at: orphan.created_at,
             text: orphan.body,

@@ -9,11 +9,17 @@ import { displayTree } from "../../../__tests__/display-trees";
 import type { DisplayTree } from "../../../api/types";
 import { quoteAnchor } from "../../doc/quote-anchor";
 import { loadedEngine, warmMarkdownRenderer } from "../../refs/markdown-engine";
+import {
+  type PublishedReferences,
+  ReferenceNamesProvider,
+  usePublishReferenceNames,
+} from "../../refs/reference-names";
 import { KEY, node } from "../decisions-filter/decisions-fixtures";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
+import { publishedNames } from "../projection-fixture";
 import { RowText } from "../RowText";
-import { ReferenceNamesProvider, usePublishReferenceNames } from "../reference-names";
+import { citedReferences } from "../row-references";
 import { issueDetails } from "../spec-filter/spec-fixtures";
 import { treeAnswer, treeNode } from "../tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
@@ -125,36 +131,33 @@ function matchCount(text: string, quote: string): number {
   return count;
 }
 
-/** The names and marks a page publishes, stable across renders as `usePublishReferenceNames`
- *  wants. */
-interface Published {
-  readonly edited: ReadonlySet<string>;
-  readonly names: ReadonlyMap<string, string>;
-}
-
-const NOTHING_PUBLISHED: Published = { edited: new Set(), names: new Map() };
-
+/** Publishes `published` as the page publishes its batched read, for as long as it is drawn. */
 function Publishing({
   children,
   published,
 }: {
   children?: ReactNode;
-  published: Published;
+  published: PublishedReferences;
 }): ReactNode {
-  usePublishReferenceNames(published.names, undefined, published.edited);
+  usePublishReferenceNames(published);
   return children;
 }
 
 /** `RowText` of `markdown` as a row draws it, in a row element that carries a node id and a words
- *  element, with the names the page published. */
+ *  element, with the names the page published: by default none, the page asking for each
+ *  reference the words cite, so the row reads none itself and draws each as its author wrote it.
+ *  The row is drawn once the store holds what the page published, as the page's tree hands its
+ *  rows the page's value in the render that draws them (`PublishedReferenceNames`). */
 function drawWords(
   markdown: string,
-  published: Published = NOTHING_PUBLISHED
+  published: PublishedReferences = publishedNames(new Map(), {
+    asked: citedReferences(markdown),
+  })
 ): { readonly row: HTMLElement; readonly unmount: () => void; readonly words: HTMLElement } {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  const view = render(
+  const page = (row: ReactNode) =>
     createElement(
       QueryClientProvider,
       { client },
@@ -164,23 +167,20 @@ function drawWords(
         createElement(
           NoTooltips,
           null,
-          createElement(
-            ReferenceNamesProvider,
-            null,
-            createElement(
-              Publishing,
-              { published },
-              createElement(
-                "div",
-                { "data-node-id": "words-row" },
-                createElement(
-                  "div",
-                  { "data-node-words": "" },
-                  createElement(RowText, { markdown, tree: readingOf(markdown) })
-                )
-              )
-            )
-          )
+          createElement(ReferenceNamesProvider, null, createElement(Publishing, { published }, row))
+        )
+      )
+    );
+  const view = render(page(null));
+  view.rerender(
+    page(
+      createElement(
+        "div",
+        { "data-node-id": "words-row" },
+        createElement(
+          "div",
+          { "data-node-words": "" },
+          createElement(RowText, { markdown, tree: readingOf(markdown) })
         )
       )
     )
@@ -553,14 +553,15 @@ describe("the words of each kind", () => {
     }
   });
 
-  test("a shortened address is quoted from the node's text", () => {
+  test("an address in words a row reads to plain words is quoted from the node's text", () => {
     const view = drawKinds();
     try {
       const { row, words } = located(view, LENS);
       const held: QuotedNode = { text: VERDICT };
-      expect(words.textContent, "the row draws the address short and one space for each run").toBe(
-        "Read CORE-1 spec block before the plan."
-      );
+      expect(
+        words.textContent,
+        "the row draws the address as written and one space for each run"
+      ).toBe("Read dispatch://CORE-1/spec#b-r1 before the plan.");
       // The words after the address, with the node's own white space between them.
       selectBetween(words, "before the plan.");
       expect(quoteOf(selected(), row, held)).toEqual({
@@ -568,8 +569,8 @@ describe("the words of each kind", () => {
         occurrence: 0,
         quote: "before   the plan.",
       });
-      // Part of the short form quotes the whole address, as the node's text writes it.
-      selectBetween(words, "spec block", "before");
+      // Part of the address quotes the whole address, with the node's own white space after it.
+      selectBetween(words, "spec#b-r1", "before");
       expect(quoteOf(selected(), row, held)?.quote).toBe("dispatch://CORE-1/spec#b-r1  before");
       selectBetween(words, "Read", "CORE-1");
       expect(quoteOf(selected(), row, held)?.quote).toBe("Read dispatch://CORE-1/spec#b-r1");
@@ -585,7 +586,7 @@ describe("what a row draws that is no part of the node's text", () => {
   test("a reference's drawn name takes none, and the words beside it take the control", () => {
     const text = "See dispatch://CORE-2 and more words.";
     const names = new Map([["dispatch://CORE-2", "Draw the children"]]);
-    const view = drawWords(text, { edited: new Set(), names });
+    const view = drawWords(text, publishedNames(names));
     try {
       const held = quotedFrom(text);
       expect(textRuns(view.words).text, "the address the text writes").toBe(text);
@@ -610,7 +611,7 @@ describe("what a row draws that is no part of the node's text", () => {
   test("a chip's words and an edited mark take none", () => {
     const text = `See ${SHORT} first.`;
     const names = new Map([[SHORT, "The page draws the plan."]]);
-    const view = drawWords(text, { edited: new Set([SHORT]), names });
+    const view = drawWords(text, publishedNames(names, { edited: new Set([SHORT]) }));
     try {
       const held = quotedFrom(text);
       selectBetween(view.words, "See");
@@ -626,14 +627,14 @@ describe("what a row draws that is no part of the node's text", () => {
     }
   });
 
-  test("a reference not yet named is its short form, which stands for the whole address", () => {
+  test("a reference not yet named is drawn as written, which stands for the whole address", () => {
     const text = `See ${SHORT} first.`;
     const view = drawWords(text);
     try {
       const held = quotedFrom(text);
       const runs = textRuns(view.words);
       expect(runs.text).toBe(text);
-      selectBetween(view.words, "spec block");
+      selectBetween(view.words, "spec#b-r1");
       expect(quoteOf(selected(), view.row, held)?.quote).toBe(SHORT);
       selectBetween(view.words, "See", "first.");
       expect(quoteOf(selected(), view.row, held)?.quote).toBe(text);
@@ -669,7 +670,7 @@ describe("what a row draws that is no part of the node's text", () => {
       answered: true,
       editedAt: "2026-11-05T00:00:00Z",
       gone: false,
-      name: "Another block",
+      reading: { words: "Another block" },
       ref: "dispatch://CORE-1/spec#b-r2",
     };
     const view = drawTree([
@@ -781,7 +782,7 @@ describe("rangeOf", () => {
       expect(range?.toString()).toBe("before the plan.");
       expect(
         rangeOf(row, `${"dispatch://CORE-1/spec#b-r1"}  before`, 0, { node: held })?.toString()
-      ).toBe("CORE-1 spec block before");
+      ).toBe("dispatch://CORE-1/spec#b-r1 before");
     } finally {
       view.unmount();
     }

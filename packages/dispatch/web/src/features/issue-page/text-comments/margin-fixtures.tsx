@@ -40,10 +40,12 @@ import {
 import { IssueOutlinePage } from "../IssueOutlinePage";
 import { IssueTree } from "../IssueTree";
 import { presetPath } from "../issue-address";
-import type { TreeNode } from "../issue-tree";
+import { nodeWords, type TreeNode } from "../issue-tree";
 import { type MarginDrawer, MarginSlotProvider } from "../margin-slot";
 import { readComment } from "../outline-fixtures";
 import type { Preset } from "../page-words";
+import { Publisher, publishedTree } from "../projection-fixture";
+import { citedReferences } from "../row-references";
 import { ProvidersSlot } from "../slots/providers";
 import { StageSlot } from "../slots/stage";
 import { AppProviders, inDocument, stubReads, treeOf } from "../slots/stage-fixtures";
@@ -52,6 +54,7 @@ import { commentNode, treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 import { issueAskThreadsQuery } from "../useIssueTree";
 import { check, result, VERIFICATION_SLUG } from "../verification-filter/verification-fixtures";
+import type { TreeAnchor } from "./on-text";
 import { TextMargin } from "./TextMargin";
 
 /**
@@ -155,6 +158,13 @@ export function seededIssue(): IssueDetails {
   };
 }
 
+/** A comment's anchor as the comments read answers it, as the tree read answers it on the
+ *  comment's node (`IssueTreeAnchor`), which leaves out a block it names none of. */
+export function treeAnchorOf(anchor: Anchor): TreeAnchor {
+  const { block_id: block, ...members } = anchor;
+  return block === null ? members : { ...members, block_id: block };
+}
+
 /** A text of one block for each of `paragraphs`, as the server reads a stored text for display. */
 function blocksOf(...paragraphs: string[]): DisplayTree {
   return {
@@ -199,7 +209,7 @@ export function seededNodes(
     ...blocks,
     ...threads.map(({ comment, node }) =>
       treeNode(comment.id, "comment", node, {
-        ...(comment.anchor === null ? {} : { anchor: comment.anchor }),
+        ...(comment.anchor === null ? {} : { anchor: treeAnchorOf(comment.anchor) }),
         author: [comment.author],
         made_at: comment.created_at,
         text: comment.body,
@@ -563,10 +573,18 @@ function IssueScope(): ReactNode {
   return null;
 }
 
+/** Every reference the words of `node` and of each node under it cite (`citedReferences`). */
+function citedUnder(node: TreeNode): string[] {
+  return [...citedReferences(nodeWords(node)), ...node.children.flatMap(citedUnder)];
+}
+
 /** The outline's rows of `children`, each a node of its own kind, under the issue, as the page's
  *  body draws a tree, under the page's providers and the reader alice: a tree the case builds by
  *  hand, for the kinds the page's reads draw only under a whole issue. The rows are the rows of
- *  `IssueTree`, whose `[data-node-words]` the margin part reads. */
+ *  `IssueTree`, whose `[data-node-words]` the margin part reads. The page asks its batched read
+ *  for each chip's target and each reference the nodes' words cite (`useIssueTree.ts`), so a row
+ *  waits on the page for each and reads none itself; one the case names no reading for stays
+ *  drawn as its author wrote it. */
 export function drawTree(
   children: readonly TreeNode[]
 ): RenderResult & { readonly client: QueryClient } {
@@ -577,11 +595,14 @@ export function drawTree(
   for (const read of ["asks", "comments", "issue-messages"]) client.setQueryData([read, KEY], []);
   client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
   const root = node({ children: [...children], id: KEY, type: "issue" });
+  const chips = publishedTree(root);
+  const published = { ...chips, asked: new Set([...chips.asked, ...citedUnder(root)]) };
   const view = render(
     <MemoryRouter>
       <AppProviders client={client}>
         <ProvidersSlot issue={seededIssue()} route={{ key: KEY, kind: "issue" }}>
           <IssueScope />
+          <Publisher published={published} />
           <IssueTree
             artifacts={new Map()}
             context={new Set()}
@@ -590,6 +611,7 @@ export function drawTree(
             holdsEscape={false}
             isClosed={false}
             onEditing={() => {}}
+            published={published}
             reveal={undefined}
             root={root}
             rootRow

@@ -30,8 +30,9 @@ interface WindowStep {
   readonly token: string;
 }
 
-/** Every layout step at a window width inside the stage on B0, each with its rule. The `max-[N]:`
- *  of Tailwind is `(width < N)`, so `max-[761px]` takes 760 px and below. */
+/** Every layout step at a window width inside the stage on B0, and each the base added since,
+ *  each with its rule. The `max-[N]:` of Tailwind is `(width < N)`, so `max-[761px]` takes 760 px
+ *  and below. */
 const WINDOW_STEPS: readonly WindowStep[] = [
   {
     file: "NodeRow.tsx",
@@ -50,6 +51,12 @@ const WINDOW_STEPS: readonly WindowStep[] = [
     lines: 1,
     rule: "the row's box takes a 6 px gap between its columns below 768 px",
     token: "max-[768px]",
+  },
+  {
+    file: "NodeRow.tsx",
+    lines: 2,
+    rule: "below 1280 px of window a row's kind link and a child's key sit their 6 px of touch padding over the line, so the row's line keeps its height (part T, after B0)",
+    token: "max-[1279px]",
   },
   {
     file: "TreeRows.tsx",

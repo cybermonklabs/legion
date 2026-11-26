@@ -21,6 +21,8 @@ function regionOrigin(region: HTMLElement): number {
   return region.getBoundingClientRect().top + scrolled;
 }
 
+export { regionOrigin };
+
 /** One region's stack of cards (`useCardStack`). */
 export interface CardStack {
   /** The ref of each card's box, by its key, which the stack reads the card's height from. */
