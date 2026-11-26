@@ -173,9 +173,10 @@ type workflowRuntime struct {
 	// entrySweep is tickEntrySweep's period, zero being entrySweepInterval; a test shortens it
 	// so it waits out its own period rather than the daemon's minute.
 	entrySweep time.Duration
-	// lingerWake carries the deadline every admission pass reports, the next moment its block can
-	// change with no write, to the daemon's one timer for it (wakeAtLingerDeadlines); openWorkflow
-	// registers it with the admission pass.
+	// lingerWake carries the deadline each admission pass that judges the block reports (admit's
+	// block rule, Admission.Apply), the next moment that block can change with no write, to the
+	// daemon's one timer for it (wakeAtLingerDeadlines); openWorkflow registers it with the
+	// admission pass.
 	lingerWake *lingerWake
 	// outboxSweep is how often the outbox sweeps its lanes (overrides.outboxSweep), which attach
 	// hands the outbox (outbox.sweepEvery); zero is outboxLease.

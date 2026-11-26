@@ -937,18 +937,19 @@ test("the gate names a key no schema names, and is blind under the loose blocks"
     "issues.LEGION-207.workers.implementer.claim.somethingNew"
   );
 
-  const settings = fixture("state.json") as { settings: Record<string, unknown> };
-  settings.settings.a_later_legion_yaml_key = "ridden loosely";
-  const parsedSettings = LegionStateResponse.parse(settings);
-  expect(firstDroppedKey(settings, parsedSettings)).toBeUndefined();
-  expect<unknown>(parsedSettings).toEqual(settings);
-  // The census of the answer side below walks the settings block once, at the observed view's
-  // path, and parses neither answer, so the observed view's parse is held here as the state's is.
-  const observed = fixture("observed-state.json") as { settings: Record<string, unknown> };
-  observed.settings.a_later_legion_yaml_key = "ridden loosely";
-  const parsedObserved = LegionObservedStateResponse.parse(observed);
-  expect(firstDroppedKey(observed, parsedObserved)).toBeUndefined();
-  expect<unknown>(parsedObserved).toEqual(observed);
+  // The census below parses neither answer and counts the settings node both carry once, at the
+  // observed view's path, so it would still pass were the full state's settings to strip a key;
+  // each answer's parse is held here.
+  for (const [name, schema] of [
+    ["state.json", LegionStateResponse],
+    ["observed-state.json", LegionObservedStateResponse],
+  ] as const) {
+    const settings = fixture(name) as { settings: Record<string, unknown> };
+    settings.settings.a_later_legion_yaml_key = "ridden loosely";
+    const parsed = schema.parse(settings);
+    expect(firstDroppedKey(settings, parsed), name).toBeUndefined();
+    expect<unknown>(parsed, name).toEqual(settings);
+  }
 
   const payload = fixture("state-stage3.json") as {
     pendingStatusWrites: { payload: Record<string, unknown> }[];

@@ -166,10 +166,10 @@ func (r *stateGoldenRig) stamped(t *testing.T, live time.Time) time.Time {
 	return time.Time{}
 }
 
-// pass commits write in one transaction that ends as every admission pass ends a fact (admit's
-// queueAdmissionBlock): the project's admission block judged afresh at the clock's instant, through
-// the one judgement the state route serves it from, and written where it moved, which queues its
-// state event in the same transaction.
+// pass commits write in one transaction that ends as an admission pass that judges the block ends
+// a fact (admit's block rule, Admission.Apply, and queueAdmissionBlock): the project's admission
+// block judged afresh at the clock's instant, through the one judgement the state route serves it
+// from, and written where it moved, which queues its state event in the same transaction.
 func (r *stateGoldenRig) pass(t *testing.T, write func(ctx context.Context, tx pgx.Tx) error) {
 	t.Helper()
 	ctx := context.Background()

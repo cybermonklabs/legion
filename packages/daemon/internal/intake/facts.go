@@ -559,9 +559,10 @@ func (EntrySweep) namedIssue() (string, bool) { return "", false }
 // synthetic fact by the daemon's one timer for it (internal/daemon's wakeAtLingerDeadlines) and
 // never decoded from an event: the block changes at that deadline with no write at all (admit's
 // queueAdmissionBlock), and an admission pass runs only on a fact, so this is the fact that runs
-// one there. Admission is the only handler that acts on it, and does nothing but end its pass as
-// every pass ends, with the block written where it moved, which queues that change's state event.
-// It carries nothing: the pass reads the whole project and the clock.
+// one there. Admission is the only handler that acts on it, and does nothing but end its pass with
+// the block judged, which admit's block rule (Admission.Apply) always does for this fact, and
+// written where it moved, which queues that change's state event. It carries nothing: the pass
+// reads the whole project and the clock.
 type LingerDeadline struct{}
 
 func (LingerDeadline) namedIssue() (string, bool) { return "", false }

@@ -127,12 +127,8 @@ type Admission struct {
 	workerSilence    time.Duration
 	workerBackground time.Duration
 
-	// lingerWake is told, once the transaction of each pass that judges the block commits
-	// (queueAdmissionBlock), the earliest linger deadline after the pass's clock among the records
-	// its block was judged from (record.NextLingerEnd), the zero time where none lies ahead, under
-	// the pass's number from passes, so that a hook that ran late cannot put back an older pass's
-	// deadline over a newer one's (UseLingerWake). nil, which a test that registers none leaves,
-	// tells nothing.
+	// lingerWake is the wake UseLingerWake registers, which queueAdmissionBlock tells, numbering
+	// its reports from passes; nil, which a test that registers none leaves, tells nothing.
 	lingerWake func(pass uint64, deadline time.Time)
 	passes     atomic.Uint64
 }
@@ -140,9 +136,10 @@ type Admission struct {
 // UseLingerWake registers wake, which the end of every admission pass that judges the block
 // (queueAdmissionBlock, with the state events on) tells the next moment that block can change with
 // no write: the earliest linger deadline after the pass's clock among the records the block reads,
-// or the zero time where none lies ahead. It is told once the pass's transaction has committed, with
-// the pass's number, counted up as the passes run, which passes take one at a time under the fact
-// lock. The daemon's one timer for it runs an admission pass at that deadline
+// or the zero time where none lies ahead. It is told once the pass's transaction has committed,
+// with the pass's number, counted up as the passes run, which passes take one at a time under the
+// fact lock, so wake can drop an older pass's report that a commit hook running late makes after
+// a newer one's. The daemon's one timer for it runs an admission pass at that deadline
 // (internal/daemon's wakeAtLingerDeadlines), so the block's change is published then. It is a
 // setter for the reason UseExperiments is.
 func (a *Admission) UseLingerWake(wake func(pass uint64, deadline time.Time)) {
@@ -227,15 +224,17 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 //
 // The block rule, which endPass and queueAdmissionBlock refer to. A fact judges the admission
 // block where it took a pass's read or a judgement of the line (last, which every pass that runs
-// past the project's pause records: judged, and convergeEntries for the entry sweep's read), where
-// its transaction wrote a record admission reads (record.RecordsWritten), and where it exists to
-// judge the block whatever it wrote: the controller tick, the entry sweep and the linger deadline.
-// Any other fact took neither and wrote no record the block reads, so judging it would cost a read
-// of the whole project (finalJudgement) under the lock every fact takes (intake.SerializeFacts) for
-// a block no write of its own moved: the read the pass rule spares a fact that wrote nothing
-// (promoteWritten). Those three also judge what moves the block with no such write: the tick and
-// the entry sweep read the rows whose writers keep no mark (record.RecordsWritten), and the linger
-// deadline reads the clock a linger runs out against (queueAdmissionBlock).
+// past the project's pause records: judged, and convergeEntries for the entry sweep's read, so the
+// sweep judges the block through its read), where its transaction wrote a record admission reads
+// (record.RecordsWritten), and where it exists to judge the block whatever it wrote: the
+// controller tick and the linger deadline. Any other fact took neither and wrote no record the
+// block reads, so judging it would cost a read of the whole project (finalJudgement) under the
+// lock every fact takes (intake.SerializeFacts) for a block no write of its own moved: the read
+// the pass rule spares a fact that wrote nothing (promoteWritten). A sweep the project's pause
+// stops is such a fact, since it reads nothing. What moves the block with no such write is judged
+// too: the tick reads the rows whose writers keep no mark (record.RecordsWritten), and so does
+// the sweep's read where it runs, and the linger deadline reads the clock a linger runs out
+// against (queueAdmissionBlock).
 func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
 	a.last = nil
 	released, refusal, err := a.applyFact(ctx, tx, fact)
@@ -244,7 +243,7 @@ func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (int
 	}
 	block := a.last != nil || record.RecordsWritten(ctx)
 	switch fact.(type) {
-	case intake.ControllerTick, intake.EntrySweep, intake.LingerDeadline:
+	case intake.ControllerTick, intake.LingerDeadline:
 		block = true
 	}
 	_, tick := fact.(intake.ControllerTick)
@@ -255,11 +254,11 @@ func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (int
 // (internal/daemon's recoverRepositories), with the readers of the final judgement
 // (finalJudgement), which it takes at most once and only where one of them reads it: the admission
 // block where block says so (queueAdmissionBlock), which Apply sets by its block rule and
-// Reconcile, itself a pass, always sets; the free-slot wake for the slots the pass released
-// (wakeForFreeSlot); and, for the controller tick, the tick's own wake (tickWake).
-// The judgement is taken after every write of the pass that any judgement reads, and the rows
-// these three write are none of those (finalJudgement says why), so each reads the transaction's
-// final state.
+// Reconcile, itself a pass, always sets, and nothing of the block where block is false, the linger
+// wake's report included; the free-slot wake for the slots the pass released (wakeForFreeSlot);
+// and, for the controller tick, the tick's own wake (tickWake). The judgement is taken after every
+// write of the pass that any judgement reads, and the rows these three write are none of those
+// (finalJudgement says why), so each reads the transaction's final state.
 func (a *Admission) endPass(ctx context.Context, tx pgx.Tx, released []string, tick, block bool) error {
 	var judged *passJudgement
 	final := func() (*passJudgement, error) {
@@ -270,8 +269,10 @@ func (a *Admission) endPass(ctx context.Context, tx pgx.Tx, released []string, t
 		judged, err = a.finalJudgement(ctx, tx)
 		return judged, err
 	}
-	if err := a.queueAdmissionBlock(ctx, tx, block, final); err != nil {
-		return err
+	if block {
+		if err := a.queueAdmissionBlock(ctx, tx, final); err != nil {
+			return err
+		}
 	}
 	if err := a.wakeForFreeSlot(ctx, tx, released, final); err != nil {
 		return err
@@ -282,15 +283,15 @@ func (a *Admission) endPass(ctx context.Context, tx pgx.Tx, released []string, t
 	return a.tickWake(ctx, tx, final)
 }
 
-// queueAdmissionBlock is the first reader of the pass's end (endPass), and does nothing at all
-// where block is false, the linger wake's report included: the block rule (Apply) says where it is
-// true. With the state events on (record.Store.StatePublished) it takes the project's admission
-// block from the pass's final judgement (final, finalJudgement: the judgement the pass itself made
-// where no row a judgement reads was written after it, else one judgement over a read taken now),
-// assembled as the state route assembles the block it serves (blockers.AdmissionOf), and writes it
-// where it differs from the block last written, which queues its state event
-// (record.Store.QueueAdmissionBlock): a pass that leaves the block as it was writes nothing. With
-// the events off it takes no judgement, so a daemon that publishes no state pays nothing for it.
+// queueAdmissionBlock is the first reader of the pass's end (endPass), which calls it only where
+// the block rule (Apply) has the pass judge the block. With the state events on
+// (record.Store.StatePublished) it takes the project's admission block from the pass's final
+// judgement (final, finalJudgement: the judgement the pass itself made where no row a judgement
+// reads was written after it, else one judgement over a read taken now), assembled as the state
+// route assembles the block it serves (blockers.AdmissionOf), and writes it where it differs from
+// the block last written, which queues its state event (record.Store.QueueAdmissionBlock): a pass
+// that leaves the block as it was writes nothing. With the events off it takes no judgement, so a
+// daemon that publishes no state pays nothing for it.
 //
 // The block rule asks what the fact wrote, not what the pass promoted: a fact the pass promotes
 // nothing on can still move the block — a Dispatch rank or a blocker link the mirror wrote, a
@@ -305,8 +306,8 @@ func (a *Admission) endPass(ctx context.Context, tx pgx.Tx, released []string, t
 // rule leaves unjudged tells nothing: a linger is set and taken off only by a write of its
 // record's issues row, which keeps the mark (record.RecordsWritten), so such a fact moved no
 // deadline, and the one last told stands.
-func (a *Admission) queueAdmissionBlock(ctx context.Context, tx pgx.Tx, block bool, final func() (*passJudgement, error)) error {
-	if !block || !a.store.StatePublished() {
+func (a *Admission) queueAdmissionBlock(ctx context.Context, tx pgx.Tx, final func() (*passJudgement, error)) error {
+	if !a.store.StatePublished() {
 		return nil
 	}
 	judged, err := final()

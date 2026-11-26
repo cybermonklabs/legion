@@ -10,9 +10,10 @@ import (
 )
 
 // lingerWake carries the next moment the admission block can change with no write — the earliest
-// linger deadline after the clock of the last committed admission pass among the records its block
-// was judged from (record.NextLingerEnd), zero where none lies ahead — from the passes that report
-// it (admit.Admission.UseLingerWake) to the loop that holds the daemon's one timer for it
+// linger deadline, among the records the block was judged from (record.NextLingerEnd), after the
+// clock of the last committed admission pass that judged the block (admit's block rule,
+// Admission.Apply), zero where none lies ahead — from the passes that report it
+// (admit.Admission.UseLingerWake) to the loop that holds the daemon's one timer for it
 // (wakeAtLingerDeadlines). A pass reports once its transaction has committed, with its number:
 // passes run one at a time under the fact lock, but their commit hooks run on their own goroutines
 // after it, so a report older than the one held is dropped rather than put back over it.
