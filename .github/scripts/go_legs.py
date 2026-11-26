@@ -5,14 +5,26 @@
 
 prints on its standard output, one line each and nothing else, what the leg's `go test` is to be
 given: the packages .github/go-legs.yaml lists for leg <leg> of job <job> under <module> (a
-directory of the repository, `packages/daemon`), each as `./<directory>/`, in the file's order,
-which is the order go test starts them in; or, for a leg that runs a group of one package's tests,
-that group's `-run=^(<name>|…)$` and then the package. <legs> is how many legs the job's matrix
-runs, `${{ strategy.job-total }}`; the build flags are the leg's own `go test`'s (`-race`), under
-which a split package's tests are listed, so the listing is the build the run then reuses. A leg's
-go test step pipes what this prints to xargs:
+directory of the repository, `packages/daemon`), each as `./<directory>/`, longest-first by the
+times the file records beside them, which is the order go test starts them in; or, for a leg that
+runs a group of one package's tests, that group's `-run=^(<name>|…)$` and then the package. <legs>
+is how many legs the job's matrix runs, `${{ strategy.job-total }}`; the build flags are the leg's
+own `go test`'s (`-race`), under which a split package's tests are listed, so the listing is the
+build the run then reuses. A leg's go test step pipes what this prints to xargs:
 
     python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs go test …
+
+The order is this script's, not the file's. go test starts a package's test binary when a slot of
+its -p is free, in the order the command names the packages, so a leg whose longest package is
+named last starts it last and waits for it after everything else has finished: in envoy-go-race's
+single step before the legs, ./cmd/listener/ (about 950 s) was named 7th and started 142 s in,
+behind a 111 s package, where the same step with the cache warm and the listener first started it
+at 20 s. So each leg's whole packages are printed longest-first by the `# <n> s` the file records
+beside each, the untimed ones after them in the file's order, and an entry that runs a group of a
+package's tests (`- <package>: <group>`) where the file has it, since its leg runs that package
+alone and the time beside it is the whole package's. A time is compared only with the times of
+its own leg, which come from one run of that leg; the times of two legs, or of two jobs, are of
+different runs and are not comparable.
 
 The rules the legs and the groups keep, and what is refused as an error and what passes with a
 warning, are in .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs and
@@ -75,6 +87,11 @@ TEST_NAME = re.compile(r"^(?:Test|Fuzz|Example)\w*$")
 # starts a second go test with the arguments that did not fit, which here would be the package with
 # no -run. This bound leaves the step's own flags their room under both.
 PATTERN_LIMIT = 100_000
+# The time .github/go-legs.yaml records beside an entry, `# 554 s`: the seconds that package took
+# in the run the leg's comment names. The seconds are the first number of the comment, so a
+# comment that goes on (`# 15 s (run 45862794170, job 140058256929)`) reads as 15; a comment with
+# no such number records no time, and its entry is printed after the timed ones.
+TIME = re.compile(r"#\s*(\d+)\s*s(?![\w.])")
 
 
 class Place:
@@ -126,6 +143,47 @@ def job_packages(legs: dict) -> list:
             if package is not None and package not in found:
                 found.append(package)
     return found
+
+
+def recorded_seconds(text: str, module: str, job: str, leg: str) -> list:
+    """The seconds the file records beside each entry of that leg, in the file's order, None where
+    an entry has none. yaml.safe_load drops the comments the times are in, so this reads the text:
+    a key line (`packages/envoy:`, `envoy-go-race:`, `4:`) opens what its indentation says it is
+    under, and an entry line of the wanted leg (`- internal/dispatch/store  # 554 s`) gives its
+    time. The list is as long as the leg's list, and the caller keeps the file's order when it is
+    not."""
+    stack, times = [], []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if stripped.startswith("- "):
+            if [key for _, key in stack] == [module, job, str(leg)]:
+                found = TIME.search(line)
+                times.append(int(found.group(1)) if found else None)
+            continue
+        named = re.match(r"([^:#]+):", stripped)
+        if named is None:
+            continue
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        stack.append((indent, named.group(1).strip()))
+    return times
+
+
+def longest_first(entries: list, seconds: list) -> list:
+    """The leg's entries with its whole packages longest-first by `seconds`, the untimed ones after
+    them in the file's order, and an entry running a group of a package's tests where the file has
+    it: that leg runs its package alone, and the time beside such an entry is the whole package's,
+    not the group's. The sort is stable, so entries of one time keep the file's order."""
+    pinned = {index for index, entry in enumerate(entries) if item(entry)[1] is not None}
+    movable = [index for index in range(len(entries)) if index not in pinned]
+    ranked = sorted(movable, key=lambda index: (0, -seconds[index]) if seconds[index] is not None else (1, 0))
+    ordered = list(entries)
+    for slot, source in zip(movable, ranked):
+        ordered[slot] = entries[source]
+    return ordered
 
 
 def groups_path(module: str, package: str) -> str:
@@ -499,6 +557,17 @@ def main(argv: list) -> int:
          f"{home[1]} of {home[0]} ({UNLISTED}) runs it: list it in {LEGS}, in the leg of the job that should run "
          f"it, as its time fits" for package in extra],
         "warning", LEGS)
+    # Longest-first, by the times the file records: go test starts the packages in the order this
+    # prints them, so the leg's longest starts as soon as it is linked and the leg ends with it
+    # rather than after it. A text this cannot read leaves the file's order and says so, rather
+    # than printing an order it did not work out.
+    seconds = recorded_seconds((ROOT / LEGS).read_text(), module, job, leg)
+    if len(seconds) == len(mine):
+        mine = longest_first(mine, seconds)
+    else:
+        say([f"this file's text gives leg {leg} of {job} under {module} {len(seconds)} entries, where it runs "
+             f"{len(mine)}: the leg keeps the file's order, so its longest package starts where the file has it"],
+            "warning", LEGS)
     mine = [item(written) for written in mine]
     split = [(package, group) for package, group in mine if group is not None]
     if split:
@@ -507,8 +576,9 @@ def main(argv: list) -> int:
                    if place.job == job and place.package == package and place.group is not None]
         return run_group(module, job, leg, package, group, by_legs, flags)
     running = [package for package, _ in mine] + (extra if home == (job, leg) else [])
-    print(f"go_legs.py: leg {leg} of {job} runs {len(running)} of the {len(packages)} packages of {module}",
-          file=sys.stderr)
+    first = f", {running[0]} first" if running else ""
+    print(f"go_legs.py: leg {leg} of {job} runs {len(running)} of the {len(packages)} packages of "
+          f"{module}{first}", file=sys.stderr)
     for package in running:
         print(package_argument(package))
     return 0

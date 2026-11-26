@@ -2654,8 +2654,10 @@ minutes where the four without it took 7.3-14.9, set by daemon-go-race's first l
 took 19.5-21.5 minutes, its one step ending with cmd/listener under the detector.
 
 So each step runs in legs, one job per leg, all at the same time, each over the packages
-`.github/go-legs.yaml` lists for it under packages/envoy, longest first, by area, so that a change
-to one area's code can run that area's legs:
+`.github/go-legs.yaml` lists for it under packages/envoy, by area, so that a change to one area's
+code can run that area's legs. `.github/scripts/go_legs.py` gives each leg its packages
+longest-first by the times the file records, whatever order the leg lists them in, since go test
+starts a package when a slot of its `-p` is free, in the order the command names them:
 
 - envoy-go's unit step, through `packages/envoy/scripts/database-skips.sh --count-table`, in five
   legs: the broker's command cmd/cipherd with the writer hold's client and the NATS auth service,

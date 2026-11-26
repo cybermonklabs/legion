@@ -26,7 +26,10 @@
 #
 # The legs are balanced from measured times: a leg takes as long as its longest package, or as
 # its packages' sum over the runner's four cores when that is longer, and go test starts its
-# packages in the order they are given, so each leg lists its longest first. The daemon's times
+# packages in the order they are given, so .github/scripts/go_legs.py gives each leg's packages
+# longest-first by the times below, whatever order a leg lists them in, and lists an entry with no
+# time after the timed ones. Write each new package where it belongs by area; the order within a
+# leg is the script's. The daemon's times
 # beside its packages are the medians of the four green merge groups after the Postgres service ran
 # with crash
 # safety off (#5515, 2026-11-25 14:32Z-16:27Z: runs 45634905903, 45640650357, 45646796488 and
@@ -178,8 +181,8 @@ packages/envoy:
   # packages/envoy/scripts/database-skips.sh, which counts the skips of the broker's packages among
   # a leg's packages; every package of the module but the race lane's, the text checks, the
   # integration suite and envoy-go-build's. The legs are by area, so a change to one area's code
-  # runs that area's legs (legs 1-2 the broker, 3-4 Dispatch, 5 the rest); each leg lists its
-  # longest package first. The times beside the packages are each package's `Elapsed` in throwaway
+  # runs that area's legs (legs 1-2 the broker, 3-4 Dispatch, 5 the rest); go_legs.py starts each
+  # leg with its longest package, by the times below. The times beside the packages are each package's `Elapsed` in throwaway
   # run 45676312472 (2026-11-25, main at 7102278681e2), which ran these legs, each on an
   # ubuntu-24.04-arm runner of its own with this job's setup (unit legs 1-5: jobs 139424681543,
   # 139424681329, 139424680750, 139424681174, 139424681322; race legs 3-5: 139424681558,

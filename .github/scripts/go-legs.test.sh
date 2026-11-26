@@ -67,9 +67,9 @@ whole='mod:
     testonly: another-job
   unlisted: job'
 
-echo "case: a file that runs every package once"
+echo "case: a file that runs every package once, no time recorded"
 root=$(tree whole "$whole")
-check "leg 1 prints its packages in the file's order" "$(is "$(legs "$root" job 1)" "./b/
+check "leg 1 prints its packages in the file's order, since neither has a time" "$(is "$(legs "$root" job 1)" "./b/
 ./a/
 exit=0")"
 check "and says how many of the module's packages they are" "$(contains "$(err)" "leg 1 of job runs 2 of the 4 packages of mod")"
@@ -411,6 +411,60 @@ check "the leg of whole packages prints packages alone" \
 ./a/
 ./b/c/
 exit=0")"
+
+echo "case: a leg whose longest package is listed last starts it first"
+# go test starts the packages in the order the command names them, so the leg's longest must be
+# named first however the file lists it. The control below is the same legs with the times taken
+# out: those print the file's order, so this reorder is the times' doing and the check can fail.
+root=$(tree timed "$(legs_for '    1:
+      - b                                       # 30 s
+      - a                                       # 400 s
+    2:
+      - b/c')")
+check "the 400 s package comes before the 30 s one" "$(is "$(legs "$root" job 1)" "./a/
+./b/
+exit=0")"
+check "and the leg says which package it starts first" \
+  "$(contains "$(err)" 'leg 1 of job runs 2 of the 4 packages of mod, a first')"
+root=$(tree untimed-control "$(legs_for '    1:
+      - b
+      - a
+    2:
+      - b/c')")
+check "control: the same legs with no time print in the file's order" "$(is "$(legs "$root" job 1)" "./b/
+./a/
+exit=0")"
+
+echo "case: a package with no recorded time runs after the timed ones, in the file's order"
+root=$(tree mixed "$(legs_for '    1:
+      - b/c
+      - b                                       # 15 s (run 45862794170, job 140058256929)
+      - a                                       # 400 s')")
+check "the timed lead, longest first, and the untimed follows" "$(is "$(legs "$root" job 1 1)" "./a/
+./b/
+./b/c/
+exit=0")"
+
+echo "case: a leg that runs a group of a package's tests keeps its place"
+# Its leg runs that package alone, and the time beside such an entry is the whole package's, not
+# the group's, so the sort leaves it where the file has it.
+root=$(split_tree grouped-order "$(legs_for '    1:
+      - many: 1                                 # 537 s whole; 293 and 244 s a group
+    2:
+      - many: 2
+    3:
+      - b                                       # 30 s
+      - a                                       # 400 s
+      - b/c')" "$whole_groups")
+check "the grouped leg prints its -run and its package, as it did" \
+  "$(is "$(legs "$root" job 1 3)" "-run=^(TestOne|ExampleThing)\$
+./many/
+exit=0")"
+check "and the leg of whole packages is longest-first" "$(is "$(legs "$root" job 3 3)" "./a/
+./b/
+./b/c/
+exit=0")"
+
 echo "case: the listing runs under the leg's own build flags"
 # The fixture holds TestUnderRace behind //go:build race: without -race it is in no listing, so
 # no group need name it; with -race it is a test of the package and a group must run it.

@@ -40,7 +40,8 @@ import-path order, so one long package that came late set the step's time. In me
   group's time.
 
 So each step runs in legs: one job per leg, all at the same time, each over the packages
-`.github/go-legs.yaml` lists for it, longest first. The first split ran the plain step in two legs:
+`.github/go-legs.yaml` lists for it, which `.github/scripts/go_legs.py` gives it longest-first by
+the times the file records. The first split ran the plain step in two legs:
 leg 1 was internal/store, whose 542 s set its time, beside the next three, each on a core of its
 own; leg 2 was the other 87 packages, about 880 s of package time over four cores, and ran alone
 the steps no leg splits: the race-impossible tests, the forced-order tests and Stage 1, 57 s in
@@ -113,8 +114,8 @@ The rules the legs keep:
   shutdown as a failure of the change, and post an early failing ci-ok for it. ci-ok.test.sh holds
   both the reading and the two steps' words.
 - **Rebalance from the legs' own times.** Each leg's log prints `ok <package> <seconds>s`. When
-  a package's time moves, move packages between legs so no leg is longer than it has to be, and
-  keep each leg's longest first.
+  a package's time moves, write the new time beside it and move packages between legs so no leg is
+  longer than it has to be; the order within a leg is go_legs.py's, longest-first by those times.
 
 What it costs:
 
