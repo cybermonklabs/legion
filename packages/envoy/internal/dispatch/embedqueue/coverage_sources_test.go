@@ -67,6 +67,7 @@ func recordedSource(t *testing.T, database *store.Store, key string) (source, xm
 // reads its hash from the row rather than building its text (sourceMatches). A second run records
 // nothing and rewrites nothing: the source row keeps its xmin.
 func TestTheRecordStepRecordsAnIssueThatHoldsItsTextOnce(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "RCRD", "RCRD-1", "An issue its trigger enqueued")
 	seedSpec(t, database.Pool, "RCRD", "RCRD-1", "## Summary\n\nIts spec.\n")
@@ -94,6 +95,7 @@ func TestTheRecordStepRecordsAnIssueThatHoldsItsTextOnce(t *testing.T) {
 // is not the hash of the issue's text - is not recorded: the refresh must build and hash its text.
 // The pass's repair points the row at the current text, and the run after the repair records it.
 func TestTheRecordStepLeavesAStaleIssueUntilTheRepair(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "RSTL", "RSTL-1", "A title the trigger saw")
 	withTableTriggersOff(t, database, "issues", func(q querier) {
@@ -129,6 +131,7 @@ func TestTheRecordStepLeavesAStaleIssueUntilTheRepair(t *testing.T) {
 // embedded at its current text, so a report that trusted the source past the edit would count a
 // vector of the old text current.
 func TestTheCountsFollowEachEditOfAnIssuesInputsByTheNextRecount(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "REDT", "REDT-1", "A title")
 	spec := seedSpec(t, database.Pool, "REDT", "REDT-1", "## Summary\n\nThe first version.\n")
@@ -209,6 +212,7 @@ func TestTheCountsFollowEachEditOfAnIssuesInputsByTheNextRecount(t *testing.T) {
 // of the step's writes are held to it: the insert of a first source, and the update of a source
 // whose issue was edited since.
 func TestTheRecordStepWritesNoEmbeddingsRow(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedEveryKind(t, database.Pool, "RNOW")
 	deps := Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity)}
@@ -266,6 +270,8 @@ func attrsOf(record slog.Record) map[string]slog.Value {
 // write's triggers write delta rows and never the base. Once the lock is released, the same pass
 // logs its ordinary line with the coverage it leaves.
 func TestACoveragePassWhoseReportRunsPastItsBoundFailsNothing(t *testing.T) {
+	// Not parallel: it shortens coverageStatementTimeout (ShortenCoverageBoundForTest), a package
+	// variable every coverage report reads, and sets the default logger (logtest.SetDefault).
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedIssue(t, database, "BNDP", "BNDP-1", "An issue the pass records")

@@ -12,7 +12,10 @@ import (
 // naming the bound names the one in force. Tests in package api shorten it to see the search
 // coverage route answer a statement Postgres ended at its bound, without waiting production's ten
 // seconds out; they cannot reach the unexported var. It is set and restored while nothing else
-// reads it: no test of either package that reads the coverage report runs in parallel.
+// reads it: the tests that shorten it (TestSearchCoverageRefusesAtItsBound in api,
+// TestACoveragePassWhoseReportRunsPastItsBoundFailsNothing here) are serial and restore it in
+// t.Cleanup, and Go starts no parallel test of a package until its serial tests have finished, so
+// no parallel test that reads the coverage report runs while it is shortened.
 // cmd/dispatch calls it too, only under DISPATCH_TEST_HOOKS=1 with
 // DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT set, before it serves, and never restores it.
 func ShortenCoverageBoundForTest(timeout time.Duration) (restore func()) {

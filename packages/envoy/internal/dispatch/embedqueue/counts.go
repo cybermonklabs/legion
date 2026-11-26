@@ -44,7 +44,7 @@ const (
 	coverageBackoffCeiling = 10 * time.Minute
 )
 
-// The counts loop's settings a test sets, as identityRecheckInterval is a var for a test to shrink.
+// The counts loop's settings, each a var so that a test can set it (setForTest) and restore it.
 //
 // coverageFillTimeout and coverageRecountTimeout are the fill's timeout and the recount's bound.
 // R7's design (dispatch://INFRA-4864/spec) sets each as the larger of two times. The first is four

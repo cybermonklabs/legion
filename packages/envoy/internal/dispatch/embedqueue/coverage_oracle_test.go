@@ -426,6 +426,7 @@ func trustedIssues(t *testing.T, database *store.Store, identity string) (truste
 // would count them current. Both statements count them lacking, and so do the counts once
 // recounted.
 func TestCoverageAnswersWhatMainsStatementAnswers(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	states := seedEveryCoverageState(t, database)
@@ -510,6 +511,7 @@ const (
 // (TestNoOtherIndexCanReadTheWindowKinds names it): either leaves the counts right and the
 // recount testing every window's text again.
 func TestCoverageReadsTheWindowKindsThroughABitmapOfBothIndexes(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedEveryCoverageState(t, database)
 	for _, statistics := range []struct{ name, statement string }{
@@ -563,6 +565,7 @@ func TestCoverageReadsTheWindowKindsThroughABitmapOfBothIndexes(t *testing.T) {
 // TestCoverageReadsTheWindowKindsThroughABitmapOfBothIndexes, analyzed, and the plan is read under
 // each of coverageCostProfiles.
 func TestNoOtherIndexCanReadTheWindowKinds(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedEveryCoverageState(t, database)

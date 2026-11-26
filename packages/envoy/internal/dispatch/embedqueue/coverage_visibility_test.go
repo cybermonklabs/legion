@@ -52,6 +52,7 @@ import (
 // Coverage runs on a pool of one connection, so the statistics of its own statement are the ones
 // read: pg_stat_force_next_flush makes that backend flush them before it next answers.
 func TestCoverageReadsNoWindowsTextWhileFewPagesOfEmbeddingsAreAllVisible(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	// No autovacuum sets the visibility map while the test reads it.
