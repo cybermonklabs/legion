@@ -4,7 +4,6 @@ import type { DisplayTree, IssueTreeParent } from "../../api/types";
 import { actorLabelText } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { deletedLineText } from "../refs/post-marks";
-import { wordsOf } from "../refs/tree-fragment";
 import type { AddressFallback } from "./address-target";
 import type { AddressTarget } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
@@ -18,7 +17,7 @@ import {
   presetView,
   tagFilter,
 } from "./presets";
-import { parentLinkWords } from "./projection-fixture";
+import { nameOf, parentLinkWords } from "./projection-fixture";
 import { addressView } from "./slots/body";
 import { type DrawnRow, treeRows } from "./tree-fold";
 import { type TreeNodeExtra, treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
@@ -813,9 +812,7 @@ test("a view's row drawn from its own tree names each other parent it serves by 
   const root = node("CORE-1", "issue", [], { views: { plan: answer, trees: { plan: tree } } });
   const drawn = presetView(root, "plan", "").root.children.find((row) => row.id === "plan#b-t1");
   expect(
-    drawn?.alsoUnder.map((chip) =>
-      chip.reading !== undefined && "tree" in chip.reading ? wordsOf(chip.reading.tree) : undefined
-    ),
+    drawn?.alsoUnder.map(nameOf),
     "the task does not name the second statement it serves"
   ).toEqual(["The second statement."]);
 });

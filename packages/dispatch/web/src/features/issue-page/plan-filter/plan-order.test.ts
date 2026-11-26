@@ -11,7 +11,8 @@ import { type PlanEntry, planChart, planOrder, sizeWords, writtenOrder } from ".
  *
  * The nodes are built as `issue-tree.ts` builds them from the plan document's blocks: a task's
  * id is `<slug>#b-<block id>` (`tree-drafts.ts`'s `blockNodeId`), and its `needs` are its chips,
- * each naming its target by that target's own `dispatch://` address (`placeBlocks`).
+ * each naming its target by that target's own `dispatch://` address
+ * (`tree-read/tree-nodes.ts`' `needsChips`).
  */
 
 const KEY = "CORE-1";
@@ -31,8 +32,8 @@ function chip(ref: string, name = ""): NodeChip {
   };
 }
 
-/** The chip the tree draws for one `needs` pointer of a task's block (`tree-drafts.ts`'s
- *  `placeBlocks`): the target's name under the attribute's own word. */
+/** The chip the tree draws for one `needs` pointer of a task's block (`tree-read/tree-nodes.ts`'
+ *  `needsChips`): the target's name under the attribute's own word. */
 function need(blockId: string): NodeChip {
   return { ...chip(taskRef(blockId), blockId), label: BLOCK_ATTRIBUTE_LABELS.needs };
 }
@@ -263,7 +264,6 @@ test("a bar starts where every task it needs has ended", () => {
     ["t3", 1],
     ["t4", 2],
   ]);
-  expect(chart.end).toBe(3);
   expect(chart.axis).toEqual({ numbered: false, span: 3, step: 1 });
   // Each bar names the tasks it needs, which is what the lines between them are drawn from.
   expect(
@@ -299,7 +299,7 @@ test("a cycle is one row of the chart at its place, and what waits on it starts 
 });
 
 test("a plan with no tasks is a chart with no rows", () => {
-  expect(planChart([])).toEqual({ axis: { numbered: false, span: 1, step: 1 }, end: 1, rows: [] });
+  expect(planChart([])).toEqual({ axis: { numbered: false, span: 1, step: 1 }, rows: [] });
 });
 
 // Every size the page draws is written by one function: minutes below an hour, and from an hour
@@ -338,7 +338,6 @@ test("a bar is as long as its task's size and starts where the tasks it needs en
     ["t3", 90, 60],
     ["t4", 150, 60],
   ]);
-  expect(chart.end).toBe(210);
   expect(chart.axis).toEqual({ numbered: false, span: 240, step: 60 });
   const whole = planChart(planOrder([sized(task("t1"), 90), sized(task("t2", ["t1"]), 45)]));
   expect(whole.axis).toEqual({ numbered: true, span: 150, step: 30 });

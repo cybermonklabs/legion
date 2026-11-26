@@ -928,7 +928,7 @@ function PlanChart({
           {PLAN_WORDS.steps}
         </span>
         <div className="relative min-w-0 self-stretch">
-          <Units axis={axis} numbered={axis.numbered} />
+          <Units axis={axis} head />
         </div>
         <span className={`px-3.5 ${CAP}`} {...pageChrome}>
           {PLAN_WORDS.serves}
@@ -1033,17 +1033,18 @@ function CycleRow({
 }
 
 /** The axis (the prototype's `.grid-l`): one faint line every `axis.step` units across the
- *  chart's span, and where `numbered` holds, which only the head row asks and only where every
- *  task of the chart holds a size (`PlanAxis.numbered`), the time each line past the first stands
- *  at (`sizeWords`), ending at its line, so two times stand apart wherever two lines do. The
- *  last line is drawn against the column's right edge, so every line stands inside the column
- *  that holds the axis: at `left: 100%` it would be one pixel past it. */
+ *  chart's span, and in the head row (`head`), where every task of the chart holds a size
+ *  (`PlanAxis.numbered`), the time each line past the first stands at (`sizeWords`), ending at its
+ *  line, so two times stand apart wherever two lines do. The last line is drawn against the
+ *  column's right edge, so every line stands inside the column that holds the axis: at
+ *  `left: 100%` it would be one pixel past it. */
 const Units = memo(function Units({
   axis,
-  numbered = false,
+  head = false,
 }: {
   axis: PlanAxis;
-  numbered?: boolean;
+  /** Whether this is the head row's axis, the one row that draws the times. */
+  head?: boolean;
 }): ReactNode {
   const lines = Math.round(axis.span / axis.step);
   const unit = 100 / lines;
@@ -1060,7 +1061,7 @@ const Units = memo(function Units({
             className="absolute inset-y-0 w-px bg-page-line"
             style={tick === lines ? { right: 0 } : { left: `${tick * unit}%` }}
           />
-          {numbered && tick > 0 ? (
+          {head && axis.numbered && tick > 0 ? (
             <span
               className={`absolute bottom-0.5 pr-1 text-[11px] leading-4 whitespace-nowrap ${pageQuietText}`}
               data-plan-axis-time=""
@@ -1151,10 +1152,19 @@ function BarRow({
   // takes another chip's key.
   const keyed = new Map<string, number>();
   const parent = task.parentLine;
+  // The parent's reading, worked out again only where the view hands the row another parent
+  // line, and not at each render of the chart as the focus moves through it.
+  const parentReading = useMemo(
+    () =>
+      parent?.type === "requirement" && parent.reference !== undefined
+        ? nodeReading(parent)
+        : undefined,
+    [parent]
+  );
   const serves = [
-    ...(parent?.type !== "requirement" || parent.reference === undefined
+    ...(parentReading === undefined || parent?.reference === undefined
       ? []
-      : [{ reading: nodeReading(parent), ref: parent.reference }]),
+      : [{ reading: parentReading, ref: parent.reference }]),
     ...task.alsoUnder,
   ]
     .flatMap((chip) => {

@@ -5,7 +5,6 @@ import type { NodeType } from "./page-words";
 import {
   CHILD_PAGE,
   type DrawnRow,
-  foldedLine,
   indentOf,
   NOTHING_OPENED,
   type OpenedBranches,
@@ -119,35 +118,24 @@ test("no node opens folded", () => {
   }
 });
 
-// R11: a node the reader folds shows its first line - to its first sentence end, or to 100
-// characters cut at a word - and how many nodes it holds, at every level, and its branch is
-// drawn as no rows; unfolded, the branch is back.
-test("a folded node shows its first line and how many nodes it holds", () => {
-  const long = `${"word ".repeat(30)}with no end`;
-  const deep = node("doc-3", "document", [node("note", "callout")], { text: long });
+// R11: a node the reader folds counts how many nodes it holds, at every level, and its branch is
+// drawn as no rows; unfolded, the branch is back. The line a folded row draws is the row's
+// (`NodeRow.drawn.test.tsx`).
+test("a folded node counts the nodes it holds and draws no row of its branch", () => {
+  const deep = node("doc-3", "document", [node("note", "callout")]);
   const root = node("CORE-1", "issue", [
-    node(
-      "comment-1",
-      "comment",
-      [node("reply-1", "comment", [node("reply-2", "comment")]), node("reply-3", "comment")],
-      { text: "The first sentence ends here. The second does not show." }
-    ),
+    node("comment-1", "comment", [
+      node("reply-1", "comment", [node("reply-2", "comment")]),
+      node("reply-3", "comment"),
+    ]),
     node("doc-1", "document", [node("doc-2", "document", [deep])]),
   ]);
   let opened = withFold(NOTHING_OPENED, "CORE-1>comment-1", false);
   opened = withFold(opened, "CORE-1>doc-1>doc-2>doc-3", false);
   const rows = treeRows(root, opened);
   expect(idsOf(rows)).toEqual(["CORE-1", "comment-1", "doc-1", "doc-2", "doc-3"]);
-  const comment = rowOf(rows, "comment-1");
-  expect(comment).toMatchObject({ expanded: false, folded: 3 });
-  expect(foldedLine(comment.node)).toBe("The first sentence ends here.");
-  const document = rowOf(rows, "doc-3");
-  expect(document).toMatchObject({ expanded: false, folded: 1, level: 4 });
-  const line = foldedLine(document.node);
-  expect(line.endsWith("…")).toBe(true);
-  expect(line.length).toBeLessThanOrEqual(101);
-  expect(long.startsWith(line.slice(0, -1))).toBe(true);
-  expect(line.slice(0, -1).endsWith(" ")).toBe(false);
+  expect(rowOf(rows, "comment-1")).toMatchObject({ expanded: false, folded: 3 });
+  expect(rowOf(rows, "doc-3")).toMatchObject({ expanded: false, folded: 1, level: 4 });
   // Unfolded by the same control, the branch is back.
   const unfolded = treeRows(root, withFold(opened, "CORE-1>comment-1", true));
   expect(idsOf(unfolded)).toContain("reply-2");

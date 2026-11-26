@@ -49,7 +49,6 @@ import {
   firstLineOf,
   type IssueTreeReads,
   lineWordsRaw,
-  type NodeChip,
   nodeWords,
   type TreeAsk,
   type TreeNode,
@@ -59,6 +58,7 @@ import { useNodeLine } from "./node-line";
 import { NODE_TYPE_NAMES, NODE_TYPES, nodeStateWord, PRESET_NAMES } from "./page-words";
 import { filterSignals, presetView } from "./presets";
 import {
+  drawnChip,
   nameOf,
   namesOf,
   nodeLineOf,
@@ -99,13 +99,6 @@ import {
 beforeAll(async () => {
   await warmMarkdownRenderer();
 });
-
-/** A chip as a row reads it: its fields, with the name it draws (`nameOf`) in place of the
- *  reading. */
-function drawnChip(chip: NodeChip): Omit<NodeChip, "reading"> & { readonly name: string } {
-  const { reading: _reading, ...fields } = chip;
-  return { ...fields, name: nameOf(chip) };
-}
 
 const KEY = "CORE-1";
 const SPEC = "spec";

@@ -25,14 +25,13 @@ import {
   buildIssueTree,
   type IssueTreeReads,
   lineWordsRaw,
-  type NodeChip,
   nodeWords,
   type TreeNode,
   treeWordsOf,
 } from "../issue-tree";
 import { GLYPH_TOKENS, NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
-import { nameOf } from "../projection-fixture";
+import { drawnChip, nameOf } from "../projection-fixture";
 import { blockNodeId } from "../tree-drafts";
 import {
   pagedAnswer,
@@ -43,6 +42,7 @@ import {
 } from "./tree-fixtures";
 import {
   blocksOfRole,
+  holdsPlanTask,
   nextTreeCursor,
   nodesRemaining,
   type TreeDraftMark,
@@ -75,13 +75,6 @@ const KEY = "CORE-1";
 beforeAll(async () => {
   await warmMarkdownRenderer();
 });
-
-/** A chip as a row reads it: its fields, with the name it draws (`nameOf`) in place of the
- *  reading. */
-function drawnChip(chip: NodeChip): Omit<NodeChip, "reading"> & { readonly name: string } {
-  const { reading: _reading, ...fields } = chip;
-  return { ...fields, name: nameOf(chip) };
-}
 
 /** A supertag no part's step drafts, so a node of it is drawn by no row whatever later parts add
  *  to `treeDraftSteps` (later work drafts a lens, a finding, a risk, a constraint and a
@@ -686,8 +679,8 @@ test("a statement no plan task serves is marked once the plan view holds a plan 
   ]);
   const reads: IssueTreeReads = {
     coverage: coverage([unplanned("r1"), requirement("r2")]),
+    holdsPlanTask: holdsPlanTask(plan),
     issue: issueDetails(),
-    plan,
   };
 
   expect(statementGaps(tree, reads, ["r1", "r2"])).toEqual([["no_plan_task"], []]);
@@ -713,8 +706,8 @@ test("a plan task of an issue under this one counts", () => {
   ]);
   const reads: IssueTreeReads = {
     coverage: coverage([unplanned("r1"), requirement("r2")]),
+    holdsPlanTask: holdsPlanTask(plan),
     issue: issueDetails(),
-    plan,
   };
 
   expect(statementGaps(tree, reads, ["r1", "r2"])).toEqual([["no_plan_task"], []]);
@@ -732,7 +725,12 @@ test("no statement is marked for a missing plan task while no plan task exists, 
     block("t-gone", "plan_task", KEY, PLAN, 1, { role: "query", state: "gone" }),
   ]);
 
-  expect(statementGaps(tree, { ...reads, plan: none }, ["r1"])).toEqual([[]]);
+  expect(holdsPlanTask(none), "a plan role and a task gone at its cut hold a plan task").toBe(
+    false
+  );
+  expect(statementGaps(tree, { ...reads, holdsPlanTask: holdsPlanTask(none) }, ["r1"])).toEqual([
+    [],
+  ]);
   expect(statementGaps(tree, reads, ["r1"])).toEqual([[]]);
 });
 
@@ -745,8 +743,8 @@ test("no statement is marked for a missing plan task while a document of the iss
   const plan = answer([block("t1", "plan_task", KEY, PLAN, 0, { role: "query" })]);
   const reads: IssueTreeReads = {
     coverage: { ...coverage([unplanned("r1")]), gaps: [owed] },
+    holdsPlanTask: holdsPlanTask(plan),
     issue: issueDetails(),
-    plan,
   };
 
   expect(statementGaps(tree, reads, ["r1"])).toEqual([[]]);
@@ -765,8 +763,8 @@ test("a proposed or an overtaken statement draws no gap for a missing check or p
   const ids = ["r-live", "r-proposed", "r-overtaken"];
   const reads: IssueTreeReads = {
     coverage: coverage(ids.map((id) => ({ ...unplanned(id), checks: 0 }))),
+    holdsPlanTask: holdsPlanTask(plan),
     issue: issueDetails(),
-    plan,
   };
 
   expect(statementGaps(tree, reads, ids)).toEqual([["no_check", "no_plan_task"], [], []]);

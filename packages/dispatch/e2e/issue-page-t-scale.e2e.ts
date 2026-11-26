@@ -6,7 +6,7 @@ import type { Page, TestInfo } from "@playwright/test";
 
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { gotoIssue, phase } from "./issue-page";
-import { DESKTOP, expectIssuePageDrawn, expectOpeningLanded } from "./issue-page-g";
+import { DESKTOP, expectIssuePageDrawn, expectOpeningLanded, nodeRows } from "./issue-page-g";
 import { steadily } from "./issue-page-t";
 import { ROW_MS } from "./issue-page-t-rows";
 import {
@@ -105,8 +105,8 @@ test("with a question waiting on the reader, the page opens on it at the largest
     await expectOpeningLanded(page);
     // Read for the failure's words alone, once the opening has landed.
     const screen = await readFirstScreen(page, seeded.posts);
-    const waiting = page
-      .locator("[data-issue-page] [data-node-row][data-node-type='ask']")
+    const waiting = nodeRows(page)
+      .and(page.locator("[data-node-type='ask']"))
       .filter({ hasText: WAITING_QUESTION });
     await expect(
       waiting,
