@@ -220,18 +220,6 @@ func backfillBeforeAskNodesAt(ctx context.Context, database *store.Store, out io
 			return report, errors.Join(moved, err)
 		}
 	}
-	// The asks and their followers, after the object pass above wrote the node of every ask: the
-	// rest of the boot step's first phase (BackfillAsks), so a database the command fills reads
-	// as one the boot fills. A row the object pass left in another project holds them back no
-	// more than it holds back the fill, and the run answers it after them.
-	for _, write := range askPasses {
-		done, err := write(ctx, database)
-		report.Kinds = append(report.Kinds, done)
-		writeKindBackfill(out, done)
-		if err != nil {
-			return report, errors.Join(moved, err)
-		}
-	}
 	return report, moved
 }
 

@@ -14,27 +14,13 @@ import (
 // decisionType is the block type whose server-owned attributes settlement holds to the store.
 const decisionType = "decision"
 
-// decisionServerAttribute is one server-owned attribute of the decision type: its name in the
-// markdown, and kind, the store name its value or its relation is kept under
-// (schemanodes.StoreName).
-type decisionServerAttribute struct{ name, kind string }
-
-// decisionServerAttributes is the decision type's server-owned attributes, read off the block
-// schema with their store names, and false where the installed manifest declares no decision
-// type. The installed manifest names each once, and a settlement reads it once per decision
-// document it settles.
-func decisionServerAttributes() ([]decisionServerAttribute, bool) {
-	schema, declared := pmdoc.BlockTypeAttributes(decisionType)
-	if !declared {
-		return nil, false
-	}
-	var server []decisionServerAttribute
-	for _, attribute := range schema {
-		if attribute.Server {
-			server = append(server, decisionServerAttribute{name: attribute.Name, kind: schemanodes.StoreName(decisionType, attribute.Name)})
-		}
-	}
-	return server, true
+// decisionServerAttributes is the names of the decision type's server-owned attributes, read off
+// the installed manifest once when it was compiled (pmdoc.ServerAttributes), as the ask type's are
+// (pmdoc.ServerAttributesInMarkdown), and none where the installed manifest declares no decision
+// type. Every settlement shares the list, which none writes; the store keeps each attribute's
+// value or relation under its store name (schemanodes.StoreName).
+func decisionServerAttributes() []string {
+	return pmdoc.ServerAttributes(decisionType)
 }
 
 // reconcileDecisionBlocks holds the server-owned attributes of every decision block of tree, the
@@ -52,8 +38,8 @@ func decisionServerAttributes() ([]decisionServerAttribute, bool) {
 // Each change is a repair (settlementReconciliation.repair), written into the live document with
 // the ask blocks' (repairLive); it emits no event, since it restores what the store already says.
 func (r *settlementReconciliation) reconcileDecisionBlocks(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node) error {
-	server, declared := decisionServerAttributes()
-	if !declared {
+	server := decisionServerAttributes()
+	if len(server) == 0 {
 		return nil
 	}
 	type claimed struct {
@@ -71,15 +57,15 @@ func (r *settlementReconciliation) reconcileDecisionBlocks(ctx context.Context, 
 			return true
 		}
 		seen[id] = struct{}{}
-		for _, attribute := range server {
-			if value, carried := node.Attrs[attribute.name]; carried && value != nil {
+		for _, name := range server {
+			if value, carried := node.Attrs[name]; carried && value != nil {
 				decisions = append(decisions, claimed{node: node, id: id})
 				break
 			}
 		}
 		return true
 	})
-	if len(server) == 0 || len(decisions) == 0 {
+	if len(decisions) == 0 {
 		return nil
 	}
 	var refKey string
@@ -91,8 +77,8 @@ func (r *settlementReconciliation) reconcileDecisionBlocks(ctx context.Context, 
 		addresses[index] = refs.BlockAddress(refKey, decision.id)
 	}
 	kinds := make([]string, len(server))
-	for index, attribute := range server {
-		kinds[index] = attribute.kind
+	for index, name := range server {
+		kinds[index] = schemanodes.StoreName(decisionType, name)
 	}
 	// The newest tuple of each kind each node holds: a relation of these kinds holds one far end
 	// at a time (decided_by is set once, a Keep names one person), and a value is its newest.
@@ -123,25 +109,25 @@ func (r *settlementReconciliation) reconcileDecisionBlocks(ctx context.Context, 
 	}
 	for index, decision := range decisions {
 		want := map[string]string{}
-		for _, attribute := range server {
-			if value, stored := held[[2]string{addresses[index], attribute.kind}]; stored {
-				want[attribute.name] = value
+		for at, name := range server {
+			if value, stored := held[[2]string{addresses[index], kinds[at]}]; stored {
+				want[name] = value
 			}
 		}
 		r.repair(decision.node, decision.id, func(node *pmdoc.Node) bool {
 			changed := false
-			for _, attribute := range server {
-				carried, present := node.Attrs[attribute.name]
+			for _, name := range server {
+				carried, present := node.Attrs[name]
 				if !present || carried == nil {
 					continue
 				}
-				stored, holds := want[attribute.name]
+				stored, holds := want[name]
 				switch {
 				case !holds:
-					delete(node.Attrs, attribute.name)
+					delete(node.Attrs, name)
 					changed = true
 				case carried != stored:
-					node.Attrs[attribute.name] = stored
+					node.Attrs[name] = stored
 					changed = true
 				}
 			}

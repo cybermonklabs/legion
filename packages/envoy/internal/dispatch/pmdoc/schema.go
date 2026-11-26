@@ -77,6 +77,15 @@ func BlockTypeAttributes(name string) (BlockAttributes, bool) {
 	return typ.Attributes, ok
 }
 
+// ServerAttributes is the names of the server attributes the installed schema declares for the
+// typed block name, in declaration order, read off the manifest once when it was compiled; none
+// for a type that declares none or that the schema does not declare. Every caller shares the
+// list, which none writes: settlement reads the decision type's to hold each to the store (docs'
+// decision_blocks.go).
+func ServerAttributes(name string) []string {
+	return active.Load().serverAttributes[name]
+}
+
 // ServerAttributesInMarkdown is the names of the server attributes the installed schema declares
 // for the typed block name that its markdown carries (BlockAttributeSchema.InMarkdown), in
 // declaration order, read off the manifest once when it was compiled; none for a type that

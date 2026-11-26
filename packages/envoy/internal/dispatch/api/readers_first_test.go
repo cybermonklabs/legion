@@ -162,16 +162,20 @@ func TestTheNewTypesAreReadButNotWrittenBeforeTheirNodePass(t *testing.T) {
 			t.Fatalf("version %d's display tree lost stored content: %s", version, text.MarkdownTree)
 		}
 	}
+	// The stored ask block's shaped is read as this build reads it, under the readers-first manifest
+	// too: one block_refs row, and its tuple on the ask's node, where this build's node pass hangs an
+	// ask block's shaped (refs' TypedFacts), and none on the block's own node, where the build that
+	// reads it first, which has no node pass, states it.
 	requirePointer := func() {
 		t.Helper()
 		var projections, blockTuples, askTuples int
 		if err := database.Pool.QueryRow(t.Context(), `
 			select (select count(*) from block_refs where artifact_id = $1 and block_id = 'read-it' and kind = 'shaped'),
-			       (select count(*) from graph_tuples where from_kind = 'block' and from_id = a.ref_key || '#read-it' and kind = 'shaped' and asserted),
-			       (select count(*) from graph_tuples where from_kind = 'ask' and from_id = $2 and kind = 'shaped')
+			       (select count(*) from graph_tuples where from_kind = 'block' and from_id = a.ref_key || '#read-it' and kind = 'shaped'),
+			       (select count(*) from graph_tuples where from_kind = 'ask' and from_id = $2 and kind = 'shaped' and asserted)
 			from artifacts a where a.id = $1
-		`, id, asks["read-it"]).Scan(&projections, &blockTuples, &askTuples); err != nil || projections != 1 || blockTuples != 1 || askTuples != 0 {
-			t.Fatalf("shaped projection / block tuple / ask tuple = %d/%d/%d (%v), want 1/1/0", projections, blockTuples, askTuples, err)
+		`, id, asks["read-it"]).Scan(&projections, &blockTuples, &askTuples); err != nil || projections != 1 || blockTuples != 0 || askTuples != 1 {
+			t.Fatalf("shaped projection / block tuple / ask tuple = %d/%d/%d (%v), want 1/0/1", projections, blockTuples, askTuples, err)
 		}
 	}
 	requireRead("Introductory prose.", stored)

@@ -294,9 +294,9 @@ test("askOpenerAttributes reads a name written twice as its last value, and no a
   expect(askOpenerAttributes(':::ask{#a __proto__="x" constructor="y"}')).toEqual({
     block_id: "a",
   });
-  expect(
-    Object.hasOwn(askOpenerAttributes(':::ask{#a state="open"}') ?? {}, "constructor")
-  ).toBe(false);
+  expect(Object.hasOwn(askOpenerAttributes(':::ask{#a state="open"}') ?? {}, "constructor")).toBe(
+    false
+  );
 });
 
 // An opening line is text a document's writer controls, so its `state` is read only where it is
