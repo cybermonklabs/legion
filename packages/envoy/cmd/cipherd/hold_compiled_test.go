@@ -163,15 +163,21 @@ func newHoldRig(t *testing.T) *holdRig {
 	t.Helper()
 	r := &holdRig{f: newApprovalFixture(t), databaseURL: storetest.URL(t), public: newFront(t)}
 	r.frontAddr = strings.TrimPrefix(r.public.URL, "http://")
-	secret := func(slug, owner, tier, value string) string {
+	secret := func(slug, owner, tier, proxy, value string) string {
+		tags := `"owner": "` + owner + `", "tier": "` + tier + `"`
+		if proxy != "" {
+			tags += `, "proxy": "` + proxy + `"`
+		}
 		return `{"name": "` + testSecretsPrefix + slug + `", "kms_key_id": "` + testSecretsKMSKeyARN +
-			`", "tags": {"owner": "` + owner + `", "tier": "` + tier + `"}, "value": "` + value + `"}`
+			`", "tags": {` + tags + `}, "value": "` + value + `"}`
 	}
+	// Each airlock secret is behind the proxy by its proxy tag, which names its kind of the
+	// profiles file below (policy.TagProxy).
 	r.f.secrets = writeTempFile(t, "fake-secrets.json", []byte(`{"secrets": [`+strings.Join([]string{
-		secret("ada-deploy-key", ada, "human", "ada-deploy-value"),
-		secret("bob-deploy-key", bob, "human", "bob-deploy-value"),
-		secret("ada-airlock", ada, "agent", "ada-airlock-value"),
-		secret("bob-airlock", bob, "agent", "bob-airlock-value"),
+		secret("ada-deploy-key", ada, "human", "", "ada-deploy-value"),
+		secret("bob-deploy-key", bob, "human", "", "bob-deploy-value"),
+		secret("ada-airlock", ada, "agent", "adaairlock", "ada-airlock-value"),
+		secret("bob-airlock", bob, "agent", "bobairlock", "bob-airlock-value"),
 	}, ",\n")+`]}`))
 
 	r.dispatch = projectaccesstest.NewServer(t, nil, map[string]string{ada: projectaccess.MemberFull, bob: projectaccess.MemberFull})
@@ -183,16 +189,15 @@ func newHoldRig(t *testing.T) *holdRig {
 		_, _ = io.WriteString(w, holdUpstreamBody)
 	}))
 	t.Cleanup(r.upstream.Close)
-	// The two secrets behind the airlock, each served by a profile of its own name whose proxy
-	// block binds it to a host of its own that no request of this test names: a grant of either
-	// opens connections to the proxy, and the request the probe makes goes to the service on
-	// loopback, which no name of the grant is bound to, so the proxy carries it as it comes, after
-	// the hold. The proxy dials no loopback address but the one BROKER_AIRLOCK_TEST_DIAL_ALLOW
-	// names, the service's.
-	profiles := profilesFile(t, `{"profiles": [
-		{"name": "ADA_AIRLOCK", "proxy": {"hosts": ["ada.hold.airlock.test"], "headers": ["authorization"]}},
-		{"name": "BOB_AIRLOCK", "proxy": {"hosts": ["bob.hold.airlock.test"], "headers": ["authorization"]}}
-	]}`)
+	// The two secrets behind the airlock, each behind a kind of its own that binds it to a host of
+	// its own that no request of this test names: a grant of either opens connections to the
+	// proxy, and the request the probe makes goes to the service on loopback, which no name of the
+	// grant is bound to, so the proxy carries it as it comes, after the hold. The proxy dials no
+	// loopback address but the one BROKER_AIRLOCK_TEST_DIAL_ALLOW names, the service's.
+	profiles := profilesFile(t, `{"kinds": [
+		{"name": "adaairlock", "hosts": ["ada.hold.airlock.test"], "headers": ["authorization"], "ways": ["swap"]},
+		{"name": "bobairlock", "hosts": ["bob.hold.airlock.test"], "headers": ["authorization"], "ways": ["swap"]}
+	], "profiles": []}`)
 	r.airlock = append(airlockEnv(t),
 		"BROKER_PROFILES_FILE="+profiles,
 		"BROKER_AIRLOCK_TEST_DIAL_ALLOW="+strings.TrimPrefix(r.upstream.URL, "http://"))
