@@ -3,10 +3,15 @@ body: |-
   The daemon serves the project's controller `POST /legion/v1/issues/pod-update` (`grantId`,
   `issue`), which opens the daemon's update round over that issue's pod as a drift opens one, with
   reasons that say the controller asked for the replacement. Each role of the pod is asked to push
-  its work and answer `ready_for_update`, and the sweep replaces the pod once each has answered, no
+  its work and answer `ready_for_update`, and the round reaches its end once each has answered, no
   turn runs and each role's report since its last turn names no running background work, or at
-  the round's bound, whether or not the pod has drifted. A suspension by the operator or the
-  controller over a role the round asks keeps the pod past the bound until a resume lifts it. The
+  the round's bound, whether or not the pod has drifted. At its end the daemon reads the pod's
+  workspace, and the sweep replaces the pod only where that read finds nothing that no branch or
+  tag on origin holds. Where the read finds such work, or fails, the round keeps the pod and ends
+  with no replacement, and the open phase's worker or the issue's architect is told. The request
+  opens its round over a pod an earlier round kept as well, over which the sweep opens none. A
+  suspension by the operator or the controller over a role the round asks keeps the pod past the
+  bound until a resume lifts it. The
   controller's own suspension counts too, so a controller that suspended a role and
   then asks for the replacement waits on itself, and the round comes back as `update-stalled`. The
   opening is held to `pod_update_max_open_rounds` and `pod_update_rounds_per_minute` as a drift's

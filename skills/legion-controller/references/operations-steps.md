@@ -2,6 +2,12 @@
 
 Read this when `skill://legion-controller/references/operations.md` sends you here for a section's steps; that file states the rule each section here carries out.
 
+## A replacement of an issue's pod
+
+1. Read `read_state` with `issues: ["<KEY>"]`, and note each claim's `locator.sandbox.podUid`. Then run `legion({ op: "replace_pod", issue: "<KEY>" })`. A round already open is answered as it stands.
+2. On a refusal: `NO_CLAIM`, there is no pod to replace; `NO_POD`, ask again once a role runs in the pod; `POD_CHANGING` or `POD_UPDATE_LIMITED`, ask at a later wake; `POD_UPDATE_BUSY`, ask after a minute; `POD_UPDATE_NOT_RECORDED` or `POD_UPDATE_FAILED`, read `updateRound` on the issue's claims first; `PROJECT_PAUSED`, ask after the resume; `POD_HELD_BY_PAUSE`, ask once a role of the pod runs again.
+3. Read `read_state` with `issues: ["<KEY>"]`: the round is over when no claim shows `updateRound`. A round that is over did not always replace the pod. Before you tell a person that the pod was replaced, compare each claim's `locator.sandbox.podUid` with the uid from step 1. The same uid means that the round kept the pod, and the daemon told the open phase's worker or the issue's architect why. A round still held past its bound comes back as `update-stalled` (`skill://legion-controller/references/escalation.md`).
+
 ## A re-run of a CI run
 
 1. Read the failed job's log: `gh run view <id> --log-failed --repo <owner>/<repo>`. Re-run only the failed jobs, and only for an infrastructure failure the log shows, such as a lost runner. Never re-run to test a theory, or on a head a run already tested with the same inputs.

@@ -956,10 +956,16 @@ export function createLegionTool(deps: {
         "With set_status, the controller moves an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cites that reason in a comment on the issue. " +
         "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
         "controller's report issue's icebox, because that issue holds no work. " +
-        "The controller's replace_pod (issue) replaces the pod that runs the roles of an issue of its own project. The " +
-        "daemon opens its update round over that pod: it asks each role in the pod to push its work and answer " +
-        "ready_for_update, and it replaces the pod once each role has answered, no turn runs and each role's report " +
-        "since its last turn names no running background work, or at the round's bound whatever the roles said. A " +
+        "The controller's replace_pod (issue) asks the daemon to replace the pod that runs the roles of an issue of its " +
+        "own project. The daemon opens its update round over that pod, also where an earlier round kept the pod. It " +
+        "asks each role in the pod to push its work and answer ready_for_update. The round ends once each role has " +
+        "answered, no turn runs and each role's report since its last turn names no running background work, or at " +
+        "the round's bound whatever the roles said. Then the daemon reads the workspace of the pod. It replaces the " +
+        "pod only if that read finds nothing that no branch or tag on origin holds. If the read finds such work, or " +
+        "if the read fails, the round keeps the pod and ends with no replacement, and the daemon tells the open " +
+        "phase's worker or the issue's architect. So a round that ended did not always replace the pod. Before you " +
+        "tell a person that the pod was replaced, read the pod uid on the issue's claims (read_state, " +
+        "locator.sandbox.podUid): the same uid as before the request means that the round kept the pod. A " +
         "suspension by the operator or the controller over a role the round asks keeps the " +
         "pod past the bound, until a resume of that role lifts it. The controller's own suspension counts too, so a controller that " +
         "suspended a role and then asks replace_pod waits on itself, and the round comes back as update-stalled. " +

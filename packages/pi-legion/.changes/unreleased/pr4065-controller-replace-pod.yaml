@@ -1,9 +1,13 @@
 kind: Added
 body: |-
   The controller's `legion` tool gets `replace_pod (issue)`. The daemon opens its update round over
-  the pod that issue runs in, asks each role of the pod to push its work and answer
-  `ready_for_update`, and replaces the pod once each role has answered, no turn runs and each
-  role's report since its last turn names no running background work, or at the round's bound. A
+  the pod that issue runs in, a pod an earlier round kept included, and asks each role of the pod
+  to push its work and answer `ready_for_update`. The round reaches its end once each role has
+  answered, no turn runs and each role's report since its last turn names no running background
+  work, or at the round's bound. The daemon then reads the pod's workspace, and replaces the pod
+  only where that read finds nothing that no branch or tag on origin holds. Where the read finds
+  such work, or fails, the round keeps the pod and ends with no replacement, and the open phase's
+  worker or the issue's architect is told. A
   suspension by the operator or the controller over a role the round asks keeps the pod past the
   bound until a resume lifts it. The controller's own suspension counts too, so a
   controller that suspended a role and then asks `replace_pod` waits on itself, and the round comes

@@ -121,10 +121,13 @@ import (
 //     read again (above).
 //
 // The sweep walks the issues in key order, decides each of them, and only then makes the pod
-// replacements those decisions left it, also in key order. A replacement waits its pod out — a
-// sweep interval at worst (replacePodForRound) — so one made where it is decided holds every
-// issue after it in the walk for minutes, and the project's two limits (podupdate_limits.go)
-// would open one round per slow sweep rather than the rounds a minute the project asks for.
+// replacements those decisions left it, also in key order. Before its issues the walk finishes
+// each standing replacement record (finishReplacements), and it holds the walk's turn for all of it
+// (walkPodUpdates says what that turn costs the controller's request). A replacement waits its pod
+// out — a sweep interval at worst (replacePodForRound) — so one made where it is decided holds
+// every issue after it in the walk for minutes, and the project's two limits
+// (podupdate_limits.go) would open one round per slow sweep rather than the rounds a minute the
+// project asks for.
 //
 // Those two limits are what keeps one pod template change from waking every worker of the fleet
 // in one minute: `pod_update_max_open_rounds` caps how many issues may hold an open round at
@@ -168,14 +171,23 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 // reads of kept pods (podUpdateSweep.keptReads) the walk left the sweep to make, and none where
 // ctx ended inside the walk, where the pods a project's pause holds could not be read
 // (podPauseHolds), or where the records of the replacements of issue pods could not be read
-// (finishReplacements). It holds the walk's turn (podUpdateWalk) from its read of the limits
-// (beginPodUpdateSweep) to its record, so a round the controller asks for (requestPodUpdate) is
-// opened before that read or after that record, and never between them on limits the walk has
-// already spent. It waits for the turn as long as a request holds it: a request holds it for its
-// store reads of the claims and of the pause holds on the issue's pod (podPauseHolds), its read
-// of the limits (readPodUpdateSweep), and its post, whose ask of a ready role first reads the
-// asks still queued (askRound). The replacements and the reads wait on a pod as long as a sweep
-// interval each, so they are made after the walk, outside the turn (reconcilePodUpdates).
+// (finishReplacements). It takes the walk's turn (podUpdateWalk) before it reads the pause holds,
+// and holds it to its record, so a round the controller asks for (requestPodUpdate) is opened
+// before the walk or after that record, and never between its read of the limits
+// (beginPodUpdateSweep) and that record, on limits the walk has already spent. It waits for the
+// turn as long as a request holds it: a request holds it for its store reads of the claims and of
+// the pause holds on the issue's pod (podPauseHolds), its read of the limits
+// (readPodUpdateSweep), and its post, whose ask of a ready role first reads the asks still queued
+// (askRound). The replacements and the reads wait on a pod as long as a sweep interval each, so
+// they are made after the walk, outside the turn (reconcilePodUpdates).
+//
+// Under the turn, before its issues, the walk finishes each standing replacement record
+// (finishReplacements), and each finish reads the act from the API server: the issue's Sandbox and
+// then its pod, two reads of up to 30 seconds each (the sandbox runtime's ReadAct, apiTimeout). A
+// slow read can hold the turn past the bound of a request's wait for it (roundRecordBound, 30 s),
+// and the request is then refused 503 POD_UPDATE_BUSY (api.PodUpdateBusy), a refusal that names
+// its reason; the controller asks again. The finish stays in the turn: moved out of it, a request
+// could open a round beside a replacement that is still being finished.
 func (s *supervision) walkPodUpdates(ctx context.Context, claims []supervise.Claim) ([]podReplacement, []keptPodRead) {
 	issues, byIssue := s.podUpdateGroups(claims)
 	turn := s.podUpdateWalkTurn()
@@ -227,7 +239,11 @@ func (s *supervision) walkPodUpdates(ctx context.Context, claims []supervise.Cla
 }
 
 // podUpdateWalkTurn is the walk's turn (podUpdateWalk), a one-slot semaphore made at its first
-// use: a send takes the turn, and a receive gives it back.
+// use: a send takes the turn, and a receive gives it back. The walk holds it from before its read
+// of the pause holds to its record, its finish of each standing replacement record included
+// (finishReplacements: for each record, two API server reads of up to 30 seconds each), and the
+// controller's request waits for it at most roundRecordBound before it is refused 503
+// POD_UPDATE_BUSY (walkPodUpdates says why the finish stays in the turn).
 func (s *supervision) podUpdateWalkTurn() chan struct{} {
 	s.podUpdateWalkOnce.Do(func() { s.podUpdateWalk = make(chan struct{}, 1) })
 	return s.podUpdateWalk
@@ -1345,7 +1361,7 @@ type roundCall struct {
 // the last word (asked). The call is bounded to one sweep interval. A last word that refuses is the
 // daemon's own and is logged only, and the round stays open. A call that fails otherwise is logged
 // and its record left for the next sweep (finishReplacements), and past the bound it holds the
-// round, so it is told to the operator's side once (tellLateRound, failedReplacementReason).
+// round, so it is told to the controller once (tellLateRound, failedReplacementReason).
 //
 // A call that answers nil made the replacement, or found the round's pod already taken and asked
 // no last word. Such a call took nothing, and the round ends as the act that did take the pod: as

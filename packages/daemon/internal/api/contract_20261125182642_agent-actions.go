@@ -32,28 +32,33 @@ import (
 // controller gets one more route of its own beside these (#4065): `POST
 // /legion/v1/issues/pod-update` takes `api.PodUpdateRequest` (`grantId`, `issue`) and opens the
 // daemon's update round over that issue's pod as a drift opens one: each role of the pod is asked
-// to push its work and answer ready_for_update, and the pod is replaced once each has answered, no
-// turn runs and each role's report since its last turn names no running background work, or at the
-// round's bound (`pod_update_grace_minutes`), whatever the pod's drift. The round's reasons say the
-// project's controller asked for the replacement, and the opening is held to the project's limits
-// on openings as a drift's is (`409 POD_UPDATE_LIMITED`, naming `pod_update_max_open_rounds` or
-// `pod_update_rounds_per_minute`). It answers `api.PodUpdateResponse`: the `round`, its `reasons`,
-// and whether this request `opened` it, false for a round already open over the pod, which it
-// leaves as it stands. It takes a controller grant alone (`403 CONTROLLER_REQUIRED`) and an issue
-// key (`400 INVALID_ISSUE`); an issue of another project, or one with no claim the daemon
-// supervises that has not retired, is `404 NO_CLAIM`, one whose claims run no worker in a pod `404
-// NO_POD`, and one whose pod is being replaced already — its claims in two pods, or the round over
-// the pod before it still ending — `409 POD_CHANGING`. It is the one route by which the controller
-// removes an issue pod whose workspace may hold work. It answers 200 only once a claim of the issue
-// records the round in the store, which a restart restores and the sweeps carry to the pod's
-// replacement; a round no claim records within its wait is `503 POD_UPDATE_NOT_RECORDED`, and may
-// still open. A request waits for the turn a sweep's walk over the project's issues holds while its
-// own context lives and at most the bound of its wait for the record (30 seconds); one whose
-// context ends first, or that waits out that bound, reads nothing and opens nothing, and is `503
-// POD_UPDATE_BUSY` with a `Retry-After` of the sweep's interval in seconds (60), its sentence
-// naming which of the two ended the wait, and the bound. While the project is paused (178), the
-// controller's `agents/resume` and `agents/retry` answer 409 `PROJECT_PAUSED`, with the `pause`
-// that stands, for every agent, as its `claims/fresh-session` and `claims/compact` do, and change
+// to push its work and answer ready_for_update, and the round reaches its end once each has
+// answered, no turn runs and each role's report since its last turn names no running background
+// work, or at the round's bound (`pod_update_grace_minutes`), whatever the pod's drift. At its end
+// the daemon reads the pod's workspace, and replaces the pod only where that read finds nothing
+// that no branch or tag on origin holds; where it finds such work, or fails, the round keeps the
+// pod and ends with no replacement, and the open phase's worker or the issue's architect is told.
+// The request opens its round over a pod an earlier round kept as well, over which the sweep
+// opens none. The round's reasons say the project's controller asked for the replacement, and the
+// opening is held to the project's limits on openings as a drift's is (`409 POD_UPDATE_LIMITED`,
+// naming `pod_update_max_open_rounds` or `pod_update_rounds_per_minute`). It answers
+// `api.PodUpdateResponse`: the `round`, its `reasons`, and whether this request `opened` it, false
+// for a round already open over the pod, which it leaves as it stands. It takes a controller grant
+// alone (`403 CONTROLLER_REQUIRED`) and an issue key (`400 INVALID_ISSUE`); an issue of another
+// project, or one with no claim the daemon supervises that has not retired, is `404 NO_CLAIM`, one
+// whose claims run no worker in a pod `404 NO_POD`, and one whose pod is being replaced already —
+// its claims in two pods, or the round over the pod before it still ending — `409 POD_CHANGING`.
+// It is the one route by which the controller removes an issue pod whose workspace may hold work.
+// It answers 200 only once a claim of the issue records the round in the store, which a restart
+// restores and the sweeps carry to its end; a round no claim records within its wait is `503
+// POD_UPDATE_NOT_RECORDED`, and may still open. A request waits for the turn a sweep's walk over
+// the project's issues holds while its own context lives and at most the bound of its wait for the
+// record (30 seconds); one whose context ends first, or that waits out that bound, reads nothing
+// and opens nothing, and is `503 POD_UPDATE_BUSY` with a `Retry-After` of the sweep's interval in
+// seconds (60), its sentence naming which of the two ended the wait, and the bound. While the
+// project is paused (178), the controller's `agents/resume` and `agents/retry` answer 409
+// `PROJECT_PAUSED`, with the `pause` that stands, for every agent, as its `claims/fresh-session`
+// and `claims/compact` do, and change
 // nothing: an agent the pause stopped is the pause's to bring back at the project's resume, and no
 // agent action undoes the pause. Its `agents/stop` and `agents/suspend` start nothing and still
 // run. A suspension of the controller's or the operator's and the pause's stop each keep their own

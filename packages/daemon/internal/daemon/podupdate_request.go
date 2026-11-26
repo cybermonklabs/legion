@@ -25,12 +25,19 @@ const requestedPodUpdateReasons = "the project's controller asked for the replac
 // project's limits as the sweep charges an opening (recordPodUpdateOpening), and carried from then
 // on by the sweep alone. Its reasons say the controller asked for it (requestedPodUpdateReasons).
 // The sweep asks each role of the pod, at the first sweep that reads the round recorded on its
-// claim, to push its work and answer ready_for_update (askRound), and replaces the pod once every
-// role it asks has answered, no turn runs and no claim with a process in the pod reports
+// claim, to push its work and answer ready_for_update (askRound). The round reaches its end once
+// every role it asks has answered, no turn runs and no claim with a process in the pod reports
 // background work that runs or has sent no report since its last turn started
-// (roundEnd.holding), or at the round's bound whatever they said (completePodUpdate). No drift is
-// needed for any of that: a round open over the pod its claims record goes on, drift or no drift,
-// until its pod is replaced or gone (reconcileIssuePodUpdate).
+// (roundEnd.holding), or at the round's bound whatever they said (completePodUpdate). Its reasons
+// carry no runtime.BreakingDrift mark, so the round replaces the pod only where the read of the
+// workspace before the replacement (readPodWorkspace) finds nothing that no branch or tag on origin
+// holds. Where that read finds such work, or fails, the round keeps the pod and ends with no
+// replacement (roundKeeps, keepPodForRound), and the open phase's worker or the issue's architect
+// is told (recordPodKept). The request opens its round over a pod an earlier round kept as well,
+// over which the walk opens none (podKeptForWork); that round's read keeps the pod again where it
+// still finds work. No drift is needed for any of that: a round open over the pod its claims
+// record goes on, drift or no drift, until it replaces or keeps its pod, or the pod is gone
+// (reconcileIssuePodUpdate).
 //
 // It reads the issue as the sweep groups it — every claim of the issue that has not retired — and
 // answers, in this order:
@@ -91,11 +98,12 @@ const requestedPodUpdateReasons = "the project's controller asked for the replac
 // in the store (awaitPodRoundRecorded). The post is asynchronous and lives in memory alone
 // (supervisor.post): a daemon that stops before a machine takes it loses it, and the record of
 // the opening this daemon keeps (podUpdateOpened) goes with it. A round a claim records is the
-// store's, which a restart restores, and every sweep from then on carries it, posts it again to
-// every claim it blocks, and replaces its pod, drift or no drift (reconcileIssuePodUpdate). So a
-// 200 always names a round the sweeps carry to its pod's replacement. A round no claim records
-// within the bound is refused (api.PodUpdateNotRecorded): its post may still land, which a later
-// request answers as the round open over the pod.
+// store's, which a restart restores, and every sweep from then on carries it and posts it again to
+// every claim it blocks, drift or no drift, until its end (reconcileIssuePodUpdate): the
+// replacement of its pod, or its keep where the read before the replacement finds work or fails
+// (roundKeeps). So a 200 always names a round the sweeps carry to its end. A round no claim
+// records within the bound is refused (api.PodUpdateNotRecorded): its post may still land, which a
+// later request answers as the round open over the pod.
 //
 // It holds the walk's turn (podUpdateWalk) from its read of the claims to its post, so the claims
 // it decides from are no older than the last sweep's walk, the limits it reads are the ones it
@@ -106,6 +114,14 @@ const requestedPodUpdateReasons = "the project's controller asked for the replac
 // once the caller has gone, when the refusal reaches nobody, and a caller still there would wait
 // out the whole walk. The wait for the record is made after, outside that turn: a machine in a
 // relaunch can hold the post for minutes, and the sweep's walk must not wait on it.
+//
+// Before its issues the walk finishes each standing replacement record under the same turn
+// (finishReplacements), and each finish reads the act from the API server: the issue's Sandbox and
+// then its pod, two reads of up to 30 seconds each (the sandbox runtime's ReadAct, apiTimeout). A
+// slow read can hold the turn past the request's bound (roundRecordBound, 30 s), and the request
+// is then refused 503 POD_UPDATE_BUSY (api.PodUpdateBusy), a refusal that names its reason; the
+// controller asks again. The finish stays in the turn: moved out of it, a request could open a
+// round beside a replacement that is still being finished.
 func (s *supervision) requestPodUpdate(ctx context.Context, issue string) (api.PodUpdateResponse, error) {
 	answer, asked, err := s.postRequestedPodUpdate(ctx, issue)
 	if err != nil || len(asked) == 0 {

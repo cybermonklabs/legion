@@ -1972,10 +1972,13 @@ export const LegionAgentActionResponse = z.object({
 
 /** `api.PodUpdateRequest`, the project's controller asking the daemon to replace the pod one issue
  * of its project runs in (`POST /legion/v1/issues/pod-update`, the agent-actions contract): its grant and the
- * issue. The daemon opens its update round over that pod as a drift opens one: each role of the
- * pod is asked to push its work and answer `ready_for_update`, and the pod is replaced once each
- * has answered, no turn runs and each role's report since its last turn names no running
- * background work, or at the round's bound (`pod_update_grace_minutes`). It takes a controller
+ * issue. The daemon opens its update round over that pod as a drift opens one, and over a pod an
+ * earlier round kept as well: each role of the pod is asked to push its work and answer
+ * `ready_for_update`, and the round reaches its end once each has answered, no turn runs and each
+ * role's report since its last turn names no running background work, or at the round's bound
+ * (`pod_update_grace_minutes`). The daemon then reads the pod's workspace and replaces the pod only
+ * where that read finds nothing that no branch or tag on origin holds; where it finds such work, or
+ * fails, the round keeps the pod and ends with no replacement. It takes a controller
  * grant alone (`CONTROLLER_REQUIRED`). An issue of another project, or one with no claim the daemon
  * supervises, is `NO_CLAIM`; one whose claims run no worker in a pod is `NO_POD`; one whose pod is
  * being replaced already is `POD_CHANGING`; an opening a limit of the project holds back is

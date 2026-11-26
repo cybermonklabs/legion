@@ -15,11 +15,16 @@ import (
 // PodUpdateRequest is the project's controller asking the daemon to replace the pod one issue of
 // its project runs in (POST /legion/v1/issues/pod-update, issuePodUpdate): its grant and the
 // issue. The round it opens is the one a drift opens (the daemon's requestPodUpdate): each role
-// of the pod is asked to push its work and answer ready_for_update, and the pod is replaced once
-// each has answered, no turn runs and no role with a process in the pod reports background work
-// that runs or has sent no report since its last turn started (the daemon's roundEnd.holding), or
-// at the round's bound. A suspension by the operator or the controller over a role the round asks
-// keeps the pod past the bound until a resume lifts it (the daemon's heldClaims).
+// of the pod is asked to push its work and answer ready_for_update, and the round reaches its end
+// once each has answered, no turn runs and no role with a process in the pod reports background
+// work that runs or has sent no report since its last turn started (the daemon's
+// roundEnd.holding), or at the round's bound. At its end the daemon reads the pod's workspace, and
+// replaces the pod only where that read finds nothing that no branch or tag on origin holds. Where
+// the read finds such work, or fails, the round keeps the pod and ends with no replacement, and
+// the open phase's worker or the issue's architect is told (the daemon's roundKeeps). The request
+// opens its round over a pod an earlier round kept as well, over which the daemon's sweep opens
+// none. A suspension by the operator or the controller over a role the round asks keeps the pod
+// past the bound until a resume lifts it (the daemon's heldClaims).
 // The controller's own suspension counts too, so a controller that suspended a role and then asks
 // for the replacement waits on itself, and the round comes back as update-stalled. It is the one
 // way the controller removes an issue pod whose workspace may hold work.
@@ -126,15 +131,17 @@ func podUpdateRefusal(refusal PodUpdateRefusal) (int, string) {
 // project is refused `404 NO_CLAIM` before the daemon is asked anything, since this daemon runs no
 // claim of it. While the project is paused it is refused `409 PROJECT_PAUSED`, with the pause
 // that stands, before the daemon is asked anything (refusedForPause): a round would ask each role
-// of the pod for a turn, which a paused project starts for no role but the controller, and then
-// replace the pod the pause keeps for its stopped roles. Every other answer is the daemon's
+// of the pod for a turn, which a paused project starts for no role but the controller, and could
+// then replace the pod the pause keeps for its stopped roles. Every other answer is the daemon's
 // (Options.RequestPodUpdate): 200 with the round, opened by this request or already open, which a
 // claim of the issue records in the store by then, or a PodUpdateRefused, with a Retry-After
 // header where the refusal names a wait.
 //
-// The round's ask, its bound and the replacement are the sweep's, as for a round a drift opened:
-// the ask reaches each role at the first sweep that reads the round recorded on its claim, and
-// a round once open is carried to the replacement of its pod whatever the pod's drift says.
+// The round's ask, its bound and its end are the sweep's, as for a round a drift opened: the ask
+// reaches each role at the first sweep that reads the round recorded on its claim, and a round
+// once open is carried to its end whatever the pod's drift says: the replacement of its pod, or
+// its keep where the read of the workspace before the replacement finds work that no branch or
+// tag on origin holds, or fails.
 func (s *server) issuePodUpdate(w http.ResponseWriter, r *http.Request) {
 	var req PodUpdateRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
@@ -163,7 +170,7 @@ func (s *server) issuePodUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.refusedForPause(w, r, "the pod update", req.Issue,
-		"a paused project opens no update round, which would ask each role of the issue's pod for a turn and then replace the pod the pause keeps for the roles it stopped",
+		"a paused project opens no update round, which would ask each role of the issue's pod for a turn and could then replace the pod the pause keeps for the roles it stopped",
 		"issue", req.Issue) {
 		return
 	}

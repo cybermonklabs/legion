@@ -23,6 +23,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/credential"
+	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -774,5 +776,137 @@ func TestPodUpdateTheControllerAsksForWaitsForASweepsWalkWhileItsRequestLivesAnd
 	route.answered(podUpdateIssue, requestedRound)
 	for _, role := range roles {
 		rig.awaitRound(role, podUpdateRound)
+	}
+}
+
+// A request over a pod an earlier round kept for its disk opens a round, where the walk alone
+// opens none: the keep holds back the walk (podKeptForWork), and the controller's request reads no
+// keep. An earlier round over a drift the roles can keep working under finds one commit that
+// origin does not hold and keeps the pod, and the sweeps after it, over the same drift, open no
+// round over the kept pod. The request then answers the round opened. That round runs as any round
+// the controller asks for, and at its end its own read still finds the commit, so it keeps the pod
+// again (roundKeeps, keepPodForRound): no replacement reaches the runtime, no claim records the
+// round, and the keep record still names the pod. It is also the test of a round the controller
+// asked for whose read finds work.
+//
+// The negative controls: with the controller's reasons marked as a drift that breaks the pod
+// (runtime.BreakingDrift opening requestedPodUpdateReasons), the round's end replaces the pod over
+// the read that found the commit, where this test wants the pod kept; and a request that read the
+// keep as the walk does (podKeptForWork in postRequestedPodUpdate, refusing a kept pod) opens no
+// round, where this test wants it opened.
+func TestPodUpdateTheControllerAsksForOverAKeptPodOpensARoundThatKeepsItAgain(t *testing.T) {
+	t.Parallel()
+	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, roundUnpushed)
+
+	rig.answerRound(podUpdateDrift, roles...)
+	rig.roundEndsKept("over a workspace that holds an unpushed commit", roles...)
+	if reason, pod := rig.keptReason(); reason != pods.DeclineUnpushedWork || pod != podUpdatePod {
+		t.Fatalf("the decline row reads %q of pod %q, want unpushed_work of the round's pod %s", reason, pod, podUpdatePod)
+	}
+	rig.noRoundOver("by the walk over the kept pod, which still drifts", roles...)
+
+	route.answered(podUpdateIssue, requestedRound)
+	for _, role := range roles {
+		if c := rig.awaitAsked(role, podUpdateRound); c.UpdateReasons != requestedPodUpdateReasons {
+			t.Fatalf("the %s records the reasons %q, want %q", role, c.UpdateReasons, requestedPodUpdateReasons)
+		}
+	}
+	for _, role := range roles {
+		rig.signal(role, "a1b2c3d")
+	}
+	rig.settleAll()
+
+	rig.roundEndsKept("over a kept pod whose workspace still holds the unpushed commit", roles...)
+	if reads := rig.workspaceReads(); reads != 2 {
+		t.Fatalf("the workspace was read %d times, want once before each round's replacement", reads)
+	}
+	if reason, pod := rig.keptReason(); reason != pods.DeclineUnpushedWork || pod != podUpdatePod {
+		t.Fatalf("the decline row reads %q of pod %q after the requested round, want unpushed_work of the kept pod %s", reason, pod, podUpdatePod)
+	}
+}
+
+// keepRow is the issue's decline row whole, as the store holds it, and "" where none stands: what
+// a read of a kept pod writes again or forgets (recordPodKept, store.Store.ForgetIdleDecline).
+func (r *podUpdateRig) keepRow() string {
+	r.t.Helper()
+	var row string
+	if err := r.pool.QueryRow(r.ctx, `select coalesce((select row_to_json(d)::text from idle_release_declines d
+		where d.issue = $1), '')`, podUpdateIssue).Scan(&row); err != nil {
+		r.t.Fatalf("read the decline row of %s: %v", podUpdateIssue, err)
+	}
+	return row
+}
+
+// The sweep makes the read that may end a round's keep of a pod after its walk, outside the walk's
+// turn (reconcilePodUpdates, readKeptPod), so the controller's request can take the turn between
+// the walk that found the read due (podKeptForWork) and the read, and open its round over the kept
+// pod. That round reads the workspace itself before its replacement, so the read the walk found
+// due reads no workspace, queues no role message and no workspace-kept notice, and leaves the keep
+// record as it was. Here an earlier round over a drift keeps the pod for one commit that origin
+// does not hold, a turn of the tester ends, and the walk finds the read due; the request opens its
+// round; and the sweep then makes the read the walk left it.
+//
+// The negative control is the same read with no round open, in the same test: the walk finds it
+// due, and the read is made. With no check of an open round in readKeptPod, the read during the
+// requested round reads the workspace too, and writes the keep record again.
+func TestPodUpdateTheControllerAsksForBetweenAWalkAndItsKeptPodReadMakesThatReadSendNothing(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		requested bool
+	}{
+		{"a_round_the_controller_asked_for_is_open", true},
+		{"control:_no_round_is_open", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
+			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+			route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
+			rig.rt.ScriptWorkspaceWork(podUpdateIssue, roundUnpushed)
+			rig.answerRound(podUpdateDrift, roles...)
+			rig.roundEndsKept("over a workspace that holds an unpushed commit", roles...)
+			rig.turn(claim.RoleTester, nil)
+
+			claims, err := rig.sup.Claims(rig.ctx)
+			if err != nil {
+				t.Fatalf("read the claims for the walk: %v", err)
+			}
+			replacements, reads := rig.s.walkPodUpdates(rig.ctx, claims)
+			if len(replacements) != 0 || len(reads) != 1 || reads[0].issue != podUpdateIssue || reads[0].pod != podUpdatePod {
+				t.Fatalf("the walk left the replacements %+v and the kept-pod reads %+v, want the one read of the kept pod %s", replacements, reads, podUpdatePod)
+			}
+			if tc.requested {
+				route.answered(podUpdateIssue, requestedRound)
+			}
+			workspace := rig.workspaceReads()
+			messages := len(rig.rows(record.OutboxKindRoleMessage))
+			notices := len(rig.rows(record.OutboxKindNotice))
+			keep := rig.keepRow()
+
+			rig.s.readKeptPod(rig.ctx, reads[0])
+
+			if !tc.requested {
+				if made := rig.workspaceReads() - workspace; made != 1 {
+					t.Fatalf("the read of the kept pod with no round open read the workspace %d times, want once", made)
+				}
+				return
+			}
+			if made := rig.workspaceReads() - workspace; made != 0 {
+				t.Fatalf("the read of the kept pod during the requested round read the workspace %d times, want none", made)
+			}
+			if after := len(rig.rows(record.OutboxKindRoleMessage)); after != messages {
+				t.Fatalf("the read of the kept pod during the requested round queued %d role messages, want none", after-messages)
+			}
+			if after := len(rig.rows(record.OutboxKindNotice)); after != notices {
+				t.Fatalf("the read of the kept pod during the requested round queued %d notices, want none", after-notices)
+			}
+			if after := rig.keepRow(); after != keep {
+				t.Fatalf("the read of the kept pod during the requested round left the keep record\n%s\nwant it as it was\n%s", after, keep)
+			}
+		})
 	}
 }

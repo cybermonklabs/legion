@@ -226,9 +226,14 @@ export interface LegionDaemonClient {
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionAgentActionResponse>>;
   /** The controller's `replace_pod`: the daemon opens its update round over the pod `issue` runs
-   * in, as a drift opens one. Each role of the pod is asked to push its work and answer
-   * `ready_for_update`, and the pod is replaced once each has answered, no turn runs and each
-   * role's report since its last turn names no running background work, or at the round's bound.
+   * in, as a drift opens one, and over a pod an earlier round kept as well. Each role of the pod is
+   * asked to push its work and answer `ready_for_update`, and the round reaches its end once each
+   * has answered, no turn runs and each role's report since its last turn names no running
+   * background work, or at the round's bound. The daemon then reads the pod's workspace and
+   * replaces the pod only where that read finds nothing that no branch or tag on origin holds;
+   * where it finds such work, or fails, the round keeps the pod and ends with no replacement, and
+   * the open phase's worker or the issue's architect is told. So a round that ended did not always
+   * replace the pod: the pod uid on the issue's claims (`locator.sandbox.podUid`) says which.
    * The answer is the round, its reasons, and whether this request opened it, false for a round
    * already open over the pod. Refused for an issue of another project or with no claim the
    * daemon supervises (`NO_CLAIM`), one whose claims run no worker in a pod (`NO_POD`), one whose

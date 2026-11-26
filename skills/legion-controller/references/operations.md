@@ -43,11 +43,9 @@ Publish to no role topic while the restart runs: a message starts a turn that th
 
 ## A replacement of an issue's pod
 
-Replace an issue pod only when a person asks or your deployment instructions name the case, never to reach one agent. Delete no issue pod or Sandbox with `kubectl`: its disk can hold unpushed work. `replace_pod` opens an update round: it asks each role to push, then replaces the pod.
+Replace an issue pod only when a person asks or your deployment instructions name the case, never to reach one agent. Delete no issue pod or Sandbox with `kubectl`: its disk can hold unpushed work. `replace_pod` opens an update round: it asks each role to push. At the end of the round the daemon reads the workspace. It replaces the pod only if that read finds nothing that no branch or tag on origin holds. If the read finds such work, or fails, the round keeps the pod and ends with no replacement, and the daemon tells the open phase's worker or the issue's architect. The daemon opens the round also over a pod that an earlier round kept.
 
-1. `legion({ op: "replace_pod", issue: "<KEY>" })`. A round already open is answered as it stands.
-2. On a refusal: `NO_CLAIM`, there is no pod to replace; `NO_POD`, ask again once a role runs in the pod; `POD_CHANGING` or `POD_UPDATE_LIMITED`, ask at a later wake; `POD_UPDATE_BUSY`, ask after a minute; `POD_UPDATE_NOT_RECORDED` or `POD_UPDATE_FAILED`, read `updateRound` on the issue's claims first; `PROJECT_PAUSED`, ask after the resume; `POD_HELD_BY_PAUSE`, ask once a role of the pod runs again.
-3. Read `read_state` with `issues: ["<KEY>"]`: the round is done when no claim shows `updateRound`. A round still held past its bound comes back as `update-stalled` (`skill://legion-controller/references/escalation.md`).
+The three steps, the pod uid before the request, the refusals and the pod uid after the round, are in `skill://legion-controller/references/operations-steps.md#a-replacement-of-an-issues-pod`: read them before every replacement.
 
 ## A re-run of a CI run
 
