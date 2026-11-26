@@ -133,9 +133,12 @@ function profileDir(): string {
   mkdirSync(path.join(dir, "home", ".omp"), { recursive: true });
   return dir;
 }
+/** The model key the key-file route serves: random, as a real one is (`fixtureSecret`), so the
+ *  process holds it and scrubs every line it prints of it (`@legion/contracts/held-secrets`). */
+const MODEL_KEY = fixtureSecret("rigkey");
 function keyFile(mode: number): string {
   const file = path.join(work, `key-${profiles}-${mode.toString(8)}`);
-  writeFileSync(file, "sk-ant-rig-test-0000000000000000\n", { mode });
+  writeFileSync(file, `${MODEL_KEY}\n`, { mode });
   return file;
 }
 function route(dir: string, env: Record<string, string>, model = "") {
@@ -169,7 +172,7 @@ describe("install_model_route", () => {
     expect(models).toContain(`!exec ${path.join(dir, "model-key", "anthropic-key")}`);
     expect(models).toContain("https://api.anthropic.com");
     const served = Bun.spawnSync([path.join(dir, "model-key", "anthropic-key")]);
-    expect(served.stdout.toString().trim()).toBe("sk-ant-rig-test-0000000000000000");
+    expect(served.stdout.toString().trim()).toBe(MODEL_KEY);
     expect(existsSync(path.join(dir, "key", "anthropic-key.log"))).toBe(true);
   });
 
@@ -1368,6 +1371,42 @@ echo done
   });
 });
 
+// The host-mapping rows below (spend_docker_args for the collector, cmd_judge_omp's two lines for
+// the model's endpoint) run rig.sh's own functions with `getent` alone replaced. The stand-in is
+// deterministic: it logs each name it is asked for to $LOOKUPS, answers the three hosts below with
+// fixed documentation addresses (192.0.2.0/24) and every other name, a credential or `[2001`
+// among them, with a trap address, so a wrong name shows in the lookups and in the --add-host
+// words alike; an empty name gets no answer, as getent's gets none. `numeric` is a name of digits
+// alone: a host name, no address.
+const HOSTS = {
+  real: "collector-real.example",
+  other: "collector-other.example",
+  numeric: "9999",
+} as const;
+const HOST_ADDRESS: Record<string, string> = {
+  [HOSTS.real]: "192.0.2.10",
+  [HOSTS.other]: "192.0.2.11",
+  [HOSTS.numeric]: "192.0.2.12",
+};
+const GETENT_STAND_IN = `: >"$LOOKUPS"
+getent() {
+  printf '%s\\n' "$2" >>"$LOOKUPS"
+  case $2 in
+  '') ;;
+${Object.entries(HOST_ADDRESS)
+  .map(([host, address]) => `  ${host}) echo '${address} ${host}' ;;`)
+  .join("\n")}
+  *) echo "192.0.2.99 $2" ;;
+  esac
+}`;
+/** Runs SCRIPT with the getent stand-in defined ahead of it, and returns bash()'s result and the
+ * names the stand-in was asked for, in order. */
+function resolving(script: string, args: string[], env: Record<string, string>) {
+  const lookups = path.join(freshDir("lookups"), "names");
+  const result = bash(`${GETENT_STAND_IN}\n${script}`, args, { LOOKUPS: lookups, ...env });
+  return { ...result, lookups: readFileSync(lookups, "utf8").split("\n").filter(Boolean) };
+}
+
 describe("the spend collector's variables", () => {
   // Catches: a scenario turn's Oh My Pi started with no spend variable (it records none of its
   // model calls), or with an OTEL_* variable beyond the six (another exporter, a header).
@@ -1405,7 +1444,7 @@ sleep() { command sleep 0.05; }`;
   // Catches: a judge's container given no spend variable, one beyond the six, or a value in its
   // `docker run` arguments, which any process of the machine can read.
   test("a judge's docker run names the six, each as `-e NAME` alone, and no other OTEL_* variable", () => {
-    const script = `${fn("spend_variables")}\n${fn("add_host_args")}\n${fn("url_hostport")}\n${fn("spend_docker_args")}\nspend_docker_args`;
+    const script = `${fn("spend_variables")}\n${fn("add_host_args")}\n${fn("url_hostport")}\n${fn("http_hostname")}\n${fn("spend_docker_args")}\nspend_docker_args`;
     const result = bash(script, [], { ...SPEND, ...OTHER_OTEL });
     expect(result.code).toBe(0);
     holdsNoSpendValue(result.stdout + result.stderr);
@@ -1423,27 +1462,13 @@ sleep() { command sleep 0.05; }`;
   // host. spend_docker_args read `https://<user>:<password>@<host>:<port>/…` as the host `<user>`:
   // it looked the user name up, left the collector unmapped, and printed `--add-host <user>:<ip>`
   // into the `docker run` arguments, which any process of the machine can read; it read a
-  // bracketed IPv6 literal as `[2001`. The resolver is deterministic: getent is a function here
-  // that logs each name it is asked for to $LOOKUPS, answers the two collector hosts with fixed
-  // documentation addresses and every other name, a credential or `[2001` among them, with a trap
-  // address, so a wrong name shows in the lookups and in the --add-host words alike. Each row
-  // names the endpoint variables it sets and the hosts the resolver must be asked for, in order.
+  // bracketed IPv6 literal as `[2001`. Each row names the endpoint variables it sets and the hosts
+  // the getent stand-in must be asked for, in order.
   test("a collector endpoint's host alone is looked up and mapped, once, and no credential is looked up or printed", () => {
     const user = fixtureSecret("user");
     const pass = fixtureSecret("pass");
-    const real = "collector-real.example";
-    const other = "collector-other.example";
-    const address: Record<string, string> = { [real]: "192.0.2.10", [other]: "192.0.2.11" };
-    const resolver = `: >"$LOOKUPS"
-getent() {
-  printf '%s\\n' "$2" >>"$LOOKUPS"
-  case $2 in
-  ${real}) echo '${address[real]} ${real}' ;;
-  ${other}) echo '${address[other]} ${other}' ;;
-  *) echo "192.0.2.99 $2" ;;
-  esac
-}`;
-    const script = `${fn("spend_variables")}\n${fn("add_host_args")}\n${fn("url_hostport")}\n${fn("spend_docker_args")}\n${resolver}\nspend_docker_args`;
+    const { real, other, numeric } = HOSTS;
+    const script = `${fn("spend_variables")}\n${fn("add_host_args")}\n${fn("url_hostport")}\n${fn("http_hostname")}\n${fn("spend_docker_args")}\nspend_docker_args`;
     interface Row {
       name: string;
       /** OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, when the row sets it. */
@@ -1485,6 +1510,11 @@ getent() {
         lookups: [other, real],
       },
       {
+        name: "a name of digits alone is a host name, not an address",
+        base: `http://${user}@${numeric}:4318`,
+        lookups: [numeric],
+      },
+      {
         name: "a bracketed IPv6 address with credentials and a port",
         traces: `https://${user}:${pass}@[2001:db8::1]:4318/v1/traces`,
         lookups: [],
@@ -1507,21 +1537,12 @@ getent() {
       },
       { name: "no scheme", base: `${user}:${pass}@${real}:4318`, lookups: [] },
     ];
-    const dir = freshDir("spend-lookups");
-    const seen = rows.map((row, index) => {
-      const lookups = path.join(dir, `names-${index}`);
-      const result = bash(script, [], {
-        LOOKUPS: lookups,
+    const seen = rows.map((row) => {
+      const result = resolving(script, [], {
         ...(row.base === undefined ? {} : { OTEL_EXPORTER_OTLP_ENDPOINT: row.base }),
         ...(row.traces === undefined ? {} : { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: row.traces }),
       });
-      return {
-        name: row.name,
-        code: result.code,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        lookups: readFileSync(lookups, "utf8").split("\n").filter(Boolean),
-      };
+      return { name: row.name, ...result };
     });
     // Per row: `-e NAME` for each variable set, in spend_variables' order, then one --add-host
     // word pair for each name the resolver is asked for.
@@ -1536,7 +1557,95 @@ getent() {
           ]
             .map((name) => `-e\n${name}\n`)
             .join("") +
-          row.lookups.map((host) => `--add-host\n${host}:${address[host]}\n`).join(""),
+          row.lookups.map((host) => `--add-host\n${host}:${HOST_ADDRESS[host]}\n`).join(""),
+        stderr: "",
+        lookups: row.lookups,
+      }))
+    );
+    for (const row of seen) {
+      const shown = `${row.stdout}${row.stderr}${row.lookups.join("\n")}`;
+      expect({ name: row.name, user: shown.includes(user), pass: shown.includes(pass) }).toEqual({
+        name: row.name,
+        user: false,
+        pass: false,
+      });
+    }
+  });
+});
+
+// cmd_judge_omp gives its container the model endpoint's address, which add_host_args resolves for
+// the host of the first http(s) baseUrl of the judge profile's models.yml (model_base_url, then
+// http_hostname): the script below is those two lines and the add_host_args call after them.
+describe("the judge's model endpoint host", () => {
+  // Catches: a model baseUrl with user info (the provider route copies an operator's block as it
+  // stands, and only the key-file route refuses credentials) whose user name was looked up in
+  // place of the host, left the endpoint unmapped, and printed `--add-host <user>:<ip>` into the
+  // judge's `docker run` arguments, which any process of the machine can read. Rows cover both
+  // forms models.yml takes (YAML as the installers write it, JSON as the provider route does).
+  test("a models.yml baseUrl's host alone is looked up and mapped, and no credential is looked up or printed", () => {
+    const user = fixtureSecret("user");
+    const pass = fixtureSecret("pass");
+    const { real, other, numeric } = HOSTS;
+    const script = `${fn("url_hostport")}\n${fn("http_hostname")}\n${fn("model_base_url")}\n${fn("add_host_args")}\nurl=$(model_base_url "$1")\nhost=$(http_hostname "$url")\nadd_host_args "$host"`;
+    const yaml = (url: string) =>
+      `providers:\n  anthropic:\n    baseUrl: ${url}\n    auth: apiKey\n    api: anthropic-messages\n`;
+    const json = (url: string) =>
+      `${JSON.stringify({ providers: { anthropic: { baseUrl: url, api: "anthropic-messages" } } }, null, 2)}\n`;
+    const rows: { name: string; models: string; lookups: string[] }[] = [
+      {
+        name: "YAML, credentials, a port and a path",
+        models: yaml(`https://${user}:${pass}@${real}:8443/anthropic`),
+        lookups: [real],
+      },
+      {
+        name: "JSON, credentials and a path",
+        models: json(`https://${user}:${pass}@${real}/v1`),
+        lookups: [real],
+      },
+      { name: "YAML, no credentials", models: yaml(`https://${real}`), lookups: [real] },
+      {
+        name: "a quoted YAML value, a user with no password",
+        models: yaml(`"http://${user}@${other}:80"`),
+        lookups: [other],
+      },
+      {
+        name: "a name of digits alone is a host name, not an address",
+        models: yaml(`http://${user}@${numeric}:8080`),
+        lookups: [numeric],
+      },
+      {
+        name: "the first http(s) baseUrl, past one of another scheme",
+        models: `providers:\n  a:\n    baseUrl: grpc://${user}@${other}\n  b:\n    baseUrl: https://${user}@${real}\n  c:\n    baseUrl: https://${other}\n`,
+        lookups: [real],
+      },
+      {
+        name: "the @ of a query is not user info",
+        models: yaml(`https://${real}/p?x=a@${other}`),
+        lookups: [real],
+      },
+      {
+        name: "a bracketed IPv6 address with credentials",
+        models: yaml(`https://${user}:${pass}@[2001:db8::1]:443/x`),
+        lookups: [],
+      },
+      {
+        name: "an IPv4 address with credentials",
+        models: json(`http://${user}:${pass}@192.0.2.7`),
+        lookups: [],
+      },
+      { name: "no baseUrl", models: "providers: {}\n", lookups: [] },
+    ];
+    const dir = freshDir("model-hosts");
+    const seen = rows.map((row, index) => {
+      const file = path.join(dir, `models-${index}.yml`);
+      writeFileSync(file, row.models);
+      return { name: row.name, ...resolving(script, [file], {}) };
+    });
+    expect(seen).toEqual(
+      rows.map((row) => ({
+        name: row.name,
+        code: 0,
+        stdout: row.lookups.map((host) => `--add-host\n${host}:${HOST_ADDRESS[host]}\n`).join(""),
         stderr: "",
         lookups: row.lookups,
       }))

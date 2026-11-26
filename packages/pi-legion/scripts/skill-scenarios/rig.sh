@@ -361,25 +361,44 @@ add_host_args() {
   [ -z "$ip" ] || [ "$ip" = "$1" ] || printf '%s\n%s\n' --add-host "$1:$ip"
 }
 
+# http_hostname URL prints the name a container must resolve to reach URL, as one line, when URL
+# is an http:// or https:// URL (after any leading spaces) whose host is a name. It prints nothing
+# for another scheme, for no host, and for an address that needs no alias: a dotted-quad IPv4
+# literal or a bracketed IPv6 one. A single numeric name (`4242`) is a name, and is printed.
+# url_hostport reads the authority, so the user info (a credential, never a host) is neither
+# returned nor looked up, and the port is cut here.
+http_hostname() {
+  local url=${1#"${1%%[! ]*}"} host
+  case $url in http://* | https://*) ;; *) return 0 ;; esac
+  host=$(url_hostport "$url")
+  case $host in \[*) return 0 ;; esac
+  host=${host%%:*}
+  [[ $host =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && return 0
+  [ -z "$host" ] || printf '%s\n' "$host"
+}
+
+# model_base_url MODELS_YML prints the scheme and the authority of the first http:// or https://
+# `baseUrl` that a profile's models.yml holds: as the installers write it (YAML, `baseUrl: <url>`)
+# or as the provider route writes it (JSON, `"baseUrl": "<url>",`). It prints nothing when the file
+# holds none. The authority can hold user info, so the caller keeps the answer in a variable and
+# reads its host with http_hostname, which drops it; the sed's delimiter is `|` because the
+# authority's class holds `#`.
+model_base_url() {
+  sed -n 's|^ *"\{0,1\}baseUrl"\{0,1\}: *"\{0,1\}\(https\{0,1\}://[^/?#" ]*\).*|\1|p' "$1" | head -1
+}
+
 # spend_docker_args prints the `docker run` words that give a judge's container the spend
 # collector's variables, one a line: `-e NAME` for each of spend_variables, so that docker takes
 # each value from its own environment and no value stands in its arguments; and the collector's
-# host (add_host_args), once though both endpoint variables name it, as cmd_judge_omp passes the
-# model endpoint's. An http:// or https:// endpoint names its host through url_hostport, which
-# drops the user info: a credential is never taken for a host, so it is neither looked up nor
-# printed. The port is cut here. An endpoint of another scheme, one with no host, and one whose
-# host is an address (IPv4, or a bracketed IPv6 literal) needs no alias and gets none.
+# host (add_host_args, from http_hostname), once though both endpoint variables name it, as
+# cmd_judge_omp passes the model endpoint's. A collector that is not an http:// or https:// URL
+# naming a host gets none.
 spend_docker_args() {
   local name url host seen=
   for name in $(spend_variables); do printf '%s\n%s\n' -e "$name"; done
   for url in "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}" "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"; do
-    url=${url#"${url%%[! ]*}"}
-    case $url in http://* | https://*) ;; *) continue ;; esac
-    host=$(url_hostport "$url")
-    case $host in \[*) continue ;; esac
-    host=${host%%:*}
-    [[ $host =~ ^[0-9.]*$ ]] && continue
-    [ "$host" != "$seen" ] || continue
+    host=$(http_hostname "$url")
+    [ -n "$host" ] && [ "$host" != "$seen" ] || continue
     seen=$host
     add_host_args "$host"
   done
@@ -994,8 +1013,8 @@ pg_sql() {
 # nats.go parses a server URL with: the authority runs from past the `://` (from the start, in a
 # URL with none, which nats.go reads as nats://) to the path, the query or the fragment, and the
 # user info in it to its last `@`, whatever its form: a token (nats.go reads a user with no
-# password as one), user:password or :password. spend_docker_args reads a collector's HTTP(S) URL
-# with it, which Go's net/url reads the same way.
+# password as one), user:password or :password. http_hostname reads a model's or a collector's
+# HTTP(S) URL with it, which Go's net/url reads the same way.
 url_hostport() {
   local authority=${1#*://}
   authority=${authority%%[/?#]*}
@@ -1625,7 +1644,7 @@ cmd_judge_omp() {
   judge_profiles
   P=$work/judge-profiles/$kind
   agent=$P/home/.omp/profiles/judge-$kind/agent
-  local route=() host
+  local route=() url host
   keys=$dir.key
   rm -rf -- "$keys"
   on_exit "$(printf 'rm -rf -- %q' "$keys")"
@@ -1637,7 +1656,8 @@ cmd_judge_omp() {
   # once skipped the key-file route, which reached Anthropic's own public name and needed none;
   # since that route takes LEGION_E2E_MODEL_BASE_URL it can name a gateway like any other, and a
   # route left out here would let the scenario agents reach it while its judges could not.
-  host=$(sed -n 's#^ *"\{0,1\}baseUrl"\{0,1\}: *"\{0,1\}https\{0,1\}://\([^/:"]*\).*#\1#p' "$agent/models.yml" | head -1)
+  url=$(model_base_url "$agent/models.yml")
+  host=$(http_hostname "$url")
   mapfile -t -O "${#route[@]}" route < <(add_host_args "$host")
   printf 'model %s\nthinking %s\n' "$judge_model" "$judge_thinking" >"$dir/judge-model.txt"
   mkdir -p "$dir/sessions"

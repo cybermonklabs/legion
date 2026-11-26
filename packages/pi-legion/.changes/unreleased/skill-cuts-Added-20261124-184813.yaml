@@ -19,6 +19,15 @@ body: |-
   A plugin built from a checkout that holds `scripts/daemon-contract.sh` is built with the daemon
   API contract in its manifest, as a pack writes it, so a Legion pane built from main's `pi-legion`
   defines its `legion` tool.
+  Every stage run numbered n of every arm of a case whose body is a Messages API body is sent with
+  one routing id in the `x-litellm-session-id` header, which the gateway places on a deployment, so
+  the arms of a round go to the same deployment; a retry or a fallback can still be answered by
+  another one. A Responses body goes with no routing id. Each request records the deployment that
+  answered it, and the report counts runs by arm under the deployment that answered them, joined
+  by `+` for a run answered by more than one.
+  The skill-scenarios rig maps the model endpoint's host and the spend collector's host into a
+  judge's container from the host's resolver, and reads each host from the URL's authority: an
+  endpoint whose URL has user info no longer maps the user name as the host.
 time: 2026-11-24T18:48:13Z
 custom:
     Issue: skill-cuts
