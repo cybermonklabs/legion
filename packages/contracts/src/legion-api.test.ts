@@ -942,6 +942,13 @@ test("the gate names a key no schema names, and is blind under the loose blocks"
   const parsedSettings = LegionStateResponse.parse(settings);
   expect(firstDroppedKey(settings, parsedSettings)).toBeUndefined();
   expect<unknown>(parsedSettings).toEqual(settings);
+  // The census of the answer side below walks the settings block once, at the observed view's
+  // path, and parses neither answer, so the observed view's parse is held here as the state's is.
+  const observed = fixture("observed-state.json") as { settings: Record<string, unknown> };
+  observed.settings.a_later_legion_yaml_key = "ridden loosely";
+  const parsedObserved = LegionObservedStateResponse.parse(observed);
+  expect(firstDroppedKey(observed, parsedObserved)).toBeUndefined();
+  expect<unknown>(parsedObserved).toEqual(observed);
 
   const payload = fixture("state-stage3.json") as {
     pendingStatusWrites: { payload: Record<string, unknown> }[];
@@ -1100,24 +1107,6 @@ test("every answer-side object strips a key it does not name", () => {
   // node of this census.
   expect(found.loose).toEqual(["LegionObservedStateResponse.settings"]);
   expect(found.strips.length).toBeGreaterThan(0);
-});
-
-// The census above walks the settings block once, at the observed view's path, so it would still
-// pass were the full state to stop keeping a key its settings do not name. Each answer is held to
-// that here: a legion.yaml key no schema names rides through the full state's parser and through
-// the observed view's alike (contract 35).
-test("the full state and the observed view each keep a settings key no schema names", () => {
-  for (const [name, schema] of [
-    ["state.json", LegionStateResponse],
-    ["observed-state.json", LegionObservedStateResponse],
-  ] as const) {
-    const body = fixture(name) as { settings: Record<string, unknown> };
-    body.settings.a_later_legion_yaml_key = "ridden loosely";
-    const parsed = schema.safeParse(body);
-    expect(parsed.success, `${name} parses`).toBeTrue();
-    expect(parsed.data?.settings?.a_later_legion_yaml_key, name).toBe("ridden loosely");
-    expect<unknown>(parsed.data?.settings, name).toEqual(body.settings);
-  }
 });
 
 test("state accepts optional fields emitted by later workflow slices", () => {
