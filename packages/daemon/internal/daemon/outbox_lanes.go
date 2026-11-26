@@ -20,7 +20,8 @@ import (
 // state events (record.LaneState) are one lane more, keyed by the bare Dispatch project key that
 // every state row carries as its issue, so a wake of that key and any state kind, the sweep and
 // the timer start and run it as they do an issue's: its rows run one message at a time
-// (stateEvents), in the order record.LaneState holds them to. A lane is woken by the write that
+// (stateEvents), in the order record.OutboxLane's comment holds LaneState to. A lane is woken by
+// the write that
 // commits one of its rows (projectRecords, through store.OnCommit), by the timer it arms for its
 // next row due later, and by the sweep, which every sweepInterval lists the lanes with a row still
 // in the outbox (record.Store.UnfinishedLanes) and wakes each: a row whose run ended without its

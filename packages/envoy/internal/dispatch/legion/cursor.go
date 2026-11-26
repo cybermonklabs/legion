@@ -29,30 +29,30 @@ const holdAtLeast = time.Second
 
 // stateMaxHolds is how many times one message goes back to the stream holding its project's owed
 // whole read (cursor.readFor): the hand-back that waits for the read to be due, where the message
-// arrived inside ReadRetryAfter of the start of the last read, and one for each read its
-// deliveries made that failed, each until ReadRetryAfter after that read began. The cursor counts
-// the hand-backs beside the holder (cursor.readHolds): 1 when it records the message as the
-// holder, one more at each hand-back after it (owe), and 0 once it names no holder. A take-over
-// creates the durable again, which starts the message's own NumDelivered again at 1, and keeps
-// the cursor's count, so the bound holds for the message across every take-over. Neither a
-// take-over's call for the read nor a settings change's makes a read while the message holds it,
-// a starting read's included, and neither defers a call for it (cursor.readFor,
-// Intake.startingPoint), so neither adds a read to the hold. A write of the setting, a delete
-// included, either leaves the holder and its count as they are or ends the hold, by the rule that
-// resetCursor and cursor.reset hold whole (read-rule-cases rows 6.1 to 6.5), so no write
-// starts the count again. A message whose hold a write ended is acknowledged unapplied at its next
-// delivery (outcomeReleased), and another message may then hold the read from a count of 1. A
-// holder that has gone back stateMaxHolds times holds the read no more: its next delivery makes
-// the read first where it is due (readFor) and is acknowledged. Where a read is still owed then,
-// for the reasons the cursor holds (readReasons, as afterRead and owe leave them), the cursor names
-// no holder from then on (readAnswer.release), and the read waits for the project's next message,
-// boot, settings change or take-over, which makes it once it is due, as R3 makes every failed
-// read. So each message holds the durable's ack floor below it for about 11 minutes at the most,
-// however many take-overs and writes of the setting there are, and a take-over replays at most
-// that long of messages (consumerConfig). One case is past that bound: a write of another URL or
-// a delete that ends a hold while maxReleasedHolders messages released before it are all still
-// out, whose oldest record then goes (cursor.reset), so that message may hold a read again for
-// about 11 minutes more.
+// arrived inside ReadRetryAfter of the start of the last read, and one for each read its deliveries
+// made that failed, each until ReadRetryAfter after that read began. The cursor counts the
+// hand-backs beside the holder (cursor.readHolds): 1 when it records the message as the holder, one
+// more at each hand-back after it (owe), and 0 once it names no holder. A take-over creates the
+// durable again, which starts the message's own NumDelivered again at 1, and keeps the cursor's
+// count, so the bound holds for the message across every take-over. Neither a take-over's call for
+// the read nor a settings change's makes a read while the message holds it, a starting read's
+// included, and neither defers a call for it (cursor.readFor, Intake.startingPoint), so neither
+// adds a read to the hold. A write of the setting, a delete included, either leaves the holder and
+// its count as they are or ends the hold, by the rule that resetCursor and cursor.reset hold whole
+// (read-rule-cases rows 6.1 to 6.5), so no write starts the count again. A message whose hold a
+// write ended is acknowledged unapplied at its next delivery (outcomeReleased), and another message
+// may then hold the read from a count of 1. A holder that has gone back stateMaxHolds times holds
+// the read no more: its next delivery is acknowledged; on the project's runner it makes the read
+// first where it is due (readFor), and on its crowded key it makes none (judgeCrowded). Where a
+// read is still owed then, for the reasons the cursor holds (readReasons, as afterRead and owe
+// leave them), the cursor names no holder from then on (readAnswer.release), and the read waits for
+// the project's next message, boot, settings change or take-over, which makes it once it is due, as
+// R3 makes every failed read. So each message holds the durable's ack floor below it for about 11
+// minutes at the most, however many take-overs and writes of the setting there are, and a take-over
+// replays at most that long of messages (consumerConfig). One case is past that bound: a write of
+// another URL or a delete that ends a hold while maxReleasedHolders messages released before it are
+// all still out, whose oldest record then goes (cursor.reset), so that message may hold a read
+// again for about 11 minutes more.
 const stateMaxHolds = 10
 
 // owedRead is a whole read to make: the setting whose daemon it reads, the reason its legion_reads
@@ -883,7 +883,9 @@ func lockCursor(ctx context.Context, tx pgx.Tx, project string) (stateURL string
 // cursor's store is. Every other read keeps both (forgets). A good read takes its own store out of
 // the stores marked as no daemon of the project (foreign_state_ids). A good read that a message of
 // another store made (owed.store), and that finds the cursor's store unchanged, marks that
-// message's store (marking), whose later messages the cursor then drops (drops).
+// message's store (marking), whose later messages the cursor then drops, but for a boot of it while
+// the cursor follows the setting's URL in a store a read verified, which calls for a store read
+// (drops).
 func (c cursor) afterRead(owed owedRead, read *wholeRead) cursor {
 	next := c
 	next.exists, next.stateURL, next.lastReadStartedAt = true, read.stateURL, &read.started

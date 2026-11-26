@@ -2653,7 +2653,7 @@ Roll out the three parts in this order:
 After the roll, the intake reads a project's daemon whole only where the events cannot carry the state, for the reasons the `ReadReason` constants name (`packages/envoy/internal/dispatch/legion/whole_read.go`), and no recurring timer reads a daemon.
 A project's whole reads start at least a minute apart.
 The Dispatch README describes the rule, in [The Legion state intake](../packages/envoy/cmd/dispatch/README.md#the-legion-state-intake): when a read is owed, which message holds it and for how long, how many messages of the durable's window one project can hold meanwhile, what a `PUT` or a `DELETE` of the project's Legion setting does to the project's cursor, and the intake's log lines of the rule, each with the `project`.
-`cursor.readFor`, `resetCursor` and `cursor.reset` (`packages/envoy/internal/dispatch/legion/cursor.go`) hold it in full.
+`cursor.readFor`, `cursor.afterRead`, `resetCursor` and `cursor.reset` (`packages/envoy/internal/dispatch/legion/cursor.go`), and `judgeCrowded` and `stateMaxWaiting` (`crowded.go`), hold it in code.
 
 The readings of production on 2026-11-18 were these.
 Production Dispatch (commit `4055c4a5`) had no Legion setting, so step 2 covered no project there, and the take-over of step 3 reads no daemon.

@@ -10,9 +10,11 @@ body: |-
   state intake"): when a read is owed, which message holds it and for how long, how many messages
   of the consumer's window one project can hold, what a `PUT` or a `DELETE` of a project's Legion
   setting does to the project's cursor, and the intake's log lines; legion's `cursor.readFor`,
-  `resetCursor` and `cursor.reset` hold it in full. A daemon of an earlier build
+  `cursor.afterRead`, `resetCursor` and `cursor.reset`, and its `judgeCrowded` and
+  `stateMaxWaiting`, hold it in code. A daemon of an earlier build
   ignores the `view` query and serves its whole state, which Dispatch reads the same way. A whole
-  read reads at most 64 MiB of the answer, not 32 MiB, and an answer over that is a failed read.
+  read reads at most 64 MiB and one byte of the answer, not 32 MiB, and an answer over 64 MiB is a
+  failed read.
   When Dispatch has NATS, a `PUT` of a project's Legion setting, of the same URL too, calls for a
   whole read of the daemon the setting names; the README says when the `PUT`'s wake makes that read
   and when a read already owed or in flight stands for it. Dispatch takes no starting point while a

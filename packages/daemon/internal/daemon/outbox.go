@@ -2615,7 +2615,8 @@ func stateCarried(encoded []byte) int {
 //
 // A publish that fails returns its error, and settle retries head on the outbox's backoff with its
 // sequence, or finishes it, logged, where the listener refuses it the same way however often it is
-// sent (permanentRefusal, finishRefused); record.LaneState says what each holds of the later rows.
+// sent (permanentRefusal, finishRefused); record.OutboxLane's comment, in its paragraph on
+// LaneState, says what each holds of the later rows.
 func (r *outbox) stateEvents(ctx context.Context, head record.OutboxRow, payload record.OutboxPayload) error {
 	if r.notices == nil {
 		return errors.New("state event executor has no Envoy publisher")

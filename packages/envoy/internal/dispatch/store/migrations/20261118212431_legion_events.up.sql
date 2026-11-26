@@ -53,7 +53,8 @@
 -- - read_reasons is every reason a whole read is owed for (legion's ReadReason constants), in the
 --   order they called for it, and empty while none is owed. legion's cursor.readFor says when a
 --   call adds its reason, and cursor.afterRead what a read leaves. The read is recorded under the
---   first reason and logged with them all.
+--   first reason and logged with every reason it joined; a starting read joins start alone and
+--   clears the rest (cursor.readFor).
 -- - read_owed is a whole read owed, which Postgres generates from read_reasons, so no write names
 --   it.
 -- - last_read_started_at is when the project's newest whole read began, whatever its reason and
@@ -112,7 +113,8 @@
 --   message's next delivery while the project has a setting, the intake acknowledges it
 --   unapplied, it holds no read, its store goes into foreign_state_ids as above, and the intake
 --   takes its sequence out of the array, and no other. So a write that names another URL ends the
---   hold of the message before it within one read's 60 s and a second, however many such writes
+--   hold of the message before it within the holder's remaining hand-back delay (60 s at most)
+--   plus one read's 60 s and a second, however many such writes
 --   come before that message comes back, and a message of the newly named daemon may hold the
 --   read from a count of 1. When an entry is added and when it goes is the rule of legion's
 --   cursor.reset. Empty for none.

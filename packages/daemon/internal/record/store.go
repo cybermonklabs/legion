@@ -3314,7 +3314,8 @@ const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null 
 // row ($6 is the state lane's kinds) waits while an unfinished state row of its project has a
 // lower sequence: every state row carries the bare project key as its issue, and takes its
 // sequence when its transaction commits (OutboxRow.StateSeq), so the project's one state lane
-// publishes its rows strictly in sequence order (LaneState, which says what a failed row holds).
+// publishes its rows strictly in sequence order (OutboxLane's comment on LaneState says what a
+// failed row holds).
 //
 // None of the four holds back any row but the ones it names. A row that is merely unclaimable
 // takes no lease, and the lane rule (outboxLaneFree) blocks only on a live lease, so an issue whose

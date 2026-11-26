@@ -35,10 +35,10 @@ import (
 
 var updateGolden = flag.Bool("update", false, "rewrite the golden fixtures this package pins")
 
-// settingsFixtureFile is the maximal kubernetes legion.yaml the settings tests share with the two
-// state goldens written from populatedState, state.json (TestStateGolden) and
+// settingsFixtureFile is the maximal kubernetes legion.yaml the settings tests share with the three
+// goldens written from populatedState, state.json and observed-state.json (TestStateGolden) and
 // state-narrowed-repositories.json (TestStateNarrowedRepositoriesGolden), so a key added here moves
-// both goldens: every key the loader models is set, and every value a credential, its source or its
+// all three goldens: every key the loader models is set, and every value a credential, its source or its
 // file could be is a planted fixture a test can look for in the wire bytes (a PEM that is no key, a
 // DSN password that opens nothing, `*_file` paths, the kubeconfig, the session DSN secret's key,
 // each provider key's store key, the pod's env values, volume, Secret and ServiceAccount names,

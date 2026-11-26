@@ -2719,9 +2719,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a role-holders publish requires the issue whose role sessions it writes")
 		}
 	// A state row's message is what Dispatch writes its observations from, so each state row, the
-	// claim writes' among them, is checked here by the checks package stateevent holds for every
-	// state row (stateevent.Change.Validate): checks of the row's own fields, not of the whole
-	// message.
+	// claim writes' among them, is checked here by the checks package stateevent holds for its kind
+	// (Change.Validate, Admission.Validate, Boot.Validate): checks of the row's own fields, not of
+	// the whole message.
 	case StateChange:
 		if err := stateevent.Change(value).Validate(); err != nil {
 			return err
