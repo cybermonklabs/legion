@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { daemonContract } from "@legion/contracts/daemon-contract";
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config";
 import { resolveIssueDocumentId } from "@legion/envoy-client/dispatch-execute";
@@ -71,12 +72,7 @@ import {
 import { createClaimSession } from "../src/claim-session";
 import { classifySession, type LegionSessionKind, requiredEnvironment } from "../src/classify";
 import { createControllerSession } from "../src/controller-session";
-import {
-  CYBER_POLICY_RETRY_ENTRY,
-  CYBER_POLICY_RETRY_NOTE,
-  createCyberPolicyLadder,
-  cyberPolicyLadderSettings,
-} from "../src/cyber-policy-ladder";
+import { createCyberPolicyLadder, cyberPolicyLadderSettings } from "../src/cyber-policy-ladder";
 import { createModelFallback } from "../src/model-fallback";
 import { applySessionTitle, legionSessionTitle } from "../src/session-title";
 import { daemonLaunchedController } from "../src/slack-channels";
@@ -316,43 +312,28 @@ export default function legionExtension(pi: PiApi): void {
         : undefined,
   });
 
+  // The host's own classifier of a `cyber_policy` refusal, read as a string-literal import when
+  // the first refusal comes, since the module exists only inside Oh My Pi and `bun test` has no
+  // loader for it. The ladder below and the turn-outcome reporter both class with it.
+  const cyberPolicyRefusal = async (message: unknown): Promise<boolean> =>
+    (await import("@oh-my-pi/pi-ai/error")).isCyberPolicyRefusal(message);
+
   // What a role does when OpenAI refuses its turn under `cyber_policy` (src/cyber-policy-ladder.ts):
   // retry, retry with a message, compact and retry, then a weaker model of the same family from the
   // model fallback above, each inside the turn so the daemon's prompt reads the last rung's
   // outcome. Each rung's send is input from outside the session, so Oh My Pi's hold ends for it.
-  const ladderMessage = {
-    customType: CYBER_POLICY_RETRY_ENTRY,
-    content: CYBER_POLICY_RETRY_NOTE,
-    display: false,
-  } as const;
   const cyberPolicyLadder = createCyberPolicyLadder<SessionContext>({
     settings: cyberPolicyLadderSettings(process.env, logger),
-    cyberPolicyRefusal: async (message) =>
-      (await import("@oh-my-pi/pi-ai/error")).isCyberPolicyRefusal(message),
+    cyberPolicyRefusal,
     recordableRefusal: async (message) =>
       (
         await import("@oh-my-pi/pi-coding-agent/session/cyber-policy-closure")
       ).isRecordableCyberPolicyRefusal(message),
-    sendOutside: (triggerTurn) =>
-      pi.sendMessage(ladderMessage, { deliverAs: "nextTurn", triggerTurn, origin: "outside" }),
-    sendInside: () => pi.sendMessage(ladderMessage, { deliverAs: "nextTurn", triggerTurn: true }),
+    // `pi`'s own method, called on `pi` as every other send of this entry is.
+    sendMessage: (message, options) => pi.sendMessage(message, options),
     sameFamilyFallback: (context) => modelFallback.sameFamilyFallback(context),
     stepDownTo: (context, model) => modelFallback.stepDownTo(context, model),
-    wait: (delayMs, signal) => {
-      if (signal?.aborted === true) return Promise.resolve(false);
-      const { promise, resolve } = Promise.withResolvers<boolean>();
-      const onAbort = (): void => {
-        clearTimeout(timer);
-        resolve(false);
-      };
-      const timer = setTimeout(() => {
-        signal?.removeEventListener("abort", onAbort);
-        resolve(true);
-      }, delayMs);
-      signal?.addEventListener("abort", onAbort, { once: true });
-      return promise;
-    },
-    paneContext: () => paneContext,
+    wait: (delayMs, signal) => delay(delayMs, true, { signal }).catch(() => false),
     log: logger,
   });
 
@@ -441,14 +422,12 @@ export default function legionExtension(pi: PiApi): void {
   // It runs for an architect's claim as well as a phase worker's: a provider that refuses turn
   // after turn ends either of them the same way, and a `task` subagent, whose instance registers
   // no claim of its own, reports nothing. A refused turn is classed with the host's own
-  // classifier, read as a string-literal import when the first refusal comes, since the module
-  // exists only inside Oh My Pi and `bun test` has no loader for it.
+  // classifier (`cyberPolicyRefusal` above).
   const turnOutcomes = createTurnOutcomeReporter({
     daemon: roleDaemon,
     claim: (sessionID) => claimSession.capability(sessionID),
     log: logger,
-    cyberPolicyRefusal: async (message) =>
-      (await import("@oh-my-pi/pi-ai/error")).isCyberPolicyRefusal(message),
+    cyberPolicyRefusal,
   });
 
   // A root architect's or phase worker's claim, and the operator-launched controller's.

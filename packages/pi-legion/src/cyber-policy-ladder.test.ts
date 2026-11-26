@@ -71,8 +71,10 @@ function rig(options: { weaker?: HostModel; compact?: "ok" | "fails" | "absent" 
       "errorMessage" in message &&
       String(message.errorMessage).includes("cyber_policy") &&
       !String(message.errorMessage).startsWith(HOLD_PREFIX),
-    sendOutside: (triggerTurn) => void calls.push(`outside ${triggerTurn}`),
-    sendInside: () => void calls.push("inside"),
+    sendMessage: (message, options) => {
+      expect(message).toMatchObject({ customType: CYBER_POLICY_RETRY_ENTRY, display: false });
+      calls.push(`${options?.origin ?? "inside"} ${options?.triggerTurn}`);
+    },
     sameFamilyFallback: async () => options.weaker,
     stepDownTo: async (_ctx, model) => {
       calls.push(`step ${model.provider}/${model.id}`);
@@ -82,7 +84,6 @@ function rig(options: { weaker?: HostModel; compact?: "ok" | "fails" | "absent" 
       waits.push(ms);
       return signal?.aborted !== true;
     },
-    paneContext: () => ctx,
     log: { debug: () => undefined, warn: (message) => void warnings.push(message) },
   });
   const signal = new AbortController().signal;
@@ -258,16 +259,21 @@ describe("one pass of the ladder", () => {
 });
 
 describe("a compaction that fails", () => {
-  test("counts as refused: the weaker model of the family is tried from outside the session", async () => {
+  test("counts as refused: a turn from inside the session is held, and its settle climbs the weaker model", async () => {
     const pane = rig({ weaker: WEAKER });
     for (let rung = 0; rung < 3; rung += 1) await pane.stop(refused());
     await pane.ladder.request([], pane.ctx);
     pane.failCompaction(new Error("cyber_policy: the summary was refused"));
     await settle();
-    await settle();
 
+    expect(pane.calls.at(-1)).toBe("inside true");
+    // The hold holds that turn's call, and its settle climbs the last rung from outside the session.
+    expect(await pane.stop(held())).toEqual({
+      continue: true,
+      additionalContext: CYBER_POLICY_CONTINUE,
+    });
     expect(pane.waits.at(-1)).toBe(25_000);
-    expect(pane.calls.slice(-2)).toEqual(["step openai/gpt-5.4-mini", "outside true"]);
+    expect(pane.calls.slice(-2)).toEqual(["step openai/gpt-5.4-mini", "outside false"]);
     // That rung's own refusal spends the pass.
     expect(await pane.stop(refused())).toBeUndefined();
   });
@@ -279,9 +285,24 @@ describe("a compaction that fails", () => {
     pane.failCompaction(new Error("cyber_policy: the summary was refused"));
     await settle();
 
-    expect(pane.calls.at(-1)).toBe("inside");
+    expect(pane.calls.at(-1)).toBe("inside true");
     // The held call of that turn settles: the pass is spent.
     expect(await pane.stop(held())).toBeUndefined();
+  });
+
+  test("after the pane moved to another session answers nothing of the new one's", async () => {
+    const pane = rig({ weaker: WEAKER });
+    for (let rung = 0; rung < 3; rung += 1) await pane.stop(refused());
+    await pane.ladder.request([], pane.ctx);
+    pane.ladder.reset();
+    pane.failCompaction(new Error("cyber_policy: the summary was refused"));
+    await settle();
+
+    // No turn is started for the old session's pass, and the new session's first refusal starts
+    // its own pass at the retry.
+    expect(pane.calls.at(-1)).toBe("compact outside");
+    expect(await pane.stop(refused())).toMatchObject({ additionalContext: CYBER_POLICY_CONTINUE });
+    expect(pane.waits.at(-1)).toBe(15_000);
   });
 });
 
@@ -312,7 +333,11 @@ describe("every request", () => {
   test("keeps a refused reply that carries a tool call, and another provider's error", async () => {
     const pane = rig();
     const withCall = { ...refused(), content: [{ type: "toolCall", id: "call-1" }] };
-    expect(await pane.ladder.request([user, withCall, otherError()], pane.ctx)).toBeUndefined();
+    // Claude Code's name for the same block.
+    const withToolUse = { ...refused(), content: [{ type: "tool_use", id: "call-2" }] };
+    expect(
+      await pane.ladder.request([user, withCall, withToolUse, otherError()], pane.ctx)
+    ).toBeUndefined();
   });
 });
 

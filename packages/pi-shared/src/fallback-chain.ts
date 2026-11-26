@@ -58,7 +58,7 @@ export async function nextFallbackModel(
   roleHint?: string
 ): Promise<HostModel | undefined> {
   const next = (await chainCandidates(ctx, model, roleHint))?.[0];
-  return next === undefined ? undefined : resolved(ctx, model, next);
+  return next === undefined ? undefined : resolved(ctx, model, next, "staying on this model");
 }
 
 /**
@@ -75,23 +75,25 @@ export async function fallbackModels(
 ): Promise<readonly HostModel[]> {
   const candidates = (await chainCandidates(ctx, model, roleHint)) ?? [];
   return candidates.flatMap((selector) => {
-    const candidate = resolved(ctx, model, selector);
+    const candidate = resolved(ctx, model, selector, "leaving that entry out");
     return candidate === undefined ? [] : [candidate];
   });
 }
 
 /** What one chain entry resolves to for this session, or undefined when it resolves to nothing
- * or the host's resolution throws (warned). */
+ * or the host's resolution throws: warned, with `consequence`, what the caller does without it. */
 function resolved(
   ctx: FallbackChainContext,
   model: HostModel,
-  selector: string
+  selector: string,
+  consequence: string
 ): HostModel | undefined {
   try {
     return ctx.models.resolve(selector);
   } catch (error) {
-    ctx.log.warn("legion: the model fallback chain did not resolve; staying on this model", {
+    ctx.log.warn(`legion: the model fallback chain entry did not resolve; ${consequence}`, {
       model: modelSelector(model),
+      entry: selector,
       error: messageFor(error),
     });
     return undefined;

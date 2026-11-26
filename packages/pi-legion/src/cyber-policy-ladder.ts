@@ -1,7 +1,10 @@
 import { messageFor } from "@legion/envoy-client/errors";
+import { assistantRanTool, assistantRefusal } from "@legion/pi-shared/phase-stall";
 import type {
+  AgentEndMessage,
   CompactionPreparation,
   HostModel,
+  PiApi,
   SessionBeforeCompactEvent,
   SessionStopEvent,
   SessionStopEventResult,
@@ -67,13 +70,18 @@ export const LONGEST_RUNG_WAIT_MS = 25_000;
 export const DEFAULT_CYBER_POLICY_MESSAGE =
   "The provider's content filter blocked your last response. Continue the task, and do not reproduce exploit code, payloads or credentials verbatim; describe them instead.";
 
-/** The `customType` of the hidden message that ends the host's hold before each rung. Taken out of
- * every request (`CyberPolicyLadder.request`), so the model never reads it. */
+/** The `customType` of the hidden message the ladder sends before each rung, and after a failed
+ * compaction. Taken out of every request (`CyberPolicyLadder.request`), so the model never reads
+ * it. */
 export const CYBER_POLICY_RETRY_ENTRY = "legion-cyber-policy-retry";
 
-/** The text of that message, which only the transcript shows. */
-export const CYBER_POLICY_RETRY_NOTE =
-  "Legion sends the request the provider's content filter refused again (cyber_policy ladder).";
+/** That message, whose text only the transcript shows. */
+const CYBER_POLICY_RETRY_MESSAGE = {
+  customType: CYBER_POLICY_RETRY_ENTRY,
+  content:
+    "Legion sends the request the provider's content filter refused again (cyber_policy ladder).",
+  display: false,
+} as const;
 
 /** The continuation text of every rung but the second. The host needs a text to continue the turn
  * (`agent-session.ts:7108-7133`); this one is taken out of every request again, and it says what a
@@ -150,21 +158,15 @@ export interface CyberPolicyLadderDeps<Context extends CyberPolicyLadderContext>
    * (`@oh-my-pi/pi-coding-agent/session/cyber-policy-closure`): OpenAI's own refusal, never a call
    * the hold held. Only such a refusal starts a pass of the ladder. */
   readonly recordableRefusal: (message: unknown) => Promise<boolean>;
-  /** Sends the hidden `CYBER_POLICY_RETRY_ENTRY` message as input from outside the session, which
-   * ends the host's hold; with `triggerTurn` it also starts a turn on an idle pane. */
-  readonly sendOutside: (triggerTurn: boolean) => void;
-  /** Sends the same message from inside the session, starting a turn on an idle pane while the
-   * hold stays: the turn that settles a pass whose compaction failed with no rung left. */
-  readonly sendInside: () => void;
+  /** The host's `pi.sendMessage`, which carries the ladder's hidden `CYBER_POLICY_RETRY_ENTRY`
+   * message. */
+  readonly sendMessage: PiApi["sendMessage"];
   /** The model of the session model's family below it in its chain (`ModelFallback`). */
   readonly sameFamilyFallback: (ctx: Context) => Promise<HostModel | undefined>;
   /** Moves the session to that model and arms its return (`ModelFallback.stepDownTo`). */
   readonly stepDownTo: (ctx: Context, model: HostModel) => Promise<boolean>;
   /** Resolves true after `ms`, or false at once when `signal` aborts first. */
   readonly wait: (ms: number, signal?: AbortSignal) => Promise<boolean>;
-  /** The pane's own session context, for the rung a failed compaction leaves to run outside every
-   * hook; undefined when the pane is on no Legion role's session. */
-  readonly paneContext: () => Context | undefined;
   readonly log: CyberPolicyLadderLog;
 }
 
@@ -185,44 +187,25 @@ export interface CyberPolicyLadder<Context extends CyberPolicyLadderContext> {
   /** `session_before_compact`: the ladder's own compaction summarizes the newest turn group too. */
   readonly beforeCompact: (event: SessionBeforeCompactEvent) => void;
   /** `turn_end`: a reply the provider gave ends the pass, so the next refusal starts a new one. */
-  readonly turnEnded: (message: unknown) => void;
-  /** The pane moved to another session: whatever pass ran was the old session's. */
+  readonly turnEnded: (message: AgentEndMessage | undefined) => void;
+  /** The pane moved to another session: whatever pass ran was the old session's, and a compaction
+   * it started answers nothing of the new one's. */
   readonly reset: () => void;
 }
 
-/** How a reply ended, read field by field from what the host hands. */
-function stopReason(message: unknown): string | undefined {
-  if (typeof message !== "object" || message === null || !("stopReason" in message)) return;
-  return typeof message.stopReason === "string" ? message.stopReason : undefined;
-}
-
-function role(message: unknown): string | undefined {
-  if (typeof message !== "object" || message === null || !("role" in message)) return;
-  return typeof message.role === "string" ? message.role : undefined;
-}
-
-/** Whether an assistant message carries a tool call: such a reply is never taken out of a
- * request, since its calls pair with results the provider must see. */
-function hasToolCall(message: unknown): boolean {
-  if (typeof message !== "object" || message === null || !("content" in message)) return false;
-  return (
-    Array.isArray(message.content) &&
-    message.content.some(
-      (block: unknown) =>
-        typeof block === "object" && block !== null && "type" in block && block.type === "toolCall"
-    )
-  );
-}
-
-/** Whether `message` is one of the ladder's own: the hold's outside message, or a continuation
- * carrying `CYBER_POLICY_CONTINUE`. The second rung's continuation is the model's to read. */
+/** Whether `message` is one of the ladder's own: the hidden message, or a continuation carrying
+ * `CYBER_POLICY_CONTINUE`. The second rung's continuation is the model's to read. */
 function isLadderMessage(message: unknown): boolean {
-  if (role(message) !== "custom" || typeof message !== "object" || message === null) return false;
-  const customType = "customType" in message ? message.customType : undefined;
-  if (customType === CYBER_POLICY_RETRY_ENTRY) return true;
-  if (customType !== SESSION_STOP_CONTINUATION) return false;
-  const content = "content" in message ? message.content : undefined;
-  return content === CYBER_POLICY_CONTINUE;
+  if (typeof message !== "object" || message === null) return false;
+  if (!("role" in message) || message.role !== "custom" || !("customType" in message)) {
+    return false;
+  }
+  if (message.customType === CYBER_POLICY_RETRY_ENTRY) return true;
+  return (
+    message.customType === SESSION_STOP_CONTINUATION &&
+    "content" in message &&
+    message.content === CYBER_POLICY_CONTINUE
+  );
 }
 
 export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext>(
@@ -237,6 +220,9 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
   let compactDue = false;
   /** The ladder's own compaction is running, which `beforeCompact` widens. */
   let compacting = false;
+  /** Which session's pass this is: `reset` moves it on, and a compaction started for an earlier
+   * one answers nothing when it ends. */
+  let generation = 0;
 
   const classify = async (
     check: (message: unknown) => Promise<boolean>,
@@ -271,55 +257,44 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
     spent = true;
   };
 
-  /** The compaction failed, so the turn it aborted is not resumed and the prompt waits on a run
-   * nothing starts: the next rung is started here, or, with none left, a turn the hold refuses,
-   * which settles the prompt with the `cyber_policy` code. */
-  const afterFailedCompaction = async (): Promise<void> => {
-    const ctx = deps.paneContext();
-    const target = ctx === undefined ? undefined : await deps.sameFamilyFallback(ctx);
-    if (ctx === undefined || target === undefined) {
-      exhaust();
-      deps.sendInside();
-      return;
-    }
-    next = CYBER_POLICY_RUNGS.indexOf("weaker-model") + 1;
-    await deps.wait(deps.settings.waitsMs["weaker-model"]);
-    if (!(await deps.stepDownTo(ctx, target))) {
-      exhaust();
-      deps.sendInside();
-      return;
-    }
-    deps.log.debug("legion: the cyber_policy ladder retries on a weaker model of the same family", {
-      model: `${target.provider}/${target.id}`,
+  /** Input from outside the session, sent before each rung: it ends the host's hold for that
+   * rung's request (`session/agent-session.ts:12605-12616`). */
+  const endHold = (): void =>
+    deps.sendMessage(CYBER_POLICY_RETRY_MESSAGE, {
+      deliverAs: "nextTurn",
+      triggerTurn: false,
+      origin: "outside",
     });
-    deps.sendOutside(true);
-  };
+
+  /** A turn from inside the session, started after a failed compaction: the turn that compaction
+   * aborted is not resumed, and the prompt waits on a run nothing else starts. The hold holds this
+   * turn's call, and that held call's `settle` climbs the next rung, or, with none left, settles
+   * the prompt with the `cyber_policy` code. */
+  const startHeldTurn = (): void =>
+    deps.sendMessage(CYBER_POLICY_RETRY_MESSAGE, { deliverAs: "nextTurn", triggerTurn: true });
 
   const startCompaction = (ctx: Context): void => {
-    compacting = true;
     const compact = ctx.compact;
+    // `settle` passes over the compacted rung where the host has no compaction.
+    if (compact === undefined) return;
+    compacting = true;
+    const started = generation;
     // The synchronous part of the host's compaction aborts the agent, so the request this hook was
     // called for is never sent; the host resumes the turn once the summary is committed
     // (`session/session-maintenance.ts:1999-2006, 2428-2437` at the pinned tag).
-    const running =
-      compact === undefined
-        ? Promise.reject(new Error("this host has no compaction for extensions"))
-        : compact({ origin: "outside" });
-    running.then(
+    compact({ origin: "outside" }).then(
       () => {
+        if (started !== generation) return;
         compacting = false;
         deps.log.debug("legion: the cyber_policy ladder compacted the session; the turn resumes");
       },
       (error: unknown) => {
+        if (started !== generation) return;
         compacting = false;
         deps.log.warn("legion: the cyber_policy ladder's compaction failed; it counts as refused", {
           error: messageFor(error),
         });
-        afterFailedCompaction().catch((failure: unknown) => {
-          deps.log.warn("legion: the cyber_policy ladder could not go on after its compaction", {
-            error: messageFor(failure),
-          });
-        });
+        startHeldTurn();
       }
     );
   };
@@ -327,7 +302,7 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
   return {
     settle: async (event, ctx) => {
       const last = event.last_assistant_message;
-      if (role(last) !== "assistant" || stopReason(last) !== "error") {
+      if (assistantRefusal(last) === undefined) {
         endPass("the turn ended with no refusal");
         return undefined;
       }
@@ -369,7 +344,7 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
         exhaust();
         return undefined;
       }
-      deps.sendOutside(false);
+      endHold();
       deps.log.debug("legion: the cyber_policy ladder climbs a rung", { rung });
       if (rung === "compact") compactDue = true;
       return {
@@ -386,9 +361,8 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
       for (const message of messages) {
         if (isLadderMessage(message)) continue;
         if (
-          role(message) === "assistant" &&
-          stopReason(message) === "error" &&
-          !hasToolCall(message) &&
+          assistantRefusal(message) !== undefined &&
+          !assistantRanTool(message) &&
           (await classify(deps.cyberPolicyRefusal, message))
         ) {
           continue;
@@ -408,7 +382,7 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
       summarizeThrough(event.preparation, leafId);
     },
     turnEnded: (message) => {
-      const reason = stopReason(message);
+      const reason = message?.stopReason;
       if (reason === "stop" || reason === "toolUse" || reason === "length") {
         spent = false;
         endPass("the provider answered");
@@ -419,6 +393,7 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
       spent = false;
       compactDue = false;
       compacting = false;
+      generation += 1;
     },
   };
 }

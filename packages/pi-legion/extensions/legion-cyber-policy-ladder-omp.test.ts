@@ -317,7 +317,8 @@ test.skipIf(skip)(
     });
 
     // The compacted rung's own request is aborted before it is sent, and its summary was refused,
-    // so nothing resumes it: the ladder itself starts the last rung, on the weaker model.
+    // so nothing resumes it: the ladder starts a turn from inside the session, the hold holds its
+    // call, and that held call's settle climbs the last rung, on the weaker model.
     const task = pane.turns().filter(onTask);
     expect(task.map((turn) => turn.model)).toEqual([
       "gpt-5.5",
