@@ -191,6 +191,17 @@ Apps' installations on it, its name and default branch, and Dispatch's webhook A
   - `Succeeded without checking the capability list (its legion CLI predates the check)`: the image's
     `legion` is older than this daemon's capability check. Build the image from this daemon's
     commit.
+  - `… does not take --session-id (omp-session-id=absent …)`, `… could not read whether its Oh My
+    Pi … takes --session-id …` or `… its legion CLI predates the omp-session-id mark …`:
+    `runtime.kubernetes.agent_secrets.exchange_audience` is set, so the daemon starts each new Oh My
+    Pi role with `--session-id <id>`, and the image's Oh My Pi does not take that flag, or nothing
+    shows that it does. The third message comes from an image whose `legion` speaks this daemon's
+    contract but prints no `omp-session-id` mark. An image whose `legion` is older than this release
+    is refused for its daemon contract instead (the first cause above). Use a worker image with an
+    Oh My Pi from the cybermonklabs/oh-my-pi release `v18.18.6-sami.20261117-074351` or a later
+    one, and a `legion` from this daemon's release or a later one, or unset `exchange_audience`.
+    The Oh My Pi that this release's `.omp-pin` names is that release or a later one, so an image
+    built on that pin passes.
   - `… refused role <role>'s Oh My Pi overlays: <file> cannot be read: …` (or `Oh My Pi refuses
     <file>: error: …`, quoting Oh My Pi's own error): a file `role_config_files` names for that
     role is not in the mount you gave it, or Oh My Pi cannot parse it. Add the key to the ConfigMap
@@ -216,11 +227,17 @@ prompt it launched with until then.
 - **The daemon logs `legion daemon launches with the instructions it last read: its copy could not
   be replaced` at ERROR.** The daemon read the edit but could not write its own copy under the state
   directory, which the prompt is composed from (`error` names the path and the cause). Launches go
-  on carrying the old text. Never delete the copy itself: while the write still fails, every launch
-  that reads it, the controller's included, then fails to compose its prompt. Fix what `error`
-  names: `permission denied`, give the daemon's user write access to the copy's directory; `is a
-  directory` or `file exists`, remove the directory that stands at the copy's path; `no space left
-  on device` or `read-only file system`, free space on, or remount, the state directory's volume.
+  on carrying the old text while the old copy is still there. Never delete the copy yourself: while
+  the write fails, each launch whose prompt reads that copy fails to compose it. For the deployment's
+  copy that is every launch, the controller's included; for an arm's copy, the memory block's among
+  them, it is each launch of a unit drawn into that arm. Fix what `error` names:
+  - `permission denied`: give the daemon's user write access to the copy's directory.
+  - `file exists`: a directory stands at the copy's path, so the old copy is already gone and each
+    launch that reads it fails. Remove that directory.
+  - `not a directory`: a file stands where the copy's directory should be. Remove that file.
+  - `no space left on device`, `disk quota exceeded` or `read-only file system`: free space or
+    quota on the state directory's volume, or remount it writable.
+
   The next launch writes the copy and logs the edit.
 - **The daemon logs none of these lines, and the edit is still not in a new launch's prompt.**
   Under Kubernetes, check how the daemon's pod mounts the file: the kubelet updates a ConfigMap
@@ -372,17 +389,24 @@ Check, in order:
    counts the issues the daemon has started, not trees). A parent whose own first phase waits for its open children
    is in `blocked`, with each child it waits for.
 
-   Each waiting issue's own `waitingLine` says where it stands and why: `part`, `returned` for
+   Each waiting issue's own `waitingLine` says where it stands and why: `priority`, the priority
+   that placed it, its own, else its tree root's (0 for P0 to 3 for P3, or null for one that waits
+   after P3); `part`, `returned` for
    an issue whose work came back or `starting` for one that has not started; `kind`;
-   `partPlace` and `partLength` within that part; `holdsSlot`, true where it holds its
+   `partPlace` and `partLength` within its priority and part; `holdsSlot`, true where it holds its
    admission slot already and so waits for no free one; `since`, or the `rootRank`, `ownRank`
    and `rootKey` that placed it; and `reason`, the daemon's own sentence. Plain `legion state`
    prints that sentence for the first ten waiting issues under the `admission:` counts, each
    line reading `<KEY> <place> of <N>, <part>: <reason>`, and then `and <N> more`. It prints
    `waiting line: none` while nothing waits, and
    `waiting line: the daemon sent no reasons at this caller's contract` where the daemon served
-   this caller no sentence. An issue that has not started stands behind every issue whose work
-   came back, whatever its board rank, so that order is no fault to chase.
+   this caller no sentence. The line is ordered by Dispatch priority first, P0 to P3 and then the
+   issues with no priority; within one priority, an issue that has not started stands behind every
+   issue whose work came back, whatever its board rank, so that order is no fault to chase. An
+   issue waits behind every issue of a higher priority, whatever its part: `waitingLine.priority`
+   is the priority it waits at, and `issues.<KEY>.priority` is its own, so a child whose own is
+   null waits at its tree root's. A priority changed in Dispatch moves the issue at the next
+   admission pass, and priority takes no slot back from work that runs.
 
 5. **GitHub refuses its branch.** Before the architect starts, the daemon creates the issue's
    branch, `legion/<KEY>`, on GitHub in the issue's recorded repository at its recorded default
@@ -429,11 +453,11 @@ approval on a deployment that gates no step, or when the last gated step was tak
 issue in `awaiting_person` keeps its admission slot
 ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label));
 once it is answered it stands in `admission.waiting` too,
-among the issues whose work came back, oldest first, until the pass that resumes it. That resume
+within its priority, among the issues whose work came back, oldest first, until the pass that resumes it. That resume
 takes no further slot, so it happens however full the cap is, whether or not the design gate has
 opened. While the root stands in the line, `waitingLine` on the
-issue gives its place in the line and the line's length, its `part` `returned`, its `kind`
-`answered`, its `holdsSlot` true and a `reason` saying a person answered it and that it holds
+issue gives its place in the line and the line's length, its `priority`, its `part` `returned`,
+its `kind` `answered`, its `holdsSlot` true and a `reason` saying a person answered it and that it holds
 its slot already, and its `why.state` is `waiting`. Nothing is sent to its architect about
 the wait, and the daemon resumes the root by itself on that pass, so neither the
 place nor the wait is anything to act on.
@@ -492,14 +516,23 @@ document. The tree waits until every entry reads `approved`, and `designGate` be
 A root in `backlog` or `icebox` runs again when a person sets it to `todo` with its `legion` label
 on, when a person asks the controller to start it, when a person approves its spec and it keeps its
 `legion` label and has no parent (the daemon then sets it to `todo` itself; an approval Dispatch
-carries from an earlier one does not count), or, when the controller parked it for a hold of its
-own, once the controller judges that a person's decision gives its work a next step or its walk
-finds the hold's cause gone or its event happened. The controller marks such a park with a comment
-on the root that begins `Parked by Legion while it waits on:`. First find whether the daemon relayed
-the decision. Its JSON log names the issue and the root on each of these lines:
+carries from an earlier one does not count, and neither does an approval the daemon applies after
+the root's status changed again, because it reached the daemon late or the operator replayed it),
+or, when the controller parked it for a hold of its own, once the controller judges that a
+person's decision gives its work a next step or its walk finds the hold's cause gone or its event
+happened. The controller marks such a park with a comment on the root that begins
+`Parked by Legion while it waits on:`. First find whether the daemon relayed the decision. Its
+JSON log names the issue and the root on each of these lines:
 
 - `outbox parked decision sent to the controller` or `workflow: a person's decision on a parked
   tree goes to the controller`: the controller received the decision.
+- `workflow: a person's approval of a parked root is older than a change of the root's status; the
+  root is not queued as their handover` (a warning with `approval_seq`, `status_change_seq` and
+  `controller_told`): the root's status changed after a person approved its spec, so the approval
+  queues nothing. `approval_seq` is the Dispatch event of the approval, and `status_change_seq` is
+  the later event that changed the status. `controller_told=true` says that the controller also
+  got a parked decision whose reason says this. For a root the daemon does not record,
+  `controller_told` is `false` and the warning is the only notice. Set the root to `todo` to run it.
 - `outbox parked decision not relayed: it names no person`: the gate opened on a deployment that
   gates no step, so no person made the decision.
 - `outbox parked decision not relayed: its root is not parked` or `workflow: a decision on a
@@ -576,10 +609,25 @@ ended this claim's turn: <cause>`, where the cause names that status, and the ho
 architect's to retry or escalate as any held phase is. The claim's own record carries that
 failure under the cause word `provider_error`, with the same sentence as its `detail`.
 
-**After six turns of one claim in a row have ended in a provider error**, the project's controller
-is told once, as `provider-errors on <KEY>`, with the run, the model and the cause
+**A turn that no prompt of the daemon's ran** — a phase reminder the plugin starts itself, an Envoy
+message, a background job's result — has no prompt result, so the daemon judges it from the
+plugin's turn-outcome report, which carries the HTTP status the provider answered and marks the
+turn `unprompted`. The same rule holds: a status that cannot clear fails the claim at once, with
+`why` reading `a provider error that cannot clear ended a turn this claim's agent ran with no
+prompt of the daemon's: <cause>`, holds the issue under the cause word `provider_error`, and so
+ends the plugin's reminders. Any other refusal, or one whose report carries no status, fails
+nothing and logs `supervise: a turn that ran no prompt of the daemon's ended in a provider error`;
+the reminders keep their pace of one every 5 minutes, and the turn counts in the claim's run of
+provider-error turns below. Nothing is sent again for such a turn: it carried no task.
+
+**After six turns of one claim in a row have ended in a provider error**, whether a prompt of the
+daemon's ran them or not, the project's controller is told once, as `provider-errors on <KEY>`,
+with the run, the model where the prompt's result named one, and the cause
 (`supervise: a run of turns that ended in a provider error; the controller is told`). Nothing is
-held and nothing is stopped by that count: the task is still kept and still sent again. The run
+held and nothing is stopped by that count. A prompt's task is still kept and still sent again on
+the ladder, and the notice says so; a turn that no prompt of the daemon's ran carried no task, so
+nothing is sent again for it, the reminders keep their pace, and a notice whose sixth turn was such
+a turn says that the daemon sends no task again for it. The run
 goes back to zero three ways: at a turn of that claim that ends with no provider error, at a
 compaction of its session that ran (`legion claims compact`, or the controller's `compact`; one
 Oh My Pi refused or skipped resets nothing, since the session is as it was), and when the claim's
@@ -857,11 +905,15 @@ as uncached input — a mean of 576,083 tokens, a median of 493,636 and a nineti
 1,327,888 — and the pacing is what spreads that over the minutes after a restart. A wave sustains
 about two thirds of the rate, about 5 a minute at the default, so a hundred claims take about
 twenty minutes. A restart forgets each waiting wake's moment. The launches it finds unfinished, a
-claim launching with no process, go back into the pacing in the order their tasks were queued, the
-oldest first, so among those a claim that waited before the restart goes ahead of work owed after
-it; the stale-plugin pass and the relaunches of processes found dead take their turns as they
-reach the gate, and while the project is paused the unfinished launches wait for the resume
-instead. Read what the pacing still holds before you act on anything below:
+claim launching with no process, and the relaunches of processes the previous daemon found dead go
+back into the pacing in one order, the order their tasks were queued, the oldest first, so among
+those a claim that waited before the restart goes ahead of work owed after it; the stale-plugin
+pass takes its turns as it reaches the gate, and while the project is paused the unfinished
+launches wait for the resume instead. A relaunch that reaches its gate an interval or more after
+the turn the boot gave it — its admission waits behind every other launch's — is reserved a turn
+afresh, at the back of the queue unless the pacing has drained, and the daemon logs `supervise:
+this launch reached the wake gate an interval or more after the turn its caller reserved` with the
+moment it is now `due`. Read what the pacing still holds before you act on anything below:
 
 ```sh
 legion state --config legion.yaml --json | jq '.wakesWaiting'
@@ -882,6 +934,23 @@ To run one now: `legion claims retry --claim <token>` runs the launch of a claim
 process, `legion claims resume` that of a suspended one, and a task you send runs the launch over
 a process the claim still records. Each takes the reserved wake back, and the wakes behind it keep
 their turns.
+
+A claim whose process the daemon found dead before the restart is on that list as well.
+Its record says the death was charged, and the boot raises the relaunch that death raised again, in
+the restart's own wave and in one order with the launches the previous daemon did not finish,
+without waiting for the runtime to report the death a second time.
+Until its turn, such a claim reads the state it was in when its process died, most often `working`
+or `shim_connected`, with `lastDeathCause` naming the death (after an issue pod's `roles` container
+was killed for memory and restarted, `launcher reports no child; container roles restarted`), and
+its `wake` (the claim's entry under `.issues` of the same `legion state --json` body) names the
+launch it waits for.
+The controller's `fresh_session` refuses such a claim with `CLAIM_UNSETTLED` while it reads
+`working`, `launching` or `shim_connected`: its launch is already in flight, and runs at the
+`dueAt` the list names.
+A claim that reads `registered`, `ready` or `idle` it suspends and starts again in a fresh session
+at once.
+A project pause's stop of such a claim records the relaunch as owed for the pause's end, even when
+it reaches the claim before the boot raises the relaunch.
 
 After a boot onto a new plugin contract, the wakes alone understate the wave: the stale-plugin
 lane holds at most one minute of the pacing at a time, so what it has reserved is a minute's
@@ -1667,10 +1736,11 @@ the tester or the reviewer, is told to stop writing the workspace and not to com
 the old head, and is then told the new head, and `workflow: the merge forward landed`
 names both heads. A completion of the phase the issue stands in that names a head a merge
 forward replaced, the head an earlier merge forward replaced included, or that names no head once
-a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is
-made again at the new head; a completion of a phase the issue has already left is recorded as
-before. Where the task's reviewer step already ran, the reviewer is asked to read the merge and
-approve the new head. A red check sends nothing back from anywhere.
+a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD` and moves nothing; the daemon
+keeps the refusal, so the same call again is answered `HANDOFF_ALREADY_RECORDED`, and the
+completion is made again at the new head. A completion of a phase the issue has already left is
+recorded as before. Where the task's reviewer step already ran, the reviewer is asked to read
+the merge and approve the new head. A red check sends nothing back from anywhere.
 
 The pull request's state as the daemon sees it:
 
@@ -1758,10 +1828,17 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
 - **`STALLED`** (`stalled`) is messages waiting and none of that consumer's handled for 60
   seconds, since the last one (`lastHandledAt`) or, before the first, since the daemon started.
   The daemon is handling none of them: each delivery fails and is put back to retry (the database
-  out of reach, say), or the message in hand does not finish. Search the daemon's log for
-  `retryable intake processing failure` and the other warnings naming a `subject` of that
-  consumer, whose `error` says what fails. A handler that does not finish writes none of those
-  lines while it holds ([a handling that outlives its window](#a-handling-that-outlives-its-window)).
+  out of reach, say), or the message in hand does not finish. A message put back waits longer after
+  each failure, from one second up to five minutes, and once JetStream has delivered it 21 times and
+  an hour has passed since its first failure, the daemon gives it up and it waits no more
+  ([A message the intake gave up](#a-message-the-intake-gave-up)). Search the daemon's log for
+  the warnings that carry `retry_in` and `delivered` and name a `subject` of that consumer. The
+  daemon writes one for each failed delivery: its message is the step that failed (each is
+  listed under [A message the intake gave up](#a-message-the-intake-gave-up)), `error` says what
+  fails, `delivered` how many times JetStream has delivered the message and `retry_in` how long
+  the daemon waits for its next delivery. A handler that does not
+  finish writes none of those lines while it holds
+  ([a handling that outlives its window](#a-handling-that-outlives-its-window)).
   The stall is all that shows until the handler passes the intake handler limit and the daemon
   writes `an intake handler outran its limit and was cut`, so search for that line too
   ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)), whose entry
@@ -1793,7 +1870,194 @@ timer. The daemon's read of an issue's pull request
 ([Running Legion](/legion/legion/running-legion/#the-github-apps)) is the backstop, and it runs
 at the daemon's start and after every handoff: it records the open pull request GitHub lists on
 the issue's branch, and applies a head, a review or an approval-carrying push GitHub shows. An
-event that waits for a phase no handoff is coming for waits for the consumer to catch up.
+event that waits for a phase no handoff is coming for waits for the consumer to catch up. An event
+the daemon gave up waits for a replay ([A message the intake gave up](#a-message-the-intake-gave-up)).
+
+## A message the intake gave up
+
+The daemon takes each GitHub event, each Dispatch event and each wake report of the Envoy listener
+as a message of one of its three durable consumers ([GitHub events wait](#github-events-wait)).
+When the handling of a message fails, the daemon puts the message back, and JetStream delivers it
+again: one second after the first failure, and twice as long after each later failure, up to five
+minutes. When GitHub's rate limit names a longer wait, the daemon waits that long. Each failure
+writes one warning, which carries the failure's `error`, the wait (`retry_in`), JetStream's count
+of the message's deliveries (`delivered`), and the message's `subject` and `stream_seq`. Search for
+`retry_in` and `delivered` together to find every one of them, because the warning's message is
+the step that failed. Six name a step of the handling: the first five are the reads and
+preparations the daemon makes before the event's database transaction, and the last is that
+transaction:
+
+- `read whether the pull request is recorded`
+- `prepare the issue's repository`
+- `prepare the review's issue`
+- `restore the review's truncated body`
+- `read the reviewer's repository permission`
+- `retryable intake processing failure`
+
+Three more name a write of the record itself, which failed, so the message waits for its next
+delivery rather than being given up: `record the give-up of a message that does not decode`,
+`a message that does not decode has no metadata to record it under` and `give up a message whose
+delivery did not end`. A record write that fails after a failed handling writes the warning
+`intake: the give-up record of a delivery was not written; the delivery goes on without it`, then
+that handling's own line from the six above.
+
+From the first failure the daemon keeps the whole message in its database, with the error of the
+last failure.
+
+The daemon gives the message up, and stops taking it, for one of five reasons, which the record
+keeps:
+
+- **`bound`**: JetStream has delivered the message 21 times, and its first failure is at least an
+  hour old. With the waits above, both are true at the 21st delivery, about 64 minutes after the
+  first.
+- **`did not end`**: one delivery ended in no recorded failure, because the daemon stopped or
+  crashed while it ran or because the record of its failure was not written, and the bound is
+  reached. The next delivery gives the message up before its handler runs again.
+- **`retention`**: the stream would delete the message before its next delivery.
+- **`undecodable`**: the message does not decode. The daemon gives it up at its first delivery.
+- **`consumer moved past`**: the consumer moved past the message without delivering it again,
+  because the consumer was made again past it or the stream deleted it. A sweep finds such a
+  message within a few minutes. Its record keeps the error `the consumer moved past it without
+  delivering it again`, so the error of its handling is in the earlier failure warnings (those
+  that carry `retry_in` and `delivered`) with the same `stream_seq`.
+
+A message given up is terminated: JetStream does not deliver it again, and its consumer counts it
+as handled and moves past it. The daemon writes one error line, `intake: a message was given up`,
+with `consumer`, `subject`, `stream_seq`, `delivered`, `reason`, `record` (the record's id) and the
+start of the `error`. Where the record cuts the error, the lines `intake: a given-up message's error
+in full; …` with the same `record` carry the whole of it. The record stays open until a replay or a
+discard closes it. While a controller is registered, the daemon also tells it: one
+`intake-gave-up` notice goes a minute after the first give-up, counts each give-up of that minute
+(`count`), and names up to 100 of them by record id, consumer and subject (`giveUps`).
+
+An operator acts on the records with `legion intake replay` and `legion intake discard`
+([Running Legion](/legion/legion/running-legion/#replay-or-discard-a-message-the-intake-gave-up)),
+and the controller with its `legion` tool's `replay_give_up` and `discard_give_up`. Each takes one
+record by its id (`--give-up`, or `giveUp`), or every open record of one consumer at or below a
+stream sequence (`--consumer` with `--through-seq`, or `consumer` with `throughSeq`).
+
+1. **Read the give-ups.** `legion state` prints one line for each consumer with open give-ups,
+   with how many and the newest stream sequence among them, and one line for each of the ten
+   newest:
+
+   ```text
+   intake give-ups legion-go-WIDGETS-dispatch: 1 open, newest seq 48213
+   intake give-up 412 legion-go-WIDGETS-dispatch notifications.dispatch.issue.WIDGETS-14.issue.updated seq 48213 gave up 2026-10-03T08:55:02Z after 1 deliveries (undecodable): Envoy envelope payload is not JSON
+   ```
+
+   `legion state --config legion.yaml --json | jq .intakeGiveUps` lists the 50 newest, each with
+   the first 300 characters of its `lastError` ([Running Legion](/legion/legion/running-legion/#observe)).
+   The controller reads the counts in `read_state`'s summary, as
+   `intake give-ups <consumer> open <n> newest seq <seq>`, and the record ids in the notice.
+2. **Find the cause in the last error.** The subject names the event:
+   `notifications.dispatch.issue.<KEY>.…` is an event of that issue, and
+   `notifications.github.<owner>.<repo>.…` an event of that repository. Search the daemon's log
+   for the give-up line with `record=<id>`. The controller's tools show no record's error: a replay
+   of one record by its id answers `failed` with the error, and leaves the record as it was.
+3. **Have the cause removed.** A cause outside the daemon, such as the database out of reach, a
+   Dispatch or GitHub outage, or GitHub's rate limit, needs no change to Legion: go on once it has
+   cleared. A defect in the daemon needs a fix that runs in the daemon: give the fix to the tree
+   that already works on that code, or hand the defect over as an issue for Legion. The controller
+   hands over a clear defect as its skill says.
+4. **Replay once the fix runs in the daemon.** A replay applies the stored message through the
+   handling a live delivery takes, and publishes nothing to the stream. It judges the fact against
+   the records as they stand now: however late the replay comes, a fact older than what an issue
+   or a pull request holds moves no record back, and it wakes no worker for a head the pull
+   request has left. Replay one record by its id, an open one or a discarded one, or every open
+   record of one consumer at or below a stream sequence. The newest sequence on the consumer's
+   line takes all of them:
+
+   ```sh
+   legion intake replay --config legion.yaml --operator-token-file operator-token --give-up 412
+   legion intake replay --config legion.yaml --operator-token-file operator-token --consumer legion-go-WIDGETS-dispatch --through-seq 48213
+   ```
+
+   Read the outcome of each record. `applied` (its fact applied now), `already applied` (the
+   daemon had applied the same fact before, so nothing changed) and `no fact` (the message holds
+   nothing the daemon acts on now, such as an event of a repository it no longer hears) each close
+   the record. `failed`, with its error, leaves the record as it was. One call takes at most 100
+   records, the lowest stream sequences first, and `remaining` counts the open records of the
+   selection left after it: make the same call again. A record that fails stays open and comes
+   first again at the next call, so once 100 records keep failing, no bulk call reaches the
+   records after them. Discard those that can never apply, or replay a record after them by its
+   id.
+5. **Discard a message that can never apply**, with the reason: most often a payload that does
+   not decode, which its producer should not have published. A discard applies nothing. Its record
+   stays, with the time, who discarded it (`operator`, or `controller session <id>`) and the
+   reason, so a replay by its id undoes a wrong discard. A discard of a consumer's records passes
+   over a record that a running replay holds.
+
+   ```sh
+   legion intake discard --config legion.yaml --operator-token-file operator-token --give-up 412 --reason 'the payload is not JSON, so no release can apply it'
+   ```
+
+The daemon refuses a discard whose reason is blank or longer than 2,048 characters
+(`400 GIVE_UP_REQUEST_INVALID`), an id of no give-up of this project (`404 GIVE_UP_NOT_FOUND`), a
+replay of a record a replay closed and a discard of a closed record (`409 GIVE_UP_CLOSED`, naming
+how and when it closed), an id that a running replay holds (`409 GIVE_UP_BEING_REPLAYED`), and
+every call to a daemon that runs no intake (`503 NO_INTAKE`).
+
+## An issue whose Dispatch event log cannot be read
+
+The daemon logs the error line `workflow: the listing leaves out of admission an issue whose
+Dispatch event log cannot be read` with four fields:
+
+- `issue`: the issue's key.
+- `event`: the place of the event that the daemon cannot read in the issue's Dispatch event
+  log, counted from 1.
+- `seq`: the Dispatch sequence of that event where the event itself decoded, and 0 where it did
+  not.
+- `error`: the error, which names the issue and the cause.
+
+The boot's listing of Dispatch's issues, or the listing of a repository recovery
+([Running Legion](/legion/legion/running-legion/#the-projects-repositories)), found a root in
+`triage` that carries the `legion` label and that the daemon does not record. For such a root,
+the daemon reads the issue's whole Dispatch event log to learn who set the label: the daemon moves
+the root to `todo` itself only for a label a person set. The daemon could not read this log, for
+one of two causes:
+
+- The log holds an event that the daemon cannot decode. It is an event that does not decode as a
+  Dispatch event, or an `issue.created`, `issue.updated` or `issue.closed` event whose payload is
+  no JSON object, whose `status` is not a string or whose `labels` is not a list of strings (a
+  `null` reads as absent).
+- A page of the log holds an event that the daemon cannot read: the event does not decode as an
+  object with a whole-number `seq`, or its `seq` is not above the `seq` before it (0 before the
+  first event). Its `error` holds `page issue events for <KEY>:`.
+
+So the daemon cannot tell who set the label. It leaves the root out of admission: it records
+nothing, queues nothing and writes nothing to Dispatch. The rest of the listing applies. The line
+comes back at every boot and at every recovery of the root's repository, because the daemon reads
+the whole log from its start and Dispatch never rewrites a log.
+
+While the daemon does not record the root, a live event that still shows the root labelled and in
+`triage` reads the log too. Its preparation fails the same way, with the warning `prepare the
+issue's repository`, and the intake gives the message up at its bound
+([A message the intake gave up](#a-message-the-intake-gave-up)). A replay of that give-up fails
+the same way while the daemon does not record the root, so discard a give-up whose root stays
+unrecorded, with the reason.
+
+A person ends the line, whatever its cause. Either the person moves the issue to `todo`, which
+admission takes without reading the log, or the person takes the `legion` label off. Any other
+move out of `triage` ends the line too.
+
+Any other failed read of the log, every refusal of it included, is not this line: it fails the
+whole listing and leaves no root out. A recovery reads the listing again later. The boot does one
+of two things:
+
+- It waits and reads the listing again when Dispatch is out of reach: no answer, a 5xx, a `401`,
+  `403`, `408` or `429`, or a 4xx without a Dispatch error code.
+- It stops and names the error on every other failed read: the `400 INVALID_QUERY` of a query
+  out of the route's bounds, the `404` with the message `no route for …` from a Dispatch that
+  does not have the events route yet, any other 4xx with a Dispatch error code, a refusal of the
+  transport (for example a TLS alert), or an answer whose body is not a page of events.
+
+Dispatch's events route answers `200` for an issue that it does not hold, and it makes its
+refusals (the credential answers, the `400 INVALID_QUERY`, the `no route` 404) for every request
+alike, so those refusals are not about one issue. A 5xx can be about one issue: an ask event in
+its log whose stored payload Dispatch cannot read answers `500` for that log alone. The boot then
+waits on that issue, and the error it logs at each attempt names it (`prepare who set the label of
+<KEY> for admission: …`). To let the boot complete, move that issue out of `triage`, to `todo`,
+or take its `legion` label off: the next attempt reads no log for it, and the listing applies.
 
 ## An architect is told `pull-request-missing`
 
@@ -1854,16 +2118,26 @@ notice comes once per handoff commit, from whichever read finds it first.
     reads), `workflow: a checks settlement was dropped: no pull request is recorded
     for it`, `workflow: a checks settlement stands for no head the record holds` (with
     `recorded_head` and `head_run_open`), and `workflow: a checks settlement of the head was not
-    applied` (with `classification`, `stale` or `conflict`). A settlement envelope the daemon
-    cannot decode at all, such as one whose source is not `github`, is logged as `poison JetStream
-    message` (an error with the `subject`) and dropped. A settlement delivered again after it
-    applied writes no line.
+    applied` (with `classification`, `stale` or `conflict`). The daemon gives up a settlement
+    envelope that it cannot decode at all, such as one whose source is not `github`, at its first
+    delivery ([A message the intake gave up](#a-message-the-intake-gave-up)). It keeps the message
+    in its database and writes the error line `intake: a message was given up`, with the reason
+    `undecodable` and the `subject`. The state counts the message in `intakeGiveUps`. While a
+    controller is registered, the `intake-gave-up` notice also counts it. A settlement delivered
+    again after it applied writes no line.
 
-  A published settlement with no new `CI settled` message and no drop line is one of three things:
+  A published settlement with no new `CI settled` message, no drop line and no give-up line is one
+  of four things:
   - The daemon applied it, and the line it would tell is the line it already told for that head,
     so it tells nobody again. The earlier `CI settled` message of that head stands for it.
   - The daemon applied it on a tree that lingers after its root left the workflow, where the
     daemon tells nobody.
+  - The daemon applied it and woke the released worker of the issue's open phase with a task that
+    names the settlement: `wake: a released pod is coming back`, kind `checks`, whose `detail`
+    starts with the head's first 12 characters. That task is the worker's `CI settled` message.
+    Each other released role's message ends `outbox role message finished undelivered: its role's
+    pod is released, and the message is not worth a wake`, unless a project pause holds it for the
+    role, when it waits for the role's launch.
   - In every other case, it was lost between the listener and the daemon.
 
   No line at all for a finished head means that no event of that head reached the listener's
@@ -1875,8 +2149,9 @@ notice comes once per handoff commit, from whichever read finds it first.
   the message in progress only until the limit, and the handler returns once the step that is
   running honours the cancelled context, which every step does at once today; only then is
   this warning written and the message naked. The event is sent again, and its `delivered` count
-  goes up by one, no sooner than that return: one nak delay (a second) after the nak, or at the
-  consumer's next pull where the step held the handler past about one acknowledgement window
+  goes up by one, no sooner than that return: one nak delay after the nak (a second after the first
+  failure, twice as long after each later one, up to five minutes), or at the consumer's next pull
+  where the step held the handler past about one acknowledgement window
   after the limit ([a handling that outlives its window](#a-handling-that-outlives-its-window)).
   The reports stop at the limit, so a handler cut there has had no report for whatever it ran
   past the limit. A step that ignored the cancelled context would hold the message, and this
@@ -1904,7 +2179,8 @@ notice comes once per handoff commit, from whichever read finds it first.
   ```
 
   The first row is the holder, the rest are waiting on it, and `xact_start` says how long it has
-  held. The next delivery of the same event takes the same path and is cut the same way.
+  held. The next delivery of the same event takes the same path and is cut the same way, until the
+  daemon gives the event up at its bound ([A message the intake gave up](#a-message-the-intake-gave-up)).
 
   The limit this deployment runs with is in the daemon's log at every boot, in a line beginning
   `intake: one fact's handling is cut after <n>s`, at warn when the limit is above an hour,
@@ -1949,12 +2225,15 @@ notice comes once per handoff commit, from whichever read finds it first.
   below). This line's own `delivered` is that delivery's count: the handling that outlived the
   window writes the line before its own acknowledgement.
 - **`an intake fact was delivered again and dropped as already applied`** (an info line with
-  `consumer`, `source`, `event_id`, `subject`, `stream_seq`, `delivery_seq` and `delivered`).
-  Intake was handed a fact it had already applied, so it ran no handler, wrote no record and
-  acknowledged the message. `delivered` and `subject` say where the second reading of the fact
-  came from, and there are five. A `delivered` above 1 is a JetStream redelivery of the same
-  message. A `delivered` of 1 is a second reading of one fact, in one of four ways: the
-  listener publishes a review or comment that mentions the trigger on each of its mention
+  `consumer`, `source`, `event_id`, `subject`, `stream_seq`, `delivery_seq` and `delivered`, or
+  `replay` in place of `delivery_seq`). Intake was handed a fact it had already applied, so it ran
+  no handler and wrote no record: it acknowledged the message or, on a replay, closed the give-up
+  as `already applied`. `delivered`, `subject` and `replay` say where the second reading of the
+  fact came from, and there are six. A line with `replay=<record id>` is a replay of a message the
+  intake gave up ([A message the intake gave up](#a-message-the-intake-gave-up)), and its
+  `delivered` is the count the record kept. A `delivered` above 1 on a line with no `replay` is a
+  JetStream redelivery of the same message. A `delivered` of 1 is a second reading of one fact, in
+  one of four ways: the listener publishes a review or comment that mentions the trigger on each of its mention
   topics beside its own, one fact under one dedupe key; a durable consumer created again at the
   last message it applied is delivered that message once more (the `intake: a missing durable
   consumer is created at the last message it applied` entry below); the listener publishes a
@@ -1970,11 +2249,12 @@ notice comes once per handoff commit, from whichever read finds it first.
   took the fact lock before the deduplication found it applied, whichever reading it is, and
   `ApplyFact`'s other callers drop duplicates the same way and write no line, so the total is
   the intake consumer's part of what decides whether `processed_events` should be read before
-  the lock. The lines whose `delivered` is above 1 are the rate at which JetStream delivers again
-  a fact this consumer had already applied. The daemon writes a line only for a copy it finds
-  already applied, so that rate counts no redelivery of an event that carries no fact, and none of
-  an event not yet applied. A recreated consumer's replay reads 1 and stands outside the rate,
-  although JetStream did hand the fact over twice.
+  the lock. The lines whose `delivered` is above 1 and that carry no `replay` are the rate at which
+  JetStream delivers again a fact this consumer had already applied. The daemon writes a line only
+  for a copy it finds already applied, so that rate counts no redelivery of an event that carries
+  no fact, and none of an event not yet applied. A recreated consumer's delivery of its last
+  applied message reads 1 and stands outside the rate, although JetStream did hand the fact over
+  twice.
 - **`webhook App missing on <repo>: <reason>`** in `legion state` (its entry in
   `repositories.withoutWebhookApp` in `--json`). Dispatch's GitHub App, the Envoy App whose
   webhook carries GitHub's events, is not known to be installed on a repository a live record
@@ -1998,11 +2278,12 @@ notice comes once per handoff commit, from whichever read finds it first.
 - **`intake: a missing durable consumer's last applied message is older than the stream's first
   message; …`** (a warning with `consumer`, `start` and `stream_first`). The stream keeps 72 hours
   of messages, and the last message the consumer applied is older than the oldest it still holds.
-  Only an applied event moves that position, not one the daemon acknowledged without acting on, so
-  on a quiet project the consumer may have handled every event between `start` and `stream_first`
-  before it went missing. Any it had not reached may have been missed: the daemon applied none of
-  them, and nothing replays them, so an issue one of them would have moved waits for its next
-  event, or for the daemon's own read of its pull request at that issue's next handoff.
+  Only an applied event, or one the daemon gave up, moves that position, not one the daemon
+  acknowledged without acting on, so on a quiet project the consumer may have handled every event
+  between `start` and `stream_first` before it went missing. Any it had not reached may have been
+  missed: the daemon applied none of them, and nothing replays them, so an issue one of them would
+  have moved waits for its next event, or for the daemon's own read of its pull request at that
+  issue's next handoff.
 - **`agent-secrets: the token login failed; retrying`** (an error line with the cause, the class
   it was sorted into and the retry schedule that class takes).
   With `runtime.kubernetes.agent_secrets` set, the daemon logs in to the
@@ -2019,12 +2300,14 @@ notice comes once per handoff commit, from whichever read finds it first.
   reads `"state": "failed"` until a login succeeds. Nothing needs restarting, and no person is ever
   asked. The line names the class the failure was sorted into (`class`), the retry schedule that
   class takes (`schedule`), the wait before the next login (`retry_in`) and the cause (`error`).
-  When a login got no HTTP answer, or a 5xx answer from the broker or its front door (the
-  broker is down, out of reach, or cannot reach its database), the daemon retries 2 s later,
-  doubling to at most 10 s, so it logs in within about 10 s of the broker serving again. After
-  any other failure it retries 30 s later, doubling to at most 5 minutes: a refusal the broker
-  decided, a token file it could not read, and a fault on the daemon's own side — a TLS
-  handshake that failed, or a host name that does not resolve — which no wait of seconds fixes.
+  When a login got no HTTP answer, or a 408, a 429 or a 5xx answer from the broker or its front
+  door (the broker is down, out of reach, cannot reach its database, or will not take a login
+  yet), the daemon retries 2 s later, doubling to at most 10 s, so it logs in within about 10 s of
+  the broker serving again. After a 429 it waits at least as long as the answer's `Retry-After`
+  asks, at most 5 minutes. After any other failure it retries 30 s later, doubling to at most 5
+  minutes: a refusal the broker decided (any other 4xx), a token file it could not read, and a
+  fault on the daemon's own side — a TLS handshake that failed, or a host name that does not
+  resolve — which no wait of seconds fixes.
 
   ```sh
   legion state --config legion.yaml --json | jq .agentSecretsLogin

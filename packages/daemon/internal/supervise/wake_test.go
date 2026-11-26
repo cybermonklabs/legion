@@ -47,7 +47,8 @@ func pacedDeps(rate int) func(*Deps) {
 	return func(d *Deps) {
 		d.WakePace = WakePace{Rate: rate, Burst: 1}
 		if rate > 0 {
-			d.WakePace.Reserve = wakepace.New(rate, 1, func(time.Duration) time.Duration { return wakePart }).Reserve
+			limiter := wakepace.New(rate, 1, func(time.Duration) time.Duration { return wakePart })
+			d.WakePace.Reserve, d.WakePace.Interval = limiter.Reserve, limiter.Interval()
 		}
 	}
 }
@@ -254,8 +255,79 @@ func TestASpawnWhoseCarriedTurnPassedLongAgoIsPacedAgain(t *testing.T) {
 	if held := second.View().WakeWaiting; held == nil || !held.At.Equal(now.Add(wakeInterval+wakePart)) {
 		t.Fatalf("the spawn whose turn passed two intervals ago holds wake %+v, want one reserved afresh, due one interval and a part on", held)
 	}
+	if late := h.logs.lines("reached the wake gate an interval or more after the turn its caller reserved"); len(late) != 1 ||
+		!strings.Contains(late[0], "claim="+string(secondToken)) {
+		t.Fatalf("the lines that say a late turn was reserved afresh are %v, want one, the second claim's", late)
+	}
 	if held := third.View().WakeWaiting; held == nil || !held.At.Equal(now.Add(3*wakeInterval)) {
 		t.Fatalf("the spawn whose turn is to come holds wake %+v, want its own turn, three intervals on", held)
+	}
+}
+
+// A parked wake runs at the turn its claim's view names, however far the clock moved between the
+// decision's read of it and the arm of the wake's timer (Clock.At). Here the reservation moves the
+// clock a second, as the test goroutine of internal/daemon's
+// TestNoMinuteOfAFleetsRefreshWaveHoldsMoreThanTheRateAndTheBurst moved the wave clock inside
+// another goroutine's park, which failed it with "timed out waiting for the launch of … at its
+// turn" (awaitLaunchAtItsTurn).
+func TestAWakeRunsAtItsTurnWhenTheClockMovesBeforeItsTimerIsArmed(t *testing.T) {
+	const moved = time.Second
+	var h *harness
+	h = pacedHarness(t, wakeRate, func(d *Deps) {
+		reserve := d.WakePace.Reserve
+		d.WakePace.Reserve = func(now time.Time) time.Time {
+			at := reserve(now)
+			if at.After(now) {
+				h.clock.Advance(moved)
+			}
+			return at
+		}
+	})
+	second := h.machineFor(wakeClaim(secondToken, StateQueued))
+	start := h.clock.Now()
+
+	h.must(RequestSpawn{Claim: h.token})
+	h.mustPostTo(second, RequestSpawn{Claim: secondToken})
+
+	held := second.View().WakeWaiting
+	if want := start.Add(wakeInterval + wakePart); held == nil || !held.At.Equal(want) {
+		t.Fatalf("the waiting claim names wake %+v, want its turn at %s, one interval and a part after the first", held, want)
+	}
+	if now := h.clock.Now(); !now.Equal(start.Add(moved)) {
+		t.Fatalf("the clock reads %s after the park, want %s: the reservation moved it %s", now, start.Add(moved), moved)
+	}
+	h.clock.Advance(held.At.Sub(h.clock.Now()) - time.Nanosecond)
+	second.Wait()
+	h.wantStarts(secondToken, 0)
+
+	h.clock.Advance(time.Nanosecond)
+	second.Wait()
+
+	h.wantStarts(secondToken, 1)
+	h.wantWakeLine(secondToken, "waited=true", "waitedFor="+(wakeInterval+wakePart).String())
+}
+
+// The fake clock arms a moment it has passed, by either arm, for its own time: it fires at the
+// clock's next move and never moves the clock back.
+func TestTheFakeClockFiresAPassedMomentAtItsOwnTime(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		arm  func(c *fakeClock, passed time.Time, f func())
+	}{
+		{name: "AfterFunc", arm: func(c *fakeClock, passed time.Time, f func()) { c.AfterFunc(passed.Sub(c.Now()), f) }},
+		{name: "At", arm: func(c *fakeClock, passed time.Time, f func()) { c.At(passed, f) }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			c := newFakeClock()
+			c.Advance(time.Hour)
+			before := c.Now()
+			var read time.Time
+			row.arm(c, before.Add(-time.Minute), func() { read = c.Now() })
+			c.Advance(time.Nanosecond)
+			if read.IsZero() || read.Before(before) {
+				t.Fatalf("the timer %s armed for a passed moment read the clock at %s, want no earlier than %s, the clock's time at the arm", row.name, read, before)
+			}
+		})
 	}
 }
 
@@ -1312,6 +1384,293 @@ func TestTheRegistrationDeadlineOfADeadProcessIsNotFiredWhileItsRelaunchWaits(t 
 
 	h.wantState(StateLaunching)
 	h.wantStarts(h.token, 2)
+}
+
+// The boot's replay of a recorded death (RecordedDeath) raises no second relaunch over a claim
+// whose death the sweep already decided: at boot the runtime's first report can reach a machine
+// before the replay does — a pod that is gone reads gone at once — and that report raised the
+// relaunch the record names. A second launch raised over a waiting wake replaces it and takes a
+// token of its own at the back of the queue (reserveWake), so the replay must find the launch
+// already raised and decide nothing (relaunchRecordedDeath, launchMet).
+//
+// The negative control is that guard reverted: the replay then reserves again and the claim's
+// wake moves to a later turn, which wantWakeDueAt reads.
+func TestARecordedDeathWhoseReportCameFirstTakesNoSecondWake(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	h.reach(StateReady)
+	queueAhead(h, 1)
+	h.observe(runtime.Gone)
+	waiting := h.wantWaitingWake(WakeLaunch)
+	h.wantBudgets(Budgets{LaunchFailures: 1})
+	if !h.claim().DeathCharged {
+		t.Fatal("the claim records no charge for the death the sweep decided, want DeathCharged: the boot's replay reads it")
+	}
+
+	h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation})
+
+	h.wantWakeDueAt(waiting)
+	h.wantBudgets(Budgets{LaunchFailures: 1})
+	h.wantStarts(h.token, 1)
+}
+
+// One death is charged one launch failure, however many daemons raise its relaunch. The
+// relaunch a death raises waits in the pacing in memory, and a write the claim makes while it
+// waits — the task a workflow start queues on it, here — stores the claim as the machine holds
+// it. After a restart the death's relaunch is raised again, by the boot's replay of the record
+// (RecordedDeath) or by the sweep's next report of the same death (died), and neither may charge
+// the death a second launch failure: that walks a claim to the launch budget for a process that
+// failed once, and fails it with no launch tried.
+//
+// The negative control is the charge made at every raise of the relaunch (relaunchAfterFailure
+// without its deathLaunchFailureCharged guard): the restart reads the stored count with the first
+// charge in it and adds a second.
+func TestARestartChargesADeathWhoseRelaunchWaitedNoSecondLaunchFailure(t *testing.T) {
+	for _, row := range []struct {
+		name  string
+		again func(h *harness, dead runtime.Locator)
+	}{
+		{"the boot's replay of the recorded death", func(h *harness, _ runtime.Locator) {
+			h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation})
+		}},
+		{"the sweep's next report of the death", func(h *harness, dead runtime.Locator) {
+			h.must(RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: h.clock.Now()}})
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h := pacedHarness(t, wakeRate)
+			h.reach(StateReady)
+			queueAhead(h, 1)
+			dead := h.locator()
+			h.observe(runtime.Gone)
+			h.wantWaitingWake(WakeLaunch)
+			charged := h.claim().Budgets
+			h.must(RequestDeliver{Claim: h.token, Task: "the phase's task", ID: "outbox:7", Row: 7})
+			if stored := h.store.load(h.token).Budgets; stored != charged {
+				t.Fatalf("the claim is stored with budgets %+v while its relaunch waits, want %+v: the task's write stores the claim as the machine holds it",
+					stored, charged)
+			}
+
+			h.restart()
+			row.again(h, dead)
+
+			h.wantWaitingWake(WakeLaunch)
+			h.wantBudgets(charged)
+		})
+	}
+}
+
+// The boot's replay of a recorded death relaunches the claim in every live state a death can
+// leave it stored in: the park over a dead process writes nothing of the claim, so it is restored
+// in the state its process died in — shim_connected or registered for a role that died before it
+// was ready, which is where most roles of a pod killed during its relaunch stand.
+func TestTheBootsReplayRelaunchesARecordedDeathInEveryStateItCanBeStoredIn(t *testing.T) {
+	for _, state := range []ClaimState{StateShimConnected, StateRegistered, StateReady, StateWorking} {
+		t.Run(string(state), func(t *testing.T) {
+			h := pacedHarness(t, wakeRate)
+			h.reach(state)
+			queueAhead(h, 1)
+			h.observe(runtime.Gone)
+			h.wantWaitingWake(WakeLaunch)
+			h.restart()
+			if restored := h.claim(); restored.State != state || !restored.DeathCharged || restored.Locator == nil {
+				t.Fatalf("the restored claim is %s, DeathCharged %v, recording %+v; want %s over its dead process with the death charged",
+					restored.State, restored.DeathCharged, restored.Locator, state)
+			}
+
+			h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation})
+
+			h.wantWaitingWake(WakeLaunch)
+		})
+	}
+}
+
+// A report that finds the recorded process running, decided before the boot's replay of its
+// death, leaves the replay nothing to relaunch: the report clears the charge (reportedProcess),
+// and a replay that relaunched anyway would end a running worker's turn for a death the runtime
+// has just said did not happen.
+func TestTheBootsReplayOfADeathTheRuntimeSinceFoundRunningRelaunchesNothing(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	h.reach(StateReady)
+	queueAhead(h, 1)
+	h.observe(runtime.Gone)
+	h.restart()
+	h.observe(runtime.Alive)
+	charged := h.claim().Budgets
+
+	h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation})
+
+	if held := h.m.View().WakeWaiting; held != nil {
+		t.Fatalf("the claim waits on wake %+v, want none: the runtime found its process running", *held)
+	}
+	h.wantStarts(h.token, 1)
+	h.wantBudgets(charged)
+	h.wantState(StateReady)
+}
+
+// A suspension held over a restored dead claim keeps the boot's replay of the death from
+// relaunching it: the claim reads working, its process unreported since the restart, so an
+// operator's suspension is held for a turn that will not end, and the death's own report ends that
+// hold as a suspension (died, endHeld). A replay that launched instead — at once, where the pacing
+// does not hold it — would let the process go with the hold (letGo), and the claim would run where
+// the operator suspended it, with no request left to suspend it again.
+//
+// The death's relaunch is refused before the restart, so the claim is stored working over its dead
+// process with the death charged, which is what the replay reads (relaunchRecordedDeath).
+func TestTheBootsReplayLeavesARecordedDeathWithAHeldSuspensionToItsReport(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+	h.must(StreamTurnStart{Claim: testToken})
+	dead := h.locator()
+	h.m.deps.Store = &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+	gone := RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: h.clock.Now()}}
+	if err := h.handle(gone); err == nil {
+		t.Fatal("the relaunch the death raised was taken, want the lifecycle recheck's refusal of it")
+	}
+	h.restart()
+	if err := h.handle(RequestSuspend{Claim: testToken, By: SuspendedByOperator}); err != nil && !errors.Is(err, ErrSuspendHeld) {
+		t.Fatal(err)
+	}
+	if !h.claim().SuspensionHeld {
+		t.Fatalf("the operator's suspension of the restored working claim is not held, state %s", h.state())
+	}
+
+	h.must(RecordedDeath{Claim: testToken, Generation: h.claim().Generation})
+
+	h.wantStarts(testToken, 1)
+	if !h.claim().SuspensionHeld {
+		t.Fatal("the replay dropped the held suspension, want it kept for the death's report to end")
+	}
+	h.must(gone)
+	h.wantState(StateSuspended)
+	h.wantStarts(testToken, 1)
+}
+
+// The boot's replay names the generation it read, and a claim a launch has moved past it raises
+// nothing, even where a death of that later process is charged and its relaunch was refused: that
+// relaunch is the later death's, which its own report raises, and the death the replay names was
+// relaunched already.
+func TestTheBootsReplayOfAnEarlierGenerationRelaunchesNothing(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	refusing := &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+	first := RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}}
+	h.m.deps.Store = refusing
+	if err := h.handle(first); err == nil {
+		t.Fatal("the relaunch the first death raised was taken, want the lifecycle recheck's refusal of it")
+	}
+	h.restart()
+	read := h.claim().Generation
+	// The sweep's report of the first death raises its relaunch, which runs at once.
+	h.must(first)
+	h.wantStarts(h.token, 2)
+	// That process dies too, and the lifecycle refuses its relaunch, so the claim stands charged
+	// over its dead process at the later generation with no launch raised.
+	h.m.deps.Store = refusing
+	if err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}}); err == nil {
+		t.Fatal("the relaunch the second death raised was taken, want the lifecycle recheck's refusal of it")
+	}
+	h.m.deps.Store = h.store
+	if c := h.claim(); c.Generation == read || !c.DeathCharged {
+		t.Fatalf("the claim is at generation %d with DeathCharged %v, want past %d with the later death charged", c.Generation, c.DeathCharged, read)
+	}
+
+	h.must(RecordedDeath{Claim: h.token, Generation: read})
+
+	h.wantStarts(h.token, 2)
+}
+
+// A report of a recorded death that reaches the machine after the boot's pass reserved that
+// death's turn and before the pass's replay parks the relaunch at a turn of its own, behind every
+// turn the pass reserved. The replay moves that wake to the turn the pass handed it, so a report
+// that lands after the pass reserved costs the relaunch no place in the owed order, and the
+// relaunch is charged no second launch failure and launches once, at that turn, however far the
+// clock moves between the replay's read of it and the arm (Clock.At).
+//
+// The negative control is the replay deciding nothing over the waiting wake, as it does for a
+// relaunch it finds parked at an earlier turn: the wake stays at the report's later turn.
+func TestTheBootsReplayMovesARelaunchItsReportParkedLaterToTheReplaysTurn(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	h.reach(StateReady)
+	queueAhead(h, 1)
+	dead := h.locator()
+	h.observe(runtime.Gone)
+	h.restart()
+	queueAhead(h, 3)
+	h.must(RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: h.clock.Now()}})
+	late := h.wantWaitingWake(WakeLaunch)
+	turn := h.clock.Now().Add(wakeInterval)
+	if !turn.Before(late.At) {
+		t.Fatalf("the report's relaunch waits for %s, want a turn after %s: the queue ahead of it is too short", late.At, turn)
+	}
+	clock := &movingClock{fakeClock: h.clock, step: time.Millisecond}
+	h.m.deps.Clock = clock
+
+	clock.moving.Store(true)
+	h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation, Turn: turn})
+	clock.moving.Store(false)
+
+	if clock.moves.Load() == 0 {
+		t.Fatal("the replay read the clock no time while it was moving: the clock moved nothing between a read and the arm")
+	}
+	h.wantWakeDueAt(WakeWaiting{Kind: WakeLaunch, At: turn})
+	h.wantBudgets(Budgets{LaunchFailures: 1})
+	h.advance(turn.Sub(h.clock.Now()))
+	h.wantStarts(h.token, 2)
+	if held := h.m.View().WakeWaiting; held != nil {
+		t.Fatalf("the claim still waits on wake %+v after its turn, want none: the report's later turn is spent, not run", *held)
+	}
+}
+
+// The replay moves only a wake of the pacing's own, to a turn earlier than that wake's which has
+// not passed by an interval or more (takeEarlierTurn); over any other relaunch the report raised,
+// it decides nothing, and the relaunch waits where the report put it. A turn later than the
+// report's would move the relaunch back; one passed by an interval would let it out at once, ahead
+// of every turn the boot's pass reserved after it; and a launch the pause's gate holds has no
+// moment to move, and moved would run while the project is paused.
+func TestTheBootsReplayMovesNoRelaunchOutsideItsRule(t *testing.T) {
+	for _, row := range []struct {
+		name   string
+		paused bool
+		turn   func(now, due time.Time) time.Time
+	}{
+		{name: "a turn after the report's", turn: func(_, due time.Time) time.Time { return due.Add(wakeInterval) }},
+		{name: "a turn passed by an interval", turn: func(now, _ time.Time) time.Time { return now.Add(-wakeInterval) }},
+		{name: "a launch the pause's gate holds", paused: true, turn: func(now, _ time.Time) time.Time { return now.Add(wakeInterval) }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h := pacedHarness(t, wakeRate)
+			h.reach(StateReady)
+			queueAhead(h, 1)
+			dead := h.locator()
+			h.observe(runtime.Gone)
+			flag := &pauseFlag{}
+			stops := &stopTransaction{store: h.store}
+			h.deps.Paused, h.deps.PauseStopped = flag.Paused, stops.PauseStopped
+			h.restart()
+			queueAhead(h, 3)
+			if row.paused {
+				flag.set(7)
+			}
+			h.must(RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: h.clock.Now()}})
+			waiting := h.m.View().WakeWaiting
+			due := h.clock.Now().Add(10 * wakeInterval)
+			if waiting != nil {
+				due = waiting.At
+			}
+			if row.paused != (waiting == nil) {
+				t.Fatalf("the report's relaunch publishes wake %+v with the project paused %v, want one only where no pause holds it", waiting, row.paused)
+			}
+
+			h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation, Turn: row.turn(h.clock.Now(), due)})
+
+			if got := h.m.View().WakeWaiting; (got == nil) != (waiting == nil) || got != nil && *got != *waiting {
+				t.Fatalf("the claim names wake %+v after the replay, want the report's %+v: the replay moves nothing outside its rule", got, waiting)
+			}
+			h.advance(2 * wakeInterval)
+			h.wantStarts(h.token, 1)
+		})
+	}
 }
 
 // Nothing probes the process a waiting launch replaces, so no probe interval ever falls inside

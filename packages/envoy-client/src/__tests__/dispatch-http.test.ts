@@ -1589,6 +1589,7 @@ test("createProject posts the key, name and actor and answers the created projec
     default_assignee: "alice@example.com",
     created_at: "2026-10-11T00:00:00Z",
     gated_steps: [],
+    proven_sessions: false,
   };
   const { fetchImpl, requests } = fakeFetch([jsonResponse(project, 201)]);
   const client = new DispatchClient("http://dispatch.test", bearerCredential("secret"), fetchImpl);

@@ -53,8 +53,12 @@ type branchHeadAnswer struct {
 // (commitStands). A branch head is GitHub's answer now and nothing Dispatch holds, so a branch of
 // an issue resolving to no repository is never read, and a resolve that did not answer leaves
 // every branch unread for model.ReasonReadFailed.
+//
+// A read-only caller's read passes the answers its own read-throughs learned, and the statement
+// reads the stored rows with them laid on (answers), which is what a writer's read reads once its
+// read-throughs have stored them; a writer's read passes none and reads the stored heads alone.
 func (c *comparisonReader) headBases(ctx context.Context, issueKey string) comparison {
-	heads, err := c.server.deps.Attributor.HeadsAttributedTo(ctx, c.server.deps.Store.Pool, issueKey)
+	heads, err := c.server.deps.Attributor.HeadsAttributedTo(ctx, c.server.deps.Store.Pool, issueKey, c.answers)
 	if err != nil {
 		slog.Warn("dispatch: read the pull request heads of a check's issue", "issue", issueKey, "error", err)
 		return noBases(model.ReasonReadFailed)
@@ -88,7 +92,7 @@ func (c *comparisonReader) mergedInOrder(ctx context.Context, heads []delivery.A
 	for index, head := range heads {
 		rows[index] = head.MergeTime()
 	}
-	ordered := c.server.fillMergeTimes(ctx, c.fills, rows)
+	ordered := c.fillMergeTimes(ctx, rows)
 	for index := range heads {
 		heads[index].MergedAt = rows[index].MergedAt
 	}
@@ -207,13 +211,14 @@ func (c *comparisonReader) issueBranchHead(ctx context.Context, issueKey, repo, 
 
 // branchOfIssue is whether branch belongs to issueKey (delivery.BranchOfIssue), and whether the
 // read answered, held for the rest of the read: a stored row's branch counts for the check's
-// issue only where it does, so a row a job of another issue's branch left adds no head.
+// issue only where it does, so a row a job of another issue's branch left adds no head. It reads
+// the caller's request's answers as headBases does.
 func (c *comparisonReader) branchOfIssue(ctx context.Context, issueKey, branch string) (bool, bool) {
 	key := [2]string{issueKey, branch}
 	if held, read := c.branchIssues[key]; read {
 		return held[0], held[1]
 	}
-	belongs, err := delivery.BranchOfIssue(ctx, c.server.deps.Store.Pool, issueKey, branch)
+	belongs, err := delivery.BranchOfIssue(ctx, c.server.deps.Store.Pool, issueKey, branch, c.answers)
 	if err != nil {
 		slog.Warn("dispatch: read whether a branch belongs to a check's issue", "issue", issueKey, "branch", branch, "error", err)
 	}

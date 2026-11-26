@@ -150,10 +150,10 @@ type paneRequest struct {
 	// BootTokenFile is the rig's boot token file, the one its stand-in daemon checks.
 	BootTokenFile string `json:"bootTokenFile"`
 	// GHToken is the GitHub token the rig stands in for the claim's App token: it is rendered
-	// into the claim's gh bundle (runtime.GHConfigDir), the one directory of rigOwner, which the
-	// pane's GH_CONFIG_DIR names, as the daemon's tmux runtime writes it at spawn; the pane's
-	// LEGION_GH_PATH is realGH's: GHPath when the rig names one, else the first gh on Path,
-	// refused when that is a script, as the daemon resolves it at boot. "" is a daemon
+	// into the claim's gh bundle (runtime.GHConfigDir), the one directory of the repository's
+	// owner, which the pane's GH_CONFIG_DIR names, as the daemon's tmux runtime writes it at spawn;
+	// the pane's LEGION_GH_PATH is realGH's: GHPath when the rig names one, else the first gh on
+	// Path, refused when that is a script, as the daemon resolves it at boot. "" is a daemon
 	// with no GitHub credential: no files, and no gh variable on the pane.
 	GHToken string `json:"ghToken"`
 	// Path is the PATH the daemon would start under; the pane's PATH is it behind the pane's

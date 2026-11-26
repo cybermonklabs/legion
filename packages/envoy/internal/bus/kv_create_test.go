@@ -23,6 +23,7 @@ import (
 // the server refuses ends at the create, and both answer the same error. A config nats.go refuses
 // before its create (a history past nats.KeyValueMaxHistory) sends no create from either.
 func TestABucketStreamIsCreatedAsNatsGoCreatesIt(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, err := nats.Connect(uri)
 	if err != nil {
@@ -129,6 +130,7 @@ func TestABucketStreamIsCreatedAsNatsGoCreatesIt(t *testing.T) {
 // later, as nats.go's CreateKeyValue does (nats.go@v1.55.0 kv.go:520-523): the server the row
 // above sends both creates to reports 2.15, so these are the versions it cannot.
 func TestABucketStreamDiscardsNewOnlyFromServersThatTakeIt(t *testing.T) {
+	t.Parallel()
 	for version, want := range map[string]nats.DiscardPolicy{
 		"2.15.1": nats.DiscardNew,
 		"2.7.2":  nats.DiscardNew,

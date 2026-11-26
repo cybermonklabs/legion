@@ -125,8 +125,8 @@ type ciRun struct {
 // or failed, the result derived from that run, merged into the results the read loaded for it,
 // newest first (newestResultsFirst). The heads are the head of each open pull request of the issue
 // (ciHeadsOf), each read in the repository of its own row, or where none is open the merged one
-// that merged last, which the read's fill (fillMergeTimes, over fills, the memo listCheckResults
-// made) orders. Where Dispatch cannot tell which merged one merged last, it reads no head, and each
+// that merged last, which the reader's fill (comparisonReader.fillMergeTimes, over the reader's
+// memo) orders. Where Dispatch cannot tell which merged one merged last, it reads no head, and each
 // such check's `ci` is unread for the case read_failed (ciCaseReadFailed). It answers each check's
 // read at each head, by block id and then by the head's repository and commit (ciHeadKey), which
 // the comparison gives each subject (comparison.ci): two repositories at one commit each read
@@ -140,10 +140,12 @@ type ciRun struct {
 // the read loaded for such a check that no run of the job its ci_check names recorded, a role's or
 // another job's, counts for nothing and says why (notCountedOnCICheck). An issue holding no check
 // CI proves asks nothing of the database or of GitHub. issueKey is the route's issue, whose
-// Verification document holds the checks and whose pull request heads they are read at. Only a
-// failed read of Dispatch's own database is an error; whatever GitHub answers is a case of the
-// answer.
-func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []model.CheckBlock, fills *mergeTimeFills) (map[string]map[ciHeadKey]*model.CheckCI, error) {
+// Verification document holds the checks and whose pull request heads they are read at. It runs
+// after reader has learned the heads GitHub names (comparisonReader.learn) and reads the heads with
+// reader's answers (ciHeadsOf), so a head this read's read-through learned is a head a check CI
+// proves is derived at. Only a failed read of Dispatch's own database is an error; whatever GitHub
+// answers is a case of the answer.
+func (s *server) deriveCIResults(ctx context.Context, reader *comparisonReader, issueKey string, checks []model.CheckBlock) (map[string]map[ciHeadKey]*model.CheckCI, error) {
 	var proved []provedCI
 	names := map[string]struct{}{}
 	for index := range checks {
@@ -163,7 +165,12 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 	if err != nil {
 		return nil, err
 	}
-	heads, ordered, err := s.ciHeadsOf(ctx, issueKey, fills)
+	// The heads are read after learn, so a writer's read finds the rows its own read-through
+	// stored, and a read-only caller's read finds the heads its own read-through learned, through
+	// the request's answers it passes as every other read of the heads does. A reader that named a
+	// commit learns nothing, so its answers are empty and it reads the stored rows alone, whoever
+	// reads.
+	heads, ordered, err := s.ciHeadsOf(ctx, reader, issueKey)
 	if err != nil {
 		return nil, err
 	}
@@ -299,11 +306,13 @@ func (s *server) jobResultHeads(ctx context.Context, issueKey string, proved []p
 // the check's `ci`; where none is open, the one head delivery.NewestPullRequestHead answers, the
 // final head of the merged pull request that merged last; and none where Dispatch holds neither.
 // Where none is open, the merged pull requests are taken in the order they merged only once the
-// read's fill (fillMergeTimes, over fills) says they can be: where it says they cannot, ordered is
-// false and no head is read, since the head of the highest number, or of a merge with no time
-// ordered last, may be an older merge's than the newest.
-func (s *server) ciHeadsOf(ctx context.Context, issueKey string, fills *mergeTimeFills) ([]delivery.NewestHead, bool, error) {
-	attributed, err := s.deps.Attributor.HeadsAttributedTo(ctx, s.deps.Store.Pool, issueKey)
+// reader's fill (comparisonReader.fillMergeTimes) says they can be: where it says they cannot,
+// ordered is false and no head is read, since the head of the highest number, or of a merge with
+// no time ordered last, may be an older merge's than the newest. Each read of the heads takes the
+// reader's answers (comparisonReader.answers), as every read of the heads on the results path
+// does.
+func (s *server) ciHeadsOf(ctx context.Context, reader *comparisonReader, issueKey string) ([]delivery.NewestHead, bool, error) {
+	attributed, err := s.deps.Attributor.HeadsAttributedTo(ctx, s.deps.Store.Pool, issueKey, reader.answers)
 	if err != nil {
 		return nil, false, err
 	}
@@ -324,10 +333,10 @@ func (s *server) ciHeadsOf(ctx context.Context, issueKey string, fills *mergeTim
 	for index, head := range attributed {
 		merged[index] = head.MergeTime()
 	}
-	if !s.fillMergeTimes(ctx, fills, merged) {
+	if !reader.fillMergeTimes(ctx, merged) {
 		return nil, false, nil
 	}
-	head, found, err := delivery.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey)
+	head, found, err := delivery.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey, reader.answers)
 	if err != nil || !found {
 		return nil, true, err
 	}

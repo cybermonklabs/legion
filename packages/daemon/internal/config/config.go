@@ -143,6 +143,15 @@ type Config struct {
 	WorkerWakesPerMinute int
 	WorkerWakeBurst      int
 
+	// GitHubGraphQLShare is the share of the time this daemon's GraphQL queries of one GitHub App
+	// installation may keep GitHub at work (`github_graphql_share`, DefaultGitHubGraphQLShare
+	// when the file names none): after each query the next waits (1 - share) / share of the time
+	// it took (internal/daemon's queryGate). GitHub allows an installation 60 seconds of query
+	// processing time in 60 seconds, and every daemon that reads with the same installation
+	// spends that one allowance, so a deployment sets it near 1 divided by the number of daemons
+	// sharing the installation. It is at least MinGitHubGraphQLShare and at most 1 (readShare).
+	GitHubGraphQLShare float64
+
 	// OperatorTokenFile is the bearer the operator routes compare against, as a path; "" when
 	// the file sets none.
 	OperatorTokenFile string
@@ -164,9 +173,20 @@ type Config struct {
 	// bearer only after every local configuration refusal has passed.
 	DispatchURL       string
 	DispatchTokenFile string
-	Projects          map[string]Project
-	Gates             Gates
-	GitHubApps        GitHubApps
+	// DispatchTokenBroker is `dispatch_token_broker`: the daemon's Dispatch credential is its own
+	// pod identity, traded at the secrets broker, rather than the bearer DispatchTokenFile names,
+	// which is "" whenever this is true (resolveDispatchTokenBroker). Only `runtime: kubernetes`
+	// takes it, and only beside DispatchURL and runtime.kubernetes.agent_secrets.exchange_audience.
+	// The loader reads no environment, so it decides nothing about that trade: boot makes it.
+	DispatchTokenBroker bool
+	// DispatchTokenTransitionFile is `dispatch_token_transition_file`, a path like
+	// DispatchTokenFile and "" when the file names none: the file holding the shared Dispatch
+	// token a launch into a pod built before DispatchTokenBroker was on gets. The daemon never
+	// calls Dispatch with it, and the loader takes it only beside DispatchTokenBroker.
+	DispatchTokenTransitionFile string
+	Projects                    map[string]Project
+	Gates                       Gates
+	GitHubApps                  GitHubApps
 	// Linger is how long a finished tree keeps its workspace before it closes (`linger_hours`).
 	Linger time.Duration
 	// ProductionCheckBound is how long a closed issue's production check stays open after the
@@ -294,6 +314,13 @@ const (
 	defaultRuntimeName          = "tmux"
 	defaultEnvoyURL             = "http://127.0.0.1:9020"
 
+	// DefaultGitHubGraphQLShare is `github_graphql_share`'s default: half, so each query of an
+	// installation is followed by a pause as long as it took.
+	DefaultGitHubGraphQLShare = 0.5
+	// MinGitHubGraphQLShare is the smallest `github_graphql_share` the loader takes: one daemon in
+	// a hundred sharing an installation, a pause 99 times as long as each query.
+	MinGitHubGraphQLShare = 0.01
+
 	// maxTimerSeconds is the shipped bound on every duration key (config.ts MAX_TIMER_SECONDS):
 	// the largest whole number of seconds whose milliseconds fit a signed 32-bit timer. Go's
 	// timers are not so bounded; the bound is kept so a file one daemon accepts, the other
@@ -413,13 +440,17 @@ type fileConfig struct {
 	NatsDaemonNkeySeedFile *string
 	DispatchURL            *string
 	DispatchTokenFile      *string
-	Projects               map[string]Project
-	Gates                  *Gates
-	GitHubApps             *GitHubApps
-	Linger                 *time.Duration
-	ProductionCheckBound   *time.Duration
-	PodUpdateGrace         *time.Duration
-	StalledTreeNotice      *time.Duration
+	// DispatchTokenBroker is `dispatch_token_broker`, nil when the file leaves it out, and
+	// DispatchTokenTransitionFile `dispatch_token_transition_file`.
+	DispatchTokenBroker         *bool
+	DispatchTokenTransitionFile *string
+	Projects                    map[string]Project
+	Gates                       *Gates
+	GitHubApps                  *GitHubApps
+	Linger                      *time.Duration
+	ProductionCheckBound        *time.Duration
+	PodUpdateGrace              *time.Duration
+	StalledTreeNotice           *time.Duration
 	// WorkerSilence is `worker_silence_minutes` and WorkerBackground `worker_background_hours`,
 	// pointers as every other duration key here is: a file that leaves a key out is
 	// distinguishable from one that sets it, so resolve leaves the default standing for the
@@ -441,6 +472,8 @@ type fileConfig struct {
 	WorkerStallBackstops     map[claim.Role]time.Duration
 	RepositoryRenames        []ghrepo.Rename
 	LeakCheck                *fileLeakCheck
+	// GitHubGraphQLShare is `github_graphql_share` (readShare).
+	GitHubGraphQLShare *float64
 	// Hooks is `hooks`, a pointer so the settle tells a file that names no key, which runs
 	// DefaultHooks(), from one that writes the empty list, which runs no hook.
 	Hooks *[]Hook
@@ -586,6 +619,19 @@ func readString(value *yaml.Node, key string) (*string, error) {
 	var read string
 	if value.Kind != yaml.ScalarNode || value.Decode(&read) != nil {
 		return nil, fmt.Errorf("%s must be a string", key)
+	}
+	return &read, nil
+}
+
+// readBool reads a key that is only true or false, as the controller's loader reads its own
+// `dispatch_token_broker`; nil for an unset one (absent from its mapping, or null).
+func readBool(value *yaml.Node, key string) (*bool, error) {
+	if value == nil || value.Tag == "!!null" {
+		return nil, nil
+	}
+	var read bool
+	if value.Tag != "!!bool" || value.Decode(&read) != nil {
+		return nil, fmt.Errorf("%s must be true or false", key)
 	}
 	return &read, nil
 }
@@ -937,6 +983,27 @@ func readUnit(value *yaml.Node, key string, unit time.Duration, most int) (*time
 	return &duration, nil
 }
 
+// readShare is a key written as a share of a whole (`github_graphql_share`): a finite number at
+// least MinGitHubGraphQLShare and at most 1, a decimal among them, and nil for a key the file
+// writes with no value at all. A share below the floor asks for a pause no deployment needs -
+// one of 0 would wait forever after the first query, and a share of 1e-12 a pause past what a
+// time.Duration holds - and one above 1 a pause below nothing, so both are refused, as are NaN,
+// the infinities and anything that is not a number (`1/4` among them, which YAML reads as a
+// string).
+func readShare(value *yaml.Node, key string) (*float64, error) {
+	if value.Tag == "!!null" {
+		return nil, nil
+	}
+	var read float64
+	if (value.Tag != "!!int" && value.Tag != "!!float") || value.Decode(&read) != nil {
+		return nil, fmt.Errorf("%s must be a number", key)
+	}
+	if math.IsNaN(read) || math.IsInf(read, 0) || read < MinGitHubGraphQLShare || read > 1 {
+		return nil, fmt.Errorf("%s must be at least %v and at most 1", key, MinGitHubGraphQLShare)
+	}
+	return &read, nil
+}
+
 // validURL is the shipped `validateUrl` (config.ts) for the URLs this daemon dials or
 // hands out: a scheme and a host, or the key is refused.
 func validURL(value, key string) (*url.URL, error) {
@@ -1007,6 +1074,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		Runtime:              Runtime{Name: defaultRuntimeName},
 		AdmissionCap:         defaultAdmissionCap,
 		WorkerWakesPerMinute: defaultWorkerWakesPerMinute,
+		GitHubGraphQLShare:   DefaultGitHubGraphQLShare,
 		EnvoyURL:             defaultEnvoyURL,
 		Gates:                Gates{Design: DesignGateRootIssues.Steps()},
 		Linger:               72 * time.Hour,
@@ -1055,6 +1123,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		}
 		cfg.AdvertiseHost = *file.AdvertiseHost
 	}
+	if err := resolveDispatchTokenBroker(file, configDir, &cfg); err != nil {
+		return Config{}, err
+	}
 
 	if file.Kubernetes != nil {
 		if err := resolveKubernetes(file, configDir, &cfg); err != nil {
@@ -1087,6 +1158,10 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	// refuses it.
 	if cfg.WorkerWakesPerMinute < 0 {
 		return Config{}, errors.New("worker_wakes_per_minute must be 0 (the pacing off) or a positive integer")
+	}
+
+	if file.GitHubGraphQLShare != nil {
+		cfg.GitHubGraphQLShare = *file.GitHubGraphQLShare
 	}
 
 	if err := resolveStage2(file, configDir, &cfg); err != nil {

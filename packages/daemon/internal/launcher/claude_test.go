@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -38,7 +37,7 @@ const claudeSession = "0b9c2f4e-2d3a-4c55-9a1e-6f7d8e9a0b1c"
 type claudeRig struct {
 	*rig
 	dsnFile    string
-	conn       *pgx.Conn
+	conn       *ompsessions.Conn
 	configDir  string
 	transcript string
 	record     string
@@ -310,7 +309,18 @@ func TestAClaudeSaveMarksAFreshTranscriptOnlyAfterItsFirstCommit(t *testing.T) {
 	pid := pidOf(t, pidFile)
 	marker := c.transcript + SavedMarkerSuffix
 	ctx := context.Background()
-	tx, err := c.conn.Begin(ctx)
+	// The lock is the test's own statement, on a connection of its own: the rig's is the package's
+	// Conn, on which no statement but the package's runs.
+	dsn, err := ompsessions.ReadDSN(c.dsnFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locker, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = locker.Close(context.Background()) })
+	tx, err := locker.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,16 +412,20 @@ func TestAClaudeSaveReachesTheTableThroughTheGenerationsProxy(t *testing.T) {
 const launcherProcessEnv = "LEGION_LAUNCHER_TEST_PROCESS"
 
 // TestLauncherProcess runs a launcher in a process of its own, so a test can kill it with
-// SIGKILL as a node does a pod's.
+// SIGKILL as a node does a pod's. Its stdin is a pipe only the test binary that started it holds
+// (processRig), so the end of that pipe, whether the binary returned, panicked at its deadline or
+// was killed, ends the launcher too: no launcher outlives its test to redial the next listener on
+// its port with a hello the daemon end takes.
 func TestLauncherProcess(t *testing.T) {
 	if os.Getenv(launcherProcessEnv) != "1" {
 		return
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer cancel()
+	go func() { _, _ = io.Copy(io.Discard, os.Stdin); cancel() }()
 	err := Run(ctx, Config{
 		Connect: os.Getenv("LEGION_LAUNCHER_TEST_ADDRESS"), PrivateDir: os.Getenv("LEGION_LAUNCHER_TEST_PRIVATE"),
-		Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", Stderr: os.Stderr,
+		Token: os.Getenv("LEGION_LAUNCHER_TEST_TOKEN"), Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", Stderr: os.Stderr,
 	})
 	if err != nil && ctx.Err() == nil {
 		t.Fatal(err)
@@ -421,11 +435,8 @@ func TestLauncherProcess(t *testing.T) {
 // processRig is a launcher in a process of its own, and kill its SIGKILL.
 func processRig(t *testing.T) (g *rig, kill func()) {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
+	token := ownToken("launcher-token")
+	listener := listenForLauncher(t, token)
 	private := shortTempDir(t)
 	self, err := os.Executable()
 	if err != nil {
@@ -433,7 +444,7 @@ func processRig(t *testing.T) (g *rig, kill func()) {
 	}
 	command := exec.Command(self, reentry(t, "TestLauncherProcess")...)
 	command.Env = append(os.Environ(), launcherProcessEnv+"=1", "LEGION_LAUNCHER_TEST_ADDRESS=tcp://"+listener.Addr().String(),
-		"LEGION_LAUNCHER_TEST_PRIVATE="+private)
+		"LEGION_LAUNCHER_TEST_PRIVATE="+private, "LEGION_LAUNCHER_TEST_TOKEN="+token)
 	// The launcher's output goes to a file rather than a pipe: its child inherits it, and a pipe
 	// would hold the launcher's Wait open for as long as the child outlives the launcher.
 	output, err := os.Create(filepath.Join(t.TempDir(), "launcher.log"))
@@ -442,11 +453,19 @@ func processRig(t *testing.T) (g *rig, kill func()) {
 	}
 	t.Cleanup(func() { _ = output.Close() })
 	command.Stdout, command.Stderr = output, output
+	// The pipe stays open as long as this binary holds it, and Wait closes it (TestLauncherProcess).
+	if _, err := command.StdinPipe(); err != nil {
+		t.Fatal(err)
+	}
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
 	exited := make(chan struct{})
-	go func() { _ = command.Wait(); close(exited) }()
+	go func() {
+		err := command.Wait()
+		listener.codeReturned(err)
+		close(exited)
+	}()
 	kill = func() {
 		_ = command.Process.Signal(syscall.SIGKILL)
 		<-exited
@@ -540,7 +559,7 @@ const (
 type keeperRig struct {
 	t          *testing.T
 	k          *claudeKeeper
-	conn       *pgx.Conn
+	conn       *ompsessions.Conn
 	log        *lockedBuffer
 	transcript string
 	record     string
@@ -575,7 +594,7 @@ func newKeeperRig(t *testing.T, dsnFile string) *keeperRig {
 
 // faulty is write meeting the rig's fault.
 func (c *keeperRig) faulty(write rowWrite) rowWrite {
-	return func(ctx context.Context, conn *pgx.Conn, path string, saved int64, content []byte, mtime time.Time) error {
+	return func(ctx context.Context, conn *ompsessions.Conn, path string, saved int64, content []byte, mtime time.Time) error {
 		fault := c.fault
 		c.fault = noFault
 		switch fault {

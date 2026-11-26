@@ -200,11 +200,45 @@ var (
 	// character past ASCII, and subquery a select in it.
 	callName = regexp.MustCompile(`(?i)((?:[a-z_]|[^\x00-\x7F])(?:[a-z_0-9$]|[^\x00-\x7F])*)\s*\(`)
 	subquery = regexp.MustCompile(`(?i)\bselect\b`)
+	// markdownWord is any mention of a markdown column, and markdownNullTest a null test of one
+	// through a table alias - v.markdown is null, v.markdown is not null - which hands the parser
+	// nothing: it tells a version with text from an image, as the triggers' own `when` does.
+	markdownWord     = regexp.MustCompile(`(?i)\bmarkdown\b`)
+	markdownNullTest = regexp.MustCompile(`(?i)\b[a-z_][a-z_0-9]*\s*\.\s*markdown\s+is\s+(not\s+)?null\b`)
 )
 
 // argumentCalls are the only calls a trigger may make inside the argument of a normaliser or a
 // vector function: none of them parses text.
 var argumentCalls = []string{"coalesce", "ask_search_suffix", "issue_embedding_spec"}
+
+// rowColumnsRead are the columns of `new` a search trigger may read outside the normalising
+// functions: the vector it writes, the artifact_id it looks a row up by, and the number it
+// compares versions by. None is text the parser reads.
+var rowColumnsRead = []string{"new.search", "new.artifact_id", "new.number"}
+
+// markdownOutsideNormaliser reports whether code, as maskSQL leaves it, reads a markdown column
+// other than inside search_document_text or in a null test through an alias (markdownNullTest).
+func markdownOutsideNormaliser(code string) bool {
+	return markdownWord.MatchString(markdownNullTest.ReplaceAllString(withoutCalls(code, "search_document_text"), " "))
+}
+
+// rawRowReads answers each read of the row in code, as maskSQL leaves it, that is not inside a
+// normalising function, a write of the vector, the row's return, or a column of rowColumnsRead.
+func rawRowReads(code string) []string {
+	rest := withoutCalls(code, "search_document_text", "search_text", "issue_search_vector", "title_lexemes", "issue_embedding_spec")
+	rest = returnNew.ReplaceAllString(assignTarget.ReplaceAllString(rest, "assigned :="), "return")
+	var reads []string
+	for _, at := range rowRead.FindAllStringIndex(rest, -1) {
+		if !standalone(rest, at[0], at[0]+len("new")) {
+			continue
+		}
+		read := strings.ToLower(strings.Join(strings.Fields(rest[at[0]:at[1]]), ""))
+		if !slices.Contains(rowColumnsRead, read) {
+			reads = append(reads, rest[at[0]:min(len(rest), at[1]+40)])
+		}
+	}
+	return reads
+}
 
 // callsIn answers the name of each call in code that stands as a whole token, lower case.
 func callsIn(code string) []string {
@@ -233,13 +267,15 @@ func callsIn(code string) []string {
 // merges. In each: no call of an entry point, quoted or qualified; each argument of search_vector
 // a literal or wholly one normalising call; inside the argument of each normaliser and vector
 // function no subquery and no call but coalesce, ask_search_suffix and issue_embedding_spec;
-// markdown only inside search_document_text; and once those calls are removed, no read through
-// `new` - new.x, (new).x, row_to_json(new) - but the vector it writes and the artifact_id it
-// looks a row up by. It reads search_document_text's own body too, which must be one search_text
-// call, and each parameter of the two vector functions those triggers call, which must appear only
-// inside its normaliser. A read of the row through another name, such as a variable assigned from
-// new, is beyond it, and so is text @@ query, an operator; a raw read of new for either still
-// fails here.
+// markdown only inside search_document_text, or in a null test through an alias, which reads no
+// text (markdownOutsideNormaliser); and once those calls are removed, no read through `new` -
+// new.x, (new).x, row_to_json(new) - but the vector it writes, the artifact_id it looks a row up by
+// and the number it compares versions by (rawRowReads). It reads search_document_text's own body
+// too, which must be one search_text call, and each parameter of the two vector functions those
+// triggers call, which must appear only inside its normaliser. A read of the row through another
+// name, such as a variable assigned from new, is beyond it, and so is text @@ query, an operator;
+// a raw read of new for either still fails here. TestTheSearchTriggerShapeReadsTheRowsItAllows
+// holds the two allowances to exactly that.
 func TestEverySearchTriggerHandsTheParserOnlyNormalisedText(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -333,19 +369,45 @@ func TestEverySearchTriggerHandsTheParserOnlyNormalisedText(t *testing.T) {
 				}
 			}
 		}
-		if regexp.MustCompile(`(?i)\bmarkdown\b`).MatchString(withoutCalls(code, "search_document_text")) {
+		if markdownOutsideNormaliser(code) {
 			t.Errorf("%s reads markdown, which holds ask blocks, outside search_document_text:\n%s", name, code)
 		}
-		rest := withoutCalls(code, "search_document_text", "search_text", "issue_search_vector", "title_lexemes", "issue_embedding_spec")
-		rest = returnNew.ReplaceAllString(assignTarget.ReplaceAllString(rest, "assigned :="), "return")
-		for _, at := range rowRead.FindAllStringIndex(rest, -1) {
-			if !standalone(rest, at[0], at[0]+len("new")) {
-				continue
-			}
-			read := strings.ToLower(strings.Join(strings.Fields(rest[at[0]:at[1]]), ""))
-			if read != "new.search" && read != "new.artifact_id" {
-				t.Errorf("%s reads the row raw (%s), outside the normalising functions:\n%s", name, rest[at[0]:min(len(rest), at[1]+40)], code)
-			}
+		for _, read := range rawRowReads(code) {
+			t.Errorf("%s reads the row raw (%s), outside the normalising functions:\n%s", name, read, code)
 		}
+	}
+}
+
+// The two allowances of TestEverySearchTriggerHandsTheParserOnlyNormalisedText's rules are a
+// markdown column's null test through an alias, and new.number. Neither lets the parser see raw
+// text: markdown handed to anything but search_document_text, a bare markdown, and a read of any
+// other column of new still fail.
+func TestTheSearchTriggerShapeReadsTheRowsItAllows(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name            string
+		code            string
+		markdown, reads bool
+	}{
+		{"a null test of an alias's markdown", "if not exists (select 1 from artifact_versions v where v.markdown is not null) then", false, false},
+		{"an is-null test of an alias's markdown", "where v . markdown is null", false, false},
+		{"markdown inside search_document_text", "search_vector('', search_document_text(new.markdown))", false, false},
+		{"a comparison of new.number", "where v.artifact_id = new.artifact_id and v.number > new.number", false, false},
+		{"markdown handed to to_tsvector", "to_tsvector('english', v.markdown)", true, false},
+		{"markdown handed to search_text", "search_vector('', search_text(v.markdown))", true, false},
+		{"markdown compared, not null-tested", "where v.markdown is not distinct from ''", true, false},
+		{"a bare markdown", "select markdown from artifact_versions", true, false},
+		{"new.markdown outside a normaliser", "if new.markdown is not null then", false, true},
+		{"another column of new", "where v.created_at > new.created_at", false, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			code := maskSQL(test.code)
+			if got := markdownOutsideNormaliser(code); got != test.markdown {
+				t.Errorf("markdownOutsideNormaliser(%q) = %v, want %v", test.code, got, test.markdown)
+			}
+			if got := len(rawRowReads(code)) > 0; got != test.reads {
+				t.Errorf("rawRowReads(%q) = %v, want a read refused: %v", test.code, rawRowReads(code), test.reads)
+			}
+		})
 	}
 }

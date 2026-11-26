@@ -160,7 +160,7 @@ func storeMerge(t *testing.T, database *store.Store, repo string, number int, sh
 // rename pairs, as the test server's own Attributor reads them.
 func headNumbersOf(t *testing.T, database *store.Store, issue string) []int {
 	t.Helper()
-	heads, err := delivery.NewAttributor(refs.Renames{}).HeadsAttributedTo(context.Background(), database.Pool, issue)
+	heads, err := delivery.NewAttributor(refs.Renames{}).HeadsAttributedTo(context.Background(), database.Pool, issue, delivery.HeadAnswers{})
 	if err != nil {
 		t.Fatalf("read the heads of %s: %v", issue, err)
 	}

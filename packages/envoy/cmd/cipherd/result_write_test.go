@@ -249,7 +249,7 @@ func TestAResultWriteLeavesTheProxyWithTheRunsTokenAndAProofOfThePodsKey(t *test
 		t.Fatalf("the token Dispatch received introspects as %+v (run %+v); want a live results token of check run 97 bound to the pod key %s", got, got.CI, b.thumbprint)
 	}
 	verifier, err := ciphertoken.New(ciphertoken.Options{
-		BrokerURL: "http://" + b.Addr, Account: staticAccount(e.apiToken), Origin: "https://" + resultsBoundHost,
+		BrokerURL: "http://" + b.Addr, Account: staticAccount(e.apiToken), Origins: []string{"https://" + resultsBoundHost},
 		Replay: &spentProofs{}, Address: func(*http.Request) string { return "127.0.0.1" }, ServesResults: true,
 	})
 	if err != nil {

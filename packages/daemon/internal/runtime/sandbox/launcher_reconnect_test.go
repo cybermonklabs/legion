@@ -89,31 +89,28 @@ func TestALaunchStartsItsRoleOnALauncherThatReconnectsDuringIt(t *testing.T) {
 // the session it was prepared for (launchers.start), which has closed, so Spawn fails naming the
 // closed connection, having stopped the Start's generation on the reconnected launcher in case the
 // Start began it (stopIssuedChild). The supervisor's next try, at the next generation, starts the
-// role on the reconnected launcher. The drop comes from the store's read of the issue's saved work
-// (restoreWorkspace), the one step between the session's choice and the Start's write a row can
-// hold: armed, that read drops the connection, waits until the launcher has said hello again, and
-// answers that there is nothing to restore.
+// role on the reconnected launcher. The drop comes from launchers.beforeStart, run where a step
+// between the session's choice and the Start's write would run (this daemon reads no saved work
+// there): armed, it drops the connection and waits until the launcher has said hello again.
 func TestALaunchWhoseLauncherReconnectsBeforeItsStartIsWrittenFailsAndTheNextTryStarts(t *testing.T) {
 	var g *rig
 	var armed atomic.Bool
 	dropped, redialed := make(chan struct{}), make(chan struct{})
 	g = newRig(t, nil, withOptions(func(o *Options) {
 		o.BootTimeout = reconnectBoot
-		o.WorkspaceBundleRestored = func(context.Context, string, int64) error { return nil }
-		o.SavedWorkspaceBundle = func(ctx context.Context, _, _ string, _ time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
-			if armed.CompareAndSwap(true, false) {
-				if session := launcherOf(g, workerToken); session != nil {
-					session.close()
-				}
-				close(dropped)
-				select {
-				case <-redialed:
-				case <-ctx.Done():
-				}
-			}
-			return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, nil
-		}
 	}))
+	g.r.launchers.beforeStart = func(ctx context.Context, _ claim.Token) {
+		if armed.CompareAndSwap(true, false) {
+			if session := launcherOf(g, workerToken); session != nil {
+				session.close()
+			}
+			close(dropped)
+			select {
+			case <-redialed:
+			case <-ctx.Done():
+			}
+		}
+	}
 	first := g.spawn(workerSpec(t))
 
 	armed.Store(true)

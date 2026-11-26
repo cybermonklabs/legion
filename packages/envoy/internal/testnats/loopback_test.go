@@ -77,10 +77,10 @@ func TestAClientDialingThisServersPortOnTheSharedLoopbackDoesNotReachIt(t *testi
 }
 
 // A client another test left dialing 127.0.0.1 at the port of a handshake hold's own relay is no
-// handshake attempt of this test's: during a Hold its CONNECT does not reach the hold, so it moves
-// neither Attempts nor the channel Hold returns, which a row reads as its own client's reconnect
+// handshake attempt of this test's: during a Hold it does not reach the hold, so it moves neither
+// Dials, Attempts nor the channel Hold returns, which a row reads as its own client's reconnect
 // being held (HoldReconnect, AnswersWithinAttempt). The control is the same client at the relay's
-// own address, whose CONNECT the hold counts and holds.
+// own address, whose dial and CONNECT the hold counts and whose CONNECT it holds.
 func TestAClientDialingTheHoldsRelayPortOnTheSharedLoopbackIsNoHeldAttempt(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("only Linux routes the whole of 127.0.0.0/8 to the loopback; elsewhere every server here listens on 127.0.0.1")
@@ -98,8 +98,8 @@ func TestAClientDialingTheHoldsRelayPortOnTheSharedLoopbackIsNoHeldAttempt(t *te
 	if nc, err := ConnectSeed(t, "nats://"+shared, ""); err == nil {
 		nc.Close()
 	}
-	if attempts := hold.Attempts(); attempts != 0 {
-		t.Fatalf("a client dialing %s, the port of the hold's relay at %s, was counted as %d held handshake attempt(s)", shared, relay, attempts)
+	if dials, attempts := hold.Dials(), hold.Attempts(); dials != 0 || attempts != 0 {
+		t.Fatalf("a client dialing %s, the port of the hold's relay at %s, was counted as %d dial(s) and %d held handshake attempt(s)", shared, relay, dials, attempts)
 	}
 	select {
 	case <-held:
@@ -110,8 +110,8 @@ func TestAClientDialingTheHoldsRelayPortOnTheSharedLoopbackIsNoHeldAttempt(t *te
 		nc.Close()
 		t.Fatalf("control: a client at the hold's relay %s connected while the hold kept the server's answer to its CONNECT", relay)
 	}
-	if attempts := hold.Attempts(); attempts != 1 {
-		t.Fatalf("control: a client at the hold's relay %s was counted as %d held handshake attempt(s), want 1, so the count cannot be used to check isolation", relay, attempts)
+	if dials, attempts := hold.Dials(), hold.Attempts(); dials != 1 || attempts != 1 {
+		t.Fatalf("control: a client at the hold's relay %s was counted as %d dial(s) and %d held handshake attempt(s), want 1 of each, so the counts cannot be used to check isolation", relay, dials, attempts)
 	}
 	select {
 	case <-held:

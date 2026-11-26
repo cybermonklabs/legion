@@ -575,21 +575,26 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		}
 		checks[index].Results = results
 	}
-	// The read's memo of merge times is made before anything orders a merged pull request, so the
-	// CI read of each check and the comparison after it learn each merge time once
-	// (fillMergeTimes).
-	fills := &mergeTimeFills{}
-	headCI, err := s.deriveCIResults(r.Context(), issueKey, checks, fills)
+	// The reader learns the heads GitHub names before any check CI proves is derived
+	// (deriveCIResults). A derived result is read at the heads of the issue's pull requests, and a
+	// head this read's read-through learns may be one of them: derived first, a first read would
+	// answer that Dispatch holds no head while it names the head it learned as another check's
+	// basis. A derived result is at one of those heads, which the learned heads already hold, so it
+	// leaves nothing to learn. Every head GitHub has to be asked for is learned before the first
+	// check is answered, and where the learn stored or learned any head every check's bases are read
+	// again, so each check of the answer is answered on the heads as they stand after this read's
+	// read-throughs, and two `before_merge` checks of one issue name one list of bases and not two
+	// (comparisonReader.learn). The reader holds the read's memo of merge times too
+	// (comparisonReader.fills), so the CI read of each check and the comparison after it learn each
+	// merge time once (fillMergeTimes).
+	reader := newComparisonReader(r.Context(), s, at)
+	reader.learn(r.Context(), checks)
+	headCI, err := s.deriveCIResults(r.Context(), reader, issueKey, checks)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// Every head GitHub has to be asked for is learned before the first check is answered, so
-	// two `before_merge` checks of one issue name one list of bases and not two
-	// (comparisonReader.learn).
-	reader := newComparisonReader(s, at)
-	reader.headCI, reader.fills = headCI, fills
-	reader.learn(r.Context(), checks)
+	reader.headCI = headCI
 	for index := range checks {
 		reader.answer(r.Context(), &checks[index])
 	}

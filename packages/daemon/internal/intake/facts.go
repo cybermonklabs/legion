@@ -50,6 +50,10 @@ type DispatchIssue struct {
 	Rank   string
 	// HandedOver is whether the event's own labels carried dispatch.LegionLabel.
 	HandedOver bool
+	// Priority is the issue's own Dispatch priority as the observation showed it: an event's
+	// payload, the listing's or the detail's (record.DispatchPriority over Dispatch's 0 to 3 or
+	// null). The record takes it wherever it takes the observation's rank.
+	Priority record.Priority
 	// Labels is the issue's labels as the observation showed them, in Dispatch's order. The copy
 	// of Dispatch's issues writes them with the rest of the observation (blockers.Mirror), and
 	// nothing else reads them: a decision reads HandedOver.
@@ -153,7 +157,7 @@ func (i DispatchIssue) LabelSetByPerson() bool {
 }
 
 // ObservedIssue is issue as Dispatch's detail shows it now, as an Observed fact at the sequence
-// Dispatch has run to: its status, title, parent, rank, labels, hand-over, blockers and
+// Dispatch has run to: its status, title, parent, rank, priority, labels, hand-over, blockers and
 // repository, with no event's type or actor, since no one event wrote that state.
 // release_children's todo child and an unrecorded issue's admission event are applied from it.
 func ObservedIssue(issue dispatch.Issue) DispatchIssue {
@@ -162,8 +166,8 @@ func ObservedIssue(issue dispatch.Issue) DispatchIssue {
 		parent = *issue.Parent
 	}
 	return DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Parent: parent,
-		Rank: issue.Rank, HandedOver: issue.HandedOver, Labels: issue.Labels, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
-		ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Observed: true}
+		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), HandedOver: issue.HandedOver, Labels: issue.Labels, ResolvedRepo: issue.ResolvedRepo,
+		Blockers: issue.BlockedBy, ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Observed: true}
 }
 
 // OwnStatusWrite is the event the daemon's own status write makes, as the Dispatch consumer
@@ -189,8 +193,16 @@ func ListedIssue(issue dispatch.IssueSummary) DispatchIssue {
 		parent = *issue.Parent
 	}
 	return DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Parent: parent,
-		Rank: issue.Rank, HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
+		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
 		ClaimedBy: issue.ClaimedBy, ClaimKnown: !issue.ClaimUnread}
+}
+
+// dispatchPriority is level, the priority a Dispatch read serves, as the record keeps it. The
+// listing and the detail answer no event's fields the decoder could report, and Dispatch writes
+// no level outside 0 to 3, so a level it could not read is none here (record.DispatchPriority).
+func dispatchPriority(level *int) record.Priority {
+	priority, _ := record.DispatchPriority(level)
+	return priority
 }
 
 // Handover is the outbox's direct completion of a hand-over whose Dispatch state is already todo
@@ -276,10 +288,17 @@ type DispatchArtifact struct {
 	// Issue is Dispatch's view of the issue the review is on, read when the fact is prepared by
 	// the daemon's workflowRuntime.prepareArtifact, for a person's approval that is not a carried
 	// one (CarriedApproval), outside the fact lock; nil for every other fact, a seed's or the boot
-	// catch-up's among them. The workflow reads its parent, label, status and primary document to
+	// catch-up's among them. MayQueueHandover reads its parent, label, status and primary document,
+	// for the preparation to decide whether to read the issue's event log and for the workflow to
 	// decide whether the approval queues the root: a nil view queues nothing and is never an
 	// error, since nothing but that decision reads it.
 	Issue *dispatch.Issue
+	// StatusChangedSeq is the sequence of the first issue event of the issue's Dispatch event log
+	// after the approval (Mark.Seq) that carries another status than the issue event before it
+	// (WithStatusChange), set when the daemon prepares a person's approval that needs the log
+	// (NeedsEventLog). It is 0 when no later event changed the status, and for every fact
+	// nothing read the log for.
+	StatusChangedSeq int64
 }
 
 func (f DispatchArtifact) namedIssue() (string, bool) { return f.Key, true }
@@ -309,6 +328,21 @@ func (a DispatchArtifact) CarriedApproval() bool {
 // side and the deciding side test one predicate.
 func (a DispatchArtifact) PersonApproval() bool {
 	return a.Kind == DispatchArtifactApproved && a.Actor.Person() && !a.CarriedApproval()
+}
+
+// MayQueueHandover says whether the review is a person's approval (PersonApproval) of the primary
+// document of a root that Dispatch's view (Issue) shows parked: no parent, the legion label, status
+// backlog or icebox. Such an approval queues the root as the person's handover unless the root's
+// tree is live or its status changed after the approval (StatusChangedSeq), which the workflow
+// decides. The daemon reads the issue's event log for it when it prepares the fact (NeedsEventLog),
+// and the workflow decides from it, so the read side and the deciding side test one predicate.
+func (a DispatchArtifact) MayQueueHandover() bool {
+	if a.Issue == nil || !a.PersonApproval() {
+		return false
+	}
+	view := a.Issue
+	parked := view.Status == "backlog" || view.Status == "icebox"
+	return view.Parent == nil && view.HandedOver && parked && view.PrimaryArtifactID == a.ArtifactID
 }
 
 // GateAboveDispatch is the gate seed of a generation (Generation) finding the document at a version
@@ -527,9 +561,11 @@ func (EntrySweep) namedIssue() (string, bool) { return "", false }
 // pass: the pause held every promotion, and the pass runs now rather than at the next fact or
 // tick. Admission promotes on it as on every fact that is not a Dispatch issue
 // (admit.Admission.applyFact); the workflow engine and the blockers mirror do nothing for it.
-// Unlike the controller's tick, which queues a tick notice, it queues none: a slot its pass leaves
-// free wakes the controller as any fact's pass does (admit.Admission.wakeForFreeSlot), and
-// nothing else.
+// Unlike the controller's tick, which queues a tick notice, it queues none: a slot its pass's own
+// release leaves free wakes the controller as any fact's pass does
+// (admit.Admission.wakeForFreeSlot), and nothing else. The rows a re-admission freed while the
+// pause held (admit's releaseTreeSlots) wake nothing; the resume's notice tells the controller
+// of that capacity.
 //
 // It carries nothing, as EntrySweep carries nothing: the pass reads the whole project. Its event
 // is keyed on the pause the resume ended (internal/daemon's applyResumePass), so a resume applies
@@ -1582,15 +1618,24 @@ func (f CheckReport) namedIssue() (string, bool) { return f.Issue, true }
 // look the check stood at when the wake was named, so a row of a look the check has since left
 // starts nothing, and OpenedAt the check instance it was named for, so a row of a check a later
 // merge of the same issue replaced — whose looks count from one again — starts nothing either; a
-// zero OpenedAt names none.
+// zero OpenedAt names none. WakeAt is the wake the row was queued for, so a row whose wake the
+// check no longer records — a failure between looks named the next look later — starts nothing;
+// a zero WakeAt, a row a release before the field queued, is not fenced.
 type CheckWakeDue struct {
 	Issue    string
 	Look     int
 	OpenedAt time.Time
+	WakeAt   time.Time
 	Reason   string
 }
 
 func (f CheckWakeDue) namedIssue() (string, bool) { return f.Issue, true }
+
+// CheckWakeOf is the fact a check_wake row of issue applies when it comes due (the daemon's
+// outbox), made here alone so that every field the row carries reaches the fact.
+func CheckWakeOf(issue string, wake record.CheckWakeDue) CheckWakeDue {
+	return CheckWakeDue{Issue: issue, Look: wake.Look, OpenedAt: wake.OpenedAt, WakeAt: wake.WakeAt, Reason: wake.Reason}
+}
 
 // CheckLookEnded is a look of issue Issue's production check ending with no report: Cause is
 // `look bound` (the check_look row due at the look's bound), `operator hold` (a check start the
@@ -2035,7 +2080,9 @@ func PlanRatingUnexpected(what string) *Refusal {
 // (settleObserved): the handlers see its view only while the workflow records no such issue. A
 // fact a durable consumer delivered (withStreamPosition) records that consumer's stream position
 // in the same transaction (recordStreamPosition), so a consumer found missing is created at the
-// last message it applied (openConsumer). The fact commits through store.Transact, so a fact whose
+// last message it applied (openConsumer). A fact a replay applies (withReplayClose) closes the
+// give-up it was stored in, in the same transaction too, as applied or, for a duplicate, as
+// already applied (closeReplayed). The fact commits through store.Transact, so a fact whose
 // commit's reply is lost is reported by what the store says of it.
 //
 // Facts apply one at a time. Handlers read and rewrite whole records, and admission's slots span
@@ -2100,7 +2147,7 @@ func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, f
 		}
 		if !fresh {
 			result = Result{Duplicate: true}
-			return nil
+			return closeReplayed(ctx, tx, record.IntakeAlreadyApplied)
 		}
 
 		fact, apply, err := settleObserved(ctx, tx, fact)
@@ -2132,9 +2179,11 @@ func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, f
 		// refused handoff apply on its next delivery, which those refusals exist to stop.
 		_, report := fact.(CheckReport)
 		if (report && result.Refusal != nil) || result.Unspent {
-			return record.NewStore().ForgetProcessed(ctx, tx, source, eventID)
+			if err := record.NewStore().ForgetProcessed(ctx, tx, source, eventID); err != nil {
+				return err
+			}
 		}
-		return nil
+		return closeReplayed(ctx, tx, record.IntakeApplied)
 	}); err != nil {
 		return Result{}, err
 	}

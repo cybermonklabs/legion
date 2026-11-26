@@ -863,5 +863,10 @@ func Outgoing(ctx context.Context, q Queryer, who model.Actor, artifactID string
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	for _, reference := range outgoing {
+		if reference.Artifact != nil {
+			model.StateFileTokens(reference.Artifact.Kind, reference.Artifact.Versions)
+		}
+	}
 	return outgoing, nil
 }

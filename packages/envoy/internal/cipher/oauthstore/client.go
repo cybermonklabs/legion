@@ -13,23 +13,44 @@ import (
 // The client type every registration here is, which the token exchange reads through
 // rfc8693.Client: which subject, actor and requested token types a client may name, which client
 // may exchange a token issued to it, and whether it may present an actor token for a subject
-// token that carries no 'may_act' claim. A plain *oauth2.DefaultClient answers none of those.
-var _ rfc8693.Client = exchangeRegisteredClient{}
+// token that carries no 'may_act' claim. A plain *oauth2.DefaultClient answers none of those. The
+// exchange client also answers the scope strategy the exchange checks a requested scope with.
+var (
+	_ rfc8693.Client               = exchangeRegisteredClient{}
+	_ oauth2.ScopeStrategyProvider = exchangeRegisteredClient{}
+)
 
-// exchangeRegisteredClient is the exchange client's registration with one answer of its own.
+// exchangeRegisteredClient is the exchange client's registration with two answers of its own.
 // The library refuses a delegation whose subject token carries no RFC 8693 Section 4.4
 // 'may_act' claim unless its client says an authorization outside the token decides it, and
 // Google puts no 'may_act' in a person's ID token, so without this every person's sign-in would
 // be refused invalid_grant. What decides it instead is the broker's own: the machine's actor
 // token is verified against Google and held to the entry rules BROKER_VM_SERVICES makes
 // (exchange.Set.Person), and the sign-in that first bound the person to the box key is a row in
-// the broker's own database.
+// the broker's own database. The other answer is the scope strategy (GetScopeStrategy).
 type exchangeRegisteredClient struct {
 	*oauth2.DefaultRegisteredClient
 }
 
 // GetAllowActorTokenWithoutMayAct reports true, for the reason exchangeRegisteredClient gives.
 func (exchangeRegisteredClient) GetAllowActorTokenWithoutMayAct() bool { return true }
+
+// GetScopeStrategy is readScopeStrategy: the library checks the scopes an exchange asks for with
+// it, against this client's registered scopes and, for a machine login's access token as the
+// subject, against the scopes that token was granted.
+func (exchangeRegisteredClient) GetScopeStrategy(context.Context) oauth2.ScopeStrategy {
+	return readScopeStrategy
+}
+
+// readScopeStrategy holds oauthwire.ScopeRead by every subject and reads every other scope as
+// the library's default wildcard strategy does. A machine login is granted oauthwire.Scope alone,
+// so the library's check that a trade asks only for scopes its subject was granted
+// (validateExchangeTokenPolicy) would refuse a machine login's trade that asks for read until it
+// logged in again. Read only narrows what a token may do, so every subject holds it; a scope
+// that widens, such as approve, is still refused invalid_scope.
+func readScopeStrategy(haystack []string, needle string) bool {
+	return needle == oauthwire.ScopeRead || oauth2.WildcardScopeStrategy(haystack, needle)
+}
 
 // authMethodNone is the 'token_endpoint_auth_method' of a public client, which presents no
 // credentials of its own. A registration leaving it unset is read as client_secret_basic, the
@@ -89,12 +110,17 @@ func machineClient() *oauth2.DefaultRegisteredClient {
 // actor list as no restriction at all, so naming this one is what keeps every other kind of
 // token out of the actor_token parameter, and a request that carries no actor token is not an
 // actor request at all and reaches no such check.
+//
+// It is registered for oauthwire.Scope, which a request may name and which grants nothing, and
+// for oauthwire.ScopeRead, which narrows the trade to reading whatever its subject
+// (oauth.Provider.decide). The library validates a requested scope and grants none of them
+// itself: the exchange grants what it decided.
 func exchangeClient() oauth2.Client {
 	return exchangeRegisteredClient{&oauth2.DefaultRegisteredClient{
 		DefaultClient: &oauth2.DefaultClient{
 			ID:         oauthwire.ExchangeClientID,
 			GrantTypes: []string{string(oauth2.GrantTypeTokenExchange)},
-			Scopes:     []string{oauthwire.Scope},
+			Scopes:     []string{oauthwire.Scope, oauthwire.ScopeRead},
 		},
 		TokenExchangeSubjectTokenTypes: []string{
 			oauthwire.SubjectTokenTypeKubernetes,

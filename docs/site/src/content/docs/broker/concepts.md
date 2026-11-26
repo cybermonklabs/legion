@@ -55,15 +55,52 @@ A Kubernetes pod trades its own projected ServiceAccount token at the same excha
 access token alone: that trade mints no machine login and enrols nothing. The entry that lists the
 pod's account decides what the token is. An entry of `BROKER_EXCHANGE_ACCOUNTS` gives it a person
 and the one Dispatch project it may write, or no project for an entry that names none
-(`<service account>==<person>`). A read entry, of `BROKER_EXCHANGE_READ_ACCOUNTS`, gives it a
-service and a fixed session instead, and no person and no project: the token holds the OAuth scope
-`read` alone. Dispatch serves such a token on the routes its read list names and refuses it on every
-other route with `403 READ_ONLY_TOKEN`; the Envoy listener refuses it with `401`, and the NATS auth
-service refuses a connection that presents it as `not_a_session`
-([Operate](/legion/broker/operate/#what-to-run)). That token reads the whole answer of
-`GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each
-source, each component, and every issue of the project, closed and iceboxed ones included. No
-setting holds a read entry to some projects.
+(`<service account>==<person>`), or neither a person nor a project for an entry that names
+neither (`<service account>==`): such a token acts as the account itself, names the account as its
+service, and Dispatch records its writes under that account. An entry that names a project names
+its person, so no token held to a project is personless. A read entry, of `BROKER_EXCHANGE_READ_ACCOUNTS`,
+gives it a service and a fixed session instead, and no person and no project: the token holds the OAuth scope
+`read` alone. Dispatch serves such a token on the GET routes it classes as reads, and refuses it on
+every other route with `403 READ_ONLY_TOKEN`. The Envoy listener refuses it with `401`, and the
+NATS auth service refuses a connection that presents it as `not_a_session`
+([Operate](/legion/broker/operate/#what-to-run)). That token reads every read of Dispatch that
+needs no OAuth scope, for every project: each issue, closed and iceboxed ones included, with its
+documents, comments and asks. No setting holds a read entry to some projects.
+
+Any trade may also ask for the OAuth scope `read` (`scope=read`), whatever its subject. That
+includes a pod's token under any entry, an account entry that names no person among them, whose read token names its account as the service, a workflow run's token, a machine's Google identity, a
+person's sign-in and a machine login. The token keeps the session, the person or the service, and
+the projects that the same trade would have named, and it writes nothing. Its project scope is
+the narrowed word of the one it would have had: `read-named`, `read-person` or `read-none`. It
+holds `read`, and `person` beside it when it acts for a person, never `approve`. The trade may
+also name a cut (`as_of`), the past time the token reads at: an RFC 3339 time no later than the
+trade. Until Dispatch serves reads at a past time, it refuses a token with a cut on every read but
+`GET /api/v1/whoami`, with `403 AS_OF_TOKEN_NOT_SERVED`. A trade that asks for no scope gets the
+token it always got (`packages/envoy/internal/cipher/oauth/exchange.go`, `decide`).
+
+A read trade makes, moves and extends no launcher credential, and its answer names none. A
+person's read trade still proves the sign-in with the box key. Its token names the launcher
+credential the sign-in already holds, so a revoke of the sign-in ends the token. A sign-in that
+holds no credential yet is refused `invalid_grant`, which names `agent-secrets login`. A read
+trade does not renew the sign-in's credential either. Once that credential lapses, read trades
+are refused `invalid_grant` until one ordinary trade of the sign-in renews it, as `agent-secrets`
+makes, and the read tokens that named it end with it. A narrowed token lives no longer than its
+subject token or the credential it names, and a revoke of either ends it. A token that
+holds `read`, a read entry's included, is never the subject of a trade.
+
+No key is both a read token's key and a launcher credential's key. A launcher credential's key
+signs launcher proofs, which enrol sessions and revoke a person's machines and grants, and a read
+token is meant for a holder that only reads. So the broker refuses to bind a read token to a key
+that a live launcher credential is bound to, with `invalid_request` that names the cure. It also
+refuses to mint or move a launcher credential onto a key that a live read token is bound to, as it
+refuses a key that another live credential holds. A launcher proof signed with a read token's key
+is refused `401 LAUNCHER_INVALID`. A read trade whose DPoP proof is signed with a launcher
+credential's key, such as a person's box key, the key in a machine login's `machine.json` or a
+device login's key, sends a second proof of the same request in the `DPoP-Holder` header. That
+proof is signed with a key made for the token's holder, and the broker binds the token to that
+key. A person's read trade must always send one. This departs from RFC 9449, which binds a token
+to the key of the request's DPoP proof (`packages/envoy/internal/cipher/oauthstore/store.go`,
+`CreateAccessTokenSession` and `KeyHoldsReadToken`).
 
 An enrollment is leased for `BROKER_LEASE_SECONDS` and renewed while its session runs: the helper
 renews the sessions it registered, `agent-secrets renew` renews a box, and Legion's pod shim renews
@@ -1045,8 +1082,21 @@ The broker evaluates every name
   roll took the target out of its profile is refused the same way and grants nothing, and a
   release of a grant whose target its live profile does not hold answers `400 TARGET_REFUSED`
   too (`403 TARGET_REFUSED` at the airlock's proxy) and mints nothing. A body that carries
-  `github_app`, the narrowing the broker took before profiles, is refused
-  `400 GITHUB_APP_FIELD_REMOVED` on `POST /v1/requests` and
+  `github_app`, the narrowing an `agent-secrets` of a release before `--target` sends for a stored
+  `github-app` secret, is answered until every client has moved, for the services and people
+  `BROKER_GITHUB_APP_FIELD_REQUESTERS` names and for a person asking for their own App: the broker
+  serves the request as the profile of that secret the profiles file grants the caller at once
+  whose scope holds the narrowing (the one with the most `write` permissions, the stored name and
+  then the file's order breaking a tie), with the narrowing's account and repositories as its
+  target, and releases it under the stored secret's name in the `installations` form, outside the
+  airlock, echoing `github_app`; a read-only body gets each of that broker's read set — `actions`,
+  `checks`, `contents`, `metadata`, `pull_requests` and `statuses` — at read where the profile
+  holds it, and none it does not. `BROKER_GITHUB_APP_FIELD_SECRETS` names the stored secrets this
+  may hand over at all, and a body for any other is refused.
+  Such a grant releases only through that field, with the same `read_only`, and no `--target`
+  grant is released through it. With `BROKER_GITHUB_APP_FIELD=off`, for a requester the list does
+  not name, and for a body it cannot serve, the field is refused `400 GITHUB_APP_FIELD_REMOVED` on
+  `POST /v1/requests` and
   `POST /v1/grants/{id}/values`, never `INVALID_REQUEST`, so a client of an earlier release does
   not send its request again without it. Where a person must approve a request that names a GitHub
   profile, the broker first mints the token the release would mint, for the target's account or

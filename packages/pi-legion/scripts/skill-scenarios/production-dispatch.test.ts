@@ -70,34 +70,39 @@ const presented = (found: DispatchCredentials) => ({
 const presentedCredentials = { url: "http://dispatch.test", token: DISPATCH_TOKEN };
 const noSleep = async () => {};
 
-test("DISPATCH_URL with DISPATCH_TOKEN gives the server and the token", () => {
+test("DISPATCH_URL with DISPATCH_TOKEN gives the server and the token", async () => {
   const home = dir("home-variables");
   expect(
     presented(
-      resolveDispatch({ HOME: home, DISPATCH_URL: "http://dispatch.test/", DISPATCH_TOKEN }, home)
+      await resolveDispatch(
+        { HOME: home, DISPATCH_URL: "http://dispatch.test/", DISPATCH_TOKEN },
+        home
+      )
     )
   ).toEqual(presentedCredentials);
 });
 
-test("the envoy.json ENVOY_CONFIG_FILE names gives the server and the token", () => {
+test("the envoy.json ENVOY_CONFIG_FILE names gives the server and the token", async () => {
   const home = dir("home-file");
   const file = path.join(home, "envoy.json");
   writeFileSync(
     file,
     JSON.stringify({ dispatch: { serverUrl: "http://dispatch.test", token: DISPATCH_TOKEN } })
   );
-  expect(presented(resolveDispatch({ HOME: home, ENVOY_CONFIG_FILE: file }, home))).toEqual(
+  expect(presented(await resolveDispatch({ HOME: home, ENVOY_CONFIG_FILE: file }, home))).toEqual(
     presentedCredentials
   );
 });
 
-test("no Dispatch configuration stops the run and names what is missing", () => {
+test("no Dispatch configuration stops the run and names what is missing", async () => {
   const home = dir("home-empty");
   const file = path.join(home, ".config", "legion", "envoy.json");
-  expect(() => resolveDispatch({ HOME: home }, home)).toThrow(
+  await expect(resolveDispatch({ HOME: home }, home)).rejects.toThrow(
     `Dispatch is not configured: no envoy.json at ${file}: Dispatch is off`
   );
-  expect(() => resolveDispatch({ HOME: home, DISPATCH_URL: "http://dispatch.test" }, home)).toThrow(
+  await expect(
+    resolveDispatch({ HOME: home, DISPATCH_URL: "http://dispatch.test" }, home)
+  ).rejects.toThrow(
     "DISPATCH_URL is set and no token is: set DISPATCH_TOKEN or DISPATCH_TOKEN_FILE"
   );
 });

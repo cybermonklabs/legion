@@ -127,6 +127,7 @@ func renderedOrNil(tree *Node) string {
 // A move over a validated tree answers what MoveBlock answers for the same tree: every block of
 // every corpus document, moved to the boundary before and after the document's first block.
 func TestValidDocumentMoveBlockAnswersMoveBlock(t *testing.T) {
+	t.Parallel()
 	documents, compared := corpusTrees(t), 0
 	for _, document := range documents {
 		tree := document.tree
@@ -153,6 +154,7 @@ func TestValidDocumentMoveBlockAnswersMoveBlock(t *testing.T) {
 // every heading of every corpus document, without an occurrence and at the first two, and a title
 // no document holds.
 func TestValidDocumentFindHeadingAnswersFindHeading(t *testing.T) {
+	t.Parallel()
 	documents, compared := corpusTrees(t), 0
 	zero, one := 0, 1
 	for _, document := range documents {
@@ -180,6 +182,7 @@ func TestValidDocumentFindHeadingAnswersFindHeading(t *testing.T) {
 // A row delete over a validated tree answers what DeleteTableRow answers for the same tree: every
 // table of every corpus document, at the index the edit path takes and at the edges of the range.
 func TestValidDocumentDeleteTableRowAnswersDeleteTableRow(t *testing.T) {
+	t.Parallel()
 	documents, compared, tables := corpusTrees(t), 0, 0
 	for _, document := range documents {
 		tree := document.tree
@@ -201,6 +204,7 @@ func TestValidDocumentDeleteTableRowAnswersDeleteTableRow(t *testing.T) {
 
 // A column delete over a validated tree answers what DeleteTableColumn answers for the same tree.
 func TestValidDocumentDeleteTableColumnAnswersDeleteTableColumn(t *testing.T) {
+	t.Parallel()
 	documents, compared, tables := corpusTrees(t), 0, 0
 	for _, document := range documents {
 		tree := document.tree
@@ -223,6 +227,7 @@ func TestValidDocumentDeleteTableColumnAnswersDeleteTableColumn(t *testing.T) {
 // The marks a row delete would remove, read over a validated tree, are the marks TableRowMarks
 // reads for the same tree, and a refused index is refused with the same words.
 func TestValidDocumentTableRowMarksAnswersTableRowMarks(t *testing.T) {
+	t.Parallel()
 	documents, compared, tables := corpusTrees(t), 0, 0
 	for _, document := range documents {
 		tree := document.tree
@@ -249,6 +254,7 @@ func TestValidDocumentTableRowMarksAnswersTableRowMarks(t *testing.T) {
 // The marks a column delete would remove, read over a validated tree, are the marks
 // TableColumnMarks reads for the same tree.
 func TestValidDocumentTableColumnMarksAnswersTableColumnMarks(t *testing.T) {
+	t.Parallel()
 	documents, compared, tables := corpusTrees(t), 0, 0
 	for _, document := range documents {
 		tree := document.tree
@@ -275,6 +281,7 @@ func TestValidDocumentTableColumnMarksAnswersTableColumnMarks(t *testing.T) {
 // The zero ValidDocument refuses each of the six with the words its plain-tree function gives a
 // nil tree, and reaches no nil dereference.
 func TestTheZeroValidDocumentRefusesTheBlockAndTableOperations(t *testing.T) {
+	t.Parallel()
 	zero := ValidDocument{}
 	for _, test := range []struct {
 		name string

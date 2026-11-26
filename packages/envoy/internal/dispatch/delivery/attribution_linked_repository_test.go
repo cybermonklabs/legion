@@ -88,7 +88,7 @@ func linkedPullEnvelope(number int, title, headRef, headRepo, sha string) map[st
 // linkedHeads is the heads of ACME-1, as the results read reads them, by pull request number.
 func linkedHeads(t *testing.T, ctx context.Context, pool *store.Pool) map[int]AttributedHead {
 	t.Helper()
-	heads, err := unrenamed().HeadsAttributedTo(ctx, pool, linkedIssue)
+	heads, err := unrenamed().HeadsAttributedTo(ctx, pool, linkedIssue, HeadAnswers{})
 	if err != nil {
 		t.Fatalf("read the heads of %s: %v", linkedIssue, err)
 	}
@@ -156,7 +156,7 @@ func TestALinkedPullRequestOfAnotherRepositoryIsTheIssues(t *testing.T) {
 		pool, ctx := deliveryTestPool(t)
 		seedLinkedIssue(t, ctx, pool, linkedPullURL(9))
 		var reads atomic.Int32
-		intake := newIntake(nil, pool, nil, linkedPullGitHub(t, mergedHead, &reads).newTestClient(), nil, nil, unrenamed())
+		intake := newIntake(tuningFor(t), nil, pool, nil, linkedPullGitHub(t, mergedHead, &reads).newTestClient(), nil, nil, unrenamed())
 		if _, err := intake.recordPullRequestHead(ctx,
 			linkedPullEnvelope(9, "Move the deploy job", "work/deploy-job", linkedPullRepo, linkedHead), 9); err != nil {
 			t.Fatalf("record the head of acme/infra#9: %v", err)
@@ -179,7 +179,7 @@ func TestALinkedPullRequestOfAnotherRepositoryIsTheIssues(t *testing.T) {
 		pool, ctx := deliveryTestPool(t)
 		seedLinkedIssue(t, ctx, pool)
 		var reads atomic.Int32
-		intake := newIntake(nil, pool, nil, linkedPullGitHub(t, mergedHead, &reads).newTestClient(), nil, nil, unrenamed())
+		intake := newIntake(tuningFor(t), nil, pool, nil, linkedPullGitHub(t, mergedHead, &reads).newTestClient(), nil, nil, unrenamed())
 		envelope := linkedPullEnvelope(10, linkedIssue+" move the deploy job", "legion/"+linkedIssue, linkedPullRepo, namedHead)
 		envelope["body"] = "This moves the deploy job of " + linkedIssue + "."
 		if _, err := intake.recordPullRequestHead(ctx, envelope, 10); err != nil {
@@ -198,7 +198,7 @@ func TestALinkedPullRequestOfAnotherRepositoryIsTheIssues(t *testing.T) {
 		pool, ctx := deliveryTestPool(t)
 		seedLinkedIssue(t, ctx, pool, linkedPullURL(11))
 		var reads atomic.Int32
-		intake := newIntake(nil, pool, nil, linkedPullGitHub(t, mergedHead, &reads).newTestClient(), nil, nil, unrenamed())
+		intake := newIntake(tuningFor(t), nil, pool, nil, linkedPullGitHub(t, mergedHead, &reads).newTestClient(), nil, nil, unrenamed())
 		if _, err := intake.recordPullRequestHead(ctx,
 			linkedPullEnvelope(11, "Move the deploy job", "work/deploy-job", "contributor/infra", forkHead), 11); err != nil {
 			t.Fatalf("record the head of acme/infra#11: %v", err)

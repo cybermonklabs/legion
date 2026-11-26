@@ -1,5 +1,7 @@
 package intake
 
+//ci:reads packages/contracts/fixtures/github-envelopes/* TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer globs it and reads each file; TestAWorkflowRunEnvelopeIsNoFact reads workflow-run-completed.json
+
 import (
 	"bytes"
 	"context"
@@ -563,8 +565,9 @@ func TestCapturedIssueUpdatedEnvelopeDecodes(t *testing.T) {
 
 // Dispatch can add issue payload fields, or start filling one it has always sent empty, before a
 // deployed daemon consumes them: the old decoder must keep accepting those events until its
-// matching workflow change rolls out. The daemon reads no priority, and no key the captured
-// fixture lacks, which a decoder rejecting unknown fields would refuse.
+// matching workflow change rolls out. The daemon reads no key the captured fixture lacks, which a
+// decoder rejecting unknown fields would refuse; it does read the priority, which the filled
+// fixture carries as P1 and the fact carries beside everything the original says.
 func TestIssueEventIgnoresFieldsTheDaemonDoesNotConsume(t *testing.T) {
 	original := string(capturedIssueCreatedEnvelope(t))
 	filled := strings.Replace(original, `\"priority\":null`, `\"priority\":1`, 1)
@@ -584,8 +587,13 @@ func TestIssueEventIgnoresFieldsTheDaemonDoesNotConsume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode issue.created with a priority and a field the fixture lacks: %v", err)
 	}
-	if !reflect.DeepEqual(got.Fact, want.Fact) {
-		t.Fatalf("widened fact = %#v, want %#v", got.Fact, want.Fact)
+	carried, ok := want.Fact.(DispatchIssue)
+	if !ok {
+		t.Fatalf("captured issue.created decodes to %#v, want a Dispatch issue", want.Fact)
+	}
+	carried.Priority = record.P1
+	if !reflect.DeepEqual(got.Fact, carried) {
+		t.Fatalf("widened fact = %#v, want %#v", got.Fact, carried)
 	}
 }
 
@@ -1240,6 +1248,9 @@ func TestABootedDaemonOpensNoDispatchServerDurable(t *testing.T) {
 	}
 }
 
+// A message that does not decode is given up at its first delivery: one give-up line at ERROR
+// with the reason undecodable and one given-up record each, and it is terminated, so neither is
+// delivered again.
 func TestConsumeTermsPoisonMessagesOnce(t *testing.T) {
 	pool := migratedPool(t)
 	createWrites(t, pool)
@@ -1251,19 +1262,28 @@ func TestConsumeTermsPoisonMessagesOnce(t *testing.T) {
 
 	publish(t, js, "notifications.dispatch.issue.CAPTURE-208.issue.updated", []byte(`{`))
 	publish(t, js, "notifications.dispatch.issue.CAPTURE-208.issue.updated", envelopeJSON(t, "dispatch-poison", "dispatch", `{"id":1,"issue_key":"CAPTURE-208","seq":1,"notify":true,"type":"issue.updated","payload":{"key":"CAPTURE-999","status":"todo","title":"wrong key"}}`))
-	testwait.Eventually(t, "two poison logs", func() bool { return strings.Count(logs.String(), "poison JetStream message") == 2 })
+	const giveUp = "intake: a message was given up"
+	testwait.Eventually(t, "two give-up lines", func() bool { return strings.Count(logs.String(), giveUp) == 2 })
 	time.Sleep(3 * spec.AckWait)
-	if got := strings.Count(logs.String(), "poison JetStream message"); got != 2 {
-		t.Fatalf("poison logs after ack wait = %d, want 2", got)
+	if got := strings.Count(logs.String(), giveUp); got != 2 {
+		t.Fatalf("give-up lines after ack wait = %d, want 2", got)
+	}
+	if got := strings.Count(logs.String(), "reason=undecodable"); got != 2 {
+		t.Fatalf("%d give-up lines name the reason undecodable, want both:\n%s", got, logs)
+	}
+	records := intakeRecords(t, pool)
+	if len(records) != 2 || !records[0].GivenUp() || !records[1].GivenUp() ||
+		records[0].GiveUpReason != record.GiveUpUndecodable || records[1].GiveUpReason != record.GiveUpUndecodable {
+		t.Fatalf("intake_failures = %+v, want one record of each message given up as undecodable", records)
 	}
 	assertNoAckPending(t, stream, dispatchConsumerName(spec.Project))
 }
 
 // A GitHub envelope with no payload, as an Envoy listener published every commit status on its
 // repository's comment topic (testdata/github/status-no-payload.json is such a message's stored
-// bytes, with this test's repository and ids of its own), is terminated once with its ERROR line,
-// and the GitHub durable goes on: the push stored after it is applied, and nothing waits for an
-// acknowledgement.
+// bytes, with this test's repository and ids of its own), is given up once, its give-up line at
+// ERROR, and terminated, and the GitHub durable goes on: the push stored after it is applied, and
+// nothing waits for an acknowledgement.
 func TestConsumeTermsAGitHubEnvelopeWithNoPayloadAndAppliesTheNext(t *testing.T) {
 	pool := migratedPool(t)
 	createWrites(t, pool)
@@ -1279,11 +1299,11 @@ func TestConsumeTermsAGitHubEnvelopeWithNoPayloadAndAppliesTheNext(t *testing.T)
 	if got := writeHandlers(t, pool); !slices.Equal(got, []string{"push"}) {
 		t.Fatalf("handler writes = %q, want the push after the poison applied", got)
 	}
-	requireLogLine(t, logs, "level=ERROR", "poison JetStream message", "Envoy envelope payload is not JSON",
+	requireLogLine(t, logs, "level=ERROR", "intake: a message was given up", "reason=undecodable", "Envoy envelope payload is not JSON",
 		"subject=notifications.github.sjawhar.legion.comment", "stream_seq="+strconv.FormatUint(poison.Sequence, 10))
 	time.Sleep(3 * spec.AckWait)
-	if got := strings.Count(logs.String(), "poison JetStream message"); got != 1 {
-		t.Fatalf("poison logs after ack wait = %d, want 1: a terminated message is not delivered again", got)
+	if got := strings.Count(logs.String(), "intake: a message was given up"); got != 1 {
+		t.Fatalf("give-up lines after ack wait = %d, want 1: a terminated message is not delivered again", got)
 	}
 	assertNoAckPending(t, stream, githubConsumerName(spec.Project))
 }

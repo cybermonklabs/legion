@@ -12,7 +12,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // linkedPullRequestTerms are the `with recursive` terms of the pull requests the external links
@@ -55,9 +54,14 @@ import (
 // trimmed, is held where a read puts the name into a GitHub path (refs.SplitGitHubRepo).
 //
 // The number is bounded to nine digits so that the cast cannot fail on a link a person typed.
+//
+// linked_pulls is materialized: it is the handful of pull requests one issue links, read once,
+// so a join of it to the heads compares each head with a stored name and number, rather than
+// evaluating the link's pattern and the canonical name's expression again for every head it
+// meets, as it would for the laid heads of a read-only caller's read (answeredHeadsRelation).
 func linkedPullRequestTerms(renames refs.Renames) string {
 	return `subjects as (select $1::text as key), ` + refs.IssueRepoTerms + `,
-	linked_pulls as (
+	linked_pulls as materialized (
 		select ` + refs.CanonicalRepoSQL(renames, "link.repo") + ` as repo, link.number, link.url
 		from (
 			select parsed.url, lower(parsed.part[1] || '/' || parsed.part[2]) as repo, parsed.part[3]::int as number
@@ -76,7 +80,9 @@ func linkedPullRequestTerms(renames refs.Renames) string {
 // linkedHeadJoin joins each linked_pulls row, l, to the stored head row of the pull request it
 // names, h: the same number in the same repository, compared without case, since a row written
 // from a `pull_request` envelope carries GitHub's own spelling of the repository and a link is
-// read lowercased.
+// read lowercased. Every read of the linked heads joins them so. In a read of the results path,
+// pull_request_heads is the relation its WITH list names (headsStatement), so the linked rows a
+// read-only caller reads carry its request's answers as the attributed rows do.
 const linkedHeadJoin = `join pull_request_heads h on lower(h.repo) = lower(l.repo) and h.number = l.number`
 
 // LinkedPullRequest is one pull request an issue's external links name in a repository the
@@ -134,7 +140,7 @@ type HeadOfChangedLink struct {
 // this pull request: one on the issue it left and one on the issue it reached, as a head write
 // appends them for the same move (attributionMoveEvents), and none where it kept its issue.
 func (head HeadOfChangedLink) AttributionEvents() []model.Event {
-	if sameIssue(head.From, head.To) {
+	if sameText(head.From, head.To) {
 		return nil
 	}
 	return attributionMoveEvents(head.Repo, head.Number, head.URL, head.From, head.To, head.Source)
@@ -325,16 +331,21 @@ func (a *Attributor) judgeChangedLinkRow(
 	return nil, none, AttributionRuleVersion, nil
 }
 
-// baseBranchMergedInQuery is BaseBranchMergedIn's statement: the merged rows attributed to the
-// issue that its links name in a repository it does not resolve to, held to one repository, in
-// BaseBranchMergedFor's order.
-func baseBranchMergedInQuery(renames refs.Renames) string {
-	return `with recursive ` + linkedPullRequestTerms(renames) + `
+// baseBranchMergedInQuery is BaseBranchMergedIn's statement after its WITH list: the merged rows
+// attributed to the issue that its links name in a repository it does not resolve to, held to one
+// repository, in BaseBranchMergedFor's order.
+var baseBranchMergedInQuery = `
 	select h.base_ref from linked_pulls l
 	` + linkedHeadJoin + `
 	where h.issue_key = $1 and lower(l.repo) = lower($2) and h.state = 'merged'
 	order by h.merged_at desc nulls last, h.number desc
 	limit 1`
+
+// baseBranchMergedInRead is baseBranchMergedInQuery whole, for both callers, its linked pull
+// requests read over renames (linkedPullRequestTerms). NewAttributor builds it once from its
+// rename pairs.
+func baseBranchMergedInRead(renames refs.Renames) headsStatement {
+	return newHeadsStatement(linkedPullRequestTerms(renames), baseBranchMergedInQuery, 2, "")
 }
 
 // BaseBranchMergedIn is BaseBranchMergedFor for a repository issueKey does not resolve to: the
@@ -353,10 +364,12 @@ func baseBranchMergedInQuery(renames refs.Renames) string {
 // as every other comparison of a repository here is.
 //
 // The linked rows are read through pull_request_heads_repo_head's leading column, one
-// repository's rows for each linked pull request.
-func (a *Attributor) BaseBranchMergedIn(ctx context.Context, pool *store.Pool, issueKey, repoFull string) (string, error) {
+// repository's rows for each linked pull request, as HeadsAttributedTo's are. answers is the
+// caller's request's, as HeadsAttributedTo takes them.
+func (a *Attributor) BaseBranchMergedIn(ctx context.Context, q refs.Queryer, issueKey, repoFull string, answers HeadAnswers) (string, error) {
+	query, args := a.mergedInRead.query(answers, issueKey, repoFull)
 	var branch string
-	err := pool.QueryRow(ctx, a.mergedInQuery, issueKey, repoFull).Scan(&branch)
+	err := q.QueryRow(ctx, query, args...).Scan(&branch)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}

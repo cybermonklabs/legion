@@ -32,6 +32,7 @@ import (
 // reviewer read (record.PhaseRow.ReviewedHead), over the one an earlier review recorded, and a
 // request for changes tells the reviewer's next round that head.
 func TestTheReviewEventDecidesAndTheCompletionRecordsItsFindings(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		decision      string
@@ -106,6 +107,7 @@ func TestTheReviewEventDecidesAndTheCompletionRecordsItsFindings(t *testing.T) {
 // where it stands and nobody is told: the answer is about GitHub, not about the head, and the
 // read that finds the state clean is what moves the issue to accepting.
 func TestAnApprovalWaitsWhileGitHubHasNotAnsweredForTheHead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		state record.MergeState
@@ -156,6 +158,7 @@ func TestAnApprovalWaitsWhileGitHubHasNotAnsweredForTheHead(t *testing.T) {
 // answers the same, tell nothing more. The notice names no role topic: the decision is not the
 // reviewer's to give.
 func TestAnApprovalOnAHeadGitHubWillNotMergeTellsTheArchitectOnce(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedMergeStateRound(t, pool, record.MergeStateBlocked)
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
@@ -203,6 +206,7 @@ func TestAnApprovalOnAHeadGitHubWillNotMergeTellsTheArchitectOnce(t *testing.T) 
 // clean read tells neither of them again - it is the answer they were waiting for, not news of a
 // round that goes nowhere.
 func TestAnApprovalOnABlockedHeadGitHubLaterReportsCleanMovesOnAndTellsOnce(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedMergeStateRound(t, pool, record.MergeStateUnread)
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
@@ -247,6 +251,7 @@ func TestAnApprovalOnABlockedHeadGitHubLaterReportsCleanMovesOnAndTellsOnce(t *t
 // since it approved that head and is the role that reads the head's checks on GitHub; both are
 // told once for the head and the state.
 func TestAnApprovalOnABlockedHeadNamesTheStateAndEveryCheckGitHubReported(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedMergeStateRound(t, pool, record.MergeStateBlocked)
 	// GitHub settled the head reporting the one check run it made there. The check the base
@@ -306,6 +311,7 @@ func TestAnApprovalOnABlockedHeadNamesTheStateAndEveryCheckGitHubReported(t *tes
 // decision rather than recomputed from the record, so GitHub answering `unknown` while it
 // recomputes and then `blocked` again for the same head is one finding, told once.
 func TestAnApprovalWhoseHeadHasACheckRunningTellsNobodyUntilItConcludes(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedMergeStateRound(t, pool, record.MergeStateBlocked)
 	// The head the reviewer approved is the one its own push left: GitHub has reported no check
@@ -412,6 +418,7 @@ func stuckRoleMessages(t *testing.T, pool *pgxpool.Pool) []string {
 // move instead: the round waits for GitHub's answer about the head it now stands at, and the read
 // that lands is what moves it.
 func TestASynchronizeBeforeItsPushLeavesNoVerdictToMoveAnApprovalOn(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedMergeStateRound(t, pool, record.MergeStateClean)
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
@@ -447,6 +454,7 @@ func TestASynchronizeBeforeItsPushLeavesNoVerdictToMoveAnApprovalOn(t *testing.T
 // GitHub kept answering the same way. A push to the branch moves no head of the record - its
 // synchronize does - so it asks only for a round left waiting on GitHub.
 func TestEveryFactThatCanChangeGitHubsAnswerAsksForAMergeStateRead(t *testing.T) {
+	t.Parallel()
 	push := intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: headOne, After: headTwo, Pusher: testReviewApp}
 	for _, tc := range []struct {
 		name string
@@ -496,8 +504,9 @@ func TestEveryFactThatCanChangeGitHubsAnswerAsksForAMergeStateRead(t *testing.T)
 			var asked []string
 			engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3,
 				Linger: time.Hour, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
-				Clock:          func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
-				ReadMergeState: func(issue string) { asked = append(asked, issue) }}, nil)
+				Clock:               func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
+				ReadMergeState:      func(issue string) { asked = append(asked, issue) },
+				ReadBaseMergeStates: func(_, _ string, issues []string) { asked = append(asked, issues...) }}, nil)
 
 			applyFacts(t, pool, engine)("fact", tc.fact)
 			if got := len(asked) > 0; got != tc.want {
@@ -543,6 +552,7 @@ func seedMergeStateRound(t *testing.T, pool *pgxpool.Pool, state record.MergeSta
 // carries. A stamp written there would say the head the record stands at had been read when it
 // was the head before it that was.
 func TestAMergeStateReadForAHeadTheRecordHasMovedPastIsDropped(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedMergeStateRound(t, pool, record.MergeStateClean)
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
@@ -578,6 +588,7 @@ func TestAMergeStateReadForAHeadTheRecordHasMovedPastIsDropped(t *testing.T) {
 // count them into the runs a round is judged by (classify.HeadRuns): this test holds that the
 // round on the new head is not reported stuck and that no notice names the left head's runs.
 func TestARoundOnANewHeadIsNotJudgedByTheRunsOfTheHeadItLeft(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedMergeStateRound(t, pool, record.MergeStateBlocked)
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
@@ -610,6 +621,7 @@ func TestARoundOnANewHeadIsNotJudgedByTheRunsOfTheHeadItLeft(t *testing.T) {
 // states a verdict rather than reading one does: it writes no stamp and erases none, and the
 // recorded one stands as the last real read left it.
 func TestAConfirmingReadStampsWhenItWasMadeAndAFactWithNoReadTimeStampsNothing(t *testing.T) {
+	t.Parallel()
 	recordedAt := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
 	readAt := time.Date(2026, 11, 12, 7, 5, 3, 0, time.UTC)
 	for _, tc := range []struct {
@@ -653,6 +665,7 @@ func TestAConfirmingReadStampsWhenItWasMadeAndAFactWithNoReadTimeStampsNothing(t
 // round's two halves, with no checks-red told and no review-stuck notice but the one a completion
 // before its decision always writes.
 func TestAnApprovalEndsTheRoundWhateverCISays(t *testing.T) {
+	t.Parallel()
 	for _, verdict := range []string{"red", "green", "undecided"} {
 		for _, completeFirst := range []bool{false, true} {
 			name := verdict + ", the approval then the completion"
@@ -774,6 +787,7 @@ var stepHeads = map[string]string{"head": headOne, "head-2": headTwo, "head-3": 
 // repository decide anything: an outsider's approval neither overrides the reviewer's request for
 // changes nor, delivered first, makes it look old.
 func TestAnApprovalStandsOnlyForTheHeadItNames(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		steps []string
@@ -935,6 +949,7 @@ func TestAnApprovalStandsOnlyForTheHeadItNames(t *testing.T) {
 // they are: the next implementer is told what the request for changes said, not the comment
 // posted after it.
 func TestACommentLeavesTheRoundsRequestForChanges(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedReview(t, pool, "")
@@ -965,6 +980,7 @@ func TestACommentLeavesTheRoundsRequestForChanges(t *testing.T) {
 // open, is no newer than one already processed and records nothing, so the reviewer's completion
 // waits for the round's own review.
 func TestAReviewFromAnEarlierRoundDeliveredAgainRecordsNothing(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedReview(t, pool, "green")
@@ -998,6 +1014,7 @@ func TestAReviewFromAnEarlierRoundDeliveredAgainRecordsNothing(t *testing.T) {
 // - decides nothing and counts no round: the rounds and the pull request's blocked notice belong
 // to the round that was open.
 func TestAReviewOutsideReviewingRecordsNoRound(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedReview(t, pool, "green")
@@ -1032,6 +1049,7 @@ func TestAReviewOutsideReviewingRecordsNoRound(t *testing.T) {
 // head its footer names as the commit the reviewer read, over the one an earlier review recorded,
 // which a request for changes tells the reviewer's next round.
 func TestAReviewWhileHeldFromReviewingDecidesTheRound(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		state string
 		want  phase.Phase
@@ -1073,6 +1091,7 @@ func TestAReviewWhileHeldFromReviewingDecidesTheRound(t *testing.T) {
 // Reviews are ordered across the pull request's whole life: reopening it keeps the newest deciding
 // review it has had, so an earlier review delivered again after the reopen records nothing.
 func TestAReopenedPullRequestKeepsItsNewestReview(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedReview(t, pool, "green")
@@ -1100,6 +1119,7 @@ func TestAReopenedPullRequestKeepsItsNewestReview(t *testing.T) {
 // round already in. It ends the round there rather than starting the reviewer again, whose second
 // completion of the same commit would be refused as not new and leave the issue in reviewing.
 func TestARetryEndsARoundWhoseReviewerCompletedBeforeTheHold(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		state  string
 		want   phase.Phase
@@ -1147,6 +1167,7 @@ func TestARetryEndsARoundWhoseReviewerCompletedBeforeTheHold(t *testing.T) {
 // decision rather than reviewing afresh. The architect ordered the retry, so it is told nothing new:
 // the one review-stuck notice is the completion's, and a second would read as the reviewer's answer.
 func TestARetryOfAStuckRoundTellsTheReviewerWhy(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
@@ -1182,6 +1203,7 @@ func TestARetryOfAStuckRoundTellsTheReviewerWhy(t *testing.T) {
 // restored worker reads the head's checks itself. Nothing goes back to implementing and the
 // architect hears no checks-red, from whatever phase the hold was taken.
 func TestARetryOfAHoldWithASettledHeadRestoresThePhase(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		from   phase.Phase
 		status string
@@ -1242,6 +1264,7 @@ func TestARetryOfAHoldWithASettledHeadRestoresThePhase(t *testing.T) {
 // The reviewer's approval submitted before its completion but delivered after it ends the round as
 // any approval does, and tells nothing beyond the completion's notice.
 func TestALateDeliveredApprovalEndsAStuckRound(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
@@ -1265,6 +1288,7 @@ func TestALateDeliveredApprovalEndsAStuckRound(t *testing.T) {
 // nothing about the round. A review that arrives before the reviewer completes tells nobody: the
 // completion is still to come. A deciding review from the same round still ends it, as always.
 func TestARoundNoReviewDecidesTellsTheArchitect(t *testing.T) {
+	t.Parallel()
 	// testEngine's clock applies the completion at midnight; GitHub stamps each review's submission,
 	// and answerSkew bounds how far the two clocks can disagree.
 	early, late := time.Date(2026, 9, 22, 23, 59, 0, 0, time.UTC), time.Date(2026, 9, 23, 0, 0, 30, 0, time.UTC)
@@ -1352,6 +1376,7 @@ func TestARoundNoReviewDecidesTellsTheArchitect(t *testing.T) {
 // and the reviewer's session their footers name (byReviewer), never by write access: GitHub gives
 // its bot account no collaborator permission of its own.
 func TestOnlyTheReviewAppOrAWriterDecidesARound(t *testing.T) {
+	t.Parallel()
 	submitted := time.Date(2026, 9, 23, 0, 1, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name, author, state string
@@ -1407,6 +1432,7 @@ func TestOnlyTheReviewAppOrAWriterDecidesARound(t *testing.T) {
 // (dispatch://INFRA-714/spec R1). No CI verdict is read anywhere here
 // (TestAnApprovalEndsTheRoundWhateverCISays).
 func TestARoundItsApprovalCannotEndTellsTheArchitect(t *testing.T) {
+	t.Parallel()
 	approve := func(head string) intake.Fact {
 		return intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: head, Author: testReviewApp, Body: reviewBody("approved", head)}
 	}
@@ -1505,6 +1531,7 @@ func TestARoundItsApprovalCannotEndTellsTheArchitect(t *testing.T) {
 // where it stands (refusesRound): the round is stuck in the way it was already told.
 // Both orders tell the same notices.
 func TestAHeadArrivingReasksAStuckRoundInEitherOrder(t *testing.T) {
+	t.Parallel()
 	// A step is a fact and how many review-stuck notices the outbox holds once it is applied.
 	type step struct {
 		fact intake.Fact
@@ -1562,6 +1589,7 @@ func TestAHeadArrivingReasksAStuckRoundInEitherOrder(t *testing.T) {
 // with the move (dispatch://INFRA-714 R2). An approval of a head the branch never reached decides
 // nothing however often it is read.
 func TestAnApprovalOfAHeadTheRecordHasNotReachedDecidesOnlyOnceItArrives(t *testing.T) {
+	t.Parallel()
 	complete := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}
 	approve := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headTwo, Author: testReviewApp, Body: reviewBody("approved", headTwo)}
 	sync := func(head string) intake.Fact {
@@ -1701,6 +1729,7 @@ func reviewerDecision(t *testing.T, pool *pgxpool.Pool) *record.ReviewDecision {
 // it is set aside, the round stays undecided, and the stuck-round path logs why. One naming the
 // reviewer's own session decides exactly as before.
 func TestAReviewAppReviewFromAnotherSessionIsSetAside(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	var logs bytes.Buffer
@@ -1750,6 +1779,7 @@ const reviewWaitsLine = "workflow: a review of the review App waits: the reviewe
 // review App's as production delivers it: the daemon never reads write access for the review App's
 // login, so AuthorCanWrite is false.
 func TestInTheReviewersFirstRoundOnlyItsOwnSessionDecides(t *testing.T) {
+	t.Parallel()
 	const setAside = "workflow: a review decides nothing: the review App submitted it from a session that is not the reviewer's"
 	for _, tc := range []struct {
 		name    string
@@ -1831,6 +1861,7 @@ func TestInTheReviewersFirstRoundOnlyItsOwnSessionDecides(t *testing.T) {
 // only from the reviewer's own review-App session (byReviewer); one from another session - the
 // controller's - is nobody's answer and tells the architect nothing more.
 func TestACommentFromAnotherSessionIsNotTheReviewersAnswer(t *testing.T) {
+	t.Parallel()
 	late := time.Date(2026, 9, 23, 0, 1, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name    string
@@ -1861,6 +1892,7 @@ func TestACommentFromAnotherSessionIsNotTheReviewersAnswer(t *testing.T) {
 // nothing: it has nothing to match the reviewer's claim against, so it is set aside exactly as one
 // naming another session is, and its set-aside log line's footer_session is empty.
 func TestAReviewWithNoFooterWhileTheReviewersSessionIsRecordedIsSetAside(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	var logs bytes.Buffer
@@ -1889,6 +1921,7 @@ func TestAReviewWithNoFooterWhileTheReviewersSessionIsRecordedIsSetAside(t *test
 // recorded session, it is the reviewer's own review, and it decides the round and records the
 // commit it read.
 func TestAReviewThatWaitedForTheReviewersSessionIsJudgedByTheSessionRecordedThen(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		session  string
@@ -1948,6 +1981,7 @@ func TestAReviewThatWaitedForTheReviewersSessionIsJudgedByTheSessionRecordedThen
 // claim recording none changes nothing for it. An account with write access decides the round as
 // before, and leaves the reviewer's commit where it stands, since the reviewer never read it.
 func TestAPersonsReviewDecidesWhileTheReviewersClaimRecordsNoSession(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	seedClaimSession(t, pool, reviewClaim, "")
@@ -1975,6 +2009,7 @@ func TestAPersonsReviewDecidesWhileTheReviewersClaimRecordsNoSession(t *testing.
 // review with no footer, while the reviewer's session is recorded, is set aside exactly as any
 // other footer-less one is, and its log line names the truncation.
 func TestATruncatedReviewWithNoFooterIsSetAsideAndLogsTruncation(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	var logs bytes.Buffer
@@ -2002,6 +2037,7 @@ func TestATruncatedReviewWithNoFooterIsSetAsideAndLogsTruncation(t *testing.T) {
 // with no head in its footer, decide nothing and leave the issue in reviewing with the refusal
 // recorded for the stuck notice to name.
 func TestAReviewAppReviewDecidesOnlyTheHeadItsFooterNames(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		body    string
@@ -2056,6 +2092,7 @@ func TestAReviewAppReviewDecidesOnlyTheHeadItsFooterNames(t *testing.T) {
 // and send the issue to accepting on code no review ever read. The commit the reviewer's next
 // round is told (record.PhaseRow.ReviewedHead) is the footer's head for the same reason.
 func TestTheRoundRecordsTheHeadTheReviewsFooterNames(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
@@ -2090,6 +2127,7 @@ func TestTheRoundRecordsTheHeadTheReviewsFooterNames(t *testing.T) {
 // thing that says why a round GitHub shows a review on has no decision
 // (record.ReviewDecision.Refused).
 func TestARequestForChangesNamingAnOlderHeadLeavesTheRoundStuck(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
@@ -2122,6 +2160,7 @@ func TestARequestForChangesNamingAnOlderHeadLeavesTheRoundStuck(t *testing.T) {
 // nothing of it: the row carries a refusal a later head could have spared the round, and the
 // stuck notice of a round only a listed review was refused in carries its base reason alone.
 func TestAPersonsReviewDecidesByWebhookAndNotFromTheList(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name         string
 		readFromList bool
@@ -2161,6 +2200,7 @@ func TestAPersonsReviewDecidesByWebhookAndNotFromTheList(t *testing.T) {
 // architect's send-back takes the work through implementing and testing, and round 2's reviewer
 // completes with no review at all.
 func TestANewRoundInheritsNoRefusal(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
@@ -2190,6 +2230,7 @@ func TestANewRoundInheritsNoRefusal(t *testing.T) {
 // keeps, each behind a webhook that never arrived - is logged as a warning that names it, once, by
 // the push that let it go: the move it would have linked into is judged without it.
 func TestAPushTheBoundLetsGoIsWarnedByName(t *testing.T) {
+	t.Parallel()
 	const message = "workflow: a pull request holds the most pushes waiting for a link; the oldest is let go"
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, "head", "green")
@@ -2229,6 +2270,7 @@ func TestAPushTheBoundLetsGoIsWarnedByName(t *testing.T) {
 // move is made (classify's maxCopies): the eighteenth lets the oldest after the first go, logged as
 // a warning that names it, once, and no push waiting for a link is let go with it.
 func TestACopyOfTwoHeadsOnTheirWayLetGoIsWarnedByName(t *testing.T) {
+	t.Parallel()
 	const message = "workflow: a pull request holds the most pushes of the same two heads on their way; the oldest after the first is let go"
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, "head", "green")
@@ -2266,6 +2308,7 @@ func TestACopyOfTwoHeadsOnTheirWayLetGoIsWarnedByName(t *testing.T) {
 // move made again or its push delivered again; the seventeenth lets the oldest go, logged as a
 // warning that names it, once, and no push waiting for a link is let go with it.
 func TestARepeatAMoveLetsGoIsWarnedByName(t *testing.T) {
+	t.Parallel()
 	const message = "workflow: a move holds the most pushes of its two heads made again; the oldest is let go"
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, "head", "green")

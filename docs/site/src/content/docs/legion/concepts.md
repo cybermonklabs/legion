@@ -160,14 +160,16 @@ below lists them in the order of the default steps. A role keeps
 its session between its assignments until its issue leaves the workflow, so its next task reaches
 the same session. Under the Kubernetes runtime the pod is shorter-lived than the session: the
 daemon releases an issue's pod once no role of it has a turn in progress or a turn due for ten
-minutes, after saving the workspace's unpushed work, and the next wake for one of its roles — a
+minutes and no working copy or bookmark of its workspace holds a commit that origin does not hold,
+nor the working copy a change, and the next wake for one of its roles — a
 task, a notice, a message to the role or to its session, or a CI settlement on the pull request's
-head — brings the pod back and resumes the same sessions where they stopped.
+head — brings the pod back and resumes the same sessions where they stopped. A commit that no
+working copy and no bookmark reaches, such as a side head, is not kept.
 
 | Phase | Worker | What it does | GitHub identity |
 | --- | --- | --- | --- |
 | `awaiting_person` | none | The root keeps its admission slot while its live architect waits for and reads a person's answer to a question on the root. | none |
-| `planning` | planner | Writes the implementation plan into its handoff and the issue's document. | review App |
+| `planning` | planner | Writes the implementation plan into the issue's `plan.md` document. | review App |
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
@@ -243,7 +245,8 @@ can share a Dispatch project with people and other agents. A root issue is admit
 the label, is in `todo`, and a slot is free. A slot is one issue the daemon has started, a root or a
 child, so a tree of four started issues holds four of them. The number of slots is `admission_cap`
 in the daemon's configuration, four by default; an issue that finds no free slot waits in line, and
-a labelled `todo` root takes its place in that line in the project board's order.
+a labelled `todo` root takes its place in that line by its Dispatch priority and then in the
+project board's order.
 
 An issue takes a slot when the daemon starts it — a root at its admission, which starts its
 architect, a child at the start of its first phase. An issue holds one of the cap's slots while it
@@ -260,9 +263,10 @@ A wait on another issue in a phase that keeps a slot is the exception: a started
 blocked by an issue that is not `done`, or whose own first phase waits on an open child under
 it, holds no admission slot.
 The daemon takes its slot back and stands it in the
-waiting line among the issues whose work came back, oldest first.
-Once the daemon has seen the wait end, the issue takes the next free slot by itself,
-ahead of every issue that has not started; under a full cap it waits for a free slot.
+waiting line within its priority, among the issues whose work came back, oldest first.
+Once the daemon has seen the wait end, the issue takes a free slot by itself, after every issue
+of a higher priority and ahead of every issue of its own priority that has not started; under a
+full cap it waits for a free slot.
 The daemon sees a blocker in the same project close as a live event.
 It sees a blocker in another project close only at its periodic turn's re-read:
 the first turn comes about a minute after the daemon starts,
@@ -292,16 +296,29 @@ a start of `retro` or `merging` takes no slot and runs at once.
 never under `admission.active`, which is how you tell it from an issue a person parked, which is
 in none of the three.
 
-The line has two parts, and `legion state` prints them in the order the daemon promotes them:
-the issues whose work came back, oldest first by the moment it came back, and then the issues
-that have not started, by the Dispatch rank of each issue's tree root and then its own. A
-re-rank on the board therefore moves an issue inside the second part, and never ahead of an
-issue whose work came back. Each waiting issue carries `waitingLine` in `legion state --json`:
-its `place` and the line's `length`, its `part` (`returned` or `starting`) and `kind`, its
-`partPlace` and `partLength` within that part, `holdsSlot` where it already holds its admission
-slot and so resumes whatever the cap says, the key that placed it — `since`, the moment the
-work came back, or `rootRank`, `ownRank` and `rootKey` for an issue that has not started — and
-`reason`, the daemon's own sentence for that place. Every issue that is not working now carries
+The line is ordered by Dispatch priority first, and `legion state` prints it in the order the
+daemon promotes it: the issues at P0, then at P1, P2 and P3, and then the issues with no priority.
+An issue waits at its own priority, else at its tree root's, and after P3 when neither has one.
+Within one priority the line has two parts: the issues whose work came back, oldest first by the
+moment it came back, and then the issues that have not started, by the Dispatch rank of each
+issue's tree root and then its own. So an issue whose work came back goes ahead of every issue of
+its priority that has not started, and never ahead of an issue of a higher priority. A re-rank on
+the board moves an issue inside its priority's second part, and never ahead of an issue of its
+priority whose work came back; a change of the issue's priority in Dispatch moves it to the
+place of its new priority at the daemon's next admission pass. Priority orders the line and
+nothing else: it takes no slot back from work that runs, an issue that still waits on another
+issue is placed by its priority and passed over while that wait lasts, and an issue that already
+holds its slot is placed by its priority and resumes whatever the cap says. The members of a
+re-admitted tree stay out of the line until their root's promotion, whatever their own priority.
+Every issue the workflow records carries `priority` in `legion state --json`, its own Dispatch
+priority: 0 for P0 to 3 for P3, or null for none. Each waiting issue carries `waitingLine` there:
+its `place` and the line's `length`, its `priority`, the one that placed it (its own, else its
+tree root's, or null for an issue that waits after P3), its `part` (`returned` or `starting`) and
+`kind`, its `partPlace` and `partLength` within its priority and part, `holdsSlot` where it
+already holds its admission slot and so resumes whatever the cap says, the key that placed it
+within its part — `since`, the moment the work came back, or `rootRank`, `ownRank` and `rootKey`
+for an issue that has not started — and `reason`, the daemon's own sentence for that place.
+Every issue that is not working now carries
 `why` beside that: a `state`, one of `claim_stopped` (a claim nothing will wake), `waiting`,
 `blocked` and `unlisted` (the record holds it in the workflow and no list places it), with a
 `reason` sentence. An issue holding an admission slot carries no `why` unless it
@@ -336,15 +353,16 @@ resolution, or reply that hands an open ask back to the agent; so does your appr
 request of the root's spec, and so does the spec's design gate standing open. The wait also ends
 when nothing is asked of you any more: Dispatch retracts the question because its decision block
 left the spec, a session closes it, or a session hands it back to the agent's turn. The answered
-root goes into the waiting line's first part, among the issues whose work came back, oldest first,
-and so behind every issue of that part whose work came back before it, a root's own first phase
+root goes into the waiting line within its priority, among the issues whose work came back, oldest
+first, and so behind every issue of a higher priority and every issue of its own priority whose
+work came back before it, a root's own first phase
 included, and its promotion there gives the same architect session a task naming what answered it
 and what is still with you. That promotion takes no further slot, since the root has held one all
 along, so it resumes however full the cap is, whether or not its design gate has opened. Until the
 pass that reads your answer resumes it, the root stands in the admission line as well, where
-`waitingLine` on the issue gives its place and its length, its `kind` `answered`, its
-`holdsSlot` true, and a `reason` that says a person answered it, when its work came back and
-that it holds its slot already. The daemon sends
+`waitingLine` on the issue gives its place and its length, its `priority`, its `kind` `answered`,
+its `holdsSlot` true, and a `reason` that says a person answered it, when its work came back, the
+priority it waits at and that it holds its slot already. The daemon sends
 its architect nothing about that wait and resumes the root by itself on that pass,
 so neither the place nor the wait is anything for you to act on. An
 agent's answer or resolution of another ask answers nothing, and an act of yours from before the
@@ -423,6 +441,13 @@ task names the version the daemon accepted, which it reads with
 comes back after a restart, or a memory disagrees with a record, the record wins. The issue's
 Conversation in Dispatch lists every version, and opens each to its fields. The merger writes
 none, and nor does the architect.
+
+A handoff's body is `head`, the commit the phase ended at, and, where the role has one, a `note`
+of at most 1,000 characters that tells the next role how to run the issue's checks in the worker
+pod or an order of work it must keep. The tester's body also keeps `implementerProof`, `failures`
+and `failed`. A worker writes its handoff once, when it completes its phase. What other records
+hold stays out of it: the diff, the pull request body, each check's result, the GitHub review,
+and `plan.md` with its plan checks and its departures from the spec.
 
 A worker's completion names its record, and the daemon reads that record back from Dispatch before
 it moves the issue: it refuses a record another session wrote, one of another issue, phase or
@@ -660,8 +685,17 @@ next look. A time less than 60 seconds ahead becomes 60 seconds ahead, and a tim
 check's own bound starts no look of its own, because the look at that bound already stands.
 Nothing else wakes a check: no deploy run, no Dispatch `issue.deployed`, no Dispatch build and no
 daemon boot, and the daemon reads no deployment's production workflows at all.
-A look is bounded at two hours, and a look nobody reported — its two hours, an operator's hold,
-or a claim that failed to start — starts the next look two hours later. A look that began before
+A look is bounded at two hours, and a look nobody reported — its two hours or an operator's
+hold — starts the next look two hours later. An agent whose claim fails, in a look or after it
+ended, backs the check off: the next look comes two hours later after the first such look, and
+twice as long after each failed look in a row after it (four hours, eight, and so on, never past
+the check's bound), until a look the agent reports sets it back to two hours. That look tries the
+agent once more, with one attempt left of the budget its failure spent, so an agent that cannot
+start is launched once a look rather than a whole budget's worth of times; a failure that spent no
+budget, a provider error's, starts a fresh run. The architect is told of each such failure, with
+its cause, how the agent's last pod ended and when the next look tries it. An operator's
+`legion claims retry` or the controller's fresh session gives the agent its whole budget again.
+A look that began before
 a pause of the project ended counts its two hours from the resume, or from its agent's last ready
 after the resume where that is later, and counts nothing while that agent is still starting.
 The whole check is bounded at `production_check_hours` (336, fourteen
@@ -730,9 +764,9 @@ still moving, and a call that carries a start and no end is the shape a turn tha
 leaves behind. The daemon's own backstop reads that record and nothing else before it ends such a
 turn (`worker_stall_backstop_hours` in
 [legion.yaml](/legion/legion/running-legion/#legionyaml)), and a person reads the same record
-three ways: `legion state`'s `agents in a tool call` line, which names each claim in an open call
-by issue and role ([Observe](/legion/legion/running-legion/#observe)); `legion claims list`, whose
-last column is that call for each claim, the project controller's — which is on no issue, and so
-on no part of the `legion state` line — included; and `GET /legion/v1/state`, the bytes
-`legion state --json` prints, under `issues.<KEY>.architect.step` and
+three ways: `legion state`'s `agents in a tool call` line, which names each working claim in an
+open call by issue and role ([Observe](/legion/legion/running-legion/#observe)); `legion claims
+list`, whose last column is that call for each claim, the project controller's — which is on no
+issue, and so on no part of the `legion state` line — included; and `GET /legion/v1/state`, the
+bytes `legion state --json` prints, under `issues.<KEY>.architect.step` and
 `issues.<KEY>.workers.<role>.claim.step`.
