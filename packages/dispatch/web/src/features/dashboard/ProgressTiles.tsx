@@ -13,6 +13,7 @@ import {
   pageSegmentProgressBg,
 } from "../../theme/classes";
 import { MOVING_STATUSES } from "../issue-page/issue-status";
+import { authorText, pageChrome } from "../issue-page/page-structure";
 import { DASHBOARD_WORDS, NODE_TYPE_NAMES } from "../issue-page/page-words";
 import { useKnownReferences } from "../refs/reference-names";
 import { buildDispatchReference, parseNodeReference, referenceHref } from "../refs/routes";
@@ -143,7 +144,8 @@ function Bar({ name, tile }: { name: string; tile: TileView }): ReactNode {
 }
 
 /** The list under a tile: each entry a link to the node, named as every link to it is named,
- *  20 at a time with a control that says how many are left. */
+ *  20 at a time with a control that says how many are left. A name is the node's own, and the
+ *  page's word for the node's type stands in until the batched name read answers. */
 function TileList({ id, name, tile }: { id: string; name: string; tile: TileView }): ReactNode {
   const [pages, setPages] = useState(1);
   const { names } = useKnownReferences();
@@ -154,15 +156,19 @@ function TileList({ id, name, tile }: { id: string; name: string; tile: TileView
         {shown.map((entry) => {
           const route = parseNodeReference(entry.ref);
           const href = route === undefined ? undefined : referenceHref(route);
-          const words = names.get(entry.ref) ?? entry.fallback;
+          const named = names.get(entry.ref);
+          const words = named ?? entry.fallback;
+          const mark = named === undefined ? pageChrome : authorText;
           return (
-            <li className="min-w-0 truncate" key={entry.ref}>
+            <li className="min-w-0 truncate" key={entry.ref} {...mark}>
               {href === undefined ? (
                 words
               ) : (
                 <Link className={`underline ${pageInkText}`} to={href}>
                   {entry.before === undefined ? null : (
-                    <span className={pageMutedText}>{entry.before} </span>
+                    <span className={pageMutedText} {...authorText}>
+                      {entry.before}{" "}
+                    </span>
                   )}
                   {words}
                 </Link>
@@ -176,8 +182,11 @@ function TileList({ id, name, tile }: { id: string; name: string; tile: TileView
           className={`rounded-lg border px-3 py-1 text-xs font-medium ${pageLineBorder} ${pageMutedText}`}
           onClick={() => setPages((count) => count + 1)}
           type="button"
+          {...pageChrome}
         >
-          {`${DASHBOARD_WORDS.next_twenty} · ${left} ${DASHBOARD_WORDS.left}`}
+          {`${DASHBOARD_WORDS.next_twenty} · `}
+          <span {...authorText}>{left}</span>
+          {` ${DASHBOARD_WORDS.left}`}
         </button>
       ) : null}
     </div>
@@ -197,14 +206,19 @@ function Tile({ tile }: { tile: TileView }): ReactNode {
         onClick={() => setOpen((shown) => !shown)}
         type="button"
       >
-        <span className={`text-xs font-medium ${pageMutedText}`}>{name}</span>
+        <span className={`text-xs font-medium ${pageMutedText}`} {...pageChrome}>
+          {name}
+        </span>
         <span className="flex items-baseline gap-1">
-          <span className={`text-2xl leading-none font-semibold tabular-nums ${pageInkText}`}>
+          <span
+            className={`text-2xl leading-none font-semibold tabular-nums ${pageInkText}`}
+            {...authorText}
+          >
             {tile.count}
           </span>
-          <span className={`text-xs tabular-nums ${pageQuietText}`}>
+          <span className={`text-xs tabular-nums ${pageQuietText}`} {...pageChrome}>
             {" / "}
-            {tile.whole}
+            <span {...authorText}>{tile.whole}</span>
           </span>
         </span>
         <Bar name={name} tile={tile} />
@@ -228,7 +242,10 @@ export function Tiles(reads: Parameters<typeof tileViews>[0]): ReactNode {
   );
   return (
     <section aria-label={DASHBOARD_WORDS.parts.progress} className="space-y-2">
-      <h2 className={`text-xs font-semibold tracking-wide uppercase ${pageQuietText}`}>
+      <h2
+        className={`text-xs font-semibold tracking-wide uppercase ${pageQuietText}`}
+        {...pageChrome}
+      >
         {DASHBOARD_WORDS.parts.progress}
       </h2>
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">

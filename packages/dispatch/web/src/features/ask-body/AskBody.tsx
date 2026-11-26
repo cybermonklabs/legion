@@ -59,7 +59,7 @@ import {
   ASK_FORM_WORDS,
   ASK_LINE_WORDS,
 } from "./ask-body-words";
-import type { AskTextRenderer } from "./ask-text";
+import { type AskTextRenderer, authored, type TextMarks } from "./ask-text";
 import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
 
@@ -171,6 +171,15 @@ export interface AskBodyProps {
   /** The caller's thread read mark, placed on an answered record when its answer is the newest
    *  write the caller shows (`AskCompletionCard`). */
   markRecord?: DwellRef;
+  /** The two marks of a host that divides its own words from an author's (`TextMarks`): with
+   *  them the open body's root wears the mark of the body's own words, which are the issue
+   *  page's declared ones (`ask-body-words.ts`), and each value inside it - who asked, who it
+   *  waits on, the document, a version, a date - the mark of a value, as the caller's renderer
+   *  marks the ask's own texts. The shared answer box, with its hint, and a refusal under it are
+   *  the box's and the server's words, so the form that holds them wears the mark of a value,
+   *  and the options and the actions in it the body's again. Dashboard hands them; no other
+   *  host does, so every other surface draws the elements it always drew, with no mark. */
+  marks?: TextMarks;
   /** Called once the server has recorded the reader's decline (`DeclineControl`). */
   onAnswered?: (id: string) => void;
   /** The project document that owns an ask whose read lacks `document`
@@ -216,6 +225,7 @@ export function AskBody({
   form,
   frame,
   markRecord,
+  marks,
   onAnswered,
   owner,
   renderText,
@@ -444,7 +454,11 @@ export function AskBody({
       </p>
     );
   const answerActions = choiceShown ? (
-    <fieldset aria-label={ASK_FORM_WORDS.question_shaped} className="flex gap-2">
+    <fieldset
+      aria-label={ASK_FORM_WORDS.question_shaped}
+      className="flex gap-2"
+      {...marks?.pageChrome}
+    >
       <button
         aria-disabled={refusedWhileOut}
         className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${filledLook}`}
@@ -470,7 +484,7 @@ export function AskBody({
       </button>
     </fieldset>
   ) : (
-    <div className="space-y-2">
+    <div className="space-y-2" {...marks?.pageChrome}>
       <div className="flex gap-2">
         {submitButton}
         {changing ? (
@@ -561,7 +575,7 @@ export function AskBody({
         displayedAsk.author.id === "" ? (
           ASK_LINE_WORDS.asked
         ) : (
-          <AskAgent actor={displayedAsk.author} agentNames={agentNames} />
+          <AskAgent actor={displayedAsk.author} agentNames={agentNames} marks={marks} />
         )
       )
     ) : agentNames === "live" ? (
@@ -572,7 +586,7 @@ export function AskBody({
         kind="control"
       />
     ) : (
-      askerControl(askerName(agentText.label(sessionAuthor)))
+      askerControl(askerName(authored(marks, agentText.label(sessionAuthor))))
     );
   // What stands at the right end of the first line: an approval request's mark and the urgency
   // word a caller asked for beside the kind, the kind in its colour (the new page's tag,
@@ -642,14 +656,14 @@ export function AskBody({
       </div>
       {isApproval && documentLink ? (
         <p className={`mt-1 text-sm ${tooltips ? `${linkText} ${linkHoverText}` : ON_PAGE.link}`}>
-          <AskApprovalLink ask={displayedAsk} />
+          <AskApprovalLink ask={displayedAsk} marks={marks} />
         </p>
       ) : null}
       {/* A request to approve again names the approval it follows, under the question (the
           spec's own placement), with the diff from that version behind Show diff; a first
           request carries no earlier approval, and EarlierApproval renders nothing for it. */}
       {displayedAsk.approval === undefined ? null : (
-        <EarlierApproval agentNames={agentNames} approval={displayedAsk.approval} />
+        <EarlierApproval agentNames={agentNames} approval={displayedAsk.approval} marks={marks} />
       )}
       {/* Whose turn it is, the one part of the ask's provenance a reader acts on, on its own line
           under the question. An agent's name is what gives up width. */}
@@ -663,7 +677,7 @@ export function AskBody({
             {turnHolder === "you" ? (
               ASK_LINE_WORDS.you
             ) : (
-              <AskAgent actor={turnHolder} agentNames={agentNames} inline />
+              <AskAgent actor={turnHolder} agentNames={agentNames} inline marks={marks} />
             )}
           </span>
         </p>
@@ -675,7 +689,7 @@ export function AskBody({
           the issue is the caller's own: only an Inbox row carries one, and the ask reads
           do not. */}
       {displayedAsk.state === "open" ? (
-        <AskHandOn ask={displayedAsk} assignee={ask.issue?.assignee ?? null} />
+        <AskHandOn ask={displayedAsk} assignee={ask.issue?.assignee ?? null} marks={marks} />
       ) : null}
       {askChanged ? (
         <p className={`mt-3 text-sm font-medium ${tooltips ? inlineWarningText : ON_PAGE.warning}`}>
@@ -692,12 +706,17 @@ export function AskBody({
           else submit(event);
         }}
         ref={trackForm}
+        {...marks?.authorText}
       >
         {(displayedAsk.options ?? []).length === 0 ? null : (
           // Inside `NoTooltips`, while the body refuses, the options are refused by their group's
           // `aria-disabled`, which ARIA passes to each option in it: an option row puts no
           // attribute of its own on its input (`AskChoiceRow`).
-          <fieldset aria-disabled={refusedWhileOut} className="min-w-0 space-y-2">
+          <fieldset
+            aria-disabled={refusedWhileOut}
+            className="min-w-0 space-y-2"
+            {...marks?.pageChrome}
+          >
             <legend className="sr-only">{ASK_FORM_WORDS.options}</legend>
             {(displayedAsk.options ?? []).map((option) => (
               <AskChoiceRow
@@ -759,7 +778,12 @@ export function AskBody({
       {/* The person's way out of a question they will not answer, under the form that answers
           it. An approval request draws none: it is answered with Approve or Request changes. */}
       {displayedAsk.state === "open" && displayedAsk.kind === "question" ? (
-        <DeclineControl ask={displayedAsk} decline={decline} onDeclined={onAnswered} />
+        <DeclineControl
+          ask={displayedAsk}
+          decline={decline}
+          marks={marks}
+          onDeclined={onAnswered}
+        />
       ) : null}
     </>
   );
@@ -768,8 +792,14 @@ export function AskBody({
   // as a block as wide as the box it gives the body, so the inline-size containment a container
   // takes - its own content no longer widens it - takes no width from the body.
   return (
-    <div className="@container/ask-body" data-ask-body="">
-      <AskAnchorHeader ask={displayedAsk} inBlock={inBlock} quoteSpacing="roomy" tone="surface" />
+    <div className="@container/ask-body" data-ask-body="" {...marks?.pageChrome}>
+      <AskAnchorHeader
+        ask={displayedAsk}
+        inBlock={inBlock}
+        marks={marks}
+        quoteSpacing="roomy"
+        tone="surface"
+      />
       <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={displayedAsk} />
       {inBlock ||
       displayedAsk.block_id === undefined ||

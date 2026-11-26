@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 
 import type { Actor, DisplayTree } from "../../api/types";
 import { Dot, KindBullet } from "../../components/RowMarks";
+import type { PageWords } from "../../components/tooltips";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   dangerText,
@@ -153,6 +154,15 @@ export interface DecisionCardProps {
   readonly issueKey?: string;
   /** Keep, on a decision that waits for review; none where the caller writes none. */
   readonly keep?: CardKeepAct;
+  /** The two marks of a host that divides its own words from an author's (`PageWords`): with
+   *  them the card's root wears the mark of the card's own words, which are the issue page's
+   *  declared ones (`decision-card-words.ts`), and each value inside it - the author, the level
+   *  the read holds and its reason, a statement's line, the name a state holds - the mark of a
+   *  value, as the caller's renderer marks the heading and the text. The Change form's shared
+   *  box, with its hint, and the words it quotes wear the mark of a value, and its actions the
+   *  card's again. Dashboard hands them; no other host does, so every other surface draws the
+   *  elements it always drew, with no mark. */
+  readonly marks?: Pick<PageWords, "authorText" | "pageChrome">;
   readonly paths: CardPaths;
   readonly renderText: DecisionTextRenderer;
 }
@@ -172,8 +182,17 @@ function levelWord(decision: CardDecision, authorLine: boolean): string | undefi
  *  words is drawn as nothing, and never by its block's id. A link holds no markup, so the line
  *  is the first line of the statement's text as plain words, from the reading the server made of
  *  it where the read sent one (`usePlainHeadline`): the reading list's
- *  `decision-statement-line`. */
-function StatementLink({ link, to }: { link: CardLink; to: string }): ReactNode {
+ *  `decision-statement-line`. The line is the statement's own words, which a host that hands
+ *  `marks` gets inside the mark of a value. */
+function StatementLink({
+  link,
+  marks,
+  to,
+}: {
+  link: CardLink;
+  marks: DecisionCardProps["marks"];
+  to: string;
+}): ReactNode {
   const { reads, text } = usePlainHeadline(link.text_tree, link.text, {
     firstLine: true,
     surface: "decision-statement-line",
@@ -186,7 +205,7 @@ function StatementLink({ link, to }: { link: CardLink; to: string }): ReactNode 
   return (
     <li>
       {reads}
-      <Link className={`${linkText} ${linkHoverText}`} to={to}>
+      <Link className={`${linkText} ${linkHoverText}`} to={to} {...marks?.authorText}>
         {line}
       </Link>
       {link.changed_at != null && compareTimestamps(link.changed_at, link.created_at) > 0 ? (
@@ -226,26 +245,32 @@ export function DecisionCard({
   heading,
   issueKey,
   keep,
+  marks,
   paths,
   renderText,
 }: DecisionCardProps): ReactNode {
   const agentText = useAgentText();
   const level = levelWord(decision, authorLine);
+  // The level the read holds is a value; "Unsure" is the card's own word.
+  const levelMark = level === decision.uncertainty ? marks?.authorText : undefined;
   const reason = decision.uncertainty_reason?.trim() ?? "";
   const author = !authorLine
     ? undefined
     : decision.decided_by === undefined
       ? DECISION_LINE_WORDS.author_unknown
       : agentText.author(decision.decided_by);
+  const authorMark = decision.decided_by === undefined ? undefined : marks?.authorText;
+  // How the decision stands: the state's words, and the name of the person it holds where it
+  // holds one, which a host that hands `marks` draws inside the mark of a value.
   const state = decision.replaced
-    ? DECISION_STATE_WORDS.replaced
+    ? { words: DECISION_STATE_WORDS.replaced }
     : authorLine && decision.change !== undefined
-      ? `${DECISION_STATE_WORDS.changed_by} ${agentText.author(decision.change.author)}`
+      ? { name: agentText.author(decision.change.author), words: DECISION_STATE_WORDS.changed_by }
       : decision.waiting_review
-        ? DECISION_STATE_WORDS.waiting_review
+        ? { words: DECISION_STATE_WORDS.waiting_review }
         : decision.kept_by === undefined
           ? undefined
-          : `${DECISION_STATE_WORDS.kept_by} ${agentText.author(decision.kept_by)}`;
+          : { name: agentText.author(decision.kept_by), words: DECISION_STATE_WORDS.kept_by };
   const text: DecisionText =
     decision.kind === "person" && decision.answer !== undefined
       ? { markdown: decision.answer }
@@ -254,7 +279,7 @@ export function DecisionCard({
   return (
     // The bullet hangs left of the heading, and everything under it stands at the heading's left
     // edge: an 18 px column, its 7 px dot centred on the first line.
-    <div className="flex gap-x-2" data-decision-card="">
+    <div className="flex gap-x-2" data-decision-card="" {...marks?.pageChrome}>
       <KindBullet colour={pageKindBullet.decision} mark="data-decision-bullet" />
       <div className="min-w-0 flex-1 space-y-2">
         <div className="flex items-start justify-end gap-x-3">
@@ -264,7 +289,11 @@ export function DecisionCard({
             {paths.decision === undefined ? (
               heading.node
             ) : (
-              <Link className={`${linkText} ${linkHoverText}`} to={paths.decision}>
+              <Link
+                className={`${linkText} ${linkHoverText}`}
+                to={paths.decision}
+                {...marks?.authorText}
+              >
                 {/* A link's words hold no markup: the reading list's `decision-heading-words`. */}
                 {heading.words}
               </Link>
@@ -279,7 +308,9 @@ export function DecisionCard({
             {author === undefined ? null : (
               <>
                 <Dot />
-                <span className="min-w-0 truncate">{author}</span>
+                <span className="min-w-0 truncate" {...authorMark}>
+                  {author}
+                </span>
               </>
             )}
             {decision.changed_at === null ? null : (
@@ -296,9 +327,15 @@ export function DecisionCard({
         {level === undefined && reason === "" ? null : (
           <p className="flex flex-wrap gap-x-2 text-sm" data-decision-level="">
             {level === undefined ? null : (
-              <span className={`font-semibold ${decisionUnsureText}`}>{level}</span>
+              <span className={`font-semibold ${decisionUnsureText}`} {...levelMark}>
+                {level}
+              </span>
             )}
-            {reason === "" ? null : <span className={textSecondaryOnSurface}>{reason}</span>}
+            {reason === "" ? null : (
+              <span className={textSecondaryOnSurface} {...marks?.authorText}>
+                {reason}
+              </span>
+            )}
           </p>
         )}
         {decision.links.length === 0 ? null : (
@@ -308,6 +345,7 @@ export function DecisionCard({
                 // biome-ignore lint/suspicious/noArrayIndexKey: one statement can be tied twice
                 key={`${link.block_id}:${index}`}
                 link={link}
+                marks={marks}
                 to={paths.statement(link.block_id)}
               />
             ))}
@@ -324,11 +362,26 @@ export function DecisionCard({
         ))}
         {state === undefined ? null : (
           <p className={`text-xs font-semibold ${textMutedOnSelectedCard}`} data-decision-state="">
-            {state}
+            {state.name === undefined ? (
+              state.words
+            ) : marks === undefined ? (
+              `${state.words} ${state.name}`
+            ) : (
+              <>
+                {`${state.words} `}
+                <span {...marks.authorText}>{state.name}</span>
+              </>
+            )}
           </p>
         )}
         {acts && (keep !== undefined || change !== undefined) ? (
-          <DecisionActs change={change} issueKey={issueKey} keep={keep} name={heading.words} />
+          <DecisionActs
+            change={change}
+            issueKey={issueKey}
+            keep={keep}
+            marks={marks}
+            name={heading.words}
+          />
         ) : null}
       </div>
     </div>
@@ -340,11 +393,13 @@ function DecisionActs({
   change,
   issueKey,
   keep,
+  marks,
   name,
 }: {
   change: CardChangeAct | undefined;
   issueKey: string | undefined;
   keep: CardKeepAct | undefined;
+  marks: DecisionCardProps["marks"];
   /** The decision's heading as plain words, which a stopped Keep and the Change form are named
    *  after (`decision-heading-words`). */
   name: string;
@@ -392,6 +447,7 @@ function DecisionActs({
         <ChangeForm
           change={change}
           issueKey={issueKey}
+          marks={marks}
           name={name}
           onDone={() => setChanging(false)}
         />
@@ -400,15 +456,19 @@ function DecisionActs({
   );
 }
 
-/** The change itself: the words it is anchored on, the reader's own, and Send change. */
+/** The change itself: the words it is anchored on, the reader's own, and Send change. The
+ *  quoted words and the shared box are not the card's, so with `marks` the form wears the mark
+ *  of a value and its actions the card's own. */
 function ChangeForm({
   change,
   issueKey,
+  marks,
   name,
   onDone,
 }: {
   change: CardChangeAct;
   issueKey: string | undefined;
+  marks: DecisionCardProps["marks"];
   /** The decision's heading as plain words, which names the form. */
   name: string;
   onDone: () => void;
@@ -429,6 +489,7 @@ function ChangeForm({
       aria-label={`${DECISION_ACT_WORDS.change} ${name}`}
       className="space-y-2"
       onSubmit={submit}
+      {...marks?.authorText}
     >
       <blockquote
         className={`border-l-2 pl-2 text-sm ${textSecondaryOnSurface}`}
@@ -455,7 +516,7 @@ function ChangeForm({
             : change.error.message}
         </p>
       )}
-      <div className="flex gap-2">
+      <div className="flex gap-2" {...marks?.pageChrome}>
         <button
           className={primaryButton}
           disabled={change.pending || body.trim() === ""}

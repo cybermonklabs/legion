@@ -17,6 +17,7 @@ import { deliveryMode } from "../conversation/delivery";
 import { KeptReplyToDeleted } from "../conversation/KeptDraftOffers";
 import { MentionComposer } from "../conversation/MentionComposer";
 import { AskReplyComposer, takesReply } from "../inbox/AskThread";
+import { authorText, pageChrome } from "../issue-page/page-structure";
 import { DASHBOARD_WORDS } from "../issue-page/page-words";
 import { RowText } from "../issue-page/RowText";
 import { useAgentText } from "../refs/AgentName";
@@ -78,8 +79,10 @@ function EntryView({ entry, source }: { entry: Entry; source: TextSource | undef
   const text = useAgentText();
   return (
     <li className="space-y-1" data-thread-entry={entry.id}>
-      <p className={`text-xs ${pageQuietText}`}>
-        <span className={`font-medium ${pageMutedText}`}>{text.author(entry.author)}</span>
+      <p className={`text-xs ${pageQuietText}`} {...pageChrome}>
+        <span className={`font-medium ${pageMutedText}`} {...authorText}>
+          {text.author(entry.author)}
+        </span>
         {" · "}
         <Timestamp at={entry.created_at} />
       </p>
@@ -92,7 +95,7 @@ function EntryView({ entry, source }: { entry: Entry; source: TextSource | undef
 
 function ThreadLink({ to }: { to: string }): ReactNode {
   return (
-    <Link className={`text-xs font-medium underline ${pageMutedText}`} to={to}>
+    <Link className={`text-xs font-medium underline ${pageMutedText}`} to={to} {...pageChrome}>
       {DASHBOARD_WORDS.thread_link}
     </Link>
   );
@@ -148,7 +151,10 @@ function ReplyThread({
     />
   );
   return (
-    <div className="space-y-2">
+    // The thread's writes and the shared reply box are not the page's words, so the item wears
+    // the mark of a value, as the margin's own cards do (`IssueMargin.tsx`); each entry's line
+    // and the link mark the page's own words inside it (`EntryView`, `ThreadLink`).
+    <div className="space-y-2" {...authorText}>
       <ol className="space-y-2">
         {entry(root)}
         {replies.map(entry)}
@@ -278,7 +284,8 @@ function AskThreadItem({
   const ask = read.ask;
   const replies = unreadEntries(row, read.replies ?? [], viewer);
   return (
-    <div className="space-y-2">
+    // As `ReplyThread`'s: the ask body and the entries mark their own words.
+    <div className="space-y-2" {...authorText}>
       <DashboardAskBody ask={ask} />
       {replies.length === 0 ? null : (
         <ol className="space-y-2">

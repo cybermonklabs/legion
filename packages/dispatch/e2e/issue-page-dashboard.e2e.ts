@@ -36,15 +36,37 @@
 //   both: `slots/foot.tsx` draws them at rest in Conversation alone. These are the names part L
 //   gives them (dispatch://INFRA-3949), so the row that reads them runs only where the head holds
 //   part L's `IssueComposer.tsx` (c-dashboard-new (2)).
+// - Dashboard's own region on the new page is `[data-dashboard]` (`slots/view-dashboard.tsx`), and
+//   every text it draws carries one of the page's two marks (`page-structure.ts`): the page's
+//   (`data-page-chrome`) on Dashboard's own words and on the ask body's and the decision card's,
+//   and an author's (`data-author-text`) on every value, every author's words, and what a shared
+//   control draws in words of its own (a writing box, the approval control).
 
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+import {
+  ASK_APPROVAL_WORDS,
+  ASK_FORM_WORDS,
+  ASK_HAND_ON_WORDS,
+  ASK_LINE_WORDS,
+} from "../web/src/features/ask-body/ask-body-words";
+import {
+  DECISION_ACT_WORDS,
+  DECISION_LINE_WORDS,
+  DECISION_STATE_WORDS,
+} from "../web/src/features/decision-card/decision-card-words";
 import { URGENCY_LABELS } from "../web/src/features/inbox/ask-urgency";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import {
+  AUTHOR_TEXT_ATTRIBUTE,
+  PAGE_CHROME_ATTRIBUTE,
+} from "../web/src/features/issue-page/page-structure";
+import {
   CONTROL_LABELS,
+  DASHBOARD_WORDS,
   NODE_TYPE_NAMES,
+  PHASE_WORDS,
   PRESET_NAMES,
   type Preset,
 } from "../web/src/features/issue-page/page-words";
@@ -52,6 +74,8 @@ import { buildIssuePath } from "../web/src/features/refs/routes";
 import { getComment, getIssue } from "./api";
 import {
   type DashboardSeed,
+  type ItemKind,
+  READER,
   SEEDED_LEGION,
   seedDashboard,
   type WaitingItem,
@@ -816,5 +840,200 @@ test("pressing Dashboard from Spec sends only R8's reads, and a cold load stays 
       `a cold load of /dashboard sent more than ${COLD_LOAD_AT_MOST} requests under /api/: ${JSON.stringify(coldReads.byRoute())}`
     ).toBeLessThanOrEqual(COLD_LOAD_AT_MOST);
     await cold.close();
+  });
+});
+
+/** How the page divides one text Dashboard draws (`page-structure.ts`): by the mark of the
+ *  nearest element inside Dashboard that carries one - the page's own words (`chrome`), an
+ *  author's words or a value (`author`), or both on one element (`both`) - or by none. */
+type TextMark = "author" | "both" | "chrome" | "none";
+
+/** One text node Dashboard draws, its whitespace run together, and its mark. */
+interface MarkedText {
+  readonly mark: TextMark;
+  readonly text: string;
+}
+
+/** The marks in the order `marksOf` lists them. */
+const TEXT_MARKS: readonly TextMark[] = ["author", "both", "chrome", "none"];
+
+/** The element each kind of item is drawn whole by once its reads have answered: a thread's
+ *  first write, the ask body, the decision card, and the one approval control. */
+const ITEM_PARTS: Readonly<Record<ItemKind, string>> = {
+  approval: "[data-ask-body]",
+  decision: "[data-decision-card]",
+  question: "[data-ask-body]",
+  stale: "[data-approval-artifact]",
+  thread: "[data-thread-entry]",
+};
+
+/** Each text node Dashboard draws that has a box, with its mark. The search for a mark climbs no
+ *  higher than Dashboard's own region (`[data-dashboard]`), so a mark on the region itself or on
+ *  the page around it marks none of Dashboard's text. */
+function dashboardTexts(page: Page): Promise<MarkedText[]> {
+  const region = issuePage(page).locator("[data-dashboard]");
+  return region.evaluate(
+    (root, attributes) => {
+      const markOf = (element: Element): TextMark => {
+        for (let at: Element | null = element; at !== null && at !== root; at = at.parentElement) {
+          const chrome = at.hasAttribute(attributes.chrome);
+          const author = at.hasAttribute(attributes.author);
+          if (chrome && author) return "both";
+          if (chrome) return "chrome";
+          if (author) return "author";
+        }
+        return "none";
+      };
+      const found: MarkedText[] = [];
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+        const text = (node.textContent ?? "").replace(/\s+/g, " ").trim();
+        const parent = node.parentElement;
+        if (text === "" || parent === null || parent.getClientRects().length === 0) continue;
+        found.push({ mark: markOf(parent), text });
+      }
+      return found;
+    },
+    { author: AUTHOR_TEXT_ATTRIBUTE, chrome: PAGE_CHROME_ATTRIBUTE }
+  );
+}
+
+/** The marks each of `texts` is drawn in, over every text node that reads it whole. */
+function marksOf(
+  drawn: readonly MarkedText[],
+  texts: readonly string[]
+): Record<string, TextMark[]> {
+  return Object.fromEntries(
+    texts.map((text): [string, TextMark[]] => [
+      text,
+      TEXT_MARKS.filter((mark) => drawn.some((one) => one.text === text && one.mark === mark)),
+    ])
+  );
+}
+
+/** A text as a failure names it: its mark, then its words. */
+function described(one: MarkedText): string {
+  return `${one.mark}: ${one.text}`;
+}
+
+/** Fails unless `items` are the items drawn, in order, each drawn whole (`ITEM_PARTS`). */
+async function expectItemsDrawn(
+  waiting: Locator,
+  items: readonly WaitingItem[],
+  where: string
+): Promise<void> {
+  await expect
+    .poll(() => drawnItems(waiting), { message: `${where} are not the items drawn, in order` })
+    .toEqual(items.map(testIdOf));
+  for (const item of items) {
+    await expect(
+      itemOf(waiting, item).locator(ITEM_PARTS[item.kind]).first(),
+      `${where} draws ${testIdOf(item)} with nothing in it`
+    ).toBeVisible();
+  }
+}
+
+/** Fails unless Dashboard draws each of `texts.chrome` in the page's mark alone and each of
+ *  `texts.author` in an author's alone, read until each is drawn; then unless every text it draws
+ *  carries one mark, every number an author's, and every name the seed wrote
+ *  (`DashboardSeed.names`) an author's. */
+async function expectMarked(
+  page: Page,
+  seed: DashboardSeed,
+  where: string,
+  texts: { readonly author: readonly string[]; readonly chrome: readonly string[] }
+): Promise<void> {
+  const wanted = [...texts.chrome, ...texts.author];
+  const marked = Object.fromEntries([
+    ...texts.chrome.map((text): [string, TextMark[]] => [text, ["chrome"]]),
+    ...texts.author.map((text): [string, TextMark[]] => [text, ["author"]]),
+  ]);
+  await expect
+    .poll(async () => marksOf(await dashboardTexts(page), wanted), {
+      message: `${where} draws a label outside the page's mark, or a value outside an author's`,
+    })
+    .toEqual(marked);
+  const drawn = await dashboardTexts(page);
+  expect(
+    drawn.filter((one) => one.mark === "none" || one.mark === "both").map(described),
+    `${where} draws text that is neither the page's own words nor an author's`
+  ).toEqual([]);
+  expect(
+    drawn.filter((one) => /^\d+$/.test(one.text) && one.mark !== "author").map(described),
+    `${where} draws a number outside an author's mark`
+  ).toEqual([]);
+  const names = new Set(seed.names);
+  expect(
+    drawn.filter((one) => names.has(one.text) && one.mark !== "author").map(described),
+    `${where} draws a name the seed wrote outside an author's mark`
+  ).toEqual([]);
+}
+
+// R21's two marks on Dashboard (`page-structure.ts`), read on the seeded issue as the new page
+// draws it with every part's reads answered - the phase track, the first five items and then all
+// nine, with the approval request, the questions, the decisions, the stale approval and the two
+// threads, the tiles and the agents - at the desktop width and the phone's. Every text carries
+// exactly one mark, found no higher than Dashboard's own region; Dashboard's labels and the words
+// of the ask body and the decision card carry the page's, and the count, each number, each name
+// and an author's words carry an author's. Drawn with no mark, as Dashboard was before it marked
+// its text, the labels and the values read `none` and the row fails at its first read.
+// SLOW(>=2s): the whole Dashboard seed, then at each width one load of the bare address and one
+// press of the control under the first five, each read until the texts it names are drawn.
+test("every text Dashboard draws carries one mark, the page's on its labels and an author's on its values", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seeded, async (page, seed) => {
+    const waiting = waitingOf(issuePage(page));
+    const roles = SEEDED_LEGION.roles.filter((role) => role.state !== "retired");
+    // Dashboard's own words, and the words of the ask body, the decision card and a thread item
+    // that the first five items draw between them.
+    const labels = [
+      DASHBOARD_WORDS.parts.phase,
+      DASHBOARD_WORDS.parts.waiting,
+      DASHBOARD_WORDS.parts.progress,
+      DASHBOARD_WORDS.parts.agents,
+      ...Object.values(DASHBOARD_WORDS.tiles),
+      PHASE_WORDS.steps.planning,
+      ...roles.map((role) => ROLE_WORDS[role.state] ?? ""),
+      DASHBOARD_WORDS.thread_link,
+      PRESET_NAMES.verification,
+      ASK_APPROVAL_WORDS.requested,
+      ASK_LINE_WORDS.kind,
+      ASK_HAND_ON_WORDS.asked_of,
+      ASK_FORM_WORDS.answer,
+      DECISION_STATE_WORDS.waiting_review,
+      DECISION_ACT_WORDS.keep,
+    ];
+    // The values: the count, the reader every open ask is asked of, and each agent's role. The
+    // decision card's author line is a name where the read names one, and the card's own word
+    // where it names none.
+    const values = [String(seed.items.length), READER, ...roles.map((role) => role.role)];
+    const author = seed.decisions.author;
+    const authorWord = author === DECISION_LINE_WORDS.author_unknown;
+    const authorLine = { author: authorWord ? [] : [author], chrome: authorWord ? [author] : [] };
+    for (const width of [DESKTOP_WIDTH, PHONE_WIDTH]) {
+      const at = `at ${width} px`;
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${seed.key}`);
+      await expectDashboard(page, `the bare address ${at}`);
+      // Dashboard with its reads answered, not a part still waiting: the count, the first five
+      // each drawn whole, and the control under them with the number left.
+      await expect(countOf(waiting)).toHaveText(String(seed.items.length));
+      await expectItemsDrawn(waiting, seed.items.slice(0, 5), `the first five ${at}`);
+      await expect(nextFive(waiting)).toBeVisible();
+      await expectMarked(page, seed, `the first five ${at}`, {
+        author: [...values, String(seed.items.length - 5), ...authorLine.author],
+        chrome: [...labels, DASHBOARD_WORDS.next_five, ...authorLine.chrome],
+      });
+
+      // Every item: the questions below the first five add the urgency word and an option.
+      await nextFive(waiting).click();
+      await expectItemsDrawn(waiting, seed.items, `every item ${at}`);
+      await expectMarked(page, seed, `every item ${at}`, {
+        author: [...values, seed.asks.byOption.option, ...authorLine.author],
+        chrome: [...labels, ASK_LINE_WORDS.urgency.high, ...authorLine.chrome],
+      });
+    }
   });
 });
