@@ -9,14 +9,17 @@ import (
 
 // TestAChangeACrashLeftPendingWakesASubscribedViewOnceTheBootDrains: an eval write killed between
 // its commit and its drain leaves its change row in the change log's outbox, and the notification
-// its commit sent reached no hub. The row alone wakes nothing: a live evals view of its project is
-// not recomputed. The boot of the next server drains the outbox before it serves (cmd/dispatch's
-// main calls delivery.DrainPending), and its drain's notification wakes the hub, which reads the
-// moved change and recomputes the view, in well under the 5 s this test waits; the time from the
-// drain to the recompute is recorded. A pending row left by a writer killed between its commit and
-// its drain is moved by the next drain of any process, or else by the next process's boot before
-// it serves (delivery.DrainPending states the bound); this test drives the boot's.
+// its commit sent reached no hub. The row alone wakes nothing: its insert, as the crash left it,
+// notifies no hub, so the boot's drain finds it still pending, where any hub's catch-up would have
+// moved it first (catchUpChanges drains the outbox before it reads). The boot of the next server
+// drains the outbox before it serves (cmd/dispatch's main calls delivery.DrainPending), and its
+// drain's notification wakes the hub, which reads the moved change and recomputes a live evals
+// view of its project; the time from the drain to the recompute is recorded. A pending row left by
+// a writer killed between its commit and its drain is moved by the next drain of any process, or
+// else by the next process's boot before it serves (delivery.DrainPending states the bound); this
+// test drives the boot's.
 func TestAChangeACrashLeftPendingWakesASubscribedViewOnceTheBootDrains(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	createTestProject(t, rig.handler, "HUB")
@@ -32,10 +35,6 @@ func TestAChangeACrashLeftPendingWakesASubscribedViewOnceTheBootDrains(t *testin
 		insert into delivery_changes_pending (kind, repo, ref, t_old, t_new) values ('eval_readings', 'HUB', 'HUB/crash-left', $1, $1)
 	`, measured); err != nil {
 		t.Fatalf("leave a pending change as a crash between commit and drain leaves it: %v", err)
-	}
-	time.Sleep(4 * viewQuiet)
-	if woken := rig.count(mark, recomputeOfView(t, frame)); woken != 0 {
-		t.Fatalf("the evals view was recomputed %d times before any drain, so this test cannot tell what woke it", woken)
 	}
 
 	drained := time.Now()

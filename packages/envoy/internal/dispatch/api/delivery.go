@@ -177,10 +177,11 @@ func (bound windowBound) parsed() (*time.Time, error) {
 	return &parsed, nil
 }
 
-// deliverySettings reads the timeline's configuration record, answering 404
+// deliverySettings reads the delivery settings the timeline, the measures, the Pipeline and a
+// deploy run's drill-down answer under (recordedDeliverySettings), answering 404
 // DELIVERY_NOT_CONFIGURED (or the store's error) and false when it cannot.
 func (s *server) deliverySettings(w http.ResponseWriter, r *http.Request) (delivery.DeliverySettings, bool) {
-	settings, err := delivery.GetSettings(r.Context(), s.deps.Store.Pool)
+	settings, err := recordedDeliverySettings(r.Context(), s.deps.Store.Pool)
 	if err != nil {
 		if errors.Is(err, delivery.ErrNoSettings) {
 			writeError(w, deliveryNotConfiguredCode, http.StatusNotFound, deliveryNotConfiguredMessage)
@@ -190,6 +191,24 @@ func (s *server) deliverySettings(w http.ResponseWriter, r *http.Request) (deliv
 		return delivery.DeliverySettings{}, false
 	}
 	return settings, true
+}
+
+// recordedDeliverySettings reads, in q, the delivery settings the delivery routes and the live
+// hub's timeline, measures and pipeline views answer under: the settings the stored day rows
+// stand built under (evals.BuiltSettingsIn), the saved settings with the production rule, the
+// deploy cards' jobs and the deploy repository as the refresher recorded them with the rows. The
+// Evals tab reads the same, so between a save of the settings and the refresher's commit that
+// brings the rows to it every page answers the old settings, and from that commit on the new
+// ones: one page shows one state. delivery.ErrNoSettings where the deployment has set none.
+func recordedDeliverySettings(ctx context.Context, q delivery.Querier) (delivery.DeliverySettings, error) {
+	settings, err := evals.BuiltSettingsIn(ctx, q)
+	if err != nil {
+		return delivery.DeliverySettings{}, err
+	}
+	if settings == nil {
+		return delivery.DeliverySettings{}, delivery.ErrNoSettings
+	}
+	return *settings, nil
 }
 
 // getDeliveryTimeline answers GET /api/v1/delivery/timeline: merges, deploys, pipeline failures
@@ -418,19 +437,21 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 	pop := deliveryPopulation{query: query, withWaiting: withWaiting, jobsByRun: map[int64][]delivery.DeliveryRunJob{}, windowJobs: map[int64][]delivery.DeliveryRunJob{}}
 
 	// Independent reads, side by side. They never shared a transaction (each is its own
-	// statement on the pool, so each already read its own snapshot), so running them at once
-	// loses no consistency they had. Each takes one connection under a hold mark of its own
-	// (store.ForConcurrentRead): on the request's shared mark one read's open cursor would refuse
-	// the rest. The run jobs depend on the runs, so they follow the runs within the runs' own read.
+	// statement on the pool, or, the target evals' read, a read-only snapshot of its own,
+	// evals.Store.DeployRepoEvals), so running them at once loses no consistency they had. Each
+	// takes one connection under a hold mark of its own (store.ForConcurrentRead): on the
+	// request's shared mark one read's open cursor would refuse the rest. The run jobs depend on
+	// the runs, so they follow the runs within the runs' own read.
 	//
 	// A timeline request therefore holds up to eight of the shared pool's connections
 	// (store.sharedPoolSize) for the length of its longest read, where it held one at a time (the
 	// window's pull requests beside its runs, and its runs' two reads of jobs, run side by side
-	// within their own read). That is fine because none of them holds a lock or opens a
-	// transaction, so none waits on another caller or makes another caller wait on it: the
-	// deadlock the pool's guard exists to prevent needs a caller already holding a connection,
-	// which ForConcurrentRead refuses. A read past the pool's free connections waits for one, as
-	// any request does.
+	// within their own read). That is fine because none of them takes a lock past the one any
+	// read takes of the tables it reads, the read-only snapshot no more than a statement does, so
+	// none waits on another caller or makes another caller wait on it: the deadlock the pool's
+	// guard exists to prevent needs a caller already holding a connection, which
+	// ForConcurrentRead refuses. A read past the pool's free connections waits for one, as any
+	// request does.
 	var deploys delivery.Deploys
 	independent := []func(ctx context.Context) error{
 		// The pull requests merged in the window, every deploy run on main GitHub created from

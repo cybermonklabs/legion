@@ -24,12 +24,14 @@ const releaseBuild = "api-release-build"
 // of this history is stored under an owner key of its repository (evals.OwnerKey) and none under
 // the project's own key: its issues own no repository, so a pull request is held through the
 // project's default repository, and a deploy that ships none counts for no issue. The running
-// build's passes fold their figures, and the page takes the deltas of that write. Then a new
-// build's refresher runs its passes until it has nothing left to do, on a hub whose clock stands
-// still: the page gets one delta, which lands on the route's body, from one recompute of cause
-// rebuild, and nothing follows it, however far the clock moves past every quiet. Before, the new
-// build's walk rewrote the days one commit each, each change waiting for its quiet.
+// build's passes fold their figures, and the page takes the deltas of that write once the hub owes
+// nothing. Then a new build's refresher runs its passes until it has nothing left to do, on a hub
+// whose clock stands still: the page gets one delta, which lands on the route's body, from one
+// recompute of cause rebuild, and nothing follows it, however far the clock moves past every
+// quiet. Before, the new build's walk rewrote the days one commit each, each change waiting for
+// its quiet.
 func TestARestartThatMovesValuesSendsTheEvalsPageOneDeltaAtItsFlip(t *testing.T) {
+	t.Parallel()
 	page := newRefreshedEvalsPage(t, nil, nil)
 	project := page.fixture.Project
 	today := page.now.Truncate(24 * time.Hour)
@@ -47,8 +49,7 @@ func TestARestartThatMovesValuesSendsTheEvalsPageOneDeltaAtItsFlip(t *testing.T)
 	page.refresh(t)
 	page.rig.hub.catchUpNow()
 	page.rig.clock.Advance(viewMaxWait)
-	moved := page.take(t, 2*time.Second)
-	page.idle(t)
+	moved := page.take(t)
 	if moved == 0 {
 		t.Fatal("the page was sent no delta of the moved rows, and the check needs a release that moves them back")
 	}
@@ -68,7 +69,7 @@ func TestARestartThatMovesValuesSendsTheEvalsPageOneDeltaAtItsFlip(t *testing.T)
 		t.Fatal("the route answers after the release what it answered before, and the check needs a release that moves it")
 	}
 	page.rig.clock.Advance(viewMaxWait)
-	page.conn.none(t, time.Second, "the release's one delta, past every quiet")
+	page.rig.requireNothingSent(t, page.conn, "the release's one delta, past every quiet")
 	begun, rebuilds := page.rig.count(mark, recomputeBegin("")), page.rig.count(mark, recomputeBegin(deliveryCauseRebuild))
 	if begun != 1 || rebuilds != 1 {
 		t.Fatalf("the release began %d recomputes of the page's view, %d of them %s, want the one", begun, rebuilds, deliveryCauseRebuild)

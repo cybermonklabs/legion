@@ -324,6 +324,11 @@ func TestGetDeliveryPipelineComputesTheFixture(t *testing.T) {
 	if want := catalogueTargets(); !reflect.DeepEqual(body.Targets, want) {
 		t.Errorf("targets = %s, want the catalogue's %s", showTargets(body.Targets), showTargets(want))
 	}
+	// The catalogue seeds main's targets: 45 minutes from merge to production, and a 60-minute
+	// median from open to merge.
+	if merge, opened := body.Targets.MergeToProductionMinutes, body.Targets.OpenedToMergeMedianMinutes; merge == nil || merge.Value != 45 || opened == nil || opened.Value != 60 {
+		t.Errorf("targets = %s, want merge_to_production_minutes 45 and opened_to_merge_median_minutes 60, main's", showTargets(body.Targets))
+	}
 	if _, ok := raw["freshness"]; !ok {
 		t.Error("no freshness")
 	}
@@ -370,10 +375,13 @@ func TestGetDeliveryPipelineAnswersEmptyListsAsArrays(t *testing.T) {
 // the repository, or more than one project's is, or its project holds no pr-ci eval yet, whatever
 // min_n another project's pr-ci holds. Over a deliverytest history whose deploy repository is
 // DELIV's default, a register write setting DELIV's job min_n to the timed results of the busiest
-// job the Pipeline ranks at 50 moves its table, so the table can tell the two apart; with DELIV's
-// default cleared the Pipeline answers its table at 50 again; with the repository the default of a
+// job the Pipeline ranks at 50 moves its table, so the table can tell the two apart; with that
+// min_n cleared (null, no minimum) it ranks every job with a timed result and states 1, the one
+// result a job needs to have a median to rank by (measures.FoldSlowestJobs); with DELIV's default
+// cleared the Pipeline answers its table at 50 again; with the repository the default of a
 // project made by SQL, which holds no eval, too; and with it the default of both, too.
 func TestThePipelineRanksBy50WhereItsDeployRepositoryMapsToNoProject(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx := t.Context()
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: 14})
@@ -404,6 +412,16 @@ func TestThePipelineRanksBy50WhereItsDeployRepositoryMapsToNoProject(t *testing.
 	if moved, _, minN := read(); minN != busiest || slices.Equal(moved, at50) {
 		t.Fatalf("with %s's pr-ci min_n at %d the Pipeline ranks %v by %d, at 50 %v: want its table moved and ranked by %d",
 			fixture.Project, busiest, moved, minN, at50, busiest)
+	}
+	cleared := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/"+fixture.Project+"/evals", map[string]any{
+		"slug": evals.SlugPRCI, "series": []any{map[string]any{"series": evals.SeriesJobs, "min_n": nil}},
+	}, "pr-ci-min-n-null")
+	if cleared.Code != http.StatusCreated && cleared.Code != http.StatusOK {
+		t.Fatalf("clear %s's pr-ci min_n: status %d, body %s", fixture.Project, cleared.Code, cleared.Body.String())
+	}
+	if every, _, minN := read(); minN != 1 || len(every) < len(at50) {
+		t.Fatalf("with %s's pr-ci min_n null the Pipeline ranks %v by %d, want every job with a timed result, at least the %d at 50, by 1",
+			fixture.Project, every, minN, len(at50))
 	}
 
 	setDefault := func(project string, repo *string) {

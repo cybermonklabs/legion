@@ -9,6 +9,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -230,9 +231,9 @@ func liveEnded(sub, reason string) LiveEnded {
 
 // LiveError refuses a frame or a subscription, by the code the matching GET route would answer
 // (INVALID_QUERY, DELIVERY_NOT_CONFIGURED, the board's INVALID_PROJECT, PROJECT_NOT_FOUND and
-// LEGION_NOT_CONFIGURED, one issue's NOT_FOUND, and the evals view's INVALID_QUERY, for a project
-// that is no project key as for a query its route refuses, and PROJECT_NOT_FOUND for a project no
-// row holds), the socket's own (INVALID_FRAME, TOO_MANY_SUBSCRIPTIONS) or an agent view's
+// LEGION_NOT_CONFIGURED, one issue's NOT_FOUND, and the evals view's INVALID_QUERY for a query
+// its route refuses and PROJECT_NOT_FOUND for a project no row holds, one that is no project key
+// among them), the socket's own (INVALID_FRAME, TOO_MANY_SUBSCRIPTIONS) or an agent view's
 // (OAUTH_SCOPE_REQUIRED, SESSION_ID_INPUT, STREAM_UNAVAILABLE). Sub names the subscription it
 // refuses, and is empty for a frame Dispatch could not read a sub from.
 type LiveError struct {
@@ -457,8 +458,9 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	// its day rows); every other field is sent whole. The window is whole UTC days, which for a
 	// preset move only when a day turns, so a page holding it is sent it only then; the compare
 	// range is the one the view's query names, which never moves. The freshness's refresher age is
-	// measured at the moment of the read, so its revision leaves that age out: it goes with the
-	// freshness when the folded rows' own age moves.
+	// measured at the moment of the read, so its revision leaves that age out, and the hub's read
+	// folds in its coarse step instead (refresherAgeStep): it goes with the freshness when the
+	// folded rows' own age moves, or the step does, which the view's expiry reads (readEvalsView).
 	//
 	// It shows the unowned-p0 eval, whose count the list reads from the project's stored row of
 	// today alone, so a P0 issue's event, which moves no stored row, marks no evals view: the
@@ -489,4 +491,35 @@ func deliveryLiveRevision(encoded []byte) string {
 	hash := fnv.New64a()
 	_, _ = hash.Write(encoded)
 	return hex.EncodeToString(hash.Sum(nil))
+}
+
+// refresherAgeLastStep is the refresher age past which refresherAgeStep moves no step more: some
+// two years, past any age a deployment's refresher keeps, and short of the doubling that would
+// overflow a time.Duration.
+const refresherAgeLastStep = time.Minute << 20
+
+// refresherAgeStep is the coarse form of the refresher's age that an evals view keeps in its
+// freshness's revision, which leaves the exact age out, and the age at which it next moves: 1
+// under a minute, and one more for each doubling of the age from a minute on (2 from one minute, 3
+// from two, 4 from four), so its page is sent the age again within twice the time it last held,
+// and a read whose age moved within one step sends nothing. Past refresherAgeLastStep the step
+// moves no more, and next is 0.
+func refresherAgeStep(age time.Duration) (step int, next time.Duration) {
+	step, next = 1, time.Minute
+	for age >= next {
+		if next >= refresherAgeLastStep {
+			return step + 1, 0
+		}
+		step, next = step+1, 2*next
+	}
+	return step, next
+}
+
+// foldRefresherAgeStep folds step, the coarse refresher age an evals body states
+// (refresherAgeStep), into the revision of its freshness, the field that states the age: e is a
+// body just encoded, which no subscriber holds yet.
+func (e *deliveryLiveEncoded) foldRefresherAgeStep(step int) {
+	freshness := e.fields["freshness"]
+	freshness.rev = deliveryLiveRevision([]byte(freshness.rev + "/" + strconv.Itoa(step)))
+	e.fields["freshness"], e.revs.Fields["freshness"] = freshness, freshness.rev
 }

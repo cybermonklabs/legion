@@ -14,6 +14,7 @@ import (
 // store of a pull request the window's deploy ships makes, marks the view, as one dated inside it
 // does; one dated at or after the window's end, which no deploy of the window can ship, does not.
 func TestAMeasuresViewIsMarkedByAMergeBeforeItsWindow(t *testing.T) {
+	t.Parallel()
 	from, to := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
 	view := &deliveryView{spec: deliveryLiveSpec{kind: deliveryLiveMeasures, from: from, to: to}}
 	now := to.Add(48 * time.Hour)
@@ -45,6 +46,7 @@ func TestAMeasuresViewIsMarkedByAMergeBeforeItsWindow(t *testing.T) {
 // and shows the seven UTC days ending on at's day; the one here is at the window's last second, so
 // its seven days are the window's and the run created inside the window falls in them.
 func TestAMeasuresViewIsMarkedByEveryDeployRunChange(t *testing.T) {
+	t.Parallel()
 	from, to := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
 	now := to.Add(48 * time.Hour)
 	measuresView := &deliveryView{spec: deliveryLiveSpec{kind: deliveryLiveMeasures, from: from, to: to}}

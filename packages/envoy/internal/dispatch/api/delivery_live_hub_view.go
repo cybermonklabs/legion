@@ -128,14 +128,17 @@ func parseLegionLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErr
 // parseEvalsLiveView reads an evals view: the project whose evals it shows, its window, as a
 // timeline view names one, and its query, the query string GET /api/v1/projects/{key}/evals
 // would be sent without from and to: the compare range (compare_from and compare_to), the
-// repositories (repo), the kind (kind) and the page (limit and offset). A query the route
-// refuses, a key it does not take among them, is refused here, by the route's own reading of the
-// query the view's read sends it (evalsQuery, parseEvalListQuery), before the view is held. That
-// query holds the view's own from and to: a custom window readWindow takes can still end its days
-// past the year 9999, which the route refuses (evalDaysAnswerable), and a view held with it would
-// read and fail every deliveryLiveRetry for as long as it stood, its subscribers told nothing.
+// repositories (repo), the kind (kind) and the page (limit and offset). A project that is no
+// project key is refused PROJECT_NOT_FOUND, as the route answers it, since no project row holds
+// such a key (loadProject); one the key's shape allows and no row holds is the read's to refuse.
+// A query the route refuses, a key it does not take among them, is refused here, by the route's
+// own reading of the query the view's read sends it (evalsQuery, parseEvalListQuery), before the
+// view is held. That query holds the view's own from and to: a custom window readWindow takes can
+// still end its days past the year 9999, which the route refuses (evalDaysAnswerable), and a view
+// held with it would read and fail every deliveryLiveRetry for as long as it stood, its
+// subscribers told nothing.
 func parseEvalsLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
-	project, refusal := readLiveProject(view, "an evals view", "INVALID_QUERY")
+	project, refusal := readLiveProject(view, "an evals view", errProjectNotFound.code)
 	if refusal != nil {
 		return refusal
 	}
