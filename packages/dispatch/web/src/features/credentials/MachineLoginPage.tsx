@@ -18,8 +18,8 @@ import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { CredentialDecisionButtons } from "./CredentialDecisionButtons";
 import { CredentialRecordFacts } from "./CredentialRecordFacts";
+import { machineLoginsQuery, machineName } from "./logic/machineLogins";
 import { MachineLoginsSection } from "./MachineLoginsSection";
-import { machineLoginsQuery, machineName } from "./machineLogins";
 
 /** What the login's decision was, in place of the buttons that decide it: one just made on this
  *  page, or the one a looked-up record already carries. A service's approved login (the Legion

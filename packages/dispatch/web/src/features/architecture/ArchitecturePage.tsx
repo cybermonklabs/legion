@@ -43,6 +43,7 @@ import { openLinkInNewTab } from "../shell/new-tab";
 import { closestMatching, roveFocus } from "../shell/roving";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AttachmentLists, type AttachmentView } from "./AttachmentLists";
+import { ComponentDetails } from "./ComponentDetails";
 import {
   type ComponentIndex,
   type ComponentTone,
@@ -52,8 +53,7 @@ import {
   distrustedSources,
   indexComponents,
   sourceState,
-} from "./architecture-model";
-import { ComponentDetails } from "./ComponentDetails";
+} from "./logic/architecture-model";
 
 const ROW_SELECTOR = "[data-component-row]";
 /** The row's own link, its title: what `o` follows on a leaf and Shift+O opens on every row. */

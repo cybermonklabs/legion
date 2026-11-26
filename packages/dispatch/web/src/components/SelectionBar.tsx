@@ -361,9 +361,13 @@ function markShown(
  * under the header on a narrow screen and at the foot of the screen from `sm`, so the rows a
  * reader is marking stay in sight at either width.
  *
- * The bar is one line of actions that scrolls sideways rather than wrapping - an action pushed
- * onto a second line would make the bar taller under the reader's hand - and a notice, which is
- * the one thing that takes a line of its own.
+ * Its groups, in this order: the count (or `state`) with the actions the page puts in the bar,
+ * and a notice, which is the one thing that takes a line of its own. At the comfortable and
+ * toolbar sizes the first is one line of actions that scrolls sideways rather than wrapping - an
+ * action pushed onto a second line would make the bar taller under the reader's hand. At the
+ * compact size, the List's, the actions come to more than a narrow screen holds, so that line
+ * wraps instead (`BAR_LINE`): a whole action moves to the next line, which takes no room from
+ * the list since the bar is over it, and none is hidden past an edge.
  *
  * A bar that goes while it holds the keyboard focus because the reader caused it - **Clear
  * selection** pressed, Escape from a control inside it, a press on a row's mark that took the last
@@ -390,7 +394,7 @@ function markShown(
  * elsewhere moves nothing, and neither does one whose going left the focus somewhere other than
  * the body, since the reader put it there, nor the later going of a control the reader had moved
  * the focus off, nor the going of one they had scrolled out of their sight - the bar's line of
- * actions scrolls sideways (`outOfSight`). Nor does a going the reader did not cause - a refetch
+ * actions may scroll sideways (`outOfSight`). Nor does a going the reader did not cause - a refetch
  * that drops every marked row and empties the bar - which leaves the focus on the body, in no row,
  * and scrolls nothing. The press these read is the one that armed the hand-off (`armHandOff`): a
  * press on the bar's own actions arms it at the bar's root (`armOnPress`), and so does Escape from
@@ -435,6 +439,16 @@ const BAR_BOX: Record<ControlSize, string> = {
   comfortable: "px-4 py-2",
   compact: "px-2 py-1",
   toolbar: "px-2 py-1",
+};
+
+/** The line of the bar's count and actions at each size. The comfortable bar, the Inbox's, and the
+ *  toolbar size's keep one line that scrolls sideways. The compact bar, the project List's, wraps:
+ *  its actions are wider than a phone's bar holds. Each action keeps its own width and its one line
+ *  of text (`shrink-0`, `whitespace-nowrap`), so a whole action moves to the next line. */
+const BAR_LINE: Record<ControlSize, string> = {
+  comfortable: "flex-nowrap overflow-x-auto",
+  compact: "flex-wrap",
+  toolbar: "flex-nowrap overflow-x-auto",
 };
 
 /** The bar's own arming of its hand-off at its root, for a key: what every component's root arms
@@ -554,7 +568,7 @@ function DrawnBar({
       // the press it answered took the row they came from off the list.
       tabIndex={-1}
     >
-      <div className="flex flex-nowrap items-center gap-2 overflow-x-auto whitespace-nowrap [&>*]:shrink-0">
+      <div className={`flex items-center gap-2 whitespace-nowrap [&>*]:shrink-0 ${BAR_LINE[size]}`}>
         <span className="mr-1 font-semibold">{state ?? `${count} selected`}</span>
         {children}
       </div>

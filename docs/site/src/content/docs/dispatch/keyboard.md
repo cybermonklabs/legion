@@ -227,6 +227,9 @@ On the List table, `j` and `k` follow the current sorted, filtered page, skip co
 | `Shift+F` | Open the filter panel |
 | `Shift+V` | Open the display menu |
 
+After you select issues, the **Selected issues** toolbar shows actions for the selection.
+When the toolbar is too narrow for one line, whole actions move to the next line without moving the list rows.
+
 `j`, `k`, `o`, `Enter` and `Shift+O` work the same way on the tables of the Priorities page and of
 a priority's page. On the Priorities page, `Shift+V` opens the display menu. On a priority's page,
 `Shift+F` opens the filter panel and `Shift+V` opens the display menu.

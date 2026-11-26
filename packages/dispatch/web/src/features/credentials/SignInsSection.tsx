@@ -6,8 +6,8 @@ import { invalidateWaitingForPaused } from "../../api/query-client";
 import type { PersonSignInResp } from "../../api/types";
 import { textSecondaryOnSurface } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
+import { shortThumbprint, signInsQuery } from "./logic/signins";
 import { type RevocableColumn, RevocableList } from "./RevocableList";
-import { shortThumbprint, signInsQuery } from "./signins";
 
 const columns: readonly RevocableColumn<PersonSignInResp>[] = [
   {

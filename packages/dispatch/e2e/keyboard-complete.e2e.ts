@@ -127,6 +127,7 @@ import { expectHighlight, openList, openTrigger, priorityTrigger, statusTrigger 
 import { inboxRead, logReads, readAnsweredSince } from "./pick-writes";
 import { refPicker } from "./ref-picker";
 import {
+  listedRequests,
   type ReviewedRoute,
   type ReviewSeed,
   reviewRoutes,
@@ -8566,7 +8567,7 @@ async function openReviewRoute(page: Page, seed: ReviewSeed, name: string): Prom
   );
   if (route === undefined) throw new Error(`e2e/review-routes.ts reviews no page named ${name}`);
   await page.goto(route.path(seed));
-  await waitForRouteSettled(page, route);
+  await waitForRouteSettled(page, route, listedRequests(page));
   await withoutEases(page);
 }
 

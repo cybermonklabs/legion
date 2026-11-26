@@ -6,7 +6,7 @@ import { invalidateWaitingForPaused } from "../../api/query-client";
 import type { ApproverGrantResp } from "../../api/types";
 import { textSecondaryOnSurface } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
-import { credentialGrantsQuery } from "./grants";
+import { credentialGrantsQuery } from "./logic/grants";
 import { type RevocableColumn, RevocableList } from "./RevocableList";
 
 /**

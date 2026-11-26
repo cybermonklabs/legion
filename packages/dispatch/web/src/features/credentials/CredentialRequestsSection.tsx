@@ -22,11 +22,11 @@ import { useAgents } from "../conversation/useAgents";
 import { Timestamp } from "../refs/Timestamp";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { brokerPage } from "./brokerPage";
 import { CredentialSessionLines } from "./CredentialSessionLines";
-import { useMachineCodePage } from "./capabilities";
+import { brokerPage } from "./logic/brokerPage";
+import { useMachineCodePage } from "./logic/capabilities";
+import { credentialSessionNamesAnyone } from "./logic/session";
 import { type CredentialRequests, credentialPendingQuery } from "./pending";
-import { credentialSessionNamesAnyone } from "./session";
 
 const rowLineClass = "flex flex-wrap items-center gap-2 text-sm";
 const rowLinkClass = `${rowLineClass} rounded-lg outline-none focus-visible:ring-2 ${focusVisibleRing} ${linkText} ${linkHoverText}`;
