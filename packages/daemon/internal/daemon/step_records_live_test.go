@@ -375,14 +375,6 @@ func parseSteps(key, out string) (stepsPrinted, error) {
 	return printed, nil
 }
 
-// runFields is the 16 words of text where text is one run as `dispatch steps` prints it
-// (stepLine), and false where it is no run. A line of 12 words, as the command printed it before
-// the set model, is no run. parseSteps and variantPlace both read a run by this rule.
-func runFields(text string) ([]string, bool) {
-	fields := strings.Fields(text)
-	return fields, len(fields) == 16 && fields[5] == "attempt" && fields[12] == "set" && fields[14] == "answered"
-}
-
 // holdsTen says whether printed is the walk's read: exactly the ten runs of stepRecordsTen, under
 // the header `10 steps in 1 tasks`.
 func holdsTen(printed stepsPrinted) error {
