@@ -451,7 +451,8 @@ logins. Their revoke or dismissal of anything else, and their deny of a service'
 older broker opened, is refused `403 NOT_APPROVER`, saying why, and their revoke of a service's
 machine login `404 NOT_FOUND`. Their own machine logins and the grants of their own sessions stay
 theirs. The broker keeps the member kind Dispatch last answered for each person, so a person
-Dispatch last answered a full member is served as one while Dispatch does not answer, on every
+Dispatch last answered a full member is served as one while Dispatch does not answer, for at most
+an hour (`projectaccess.KeptAnswerTTL`), on every
 route of this section, and "cannot say" below means a person it last answered a restricted member,
 or of whom it keeps no kind ([Asking Dispatch](/legion/broker/operate/#what-it-depends-on)).
 While Dispatch cannot say what kind of member a person is, those lists leave such rows
@@ -483,7 +484,7 @@ inside the 5 that Dispatch waits for the broker, and so does the approval page's
 of a grant's project is not bounded so, and while all of Dispatch is down it refuses the revoke of
 a grant whose project, or whose reason's issue key, Dispatch last answered hidden from the person,
 or never answered for them; one Dispatch last answered public, visible to them, or no project at
-all is answered so from what the broker kept.
+all is answered so from what the broker kept, for at most an hour (`projectaccess.KeptAnswerTTL`).
 The broker's rate
 limiter caps how often anyone can start a machine login, per source address and per named person,
 and how often anyone can try a token login: per source address before the token is verified, and

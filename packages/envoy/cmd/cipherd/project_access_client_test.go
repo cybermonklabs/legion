@@ -149,7 +149,7 @@ func TestTheBrokerAsksProjectAccessOnTheClientThatKeepsItsConnections(t *testing
 }
 
 // TestEndUnrecordedSignInsFollowsProjectAccess holds the production choice that a trade ends a
-// pre-0045 sign-in only where the broker can ask Dispatch. The setting's project-access client is
+// pre-0046 sign-in only where the broker can ask Dispatch. The setting's project-access client is
 // nil without BROKER_PROJECT_ACCESS_URL and non-nil with it; dropping either half of that choice
 // ends old sign-ins on every broker or on none.
 func TestEndUnrecordedSignInsFollowsProjectAccess(t *testing.T) {

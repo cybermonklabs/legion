@@ -1128,8 +1128,9 @@ func approverUnreachable(err error) error {
 // mints every trade naming no project; a login naming no approver asks nothing either, and
 // answers ApproverUnknown, which Machine refuses after its own refusal of the missing approver.
 //
-// While Dispatch cannot be asked, an approver whose last kept member kind is full answers
-// ApproverUnrestricted, so the trade goes on, a list naming no project included. Every other
+// While Dispatch cannot be asked, an approver whose last kept member kind is full, and no older
+// than projectaccess.KeptAnswerTTL (one hour), answers ApproverUnrestricted, so the trade goes on,
+// a list naming no project included. Every other
 // unanswered read is refused temporarily_unavailable: this broker cannot tell a restricted
 // member's machine from anyone else's then, and a guess would mint a token acting as its person
 // for one. The broker's own account token not working (refusedByDispatch) and a member kind it
