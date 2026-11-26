@@ -2,22 +2,14 @@ import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 
 import type { Comment, CommentWithTrees, IssueDetails } from "../../../api/types";
-import { compareTimestamps } from "../../../lib/timestamps";
 import { standsFailed } from "../../refs/reference-target";
 import { type DecisionNode, decisionNodes } from "../decision-nodes/decision-nodes";
 import { type ChangeComment, decisionNodeChanges, deletedPostIds } from "../decision-review";
 import type { TreeNode } from "../issue-tree";
 import { treeContext } from "../tree-drafts";
-import { nodesInOrder } from "../tree-keys";
 import { outlineQuery, type TreeAnswer, treeRead, viewQuery } from "../tree-read/tree-read";
 import { issueAskThreadsQuery, issueCommentsQuery } from "../useIssueTree";
-import {
-  askIdOf,
-  type DecisionsEntry,
-  type DecisionsParts,
-  decisionsParts,
-  placements,
-} from "./decisions-parts";
+import { askIdOf, type DecisionsParts, decisionsParts, placements } from "./decisions-parts";
 
 /**
  * The one seam between the page's reads and the Decisions view: it
@@ -49,9 +41,10 @@ import {
  * (`issueAskThreadsQuery`, `issueCommentsQuery`), each watched and never sent, so the view adds
  * no request of its own and reads none of them again when it is opened.
  *
- * The view draws four parts. A decision another person made is no part of its own: it stands
- * under the reader's decisions, with that person's name on its row, so the model's `others` is
- * put in `yours`, newest first, and `others` is left empty.
+ * The view draws the model's parts as the model gives them. A decision another person made
+ * stands in `others`, which the view draws under "Decided by others", after the reader's own
+ * decisions and before the agents' at the foot, each row naming that person; where the reader
+ * made every decision `others` is empty, and the view draws no part for it.
  *
  * The seam says too, beside the parts, whether the view knows what the issue holds
  * (`readsHeld`), which the outline's keys (`useTreeKeymap.ts`) and the body's empty line read.
@@ -111,8 +104,8 @@ interface DecisionsEntries {
    *  again, and a run that ends with none, cancelled or paused while the browser is offline, says
    *  nothing again. */
   readonly failures: Readonly<Record<DecisionsRead, number>>;
-  /** Which entry stands in which part, each part in the order it is drawn. Another person's
-   *  decisions stand in `yours`, so `others` is empty. */
+  /** Which entry stands in which part, each part in the order it is drawn, as the model gives
+   *  them: another person's decisions stand in `others`. */
   readonly parts: DecisionsParts;
   /** Whether the view knows what the issue holds: the tree read, which its rows come from, and
    *  the asks have both answered. A read that failed holds no answer. */
@@ -266,11 +259,6 @@ export function useDecisionsEntries({
     return {
       ...model,
       named: model.named.filter((entry) => !restating.has(entry.node.id)),
-      others: [],
-      yours:
-        model.others.length === 0
-          ? model.yours
-          : newestFirst([...model.yours, ...model.others], root),
     };
   }, [asks, changes, decisions, issue.key, nodeIdOf, reader, restating, root, view]);
   // Until the asks read and the decisions' reads have answered, or stand refused, the tree may
@@ -318,33 +306,4 @@ export function changesOf(
     });
   }
   return changes;
-}
-
-/**
- * `entries` with the newest first, in the order G's model keeps each part
- * (`decisions-parts.ts`'s `newestFirst`), so the reader's decisions and another person's read as
- * one part: an entry the model holds no time for stands last, and two entries of one moment
- * stand in the order their nodes first stand in the page's reading order (`nodesInOrder`),
- * which is the order the outline draws them in. The same reads always draw the same list.
- */
-function newestFirst(
-  entries: readonly DecisionsEntry[],
-  root: TreeNode
-): readonly DecisionsEntry[] {
-  // Each node's place in the reading order; a node drawn under two parents is one node, so its
-  // first placement is its place.
-  const place = new Map<string, number>();
-  for (const node of nodesInOrder(root)) if (!place.has(node.id)) place.set(node.id, place.size);
-  return [...entries].sort((one, other) => {
-    const left = one.at;
-    const right = other.at;
-    if (left !== undefined && right !== undefined) {
-      const newer = compareTimestamps(right, left);
-      if (newer !== 0) return newer;
-    } else if (left !== right) {
-      return left === undefined ? 1 : -1;
-    }
-    // Every entry's node is a node of `root`, which the model read its entries from.
-    return (place.get(one.node.id) ?? place.size) - (place.get(other.node.id) ?? place.size);
-  });
 }

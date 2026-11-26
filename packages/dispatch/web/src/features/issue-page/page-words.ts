@@ -390,7 +390,7 @@ export const SPEC_WORDS = joinWords("SPEC_WORDS", {
 /**
  * The words the Decisions filter's body draws of its own (dispatch://INFRA-1196 R2, R22, R35,
  * `decisions-filter/`). None is a sentence about the page or about Dispatch, and no sentence
- * explains the four parts: their headings are the whole of it. How a decision stands is
+ * explains the parts: their headings are the whole of it. How a decision stands is
  * `NODE_STATE_WORDS.decision`, which the outline draws too.
  */
 export const DECISIONS_WORDS = joinWords("DECISIONS_WORDS", {

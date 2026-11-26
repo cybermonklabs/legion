@@ -11,6 +11,7 @@ import type {
   IssueChild,
   IssueCoverage,
   IssueDetails,
+  IssueTreeNode,
   ReferenceTarget,
 } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
@@ -631,16 +632,26 @@ export function stableSourceOf(
  * Who decided a decision node, as the page names an author: the far end of its `decided_by`
  * tuple, which the tree read answers with that person or session as context
  * (`tree-read/tree-nodes.ts`' `draftDecision`): a session for an agent (`session:<id>`) and a
- * person by login (`person:<login>`), which every other read names as a `user` actor. The end
- * names no title the session stamped, so the session carries no origin, and one the registry no
- * longer lists is named as any session nothing names (`AgentName.tsx`'s `drawnSessionName`).
- * Undefined where the decision names nobody, or an end of another kind.
+ * person by login (`person:<login>`), which every other read names as a `user` actor. A session
+ * carries the newest title it stamped, which the model's tree route answers on each session node
+ * (`title`, INFRA-1253's spec v168), as its origin's `session_title`, where `nodeOf` - the
+ * caller's lookup of the answer's nodes by their store ids - finds the node the end names and that
+ * node's title is not empty; else it carries no origin. The page names a session by the
+ * registry's title first, else that stamped title, else its word for an agent nothing names
+ * (`AgentName.tsx`'s `drawnSessionName`). Undefined where the decision names nobody, or an end of
+ * another kind.
  */
 export function deciderOf(
-  end: { readonly id: string; readonly kind: string } | null
+  end: { readonly id: string; readonly kind: string } | null,
+  nodeOf: (readId: string) => Pick<IssueTreeNode, "title"> | undefined
 ): Actor | undefined {
   if (end === null) return undefined;
-  if (end.kind === "session") return { id: end.id, kind: "session" };
+  if (end.kind === "session") {
+    const title = nodeOf(end.id)?.title;
+    return title === undefined || title === ""
+      ? { id: end.id, kind: "session" }
+      : { id: end.id, kind: "session", origin: { session_title: title } };
+  }
   return end.kind === "person" ? { id: end.id, kind: "user" } : undefined;
 }
 

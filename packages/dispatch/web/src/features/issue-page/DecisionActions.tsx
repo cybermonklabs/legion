@@ -439,6 +439,8 @@ function ChangeComposer({
         {...authorText}
       >
         {quoteReads}
+        {/* The projection, and until the engine has answered the words of the first paragraph
+            it projects, as the row decision-change-quote's load-state reason says. */}
         {quoted?.text ?? decision.heading}
       </blockquote>
       <MentionField
