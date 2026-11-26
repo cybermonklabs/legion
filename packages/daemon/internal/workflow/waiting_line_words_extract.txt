@@ -42,6 +42,3 @@ when the answered root stands in admission's waiting line, within its priority, 
 
 # docs/site/src/content/docs/legion/concepts.md collapsed
 The answered root goes into the waiting line within its priority, among the issues whose work came back, oldest first, and so behind every issue of a higher priority and every issue of its own priority whose work came back before it
-
-# skills/legion-controller/references/wakes.md collapsed
-The person's answer puts it in `admission.waiting` by itself, within its priority, among the issues whose work came back, oldest first, and its promotion gives its architect the answer task

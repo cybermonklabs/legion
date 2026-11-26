@@ -337,10 +337,11 @@ function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string
  * `Needs you` is the page's `needsYou` (`.../features/inbox/BlockedOnYou.tsx`): the asks waiting
  * on a person that the viewer has not deferred and that wait on them (`waitingOnYou`),
  * plus every credential request still waiting on a decision, which is the viewer's by
- * construction because the list is read as `?approver=me`. Here that is the band's own rows and
+ * construction because the list is read as `?approver=me`. Its asks are the band's own rows and
  * nothing narrower, since `?assignee=me` keeps only the asks that wait on the caller, as the
- * page's default view does; counting the rows it prints is therefore the page's rule, and it is
- * the one count that cannot disagree with the lines under it. An expired credential request
+ * page's default view does. The count is the page's rule: those rows plus the pending credential
+ * requests, which are listed under `Credential requests` and not under this heading, so the
+ * count is higher than the rows under it by that number. An expired credential request
  * waits on nobody (`awaitsDecision`), so it is not counted here, as the page does not count it,
  * though `Credential requests` lists and counts it until somebody dismisses it.
  *

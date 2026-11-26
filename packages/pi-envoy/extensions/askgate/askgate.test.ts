@@ -5102,6 +5102,17 @@ describe("the literal grammar, widened to forms with no expansion", () => {
     // Main deleted skills/dispatch/references/, whose asks.md held one more example.
     ["skills/legion-worker/references/findings.md", "dispatch ask --issue", "dispatch_ask"],
     ["skills/legion-worker/references/findings.md", "dispatch comment --issue", "dispatch_comment"],
+    // findings.md's two --mention examples moved to its steps file under the skill budget.
+    [
+      "skills/legion-worker/references/findings-steps.md",
+      "dispatch comment --issue '<owning KEY>'",
+      "dispatch_comment",
+    ],
+    [
+      "skills/legion-worker/references/findings-steps.md",
+      "dispatch comment --issue '<KEY>'",
+      "dispatch_comment",
+    ],
     ["skills/legion-retro/SKILL.md", "dispatch message --issue", "dispatch_message"],
   ])
     test(`the skill example in ${file} that starts \`${first}\` is in the literal grammar`, () => {

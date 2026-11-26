@@ -1280,19 +1280,22 @@ architecture-check and spec-check at this paragraph's end). dispatch-two-builds 
 earlier Dispatch builds it runs (ci-job-dispatch-two-builds.yaml) and builds one on a miss;
 ci-caches.yaml's dispatch-builds job fills both on main (the two-build section below says why).
 setup-go caches nothing here (`cache: false` on every step, the two check actions'
-included). The jobs that cache Go restore, in steps of their own, one of seven families with
+included). The jobs that cache Go restore, in steps of their own, one of eight families with
 actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same
 internal/daemon test binary daemon-go's race step does — and pi-legion; the test job restored
 it while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job
 of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 build the same listener and natsd, listener-server-change and envoy-go-build, which build the
-listener, envoy-go-checks, whose script tests run under the setup they had in envoy-go-build's
-job, and envoy-go-race-docs), go-envoy-test (envoy-go, which
+listener, and envoy-go-checks, whose script tests run under the setup they had in
+envoy-go-build's job), go-envoy-test (envoy-go, which
 builds the test binary of every package of the envoy module, envoy-go-claim-model, which builds
 the API's of that set, the binaries, multiprocess
 and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
-broker's commands out of that same set, and the two jobs of ci-job-dispatch-two-builds.yaml,
-whose ceiling step and twobuild test step build out of it too), go-envoy-darwin-vet
+broker's commands out of that same set, the two jobs of ci-job-dispatch-two-builds.yaml,
+whose ceiling step and twobuild test step build out of it too, and dispatch-memory and
+dispatch-multiprocess; .github/ci-notes/ci.md#why-the-envoy-lanes-with-a-database-restore-go-envoy-test), go-envoy-race (every leg of
+envoy-go-race, envoy-go-race-api and envoy-go-race-docs, the envoy race lane, whose race objects
+no other family holds; .github/ci-notes/ci-caches.md#the-envoy-race-lanes-family), go-envoy-darwin-vet
 (envoy-go-build's darwin vet, whose step's env gives it a build cache directory of its own,
 so the standard library and the envoy module's dependencies compiled for darwin ride in
 neither the go-envoy nor the
@@ -1308,7 +1311,7 @@ go-notices puts the architecture before the OS in its key and the other families
 its entry holds go-licenses, a program lint's notices step runs, and a run of a workflow file
 older than the architecture in the key restores by go-notices-<os>-, which an <os>-<arch> key
 starts with (ci-job-lint.yaml's restore step says what that did). go-daemon, go-notices,
-go-envoy, go-envoy-test and go-envoy-darwin-vet are filled on every push to main: the fill
+go-envoy, go-envoy-test, go-envoy-race and go-envoy-darwin-vet are filled on every push to main: the fill
 restores the newest entry
 of the family, runs on it the build the job runs, which compiles only what changed since, deletes
 from the build cache every entry that build did not use (.github/scripts/go-cache-working-set.sh;
@@ -2849,8 +2852,10 @@ outside the module cache on its directory.
 
 ## Why the envoy lanes with a database restore go-envoy-test
 
-dispatch-memory, dispatch-multiprocess, envoy-go-race and envoy-go-race-api restore go-envoy-test
-and save nothing, as the two-builds jobs and envoy-go-claim-model do. Until they did, they
+dispatch-memory and dispatch-multiprocess restore go-envoy-test and save nothing, as the
+two-builds jobs and envoy-go-claim-model do; envoy-go-race and envoy-go-race-api restored it too
+until go-envoy-race, which holds the same modules, the ceiling program's objects and their race
+objects, took its place for them (.github/ci-notes/ci-caches.md#the-envoy-race-lanes-family). Until they did, they
 restored no cache at all, so their first go command, the ceiling step's
 `go run ./internal/dispatch/store/cmd/connections`, downloaded 17 modules and compiled the store
 from nothing: a median of 19 to 20 s of the step in each (16 to 23 s), against 1 s in envoy-go,
@@ -2861,13 +2866,14 @@ after it downloaded more: 66 modules in dispatch-memory's memory step, which the
 envoy module, so it holds every module those steps download and the plain objects of every
 package they build. The two plain jobs build cmd/dispatch's tests under `-tags memory` and
 `-tags multiprocess`, so they reuse the entry's modules and the objects of the packages the tag
-leaves as they are; the two race jobs reuse its modules, and the ceiling step's plain `go run`,
-since a `-race` build compiles every package again. The restore costs the entry's download:
-17 to 21 s in envoy-go on the same arm64 runner (12 jobs of that window, before #5600 took the
-module zips out of the entry, 676 MiB at 2026-11-26T02:56Z). envoy-go-race-docs and
-envoy-session-stall restore go-envoy, 192 MiB in 1 to 4 s, after which their ceiling step
-downloaded 9 modules and their tests 2 and none, fewer seconds than go-envoy-test's larger
-download would add, so they keep go-envoy.
+leaves as they are; the two race jobs reused its modules, and the ceiling step's plain `go run`,
+since a `-race` build compiles every package again, which go-envoy-race now gives them. The
+restore costs the entry's download: 17 to 21 s in envoy-go on the same arm64 runner (12 jobs of
+that window, before #5600 took the module zips out of the entry, 676 MiB at 2026-11-26T02:56Z).
+envoy-session-stall restores go-envoy, 192 MiB in 1 to 4 s, after which its ceiling step
+downloaded 9 modules and its tests 2 and none, fewer seconds than go-envoy-test's larger download
+would add, so it keeps go-envoy; envoy-go-race-docs, which kept go-envoy for the same reason,
+restores go-envoy-race now.
 
 ## The server-change soak
 

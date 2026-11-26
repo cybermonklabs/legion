@@ -3733,7 +3733,7 @@ def check() -> int:
     rules.check_push_conditions(documents, problems)
     rules.check_rerun_guard(document, problems)
     rules.check_cache_round_trip(documents, problems)
-    rules.check_race_fill_packages(data.DAEMON_RACE_PACKAGES, data.DAEMON_RACE_FILL_JOB, problems)
+    rules.check_race_fill_packages(data.RACE_FILLS, problems)
     rules.check_race_fill_scripts(data.RACE_FILL_SCRIPTS, problems)
     rules.check_workspace_table(data.WORKSPACES, problems)
     rules.check_one_merge_group_workflow(problems)

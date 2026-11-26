@@ -280,7 +280,7 @@ export async function openAsksCommand(context: SessionContext): Promise<Dispatch
   const project = optionalString(ownerArguments.args, "project");
   if (project !== undefined) {
     const response = await client.openAsksForProject(project);
-    return { text: formatOpenAsksSummary(response, linkBase), details: { ...response } };
+    return { text: formatOpenAsksSummary(response, linkBase, project), details: { ...response } };
   }
   if (!sessionId) throw new Error("host session id is required for dispatch open-asks");
   const response = await client.openAsks(sessionId);
