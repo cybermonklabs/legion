@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -62,6 +63,16 @@ func pauseInserts(t *testing.T, r rig, table, when string) pgx.Tx {
 		t.Fatalf("take the pause's lock: %v", err)
 	}
 	return holder
+}
+
+// leaveGaps deletes every zero row of the rig's project, the rows its readings writes left after
+// their readings' days (writeLoggedZeros), so the days after a reading hold no row again for a race
+// to write.
+func leaveGaps(t *testing.T, r rig) {
+	t.Helper()
+	if _, err := r.database.Pool.Exec(t.Context(), `delete from eval_days where project_key = $1 and n = 0`, r.project); err != nil {
+		t.Fatalf("delete the zero rows the readings writes left: %v", err)
+	}
 }
 
 // race runs first until it waits on the pause holder holds, then second until it waits too,
@@ -123,13 +134,15 @@ func requireNoDeadlock(t *testing.T, what string, err error) {
 // same day, at once. The readings write is paused at its first day row's insert, which in the old
 // order came after its readings' insert had taken the change log's lock; the fill then inserted
 // the day's zero row and waited for that lock, and the readings write, let on, waited for the
-// fill's uncommitted row: a deadlock. Both now land: the day holds the reading, and the days around
-// it zero rows.
+// fill's uncommitted row: a deadlock. The zero rows the first reading's write left are taken away
+// (leaveGaps), so the days after it hold no row. Both now land: the day holds the reading, and the
+// days around it zero rows.
 func TestAReadingsWriteAndTheZeroFillOfItsDayNeverDeadlock(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	slug := "fill-race"
 	r.write(t, slug, alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 2, "measured_at": at(4, 9, 0)}))
+	leaveGaps(t, r)
 	holder := pauseInserts(t, r, "eval_days", "new.built_by = 'readings-race'")
 	readingsErr, fillErr := race(t, holder,
 		func(ctx context.Context) error {
@@ -138,7 +151,7 @@ func TestAReadingsWriteAndTheZeroFillOfItsDayNeverDeadlock(t *testing.T) {
 			return err
 		},
 		func(ctx context.Context) error {
-			return r.registry.newRefresh("fill-race", at(7, 12, 0), walkBatch).fillLogged(ctx, r.project, nil)
+			return r.registry.newRefresh("fill-race", at(7, 12, 0), walkBatch).fillLogged(ctx, r.project)
 		})
 	requireNoDeadlock(t, "the readings write", readingsErr)
 	requireNoDeadlock(t, "the zero fill", fillErr)
@@ -196,10 +209,10 @@ func collateSeriesAsADeploymentDoes(t *testing.T, r rig) {
 
 // TestAReadingsWriteAndTheZeroFillOfTwoSeriesNeverDeadlock: the race above over two series of one
 // logged eval whose byte order and collation order differ, `Queue` and `latency`, held under the
-// deployment's collation. Each has a row on the 4th and none after it; the readings write carries
-// a reading of each on the 6th, and the fill writes each series' zero rows through the 7th. The
-// readings write is paused at its insert of latency's row of the 6th, having inserted Queue's,
-// since it takes the rows by their bytes.
+// deployment's collation. Each has a row on the 4th and none after it (leaveGaps); the readings
+// write carries a reading of each on the 6th, and the fill writes each series' zero rows through
+// the 7th. The readings write is paused at its insert of latency's row of the 6th, having inserted
+// Queue's, since it takes the rows by their bytes.
 //
 // It pins that the two never deadlock, by either of two guards. Every writer of an eval's day rows
 // takes the eval's lock first (lockEval, lockEvals), so the fill waits for the readings write to
@@ -223,6 +236,7 @@ func TestAReadingsWriteAndTheZeroFillOfTwoSeriesNeverDeadlock(t *testing.T) {
 		return row(t, map[string]any{"series": series, "row_kind": "run", "row_key": key, "value": value, "measured_at": at(day, 9, 0)})
 	}
 	r.write(t, slug, alice, reading("Queue", "a", 1, 4), reading("latency", "a", 2, 4))
+	leaveGaps(t, r)
 	holder := pauseInserts(t, r, "eval_days", "new.built_by = 'readings-race' and new.series = 'latency'")
 	readingsErr, fillErr := race(t, holder,
 		func(ctx context.Context) error {
@@ -231,7 +245,7 @@ func TestAReadingsWriteAndTheZeroFillOfTwoSeriesNeverDeadlock(t *testing.T) {
 			return err
 		},
 		func(ctx context.Context) error {
-			return r.registry.newRefresh("fill-race", at(7, 12, 0), walkBatch).fillLogged(ctx, r.project, nil)
+			return r.registry.newRefresh("fill-race", at(7, 12, 0), walkBatch).fillLogged(ctx, r.project)
 		},
 		func() { requireQueuedOnTheEvalLock(t, holder, evalID, "the zero fill") })
 	requireNoDeadlock(t, "the readings write", readingsErr)
@@ -310,10 +324,12 @@ func requireDepthRows(t *testing.T, r rig, slug string, want int) {
 }
 
 // TestARegisterWriteThatUnlistsASeriesBesideAReadingsWriteUnlistsEveryRow: a readings write of a
-// listed series, one reading on a day that holds rows of it and one on a day that holds none, each
-// counted in the project's row and its repository's, is paused at its readings' insert, after it
-// read the series, while a register write unlists the series. The register write now waits for
-// the readings write and then unlists every row, the ones the readings write made among them.
+// listed series, one reading on a day that holds rows of it and one on a day that holds none (the
+// zero rows the first write left taken away, leaveGaps), each counted in the project's row and its
+// repository's, is paused at its readings' insert, after it read the series, while a register write
+// unlists the series. The register write now waits for the readings write and then unlists every
+// row, the ones the readings write made among them: its rows of the 6th and its zero rows of every
+// day after it through today.
 func TestARegisterWriteThatUnlistsASeriesBesideAReadingsWriteUnlistsEveryRow(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
@@ -323,6 +339,7 @@ func TestARegisterWriteThatUnlistsASeriesBesideAReadingsWriteUnlistsEveryRow(t *
 			"attributes": map[string]any{"repo": "acme/web"}})
 	}
 	r.write(t, slug, alice, depth("a", 4), depth("b", 5))
+	leaveGaps(t, r)
 	holder := pauseInserts(t, r, "eval_readings", "new.row_key = 'paused'")
 	readingsErr, registerErr := race(t, holder,
 		func(ctx context.Context) error {
@@ -336,26 +353,32 @@ func TestARegisterWriteThatUnlistsASeriesBesideAReadingsWriteUnlistsEveryRow(t *
 	if t.Failed() {
 		return
 	}
-	requireDepthRows(t, r, slug, 6)
+	var clock time.Time
+	if err := r.database.Pool.QueryRow(t.Context(), `select now()`).Scan(&clock); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+	requireDepthRows(t, r, slug, 6+int(measures.Midnight(clock).Sub(at(6, 0, 0)).Hours()/24))
 	if day := r.day(t, EvalID(r.project, slug), "depth", "", at(4, 0, 0)); day.N != 2 {
 		t.Errorf("the 4th holds n %d, want both its readings", day.N)
 	}
 }
 
 // TestARegisterWriteThatUnlistsASeriesBesideTheZeroFillUnlistsEveryRow: the refresher's fill of a
-// listed series' zero rows through the 7th is paused at its first zero row's insert, after it read
-// the listing of the series' newest row, while a register write unlists the series. The fill now
-// holds the eval's lock from before that read, so the register write waits for it and then
-// unlists the zero rows with the rest.
+// listed series' zero rows through the 7th, the zero rows the first write left taken away
+// (leaveGaps), is paused at its first zero row's insert, after it read the listing of the series'
+// newest row, while a register write unlists the series. The fill now holds the eval's lock from
+// before that read, so the register write waits for it and then unlists the zero rows with the
+// rest.
 func TestARegisterWriteThatUnlistsASeriesBesideTheZeroFillUnlistsEveryRow(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	slug := "queue-depth"
 	r.write(t, slug, alice, row(t, map[string]any{"series": "depth", "row_kind": "queue", "row_key": "a", "value": 4, "measured_at": at(4, 9, 0)}))
+	leaveGaps(t, r)
 	holder := pauseInserts(t, r, "eval_days", "new.built_by = 'fill-race'")
 	fillErr, registerErr := race(t, holder,
 		func(ctx context.Context) error {
-			return r.registry.newRefresh("fill-race", at(7, 12, 0), walkBatch).fillLogged(ctx, r.project, nil)
+			return r.registry.newRefresh("fill-race", at(7, 12, 0), walkBatch).fillLogged(ctx, r.project)
 		},
 		listDepth(r, slug, false))
 	requireNoDeadlock(t, "the zero fill", fillErr)
@@ -364,6 +387,55 @@ func TestARegisterWriteThatUnlistsASeriesBesideTheZeroFillUnlistsEveryRow(t *tes
 		return
 	}
 	requireDepthRows(t, r, slug, 4)
+}
+
+// TestTheFillOfANewDayWaitsForAFirstReadingItCannotSeeYet: a first reading of a slug, the write that
+// registers its eval, paused at its first day row's insert, which it reaches holding the lock of
+// the project's evals-md (lockDocument), while the refresher fills the logged evals' zero rows
+// through the next day, as the first pass after a midnight does while a write that read the day
+// before as its today is running. The fill waits for the write (awaitRegistrations), and then
+// fills the new eval's row of the next day, which the write, whose today is the day before, left
+// to it. Without the wait the fill read the project's logged evals before the write committed,
+// found no such eval, and left the new eval no row of the new day until the next midnight's fill.
+// It runs where the project has no evals-md yet, which the registration creates under the
+// project's documents' lock, and where an earlier registration made it.
+func TestTheFillOfANewDayWaitsForAFirstReadingItCannotSeeYet(t *testing.T) {
+	t.Parallel()
+	for _, documented := range []bool{false, true} {
+		t.Run(fmt.Sprintf("evals-md stored %t", documented), func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			if documented {
+				r.write(t, "earlier", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 1, "measured_at": at(4, 9, 0)}))
+			}
+			var clock time.Time
+			if err := r.database.Pool.QueryRow(t.Context(), `select now()`).Scan(&clock); err != nil {
+				t.Fatalf("read the database's clock: %v", err)
+			}
+			read, next := measures.Midnight(clock).AddDate(0, 0, -2), measures.Midnight(clock).AddDate(0, 0, 1)
+			const slug = "new-day"
+			holder := pauseInserts(t, r, "eval_days", "new.built_by = 'registering'")
+			writeErr, fillErr := race(t, holder,
+				func(ctx context.Context) error {
+					_, err := r.registry.WriteReadings(ctx, Batch{Project: r.project, Slug: slug, Caller: alice, BuiltBy: "registering",
+						Rows: []json.RawMessage{row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "b", "value": 2, "measured_at": read.Add(9 * time.Hour)})}})
+					return err
+				},
+				func(ctx context.Context) error {
+					return r.registry.newRefresh("next-day", next.Add(time.Minute), walkBatch).fillLogged(ctx, r.project)
+				})
+			requireNoDeadlock(t, "the first reading", writeErr)
+			requireNoDeadlock(t, "the fill of the next day", fillErr)
+			if t.Failed() {
+				return
+			}
+			if rows := r.count(t, `select count(*) from eval_days where eval_id = $1 and series = 'minutes' and repo = '' and day between $2 and $3`,
+				EvalID(r.project, slug), read, next); rows != 4 {
+				t.Errorf("the new eval holds %d rows from its reading's day %s through the fill's today %s, want one of each of the 4 days",
+					rows, read.Format(time.DateOnly), next.Format(time.DateOnly))
+			}
+		})
+	}
 }
 
 // TestAFirstReadingAndARegisterWriteWithDocTextNeverDeadlock: a register write that replaces an

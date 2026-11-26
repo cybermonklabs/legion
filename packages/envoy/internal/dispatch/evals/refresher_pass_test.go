@@ -379,12 +379,13 @@ func TestTheShippedMembersReadKeepsItsPartialIndexUnderAGenericPlan(t *testing.T
 	t.Logf("the generic plan reads %v", scans)
 }
 
-// TestTheLoggedZeroFillWritesEveryMissingDayAndNoOther: the fill of a logged eval's zero rows
+// TestTheLoggedZeroFillWritesEveryMissingDayAndNoOther: the fill of the logged evals' zero rows
 // (fillLoggedZeros) writes each day from a series' first row to today that holds no row of it,
 // between two rows as after the newest, each with the listing of the series' newest row, and no
-// other day: none before a series' first row, none after today though a row of a later day
-// exists, and none of an eval the fill's ids leave out. A second fill writes nothing, and a fill
-// of every logged eval fills the one left out.
+// other day: none before a series' first row, and none after today though a row of a later day
+// exists. A second fill writes nothing. The readings write writes the zero rows its readings leave
+// owed itself (writeLoggedZeros), so the test takes them away after the writes (leaveGaps), leaving
+// the gaps a write of an earlier build, which left them to the refresher, leaves.
 func TestTheLoggedZeroFillWritesEveryMissingDayAndNoOther(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
@@ -400,6 +401,7 @@ func TestTheLoggedZeroFillWritesEveryMissingDayAndNoOther(t *testing.T) {
 		reading("minutes", "c", on(12, 9)), reading("minutes", "d", on(25, 9)), reading("cache", "e", on(15, 9)))
 	r.write(t, "test-minutes", alice, reading("minutes", "f", on(10, 9)))
 	built, other := EvalID(r.project, "build-minutes"), EvalID(r.project, "test-minutes")
+	leaveGaps(t, r)
 	// The newest row of minutes is unlisted, which each zero row of minutes takes.
 	if _, err := r.database.Pool.Exec(ctx, `update eval_days set listed = false where eval_id = $1 and series = 'minutes' and day = $2`, built, on(25, 0)); err != nil {
 		t.Fatalf("unlist the newest row: %v", err)
@@ -434,9 +436,9 @@ func TestTheLoggedZeroFillWritesEveryMissingDayAndNoOther(t *testing.T) {
 	}
 
 	refresh := r.registry.newRefresh(testBuild, on(20, 12), walkBatch)
-	filled, err := refresh.fillLoggedZeros(ctx, r.project, []string{built})
+	filled, err := refresh.fillLoggedZeros(ctx, r.project)
 	if err != nil {
-		t.Fatalf("fill build-minutes: %v", err)
+		t.Fatalf("fill the logged evals: %v", err)
 	}
 	minutes, minutesListed := zeroDays(built, "minutes")
 	cache, cacheListed := zeroDays(built, "cache")
@@ -447,17 +449,14 @@ func TestTheLoggedZeroFillWritesEveryMissingDayAndNoOther(t *testing.T) {
 	if want := span(16, 20); !slices.Equal(cache, want) || slices.Contains(cacheListed, false) {
 		t.Errorf("cache holds zero rows on %v listed %v, want %v, each listed", cache, cacheListed, want)
 	}
-	if days, _ := zeroDays(other, "minutes"); len(days) != 0 {
-		t.Errorf("test-minutes, which the fill's ids leave out, holds zero rows on %v", days)
+	if days, _ := zeroDays(other, "minutes"); !slices.Equal(days, span(11, 20)) {
+		t.Errorf("test-minutes holds zero rows on %v, want %v", days, span(11, 20))
 	}
-	if want := int64(len(wantMinutes) + 5); filled != want {
+	if want := int64(len(wantMinutes) + 5 + 10); filled != want {
 		t.Errorf("the fill answers %d rows written, want %d", filled, want)
 	}
-	if again, err := refresh.fillLoggedZeros(ctx, r.project, []string{built}); err != nil || again != 0 {
+	if again, err := refresh.fillLoggedZeros(ctx, r.project); err != nil || again != 0 {
 		t.Errorf("a second fill wrote %d rows (%v), want none", again, err)
-	}
-	if every, err := refresh.fillLoggedZeros(ctx, r.project, nil); err != nil || every != 10 {
-		t.Errorf("a fill of every logged eval wrote %d rows (%v), want test-minutes' 10 days from the 11th to the 20th", every, err)
 	}
 	t.Logf("minutes' zero days %v, cache's %v; %d rows written", minutes, cache, filled)
 }

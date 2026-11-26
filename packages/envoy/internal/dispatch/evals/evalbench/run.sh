@@ -11,11 +11,17 @@
 # (`measure wait`: the Legion facts read whole and, at this head, every family's day rows served
 # under the running build with every walk done and the stored figures built, and the keyword fill's
 # cursor at the newest event, which the load leaves at its last event, with a RESULT line of how
-# long the fill took to get there), stops
-# it, starts it again and measures the first paint as the first requests after that restart
-# (`measure paint`). At this head it then greps the read path for a read of events (k13) and
-# prints the query keys of the list route (k16). failure-day is this head over the fixture with a
-# failure day added to it (evalbench's -failure-day), whose paint is the Delivery timeline's alone.
+# long the fill took to get there; at the base, those of these consumers the base runs), once, and
+# stops it. It then starts it again and measures the first paint as the first requests after that
+# start (`measure paint`), and stops it. At this head it does so EVALBENCH_PAINT_RUNS times, 8 by
+# default (k8), each run a fresh start of the server, with each run's RESULT and FAIL lines tagged
+# run=<n>, and then prints one line per read and per group of reads with the median and the
+# maximum of the runs, failing any read over its budget in any run (`measure runs`). The rest is
+# measured once. Run 1's paint is followed by k2, k13's named-jobs read and P0 count, k16's day
+# rows and folds, the probe and k16's fallback (measure's own checks); after the runs this script
+# greps the read path for a read of events (k13) and prints the query keys of the list route
+# (k16). failure-day is this head over the fixture with a failure day added to it (evalbench's
+# -failure-day), whose paint is the Delivery timeline's alone, measured once, as the base's is.
 # With EVALBENCH_PG_RESTART set it measures the first paint once more after a Postgres restart, for
 # information, judging no budget.
 #
@@ -34,6 +40,8 @@
 #   EVALBENCH_PG_RESTART  a command that restarts Postgres, for the information round
 #   EVALBENCH_CATCHUP     how long the catch-up may take (1h)
 #   EVALBENCH_QUIET, EVALBENCH_CATALOG   measure paint's -quiet and -catalog (30s, 65s)
+#   EVALBENCH_PAINT_RUNS  how many times this head's first paint is measured (8; fewer for a smoke
+#                         run)
 #
 # Every measurement prints a RESULT line, and every one that misses its budget or its rule a FAIL
 # line; the script exits 1 when any step failed.
@@ -53,6 +61,15 @@ case "$command" in
     case "$mode" in head | failure-day | base) ;; *) usage ;; esac
     : "${EVALBENCH_MEASURE:?EVALBENCH_MEASURE must name the built measure command}"
     : "${EVALBENCH_PG_LOG:?EVALBENCH_PG_LOG must name Postgres jsonlog file}"
+    runs=1
+    if [ "$mode" = head ]; then
+      runs=${EVALBENCH_PAINT_RUNS:-8}
+      case "$runs" in '' | *[!0-9]* | 0*)
+        echo "run.sh: EVALBENCH_PAINT_RUNS is a count from 1, not '$runs'" >&2
+        exit 2
+        ;;
+      esac
+    fi
     ;;
   *) usage ;;
 esac
@@ -137,9 +154,28 @@ if [ "$status" -ne 0 ]; then
   exit 1
 fi
 
-start_server "$work/server-paint.log"
-measure paint -token "$token" -server-log "$work/server-paint.log" -pg-log "$EVALBENCH_PG_LOG" \
-  -quiet "${EVALBENCH_QUIET:-30s}" -catalog "${EVALBENCH_CATALOG:-65s}"
+# The first paint: at this head $runs times (EVALBENCH_PAINT_RUNS), each as the first requests
+# after a fresh start of the server, each run's lines tagged run=<n> and its reads appended to
+# paint-runs.jsonl, which `measure runs` reads once the runs are done; in the other modes once.
+runs_file=$work/paint-runs.jsonl
+if [ "$mode" = head ]; then
+  : >"$runs_file"
+fi
+for run in $(seq 1 "$runs"); do
+  paint_log=$work/server-paint.log
+  tagged=()
+  if [ "$mode" = head ]; then
+    paint_log=$work/server-paint-$run.log
+    tagged=(-run "$run" -runs-file "$runs_file")
+  fi
+  start_server "$paint_log"
+  measure paint -token "$token" -server-log "$paint_log" -pg-log "$EVALBENCH_PG_LOG" \
+    -quiet "${EVALBENCH_QUIET:-30s}" -catalog "${EVALBENCH_CATALOG:-65s}" "${tagged[@]}"
+  stop_server
+done
+if [ "$mode" = head ]; then
+  measure runs -runs "$runs" -runs-file "$runs_file"
+fi
 
 if [ "$mode" = head ]; then
   # k13: no read of the first paint's path names events. The read path is the list read's
@@ -196,7 +232,6 @@ print(" ".join(sorted(p["name"] for p in operation.get("parameters", []) if p.ge
 fi
 
 if [ -n "${EVALBENCH_PG_RESTART:-}" ]; then
-  stop_server
   echo "MARK $(date -u +%FT%TZ) restarting Postgres for the information round"
   bash -c "$EVALBENCH_PG_RESTART" || {
     echo "FAIL run.sh: the Postgres restart failed"

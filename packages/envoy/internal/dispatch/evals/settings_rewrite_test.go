@@ -2420,3 +2420,64 @@ func TestARuleChangeOfOneRepositoryRewritesThatRepositorysRowsAlone(t *testing.T
 		}
 	}
 }
+
+// TestASettingsChangeSaysTheRowsStandAtItWhereItMovesTheDeployRepository: over a settled history,
+// the pass after a save of the delivery settings logs the eval_days change of no eval, the word
+// that the rows stand at the settings (delivery.SettingsApplied), which every evals view is
+// recomputed for, only where the save moved the repositories a read of the evals chooses among
+// (the project's source moved to another repository, DeployReposIn): none after the production
+// rule moved, whose rewrite moves rows and logs a change of each eval it moved, under that eval's
+// project; exactly one after the source moved to the history's second repository, in the commit
+// that builds that repository's rows and drops the one the source left; and exactly one after both
+// moved back together, beside the rewrite's own changes. After each, the stored figures are the
+// fold of the day rows.
+func TestASettingsChangeSaysTheRowsStandAtItWhereItMovesTheDeployRepository(t *testing.T) {
+	t.Parallel()
+	r, deliveries := newSettingsRig(t, walkBatch)
+	drain := func(what string) {
+		t.Helper()
+		if _, err := delivery.DrainPending(t.Context(), r.database.Pool); err != nil {
+			t.Fatalf("%s: drain the change log's outbox: %v", what, err)
+		}
+	}
+	settings := deliveries.Settings
+	for _, change := range []struct {
+		name    string
+		change  func(*delivery.DeliverySettings)
+		applied int
+		rows    bool
+	}{
+		{"the production rule moved", func(s *delivery.DeliverySettings) { s.ProductionJobNames = []string{"release / a job no run holds"} }, 0, true},
+		{"the deploy repository moved alone", func(s *delivery.DeliverySettings) { s.DeployRepo = deliveries.Repos[1] }, 1, true},
+		{"both moved back", func(s *delivery.DeliverySettings) { *s = deliveries.Settings }, 1, true},
+	} {
+		change.change(&settings)
+		drain(change.name + ", before the save")
+		seq := r.latestSeq(t)
+		r.putSettings(t, settings, alice)
+		r.pass(t)
+		drain(change.name)
+		changes, err := delivery.ChangesSince(t.Context(), r.database.Pool, seq, 100000)
+		if err != nil {
+			t.Fatalf("%s: read the delivery changes after %d: %v", change.name, seq, err)
+		}
+		applied, ofEvals := 0, 0
+		for _, one := range changes {
+			switch {
+			case one.Kind != delivery.ChangeKindEvalDays:
+			case delivery.SettingsApplied(one):
+				applied++
+			default:
+				ofEvals++
+			}
+		}
+		if applied != change.applied {
+			t.Errorf("%s: the pass logged %d eval_days changes of no eval, want %d", change.name, applied, change.applied)
+		}
+		if (ofEvals > 0) != change.rows {
+			t.Errorf("%s: the pass logged %d eval_days changes of an eval, and the change moves rows is %t", change.name, ofEvals, change.rows)
+		}
+		expectTruth(t, change.name, r.storedFigures(t), r.truthFigures(t))
+		t.Logf("%s: the pass logged %d eval_days changes of an eval and %d of no eval", change.name, ofEvals, applied)
+	}
+}

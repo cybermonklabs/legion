@@ -87,6 +87,13 @@ func (k *dayKey) insertBytes() int {
 	return 4*4 + len(k.series) + len(k.repo) + 8 + 1
 }
 
+// zeroBytes is the most bytes k adds to the parameters of writeLoggedZeros' insert of the zero rows
+// after it, as pgx encodes them in binary: in each of the statement's two arrays 4 bytes of length
+// and the element, the series its bytes and the day at most 8.
+func (k *dayKey) zeroBytes() int {
+	return 2*4 + len(k.series) + 8
+}
+
 // compareDayKeys orders day keys by series, repository and day, each string by its bytes: the
 // order every statement that inserts or locks one eval's day rows takes them in, whatever the
 // database's collation (ICU en-US on this deployment's server orders a series `latency` before a
@@ -168,8 +175,9 @@ func dayKeysOf(reading Reading, row int) ([]dayKey, dayPart, bool) {
 // replaced readings superseded, so a read of the standing readings sees both. A row it would leave
 // holding a value no float holds refuses the write (CodeReadingDayOverflow), and so does a row it
 // would leave holding more than MaxDaySamples values where it held fewer
-// (CodeReadingDaySamplesLimit); nothing is written then.
-func writeDays(ctx context.Context, w *writeTx, definition Definition, series map[string]Series, added, removed []Reading, builtBy string) error {
+// (CodeReadingDaySamplesLimit); nothing is written then. Last it writes the zero rows the rows it
+// touched leave owed (writeLoggedZeros) and adds the days it wrote of them to spans.
+func writeDays(ctx context.Context, w *writeTx, definition Definition, series map[string]Series, added, removed []Reading, builtBy string, spans map[string]daySpan) error {
 	// parts is each touched row's parts of the write's own readings, in the batch's order; refold
 	// holds each row a replaced reading counted in; first is the first row of the batch that
 	// touches each row, which answers for a value of that row the readings stored before the
@@ -320,7 +328,115 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 			return fmt.Errorf("write the day rows of %s: %w", definition.EvalID, err)
 		}
 	}
+	return writeLoggedZeros(ctx, w, definition, keys, builtBy, spans)
+}
+
+// writeLoggedZeros writes, in the readings write's transaction, the zero rows the day rows it
+// touched leave owed, exactly the rows the refresher's fill (fillLoggedZeros) would write after
+// them: of each series keys touch (writeDays' keys, in their byte order), the zero row of every
+// day after each of its stored all-repositories rows from the first day the write touched of it
+// on, up to the series' next stored row, or through today after its newest (loggedZeros), and it
+// adds the days it wrote to spans. So a first reading of a series leaves it a row on every day from
+// the reading's through today, and a reading before a series' first day one on every day up to that
+// day, in the transaction that stores the reading: a view of the eval is sent the one change of the
+// write's day rows (each statement widens the transaction's one eval_days change, migration
+// 20261117100014), and never the days after a reading without their rows, which no whole fill
+// leaves. A gap before the first day the write touched of a series was owed before the write, and
+// is left to the fill.
+//
+// today is the UTC date of the database's clock when the write fills, read after the write took
+// the eval's lock and, where it registers the eval, the lock of the project's `evals-md`
+// (lockDocument): fillLoggedZeros says why that leaves every day of the eval its one row at a
+// midnight. The series go in statements of at most statementBytes of parameters (statementChunks),
+// in the keys' order, each inserting its rows in the byte order of their keys, after every row
+// writeDays inserted and locked: every writer of the eval's rows holds its lock, so none takes them
+// beside this one.
+func writeLoggedZeros(ctx context.Context, w *writeTx, definition Definition, keys []dayKey, builtBy string, spans map[string]daySpan) error {
+	// firsts is each touched series' first all-repositories key, the earliest day the write touched
+	// of it: keys are in their byte order, and every reading counts in its project's row
+	// (dayKeysOf).
+	var firsts []dayKey
+	for _, key := range keys {
+		if key.repo == "" && (len(firsts) == 0 || firsts[len(firsts)-1].series != key.series) {
+			firsts = append(firsts, key)
+		}
+	}
+	var clock time.Time
+	if err := w.QueryRow(ctx, `select statement_timestamp()`).Scan(&clock); err != nil {
+		return fmt.Errorf("read the database's clock for the zero rows of %s: %w", definition.EvalID, err)
+	}
+	today := measures.Midnight(clock)
+	// Beside its two arrays the statement sends four texts and today, a date of at most 8 bytes after
+	// its 4 of length.
+	base := paramBytes(2, definition.ProjectKey, writerReadings, builtBy, definition.EvalID) + 4 + 8
+	for chunk := range statementChunks(firsts, base, (*dayKey).zeroBytes) {
+		series, days := make([]string, len(chunk)), make([]time.Time, len(chunk))
+		for index, key := range chunk {
+			series[index], days[index] = key.series, key.day
+		}
+		if _, err := writeZeroRows(ctx, w.Tx, `
+			select d.project_key, d.eval_id, d.series, d.day,
+			       lead(d.day) over series_days as next_day,
+			       last_value(d.listed) over (series_days rows between unbounded preceding and unbounded following) as listed
+			from unnest($6::text[], $7::date[]) as touched(series, first)
+			join eval_days d on d.project_key = $1 and d.eval_id = $5 and d.writer = $3 and d.deploy_repo = ''
+			  and d.series = touched.series and d.repo = '' and d.day >= touched.first
+			window series_days as (partition by d.eval_id, d.series order by d.day)
+		`, spans, definition.ProjectKey, today, writerReadings, builtBy, definition.EvalID, series, days); err != nil {
+			return fmt.Errorf("write the zero rows of %s: %w", definition.EvalID, err)
+		}
+	}
 	return nil
+}
+
+// loggedZeros is the statement that writes a logged eval's zero rows, which the readings write
+// (writeLoggedZeros) and the refresher's fill (fillLoggedZeros) both send, so the two write one row
+// of a day alike: after each stored row stored answers, the zero row of every day up to its series'
+// next stored row, or through today ($2) after its newest, of the project $1, the writer $3 and
+// the build $4. The zero row is the row the readings write leaves where every value is taken away:
+// n 0, a zero sum, numerator and denominator, no sample, no maximum and no last value, so a later
+// reading of that day adds to it as to any row; and it takes the listing of the series' newest row.
+// A day that holds a row keeps it. stored answers, of each all-repositories row of writer $3 it
+// reads, its project, eval, series and day, the next day the series holds a row of (next_day) and
+// the listing of the series' newest row (listed). The rows go in the byte order of their keys
+// (eval, series, day), the order every statement that inserts or locks one eval's day rows takes
+// them in (compareDayKeys); left to the database's collation, a series `latency` and a series
+// `Queue` would be taken in the other order. It answers, of each eval it wrote rows of, the first
+// and the last day it wrote and how many rows, so the most rows one write owes come back as three
+// numbers.
+func loggedZeros(stored string) string {
+	return `
+		with written as (
+			insert into eval_days (project_key, eval_id, writer, series, repo, day, listed, n, sum, num, den, samples, built_by)
+			select stored.project_key, stored.eval_id, $3::text, stored.series, '', gap.day::date, stored.listed, 0, 0, 0, 0, '{}', $4
+			from (` + stored + `) stored
+			cross join generate_series((stored.day + 1)::timestamp,
+				least(coalesce(stored.next_day - 1, $2::date), $2::date)::timestamp, interval '1 day') as gap(day)
+			order by stored.eval_id collate "C", stored.series collate "C", gap.day
+			on conflict (project_key, eval_id, writer, deploy_repo, series, repo, day) do nothing
+			returning eval_id, day
+		)
+		select eval_id, min(day), max(day), count(*) from written group by eval_id`
+}
+
+// writeZeroRows sends loggedZeros over stored with args in tx, adds to spans the days it wrote of
+// each eval, and answers how many rows it wrote.
+func writeZeroRows(ctx context.Context, tx pgx.Tx, stored string, spans map[string]daySpan, args ...any) (int64, error) {
+	rows, err := tx.Query(ctx, loggedZeros(stored), args...)
+	if err != nil {
+		return 0, err
+	}
+	var written, count int64
+	var evalID string
+	var first, last time.Time
+	if _, err := pgx.ForEachRow(rows, []any{&evalID, &first, &last, &count}, func() error {
+		addSpan(spans, evalID, measures.Midnight(first), measures.Midnight(last))
+		written += count
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+	return written, nil
 }
 
 // pastDaySamples is the row of the batch that makes a day row hold more than MaxDaySamples values,

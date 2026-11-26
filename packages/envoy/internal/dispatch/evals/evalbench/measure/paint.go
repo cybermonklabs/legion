@@ -58,8 +58,8 @@ func (w window) live() map[string]string {
 // paintCase is one read of a first paint: a GET (path) or a live view's snapshot (view, of kind),
 // and its budgets, none where zero. A read of a group is judged with the group's other reads too,
 // their database time together against groupBudgetMs. delivery marks a read of the Delivery page:
-// the timeline's first paint at this head (timelineCases) and the base head's (baseCases), whose
-// body no budget judges.
+// the timeline's first paint at this head (timelineCases) and the base's (baseCases), whose body
+// no budget judges.
 type paintCase struct {
 	name           string
 	path           string
@@ -138,7 +138,7 @@ func headCases(project string, today time.Time) []paintCase {
 }
 
 // timelineCases are the Delivery timeline's first paint at this head (packages/dispatch/web
-// DeliveryPage.tsx), the reads base mode times at the base head: GET /api/v1/delivery/timeline over
+// DeliveryPage.tsx), the reads base mode times at the base: GET /api/v1/delivery/timeline over
 // the 84-day window with the measures read of the 84-day compare range the page's panel makes
 // beside it (GET /api/v1/delivery/measures), which spec R8 holds to 150 ms together, and the
 // timeline over the 28-day window, held to 60 ms. The timeline reads each deploy run's failed jobs
@@ -158,23 +158,26 @@ func timelineCases(prefix string, today time.Time) []paintCase {
 	}
 }
 
-// baseCases are the base Delivery page's first paint at 84 days with a compare range: the
-// timeline view, the measures view of the compare range (the panel's own read of it), and the
-// Pipeline section's view of the window and of the compare range (02a7b3c6's
-// packages/dispatch/web DeliveryPage.tsx and PipelineSection.tsx).
+// baseCases are the base's Delivery page's first paint at 84 days with a compare range, read as
+// main's page reads it at the commit this head merges (packages/dispatch/web DeliveryPage.tsx): the
+// timeline view of the 84-day window, whose answer carries the window's measures, and a measures
+// view of the 84-day compare range before it, the view that page subscribes for a range of its own
+// (a brush). Main's page has no compare range and no Pipeline section of its own, and main's
+// pipeline view names no window (its Pipeline page reads the seven days to an `at`), so the base's
+// paint is the timeline of the window and the measures of the compare range: the reads
+// timelineCases time at this head at 84 days.
 func baseCases(today time.Time) []paintCase {
 	w84, c84 := before(today, 84), before(today.AddDate(0, 0, -84), 84)
 	return []paintCase{
 		{name: "base-timeline-84d", kind: "timeline", view: map[string]any{"kind": "timeline", "window": w84.live(), "query": ""}, delivery: true},
 		{name: "base-measures-compare-84d", kind: "measures", view: map[string]any{"kind": "measures", "window": c84.live(), "query": ""}, delivery: true},
-		{name: "base-pipeline-84d", kind: "pipeline", view: map[string]any{"kind": "pipeline", "window": w84.live()}, delivery: true},
-		{name: "base-pipeline-compare-84d", kind: "pipeline", view: map[string]any{"kind": "pipeline", "window": c84.live()}, delivery: true},
 	}
 }
 
 // paint measures the first paint (the package comment) and, at this head and outside -info,
-// k2, k13 and k16 after it; in mode failure-day, the timeline's first paint alone, its run-jobs
-// reads and the failure day the database holds.
+// k2, k13 and k16 after it, in its first run alone where the paint is one of several (-run); in
+// mode failure-day, the timeline's first paint alone, its run-jobs reads and the failure day the
+// database holds.
 func paint(ctx context.Context, r *report, o options) error {
 	database, err := store.Open(ctx, o.database)
 	if err != nil {
@@ -252,6 +255,12 @@ func paint(ctx context.Context, r *report, o options) error {
 		planCase(ctx, r, explain, &measured[index], executions, end)
 	}
 	judgePaint(r, o, measured)
+	printHistories(r, o, measured)
+	if o.runsFile != "" {
+		if err := recordRun(o.runsFile, runOf(o.run, measured)); err != nil {
+			r.fail("k8 record run %d in %s: %v", o.run, o.runsFile, err)
+		}
+	}
 	if o.info {
 		return nil
 	}
@@ -268,6 +277,12 @@ func paint(ctx context.Context, r *report, o options) error {
 		return failureDayLine(ctx, r, pool, today)
 	}
 	checkFirstPaintReads(r, measured)
+	// k13's named-jobs read and P0 count, k16's day rows and folds, k2, the probe and k16's
+	// fallback read the loaded database, which a restart of the server leaves as it was, so they
+	// are measured once, after the first run's paint.
+	if o.run > 1 {
+		return nil
+	}
 	checks := &headChecks{r: r, o: o, pool: pool, explain: explain, client: client, today: today}
 	checks.k13()
 	checks.k16()
@@ -591,20 +606,31 @@ func checkFirstPaintReads(r *report, measured []measuredCase) {
 // resolved out of the event log.
 var titleRead = regexp.MustCompile(`(?is)\bactor\b.*\bfrom events\b`)
 
-// baseControls is k8's negative control and k13's at the base head: the base's first paint's
-// database time against this head's budget, its statements that read events other than by id
-// (where the base resolves session titles), and its run-jobs reads that name no job and read
-// through no index of the failed jobs alone (runJobsScans, the rule checkRunJobsReads holds this
-// head to). A control that examined nothing shows nothing of the base, so each fails then: k8's
-// with no read measured, k13's with no statement examined or none of them a read of
-// delivery_run_jobs.
+// baseControls is k8's negative control and k13's at the base: the base's first paint's database
+// time against this head's budget, its statements that read events other than by id (where the
+// base resolves session titles), and its run-jobs reads that name no job and read through no
+// index of the failed jobs alone (runJobsScans, the rule checkRunJobsReads holds this head to). A
+// control that examined nothing shows nothing of the base, so each fails then: k8's with no read
+// measured, or with a page that shows no history (no pull request attributed to an issue on the
+// timeline, or none in the measures: historyOf), k13's with no statement examined or none of them
+// a read of delivery_run_jobs.
 //
-// The base's Legion facts consumer resolves session titles with the same statement its timeline
-// does, so that statement is in the background catalogue and out of each read's own time. The
-// control therefore also names every catalogued statement that ran while a read was in flight and
-// reads an event's actor out of events, and states the paint's time with everything in flight
+// Where a background loop of the base resolves session titles with the same statement its
+// timeline does, that statement is in the background catalogue and out of each read's own time.
+// The control therefore also names every catalogued statement that ran while a read was in flight
+// and reads an event's actor out of events, and states the paint's time with everything in flight
 // beside its own.
 func baseControls(r *report, measured []measuredCase, failed map[string]bool) {
+	attributed, measuresPRs := 0, 0
+	for _, one := range measured {
+		if history, read := historyOf(one.body); read {
+			attributed += history.attributed
+			measuresPRs += history.measuresPRs
+		}
+	}
+	if attributed == 0 || measuresPRs == 0 {
+		r.fail("k8-control: the base's first paint shows %d pull requests attributed to an issue on its timeline and %d in its measures, so it measured no Delivery history", attributed, measuresPRs)
+	}
 	total, inFlight := 0.0, 0.0
 	examined, readsEvents, catalogued, unnamed, jobReads := 0, 0, 0, 0, 0
 	for _, one := range measured {
@@ -641,6 +667,108 @@ func baseControls(r *report, measured []measuredCase, failed map[string]bool) {
 		r.fail("k13-control: no statement of the base's first paint was examined")
 	case jobReads == 0:
 		r.fail("k13-control: no statement of the base's first paint reads delivery_run_jobs, so the run-jobs control examined nothing")
+	}
+}
+
+// deliveryHistory is what one Delivery read's answer shows of the history: a timeline's pull
+// requests, those attributed to an issue and those by the issue's project (the part of its key
+// before the number), and the measures' change_failure_rate.per_pr.total, successful deploys and
+// deploys that shipped a pull request. The base counts every population pull request merged in the
+// window in per_pr.total; this head builds change-fail-rate only where a failure source exists
+// (measures.Compute), so with none it answers 0 there, and the timeline's prs are the pull
+// requests to set beside the base's.
+type deliveryHistory struct {
+	timeline, measures                   bool
+	prs, attributed                      int
+	byProject                            map[string]int
+	measuresPRs, deploys, deploysWithPRs int
+}
+
+// deliveryMeasures is the part of the measures historyOf reads.
+type deliveryMeasures struct {
+	DeployFrequency struct {
+		SuccessfulDeploys int `json:"successful_deploys"`
+		DeploysWithPRs    int `json:"deploys_with_prs"`
+	} `json:"deploy_frequency"`
+	ChangeFailureRate struct {
+		PerPR struct {
+			Total int `json:"total"`
+		} `json:"per_pr"`
+	} `json:"change_failure_rate"`
+}
+
+// historyOf reads the history a Delivery read's answer shows, at this head and at the base, whose
+// answers have one shape: a timeline's answer (GET /api/v1/delivery/timeline, a timeline view)
+// holds its pull requests at prs and carries its window's measures answer whole at measures, and a
+// measures answer (GET /api/v1/delivery/measures, a measures view) holds the measures at measures.
+// read is false for a body that is neither.
+func historyOf(body []byte) (history deliveryHistory, read bool) {
+	var timeline struct {
+		PRs *[]struct {
+			Issue *string `json:"issue"`
+		} `json:"prs"`
+		Measures *struct {
+			Measures *deliveryMeasures `json:"measures"`
+		} `json:"measures"`
+	}
+	var answer struct {
+		Measures *deliveryMeasures `json:"measures"`
+	}
+	if json.Unmarshal(body, &timeline) != nil || json.Unmarshal(body, &answer) != nil {
+		return deliveryHistory{}, false
+	}
+	measures := answer.Measures
+	if timeline.PRs != nil {
+		history.timeline, history.prs, history.byProject = true, len(*timeline.PRs), map[string]int{}
+		for _, pr := range *timeline.PRs {
+			if pr.Issue == nil {
+				continue
+			}
+			history.attributed++
+			project := *pr.Issue
+			if at := strings.LastIndex(project, "-"); at > 0 {
+				project = project[:at]
+			}
+			history.byProject[project]++
+		}
+		measures = nil
+		if timeline.Measures != nil {
+			measures = timeline.Measures.Measures
+		}
+	}
+	if measures != nil {
+		history.measures = true
+		history.measuresPRs = measures.ChangeFailureRate.PerPR.Total
+		history.deploys, history.deploysWithPRs = measures.DeployFrequency.SuccessfulDeploys, measures.DeployFrequency.DeploysWithPRs
+	}
+	return history, history.timeline || history.measures
+}
+
+// printHistories prints, for each Delivery read of the paint, the history its answer shows
+// (historyOf), so a run at this head and one at the base can be set side by side: one history
+// loaded into each shows the same pull requests, attributed to the same project.
+func printHistories(r *report, o options, measured []measuredCase) {
+	for _, one := range measured {
+		if !one.delivery {
+			continue
+		}
+		history, read := historyOf(one.body)
+		if !read {
+			r.result("delivery-history mode=%s case=%s status=%d: the answer shows no pull request and no measures", o.mode, one.name, one.status)
+			continue
+		}
+		line := fmt.Sprintf("delivery-history mode=%s case=%s", o.mode, one.name)
+		if history.timeline {
+			projects := make([]string, 0, len(history.byProject))
+			for _, project := range slices.Sorted(maps.Keys(history.byProject)) {
+				projects = append(projects, fmt.Sprintf("%s=%d", project, history.byProject[project]))
+			}
+			line += fmt.Sprintf(" timeline_prs=%d attributed=%d attributed_by_project=[%s]", history.prs, history.attributed, strings.Join(projects, " "))
+		}
+		if history.measures {
+			line += fmt.Sprintf(" measures_per_pr_total=%d successful_deploys=%d deploys_with_prs=%d", history.measuresPRs, history.deploys, history.deploysWithPRs)
+		}
+		r.result("%s", line)
 	}
 }
 

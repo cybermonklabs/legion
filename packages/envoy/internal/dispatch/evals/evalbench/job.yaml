@@ -2,19 +2,21 @@
 # farm: it clones the pushed commit, and evalbench/job.sh starts a Postgres 18 of its own with
 # pg_stat_statements preloaded and its data on the Job's volume, builds the generator, the
 # instrument and envoy-dispatch, loads the fixture at INFRA's stated rate and measures the first
-# paint. MODE is head (this commit's first paint, k2, k13, k16, and the Delivery timeline's first
-# paint over the history and again over it with INFRA's worst day of deploy failures added) or base
-# (the base head 02a7b3c6's first paint, k8's and k13's negative controls). The log is the evidence:
+# paint. MODE is head (this commit's first paint, 8 times, each after a fresh start of the server,
+# k2, k13, k16, and the Delivery timeline's first paint over the history and again over it with
+# INFRA's worst day of deploy failures added) or base (the first paint of the base, k8's and k13's
+# negative controls). BASE is the base: main at the commit COMMIT merges, `git merge-base <COMMIT>
+# origin/main`, which base mode builds and loads. The log is the evidence:
 # judge it by its RESULT and FAIL lines and its closing VERDICT line, never by the Job's phase.
 # The container exits 0 once it has printed that verdict, FAIL lines or not, so a failed check
 # never runs the hour-long measurement again; only a pod that ends before its verdict (a lost
-# machine, an eviction, a failed clone) is retried. Fill the seven ${…} variables (and only those,
-# so the script's own $HOME and $COMMIT are left for the shell). LABEL_DOMAIN is the build farm's
-# label domain, the deployment's own, under which its policy reads a Job's session, cost, branch
-# and head; this public file names no domain, so the render refuses when it is unset, as it
-# refuses any of the seven unset:
-#   export COMMIT=<pushed sha> MODE=head SCALE=1 TEN_TIMES=0 OMP_SESSION=<id> OMP_SESSION_TITLE=<title> LABEL_DOMAIN=<domain>
-#   python3 -c 'import os, re, sys; names = ("COMMIT", "MODE", "SCALE", "TEN_TIMES", "OMP_SESSION", "OMP_SESSION_TITLE", "LABEL_DOMAIN"); missing = [n for n in names if not os.environ.get(n)]; missing and sys.exit("job.yaml: set " + ", ".join(missing)); sys.stdout.write(re.sub(r"\$\{(" + "|".join(names) + r")\}", lambda m: os.environ[m[1]], sys.stdin.read()))' \
+# machine, an eviction, a failed clone) is retried. Fill the eight ${…} variables (and only those,
+# so the script's own $HOME, $COMMIT and $BASE are left for the shell). LABEL_DOMAIN is the build
+# farm's label domain, the deployment's own, under which its policy reads a Job's session, cost,
+# branch and head; this public file names no domain, so the render refuses when it is unset, as
+# it refuses any of the eight unset:
+#   export COMMIT=<pushed sha> BASE=$(git merge-base <pushed sha> origin/main) MODE=head SCALE=1 TEN_TIMES=0 OMP_SESSION=<id> OMP_SESSION_TITLE=<title> LABEL_DOMAIN=<domain>
+#   python3 -c 'import os, re, sys; names = ("COMMIT", "BASE", "MODE", "SCALE", "TEN_TIMES", "OMP_SESSION", "OMP_SESSION_TITLE", "LABEL_DOMAIN"); missing = [n for n in names if not os.environ.get(n)]; missing and sys.exit("job.yaml: set " + ", ".join(missing)); sys.stdout.write(re.sub(r"\$\{(" + "|".join(names) + r")\}", lambda m: os.environ[m[1]], sys.stdin.read()))' \
 #     < job.yaml > "$TMPDIR/job.yaml"
 #   kubectl -n builds create --dry-run=server -f "$TMPDIR/job.yaml" && kubectl -n builds create -f "$TMPDIR/job.yaml"
 apiVersion: batch/v1
@@ -27,8 +29,14 @@ metadata:
     ${LABEL_DOMAIN}/omp-session: &omp-session "${OMP_SESSION}"
   annotations:
     ${LABEL_DOMAIN}/omp-session-title: &omp-session-title "${OMP_SESSION_TITLE}"
-    # About an hour on a dozen CPUs of a Spot build machine.
+    # One attempt takes at most about an hour at the stated rate: eight runs of the head mode's
+    # first paint, each with its own catch-up wait, checks and information round, took 55 minutes
+    # end to end on the build farm, and this Job makes each of those once. The figures are its
+    # requests for that hour: 8 CPUs x 1 h = 8 CPU-hours and 24 GiB x 1 h = 24 GiB-hours. The cost
+    # is that hour on up to a dozen CPUs of a Spot build machine.
     ${LABEL_DOMAIN}/cost-usd: "2.00"
+    ${LABEL_DOMAIN}/expected-cpu-hours: "8"
+    ${LABEL_DOMAIN}/expected-memory-gib-hours: "24"
     ${LABEL_DOMAIN}/branch: "legion/INFRA-2916"
     ${LABEL_DOMAIN}/head: "${COMMIT}"
 spec:
@@ -71,7 +79,7 @@ spec:
         - {name: GOMODCACHE, value: /scratch/gomod}
         - {name: COMMIT, value: "${COMMIT}"}
         - {name: MODE, value: "${MODE}"}
-        - {name: BASE, value: "02a7b3c67eefaa5c3e7d724c794423cc6b89da64"}
+        - {name: BASE, value: "${BASE}"}
         - {name: EVALBENCH_SCALE, value: "${SCALE}"}
         - {name: EVALBENCH_TEN_TIMES, value: "${TEN_TIMES}"}
         volumeMounts:
@@ -81,7 +89,7 @@ spec:
         - |
           set -euo pipefail
           mkdir -p "$HOME" "$TMPDIR" "$GOCACHE" "$GOMODCACHE"
-          echo "MARK start $(date -u +%FT%TZ) commit=$COMMIT mode=$MODE scale=$EVALBENCH_SCALE ten_times=$EVALBENCH_TEN_TIMES"
+          echo "MARK start $(date -u +%FT%TZ) commit=$COMMIT base=$BASE mode=$MODE scale=$EVALBENCH_SCALE ten_times=$EVALBENCH_TEN_TIMES"
           git clone --filter=blob:none --no-checkout https://github.com/cybermonklabs/legion /scratch/src
           cd /scratch/src
           git fetch --depth 1 origin "$COMMIT"

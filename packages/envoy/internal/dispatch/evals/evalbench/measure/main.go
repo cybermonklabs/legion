@@ -5,10 +5,12 @@
 //
 //	measure wait  -mode head -database <url> -url <server>
 //	measure paint -mode head -database <url> -url <server> -token <token> \
-//	  -server-log <the server's stderr> -pg-log <Postgres's jsonlog file>
+//	  -server-log <the server's stderr> -pg-log <Postgres's jsonlog file> [-run <n> -runs-file <file>]
+//	measure runs  -runs <n> -runs-file <file>
 //
 // -mode is head, base or failure-day: failure-day is this head over the fixture with a failure
-// day added to it (evalbench.AddFailureDay), whose paint is the Delivery timeline's alone.
+// day added to it (evalbench.AddFailureDay), whose paint is the Delivery timeline's alone; base is
+// the base, main at the commit this head merges (git merge-base <head> origin/main).
 //
 // wait polls the database until the server's consumers have caught up with the fixture: the
 // Legion facts consumer has read every project whole under the running build and passed every
@@ -16,8 +18,9 @@
 // served every family's rows under the running build (eval_days_serving) with no rebuild building
 // and built every project's stored figures through today's last end day, and the keyword fill's
 // cursor stands at the newest event, which evalbench's load leaves it at as of the load, so it has
-// only the server's own later events to follow (consumerState.caughtUp). At this head it prints
-// how long that took.
+// only the server's own later events to follow (consumerState.caughtUp). At the base it waits for
+// those of the facts consumer and the fill the base's catalog holds the tables of. Where the
+// server runs the fill it prints how long that took.
 //
 // paint is the first paint after a restart: the reads the page makes, each with the database time
 // of its statements (pg_stat_statements' total_exec_time, reset before each), the handler's
@@ -32,10 +35,23 @@
 // named-jobs read and P0 count, k16's hand folds, and the probe of the 84-day compare read's
 // stored-figures statements (probe.go). In mode failure-day they are the Delivery timeline's reads
 // alone, over the same windows, one of which holds the failure day, with k13's run-jobs rule and
-// the failure day the database holds. At the base head (-mode base) they are the base Delivery
-// page's timeline, measures, pipeline and compare views at 84 days, k8's negative control, and the
-// base statements k13's control names. -info measures the first paint alone and judges no budget,
-// for the round after a Postgres restart that the Job records for information.
+// the failure day the database holds. At the base (-mode base) they are the base Delivery page's
+// first paint at 84 days with a compare range, the timeline view of the window and the measures
+// view of the compare range, k8's negative control, and the base statements k13's control names.
+// Every Delivery read's answer is printed as the history it shows: its pull requests, those
+// attributed to an issue, by the issue's project, and the measures' per-PR total and deploys; the
+// base's control fails on a page that shows no pull request attributed to an issue, or none in its
+// measures. -info measures the first paint alone and judges no budget, for the round after a
+// Postgres restart that the Job records for information.
+//
+// -run n tags each RESULT and FAIL line of the paint with run=n, one of the first paint's runs
+// (k8: run.sh paints this head's first paint EVALBENCH_PAINT_RUNS times, 8 by default, each as the
+// first requests after a fresh start of the server), and -runs-file appends the run's reads to a
+// file. k2's statements and controls, k13's named-jobs read and P0 count, k16's day rows by
+// repository and hand folds, the probe and k16's fallback are measured in run 1 alone, after its
+// paint; the reads of every run are judged by their budgets, and by k13's rules over their plans.
+// runs then prints, for each read and each group of reads, its database time in each run with the
+// median and the maximum of the runs, and fails one over its budget in any run (runs.go).
 //
 // The server runs background loops that touch the database between requests. Each read's
 // statements are told from theirs by a catalogue taken first: every statement the database ran in
@@ -54,21 +70,24 @@ import (
 	"time"
 )
 
-// report collects what one run measured: each line it printed and whether any failed.
+// report collects what one invocation measured: each line it printed and whether any failed.
+// tag, where it is set, follows the prefix of every RESULT and FAIL line: " run=3" for the third
+// of the first paint's runs.
 type report struct {
 	prefix string
+	tag    string
 	failed int
 }
 
 // result prints one measurement.
 func (r *report) result(format string, args ...any) {
-	fmt.Printf(r.prefix+" "+format+"\n", args...)
+	fmt.Printf(r.prefix+r.tag+" "+format+"\n", args...)
 }
 
 // fail prints one measurement that missed its budget or its rule, and marks the run failed.
 func (r *report) fail(format string, args ...any) {
 	r.failed++
-	fmt.Printf("FAIL "+format+"\n", args...)
+	fmt.Printf("FAIL"+r.tag+" "+format+"\n", args...)
 }
 
 // block prints text under a heading, each line indented, so a plan or a statement reads whole in
@@ -93,17 +112,22 @@ type options struct {
 	catalog   time.Duration
 	timeout   time.Duration
 	info      bool
+	run       int
+	runs      int
+	runsFile  string
 }
 
+const usage = "usage: measure wait|paint|runs -mode head|failure-day|base -database <url> -url <server> [flags]"
+
 func main() {
-	if len(os.Args) < 2 || (os.Args[1] != "wait" && os.Args[1] != "paint") {
-		fmt.Fprintln(os.Stderr, "usage: measure wait|paint -mode head|failure-day|base -database <url> -url <server> [flags]")
+	if len(os.Args) < 2 || (os.Args[1] != "wait" && os.Args[1] != "paint" && os.Args[1] != "runs") {
+		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
 	command := os.Args[1]
 	flags := flag.NewFlagSet(command, flag.ExitOnError)
 	var o options
-	flags.StringVar(&o.mode, "mode", "head", "head, this head's first paint; failure-day, this head's timeline once a failure day is added; or base, the base head's")
+	flags.StringVar(&o.mode, "mode", "head", "head, this head's first paint; failure-day, this head's timeline once a failure day is added; or base, the first paint of the base, main at the commit this head merges")
 	flags.StringVar(&o.database, "database", "", "the Postgres URL the server reads, as a superuser (required): the instrument resets pg_stat_statements and sets the statement log")
 	flags.StringVar(&o.url, "url", "", "the server's base URL")
 	flags.StringVar(&o.token, "token", "", "the server's agent token (DISPATCH_AGENT_TOKEN)")
@@ -114,6 +138,9 @@ func main() {
 	flags.DurationVar(&o.catalog, "catalog", 65*time.Second, "how long the background catalogue is taken over: more than a minute, so every loop a quiet server runs on a minute's pace or on the Legion sampler's minute wake runs in it")
 	flags.DurationVar(&o.timeout, "timeout", time.Hour, "how long wait polls before it fails")
 	flags.BoolVar(&o.info, "info", false, "measure the first paint alone and judge no budget")
+	flags.IntVar(&o.run, "run", 0, "paint: which of the first paint's runs this is, from 1, which tags its lines run=<n>; the checks after the paint are run 1's; 0 for a paint measured once")
+	flags.StringVar(&o.runsFile, "runs-file", "", "paint: the file each run's reads are appended to; runs: the file it reads them from")
+	flags.IntVar(&o.runs, "runs", 0, "runs: how many runs the file holds, numbered 1 to this")
 	if err := flags.Parse(os.Args[2:]); err != nil {
 		os.Exit(2)
 	}
@@ -121,13 +148,16 @@ func main() {
 		fmt.Fprintf(os.Stderr, "measure: -mode is head, failure-day or base, not %q\n", o.mode)
 		os.Exit(2)
 	}
-	if o.database == "" || o.url == "" {
-		fmt.Fprintln(os.Stderr, "usage: measure wait|paint -mode head|failure-day|base -database <url> -url <server> [flags]: name the database with -database and the server with -url")
+	if command != "runs" && (o.database == "" || o.url == "") {
+		fmt.Fprintln(os.Stderr, usage+": name the database with -database and the server with -url")
 		os.Exit(2)
 	}
 	r := &report{prefix: "RESULT"}
 	if o.info {
 		r.prefix = "INFO"
+	}
+	if command == "paint" && o.run > 0 {
+		r.tag = fmt.Sprintf(" run=%d", o.run)
 	}
 	ctx := context.Background()
 	var err error
@@ -139,14 +169,27 @@ func main() {
 			fmt.Fprintln(os.Stderr, "measure: paint needs -token, -server-log and -pg-log")
 			os.Exit(2)
 		}
+		if o.runsFile != "" && o.run < 1 {
+			fmt.Fprintln(os.Stderr, "measure: paint with -runs-file needs -run, the run's number from 1")
+			os.Exit(2)
+		}
 		err = paint(ctx, r, o)
+	case "runs":
+		if o.runsFile == "" || o.runs < 1 {
+			fmt.Fprintln(os.Stderr, "measure: runs needs -runs-file and -runs, at least 1")
+			os.Exit(2)
+		}
+		var runs []paintRun
+		if runs, err = readRuns(o.runsFile); err == nil {
+			judgeRuns(r, runs, o.runs)
+		}
 	}
 	if err != nil {
 		r.fail("%s: %v", command, err)
 	}
 	if r.failed > 0 {
-		fmt.Printf("%s %s: %d FAIL lines\n", r.prefix, command, r.failed)
+		fmt.Printf("%s%s %s: %d FAIL lines\n", r.prefix, r.tag, command, r.failed)
 		os.Exit(1)
 	}
-	fmt.Printf("%s %s: no FAIL line\n", r.prefix, command)
+	fmt.Printf("%s%s %s: no FAIL line\n", r.prefix, r.tag, command)
 }

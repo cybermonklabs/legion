@@ -240,7 +240,8 @@ func (s *Store) runRefresher(ctx context.Context, deps RefresherDeps, sched refr
 		Retry:  sched.gap,
 		Pass: func(ctx context.Context) time.Time {
 			started, asOf := time.Now(), sched.now()
-			if !started.Before(began.Add(sched.gap)) {
+			begun := !started.Before(began.Add(sched.gap))
+			if begun {
 				began, batch = started, &gapBatch{}
 			}
 			walking := batch != nil
@@ -255,6 +256,7 @@ func (s *Store) runRefresher(ctx context.Context, deps RefresherDeps, sched refr
 				slog.Warn("dispatch: the eval day-row refresher's pass failed", "error", err)
 				return time.Now().Add(sched.gap)
 			}
+			report.logSlow(begun, walking)
 			// A due time the pass read off sched.now stands as far ahead on the wall clock.
 			if !next.IsZero() {
 				next = started.Add(next.Sub(asOf))
@@ -363,14 +365,138 @@ func (s *Store) RefreshThrough(ctx context.Context, deps RefresherDeps, now time
 // rows or a figures walk has days left after the pass's batch, the refold of a cut a default move
 // marked stale stopped for an owed wake with a mark left (refoldStaleCuts), or the rebuild or its
 // cleanup has work left (finishRebuild), yielded whether its walks or its refold stopped for an
-// owed wake with work left (refresh.yields), and heldBack whether its safe horizon held an event
-// back (refresh).
+// owed wake with work left (refresh.yields), heldBack whether its safe horizon held an event back
+// (refresh), and parts how long each part of it took (passParts).
 type refreshed struct {
 	days      map[builtDay]bool
 	seeded    []string
 	walksLeft bool
 	yielded   bool
 	heldBack  bool
+	parts     passParts
+}
+
+// slowPass is the shortest pass runRefresher logs the parts of (refreshed.logSlow): the pass a
+// change waits for when it commits during one is part of the 2 s R14 gives the change
+// (RefresherGap), and one of a tenth of a second or more is a twentieth of it.
+const slowPass = 100 * time.Millisecond
+
+// stopwatch splits a span of wall time into parts: each lap answers the time since the lap before
+// it, or since start, so every moment from the start to the last lap falls in exactly one part.
+type stopwatch struct {
+	began, last time.Time
+}
+
+func (s *stopwatch) start() {
+	s.began = time.Now()
+	s.last = s.began
+}
+
+// lap answers the time since the last lap, or since start, and begins the next part there.
+func (s *stopwatch) lap() time.Duration {
+	now := time.Now()
+	took := now.Sub(s.last)
+	s.last = now
+	return took
+}
+
+// total is the time from the start to the last lap.
+func (s *stopwatch) total() time.Duration {
+	return s.last.Sub(s.began)
+}
+
+// passPart is one part of a pass (refresh), in the order a pass runs them: the change log's
+// outbox moved into the log (drain, delivery.DrainPending); the projects, the owner keys and the
+// settings read, and the seeds owed (seed, load); the event log's safe horizon read (horizon);
+// then, of each page, its cursors and delivery changes read (changes), its events read (events),
+// its rows brought to the delivery settings (settings, syncSettings, which runs a settings rewrite
+// where one is owed), its repositories that hold a delivery run compared with the record (kept,
+// syncKept), its default repositories compared with those published (defaults, syncDefaults), its
+// days written (work, apply), its commit (commit, commitPage) and the days its writes left owed
+// (owed, writeOwed), each page's added to the page's before; then the walks' and the serving
+// records read (walk_reads), the delivery walk's batch (delivery_walk), each project's Legion
+// walk's (legion_walks), the rebuild's walks (rebuild_walks, rebuildDays), each project's logged
+// zero fill and unowned-p0 row of the day and the failure rows of the UTC day (daily, walkDaily,
+// walkFailures), and the stored figures of the days
+// the walks wrote folded (fold_walked, foldWalked); the stored figures' read of the change log and
+// its folds (figure_changes, figureChanges), each project's figures walk's batch (figures_walk,
+// walkFigures), the stale cuts folded again (refold, refoldStaleCuts), the rebuild's rest
+// (finish_rebuild, finishRebuild), the change log pruned (prune), and the next due pass read
+// (next, nextPass) with the safe horizon's held-back check. A pass with no batch of the walks runs
+// none of the walks' parts, the figures walk, the rebuild's rest or the prune.
+type passPart int
+
+const (
+	partDrain passPart = iota
+	partSeed
+	partHorizon
+	partChanges
+	partEvents
+	partSettings
+	partKept
+	partDefaults
+	partWork
+	partCommit
+	partOwed
+	partWalkReads
+	partDeliveryWalk
+	partLegionWalks
+	partRebuildWalks
+	partDaily
+	partFoldWalked
+	partFigureChanges
+	partFiguresWalk
+	partRefold
+	partFinishRebuild
+	partPrune
+	partNext
+	passPartCount
+)
+
+// passPartNames is each part's field in the line a slow pass logs, in the order of passPart.
+var passPartNames = [passPartCount]string{
+	"drain_ms", "seed_ms", "horizon_ms", "changes_ms", "events_ms", "settings_ms", "kept_ms", "defaults_ms", "work_ms",
+	"commit_ms", "owed_ms", "walk_reads_ms", "delivery_walk_ms", "legion_walks_ms", "rebuild_walks_ms", "daily_ms",
+	"fold_walked_ms", "figure_changes_ms", "figures_walk_ms", "refold_ms", "finish_rebuild_ms", "prune_ms", "next_ms",
+}
+
+// passParts is how long each part of one pass took, read off a stopwatch the pass starts as it
+// begins, so every moment of the pass falls in exactly one part (mark), and how many pages it read
+// and how many delivery changes they held.
+type passParts struct {
+	stopwatch
+	took           [passPartCount]time.Duration
+	pages, changes int
+}
+
+// mark gives part the time since the part before it ended.
+func (p *passParts) mark(part passPart) {
+	p.took[part] += p.lap()
+}
+
+// logSlow logs the parts of a pass that took slowPass or more (passParts), and nothing for a faster
+// one: whether it began the gap's batch of the walks, went on with the batch a pass before it left
+// (walking), or built none, whether its walks or its refold stopped for an owed wake, whether work
+// is left, and how many pages and delivery changes it read.
+func (r refreshed) logSlow(begun, walking bool) {
+	total := r.parts.total()
+	if total < slowPass {
+		return
+	}
+	batch := "none"
+	switch {
+	case begun:
+		batch = "began"
+	case walking:
+		batch = "continued"
+	}
+	fields := make([]any, 0, 12+2*int(passPartCount))
+	fields = append(fields, "total_ms", total.Milliseconds(), "batch", batch, "yielded", r.yielded, "walks_left", r.walksLeft,
+		"pages", r.parts.pages, "changes", r.parts.changes)
+	for part, took := range r.parts.took {
+		fields = append(fields, passPartNames[part], took.Milliseconds())
+	}
+	slog.Info("dispatch: the eval day-row refresher's pass took 100 ms or more", fields...)
 }
 
 // builtDay is one project's day of one family a pass wrote.
@@ -402,8 +528,8 @@ func (r refreshed) sorted() []string {
 // folds again each stale cut and answers no due time: its loop asks for the pass that begins the
 // next batch (runRefresher). Either way the refold runs to its end or to an owed wake, whose pass
 // the loop starts at once and which goes on with it. It answers what it wrote, given batch whether
-// a walk, the refold, the rebuild or its cleanup has work left, and whether its walks or its refold
-// stopped for an owed wake.
+// a walk, the refold, the rebuild or its cleanup has work left, whether its walks or its refold
+// stopped for an owed wake, and how long each of its parts took (passParts).
 //
 // A pass that leaves an event id standing above the safe horizon it read has read less than the
 // log holds (events.Horizon.HeldBack): an event that committed while a lower id was still open,
@@ -414,16 +540,21 @@ func (r refreshed) sorted() []string {
 func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresherSchedule, seeds *seeding, batch *gapBatch) (refreshed, time.Time, error) {
 	r := s.newRefresh(deps.Build, sched.now().UTC(), sched.batch)
 	r.clock, r.refoldBudget = sched.now, sched.refoldBudget
+	parts := &r.report.parts
+	parts.start()
 	if _, err := delivery.DrainPending(ctx, s.database.Pool); err != nil {
 		return r.report, time.Time{}, err
 	}
+	parts.mark(partDrain)
 	if err := r.load(ctx, seeds); err != nil {
 		return r.report, time.Time{}, err
 	}
+	parts.mark(partSeed)
 	safe, err := deps.Horizon.SafeOrAwait(ctx)
 	if err != nil {
 		return r.report, time.Time{}, err
 	}
+	parts.mark(partHorizon)
 	for {
 		more, err := r.page(ctx, safe, sched.page)
 		if err != nil {
@@ -437,10 +568,13 @@ func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresher
 		if err := r.figureChanges(ctx, sched.page); err != nil {
 			return r.report, time.Time{}, err
 		}
+		parts.mark(partFigureChanges)
 		if _, err := r.refoldStaleCuts(ctx); err != nil {
 			return r.report, time.Time{}, err
 		}
+		parts.mark(partRefold)
 		r.report.heldBack = deps.Horizon.HeldBack(safe)
+		parts.mark(partNext)
 		return r.report, time.Time{}, nil
 	}
 	r.batched = batch
@@ -452,25 +586,30 @@ func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresher
 	if err != nil {
 		return r.report, time.Time{}, err
 	}
+	parts.mark(partFiguresWalk)
 	refolding, err := r.refoldStaleCuts(ctx)
 	if err != nil {
 		return r.report, time.Time{}, err
 	}
+	parts.mark(partRefold)
 	finishing, err := r.finishRebuild(ctx, rebuilding)
 	if err != nil {
 		return r.report, time.Time{}, err
 	}
+	parts.mark(partFinishRebuild)
 	r.report.walksLeft = live || rebuilding || building || refolding || finishing
 	// The log keeps a day (delivery.ChangeRetention). A failed prune leaves the rows for the next
 	// pass and fails nothing else, as the reconcile's does.
 	if _, err := delivery.PruneChanges(ctx, s.database.Pool); err != nil && ctx.Err() == nil {
 		slog.Warn("dispatch: the eval day-row refresher could not prune the delivery changes", "error", err)
 	}
+	parts.mark(partPrune)
 	next, err := r.nextPass(ctx)
 	if err != nil {
 		return r.report, time.Time{}, err
 	}
 	r.report.heldBack = deps.Horizon.HeldBack(safe)
+	parts.mark(partNext)
 	return r.report, next, nil
 }
 
@@ -565,9 +704,11 @@ func (s *Store) readRefresherCursors(ctx context.Context) (feedCursors, bool, er
 // reads the same changes again, and a walk or a rebuild the changes begin is recorded with the
 // cursor that passed them, and with the rules it builds under where none were recorded
 // (syncSettings). A walk a lost cursor begins again is one of a family no rows
-// are served of, which a walk builds in the open; a served family's is the rebuild's. Where one of
-// the page's changes is of the delivery settings row and no rewrite of the page said so already,
-// the commit says that the day rows stand at the settings (markSettingsApplied). Where a project's
+// are served of, which a walk builds in the open; a served family's is the rebuild's. Where the
+// rules it records move the repositories a read of the evals chooses among, or none were recorded
+// and the page read a change of the settings row (work.settingsApplied, syncSettings), the commit
+// says that the day rows stand at the settings (markSettingsApplied); a rewrite of one
+// repository's rows says so in no transaction of its own (rewriteSettings). Where a project's
 // default repository moved (work.defaults, syncDefaults), the commit publishes it, with the stored
 // figures it moves (publishDefaults). The event cursor
 // is stamped with the moment the pass ran as of, and the change cursor with its ReadAt, when a
@@ -597,8 +738,7 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 	if err := writeSpans(ctx, tx, spans); err != nil {
 		return err
 	}
-	applied := work.settings && !r.settingsApplied
-	if applied {
+	if work.settingsApplied {
 		if err := markSettingsApplied(ctx, tx); err != nil {
 			return err
 		}
@@ -653,10 +793,7 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 	if published != nil {
 		published.log(began, committed)
 	}
-	if applied {
-		r.settingsApplied = true
-	}
-	if applied || len(spans) > 0 || work.defaults != nil {
+	if work.settingsApplied || len(spans) > 0 || work.defaults != nil {
 		r.store.drainChanges(ctx)
 	}
 	return nil

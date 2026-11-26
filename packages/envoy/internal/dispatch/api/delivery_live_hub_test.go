@@ -2962,6 +2962,199 @@ func TestOneRecomputeAtATime(t *testing.T) {
 	}
 }
 
+// TestTheHubRecomputesUpToFourEvalsViewsAtOnce: five evals views of one project, a timeline and a
+// measures view are open, and a day row of the project marks the five evals views at one moment.
+// The reads of the first evalsRecomputes evals views to take their position are held there: four
+// begin and are held at once, and the fifth, which the worker has picked, waits for a slot and
+// begins no recompute while they hold every slot. Three of the four are let go and finish while
+// the first is still held; the fifth then takes a slot and finishes beside it; and a merge made
+// while the first is held marks the timeline and the measures view, which the worker recomputes
+// itself, one at a time, while the first is still held. No view is computed twice at once, each
+// evals view is recomputed once, and every view is sent its one delta. A hub that recomputes one
+// view at a time begins no second evals view while the first is held, so the wait for the four
+// has a bound of its own rather than the test binary's deadline.
+func TestTheHubRecomputesUpToFourEvalsViewsAtOnce(t *testing.T) {
+	t.Parallel()
+	var (
+		mu        sync.Mutex
+		computing = map[string]int{}
+		// evalsNow and deliveryNow are the recomputes of each kind under way, and mostEvals and
+		// mostDelivery the most of each there were at once; twice names each view a recompute began
+		// on while another was under way.
+		evalsNow, deliveryNow, mostEvals, mostDelivery int
+		twice                                          []string
+		// gates lets go each read held, by its view.
+		gates   = map[string]chan struct{}{}
+		holding atomic.Int32
+		held    = make(chan string, evalsRecomputes)
+	)
+	rig := newHubRig(t, func(hub *deliveryHub) {
+		observe, lifetime := hub.observe, hub.lifetime
+		hub.observe = func(note deliveryHubNote) {
+			observe(note)
+			evals := strings.HasPrefix(note.view, evalsView+"|")
+			switch note.what {
+			case "recompute begin":
+				mu.Lock()
+				if computing[note.view]++; computing[note.view] > 1 {
+					twice = append(twice, note.view)
+				}
+				if evals {
+					evalsNow++
+					mostEvals = max(mostEvals, evalsNow)
+				} else {
+					deliveryNow++
+					mostDelivery = max(mostDelivery, deliveryNow)
+				}
+				mu.Unlock()
+			case "recompute end":
+				mu.Lock()
+				computing[note.view]--
+				if evals {
+					evalsNow--
+				} else {
+					deliveryNow--
+				}
+				mu.Unlock()
+			case "recompute position":
+				if !evals || holding.Add(-1) < 0 {
+					return
+				}
+				gate := make(chan struct{})
+				mu.Lock()
+				gates[note.view] = gate
+				mu.Unlock()
+				held <- note.view
+				// The wait also ends with the hub's lifetime, so a test that fails while a read is
+				// held still stops its hub.
+				select {
+				case <-gate:
+				case <-lifetime.Done():
+				}
+			}
+		}
+	})
+	release := func(key string) {
+		mu.Lock()
+		gate := gates[key]
+		mu.Unlock()
+		close(gate)
+	}
+	createTestProject(t, rig.handler, "ACME")
+	saveProjectRules(t, rig.database, "ACME", deployRule("acme/widgets", "release / release"))
+	today := rig.clock.Now().UTC().Truncate(24 * time.Hour)
+	// The day row below is of acme/widgets', which a read of ACME's evals reads once the refresher's
+	// record names it (eval_days_rules, evals.DeployReposIn).
+	publishDeployRepo(t, rig.database, "ACME", deployRule("acme/widgets", "release / release"), today.AddDate(0, 0, -27))
+	keyOf := func(frame DeliveryLiveView) string {
+		spec, refusal := parseDeliveryLiveView(frame)
+		if refusal != nil {
+			t.Fatalf("read the %s view: %+v", frame.Kind, refusal)
+		}
+		return spec.key
+	}
+
+	delivered := newFakeLiveConn()
+	timeline, measures := presetView(deliveryLiveTimeline, 7, ""), presetView(deliveryLiveMeasures, 7, "")
+	rig.hub.Subscribe(delivered, subscribeFrame("t", timeline))
+	rig.hub.Subscribe(delivered, subscribeFrame("m", measures))
+	delivered.firstSnapshots(t, "t", "m")
+	frames := []DeliveryLiveView{
+		evalsLiveView("ACME", DeliveryLiveWindow{Preset: new(7)}, ""), evalsLiveView("ACME", DeliveryLiveWindow{Preset: new(14)}, ""),
+		evalsLiveView("ACME", DeliveryLiveWindow{Preset: new(28)}, ""), evalsLiveView("ACME", DeliveryLiveWindow{Preset: new(84)}, ""),
+		evalsLiveView("ACME", evalsDays(today.AddDate(0, 0, -27), today.AddDate(0, 0, 1)), ""),
+	}
+	conns, keys := make([]*fakeLiveConn, len(frames)), make([]string, len(frames))
+	for i, frame := range frames {
+		sub := "e" + strconv.Itoa(i)
+		keys[i], conns[i] = keyOf(frame), newFakeLiveConn()
+		rig.hub.Subscribe(conns[i], subscribeFrame(sub, frame))
+		conns[i].snapshot(t, sub)
+		conns[i].freshness(t, "the verdict after the snapshot of "+sub)
+	}
+	rig.settle(t)
+
+	start := rig.mark()
+	holding.Store(evalsRecomputes)
+	if _, err := rig.database.Pool.Exec(t.Context(), `
+		insert into eval_days (project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, counts, built_by)
+		values ('ACME', 'ACME/deploy-frequency', 'acme/widgets', 'deploys', '', $1, true, 1, 1, '{"with_prs": 1}', 'test')
+	`, today); err != nil {
+		t.Fatalf("write ACME's day row of deploy-frequency: %v", err)
+	}
+	rig.hub.catchUpNow()
+	bound := testwait.Bounded(t, 30*time.Second, time.Second)
+	var reading []string
+	for range evalsRecomputes {
+		select {
+		case key := <-held:
+			reading = append(reading, key)
+		case <-time.After(bound):
+			t.Fatalf("%d evals views' reads were held %s after the day row marked five, want %d at once (evalsRecomputes)", len(reading), bound, evalsRecomputes)
+		}
+	}
+	first, waiting := reading[0], ""
+	for _, key := range keys {
+		if !slices.Contains(reading, key) {
+			waiting = key
+		}
+	}
+	begins := func(key string) int {
+		return rig.count(start, func(note deliveryHubNote) bool { return note.what == "recompute begin" && note.view == key })
+	}
+	ends := func(key string) int {
+		return rig.count(start, func(note deliveryHubNote) bool { return note.what == "recompute end" && note.view == key })
+	}
+	rig.waitNoRecompute(t, 2*viewQuiet)
+	if n := begins(waiting); n != 0 {
+		t.Fatalf("the fifth evals view began %d recomputes while four held every slot, want none", n)
+	}
+
+	upsertPR(t, rig.database, hubPR(1, rig.clock.Now().Add(-time.Hour)))
+	rig.hub.catchUpNow()
+	for _, key := range reading[1:] {
+		release(key)
+	}
+	finished := append(slices.Clone(reading[1:]), waiting, keyOf(timeline), keyOf(measures))
+	testwait.Until(t, "the three evals views let go, the fifth and both delivery views to finish while the first is held (those left)", func() ([]string, bool) {
+		var left []string
+		for _, key := range finished {
+			if ends(key) == 0 {
+				left = append(left, key)
+			}
+		}
+		return left, len(left) == 0
+	})
+	if n := ends(first); n != 0 {
+		t.Fatalf("the held evals view ended %d recomputes before it was let go", n)
+	}
+	release(first)
+
+	for i, conn := range conns {
+		conn.delta(t, "e"+strconv.Itoa(i))
+	}
+	for range 2 {
+		if _, ok := delivered.next(t, "each delivery view's delta").(DeliveryLiveDelta); !ok {
+			t.Fatal("want a delta for each delivery view")
+		}
+	}
+	rig.settle(t)
+	for _, key := range keys {
+		if n := begins(key); n != 1 {
+			t.Errorf("%s began %d recomputes for the one day row, want 1", key, n)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(twice) > 0 {
+		t.Errorf("recomputes began on %v while another of the same view was under way, want none", twice)
+	}
+	if mostEvals != evalsRecomputes || mostDelivery != 1 {
+		t.Errorf("at most %d evals views and %d delivery views were computed at once, want %d and 1", mostEvals, mostDelivery, evalsRecomputes)
+	}
+	t.Logf("%d evals views computed at once, the fifth waiting; the delivery views one at a time, while the first evals view was held", mostEvals)
+}
+
 func TestAChangeOutsideAWindowRecomputesNothing(t *testing.T) {
 	t.Parallel()
 	rig := newHubRig(t, nil)

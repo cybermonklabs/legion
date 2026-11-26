@@ -199,14 +199,17 @@ func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []str
 // over window and compare (nil for none), the ranges the read read, read against firsts, each
 // series' first day, the answer SeriesValuesOf gives over the day rows, bit for bit, each
 // statistic a lookup; and the oldest updated_at of the rows the stored rows it read fold, nil where
-// it read none. A range of which the eval has no stored row holds none of its rows, and reads the
-// fold of no parts, as the day rows' read folds none. ok is false where the stored figures cannot
-// answer the eval, which the caller answers from its day rows: the read did not serve it (its
-// project's figures are not built through the end of both ranges, or a stale mark of its cut names
-// it and its generation has not folded again the stored rows the read reads; builtCut.serves), its
-// stored rows lie in more than one deploy repository (several), a stored row it would read was
-// folded under another fold key than the eval's definition now has (a register write the
-// refresher has not folded yet), or one does not decode.
+// it read none. A range of which the eval has no stored row reads the fold of no parts, as the day
+// rows' read folds none where the range holds none of the eval's listed rows, which every write
+// that folds the rows it moves keeps true; a register write that lists a series folds none of its
+// rows (relistDays), so a range whose only listed rows it lists holds no stored row, and reads as
+// holding none, until the refresher's next pass folds the days it relisted (figureChanges). ok is
+// false where the stored figures cannot answer the eval, which the caller answers from its day
+// rows: the read did not serve it (its project's figures are not built through the end of both
+// ranges, or a stale mark of its cut names it and its generation has not folded again the stored
+// rows the read reads; builtCut.serves), its stored rows lie in more than one deploy repository
+// (several), a stored row it would read was folded under another fold key than the eval's
+// definition now has (a register write the refresher has not folded yet), or one does not decode.
 func (f StoredFigures) SeriesValues(entry Entry, firsts map[string]time.Time, window Range, compare *Range) ([]SeriesValues, *time.Time, bool) {
 	definition := entry.Definition
 	if !f.served[definition.EvalID] {
