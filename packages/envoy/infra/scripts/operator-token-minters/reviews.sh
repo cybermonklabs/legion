@@ -570,7 +570,7 @@ live_named() {
 # is not whole: without its RoleBindings, binding_rights would ask nothing outside the guarded
 # namespaces and live_named would read no RoleBinding. Its subjects are still added.
 bound_subjects() {
-  local kind ns name label
+  local kind ns name label user
   local -A held=()
   BOUND=0 BOUND_ERROR="" BINDINGS_OK=false
   if ! kubectl --kubeconfig "$1" get clusterrolebindings,rolebindings --all-namespaces -o json >"$WORK/bindings.json" 2>"$WORK/bindings.err"; then
@@ -585,7 +585,9 @@ bound_subjects() {
     return 1
   fi
   BINDINGS_OK=true
-  while IFS="$US" read -r label _; do held[$label]=1; done <"$WORK/principals.rec"
+  # held: each label the file holds (the Group and ServiceAccount subjects below are held by it), and
+  # each label with the name the API server knows it by, as a record's first two fields write them.
+  while IFS="$US" read -r label user _; do held[$label]=1 held[$label$US$user]=1; done <"$WORK/principals.rec"
   while IFS="$US" read -r -u 7 kind ns name; do
     if [ "$kind" = Group ]; then
       own_group "$name" || continue
@@ -607,10 +609,12 @@ bound_subjects() {
     k8s_subject "$kind" "" "$name"
     [ "$SUBJECT_OK" != true ] || continue
     case "$SUBJECT" in system:serviceaccount:*) continue ;; esac
-    # A subject is held by its label and the name the API server knows it by: an account bound by
-    # its email and by its uniqueId is one label (k8s_subject) reviewed under each name, since each
-    # binding grants its own rights.
-    [ -z "${held[$SUBJECT]:-}" ] && [ -z "${held[$SUBJECT$US$name]:-}" ] || continue
+    # A User subject is held by its label and the name the API server knows it by, never by its
+    # label alone: an account the file already holds under its email (a ServiceAccount's
+    # iam.gke.io/gcp-service-account annotation, above) and that a binding names by its uniqueId is
+    # one label (k8s_subject) reviewed under each name, since each name's bindings grant their own
+    # rights.
+    [ -z "${held[$SUBJECT$US$name]:-}" ] || continue
     held[$SUBJECT$US$name]=1
     if [ "$name" = system:anonymous ]; then
       printf '%s\x1f%s\x1fsystem:unauthenticated\n' "$SUBJECT" "$name" >>"$WORK/principals.rec"

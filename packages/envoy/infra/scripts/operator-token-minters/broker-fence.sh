@@ -26,9 +26,11 @@
 #     failurePolicy Fail, to dispatch alone) and hashing to the digest; so the two agree;
 #   - the cluster's pods in dispatch keep the account's shape (fence_pods): at least one pod named
 #     envoy-broker-* runs as envoy-broker (a list that saw nothing proves nothing), and no pod named
-#     otherwise runs as envoy-broker or takes a Secret of the broker's: --db-secret, a token Secret of
-#     the namespace, or any Secret a pod named envoy-broker-* that runs as envoy-broker takes (its
-#     NATS seeds and hold keys among them). A pod made before the fence keeps any name;
+#     otherwise runs as envoy-broker, takes a Secret of the broker's (--db-secret, a guarded pair's
+#     token Secret the renders declare or its ServiceAccount lists, or any Secret a pod named
+#     envoy-broker-* that runs as envoy-broker takes, its NATS seeds and hold keys among them), or
+#     takes a Secret no --secret-render declares: the check reads no Secret, so such a Secret may
+#     hold the broker's token. A pod made before the fence keeps any name;
 #   - no webhook of the cluster's configurations calls a Service in dispatch, whatever its selectors
 #     and rules (admission_power's WEBHOOK_SERVICES): whoever enters a pod there that backs it
 #     changes what the webhook does to each object it admits, and the fence does not refuse that
@@ -150,13 +152,13 @@ fence_declared() {
 # fence_declared_json: the fence code-rbac.jq reads in the code step: the declared one, or null.
 fence_declared_json() { if [ -n "$FENCE_DECLARED" ]; then fence_json; else echo null; fi; }
 # fence_live KUBECONFIG STEP: on the operator's cluster, after admission_rights read its discovery,
-# admission_power its webhooks (WEBHOOK_SERVICES) and the token Secrets of the guarded namespaces
-# were listed: sets FENCE_CREDITED, the fence fence_json writes with the declared and live digests,
-# each policy's and binding's versions and the contract's residual, when the cluster's fence is the
-# reviewed one the renders declare, its pods keep the account's shape and no webhook's Service is in
-# its namespace.
+# admission_power its webhooks (WEBHOOK_SERVICES), and step-rbac.sh the guarded pairs' token Secrets
+# (TOKEN_RIGHTS): sets FENCE_CREDITED, the fence fence_json writes with the declared and live
+# digests, each policy's and binding's versions and the contract's residual, when the cluster's
+# fence is the reviewed one the renders declare, its pods keep the account's shape and no webhook's
+# Service is in its namespace.
 fence_live() {
-  local kube="$1" step="$2" resource missing="" held outside witness backends
+  local kube="$1" step="$2" resource missing="" held declared outside witness backends
   FENCE_CREDITED=""
   [ "$FENCE_GUARDED" = true ] || return 0
   FENCE_LIVE_READ=true
@@ -196,20 +198,24 @@ fence_live() {
     return 0
   fi
   # The Secrets of the broker's beside those its witness pods take: --db-secret when it is in the
-  # fence's namespace, and each token Secret the renders declare there.
+  # fence's namespace, and each token Secret of a guarded pair there, the renders' and the one its
+  # ServiceAccount lists (TOKEN_RIGHTS). The check reads no Secret, so it cannot tell whose token
+  # another Secret holds: every other pod there must take only Secrets a --secret-render declares
+  # (SECRET_DECLARED), and one that takes any other is outside the fence too.
   held="$({ [ "${DB_SECRET%%/*}" != "$FENCE_NS" ] || printf '%s\n' "${DB_SECRET#*/}"
-    jq -r --arg ns "$FENCE_NS" '.[] | select(.ns == $ns) | .name' <<<"$SECRET_RIGHTS"; } | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+    jq -r --arg ns "$FENCE_NS" '.[] | select(.ns == $ns) | .name' <<<"$TOKEN_RIGHTS"; } | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+  declared="$(jq -c --arg ns "$FENCE_NS" '[.[] | select(.ns == $ns) | .name]' <<<"$SECRET_DECLARED")"
   # The pod record read as a part of the guard: an answer jq reads as nothing writes no record, and
   # an unguarded read of none would end the run, losing why.
   if ! is_list "$WORK/fence-pods.json" "$WORK/fence-pods.err" ||
-    ! jq -r -L "$LIB" --arg prefix "$FENCE_PREFIX" --arg account "$FENCE_ACCOUNT" --argjson secrets "$held" \
-      'include "broker-fence"; fence_pods($prefix; $account; $secrets)' "$WORK/fence-pods.json" >"$WORK/fence-pods.rec" 2>"$WORK/fence-pods.err" ||
+    ! jq -r -L "$LIB" --arg prefix "$FENCE_PREFIX" --arg account "$FENCE_ACCOUNT" --argjson secrets "$held" --argjson declared "$declared" \
+      'include "broker-fence"; fence_pods($prefix; $account; $secrets; $declared)' "$WORK/fence-pods.json" >"$WORK/fence-pods.rec" 2>"$WORK/fence-pods.err" ||
     ! IFS="$US" read -r outside witness <"$WORK/fence-pods.rec"; then
     unknown "$step" "the API server's list of pods in $FENCE_NS is not one JSON list, so nothing the broker's pod fence refuses is credited: $(first_line "$WORK/fence-pods.err")"
     return 0
   fi
   if [ -n "$outside" ]; then
-    no_credit "$step" "pods of $FENCE_NS run as $FENCE_ACCOUNT or take a Secret of the broker's under a name the fence's connect rule does not hold ($FENCE_PREFIX*): $outside"
+    no_credit "$step" "pods of $FENCE_NS run as $FENCE_ACCOUNT, take a Secret of the broker's, or take a Secret no --secret-render declares (whose token it may hold, since the check reads no Secret), under a name the fence's connect rule does not hold ($FENCE_PREFIX*): $outside"
     return 0
   fi
   if [ "$witness" -eq 0 ]; then
@@ -274,7 +280,7 @@ fence_settle() {
   for entry in "${CODE_PENDING[@]}"; do
     IFS="$US" read -r principal detail id policy residual <<<"$entry"
     if [ -n "$FENCE_CREDITED" ]; then
-      credit "$principal" "$detail, declared by $id" "cluster:$cluster_name" "$id" "$policy" "$residual"
+      credit "$principal" "$detail, declared by $id" "$(operator_res)" "$id" "$policy" "$residual"
     else
       declared_finding "$principal" "$detail" "$id"
     fi

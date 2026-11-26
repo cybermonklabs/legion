@@ -5,7 +5,7 @@
 # --- code: RBAC ---
 # declared_finding PRINCIPAL DETAIL ID: one grant the renders declare (ID, the binding) is a finding;
 # fence_settle (broker-fence.sh) finds the grants the fence would have credited the same way.
-declared_finding() { finding "$1" "$2, declared by $3" "$2" "cluster:$cluster_name" "$2" "$3"; }
+declared_finding() { finding "$1" "$2, declared by $3" "$2" "$(operator_res)" "$2" "$3"; }
 step="code: RBAC"
 if [ "${#RBAC_RENDERS[@]}" -eq 0 ]; then
   unknown "$step" "no --rbac-render: what the cluster's RBAC program declares is not read"
@@ -68,10 +68,15 @@ else
             ;;
         esac
       done 3<"$WORK/render.rec"
-      csr_chains ", declared by the renders" "cluster:$cluster_name"
+      csr_chains ", declared by the renders" "$(operator_res)"
       if unchanged; then
         code_pass="the renders give the rights, the guard rights, the certificate chain and the admission rights, outright or by name, to no one but people, system namespaces and components, and the operator's own account ($declared grants read; custom resources are read live)"
-        if [ "${#CODE_PENDING[@]}" -eq 0 ]; then pass "$step" "$code_pass"; else CODE_PASS="$code_pass"; fi
+        if [ "${#CODE_PENDING[@]}" -eq 0 ]; then
+          pass "$step" "$code_pass"
+        else
+          CODE_PASS="$code_pass"
+          census_quiet "its PASS waits on live: RBAC's read of the broker's pod fence (fence_settle)"
+        fi
       fi
     fi
   fi

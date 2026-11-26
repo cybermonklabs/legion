@@ -20,10 +20,20 @@ elif ! is_list "$WORK/serviceaccounts.json" "$WORK/serviceaccounts.err"; then
   unknown "$step" "the API server's list of ServiceAccounts could not be read: $(first_line "$WORK/serviceaccounts.err")"
 else
   mark
+  # Each guarded pair's token Secret, by name (a review that names no Secret is refused for a get
+  # limited to the name): each the Secret renders declare (SECRET_RIGHTS, code: Secrets), and each a
+  # guarded pair's ServiceAccount lists in its `secrets` in the list just read, so the cluster's own
+  # word on which Secrets hold its token is read beside the renders'; neither reads a Secret. The
+  # broker's pod fence holds those in its namespace as the broker's (broker-fence.sh).
+  TOKEN_RIGHTS="$(with_rights "$SECRET_RIGHTS" "$(jq -c '[.items[] | select("\(.metadata.namespace)/\(.metadata.name)" as $p | any($ARGS.positional[]; . == $p))
+      | .metadata.namespace as $ns | .secrets | .[]? | .name? | select(type == "string" and length > 0)
+      | {verb: "get", group: "", resource: "secrets", sub: "", ns: $ns, name: ., label: "get secrets \(.) in \($ns)"}
+      | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}] | unique_by(.key)' \
+    "$WORK/serviceaccounts.json" --args "${GUARDED[@]}")")"
   # Every guarded pair's rights and the other clusters' guard rights, each right once: where both
   # list one, the full list's label stays; and the custom resources' and the admission resources'
   # rights, from this cluster's discovery.
-  rights="$(with_rights "$(with_rights "$(rights_json db)" "$SECRET_RIGHTS")" "$GUARD_RIGHTS")"
+  rights="$(with_rights "$(with_rights "$(rights_json db)" "$TOKEN_RIGHTS")" "$GUARD_RIGHTS")"
   custom_rights "$KUBE" plain || unknown "$step" "$CUSTOM_ERROR"
   rights="$(with_rights "$rights" "$CUSTOM_RIGHTS")"
   admission_rights "$KUBE" || unknown "$step" "$ADMISSION_ERROR"
@@ -87,10 +97,11 @@ else
   [ "${AUTOPILOT["$PROJECT/$OPERATOR_LOCATION/$CLUSTER"]:-}" = true ] ||
     unknown "$step" "the cluster is GKE Standard, not Autopilot, so a privileged or hostPath pod on the operator's node can read the kubelet's credentials and the operator's ServiceAccount token there, a node escape no RBAC review here sees"
   # The cluster's label in every finding, credit and residual here: <project>/<location>/<name>, as
-  # every other cluster of the pool is labelled (step-workload-identity.sh). The location is
-  # --location, which live: clusters requires to be the project's list's own for this name, or the
-  # list's when --location is not given; so one name in two locations is two labels.
-  op_res="cluster:$PROJECT/$OPERATOR_LOCATION/$CLUSTER"
+  # every other cluster of the pool is labelled (step-workload-identity.sh, operator_res in
+  # output.sh). The location is --location, which live: clusters requires to be the project's
+  # list's own for this name, or the list's when --location is not given; so one name in two
+  # locations is two labels.
+  op_res="$(operator_res)"
   masters_bindings "$step" "" "$op_res"
   # A right a role limits to a resource by name never answers a review that names nothing, so
   # those are read rather than reviewed: live_named below reads the cluster's own Roles and

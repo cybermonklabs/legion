@@ -55,9 +55,20 @@ done
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/minters-auditor.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
+# No quota project, before any cloud call: gcloud's billing/quota_project, set in a configuration or
+# by CLOUDSDK_BILLING_QUOTA_PROJECT, bills each call to that project and needs
+# serviceusage.services.use there, which the auditor's account is not granted; with none, gcloud
+# sends no X-Goog-User-Project header (README, "Minter-auditor render inputs"). `gcloud config get`
+# prints the effective value, the environment's included, and nothing when it is unset.
+gcloud config get billing/quota_project >"$work/quota-project" 2>"$work/quota-project.err" ||
+  unknown "gcloud config get billing/quota_project was refused, so whether the calls bill to a quota project is unknown: $(head -n 1 "$work/quota-project.err")"
+[ ! -s "$work/quota-project" ] ||
+  unknown "gcloud's billing/quota_project is set (in its configuration or CLOUDSDK_BILLING_QUOTA_PROJECT), so each call would bill to that project and need serviceusage.services.use there, which the auditor's account does not hold: unset it"
 export USE_GKE_GCLOUD_AUTH_PLUGIN=True
 kubeconfig="$work/kubeconfig"
-for cluster in $(jq -c '.[]' <<<"$MINTERS_AUDITOR_CLUSTERS"); do
+# One JSON object a line, read whole: a space in a field would split it on a word.
+mapfile -t cluster_entries < <(jq -c '.[]' <<<"$MINTERS_AUDITOR_CLUSTERS")
+for cluster in "${cluster_entries[@]}"; do
   project="$(jq -r .project <<<"$cluster")"
   location="$(jq -r .location <<<"$cluster")"
   name="$(jq -r .name <<<"$cluster")"

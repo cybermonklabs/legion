@@ -2125,7 +2125,7 @@
     {
       "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
       "right": "create pods/exec in dispatch, declared by RoleBinding dispatch/comment-delivery",
-      "resource": "cluster:operator-cluster",
+      "resource": "cluster:example-project/us-central1/operator-cluster",
       "granted_at": "RoleBinding dispatch/comment-delivery",
       "policy": "broker-pod-connect",
       "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
@@ -2134,7 +2134,7 @@
     {
       "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
       "right": "get pods/exec in dispatch, declared by RoleBinding dispatch/comment-delivery",
-      "resource": "cluster:operator-cluster",
+      "resource": "cluster:example-project/us-central1/operator-cluster",
       "granted_at": "RoleBinding dispatch/comment-delivery",
       "policy": "broker-pod-connect",
       "declared": "sha256:a790f66fcb4640bb1d0aeea0ae91f648cd6d9558d3e5ce7b1169b65e73ddbe50",
@@ -2177,7 +2177,7 @@
     {
       "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
       "right": "create pods/exec in dispatch, declared by RoleBinding dispatch/comment-delivery",
-      "resource": "cluster:operator-cluster",
+      "resource": "cluster:example-project/us-central1/operator-cluster",
       "granted_at": "RoleBinding dispatch/comment-delivery",
       "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
       "tracked_by": "INFRA-4604"
@@ -2185,7 +2185,7 @@
     {
       "principal": "serviceAccount:comment-delivery@example-project.iam.gserviceaccount.com",
       "right": "get pods/exec in dispatch, declared by RoleBinding dispatch/comment-delivery",
-      "resource": "cluster:operator-cluster",
+      "resource": "cluster:example-project/us-central1/operator-cluster",
       "granted_at": "RoleBinding dispatch/comment-delivery",
       "residual": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
       "tracked_by": "INFRA-4604"
@@ -2217,6 +2217,52 @@
     {
       "flag": "--render-writer",
       "value": "writer-d@example-project.iam.gserviceaccount.com=program-d/object"
+    }
+  ],
+  "steps": [
+    {
+      "step": "step-permission-names.sh",
+      "state": "reported"
+    },
+    {
+      "step": "step-code-secrets.sh",
+      "state": "reported"
+    },
+    {
+      "step": "step-code-rbac.sh",
+      "state": "quiet: its PASS waits on live: RBAC's read of the broker's pod fence (fence_settle)"
+    },
+    {
+      "step": "step-code-iam.sh",
+      "state": "reported"
+    },
+    {
+      "step": "step-clusters.sh",
+      "state": "reported"
+    },
+    {
+      "step": "step-gke-iam.sh",
+      "state": "reported"
+    },
+    {
+      "step": "step-rbac.sh",
+      "state": "reported"
+    },
+    {
+      "step": "step-workload-identity.sh",
+      "state": "reported"
+    },
+    {
+      "step": "step-audited-clusters.sh",
+      "state": "quiet: no --audited-cluster: the step does not run"
+    },
+    {
+      "step": "step-live-iam.sh",
+      "state": "reported"
+    },
+    {
+      "step": "step-admin-tag.sh",
+      "state": "reported"
     }
   ]
 }

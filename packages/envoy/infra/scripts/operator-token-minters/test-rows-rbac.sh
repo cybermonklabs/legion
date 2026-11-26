@@ -43,14 +43,23 @@
 #        deployer-bot to cluster-admin each exit 1 naming it;
 #   (ka) GKE's ClusterRoleBinding kube-apiserver-kubelet-api-admin, to the ClusterRole
 #        kubelet-api-admin, makes User kube-apiserver a finding on each cluster, granted by that
-#        binding; a world naming the binding by its role's name fails the binding check, and a copy
-#        accepting kube-apiserver by name prints no finding (its controls);
+#        binding as the cluster's bindings' list names it; a world naming the binding by its role's
+#        name fails the binding check, and a copy accepting kube-apiserver by name exits 0 with no
+#        finding of it (its controls); (kb) a binding and role of other names are the finding's
+#        granted_at and fail ka's check;
 #   (nu) a User named by a number (a Google service account's uniqueId) is judged as the account it
 #        resolves to: from an IAM preview's service account outputs, from the service accounts
 #        listed in a project the check reads, or by describe; resolved to the operator's own account
 #        it is allowed, to a stranger it is a finding naming the account, never the number; one no
-#        source resolves is a finding naming the number and how to resolve it by hand (a copy of the
-#        check without the resolver fails each case);
+#        source resolves is a finding naming the number and how to resolve it by hand (each resolved
+#        case's control is that world with its source taken away);
+#   (zz) an account the operator's cluster already names by its email (a ServiceAccount's
+#        iam.gke.io/gcp-service-account annotation) that a ClusterRoleBinding names by its uniqueId,
+#        granting create pods, exits 1 naming the account; (zy) the same grant by its email, and
+#        (zx) by its uniqueId to an account the cluster does not otherwise name, each exit 1; (zg)
+#        the annotated account bound by its uniqueId to a right no list holds exits 0 with no
+#        UNKNOWN; (zf) a copy that holds a subject by its label alone again (as the check did before
+#        this row) exits 0 on zz's world, so zz fails on it;
 #   (ax) Kubernetes' own groups are findings: system:authenticated or system:serviceaccounts:apps
 #        allowed to create pods in envoy-operator on another cluster, system:serviceaccounts on the
 #        operator's, a live binding of system:masters other than the bootstrap one, and a render
@@ -473,53 +482,81 @@ if row aw; then
   passed "(aw) a User that is no email (deployer-bot on a non-GKE fleet member, a principal:// name, a render's deployer-bot) is reviewed and exits 1 naming it"
 fi
 
-# --- (ka) GKE's own ClusterRoleBinding kube-apiserver-kubelet-api-admin, to the ClusterRole
+# --- (ka, kb) GKE's own ClusterRoleBinding kube-apiserver-kubelet-api-admin, to the ClusterRole
 # kubelet-api-admin, gives the User kube-apiserver nodes/proxy on every cluster. No subject is
 # accepted by its name (README, "Who is reviewed"), so on each cluster it is a finding naming the
-# User, granted by that binding. Controls: a world naming the binding by its role's name
-# (kubelet-api-admin, the earlier misreading) fails the binding check, and a copy of the check that
-# accepts kube-apiserver by name prints no finding. ---
+# User, granted by that binding. The fake API server writes a review's reason from the binding its
+# bindings' list holds (binding_name, role_name), as the RBAC authorizer does, so the report's
+# granted_at is the cluster's own binding and role, never a text the row wrote. What ka proves: the
+# User kube-apiserver is reviewed, not accepted by its name, on the operator's cluster and another,
+# and each finding carries that cluster's label and the binding that allowed it. What it cannot
+# prove is that GKE names the binding kube-apiserver-kubelet-api-admin: that is the README's reading
+# of a real cluster, and this world is written from it. (kb) the same world whose binding and role
+# are named "not a binding name" and "not a role name" is a finding on both clusters granted by
+# that binding, which fails ka's check. Controls: the binding named by its role's name
+# (kubelet-api-admin, the earlier misreading) fails ka's check too, and a copy of the check that
+# accepts kube-apiserver by name exits 0 with a report that holds no finding of it. ---
 readonly gke_binding=kube-apiserver-kubelet-api-admin gke_role=kubelet-api-admin
-# gke_binding_world BINDING: the binding named BINDING on the operator's cluster and another, as GKE
-# makes it: User kube-apiserver, every verb on nodes/proxy, cluster-wide.
+# gke_binding_world BINDING ROLE: the binding named BINDING of the ClusterRole ROLE on the operator's
+# cluster and another, as GKE makes it: User kube-apiserver, every verb on nodes/proxy, cluster-wide.
 gke_binding_world() {
   local cluster
   base_world
   add_cluster other-cluster us-east1
   for cluster in operator-cluster other-cluster; do
-    grant "$cluster" "$(jq -nc --arg b "$1" --arg r "$gke_role" '{subject: {kind: "User", name: "kube-apiserver"},
-      verb: "*", group: "", resource: "nodes", subresource: "proxy", namespace: null, name: null,
-      binding_name: $b, role_name: $r,
-      binding: "ClusterRoleBinding \"\($b)\" of ClusterRole \"\($r)\" to User \"kube-apiserver\""}')"
+    grant "$cluster" "$(jq -nc --arg b "$1" --arg r "$2" '{subject: {kind: "User", name: "kube-apiserver"},
+      verb: "*", group: "", resource: "nodes", subresource: "proxy", namespace: null, name: null, binding_name: $b, role_name: $r}')"
   done
 }
-# gke_binding_found [SCRIPT]: whether the run's report holds, on both clusters, a finding of
-# user:kube-apiserver granted by GKE's binding under its right name.
-gke_binding_found() {
+# gke_binding_run [SCRIPT]: the run, with its report; fails the row on a report it cannot read.
+gke_binding_run() {
+  rm -f "$temporary_dir/gke-binding.json"
   run_script="${1:-$check}" run --location us-central1 --report "$temporary_dir/gke-binding.json"
+  jq -e '.findings | type == "array"' "$temporary_dir/gke-binding.json" >/dev/null 2>&1 || fail "the run wrote no report holding its findings"
+}
+# gke_granted_on BINDING ROLE: whether the report holds, on both clusters, a finding of
+# user:kube-apiserver granted by the binding BINDING of the ClusterRole ROLE.
+gke_granted_on() {
   jq -e --arg op "cluster:$project/us-central1/operator-cluster" --arg other "cluster:$project/us-east1/other-cluster" \
-    --arg by "RBAC: allowed by ClusterRoleBinding \"$gke_binding\" of ClusterRole \"$gke_role\" to User \"kube-apiserver\"" '
+    --arg by "RBAC: allowed by ClusterRoleBinding \"$1\" of ClusterRole \"$2\" to User \"kube-apiserver\"" '
     [.findings[] | select(.principal == "user:kube-apiserver" and .granted_at == $by) | .resource] as $at
     | any($at[]; . == $op) and any($at[]; . == $other)' "$temporary_dir/gke-binding.json" >/dev/null
 }
+gke_findings() { jq -c '[.findings[] | select(.principal == "user:kube-apiserver")]' "$temporary_dir/gke-binding.json"; }
 if row ka; then
-  gke_binding_world "$gke_binding"
-  gke_binding_found || fail "GKE's binding $gke_binding of $gke_role to User kube-apiserver is not a finding on both clusters: $(jq -c '[.findings[] | select(.principal == "user:kube-apiserver")]' "$temporary_dir/gke-binding.json")"
+  gke_binding_world "$gke_binding" "$gke_role"
+  gke_binding_run
+  want_status 1 "GKE's binding"
+  gke_granted_on "$gke_binding" "$gke_role" || fail "GKE's binding $gke_binding of $gke_role to User kube-apiserver is not a finding on both clusters: $(gke_findings)"
   want_line "FINDING user:kube-apiserver: create nodes/proxy cluster-wide on cluster $project/us-east1/other-cluster" \
     "GKE's binding on another cluster"
   passed "(ka) GKE's ClusterRoleBinding $gke_binding (to the ClusterRole $gke_role) makes User kube-apiserver a finding on each cluster, granted by that binding"
 
-  gke_binding_world "$gke_role"
-  ! gke_binding_found || fail "a world naming the binding $gke_role, its role's name, still passed the binding check"
-  passed "(ka) control: the binding named by its role's name, $gke_role, fails the binding check"
+  gke_binding_world "$gke_role" "$gke_role"
+  gke_binding_run
+  want_status 1 "the binding named by its role's name"
+  gke_granted_on "$gke_role" "$gke_role" || fail "the binding named by its role's name is not a finding granted by that name: $(gke_findings)"
+  ! gke_granted_on "$gke_binding" "$gke_role" || fail "a world naming the binding $gke_role, its role's name, still passed ka's check"
+  passed "(ka) control: the binding named by its role's name, $gke_role, is a finding granted by that name, and fails ka's check"
 
-  gke_binding_world "$gke_binding"
+  gke_binding_world "$gke_binding" "$gke_role"
   copy="$(script_copy accept-by-name)"
   sed -i 's|^        system:anonymous) SUBJECT="user:\$name" ;;$|&\n        kube-apiserver) SUBJECT="user:$name" SUBJECT_OK=true ;;|' "$(dirname "$copy")/operator-token-minters/principals.sh"
   grep -qxF '        kube-apiserver) SUBJECT="user:$name" SUBJECT_OK=true ;;' "$(dirname "$copy")/operator-token-minters/principals.sh" ||
     fail "the test could not make its copy accept kube-apiserver by name"
-  ! gke_binding_found "$copy" || fail "a copy accepting kube-apiserver by name still printed the finding"
-  passed "(ka) control: a copy accepting kube-apiserver by name prints no finding, so the row catches it"
+  gke_binding_run "$copy"
+  want_status 0 "a copy accepting kube-apiserver by name"
+  [ "$(gke_findings)" = "[]" ] || fail "a copy accepting kube-apiserver by name still reported it: $(gke_findings)"
+  passed "(ka) control: a copy accepting kube-apiserver by name exits 0 with no finding of it in its report, so the row catches it"
+fi
+if row kb; then
+  gke_binding_world "not a binding name" "not a role name"
+  gke_binding_run
+  want_status 1 "a binding of another name"
+  gke_granted_on "not a binding name" "not a role name" ||
+    fail "the binding named \"not a binding name\" is not a finding on both clusters granted by that binding: $(gke_findings)"
+  ! gke_granted_on "$gke_binding" "$gke_role" || fail "a world whose binding is named \"not a binding name\" still passed ka's check"
+  passed "(kb) the binding and role named \"not a binding name\" and \"not a role name\" are a finding on both clusters granted by that binding, and fail ka's check"
 fi
 
 # --- (nu) A User named by a uniqueId is judged as the account it resolves to. ---
@@ -566,6 +603,75 @@ numeric_row() {
 if row nu; then
   each numeric_row preview-stranger preview-accepted list describe unresolved
   passed "(nu) a uniqueId User is judged as the account an IAM preview, a project's service account list or describe resolves it to; one none resolves is a finding naming the number"
+fi
+
+# --- (zz, zy, zx, zg, zf) One account under two names: the operator's cluster names
+# ci-runner@example-project.iam.gserviceaccount.com by its email (legion/ci's
+# iam.gke.io/gcp-service-account annotation), and a ClusterRoleBinding names it by its uniqueId,
+# which the project's service account list resolves. The API server knows that binding's User by
+# the number alone, so the account is reviewed under each name. ---
+# uid_name_row ITEM: the world ITEM names (zz: both names, the number's binding granting create pods;
+# zy: the email's binding granting it; zx: the number's binding with no annotation; zg: both names,
+# the number's binding granting a right no list holds), run against the check, or for zf against a
+# copy that holds a subject by its label alone, on zz's world.
+uid_name_row() {
+  local want="FINDING serviceAccount:$ci_gsa: create pods in envoy-operator" subject script="$check" copy
+  base_world
+  mkdir -p "$world/service-accounts"
+  jq -n --arg e "$ci_gsa" --arg n "$numeric_user" '[{email: $e, uniqueId: $n}]' >"$world/service-accounts/$project.json"
+  [ "$1" = zx ] || edit "$world/clusters/operator-cluster/serviceaccounts.json" '. + [{namespace: "legion", name: "ci", gsa: $g}]' --arg g "$ci_gsa"
+  subject="$(user_subject "$numeric_user")"
+  [ "$1" != zy ] || subject="$(user_subject "$ci_gsa")"
+  if [ "$1" = zg ]; then
+    subject_grant operator-cluster "$subject" get "" configmaps "" legion ""
+  else
+    subject_grant operator-cluster "$subject" create "" pods "" "" ""
+  fi
+  if [ "$1" = zf ]; then
+    copy="$(script_copy label-alone)"
+    plant "$(dirname "$copy")/operator-token-minters/reviews.sh" \
+      'while IFS="$US" read -r label user _; do held[$label]=1 held[$label$US$user]=1; done' \
+      'while IFS="$US" read -r label _; do held[$label]=1; done'
+    plant "$(dirname "$copy")/operator-token-minters/reviews.sh" \
+      '[ -z "${held[$SUBJECT$US$name]:-}" ] || continue' \
+      '[ -z "${held[$SUBJECT]:-}" ] && [ -z "${held[$SUBJECT$US$name]:-}" ] || continue'
+    script="$copy"
+  fi
+  run_script="$script" run
+  case "$1" in
+    zz | zy | zx)
+      want_status 1 "ci-runner's create pods ($1)"
+      want_line "$want" "ci-runner's create pods ($1)"
+      ;;
+    zg)
+      want_status 0 "ci-runner under two names with no right a list holds"
+      [ "$(count_prefix 'UNKNOWN ')" -eq 0 ] || fail "ci-runner under two names with no right a list holds: an UNKNOWN"
+      ;;
+    zf)
+      want_status 0 "a copy holding a subject by its label alone, on zz's world"
+      ! has_line "$want" || fail "a copy holding a subject by its label alone still reviewed the uniqueId binding, so zz cannot fail on that copy"
+      ;;
+  esac
+}
+if row zz; then
+  uid_name_row zz
+  passed "(zz) an account named by its email and bound by its uniqueId to create pods exits 1 naming the account"
+fi
+if row zy; then
+  uid_name_row zy
+  passed "(zy) the same grant to the account by its email exits 1 naming it"
+fi
+if row zx; then
+  uid_name_row zx
+  passed "(zx) the same uniqueId grant to an account the cluster does not otherwise name exits 1 naming it"
+fi
+if row zg; then
+  uid_name_row zg
+  passed "(zg) the account under both names, its uniqueId granting a right no list holds, exits 0 with no UNKNOWN"
+fi
+if row zf; then
+  uid_name_row zf
+  passed "(zf) control: a copy holding a subject by its label alone exits 0 on zz's world, so zz catches it"
 fi
 
 # --- (ax) Kubernetes' own groups, whatever Google Groups for RBAC says. ---

@@ -20,8 +20,12 @@
 #        name, is a finding naming that namespace (the live steps' binding rights, read in code);
 #   (bw) a render's rule limited by resourceNames on update of a mutating webhook configuration, or
 #        on patch of a Deployment in secrets-broker, is a finding naming the names;
-#   (se) a Secret render carries no printed Secret value, malformed JSON reads UNKNOWN, and a valid
-#        render with no Secret objects is accepted;
+#   (se) a Secret render carries no printed Secret value; malformed JSON, a file of no document (zero
+#        bytes, or blanks), a render that declares no Secret, and a token Secret without its
+#        namespace, name or service-account-name annotation each read UNKNOWN, exit 2; a Secret of
+#        another type without a namespace is read; controls: a copy that reads the records by tab
+#        again reads a token Secret missing its namespace or its name as another type, and a copy
+#        without the document and Secret witnesses passes the empty files, each exit 0;
 #   (ca) a render's create namespaces, create of a mutating webhook configuration, and the
 #        certificate chain (create, patch of the approval, approve of the client signer by name)
 #        are each a finding, the chain as one, and create of requests alone is none.
@@ -223,27 +227,83 @@ if row ca; then
   passed "(ca) a render's guard right, admission right and certificate chain are each a finding, the chain as one"
 fi
 
-# --- (se) The Secret render is a Kubernetes-object render that does not expose Secret values. ---
-if row se; then
+# --- (se) The Secret render: a Kubernetes-object render that does not expose Secret values, holds a
+# JSON document and a Secret, and keeps a token Secret's empty field empty. ---
+# secret_token JSON: a token Secret of envoy-operator's, its metadata JSON merged over the full one's.
+secret_token() {
+  jq -n --argjson m "$1" '{apiVersion: "v1", kind: "List", items: [{apiVersion: "v1", kind: "Secret", type: "kubernetes.io/service-account-token",
+    metadata: ({namespace: "envoy-operator", name: "envoy-operator-token-legacy",
+                annotations: {"kubernetes.io/service-account.name": "envoy-operator"}} + $m | with_entries(select(.value != null)))}]}'
+}
+secret_render_row() {
+  local copy script="$check" file="$world/secret-render.json"
   base_world
-  jq -n --arg canary "SECRET-RENDER-DATA-CANARY" '{apiVersion: "v1", kind: "List", items: [
-    {apiVersion: "v1", kind: "Secret",
-     metadata: {namespace: "envoy-operator", name: "envoy-operator-token",
-                annotations: {"kubernetes.io/service-account.name": "envoy-operator"}},
-     type: "kubernetes.io/service-account-token", data: {token: $canary}, stringData: {token: $canary}}
-  ]}' >"$world/secret-render.json"
-  run
-  want_status 0 "a Secret render that carries Secret data"
-  ! has_prefix "SECRET-RENDER-DATA-CANARY" || fail "the Secret render's data was printed"
-
-  printf 'not JSON\n' >"$world/secret-render.json"
-  run
-  want_status 2 "a malformed Secret render"
-  want_text "UNKNOWN code: Secrets: --secret-render entry 1 is not a Kubernetes-object JSON render" \
-    "a malformed Secret render"
-
-  jq -n '{apiVersion: "v1", kind: "List", items: []}' >"$world/secret-render.json"
-  run
-  want_status 0 "a valid Secret render with no Secret objects"
-  passed "(se) a Secret render supplies no Secret value, rejects malformed JSON and accepts no Secret objects"
+  case "$1" in
+    data)
+      jq -n --arg canary "SECRET-RENDER-DATA-CANARY" '{apiVersion: "v1", kind: "List", items: [
+        {apiVersion: "v1", kind: "Secret",
+         metadata: {namespace: "envoy-operator", name: "envoy-operator-token",
+                    annotations: {"kubernetes.io/service-account.name": "envoy-operator"}},
+         type: "kubernetes.io/service-account-token", data: {token: $canary}, stringData: {token: $canary}}
+      ]}' >"$file"
+      run
+      want_status 0 "a Secret render that carries Secret data"
+      want_text "PASS code: Secrets: the Secret renders declare 1 Secret(s), 1 of them guarded service-account token Secret(s)" "a Secret render that carries Secret data"
+      ! has_prefix "SECRET-RENDER-DATA-CANARY" || fail "the Secret render's data was printed"
+      return
+      ;;
+    malformed) printf 'not JSON\n' >"$file" ;;
+    zero-bytes | zero-bytes-control) : >"$file" ;;
+    blanks | blanks-control) printf ' \n\t\n' >"$file" ;;
+    no-secret | no-secret-control) jq -n '{apiVersion: "v1", kind: "List", items: [{apiVersion: "v1", kind: "ConfigMap", metadata: {namespace: "dispatch", name: "settings"}}]}' >"$file" ;;
+    no-namespace | no-namespace-control) secret_token '{"namespace": null}' >"$file" ;;
+    no-name | no-name-control) secret_token '{"name": null}' >"$file" ;;
+    no-annotation | no-annotation-control) secret_token '{"annotations": null}' >"$file" ;;
+    other-type)
+      jq -n '{apiVersion: "v1", kind: "List", items: [{apiVersion: "v1", kind: "Secret", type: "Opaque", metadata: {name: "settings"}}]}' >"$file"
+      run
+      want_status 0 "an Opaque Secret without a namespace"
+      want_text "PASS code: Secrets: the Secret renders declare 1 Secret(s), 0 of them guarded service-account token Secret(s)" "an Opaque Secret without a namespace"
+      return
+      ;;
+  esac
+  case "$1" in
+    zero-bytes-control | blanks-control | no-secret-control)
+      copy="$(script_copy "no-render-witness-$1")"
+      plant "$(dirname "$copy")/operator-token-minters/step-code-secrets.sh" 'if length == 0 then error("it holds no JSON document") else . end' '.'
+      plant "$(dirname "$copy")/operator-token-minters/step-code-secrets.sh" 'if [ ! -s "$WORK/secret-render-$n.rec" ]; then' 'if false; then'
+      script="$copy"
+      ;;
+    *-control)
+      copy="$(script_copy "tab-fields-$1")"
+      plant "$(dirname "$copy")/operator-token-minters/step-code-secrets.sh" '      | rec' '      | @tsv'
+      plant "$(dirname "$copy")/operator-token-minters/step-code-secrets.sh" 'while IFS="$US" read -r namespace name type service_account' "while IFS=\$'\\t' read -r namespace name type service_account"
+      script="$copy"
+      ;;
+  esac
+  run_script="$script" run
+  case "$1" in
+    *-control)
+      want_status 0 "a copy blind to the render's fault ($1)"
+      ! has_prefix "UNKNOWN code: Secrets: " || fail "a copy blind to the render's fault ($1) still read UNKNOWN"
+      ;;
+    malformed | zero-bytes | blanks)
+      want_status 2 "a Secret render that is no render ($1)"
+      want_text "UNKNOWN code: Secrets: --secret-render entry 1 is not a Kubernetes-object JSON render" "a Secret render that is no render ($1)"
+      [ "$1" = malformed ] || want_text "it holds no JSON document" "a Secret render that is no render ($1)"
+      ;;
+    no-secret)
+      want_status 2 "a Secret render that declares no Secret"
+      want_line "UNKNOWN code: Secrets: --secret-render entry 1 declares no Secret, so it cannot be told from a render of nothing" "a Secret render that declares no Secret"
+      ;;
+    *)
+      want_status 2 "a token Secret missing a field ($1)"
+      want_line "UNKNOWN code: Secrets: --secret-render entry 1 declares a service-account token Secret without its namespace, name or service-account-name annotation" "a token Secret missing a field ($1)"
+      ;;
+  esac
+}
+if row se; then
+  each secret_render_row data malformed zero-bytes blanks no-secret no-namespace no-name no-annotation other-type \
+    zero-bytes-control blanks-control no-secret-control no-namespace-control no-name-control
+  passed "(se) a Secret render prints no Secret value; one that is not JSON, holds no document or declares no Secret, and a token Secret missing a field, each read UNKNOWN; each control copy passes the fault, exit 0"
 fi

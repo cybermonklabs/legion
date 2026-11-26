@@ -13,15 +13,16 @@
 #   (j)  each live step's witness: the operator account's analysis without its Workload Identity
 #        member, and an RBAC read whose cluster-admin binding does not answer, each read UNKNOWN;
 #   (k)  with no identity that may run the live steps, each prints UNKNOWN naming the permission it
-#        needs, and the run exits 2;
+#        needs, and the run exits 2; a refused analysis names the three Cloud Asset permissions
+#        Google requires on the scope and keeps Google's own line, and a copy dropping one fails;
 #   (l)  the admin tag, read from the secret's Secret Manager annotations: ENVOY_OPERATOR without
 #        the admin annotation, at agent tier, no such secret, and the scratch secret
 #        ENVOY_OPERATOR_CONTROL at human tier without --admin each exit 1 naming the field; admin
 #        held beside the annotations instead of in them is a finding too (the read's control); a
 #        refused describe, and a run with no --secrets-prefix, read UNKNOWN;
 #   (m)  --report writes run_at, findings, credited and residuals ([] each for a run that credits
-#        nothing; row fa holds their entries), unknown and allowances ([] for a run given none), with
-#        a stubbed UNKNOWN step listed under unknown;
+#        nothing; row fa holds their entries), unknown, allowances ([] for a run given none) and
+#        steps (the step census, row sc), with a stubbed UNKNOWN step listed under unknown;
 #   (v)  the report's findings carry role, resource, permissions and granted_at beside principal
 #        and right, on an IAM finding and on an RBAC finding;
 #   (z)  the fixture testdata/operator-token-minters-report.json is the --report of fence_check (the
@@ -36,6 +37,12 @@
 #        ServiceAccount outside its system namespaces though a binding names a subject there;
 #   (bc) a copy of the script missing output.sh, or missing analysis.jq, prints "UNKNOWN run" naming
 #        it, writes that to --report, and exits 2 before any step runs;
+#   (sc) no part can vanish from a run: a copy with any one part emptied (each step file, library
+#        and jq file) prints "UNKNOWN run" naming it and exits 2 before any step runs; past that
+#        guard (a copy without it), the step census names each step file emptied, "ran and reported
+#        nothing", and one that never ran, and the run does not exit 0; a clean run's --report lists
+#        each step file reported but live: audited clusters, quiet without its flag; control: a copy
+#        without the guard and the census exits 0 with step-admin-tag.sh emptied;
 #   (cj) --service-agent naming an agent's own Google service account is a usage error, and a run
 #        given --service-agent, --rbac-only-member and --fleet none writes each into --report's
 #        allowances;
@@ -46,7 +53,10 @@
 #   (cp) the auditor never asks the API server for a Secret, even when a guarded namespace holds
 #        token Secrets that carry data.
 #   (rd) every fake kubectl call is in reads.json with its Kubernetes verb, resource or non-resource
-#        URL and source step; removing get namespaces makes the workload-identity row fail.
+#        URL and source step; removing get namespaces makes the workload-identity row fail; a row
+#        that wants a finding's exit 1 fails on a read reads.json lacks, never passing on it; and
+#        unused_reads names an entry no call uses (the inventory a run of every row holds
+#        reads.json to);
 #   (cq) a credential of a name flag's form shaped as a credential its issuer marks (a ghp_ token,
 #        a github_pat_ token, an AIza key and a Slack token as --signing-secret, an AWS access key
 #        ID as --secret) is refused too, naming the flag and never the value, and is printed in
@@ -129,7 +139,21 @@ if row j; then
   passed "(j) an RBAC read whose cluster-admin binding does not answer reads UNKNOWN"
 fi
 
-# --- (k) No identity that may run the live steps. ---
+# --- (k) No identity that may run the live steps. A refused analysis names the three permissions
+# Google requires on the scope, cloudasset.assets.analyzeIamPolicy, searchAllResources and
+# searchAllIamPolicies, and keeps Google's own line; control: a copy whose message drops
+# searchAllResources fails the row's check. ---
+analyze_names_all() {
+  local step="$1" line needs name
+  line="$(grep -F -- "UNKNOWN $step: Policy Analyzer refused the analysis (it needs " <<<"$output" || true)"
+  [ -n "$line" ] || return 1
+  # What the message says the analysis needs, apart from Google's own line after it.
+  needs="${line#*"(it needs "}" needs="${needs%%"): "*}"
+  for name in cloudasset.assets.analyzeIamPolicy cloudasset.assets.searchAllResources cloudasset.assets.searchAllIamPolicies; do
+    [[ "$needs" == *"$name"* ]] || return 1
+  done
+  [[ "$needs" == *"on organizations/$org"* && "$line" == *"): ERROR: (gcloud.asset.analyze-iam-policy) PERMISSION_DENIED: $2" ]]
+}
 if row k; then
   base_world
   : >"$world/clusters/operator-cluster/refuse-sar"
@@ -139,10 +163,25 @@ if row k; then
   want_text "UNKNOWN live: RBAC on operator-cluster: the API server refused the review (it needs create on subjectaccessreviews, container.subjectAccessReviews.create on GKE)" \
     "a refused review"
   for step in "live: GKE IAM on project $project" "live: minters of $gsa" "live: hold writers: Cloud SQL users of example-instance"; do
-    want_text "UNKNOWN $step: Policy Analyzer refused the analysis (it needs cloudasset.assets.analyzeIamPolicy on organizations/$org)" "a refused analysis"
+    want_text "UNKNOWN $step: Policy Analyzer refused the analysis (it needs cloudasset.assets.analyzeIamPolicy, cloudasset.assets.searchAllResources and cloudasset.assets.searchAllIamPolicies on organizations/$org, iam.roles.get for a custom role, and Google Workspace's groups.read to expand a group): ERROR: (gcloud.asset.analyze-iam-policy) PERMISSION_DENIED: Permission 'cloudasset.assets.analyzeIamPolicy' denied" \
+      "a refused analysis"
   done
   [ "$(count_prefix 'FINDING ')" -eq 0 ] || fail "no identity that may run the live steps: a finding"
   passed "(k) with no identity that may run them, the live steps print UNKNOWN naming the permission, and the run exits 2"
+
+  base_world
+  : >"$world/refuse-analyze-search"
+  run
+  want_status 2 "an analysis refused for searchAllResources"
+  analyze_names_all "live: minters of $gsa" "Caller doesn't have cloudasset.assets.searchAllResources permission on the requested scope" ||
+    fail "the refused analysis does not name each of the three permissions and Google's own line: $(grep -F "UNKNOWN live: minters of $gsa" <<<"$output" || true)"
+  copy="$(script_copy analyze-two-names)"
+  plant "$(dirname "$copy")/operator-token-minters/iam-analysis.sh" 'cloudasset.assets.analyzeIamPolicy, cloudasset.assets.searchAllResources and cloudasset.assets.searchAllIamPolicies on $4' \
+    'cloudasset.assets.analyzeIamPolicy and cloudasset.assets.searchAllIamPolicies on $4'
+  run_script="$copy" run
+  ! analyze_names_all "live: minters of $gsa" "Caller doesn't have cloudasset.assets.searchAllResources permission on the requested scope" ||
+    fail "a copy whose message drops searchAllResources still passed the message check"
+  passed "(k) a refused analysis names analyzeIamPolicy, searchAllResources and searchAllIamPolicies on the scope and keeps Google's line; a copy dropping searchAllResources fails the check"
 fi
 
 # --- (l) The admin tag, from the secret's annotations. ---
@@ -225,11 +264,11 @@ if row m; then
     fail "the report's findings do not name serviceAccount:$ci_gsa: $(jq -c .findings "$report")"
   jq -e 'any(.unknown[]?; .step == "admin tag of ENVOY_OPERATOR" and (.reason | contains("PERMISSION_DENIED")))' "$report" >/dev/null ||
     fail "the report's unknown does not list the step 'admin tag of ENVOY_OPERATOR': $(jq -c '.unknown // "absent"' "$report")"
-  jq -e --argjson ra "$(renders_allowances)" 'keys == ["allowances", "credited", "findings", "residuals", "run_at", "unknown"] and .allowances == $ra and .credited == []
+  jq -e --argjson ra "$(renders_allowances)" 'keys == ["allowances", "credited", "findings", "residuals", "run_at", "steps", "unknown"] and .allowances == $ra and .credited == []
     and .residuals == [] and all(.findings[]; keys == ["granted_at", "permissions", "principal", "resource", "right", "role"])
-    and all(.unknown[]; keys == ["reason", "step"])' "$report" >/dev/null ||
-    fail "the report holds other fields than run_at, findings (principal, right, role, resource, permissions, granted_at), an empty credited and residuals, unknown and the renders' allowances alone: $(jq -c . "$report")"
-  passed "(m) --report writes run_at, findings, credited, residuals, unknown and allowances, with the stubbed UNKNOWN step under unknown"
+    and all(.unknown[]; keys == ["reason", "step"]) and (.steps | length) == 11 and all(.steps[]; keys == ["state", "step"])' "$report" >/dev/null ||
+    fail "the report holds other fields than run_at, findings (principal, right, role, resource, permissions, granted_at), an empty credited and residuals, unknown, the renders' allowances and the 11 steps alone: $(jq -c . "$report")"
+  passed "(m) --report writes run_at, findings, credited, residuals, unknown, allowances and steps, with the stubbed UNKNOWN step under unknown"
 fi
 
 # --- (v) The report's parts of each finding, for a reader matching principal and role. ---
@@ -275,6 +314,9 @@ if row z; then
   # An RBAC finding's permissions are its one label, whole, though a guarded label holds a comma.
   split="$(jq -r '.findings[] | select(.granted_at | startswith("RBAC: ")) | select(.permissions != [.role]) | "\(.role): \(.permissions)"' "$temporary_dir/fixture-fresh.json")"
   [ -z "$split" ] || fail "an RBAC finding's permissions are not its label, whole: $split"
+  # Every cluster the report names, a declared finding's and a credit's among them, is named in full.
+  [ -z "$(full_labels "$temporary_dir/fixture-fresh.json")" ] ||
+    fail "the fixture's report names a cluster other than cluster:<project>/<location>/<name>: $(full_labels "$temporary_dir/fixture-fresh.json")"
   if [ "${OPERATOR_MINTERS_WRITE_FIXTURE:-}" = 1 ]; then
     mkdir -p "$(dirname "$fixture")"
     cp "$temporary_dir/fixture-fresh.json" "$fixture"
@@ -353,6 +395,87 @@ missing_part_row() {
 if row bc; then
   each missing_part_row output.sh analysis.jq
   passed "(bc) a copy missing output.sh or analysis.jq prints UNKNOWN run naming it, reports it, and exits 2"
+fi
+
+# --- (sc) No part of the check can vanish from a run that exits 0. An empty file sources as a
+# clean no-op under set -e, and an empty jq program is `.`: at 042cb479c40 an emptied
+# step-admin-tag.sh, step-code-rbac.sh, step-gke-iam.sh, step-live-iam.sh, step-permission-names.sh,
+# step-workload-identity.sh, step-audited-clusters.sh, node-escape.sh or become-rights.jq each left
+# (a)'s world at exit 0, measured. The guard refuses an empty part before any step runs; the census
+# names a step file that ran and reported nothing, or never ran. ---
+readonly check_parts=(output.sh rights.sh principals.sh checks.sh reviews.sh admission-backends.sh broker-fence.sh iam-analysis.sh node-escape.sh
+  step-permission-names.sh step-code-secrets.sh step-code-rbac.sh step-code-iam.sh step-clusters.sh step-gke-iam.sh step-rbac.sh
+  step-workload-identity.sh step-audited-clusters.sh step-live-iam.sh step-admin-tag.sh analysis.jq become-rights.jq broker-fence.jq
+  broker-fence.json code-iam.jq code-rbac.jq custom.jq custom-rights.jq fleet.jq guard-rights.jq binding-rights.jq rec.jq review-answer.jq
+  review-request.jq webhook-backends.jq)
+readonly step_files=(step-permission-names.sh step-code-secrets.sh step-code-rbac.sh step-code-iam.sh step-clusters.sh step-gke-iam.sh
+  step-rbac.sh step-workload-identity.sh step-audited-clusters.sh step-live-iam.sh step-admin-tag.sh)
+empty_part_row() {
+  local script report="$temporary_dir/sc-$1.json"
+  base_world
+  script="$(script_copy "sc-$1")"
+  : >"$(dirname "$script")/operator-token-minters/$1"
+  run_script="$script" run --report "$report"
+  want_status 2 "a copy whose $1 is empty"
+  want_text "UNKNOWN run: the parts $1 of " "a copy whose $1 is empty"
+  want_text "cannot be read or are empty, so no step runs" "a copy whose $1 is empty"
+  [ "$(count_prefix 'PASS ')" -eq 0 ] || fail "a copy whose $1 is empty ran a step"
+  jq -e --arg p "$1" '.findings == [] and any(.unknown[]; .step == "run" and (.reason | contains($p)))
+    and (.steps | length) == 11 and all(.steps[]; .state == "not run")' "$report" >/dev/null 2>&1 ||
+    fail "a copy whose $1 is empty: the report does not hold the UNKNOWN run and every step not run: $(cat "$report" 2>&1)"
+}
+# census_row ITEM: a copy without the empty-part guard, with the step file ITEM emptied, or (never-ran)
+# with step-admin-tag.sh's line taken out, or (census-off) without the census too and
+# step-admin-tag.sh emptied.
+census_row() {
+  local script lib target="$1"
+  base_world
+  script="$(script_copy "census-$1")"
+  lib="$(dirname "$script")/operator-token-minters"
+  plant "$script" '[ -r "$LIB/$part" ] && [ -s "$LIB/$part" ] ||' '[ -r "$LIB/$part" ] ||'
+  case "$1" in
+    never-ran)
+      target="step-admin-tag.sh"
+      plant "$script" '. "$LIB/step-admin-tag.sh"' ':'
+      plant "$script" 'census_end step-admin-tag.sh' ':'
+      ;;
+    census-off)
+      target="step-admin-tag.sh"
+      : >"$lib/$target"
+      plant "$lib/output.sh" 'census_end() {' 'census_end() { return 0;'
+      plant "$lib/output.sh" 'census_close() {' 'census_close() { return 0;'
+      ;;
+    *) : >"$lib/$1" ;;
+  esac
+  run_script="$script" run
+  case "$1" in
+    census-off)
+      want_status 0 "a copy without the guard and the census, step-admin-tag.sh emptied"
+      [ "$(count_prefix 'UNKNOWN ')" -eq 0 ] || fail "a copy without the guard and the census read UNKNOWN"
+      ;;
+    never-ran)
+      [ "$status" -ne 0 ] || fail "a copy that never runs step-admin-tag.sh exited 0"
+      want_line "UNKNOWN run: the step file step-admin-tag.sh never ran, so what it checks is unread" "a copy that never runs step-admin-tag.sh"
+      ;;
+    *)
+      [ "$status" -ne 0 ] || fail "a copy whose $target is empty exited 0"
+      want_line "UNKNOWN run: the step file $target ran and reported nothing, no PASS, FINDING, UNKNOWN or credit, and gave no reason, so what it checks is unread" \
+        "a copy whose $target is empty"
+      ;;
+  esac
+}
+if row sc; then
+  each empty_part_row "${check_parts[@]}"
+  passed "(sc) a copy with any one of its ${#check_parts[@]} parts empty prints UNKNOWN run naming it, runs no step, reports each step not run, and exits 2"
+  each census_row "${step_files[@]}" never-ran census-off
+  passed "(sc) past the guard, the census names each of the ${#step_files[@]} step files emptied, and one that never ran, and the run does not exit 0; a copy without the census exits 0"
+  base_world
+  run --report "$temporary_dir/sc-clean.json"
+  want_status 0 "a clean run's step census"
+  jq -e '[.steps[] | "\(.step)=\(.state)"] == ([$ARGS.positional[] | if . == "step-audited-clusters.sh" then "\(.)=quiet: no --audited-cluster: the step does not run" else "\(.)=reported" end])' \
+    "$temporary_dir/sc-clean.json" --args "${step_files[@]}" >/dev/null ||
+    fail "a clean run's --report does not list each step file reported: $(jq -c .steps "$temporary_dir/sc-clean.json")"
+  passed "(sc) a clean run's --report lists each step file reported, and live: audited clusters quiet without its flag"
 fi
 
 # --- (cj) The allowances: --service-agent names a Google service agent alone, and every allowance a
@@ -463,20 +586,45 @@ printed_secret_data() { has_prefix "SECRET-DATA-CANARY-7f3a" || has_prefix "$(pr
    passed "(cp) token Secrets present on the API server are never read"
  fi
 
-# --- (rd) The recorded Kubernetes reads are the declared least privilege. ---
+# --- (rd) The recorded Kubernetes reads are the declared least privilege, and its inventory: a read
+# reads.json lacks fails the row whatever the check's exit, a row that wants exit 1 included, and
+# an entry no read uses is named by unused_reads, which the run of every row holds reads.json to. ---
 if row rd; then
   base_world
   add_cluster other-cluster us-east1
-  OPERATOR_MINTERS_VERIFY_READS=true run
+  run
   want_status 0 "every recorded Kubernetes read is declared"
+  [ "$reads_failed" = false ] || fail "every recorded Kubernetes read is declared: the reads failed"
 
   jq 'del(.[] | select(.step == "step-workload-identity.sh" and .verb == "get" and .apiGroup == "" and .resource == "namespaces"))' \
     "$reads" >"$temporary_dir/reads-without-namespaces.json"
-  OPERATOR_MINTERS_VERIFY_READS=true OPERATOR_MINTERS_READS="$temporary_dir/reads-without-namespaces.json" run
-  want_status 1 "a read removed from the manifest"
+  expect_reads_failure=true OPERATOR_MINTERS_READS="$temporary_dir/reads-without-namespaces.json" run
+  [ "$reads_failed" = true ] || fail "a read removed from the manifest did not fail the run's reads"
   want_text "FAIL: recorded kubectl get namespaces is absent from reads.json for step-workload-identity.sh" \
     "a missing get namespaces declaration"
   passed "(rd) each fake kubectl call is declared, and dropping get namespaces fails the workload-identity row"
+
+  # A row that wants a finding's exit 1, under a manifest without subjectaccessreviews: its run
+  # fails the row, rather than its exit 1 reading as the finding's.
+  base_world
+  subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods "" envoy-operator ""
+  jq 'del(.[] | select(.resource == "subjectaccessreviews"))' "$reads" >"$temporary_dir/reads-without-reviews.json"
+  absorbed="$( (OPERATOR_MINTERS_READS="$temporary_dir/reads-without-reviews.json" run
+    want_status 1 "a finding under a manifest without subjectaccessreviews"
+    echo "ROW PASSED") 2>&1 || true)"
+  [[ "$absorbed" != *"ROW PASSED"* ]] && [[ "$absorbed" == *"FAIL: a kubectl read this run made is not one reads.json declares"* ]] &&
+    [[ "$absorbed" == *"FAIL: recorded kubectl create subjectaccessreviews is absent from reads.json for reviews.sh"* ]] ||
+    fail "a row wanting exit 1 passed beside a read reads.json lacks: $absorbed"
+  passed "(rd) a row that wants a finding's exit 1 fails on a read reads.json lacks, naming it"
+
+  # The inventory's own control: an entry no recorded call uses is named, and only it.
+  printf '%s\n' 'reviews.sh|create|authorization.k8s.io|subjectaccessreviews|' 'step-rbac.sh|list||serviceaccounts|' >"$temporary_dir/rd-calls.tsv"
+  jq '[.[] | select(.resource == "subjectaccessreviews" or (.step == "step-rbac.sh" and .resource == "serviceaccounts"))]
+      + [{step: "step-rbac.sh", verb: "list", apiGroup: "", resource: "secrets"}]' "$reads" >"$temporary_dir/reads-with-secrets.json"
+  unused="$(unused_reads "$temporary_dir/reads-with-secrets.json" "$temporary_dir/rd-calls.tsv")"
+  [ "$unused" = '{"step":"step-rbac.sh","verb":"list","apiGroup":"","resource":"secrets"}' ] ||
+    fail "unused_reads named '$unused', not the one entry no call uses (list secrets)"
+  passed "(rd) control: unused_reads names a reads.json entry no recorded call uses, list secrets, and no other"
 fi
 
 # --- (cq) A credential of a name flag's form is refused too when it is shaped as a credential its

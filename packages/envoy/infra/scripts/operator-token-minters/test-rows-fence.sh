@@ -23,12 +23,19 @@
 #        connect rule, the cluster's fence differing from the renders', a list of admission
 #        policies or of pods that cannot be read or is answered empty (UNKNOWN), a pod outside the
 #        fence's names running as envoy-broker or taking --db-secret, a pod outside them taking
-#        another Secret a broker pod takes (its NATS issuer seed), a list with no broker pod, a
+#        another Secret a broker pod takes (its NATS issuer seed), Dispatch's own pod once no render
+#        declares the Secret it takes, a list with no broker pod, a
 #        webhook backed by a Service in dispatch, one whose selector misses the guarded namespaces
 #        but whose rule matches a cluster-scoped object, one whose selector names an unguarded
 #        namespace alone and whose rules are namespaced, a list of webhooks that cannot be read or
 #        is answered empty or as `{}`, one whose webhook's Service webhook-backends.jq cannot read
 #        (its jq error printed above the NO CREDIT), and another guarded pair in dispatch;
+#   (zd) another pod in dispatch that takes a token Secret of the broker's no render declares and
+#        no ServiceAccount lists is NO CREDIT naming the pod and the Secret, exit 1; (ze) the same
+#        Secret declared the broker's token Secret, and (zl) declared of another type but listed by
+#        the broker's ServiceAccount, each NO CREDIT, exit 1; controls: a copy that holds no other
+#        pod to the declared Secrets credits zd's world, and a copy that reads no ServiceAccount's
+#        `secrets` credits zl's, each exit 0;
 #   (fc) a principal that can write the fence stays a finding: patch of the binding, delete of a
 #        policy, and delete of broker-pod-connect by name;
 #   (fd) legion/worker, which can become legion/dispatch-measure, whose exec in dispatch is credited
@@ -79,6 +86,8 @@ credit_line() { echo "CREDIT $1: $2, its use on envoy-broker-* pods refused by t
 fence_residual="$(jq -r .residual.text "$fence_contract")"
 readonly fence_residual
 allowance_line() { echo "ALLOWANCE $1: $2, $fence_residual"; }
+# The NO CREDIT reason for a pod outside the fence's names, before the pods it names.
+readonly fence_outside_why="pods of dispatch run as envoy-broker, take a Secret of the broker's, or take a Secret no --secret-render declares (whose token it may hold, since the check reads no Secret), under a name the fence's connect rule does not hold (envoy-broker-*)"
 fence_credits_want=(
   "serviceAccount:$comment_delivery|create pods/exec in dispatch|broker-pod-connect"
   "serviceAccount:$comment_delivery|get pods/exec in dispatch|broker-pod-connect"
@@ -194,12 +203,18 @@ fence_fail_row() {
     rogue-pod)
       edit "$world/clusters/operator-cluster/pods.json" '. + [{metadata: {namespace: "dispatch", name: "debug-7f9c"},
         spec: {serviceAccountName: "dispatch", volumes: [{name: "db", secret: {secretName: "envoy-broker-db"}}], containers: [{name: "sh"}]}}]'
-      want="pods of dispatch run as envoy-broker or take a Secret of the broker's under a name the fence's connect rule does not hold (envoy-broker-*): debug-7f9c (runs as dispatch, takes envoy-broker-db)"
+      want="$fence_outside_why: debug-7f9c (runs as dispatch, takes envoy-broker-db)"
       ;;
     other-secret)
       # A Secret the broker's pod takes, as it takes its NATS issuer seed, mounted by Dispatch's pod too.
       edit "$world/clusters/operator-cluster/pods.json" 'map(.spec.volumes = ((.spec.volumes // []) + [{name: "issuer", secret: {secretName: "envoy-broker-nats-issuer"}}]))'
-      want="pods of dispatch run as envoy-broker or take a Secret of the broker's under a name the fence's connect rule does not hold (envoy-broker-*): dispatch-6b8f4c-fghij (runs as dispatch, takes envoy-broker-nats-issuer)"
+      want="$fence_outside_why: dispatch-6b8f4c-fghij (runs as dispatch, takes envoy-broker-nats-issuer)"
+      ;;
+    undeclared-own)
+      # Dispatch's own Secret, with the render that declares it taken away: the pod that takes it
+      # is outside the fence, since no Secret is read to say whose token it holds.
+      edit "$world/secret-render.json" '.items |= map(select(.metadata.name != "dispatch-dispatch"))'
+      want="$fence_outside_why: dispatch-6b8f4c-fghij (runs as dispatch, takes dispatch-dispatch, which no --secret-render declares)"
       ;;
     no-pod)
       echo '[]' >"$world/clusters/operator-cluster/pods.json"
@@ -288,9 +303,80 @@ fence_fail_row() {
   want_text "$want" "the fence $1"
 }
 if row fb; then
-  each fence_fail_row removed warn ignore selector policy-selector exception drift unread pods-unread rogue-pod other-secret no-pod \
-    webhook webhook-cluster webhook-unguarded webhooks-unread webhooks-empty webhooks-object webhook-malformed policies-empty pods-empty shared
-  passed "(fb) the fence removed, bound Warn, failing open, missing dispatch in a binding's or a policy's selector, with an exception, differing live from declared, unread or answered empty, beside a pod outside its names that runs as the broker or takes its database login or another of its Secrets, with no broker pod, beside any webhook backed in dispatch (one matching a guarded namespace, a cluster-scoped object or neither) or webhooks unread, answered empty or as {}, or a webhook's Service the walk cannot read (its jq error printed), or beside another guarded pair in dispatch, credits nothing"
+  each fence_fail_row removed warn ignore selector policy-selector exception drift unread pods-unread rogue-pod other-secret undeclared-own \
+    no-pod webhook webhook-cluster webhook-unguarded webhooks-unread webhooks-empty webhooks-object webhook-malformed policies-empty pods-empty shared
+  passed "(fb) the fence removed, bound Warn, failing open, missing dispatch in a binding's or a policy's selector, with an exception, differing live from declared, unread or answered empty, beside a pod outside its names that runs as the broker or takes its database login or another of its Secrets, or Dispatch's own Secret once no render declares it, with no broker pod, beside any webhook backed in dispatch (one matching a guarded namespace, a cluster-scoped object or neither) or webhooks unread, answered empty or as {}, or a webhook's Service the walk cannot read (its jq error printed), or beside another guarded pair in dispatch, credits nothing"
+fi
+
+# --- (zd, ze, zl) A token Secret of the broker's taken by another pod in dispatch,
+# other-7f1a2b-klmno, which runs as dispatch and takes envoy-broker-token-abcde by envFrom. Its
+# exec is credited unless the fence's guard sees the Secret: (zd) no render declares it and the
+# broker's ServiceAccount lists none, (ze) the render declares it the broker's token Secret, and
+# (zl) the render declares it of another type while the broker's ServiceAccount lists it in its
+# `secrets`. Each is NO CREDIT and exit 1. Controls: a copy whose fence_pods holds no pod to the
+# declared Secrets credits zd's world, and a copy that reads no ServiceAccount's `secrets`
+# credits zl's, each exit 0. ---
+token_taken_row() {
+  local copy script="$fence_check" want
+  fence_world
+  edit "$world/clusters/operator-cluster/pods.json" '. + [{metadata: {namespace: "dispatch", name: "other-7f1a2b-klmno"},
+    spec: {serviceAccountName: "dispatch", containers: [{name: "other", envFrom: [{secretRef: {name: "envoy-broker-token-abcde"}}]}]}}]'
+  case "$1" in
+    zd | zd-control) want="$fence_outside_why: other-7f1a2b-klmno (runs as dispatch, takes envoy-broker-token-abcde, which no --secret-render declares)" ;;
+    ze)
+      edit "$world/secret-render.json" '.items += [{apiVersion: "v1", kind: "Secret", type: "kubernetes.io/service-account-token",
+        metadata: {namespace: "dispatch", name: "envoy-broker-token-abcde", annotations: {"kubernetes.io/service-account.name": "envoy-broker"}}}]'
+      want="$fence_outside_why: other-7f1a2b-klmno (runs as dispatch, takes envoy-broker-token-abcde)"
+      ;;
+    zl | zl-control)
+      edit "$world/secret-render.json" '.items += [{apiVersion: "v1", kind: "Secret", type: "Opaque", metadata: {namespace: "dispatch", name: "envoy-broker-token-abcde"}}]'
+      edit "$world/clusters/operator-cluster/serviceaccounts.json" \
+        'map(if .namespace == "dispatch" and .name == "envoy-broker" then . + {secrets: [{name: "envoy-broker-token-abcde"}]} else . end)'
+      want="$fence_outside_why: other-7f1a2b-klmno (runs as dispatch, takes envoy-broker-token-abcde)"
+      ;;
+  esac
+  case "$1" in
+    zd-control)
+      copy="$(script_copy any-secret)"
+      cp "$(dirname "$fence_check")/operator-token-minters/broker-fence.json" "$(dirname "$copy")/operator-token-minters/broker-fence.json"
+      plant "$(dirname "$copy")/operator-token-minters/broker-fence.jq" ' or (.undeclared | length) > 0)' ')'
+      script="$copy"
+      ;;
+    zl-control)
+      copy="$(script_copy no-listed-secrets)"
+      cp "$(dirname "$fence_check")/operator-token-minters/broker-fence.json" "$(dirname "$copy")/operator-token-minters/broker-fence.json"
+      plant "$(dirname "$copy")/operator-token-minters/step-rbac.sh" '| .metadata.namespace as $ns | .secrets | .[]? | .name?' '| .metadata.namespace as $ns | empty'
+      script="$copy"
+      ;;
+  esac
+  run_script="$script" fence_run
+  case "$1" in
+    *-control)
+      want_status 0 "a copy blind to the Secret ($1)"
+      want_fence_credits "a copy blind to the Secret ($1)"
+      ;;
+    *)
+      want_status 1 "another pod takes the broker's token Secret ($1)"
+      want_fence_findings "another pod takes the broker's token Secret ($1)"
+      want_text "$want" "another pod takes the broker's token Secret ($1)"
+      ;;
+  esac
+}
+if row zd; then
+  token_taken_row zd
+  passed "(zd) another pod in dispatch taking a token Secret no render declares and no ServiceAccount lists is NO CREDIT, naming it, and exits 1"
+  token_taken_row zd-control
+  passed "(zd) control: a copy that holds no other pod to the declared Secrets credits zd's world, exit 0"
+fi
+if row ze; then
+  token_taken_row ze
+  passed "(ze) the same pod, the Secret declared the broker's token Secret, is NO CREDIT, naming it, and exits 1"
+fi
+if row zl; then
+  token_taken_row zl
+  passed "(zl) the same pod, the Secret declared of another type but listed by the broker's ServiceAccount, is NO CREDIT, naming it, and exits 1"
+  token_taken_row zl-control
+  passed "(zl) control: a copy that reads no ServiceAccount's secrets credits zl's world, exit 0"
 fi
 
 # --- (fc) Whoever can write the fence stays a finding while it is credited. ---

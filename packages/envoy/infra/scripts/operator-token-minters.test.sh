@@ -56,7 +56,9 @@
 # OPERATOR_MINTERS_SCRIPT names another copy of the script to run them against; a copy keeps the
 # directory operator-token-minters/ beside it, whose parts it sources (the rows files are this
 # test's own, beside it). A row of one plant per item runs up to 8 items at a time, each in a world
-# of its own (each).
+# of its own (each). A run of every row ends by holding reads.json to an inventory, not only a
+# bound: each entry must be a read some run of the check made (unused_reads), so a right the
+# auditor's ClusterRole would grant and no step uses fails the suite.
 # CI runs it in envoy-go-checks (.github/workflows/ci-job-envoy-go-checks.yaml).
 set -euo pipefail
 shopt -s inherit_errexit
@@ -70,6 +72,10 @@ readonly fake_bin="$temporary_dir/bin"
 # world is the world the current row plants in; a row run beside others has one of its own.
 world="$temporary_dir/world"
 mkdir -p "$fake_bin"
+# calls_dir: each process's record of the kubectl reads its runs of the check (or of fence_check,
+# which differs from it only in its contract's digests) made, one file a process (run_only).
+readonly calls_dir="$temporary_dir/kubectl-calls"
+mkdir -p "$calls_dir"
 # Every row asks the reviews in one kubectl call, so a world that answers the nth call its own way
 # (the fake's review-follow-* markers) names a round, not a worker's share of one; row (cy)'s
 # chunked item sets REVIEW_WORKERS itself and wants the same finding.
@@ -176,13 +182,17 @@ add_cluster() {
   make_cluster "$1"
 }
 # make_cluster NAME: a cluster's own world (its namespaces, ServiceAccounts and grants) and no
-# entry in the project's list, as a fleet member in another project or outside GKE has.
+# entry in the project's list, as a fleet member in another project or outside GKE has; its pods
+# are kube-system's kube-dns, running on a node, whose ServiceAccount holds no right asked, as every
+# GKE cluster runs kube-system's pods (node_escape's census witness).
 make_cluster() {
   mkdir -p "$world/clusters/$1"
   printf '%s\n' default kube-system gke-managed-system gmp-system apps >"$world/clusters/$1/namespaces"
   jq -n '[{namespace: "kube-system", name: "namespace-controller"}, {namespace: "gke-managed-system", name: "addon-manager"},
           {namespace: "gmp-system", name: "collector"}, {namespace: "default", name: "default"}, {namespace: "apps", name: "deployer"}]' \
     >"$world/clusters/$1/serviceaccounts.json"
+  jq -n '[{metadata: {namespace: "kube-system", name: "kube-dns-5c6f9b8d4-x2k7q"},
+           spec: {serviceAccountName: "kube-dns", nodeName: "node-1"}, status: {phase: "Running"}}]' >"$world/clusters/$1/pods.json"
   echo '[]' >"$world/clusters/$1/grants.json"
   subject_grant "$1" "$(sa_subject kube-system namespace-controller)" create "" namespaces "" "" ""
   subject_grant "$1" "$(sa_subject gke-managed-system addon-manager)" create "" serviceaccounts "" "" ""
@@ -265,11 +275,13 @@ jq --argjson digests "$fence_example_digests" '.objects |= map(if .digest then .
 
 # fence_world: the base world with the broker in dispatch: its ServiceAccount, bound to the broker's
 # Google account through Workload Identity; its pod, which takes the broker's database login, and
-# Dispatch's own, which does not; the example fence (fence_objects) in the render and on the cluster
-# as GKE returns it (each policy with GKE's selector skipping its own namespaces, and the API
-# server's matchPolicy, objectSelector and scope, which the check must read as left out); and the
-# grants the fence answers: comment-delivery's exec, dispatch-measure's exec and legion/worker's
-# port forward in dispatch (row fk plants dispatch-measure's pod patch, which is no credit).
+# Dispatch's own, which takes dispatch-dispatch, each Secret declared by the Secret render, as the
+# dispatch/ and broker/ programs declare them; the example fence (fence_objects) in the render and
+# on the cluster as GKE returns it (each policy with GKE's selector skipping its own namespaces, and
+# the API server's matchPolicy, objectSelector and scope, which the check must read as left out);
+# and the grants the fence answers: comment-delivery's exec, dispatch-measure's exec and
+# legion/worker's port forward in dispatch (row fk plants dispatch-measure's pod patch, which is no
+# credit).
 fence_world() {
   base_world
   edit "$world/clusters/operator-cluster/serviceaccounts.json" '. + [{namespace: "dispatch", name: "envoy-broker", gsa: $b}, {namespace: "dispatch", name: "dispatch"},
@@ -283,6 +295,8 @@ fence_world() {
           {metadata: {namespace: "dispatch", name: "dispatch-6b8f4c-fghij"},
            spec: {serviceAccountName: "dispatch", containers: [{name: "dispatch", envFrom: [{secretRef: {name: "dispatch-dispatch"}}]}]}}]' \
     >"$world/clusters/operator-cluster/pods.json"
+  edit "$world/secret-render.json" '.items += [{apiVersion: "v1", kind: "Secret", type: "Opaque", metadata: {namespace: "dispatch", name: "dispatch-dispatch"}},
+    {apiVersion: "v1", kind: "Secret", type: "Opaque", metadata: {namespace: "dispatch", name: "envoy-broker-db"}}]'
   fence_objects >"$world/fence.json"
   edit "$world/render.json" '.items += $f[0]
     + [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "Role", metadata: {name: "comment-delivery", namespace: "dispatch"},
@@ -465,7 +479,10 @@ build_world() {
     {apiVersion: "rbac.authorization.k8s.io/v1", kind: "RoleBinding", metadata: {name: "sessions", namespace: "legion"},
      roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "Role", name: "sessions"},
      subjects: [{kind: "ServiceAccount", name: "worker", namespace: "legion"}]}]}' >"$world/render.json"
-  jq -n '{apiVersion: "v1", kind: "List", items: []}' >"$world/secret-render.json"
+  # The Secret render: the broker's database login, --db-secret, as the broker's Secret program
+  # declares it (a render that declares no Secret is UNKNOWN).
+  jq -n '{apiVersion: "v1", kind: "List", items: [{apiVersion: "v1", kind: "Secret", type: "Opaque",
+    metadata: {namespace: "example-db", name: "broker-db-login"}}]}' >"$world/secret-render.json"
   jq -n --arg p "$project" --arg gsa "$gsa" --arg broker "$broker" --arg wi "$wi_member" --arg ci "$ci_gsa" '
     def step($name; $type; $inputs): {op: "same", urn: "urn:pulumi:example::iam::\($type)::\($name)", provider: "example-provider",
                                       newState: {urn: "urn:pulumi:example::iam::\($type)::\($name)", custom: true, type: $type, inputs: $inputs}};
@@ -555,12 +572,33 @@ verify_kubectl_reads() {
   [ -z "$failure" ] || { output+=$'\n'"${failure%$'\n'}"; return 1; }
 }
 # run_only ARGS...: the check with ARGS alone; run_script names another copy of the script to run, as
-# a row breaking one of its parts does (run_script=<copy> run).
+# a row breaking one of its parts does (run_script=<copy> run). A run of the check itself (or of
+# fence_check) adds its kubectl reads to calls_dir, which unused_reads holds reads.json to. A read
+# reads.json does not declare fails the row there and then, whatever the check's exit, so a row that
+# wants a finding's exit 1 cannot pass on it; a row that holds the manifest itself to a missing read
+# (expect_reads_failure=true, row rd) reads reads_failed instead.
 run_only() {
-  status=0
+  status=0 reads_failed=false
   : >"$world/kubectl-calls.tsv"
   output="$(env PATH="$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$temporary_dir" bash "${run_script:-$check}" "$@" 2>&1)" || status=$?
-  [ "${OPERATOR_MINTERS_VERIFY_READS:-true}" != true ] || verify_kubectl_reads || status=1
+  case "${run_script:-$check}" in "$check" | "$fence_check") cat "$world/kubectl-calls.tsv" >>"$calls_dir/calls.$BASHPID" ;; esac
+  if ! verify_kubectl_reads; then
+    reads_failed=true
+    [ "${expect_reads_failure:-false}" = true ] || fail "a kubectl read this run made is not one reads.json declares"
+  fi
+}
+# unused_reads MANIFEST CALLS_FILE...: each entry of MANIFEST (reads.json's form) that no call the
+# files record matches as verify_kubectl_reads matches one, a line each as JSON: a read the
+# auditor's ClusterRole would grant that no run of the check made.
+unused_reads() {
+  local manifest="$1"
+  shift
+  sort -u -- "$@" | jq -R -s -c --slurpfile manifest "$manifest" '
+    [split("\n")[] | select(length > 0) | split("|") | {step: .[0], verb: .[1], group: .[2], resource: .[3], url: (.[4] // "")}] as $calls
+    | $manifest[0][] | . as $entry
+    | select(any($calls[]; .step == $entry.step and .verb == $entry.verb
+        and (if $entry.nonResourceURL then .url == $entry.nonResourceURL
+             else .url == "" and .group == $entry.apiGroup and .resource == $entry.resource end)) | not)'
 }
 # plant FILE OLD NEW: FILE with its one OLD made NEW; fails the row when FILE does not hold OLD once,
 # so a plant that missed its line cannot pass as a control.
@@ -597,6 +635,15 @@ want_step_unknown() {
   ! has_prefix "PASS live: $1: " || fail "$3: the step $1 passed"
 }
 want_rbac_unknown() { want_step_unknown "RBAC on operator-cluster" "$1" "$2"; }
+# full_labels FILE: each resource of the report FILE that names a cluster and is not
+# cluster:<project>/<location>/<name>, or that names operator-cluster and is not
+# cluster:example-project/us-central1/operator-cluster, the operator's: none prints nothing
+# (rows zc and z).
+full_labels() {
+  jq -r --arg op "cluster:$project/us-central1/operator-cluster" '
+    [(.findings[], .credited[], .residuals[]) | .resource | select(startswith("cluster:"))]
+    | map(select((test("^cluster:[^/]+/[^/]+/[^/]+$") | not) or (endswith("/operator-cluster") and . != $op))) | unique[]' "$1"
+}
 rows=0
 passed() {
   rows=$((rows + 1))
@@ -654,4 +701,17 @@ each() {
 . "$script_dir/operator-token-minters/test-rows-fence.sh"
 
 [ "$rows" -gt 0 ] || { echo "FAIL: OPERATOR_MINTERS_TEST_ROWS=${OPERATOR_MINTERS_TEST_ROWS:-} names no row" >&2; exit 1; }
+# reads.json as an inventory: on a run of every row, each entry is a read some run of the check made.
+# A subset of the rows cannot say so, and says it did not check; a run that recorded no call has
+# enumerated nothing, and fails rather than reading as every entry unused or none.
+if [ -n "${OPERATOR_MINTERS_TEST_ROWS:-}" ]; then
+  echo "reads.json inventory: not checked, since OPERATOR_MINTERS_TEST_ROWS runs a subset of the rows"
+else
+  call_files=("$calls_dir"/calls.*)
+  [ -e "${call_files[0]}" ] && [ -n "$(cat -- "${call_files[@]}")" ] ||
+    { echo "FAIL: no run of the check recorded a kubectl read, so reads.json could not be held to them" >&2; exit 1; }
+  unused="$(unused_reads "$reads" "${call_files[@]}")"
+  [ -z "$unused" ] || { printf 'FAIL: reads.json entries no run of the check read:\n%s\n' "$unused" >&2; exit 1; }
+  echo "PASS: every reads.json entry is a read some run of the check made (${#call_files[@]} processes recorded)"
+fi
 echo "all $rows rows passed"

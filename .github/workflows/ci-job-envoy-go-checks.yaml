@@ -90,7 +90,7 @@ jobs:
       # harnesses and judge them" is their verdict and prints each one's log.
       # The operator-token-minters check's harness is queued first: it is the longest, 706 s in its
       # last whole run on a developer box (2026-11-25), so the shorter ones fill the other cores.
-      - name: Verdict test for infra/scripts/operator-token-minters.sh (fakes kubectl, gcloud and agent-secrets; no cluster or cloud)
+      - name: Verdict test for infra/scripts/operator-token-minters.sh (fakes kubectl, gcloud and curl; no cluster or cloud)
         run: ../../.github/scripts/harness-pool.sh start infra/scripts/operator-token-minters.test.sh bash infra/scripts/operator-token-minters.test.sh
         working-directory: packages/envoy
       - name: Validation test for the minter-auditor image entrypoint (fakes gcloud; no cluster or cloud)

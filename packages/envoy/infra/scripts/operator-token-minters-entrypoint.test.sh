@@ -4,6 +4,9 @@
 #   - each scalar variable unset or empty, and each array variable malformed, exits 2 naming it and
 #     makes no gcloud call; so do an empty or duplicate cluster list, a writer list of another
 #     length, and an argument;
+#   - a gcloud billing/quota_project, set by CLOUDSDK_BILLING_QUOTA_PROJECT or in the configuration
+#     CLOUDSDK_CONFIG names, and a configuration gcloud cannot read, each exit 2 naming the
+#     property before any cloud call, and the check does not run;
 #   - a full run builds a context for each of the pool's five clusters, reads each render object's
 #     commit and run_id from the API's metadata, fetches that object at the generation it read, runs
 #     the check with its flags in order (each cluster an --audited-cluster), and adds the objects to
@@ -19,12 +22,23 @@ trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin"
 # The fake gcloud: get-credentials fails for the cluster MINTERS_AUDITOR_TEST_BAD_CLUSTER names; an
 # object's raw description holds generation 7 and its commit and run id, but none for the object
-# MINTERS_AUDITOR_TEST_NO_COMMIT names; cp copies only an object named at generation 7.
+# MINTERS_AUDITOR_TEST_NO_COMMIT names; cp copies only an object named at generation 7; config get
+# billing/quota_project prints the effective value, CLOUDSDK_BILLING_QUOTA_PROJECT's or the [billing]
+# quota_project of the configuration CLOUDSDK_CONFIG names, or nothing and "(unset)" on stderr, as
+# gcloud does, and fails when MINTERS_AUDITOR_TEST_CONFIG_REFUSED is set.
 cat >"$tmp/bin/gcloud" <<'EOF'
 #!/usr/bin/env bash
 : "${MINTERS_AUDITOR_TEST_CALLS:?}"
 printf 'gcloud %s\n' "$*" >>"$MINTERS_AUDITOR_TEST_CALLS"
 case "$1 $2 $3" in
+  "config get billing/quota_project")
+    [ -z "${MINTERS_AUDITOR_TEST_CONFIG_REFUSED:-}" ] || { echo "ERROR: (gcloud.config.get) Unable to read the configuration" >&2; exit 1; }
+    value="${CLOUDSDK_BILLING_QUOTA_PROJECT:-}"
+    if [ -z "$value" ] && [ -r "${CLOUDSDK_CONFIG:-/nonexistent}/configurations/config_default" ]; then
+      value="$(awk -F' *= *' '/^\[/ { billing = ($0 == "[billing]"); next } billing && $1 == "quota_project" { print $2 }' "$CLOUDSDK_CONFIG/configurations/config_default")"
+    fi
+    if [ -n "$value" ]; then echo "$value"; else echo "(unset)" >&2; fi
+    ;;
   "container clusters get-credentials")
     [ "$4" != "${MINTERS_AUDITOR_TEST_BAD_CLUSTER:-}" ] || { echo "ERROR: permission denied on $4" >&2; exit 1; }
     [ -n "${KUBECONFIG:-}" ] || { echo "fake gcloud: get-credentials with no KUBECONFIG" >&2; exit 2; }
@@ -78,7 +92,9 @@ writers='["writer-a@example-project.iam.gserviceaccount.com=rbac/cluster-grants"
 run() {
   status=0
   rm -f "$tmp/calls" "$tmp/args" "$tmp/report.json"
-  output="$(env PATH="$tmp/bin:$PATH" MINTERS_AUDITOR_TEST_CALLS="$tmp/calls" MINTERS_AUDITOR_TEST_ARGS="$tmp/args" TMPDIR="$tmp" \
+  # The box's own gcloud configuration and quota project stay out: a row names its own.
+  output="$(env -u CLOUDSDK_BILLING_QUOTA_PROJECT CLOUDSDK_CONFIG="$tmp/no-gcloud-config" \
+    PATH="$tmp/bin:$PATH" MINTERS_AUDITOR_TEST_CALLS="$tmp/calls" MINTERS_AUDITOR_TEST_ARGS="$tmp/args" TMPDIR="$tmp" \
     MINTERS_AUDITOR_RENDERS_BUCKET=gs://example-renders MINTERS_AUDITOR_RENDERS_PROJECT=example-root \
     MINTERS_AUDITOR_SECRETS_PREFIX=projects/000000000000/secrets/agent-secrets- \
     MINTERS_AUDITOR_RENDERS_ADMIN=renders-admin@example-project.iam.gserviceaccount.com MINTERS_AUDITOR_PROJECT=example-project \
@@ -124,6 +140,30 @@ status=0
 output="$(env PATH="$tmp/bin:$PATH" "$entrypoint" an-argument 2>&1)" || status=$?
 [ "$status" -eq 2 ] && [[ "$output" == *"takes no argument"* ]] || fail "an argument exits $status, want 2 naming it"
 echo "PASS: each invalid variable, and an argument, exits 2 naming it before any call"
+
+# --- A quota project, refused before any cloud call. ---
+# refused_at_quota WHAT TEXT: the run exited 2 naming TEXT, its one gcloud call was the read of
+# billing/quota_project, and the check did not run.
+refused_at_quota() {
+  [ "$status" -eq 2 ] || fail "$1 exits $status, want 2"
+  [[ "$output" == *"$2"* ]] || fail "$1 does not name $2"
+  [ "$(cat "$tmp/calls")" = "gcloud config get billing/quota_project" ] || fail "$1 made a cloud call: $(cat "$tmp/calls")"
+  [ ! -e "$tmp/args" ] || fail "the check ran though $1"
+}
+quota_set="UNKNOWN entrypoint: gcloud's billing/quota_project is set (in its configuration or CLOUDSDK_BILLING_QUOTA_PROJECT)"
+run env CLOUDSDK_BILLING_QUOTA_PROJECT=example-quota
+refused_at_quota "a quota project in the environment" "$quota_set"
+mkdir -p "$tmp/gcloud-config/configurations"
+printf '[core]\naccount = auditor@example-project.iam.gserviceaccount.com\n[billing]\nquota_project = example-quota\n' \
+  >"$tmp/gcloud-config/configurations/config_default"
+run env CLOUDSDK_CONFIG="$tmp/gcloud-config"
+refused_at_quota "a quota project in the configuration" "$quota_set"
+run env MINTERS_AUDITOR_TEST_CONFIG_REFUSED=1
+refused_at_quota "a configuration gcloud cannot read" "UNKNOWN entrypoint: gcloud config get billing/quota_project was refused"
+printf '[core]\naccount = auditor@example-project.iam.gserviceaccount.com\n' >"$tmp/gcloud-config/configurations/config_default"
+run env CLOUDSDK_CONFIG="$tmp/gcloud-config"
+[ "$status" -eq 0 ] || fail "a configuration without a quota project exits $status, want 0"
+echo "PASS: a quota project in the environment or the configuration, and an unreadable configuration, each exit 2 naming the property before any cloud call; a configuration without one runs"
 
 # --- A full run. ---
 run

@@ -54,6 +54,7 @@ paths cybermonklabs/legion
 check "exits 0" "$(is "$rc" 0)"
 check "worker_image" "$(is "$(value_of worker_image)" 'ghcr.io/cybermonklabs/legion-worker')"
 check "minters_auditor_image" "$(is "$(value_of minters_auditor_image)" 'ghcr.io/cybermonklabs/legion/minters-auditor')"
+check "envoy_image" "$(is "$(value_of envoy_image)" 'ghcr.io/cybermonklabs/legion/envoy')"
 # shellcheck disable=SC2016 # literal ${VERSION}: Pulumi substitutes it at install time
 check "plugin_download_url" \
   "$(is "$(value_of plugin_download_url)" 'https://github.com/cybermonklabs/legion/releases/download/envoy-infra-v${VERSION}')"
@@ -71,6 +72,7 @@ paths acme/widgets
 check "exits 0" "$(is "$rc" 0)"
 check "worker_image" "$(is "$(value_of worker_image)" 'ghcr.io/acme/widgets-worker')"
 check "minters_auditor_image" "$(is "$(value_of minters_auditor_image)" 'ghcr.io/acme/widgets/minters-auditor')"
+check "envoy_image" "$(is "$(value_of envoy_image)" 'ghcr.io/acme/widgets/envoy')"
 # shellcheck disable=SC2016 # literal ${VERSION}: Pulumi substitutes it at install time
 check "plugin_download_url" \
   "$(is "$(value_of plugin_download_url)" 'https://github.com/acme/widgets/releases/download/envoy-infra-v${VERSION}')"

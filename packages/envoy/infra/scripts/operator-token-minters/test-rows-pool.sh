@@ -49,8 +49,10 @@
 #   (bx) with --fleet none, an empty membership listing passes and a listed membership is a finding
 #        naming it; --fleet takes none alone;
 #   (by) a fleet member that is no GKE cluster reads UNKNOWN unless --rbac-only-member names it;
-#   (hd) a structured SERVICE_DISABLED answer for GKE Hub in the pool project is an empty fleet;
-#        PERMISSION_DENIED and SERVICE_DISABLED for another service or project stay UNKNOWN;
+#   (hd) a structured SERVICE_DISABLED answer for GKE Hub in the pool project reads UNKNOWN naming
+#        it, with --fleet none too, and the audited clusters step with it; PERMISSION_DENIED and
+#        SERVICE_DISABLED for another service or project stay UNKNOWN; control: a copy that reads
+#        the disabled API as a listing of none passes, exit 0;
 #   (bz) the operator's cluster on GKE Standard reads UNKNOWN naming the node escape;
 #   (cw) --audited-cluster: the pool's GKE clusters all named pass; a cluster of the project, and a
 #        GKE member of the fleet in another project, that none names are each a finding naming it,
@@ -58,9 +60,15 @@
 #        or incomplete cluster list and a refused fleet listing read UNKNOWN; a cluster named twice
 #        is a usage error; without the flag the step does not run.
 #   (ne) another cluster of the pool on GKE Standard: a system ServiceAccount with a running pod on
-#        a node, allowed create namespaces, is a finding naming it; the same account on Autopilot,
-#        with no pod, or with a pod bound to no node, is no finding (its controls); a refused
-#        describe, and a refused pods' list there, read UNKNOWN;
+#        a node is reviewed for every right the cluster's review asks: allowed create namespaces,
+#        get nodes/proxy (outright, or by a rule a live role limits to one node's name) or
+#        impersonate users, it is a finding naming it; the certificate chain's approval alone is
+#        none; the same account on Autopilot, with no pod, or with a pod bound to no node, is no
+#        finding; its review ending in an evaluation error, a pods' list that holds no pod (or a
+#        List of no item), a refused describe, and a refused pods' list there, read UNKNOWN;
+#        controls: a copy that asks a node's account only the namespace, ServiceAccount and pod
+#        rights misses nodes/proxy, one that skips an evaluation error and one without the census
+#        witness each exit 0;
 #   (lb) the operator's cluster's findings carry cluster:<project>/<location>/<name>, apart from a
 #        cluster of its name in another location; a copy using the bare name fails the row;
 #   (gn) a guarded namespace on another cluster: the cluster is reviewed with the operator's
@@ -339,9 +347,7 @@ label_row() {
     full) script="$check" ;;
     bare)
       script="$(script_copy bare-label)"
-      sed -i 's|^  op_res="cluster:\$PROJECT/\$OPERATOR_LOCATION/\$CLUSTER"$|  op_res="cluster:$CLUSTER"|' "$(dirname "$script")/operator-token-minters/step-rbac.sh"
-      grep -qxF '  op_res="cluster:$CLUSTER"' "$(dirname "$script")/operator-token-minters/step-rbac.sh" ||
-        fail "the test could not give its copy the bare label"
+      plant "$(dirname "$script")/operator-token-minters/step-rbac.sh" '  op_res="$(operator_res)"' '  op_res="cluster:$CLUSTER"'
       ;;
   esac
   run_script="$script" run --location us-central1 --report "$temporary_dir/label.json"
@@ -353,6 +359,78 @@ if row lb; then
   label_row full || fail "the operator's cluster's finding is not labelled cluster:$project/us-central1/operator-cluster beside the other cluster's cluster:$project/us-east1/operator-cluster"
   ! label_row bare || fail "a copy labelling the operator's cluster by its bare name still passed the label check"
   passed "(lb) the operator's cluster is labelled cluster:<project>/<location>/<name>, apart from a cluster of its name elsewhere; a bare-name copy is caught"
+fi
+
+# --- (zc) One report, one label form: a grant the render declares and a live grant on the
+# operator's cluster, and the fence's declared and live credits and residuals, each name the
+# cluster cluster:<project>/<location>/<name>, with --location and without it (the project's list
+# gives the location the code step could not know yet). No resource in the report is a bare
+# cluster name. Controls: a copy whose code step labels its findings by the bare name, and one
+# whose fence credits a declared grant by it, each fail the row. ---
+cluster_label_row() {
+  local script="$check" args=(--location us-central1) copy
+  case "$1" in
+    fence | fence-no-location | fence-bare)
+      fence_world
+      script="$fence_check"
+      ;;
+    *) base_world ;;
+  esac
+  case "$1" in
+    code-live | code-live-no-location | code-bare)
+      edit "$world/render.json" '.items += [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "RoleBinding",
+        metadata: {name: "bot", namespace: "envoy-operator"},
+        roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "ClusterRole", name: "cluster-admin"},
+        subjects: [{apiGroup: "rbac.authorization.k8s.io", kind: "User", name: "deployer-bot"}]}]'
+      subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods exec envoy-operator ""
+      ;;
+  esac
+  case "$1" in
+    *-no-location) args=() ;;
+    code-bare)
+      copy="$(script_copy code-bare-label)"
+      plant "$(dirname "$copy")/operator-token-minters/step-code-rbac.sh" '"$2" "$(operator_res)" "$2" "$3"; }' '"$2" "cluster:$cluster_name" "$2" "$3"; }'
+      script="$copy"
+      ;;
+    fence-bare)
+      copy="$(script_copy fence-bare-label)"
+      cp "$(dirname "$fence_check")/operator-token-minters/broker-fence.json" "$(dirname "$copy")/operator-token-minters/broker-fence.json"
+      plant "$(dirname "$copy")/operator-token-minters/broker-fence.sh" '"$detail, declared by $id" "$(operator_res)"' '"$detail, declared by $id" "cluster:$cluster_name"'
+      script="$copy"
+      ;;
+  esac
+  case "$1" in
+    fence*) run_script="$script" fence_run ${args[@]+"${args[@]}"} --report "$temporary_dir/labels-$1.json" ;;
+    *) run_script="$script" run ${args[@]+"${args[@]}"} --report "$temporary_dir/labels-$1.json" ;;
+  esac
+  local report="$temporary_dir/labels-$1.json" why=""
+  case "$1" in
+    code*)
+      want_status 1 "a declared and a live finding ($1)"
+      jq -e --arg op "cluster:$project/us-central1/operator-cluster" '
+        any(.findings[]; .principal == "user:deployer-bot" and .resource == $op)
+        and any(.findings[]; .principal == "system:serviceaccount:legion:worker" and .resource == $op)' "$report" >/dev/null ||
+        why="the declared or the live finding does not name the operator's cluster in full: $(jq -c '[.findings[] | {principal, resource}]' "$report")"
+      ;;
+    fence*)
+      want_status 0 "the fence's credits ($1)"
+      jq -e --arg op "cluster:$project/us-central1/operator-cluster" '
+        (.credited | length) > 0 and (.residuals | length) > 0 and all(.credited[], .residuals[]; .resource == $op)
+        and any(.credited[]; .right | contains(", declared by "))' "$report" >/dev/null ||
+        why="a credit or residual does not name the operator's cluster in full: $(jq -c '[.credited[], .residuals[] | {principal, right, resource}]' "$report")"
+      ;;
+  esac
+  [ -n "$why" ] || [ -z "$(full_labels "$report")" ] || why="the report holds a cluster label not in full: $(full_labels "$report")"
+  case "$1" in
+    *-bare) [ -n "$why" ] || fail "a copy labelling by the bare name ($1) passed the label check" ;;
+    *) [ -z "$why" ] || fail "$why ($1)" ;;
+  esac
+}
+if row zc; then
+  each cluster_label_row code-live code-live-no-location fence fence-no-location
+  passed "(zc) a declared and a live finding, and the fence's declared and live credits and residuals, name the operator's cluster cluster:$project/us-central1/operator-cluster, with --location and without it, and the report holds no bare cluster name"
+  each cluster_label_row code-bare fence-bare
+  passed "(zc) control: a copy whose code step, or whose fence's declared credit, labels by the bare name fails the label check"
 fi
 
 # --- (gn) A guarded namespace on another cluster of the pool makes that cluster reviewed with the
@@ -599,17 +677,39 @@ if row by; then
   passed "(by) a fleet member that is no GKE cluster reads UNKNOWN unless --rbac-only-member names it"
 fi
 
-# --- (hd) A disabled GKE Hub API holds no fleet memberships. ---
+# --- (hd) A disabled GKE Hub API is no empty fleet: Google keeps a disabled service's memberships,
+# and whoever holds serviceusage.services.disable on the pool project, which no step reads, can turn
+# it off, so it reads UNKNOWN, with --fleet none too. ---
 hub_disabled_row() {
+  local copy script="$check" disabled="UNKNOWN $fleet_step: the GKE Hub API is disabled in project $project (SERVICE_DISABLED), and refused the listing of projects/$project/locations/-/memberships"
   base_world
   case "$1" in
-    disabled)
+    disabled | disabled-fleet-none | disabled-audited | disabled-control)
       : >"$world/fleet-service-disabled"
-      run --report "$temporary_dir/hub-disabled-report.json"
-      want_status 0 "a disabled GKE Hub API"
-      want_line "PASS $fleet_step: GKE Hub is disabled for project $project, so it has no memberships" "a disabled GKE Hub API"
-      jq -e --arg project "$project" 'any(.allowances[]; .flag == "gkehub-service-disabled" and .value == $project)' \
-        "$temporary_dir/hub-disabled-report.json" >/dev/null || fail "the disabled GKE Hub reading is not in --report"
+      ;;
+  esac
+  case "$1" in
+    disabled | disabled-fleet-none)
+      if [ "$1" = disabled ]; then run --report "$temporary_dir/hub-disabled-$1.json"; else run --fleet none --report "$temporary_dir/hub-disabled-$1.json"; fi
+      want_status 2 "a disabled GKE Hub API ($1)"
+      want_text "$disabled" "a disabled GKE Hub API ($1)"
+      ! has_prefix "PASS $fleet_step: " || fail "a disabled GKE Hub API ($1): the fleet step passed"
+      jq -e 'all(.allowances[]; .flag != "gkehub-service-disabled")' "$temporary_dir/hub-disabled-$1.json" >/dev/null ||
+        fail "a disabled GKE Hub API ($1) is still an allowance in --report"
+      ;;
+    disabled-audited)
+      run --fleet none --audited-cluster "$project/us-central1/operator-cluster"
+      want_status 2 "a disabled GKE Hub API beside --audited-cluster"
+      want_text "UNKNOWN live: audited clusters: the fleet's memberships were not read whole" "a disabled GKE Hub API beside --audited-cluster"
+      ;;
+    disabled-control)
+      copy="$(script_copy hub-disabled-as-none)"
+      plant "$(dirname "$copy")/operator-token-minters/step-workload-identity.sh" \
+        'HUB_ERROR="the GKE Hub API is disabled in project $POOL_PROJECT (SERVICE_DISABLED)' \
+        'printf '"'"'{"resources":[]}\n'"'"' >"$3"; return 0; HUB_ERROR="the GKE Hub API is disabled in project $POOL_PROJECT (SERVICE_DISABLED)'
+      run_script="$copy" run --fleet none
+      want_status 0 "a copy reading a disabled GKE Hub API as none"
+      want_text "PASS $fleet_step: the GKE Hub API lists no membership in the fleet, as --fleet none says" "a copy reading a disabled GKE Hub API as none"
       ;;
     denied)
       : >"$world/refuse-fleet"
@@ -632,8 +732,8 @@ hub_disabled_row() {
   esac
 }
 if row hd; then
-  each hub_disabled_row disabled denied other-service other-project
-  passed "(hd) only structured GKE Hub SERVICE_DISABLED in the pool project reads as an empty fleet"
+  each hub_disabled_row disabled disabled-fleet-none disabled-audited denied other-service other-project disabled-control
+  passed "(hd) GKE Hub SERVICE_DISABLED in the pool project reads UNKNOWN naming it, with --fleet none and beside --audited-cluster too, as does any other refusal; a copy reading it as none passes, exit 0"
 fi
 
 # --- (bp) Cluster settings that authorize or authenticate outside RBAC and Google: legacy ABAC
@@ -779,46 +879,127 @@ node_pod() {
 node_escape_row() {
   base_world
   add_cluster other-cluster us-east1
-  local pods="$world/clusters/other-cluster/pods.json"
-  local want="FINDING system:serviceaccount:kube-system:namespace-controller: create namespaces cluster-wide on cluster $ne_cluster, and it runs a pod on a node of this GKE Standard cluster"
+  local pods="$world/clusters/other-cluster/pods.json" copy script="$check" sa
+  local node_why=" on cluster $ne_cluster, and it runs a pod on a node of this GKE Standard cluster, where a privileged or hostPath pod reads every token on its node"
+  local want="FINDING system:serviceaccount:kube-system:namespace-controller: create namespaces cluster-wide$node_why"
+  local proxy="FINDING system:serviceaccount:kube-system:metrics-agent: get nodes/proxy cluster-wide$node_why"
+  case "$1" in
+    nodes-proxy | nodes-proxy-control | impersonate | named-proxy | approval-alone | eval-error | eval-error-control)
+      sa=metrics-agent
+      node_pod kube-system "$sa" node-1 Running | jq -s . >"$pods"
+      ;;
+  esac
   case "$1" in
     standard)
       node_pod kube-system namespace-controller node-1 Running | jq -s . >"$pods"
       run
       want_status 1 "a system ServiceAccount with a pod on a Standard cluster's node"
       want_text "$want" "a system ServiceAccount with a pod on a Standard cluster's node"
+      return
+      ;;
+    nodes-proxy | nodes-proxy-control) subject_grant other-cluster "$(sa_subject kube-system "$sa")" get "" nodes proxy "" "" ;;
+    impersonate) subject_grant other-cluster "$(sa_subject kube-system "$sa")" impersonate "" users "" "" "" ;;
+    named-proxy) subject_grant other-cluster "$(sa_subject kube-system "$sa")" get "" nodes proxy "" node-1 ;;
+    approval-alone) subject_grant other-cluster "$(sa_subject kube-system "$sa")" update certificates.k8s.io certificatesigningrequests approval "" "" ;;
+    eval-error | eval-error-control)
+      # On the token of a guarded pair by name, which the node review asks and the cluster's own
+      # review of its other principals does not, so the error is the node review's alone.
+      grant other-cluster "$(jq -nc --arg sa "$sa" '{subject: {kind: "ServiceAccount", namespace: "kube-system", name: $sa},
+        verb: "create", group: "", resource: "serviceaccounts", subresource: "token", namespace: "envoy-operator", name: "envoy-operator",
+        error: "authorizer timed out"}')"
       ;;
     autopilot)
       node_pod kube-system namespace-controller node-1 Running | jq -s . >"$pods"
       edit "$world/clusters.json" 'map(if .name == "other-cluster" then . + {autopilot: {enabled: true}} else . end)'
       run
       ! has_prefix "$want" || fail "an Autopilot cluster's system ServiceAccount was a node escape finding"
+      return
       ;;
     no-pod)
       run
+      want_status 0 "a system ServiceAccount with no pod, beside a census of kube-dns"
       ! has_prefix "$want" || fail "a system ServiceAccount with no pod was a node escape finding"
+      return
       ;;
     unscheduled)
       node_pod kube-system namespace-controller "" Pending | jq -s . >"$pods"
       run
       ! has_prefix "$want" || fail "a system ServiceAccount whose pod is on no node was a node escape finding"
+      return
       ;;
+    empty-census | empty-census-control) echo '[]' >"$pods" ;;
+    emptylist-census) : >"$world/clusters/other-cluster/emptylist-pods" ;;
     describe-refused)
       node_pod kube-system namespace-controller node-1 Running | jq -s . >"$pods"
       : >"$world/refuse-describe-other-cluster"
       run
       want_status 2 "a refused describe"
       want_text "UNKNOWN live: Workload Identity on $ne_cluster: whether the cluster is GKE Autopilot is unknown" "a refused describe"
+      return
       ;;
     pods-refused)
       : >"$world/clusters/other-cluster/refuse-pods"
       run
       want_status 2 "a refused pods' list on a Standard cluster"
       want_text "UNKNOWN live: Workload Identity on $ne_cluster: the cluster is GKE Standard, and the API server refused the pods' list" "a refused pods' list"
+      return
+      ;;
+  esac
+  case "$1" in
+    nodes-proxy-control)
+      copy="$(script_copy node-rights-subset)"
+      plant "$(dirname "$copy")/operator-token-minters/node-escape.sh" 'rights="$(with_rights "$5" "$NODE_TOKEN_RIGHTS")"' \
+        'rights="$(with_rights "$(jq -c '"'"'[.[] | select(.sub == "" and (.resource == "namespaces" or .resource == "serviceaccounts" or .resource == "pods"))]'"'"' <<<"$5")" "$NODE_TOKEN_RIGHTS")"'
+      script="$copy"
+      ;;
+    eval-error-control)
+      copy="$(script_copy node-error-skipped)"
+      plant "$(dirname "$copy")/operator-token-minters/node-escape.sh" '      error) unknown "$cstep" "the review of $principal, which runs a pod' '      error) : "the review of $principal, which runs a pod'
+      script="$copy"
+      ;;
+    empty-census-control)
+      copy="$(script_copy no-census-witness)"
+      plant "$(dirname "$copy")/operator-token-minters/node-escape.sh" 'if [ "$(jq '"'"'.items | length'"'"' "$WORK/node-pods.json")" -eq 0 ]; then' 'if false; then'
+      script="$copy"
+      ;;
+  esac
+  run_script="$script" run
+  case "$1" in
+    *-control)
+      want_status 0 "a copy blind to the node escape ($1)"
+      [ "$(count_prefix 'UNKNOWN ')" -eq 0 ] || fail "a copy blind to the node escape ($1) read UNKNOWN"
+      ;;
+    nodes-proxy)
+      want_status 1 "a system ServiceAccount on a node with get nodes/proxy"
+      want_line "$proxy" "a system ServiceAccount on a node with get nodes/proxy"
+      ;;
+    impersonate)
+      want_status 1 "a system ServiceAccount on a node that may impersonate users"
+      want_line "FINDING system:serviceaccount:kube-system:metrics-agent: impersonate users cluster-wide$node_why" "a system ServiceAccount on a node that may impersonate users"
+      ;;
+    named-proxy)
+      want_status 1 "a system ServiceAccount on a node with get nodes/proxy on one node by name"
+      want_text "FINDING system:serviceaccount:kube-system:metrics-agent: get nodes/proxy node-1" "a system ServiceAccount on a node with get nodes/proxy on one node by name"
+      want_text "$node_why" "a system ServiceAccount on a node with get nodes/proxy on one node by name"
+      ;;
+    approval-alone)
+      want_status 0 "a system ServiceAccount on a node with the certificate approval alone"
+      ! has_prefix "FINDING system:serviceaccount:kube-system:metrics-agent" || fail "the certificate approval alone, on a node's account, was a finding"
+      ;;
+    eval-error)
+      want_status 2 "a node account's review that ended in an evaluation error"
+      want_text "UNKNOWN live: Workload Identity on $ne_cluster: the review of system:serviceaccount:kube-system:metrics-agent, which runs a pod on a node of this GKE Standard cluster, for create serviceaccounts/token envoy-operator in envoy-operator ended in an evaluation error, so its refusal proves nothing: authorizer timed out" \
+        "a node account's review that ended in an evaluation error"
+      ;;
+    empty-census | emptylist-census)
+      want_status 2 "a Standard cluster's pods' list that holds no pod ($1)"
+      want_text "UNKNOWN live: Workload Identity on $ne_cluster: the cluster is GKE Standard, and the API server's list of pods holds no pod, though every GKE cluster runs kube-system's" \
+        "a Standard cluster's pods' list that holds no pod ($1)"
       ;;
   esac
 }
 if row ne; then
-  each node_escape_row standard autopilot no-pod unscheduled describe-refused pods-refused
-  passed "(ne) on another Standard cluster of the pool, a system ServiceAccount with a running pod on a node and a right over the guarded namespaces is a finding; on Autopilot, with no pod or a pod on no node it is none; a refused describe or pods' list reads UNKNOWN"
+  each node_escape_row standard nodes-proxy impersonate named-proxy approval-alone eval-error autopilot no-pod unscheduled \
+    empty-census emptylist-census describe-refused pods-refused nodes-proxy-control eval-error-control empty-census-control
+  passed "(ne) on another Standard cluster of the pool, a system ServiceAccount with a running pod on a node and any right the cluster's review asks (create namespaces, get nodes/proxy outright or by name, impersonate users) is a finding; the certificate approval alone is none; on Autopilot, with no pod or a pod on no node it is none; an evaluation error, a pods' list of no pod, a refused describe or pods' list reads UNKNOWN; each control copy exits 0"
 fi

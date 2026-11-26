@@ -54,12 +54,19 @@ fi
 # operator's member as --gsa, the broker's as --broker-account) and the broker minting --gsa's
 # token, as its account or as its Workload Identity principal (BROKER_PRINCIPAL): its outermost
 # principal is the account it acts as, already judged, so it is no finding.
+# A refused analysis names what Google requires for it (Policy Analyzer's "Required permissions",
+# read 2026-11-26): cloudasset.assets.analyzeIamPolicy, cloudasset.assets.searchAllResources and
+# cloudasset.assets.searchAllIamPolicies on the scope, iam.roles.get for a custom role
+# (--expand-roles), and Workspace's groups.read to expand a group (--expand-groups); then Google's
+# own first line. The page's serviceusage.services.use is the gcloud path's on a quota project, and
+# the auditor runs with none (its entrypoint refuses one), so the message does not send a reader to
+# grant it.
 analyze() {
   ANALYZE_ERROR=""
   if ! gcloud asset analyze-iam-policy "$3" --full-resource-name="$1" --permissions="$2" \
     --expand-groups --output-group-edges --expand-roles --analyze-service-account-impersonation \
     --show-response --format=json --quiet >"$WORK/analysis.json" 2>"$WORK/analysis.err"; then
-    ANALYZE_ERROR="Policy Analyzer refused the analysis (it needs cloudasset.assets.analyzeIamPolicy on $4): $(first_line "$WORK/analysis.err")"
+    ANALYZE_ERROR="Policy Analyzer refused the analysis (it needs cloudasset.assets.analyzeIamPolicy, cloudasset.assets.searchAllResources and cloudasset.assets.searchAllIamPolicies on $4, iam.roles.get for a custom role, and Google Workspace's groups.read to expand a group): $(first_line "$WORK/analysis.err")"
     return 1
   fi
   if ! jq -r --arg wi "$WI_MEMBER" --arg gsa "$GSA" --arg bwi "$BROKER_WI_MEMBER" --arg broker "$BROKER" --arg bp "$BROKER_PRINCIPAL" \

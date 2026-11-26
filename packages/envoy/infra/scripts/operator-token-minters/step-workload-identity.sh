@@ -101,7 +101,7 @@ read_other_cluster() {
     csr_chains "$where" "$principal"
     follow_becomes "$KUBE" "$cstep" "$where" "$principal"
     remember_cluster "$KUBE" "$cstep" "$where" "$principal"
-    node_escape "$cstep" "$where" "$principal" "$autopilot"
+    node_escape "$cstep" "$where" "$principal" "$autopilot" "$guard_rights"
     ! unchanged ||
       pass "$cstep" "$([ "${#present[@]}" -eq 0 ] && echo "no guarded namespace ($GUARDED_TEXT), and none" || echo "the guarded namespaces there reviewed with the operator's cluster's rights, and none") of its $accounts ServiceAccounts outside the system namespaces, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects and anyone unauthenticated may make a namespace, a ServiceAccount, a pod or a custom resource in a guarded namespace, write a webhook or admission policy, or hold an escalation right"
   fi
@@ -168,12 +168,8 @@ done 5<"$WORK/pool-clusters.tsv"
 # memberships list`: that command's list drops the answer's `unreachable` field, so a listing
 # that missed a location would read as complete.
 fleet_memberships() {
-  FLEET_ERROR="" FLEET_SERVICE_DISABLED=false
+  FLEET_ERROR=""
   hub_list memberships gkehub.memberships.list "$WORK/fleet-pages.json" || { FLEET_ERROR="$HUB_ERROR"; return 1; }
-  FLEET_SERVICE_DISABLED="$HUB_SERVICE_DISABLED"
-  if [ "$FLEET_SERVICE_DISABLED" = true ]; then
-    printf '%s\n' '{"resources":[]}' >"$WORK/fleet-pages.json"
-  fi
   if ! jq -r -s -L "$LIB" -f "$LIB/fleet.jq" "$WORK/fleet-pages.json" >"$WORK/fleet.rec" 2>"$WORK/fleet.err"; then
     FLEET_ERROR="the GKE Hub API's answer holds no list of memberships: $(first_line "$WORK/fleet.err")"
     return 1
@@ -182,10 +178,14 @@ fleet_memberships() {
 
 # hub_list COLLECTION PERMISSION PAGES: every page of the GKE Hub API's
 # projects/$POOL_PROJECT/locations/-/COLLECTION, each page's JSON a line of PAGES. Returns 1 with
-# HUB_ERROR, naming PERMISSION, when the listing was refused or a page is not JSON.
+# HUB_ERROR, naming PERMISSION, when the listing was refused or a page is not JSON. A refusal
+# because the API is disabled in the pool project (403, SERVICE_DISABLED) is no empty listing:
+# Google keeps a disabled service's resources, a membership among them, while the API refuses to
+# list them, and whoever holds serviceusage.services.disable there, which no step here reads, can
+# turn it off; so it is HUB_ERROR too, naming the cause.
 hub_list() {
   local token page="" quoted_page pages=0 status why
-  HUB_ERROR="" HUB_SERVICE_DISABLED=false
+  HUB_ERROR=""
   if ! have curl; then
     HUB_ERROR="curl is not on PATH"
     return 1
@@ -217,7 +217,7 @@ hub_list() {
     } | curl -sS --fail-with-body --max-time 60 -G -K - --data-urlencode pageSize=100 \
       "https://gkehub.googleapis.com/v1/projects/$POOL_PROJECT/locations/-/$1" >"$WORK/hub-page.json" 2>"$WORK/hub.err" || status=$?
     if [ "$status" -ne 0 ]; then
-      if [ "$1" = memberships ] && jq -e --arg project "$POOL_PROJECT" '
+      if jq -e --arg project "$POOL_PROJECT" '
         .error.code == 403
         and any(.error.details[]?;
           .reason == "SERVICE_DISABLED"
@@ -225,8 +225,8 @@ hub_list() {
           and ((.metadata.consumer // "") == ("projects/" + $project) or (.metadata.project // "") == $project)
         )
       ' "$WORK/hub-page.json" >/dev/null 2>&1; then
-        HUB_SERVICE_DISABLED=true
-        return 0
+        HUB_ERROR="the GKE Hub API is disabled in project $POOL_PROJECT (SERVICE_DISABLED), and refused the listing of projects/$POOL_PROJECT/locations/-/$1; Google keeps a disabled service's resources, so one registered there is not read, and whoever holds serviceusage.services.disable on the project can turn the API off, so a disabled API is never read as none: enable gkehub.googleapis.com there, and --fleet none then passes a listing that holds none"
+        return 1
       fi
       why="$(jq -r '[.error.code, .error.status, .error.message] | map(select(. != null) | tostring) | join(" ")' "$WORK/hub-page.json" 2>/dev/null |
         sed -n '1{s/[[:cntrl:]]/ /g;p;}')" || true
@@ -355,20 +355,16 @@ else
         read_other_cluster "$cstep" "membership:$label" " on fleet member $label" own
       fi
     done 6<"$WORK/fleet.rec"
-    if [ "$FLEET_SERVICE_DISABLED" = true ]; then
-      echo "PASS $step: GKE Hub is disabled for project $POOL_PROJECT, so it has no memberships"
-    else
-      if [ "$members" -eq 0 ] && [ "$FLEET" != none ]; then
-        FLEET_LISTED=false
-        unknown "$step" "the GKE Hub API lists no membership in the fleet, so an answer that saw nothing cannot be told from a fleet that holds none (--fleet none says it has none)"
-      fi
-      fleet_scopes
-      if [ "${#FINDINGS[@]}" -eq "$fleet_f" ] && [ "${#UNKNOWNS[@]}" -eq "$fleet_u" ]; then
-        if [ "$members" -eq 0 ]; then
-          pass "$step" "the GKE Hub API lists no membership in the fleet, as --fleet none says, and the fleet holds no scope"
-        else
-          pass "$step" "$members membership(s) listed, every location reached: $own the operator's cluster, $above read above as clusters of the project, $here read here, and the fleet holds no scope"
-        fi
+    if [ "$members" -eq 0 ] && [ "$FLEET" != none ]; then
+      FLEET_LISTED=false
+      unknown "$step" "the GKE Hub API lists no membership in the fleet, so an answer that saw nothing cannot be told from a fleet that holds none (--fleet none says it has none)"
+    fi
+    fleet_scopes
+    if [ "${#FINDINGS[@]}" -eq "$fleet_f" ] && [ "${#UNKNOWNS[@]}" -eq "$fleet_u" ]; then
+      if [ "$members" -eq 0 ]; then
+        pass "$step" "the GKE Hub API lists no membership in the fleet, as --fleet none says, and the fleet holds no scope"
+      else
+        pass "$step" "$members membership(s) listed, every location reached: $own the operator's cluster, $above read above as clusters of the project, $here read here, and the fleet holds no scope"
       fi
     fi
   fi

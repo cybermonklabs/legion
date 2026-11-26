@@ -19,7 +19,8 @@
 # already held, never a person's administrator credential. It requests no credential, impersonates
 # no one, and writes nothing but its own work directory and --report. It never reads a Kubernetes
 # Secret. Its --secret-render inputs supply only the declared namespace, name, type and
-# service-account-name annotation of each Secret; an invalid render is UNKNOWN.
+# service-account-name annotation of each Secret; an invalid render is UNKNOWN, and so is one that
+# holds no JSON document or declares no Secret.
 #
 # The steps, in order; each prints PASS, a FINDING per principal and right, or UNKNOWN naming why;
 # the RBAC steps print a CREDIT per grant whose use on the broker's pods its pod fence refuses, or
@@ -350,9 +351,11 @@
 # operator's ServiceAccount token, a node escape no review sees, so Standard is UNKNOWN. On another
 # GKE cluster of the pool, read Standard by `gcloud container clusters describe` (a refused describe
 # is UNKNOWN), the same pod reads every token on its node, so a system namespace's ServiceAccount
-# that runs a pod on a node is no longer allowed: each such account allowed create or patch of
-# namespaces, create or patch of serviceaccounts or pods in a guarded namespace, or create
-# serviceaccounts/token for a guarded pair is a finding naming it (node-escape.sh). The broker's
+# that runs a pod on a node is no longer allowed: it is reviewed for every right that cluster's
+# review asks and create serviceaccounts/token for each guarded pair, and read in that cluster's
+# roles for each rule that gives one by name, each allowed a finding naming it (the certificate
+# chain only whole), an evaluation error UNKNOWN, and a list of pods that holds no pod UNKNOWN
+# (node-escape.sh). The broker's
 # minting grant on --gsa is allowed to its account and to its Workload Identity principal,
 # principal://iam.googleapis.com/projects/<pool project number>/locations/global/
 # workloadIdentityPools/<pool>.svc.id.goog/subject/ns/<ns>/sa/<name> of --broker-workload.
@@ -382,8 +385,8 @@
 # ServiceAccount; create and get nodes/proxy cluster-wide, whose kubelet API enters any pod on the
 # node; get, list, watch and create secrets (a Secret of type kubernetes.io/service-account-token
 # naming a ServiceAccount is filled with its token), and on the operator's cluster get, by name, of
-# each token Secret of a guarded namespace, those a guarded pair's ServiceAccount lists and those the
-# namespace's list of that type names (read in the Table form, no data); and, cluster-wide on every
+# each guarded pair's token Secret, those the Secret renders declare and those its ServiceAccount
+# lists in its `secrets` (no Secret is read); and, cluster-wide on every
 # cluster of the pool, create, update
 # and patch of each admissionregistration.k8s.io resource its discovery lists, and the certificate
 # signing chain: a certificate signed for kubernetes.io/kube-apiserver-client authenticates as any
@@ -406,8 +409,10 @@
 # reads the operator's cluster's ValidatingAdmissionPolicies and bindings (less what the API server
 # and GKE fill in), its pods in dispatch and its webhooks. Only when the renders and the cluster each
 # hold the five policies and bindings with the reviewed specs; no pod there named otherwise than
-# envoy-broker-* runs as envoy-broker or takes --db-secret, a token Secret of the namespace or a
-# Secret a broker pod takes; at least one envoy-broker-* pod runs as envoy-broker; and no webhook of
+# envoy-broker-* runs as envoy-broker or takes --db-secret, a guarded pair's token Secret (declared,
+# or listed by its ServiceAccount), a Secret a broker pod takes, or a Secret no --secret-render
+# declares (the check reads no Secret, so it may hold the broker's token); at least one
+# envoy-broker-* pod runs as envoy-broker; and no webhook of
 # the cluster's configurations, whatever its selectors and rules, calls a Service in dispatch, does a
 # grant of create or get on pods/exec, pods/attach or pods/portforward in dispatch, outright or by
 # name, declared or live, or as a way to become envoy-broker, print a CREDIT line naming its use on
@@ -434,14 +439,18 @@
 # finding, each line naming the principal and the right (UNKNOWN lines may stand beside them). Exit
 # 2: no finding, and at least one UNKNOWN, each naming its step and why, such as the permission the
 # running identity lacks; also a usage error, a copy of the script missing a part or a jq file of
-# operator-token-minters/ (checked before any is sourced), and a run that stops before its end (a
+# operator-token-minters/, or holding one empty (checked before any is sourced: an empty file
+# sources as a clean no-op and an empty jq program is `.`), a step file that ran and reported
+# nothing or never ran (the step census, output.sh), and a run that stops before its end (a
 # command failing under set -e), each of which prints the UNKNOWN `run` and writes it to --report (a
 # usage error writes none). --report is deleted when the run starts, so a report is this run's or
 # none. --report <file> writes {"run_at": "<RFC 3339>", "findings": [{"principal", "right", "role",
 # "resource", "permissions", "granted_at"}], "credited": [{"principal", "right", "resource",
 # "granted_at", "policy", "declared", "live"}], "residuals": [{"principal", "right", "resource",
 # "granted_at", "residual", "tracked_by"}], "unknown": [{"step", "reason"}], "allowances": [{"flag",
-# "value"}]} beside the text, run_at being when the run began. `credited` holds each grant whose use
+# "value"}], "steps": [{"step", "state"}]} beside the text, run_at being when the run began.
+# `steps` names each step file in the order it runs and its census state: reported, quiet: <why>
+# (a step that says why it prints nothing), silent or not run (each an UNKNOWN). `credited` holds each grant whose use
 # on the broker's pods its pod fence refuses: principal and right as its CREDIT line prints them,
 # resource and granted_at as a finding's (the grant, kept as evidence), the policy that refuses that
 # use (its binding has its name), declared the sha256 of the renders' fence and live the same of the
@@ -458,8 +467,9 @@
 #                outermost link; for an RBAC finding the right's label (create
 #                serviceaccounts/token envoy-operator in envoy-operator); for the namespace and the
 #                secret's tags, what is wrong (namespace envoy-operator, admin, tier, secret);
-#   resource     what the right is on: the analysed resource's full name, `cluster:<name>` (the
-#                operator's cluster; `<project>/<location>/<name>` for every other) or
+#   resource     what the right is on: the analysed resource's full name,
+#                `cluster:<project>/<location>/<name>` on every cluster, the operator's included
+#                (its location `-` while live: clusters has not read one),
 #                `membership:<pool>/<location>/<id>`, or `secret:<name>`;
 #   permissions  the IAM permissions the role grants among those asked, for a chain the holder's;
 #                for an RBAC finding the right's label; empty for the namespace and the secret's tags;
@@ -700,15 +710,14 @@ for agent in ${SERVICE_AGENTS[@]+"${SERVICE_AGENTS[@]}"}; do
 done
 # allowances_json: the JSON array of each allowance the run was given, {flag, value}: each
 # --service-agent, each --rbac-only-member and --fleet none, which let a principal or a reading pass,
-# a GKE Hub API the run read as disabled, --renders-admin and each --render-writer, which let an
-# account write the renders, and each --credentials-arg, which chooses how each cluster is reached,
-# so a reader of --report can hold each one to what was accepted.
+# --renders-admin and each --render-writer, which let an account write the renders, and each
+# --credentials-arg, which chooses how each cluster is reached, so a reader of --report can hold
+# each one to what was accepted.
 allowances_json() {
   {
     for value in ${SERVICE_AGENTS[@]+"${SERVICE_AGENTS[@]}"}; do printf -- '--service-agent\t%s\n' "$value"; done
     for value in ${RBAC_ONLY_MEMBERS[@]+"${RBAC_ONLY_MEMBERS[@]}"}; do printf -- '--rbac-only-member\t%s\n' "$value"; done
     [ -z "${FLEET:-}" ] || printf -- '--fleet\t%s\n' "$FLEET"
-    [ "${FLEET_SERVICE_DISABLED:-}" != true ] || printf -- 'gkehub-service-disabled\t%s\n' "$POOL_PROJECT"
     [ -z "${RENDERS_ADMIN:-}" ] || printf -- '--renders-admin\t%s\n' "$RENDERS_ADMIN"
     for value in ${RENDER_WRITERS[@]+"${RENDER_WRITERS[@]}"}; do printf -- '--render-writer\t%s\n' "$value"; done
     for value in ${CREDENTIALS_ARGS[@]+"${CREDENTIALS_ARGS[@]}"}; do printf -- '--credentials-arg\t%s\n' "$value"; done
@@ -772,22 +781,28 @@ mkdir -p "$WORK/kube" "$WORK/roles"
 # this script, sourced here so that all of them share this run's state; a part's large jq programs
 # are .jq files there, read with jq -f.
 LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/operator-token-minters"
-# Every part and jq file must be readable before any is sourced: a missing one would stop the run
-# before output.sh defines its report, or leave a step that needs it unread.
+# STEP_FILES: the step files, in the order they run, each sourced between census_begin and
+# census_end (output.sh), so one that reports nothing, or never runs, is an UNKNOWN naming it.
+STEP_FILES=(step-permission-names.sh step-code-secrets.sh step-code-rbac.sh step-code-iam.sh step-clusters.sh step-gke-iam.sh
+  step-rbac.sh step-workload-identity.sh step-audited-clusters.sh step-live-iam.sh step-admin-tag.sh)
+# Every part and jq file must be readable and hold something before any is sourced: a missing one
+# would stop the run before output.sh defines its report, or leave a step that needs it unread, and
+# an empty one sources as a clean no-op under set -e (and an empty jq program is `.`), so a step
+# would vanish from a run that exits 0.
 missing=""
-for part in output.sh rights.sh principals.sh checks.sh step-permission-names.sh step-code-secrets.sh step-code-rbac.sh step-code-iam.sh \
-  step-clusters.sh reviews.sh admission-backends.sh broker-fence.sh step-rbac.sh iam-analysis.sh step-gke-iam.sh \
-  node-escape.sh step-workload-identity.sh step-audited-clusters.sh step-live-iam.sh step-admin-tag.sh analysis.jq become-rights.jq broker-fence.jq broker-fence.json \
+for part in output.sh rights.sh principals.sh checks.sh reviews.sh admission-backends.sh broker-fence.sh iam-analysis.sh node-escape.sh \
+  "${STEP_FILES[@]}" analysis.jq become-rights.jq broker-fence.jq broker-fence.json \
   code-iam.jq code-rbac.jq custom.jq custom-rights.jq fleet.jq guard-rights.jq binding-rights.jq rec.jq review-answer.jq \
   review-request.jq webhook-backends.jq; do
-  [ -r "$LIB/$part" ] || missing="${missing:+$missing, }$part"
+  [ -r "$LIB/$part" ] && [ -s "$LIB/$part" ] || missing="${missing:+$missing, }$part"
 done
 if [ -n "$missing" ]; then
-  reason="the parts $missing of $LIB cannot be read, so no step runs"
+  reason="the parts $missing of $LIB cannot be read or are empty, so no step runs"
   echo "UNKNOWN run: $reason"
   [ -z "$REPORT" ] ||
-    { jq -n --arg run_at "$RUN_AT" --arg reason "$reason" --argjson allowances "$(allowances_json)" \
-      '{run_at: $run_at, findings: [], credited: [], residuals: [], unknown: [{step: "run", reason: $reason}], allowances: $allowances}' >"$REPORT"; } 2>/dev/null ||
+    { jq -n --arg run_at "$RUN_AT" --arg reason "$reason" --argjson allowances "$(allowances_json)" '
+      {run_at: $run_at, findings: [], credited: [], residuals: [], unknown: [{step: "run", reason: $reason}], allowances: $allowances,
+       steps: [$ARGS.positional[] | {step: ., state: "not run"}]}' --args "${STEP_FILES[@]}" >"$REPORT"; } 2>/dev/null ||
     echo "operator-token-minters: --report cannot be written" >&2
   echo "operator-token-minters: no step ran, 1 unknown: exit 2"
   FINISHED=true
@@ -807,34 +822,57 @@ fi
 . "$LIB/admission-backends.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/broker-fence.sh
 . "$LIB/broker-fence.sh"
+census_begin
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-permission-names.sh
 . "$LIB/step-permission-names.sh"
+census_end step-permission-names.sh
+census_begin
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-code-secrets.sh
 . "$LIB/step-code-secrets.sh"
+census_end step-code-secrets.sh
+census_begin
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-code-rbac.sh
 . "$LIB/step-code-rbac.sh"
+census_end step-code-rbac.sh
+census_begin
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-code-iam.sh
 . "$LIB/step-code-iam.sh"
+census_end step-code-iam.sh
+census_begin
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-clusters.sh
 . "$LIB/step-clusters.sh"
+census_end step-clusters.sh
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/iam-analysis.sh
 . "$LIB/iam-analysis.sh"
+census_begin
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-gke-iam.sh
 . "$LIB/step-gke-iam.sh"
+census_end step-gke-iam.sh
+census_begin
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-rbac.sh
 . "$LIB/step-rbac.sh"
+census_end step-rbac.sh
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/node-escape.sh
 . "$LIB/node-escape.sh"
+census_begin
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-workload-identity.sh
 . "$LIB/step-workload-identity.sh"
+census_end step-workload-identity.sh
+census_begin
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-audited-clusters.sh
 . "$LIB/step-audited-clusters.sh"
+census_end step-audited-clusters.sh
+census_begin
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-live-iam.sh
 . "$LIB/step-live-iam.sh"
+census_end step-live-iam.sh
+census_begin
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-admin-tag.sh
 . "$LIB/step-admin-tag.sh"
+census_end step-admin-tag.sh
 
 # --- The result. ---
+census_close
 findings="${#FINDINGS[@]}"
 unknowns="${#UNKNOWNS[@]}"
 write_report

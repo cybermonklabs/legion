@@ -169,6 +169,9 @@ case "${words[*]}" in
       [ -z "${flag[$kind]:-}" ] || scope="$kind/${flag[$kind]}"
     done
     [ ! -e "$world/refuse-analyze" ] || refuse asset.analyze-iam-policy "Permission 'cloudasset.assets.analyzeIamPolicy' denied on resource '//cloudresourcemanager.googleapis.com/${scope/\//s/}' (or it may not exist)."
+    # refuse-analyze-search answers as Google answered a reader that holds analyzeIamPolicy and not
+    # searchAllResources, on 2026-11-20.
+    [ ! -e "$world/refuse-analyze-search" ] || refuse asset.analyze-iam-policy "Caller doesn't have cloudasset.assets.searchAllResources permission on the requested scope"
     # refuse-analyze-of and empty-analysis-of name one resource whose analysis alone is refused or empty.
     ! grep -qxF -- "${flag[full-resource-name]:-}" "$world/refuse-analyze-of" 2>/dev/null ||
       refuse asset.analyze-iam-policy "Permission 'cloudasset.assets.analyzeIamPolicy' denied on resource '${flag[full-resource-name]}'."
@@ -345,6 +348,12 @@ case "${args[*]}" in
     #   review-follow-nostatus answers a follow round's reviews with no status (row cy);
     #   review-witness-copied answers the witness's reviews with copies of the first other review,
     #   and review-repeated answers the last review with a copy of the first, keeping the count (row cy).
+    # A review a grant answers is allowed, its reason the binding's as the RBAC authorizer writes it
+    # (k8s.io/kubernetes plugin/pkg/auth/authorizer/rbac, the bindings' describers): from the
+    # grant's binding_name and role_name when it has them, which name the binding and role the
+    # bindings' and roles' lists hold too, so a row cannot give the reason a third name; else its
+    # binding text. A grant with `error` answers its review with that evaluation error and no
+    # verdict, as an authorizer that failed to decide does (rows ne and nu).
     while ! mkdir "$dir/review-calls.lock" 2>/dev/null; do :; done
     calls=$(( $(cat "$dir/review-calls" 2>/dev/null || echo 0) + 1 ))
     echo "$calls" >"$dir/review-calls"
@@ -383,11 +392,17 @@ case "${args[*]}" in
                 and (.verb == "*" or .verb == ($a.verb // "")) and (.group == "*" or .group == ($a.group // ""))
                 and (.resource == "*" or .resource == ($a.resource // "")) and (.subresource == "*" or .subresource == ($a.subresource // ""))
                 and (.namespace == null or .namespace == ($a.namespace // ""))
-                and (.name == null or .name == ($a.name // "")))
-            | .binding ] as $by
+                and (.name == null or .name == ($a.name // ""))) ] as $matched
+        | [ $matched[] | select(.error | not)
+            | if .binding_name then
+                (if .binding then error("a grant names binding_name and binding both: the reason is its binding'"'"'s, never a second text") else . end)
+                | "\(if .namespace == null then "ClusterRoleBinding \(.binding_name | tojson)" else "RoleBinding \("\(.binding_name)/\(.namespace)" | tojson)" end) of \(.role_kind // "ClusterRole") \(.role_name | tojson) to \(.subject.kind) \(if .subject.kind == "ServiceAccount" then "\(.subject.name)/\(.subject.namespace)" else .subject.name end | tojson)"
+              else .binding end ] as $by
+        | ([ $matched[] | .error // empty ] | first) as $error
         | (($masters == "on" and any($groups[]; . == "system:masters"))) as $master
         | . + {status: (if $master then {allowed: true, reason: "RBAC: allowed by ClusterRoleBinding \"cluster-admin\" of ClusterRole \"cluster-admin\" to Group \"system:masters\""}
                         elif ($by | length) > 0 then {allowed: true, reason: "RBAC: allowed by \($by[0])"}
+                        elif $error then {allowed: false, evaluationError: $error}
                         else {allowed: false} end)};
       def witness: (.spec.user // "") == "" and (.spec.groups // []) == ["system:masters"];
       [.items[] | answer]
@@ -554,10 +569,11 @@ case "${args[*]}" in
     ;;
   "get roles,clusterroles --all-namespaces -o json")
     # The built-in cluster-admin role, the bootstrap Role kube-system/extension-apiserver-
-    # authentication-reader, and one role of each grant (planted-<its index>, as the bindings' list
-    # names it), holding the grant as a rule, limited by name when the grant names one: a Role in the
-    # grant's namespace when it has role_kind Role, else a ClusterRole. A world marked no-roles
-    # answers the ClusterRoles alone, as an answer whose Role half came back empty would (row cu).
+    # authentication-reader, and one role of each grant (its role_name, or planted-<its index>, as
+    # the bindings' list names it), holding the grant as a rule, limited by name when the grant
+    # names one: a Role in the grant's namespace when it has role_kind Role, else a ClusterRole. A
+    # world marked no-roles answers the ClusterRoles alone, as an answer whose Role half came back
+    # empty would (row cu).
     shaped_answer roles
     [ ! -e "$dir/refuse-roles" ] || forbidden roles.rbac.authorization.k8s.io 'list resource "roles" in API group "rbac.authorization.k8s.io"' container.roles.list
     jq --arg roles "$([ -e "$dir/no-roles" ] && echo off || echo on)" '{apiVersion: "v1", kind: "List", items: (
@@ -570,7 +586,7 @@ case "${args[*]}" in
         rules: [{apiGroups: [""], resources: ["configmaps"], resourceNames: ["extension-apiserver-authentication"], verbs: ["get", "list", "watch"]}]}]
       + [to_entries[] | .key as $i | .value as $g | {
           apiVersion: "rbac.authorization.k8s.io/v1", kind: ($g.role_kind // "ClusterRole"),
-          metadata: ({name: "planted-\($i)"} + (if ($g.role_kind // "") == "Role" then {namespace: $g.namespace} else {} end)),
+          metadata: ({name: ($g.role_name // "planted-\($i)")} + (if ($g.role_kind // "") == "Role" then {namespace: $g.namespace} else {} end)),
           rules: [{apiGroups: [$g.group], verbs: [$g.verb],
                    resources: [if $g.resource == "*" or ($g.subresource // "") == "" then $g.resource else "\($g.resource)/\($g.subresource)" end]}
                   + (if $g.name then {resourceNames: [$g.name]} else {} end)]}]
@@ -681,18 +697,21 @@ deny() {
   exit 22
 }
 project_of="${url#https://gkehub.googleapis.com/v1/projects/}"
-if [ "$url" = "https://gkehub.googleapis.com/v1/projects/$fleet_project/locations/-/scopes" ]; then
-  [ ! -e "$world/refuse-scopes" ] || deny gkehub.scopes.list "projects/$fleet_project/locations/-/scopes"
-  { if [ -e "$world/scopes.json" ]; then cat "$world/scopes.json"; else echo '[]'; fi; } |
-    jq --argjson at "${token:-0}" '. as $s | {scopes: [$s[$at] // empty]} + (if $at + 1 < ($s | length) then {nextPageToken: "p\\\"\($at + 1)"} else {} end)'
-  exit 0
-fi
+# A world marked fleet-service-disabled answers each GKE Hub listing of the pool project, its
+# memberships and its scopes, as Google answers a disabled service: 403 with SERVICE_DISABLED.
 disabled() {
   jq -nc --arg project "$1" --arg service "$2" '{error: {code: 403, status: "PERMISSION_DENIED",
     details: [{reason: "SERVICE_DISABLED", metadata: {consumer: ("projects/" + $project), service: $service}}]}}'
   echo "curl: (22) The requested URL returned error: 403" >&2
   exit 22
 }
+if [ "$url" = "https://gkehub.googleapis.com/v1/projects/$fleet_project/locations/-/scopes" ]; then
+  [ ! -e "$world/fleet-service-disabled" ] || disabled "$fleet_project" gkehub.googleapis.com
+  [ ! -e "$world/refuse-scopes" ] || deny gkehub.scopes.list "projects/$fleet_project/locations/-/scopes"
+  { if [ -e "$world/scopes.json" ]; then cat "$world/scopes.json"; else echo '[]'; fi; } |
+    jq --argjson at "${token:-0}" '. as $s | {scopes: [$s[$at] // empty]} + (if $at + 1 < ($s | length) then {nextPageToken: "p\\\"\($at + 1)"} else {} end)'
+  exit 0
+fi
 if [ "$url" = "https://gkehub.googleapis.com/v1/projects/$fleet_project/locations/-/memberships" ]; then
   [ ! -e "$world/fleet-service-disabled" ] || disabled "$fleet_project" gkehub.googleapis.com
   [ ! -e "$world/fleet-service-disabled-other-service" ] || disabled "$fleet_project" other.googleapis.com
