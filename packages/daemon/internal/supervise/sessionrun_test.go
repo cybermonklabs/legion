@@ -242,6 +242,42 @@ func TestAControllerSessionIsReplacedAfterTwoLaunchesEndBeforeAFinishedTurn(t *t
 			t.Errorf("%d replacement lines, want the one of the first session", len(lines))
 		}
 	})
+
+	t.Run("f: the controller's first session that never finished a turn is not replaced, and its Error line names no oldSession", func(t *testing.T) {
+		h := newHarnessOf(t, controllerClaim())
+		h.reach(StateReady)
+		if c := h.claim(); c.SessionRun.TurnFinished || c.Abandoned.Session != "" {
+			t.Fatalf("the controller's session reads finished %t with abandoned %q, want its first session, which never finished a turn", c.SessionRun.TurnFinished, c.Abandoned.Session)
+		}
+		h.dies()
+		h.relaunched()
+		resumes, spawns := h.startsSoFar()
+		h.dies()
+
+		h.wantResumedSince(resumes, spawns, session)
+		h.wantEnds(2)
+		lines := h.records.of(sessionNotReplacedLine)
+		if len(lines) != 1 || lines[0].level != slog.LevelError {
+			t.Fatalf("the lines that say the session is not replaced are %+v, want one at Error", lines)
+		}
+		if got, _ := lines[0].attr("session"); got.String() != session {
+			t.Errorf("the Error line names session %q, want the first one, %q", got, session)
+		}
+		if got, ok := lines[0].attr("oldSession"); !ok || got.String() != "" {
+			t.Errorf("the Error line names oldSession %q (present %t), want it empty: %q replaced none", got, ok, session)
+		}
+
+		// The launch budget runs out, the claim fails, and the keeper's retry resumes the same session.
+		for h.state() != StateFailed {
+			h.dies()
+		}
+		resumes, spawns = h.startsSoFar()
+		h.must(RequestRetry{Claim: h.token})
+		h.wantResumedSince(resumes, spawns, session)
+		if lines := h.records.of(sessionReplacedLine); len(lines) != 0 {
+			t.Errorf("%d replacement lines, want none: the first session is never replaced", len(lines))
+		}
+	})
 }
 
 // A replacement under R1 is logged, and the fresh session is told (dispatch://INFRA-2045 R4): one
