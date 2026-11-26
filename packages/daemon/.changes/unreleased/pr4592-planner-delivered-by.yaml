@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The planner's role prompt says that a requirement whose text starts `Delivered by` after its
+  number and any title is the work of the issue it names, whatever that issue's parent, so the plan
+  gives it no task.
+custom:
+    Issue: pr4592
