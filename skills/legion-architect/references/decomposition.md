@@ -9,14 +9,14 @@ Read your own issue (`read_record`), its criteria, its children and their handof
 
 ## Adopting children
 
-Release a child a person created at once and as it is: `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`.
+Release a child a person created at once and as it is: `legion({ op: "release_children", issues: ["ACME-41", "ACME-42"] })`.
 The answer names `released`, `started` and `held`, each held child with what it waits on.
 A release refused with a code below writes nothing: release the rest again without the child it names.
 
 - `CHILD_NOT_ADOPTABLE`: it runs or ran as a tree of its own.
-  Leave it, or ask the controller.
+  Leave it where it stands.
 
-- `CHILD_IN_OTHER_TREE`: re-parent it back in Dispatch, or ask that tree's architect or the controller.
+- `CHILD_IN_OTHER_TREE`: re-parent it back in Dispatch, or ask that tree's architect by a mention on its issue.
 
 - `ISSUE_NOT_OWNED`: the issue is another architect's; send the move to the architect above you.
 

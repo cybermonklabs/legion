@@ -633,13 +633,15 @@ func hasDoubleEncoding(path string) bool {
 	return false
 }
 
-// check is the one decision both Decide and Rewrite take: the kind the request is carried under,
-// or the reason it may not be. The reasons, and the order they are reported in, are the Lean
-// model's.
+// Admit is every rule of the decision that reads no value: the kind the request may carry, or
+// the reason it may not. The proxy asks it of a request to a minted capability before its value
+// exists, so a request it refuses mints nothing. check asks it first and reads the one rule left,
+// a header already carrying the value, after it, so Decide and Rewrite refuse every value with
+// the same reason. The reasons, and the order they are reported in, are the Lean model's.
 //
-// The name's binding gives its kind, whose hosts and allow bind every secret of the kind, and
-// its profile's own allow, which narrows that one name: a request goes through only when both
-// allow it, so a profile never widens its kind.
+// The name's binding gives its kind, whose hosts and allow bind every secret of the kind, and its
+// profile's own allow, which narrows that one name: a request goes through only when both allow
+// it, so a profile never widens its kind.
 //
 // Two of the refusals are about the request's port and names. The CONNECT port must be 443:
 // every name the decision compares - the CONNECT host, the TLS name and the Host header - carries
@@ -669,7 +671,7 @@ func hasDoubleEncoding(path string) bool {
 // which services read them is not something the rules say. With neither list every method is
 // allowed already, so they take nothing away and are not refused. They are read directly below
 // the allow lists, for the same reason the path rules are read directly above them.
-func check(rules Rules, g Grant, value string, r *Request) (*Kind, string) {
+func Admit(rules Rules, g Grant, r *Request) (*Kind, string) {
 	if g.Placeholder == "" {
 		return nil, "empty placeholder"
 	}
@@ -713,6 +715,16 @@ func check(rules Rules, g Grant, value string, r *Request) (*Kind, string) {
 		return nil, "request carries a method override header"
 	case listed && hasMethodOverrideParameter(r.Query):
 		return nil, "request carries a method override parameter"
+	}
+	return k, ""
+}
+
+// check is the one decision both Decide and Rewrite take: Admit's rules and then the one rule
+// that reads the value.
+func check(rules Rules, g Grant, value string, r *Request) (*Kind, string) {
+	k, why := Admit(rules, g, r)
+	if k == nil {
+		return nil, why
 	}
 	// A request that already carries the real value learnt it somewhere other than this
 	// swap, so the airlock refuses it rather than forwarding it. The scan reads every

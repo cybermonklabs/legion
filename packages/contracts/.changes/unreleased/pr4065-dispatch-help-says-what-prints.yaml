@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'The help of `dispatch_read` says a document summary names its approval only once its approval has been asked for. The help of `dispatch_inbox` says the Needs you heading lists the asks alone, and that its count also counts the credential requests the person may decide, which are listed under Credential requests. The help of `dispatch_issues` says a row''s text names a route only when no live session holds it (nobody does, its holder is unresponsive, or that is unknown), and that the details carry every route. Each now says what the command prints.'
+time: 2026-11-20T13:53:32.000000000Z
+custom:
+    Issue: pr4065

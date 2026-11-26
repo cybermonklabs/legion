@@ -181,7 +181,7 @@ func TestACopyStartedAsLegionRunsAsLegion(t *testing.T) {
 	cmd := exec.Command(legionCopy(t), "-h")
 	cmd.Env = append(os.Environ(), testMainEnv+"=1")
 	out, err := cmd.CombinedOutput()
-	if want := newRoot(io.Discard, io.Discard).Short + "\n"; err != nil || !strings.HasPrefix(string(out), want) {
+	if want := newRoot(io.Discard, io.Discard, processWorkspace()).Short + "\n"; err != nil || !strings.HasPrefix(string(out), want) {
 		t.Fatalf("a copy started as legion with -h: %v, want exit 0 and legion's help, which starts %q\n%s", err, want, out)
 	}
 }
@@ -621,7 +621,7 @@ func TestHelpListsEveryCommand(t *testing.T) {
 		if code != tc.code {
 			t.Fatalf("%v = %d, want %d; stderr %q", tc.argv, code, tc.code, errb.String())
 		}
-		for _, command := range newRoot(io.Discard, io.Discard).Commands() {
+		for _, command := range newRoot(io.Discard, io.Discard, processWorkspace()).Commands() {
 			if listedHere := strings.Contains(listed, "\n  "+command.Name()+" "); listedHere == command.Hidden {
 				t.Errorf("%v lists %s: %t, want %t: %q", tc.argv, command.Name(), listedHere, !command.Hidden, listed)
 			}
@@ -1622,6 +1622,35 @@ func TestConfigCheckReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 			if want := demoCheckConfigOK + tc.want + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+			}
+		})
+	}
+}
+
+// `legion config check` names the ServiceAccount the controller's pod runs as when the file names
+// runtime.kubernetes.pod.controller_service_account, beside the one every other pod runs as — the
+// namespace's default where service_account is unset — just before the repository cache's line,
+// and exits 0. A file that names no controller account prints no such line
+// (TestConfigCheckReportsTheConfigurationsCapabilityGaps): its controller runs as every other
+// pod does.
+func TestConfigCheckNamesTheControllersOwnServiceAccount(t *testing.T) {
+	legionState(t)
+	const secretsGap = "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
+	const pluginsGap = "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
+	for _, tc := range []struct{ name, extra, want string }{
+		{"beside the pods' own account", "    pod: {service_account: legion-worker, controller_service_account: legion-controller}\ncontroller: daemon\n",
+			"controller service account: the controller's pod runs as legion-controller (runtime.kubernetes.pod.controller_service_account); every other pod runs as legion-worker (runtime.kubernetes.pod.service_account)\n"},
+		{"beside no pods' account", "    pod: {controller_service_account: legion-controller}\ncontroller: daemon\n",
+			"controller service account: the controller's pod runs as legion-controller (runtime.kubernetes.pod.controller_service_account); every other pod runs as the namespace's default (runtime.kubernetes.pod.service_account is unset)\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := kubernetesCheckConfig(t, tc.extra)
+
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+			if want := demoCheckConfigOK + secretsGap + tc.want + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 			}
 		})

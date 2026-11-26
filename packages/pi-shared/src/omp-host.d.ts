@@ -259,22 +259,30 @@ declare module "@oh-my-pi/pi-ai/error" {
   export function isCyberPolicyRefusal(error: unknown): boolean;
 }
 
+/** The host's OpenAI `cyber_policy` hold (`packages/coding-agent/src/session/cyber-policy-closure.ts`
+ * of cybermonklabs/oh-my-pi). */
+declare module "@oh-my-pi/pi-coding-agent/session/cyber-policy-closure" {
+  /** Whether `outcome` is OpenAI's own `cyber_policy` refusal, and not a call the hold itself held
+   * after one, whose error names the code too (lines 34-46 at v18.18.6-sami.20261125-164517). */
+  export function isRecordableCyberPolicyRefusal(outcome: unknown): boolean;
+}
+
 declare module "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader" {
   /** Where discovery found an extension: a project's own, the user's, an explicit or configured
    * path, or a host's inline factory. Oh My Pi declares it in `extensibility/extensions/types.ts`
-   * (`ExtensionScope`, line 2687 at v18.18.6-sami.20261125-164517); it is a type alone, so
+   * (`ExtensionScope`, line 2687 at v18.18.6-sami.20261126-110039); it is a type alone, so
    * declaring it here beside its one reader changes nothing at run time. */
   export type ExtensionScope = "project" | "user" | "explicit" | "inline";
   /** One extension discovery found: its module path and the scope it was found at
    * (`ExtensionPathEntry`, `extensibility/extensions/types.ts:2690-2693` at
-   * v18.18.6-sami.20261125-164517). */
+   * v18.18.6-sami.20261126-110039). */
   export interface ExtensionPathEntry {
     readonly path: string;
     readonly scope: ExtensionScope;
   }
   /** Every extension loaded for `cwd`, each found once: the native modules, the hooks and the
    * installed plugins' modules, then the explicit paths, less the disabled
-   * (`extensibility/extensions/loader.ts:804-883` at v18.18.6-sami.20261125-164517). Each is an
+   * (`extensibility/extensions/loader.ts:804-883` at v18.18.6-sami.20261126-110039). Each is an
    * entry; v18.18.6-sami.20261123-024918 returned the bare paths. */
   export function discoverExtensionPaths(
     explicit: readonly string[],
