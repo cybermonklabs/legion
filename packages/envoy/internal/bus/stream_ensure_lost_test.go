@@ -72,6 +72,12 @@ func TestAStreamEnsureWhoseReadIsLostWithItsConnectionFinishesAtTheReconnect(t *
 	relay.Arm(1)
 	cutAndAwaitReconnect(t, relay, conn)
 	awaitRelaySent(t, relay, 1)
+	// The hook is looked for from just before the second cut, not from the moment the poll of the
+	// reconnect took (reconnected): the ensure and the hook behind it finish within a few
+	// milliseconds of the reconnect, so a loaded test whose poll woke later than that stamped a
+	// moment after the hook had run, and waited out the 15 s for a run that was behind it. A figure
+	// below that is how long before the stamp the step ran.
+	cut := time.Now()
 	reconnected := cutAndAwaitReconnect(t, relay, conn)
 
 	var ensured, hooked time.Time
@@ -85,7 +91,7 @@ func TestAStreamEnsureWhoseReadIsLostWithItsConnectionFinishesAtTheReconnect(t *
 			ensured = time.Now()
 		}
 		if hooked.IsZero() {
-			if run, ok := firstHookRunAfter(reconnected); ok {
+			if run, ok := firstHookRunAfter(cut); ok {
 				hooked = run
 			}
 		}
