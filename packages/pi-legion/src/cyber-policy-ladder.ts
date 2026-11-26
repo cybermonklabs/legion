@@ -43,8 +43,8 @@ import { integerSetting, type StallLimitsLog } from "@legion/pi-shared/stall-lim
  * `session_stop` handler at 30 s without aborting it (`extensibility/extensions/runner.ts:152,
  * 1983-1988, 2030`), so each wait is at most `LONGEST_RUNG_WAIT_MS`, and once `SETTLE_BUDGET_MS`
  * from the handler's start has passed a rung starts no model switch and sends nothing; a switch
- * already under way ends, and the model fallback's return brings the model back. The compaction
- * itself runs outside every handler (below), so its length is bound by nothing here.
+ * already under way runs to its end, and the model fallback's return brings the model back. The
+ * compaction itself runs outside every handler (below), so its length is bound by nothing here.
  *
  * The compaction. It is asked for as `mode: "soft"`, a text summary by the session's model: the
  * shipped `compaction.methodOrder` puts provider-native compaction and snapcompact first, and
@@ -189,9 +189,8 @@ export interface CyberPolicyLadderDeps<Context extends CyberPolicyLadderContext>
   readonly sendMessage: PiApi["sendMessage"];
   /** The model of the session model's family below it in its chain (`ModelFallback`). */
   readonly sameFamilyFallback: (ctx: Context) => Promise<HostModel | undefined>;
-  /** Moves the session to that model and arms its return (`ModelFallback.stepDownTo`); with
-   * `signal` already aborted it moves nothing and answers false. */
-  readonly stepDownTo: (ctx: Context, model: HostModel, signal: AbortSignal) => Promise<boolean>;
+  /** Moves the session to that model and arms its return (`ModelFallback.stepDownTo`). */
+  readonly stepDownTo: (ctx: Context, model: HostModel) => Promise<boolean>;
   /** Resolves true after `ms`, or false at once when `signal` aborts first. */
   readonly wait: (ms: number, signal?: AbortSignal) => Promise<boolean>;
   /** A signal that aborts `ms` after it is made (`AbortSignal.timeout`). */
@@ -256,7 +255,7 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
   /** `widen` is registered on the host's `session_before_compact`. */
   let widening = false;
   /** Which pass this is: ending a pass, spending it and `reset` move it on, so a compaction or a
-   * `settle` that began under an earlier one changes nothing when it ends (`closePass`). */
+   * `settle` that began under an earlier one returns as soon as it sees the pass moved on. */
   let pass = 0;
 
   const classify = async (
@@ -276,31 +275,25 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
     }
   };
 
-  /** Ends the pass `from` names, and does nothing when `from` is an earlier one: a `settle` or a
-   * compaction that began under that pass leaves the pass after it alone. */
-  const closePass = (from: number): boolean => {
-    if (from !== pass) return false;
+  /** Ends the pass: every rung from the first again, and no compaction due. */
+  const closePass = (): void => {
     next = 0;
     compactDue = false;
     pass += 1;
-    return true;
   };
 
-  const endPass = (why: string, from = pass): void => {
-    const rungs = next;
-    if (closePass(from) && rungs > 0) {
-      deps.log.debug(`legion: the cyber_policy ladder ended: ${why}`, { rungs });
-    }
+  const endPass = (why: string): void => {
+    if (next > 0) deps.log.debug(`legion: the cyber_policy ladder ended: ${why}`, { rungs: next });
+    closePass();
   };
 
-  const exhaust = (from: number): void => {
-    const rungs = next;
-    if (!closePass(from)) return;
-    spent = true;
+  const exhaust = (): void => {
     deps.log.warn(
       "legion: every rung of the cyber_policy ladder was refused; the refusal goes to the daemon",
-      { rungs }
+      { rungs: next }
     );
+    closePass();
+    spent = true;
   };
 
   /** Input from outside the session, sent before each rung: it ends the host's hold for that
@@ -363,7 +356,7 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
           return;
         }
         if (name === COMPACTION_CANCELLED || name === "AbortError") {
-          endPass("its compaction was stopped", started);
+          endPass("its compaction was stopped");
           return;
         }
         deps.log.warn(
@@ -383,14 +376,14 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
       const signal = AbortSignal.any([event.signal, deps.timeout(SETTLE_BUDGET_MS)]);
       const last = event.last_assistant_message;
       if (assistantRefusal(last) === undefined) {
-        endPass("the turn ended with no refusal", started);
+        endPass("the turn ended with no refusal");
         return undefined;
       }
       const refused = await classify(deps.cyberPolicyRefusal, last);
       // The pane moved to another session meanwhile: this turn was the old session's.
       if (started !== pass) return undefined;
       if (!refused) {
-        endPass("the turn ended in another provider error", started);
+        endPass("the turn ended in another provider error");
         return undefined;
       }
       // A pass starts on OpenAI's own refusal only. A call the hold held is no new refusal: after a
@@ -409,13 +402,13 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
       }
       const rung = CYBER_POLICY_RUNGS[next];
       if (rung === undefined) {
-        exhaust(started);
+        exhaust();
         return undefined;
       }
       next += 1;
       /** The rung is given up: the settle pass was aborted or ran past its budget. */
       const giveUp = (): undefined => {
-        endPass("the settle pass was aborted or ran past its budget", started);
+        endPass("the settle pass was aborted or ran past its budget");
         return undefined;
       };
       let target: HostModel | undefined;
@@ -423,7 +416,7 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
         target = await deps.sameFamilyFallback(ctx);
         if (started !== pass) return undefined;
         if (target === undefined) {
-          exhaust(started);
+          exhaust();
           return undefined;
         }
       }
@@ -431,11 +424,11 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
       if (started !== pass) return undefined;
       if (!waited || signal.aborted) return giveUp();
       if (target !== undefined) {
-        const stepped = await deps.stepDownTo(ctx, target, signal);
+        const stepped = await deps.stepDownTo(ctx, target);
         if (started !== pass) return undefined;
         if (signal.aborted) return giveUp();
         if (!stepped) {
-          exhaust(started);
+          exhaust();
           return undefined;
         }
       }
@@ -480,7 +473,7 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
     reset: () => {
       spent = false;
       compacting = false;
-      closePass(pass);
+      closePass();
     },
   };
 }

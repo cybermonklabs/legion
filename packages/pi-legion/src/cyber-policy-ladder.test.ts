@@ -3,11 +3,11 @@ import type {
   CompactionPreparation,
   HostModel,
   SessionBeforeCompactEvent,
-  SessionContext,
 } from "@legion/pi-shared/pi-types";
 import {
   CYBER_POLICY_CONTINUE,
   CYBER_POLICY_RETRY_ENTRY,
+  type CyberPolicyLadderContext,
   type CyberPolicyLadderSettings,
   createCyberPolicyLadder,
   cyberPolicyLadderSettings,
@@ -41,7 +41,7 @@ const SETTINGS: CyberPolicyLadderSettings = {
 
 const WEAKER: HostModel = { provider: "openai", id: "gpt-5.4-mini", identity: { class: "openai" } };
 
-type Ctx = Pick<SessionContext, "compact">;
+type Ctx = CyberPolicyLadderContext;
 
 /** An error of the name Oh My Pi's own rejection of a compaction carries. */
 function named(name: string, message: string): Error {
@@ -52,8 +52,12 @@ function named(name: string, message: string): Error {
 
 /** What a case does inside the ladder's collaborators, set after the rig is made. */
 interface Hooks {
-  /** Runs inside the host's classifier of a refusal, before it answers. */
-  onRefusalCheck?: () => void;
+  /** Runs inside the host's classifier of a refusal, and is awaited before it answers. */
+  onRefusalCheck?: () => void | Promise<void>;
+  /** Runs inside the host's classifier of OpenAI's own refusal, before it answers. */
+  onRecordableCheck?: () => void;
+  /** Runs inside `sameFamilyFallback`, before it answers. */
+  onFallback?: () => void;
   /** Runs inside `wait`, before it answers. */
   onWait?: () => void;
   /** Runs inside `stepDownTo` once it has begun the switch, before it answers. */
@@ -88,7 +92,7 @@ function rig(options: { weaker?: HostModel; compact?: "ok" | "fails" | "absent" 
   const ladder = createCyberPolicyLadder<Ctx>({
     settings: SETTINGS,
     cyberPolicyRefusal: async (message) => {
-      hooks.onRefusalCheck?.();
+      await hooks.onRefusalCheck?.();
       return (
         typeof message === "object" &&
         message !== null &&
@@ -96,20 +100,25 @@ function rig(options: { weaker?: HostModel; compact?: "ok" | "fails" | "absent" 
         String(message.errorMessage).includes("cyber_policy")
       );
     },
-    recordableRefusal: async (message) =>
-      typeof message === "object" &&
-      message !== null &&
-      "errorMessage" in message &&
-      String(message.errorMessage).includes("cyber_policy") &&
-      !String(message.errorMessage).startsWith(HOLD_PREFIX),
+    recordableRefusal: async (message) => {
+      hooks.onRecordableCheck?.();
+      return (
+        typeof message === "object" &&
+        message !== null &&
+        "errorMessage" in message &&
+        String(message.errorMessage).includes("cyber_policy") &&
+        !String(message.errorMessage).startsWith(HOLD_PREFIX)
+      );
+    },
     sendMessage: (message, options) => {
       expect(message).toMatchObject({ customType: CYBER_POLICY_RETRY_ENTRY, display: false });
       calls.push(`${options?.origin ?? "inside"} ${options?.triggerTurn}`);
     },
-    sameFamilyFallback: async () => options.weaker,
-    stepDownTo: async (_ctx, model, signal) => {
-      // As `ModelFallback.stepDownTo` does: an aborted signal moves nothing.
-      if (signal.aborted) return false;
+    sameFamilyFallback: async () => {
+      hooks.onFallback?.();
+      return options.weaker;
+    },
+    stepDownTo: async (_ctx, model) => {
       calls.push(`step ${model.provider}/${model.id}`);
       hooks.onStep?.();
       return hooks.stepAnswer ?? true;
@@ -318,7 +327,7 @@ describe("one pass of the ladder", () => {
     expect(pane.calls).toEqual([]);
   });
 
-  test("a rung whose settle pass ends while its model switch runs ends no hold", async () => {
+  test("a settle pass aborted while its model switch runs lets the switch complete and ends no hold", async () => {
     const interrupt = new AbortController();
     const pane = rig({ weaker: WEAKER, compact: "absent" });
     pane.hooks.onStep = () => interrupt.abort();
@@ -333,8 +342,8 @@ describe("one pass of the ladder", () => {
     const pane = rig({ weaker: WEAKER, compact: "absent" });
     await pane.stop(refused());
     await pane.stop(refused());
-    // The weaker model's rung: its budget runs out during the wait.
-    pane.hooks.onWait = () => pane.budgets.at(-1)?.controller.abort();
+    // The weaker model's rung: its budget runs out while the refusal is classed, before the wait.
+    pane.hooks.onRefusalCheck = () => pane.budgets.at(-1)?.controller.abort();
     expect(await pane.stop(refused())).toBeUndefined();
     expect(pane.budgets.map((budget) => budget.ms)).toEqual([28_000, 28_000, 28_000]);
     expect(pane.calls).toEqual(["outside false", "outside false"]);
@@ -354,15 +363,53 @@ describe("one pass of the ladder", () => {
     expect(pane.waits.at(-1)).toBe(15_000);
   });
 
-  test("a session change while a refusal is classed starts the new session at the retry", async () => {
+  test("an old session's turn classed across a session change ends nothing of the new session's pass", async () => {
     const pane = rig();
-    await pane.stop(refused());
-    pane.hooks.onRefusalCheck = () => pane.ladder.reset();
+    // The old session's last turn ended in another provider error, and is still being classed.
+    const gate = Promise.withResolvers<void>();
+    pane.hooks.onRefusalCheck = () => gate.promise;
+    const oldTurn = pane.stop(otherError());
+    pane.hooks.onRefusalCheck = undefined;
+    pane.ladder.reset();
+    // The new session climbs to its compacted rung.
+    for (let rung = 0; rung < 3; rung += 1) await pane.stop(refused());
+    await pane.ladder.request([], pane.ctx);
+    gate.resolve();
+    expect(await oldTurn).toBeUndefined();
+    // The new session's compaction is still its pass's: its failure starts the ladder's turn.
+    pane.failCompaction(new Error("cyber_policy: the summary was refused"));
+    await settle();
+    expect(pane.calls.at(-1)).toBe("inside true");
+  });
+
+  test("a session change while OpenAI's own refusal is classed starts the new session at the retry", async () => {
+    const pane = rig();
+    pane.hooks.onRecordableCheck = () => pane.ladder.reset();
     // That refusal was the old session's: it climbs nothing.
     expect(await pane.stop(refused())).toBeUndefined();
-    pane.hooks.onRefusalCheck = undefined;
+    pane.hooks.onRecordableCheck = undefined;
     expect(await pane.stop(refused())).toMatchObject({ additionalContext: CYBER_POLICY_CONTINUE });
-    expect(pane.waits).toEqual([15_000, 15_000]);
+    expect(pane.waits).toEqual([15_000]);
+  });
+
+  test("a session change while the weaker model is looked for leaves the new session's ladder whole", async () => {
+    const pane = rig({ compact: "absent" });
+    await pane.stop(refused());
+    await pane.stop(refused());
+    // No weaker model of the family, and the pane moved to another session meanwhile.
+    pane.hooks.onFallback = () => pane.ladder.reset();
+    expect(await pane.stop(refused())).toBeUndefined();
+    pane.hooks.onFallback = undefined;
+    expect(await pane.stop(refused())).toMatchObject({ additionalContext: CYBER_POLICY_CONTINUE });
+  });
+
+  test("a session change during a rung's wait ends no hold and climbs nothing", async () => {
+    const pane = rig();
+    pane.hooks.onWait = () => pane.ladder.reset();
+    expect(await pane.stop(refused())).toBeUndefined();
+    expect(pane.calls).toEqual([]);
+    pane.hooks.onWait = undefined;
+    expect(await pane.stop(refused())).toMatchObject({ additionalContext: CYBER_POLICY_CONTINUE });
   });
 
   test("a host with no compaction for extensions passes over the compacted rung", async () => {

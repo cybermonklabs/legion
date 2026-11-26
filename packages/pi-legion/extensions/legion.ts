@@ -332,7 +332,7 @@ export default function legionExtension(pi: PiApi): void {
     // `pi`'s own method, called on `pi` as every other send of this entry is.
     sendMessage: (message, options) => pi.sendMessage(message, options),
     sameFamilyFallback: (context) => modelFallback.sameFamilyFallback(context),
-    stepDownTo: (context, model, signal) => modelFallback.stepDownTo(context, model, signal),
+    stepDownTo: (context, model) => modelFallback.stepDownTo(context, model),
     wait: (delayMs, signal) => delay(delayMs, true, { signal }).catch(() => false),
     timeout: (ms) => AbortSignal.timeout(ms),
     // At the ladder's first compaction only: with any handler registered Oh My Pi runs no
