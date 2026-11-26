@@ -1,6 +1,6 @@
 # Reading admission
 
-Read this when you need to know where an issue stands in admission, what an `admission.held` word means, or which trees are live, and before you move an issue to `todo`.
+Read this when you need to know where an issue stands in admission, what an `admission.held` word means, or which trees are live, before you move an issue to `todo`, and before you change admission by signals.
 An issue's `phase` alone does not say it: read its key against the `admission` lists and the root its `tree` names.
 The `read_state` summary prints `admission.active`, `admission.waiting` and `admission.blocked` as its `active`, `waiting` and `blocked` lines;
 no read prints `admission.trees` or `admission.held`.
@@ -83,3 +83,9 @@ Every move to `todo` you make is one of these:
 - a tree you parked with the mark `Parked by Legion while it waits on:`, once its cause is gone or its event happened (comment the mark and what you checked), or a person's later decision gives it a next step;
 
 - stopped-session work a person's directive in the weekly plan moves to Legion.
+
+## Admission by signals
+
+Change admission by signals only on a person's cited word, in `reason`: `signals_on`, `signals_off`, `set_signal_limit`, `clear_signal_limit`.
+You regulate nothing yourself.
+What each signal is, its limit and how to read it: [Admission by signals](https://cybermonklabs.github.io/legion/legion/admission-signals/).

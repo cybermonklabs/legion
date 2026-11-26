@@ -67,9 +67,7 @@ The daemon works only issues labelled `legion` (any case), and a labelled root i
 
 A free slot or a full cap is no reason to take, label, admit or park an issue: a labelled root in `todo` takes the next slot by itself.
 
-How a slot is counted, the words of the lists and of `admission.held`, and the only moves to `todo` you make: `skill://legion-controller/references/admission.md`.
-
-Change admission by signals only on a person's cited word, in `reason`: `signals_on`, `signals_off`, `set_signal_limit`, `clear_signal_limit`. You regulate nothing yourself.
+How a slot is counted, the words of the lists and of `admission.held`, the only moves to `todo` you make, and your changes of admission by signals: `skill://legion-controller/references/admission.md`.
 
 ## Merge holds
 
