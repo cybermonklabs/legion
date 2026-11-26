@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -14,13 +18,16 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // A listener whose ENVOY_OIDC_ACCOUNTS names no account — a list emptied by mistake — refuses to
 // start, naming the setting, rather than reading it as unset and admitting every pod of the
 // cluster; the same listener with the setting empty starts, as one with it unset does. A refused
-// start is killed only with 30 s left of the test binary's deadline, so a loaded machine that
-// starts the binary late kills no start that would have refused on its own.
+// start ends within refusedStartLimit of when the kernel made its process. The limit counts from
+// that start, not from the call, so a loaded machine that starts the binary late kills no start
+// that would have refused on its own; a start still going with 30 s left of the test binary's
+// deadline is killed too.
 func TestTheListenerBinaryRefusesAnAccountListThatNamesNoAccount(t *testing.T) {
 	t.Parallel()
 	issuer := oidctest.New(t)
@@ -33,16 +40,62 @@ func TestTheListenerBinaryRefusesAnAccountListThatNamesNoAccount(t *testing.T) {
 			"PORT=0", "ENVOY_LISTEN_HOST=127.0.0.1", "ENVOY_MACHINE_ID=oidc-accounts-blank", "NATS_URLS=" + uri,
 			"ENVOY_OIDC_ISSUER=" + issuer.URL(), "ENVOY_OIDC_AUDIENCE=" + listenerTestAudience, "ENVOY_OIDC_ACCOUNTS=" + value,
 		}
-		output, err := cmd.CombinedOutput()
+		var output bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &output, &output
+		overran, err := runFromItsStart(t, cmd, refusedStartLimit)
 		cancel()
+		if overran {
+			t.Fatalf("ENVOY_OIDC_ACCOUNTS=%q: the start did not end within %s of when the kernel made its process and was killed, want exit 1 naming the setting:\n%s", value, refusedStartLimit, output.Bytes())
+		}
 		var exit *exec.ExitError
-		if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(string(output), "ENVOY_OIDC_ACCOUNTS is set but names no account") {
-			t.Fatalf("ENVOY_OIDC_ACCOUNTS=%q: the start ended with %v, want exit 1 naming the setting:\n%s", value, err, output)
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(output.String(), "ENVOY_OIDC_ACCOUNTS is set but names no account") {
+			t.Fatalf("ENVOY_OIDC_ACCOUNTS=%q: the start ended with %v, want exit 1 naming the setting:\n%s", value, err, output.Bytes())
 		}
 	}
 	listener := startListenerProcess(t, binary, uri, "oidc-accounts-empty",
 		"ENVOY_OIDC_ISSUER="+issuer.URL(), "ENVOY_OIDC_AUDIENCE="+listenerTestAudience, "ENVOY_OIDC_ACCOUNTS=")
 	listener.waitHealthy(t)
+}
+
+// refusedStartLimit bounds a start that refuses its settings, from when the kernel made the
+// listener's process to its exit: the listener reads its settings before it serves anything.
+const refusedStartLimit = 30 * time.Second
+
+// runFromItsStart starts cmd and waits for it, and kills it once it has run bound from when the
+// kernel made its process, read right after Start (testexec.ProcStart), not from this call. Each of
+// the two times it compares, that start and the time since boot it reads to set the kill, can read
+// up to a tick early, so the kill waits two ticks more: no run is killed before it has run bound.
+// overran says the bound ended the run: the kill had been sent, and the run's own exit status says
+// a SIGKILL ended it, so a run that exited before the kill reached it did not overrun. A start the
+// kernel dates more than two ticks before the call is no start at all, and the row says it cannot
+// read when its run started, as testexec.StartedAfter does, rather than judge it.
+func runFromItsStart(t *testing.T, cmd *exec.Cmd, bound time.Duration) (overran bool, err error) {
+	t.Helper()
+	called := testexec.SinceBoot(t)
+	if err := cmd.Start(); err != nil {
+		return false, err
+	}
+	started, err := testexec.ProcStart(cmd.Process.Pid)
+	if err == nil && started < called-2*testexec.ClockTick {
+		err = fmt.Errorf("the kernel made it %s before the call, which no start can be: this machine's /proc/uptime and its processes' start times are not one clock", called-started)
+	}
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("read when the kernel made the process of %s: %v", cmd.Path, err)
+	}
+	var sent atomic.Bool
+	kill := time.AfterFunc(started+bound+2*testexec.ClockTick-testexec.SinceBoot(t), func() {
+		sent.Store(true)
+		_ = cmd.Process.Kill()
+	})
+	err = cmd.Wait()
+	kill.Stop()
+	if !sent.Load() || cmd.ProcessState == nil {
+		return false, err
+	}
+	status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
+	return ok && status.Signaled() && status.Signal() == syscall.SIGKILL, err
 }
 
 // The settings reach the handler the listener binary serves, which the handler's own tests, each
