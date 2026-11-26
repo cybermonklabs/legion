@@ -12,11 +12,12 @@ import (
 
 // ClockTick is the unit of /proc/<pid>/stat's starttime: USER_HZ, a hundredth of a second on every
 // Linux, which is also how finely /proc/uptime counts. The two agree to within one tick
-// (TestTheStartClockAgreesWithTheUptimeClock, 20/20 gVisor and native), but not without bias:
-// /proc/uptime rounds to the tick and a starttime truncates, so each StartMark.Late() runs up to
-// half a tick high on average (about +5 ms a reading under gVisor). A single reading is sound to one
-// tick; a bound that SUMS Late() over a number of readings the product chooses drifts by that half
-// tick each, so it must sum a fixed set, not a count the product controls.
+// (TestTheStartClockAgreesWithTheUptimeClock, 20/20 gVisor and native), but not without bias.
+// A process's starttime truncates to the tick on both. /proc/uptime truncates on native (so the two
+// track, mean about 0) but rounds under gVisor, which puts StartMark.Late() up to half a tick high on
+// average there (measured about +5 ms a reading). A single reading is sound to one tick; a bound that
+// SUMS Late() over a number of readings the product chooses drifts by that half tick each under
+// gVisor, so it must sum a fixed set, not a count the product controls.
 const ClockTick = 10 * time.Millisecond
 
 // MarkStart is shell that writes, to the file the shell word to names, when the kernel made the

@@ -2002,7 +2002,7 @@ func TestAToolCallSummaryCutsTheArgumentsAfterTheURLRule(t *testing.T) {
 					t.Fatalf("the summary %q holds a part of the URL's user name or of its query", line)
 				}
 			}
-			left := []rune(head + `https://github.com/o/r.git"}`)
+			left := []rune(head + `https://[a URL with credentials]/o/r.git"}`)
 			summary := string(left)
 			if len(left) > 80 {
 				summary = string(left[:79]) + "…"

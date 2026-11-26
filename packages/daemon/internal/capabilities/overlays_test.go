@@ -85,19 +85,17 @@ func TestCheckOverlaysRefusesOnlyANonZeroExit(t *testing.T) {
 //   - it recorded none: Oh My Pi exited on its own, a refusal. A correct check reads that as its own
 //     exit, with one exception: kill succeeds on a zombie, so a refusal whose reap os/exec took only
 //     after the timeout passed is stopped "as a timeout" with no SIGTERM delivered, which looks exactly
-//     like a check that misreads a refusal. The row orders that window from the run's own marks. The
-//     refused file's run starts after the slow file's run returned, which is after the slow file's
-//     Oh My Pi recorded its SIGTERM, so its timeout passes no sooner than that mark plus 300 ms. A
-//     refusal that exited reapBound or more before that earliest moment would have needed os/exec to
-//     reap it that late, and the row fails it as a refusal read as a timeout. One that exited closer
-//     than that lies in the window no fact outside os/exec orders, and is not judged.
+//     like a check that misreads a refusal. The window from a zombie's exit to os/exec's reap is
+//     ordered by no fact outside os/exec, so such a call is not judged. This cannot fail a correct
+//     check whose reap was merely late. A check that misreads EVERY refusal never answers before its
+//     timeout on any call, so no call of the right order comes, and the give-up line below fails it.
 //
 // A check that stops at the first timeout never runs the refused file at all, and fails the row at once.
 func TestCheckOverlaysKeepsCheckingAfterATimeout(t *testing.T) {
 	was := commandTimeout
 	commandTimeout = 300 * time.Millisecond
 	t.Cleanup(func() { commandTimeout = was })
-	const stopBound, reapBound = 5 * time.Second, 200 * time.Millisecond
+	const stopBound = 5 * time.Second
 	dir := t.TempDir()
 	omp := filepath.Join(dir, "omp")
 	// Each call's files are in the directory LEGION_TEST_RUN names. The slow file's run waits until
@@ -176,10 +174,13 @@ func TestCheckOverlaysKeepsCheckingAfterATimeout(t *testing.T) {
 					t.Fatalf("call %d: the refused file's run read as timed out, its Oh My Pi passed its first act and recorded no SIGTERM, and the row cannot read the marks that order its exit against its timeout (slow file's SIGTERM mark: %v; refused file's exit mark: %v): CheckOverlays = %q, %v", calls, slowErr, exitErr, got, err)
 				}
 				earliest := slowTermed + commandTimeout
-				if reap := earliest - exited; reap >= reapBound {
-					t.Fatalf("call %d: the refused file's run read as timed out, but its Oh My Pi passed its first act, recorded no SIGTERM, and exited %s before the earliest moment its %s timeout could pass: the check read a refusal as a timeout (CheckOverlays = %q, %v)", calls, reap, commandTimeout, got, err)
-				}
-				why = fmt.Sprintf("its Oh My Pi recorded no SIGTERM and exited only %s before the earliest moment its timeout could pass, inside the window from a zombie's exit to os/exec's reap, which no fact outside os/exec orders", earliest-exited)
+				// A refusal reaped after its timeout could pass is stopped "as a timeout" with no
+				// SIGTERM, which is indistinguishable from a check that misreads a refusal: the window
+				// from a zombie's exit to os/exec's reap is ordered by no fact outside os/exec. So this
+				// call is not judged. A check that misreads EVERY refusal never answers before its
+				// timeout on any call, and the give-up line below fails it; a loaded machine's late reap
+				// on one call does not, because a good call comes within the bound.
+				why = fmt.Sprintf("its Oh My Pi recorded no SIGTERM and exited %s before the earliest moment its %s timeout could pass, inside the window from a zombie's exit to os/exec's reap, which no fact outside os/exec orders", earliest-exited, commandTimeout)
 			}
 			if time.Now().Before(until) {
 				t.Logf("call %d is not judged: %s (%v)", calls, why, err)

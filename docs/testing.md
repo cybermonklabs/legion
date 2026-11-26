@@ -266,6 +266,23 @@ itself, whose tests import its sources by relative path.
   container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`). Remove it with `docker rm -f
   -v`, and give it the CPU and memory limits "Containers a test starts" below requires.
 
+- A server a suite or a rig script starts never binds a port the caller found free and let go of:
+  any other program on the machine can take that port first, and the server then fails to start
+  or another program answers in its place. The server binds port 0 and the caller reads the port
+  from what the server reports (natsd's `-p -1 -m -1`, the listener's `PORT=0`, a broker's
+  `*_LISTEN_ADDR` of `127.0.0.1:0`, `moto_server -p 0`, `python3 -u -m http.server 0`,
+  `Bun.serve({ port: 0 })`), or takes a socket the caller holds (`start_held` in
+  `scripts/e2e/lib/rig.sh`), or listens on a unix socket in a directory of the run's own and on no
+  TCP port, as the Dispatch e2e harness's Postgres does in both providers
+  (`packages/dispatch/e2e/harness-postgres.ts`). A URL a server must hold before it binds names a
+  front bound first and pointed at the port the server reports (`dev-airlock-stands front`, as
+  `packages/envoy/scripts/dev-broker.sh` and `lib/project-access-stack.sh` run it). A port a
+  process names as closed for its whole life is held bound and never listening (`holdRefusedPort`
+  in `@legion/test-fixtures/refused-port`, which the outside-path-reach tests' `closedPort` takes),
+  and a broker that must refuse and later answer at one address is a listener the row holds from
+  its start, which drops each connection until it relays to the broker (`heldBrokerAddress` in
+  `packages/claude-envoy/tests/channel-nats.test.ts`).
+
 - Give a Bun process the test starts under a HOME of its own `BUN_RUNTIME_TRANSPILER_CACHE_PATH=0`,
   unless the row tests that cache. Where neither that variable nor `XDG_CACHE_HOME` names another
   place, Bun keeps its transpiler cache under HOME, so a child in an empty HOME writes a file and a
@@ -420,6 +437,22 @@ printed an act message, naming each message with its component and the frames th
   the row. Under a lane's load that is rare, and the file alone does not show it:
   `web/src/features/conversation/ConversationTab.test.tsx`'s row "a scroll event measures the
   reader position in O(1) rect reads" failed 1 run in 20 that way.
+
+- A row whose tree can still hold a real timer when its body ends, such as the 150 ms debounce of
+  a composer's draft pills (`useSettled`), ends its body by unmounting inside `act`: `cleanup()` in
+  a `finally` around the body, as `web/src/features/delivery/DeliveryPage.test.tsx` and
+  `web/src/features/inbox/ThreadBody.test.tsx` wrap their rows. Bun gives the event loop a turn
+  between a row's body and its `afterEach`, so a timer due then fires with the act environment on
+  and no act scope open, and an `afterEach` that unmounts comes after that turn. Only a loaded run
+  ends the body before the timer: `ThreadBody.test.tsx`'s row "an Agent card whose thread moves on
+  under a refused reply says what its box can do" failed 1 run in 20 that way. A row that reads
+  what the timer does lets it run out inside `act` instead (`settleRefPickerSearch` in
+  `web/src/features/refs/ref-picker-fixture.ts`).
+
+- Bun drops the frame of an arrow whose whole body is the call that sets the state, as in
+  `setTimeout(() => setValue(next), ms)`: JavaScriptCore runs that call as a tail call. The act
+  rule then names the component and no frame of `web/src`, so look in that component's own hooks
+  for a timer or a promise that ends in such a call.
 
 - `web/src/__tests__/act-warnings.test.ts` runs the act rule's six fixtures,
   `web/src/__tests__/act-rule*.fixture.tsx`. Four draw React's act messages.
@@ -737,19 +770,31 @@ A Legion issue pod does not run that whole package: `skills/legion-worker/refere
 
 CI runs that package under `-race` in `envoy-go-race-api`, the job that runs it by itself, which
 gives it 70 minutes (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's
-steps); `envoy-go` leaves it out of its unit step, and `text-checks` runs its nineteen source-guard
+steps); `envoy-go` leaves it out of its unit legs, and `text-checks` runs its nineteen source-guard
 tests by name. `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone
 rather than beside the module's other Postgres-backed packages: together they share one database
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
-Every package of `packages/daemon` runs in CI in exactly one leg that `.github/go-legs.yaml` names
-for it, or, as `internal/daemon` does, in a group of its tests in each of several legs of one job
-(or under `elsewhere`, with the job that runs it). When you add, remove, rename or move a
-daemon package, change its line there in the same change: every daemon-go leg fails, naming the
-package, while `go list ./...` and the file disagree. Put a new package in the leg its measured
-time fits, longest first; `.github/ci-notes/ci-job-daemon-go.md` says how the legs are balanced.
+Every package of `packages/daemon` and of `packages/envoy` runs in CI in exactly one leg that
+`.github/go-legs.yaml` names for it, or, as `internal/daemon` and `cmd/listener` do, in a group of
+its tests in each of several legs of one job (or under `elsewhere`, with the job that runs it). A
+package the module's `twice` names, as envoy's `internal/cipher/natscallout` is, runs once in a
+leg of each of two jobs, a plain one and a race one, each in a mode of its own.
+When you add, remove, rename or move a package of either module, change its line there in the same
+change. A package `go list ./...` prints and the file does not name still runs, in exactly one
+leg: the last leg of the job the module's `unlisted` names (daemon-go, envoy-go), and every leg
+of the module warns, naming it, until the file does. A package under one of envoy's race trees
+(`internal/dispatch/delivery`, `internal/dispatch/store`, `internal/kvwatch`) must be listed in
+the race leg of its tree: the import of `.github/scripts/ci_job_reads.py` refuses it unlisted, so
+the ci-filters job fails naming it, and the changes job's filter generation falls open and selects
+every job, which the lint job then fails on (its checks refuse the fall-open filters file, without
+naming the package), since the last plain leg would run it without the race detector. A line that
+names a directory that is no package, or a package in two places (but the two legs of a package
+`twice` names), fails every leg of the module. Put a new package in the leg its measured time
+fits, longest first; `.github/ci-notes/ci-job-daemon-go.md` and `.github/ci-notes/ci.md`, "Why
+envoy's Go tests run in legs", say how the legs are balanced.
 
 `packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI runs it only
 under the race detector, once per run, split by test name over the three race legs
@@ -803,7 +848,7 @@ It prints `WARNING: LIKELY CLEANUP/FINALIZER ISSUES`, then one `is reachable fro
 The rule covers the cleanup's argument as well as its closure, so an argument that reaches the object is the same defect: the room load `keepInstance` passed reached a document of its own, which is the finding this job made on a head where the closure itself was already weak, and the comment on that cleanup names the path it took (dispatch://INFRA-1085).
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
-CI runs it in `envoy-go-race-docs` (`.github/workflows/ci-job-envoy-go-race-docs.yaml`), on the same line as the race detector, so one run of the package's tests serves both detectors, and on the package's line of `envoy-go`'s step "Test what the race build cannot run at all or at full size", which runs plain the tests the race build leaves out or shrinks.
+CI runs it in `envoy-go-race-docs` (`.github/workflows/ci-job-envoy-go-race-docs.yaml`), on the same line as the race detector, so one run of the package's tests serves both detectors, and on the package's lines of `envoy-go`'s two plain steps for what the race build leaves out or shrinks: "Test what the race build cannot run at all or at full size" (`envoy-go-race-impossible`) for the memory bounds and the render storms, and "Test the xid window rows, the API's issue-list bound and the auth service's storm, alone" (`envoy-go-alone`) for the xid window rows.
 The `envoy_go_race_docs` and `envoy_go` filters in `.github/ci-filters.yaml` select them.
 Both are slow suites: a pull request runs them only with the label `full-ci` or that suite's `lane:` label, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
 
@@ -831,6 +876,19 @@ copy writes a few hundred bytes. `storetest`'s own test fails when a clone write
 hundredth of its template's size, and each module's `internal/textcheck` test
 `TestEveryCreatedDatabaseIsAFileCopy` fails on any line of the module's Go files that opens a
 database's creation in a string without `strategy file_copy` on the same line.
+
+The same test then runs `testdb.WithoutJIT(name)` on the database it made (`alter database … set
+jit = off`; `internal/testpg/testdb` in each module), so every session on it starts with JIT off,
+as production's database does: Dispatch runs on Cloud SQL, which does not support PostgreSQL's
+LLVM JIT (https://cloud.google.com/sql/docs/postgres/features, "Unsupported features"), and CI's
+Postgres image runs with `jit = on`. Under it a statement whose estimate passes `jit_above_cost`
+compiles before it runs: in `internal/dispatch/refs` one oracle statement spent 445-475 ms of each
+453-564 ms run compiling, 200 times a run. The setting is the database's, and a clone does not
+copy its template's, so each database takes it when it is made, a template included. Each
+module's `internal/textcheck` test `TestEveryCreatedDatabaseRunsWithoutJIT` fails on any function
+that opens a database's creation in a string and calls no `WithoutJIT`, and
+`TestEveryDatabaseRunsWithoutJIT` (Dispatch's `storetest`, the daemon's `testpg`) reads `jit = off`
+from the source `database` on each kind of database those harnesses hand out.
 
 In Envoy, a test that already holds a server's URL makes its database with
 `internal/testpg/testdb`'s `DatabaseOn`, never `internal/testpg`'s: `testpg` links
