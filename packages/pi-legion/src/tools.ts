@@ -373,9 +373,7 @@ function stateSummary(state: LegionState): string {
   const pause = pauseSummary(state);
   if (pause !== undefined) lines.push(pause);
   if (admission !== undefined) {
-    lines.push(
-      `admission cap ${admission.cap}`
-    );
+    lines.push(`admission cap ${admission.cap}`);
     const p0 = p0Summary(state);
     if (p0 !== undefined) lines.push(p0);
     lines.push(
