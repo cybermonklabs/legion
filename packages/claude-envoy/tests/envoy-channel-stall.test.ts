@@ -197,19 +197,6 @@ async function startChannelServer(
       server.exitCode !== null || server.signalCode !== null
         ? `the channel server exited (${server.exitCode ?? server.signalCode}): ${stderr}`
         : stack.exited()
-    // The server runs on nats.js's real ping and dial timers and a real listener, so each wait
-    // polls the real clock until its condition holds. Each probe throws once the server, natsd or
-    // the listener has exited, naming that exit, and names it in place of the error a read meets
-    // once one has. Once its row has ended it throws before each read and in place of its
-    // answer, so a wait of a row that ended does not poll on into the row after it.
-    const probe =
-      (what: string, condition: () => boolean | Promise<boolean>) => async (): Promise<boolean> => {
-        const doing = `waiting for ${what}`
-        if (await readInRow(ended.signal, doing, exit, condition)) return true
-        const exited = exit()
-        if (exited !== undefined) throw new Error(`${doing}: ${exited}`)
-        return false
-      }
     return {
       server,
       proxy,
@@ -221,9 +208,16 @@ async function startChannelServer(
       // within `RECOVERY_BOUND_MS` of the freeze (`runFreezeScenario`). A wait given none fails
       // at its row's deadline, naming what it waited for.
       async waitFor(condition, deadline, what) {
-        const met = probe(what, condition)
+        const doing = `waiting for ${what}`
+        // The server runs on nats.js's real ping and dial timers and a real listener, so each
+        // wait polls the real clock until its condition holds. Each probe throws once the server,
+        // natsd or the listener has exited, naming that exit, and names it in place of the error a
+        // read meets once one has. Once its row has ended it throws before each read and in place
+        // of its answer, so a wait of a row that ended does not poll on into the row after it.
         await until(what, async () => {
-          if (await met()) return true
+          if (await readInRow(ended.signal, doing, exit, condition)) return true
+          const exited = exit()
+          if (exited !== undefined) throw new Error(`${doing}: ${exited}`)
           if (deadline !== undefined && Date.now() > deadline) {
             throw new Error(`timed out waiting for ${what}: ${stderr}`)
           }
@@ -286,8 +280,14 @@ describe.skipIf(!envoyStackEnabled)(
         "ses_stall",
       )
       try {
+        let registered: unknown
         await waitFor(
-          async () => (await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok,
+          async () => {
+            const answer = await fetch(`${envoyUrl}/v1/registry/${sessionID}`)
+            if (!answer.ok) return false
+            registered = await answer.json()
+            return true
+          },
           undefined,
           "the session's registration",
         )
@@ -297,9 +297,7 @@ describe.skipIf(!envoyStackEnabled)(
           plugin: "@sjawhar/claude-envoy",
           plugin_version: "source",
         }
-        expect(await (await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).json()).toMatchObject(
-          registration,
-        )
+        expect(registered).toMatchObject(registration)
         expect(await (await fetch(`${envoyUrl}/v1/sessions`)).json()).toContainEqual(
           expect.objectContaining(registration),
         )
@@ -327,8 +325,8 @@ describe.skipIf(!envoyStackEnabled)(
       try {
         await waitFor(
           async () =>
-            (await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok &&
-            proxy.connections[0]?.subscribedAt !== undefined,
+            proxy.connections[0]?.subscribedAt !== undefined &&
+            (await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok,
           undefined,
           "the session's registration and first subscription",
         )

@@ -1853,6 +1853,7 @@ function onTestClock<T>(
       // Read while the test's clock is still the clock.
       elapsedMs = Date.now() - startedAt;
     });
+    watched.catch(() => undefined);
     if (waiting !== undefined) {
       const what = "the work to wait on the test's clock";
       const deadline = realTimeDeadline(`onTestClock's wait for ${what}`);
@@ -6860,11 +6861,10 @@ console.log(JSON.stringify(args));
      * goes no further than this wait.
      */
     const recordsLanded = async (wanted: number) => {
-      const ownRow = rowCheck();
-      await until(`${wanted} records to reach the stand-in Dispatch`, () => {
-        stillOn(ownRow, `waiting for ${wanted} records to land`);
-        return published.length >= wanted;
-      });
+      await until(
+        `${wanted} records to reach the stand-in Dispatch`,
+        rowProbe(() => published.length >= wanted)
+      );
     };
     /**
      * One unmarked write, end to end: the session's gate is bound, the `dispatch` CLI runs the
@@ -25077,6 +25077,7 @@ console.log(JSON.stringify(args));
 
     control?.push(JSON.stringify({ type: "watch", v: 1 }));
     control?.push(JSON.stringify({ type: "replay", v: 1 }), "inbox-viewer-of-b");
+    const decoder = new TextDecoder();
     // The replay is one publish on the viewer's inbox (`pumpAgentStreamControl`), so once it holds
     // B's own turn it holds all it ever will. The replay can carry a turn at all: B's own is in it.
     const replayed = await until(
@@ -25084,12 +25085,11 @@ console.log(JSON.stringify(args));
       rowProbe(() => {
         const text = natsState.published
           .filter((each) => each.subject === "inbox-viewer-of-b")
-          .map((each) => new TextDecoder().decode(each.data))
+          .map((each) => decoder.decode(each.data))
           .join("\n");
         return text.includes(ownTurn) && text;
       })
     );
-    expect(replayed).toContain(ownTurn);
     expect(replayed).not.toContain(returnedTurn);
     await stop();
     // What can hang is the session's start, its switch, a turn's end (`message_end`) or its
@@ -25352,6 +25352,19 @@ console.log(JSON.stringify(args));
     expect(fixture.deliveries[0]?.content).toContain("ses_outage_after");
   });
 
+  /**
+   * Holds the row 60 ms, well past the resubscribe delay the rows below set
+   * (`ENVOY_RESUBSCRIBE_DELAY_MS`, 10 ms), so a resubscribe the extension armed would have run by
+   * its end: what the row reads after it shows that `mustNot` did not start. It is a named span
+   * and sets no deadline of its own.
+   */
+  function pastResubscribeDelay(mustNot: string): Promise<void> {
+    return span(
+      60,
+      `${mustNot} is a 10 ms timer inside the extension (ENVOY_RESUBSCRIBE_DELAY_MS) that no state shows armed, and no later action of the row orders after it`
+    );
+  }
+
   test("an in-process session switch leaves the session it left behind nothing to receive on", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
@@ -25366,13 +25379,8 @@ console.log(JSON.stringify(args));
     expect(abandoned?.active()).toBe(true);
 
     await fixture.handlers.get("session_switch")?.({}, sessionContext("ses_current"));
-    // Well past ENVOY_RESUBSCRIBE_DELAY_MS, so the pump has had its chance to
-    // treat this deliberate close as an outage and recover from it.
-    await span(
-      60,
-      "the resubscribe a deliberate close of the session left must not start is a 10 ms timer " +
-        "inside the extension (ENVOY_RESUBSCRIBE_DELAY_MS) that no state shows armed, and no " +
-        "later action of the row orders after it"
+    await pastResubscribeDelay(
+      "the resubscribe a deliberate close of the session left must not start"
     );
 
     // The relay the session left is closed and no second one was opened for it: what the
@@ -25404,14 +25412,7 @@ console.log(JSON.stringify(args));
 
     const result = await unsubscribeTool.execute("", { topics: ["team.standup"] });
     expect(result.details.removed).toEqual(["team.standup"]);
-    // Well past ENVOY_RESUBSCRIBE_DELAY_MS, so the resubscribe path has had its chance to open
-    // the topic again.
-    await span(
-      60,
-      "the resubscribe an unsubscribe must not be undone by is a 10 ms timer inside the " +
-        "extension (ENVOY_RESUBSCRIBE_DELAY_MS) that no state shows armed, and no later action of " +
-        "the row orders after it"
-    );
+    await pastResubscribeDelay("the resubscribe an unsubscribe must not be undone by");
 
     // Nothing follows it again, and the session's consumer carries it no more: the registration
     // the tool made names it nowhere.
@@ -25460,16 +25461,7 @@ console.log(JSON.stringify(args));
       rowProbe(async () => !(await followedTopics(fixture.tools, context)).includes(topic))
     );
 
-    expect(await followedTopics(fixture.tools, context)).not.toContain(topic);
-
-    // Well past ENVOY_RESUBSCRIBE_DELAY_MS: the dead-connection recovery path
-    // had its chance to treat this deliberate close as an outage. It must not.
-    await span(
-      60,
-      "the recovery a removed subscription must not be resurrected by is a 10 ms resubscribe " +
-        "timer inside the extension (ENVOY_RESUBSCRIBE_DELAY_MS) that no state shows armed, and " +
-        "no later action of the row orders after it"
-    );
+    await pastResubscribeDelay("the recovery a removed subscription must not be resurrected by");
     expect(await followedTopics(fixture.tools, context)).not.toContain(topic);
   });
 
@@ -25585,12 +25577,7 @@ console.log(JSON.stringify(args));
     // The switch closed the relay subject on purpose, which ends its pump as a dropped connection
     // would (the stand-in's `unsubscribe`). A pump that read that end as a death would open the
     // subject again once the resubscribe delay has passed, so the row reads it past that delay.
-    await span(
-      60,
-      "the resubscribe a deliberate close must not start is a 10 ms timer inside the extension " +
-        "(ENVOY_RESUBSCRIBE_DELAY_MS) that no state shows armed, and no later action of the row " +
-        "orders after it"
-    );
+    await pastResubscribeDelay("the resubscribe a deliberate close must not start");
     expect(natsState.controls.get(home)?.active()).toBe(false);
 
     // Switch back: the relay subject we closed on purpose is legitimately wanted again.

@@ -105,8 +105,6 @@ jobs:
       - name: Broker credential tests on a hub behind the auth service
         run: bun test src/__tests__/nats-credential.test.ts -t "a session's connection to a hub behind the auth service"
         working-directory: packages/envoy-client
-      # A path, not a filter: bun test discovers only names holding ".test" or ".spec", and takes
-      # this one as a file because of the leading "./".
       # The script's --timeout is this step's one guard, sized to the room one hang has: the job's
       # `timeout-minutes: 20` (1 200 s), less 242 s from the job's start to this step's (the
       # slowest of main's 40 green runs of this job from 45686423066 to 45696996534), less the
