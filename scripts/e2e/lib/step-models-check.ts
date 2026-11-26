@@ -321,7 +321,13 @@ function stepLine(issue: string, line: string): StepLine {
   };
 }
 
-/** The run lines of one `dispatch steps --issue <issue>` answer, after its header. */
+/** The line `dispatch steps` prints right after its header where the records of the issue's newest
+ *  run name an experiment (steps.ts). step-records-read.sh reads it by the same pattern. */
+const variantLine = /^Experiment [a-z0-9-]+: variant [a-z0-9-]+\.$/;
+
+/** The run lines of one `dispatch steps --issue <issue>` answer, after its header. The Experiment
+ *  line is read only at line 2, right after the header, as step-records-read.sh reads it. Anywhere
+ *  else it is no run. */
 function stepLines(issue: string, path: string): StepLine[] {
   const lines = readText(path, `the steps answer of ${issue}`).split("\n");
   const header = /^(.+): ([0-9]+) steps in [0-9]+ tasks$/.exec(lines[0]);
@@ -329,7 +335,7 @@ function stepLines(issue: string, path: string): StepLine[] {
     throw new Unknown([`the first line of the steps answer is no header of ${issue}: ${lines[0]}`]);
   }
   const steps = lines
-    .slice(1)
+    .slice(variantLine.test(lines[1] ?? "") ? 2 : 1)
     .filter((line) => line.trim() !== "")
     .map((line) => stepLine(issue, line));
   if (steps.length !== Number(header[2])) {
