@@ -23,7 +23,7 @@ jobs:
         env:
           OUT: ${{ runner.temp }}/out
         run: |
-          set -u
+          set +e -u
           mkdir -p "$OUT"
           nproc
           t() { local name=$1; shift; local s; s=$(date +%s.%N); "$@" > "$OUT/$name.out" 2> "$OUT/$name.err"; local rc=$?; echo "TIME $name $(echo "$(date +%s.%N) - $s" | bc) s exit $rc lines $(wc -l < "$OUT/$name.out")"; }
