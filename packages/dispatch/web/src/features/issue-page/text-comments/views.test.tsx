@@ -15,6 +15,7 @@ import {
   DECISION,
   type DrawnPage,
   drawPage,
+  newClient,
   ON_STATEMENT,
   PLAN_DOCUMENT,
   PLAN_TASK,
@@ -74,7 +75,7 @@ test("every view of R2 mounts the column and no other view does", async () => {
   const lacking: string[] = [];
   const unexpected: string[] = [];
   for (const preset of PRESET_ORDER) {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const client = newClient();
     const view = drawPage(client, preset);
     try {
       await waitFor(() =>
@@ -217,8 +218,8 @@ test("the margin adds no read for each node or each thread", async () => {
   }
 });
 
-// R9 whole: owed on G5, where `ThreadCard`'s reply composer takes the page's agents and reads none
-// (t11).
+// R9 whole: owed on G5, where `ThreadCard`'s reply composer takes the page's agents and reads
+// none.
 test.skipIf(!GATES.COMPOSER)(
   "the load with threads sends exactly the requests of the load without them",
   async () => {

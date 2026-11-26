@@ -1,10 +1,8 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 
 import type { Anchor, Comment, IssueDetails, MessageRead } from "../../../api/types";
 import { withEntries } from "../../issue/decision-entries";
 import {
-  artifact,
   DECISIONS_DOCUMENT,
   decision,
   issueDetails,
@@ -19,6 +17,7 @@ import { commentNode, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
 import { treeIdOf } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 import { GATES } from "./gates";
+import { recorded, recordedIssue, recordedReads } from "./margin-fixtures";
 import {
   type OnText,
   onTextOf,
@@ -36,43 +35,10 @@ import { textThreadsOf } from "./text-threads";
  * a gate is skipped on its `gates.ts` line.
  */
 
-/** The answers the recorder read, each named for the read and the gate it needs. The recorder
- *  names each instant of a file by its place in that file's order (`instant-001`, ...); each is
- *  read back as a time in that order, as the page's code reads a time. */
-function recorded<Shape>(name: string): Shape {
-  const text = readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
-  return JSON.parse(text, (_field, value: unknown) =>
-    typeof value === "string"
-      ? value.replace(/instant-(\d+)/gu, (_named, place: string) => {
-          const seconds = Number(place);
-          const minute = String(Math.floor(seconds / 60)).padStart(2, "0");
-          return `2026-11-05T00:${minute}:${String(seconds % 60).padStart(2, "0")}Z`;
-        })
-      : value
-  ) as Shape;
-}
-
-const CONVERSATION = recorded<{ read: TreeAnswer }>("tree-b0-conversation.json").read;
+/** The recorder's answers (`recorded`): the reads of Conversation's tree, of the comments and of
+ *  the messages, and the read of Graph's tree. */
+const { comments: COMMENTS, conversation: CONVERSATION, messages: MESSAGES } = recordedReads();
 const GRAPH = recorded<{ read: TreeAnswer }>("tree-b0-graph.json").read;
-const COMMENTS = recorded<{ comments: Comment[] }>("comments.json").comments;
-const MESSAGES = recorded<{ messages: MessageRead[] }>("messages.json").messages;
-
-/** The recorded issue, `key`, with the documents its answers name by their recorded ids. */
-function recordedIssue(): IssueDetails {
-  return {
-    ...issueDetails(),
-    artifacts: [
-      artifact("specArtifactId", "spec", true),
-      artifact("verificationArtifactId", "verification-md"),
-      artifact("planArtifactId", "plan-md"),
-      artifact("uncitedArtifactId", "background-md"),
-    ],
-    key: "key",
-    plan_artifact_id: "planArtifactId",
-    primary_artifact_id: "specArtifactId",
-    verification_artifact_id: "verificationArtifactId",
-  };
-}
 
 /** The issue with its spec and its `decisions.md`. */
 function issueWithDecisions(): IssueDetails {

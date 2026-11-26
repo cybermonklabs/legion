@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, expect, test } from "bun:test";
-import { QueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { act, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useRef, useState } from "react";
@@ -15,6 +15,7 @@ import {
   answerSeededReads,
   type DrawnPage,
   drawFrame,
+  newClient,
   ON_STATEMENT,
   REPLY_ON_STATEMENT,
   type SeededReads,
@@ -139,7 +140,7 @@ async function drawnSheet(
   readonly view: DrawnPage;
 }> {
   stubs = answerSeededReads(reads);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = newClient();
   const hold: RowHold = {};
   const view = drawFrame(client, "conversation", <SheetRow hold={hold} />, { width: BELOW_PANE });
   const row = await waitFor(() => {

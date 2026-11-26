@@ -1,5 +1,4 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { QueryClient } from "@tanstack/react-query";
 import { type RenderResult, waitFor } from "@testing-library/react";
 
 import { quietConsoleError } from "../../../__tests__/act-warnings";
@@ -15,6 +14,7 @@ import {
   columnOf,
   type DrawnPage,
   drawPage,
+  newClient,
   ON_PLAN_TASK,
   ON_STATEMENT,
   REPLY_ON_STATEMENT,
@@ -41,10 +41,6 @@ afterEach(() => {
   for (const stub of stubs) stub.mockRestore();
   stubs = [];
 });
-
-function newClient(): QueryClient {
-  return new QueryClient({ defaultOptions: { queries: { retry: false } } });
-}
 
 /** The address the router stands at, as the page last drew it. */
 function addressOf(view: DrawnPage): string {

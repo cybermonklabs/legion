@@ -1,5 +1,4 @@
 import { afterEach, beforeAll, expect, test } from "bun:test";
-import { QueryClient } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: user-event has no form for a cancelable beforeinput, paste, drop, cut or composition event, nor for a key whose default prevention is read.
 import { act, fireEvent, type RenderResult, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -16,6 +15,8 @@ import {
   drawFrame,
   drawPage,
   drawTree,
+  located,
+  newClient,
   readAgain,
   rowOf,
   STATEMENT,
@@ -37,7 +38,7 @@ beforeAll(async () => {
  * `inputmode="none"` and `aria-readonly="true"` on the row's words element, taken away again on
  * Escape, on blur and by the function it answers.
  *
- * Each case drives `caretIn` on a row it draws, as Enter will (t11 wires the key at G5: until then
+ * Each case drives `caretIn` on a row it draws, as Enter will (the key is wired at G5: until then
  * Enter keeps the page's "no text to put the caret in" report, a row of part I's browser file
  * reads). A case that asserts something is not there first sets the caret, so the case fails
  * where `caretIn` sets none.
@@ -80,20 +81,6 @@ function drawComment(
     node({ id: "post", text, ...(tree === undefined ? {} : { tree }), type: "comment" }),
   ]);
   return { ...located(view, "post"), view };
-}
-
-/** The row `view` draws for `nodeId`, and its own words element. */
-function located(
-  view: RenderResult,
-  nodeId: string
-): { readonly row: HTMLElement; readonly words: HTMLElement } {
-  const row = rowOf(view, nodeId);
-  if (row === null) throw new Error(`no row is drawn for ${nodeId}`);
-  const words = [...row.querySelectorAll<HTMLElement>("[data-node-words]")].find(
-    (one) => one.closest("[data-node-id]") === row
-  );
-  if (words === undefined) throw new Error(`the row of ${nodeId} draws no words element`);
-  return { row, words };
 }
 
 /** Whether `words` carries the three attributes of the caret. */
@@ -161,7 +148,7 @@ test.skipIf(!GATES.PART_Y)(
   "row focused, Enter on a block node: the block's editor takes the caret",
   async () => {
     stubs = answerSeededReads({ threads: TEXT_THREADS });
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const client = newClient();
     const view = drawPage(client, "conversation");
     try {
       const id = blockNodeId(SPEC_DOCUMENT.slug, STATEMENT);
@@ -227,7 +214,7 @@ test("caret, Left, Right, Up, Down, Home and End: the caret moves and the text d
 
 test("caret, Shift with an arrow: the selection grows and the control of the selection table shows", async () => {
   stubs = answerSeededReads({ threads: [] });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = newClient();
   const view = drawFrame(client, "conversation", <SelectionComment />);
   try {
     const id = blockNodeId(SPEC_DOCUMENT.slug, STATEMENT);
@@ -283,7 +270,7 @@ test("caret, a printable key, Backspace, Delete, Enter, a paste, a drop or an IM
 
 test("caret, $mod+Alt+m with a selection: the composer of the selection table opens", async () => {
   stubs = answerSeededReads({ threads: [] });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = newClient();
   const view = drawFrame(client, "conversation", <SelectionComment />);
   try {
     const id = blockNodeId(SPEC_DOCUMENT.slug, STATEMENT);
@@ -374,7 +361,7 @@ test("caret, blur: the attribute goes", () => {
 
 test("caret, the tree read is read again: the caret stays in the same node's text", async () => {
   stubs = answerSeededReads({ threads: TEXT_THREADS });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = newClient();
   const view = drawPage(client, "conversation");
   try {
     const id = blockNodeId(SPEC_DOCUMENT.slug, STATEMENT);

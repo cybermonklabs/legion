@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { QueryClient } from "@tanstack/react-query";
 import { act, waitFor } from "@testing-library/react";
 
 import {
@@ -12,6 +11,7 @@ import {
   answerSeededReads,
   columnOf,
   drawPage,
+  newClient,
   ON_CHECK,
   ON_STATEMENT,
   rowOf,
@@ -78,7 +78,7 @@ function wordsIn(name: string): string[] {
 
 test("each thread's words are in the margin highlight and the focused thread's in the focus highlight", async () => {
   stubs = answerSeededReads({ threads: [ON_STATEMENT, ON_CHECK] });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = newClient();
   const view = drawPage(client, "conversation");
   try {
     const column = await columnOf(view, "Comments on text");
@@ -104,8 +104,8 @@ test("each thread's words are in the margin highlight and the focused thread's i
     const card = column?.querySelector<HTMLElement>(
       `[data-margin-item="${CSS.escape(ON_STATEMENT.comment.id)}"]`
     );
-    const control = card?.querySelector<HTMLElement>("button");
-    expect(control, "the statement's thread draws no control").not.toBeUndefined();
+    const control = card?.querySelector<HTMLElement>("button") ?? null;
+    expect(control, "the statement's thread draws no control").not.toBeNull();
     await act(async () => control?.focus());
     expect(wordsIn(TEXT_COMMENT_FOCUS_HIGHLIGHT), "the focused thread's words").toEqual([
       ON_STATEMENT.quote,

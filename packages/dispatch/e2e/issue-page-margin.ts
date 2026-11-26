@@ -48,19 +48,20 @@ const RISK_TEXT = "A delay hides the delay from the next reader.";
 const ASK_TEXT = "Should a draft stay visible after another draft arrives?";
 const PART = "b1";
 
-export type MarginTreeQuery = Query<"/api/v1/issues/{key}/tree", "get">;
+type MarginTreeQuery = Query<"/api/v1/issues/{key}/tree", "get">;
 
-/** The page's tree read, with display trees enabled. */
-export async function readMarginTree(
-  key: string,
-  query: MarginTreeQuery = {}
-): Promise<IssueTreeRead> {
-  const url = routeUrl("/api/v1/issues/{key}/tree", { key }, query);
-  const response = await fetch(new URL(url, baseUrl), {
+/** alice's GET of `path`, with display trees enabled. */
+export async function readWithTrees<T>(path: string): Promise<T> {
+  const response = await fetch(new URL(path, baseUrl), {
     headers: { ...(await userHeaders()), "Dispatch-Trees": "1" },
   });
-  if (!response.ok) throw new Error(`GET ${url}: ${response.status} ${await response.text()}`);
-  return (await response.json()) as IssueTreeRead;
+  if (!response.ok) throw new Error(`GET ${path}: ${response.status} ${await response.text()}`);
+  return (await response.json()) as T;
+}
+
+/** The page's tree read, with display trees enabled. */
+export function readMarginTree(key: string, query: MarginTreeQuery = {}): Promise<IssueTreeRead> {
+  return readWithTrees<IssueTreeRead>(routeUrl("/api/v1/issues/{key}/tree", { key }, query));
 }
 
 function block(kind: string, id: string, words: string, attrs = ""): string {

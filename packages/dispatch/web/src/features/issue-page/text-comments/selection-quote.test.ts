@@ -22,8 +22,9 @@ import {
   clearSelection,
   drawPage,
   drawTree,
+  located,
+  newClient,
   PLAN_TASK_WORDS,
-  rowOf,
   STATEMENT_WORDS,
   setSelection,
 } from "./margin-fixtures";
@@ -97,20 +98,6 @@ function selectOffsets(words: HTMLElement, start: number, end: number): void {
   range.setStart(from.node, from.offset);
   range.setEnd(last.node, last.offset + 1);
   setSelection(range);
-}
-
-/** The row `view` draws for `nodeId` and its own words element. */
-function located(
-  view: RenderResult,
-  nodeId: string
-): { readonly row: HTMLElement; readonly words: HTMLElement } {
-  const row = rowOf(view, nodeId);
-  if (row === null) throw new Error(`no row is drawn for ${nodeId}`);
-  const words = [...row.querySelectorAll<HTMLElement>("[data-node-words]")].find(
-    (one) => one.closest("[data-node-id]") === row
-  );
-  if (words === undefined) throw new Error(`the row of ${nodeId} draws no words element`);
-  return { row, words };
 }
 
 /** The reading of `markdown` the server would send. */
@@ -864,7 +851,7 @@ describe("the server takes each fixture's quote at its occurrence", () => {
 describe("a row site", () => {
   test("a selection in a row site the list does not name takes no control", async () => {
     stubs = answerSeededReads({ threads: [] });
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const client = newClient();
     const view = drawPage(client, "verification");
     try {
       // The statement's row names its words element, so a selection in it takes the control.
@@ -900,7 +887,7 @@ describe("a row site", () => {
     // The Plan view's rows draw the task's own words with no `RowText`: the words element is the
     // author-text element itself.
     stubs = answerSeededReads({ threads: [] });
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const client = newClient();
     const view = drawPage(client, "plan");
     try {
       const bar = await waitFor(

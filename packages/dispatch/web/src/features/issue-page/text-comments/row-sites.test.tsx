@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { QueryClient } from "@tanstack/react-query";
 import { type RenderResult, waitFor } from "@testing-library/react";
 
 import type { Anchor } from "../../../api/types";
@@ -8,6 +7,7 @@ import { GATES, type GateName } from "./gates";
 import {
   answerSeededReads,
   drawPage,
+  newClient,
   ON_CHECK,
   ON_DECISION,
   ON_PLAN_TASK,
@@ -156,7 +156,7 @@ describe("each row site names one words element", () => {
   for (const site of SITES) {
     test(site.name, async () => {
       stubs = answerSeededReads({ threads: [site.thread] });
-      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const client = newClient();
       const view = drawPage(client, site.preset);
       try {
         const row = await rowOfSite(view, site);
@@ -175,7 +175,7 @@ describe("every row site draws its node's threads in the sheet below 1024 px", (
   for (const site of SITES) {
     test.skipIf(!GATES[site.gate])(site.name, async () => {
       stubs = answerSeededReads({ threads: [site.thread] });
-      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const client = newClient();
       const view = drawPage(client, site.preset, { width: BELOW_PANE });
       try {
         const row = await rowOfSite(view, site);
@@ -225,7 +225,7 @@ test.skipIf(!GATES.PART_Y || !GATES.NODE_ANCHOR)(
       node: "res1",
     });
     stubs = answerSeededReads({ threads: [onResult(ON_CHECK)] });
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const client = newClient();
     const view = drawPage(client, "verification", { width: BELOW_PANE });
     try {
       const row = await waitFor(() => {

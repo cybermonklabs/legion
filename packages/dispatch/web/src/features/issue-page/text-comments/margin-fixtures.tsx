@@ -1,4 +1,5 @@
 import { spyOn } from "bun:test";
+import { readFileSync } from "node:fs";
 import { QueryClient } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import { http } from "msw";
@@ -20,6 +21,7 @@ import type {
   DisplayTree,
   IssueDecisions,
   IssueDetails,
+  MessageRead,
 } from "../../../api/types";
 import { DESKTOP_WIDTH } from "../../margin/margin-fixture";
 import { buildDispatchReference, parseIssuePath } from "../../refs/routes";
@@ -47,7 +49,7 @@ import { StageSlot } from "../slots/stage";
 import { AppProviders, inDocument, stubReads, treeOf } from "../slots/stage-fixtures";
 import { blockNodeId } from "../tree-drafts";
 import { commentNode, treeNode, treeTuple } from "../tree-read/tree-fixtures";
-import type { TreeAnswerNode } from "../tree-read/tree-read";
+import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 import { issueAskThreadsQuery } from "../useIssueTree";
 import { check, result, VERIFICATION_SLUG } from "../verification-filter/verification-fixtures";
 import { TextMargin } from "./TextMargin";
@@ -59,7 +61,8 @@ import { TextMargin } from "./TextMargin";
  * comment on its words, drawn as the page's root draws it (`IssueOutlinePage`) at an address and
  * a window width. The comment on text is what part T's tree read answers for it on B0: a node
  * under the node it is on, with the `anchor` naming that node's document and block, and the same
- * `anchor` on the comments read's comment.
+ * `anchor` on the comments read's comment. It holds too the answers the recorder read from the
+ * real server (`recorded`), which `on-text.test.ts` and `text-threads.test.ts` read.
  */
 
 /** The plan and the Verification document of the issue, beside its spec. */
@@ -220,8 +223,8 @@ export const SERVES = [
 ];
 
 /** What each read answers while a case draws: `threads` the comments on text the reads hold
- *  (change it and read again to load a thread), `refused` the node ids of the nodes the tree read
- *  leaves out. */
+ *  (change it and read again to load a thread), `without` the block ids the tree read leaves
+ *  out. */
 export interface SeededReads {
   /** The comments of the issue that are no thread on text: posts under the issue. */
   posts?: readonly Comment[];
@@ -401,6 +404,11 @@ export function windowOf(initial: number): {
   };
 }
 
+/** A client as the page's tests take one: no read tried again. */
+export function newClient(): QueryClient {
+  return new QueryClient({ defaultOptions: { queries: { retry: false } } });
+}
+
 /** What a case holds of the page it drew, from inside the page's providers. */
 export interface PageHold {
   /** The Details drawer the shell holds, where the case gave the page one. */
@@ -445,29 +453,25 @@ export type DrawnPage = RenderResult & {
   readonly window: ReturnType<typeof windowOf>;
 };
 
-/** The page's root, `IssueOutlinePage`, at the issue's address of `preset` under what the app
- *  provides above it, in a window `width` px wide (`DESKTOP_WIDTH`, 1440 px, where none is given)
- *  that `window.set` resizes. Details' drawer is the shell's own (`drawer`) where the case wants
- *  Details. */
-export function drawPage(
+/** `content` at the address `entry`, beside what holds the router for the case, under what the
+ *  app provides above the page, in a window `width` px wide that `window.set` resizes. Details'
+ *  drawer is the shell's own (`drawer`) where the case wants Details. */
+function drawIn(
   client: QueryClient,
-  preset: Preset,
-  {
-    after = "",
-    drawer = false,
-    width = DESKTOP_WIDTH,
-  }: { after?: string; drawer?: boolean; width?: number } = {}
+  entry: string,
+  content: ReactNode,
+  { drawer, width }: { readonly drawer: boolean; readonly width: number }
 ): DrawnPage {
   const sized = windowOf(width);
   const held: PageHold = {};
   const page = (
     <>
       <NavigateProbe held={held} />
-      <IssueOutlinePage />
+      {content}
     </>
   );
   const view = render(
-    <MemoryRouter initialEntries={[`${presetPath(KEY, preset)}${after}`]}>
+    <MemoryRouter initialEntries={[entry]}>
       <AppProviders client={client}>
         {drawer ? <DrawerAround held={held}>{page}</DrawerAround> : page}
       </AppProviders>
@@ -482,6 +486,25 @@ export function drawPage(
     held,
     window: sized,
   };
+}
+
+/** The page's root, `IssueOutlinePage`, at the issue's address of `preset` under what the app
+ *  provides above it, in a window `width` px wide (`DESKTOP_WIDTH`, 1440 px, where none is given)
+ *  that `window.set` resizes. Details' drawer is the shell's own (`drawer`) where the case wants
+ *  Details. */
+export function drawPage(
+  client: QueryClient,
+  preset: Preset,
+  {
+    after = "",
+    drawer = false,
+    width = DESKTOP_WIDTH,
+  }: { after?: string; drawer?: boolean; width?: number } = {}
+): DrawnPage {
+  return drawIn(client, `${presetPath(KEY, preset)}${after}`, <IssueOutlinePage />, {
+    drawer,
+    width,
+  });
 }
 
 /** The page's root as `IssueOutlinePage` draws it - the stage in the issue's column and the
@@ -520,30 +543,12 @@ export function drawFrame(
   children: ReactNode,
   { drawer = false, width = DESKTOP_WIDTH }: { drawer?: boolean; width?: number } = {}
 ): DrawnPage {
-  const sized = windowOf(width);
-  const held: PageHold = {};
-  const frame = (
-    <>
-      <NavigateProbe held={held} />
-      <FrameRoot issue={seededIssue()}>{children}</FrameRoot>
-    </>
+  return drawIn(
+    client,
+    presetPath(KEY, preset),
+    <FrameRoot issue={seededIssue()}>{children}</FrameRoot>,
+    { drawer, width }
   );
-  const view = render(
-    <MemoryRouter initialEntries={[presetPath(KEY, preset)]}>
-      <AppProviders client={client}>
-        {drawer ? <DrawerAround held={held}>{frame}</DrawerAround> : frame}
-      </AppProviders>
-    </MemoryRouter>
-  );
-  return {
-    ...view,
-    finish: () => {
-      view.unmount();
-      sized.restore();
-    },
-    held,
-    window: sized,
-  };
 }
 
 /** The page's own scope for the tree's keys. */
@@ -600,6 +605,20 @@ export async function readAgain(client: QueryClient): Promise<void> {
 /** The row drawn for the node `nodeId` in `view`: the first element that carries it. */
 export function rowOf(view: RenderResult, nodeId: string): HTMLElement | null {
   return view.container.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(nodeId)}"]`);
+}
+
+/** The row `view` draws for `nodeId`, and its own words element. */
+export function located(
+  view: RenderResult,
+  nodeId: string
+): { readonly row: HTMLElement; readonly words: HTMLElement } {
+  const row = rowOf(view, nodeId);
+  if (row === null) throw new Error(`no row is drawn for ${nodeId}`);
+  const words = [...row.querySelectorAll<HTMLElement>("[data-node-words]")].find(
+    (one) => one.closest("[data-node-id]") === row
+  );
+  if (words === undefined) throw new Error(`the row of ${nodeId} draws no words element`);
+  return { row, words };
 }
 
 /** The width in px that `element` has at a window `windowWidth` px wide, from the width it draws
@@ -691,4 +710,52 @@ export async function columnOf(
   } catch {
     return null;
   }
+}
+
+/** The answers the recorder read from the real server at part W's head (`fixtures/`, gate B0),
+ *  each named for the read and the gate it needs. The recorder names each instant of a file by its
+ *  place in that file's order (`instant-001`, ...); each is read back as a time in that order, as
+ *  the page's code reads a time. */
+export function recorded<Shape>(name: string): Shape {
+  const text = readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
+  return JSON.parse(text, (_field, value: unknown) =>
+    typeof value === "string"
+      ? value.replace(/instant-(\d+)/gu, (_named, place: string) => {
+          const seconds = Number(place);
+          const minute = String(Math.floor(seconds / 60)).padStart(2, "0");
+          return `2026-11-05T00:${minute}:${String(seconds % 60).padStart(2, "0")}Z`;
+        })
+      : value
+  ) as Shape;
+}
+
+/** The recorded reads of Conversation's tree, of the comments and of the messages, read anew at
+ *  each call. */
+export function recordedReads(): {
+  readonly comments: Comment[];
+  readonly conversation: TreeAnswer;
+  readonly messages: MessageRead[];
+} {
+  return {
+    comments: recorded<{ comments: Comment[] }>("comments.json").comments,
+    conversation: recorded<{ read: TreeAnswer }>("tree-b0-conversation.json").read,
+    messages: recorded<{ messages: MessageRead[] }>("messages.json").messages,
+  };
+}
+
+/** The recorded issue, `key`, with the documents its answers name by their recorded ids. */
+export function recordedIssue(): IssueDetails {
+  return {
+    ...issueDetails(),
+    artifacts: [
+      artifact("specArtifactId", "spec", true),
+      artifact("verificationArtifactId", "verification-md"),
+      artifact("planArtifactId", "plan-md"),
+      artifact("uncitedArtifactId", "background-md"),
+    ],
+    key: "key",
+    plan_artifact_id: "planArtifactId",
+    primary_artifact_id: "specArtifactId",
+    verification_artifact_id: "verificationArtifactId",
+  };
 }

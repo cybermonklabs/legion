@@ -1,5 +1,5 @@
 import { afterEach, expect, type Mock, spyOn, test } from "bun:test";
-import { QueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { act, type RenderResult, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -17,6 +17,7 @@ import {
   type DrawnPage,
   drawFrame,
   drawPage,
+  newClient,
   ON_CHECK,
   ON_DECISION,
   ON_STATEMENT,
@@ -50,11 +51,6 @@ afterEach(() => {
   for (const stub of stubs) stub.mockRestore();
   stubs = [];
 });
-
-/** A client as the page's tests take one: no read tried again. */
-function newClient(): QueryClient {
-  return new QueryClient({ defaultOptions: { queries: { retry: false } } });
-}
 
 /** The page at `preset` with `reads` answered, once its first row is drawn. */
 async function drawn(
@@ -144,7 +140,7 @@ test("column, the last thread of the view's drawn nodes goes and no composer is 
 });
 
 /** A control that opens the composer of this part on the statement's words, as the control of the
- *  selection does (`SelectionComment`, t8). */
+ *  selection does (`SelectionComment`). */
 function ComposerOpener(): ReactNode {
   const composer = useTextComposer();
   return (

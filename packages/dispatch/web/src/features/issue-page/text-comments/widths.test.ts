@@ -147,9 +147,17 @@ const WINDOW_VARIANT =
 /** A class token that steps by a container's width: `@min-[869px]:` or `@max-[482px]:`. */
 const CONTAINER_VARIANT = /@(?:(?:min|max)-)?\[(\d+(?:\.\d+)?)px\]:/g;
 
+/** What each file of `issue-page/` holds, by its path there, read once. */
+const SOURCES = new Map<string, string>();
+
 /** What `file` of `issue-page/` holds. */
 function read(file: string): string {
-  return readFileSync(join(PAGE, file), "utf8");
+  let text = SOURCES.get(file);
+  if (text === undefined) {
+    text = readFileSync(join(PAGE, file), "utf8");
+    SOURCES.set(file, text);
+  }
+  return text;
 }
 
 /** The lines of `file` that hold `token`, as `git grep -c` counts them. */
@@ -161,13 +169,11 @@ function linesHolding(file: string, token: string): number {
 
 /** The source files of the stage: each `.ts` and `.tsx` under `issue-page/` that is no test, no
  *  fixture of this part, and none of the files outside the stage. */
-function stageFiles(): string[] {
-  return (readdirSync(PAGE, { recursive: true }) as string[])
-    .map((path) => relative(PAGE, join(PAGE, path)))
-    .filter((path) => /\.(ts|tsx)$/.test(path) && !/\.test\./.test(path))
-    .filter((path) => !path.startsWith("text-comments/") && !OUTSIDE_THE_STAGE.has(path))
-    .sort();
-}
+const STAGE_FILES: readonly string[] = (readdirSync(PAGE, { recursive: true }) as string[])
+  .map((path) => relative(PAGE, join(PAGE, path)))
+  .filter((path) => /\.(ts|tsx)$/.test(path) && !/\.test\./.test(path))
+  .filter((path) => !path.startsWith("text-comments/") && !OUTSIDE_THE_STAGE.has(path))
+  .sort();
 
 /** The window variants `file` writes, each once. */
 function windowVariantsOf(file: string): string[] {
@@ -197,7 +203,7 @@ test("each window step of the stage keeps its rule", () => {
     WINDOW_STEPS.map(({ file, lines, token }) => `${file} ${token} ${lines}`)
   );
   const named = new Set(WINDOW_STEPS.map(({ file, token }) => `${file} ${token}`));
-  const unnamed = stageFiles().flatMap((file) =>
+  const unnamed = STAGE_FILES.flatMap((file) =>
     windowVariantsOf(file)
       .filter((variant) => !named.has(`${file} ${variant}`))
       .map((variant) => `${file} ${variant}`)
@@ -212,11 +218,28 @@ test("each window step of the stage keeps its rule", () => {
   ).toEqual([]);
 });
 
-/** What Plan draws at a main column `width` px wide, by the thresholds its file steps at: its
- *  cards below the first, its narrow grid from the first, its wide chart from the second. */
-function planFormAt(width: number, thresholds: readonly number[]): string {
-  const forms = ["cards", "narrow grid", "wide chart"];
-  return forms[thresholds.filter((threshold) => width >= threshold).length] ?? "wide chart";
+/** Whether the container class `token` applies in a container `width` px wide: Tailwind writes
+ *  `@min-[N]:` as `(width >= N)` and `@max-[N]:` as `(width < N)`. */
+function appliesAt(token: string, width: number): boolean {
+  const [, side, at] = /@(min|max)-\[([\d.]+)px\]:/.exec(token) ?? [];
+  return side === "min" ? width >= Number(at) : side === "max" && width < Number(at);
+}
+
+/** The grid columns of Plan's chart, by the form they draw (`PlanFilterBody.tsx`). */
+const PLAN_GRIDS: Readonly<Record<string, string>> = {
+  "grid-cols-[260px_minmax(0,1fr)_220px]": "narrow grid",
+  "grid-cols-[330px_minmax(0,1fr)_320px]": "wide chart",
+};
+
+/** What Plan draws in a main column `width` px wide, by the container classes of `file` that apply
+ *  there to a step's row (`[data-plan-bar-row]`), as the browser suite reads its form: its phone
+ *  step's cards where the row is a flex box, else the grid its columns draw. */
+function planFormIn(file: string, width: number): string {
+  const utilities = containerTokens(file)
+    .filter((token) => token.includes("_[data-plan-bar-row]]:") && appliesAt(token, width))
+    .map((token) => token.slice(token.lastIndexOf(":") + 1));
+  if (utilities.includes("flex")) return "cards";
+  return utilities.flatMap((utility) => PLAN_GRIDS[utility] ?? []).join(" and ") || "no grid";
 }
 
 describe("every view steps by its column's width", () => {
@@ -238,7 +261,7 @@ describe("every view steps by its column's width", () => {
     const thresholds = containerThresholds(file);
     expect(thresholds, "Plan's steps by its column's width").toEqual([482, 869]);
     expect(
-      PLAN_FORMS.map(([width]) => `${width} px ${planFormAt(width, thresholds)}`),
+      PLAN_FORMS.map(([width]) => `${width} px ${planFormIn(file, width)}`),
       "the form Plan draws at each main column"
     ).toEqual(PLAN_FORMS.map(([width, form]) => `${width} px ${form}`));
     expect(linesHolding(file, "max-[1241px]"), "the window step stays beside it").toBe(2);
@@ -246,7 +269,7 @@ describe("every view steps by its column's width", () => {
   });
 
   test("no container class applies without the attribute the column sets on the stage", () => {
-    const containerClasses = stageFiles().flatMap((file) =>
+    const containerClasses = STAGE_FILES.flatMap((file) =>
       containerTokens(file).map((token) => ({ file, token }))
     );
     expect(
@@ -263,7 +286,5 @@ describe("every view steps by its column's width", () => {
   test.skipIf(!GATES.PART_J)("the Spec view draws its two columns from a 672 px column", () => {
     const thresholds = containerThresholds("spec-filter/SpecFilterBody.tsx");
     expect(thresholds, "the Spec view's steps by its column's width").toEqual([672]);
-    const forms = [671, 672].map((width) => (width >= (thresholds[0] ?? Infinity) ? "two" : "one"));
-    expect(forms).toEqual(["one", "two"]);
   });
 });

@@ -316,11 +316,17 @@ function mustDraw(seeded: MarginSeed, view: View): ReadonlySet<string> {
   return new Set(ids[view]);
 }
 
-/** The node each view draws a row of on either seed, which a row waits for before it reads. */
-function anchorOf(seeded: NoThreadsSeed, view: View): string {
-  if (view === "plan") return blockNode(seeded.planSlug, seeded.planTask);
-  if (view === "decisions") return blockNode(seeded.specSlug, seeded.decision);
-  return blockNode(seeded.specSlug, seeded.statementS1);
+/** A row each view draws on either seed, which a row waits for before it reads. On
+ *  `seedNoThreads` Decisions draws no row of alice's decision, which no comment is on there; its
+ *  review list holds the agent's decision. */
+function anchorRow(page: Page, seeded: NoThreadsSeed, view: View): Locator {
+  if (view === "plan") return stageRow(page, blockNode(seeded.planSlug, seeded.planTask)).first();
+  if (view === "decisions") {
+    return stageRow(page, blockNode(seeded.specSlug, seeded.decision))
+      .or(stageRow(page, blockNode(seeded.specSlug, seeded.agentDecision)))
+      .first();
+  }
+  return stageRow(page, blockNode(seeded.specSlug, seeded.statementS1)).first();
 }
 
 /** One box, as `getBoundingClientRect` measures it. */
@@ -797,12 +803,17 @@ async function expectCheckOnce(
     .toEqual({ beside: true, underParent: true });
 }
 
-/** Opens `view` of `key` at its own address and waits out its load and, in an outline, unfolds
- *  every branch. */
-async function openView(page: Page, traffic: ApiRequests, key: string, view: View): Promise<void> {
+/** Opens `view` of `key` at its own address and waits out its load. */
+async function loadView(page: Page, traffic: ApiRequests, key: string, view: View): Promise<void> {
   traffic.reset();
   await gotoIssue(page, presetPath(key, view));
   await expectLoadSettled(traffic);
+}
+
+/** Opens `view` of `key` at its own address and waits out its load and, in an outline, unfolds
+ *  every branch. */
+async function openView(page: Page, traffic: ApiRequests, key: string, view: View): Promise<void> {
+  await loadView(page, traffic, key, view);
   if (OUTLINES[view]) {
     await expectOpeningLanded(page);
     await unfoldEveryBranch(page);
@@ -921,9 +932,7 @@ async function readDetails(
   spots: readonly Spot[]
 ): Promise<void> {
   await page.setViewportSize(DESKTOP);
-  traffic.reset();
-  await gotoIssue(page, presetPath(seeded.key, "conversation"));
-  await expectLoadSettled(traffic);
+  await loadView(page, traffic, seeded.key, "conversation");
   const must = mustDraw(seeded, "conversation");
   const placed = spots.filter((spot) => must.has(spot.id));
   await expect
@@ -989,16 +998,15 @@ function planChart(page: Page): Promise<{
     const container = chart?.parentElement ?? null;
     const main = document.querySelector('[data-testid="issue-column"]');
     if (chart === null || row === null || container === null || main === null) return null;
-    const style = getComputedStyle(row);
-    const first = style.gridTemplateColumns.split(" ")[0];
-    const form =
-      style.display === "flex"
-        ? "cards"
-        : first === "330px"
-          ? "wide"
-          : first === "260px"
-            ? "narrow"
-            : `${style.display} ${style.gridTemplateColumns}`;
+    // A step row is a flex box in the cards, and a grid whose first column names its form.
+    const formOf = (style: CSSStyleDeclaration): string => {
+      if (style.display === "flex") return "cards";
+      const first = style.gridTemplateColumns.split(" ")[0];
+      if (first === "330px") return "wide";
+      if (first === "260px") return "narrow";
+      return `${style.display} ${style.gridTemplateColumns}`;
+    };
+    const form = formOf(getComputedStyle(row));
     const box = getComputedStyle(container);
     const inset = ["borderLeftWidth", "borderRightWidth", "paddingLeft", "paddingRight"] as const;
     return {
@@ -1041,9 +1049,7 @@ async function narrowestColumn(
  *  narrowest columns of its wide form and its narrow grid, which the row records. */
 async function readPlanSteps(page: Page, traffic: ApiRequests, seeded: MarginSeed): Promise<void> {
   await page.setViewportSize(DESKTOP);
-  traffic.reset();
-  await gotoIssue(page, presetPath(seeded.key, "plan"));
-  await expectLoadSettled(traffic);
+  await loadView(page, traffic, seeded.key, "plan");
   await expect(
     threadBox(page, seeded.planTaskComment),
     "Plan draws the thread on its task in the region"
@@ -1166,9 +1172,7 @@ async function readWidths(
 ): Promise<void> {
   for (const view of VIEWS) {
     await page.setViewportSize(DESKTOP);
-    traffic.reset();
-    await gotoIssue(page, presetPath(seeded.key, view));
-    await expectLoadSettled(traffic);
+    await loadView(page, traffic, seeded.key, view);
     for (const width of COLUMN_WIDTHS) {
       await page.setViewportSize(viewportAt(width));
       // The column is 320 px wide from 1280 px, and 280 px below (R2).
@@ -1204,11 +1208,9 @@ async function readPhone(
 ): Promise<void> {
   await page.setViewportSize(PHONE);
   for (const view of VIEWS) {
-    traffic.reset();
-    await gotoIssue(page, presetPath(seeded.key, view));
-    await expectLoadSettled(traffic);
+    await loadView(page, traffic, seeded.key, view);
     await expect(
-      stageRow(page, anchorOf(seeded, view)).first(),
+      anchorRow(page, seeded, view),
       inView(view, "the view draws its rows at 390 px")
     ).toBeAttached();
     await expect(region(page), inView(view, "at 390 px no region is drawn")).toHaveCount(0);
@@ -1239,11 +1241,9 @@ function columnRoom(page: Page): Promise<{ readonly column: number; readonly roo
 async function readNoThreads(page: Page, seeded: NoThreadsSeed): Promise<void> {
   const traffic = watchApiRequests(page);
   for (const view of VIEWS) {
-    traffic.reset();
-    await gotoIssue(page, presetPath(seeded.key, view));
-    await expectLoadSettled(traffic);
+    await loadView(page, traffic, seeded.key, view);
     await expect(
-      stageRow(page, anchorOf(seeded, view)).first(),
+      anchorRow(page, seeded, view),
       inView(view, "the view draws its rows on seedNoThreads")
     ).toBeAttached();
     await expect(region(page), inView(view, "on seedNoThreads no region is drawn")).toHaveCount(0);
@@ -1256,9 +1256,7 @@ async function readNoThreads(page: Page, seeded: NoThreadsSeed): Promise<void> {
       )
     ).toBe(room);
   }
-  traffic.reset();
-  await gotoIssue(page, presetPath(seeded.key, "plan"));
-  await expectLoadSettled(traffic);
+  await loadView(page, traffic, seeded.key, "plan");
   // At this part's base the chart steps by the window alone: below 761 px its cards, below
   // 1241 px its narrow grid (`PlanFilterBody.tsx`'s `max-[761px]:` and `max-[1241px]:`).
   const base: readonly (readonly [number, PlanForm])[] = [
@@ -1879,9 +1877,7 @@ test("the address of a comment on text opens its thread", async ({ browser }) =>
       ).toHaveCount(0);
     }
 
-    traffic.reset();
-    await gotoIssue(page, presetPath(key, "conversation"));
-    await expectLoadSettled(traffic);
+    await loadView(page, traffic, key, "conversation");
     const entry = contentsPane(page).locator(`[data-contents-entry="${seeded.statementComment}"]`);
     await expect(entry, "the Contents pane lists alice's comment on the statement").toBeVisible();
     await expect(

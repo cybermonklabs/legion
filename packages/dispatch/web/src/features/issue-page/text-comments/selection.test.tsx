@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
-import { QueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { act, type RenderResult, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 
@@ -15,6 +15,7 @@ import {
   columnOf,
   type DrawnPage,
   drawFrame,
+  newClient,
   ON_STATEMENT,
   OTHER,
   OTHER_WORDS,
@@ -70,7 +71,7 @@ async function drawn(
   options: { drawer?: boolean } = {}
 ): Promise<{ readonly client: QueryClient; readonly row: HTMLElement; readonly view: DrawnPage }> {
   stubs = answerSeededReads(reads);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = newClient();
   const view = drawFrame(client, "conversation", <SelectionComment />, options);
   const row = await waitFor(() => {
     const found = rowOf(view, STATEMENT_NODE);
@@ -168,7 +169,7 @@ test("no selection, a selection inside the words of one row: the control is draw
 
 test("no selection, a selection across two rows, two blocks of one item, or into the row's margin: no control", async () => {
   stubs = answerSeededReads({ threads: [] });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = newClient();
   const view = drawFrame(client, "conversation", <SelectionComment />);
   try {
     const statement = await waitFor(() => {

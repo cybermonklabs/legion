@@ -1,6 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import type { LensInvoked } from "@legion/contracts";
-import { QueryClient } from "@tanstack/react-query";
 import { type RenderResult, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
@@ -13,7 +12,14 @@ import { LENS_WORDS } from "../page-words";
 import { treeOf } from "../slots/stage-fixtures";
 import { treeNode } from "../tree-read/tree-fixtures";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
-import { answerSeededReads, drawPage, ON_STATEMENT, SERVES, seededNodes } from "./margin-fixtures";
+import {
+  answerSeededReads,
+  drawPage,
+  newClient,
+  ON_STATEMENT,
+  SERVES,
+  seededNodes,
+} from "./margin-fixtures";
 
 /**
  * R7: each comment of a thread on text carries the Lens act of part W in Conversation and in
@@ -37,10 +43,6 @@ afterEach(() => {
   for (const stub of stubs) stub.mockRestore();
   stubs = [];
 });
-
-function newClient(): QueryClient {
-  return new QueryClient({ defaultOptions: { queries: { retry: false } } });
-}
 
 /** The card the column draws for the thread whose root is `root`, once it is drawn. */
 async function cardOf(view: RenderResult, root: string): Promise<HTMLElement> {

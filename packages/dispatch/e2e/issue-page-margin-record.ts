@@ -17,6 +17,7 @@ import {
   type MarginReplyQuote,
   type MarginSeed,
   readMarginTree,
+  readWithTrees,
   seedMarginIssue,
 } from "./issue-page-margin";
 import { GATES, type SkippedMarginItem } from "./issue-page-margin-gates";
@@ -149,14 +150,6 @@ function keyedFixture(keys: ReadonlyMap<string, string>, data: unknown) {
     );
   }
   return sortedFields(walk(data));
-}
-
-async function pageRead<T>(path: string): Promise<T> {
-  const response = await fetch(new URL(path, baseUrl), {
-    headers: { ...(await userHeaders()), "Dispatch-Trees": "1" },
-  });
-  if (!response.ok) throw new Error(`GET ${path}: ${response.status} ${await response.text()}`);
-  return (await response.json()) as T;
 }
 
 type CommentWrite = Body<typeof COMMENTS, "post">;
@@ -418,12 +411,12 @@ async function record(recordedOn: string) {
   // as on load; it has no cursor or comments_before in the request.
   for (const read of Object.values(reads)) nameTreeBlocks(keys, read);
   const commentsPath = routeUrl(COMMENTS, { key });
-  const comments = await pageRead<Result<typeof COMMENTS, "get">>(commentsPath);
+  const comments = await readWithTrees<Result<typeof COMMENTS, "get">>(commentsPath);
   for (const comment of comments) nameAnchorBlock(keys, comment.anchor);
   const commentsWithNodeAnchor = GATES.NODE_ANCHOR
-    ? await pageRead<unknown>(`${commentsPath}?node_anchor=true`)
+    ? await readWithTrees<unknown>(`${commentsPath}?node_anchor=true`)
     : undefined;
-  const messages = await pageRead<Result<typeof MESSAGES, "get">>(routeUrl(MESSAGES, { key }));
+  const messages = await readWithTrees<Result<typeof MESSAGES, "get">>(routeUrl(MESSAGES, { key }));
   // Name any document blocks whose minted IDs are mentioned by another record but not drawn.
   for (const artifact of [
     seed.specArtifactId,
