@@ -54,7 +54,7 @@ func resumeAt(spec runtime.SpawnSpec, file, id string) runtime.SpawnSpec {
 // (ResumeFile), by which the launcher looks the session up before it starts the agent.
 func TestAnOhMyPiRoleStartsUnderTheIdItsDaemonChose(t *testing.T) {
 	t.Parallel()
-	g := newRig(t, nil, exchangeKeyed())
+	g := newRig(t, nil, exchangeKeyed(), withWaitsToTheDeadline())
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
 	chosen, named := g.r.LaunchSession(loc)
@@ -104,8 +104,8 @@ func TestATradingLaunchResumesASessionRecordedWithNoFileByItsID(t *testing.T) {
 		byAgent bool
 		named   string
 	}{
-		{"through a launcher that looks the id up", []rigOption{exchangeKeyed(), withResumesBySession()}, false, resumeSessionID},
-		{"through the agent's own lookup", []rigOption{exchangeKeyed()}, true, ""},
+		{"through a launcher that looks the id up", []rigOption{exchangeKeyed(), withResumesBySession(), withWaitsToTheDeadline()}, false, resumeSessionID},
+		{"through the agent's own lookup", []rigOption{exchangeKeyed(), withWaitsToTheDeadline()}, true, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newRig(t, nil, tc.options...)
@@ -142,7 +142,7 @@ func TestATradingLaunchResumesASessionRecordedWithNoFileByItsID(t *testing.T) {
 func TestATradingResumeOfARecordedSessionIDIsNeverRefusedForAFileItHasNot(t *testing.T) {
 	t.Parallel()
 	const id = "-" + resumeSessionID
-	untraded := newRig(t, nil, withResumesBySession())
+	untraded := newRig(t, nil, withResumesBySession(), withWaitsToTheDeadline())
 	first := untraded.spawn(workerSpec(t))
 	spec := byIDSpec(t)
 	spec.ResumeSession = id
@@ -153,7 +153,7 @@ func TestATradingResumeOfARecordedSessionIDIsNeverRefusedForAFileItHasNot(t *tes
 		t.Fatalf("the control: a pod that trades nothing names its session as %q, want %q", got, want)
 	}
 
-	g := newRig(t, nil, exchangeKeyed(), withResumesBySession())
+	g := newRig(t, nil, exchangeKeyed(), withResumesBySession(), withWaitsToTheDeadline())
 	first = g.spawn(workerSpec(t))
 	resumed, err := g.r.Resume(g.ctx, &first, spec)
 	if err != nil {
@@ -176,7 +176,7 @@ func TestAnOldClaimResumesByTheIdInItsFileName(t *testing.T) {
 	t.Parallel()
 	const id = "0198f3a2-6b7c-7d8e-9f01-23456789abcd"
 	file := ompSessionsDir + "/--legion-workspaces-sjawhar-legion-smoke-legion-208--/2026-09-23T12-00-00-000Z_" + id + ".jsonl"
-	g := newRig(t, nil, exchangeKeyed())
+	g := newRig(t, nil, exchangeKeyed(), withWaitsToTheDeadline())
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
 	resumed, err := g.r.Resume(g.ctx, &loc, resumeAt(spec, file, ""))
@@ -219,7 +219,7 @@ func TestAnOldClaimResumesByTheIdInItsFileName(t *testing.T) {
 func TestAResumedIdNoParserCanMisreadIsTheOnlyOnePassed(t *testing.T) {
 	t.Parallel()
 	dir := ompSessionsDir + "/--legion-workspaces-sjawhar-legion-smoke-legion-208--/"
-	g := newRig(t, nil, exchangeKeyed())
+	g := newRig(t, nil, exchangeKeyed(), withWaitsToTheDeadline())
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
 	for _, tc := range []struct{ name, file, id, fault string }{
@@ -298,7 +298,7 @@ func TestNothingChangesWithoutTheKey(t *testing.T) {
 		"a block that names no audience": withOptions(enrolledWith(keptBrokerURL)),
 	} {
 		t.Run(name, func(t *testing.T) {
-			g := newRig(t, nil, option)
+			g := newRig(t, nil, option, withWaitsToTheDeadline())
 			spec := workerSpec(t)
 			loc := g.spawn(spec)
 			if words := sessionWords(lastStart(t, g, workerToken).Argv); len(words) != 0 {
@@ -338,7 +338,7 @@ func TestNothingChangesWithoutTheKey(t *testing.T) {
 // lacks.
 func TestAKeptPodWithoutTheExchangeIdentityKeepsItsOhMyPiArgv(t *testing.T) {
 	t.Parallel()
-	g := newRig(t, nil, withOptions(enrolledWith(keptBrokerURL)))
+	g := newRig(t, nil, withOptions(enrolledWith(keptBrokerURL)), withWaitsToTheDeadline())
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
 	r2 := secondRuntime(t, g, func(o *Options) {
@@ -370,7 +370,7 @@ func TestAKeptPodWithoutTheExchangeIdentityKeepsItsOhMyPiArgv(t *testing.T) {
 		t.Errorf("LaunchSession of the resumed role in the kept pod = %q, want none", session)
 	}
 
-	trading := newRig(t, nil, exchangeKeyed())
+	trading := newRig(t, nil, exchangeKeyed(), withWaitsToTheDeadline())
 	tradingLoc := trading.spawn(workerSpec(t))
 	for i, tc := range []struct{ name, file, id, refusal string }{
 		{"a claim that recorded no id, whose file's name gives none", unnamedSession, "", unnamedSession},

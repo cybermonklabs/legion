@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -19,16 +20,18 @@ import (
 
 // beforeTheBroker is a tester and an implementer of two issues, each in a pod of its own that a
 // daemon before dispatch_token_broker built (dispatchBearer), so neither pod carries an exchange
-// identity.
+// identity. Its launches, and those of every daemon restartedUnder restarts over it, must not give
+// up, so their waits are bounded by the test binary's deadline (withWaitsToTheDeadline).
 func beforeTheBroker(t *testing.T) (*rig, runtime.Locator, runtime.Locator) {
 	t.Helper()
-	g := newRig(t, nil, withOptions(dispatchBearer))
+	g := newRig(t, nil, withOptions(dispatchBearer), withWaitsToTheDeadline())
 	return g, g.spawn(workerSpec(t)), g.spawn(childSpec(t))
 }
 
-// restartedUnder is a daemon restarted over g's running pods under move, with the launcher of each
-// of locs connected to it and reporting the generation loc records, as a real launcher does once it
-// has redialled the restarted daemon.
+// restartedUnder is a daemon restarted over g's running pods under move, inheriting g's
+// BootTimeout through secondRuntime, with the launcher of each of locs connected to it and
+// reporting the generation loc records, as a real launcher does once it has redialled the restarted
+// daemon.
 func restartedUnder(t *testing.T, g *rig, move func(*Options), locs ...runtime.Locator) *Runtime {
 	t.Helper()
 	r := secondRuntime(t, g, move)()
@@ -67,13 +70,16 @@ func resumedInto(t *testing.T, g *rig, r *Runtime, loc runtime.Locator) runtime.
 }
 
 // adoptedAndObserved adopts locs into r as a daemon's boot does (ReconcileOrphans), starts its
-// Observe, and returns the channel once it has delivered one observation of each, failing the test
-// unless each is Alive.
+// Observe, and returns the channel once it has delivered one Alive observation of each claim. An
+// informer may requeue a claim before another's first observation, so firstOfEach skips same-claim
+// repeats rather than treating a count of observations as a count of adopted claims.
 func adoptedAndObserved(t *testing.T, g *rig, r *Runtime, locs ...runtime.Locator) <-chan runtime.Observation {
 	t.Helper()
 	var known []runtime.Known
+	claims := make([]claim.Token, 0, len(locs))
 	for _, loc := range locs {
 		known = append(known, runtime.Known{Claim: loc.Claim, Locator: &loc})
+		claims = append(claims, loc.Claim)
 	}
 	if err := r.ReconcileOrphans(g.ctx, known, time.Hour); err != nil {
 		t.Fatal(err)
@@ -82,18 +88,19 @@ func adoptedAndObserved(t *testing.T, g *rig, r *Runtime, locs ...runtime.Locato
 	if err != nil {
 		t.Fatal(err)
 	}
-	for range locs {
-		if obs := next(t, observations); obs.Kind != runtime.Alive {
+	for _, obs := range firstOfEach(t, observations, claims...) {
+		if obs.Kind != runtime.Alive {
 			t.Fatalf("%s of %s: %s, want Alive", obs.Kind, obs.Locator.Claim, obs.Detail)
 		}
 	}
 	return observations
 }
 
-// replacedByItsRound ends loc's pod as its update round does (ReplacePod) and waits, until the test
-// binary's deadline (testwait.Context), for the Gone that pod's end is observed as, which lets
-// loc's process go from the watch: beside the package's other parallel tests a loaded machine may
-// take the watch longer than any fixed span to see it.
+// replacedByItsRound ends loc's pod as its update round does (ReplacePod) and waits for the Gone
+// that pod's end is observed as, which lets loc's process go from the watch. Observe delivers that
+// Gone from a goroutine of its own once the pod store has lost the pod, and blocks until it is read,
+// so it is never dropped; the wait is bounded by the test binary's deadline (testwait.Context), as
+// next's is, never by a span a loaded machine can put the observer off past.
 func replacedByItsRound(t *testing.T, g *rig, r *Runtime, observations <-chan runtime.Observation, loc runtime.Locator) {
 	t.Helper()
 	if err := r.ReplacePod(g.ctx, runtime.Known{Claim: loc.Claim, Locator: &loc}, stillDue); err != nil {
@@ -102,7 +109,10 @@ func replacedByItsRound(t *testing.T, g *rig, r *Runtime, observations <-chan ru
 	ended := testwait.Context(t)
 	for {
 		select {
-		case obs := <-observations:
+		case obs, ok := <-observations:
+			if !ok {
+				t.Fatalf("the observation channel closed before the Gone of %s", loc.Claim)
+			}
 			if obs.Locator.Claim == loc.Claim && obs.Kind == runtime.Gone {
 				return
 			}
@@ -112,13 +122,15 @@ func replacedByItsRound(t *testing.T, g *rig, r *Runtime, observations <-chan ru
 	}
 }
 
-// liveLaunches waits, until the test binary's deadline (testwait.Eventually), for r's count of live
-// launches carrying a Dispatch token to reach want; a failure names the count the wait began at.
+// liveLaunches waits for r's count of live launches carrying a Dispatch token to reach want: the
+// observer lets a process go (forgetIf) once it has delivered the process's Gone, so the count can
+// fall a moment after replacedByItsRound returns. The wait is bounded by the test binary's deadline
+// (testwait.Until), and its failure prints the count it last read.
 func liveLaunches(t *testing.T, r *Runtime, want int, when string) {
 	t.Helper()
-	at := r.DispatchTokens().LiveLaunches
-	testwait.Eventually(t, fmt.Sprintf("%s the live launches carrying a Dispatch token to number %d (%d when the wait began)", when, want, at), func() bool {
-		return r.DispatchTokens().LiveLaunches == want
+	testwait.Until(t, fmt.Sprintf("%s, the live launches carrying a Dispatch token to number %d", when, want), func() (int, bool) {
+		live := r.DispatchTokens().LiveLaunches
+		return live, live == want
 	})
 }
 

@@ -775,9 +775,11 @@ func (h *heldEvents) Stop() {
 	})
 }
 
+// newRig builds a runtime over its fakes. Its ordinary call context ends 30 s before the test
+// binary's deadline (testwait.Context), so waits that use it give up with the test's margin.
 func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *rig {
 	t.Helper()
-	ctx, stop := context.WithCancel(context.Background())
+	ctx, stop := context.WithCancel(testwait.Context(t))
 	t.Cleanup(stop)
 	var dynamicObjects []*unstructured.Unstructured
 	var kubeObjects []k8sruntime.Object

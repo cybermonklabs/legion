@@ -256,6 +256,17 @@ func probeOptions(t *testing.T) ImageProbe {
 	}
 }
 
+// probeOptionsToDeadline is probeOptions with an attempt budget of what is left before the
+// test's margin (testwait.Remaining), rather than probeOptions' 10 s budget. newProbeRig's parent
+// context still ends all attempts at that margin; this larger per-attempt budget lets its probe
+// pod finish on the event the rig brings when a loaded machine delays it.
+func probeOptionsToDeadline(t *testing.T) ImageProbe {
+	t.Helper()
+	p := probeOptions(t)
+	p.Budget = testwait.Remaining(t)
+	return p
+}
+
 // unfinishedBudget is the attempt budget of a test in which no pod ever answers, so the attempt
 // runs out.
 const unfinishedBudget = 300 * time.Millisecond
@@ -557,7 +568,7 @@ func TestProbeImageRefusesAnOhMyPiWithoutSessionIDUnderAnExchangeAudience(t *tes
 			g := newProbeRig(t, nil, exchangeKeyed())
 			g.succeeds(testCase.log + "\n")
 
-			err := g.probe(probeOptions(t))
+			err := g.probe(probeOptionsToDeadline(t))
 
 			wantContains(t, err, append([]string{"worker image sha256:" + testDigestHex + " failed its probe: pod " + probeSandboxName + " " + testCase.want}, why...)...)
 			if n := g.creates.Load(); n != 1 {
@@ -592,7 +603,7 @@ func TestProbeImagePassesAnOhMyPiThatTakesSessionIDOrNoExchangeAudience(t *testi
 			g := newProbeRig(t, nil, testCase.option, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
 			g.succeeds(testCase.log + "\n")
 
-			report, err := g.r.ProbeImage(g.ctx, probeOptions(t))
+			report, err := g.r.ProbeImage(g.ctx, probeOptionsToDeadline(t))
 
 			if err != nil {
 				t.Fatalf("ProbeImage = %v, want a pass", err)

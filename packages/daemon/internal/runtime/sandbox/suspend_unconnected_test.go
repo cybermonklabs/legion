@@ -43,11 +43,16 @@ var failedInitStatuses = map[string]corev1.ContainerStatus{
 // "did not connect": on 2026-11-24 a tester whose pods died of a full disk in workspace-init was
 // held so from 08:46:47Z to 08:56:57Z.
 func TestSuspendOfAPodWhoseLauncherNeverConnectedReturnsAtOnce(t *testing.T) {
-	// Not parallel: it holds Suspend's answer, timed on the wall clock, to under the rig's 2 s boot
-	// timeout, a bound other tests' load could move.
+	t.Parallel()
 	for name, status := range failedInitStatuses {
 		t.Run(name, func(t *testing.T) {
-			g := newRig(t, []k8sruntime.Object{runningSandbox(t, workerToken, claim.RoleTester), inInit(status)}, withoutController())
+			// BootTimeout is this row's measured bound: Suspend's init-container branch makes no
+			// wait at all, while the former wrong path waited a boot timeout. A minute leaves room
+			// a loaded runner cannot eat, and Bounded keeps this test's failure before its binary
+			// deadline on an explicitly short invocation.
+			g := newRig(t, []k8sruntime.Object{runningSandbox(t, workerToken, claim.RoleTester), inInit(status)}, withoutController(), withOptions(func(o *Options) {
+				o.BootTimeout = testwait.Bounded(t, time.Minute, time.Second)
+			}))
 			loc := sandboxLocator(workerToken, recorded)
 			if err := g.r.ReconcileOrphans(g.ctx, []runtime.Known{{Claim: workerToken, Locator: &loc}}, time.Hour); err != nil {
 				t.Fatal(err)
@@ -92,7 +97,7 @@ func TestSuspendOfAConnectedLauncherStillWaitsForTheStop(t *testing.T) {
 			held := make(chan struct{})
 			release := sync.OnceFunc(func() { close(held) })
 			t.Cleanup(release)
-			g := newRig(t, nil, withHeldStops(held))
+			g := newRig(t, nil, withHeldStops(held), withWaitsToTheDeadline())
 			loc := g.spawn(workerSpec(t))
 			if edit != nil {
 				g.editPod(loc.Sandbox.Name, "the pod store to see the pod back in workspace-init", edit)
