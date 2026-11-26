@@ -26,7 +26,9 @@ var (
 	_ runtime.IssuePodReplacer    = (*Runtime)(nil)
 	_ runtime.LaunchSessionNamer  = (*Runtime)(nil)
 	_ runtime.WorkspaceWorkReader = (*Runtime)(nil)
+	_ runtime.PodWorkspaceReader  = (*Runtime)(nil)
 	_ runtime.IssueVolumeReader   = (*Runtime)(nil)
+	_ runtime.ActReader           = (*Runtime)(nil)
 )
 
 // Call is one method the caller called, with the arguments it called it with. A method that does
@@ -129,6 +131,19 @@ type Runtime struct {
 	holdReplace  func()
 	replaceNoPod bool
 	holdIssue    func()
+	// suspendedOver is every pod whose Sandbox a replacement's suspension landed on, as the
+	// Sandbox runtime leaves it whether or not the pod is still there to see: a ReplacePod or a
+	// ReplaceIssuePod of such a pod replaces nothing and answers nil, as that runtime answers a
+	// suspended Sandbox (FailReplacePodAfterItsSuspension, ScriptSuspendedOver).
+	suspendedOver map[string]bool
+	// onRead runs at the start of every WorkspaceWork and PodWorkspaceWork, with no lock of the
+	// fake held (OnWorkspaceWork).
+	onRead func()
+	// took is every pod a ReplacePod replaced, which ReadAct answers taken from then on, as the
+	// Sandbox runtime answers a pod its replacement's suspension took. ReplacePod and
+	// ReplaceIssuePod read nothing of it, so a test that replaces the same pod again is answered
+	// as before.
+	took map[string]bool
 	// replaced is every pod a replacement by issue (ReplaceIssuePod) or a launch (RoundPodEnds)
 	// replaced, by uid, with the uid of the pod a launch built in its place, "" while none has:
 	// the issue's Sandbox no longer holds it, as IssuePod then answers, and a launch scripted into
@@ -137,6 +152,9 @@ type Runtime struct {
 	replaced map[string]string
 	// built counts the pods launches built in the place of replaced ones (buildIn).
 	built int
+	// sandboxGone is every Sandbox uid whose delete the API server has confirmed
+	// (ScriptSandboxGone): an act that takes the volume such a Sandbox owned is made.
+	sandboxGone map[string]bool
 	// turn is the pods' launch turn, which the Sandbox runtime takes per pod (lockPod): a launch
 	// reads and replaces the pod it goes into under it (launchInto), and a replacement by issue
 	// asks its last word and replaces under it (ReplaceIssuePod), so no two of them interleave.
@@ -161,6 +179,10 @@ func NewRuntime() *Runtime {
 		sessions:    map[claim.Token]string{},
 		work:        map[string]runtime.WorkspaceWork{},
 		replaced:    map[string]string{},
+		// suspendedOver and took start empty: no replacement has landed on any pod.
+		suspendedOver: map[string]bool{},
+		took:          map[string]bool{},
+		sandboxGone:   map[string]bool{},
 	}
 	fake.pending = sync.NewCond(&fake.mu)
 	return fake
@@ -324,77 +346,79 @@ func (r *Runtime) LaunchSession(loc runtime.Locator) (string, bool) {
 	return session, named
 }
 
-// ScriptWorkspaceWork makes every later WorkspaceWork of issue answer work, as the Sandbox runtime
-// answers what the shim of a role in the issue's pod read. An issue no call named holds no work,
-// which is the uninteresting case.
+// ScriptWorkspaceWork makes every later WorkspaceWork and PodWorkspaceWork of issue answer work, as
+// the Sandbox runtime answers what the shim of a role in the issue's pod, or the pod's launcher,
+// read: the roles and the launcher of a pod read the one workspace. An issue no call named holds no
+// work, which is the uninteresting case.
 func (r *Runtime) ScriptWorkspaceWork(issue string, work runtime.WorkspaceWork) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.work[issue] = work
 }
 
-// FailWorkspaceWork makes every later WorkspaceWork of issue return err, as the Sandbox runtime
-// answers a read that no role's process could make or that the shim refused. nil clears it, and
-// the issue's scripted reading answers again.
+// FailWorkspaceWork makes every later WorkspaceWork and PodWorkspaceWork of issue return err, as
+// the Sandbox runtime answers a read that no process of the pod could make or that the shim or the
+// launcher refused. nil clears it, and the issue's scripted reading answers again.
 func (r *Runtime) FailWorkspaceWork(issue string, err error) { r.fail("WorkspaceWork:"+issue, err) }
 
 // WorkspaceWork records its call and answers what FailWorkspaceWork set for the issue, else what
 // ScriptWorkspaceWork set, else no work.
 func (r *Runtime) WorkspaceWork(_ context.Context, issue string, role claim.Role) (runtime.WorkspaceWork, error) {
+	r.reading()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, Call{Method: "WorkspaceWork", Issue: issue, Role: role})
+	return r.workspaceWork(issue)
+}
+
+// OnWorkspaceWork makes every later WorkspaceWork and PodWorkspaceWork run during first, before it
+// answers, with no lock of the fake held, so during may drive the daemon and the fake again: a test
+// starts a turn of a role there, as a turn can start while the read runs in the pod. nil clears it.
+func (r *Runtime) OnWorkspaceWork(during func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.onRead = during
+}
+
+// reading runs what OnWorkspaceWork set, if anything, with no lock of the fake held.
+func (r *Runtime) reading() {
+	r.mu.Lock()
+	during := r.onRead
+	r.mu.Unlock()
+	if during != nil {
+		during()
+	}
+}
+
+// PodWorkspaceWork is the read the Sandbox runtime has the issue pod's launcher make: it records
+// its call, with no role, and answers as WorkspaceWork does, naming the pod the issue's Sandbox
+// holds at the call (ScriptIssuePod, followed through the replacements the fake made), as the
+// Sandbox runtime names the pod its launcher read, error or not. An issue no ScriptIssuePod named
+// names no pod.
+func (r *Runtime) PodWorkspaceWork(_ context.Context, issue string) (runtime.WorkspaceWork, error) {
+	r.reading()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, Call{Method: "PodWorkspaceWork", Issue: issue})
+	pod := ""
+	if scripted, ok := r.issuePods[issue]; ok && scripted != "" {
+		if now, live := r.podNow(scripted); live {
+			pod = now
+		}
+	}
+	work, err := r.workspaceWork(issue)
+	work.PodUID = pod
+	return work, err
+}
+
+// workspaceWork is what a read of issue answers, the caller holding mu.
+func (r *Runtime) workspaceWork(issue string) (runtime.WorkspaceWork, error) {
 	if err := r.failures["WorkspaceWork:"+issue]; err != nil {
 		return runtime.WorkspaceWork{}, err
 	}
 	work := r.work[issue]
 	work.Commits = append([]string(nil), work.Commits...)
 	return work, nil
-}
-
-// FailPodDrift makes every later PodDrift return err; nil clears it.
-func (r *Runtime) FailPodDrift(err error) { r.fail("PodDrift", err) }
-
-// FailPodRepository makes every later PodRepository return err; nil clears it.
-func (r *Runtime) FailPodRepository(err error) { r.fail("PodRepository", err) }
-
-// FailReplacePod makes every later ReplacePod return err; nil clears it.
-func (r *Runtime) FailReplacePod(err error) { r.fail("ReplacePod", err) }
-
-// HoldReplacePod makes every later ReplacePod run hold before it asks whether the replacement is
-// still due, which is where the Sandbox runtime waits out the pod's launch turn. A test holds
-// there to do what that wait lets happen — a worker of the round starting a turn, a claim of the
-// issue being launched into the kept pod — and then lets the call go on. nil clears it; the hook
-// runs with none of the fake's own locks held, so it may drive the fake again.
-func (r *Runtime) HoldReplacePod(hold func()) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.holdReplace = hold
-}
-
-// FindNoPodToReplace makes every later ReplacePod answer nil without asking due and without
-// replacing anything, as the Sandbox runtime answers a Sandbox that is absent or suspended, or
-// whose pod is no longer the one the locator records: there is no pod of the round to end. The
-// call is recorded as ReplacePodNoPod, so no ReplacePod call stands for a replacement. false
-// clears it.
-func (r *Runtime) FindNoPodToReplace(none bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.replaceNoPod = none
-}
-
-// FailReplaceIssuePod makes every later ReplaceIssuePod return err once due has let it through,
-// as the Sandbox runtime answers a write the cluster refused; nil clears it.
-func (r *Runtime) FailReplaceIssuePod(err error) { r.fail("ReplaceIssuePod", err) }
-
-// HoldReplaceIssuePod makes every later ReplaceIssuePod run hold before it asks whether the
-// replacement is still due, which is where the Sandbox runtime waits out the pod's launch turn, as
-// HoldReplacePod does for ReplacePod. nil clears it; the hook runs with none of the fake's own
-// locks held, so it may drive the fake again.
-func (r *Runtime) HoldReplaceIssuePod(hold func()) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.holdIssue = hold
 }
 
 // HoldResume makes every later Resume run hold before it answers, which is where the Sandbox
@@ -751,160 +775,6 @@ func (r *Runtime) LaunchBound() time.Duration {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.TryBound
-}
-
-// PodDrift records its call and answers what ScriptPodDrift set for the claim, nil for a claim no
-// call named and for one with no process, as a runtime answers a claim that runs nowhere, and
-// runtime.ErrPodGone for a claim ScriptPodGone named, as a runtime answers a claim whose
-// recorded pod is not there.
-func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.calls = append(r.calls, Call{Method: "PodDrift", Pod: copyKnown(k)})
-	if err := r.failures["PodDrift"]; err != nil {
-		return nil, err
-	}
-	if k.Locator == nil {
-		return nil, nil
-	}
-	if r.gone[k.Claim] {
-		return nil, runtime.ErrPodGone
-	}
-	return append([]string(nil), r.drift[k.Claim]...), nil
-}
-
-// PodRepository records its call and answers what ScriptPodRepository set for the claim, "" for
-// a claim no call named and for one with no process, as a runtime answers a claim that runs in
-// no place of its own. A claim ScriptPodGone named answers "" too: nothing is read of a pod that
-// is not there, and PodDrift is where that pod is reported gone.
-func (r *Runtime) PodRepository(_ context.Context, k runtime.Known) (string, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.calls = append(r.calls, Call{Method: "PodRepository", Pod: copyKnown(k)})
-	if err := r.failures["PodRepository"]; err != nil {
-		return "", err
-	}
-	if k.Locator == nil || r.gone[k.Claim] {
-		return "", nil
-	}
-	return r.repository[k.Claim], nil
-}
-
-// IssuePod records its call and answers what ScriptIssuePod set for the issue, followed to the pod
-// a launch built in its place where the fake replaced it (podNow), no pod where the last pod so
-// followed was replaced with nothing built in its place, and read false for an issue no call
-// named.
-func (r *Runtime) IssuePod(issue string) (string, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.calls = append(r.calls, Call{Method: "IssuePod", Issue: issue})
-	pod, read := r.issuePods[issue]
-	if now, live := r.podNow(pod); live {
-		return now, read
-	}
-	return "", read
-}
-
-// IssueKeepsVolume answers what ScriptKeptVolume set for the issue: true where its kept Sandbox
-// was made before since, cut to the second as the Sandbox runtime cuts it, since the API server
-// records a creation time to the second. It records no call: the daemon asks it for the words of a
-// message and for the rename pass's live-pod rules (bootKeep, podEndKeep), whose effects a test
-// reads instead.
-func (r *Runtime) IssueKeepsVolume(issue string, since time.Time) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	created, kept := r.keptVolumes[issue]
-	return kept && created.Before(since.Truncate(time.Second))
-}
-
-// ReplacePod plays the Sandbox runtime's own order: it waits where that runtime waits for the
-// pod's launch turn (HoldReplacePod), answers nil there for a pod it finds no longer there
-// (FindNoPodToReplace), asks due whether the replacement is still due, and only then replaces
-// anything. A due that refuses records a ReplacePodNotDue call and changes nothing — no
-// replacement was made, so no ReplacePod call stands for one — and its error is returned as the
-// runtime hands it back. Otherwise the call is recorded, the claim's drift forgotten — the place
-// it named is gone, and the one built in its stead is built from the configuration the runtime
-// has now — and what FailReplacePod set is answered, nil by default.
-func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(context.Context) error) error {
-	r.mu.Lock()
-	hold := r.holdReplace
-	r.mu.Unlock()
-	if hold != nil {
-		hold()
-	}
-	r.mu.Lock()
-	if r.replaceNoPod {
-		r.calls = append(r.calls, Call{Method: "ReplacePodNoPod", Pod: copyKnown(k)})
-		r.mu.Unlock()
-		return nil
-	}
-	r.mu.Unlock()
-	if err := due(ctx); err != nil {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		r.calls = append(r.calls, Call{Method: "ReplacePodNotDue", Pod: copyKnown(k)})
-		return err
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.calls = append(r.calls, Call{Method: "ReplacePod", Pod: copyKnown(k)})
-	if err := r.failures["ReplacePod"]; err != nil {
-		return err
-	}
-	delete(r.drift, k.Claim)
-	return nil
-}
-
-// ReplaceIssuePod plays the Sandbox runtime's own order, as ReplacePod does: it waits where that
-// runtime waits for the pod's launch turn (HoldReplaceIssuePod), then takes that turn (turn),
-// answers nil for a pod the issue's Sandbox does not hold, asks due whether the replacement is
-// still due, and only then replaces anything. The issue's Sandbox does not hold podUID where the
-// fake already replaced podUID, or where IssuePod answers another pod or none for the issue, and
-// an issue no ScriptIssuePod named is taken to hold it: such a call is recorded as
-// ReplaceIssuePodNoPod and asks nothing. A due that refuses records a ReplaceIssuePodNotDue call
-// and changes nothing, and its error is returned as the runtime hands it back. Otherwise the call
-// is recorded and what FailReplaceIssuePod set is answered. A replacement that is not refused is
-// remembered (replaced): IssuePod answers no pod for it from then on, and a launch scripted into
-// it comes up in a new pod (launchInto).
-func (r *Runtime) ReplaceIssuePod(ctx context.Context, issue, podUID string, due func(context.Context) error) error {
-	r.mu.Lock()
-	hold := r.holdIssue
-	r.mu.Unlock()
-	if hold != nil {
-		hold()
-	}
-	r.turn.Lock()
-	defer r.turn.Unlock()
-	call := Call{Issue: issue, PodUID: podUID}
-	r.mu.Lock()
-	_, gone := r.replaced[podUID]
-	if pod, read := r.issuePods[issue]; read {
-		now, live := r.podNow(pod)
-		gone = gone || !live || now != podUID
-	}
-	if gone {
-		call.Method = "ReplaceIssuePodNoPod"
-		r.calls = append(r.calls, call)
-		r.mu.Unlock()
-		return nil
-	}
-	r.mu.Unlock()
-	if err := due(ctx); err != nil {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		call.Method = "ReplaceIssuePodNotDue"
-		r.calls = append(r.calls, call)
-		return err
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	call.Method = "ReplaceIssuePod"
-	r.calls = append(r.calls, call)
-	if err := r.failures["ReplaceIssuePod"]; err != nil {
-		return err
-	}
-	r.replaced[podUID] = ""
-	return nil
 }
 
 // CleanupTree records its call and answers what FailCleanupTree set, nil by default.

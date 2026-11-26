@@ -1143,10 +1143,14 @@ func TestPodUpdateReplacesThePodOnReadyForUpdateAnswersWithOneReplacePod(t *test
 	if notDue := rig.notDue(); len(notDue) != 0 {
 		t.Errorf("the replacement was refused inside ReplacePod %d times, want none", len(notDue))
 	}
+	// The replacement reads the workspace once before it is made (R7 of #5285).
 	var asked []string
+	reads := 0
 	for _, call := range rig.rt.Calls()[before:] {
 		asked = append(asked, call.Method)
 		switch call.Method {
+		case "WorkspaceWork":
+			reads++
 		// PodRepository is a sweep read like PodDrift: groupDrift asks the pod which repository
 		// it was built from at every sweep, once per group, to read a corrected repository as
 		// drift (repositoryDrift). Each launch asks it too, of the process it started, to record
@@ -1154,8 +1158,11 @@ func TestPodUpdateReplacesThePodOnReadyForUpdateAnswersWithOneReplacePod(t *test
 		// this round, which no correction opened.
 		case "ReplacePod", "PodDrift", "PodRepository", "Probe", "Observe", "ReconcileOrphans":
 		default:
-			t.Errorf("the runtime was called %s for the round, want nothing but the sweep's reads and one ReplacePod: %v", call.Method, asked)
+			t.Errorf("the runtime was called %s for the round, want nothing but the sweep's reads, one read of the workspace and one ReplacePod: %v", call.Method, asked)
 		}
+	}
+	if reads != 1 {
+		t.Errorf("the workspace was read %d times for the round, want once before the replacement: %v", reads, asked)
 	}
 	if lines := loggedLines(t, rig.logs.String(), podUpdateBoundLine); len(lines) != 0 {
 		t.Errorf("the sweep logged a bounded end %+v for a round its answers ended", lines)
@@ -1166,12 +1173,14 @@ func TestPodUpdateReplacesThePodOnReadyForUpdateAnswersWithOneReplacePod(t *test
 }
 
 // podUpdateAccountDrift is the reason PodDrift gives for a pod running as a ServiceAccount other
-// than the configured one, spelled as drift.go builds it: "account " + <the account the pod runs
-// as> + ", now " + <the configured account> (PodDrift, accountDrift), here a pod left on `default`
-// under a configuration that now names `legion-worker`. This round rig scripts PodDrift, so
-// nothing here reads drift.go: the sandbox package's TestPodDriftNamesTheServiceAccountThePodRunsAs
-// holds that spelling, and this copy of it only makes the round below one opened on the account.
-const podUpdateAccountDrift = "account default, now legion-worker"
+// than the configured one, spelled as drift.go builds it: runtime.BreakingDrift + "account " +
+// <the account the pod runs as> + ", now " + <the configured account> (PodDrift, accountDrift),
+// here a pod left on `default` under a configuration that now names `legion-worker`. The mark
+// says the drift breaks the pod (R7 of #5285, spec v23). This round rig scripts
+// PodDrift, so nothing here reads drift.go: the sandbox package's
+// TestPodDriftNamesTheServiceAccountThePodRunsAs holds that spelling, and this copy of it only
+// makes the round below one opened on the account.
+const podUpdateAccountDrift = runtime.BreakingDrift + "account default, now legion-worker"
 
 // The ServiceAccount a pod runs as reaches its replacement the way every other drift of an issue
 // pod does, and that is the whole of what this test holds. A pod created under the account the
@@ -1307,7 +1316,8 @@ func TestAPodGoneFromAKeptVolumeSaysTheWorkStays(t *testing.T) {
 		created time.Time
 		// drifted is whether the runtime reads podUpdateDrift on the pod, and corrected whether
 		// Dispatch moved the issue to podUpdateCorrectedRepo, which adds
-		// podUpdateRepositoryReason after the runtime's reasons.
+		// podUpdateRepositoryReason, a drift that breaks the pod, so the round records it before
+		// the runtime's reasons (runtime.RoundReasons).
 		drifted, corrected bool
 		disk               string
 	}{
@@ -1337,7 +1347,7 @@ func TestAPodGoneFromAKeptVolumeSaysTheWorkStays(t *testing.T) {
 			if tc.corrected {
 				pushed = pushedMovedTo(podUpdateCorrectedRepo)
 			}
-			want := implementerLostWith(strings.Join(reasons, ", "), tc.disk, pushed)
+			want := implementerLostWith(runtime.RoundReasons(reasons), tc.disk, pushed)
 
 			rig.tick()
 			rig.awaitRound(claim.RoleImplementer, podUpdateRound)
@@ -1773,12 +1783,13 @@ func (r *podGoneAfterTheDriftRead) PodDrift(ctx context.Context, k runtime.Known
 // which only Resume sets, and the worker is told so in the prompt every role reads
 // (internal/prompts/go/worker-common.md, "Your process is shorter than your session").
 //
-// What does prompt it is the daemon's silence sweep, a bound after that last turn: it finds a
-// phase worker nothing will prompt and sends the phase's task again
-// (TestSilentPhaseWorkerGetsItsTaskAgainAfterAPodReplacement). The two tests are the two halves
-// of one truth — the round's end prompts nobody, and the sweep is what does — and neither
-// stands without the other: this one advances no clock and runs no sweep, so what it reads is
-// the end of the round alone.
+// What does prompt it is its relaunch's ready, a workflow fact that gives a phase worker holding
+// nothing its phase's task once its new process is ready
+// (TestAReplacedPhaseWorkerGetsItsUnfinishedTaskOnceWhenItsNewProcessIsReady), and, a bound
+// after that last turn, the daemon's silence sweep, which finds a phase worker nothing has
+// prompted and sends the phase's task again
+// (TestSilentPhaseWorkerGetsItsTaskAgainAfterAPodReplacement). This rig binds no ready as a fact,
+// advances no clock and runs no sweep, so what it reads is the end of the round alone.
 func TestPodUpdateTellsItsWorkerNothingHoweverTheRoundEnds(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
@@ -2204,8 +2215,8 @@ func TestPodUpdateTellsTheControllerWhenTheReplacementKeepsFailing(t *testing.T)
 	if len(notices) != 1 {
 		t.Fatalf("at the bound %s the controller was told %d times about a replacement that keeps failing, want once", rig.clock.Now(), len(notices))
 	}
-	if !strings.Contains(notices[0].Reason, "The runtime refused the pod replacement") || !strings.Contains(notices[0].Reason, "the api server refused the suspension") {
-		t.Errorf("the notice says %q, want the refusal and the error the runtime gave", notices[0].Reason)
+	if !strings.Contains(notices[0].Reason, "The pod replacement failed.") || !strings.Contains(notices[0].Reason, "the api server refused the suspension") {
+		t.Errorf("the notice says %q, want the failure and the error the runtime gave", notices[0].Reason)
 	}
 	wantAnswered(t, notices[0], claim.RoleImplementer)
 	wantNoRefusedNotice(t, rig)

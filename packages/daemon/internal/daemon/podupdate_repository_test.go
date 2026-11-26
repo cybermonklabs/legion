@@ -39,8 +39,9 @@ const (
 	podUpdateCorrectedRepo   = "zeta/tools"
 	podUpdateCorrectedBranch = "release/v9"
 	// podUpdateRepositoryReason is the one reason a corrected repository adds to a round: the
-	// repository the pod was built from, then the repository the record holds now.
-	podUpdateRepositoryReason = "repository " + podUpdateRepo + ", now " + podUpdateCorrectedRepo
+	// repository the pod was built from, then the repository the record holds now, behind the mark
+	// of a drift that breaks the pod (repositoryReason, runtime.BreakingDrift).
+	podUpdateRepositoryReason = runtime.BreakingDrift + "repository " + podUpdateRepo + ", now " + podUpdateCorrectedRepo
 )
 
 // recordSpecs is the rig's launch spec: the repository the issue's record names now and that
@@ -517,30 +518,32 @@ func TestARoundOpensOnlyOnATickThatReadThePodsRepository(t *testing.T) {
 	}
 }
 
-// A replacement that could not wait for a role writes on the issue what its read of the
-// workspace found (workspaceLostMessage), and that message says where the work is as the message
-// on a gone pod does. The round here opens for the image alone over a pod of podUpdateRepo, the
+// A replacement that took work its read found tells the issue's architect what it took
+// (workspaceTakenMessage), and that notice says where the work is as the message on a gone pod
+// does. The round here opens over a drift that breaks the pod (roundBreakingDrift), which is
+// replaced whatever its read finds (roundKeeps, R7 of #5285), over a pod of podUpdateRepo; the
 // daemon suspended the planner, and the read through the implementer finds one commit that no
 // branch holds, or fails. Where Dispatch moves the issue to podUpdateCorrectedRepo while the round
-// runs, the message names the work by podUpdateRepo and not by origin, in what it says the read
+// runs, the notice names the work by podUpdateRepo and not by origin, in what it says the read
 // found or could not know as in what it says of the disk: the read ran in the round's pod, whose
 // origin was podUpdateRepo. It sends each role to the issue branch of podUpdateRepo, names
 // podUpdateCorrectedRepo as the new pod's origin and, on a kept volume, names the workspace of
-// podUpdateRepo: the round's repository and the record as it stands when the message is written
-// (roundMove). The control is the same round of an issue that never moved, whose message is the
-// text of every other such replacement, word for word.
+// podUpdateRepo: the repository the replacement's record holds and the record as it stands when
+// the notice is queued (roundMove). The control is the same round of an issue that never moved,
+// whose notice is the text of every other such replacement, word for word. The issue is written
+// nothing: the architect is the one told what a replacement took (wantToldTaken).
 func TestAReplacementOverAPassedOverRoleNamesThePodsRepositoryWhereTheIssueMoved(t *testing.T) {
 	t.Parallel()
 	madeBefore := podUpdateStart.Add(-time.Hour)
 	const (
-		// atOrigin and ofThePods are the words the message names the work that no branch holds
+		// atOrigin and ofThePods are the words the notice names the work that no branch holds
 		// with, on an issue that never moved and on one that moved off the pod's repository, and
 		// heldAtOrigin and heldOfThePods the words it names the work the read was for with.
 		atOrigin      = "Work that is not on a branch at origin"
 		ofThePods     = "Work that is not on a branch of the repository `" + podUpdateRepo + "`"
 		heldAtOrigin  = "no branch or tag at origin holds"
 		heldOfThePods = "no branch or tag of the repository `" + podUpdateRepo + "` holds"
-		// lost and kept are what the message says of the pod and its disk.
+		// lost and kept are what the notice says of the pod and its disk.
 		lost = "The pod and its disk are gone."
 		kept = "The pod is gone. Its disk is a kept volume, and the volume is still there."
 	)
@@ -552,7 +555,7 @@ func TestAReplacementOverAPassedOverRoleNamesThePodsRepositoryWhereTheIssueMoved
 		// errPassedOverRead rather than find the one commit.
 		keptVolumeAt     *time.Time
 		corrected, fails bool
-		// gone, held, work and pushed are what the message says of the pod and its disk, the
+		// gone, held, work and pushed are what the notice says of the pod and its disk, the
 		// words it names the work the read was for with, what it says of the work that no
 		// branch holds, and of the work each role pushed.
 		gone, held, work, pushed string
@@ -577,8 +580,8 @@ func TestAReplacementOverAPassedOverRoleNamesThePodsRepositoryWhereTheIssueMoved
 				"The workspace held one commit that " + tc.held + ": " + passedOverCommit + "."
 			if tc.fails {
 				rig.rt.FailWorkspaceWork(podUpdateIssue, errPassedOverRead)
-				read = "Before the replacement, the daemon tried to read the issue workspace. " +
-					"The read failed: " + errPassedOverRead.Error() + ". " +
+				read = "No read of the workspace could be made before the replacement. " +
+					"The error of the read, in quotes, is: " + readError(errPassedOverRead) + ". " +
 					"The daemon does not know if the workspace held work that " + tc.held + "."
 			} else {
 				rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
@@ -586,7 +589,7 @@ func TestAReplacementOverAPassedOverRoleNamesThePodsRepositoryWhereTheIssueMoved
 			if tc.keptVolumeAt != nil {
 				rig.rt.ScriptKeptVolume(podUpdateIssue, *tc.keptVolumeAt)
 			}
-			rig.drifts(podUpdateDrift)
+			rig.drifts(roundBreakingDrift)
 
 			rig.tick()
 			rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
@@ -598,19 +601,14 @@ func TestAReplacementOverAPassedOverRoleNamesThePodsRepositoryWhereTheIssueMoved
 			rig.settleAll()
 			rig.awaitReplacement(1, "once the implementer answered")
 
-			messages := rig.messages()
-			if len(messages) != 1 {
-				t.Fatalf("the issue was written %d messages, want one: %q", len(messages), messages)
-			}
-			want := "The daemon replaced the pod that ran this issue's roles. " +
-				"The daemon opened an update round over that pod (" + podUpdateRound + "). " +
-				"The reasons were: " + podUpdateDrift + ". " + tc.gone + "\n\n" +
-				"The round did not wait for these roles, because no process of these roles ran in the pod: " +
-				"planner (suspended).\n\n" +
-				read + "\n\n" +
-				tc.work + " " + tc.pushed
-			if messages[0] != want {
-				t.Fatalf("the message on the issue =\n%s\nwant\n%s", messages[0], want)
+			notice := wantToldTaken(t, rig, "planner (suspended)")
+			want := "The daemon replaced the pod of " + podUpdateIssue + " (pod " + podUpdatePod + ") for the update round " + podUpdateRound + ". " +
+				"The reasons were: " + roundBreakingDrift + ". " +
+				"The round was over a drift that breaks the pod, so no role could keep working in the pod. " + tc.gone + " " +
+				toldTakenRoles + "planner (suspended). " +
+				read + " " + tc.work + " " + tc.pushed + " You are told this once for this replacement."
+			if notice != want {
+				t.Fatalf("the architect's notice =\n%s\nwant\n%s", notice, want)
 			}
 		})
 	}
@@ -681,18 +679,19 @@ func TestAPodGoneWhileTheRecordCannotBeReadNamesThePodsRepository(t *testing.T) 
 	}
 }
 
-// The message of a replacement that could not wait for a role reads the record as the message
-// on a gone pod does (roundMove): where the record cannot be read when the message is written, it
-// names the work that no branch holds by the repository of the round's pod, podUpdateRepo, and
-// not by origin, in what it says the read found and in what it says of the disk, and its last
-// sentence is the one of a gone pod whose record could not be read. Control: with the failed read
-// taken as no move, the message names that work at origin.
+// The notice of a replacement that took work reads the record as the message on a gone pod does
+// (roundMove): where the record cannot be read when the notice is queued, it names the work that
+// no branch holds by the repository of the round's pod, podUpdateRepo, and not by origin, in what
+// it says the read found and in what it says of the disk, and its sentence of the pushed work is
+// the one of a gone pod whose record could not be read. The round is over a drift that breaks the
+// pod (roundBreakingDrift), so it replaces the pod over the work its read found (roundKeeps).
+// Control: with the failed read taken as no move, the notice names that work at origin.
 func TestAReplacementWhileTheRecordCannotBeReadNamesThePodsRepository(t *testing.T) {
 	t.Parallel()
 	const held = "no branch or tag of the repository `" + podUpdateRepo + "` holds"
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), suspendedRole(claim.RolePlanner, supervise.SuspendedByDaemon))
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
-	rig.drifts(podUpdateDrift)
+	rig.drifts(roundBreakingDrift)
 
 	rig.tick()
 	rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
@@ -704,21 +703,157 @@ func TestAReplacementWhileTheRecordCannotBeReadNamesThePodsRepository(t *testing
 	rig.settleAll()
 	rig.awaitReplacement(1, "once the implementer answered")
 
-	messages := rig.messages()
-	if len(messages) != 1 {
-		t.Fatalf("the issue was written %d messages, want one: %q", len(messages), messages)
-	}
-	want := "The daemon replaced the pod that ran this issue's roles. " +
-		"The daemon opened an update round over that pod (" + podUpdateRound + "). " +
-		"The reasons were: " + podUpdateDrift + ". The pod and its disk are gone.\n\n" +
-		"The round did not wait for these roles, because no process of these roles ran in the pod: " +
-		"planner (suspended).\n\n" +
+	notice := wantToldTaken(t, rig, "planner (suspended)")
+	want := "The daemon replaced the pod of " + podUpdateIssue + " (pod " + podUpdatePod + ") for the update round " + podUpdateRound + ". " +
+		"The reasons were: " + roundBreakingDrift + ". " +
+		"The round was over a drift that breaks the pod, so no role could keep working in the pod. The pod and its disk are gone. " +
+		toldTakenRoles + "planner (suspended). " +
 		"Before the replacement, the daemon read the issue workspace. " +
 		"The read found work that " + held + ". " +
-		"The workspace held one commit that " + held + ": " + passedOverCommit + ".\n\n" +
-		"Work that is not on a branch of the repository `" + podUpdateRepo + "` is lost. " + podUpdatePushedUnread
-	if messages[0] != want {
-		t.Fatalf("the message on the issue =\n%s\nwant\n%s", messages[0], want)
+		"The workspace held one commit that " + held + ": " + passedOverCommit + ". " +
+		"Work that is not on a branch of the repository `" + podUpdateRepo + "` is lost. " + podUpdatePushedUnread +
+		" You are told this once for this replacement."
+	if notice != want {
+		t.Fatalf("the architect's notice =\n%s\nwant\n%s", notice, want)
+	}
+}
+
+// R3 of #3712 (spec v8) under R7 of #5285: a corrected repository breaks the pod
+// (repositoryReason opens on runtime.BreakingDrift), since no role can move the work onto the
+// corrected repository in a pod that clones the repository the issue has left. So the round a
+// correction opens replaces the pod whatever the read of its workspace finds (roundKeeps) and never
+// keeps it. Over a read that finds a commit no branch holds, the issue's architect is told once
+// what the replacement took, naming that work by podUpdateRepo, the pod's repository, and sending
+// each role to that repository's issue branch, with podUpdateCorrectedRepo as the new pod's
+// origin. Over a clean read nobody is told. The control is the same read that finds work under a
+// round over a drift the roles can keep working under, podUpdateDrift alone: that round keeps the
+// pod and replaces nothing.
+func TestARepositoryCorrectionReplacesThePodWhateverItsReadFinds(t *testing.T) {
+	t.Parallel()
+	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
+	const held = "no branch or tag of the repository `" + podUpdateRepo + "` holds"
+	for _, tc := range []struct {
+		name string
+		// corrected is whether Dispatch moved the issue to podUpdateCorrectedRepo, which opens the
+		// round; otherwise the round is over podUpdateDrift alone. work is what the read finds.
+		corrected bool
+		work      runtime.WorkspaceWork
+		// replaced and told are whether the pod is replaced and whether the architect is told.
+		replaced, told bool
+	}{
+		{"a correction over a read that finds work", true, roundUnpushed, true, true},
+		{"a correction over a clean read", true, roundClean, true, false},
+		{"control: an image drift over a read that finds work", false, roundUnpushed, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+			rig.rt.ScriptWorkspaceWork(podUpdateIssue, tc.work)
+			if tc.corrected {
+				rig.corrects(podUpdateCorrectedRepo, podUpdateCorrectedBranch)
+			} else {
+				rig.drifts(podUpdateDrift)
+			}
+			rig.tick()
+			for _, role := range roles {
+				if c := rig.awaitAsked(role, podUpdateRound); runtime.Breaks(c.UpdateReasons) != tc.corrected {
+					t.Fatalf("the %s's round records the reasons %q, want them to break the pod only for a correction", role, c.UpdateReasons)
+				}
+			}
+			for _, role := range roles {
+				rig.signal(role, "a1b2c3d")
+			}
+			rig.settleAll()
+			if !tc.replaced {
+				for _, role := range roles {
+					rig.awaitSwept(role, "its round to end with the pod kept", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+				}
+				if replaced := rig.replacements(); len(replaced) != 0 {
+					t.Fatalf("the pod was replaced %d times, want none: the round over a drift the roles keep working under kept it", len(replaced))
+				}
+				if reason, _ := rig.keptReason(); reason == "" {
+					t.Fatalf("the issue holds no decline row, want the pod kept for the work its read found")
+				}
+				return
+			}
+			rig.awaitReplacement(1, "of the pod of the correction's round")
+			if reason, _ := rig.keptReason(); reason != "" {
+				t.Fatalf("the issue's decline row reads %q, want none: a correction's round never keeps its pod", reason)
+			}
+			if !tc.told {
+				if told := rig.architectNotices(record.WorkspaceTakenNotice); len(told) != 0 {
+					t.Fatalf("the architect was told %+v, want no workspace-taken notice", told)
+				}
+				return
+			}
+			notice := wantToldTaken(t, rig)
+			for _, want := range []string{
+				"The workspace held one commit that " + held + ": " + passedOverCommit + ".",
+				"Work that is not on a branch of the repository `" + podUpdateRepo + "` is lost.",
+				pushedMovedTo(podUpdateCorrectedRepo) + " You are told this once for this replacement.",
+			} {
+				if !strings.Contains(notice, want) {
+					t.Errorf("the notice does not say %q:\n%s", want, notice)
+				}
+			}
+			if strings.Contains(notice, "at origin") {
+				t.Errorf("the notice names work at origin, which in the new pod is %s and holds none of it:\n%s", podUpdateCorrectedRepo, notice)
+			}
+		})
+	}
+}
+
+// The record of a correction round's replacement holds the repository the round's pod was built
+// from (replacementRecord.Repository), and its finish reads the issue's record again when it
+// queues the architect's notice (roundMove). Here the call's suspension lands and the call fails,
+// so the record stands; Dispatch moves the issue on again, to a third repository; and a restarted
+// daemon, whose runtime answers no repository for the pod, finishes the replacement from the
+// record (finishReplacements). Its notice names the work by podUpdateRepo, the repository the
+// record holds, and names the third repository as the new pod's origin, as the record stands at
+// the finish.
+func TestARepositoryCorrectionsReplacementFinishedAfterARestartNamesTheRecordedRepository(t *testing.T) {
+	t.Parallel()
+	const third, thirdBranch = "zeta/gadgets", "release/v10"
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, roundUnpushed)
+	rig.rt.FailReplacePodAfterItsSuspension(errWaitedOut)
+	rig.corrects(podUpdateCorrectedRepo, podUpdateCorrectedBranch)
+	rig.tick()
+	for _, role := range landedRoles {
+		rig.awaitAsked(role, podUpdateRound)
+	}
+	for _, role := range landedRoles {
+		rig.signal(role, "a1b2c3d")
+	}
+	rig.settleAll()
+	rig.awaitReplacement(1, "for the call whose wait ran out once its suspension landed")
+
+	var held string
+	if err := rig.pool.QueryRow(rig.ctx, `select coalesce(record->>'repository', '') from pod_replacements where issue = $1`, podUpdateIssue).Scan(&held); err != nil {
+		t.Fatalf("read the record of the replacement: %v", err)
+	}
+	if held != podUpdateRepo {
+		t.Fatalf("the record of the replacement holds the repository %q, want %s, the one the round's pod was built from", held, podUpdateRepo)
+	}
+	if told := rig.architectNotices(record.WorkspaceTakenNotice); len(told) != 0 {
+		t.Fatalf("the architect was told %+v before the record was finished, want nothing yet", told)
+	}
+
+	rig.corrects(third, thirdBranch)
+	next := restartedOverIt(rig)
+	for _, role := range landedRoles {
+		next.awaitSwept(role, "its round to end as the replacement it was", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	}
+	told := next.architectNotices(record.WorkspaceTakenNotice)
+	if len(told) != 1 {
+		t.Fatalf("the architect was told %+v, want one workspace-taken notice", told)
+	}
+	for _, want := range []string{
+		"The workspace held one commit that no branch or tag of the repository `" + podUpdateRepo + "` holds: " + passedOverCommit + ".",
+		pushedMovedTo(third) + " You are told this once for this replacement.",
+	} {
+		if !strings.Contains(told[0].Reason, want) {
+			t.Errorf("the notice does not say %q:\n%s", want, told[0].Reason)
+		}
 	}
 }
 

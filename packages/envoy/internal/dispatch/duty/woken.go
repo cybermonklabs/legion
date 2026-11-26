@@ -35,6 +35,12 @@ type WokenLoop struct {
 	// with no wake - an attempt's retry time, a claim's expiry - or the zero time for never.
 	// Each pass's answer replaces the last one's, and a due time is held to MinGap like a wake.
 	Pass func(context.Context) (next time.Time)
+	// Idle, when set, is called on the loop's own goroutine each time it is about to wait with
+	// nothing owed and nothing due: it holds no timer and will make no statement until a wake
+	// arrives or ctx ends. That is the state this loop shape exists for, and a test that must
+	// know the loop has reached it waits on this rather than on a window of its own. Production
+	// leaves it nil.
+	Idle func()
 }
 
 // RunWoken runs loop until ctx is cancelled: one pass at once, then a pass on each wake and at each
@@ -86,9 +92,14 @@ func (l WokenLoop) run(ctx context.Context, exclusive ExclusiveFunc) {
 				timer.Reset(time.Until(at))
 			}
 			armed, fire = at, timer.C
-		} else if !armed.IsZero() {
-			timer.Stop()
-			armed = time.Time{}
+		} else {
+			if !armed.IsZero() {
+				timer.Stop()
+				armed = time.Time{}
+			}
+			if l.Idle != nil {
+				l.Idle()
+			}
 		}
 		select {
 		case <-ctx.Done():
