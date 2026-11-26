@@ -3382,9 +3382,10 @@ test("a reply to an ask is drawn under the ask, whatever state it is in", () => 
   ]);
 });
 
-// R1, R15: a comment or message an agent wrote outside every thread a person wrote in is no node
-// of the outline: the history in the panel draws it. A thread a person wrote in is the
-// conversation's, the agents' turns in it included, and a reply to an ask is in the ask's thread.
+// A comment thread tied to no text that no person wrote in, and a message thread the Legion
+// daemon began, are no node of the outline: the history in the panel draws them. A comment
+// thread a person wrote in is the conversation's, the agents' turns in it included, and a reply
+// to an ask is in the ask's thread.
 test("a thread no person wrote in is no node, and one a person replied in is drawn whole", () => {
   const agent = { id: "planner", kind: "session" as const };
   const status = { ...comment("status", "2026-11-04T09:00:00Z"), author: agent };
@@ -3411,7 +3412,12 @@ test("a thread no person wrote in is no node, and one a person replied in is dra
     asks: [question("ask-1")],
     comments: [status, among, answer, joined, person, underAsk],
     issue: issueDetails([]),
-    messages: [{ ...daemon, message: { ...daemon.message, author: agent } }],
+    messages: [
+      {
+        ...daemon,
+        message: { ...daemon.message, author: { id: "legion-daemon:CORE", kind: "session" } },
+      },
+    ],
   });
 
   for (const id of ["status", "among", "answer", "daemon"]) {

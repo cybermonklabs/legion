@@ -1117,7 +1117,7 @@ html:has([data-issue-page]) {
   font-size: 12px;
   font-weight: 500;
   color: var(--color-page-muted);
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 /* A picture in a node's words is 84 px tall, cut from its top, at least 110 px wide, with its

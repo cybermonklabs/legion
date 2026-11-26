@@ -122,20 +122,31 @@ async function render(): Promise<string> {
   return Bun.file(output).text();
 }
 
-/** The module's path if the commit checked out at `root` holds it, read from git, or from jj
- * where `root` is a jj workspace git does not answer for. Empty when no commit holds it. */
+/** The real jj on PATH, and whether this run is on GitHub Actions (`GITHUB_ACTIONS`, not `CI`,
+ * which agent harnesses on the devbox export), as adopt-api-layout.test.ts reads them. */
+const JJ = Bun.which("jj");
+const ON_ACTIONS = process.env.GITHUB_ACTIONS === "true";
+
+/** The module's path if the commit checked out at `root` holds it, and empty when none does. A
+ * checkout jj answers for (`jj root`) is read with jj, as adopt-api-layout.sh reads it: jj tracks
+ * files itself, and in a colocated workspace git's index can still hold the conflict stages of a
+ * merge jj resolved, which jj never resets, so git would name a module no commit holds. Every
+ * other checkout is read with git. */
 function committedModule(root: string): string {
   const path = relative(repoRoot, output);
-  for (const cmd of [
-    ["git", "ls-files", "--", path],
-    ["jj", "file", "list", "-r", "@", "--", path],
-  ]) {
-    const done = Bun.spawnSync({ cmd, cwd: root, stdout: "pipe", stderr: "pipe" });
-    if (done.exitCode === 0) return done.stdout.toString();
+  const jj =
+    JJ !== null &&
+    Bun.spawnSync({ cmd: [JJ, "root"], cwd: root, stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+  const cmd = jj
+    ? [JJ as string, "file", "list", "-r", "@", "--", path]
+    : ["git", "ls-files", "--", path];
+  const done = Bun.spawnSync({ cmd, cwd: root, stdout: "pipe", stderr: "pipe" });
+  if (done.exitCode !== 0) {
+    throw new Error(
+      `${cmd.join(" ")} exited ${done.exitCode} in ${root}, so whether it holds the module is unknown: ${done.stderr.toString()}`
+    );
   }
-  throw new Error(
-    `neither git nor jj could list the files of ${root}, so whether it holds the module is unknown`
-  );
+  return done.stdout.toString();
 }
 
 describe("gen-api", () => {
@@ -214,4 +225,65 @@ describe("the generated module", () => {
       rmSync(root, { force: true, recursive: true });
     }
   });
+
+  // A jj-colocated workspace after a merge of main that adopt-api-layout.sh resolved, as every
+  // Legion pod is: the branch changed the module, main deleted and ignored it, `jj new` made the
+  // merge and `jj file untrack` took the module out of it. jj leaves git's index holding the
+  // module's conflict stages, so the control is that git still names it there: a reading that
+  // asked git first would call this checkout one that holds the module, which no commit does.
+  test.skipIf(JJ === null && !ON_ACTIONS)(
+    "after a jj merge the adopter resolved, it is read as in no commit",
+    () => {
+      if (JJ === null) throw new Error("no jj on PATH on GitHub Actions (install-jj installs one)");
+      const root = mkdtempSync(join(tmpdir(), "gen-api-jj-merge-"));
+      const env = {
+        ...process.env,
+        GIT_AUTHOR_NAME: "t",
+        GIT_AUTHOR_EMAIL: "t@example.invalid",
+        GIT_COMMITTER_NAME: "t",
+        GIT_COMMITTER_EMAIL: "t@example.invalid",
+        JJ_USER: "t",
+        JJ_EMAIL: "t@example.invalid",
+        JJ_CONFIG: "/dev/null",
+      };
+      const must = (cmd: string[]) => {
+        const done = Bun.spawnSync({ cmd, cwd: root, env, stdout: "pipe", stderr: "pipe" });
+        if (done.exitCode !== 0) {
+          throw new Error(`${cmd.join(" ")} exited ${done.exitCode}: ${done.stderr.toString()}`);
+        }
+        return done.stdout.toString();
+      };
+      const write = (file: string, text: string) => {
+        mkdirSync(dirname(join(root, file)), { recursive: true });
+        writeFileSync(join(root, file), text);
+      };
+      try {
+        const path = relative(repoRoot, output);
+        must(["git", "init", "-q", "-b", "main", "."]);
+        write(".gitignore", "node_modules/\n");
+        write(path, "// committed render\n");
+        must(["git", "add", "-A"]);
+        must(["git", "commit", "-qm", "base"]);
+        must(["git", "checkout", "-qb", "branch"]);
+        write(path, "// the branch's render\n");
+        must(["git", "commit", "-qam", "branch"]);
+        must(["git", "checkout", "-q", "main"]);
+        write(".gitignore", `node_modules/\n${path}\n`);
+        must(["git", "rm", "-q", path]);
+        must(["git", "commit", "-qam", "main"]);
+        must(["git", "checkout", "-q", "branch"]);
+        must([JJ, "git", "init", "--colocate"]);
+        must([JJ, "new", "branch", "main", "-m", "merge main"]);
+        // The adopter renders the module and then untracks it.
+        write(path, "// rendered\n");
+        must([JJ, "file", "untrack", "--", path]);
+        expect(must([JJ, "file", "list", "-r", "@", "--", path])).toBe("");
+        expect(must(["git", "ls-files", "--", path])).not.toBe("");
+        expect(committedModule(root)).toBe("");
+      } finally {
+        rmSync(root, { force: true, recursive: true });
+      }
+    },
+    60_000
+  );
 });
