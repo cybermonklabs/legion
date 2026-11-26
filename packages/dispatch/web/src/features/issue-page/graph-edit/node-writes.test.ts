@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { type QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { http } from "msw";
 import { createElement, type ReactNode } from "react";
@@ -23,9 +23,11 @@ import { refreshQueries } from "../../../api/query-refresh";
 import type { DispatchEvent } from "../../../api/types";
 import { newSendKey } from "../../../lib/send-key";
 import { plainWrite, Writes } from "../../writes/write-store";
+import { KEY } from "../decisions-filter/decisions-fixtures";
+import { waitInAct } from "../outline-fixtures";
 import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import { outlineQuery, readNextTreePage, type TreeAnswer } from "../tree-read/tree-read";
-import { fixture } from "./graph-edit-fixtures";
+import { fixture, renamed, signedIn } from "./graph-edit-fixtures";
 import {
   drawNewRow,
   NEW_ROW_READ_MS,
@@ -85,17 +87,7 @@ import { placementOf } from "./placement";
  *   kept request (`write-storage.ts`) keeps `headers` and gives it back.
  */
 
-const KEY = "CORE-1";
 const ROUTE = "/api/v1/issues/{key}/nodes/{id}";
-
-/** The fixture's stable name of the issue, which no route of the page takes for a key. */
-const NAMED = "<issue>";
-
-/** `value` with the fixture's name of an issue, `from` (this issue's by default), written as the
- *  key the routes take: a name for a name, no other change to what the server answered. */
-function renamed<T>(value: T, from = NAMED): T {
-  return JSON.parse(JSON.stringify(value).replaceAll(from, KEY)) as T;
-}
 
 const converted = renamed(fixture.tree.converted.person.body) as unknown as TreeAnswer;
 const moved = fixture.moved;
@@ -104,15 +96,6 @@ const refused = fixture.refused;
 /** The statement every case moves: the third of the criterion, which the server's own moves of the
  *  fixture are the moves of. */
 const STATEMENT = "<statement-3>";
-
-/** A client signed in as alice, whose held reads stay held. */
-function signedIn(): QueryClient {
-  const client = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  return client;
-}
 
 /** The answer of one exchange of the fixture, as the route sent it. */
 interface Exchange {
@@ -168,23 +151,21 @@ function answerTreeReads(pages: readonly unknown[] = [fixture.tree.converted.per
   return { cursors };
 }
 
-/** Lets whatever a case's requests would send go out and be answered, for a case that asserts that
- *  nothing more happens. */
-async function letRequestsSettle(): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, 50);
-  await act(() => promise);
-}
-
-/** The page's hook under the page's query client and router, over `client`. */
-function hookOver(client: QueryClient) {
-  const wrapper = ({ children }: { children: ReactNode }) =>
+/** The page's query client and router, over `client`, as a hook's wrapper. */
+function pageWrapper(client: QueryClient) {
+  return ({ children }: { children: ReactNode }) =>
     createElement(
       QueryClientProvider,
       { client },
       createElement(MemoryRouter, { initialEntries: [`/issues/${KEY}/graph`] }, children)
     );
-  return renderHook(() => useNodeWrites({ key: KEY, status: "in_progress" }), { wrapper });
+}
+
+/** The page's hook under the page's query client and router, over `client`. */
+function hookOver(client: QueryClient) {
+  return renderHook(() => useNodeWrites({ key: KEY, status: "in_progress" }), {
+    wrapper: pageWrapper(client),
+  });
 }
 
 /** The page's hook, with the held outline read in its client. */
@@ -201,9 +182,8 @@ function heldNode(client: QueryClient, id: string) {
   return held?.nodes?.find((node) => node.id === id);
 }
 
-/** The words of `ANSWER_LINES` by key. */
+/** The words of `ANSWER_LINES` by key, for a key a case writes out of a code. */
 const WORDS: Readonly<Record<string, string>> = ANSWER_LINES;
-const LABELS: Readonly<Record<string, string>> = CONTROL_LABELS;
 
 /** What the two node routes may refuse with, read from the contract (`packages/contracts`): every
  *  `[45]\d\d CODE` the description of the `PATCH` and the one of the `DELETE` name, and the
@@ -279,7 +259,7 @@ test("each refusal code of both node routes and NODE_GONE has its own words", ()
 });
 
 test("any other code, a 5xx and no answer draw the line that the change was not made", () => {
-  const path = "/api/v1/issues/CORE-1/nodes/x";
+  const path = `/api/v1/issues/${KEY}/nodes/x`;
   for (const error of [
     new ApiError(418, { code: "TEAPOT", error: "short and stout" }),
     new ApiError(500, { code: "INTERNAL", error: "the server broke" }),
@@ -321,7 +301,7 @@ test("a container refusal names the container with a link to its row where the h
     const named = refusalLine(error, { held: converted, node: listParagraph });
     expect(named.container).toBe(item);
     expect(named.text).toContain(ANSWER_LINES.container_empties);
-    expect(named.text).toContain(LABELS.container_list_item ?? "");
+    expect(named.text).toContain(CONTROL_LABELS.container_list_item);
     expect(named.text).toContain(container?.first_line ?? "");
     expect(named.text, "the server's message is quoted only where no row is named").not.toContain(
       exchange.body.error
@@ -330,7 +310,7 @@ test("a container refusal names the container with a link to its row where the h
     const quoted = refusalLine(error);
     expect(quoted.container).toBeUndefined();
     expect(quoted.text).toContain(exchange.body.error);
-    expect(quoted.text).toContain(WORDS.refused_container_would_empty ?? "");
+    expect(quoted.text).toContain(ANSWER_LINES.refused_container_would_empty);
     // A node the held tree holds under a parent that is no list item and no callout is quoted too.
     const elsewhere = refusalLine(error, { held: converted, node: "<statement-1>" });
     expect(elsewhere.container).toBeUndefined();
@@ -433,7 +413,7 @@ test("a kept move keeps its If-Match across a reload", async () => {
 test("a kept write of an older release with no headers loads", async () => {
   await onFakeClock(async () => {
     const tab = keptTab();
-    // The release before this part kept `{ body, method, path }` and no header.
+    // An older release kept `{ body, method, path }` and no header.
     const old: WriteRequest = {
       body: moved.indent.request.body,
       method: "PATCH",
@@ -493,7 +473,7 @@ test("moves of one node wait for the answer before them and take its placement_s
   });
   await waitFor(() => expect(patches.calls).toHaveLength(1));
   // The second move waits: nothing more is sent while the first is out.
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(patches.calls).toHaveLength(1);
   await act(async () => {
     gate.resolve();
@@ -566,7 +546,7 @@ test("a refusal empties the node's queue and says how many moves were dropped", 
   expect(outcomes[0]).toMatchObject({ status: "refused" });
   expect(outcomes.slice(1)).toMatchObject([{ status: "dropped" }, { status: "dropped" }]);
   const line = writes().lines.get(STATEMENT)?.text ?? "";
-  expect(line).toContain(WORDS.refused_invalid_pointer ?? "");
+  expect(line).toContain(ANSWER_LINES.refused_invalid_pointer);
   expect(line).toContain(`2 ${ANSWER_LINES.dropped_moves}`);
   // One move dropped reads in the singular.
   const gate = Promise.withResolvers<void>();
@@ -634,7 +614,7 @@ test("the page reads its outline reads once the queue is empty", async () => {
   await waitFor(() => expect(reads.cursors).toHaveLength(2));
   expect(reads.cursors.filter((cursor) => cursor === null)).toHaveLength(1);
   expect(reads.cursors.filter((cursor) => cursor !== null)).toHaveLength(1);
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(reads.cursors, "the outline was read more than once").toHaveLength(2);
 });
 
@@ -647,7 +627,7 @@ test("a 412 says the node moved and reads the tree again", async () => {
   });
   expect(patches.calls, "the queue was not emptied").toHaveLength(1);
   const line = writes().lines.get(STATEMENT)?.text ?? "";
-  expect(line).toContain(WORDS.refused_precondition_failed ?? "");
+  expect(line).toContain(ANSWER_LINES.refused_precondition_failed);
   expect(line).toContain(`1 ${ANSWER_LINES.dropped_move}`);
   await waitFor(() => expect(reads.cursors).toHaveLength(1));
 });
@@ -678,19 +658,19 @@ test("a refused move keeps the tree and draws one line", async () => {
   // The tree is the server's: the node stands where the read had it, with the sequence it had.
   expect(heldNode(client, STATEMENT)).toEqual(before);
   expect(writes().lines.size).toBe(1);
-  expect(writes().lines.get(STATEMENT)?.text).toContain(WORDS.refused_invalid_pointer ?? "");
+  expect(writes().lines.get(STATEMENT)?.text).toContain(ANSWER_LINES.refused_invalid_pointer);
   // And nothing is read for it: the refusal is no taken write and no stale tree.
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(reads.cursors).toEqual([]);
 });
 
 // ---------------------------------------------------------------------------------------------
-// A new row (R3; plan task t14's table "A new row", its logic): the wait for its node and the one
-// `PATCH` that places it (`new-rows.ts`), over the fixture's issue whose tree artifact owes its
-// index - `owed`, the read before the block index has read the room's write, which names the tree
-// artifact among `owed_documents` and holds no node of the block, and `indexed`, the read after,
-// which holds the paragraph the page wrote with a rank and a `placement_seq`, at the end of the
-// issue's own blocks under the issue, where the server keeps it.
+// A new row (R3, its logic): the wait for its node and the one `PATCH` that places it
+// (`new-rows.ts`), over the fixture's issue whose tree artifact owes its index - `owed`, the read
+// before the block index has read the room's write, which names the tree artifact among
+// `owed_documents` and holds no node of the block, and `indexed`, the read after, which holds the
+// paragraph the page wrote with a rank and a `placement_seq`, at the end of the issue's own blocks
+// under the issue, where the server keeps it.
 // ---------------------------------------------------------------------------------------------
 
 const OWED_ISSUE = "<owed-issue>";
@@ -748,18 +728,12 @@ function answerOutline(answer?: TreeAnswer): { readonly count: () => number } {
 function mountNewRows(held: TreeAnswer = owedRead) {
   const client = signedIn();
   client.setQueryData(outlineQuery(KEY, "graph").queryKey, held);
-  const wrapper = ({ children }: { children: ReactNode }) =>
-    createElement(
-      QueryClientProvider,
-      { client },
-      createElement(MemoryRouter, { initialEntries: [`/issues/${KEY}/graph`] }, children)
-    );
   const view = renderHook(
     () => {
       useQuery(outlineQuery(KEY, "graph"));
       return { rows: useNewRows(KEY), writes: useNodeWrites({ key: KEY, status: "in_progress" }) };
     },
-    { wrapper }
+    { wrapper: pageWrapper(client) }
   );
   return { client, view };
 }
@@ -787,15 +761,15 @@ function treeVersion(): DispatchEvent {
   } as unknown as DispatchEvent;
 }
 
-// The tree is read again on the tree artifact's version event by the page's event refresh, which
-// this part adds no read to; the first character reads nothing.
+// The tree is read again on the tree artifact's version event by the page's event refresh, to
+// which the new rows add no read of their own; the first character reads nothing.
 test("the tree artifact's version reads the tree again", async () => {
   const reads = answerOutline(indexedRead);
   const ask = belowCriterion();
   const patches = answerPatches(placedAnswer(ask));
   const { client } = mountNewRows();
   typed(client, ask);
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(reads.count(), "the first character read the tree").toBe(0);
   // The feed runs each event's refresh as this does (`api/event-feed.ts`).
   act(() => refreshQueries(client, eventRefreshTargets(treeVersion())));
@@ -840,7 +814,7 @@ test("the read that holds the node sends the one placing PATCH", async () => {
   const { queryKey } = outlineQuery(KEY, "graph");
   typed(client, ask);
   act(() => client.setQueryData(queryKey, owedRead));
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(patches.calls, "a read that lacks the node sent a PATCH").toEqual([]);
   const written = indexedRead.nodes?.find((node) => node.id === WRITTEN);
   expect(written?.rank, "the fixture's indexed read holds the node with no rank").toBeString();
@@ -856,7 +830,7 @@ test("the read that holds the node sends the one placing PATCH", async () => {
   expect(heldNode(client, WRITTEN)?.parent?.id).toBe(KEY);
   await waitFor(() => expect(reads.count(), "the outline was not read after the PATCH").toBe(1));
   act(() => client.setQueryData(queryKey, indexedRead));
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(patches.calls, "a later read sent a second PATCH").toHaveLength(1);
   expect(reads.count(), "the outline was read more than once").toBe(1);
 });
@@ -910,7 +884,7 @@ test("a refused placing PATCH keeps the node where the server holds it", async (
       indexedRead.nodes?.find((node) => node.id === WRITTEN)
     );
     expect(view.result.current.writes.lines.get(WRITTEN)?.text).toContain(
-      WORDS.refused_invalid_pointer ?? ""
+      ANSWER_LINES.refused_invalid_pointer
     );
     expect(heard).toEqual([`${WRITTEN} ${WRITTEN}`]);
   } finally {

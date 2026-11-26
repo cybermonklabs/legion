@@ -5,7 +5,7 @@ import { EditorView } from "@milkdown/kit/prose/view";
 import {
   hashKey,
   notifyManager,
-  QueryClient,
+  type QueryClient,
   QueryClientProvider,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -50,16 +50,17 @@ import { FocusedNodeProvider } from "../focused-node";
 import { IssueTree } from "../IssueTree";
 import { presetPath } from "../issue-address";
 import { buildIssueTree, type TreeAsk } from "../issue-tree";
+import { waitInAct } from "../outline-fixtures";
 import { OutlineWriterProvider } from "../outline-writer";
 import { ANSWER_LINES, CONTROL_LABELS, LENS_WORDS, type Preset } from "../page-words";
 import { EditorBox } from "../StagedDocument";
 import { ProvidersSlot } from "../slots/providers";
 import { StageSlot } from "../slots/stage";
-import { AppProviders, stubReads } from "../slots/stage-fixtures";
+import { AppProviders, focusedRow, stubReads } from "../slots/stage-fixtures";
 import { outlineQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
 import { treeReferences } from "../useIssueTree";
 import type { OnEditing, OnEditor } from "../useNodeEditing";
-import { fixture } from "./graph-edit-fixtures";
+import { fixture, NAMED, nodeOf, renamed, signedIn } from "./graph-edit-fixtures";
 import { ROW_MENU_ATTRIBUTE } from "./RowMenu";
 import { GRAPH_EDIT_META } from "./room-writes";
 
@@ -71,8 +72,8 @@ import { GRAPH_EDIT_META } from "./room-writes";
  * answered at `fetch` (`answerRequests`), so each request the menu sends is one the case answers
  * and counts. A request no case answered fails its test.
  *
- * The interface this file expects of `graph-edit/RowMenu.tsx` and its drawing (the task that writes
- * it reads it here; no word is written here but through `page-words-r.ts`):
+ * The interface this file expects of `graph-edit/RowMenu.tsx` and its drawing (no word is written
+ * here but through `page-words-r.ts`):
  *
  * - `RowMenu.tsx` exports `ROW_MENU_ATTRIBUTE`, the name of the data attribute (`"data-row-menu"`)
  *   that marks the menu's control, as `data-row-lens` marks Lens's.
@@ -96,14 +97,6 @@ import { GRAPH_EDIT_META } from "./room-writes";
  *   row; the fallback line is a button.
  */
 
-const NAMED = "<issue>";
-
-/** `value` with the fixture's name of the issue written as the key the routes take: a name for a
- *  name, no other change to what the server answered. */
-function renamed<T>(value: T, from = NAMED): T {
-  return JSON.parse(JSON.stringify(value).replaceAll(from, KEY)) as T;
-}
-
 const converted = renamed(fixture.tree.converted.person.body) as unknown as TreeAnswer;
 const unconverted = renamed(
   fixture.tree.unconverted.person.body,
@@ -111,26 +104,21 @@ const unconverted = renamed(
 ) as unknown as TreeAnswer;
 const moved = fixture.moved;
 const deleted = fixture.deleted;
-const members: Readonly<Record<string, unknown>> = fixture.deleted;
-// A read of the tree right after the taken delete, which a later regeneration of the fixture gives.
-const treeAfterDelete = members.tree_after as { body: unknown } | undefined;
-
-function nodeOf(held: TreeAnswer, id: string): TreeAnswerNode {
-  const found = held.nodes?.find((each) => each.id === id);
-  if (found === undefined) throw new Error(`the fixture's read holds no node ${id}`);
-  return found;
-}
 
 const STATEMENT_1 = nodeOf(converted, "<statement-1>");
 const STATEMENT_2 = nodeOf(converted, "<statement-2>");
 const STATEMENT_3 = nodeOf(converted, "<statement-3>");
 const DECISION = nodeOf(converted, "<decision>");
 const CRITERION = nodeOf(converted, "<criterion>");
+const CHECK_AGENT = nodeOf(converted, "<check-agent>");
 
-/** The id of the row a node draws, which is the block's address inside the issue
- *  (`blockNodeId`): its document's slug, or the issue's own fragment's, and its block id. */
+/** The id the outline gives the row of `node`: a block of a document its address inside the issue
+ *  (`blockNodeId`), its document's slug and its block id; a block of the issue's own fragment its
+ *  read id. */
 function rowId(node: TreeAnswerNode): string {
-  return `${node.document?.slug ?? "tree"}#b-${node.block_id}`;
+  return node.document === undefined || node.document === null
+    ? node.id
+    : `${node.document.slug}#b-${node.block_id}`;
 }
 
 // What stands in for the page's other reads, which the outline's draw needs and no case is about.
@@ -255,11 +243,12 @@ function isOutline(query: { view?: string; cursor?: string; kind?: string[] }): 
  *  page drew it from an answer. */
 const NEVER = Promise.withResolvers<TreeAnswer>().promise;
 
-/** The lens catalogue (`GET /api/v1/schema/blocks`), which Lens's submenu reads when it opens. */
+/** One lens kind of the catalogue. */
 function kind(id: string, words: string): LensKindRead {
   return { id, ref: `dispatch://lens_kind/${id}`, sources: null, words };
 }
 
+/** The lens catalogue (`GET /api/v1/schema/blocks`), which Lens's submenu reads when it opens. */
 const CATALOGUE: readonly LensKindRead[] = [
   kind("trade-off", "trade-off analysis"),
   kind("pre-mortem", "pre-mortem"),
@@ -285,15 +274,6 @@ function Stage({ issue }: { issue: IssueDetails }): ReactNode {
   );
 }
 
-/** A client signed in as alice, whose failed read is not retried. */
-function signedIn(): QueryClient {
-  const client = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  return client;
-}
-
 /** The live feed of `client` up, as the shell's event feed holds it on the page: its socket open,
  *  and the feed's subscription on it started by Dispatch (`events_start`), as
  *  `useIssueTree.test.tsx`'s `liveFeedOn` puts it up. With it up, the end of a write of the issue
@@ -315,8 +295,8 @@ function liveFeedOn(client: QueryClient): void {
   expect(liveFeedUp(client), "the live feed is not up").toBe(true);
 }
 
-/** The page at `path`, its tree read answered by `reads` (`answerTreeReads`, Graph's answer where
- *  a case names none), under `client`. */
+/** The page at `path` (Graph's where none is given) for `issue`, under `client`; its tree reads
+ *  are answered as the case's `answerTreeReads` set them. */
 function draw(
   path = `/issues/${KEY}/graph`,
   issue: IssueDetails = issueDetails(),
@@ -333,7 +313,7 @@ function draw(
 
 function rowOf(view: RenderResult, node: TreeAnswerNode): HTMLElement | null {
   return view.container.querySelector<HTMLElement>(
-    `[data-node-row][data-node-id="${rowId(node)}"]`
+    `[data-node-row][data-node-id="${CSS.escape(rowId(node))}"]`
   );
 }
 
@@ -406,18 +386,6 @@ async function openMenu(
   return row;
 }
 
-/** Lets whatever a press would send go out and be answered. */
-async function letRequestsSettle(): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, 50);
-  await act(() => promise);
-}
-
-/** The row whose focus the page holds: the node id of the row the active element stands in. */
-function focusedRowId(): string | undefined {
-  return document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId;
-}
-
 /** The node id of each row the page draws, in the order it draws them. */
 function rowIds(view: RenderResult): string[] {
   return [...view.container.querySelectorAll<HTMLElement>("[data-node-row]")].map(
@@ -425,14 +393,14 @@ function rowIds(view: RenderResult): string[] {
   );
 }
 
-// R12: no request of this part is made by the first load of Graph, whatever rows it draws, and
-// none by a row's taking the focus.
+// R12: no request to the node routes is made by the first load of Graph, whatever rows it draws,
+// and none by a row's taking the focus.
 test("Graph's first load sends no node request", async () => {
   const reads = answerTreeReads();
   const sent = answerNodeRoutes();
   const view = draw();
   await focusRow(view, STATEMENT_3);
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(reads.outline(), "Graph's read is made once").toBe(1);
   expect(sent.patches).toEqual([]);
   expect(sent.deletes, "a dry run was sent before a menu opened").toEqual([]);
@@ -458,9 +426,9 @@ test("the menu holds nine entries in R1's order on a converted issue and Lens al
   expect(entriesOf(other).map((each) => each.textContent)).toEqual([LENS_WORDS.act]);
 });
 
-/** The reads of the spec's document that a view's key may start (Tab on a row opens the document's
- *  editor, as it does today): the document, its blocks and the reader's place in it, answered
- *  empty so a key's effect on the document is none of this case's. */
+/** The reads of the spec's document that a view's key may start (Tab on a row of a view opens the
+ *  document's editor): the document, its blocks and the reader's place in it, answered empty so a
+ *  key's effect on the document is none of this case's. */
 function answerDocuments(): void {
   answerRequests(
     http.get("/api/v1/artifacts/:id", () => Response.json(issueDetails().artifacts?.[0])),
@@ -470,8 +438,8 @@ function answerDocuments(): void {
 }
 
 // R10 and R4: `m` is taken while the outline has the focus, and the keys of the moves in Graph
-// with the caret in a block (stage B's cases). Conversation and each filter keep today's: no
-// node menu, and nothing written.
+// with the caret in a block. Conversation and each filter keep their own keys: no node menu, and
+// nothing written.
 test("each key of this part acts only where R4 and R10 say", async () => {
   const user = userEvent.setup();
   const keys = [
@@ -499,7 +467,7 @@ test("each key of this part acts only where R4 and R10 say", async () => {
       await user.keyboard(key);
       expect(menuOf(view), `${key} opened a menu in ${preset}`).toBeNull();
     }
-    await letRequestsSettle();
+    await waitInAct(50);
     expect(sent.patches, `a key wrote in ${preset}`).toEqual([]);
     expect(sent.deletes, `a key asked the server in ${preset}`).toEqual([]);
     view.unmount();
@@ -511,7 +479,7 @@ test("each key of this part acts only where R4 and R10 say", async () => {
   answerTreeReads();
   const sent = answerNodeRoutes();
   const graph = draw();
-  await waitFor(() => expect(focusedRowId(), "the page gave no row the focus").toBeDefined());
+  await waitFor(() => expect(focusedRow(), "the page gave no row the focus").toBeDefined());
   const outside = document.createElement("button");
   outside.type = "button";
   document.body.append(outside);
@@ -520,7 +488,7 @@ test("each key of this part acts only where R4 and R10 say", async () => {
     expect(document.activeElement, "the focus is not on the control outside Graph").toBe(outside);
     await user.keyboard("m");
     expect(menuOf(graph), "m opened a menu from a control outside Graph").toBeNull();
-    await letRequestsSettle();
+    await waitInAct(50);
     expect(sent.patches, "m outside Graph wrote").toEqual([]);
     expect(sent.deletes, "m outside Graph asked the server").toEqual([]);
   } finally {
@@ -607,8 +575,8 @@ function drawOutline(): { readonly edited: (string | undefined)[]; readonly view
   return { edited, view };
 }
 
-// R1: from the caret, Escape gives the focus to the row first, which is today's `tree-leave-caret`
-// (the caret is where `onEditing` says the tree put it); then `m` opens the menu.
+// R1: from the caret, Escape gives the focus to the row first, which is the tree's own
+// `tree-leave-caret` (the caret is where `onEditing` says the tree put it); then `m` opens the menu.
 test("Escape from the caret gives the focus to the row", async () => {
   const user = userEvent.setup();
   answerNodeRoutes({ deletes: [deleted.dry_run] });
@@ -646,9 +614,11 @@ test("the arrows reach every entry, grey ones included", async () => {
   expect(all[0]).toHaveFocus();
   await user.keyboard("{End}");
   expect(all[all.length - 1]).toHaveFocus();
-  expect(all.filter(isGrey).map((each) => each.textContent?.slice(0, 6))).toContain(
-    CONTROL_LABELS.edit_indent.slice(0, 6)
-  );
+  expect(
+    all
+      .filter(isGrey)
+      .some((each) => (each.textContent ?? "").startsWith(CONTROL_LABELS.edit_indent))
+  ).toBe(true);
 });
 
 test("Right opens a submenu and Left closes it", async () => {
@@ -681,7 +651,7 @@ test("a grey entry cannot be picked", async () => {
   act(() => indent.focus());
   await user.keyboard("{Enter}");
   await user.click(indent);
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(sent.patches, "a grey entry wrote").toEqual([]);
   expect(menuOf(view), "a pick of a grey entry closed the menu").not.toBeNull();
 });
@@ -695,9 +665,7 @@ test("a pick closes the menu and gives the focus back", async () => {
   await user.click(entry(view, CONTROL_LABELS.edit_indent));
   await waitFor(() => expect(sent.patches).toHaveLength(1));
   expect(menuOf(view), "the pick left the menu open").toBeNull();
-  await waitFor(() =>
-    expect(focusedRowId(), "the focus is not on the row").toBe(rowId(STATEMENT_3))
-  );
+  await waitFor(() => expect(focusedRow(), "the focus is not on the row").toBe(rowId(STATEMENT_3)));
 });
 
 test("Escape closes the menu", async () => {
@@ -720,9 +688,9 @@ test("the menu greys an entry with its reason and keeps it in the arrows' path",
   await openMenu(view, user, STATEMENT_1);
   const menu = menuOf(view);
   const entries = entriesOf(view);
-  expect(
-    entries.map((each) => each.textContent?.startsWith(ENTRY_WORDS[entries.indexOf(each)] ?? "?"))
-  ).toEqual(ENTRY_WORDS.map(() => true));
+  expect(entries.map((each, at) => each.textContent?.startsWith(ENTRY_WORDS[at] ?? "?"))).toEqual(
+    ENTRY_WORDS.map(() => true)
+  );
   expect(isGrey(entry(view, CONTROL_LABELS.edit_indent))).toBe(true);
   expect(isGrey(entry(view, CONTROL_LABELS.edit_move_up))).toBe(true);
   expect(isGrey(entry(view, CONTROL_LABELS.edit_move_down))).toBe(false);
@@ -731,7 +699,8 @@ test("the menu greys an entry with its reason and keeps it in the arrows' path",
   expect(menu?.textContent, "Retype on a statement says only a paragraph takes a kind").toContain(
     ANSWER_LINES.grey_not_paragraph
   );
-  // A node of another issue's own: every editing entry is grey, and says whose issue edits it.
+  // A node of a kind R2 does not admit, this issue's decision: every editing entry is grey, and
+  // says which kinds are edited here.
   view.unmount();
   answerTreeReads();
   const other = draw();
@@ -764,12 +733,12 @@ test("a folded new parent unfolds", async () => {
   answerTreeReads(converted, NEVER);
   const sent = answerNodeRoutes({ deletes: [deleted.dry_run], patches: [moved.indent] });
   const view = draw();
-  const second = await focusRow(view, STATEMENT_2);
-  const check = nodeOf(converted, "<check-agent>");
+  await focusRow(view, STATEMENT_2);
   // Fold the second statement: its check is no longer drawn.
-  if (rowOf(view, check) !== null) await user.keyboard("{ArrowLeft}");
-  await waitFor(() => expect(rowOf(view, check), "the second statement did not fold").toBeNull());
-  expect(second).toBeTruthy();
+  if (rowOf(view, CHECK_AGENT) !== null) await user.keyboard("{ArrowLeft}");
+  await waitFor(() =>
+    expect(rowOf(view, CHECK_AGENT), "the second statement did not fold").toBeNull()
+  );
   await openMenu(view, user, STATEMENT_3);
   await user.click(entry(view, CONTROL_LABELS.edit_indent));
   await waitFor(() => expect(sent.patches).toHaveLength(1));
@@ -777,7 +746,7 @@ test("a folded new parent unfolds", async () => {
   await waitFor(() =>
     expect(rowOf(view, STATEMENT_3), "the moved row is not drawn").not.toBeNull()
   );
-  expect(rowOf(view, check), "the second statement stayed folded").not.toBeNull();
+  expect(rowOf(view, CHECK_AGENT), "the second statement stayed folded").not.toBeNull();
 });
 
 // R8: any other code, a 5xx and no answer draw one line that says the change was not made, and a
@@ -794,9 +763,9 @@ test("a press on the fallback line tries the act again", async () => {
   await user.click(entry(view, CONTROL_LABELS.edit_indent));
   await waitFor(() => expect(sent.patches).toHaveLength(1));
   const line = await waitFor(() => {
-    const found = [
-      ...view.container.querySelectorAll<HTMLElement>('[role="status"] button, button'),
-    ].find((each) => (each.textContent ?? "").includes(ANSWER_LINES.not_made));
+    const found = [...view.container.querySelectorAll<HTMLElement>('[role="status"] button')].find(
+      (each) => (each.textContent ?? "").includes(ANSWER_LINES.not_made)
+    );
     if (found === undefined) throw new Error("the row draws no fallback line");
     return found;
   });
@@ -897,7 +866,7 @@ test("a 412 keeps the focus on the row where the server holds it", async () => {
   await waitFor(() => expect(menuOf(view)).not.toBeNull());
   await user.click(entry(view, CONTROL_LABELS.edit_move_up));
   await waitFor(() =>
-    expect(focusedRowId(), "the pick left the focus off the row").toBe(rowId(STATEMENT_3))
+    expect(focusedRow(), "the pick left the focus off the row").toBe(rowId(STATEMENT_3))
   );
   out.resolve();
   // The read again draws the third statement under the second, and the focus is on that row.
@@ -910,7 +879,7 @@ test("a 412 keeps the focus on the row where the server holds it", async () => {
   expect(under.textContent, "the row says the node moved and one move was not sent").toContain(
     `${ANSWER_LINES.refused_precondition_failed} 1 ${ANSWER_LINES.dropped_move}`
   );
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(document.activeElement, "the focus did not stay on the refused row").toBe(under);
   expect(sent.patches, "the queued move was sent").toEqual([
     {
@@ -985,7 +954,7 @@ test("a node R2 greys sends no dry run", async () => {
   const grey = entry(view, CONTROL_LABELS.edit_delete);
   expect(isGrey(grey)).toBe(true);
   expect(menuOf(view)?.textContent).toContain(ANSWER_LINES.grey_kind);
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(sent.deletes, "the menu sent a dry run for a node R2 greys").toEqual([]);
 });
 
@@ -1030,7 +999,7 @@ test("a dry run answering gone reads the tree again", async () => {
   expect(reads.outline()).toBe(1);
   await user.click(await menuControl(view));
   await waitFor(() => expect(reads.outline(), "the page did not read the tree again").toBe(2));
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(reads.outline(), "the page read the tree more than once").toBe(2);
 });
 
@@ -1065,7 +1034,7 @@ test("closing the menu drops the dry run", async () => {
   await user.keyboard("{Escape}");
   await waitFor(() => expect(menuOf(view)).toBeNull());
   out.resolve();
-  await letRequestsSettle();
+  await waitInAct(50);
   // An answer that comes after the close is drawn nowhere.
   expect(menuOf(view)).toBeNull();
   expect(view.container.textContent).not.toContain(CONTROL_LABELS.delete_rows);
@@ -1079,6 +1048,24 @@ test("closing the menu drops the dry run", async () => {
   );
 });
 
+/** The confirm a pick of Delete opens, once it is drawn. */
+function openedDialog(): Promise<HTMLElement> {
+  return waitFor(() => {
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    if (dialog === null) throw new Error("the pick opened no confirm");
+    return dialog;
+  });
+}
+
+/** The confirm's button that confirms the delete. */
+function confirmButton(dialog: HTMLElement): HTMLElement {
+  const found = [...dialog.querySelectorAll<HTMLElement>("button")].find(
+    (each) => each.textContent === CONTROL_LABELS.confirm_delete
+  );
+  if (found === undefined) throw new Error("the confirm has no button that confirms the delete");
+  return found;
+}
+
 /** The menu opened on the third statement, its dry run answered, and Delete picked: the confirm. */
 async function confirmDialog(view: RenderResult, user: UserEvent): Promise<HTMLElement> {
   await openMenu(view, user);
@@ -1088,11 +1075,7 @@ async function confirmDialog(view: RenderResult, user: UserEvent): Promise<HTMLE
     )
   );
   await user.click(entry(view, CONTROL_LABELS.edit_delete));
-  return waitFor(() => {
-    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
-    if (dialog === null) throw new Error("the pick opened no confirm");
-    return dialog;
-  });
+  return openedDialog();
 }
 
 test("the confirm names the dry run's count", async () => {
@@ -1119,7 +1102,7 @@ test("cancel sends nothing", async () => {
   if (cancel === undefined) throw new Error("the confirm has no Cancel");
   await user.click(cancel);
   await waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull());
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(sent.deletes, "Cancel sent a request beyond the dry run").toHaveLength(1);
   expect(sent.patches).toEqual([]);
 });
@@ -1130,11 +1113,7 @@ test("confirm sends one DELETE with If-Match and expected_count", async () => {
   const sent = answerNodeRoutes({ deletes: [deleted.dry_run, deleted.taken] });
   const view = draw();
   const dialog = await confirmDialog(view, user);
-  await user.click(
-    [...dialog.querySelectorAll("button")].find(
-      (each) => each.textContent === CONTROL_LABELS.confirm_delete
-    ) as HTMLElement
-  );
+  await user.click(confirmButton(dialog));
   await waitFor(() => expect(sent.deletes).toHaveLength(2));
   expect(sent.deletes[1]).toEqual({
     body: null,
@@ -1151,8 +1130,7 @@ test("confirm sends one DELETE with If-Match and expected_count", async () => {
 // to the page. The live feed is up, as on the page, so the refused delete before it reads nothing.
 test("a taken delete drops the gone nodes and moves the focus to the nearest row", async () => {
   const user = userEvent.setup();
-  expect(treeAfterDelete, "the fixture holds no tree read after the taken delete").toBeDefined();
-  const after = renamed(treeAfterDelete?.body) as unknown as TreeAnswer;
+  const after = renamed(deleted.tree_after.body) as unknown as TreeAnswer;
   const taken = Promise.withResolvers<void>();
   const reads = answerTreeReads(
     converted,
@@ -1172,19 +1150,15 @@ test("a taken delete drops the gone nodes and moves the focus to the nearest row
   // Where the deleted row stands among the rows, which the nearest row stands at once it is gone.
   const at = rowIds(view).indexOf(rowId(STATEMENT_3));
   expect(at, "the third statement's row is not drawn").toBeGreaterThanOrEqual(0);
-  const confirm = (within: HTMLElement) =>
-    [...within.querySelectorAll("button")].find(
-      (each) => each.textContent === CONTROL_LABELS.confirm_delete
-    ) as HTMLElement;
-  await user.click(confirm(dialog));
+  await user.click(confirmButton(dialog));
   // The count moved: the confirm opens again, with the new count, and is confirmed again.
   await waitFor(() =>
     expect(dialog.textContent ?? "").toContain(
       String(deleted.refused.DELETE_COUNT_MOVED.body.count)
     )
   );
-  dialog = document.querySelector<HTMLElement>('[role="dialog"]') as HTMLElement;
-  await user.click(confirm(dialog));
+  dialog = await openedDialog();
+  await user.click(confirmButton(dialog));
   await waitFor(() => expect(sent.deletes).toHaveLength(3));
   await waitFor(() =>
     expect(rowOf(view, STATEMENT_3), "the deleted row is still drawn").toBeNull()
@@ -1200,14 +1174,14 @@ test("a taken delete drops the gone nodes and moves the focus to the nearest row
   }
   // The focus is on a row of the outline, the one nearest where the deleted row stood: the row
   // now at its place, or the last where none is (`IssueTree.tsx`'s drop rule).
-  await waitFor(() => expect(focusedRowId(), "the focus is on no row").toBeDefined());
-  expect(focusedRowId()).not.toBe(rowId(STATEMENT_3));
+  await waitFor(() => expect(focusedRow(), "the focus is on no row").toBeDefined());
+  expect(focusedRow()).not.toBe(rowId(STATEMENT_3));
   const left = rowIds(view);
-  expect(focusedRowId(), "the focus is not on the nearest row").toBe(
+  expect(focusedRow(), "the focus is not on the nearest row").toBe(
     left[Math.min(at, left.length - 1)]
   );
   // One re-read of the outline after the answer, and none besides the first load.
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(reads.outline()).toBe(2);
 });
 
@@ -1219,11 +1193,7 @@ test("the confirm asks again with the new count", async () => {
   });
   const view = draw();
   const first = await confirmDialog(view, user);
-  const confirm = (within: HTMLElement) =>
-    [...within.querySelectorAll("button")].find(
-      (each) => each.textContent === CONTROL_LABELS.confirm_delete
-    ) as HTMLElement;
-  await user.click(confirm(first));
+  await user.click(confirmButton(first));
   const count = deleted.refused.DELETE_COUNT_MOVED.body.count;
   await waitFor(() =>
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
@@ -1231,7 +1201,7 @@ test("the confirm asks again with the new count", async () => {
     )
   );
   // The reader confirms again: one DELETE more, with the count the answer gave.
-  await user.click(confirm(document.querySelector<HTMLElement>('[role="dialog"]') as HTMLElement));
+  await user.click(confirmButton(await openedDialog()));
   await waitFor(() => expect(sent.deletes).toHaveLength(3));
   expect(sent.deletes.map((each) => each.expected)).toEqual([null, "4", String(count)]);
 });
@@ -1243,11 +1213,7 @@ test("a delete answering gone reads the tree again", async () => {
   const view = draw();
   const dialog = await confirmDialog(view, user);
   expect(reads.outline()).toBe(1);
-  await user.click(
-    [...dialog.querySelectorAll("button")].find(
-      (each) => each.textContent === CONTROL_LABELS.confirm_delete
-    ) as HTMLElement
-  );
+  await user.click(confirmButton(dialog));
   await waitFor(() => expect(sent.deletes).toHaveLength(2));
   await waitFor(() => expect(reads.outline(), "the page did not read the tree again").toBe(2));
   expect(document.querySelector('[role="dialog"]')).toBeNull();
@@ -1264,7 +1230,7 @@ for (const { early, reply, movedOn } of [
     const user = userEvent.setup();
     const out = Promise.withResolvers<void>();
     const read = Promise.withResolvers<TreeAnswer>();
-    const after = renamed(treeAfterDelete?.body) as TreeAnswer;
+    const after = renamed(deleted.tree_after.body) as unknown as TreeAnswer;
     const reads = answerTreeReads(converted, read.promise);
     const sent = answerNodeRoutes({ deletes: [deleted.dry_run, { ...reply, gate: out.promise }] });
     const client = signedIn();
@@ -1273,11 +1239,7 @@ for (const { early, reply, movedOn } of [
     const dialog = await confirmDialog(view, user);
     const at = rowIds(view).indexOf(rowId(STATEMENT_3));
     expect(at).toBeGreaterThanOrEqual(0);
-    const confirm = [...dialog.querySelectorAll("button")].find(
-      (button) => button.textContent === CONTROL_LABELS.confirm_delete
-    );
-    if (confirm === undefined) throw new Error("the dialog has no confirm button");
-    await user.click(confirm);
+    await user.click(confirmButton(dialog));
     await waitFor(() => expect(sent.deletes).toHaveLength(2));
 
     // Simulate a cache update that got there ahead of the counted DELETE's answer.
@@ -1316,20 +1278,16 @@ test("a refused delete keeps the tree and draws its line", async () => {
   liveFeedOn(client);
   const view = draw(undefined, undefined, client);
   const dialog = await confirmDialog(view, user);
-  await user.click(
-    [...dialog.querySelectorAll("button")].find(
-      (each) => each.textContent === CONTROL_LABELS.confirm_delete
-    ) as HTMLElement
-  );
+  await user.click(confirmButton(dialog));
   await waitFor(() => expect(sent.deletes).toHaveLength(2));
   await waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull());
   // The row stands where it did, with its line, and the tree was read no more.
   const row = rowOf(view, STATEMENT_3);
   expect(row, "the refused delete took the row away").not.toBeNull();
   await waitFor(() => expect(row?.textContent).toContain(ANSWER_LINES.refused_parent_contended));
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(reads.outline()).toBe(1);
-  expect(focusedRowId()).toBe(rowId(STATEMENT_3));
+  expect(focusedRow()).toBe(rowId(STATEMENT_3));
 });
 
 // R6: the delete takes the placement_seq of the newest answer of the node's moves, and is sent once
@@ -1354,17 +1312,8 @@ test("a delete waits for the node's moves", async () => {
     )
   );
   await user.click(entry(view, CONTROL_LABELS.edit_delete));
-  const dialog = await waitFor(() => {
-    const found = document.querySelector<HTMLElement>('[role="dialog"]');
-    if (found === null) throw new Error("the pick opened no confirm");
-    return found;
-  });
-  await user.click(
-    [...dialog.querySelectorAll("button")].find(
-      (each) => each.textContent === CONTROL_LABELS.confirm_delete
-    ) as HTMLElement
-  );
-  await letRequestsSettle();
+  await user.click(confirmButton(await openedDialog()));
+  await waitInAct(50);
   const real = () => sent.deletes.filter((each) => !each.dryRun);
   expect(real(), "the delete was sent while a move was out").toEqual([]);
   out.resolve();
@@ -1374,8 +1323,8 @@ test("a delete waits for the node's moves", async () => {
 });
 
 // ---------------------------------------------------------------------------------------------
-// The keys of the moves in a row's editor (R4, R10; stage B's three cases of plan task t13): the
-// outline with a live room, as `IssueTree.test.tsx`'s `editLive` draws it.
+// The keys of the moves in a row's editor (R4, R10): the outline with a live room, as
+// `IssueTree.test.tsx`'s `editLive` draws it.
 // ---------------------------------------------------------------------------------------------
 
 /** A block of a document as the room holds it, in ProseMirror's JSON (`IssueTree.test.tsx`'s
@@ -1425,7 +1374,6 @@ function wordsOfNode(node: TreeAnswerNode): string {
   return found[0] ?? "";
 }
 
-const CHECK_AGENT = nodeOf(converted, "<check-agent>");
 const LIST = nodeOf(converted, "<tree/bullet_list>");
 const HEADING = nodeOf(converted, "<tree/heading>");
 
@@ -1433,29 +1381,6 @@ const HEADING = nodeOf(converted, "<tree/heading>");
  *  outline draws by their read ids and edits in that artifact of the issue's room
  *  (`model-rows/room-target.ts`). */
 const TREE_ID = converted.tree ?? "";
-
-/** The id the outline gives the row of `node`: a block of a document its address in the issue
- *  (`rowId`), a prose block of the issue's own fragment its read id. */
-function liveRowId(node: TreeAnswerNode): string {
-  return node.document === undefined || node.document === null ? node.id : rowId(node);
-}
-
-function liveRowOf(view: RenderResult, node: TreeAnswerNode): HTMLElement | null {
-  return view.container.querySelector<HTMLElement>(
-    `[data-node-row][data-node-id="${CSS.escape(liveRowId(node))}"]`
-  );
-}
-
-/** The row the page draws of `child` right under the row of `parent`, by its key, or null. */
-function liveRowUnder(
-  view: RenderResult,
-  parent: TreeAnswerNode,
-  child: TreeAnswerNode
-): HTMLElement | null {
-  const path = `>${liveRowId(parent)}>${liveRowId(child)}`;
-  const rows = [...view.container.querySelectorAll<HTMLElement>("[data-node-row]")];
-  return rows.find((row) => row.dataset.rowKey?.endsWith(path) === true) ?? null;
-}
 
 /** Holds every read of the tree out, answering none, so the outline stays as the held read and
  *  the answers written into it draw it. */
@@ -1761,18 +1686,11 @@ async function editRow(
   node: TreeAnswerNode,
   artifactId: string
 ): Promise<{ readonly editable: HTMLElement; readonly view: EditorView }> {
-  const row = await waitFor(() => {
-    const drawn = liveRowOf(live.view, node);
-    if (drawn === null) throw new Error(`no row is drawn for ${node.id}`);
-    return drawn;
-  });
-  act(() => row.focus());
+  const row = await focusRow(live.view, node);
   await user.keyboard("{Enter}");
   const editable = await waitFor(
     () => {
-      const found = liveRowOf(live.view, node)?.querySelector<HTMLElement>(
-        '[contenteditable="true"]'
-      );
+      const found = rowOf(live.view, node)?.querySelector<HTMLElement>('[contenteditable="true"]');
       if (found === null || found === undefined) throw new Error(`${node.id}'s row took no editor`);
       const caret = window.getSelection()?.anchorNode ?? null;
       const block = found.querySelector(`[data-block-id="${CSS.escape(node.block_id ?? "")}"]`);
@@ -1804,7 +1722,7 @@ async function editedUnder(
   node: TreeAnswerNode
 ): Promise<HTMLElement> {
   return waitFor(() => {
-    const under = liveRowUnder(live.view, parent, node);
+    const under = rowUnder(live.view, parent, node);
     if (under === null) throw new Error(`no row of ${node.id} is drawn under ${parent.id}`);
     const editable = under.querySelector<HTMLElement>('[contenteditable="true"]');
     expect(editable, "the moved row does not hold the editor").not.toBeNull();
@@ -1817,8 +1735,8 @@ async function editedUnder(
 // PATCH of the node, with its If-Match - and the editing goes on in the row the move draws it at
 // under the second statement, a row of another key under a parent that was folded, which unfolds:
 // the document's one editor, the focus and the caret where the reader left it, with no editor let
-// go. In Conversation and in a filter the keys are today's: Tab leaves the editor, Alt+Shift+Down
-// extends the selection to the block's end, and nothing is written.
+// go. In Conversation and in a filter the keys are the editor's own: Tab leaves the editor,
+// Alt+Shift+Down extends the selection to the block's end, and nothing is written.
 test("the keys of the moves are taken in Graph alone", async () => {
   const user = userEvent.setup();
   holdTreeReads();
@@ -1846,11 +1764,11 @@ test("the keys of the moves are taken in Graph alone", async () => {
   const under = await editedUnder(live, STATEMENT_2, STATEMENT_3);
   await waitFor(() => expect(caretPlace(), "the caret moved").toEqual(before));
   expect(rowOf(live.view, CHECK_AGENT), "the folded new parent stayed folded").not.toBeNull();
-  expect(liveRowUnder(live.view, STATEMENT_2, STATEMENT_3)).toBe(under);
+  expect(rowUnder(live.view, STATEMENT_2, STATEMENT_3)).toBe(under);
   expect(editorsFrom(live, SPEC_DOCUMENT.id), "the move let the document's editor go").toEqual([
     SPEC_DOCUMENT.id,
   ]);
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(caretPlace(), "the caret moved once the move settled").toEqual(before);
   live.view.unmount();
 
@@ -1874,7 +1792,7 @@ test("the keys of the moves are taken in Graph alone", async () => {
         `Tab in ${preset} kept the focus`
       ).toBe(false)
     );
-    await letRequestsSettle();
+    await waitInAct(50);
     expect(none.patches, `a key wrote in ${preset}`).toEqual([]);
     other.view.unmount();
   }
@@ -1937,16 +1855,15 @@ test("a key at a grey edge writes nothing and shows the reason", async () => {
     expect(document.activeElement, `${name} took the focus`).toBe(editable);
     expect(caretPlace(), `${name} moved the caret`).toEqual([`s1|${words}|3`, `s1|${words}|3`]);
   }
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(sent.patches, "a key at a grey edge wrote").toEqual([]);
   expect(editorsFrom(live, SPEC_DOCUMENT.id)).toEqual([SPEC_DOCUMENT.id]);
 });
 
 // ---------------------------------------------------------------------------------------------
-// A new row (R3; plan task t14's table "A new row", the row with a live room): drawn at once at
-// its place, with the caret in the editor of the tree artifact, the issue's own fragment; its
-// block written on the reader's first character; and its node placed by one PATCH once a read
-// holds it, the row and the caret kept throughout.
+// A new row (R3, with a live room): drawn at once at its place, with the caret in the editor of
+// the tree artifact, the issue's own fragment; its block written on the reader's first character;
+// and its node placed by one PATCH once a read holds it, the row and the caret kept throughout.
 // ---------------------------------------------------------------------------------------------
 
 /** The row the caret is in once a new row has taken it, and the editable: the row around the
@@ -2025,14 +1942,7 @@ async function pickOn(
   node: TreeAnswerNode,
   word: string
 ): Promise<void> {
-  const row = await waitFor(() => {
-    const drawn = liveRowOf(live.view, node);
-    if (drawn === null) throw new Error(`no row is drawn for ${node.id}`);
-    return drawn;
-  });
-  act(() => row.focus());
-  await user.click(await menuControl(live.view));
-  await waitFor(() => expect(menuOf(live.view)).not.toBeNull());
+  await openMenu(live.view, user, node);
   await user.click(entry(live.view, word));
 }
 
@@ -2060,10 +1970,18 @@ function indexedWith(blockId: string): TreeAnswer {
   return { ...converted, nodes: [...(converted.nodes ?? []), node] };
 }
 
+/** The `placement_seq` the placing PATCH of a new row answers, the one after the indexed read's. */
+const PLACED_SEQ = "<seq:owed-paragraph>@2";
+
+/** The node `id` as Graph's held read gives it. */
+function heldNode(live: LiveOutline, id: string): TreeAnswerNode | undefined {
+  const held = live.client.getQueryData<TreeAnswer>(outlineQuery(KEY, "graph").queryKey);
+  return held?.nodes?.find((node) => node.id === id);
+}
+
 /** The `placement_seq` Graph's held read gives the node `id`. */
 function heldSeq(live: LiveOutline, id: string): unknown {
-  const held = live.client.getQueryData<TreeAnswer>(outlineQuery(KEY, "graph").queryKey);
-  return held?.nodes?.find((node) => node.id === id)?.placement_seq;
+  return heldNode(live, id)?.placement_seq;
 }
 
 // R3: New row below and New row under from the menu of a row with no caret, and Enter with the
@@ -2104,14 +2022,14 @@ test("a new row is drawn with the caret and writes nothing", async () => {
   await caretAt(textIn(editable, "s3"), wordsOfNode(STATEMENT_3).length);
   expect(pressIn(editable, "Enter"), "Enter at the end was left to the editor").toBe(false);
   const enter = await caretInNewRow(live);
-  const criterionKey = liveRowOf(live.view, CRITERION)?.dataset.rowKey ?? "";
+  const criterionKey = rowOf(live.view, CRITERION)?.dataset.rowKey ?? "";
   const children = childKeys(live.view, criterionKey);
   expect(children.indexOf(`${criterionKey}>${enter.row.dataset.nodeId}`), "Enter's row").toBe(
-    children.indexOf(`${criterionKey}>${liveRowId(STATEMENT_3)}`) + 1
+    children.indexOf(`${criterionKey}>${rowId(STATEMENT_3)}`) + 1
   );
   expect(live.edited.at(-1), "Enter's row is not edited in the tree artifact").toBe(TREE_ID);
 
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(fragmentOf(tree), "a new row wrote in the issue's own fragment").toEqual(fragment);
   expect(fragmentOf(spec), "Enter at the end wrote in the spec").toEqual(statement);
   expect(sent.patches, "a new row sent a request").toEqual([]);
@@ -2132,15 +2050,15 @@ test("a new row left empty goes and writes nothing", async () => {
   const fragment = fragmentOf(tree);
   pressIn(escaped.editable, "Escape");
   await waitFor(() => expect(rowIds(live.view)).not.toContain(escaped.row.dataset.nodeId));
-  await waitFor(() => expect(focusedRowId(), "Escape left the focus elsewhere").toBe(HEADING.id));
+  await waitFor(() => expect(focusedRow(), "Escape left the focus elsewhere").toBe(HEADING.id));
 
   await pickOn(live, user, HEADING, CONTROL_LABELS.edit_new_below);
   const left = await caretInNewRow(live);
-  act(() => liveRowOf(live.view, LIST)?.focus());
+  act(() => rowOf(live.view, LIST)?.focus());
   await waitFor(() => expect(rowIds(live.view)).not.toContain(left.row.dataset.nodeId));
-  expect(focusedRowId(), "the focus did not stay where it went").toBe(LIST.id);
+  expect(focusedRow(), "the focus did not stay where it went").toBe(LIST.id);
 
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(fragmentOf(tree), "a new row left empty wrote in the room").toEqual(fragment);
   expect(sent.patches).toEqual([]);
 });
@@ -2166,7 +2084,7 @@ test("the first character writes one paragraph in the issue's own fragment", asy
   typeInEditor(view, "uick");
   expect(fragmentOf(tree)).toEqual([...before, `paragraph ${id}: Quick`]);
   expect(document.activeElement, "the new row lost the caret").toBe(editable);
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(sent.patches, "the first character sent a request").toEqual([]);
 });
 
@@ -2201,7 +2119,7 @@ test("a new row not yet placed greys its moves with not placed yet", async () =>
     );
     expect(caretPlace(), `${name} moved the caret`).toEqual(caret);
   }
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(sent.patches, "a key of a row not placed sent a PATCH").toEqual([]);
   expect(fragmentOf(tree), "a key of a row not placed wrote in the room").toEqual(fragment);
 });
@@ -2212,11 +2130,13 @@ test("a new row not yet placed greys its moves with not placed yet", async () =>
 test("the placed node keeps its row and its caret", async () => {
   const user = userEvent.setup();
   holdTreeReads();
-  const placed = "<seq:owed-paragraph>@2";
   const sent = answerNodeRoutes({
     deletes: [deleted.dry_run],
     patches: [
-      { body: { after: HEADING.id, parent: `issue/${NAMED}`, placement_seq: placed }, status: 200 },
+      {
+        body: { after: HEADING.id, parent: `issue/${NAMED}`, placement_seq: PLACED_SEQ },
+        status: 200,
+      },
     ],
   });
   const live = drawLive();
@@ -2235,8 +2155,10 @@ test("the placed node keeps its row and its caret", async () => {
     id,
     ifMatch: '"<seq:owed-paragraph>"',
   });
-  await waitFor(() => expect(heldSeq(live, id), "the PATCH's answer was not taken").toBe(placed));
-  await letRequestsSettle();
+  await waitFor(() =>
+    expect(heldSeq(live, id), "the PATCH's answer was not taken").toBe(PLACED_SEQ)
+  );
+  await waitInAct(50);
   expect(row.isConnected, "the placed node is drawn in another row").toBe(true);
   expect(row.dataset.nodeReadId, "the row is not the placed node's").toBe(id);
   const top = childKeys(live.view, KEY);
@@ -2286,14 +2208,13 @@ const QUESTION_ASK: Ask = {
 test("a new row below a criterion under a question drawn in its block's row stands in that row", async () => {
   const user = userEvent.setup();
   holdTreeReads();
-  const placed = "<seq:owed-paragraph>@2";
   const parent = `ask/${QUESTION.id}`;
   const sent = answerNodeRoutes({
-    patches: [{ body: { after: null, parent, placement_seq: placed }, status: 200 }],
+    patches: [{ body: { after: null, parent, placement_seq: PLACED_SEQ }, status: 200 }],
   });
   const live = drawLive(undefined, [QUESTION_ASK]);
   const question = await waitFor(() => {
-    const row = liveRowOf(live.view, QUESTION_BLOCK);
+    const row = rowOf(live.view, QUESTION_BLOCK);
     if (row === null) throw new Error("no row is drawn for the question's block");
     return row;
   });
@@ -2301,9 +2222,9 @@ test("a new row below a criterion under a question drawn in its block's row stan
   expect(question.dataset.nodeReadId, "the question's row is not the block's").toBe(
     QUESTION_BLOCK.id
   );
-  expect(liveRowOf(live.view, QUESTION), "the ask is drawn in a row of its own").toBeNull();
+  expect(rowOf(live.view, QUESTION), "the ask is drawn in a row of its own").toBeNull();
   const questionKey = question.dataset.rowKey ?? "";
-  const criterionKey = `${questionKey}>${liveRowId(CRITERION)}`;
+  const criterionKey = `${questionKey}>${rowId(CRITERION)}`;
   expect(childKeys(live.view, questionKey), "the criterion stands elsewhere").toContain(
     criterionKey
   );
@@ -2331,10 +2252,11 @@ test("a new row below a criterion under a question drawn in its block's row stan
     id,
     ifMatch: '"<seq:owed-paragraph>"',
   });
-  await waitFor(() => expect(heldSeq(live, id), "the PATCH's answer was not taken").toBe(placed));
-  await letRequestsSettle();
-  const held = live.client.getQueryData<TreeAnswer>(outlineQuery(KEY, "graph").queryKey);
-  expect(held?.nodes?.find((node) => node.id === id)?.parent?.id).toBe(QUESTION.id);
+  await waitFor(() =>
+    expect(heldSeq(live, id), "the PATCH's answer was not taken").toBe(PLACED_SEQ)
+  );
+  await waitInAct(50);
+  expect(heldNode(live, id)?.parent?.id).toBe(QUESTION.id);
   expect(fresh.row.isConnected, "the placed node is drawn in another row").toBe(true);
   expect(fresh.row.dataset.rowKey, "the placed node's row moved").toBe(`${questionKey}>${id}`);
   expect(document.activeElement, "the row lost the caret").toBe(fresh.editable);
@@ -2346,13 +2268,12 @@ test("a new row below a criterion under a question drawn in its block's row stan
 test("typing across the placing PATCH loses no character", async () => {
   const user = userEvent.setup();
   holdTreeReads();
-  const placed = "<seq:owed-paragraph>@2";
   const out = Promise.withResolvers<void>();
   const sent = answerNodeRoutes({
     deletes: [deleted.dry_run],
     patches: [
       {
-        body: { after: HEADING.id, parent: `issue/${NAMED}`, placement_seq: placed },
+        body: { after: HEADING.id, parent: `issue/${NAMED}`, placement_seq: PLACED_SEQ },
         gate: out.promise,
         status: 200,
       },
@@ -2371,9 +2292,11 @@ test("typing across the placing PATCH loses no character", async () => {
   await waitFor(() => expect(sent.patches).toHaveLength(1));
   typeInEditor(view, "ui");
   out.resolve();
-  await waitFor(() => expect(heldSeq(live, id), "the PATCH's answer was not taken").toBe(placed));
+  await waitFor(() =>
+    expect(heldSeq(live, id), "the PATCH's answer was not taken").toBe(PLACED_SEQ)
+  );
   typeInEditor(view, "ck");
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(fragmentOf(tree).filter((block) => block.includes(id))).toEqual([
     `paragraph ${id}: Quick`,
   ]);
@@ -2396,13 +2319,12 @@ test("typing across the placing PATCH loses no character", async () => {
 test("typing in a new row under a node while its placing settles keeps the row and its editor", async () => {
   const user = userEvent.setup();
   holdTreeReads();
-  const placed = "<seq:owed-paragraph>@2";
   const out = Promise.withResolvers<void>();
   const sent = answerNodeRoutes({
     deletes: [deleted.dry_run],
     patches: [
       {
-        body: { after: null, parent: HEADING.id, placement_seq: placed },
+        body: { after: null, parent: HEADING.id, placement_seq: PLACED_SEQ },
         gate: out.promise,
         status: 200,
       },
@@ -2441,15 +2363,17 @@ test("typing in a new row under a node while its placing settles keeps the row a
 
     notifications = holdNotifications();
     out.resolve();
-    await waitFor(() => expect(heldSeq(live, id), "the PATCH's answer was not taken").toBe(placed));
-    await letRequestsSettle();
+    await waitFor(() =>
+      expect(heldSeq(live, id), "the PATCH's answer was not taken").toBe(PLACED_SEQ)
+    );
+    await waitInAct(50);
     kept("the PATCH's answer landed");
     typeInEditor(view, "c");
     notifications.tell();
   } finally {
     notifications.tell();
   }
-  await letRequestsSettle();
+  await waitInAct(50);
   kept("the outline drew the placed node");
   typeInEditor(view, "k");
   expect(fragmentOf(tree).filter((block) => block.includes(id))).toEqual([
@@ -2463,7 +2387,7 @@ test("typing in a new row under a node while its placing settles keeps the row a
   expect(sent.patches.map((patch) => patch.body)).toEqual([{ after: null, parent: HEADING.id }]);
 });
 
-// R3: Enter in the middle of a block's text does what it does today - in a statement's paragraph
+// R3: Enter in the middle of a block's text is the editor's own key - in a statement's paragraph
 // the editor refuses the split - and makes no new row; nothing is sent.
 test("Enter in the middle of a block's text keeps today's behaviour", async () => {
   const user = userEvent.setup();
@@ -2479,17 +2403,17 @@ test("Enter in the middle of a block's text keeps today's behaviour", async () =
   await caretAt(textIn(editable, "s3"), 5);
   pressIn(editable, "Enter");
   expect(blocksOf(view), "Enter split the statement").toEqual(blocks);
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(unread().length, "Enter in the middle made a new row").toBe(drawnBefore);
   expect(caretPlace(), "the caret left the statement").toEqual([`s3|${words}|5`, `s3|${words}|5`]);
   expect(sent.patches).toEqual([]);
 });
 
 // ---------------------------------------------------------------------------------------------
-// Retype (R5; plan task t15): the kinds the editor's schema for the issue lets it make, and a pick
-// of one from a row with no caret, which opens the row's editing in the issue's room, retypes the
-// block there with this part's meta key, which the edit hold admits, reads the outline reads once
-// (R7), sends no request of its own (R12), and leaves the focus on the row.
+// Retype (R5): the kinds the editor's schema for the issue lets it make, and a pick of one from a
+// row with no caret, which opens the row's editing in the issue's room, retypes the block there
+// with Graph's own meta key (`GRAPH_EDIT_META`), which the edit hold admits, reads the outline
+// reads once (R7), sends no request of its own (R12), and leaves the focus on the row.
 // ---------------------------------------------------------------------------------------------
 
 /** The paragraph of the issue's own fragment under the criterion, which Retype is offered on. */
@@ -2583,10 +2507,11 @@ test("retype offers the kinds the editor's schema lets it make, so a view offers
 });
 
 // R5: the retype is a transaction of the editor's own, made with the editor's typed-block
-// commands in the row's editing, which carries this part's meta key, so the row's edit hold, which
-// refuses every other change of the block's type, admits it: the handle's own retype, which carries
-// none, is refused with the caret in the block, and the menu's pick from the row writes the
-// statement in the issue's room, its id kept and its serves naming the criterion.
+// commands in the row's editing, which carries Graph's own meta key (`GRAPH_EDIT_META`), so the
+// row's edit hold, which refuses every other change of the block's type, admits it: the handle's
+// own retype, which carries none, is refused with the caret in the block, and the menu's pick from
+// the row writes the statement in the issue's room, its id kept and its serves naming the
+// criterion.
 test("retype dispatches with this part's meta key and the edit hold admits it", async () => {
   const user = userEvent.setup();
   holdTreeReads();
@@ -2644,7 +2569,7 @@ test("a taken retype reads the outline reads once", async () => {
   const sent = answerNodeRoutes({ deletes: [deleted.dry_run] });
   const live = drawLive();
   const room = proseRoom(live);
-  await letRequestsSettle();
+  await waitInAct(50);
   const before = reads.outline();
   await retypeTo(live, user, PROSE, CONTROL_LABELS.retype_statement);
   await waitFor(
@@ -2655,12 +2580,12 @@ test("a taken retype reads the outline reads once", async () => {
     { timeout: 10_000 }
   );
   await waitFor(() => expect(live.edited.at(-1), "the editing did not end").toBeUndefined());
-  await letRequestsSettle();
+  await waitInAct(50);
   expect(reads.outline() - before, "the outline was not read again once").toBe(1);
   expect(sent.patches, "the retype sent a PATCH").toEqual([]);
   expect(
     sent.deletes.map((each) => each.dryRun),
     "the retype sent a DELETE"
   ).toEqual([true]);
-  expect(document.activeElement, "the row lost the focus").toBe(liveRowOf(live.view, PROSE));
+  expect(document.activeElement, "the row lost the focus").toBe(rowOf(live.view, PROSE));
 });

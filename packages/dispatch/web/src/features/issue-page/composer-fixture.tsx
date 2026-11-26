@@ -15,6 +15,7 @@ import {
   searchResponse,
 } from "../../__tests__/search-fixture";
 import { api } from "../../api/client";
+import { issueAskThreadsQuery } from "../../api/queries";
 import type { Actor, CommentWithTrees, IssueAskRow, IssueAskThreadRow } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -360,7 +361,7 @@ export function drawBoxPage(
   place: Place = {},
   root: TreeNode = outline()
 ): BoxPage {
-  client.setQueryData(["asks", KEY, "thread"], askThreadRows(reads.asks));
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, askThreadRows(reads.asks));
   client.setQueryData(["comments", KEY], reads.comments);
   client.setQueryData(["issue-messages", KEY], []);
   client.setQueryData(["agents"], [plannerAgent()]);

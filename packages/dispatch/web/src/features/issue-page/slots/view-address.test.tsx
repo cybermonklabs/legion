@@ -396,7 +396,7 @@ test("fragments the browser changes under one key each land under the Plan view:
 // under the one key "default", from a block the tree holds to one no read holds, is a following of
 // its own: the page reads the block once in each document of the issue, and where no document
 // answers a version that last held it, the address opens without the fragment, with no line (R9 of
-// INFRA-5705, the architect's decision on its plan task t12). The outline is drawn there.
+// INFRA-5705). The outline is drawn there.
 test("a fragment the browser changes under one key, from a block the tree holds to one no read holds, opens the address without it, with no line", async () => {
   answerVerificationReads();
   const blockReads: string[][] = [];

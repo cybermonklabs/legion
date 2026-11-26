@@ -4,6 +4,7 @@ import { cleanup, render, waitFor } from "@testing-library/react";
 import { type ComponentProps, createElement, type ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { renderWithQueries } from "../../../__tests__/query-provider";
 import { api, REFERENCE_TARGETS_MAX, REFERENCE_TARGETS_MAX_QUERY_CHARS } from "../../../api/client";
 import { referenceTargetsQuery } from "../../../api/queries";
 import type { Artifact, IssueDetails, ReferenceTarget } from "../../../api/types";
@@ -16,7 +17,7 @@ import {
 } from "../../refs/reference-names";
 import { parseIssuePath } from "../../refs/routes";
 import { blockReferences } from "../address-target";
-import { artifact, issueDetails, KEY } from "../decisions-filter/decisions-fixtures";
+import { artifact, issueDetails, KEY, node } from "../decisions-filter/decisions-fixtures";
 import { buildIssueTree, type TreeNode, targetNaming } from "../issue-tree";
 import { NodeRow } from "../NodeRow";
 import { NoTooltips } from "../NoTooltips";
@@ -31,7 +32,7 @@ import { nodesInOrder } from "../tree-keys";
 import { wholeTreeOnly } from "../tree-read/tree-fixtures";
 import type { TreeAnswer } from "../tree-read/tree-read";
 import { treeReferences } from "../useIssueTree";
-import { fixture } from "./graph-edit-fixtures";
+import { fixture, renamed } from "./graph-edit-fixtures";
 import { lastHeldPath } from "./last-held";
 import { targetLastHeld } from "./last-held-chips";
 import {
@@ -45,7 +46,7 @@ import {
  * `graph-edit/last-held.ts` and the surfaces that draw a reference to a node the server answers
  * gone (`GET /api/v1/reference-targets`, whose member `last_held` the server gained).
  *
- * The interface this file expects (the task that writes it reads it here):
+ * The interface this file expects:
  *
  * - `lastHeldPath(lastHeld: string): string | undefined` in `graph-edit/last-held.ts`: the address
  *   on the new page that a `last_held` address opens, `dispatch://<KEY>/<spec | artifact/verification-md
@@ -64,7 +65,7 @@ import {
  * - A gone chip with `lastHeld` draws `CONTROL_LABELS.target_gone` as a link to `lastHeldPath` of
  *   it, titled `CONTROL_LABELS.last_held_title` (`NodeRow.tsx`'s `Chip`); a gone reference in a
  *   row's words (`RowText.tsx`, `row-references.ts`) draws the same link in place; with no
- *   `lastHeld` both draw as today.
+ *   `lastHeld` both draw it as they draw any gone reference.
  * - An address on the issue page whose `#b-<block>` names a block that no read holds (the Spec
  *   view's own address: `address-target.ts`' `lastHeldAsk`, through the page's names read in
  *   `useIssueTree.ts`, which publishes where it opens by the issue's key,
@@ -88,21 +89,8 @@ import {
  * a gone lens, each gone block with the `last_held` the server gave it.
  */
 
-const NAMED = "<issue>";
-
-/** `value` with the fixture's name of the issue written as the key the routes take: a name for a
- *  name, no other change to what the server answered. */
-function renamed<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value).replaceAll(NAMED, KEY)) as T;
-}
-
-const members: Readonly<Record<string, unknown>> = fixture;
-// The member a later regeneration of the fixture holds.
-const exchange = members.targets as { body: { targets: ReferenceTarget[] } } | undefined;
-
 function allTargets(): ReferenceTarget[] {
-  if (exchange === undefined) throw new Error("the fixture holds no `targets` member");
-  return renamed(exchange.body.targets);
+  return renamed(fixture.targets.body.targets) as unknown as ReferenceTarget[];
 }
 
 /** The target of the fixture that is gone and whose address matches `pattern`. */
@@ -175,53 +163,40 @@ test("last_held of another block opens its document at that version", () => {
   expect(LENS().last_held).toBeUndefined();
 });
 
+/** The props `NodeRow` draws `node` by, as an unfocused row of level 1 whose author is unknown. */
+function rowProps(node: TreeNode): ComponentProps<typeof NodeRow> {
+  return {
+    author: {
+      kind: authorKind(undefined),
+      name: CONTROL_LABELS.unknown_author,
+      reader: false,
+    },
+    context: false,
+    focused: false,
+    isClosed: false,
+    level: 1,
+    node,
+    onFocus: () => {},
+    onToggle: () => {},
+    ownAnswer: false,
+    rowKey: "row",
+    tabStop: false,
+  };
+}
+
 /** The node row the page draws for a chip: the chip's own link where it draws one. */
 function drawRow(chip: TreeNode["chips"][number]) {
-  const node: TreeNode = {
-    alsoUnder: [],
-    children: [],
+  const citing = node({
     chips: [chip],
-    facts: [],
-    gaps: [],
-    held: 0,
     id: "spec#b-r1",
-    question: false,
-    replaced: false,
     text: "A statement that cites a node.",
-    transcluded: false,
     type: "requirement",
-    waiting: false,
-  };
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  });
+  return renderWithQueries(
     createElement(
-      QueryClientProvider,
-      { client },
-      createElement(
-        MemoryRouter,
-        null,
-        createElement(
-          NoTooltips,
-          null,
-          createElement(NodeRow, {
-            author: {
-              kind: authorKind(undefined),
-              name: CONTROL_LABELS.unknown_author,
-              reader: false,
-            },
-            context: false,
-            focused: false,
-            isClosed: false,
-            level: 1,
-            node,
-            onFocus: () => {},
-            onToggle: () => {},
-            ownAnswer: false,
-            rowKey: "row",
-            tabStop: false,
-          })
-        )
-      )
+      MemoryRouter,
+      null,
+      createElement(NoTooltips, null, createElement(NodeRow, rowProps(citing)))
     )
   );
 }
@@ -291,7 +266,7 @@ test("every surface that draws a gone reference reads last_held", async () => {
   );
   expect(link?.getAttribute("title")).toBe(CONTROL_LABELS.last_held_title);
   row.unmount();
-  // With no `lastHeld` the chip draws as it does today: Deleted, no link.
+  // With no `lastHeld` the chip draws Deleted, with no link.
   const bare = drawRow({ ...chip, lastHeld: undefined } as typeof chip);
   expect(bare.container.textContent).toContain(CONTROL_LABELS.target_gone);
   expect(
@@ -306,22 +281,17 @@ test("every surface that draws a gone reference reads last_held", async () => {
   const lastHeld = new Map([[statement.ref, statement.last_held ?? ""]]);
   // Under a query client, as the page draws a row's words: who is signed in is the read
   // `stubReads` answers.
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const words = render(
+  const words = renderWithQueries(
     createElement(
-      QueryClientProvider,
-      { client },
+      MemoryRouter,
+      null,
       createElement(
-        MemoryRouter,
+        ReferenceNamesProvider,
         null,
         createElement(
-          ReferenceNamesProvider,
-          null,
-          createElement(
-            Publish,
-            { lastHeld, published: publishedOf(reads) },
-            createElement(RowText, { markdown: `See ${statement.ref}.` })
-          )
+          Publish,
+          { lastHeld, published: publishedOf(reads) },
+          createElement(RowText, { markdown: `See ${statement.ref}.` })
         )
       )
     )
@@ -540,11 +510,11 @@ function answering(given: ReadonlyMap<string, ReferenceTarget>) {
     });
 }
 
-// R9, R12 and the INFRA-5705 architect's decision on t12: a fragment of no document - on the
-// issue's own address, Graph's, Plan's and Verification's - naming a block no read holds sends one
-// `reference-targets` read of it in each document of the issue, the spec, the Verification
-// document, the plan and the tree artifact first, and opens the one version the answer names. Two
-// documents that answer the same version open it.
+// R9 and R12: a fragment of no document - on the issue's own address, Graph's, Plan's and
+// Verification's - naming a block no read holds sends one `reference-targets` read of it in each
+// document of the issue, the spec, the Verification document, the plan and the tree artifact
+// first, and opens the one version the answer names. Two documents that answer the same version
+// open it.
 test("a fragment of no document whose block no read holds opens the one version the read names", async () => {
   expect(
     held.nodes?.some((node) => node.block_id === UNQUALIFIED),
@@ -584,10 +554,10 @@ test("a fragment of no document whose block no read holds opens the one version 
   }
 });
 
-// The decision on t12: where the documents answer versions of more than one address, the page
-// does not choose between them, and the address opens without the block, with no line. The answers
-// are the fixture's for a deleted statement and a deleted block of the tree artifact, each under
-// the block's reference in its own document.
+// R9: where the documents answer versions of more than one address, the page does not choose
+// between them, and the address opens without the block, with no line. The answers are the
+// fixture's for a deleted statement and a deleted block of the tree artifact, each under the
+// block's reference in its own document.
 test("a fragment of no document whose block two documents last held at two versions opens without the block", async () => {
   const { seen, view } = drawAt(
     `/issues/${KEY}#b-${UNQUALIFIED}`,
@@ -788,46 +758,21 @@ test("a comment citing a node deleted in Graph draws it on a chip as in its word
 
   // The row's words and its chip each link the deleted statement to the one version, as the
   // page draws the row under the names it publishes from the same answer.
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(
+  const view = renderWithQueries(
     createElement(
-      QueryClientProvider,
-      { client },
+      MemoryRouter,
+      null,
       createElement(
-        MemoryRouter,
+        ReferenceNamesProvider,
         null,
         createElement(
-          ReferenceNamesProvider,
-          null,
-          createElement(
-            Publish,
-            {
-              lastHeld: targetLastHeld(targets),
-              // Every reference the tree cites, as the page asks its names read for them.
-              published: publishedOf(reads, treeReferences(root)),
-            },
-            createElement(
-              NoTooltips,
-              null,
-              createElement(NodeRow, {
-                author: {
-                  kind: authorKind(undefined),
-                  name: CONTROL_LABELS.unknown_author,
-                  reader: false,
-                },
-                context: false,
-                focused: false,
-                isClosed: false,
-                level: 1,
-                node: drawn,
-                onFocus: () => {},
-                onToggle: () => {},
-                ownAnswer: false,
-                rowKey: "row",
-                tabStop: false,
-              })
-            )
-          )
+          Publish,
+          {
+            lastHeld: targetLastHeld(targets),
+            // Every reference the tree cites, as the page asks its names read for them.
+            published: publishedOf(reads, treeReferences(root)),
+          },
+          createElement(NoTooltips, null, createElement(NodeRow, rowProps(drawn)))
         )
       )
     )

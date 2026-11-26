@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { editorBlockSchema } from "../../doc/schema";
 import { ANSWER_LINES } from "../page-words";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
-import { fixture } from "./graph-edit-fixtures";
+import { fixture, nodeOf } from "./graph-edit-fixtures";
 import {
   ENTRIES,
   type Entry,
@@ -20,10 +20,9 @@ import { retypeKinds } from "./room-writes";
  * Which entry of the node menu is grey, and the body of each write that is not: `graph-edit/placement.ts`
  * (R2 to R5 of INFRA-5705's spec, its Design's "Which entry is grey").
  *
- * The interface this file expects of `placement.ts` (the task that writes it reads it here). It is
- * a pure module: it reads the held tree read and nothing else, holds no rule only the server
- * decides (whether a parent is in the walk, whether a move empties a container, whether a delete
- * is possible), and imports no React.
+ * The interface this file expects of `placement.ts`. It is a pure module: it reads the held tree
+ * read and nothing else, holds no rule only the server decides (whether a parent is in the walk,
+ * whether a move empties a container, whether a delete is possible), and imports no React.
  *
  * - `ENTRIES: readonly Entry[]`, R1's nine entries in R1's order: `new_below`, `new_under`,
  *   `retype`, `indent`, `outdent`, `move_up`, `move_down`, `delete`, `lens`. The word of an entry is
@@ -68,7 +67,7 @@ import { retypeKinds } from "./room-writes";
  *   - `{ kind: "open" }`: W's own act (Lens), which this module never greys.
  * - `placingOf({ held, node, place }): Placing`, the new node's `PATCH` (R3): `{ kind: "wait" }`
  *   until `held` holds the node with a `rank` and a `placement_seq`, then
- *   `{ kind: "send", body: place.body, placementSeq }`, `place` the `NewRowPlace` of the entry
+ *   `{ kind: "send", body: place.body, placementSeq }`, `place` the `NewPlace` of the entry
  *   that made the row.
  */
 
@@ -85,17 +84,8 @@ const owed = answer(fixture.owed.owed.body);
 const indexed = answer(fixture.owed.indexed.body);
 // The Graph read cut at its first page: the walk's page size of the fixture's `paged` member.
 const firstPage = answer(fixture.paged.pages[0]?.body);
-// The child's read of its spec view, the statements of the issue above (a member a later regeneration
-// of the fixture gives).
-const trees: Readonly<Record<string, unknown>> = fixture.tree;
-const childSpecRead = trees.child_spec as { body: unknown } | undefined;
-const childSpec = childSpecRead === undefined ? undefined : answer(childSpecRead.body);
-
-function nodeOf(held: TreeAnswer, id: string): TreeAnswerNode {
-  const found = held.nodes?.find((each) => each.id === id);
-  if (found === undefined) throw new Error(`the fixture's read holds no node ${id}`);
-  return found;
-}
+// The child's read of its spec view, the statements of the issue above.
+const childSpec = answer(fixture.tree.child_spec.body);
 
 /** The nine verdicts for `node` of `held`, as the page asks them for the node's own row. */
 function place(node: string, extra: Partial<PlacementInput> = {}, held: TreeAnswer = converted) {
@@ -292,14 +282,14 @@ test("a node of another issue greys its entries as edited on its own issue", () 
   expect(place("<check-shared>").delete).toEqual({ kind: "ask" });
   // A statement of the issue above, read from the child that is a view of its spec.
   expect(child.view_of).toBe("<issue>");
-  const above = (childSpec?.nodes ?? []).filter(
-    (node) => node.issue !== undefined && node.issue !== null && node.issue !== childSpec?.issue
+  const above = (childSpec.nodes ?? []).filter(
+    (node) => node.issue !== undefined && node.issue !== null && node.issue !== childSpec.issue
   );
   expect(above.length, "the child's spec read holds no node of the issue above").toBeGreaterThan(0);
   for (const node of above) {
     for (const entry of EDITING) {
       expect(
-        place(node.id, {}, childSpec as TreeAnswer)[entry],
+        place(node.id, {}, childSpec)[entry],
         `${entry} on ${node.id} of the issue above`
       ).toEqual(grey("grey_own_issue"));
     }
@@ -448,7 +438,7 @@ test("a move names the ranked sibling of the same document that stands before th
 test("a move past the loaded page reads the next page first", () => {
   const cut = (node: string) => placementOf({ held: firstPage, node, status: STATUS });
   expect(firstPage.cursor).not.toBeNull();
-  expect(nodeOf(firstPage, "<statement-1>").id).toBe("<statement-1>");
+  expect(firstPage.nodes?.some((node) => node.id === "<statement-1>")).toBe(true);
   expect(firstPage.nodes?.some((node) => node.id === "<statement-2>")).toBe(false);
   expect(cut("<statement-1>").move_down).toEqual({ kind: "read_next" });
   expect(cut("<criterion>").move_down).toEqual({ kind: "read_next" });

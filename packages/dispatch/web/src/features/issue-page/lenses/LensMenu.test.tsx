@@ -1318,14 +1318,21 @@ async function drawsLensAct(path: string, isClosed = false): Promise<boolean> {
   }
 }
 
-/** Whether the statement's row, focused at `path`, draws the control of Graph's node menu, and
- *  that menu, opened, holds the Lens act (part R's R1). */
+/** Whether Graph's node menu, opened from the statement's row focused at `path`, holds the Lens
+ *  act (part R's R1). The row must draw the menu's control. */
 async function menuOffersLens(path: string): Promise<boolean> {
   const user = userEvent.setup();
   const drawn = renderAt(<Rows nodes={[statement]} />, path);
   try {
     await user.click(await focusedMenuControl(drawn));
-    return (await menuLensEntry(drawn)) !== undefined;
+    const menu = await waitFor(() => {
+      const opened = menuOf(drawn);
+      if (opened === null) throw new Error("the node menu did not open");
+      return opened;
+    });
+    return [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]')].some(
+      (item) => item.textContent === LENS_WORDS.act
+    );
   } finally {
     drawn.unmount();
   }

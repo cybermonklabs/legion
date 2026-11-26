@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
+import { issueAskThreadsQuery } from "../../api/queries";
 import type { Actor } from "../../api/types";
 import {
   currentPath,
@@ -428,7 +429,7 @@ function renderPoint(root: TreeNode) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  client.setQueryData(["asks", KEY, "thread"], []);
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
   for (const read of ["comments", "issue-messages"]) client.setQueryData([read, KEY], []);
   client.setQueryData(["agents"], []);
   const wrapper = ({ children }: { children: ReactNode }) =>
