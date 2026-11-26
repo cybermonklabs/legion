@@ -247,10 +247,10 @@ jobs:
         continue-on-error: true
         timeout-minutes: 3
         run: bun install --frozen-lockfile
-      # why: .github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job
-      - name: Find the merge base with main a dispatch of a branch is measured against
+      # why: .github/ci-notes/ci.md#the-commit-a-change-is-measured-against
+      - name: Find the commit this run's change is measured against
         id: base
-        if: ${{ github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job }}
+        if: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}
         timeout-minutes: 3
         run: |
           sha=$(.github/scripts/edited-migrations-base.sh)
@@ -258,17 +258,17 @@ jobs:
       # The base's filters as the push of that commit to main computed them, which the generation
       # reads rather than generating the base tree again.
       # why: .github/ci-notes/ci-caches.md#the-two-entries-the-changes-job-restores
-      - if: github.event.merge_group.base_sha || github.event.pull_request.base.sha || steps.base.outputs.sha
+      - if: github.event.merge_group.base_sha || steps.base.outputs.sha
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         timeout-minutes: 3
         with:
           path: ${{ runner.temp }}/ci-filters-base
-          key: ci-filters-${{ runner.os }}-${{ runner.arch }}-${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha || steps.base.outputs.sha }}
+          key: ci-filters-${{ runner.os }}-${{ runner.arch }}-${{ github.event.merge_group.base_sha || steps.base.outputs.sha }}
       - name: Compute every filter from what each job reads
         id: generate
         timeout-minutes: 9
         env:
-          CI_FILTERS_BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha || steps.base.outputs.sha }}
+          CI_FILTERS_BASE: ${{ github.event.merge_group.base_sha || steps.base.outputs.sha }}
           CI_FILTERS_BASE_COMPUTED: ${{ runner.temp }}/ci-filters-base
         run: .github/scripts/ci-filters-generate.sh "$RUNNER_TEMP/ci-filters.yaml"
       - name: Keep the filters this run computed
