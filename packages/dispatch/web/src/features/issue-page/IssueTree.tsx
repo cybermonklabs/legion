@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { replaceEqualDeep, useQuery } from "@tanstack/react-query";
 import {
   type ReactNode,
   type RefObject,
@@ -27,7 +27,7 @@ import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
-import { threadMarks } from "./outline-thread-read";
+import { type ThreadMark, threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
 import { authorText, KEY_REPORTS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, nodeStateWord } from "./page-words";
@@ -362,13 +362,31 @@ export function IssueTree({
   // level, with no filter on as under one. A zoom into a node keeps that node's own row, which
   // is the node the reader reads from there.
   const head = drawn[0];
-  const rows =
+  // Each read builds the tree again, every node of it a new object, so each row is the one the
+  // render before drew under its key wherever the two hold the same values (`keptRows`): a row
+  // whose node holds what it held is given the same node, and is not drawn again (`NodeRow`'s
+  // `memo`).
+  const heldRows = useRef<ReadonlyMap<string, DrawnRow>>(NO_ROWS);
+  const rows = keptRows(
+    heldRows,
     head?.kind === "node" && head.node.id === root.id
       ? drawn.slice(1).map((row) => ({ ...row, level: row.level - 1 }))
-      : drawn;
+      : drawn
+  );
   const breadcrumb: readonly TreeNode[] = zoom === undefined ? [] : zoomBreadcrumb(root, zoom);
-  // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row.
-  const threads = useMemo(() => threadMarks(root), [root]);
+  // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row,
+  // each mark the one made before for that row where it marks the same write, so a read that
+  // builds the tree again hands a row the mark it held.
+  const heldMarks = useRef<ReadonlyMap<string, ThreadMark>>(NO_MARKS);
+  const threads = useMemo(() => {
+    const marks = new Map<string, ThreadMark>();
+    for (const [node, mark] of threadMarks(root)) {
+      const held = heldMarks.current.get(node);
+      marks.set(node, held !== undefined && replaceEqualDeep(held, mark) === held ? held : mark);
+    }
+    heldMarks.current = marks;
+    return marks;
+  }, [root]);
 
   // A row the page takes the reader to of its own accord - the node an address names, the open
   // question the page opens on - takes the focus while the outline's other reads are still
@@ -448,6 +466,17 @@ export function IssueTree({
       }));
     }
   }, []);
+  // What every row calls as the focus comes into it, and as its fold control is pressed, each
+  // with the row's key: one function of each for every row, so a render of the tree hands no
+  // row a new one (`NodeRow`'s `memo`).
+  const focusRow = useCallback(
+    (row: string, node: TreeNode) => press.focus({ node, row }),
+    [press]
+  );
+  const toggleRow = useCallback(
+    (row: string, expanded: boolean | undefined) => unfold(row, expanded !== true),
+    [unfold]
+  );
   // What `z` does: every row the reader folded is unfolded (`withEveryFoldUndone`), and the
   // focused row is placed once the tree is drawn again (`unfoldedAll`).
   const unfoldAll = useCallback(() => {
@@ -1241,10 +1270,10 @@ export function IssueTree({
             foldedMore={root.moreToRead === true}
             isClosed={isClosed}
             {...(more === undefined ? {} : { more: { left: more.left, onPress: readMore } })}
-            onFocus={(row, node) => press.focus({ node, row })}
+            onFocus={focusRow}
             {...(olderAbove === undefined ? {} : { onOlder: () => readOlder(false) })}
             onPage={(page) => drawPage(page, false)}
-            onToggle={(row, expanded) => unfold(row, expanded !== true)}
+            onToggle={toggleRow}
             {...(report === undefined
               ? {}
               : { report: { line: report.line, row: report.row ?? tabStop } })}
@@ -1277,6 +1306,31 @@ export const LANDING_WAIT_MS = 10_000;
 
 /** No place has been let go from the address path's hold (`released`). */
 const NO_FOLDS: ReadonlySet<string> = new Set();
+
+/** No row drawn and no thread marked yet: what the tree holds before its first render. */
+const NO_ROWS: ReadonlyMap<string, DrawnRow> = new Map();
+const NO_MARKS: ReadonlyMap<string, ThreadMark> = new Map();
+
+/** `rows`, each the row `held` holds under its key (`rowKeyOf`) where that one holds the same
+ *  values, as TanStack Query's `replaceEqualDeep` compares two answers of a read
+ *  (`api/queries.ts`), with `held` set to the rows answered, by their keys, for the next render.
+ *  A node holds its children, so a change anywhere under a node is a change of its row too. */
+function keptRows(
+  held: RefObject<ReadonlyMap<string, DrawnRow>>,
+  rows: readonly DrawnRow[]
+): DrawnRow[] {
+  const before = held.current;
+  const now = new Map<string, DrawnRow>();
+  const kept = rows.map((row) => {
+    const key = rowKeyOf(row);
+    const was = before.get(key);
+    const one = was !== undefined && replaceEqualDeep(was, row) === was ? was : row;
+    now.set(key, one);
+    return one;
+  });
+  held.current = now;
+  return kept;
+}
 
 /** The keys of the node rows, in drawing order. */
 function nodeRowKeys(rows: readonly DrawnRow[]): string[] {

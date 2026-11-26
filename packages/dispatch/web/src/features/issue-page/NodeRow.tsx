@@ -1,5 +1,6 @@
 import {
   type CSSProperties,
+  memo,
   type ReactNode,
   type RefObject,
   useId,
@@ -106,8 +107,14 @@ import { indentOf } from "./tree-fold";
  * them, part V's Verification view and part J's Spec view - passes `tabStops`, and every control
  * the row draws keeps its place in the tab order instead, so a reader on the keyboard alone Tabs
  * to each (R9).
+ *
+ * A row is drawn again only where a prop it is given changed (`memo`), so a read or a move of the
+ * focus draws the rows it changes and no other: the tree hands every row props that keep their
+ * identity while the row's own data does - its `author` from one object per author, one
+ * `onFocus` and one `onToggle` for every row, which the row calls with its own key, and its
+ * `node` kept while a read builds an equal one (`TreeRows.tsx`, `IssueTree.tsx`).
  */
-export function NodeRow({
+export const NodeRow = memo(function NodeRow({
   answerer,
   author,
   context,
@@ -174,8 +181,13 @@ export function NodeRow({
    *  past the sixth level (`indentOf`). */
   level: number;
   node: TreeNode;
-  onFocus: () => void;
-  onToggle: () => void;
+  /** Called as the focus comes to the row or into it, with the row's key (`rowKey`) and its
+   *  node: one call for every row of the tree, so the row's own props stay the same. */
+  onFocus: (row: string, node: TreeNode) => void;
+  /** Called as the reader presses the row's fold control, with the row's key (`rowKey`) and
+   *  whether its children are drawn (`expanded`): one call for every row of the tree, as
+   *  `onFocus` is. */
+  onToggle: (row: string, expanded: boolean | undefined) => void;
   /** Whether the answer this ask carries is the reader's own, which carries the ink rule. */
   ownAnswer: boolean;
   /** Whether the row brings itself on screen while it has the focus (`useRowOnScreen`), which
@@ -255,7 +267,7 @@ export function NodeRow({
       data-node-state={node.state}
       data-node-type={node.type}
       data-row-key={rowKey}
-      onFocus={onFocus}
+      onFocus={() => onFocus(rowKey, node)}
       onPointerDown={press}
       ref={row}
       role="treeitem"
@@ -268,7 +280,7 @@ export function NodeRow({
           collapsed={oneLine}
           expanded={expanded}
           foldable={foldable}
-          onToggle={onToggle}
+          onToggle={() => onToggle(rowKey, expanded)}
           tabStops={tabStops}
           tone={tone}
         />
@@ -407,7 +419,7 @@ export function NodeRow({
       </div>
     </div>
   );
-}
+});
 
 /** One faint guide per indented level, `depth` of them, each at the middle of that level's
  *  bullet (the prototype's `.tn > .kids`, 9 px into a level 23 px wide, and 8 px into one 17 px

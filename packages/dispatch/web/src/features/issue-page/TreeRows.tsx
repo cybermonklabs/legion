@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import type { CSSProperties, ReactNode } from "react";
+import { type ComponentProps, type CSSProperties, type ReactNode, useState } from "react";
 
 import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
@@ -12,7 +12,7 @@ import type { TreeNode } from "./issue-tree";
 import { IndentGuides, NodeRow } from "./NodeRow";
 import type { ThreadMark } from "./outline-thread-read";
 import { authorText, pageChrome } from "./page-structure";
-import { authorKind, CONTROL_LABELS, isReader } from "./page-words";
+import { type AuthorKind, authorKind, CONTROL_LABELS, isReader } from "./page-words";
 import { type DrawnRow, indentOf, type PageRow } from "./tree-fold";
 import { rowKeyOf } from "./tree-keys";
 import { nodeEditable } from "./useNodeEditing";
@@ -64,6 +64,9 @@ export function TreeRows({
    *  read holds after the pages read, where it says, and the press. Undefined where its answer
    *  names none, and the control is not drawn. */
   more?: { readonly left: number | undefined; readonly onPress: () => void };
+  /** Gives the focus to one row, by its key (`rowKeyOf`) and its node, which the focus coming
+   *  into the row does: one function for every row, which each row calls with its own key, so
+   *  the tree makes it once and no row is given a new one (`NodeRow`'s `memo`). */
   onFocus: (row: string, node: TreeNode) => void;
   /** Reads the next page of the outline read's older comments, which the control above the
    *  first row does; undefined where no older comment remains or the tree is drawn from no
@@ -72,7 +75,8 @@ export function TreeRows({
   /** Draws the next page of a node's children, which the row that pages them does. */
   onPage: (row: PageRow) => void;
   /** Folds or unfolds one row, by its key (`rowKeyOf`), which a press on its fold control does:
-   *  the fold is the row's, so another row of the same node stays as it was. */
+   *  the fold is the row's, so another row of the same node stays as it was. One function for
+   *  every row, as `onFocus` is. */
   onToggle: (row: string, expanded: boolean | undefined) => void;
   /** What a key reported when it had nowhere to go, and the key of the row it was pressed on,
    *  which draws it (`NodeRow`'s `report`). */
@@ -96,6 +100,9 @@ export function TreeRows({
   // every row rather than once a row: a name and a shape for every node, the page's own words
   // where the model holds no author.
   const agentText = useAgentText();
+  // Each author as one object, held across renders, so a row whose author is the same as at its
+  // last render is given the object it was given then (`heldAuthor`, `NodeRow`'s `memo`).
+  const [authors] = useState(() => new Map<string, RowAuthor>());
   // The reader, whose own words carry the ink rule and whose name is drawn in the ink.
   const reader = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   // What each document's room last admitted the page to, read once for every row: a row of a
@@ -130,11 +137,12 @@ export function TreeRows({
             {...(row.node.answer === undefined
               ? {}
               : { answerer: agentText.author(row.node.answer.by) })}
-            author={{
-              kind: authorKind(row.node.author),
-              name: agentText.author(row.node.author),
-              reader: isReader(row.node.author, reader),
-            }}
+            author={heldAuthor(
+              authors,
+              authorKind(row.node.author),
+              agentText.author(row.node.author),
+              isReader(row.node.author, reader)
+            )}
             context={context.has(row.node.id)}
             {...(place === undefined ? {} : { document: place.artifact })}
             editable={nodeEditable(place, isClosed, admissions)}
@@ -148,8 +156,8 @@ export function TreeRows({
             key={key}
             level={row.level}
             node={row.node}
-            onFocus={() => onFocus(key, row.node)}
-            onToggle={() => onToggle(key, row.expanded)}
+            onFocus={onFocus}
+            onToggle={onToggle}
             ownAnswer={isReader(row.node.answer?.by, reader)}
             placesItself={unplaced !== key}
             {...(report?.row === key ? { report: report.line } : {})}
@@ -166,6 +174,27 @@ export function TreeRows({
       )}
     </>
   );
+}
+
+/** Who made a row's node, as the row draws it (`NodeRow`'s `author`). */
+type RowAuthor = ComponentProps<typeof NodeRow>["author"];
+
+/** The author of `kind` named `name`, `reader` whether that is the reader, as the one object
+ *  `held` holds for it: made the first time and the same at every later call for the same author,
+ *  so a row given its author again is given the object it was given before. */
+function heldAuthor(
+  held: Map<string, RowAuthor>,
+  kind: AuthorKind,
+  name: string,
+  reader: boolean
+): RowAuthor {
+  // Neither a kind nor the reader's flag holds a ":", so the name after them is read whole.
+  const key = `${kind}:${reader}:${name}`;
+  const author = held.get(key);
+  if (author !== undefined) return author;
+  const made = { kind, name, reader };
+  held.set(key, made);
+  return made;
 }
 
 /**
