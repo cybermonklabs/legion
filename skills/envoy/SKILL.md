@@ -20,8 +20,8 @@ Delivery is at-least-once and can come out of order across topics: drop a repeat
 - When `envoy_send` errs that the send is not confirmed delivered, send the same message again with the `idempotency_key` the error names. A resend without the key can deliver it twice.
 - Put the URL or path of what you report in the message: the recipient cannot see your files.
 - Set `expects_reply=false` when you need no answer, and `urgency` only when work waits on the answer. `urgency` does not deliver sooner.
-  A `low` message of a session that names itself as sender still starts a turn.
-  Under Oh My Pi, a `low` card waits for the reader's next turn only when an agent sent it and it names no sending session (the Legion daemon's, or a subagent's with an empty `session_id`), or it is a Dispatch event other than an ask's, a message to the reader or a mention of the reader.
+  A `low` message with a sending session still starts a turn.
+  Under Oh My Pi, a `low` card waits for the next turn only when an agent sent it with no sending session (the Legion daemon's, or a subagent's with an empty `session_id`), or it is a Dispatch event other than an ask's, a message to or a mention of the reader.
 
 ```text
 envoy_send(session_id="<id>", message="Review complete: <url>", in_reply_to="<id>", expects_reply=false)
