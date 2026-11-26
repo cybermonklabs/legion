@@ -480,9 +480,16 @@ func TestALaunchReplacesASandboxOfTheOtherDiskShape(t *testing.T) {
 			}
 		}
 	}
-	// roundOver ends loc's pod as its update round does once every role in it has answered.
+	// roundOver ends loc's pod as its update round does once every role in it has answered. The
+	// round's wait for the pod to go runs on a fake clock the test never moves, so it ends once the
+	// controller stand-in has ended the pod, however long a loaded runner takes it to: on the boot
+	// timeout's 2 s of wall clock, a runner busy migrating the package's database template for 27 s
+	// ran the wait out first (`wait out its pod: timed out after 2s`).
 	roundOver := func(t *testing.T, g *rig, r *Runtime, loc runtime.Locator) {
 		t.Helper()
+		was := r.clock
+		r.clock = clocktest.New(rigNow)
+		defer func() { r.clock = was }()
 		if err := r.ReplacePod(g.ctx, runtime.Known{Claim: workerToken, Locator: &loc}, stillDue); err != nil {
 			t.Fatalf("ReplacePod: %v", err)
 		}
