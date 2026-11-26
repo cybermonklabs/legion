@@ -394,7 +394,7 @@ func seedTopicWalks(t *testing.T, pool *store.Pool) {
 var topicWalkedColumns = []string{"issue_links", "components", "component_depends", "issue_component_members", "artifacts", "comments"}
 
 // askNodeColumn is asks, whose node_kind the approval requests' and the asks' block walks read the
-// rows naming their node by: migration 20261116094058_asks_node adds it after any analysis of the
+// rows naming their node by: migration 20261125163550_asks_node adds it after any analysis of the
 // table, as the columns of topicWalkedColumns are added, and the run's analysis does not analyze
 // it (walkedColumnsAnalysis), so the walks plan over it with no statistics of it.
 const askNodeColumn = "asks"

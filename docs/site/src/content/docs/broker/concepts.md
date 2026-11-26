@@ -56,7 +56,7 @@ every session it enrolled ends, and the box signs in again to work on.
 A Kubernetes pod trades its own projected ServiceAccount token at the same exchange for a Dispatch
 access token alone: that trade mints no machine login and enrols nothing. The entry that lists the
 pod's account decides what the token is. An entry of `BROKER_EXCHANGE_ACCOUNTS` gives it a person
-and the one Dispatch project it may write, or no project for an entry that names none
+and the one Dispatch project its token names, or no project for an entry that names none
 (`<service account>==<person>`), or neither a person nor a project for an entry that names
 neither (`<service account>==`): such a token acts as the account itself, names the account as its
 service, and Dispatch records its writes under that account. An entry of that setting that names a
@@ -1650,7 +1650,20 @@ string that names another kind than the source's tag is refused (`proxy-kind-con
 that names the same kind is served with one warning line at each full load. The string goes once
 every source it is written for carries its `proxy` tag. And a `proxy` object of kind `dpop` alone
 (below) is kept until a `dispatch` kind with the `dpop` way serves the broker's minted Dispatch
-tokens. Every other `proxy` object is refused, naming `kinds`.
+tokens. In a file that declares a kind, every other `proxy` object is refused, naming `kinds`.
+
+A profiles file that declares no kind, as every deployment's file did before the kinds, is read as
+the broker before the kinds read it, so a broker of this release starts against it. Each `proxy`
+object of no kind, of kind `aws` or of kind `azure` serves its profile's name behind the object's
+`hosts`, `headers` and `allow`, in the way its kind took: no kind swaps a stored value or a minted
+token in, `aws` signs with a stored key pair, and `azure` exchanges an `azure-login` token. The
+name is behind a kind of its own, named for the profile (`DEEL_API_KEY`'s is `deelxapixkey`). No
+`proxy` tag can name that kind, so a secret tagged `proxy` under such a file is refused as naming no
+kind (`proxy-kind-unknown`). The name's fingerprint is the one the broker before the kinds gave it,
+the whole object with its source's `judge` seconds, so it does not move at the upgrade, and a change
+of the object's `kind`, `hosts`, `headers` or `allow` ends the name's live grants. A `judge` or
+`guidance` in such an object is refused, naming the source's tag that holds it now. This reading is
+transitional: it goes once every deployment's file declares kinds.
 
 Who decides a request for a value is no part of a kind: that is the secret's own `judge` and
 `guidance` tags ([The model judge](#the-model-judge)), and a profiles file that still sets `judge`
@@ -1774,14 +1787,59 @@ Each grant records a digest of its block and the destination, and a broker whose
 serves none of it. The policy never serves a dpop profile as a secret, whatever the store holds,
 and a stored secret of its name is not served through it, so nothing of it can be requested or
 approved; it is no refusal either, so it writes no refused line and counts in no unservable series. A grant of the capability is made by the broker
-itself, for a kind it names in code, and this release names none yet.
+itself, for a kind it names in code. This release names one, the approve capability, below.
+
+The approve capability is a person's approvals in Dispatch from a box they signed in on. A dpop
+block named `DISPATCH_APPROVE_TOKEN`, binding Dispatch's host, turns it on, and the broker logs it
+at start (`broker: the approve capability`, with the host and the grant digest, or `state=off`).
+A session on such a box trades the person's sign-in, asking for
+`requested_token_type=urn:envoy:params:oauth:token-type:proxy-placeholder`, and is answered a
+placeholder (`agent-secrets-placeholder-approve-…`) of a grant of that person and session that
+lasts 15 minutes, with the proxy's URL, its authority and the one host under `proxy`. Nobody
+approves the grant: the sign-in is its authority, and revoking the sign-in ends it. Only a person's
+sign-in is granted the placeholder. The proxy mints a token for the grant on each broker pod, of
+the scope `approve` and the project scope person and bound to that pod's key, at the grant's first
+allowed request on the pod, and again on that pod after the broker's policy version moves, and puts
+the token it holds into every later allowed request while the grant lives; it never releases the
+token. The broker logs each such token's SHA-256 and the thumbprint of the key it is bound to
+(`broker: minted a grant's token`), one line per token it mints, never the token.
+Dispatch holds that token to its approve
+routes, and to the answer of an approval request among the asks, and answers every other route
+`403 APPROVE_ONLY_TOKEN` before it runs, the mint and the change of a personal token among them.
+The block's `allow` list narrows what reaches Dispatch by method and path prefix alone (`POST
+/api/v1/artifacts/`, `POST /api/v1/asks/` and the like), so a request under one of those prefixes
+that is no approve route, a document's comment or an ask's decline among them, reaches Dispatch,
+and Dispatch refuses it; a request under no prefix, an issue's comment or any `GET`, is refused at
+the proxy before any token is minted for it. `dispatch review` sends a person's review this way.
 
 What the command gets is the placeholder and the way to spend it. `agent-secrets NAME -- command`
 puts the placeholder in `NAME`, points `HTTPS_PROXY` at the broker's proxy port with that grant's
 proxy password, writes a trust bundle (every trust file the command's own environment named, and
 the system roots where it named none, plus the proxy's own certificate) and a wgetrc naming it,
 and sets `NO_PROXY` so the grant's bound hosts reach the proxy while loopback and the private
-ranges stay direct. The command calls the service as it did before. The value reaches no answer
+ranges stay direct. The environment it reads is the one the command will have, released values
+included. A trust file or `WGETRC` named by a relative path is resolved from the directory the
+command starts in, and a line on stderr names that variable. Each trust a grant's commands name
+gets a directory of its own, named for the grant and a keyed hash of the bundle and wgetrc it
+holds, so a later command of the same grant never gets an earlier command's bundle; the key is a
+random file in the same private directory, so the name, which the command's variables carry,
+lets nobody test a guess of a password the wgetrc holds. A grant keeps one such directory per
+trust its commands named until it ends. It writes neither file and sets no trust variable, so
+the command keeps the trust it has, only where all of these hold: the machine's own system trust
+bundle, read with no variable (`/etc/ssl/certs/ca-certificates.crt` on Debian), trusts every
+root the release carries; the command's environment carries the nine settings that make each
+client family read that store, as a pod image and a launcher session set them (`SSL_CERT_FILE`,
+`CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO`,
+`CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE`, `AWS_CA_BUNDLE` and `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH`, each
+an absolute path to a file that holds every root, and `UV_SYSTEM_CERTS` set to a value uv reads as
+true, such as `1`); the last `ca_directory` of wget's startup files, when there is one, holds every
+root; the wget startup files read are named by absolute paths (`SYSTEM_WGETRC` when set, `WGETRC`
+when set, and otherwise the `HOME` wget reads `.wgetrc` from), and so is that last `ca_directory`,
+since the command may resolve a relative one from another directory; and the command has no
+`SSL_CERT_DIR` at all. `NODE_USE_SYSTEM_CA` does not count, since a Node before v24.6.0 or
+v22.19.0 does not read it. Any other command, such as one from a shell started before those
+settings were set, gets the bundle. The command calls the service as it did before. The value
+reaches no answer
 of the broker's, no file and no variable: the proxy swaps the placeholder for it in the headers
 its kind names, inside the connection it carries to the bound host, and an answer of the proxy's
 own that quotes what a service sent — the `502` for a status line it could not read, a failed

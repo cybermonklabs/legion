@@ -16,7 +16,7 @@ import (
 
 // seedAskWithoutBlockTuple writes an ask whose row and node the earlier release already marked, in
 // the order its writer writes them: the node first, then the row that names it, which the
-// foreign key asks_node (migration 20261116094058) holds to a node the store holds.
+// foreign key asks_node (migration 20261125163550) holds to a node the store holds.
 func seedAskWithoutBlockTuple(t *testing.T, database *store.Store, project, issue, document, refKey string) (id string, createdAt time.Time) {
 	t.Helper()
 	ctx := t.Context()

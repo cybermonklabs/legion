@@ -306,12 +306,12 @@ func TestAskNodesOfTheCarriedVersionReadEveryBlockOnceAndRefuseARepeatedID(t *te
 
 // The rule over the two versions: N carries the approval of A when, with the server-owned
 // attributes taken off every ask block of each, the two render byte for byte the same, something
-// was taken off one of them, A's stored text is what this build renders A to, every ask of N
-// agrees with its node, and every block id of A still stands. The attributes dropped, or kept in
-// step with an answer given since, carry; a word of prose, an ask's question, a block added or a
-// block removed beside them do not; nor does a version that differs from A in nothing a case takes
-// out, nor one whose ask disagrees with its node, nor one A's stored bytes are not this build's
-// rendering of.
+// was taken off one of them, A's stored text is what this build renders A to, and every block id
+// of A still stands. The attributes dropped, or kept in step with an answer given since, carry; a
+// word of prose, an ask's question, a block added or a block removed beside them do not; nor does
+// a version that differs from A in nothing a case takes out, nor one A's stored bytes are not this
+// build's rendering of. That every ask of N agrees with its node is its callers' to hold first
+// (asksAgreeWithTheirNodes).
 func TestCarryVerdictOverTheApprovedAndTheNewVersion(t *testing.T) {
 	const prose = "# Rollout\n\nThe service ships behind a flag.\n\n"
 	approvedText := prose + ownDecided + ownBody + "\n" + openDirective + openBody
@@ -331,20 +331,18 @@ func TestCarryVerdictOverTheApprovedAndTheNewVersion(t *testing.T) {
 		name     string
 		approved string
 		version  string
-		agrees   bool
 		carry    bool
 	}{
-		{"the attributes dropped, every other byte the same", approvedText, prose + ownBare + ownBody + "\n" + openBare + openBody, true, true},
-		{"the attributes kept in step with an answer given since", approvedText, prose + ownDecided + ownBody + "\n" + answeredOpen + openBody, true, true},
-		{"one word of prose changed beside the removal", approvedText, strings.Replace(prose, "a flag", "a switch", 1) + ownBare + ownBody + "\n" + openBare + openBody, true, false},
-		{"an ask's question changed beside the removal", approvedText, prose + ownBare + ownBody + "\n" + openBare + "How many regions take the second wave?\n:::\n", true, false},
-		{"a block added beside the removal", approvedText, prose + ownBare + ownBody + "\n" + openBare + openBody + "\nA new paragraph.\n", true, false},
-		{"a block the approved version held removed", approvedText, prose + ownBare + ownBody, true, false},
-		{"nothing a case takes out: neither version holds the attributes", prose + ownBare + ownBody + "\n" + openBare + openBody, prose + ownBare + ownBody + "\n" + openBare + openBody, true, false},
-		{"an ask that disagrees with its node", approvedText, prose + ownBare + ownBody + "\n" + openBare + openBody, false, false},
-		{"approved bytes this build does not render so", strings.Replace(approvedText, "# Rollout\n\n", "Rollout\n=======\n\n", 1), prose + ownBare + ownBody + "\n" + openBare + openBody, true, false},
+		{"the attributes dropped, every other byte the same", approvedText, prose + ownBare + ownBody + "\n" + openBare + openBody, true},
+		{"the attributes kept in step with an answer given since", approvedText, prose + ownDecided + ownBody + "\n" + answeredOpen + openBody, true},
+		{"one word of prose changed beside the removal", approvedText, strings.Replace(prose, "a flag", "a switch", 1) + ownBare + ownBody + "\n" + openBare + openBody, false},
+		{"an ask's question changed beside the removal", approvedText, prose + ownBare + ownBody + "\n" + openBare + "How many regions take the second wave?\n:::\n", false},
+		{"a block added beside the removal", approvedText, prose + ownBare + ownBody + "\n" + openBare + openBody + "\nA new paragraph.\n", false},
+		{"a block the approved version held removed", approvedText, prose + ownBare + ownBody, false},
+		{"nothing a case takes out: neither version holds the attributes", prose + ownBare + ownBody + "\n" + openBare + openBody, prose + ownBare + ownBody + "\n" + openBare + openBody, false},
+		{"approved bytes this build does not render so", strings.Replace(approvedText, "# Rollout\n\n", "Rollout\n=======\n\n", 1), prose + ownBare + ownBody + "\n" + openBare + openBody, false},
 	} {
-		change, carried, err := carryVerdict(carryInput{approved: parse(test.approved), approvedText: test.approved, version: parse(test.version), agrees: test.agrees})
+		change, carried, err := carryVerdict(carryInput{approved: parse(test.approved), approvedText: test.approved, version: parse(test.version)})
 		if err != nil {
 			t.Fatalf("%s: %v", test.name, err)
 		}
@@ -407,7 +405,7 @@ func TestCarryVerdictCarriesTheApproversAnswersGivenSinceTheApproval(t *testing.
 			t.Fatalf("%s: the approved version renders %q (%v), want itself: the verdict compares stored bytes", test.name, rendered, err)
 		}
 		change, carried, err := carryVerdict(carryInput{
-			approved: parse(test.approved), approvedText: test.approved, version: parse(test.version), agrees: true, approverAnswered: test.approverAnswered,
+			approved: parse(test.approved), approvedText: test.approved, version: parse(test.version), approverAnswered: test.approverAnswered,
 		})
 		if err != nil {
 			t.Fatalf("%s: %v", test.name, err)
@@ -433,16 +431,17 @@ func TestApproverAnswersAreTheApproversOwnGivenSinceTheApproval(t *testing.T) {
 	// answered is the block wave whose ask, a row of the document, by answers at with act, on its
 	// row and on its node, as asks.Settle writes them.
 	answered := func(by string, at time.Time, act *model.ActorAct) versionAsks {
-		state, user := asks.StateAnswered, model.CanonicalLogin(by)
+		user := model.CanonicalLogin(by)
 		return versionAsks{
 			nodes:   map[string]*pmdoc.Node{"wave": wave},
 			rows:    map[string]model.Ask{"wave": {ID: "wave-ask", State: asks.StateAnswered, Answer: &model.AskAnswer{User: by, Selected: []string{}, At: at, Act: act}}},
-			answers: map[string]askNodeAnswer{"wave-ask": {NodeAnswer: asks.NodeAnswer{State: &state, AnsweredBy: &user, AnsweredAt: &at}}},
+			answers: map[string]askNodeAnswer{"wave-ask": {NodeAnswer: asks.NodeAnswer{Named: true, State: asks.StateAnswered, AnsweredBy: user, AnsweredAt: &at}}},
 		}
 	}
 	since, before := approvedAt.Add(time.Minute), approvedAt.Add(-time.Minute)
 	behind := answered("alice", since, nil)
-	behind.answers = nil
+	// The row names its node, which holds no answer yet: the ask reads open off the node.
+	behind.answers = map[string]askNodeAnswer{"wave-ask": {NodeAnswer: asks.NodeAnswer{Named: true}}}
 	copied := answered("alice", since, nil)
 	copied.sources = map[string]copiedSource{"wave": {ask: copied.rows["wave"]}}
 	copied.rows = nil
@@ -534,7 +533,7 @@ func TestCarryVerdictCarriesTheReadingsOfDecisionsAndAnsweredAsks(t *testing.T) 
 		if rendered, err := pmdoc.Render(parse(test.approved)); err != nil || rendered != test.approved {
 			t.Fatalf("%s: the approved version renders %q (%v), want itself: the verdict compares stored bytes", test.name, rendered, err)
 		}
-		change, carried, err := carryVerdict(carryInput{approved: parse(test.approved), approvedText: test.approved, version: parse(test.version), agrees: true, answered: test.answered})
+		change, carried, err := carryVerdict(carryInput{approved: parse(test.approved), approvedText: test.approved, version: parse(test.version), answered: test.answered})
 		if err != nil {
 			t.Fatalf("%s: %v", test.name, err)
 		}
@@ -772,7 +771,7 @@ func appendSecondRegionAsk(t *testing.T) func(*pmdoc.Node) *pmdoc.Node {
 // read. The same version without the repeat carries, so the repeat alone is what refuses. Another
 // build serves (serveTwoBuilds), so the answer is written into the block and the version without
 // the repeat differs from the approved one in the block's server-owned attributes alone, which
-// R10's case carries.
+// R5's case carries.
 func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 	t.Parallel()
 	run := func(t *testing.T, repeat bool) (reviews, approvals int) {
@@ -806,7 +805,7 @@ func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 // served. The named version differs from the one alice approved, which the release before's
 // settlement wrote with the open state, in those attributes alone, and every ask of it agrees with
 // its node, so her approval is carried to it by the case that compares the two without them
-// (attributeRemovalCase, R10).
+// (attributeRemovalCase, R5).
 func TestOnOneBuildAVersionTakenBeforeSettlementKeepsOnlyTheAsksStateAndCarriesTheApproval(t *testing.T) {
 	const spec = "Context\n\n:::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
@@ -1011,7 +1010,7 @@ func askOpeningLine(markdown, blockID string) string {
 // bob answers in 4,000 characters of words, which the document has no room for, so his answer is
 // written into the block without them, and the version settlement writes of it differs from the
 // one alice approved in the block's server-owned attributes alone. That version carries her
-// approval by R10's case, which its reason names alone, and the ask keeps bob's words whole. Read
+// approval by R5's case, which its reason names alone, and the ask keeps bob's words whole. Read
 // against the write with the words alone, the block disagreed with its node, and bob's answer
 // superseded her approval.
 func TestAnAnswerLeftOutOfItsBlockForWantOfRoomCarriesTheApproval(t *testing.T) {

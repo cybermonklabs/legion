@@ -291,7 +291,7 @@ func rowNamesNoNode(column string) string { return column + ` is null` }
 // release before this one deletes a row and appends no retraction, so the tuple outlives the row,
 // and only the row can say the edge still stands; that build may also write the row again with
 // no node, which its table's arm then answers alone. graph_edges' tuple arm makes the same join
-// (migrations 20261109215947, 20261116094101, 20261117140000 and 20261118023219). An ask holds a
+// (migrations 20261109215947, 20261125163553, 20261126050003 and 20261126050004). An ask holds a
 // follower row per session, so the follower row that carries a followed_by is the one of the
 // session the tuple reaches; an issue's row carries its child_of while it names that parent, and
 // an issue_links row the needs of its own pair; a component's row carries its part_of while it
@@ -323,7 +323,7 @@ func projectionCarries(table, fromKind, alias string) string {
 // blockRefCarries is projectionCarries for a link, whose projection row is the block_refs row of
 // the pair: the same node, kind and far end as the tuple at alias. The node is fromKind's: a
 // block's own link, or an answered ask's shaped, whose block_refs row names the ask's node
-// (migration 20261116094101).
+// (migration 20261125163553).
 func blockRefCarries(fromKind, alias string) string {
 	return `exists (select 1 from block_refs projected
 		where projected.node_kind = '` + fromKind + `' and projected.node_address = ` + alias + `.from_id
@@ -349,17 +349,17 @@ func blockLinkCarried(fromKind, alias string, deleted bool) string {
 // followed_by, and a decision block's from_ask and decided_by, which the
 // arm renders through the block_refs row of the pair as it renders a block's every other link,
 // and the kinds the view answers from the tuples alone, with no projection row behind them (its
-// store class, migrations 20261116184707 and 20261117020856), which the graph read's store arm
+// store class, migrations 20261126050001 and 20261126050002), which the graph read's store arm
 // reads by the same lists (keyedStoreArm): storeArmPointers out of any node, and
 // storeArmPlacements and authored_by out of a node of the kinds cybermonklabs/legion#4193 adds
 // (graphstore.KindInteraction and the three beside it); an issue's relations, child_of and needs,
 // which issues and issue_links project, and duplicate_of and filed_from, which no row does, beside
 // a document's attached_to, the part_of to its issue the view answers by that name (migration
-// 20261117140000); and a component's part_of its parent and depends_on another component and an
+// 20261126050003); and a component's part_of its parent and depends_on another component and an
 // issue's affects a component, which components, component_depends and issue_component_members
-// project (migration 20261118023219).
-// It is the list the view's tuple arms render (migrations 20261109215947, 20261116094101,
-// 20261116184707, 20261117020856, 20261117140000, 20261118023219 and 20261119100000) and the list
+// project (migration 20261126050004).
+// It is the list the view's tuple arms render (migrations 20261109215947, 20261125163554,
+// 20261126050001, 20261126050002, 20261126050003, 20261126050004 and 20261126050005) and the list
 // the announcer writes into server_build_announcements.tuple_kinds (startup.Deps), which is how
 // the release that deletes an old arm of the view reads whether the release a rollback would
 // reach writes that arm's kinds as tuples too. A child that moves another relation into the store
@@ -379,7 +379,7 @@ func blockLinkCarried(fromKind, alias string, deleted bool) string {
 // mentions in it is an artifact source's too, not a block's alone: a document's version index and
 // rebuild-refs write a mentions tuple out of the document's node beside each refs row of the
 // document (Replacement.ArtifactMentions), which the view answers while that row stands (migration
-// 20261119100000).
+// 20261126050005).
 //
 // The list carries this build's capabilities too (processes.Capabilities): issue_room, which no
 // relation kind spells, is how a reader of the announcements tells a build that serves the issue
@@ -402,7 +402,7 @@ const TupleAttachedTo = "attached_to"
 
 // attachedArtifactStands is the test the view's arm over the artifacts that carry their node makes
 // of the artifacts row aliased a: its node is not gone and its part_of to the issue the row names
-// is the newest tuple of that relation and asserts it (migration 20261117140000).
+// is the newest tuple of that relation and asserts it (migration 20261126050003).
 const attachedArtifactStands = `a.node_kind is not null
 			and exists (select 1 from graph_nodes live where live.kind = a.node_kind and live.id = a.node_address and live.state <> 'gone')
 			and exists (select 1 from (
@@ -552,7 +552,7 @@ type backlinkArm struct {
 	moved string
 	// storedFrom makes the arm the store's alone: the current tuples of kind out of a node of one
 	// of these kinds, which graph_edges answers from the tuples with no projection row behind
-	// them (its tuple arm's store class, migration 20261117020856). Such an arm reads no table
+	// them (its tuple arm's store class, migration 20261126050002). Such an arm reads no table
 	// of its own, so it names no from, where, toID, fromKind or fromID (storedSQL).
 	storedFrom []string
 	// goesWithFourArms marks the arms of this table that count what graph_edges' arms over
@@ -713,7 +713,7 @@ var backlinkArms = map[string][]backlinkArm{
 		// issues_parent_key, partial on parent_key is not null, over the rows that name no node
 		// and the rows whose parent the release before moved in place (store.IssueParentMoved);
 		// the store states the same fact as the issue's child_of, answered while the issue's row
-		// carries its node and names that parent (migration 20261117140000).
+		// carries its node and names that parent (migration 20261126050003).
 		{kind: graphstore.TupleChildOf, from: `issues i`, where: `i.parent_key is not null`, toID: `i.parent_key`,
 			fromKind: "issue", fromID: `i.key`, projected: `i.node_kind`, moved: store.IssueParentMoved,
 			tupleKind: graphstore.TupleChildOf, projectedIn: "issues"},
@@ -813,7 +813,7 @@ var backlinkArms = map[string][]backlinkArm{
 		// components_parent_node, on the same expression the arm selects, over the rows that
 		// name no node and the rows whose parent was moved in place (store.ComponentParentMoved);
 		// the store states the same fact as the component's part_of, answered while the
-		// component's row carries its node and names that parent (migration 20261118023219).
+		// component's row carries its node and names that parent (migration 20261126050004).
 		{kind: graphstore.TuplePartOf, from: `components c`, where: `c.parent is not null`, toID: `c.project_key || '/' || c.parent`,
 			fromKind: graphstore.KindComponent, fromID: `c.project_key || '/' || c.id`, projected: `c.node_kind`,
 			moved: store.ComponentParentMoved, tupleKind: graphstore.TuplePartOf, projectedIn: "components"},
@@ -866,7 +866,7 @@ var backlinkArms = map[string][]backlinkArm{
 	// triggered, whose count says how many lenses its findings invoked. A finding and a risk are
 	// pointed at by the part_of of a lens invoked on them. Each is an arm of the store alone, the
 	// view's tuple arms answering every one of them, a finding's part_of as the lens_block its own
-	// arm writes (migration 20261117020856).
+	// arm writes (migration 20261126050002).
 	graphstore.KindLens: {
 		{kind: graphstore.TuplePartOf, storedFrom: []string{graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindRisk}},
 		{kind: graphstore.TupleTriggeredBy, storedFrom: []string{graphstore.KindLens}},
@@ -984,7 +984,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 	// over block_refs only while its kind is one a block_refs row projects (blockLinkCarried).
 	// The types test is the view's
 	// tuple arm's: block_node_listed with the attribute node's targets as its input
-	// (migration 20261125150001), which a boot step restates to read the target's type from
+	// (migration 20261126050009), which a boot step restates to read the target's type from
 	// its node (graphcensus.RunTypedBlockSupertagsStep), and a mention is no attribute of any
 	// block type, so it is listed without the lookup. Its own test of the citing block is the
 	// view's state rule and this registry's predicate made out of one read of that block's
@@ -996,7 +996,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		liveVisibleNode("block", `r.from_id`)))
 	// An answered ask's shaped, its tie to a block of its issue, which the store states from the
 	// ask's node and the view's tuple arm answers while the block_refs row of the pair, marked with
-	// that node, stands (migration 20261116094101). An ask's shaped declares no targets, so it
+	// that node, stands (migration 20261125163553). An ask's shaped declares no targets, so it
 	// carries no types test.
 	if target.kind == BlockNodeKind {
 		arms = append(arms, arm(`graph_tuples r`, `r.from_kind = '`+graphstore.KindAsk+`' and r.kind = '`+TupleShaped+`'

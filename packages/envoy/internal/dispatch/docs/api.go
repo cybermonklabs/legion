@@ -47,6 +47,8 @@ type API interface {
 	TextWithAsks(ctx context.Context, artifactID string, withBlocks bool) (AskedText, error)
 	// kept for one release: heading-keep
 	DecisionHeading(ctx context.Context, q graphstore.Queryer, artifactID, blockID string) (HeadingDecision, bool, error)
+	// kept for one release: stored-ask-state
+	KeptText(ctx context.Context, artifactID string, withBlocks bool) (AskedText, error)
 	ScheduleSettlement(artifactID string)
 	SettleCopiesOf(ctx context.Context, ask model.Ask) error
 	CopiesOf(ctx context.Context, ask model.Ask) ([]string, error)

@@ -133,7 +133,7 @@ func TestNoActDecidesTheCarryOfTheVersionAnAnswerWrites(t *testing.T) {
 
 // renderedWithoutAskServerAttributes reports whether a and b, two markdown renderings of a
 // document, are the same once every ask block of each has its server-owned attributes taken off
-// (withoutAskServerAttributes), as R10's case compares two versions.
+// (withoutAskServerAttributes), as R5's case compares two versions.
 func renderedWithoutAskServerAttributes(a, b string) (bool, error) {
 	trees := make([]*pmdoc.Node, 2)
 	for index, markdown := range []string{a, b} {

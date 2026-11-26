@@ -71,9 +71,9 @@ func IsTypedBlock(name string) bool {
 }
 
 // BlockTypeAttributes is the attributes the installed schema declares for the typed block name,
-// in declaration order, and false for a type it does not declare. The block index reads a
-// decision's from it to tell a tie its caller writes from one the server derives (refs'
-// DecisionFacts): the schema's `server` flag is what says whose a value is.
+// in declaration order, and false for a type it does not declare. The schema's `server` flag is
+// what says whose a value is: the caller's or the server's. The block index reads a decision's
+// from it to tell a tie its caller writes from one the server derives (refs' DecisionFacts).
 func BlockTypeAttributes(name string) (BlockAttributes, bool) {
 	typ, ok := typedBlock(name)
 	return typ.Attributes, ok
@@ -84,6 +84,24 @@ func BlockTypeAttributes(name string) (BlockAttributes, bool) {
 // it where it marks gone every typed block a version removes (refs' unheldTypedNodes).
 func TypedBlockNames() []string {
 	return slices.Clone(active.Load().typedBlockNames)
+}
+
+// ServerAttributes is the names of the server attributes the installed schema declares for the
+// typed block name, in declaration order, read off the manifest once when it was compiled; none
+// for a type that declares none or that the schema does not declare. Every caller shares the
+// list, which none writes: settlement reads the decision type's to hold each to the store (docs'
+// decision_blocks.go).
+func ServerAttributes(name string) []string {
+	return active.Load().serverAttributes[name]
+}
+
+// ServerAttributesInMarkdown is the names of the server attributes the installed schema declares
+// for the typed block name that its markdown carries (BlockAttributeSchema.InMarkdown), in
+// declaration order, read off the manifest once when it was compiled; none for a type that
+// declares none or that the schema does not declare. Every caller shares the list, which none
+// writes.
+func ServerAttributesInMarkdown(name string) []string {
+	return active.Load().markdownServerAttributes[name]
 }
 
 func typedBlock(name string) (BlockTypeSchema, bool) {
@@ -622,7 +640,7 @@ func parseTypedAttributeValue(name string, attr BlockAttributeSchema, raw any) (
 	case BlockAttributeBlockList:
 		values, err := ParseBlockPointerValue(text, attr.Items)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: %w", ErrBlockPointer, err)
 		}
 		if err := parentCount(name, values); err != nil {
 			return nil, err

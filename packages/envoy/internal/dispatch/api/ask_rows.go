@@ -106,15 +106,22 @@ end`
 // issues.assignee (store/migrations/0034_issue_assignee.up.sql:6) serves a filter on it.
 const askedOfPersonExpression = `coalesce(a.asked_of, i.assignee, p.default_assignee)`
 
+// ownerProjectJoin attaches the projects row as p for a row already joined to its issue as i and
+// its document as ar. Both askedOfPersonJoins and projectOfComment (api/project_scope.go) append
+// it so the join has one spelling across the module.
+const ownerProjectJoin = `
+	left join projects p on p.key = coalesce(i.project_key, ar.project_key)`
+
 // askedOfPersonJoins are the three tables askedOfPersonExpression reads beside the ask aliased
 // a: its issue as i, its own document as ar, and the project of whichever of the two owns it as
-// p. Five FROM clauses carry them - askReadFrom and askWaitingOnPerson below, the active CTE of
-// listOpenAsks (api/asks.go), the not-exists subquery of myRepliesOwner (api/replies.go) and the
-// read putAskAskedOf takes before it writes (api/ask_asked_of.go) - and each builds them from
-// this one text, so the rule and the tables it names move together. askReadFrom serves two of
-// the six reads, askReadColumns and the Inbox's person filter, which share one statement.
-// TestOneExpressionDecidesWhoWaits holds them to this one spelling as it holds the expression to
-// its own.
+// p. Six FROM clauses carry them - askReadFrom and askWaitingOnPerson below, the active CTE of
+// listOpenAsks (api/asks.go), the not-exists subquery of myRepliesOwner (api/replies.go), the
+// read putAskAskedOf takes before it writes (api/ask_asked_of.go) and projectOfAsk
+// (api/project_scope.go) - and each builds them from this one text, so the rule and the tables
+// it names move together. The six clauses serve seven reads: askReadFrom serves two of them,
+// askReadColumns and the Inbox's person filter, which share one statement, and each other clause
+// serves one. TestOneExpressionDecidesWhoWaits holds them to this one spelling as it holds the
+// expression to its own.
 //
 // Each is an outer join: a question owned by an issue has no document row and one owned by a
 // document has no issue row, and the constraint asks_one_owner (migration 0009) guarantees
@@ -124,8 +131,7 @@ const askedOfPersonExpression = `coalesce(a.asked_of, i.assignee, p.default_assi
 // to its own `from <table> a`, whatever that caller indents its statement by.
 const askedOfPersonJoins = `
 	left join issues i on i.key = a.issue_key
-	left join artifacts ar on ar.id = a.artifact_id
-	left join projects p on p.key = coalesce(i.project_key, ar.project_key)`
+	left join artifacts ar on ar.id = a.artifact_id` + ownerProjectJoin
 
 // askItemRefExpression is the SPA item route of the ask aliased a, whose issue is aliased i and
 // whose project document is aliased ar: an issue ask's `/issues/<key>/asks/<id>`, which lands an

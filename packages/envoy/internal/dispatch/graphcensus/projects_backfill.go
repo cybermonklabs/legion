@@ -958,7 +958,7 @@ func issueParentClaims(nodes []graphstore.Node, marks map[string]rowMark, create
 // Beside them it answers the mentions each document it named owes its node for the refs rows it
 // holds (documentMentionMoves), as the backfill's pass over the references states them: graph_edges'
 // arm over refs answers a document's row only while the document's row names no node (migration
-// 20261119100000), so a document named without them would leave each of its references answered
+// 20261126050005), so a document named without them would leave each of its references answered
 // by neither arm until that pass ran.
 //
 // The read follows the update, under the owner locks the batch took first: an upload of a later

@@ -1456,10 +1456,11 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 
 // artifactText is the body GET /api/v1/artifacts/{id}/text,
 // GET /api/v1/issues/{key}/artifacts/{slug}/text and
-// GET /api/v1/projects/{key}/artifacts/{slug}/text answer. Markdown holds no server-owned attribute
-// on any ask block (docs.TextWithAsks), and Asks answers each ask block of it, in document order:
-// its state and answer, read from the ask. Blocks is absent unless the request asked for it with
-// ?blocks=true.
+// GET /api/v1/projects/{key}/artifacts/{slug}/text answer. For a reader that sent `Dispatch-Asks:
+// 1` (asksHeader), Markdown holds no server-owned attribute on any ask block (docs.TextWithAsks);
+// for every other reader it holds the kept form of them (docs.KeptText). Asks answers each ask
+// block of it, in document order: its state and answer, read from the ask. Token is the same for
+// both. Blocks is absent unless the request asked for it with ?blocks=true.
 type artifactText struct {
 	// Asks comes first so the fields stand in the sorted order of their keys, as the map the
 	// handler wrote before the body was named did (TestResponseShapes). It is absent for a
@@ -1476,6 +1477,9 @@ type artifactText struct {
 }
 
 func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
+	// The markdown depends on the request's Dispatch-Asks header, so no cache between a reader and
+	// Dispatch hands a reader that sent it the answer written for one that did not.
+	w.Header().Add("Vary", asksHeader)
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
@@ -1518,15 +1522,35 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, answer)
 }
 
-// artifactTextBody is the document the three text routes answer (docs.TextWithAsks): its markdown,
-// with no server-owned attribute on any ask block, its token and its asks, with the blocks beside
-// them for a request that asked for them with ?blocks=true. The markdown, the token and the blocks
-// come from one rendering of one tree, so a write by another session cannot leave a listing's byte
-// ranges indexing markdown they were not computed over; nil blocks for a request that asked for
-// none, which pays for none of that rendering.
+// asksHeader is what a reader sends to say that it reads the asks member of the text routes'
+// answer: `Dispatch-Asks: 1` and nothing else. Such a reader is served markdown with none of the
+// eight server-owned attributes on any ask block (docs.TextWithAsks), which it uploads back
+// unchanged: every reader of this build that reads asks sends it, `dispatch doc-read` and the
+// dashboard among them. A request without it, which is every reader of a release before this one,
+// is served the kept form (docs.KeptText), from which that reader reads which asks are answered or
+// resolved, and by whom (R5). Both forms answer the same token.
+const asksHeader = "Dispatch-Asks"
+
+// readsAsks reports whether this request said that it reads the asks member (asksHeader).
+func readsAsks(r *http.Request) bool {
+	return r.Header.Get(asksHeader) == "1"
+}
+
+// artifactTextBody is the document the three text routes answer: its markdown, with no
+// server-owned attribute on any ask block for a reader that reads asks (docs.TextWithAsks) and the
+// kept form of them for every other reader (docs.KeptText), its token and its asks, with the blocks
+// beside them for a request that asked for them with ?blocks=true. The markdown, the token and the
+// blocks come from one rendering of one tree, so a write by another session cannot leave a
+// listing's byte ranges indexing markdown they were not computed over; nil blocks for a request
+// that asked for none, which pays for none of that rendering.
 func (s *server) artifactTextBody(r *http.Request, artifactID string) (docs.AskedText, *[]model.ArtifactBlock, error) {
 	withBlocks := r.URL.Query().Get("blocks") == "true"
-	text, err := s.deps.Docs.TextWithAsks(r.Context(), artifactID, withBlocks)
+	read := s.deps.Docs.TextWithAsks
+	if !readsAsks(r) {
+		// kept for one release: stored-ask-state
+		read = s.deps.Docs.KeptText
+	}
+	text, err := read(r.Context(), artifactID, withBlocks)
 	if err != nil || !withBlocks {
 		return text, nil, err
 	}

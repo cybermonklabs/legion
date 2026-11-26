@@ -37,10 +37,11 @@ func withAskQuestion(t *testing.T, blockID, question string) func(*pmdoc.Node) *
 	}
 }
 
-// Settlement keeps writing `invalid` into the live tree (G1), and where the block has an ask row
+// Settlement keeps writing `invalid` into the live tree, and where the block has an ask row
 // the reason is a value of the ask's node too. A block that fails the strict read is flagged in the
 // live tree and its node holds the reason; once the block reads again the live tree's attribute is
-// gone, so the repaired block shows no old reason, and the node's value is retracted. A block with
+// gone, so the repaired block shows no old reason, and the node's value is retracted. The issue's
+// head projection holds the reason while it stands and drops it with the retraction. A block with
 // no ask row - one that never read - is flagged in the live tree alone, and no node holds its
 // reason. And on a fleet of one build - this test registers no process - a block that fails the
 // strict read and claims an answer state and an answerer keeps none of the seven attributes a
@@ -52,6 +53,20 @@ func TestTheInvalidReasonIsWrittenAndClearedOnTheAskNode(t *testing.T) {
 	settleCurrentGeneration(t, service, artifactID)
 	ask := blockAskOn(t, service, artifactID, "ship")
 	const reason = `ask block "ship" has an empty question`
+	requireHeadInvalid := func(want string) {
+		t.Helper()
+		var got string
+		if err := service.store.Pool.QueryRow(context.Background(), `
+			select coalesce(value_texts[array_position(value_kinds, 'invalid')], '')
+			from issue_head_nodes where issue_key = $1 and node_kind = $2 and node_address = $3
+		`, ask.IssueKey, graphstore.KindAsk, ask.ID).Scan(&got); err != nil {
+			t.Fatalf("read the head row of ask %s: %v", ask.ID, err)
+		}
+		if got != want {
+			t.Errorf("the ask's head row holds invalid %q, want %q", got, want)
+		}
+	}
+	requireHeadInvalid("")
 
 	editLiveTree(t, service, artifactID, withAskQuestion(t, "ship", ""))
 	settleCurrentGeneration(t, service, artifactID)
@@ -61,6 +76,7 @@ func TestTheInvalidReasonIsWrittenAndClearedOnTheAskNode(t *testing.T) {
 	if value, held, err := graphstore.CurrentValue(context.Background(), service.store.Pool, graphstore.KindAsk, ask.ID, "invalid"); err != nil || !held || value != reason {
 		t.Fatalf("the ask node's invalid = %q, held %v (%v), want %q", value, held, err, reason)
 	}
+	requireHeadInvalid(reason)
 
 	editLiveTree(t, service, artifactID, withAskQuestion(t, "ship", "Should we ship?"))
 	settleCurrentGeneration(t, service, artifactID)
@@ -70,6 +86,7 @@ func TestTheInvalidReasonIsWrittenAndClearedOnTheAskNode(t *testing.T) {
 	if value, held, err := graphstore.CurrentValue(context.Background(), service.store.Pool, graphstore.KindAsk, ask.ID, "invalid"); err != nil || held {
 		t.Fatalf("the repaired ask's node holds invalid %q, held %v (%v), want it retracted", value, held, err)
 	}
+	requireHeadInvalid("")
 	if values := askInvalidValues(t, service, ask.ID); len(values) != 2 || !values[0].Asserted || values[1].Asserted || values[1].ToID != reason {
 		t.Fatalf("the ask node's invalid values = %+v, want the reason asserted and then retracted", values)
 	}
@@ -116,7 +133,7 @@ func TestTheInvalidReasonIsWrittenAndClearedOnTheAskNode(t *testing.T) {
 }
 
 // On a fleet of one build a block that fails the strict read keeps of the seven attributes a
-// version can store only what a version keeps of its ask as the ask's node holds it (R10,
+// version can store only what a version keeps of its ask as the ask's node holds it (R5,
 // keptAskState): an answered ask's block a browser empties and forges another answerer onto keeps
 // its node's state, answerer and time, and the forged answerer does not come back; a block no ask
 // row backs keeps none of the seven, whatever it claims.

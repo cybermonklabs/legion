@@ -2110,8 +2110,10 @@ func TestDecodeReopenedPullRequestAsOpened(t *testing.T) {
 
 // A Dispatch event names who wrote it. A session actor's id is decoded, so the workflow can tell a
 // write by an agent holding a claim, or by an outside session, from a person's move. A user actor
-// decodes none, and neither does the daemon's own session, legion-daemon:<PROJECT>: both are the
-// writes the workflow acts on.
+// decodes none, and neither does the daemon's own session, legion-daemon:<PROJECT> of its own
+// project: both are the writes the workflow acts on. The daemon of another project writes an issue
+// of this project as its own session when it runs a claim on one, and that session decodes as any
+// other session does. An event of another project's issue is no fact, whoever wrote it.
 func TestDecodeDispatchIssueNamesASessionActor(t *testing.T) {
 	t.Parallel()
 	data, err := os.ReadFile("testdata/dispatch/issue-updated.json")
@@ -2156,6 +2158,33 @@ func TestDecodeDispatchIssueNamesASessionActor(t *testing.T) {
 	}
 	if issue, ok := daemon.Fact.(DispatchIssue); !ok || issue.ActorSession != "" || !issue.DaemonActor {
 		t.Fatalf("fact = %#v, want the daemon's own actor", daemon.Fact)
+	}
+	envelope["payload"] = strings.Replace(payload, `"actor":{"kind":"user","id":"smoke"}`, `"actor":{"kind":"session","id":"legion-daemon:OTHER"}`, 1)
+	byOtherDaemon, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherDaemon, err := decodeMessage("notifications.dispatch.issue.CAPTURE-3.issue.updated", "CAPTURE", capturedRepositories, byOtherDaemon)
+	if err != nil {
+		t.Fatalf("decode the write of another project's daemon: %v", err)
+	}
+	if issue, ok := otherDaemon.Fact.(DispatchIssue); !ok || issue.ActorSession != "legion-daemon:OTHER" || issue.DaemonActor {
+		t.Fatalf("fact = %#v, want the session actor legion-daemon:OTHER", otherDaemon.Fact)
+	}
+	// The same event on OTHER-3, an issue of another project, written by this daemon's own session.
+	onOther := strings.ReplaceAll(payload, "CAPTURE", "OTHER")
+	envelope["payload"] = strings.Replace(onOther, `"actor":{"kind":"user","id":"smoke"}`, `"actor":{"kind":"session","id":"legion-daemon:CAPTURE"}`, 1)
+	envelope["topic"] = "notifications.dispatch.issue.OTHER-3.issue.updated"
+	ofOther, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	elsewhere, err := decodeMessage("notifications.dispatch.issue.OTHER-3.issue.updated", "CAPTURE", capturedRepositories, ofOther)
+	if err != nil {
+		t.Fatalf("decode the daemon's write on another project's issue: %v", err)
+	}
+	if elsewhere.Fact != nil {
+		t.Fatalf("fact = %#v, want no fact for an event of another project's issue", elsewhere.Fact)
 	}
 }
 

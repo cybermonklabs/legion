@@ -47,18 +47,14 @@ func TestASecondReconnectRunsItsHooksWithoutWaitingOutTheFirstRunsRequest(t *tes
 	proxy.cutAndArm(time.Second)
 	dropped := testwait.Receive(t, "a stream request to reach the proxy after the first outage", proxy.dropped)
 	// The connection is back once the proxy's 3 s refusal ends and nats.go reconnects.
-	var back time.Time
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		if conn := client.Connection(); conn != nil && conn.IsConnected() && time.Since(dropped) > 3*time.Second {
-			back = time.Now()
-			break
+	testwait.Until(t, "the connection to be back after the second outage (the last read is its status)", func() (string, bool) {
+		conn := client.Connection()
+		if conn == nil {
+			return "no connection", false
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("the connection was not back within 20s of the second outage")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return conn.Status().String(), conn.IsConnected() && time.Since(dropped) > 3*time.Second
+	})
+	back := time.Now()
 	for time.Since(back) < 15*time.Second {
 		mu.Lock()
 		for _, at := range runs {

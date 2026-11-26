@@ -15,7 +15,7 @@ import (
 type GraphEdgesArms int
 
 const (
-	// GraphEdgesIssueRelations is the set 20261117140000_issue_tree_relations states. The arms
+	// GraphEdgesIssueRelations is the set 20261126050003_issue_tree_relations states. The arms
 	// over issues (child_of), issue_links (blocked_by) and artifacts (attached_to) answer only the
 	// rows that name no node, which no writer of this release wrote, and the store answers the
 	// rest: the tuple arm renders an issue's child_of, its needs to an issue under the kind
@@ -24,7 +24,7 @@ const (
 	// renders each one's attached_to while its part_of to that issue stands. The child_of arm also
 	// answers a marked row whose parent the release before moved in place (IssueParentMoved).
 	GraphEdgesIssueRelations GraphEdgesArms = iota + 1
-	// GraphEdgesComponents is the set 20261118023219_issue_tree_components states:
+	// GraphEdgesComponents is the set 20261126050004_issue_tree_components states:
 	// GraphEdgesIssueRelations with the three arms over a component's relations split the same
 	// way. The arms over components (part_of), component_depends (depends_on) and
 	// issue_component_members (affects) answer only the rows that name no node, the part_of arm
@@ -32,25 +32,25 @@ const (
 	// and the tuple arm renders a component's part_of and depends_on and an issue's affects while
 	// the projection row that names each carries its node.
 	GraphEdgesComponents
-	// GraphEdgesArtifactRefs is the set 20261119100000_issue_tree_artifact_refs states:
+	// GraphEdgesArtifactRefs is the set 20261126050005_issue_tree_artifact_refs states:
 	// GraphEdgesComponents with the arm over refs split the same way for the references a document
 	// makes, which the version index and rebuild-refs now state as tuples. The arm over refs answers
 	// a row whose source is no document, a document whose row names no node, or a far end past the
 	// store's bound (ReferenceNotStated), and the tuple arm renders a document's mentions while the
 	// refs row that names the edge stands, naming the document by its uuid.
 	GraphEdgesArtifactRefs
-	// GraphEdgesTupleArmFilter is the set 20261121090000_issue_tree_graph_edges_after_tuple_arm_filter
+	// GraphEdgesTupleArmFilter is the set 20261126050006_issue_tree_graph_edges_after_tuple_arm_filter
 	// states: GraphEdgesArtifactRefs with the tuple arm's sub-select keeping only the kinds the arm
 	// renders before its `distinct on` sorts the tuples, the test spelled over the tuple's own
 	// columns as the `when` arms of the `projects` case (tupleArmFilter), and the outer
 	// `edge.projects is not null` test gone, as 20261120122700_graph_edges_tuple_arm_filter has it
-	// for its own arms. It is stated after 20261121034242_graph_edges_asks_and_tuple_arm_filter,
-	// which restates the view from the arms of 20261116094101 alone, and stated again, last, by
-	// 20261123180000_issue_tree_graph_edges_after_store_class_last, after
-	// 20261121104002_graph_edges_store_class_last restates it from its own arms, so a database that
+	// for its own arms. It is stated after 20261125163554_graph_edges_asks_and_tuple_arm_filter,
+	// which restates the view from the arms of 20261125163553 alone, and stated again, last, by
+	// 20261126050008_issue_tree_graph_edges_after_store_class_last, after
+	// 20261126050007_graph_edges_store_class_last restates it from its own arms, so a database that
 	// ran any of them holds every arm of this set again.
 	GraphEdgesTupleArmFilter
-	// GraphEdgesBlockNodeListed is the set 20261125150001_issue_tree_graph_edges_block_node_listed
+	// GraphEdgesBlockNodeListed is the set 20261126050009_issue_tree_graph_edges_block_node_listed
 	// states: GraphEdgesTupleArmFilter with the tuple arm testing a pointer's target through
 	// block_node_listed, which 20261125150000_issue_tree_block_node_listed creates with the body of
 	// block_ref_listed, in place of block_ref_listed (R26 of the issue-tree spec,

@@ -15,33 +15,30 @@ import (
 // file, with the arm set it states. A migration stating the view from this set on is one of them:
 // the first of them is where the function became the view's one source.
 var graphEdgesViewMigrations = map[string]GraphEdgesArms{
-	"20261117140000_issue_tree_relations.up.sql":                          GraphEdgesIssueRelations,
-	"20261118023219_issue_tree_components.up.sql":                         GraphEdgesComponents,
-	"20261119100000_issue_tree_artifact_refs.up.sql":                      GraphEdgesArtifactRefs,
-	"20261121090000_issue_tree_graph_edges_after_tuple_arm_filter.up.sql": GraphEdgesTupleArmFilter,
-	"20261123180000_issue_tree_graph_edges_after_store_class_last.up.sql": GraphEdgesTupleArmFilter,
-	"20261125150001_issue_tree_graph_edges_block_node_listed.up.sql":      GraphEdgesBlockNodeListed,
+	"20261126050003_issue_tree_relations.up.sql":                          GraphEdgesIssueRelations,
+	"20261126050004_issue_tree_components.up.sql":                         GraphEdgesComponents,
+	"20261126050005_issue_tree_artifact_refs.up.sql":                      GraphEdgesArtifactRefs,
+	"20261126050006_issue_tree_graph_edges_after_tuple_arm_filter.up.sql": GraphEdgesTupleArmFilter,
+	"20261126050008_issue_tree_graph_edges_after_store_class_last.up.sql": GraphEdgesTupleArmFilter,
+	"20261126050009_issue_tree_graph_edges_block_node_listed.up.sql":      GraphEdgesBlockNodeListed,
 }
 
 // graphEdgesViewRollbacks is every down file that states graph_edges back to the view a migration
 // of graphEdgesViewMigrations stated, by its file, with that migration's arm set. The runner never
 // runs a down file, so nothing but this list ties its text to GraphEdgesView.
 var graphEdgesViewRollbacks = map[string]GraphEdgesArms{
-	"20261125150001_issue_tree_graph_edges_block_node_listed.down.sql": GraphEdgesTupleArmFilter,
+	"20261126050009_issue_tree_graph_edges_block_node_listed.down.sql": GraphEdgesTupleArmFilter,
 }
 
-// graphEdgesSiblingRestatements are the migrations, merged beside the issue-tree spec's, that
-// state graph_edges by hand after the first of graphEdgesViewMigrations, each from the arms of a
-// view of their own: 20261120122700 filters the tuple arm of 20261109215947's arms,
-// 20261121034242 restates 20261116094101's arms with that filter, and 20261121104002 restates
-// 20261121034242's arms with 20261117020856's class `store` and `lens_block` arm. None holds the
-// issue-tree spec's arms, and a database runs each version once, so the newest of
-// graphEdgesViewMigrations, dated after all three, states the view again from GraphEdgesView with
-// every arm of both.
+// graphEdgesSiblingRestatements are the migrations that state graph_edges by hand and sort after
+// the first of graphEdgesViewMigrations: 20261126050007 restates 20261125163554's arms with
+// 20261126050002's class `store` and `lens_block` arm. It holds none of the issue-tree spec's
+// arms, and a database runs each version once, so the next of graphEdgesViewMigrations,
+// 20261126050008, states the view again from GraphEdgesView with every arm of both. The
+// restatements by hand that sort before the first - 20261120122700, 20261125163554,
+// 20261126050001 and 20261126050002 - are no concern of this test.
 var graphEdgesSiblingRestatements = map[string]bool{
-	"20261120122700_graph_edges_tuple_arm_filter.up.sql":          true,
-	"20261121034242_graph_edges_asks_and_tuple_arm_filter.up.sql": true,
-	"20261121104002_graph_edges_store_class_last.up.sql":          true,
+	"20261126050007_graph_edges_store_class_last.up.sql": true,
 }
 
 // graphEdgesStatement is the head of the statement that states the view, as GraphEdgesView writes

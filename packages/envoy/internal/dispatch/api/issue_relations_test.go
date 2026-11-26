@@ -84,9 +84,11 @@ func issueLinkMarker(t *testing.T, database *store.Store, issue, target string) 
 // BLOCKED_BY_INPUT when it names blocked_by. A request naming both with the same targets appends
 // one needs tuple for each target; one whose two lists differ is refused 400 NEEDS_INPUT naming
 // both members, and the issue keeps what it held. A wait that closes a ring through the waits is
-// refused 409 DEPENDENCY_CYCLE under either member. Last, a credential that names one project is
-// refused a target outside it 403 PROJECT_SCOPE, for needs as for blocked_by, naming the member
-// it used, and the issue keeps no wait.
+// refused 409 DEPENDENCY_CYCLE under either member. Last, a credential that names one project
+// waits on an issue of another project as a credential that names none does (INFRA-4799), for
+// needs as for blocked_by and on a create as on a PATCH, and is refused only a target of a private
+// project that it does not name: the answer of a target that does not exist, 400 under the member
+// the request used, which the refusal names, and the issue keeps no wait.
 func TestNeedsCrossesAProjectAndRefusesAProjectScopedCaller(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	core := createListedIssues(t, handler, "CORE", 4)
@@ -151,7 +153,10 @@ func TestNeedsCrossesAProjectAndRefusesAProjectScopedCaller(t *testing.T) {
 	requireRelationRefused(t, "a ring under blocked_by", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+core[2],
 		map[string]any{"blocked_by": []string{core[0]}}, "alice"), http.StatusConflict, "DEPENDENCY_CYCLE")
 
-	t.Run("a credential that names one project is refused a target outside it", func(t *testing.T) {
+	// A credential that names one project waits on another project's issue as a credential that
+	// names none does (access.CredentialCovers): a PATCH under either member and a create naming
+	// needs are taken.
+	t.Run("a credential that names one project waits on another project's issue", func(t *testing.T) {
 		rig := newBrokerTokenRig(t)
 		caller := newBrokerCaller(t)
 		const token = "a-token-waiting-across-projects"
@@ -169,20 +174,81 @@ func TestNeedsCrossesAProjectAndRefusesAProjectScopedCaller(t *testing.T) {
 			}
 			return decodeBody[model.Issue](t, response).Key
 		}
+		read := func(key string) model.Issue {
+			t.Helper()
+			return decodeBody[model.Issue](t, rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+key, nil))
+		}
 		own := createIssue(brokerTestProject, "Its own project's issue")
 		outside := createIssue("OTH", "An issue of another project")
 		for _, member := range []string{"needs", "blocked_by"} {
-			refused := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{member: []string{outside}}))
-			requireRelationRefused(t, "a scoped caller's "+member+" across projects", refused, http.StatusForbidden, codeProjectScope,
-				brokerTestProject, "OTH", member+" issue "+outside)
+			taken := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{member: []string{outside}}))
+			if taken.Code != http.StatusOK {
+				t.Fatalf("a scoped caller's %s across projects: status=%d body=%s, want 200", member, taken.Code, taken.Body.String())
+			}
+			if got := read(own); !slices.Equal(got.Needs, []string{outside}) || !slices.Equal(got.BlockedBy, []string{outside}) {
+				t.Errorf("after the scoped %s, %s reads needs %v and blocked_by %v, want both [%s]", member, own, got.Needs, got.BlockedBy, outside)
+			}
+			cleared := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{member: []string{}}))
+			if cleared.Code != http.StatusOK {
+				t.Fatalf("a scoped caller's %s cleared: status=%d body=%s, want 200", member, cleared.Code, cleared.Body.String())
+			}
+			if got := read(own); len(got.Needs) != 0 || len(got.BlockedBy) != 0 {
+				t.Errorf("after the scoped %s was cleared, %s reads needs %v and blocked_by %v, want neither", member, own, got.Needs, got.BlockedBy)
+			}
 		}
 		created := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
 			"project": brokerTestProject, "title": "Created waiting outside", "needs": []string{outside}, "force": true,
 		}))
-		requireRelationRefused(t, "a scoped caller's create waiting across projects", created, http.StatusForbidden, codeProjectScope, "needs issue "+outside)
-		read := rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+own, nil)
-		if got := decodeBody[model.Issue](t, read); len(got.Needs) != 0 || len(got.BlockedBy) != 0 {
-			t.Errorf("the refused writes left needs %v and blocked_by %v, want neither", got.Needs, got.BlockedBy)
+		if created.Code != http.StatusCreated {
+			t.Fatalf("a scoped caller's create waiting across projects: status=%d body=%s, want 201", created.Code, created.Body.String())
+		}
+		if got := decodeBody[model.Issue](t, created); !slices.Equal(got.Needs, []string{outside}) {
+			t.Errorf("the scoped create made %s waiting on %v, want [%s]", got.Key, got.Needs, outside)
+		}
+	})
+
+	// The one target a credential that names one project is refused is an issue of a private
+	// project that it does not name, and it is answered as a target that does not exist: the same
+	// 400 under the member the request used as a key no issue holds gets, naming the member, on a
+	// PATCH and on a create, and nothing is written. The token that names the private project
+	// waits on it.
+	t.Run("a credential that names one project is refused a target of a private project it does not name", func(t *testing.T) {
+		rig := newPrivateProjectRig(t, testServerOptions{})
+		private := rig.issue(t, privateTestProject, "A private project's issue", nil)
+		own := rig.issue(t, brokerTestProject, "Its own project's issue", nil)
+		rig.makePrivate(t)
+		codes := map[string]string{"needs": codeNeedsInput, "blocked_by": codeBlockedByInput}
+		for _, member := range []string{"needs", "blocked_by"} {
+			wait := func(token, target string) func() *httptest.ResponseRecorder {
+				return func() *httptest.ResponseRecorder {
+					return rig.send(t, token, http.MethodPatch, "/api/v1/issues/"+own, map[string]any{member: []string{target}})
+				}
+			}
+			rig.refusedAsMissing(t, []string{own, private}, http.StatusBadRequest, codes[member], private, missingIssue,
+				wait(scopedToken, private), wait(scopedToken, missingIssue))
+			requireRelationRefused(t, "a scoped caller's "+member+" of a private project's issue", wait(scopedToken, private)(),
+				http.StatusBadRequest, codes[member], member+" issue "+private)
+			create := func(token, target string) func() *httptest.ResponseRecorder {
+				return func() *httptest.ResponseRecorder {
+					return rig.send(t, token, http.MethodPost, "/api/v1/issues", map[string]any{
+						"project": brokerTestProject, "title": "Waits on another project's issue", member: []string{target}, "force": true,
+					})
+				}
+			}
+			rig.refusedAsMissing(t, []string{private}, http.StatusBadRequest, codes[member], private, missingIssue,
+				create(scopedToken, private), create(scopedToken, missingIssue))
+		}
+		read := func() model.Issue {
+			t.Helper()
+			return decodeBody[model.Issue](t, rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+own, nil))
+		}
+		if got := read(); len(got.Needs) != 0 || len(got.BlockedBy) != 0 {
+			t.Errorf("the refused writes left %s with needs %v and blocked_by %v, want neither", own, got.Needs, got.BlockedBy)
+		}
+		taken := rig.send(t, namingToken, http.MethodPatch, "/api/v1/issues/"+own, map[string]any{"needs": []string{private}})
+		requireTaken(t, "the needs of the token that names the private project", taken, http.StatusOK)
+		if got := read(); !slices.Equal(got.Needs, []string{private}) {
+			t.Errorf("the token that names the private project left %s waiting on %v, want [%s]", own, got.Needs, private)
 		}
 	})
 }

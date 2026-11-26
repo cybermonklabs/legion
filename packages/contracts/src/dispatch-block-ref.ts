@@ -1,4 +1,5 @@
 import type { BlockItemKind } from "./block-schema.generated";
+import type { TextAsk } from "./dispatch-api";
 import { readAskBlocks } from "./dispatch-block-reader";
 import { hasControlCharacter } from "./dispatch-href";
 import { referenceTargetFits, utf8Bytes } from "./dispatch-text-rules";
@@ -850,7 +851,7 @@ const TYPED_OPENER = /^(:{3,})([A-Za-z0-9_-]+)\{.*\}$/s;
  * The web's reader of a live text of the release before, and the CLI's reader of a live text and
  * its check of a version for open ask blocks before an approval request, all read openers here.
  * So none takes a line that a document's writer quoted for a state or an answer that Dispatch
- * recorded. Go's twin is refs.questionBlocks.
+ * recorded. Go's twin is pmdoc.QuestionBlocks.
  */
 export function askOpenerLines(markdown: string): string[] {
   const lines = markdown.split("\n").map((line) => line.replace(/\r$/, ""));
@@ -864,13 +865,47 @@ export function askOpenerLines(markdown: string): string[] {
   );
 }
 
-/** The character references `typedBlockIdAttribute` writes in a quoted id, each with its character. */
-const ID_REFERENCES: Readonly<Record<string, string>> = {
-  "&amp;": "&",
-  "&#x22;": '"',
-  "&#xA;": "\n",
-  "&#xD;": "\r",
+/**
+ * The named character references an ask opener's quoted value reads back, each with its
+ * character: the `&amp;`, `&lt;` and `&gt;` the renderer writes (pmdoc's escapeDirectiveAttribute),
+ * and `&quot;` and `&apos;`.
+ */
+const NAMED_ATTRIBUTE_REFERENCES: Readonly<Record<string, string>> = {
+  amp: "&",
+  apos: "'",
+  gt: ">",
+  lt: "<",
+  quot: '"',
 };
+
+/**
+ * `raw`, a quoted attribute value, with its character references read back, in one pass, so a
+ * character a reference decodes to starts no reference of its own (`&amp;#x22;` is `&#x22;`):
+ * every numeric reference, hexadecimal or decimal (`&#x22;`, `&#xA;`, `&#xD;`, `&#34;`), and the
+ * five named ones (NAMED_ATTRIBUTE_REFERENCES). Any other named reference stays as written. A
+ * numeric reference that names no character - zero, a surrogate, one past U+10FFFF - is U+FFFD,
+ * as it is to Go's `html.UnescapeString`, which pmdoc's directive reader decodes an attribute with
+ * (`pmdoc.ParseTypedDirectiveOpen`). Those are the references the renderer writes (pmdoc's
+ * escapeDirectiveAttribute: `&amp;`, `&#x22;`, `&lt;`, `&gt;`, `&#xA;` and `&#xD;`) and a
+ * browser's parser reads back; Go's reader holds the whole HTML named-reference table besides,
+ * which no renderer writes into an opener. It is the one reading every reader of an ask opener's
+ * attributes reads them back by (`askOpenerBlockId`, `askOpenerAttributes`).
+ */
+function attributeValue(raw: string): string {
+  return raw.replace(
+    /&(?:#([xX][0-9a-fA-F]+|[0-9]+)|(amp|apos|gt|lt|quot));/g,
+    (whole: string, number: string | undefined, name: string | undefined) => {
+      if (number === undefined) return NAMED_ATTRIBUTE_REFERENCES[name ?? ""] ?? whole;
+      const codePoint =
+        number.startsWith("x") || number.startsWith("X")
+          ? Number.parseInt(number.slice(1), 16)
+          : Number.parseInt(number, 10);
+      return codePoint === 0 || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)
+        ? "\uFFFD"
+        : String.fromCodePoint(codePoint);
+    }
+  );
+}
 
 /**
  * The block id that `line`, an ask block's opener as `askOpenerLines` gives it, names: the
@@ -878,9 +913,9 @@ const ID_REFERENCES: Readonly<Record<string, string>> = {
  * a space or the closing brace. A `#id` runs to the first TYPED_BLOCK_ID_SHORTCUT_EXCLUDED
  * character, so a no-break space, a line separator (U+2028) or an ideographic space stays in the
  * id. An `id="…"` names the id that its `&amp;`, `&#x22;`, `&#xA;` and `&#xD;` read back to, where
- * the renderer writes that id so. Undefined where the line writes its id in no spelling that the
- * renderer writes. `askOpeners` reads ids here, and so does the CLI's reader of an opener's
- * attributes.
+ * the renderer writes that id so (attributeValue, whose other references no id the renderer writes
+ * holds). Undefined where the line writes its id in no spelling that the renderer writes.
+ * `askOpeners` reads ids here, and so does `askOpenerAttributes`.
  */
 export function askOpenerBlockId(line: string): string | undefined {
   // Each line opens the directive (`:::ask{`), so its first brace is the directive's.
@@ -899,9 +934,7 @@ export function askOpenerBlockId(line: string): string | undefined {
   } else if (attributes.startsWith('id="')) {
     end = attributes.indexOf('"', 'id="'.length) + 1;
     if (end === 0) return undefined;
-    id = attributes
-      .slice('id="'.length, end - 1)
-      .replace(/&(?:amp|#x22|#xA|#xD);/g, (reference) => ID_REFERENCES[reference] ?? reference);
+    id = attributeValue(attributes.slice('id="'.length, end - 1));
   } else {
     return undefined;
   }
@@ -910,65 +943,66 @@ export function askOpenerBlockId(line: string): string | undefined {
   return typedBlockIdAttribute(id) === attributes.slice(0, end) ? id : undefined;
 }
 
-/** The named character references an opener's quoted value reads back, each with its character. */
-// kept for one release: release-before-text
-const NAMED_ATTRIBUTE_REFERENCES: Readonly<Record<string, string>> = {
-  amp: "&",
-  apos: "'",
-  gt: ">",
-  lt: "<",
-  quot: '"',
-};
-
 /**
- * A quoted attribute value with its character references read back, in one pass, so a character
- * a reference decodes to starts no reference of its own (`&amp;#x22;` is `&#x22;`): every numeric
- * reference, hexadecimal or decimal (`&#x22;`, `&#xA;`, `&#xD;`, `&#34;`), and the five named
- * ones (NAMED_ATTRIBUTE_REFERENCES). Any other named reference stays as written. A numeric
- * reference that names no character - zero, a surrogate, one past U+10FFFF - is U+FFFD, as it is
- * to Go's `html.UnescapeString`, which pmdoc's directive reader decodes an attribute with
- * (`pmdoc.ParseTypedDirectiveOpen`). Those are the references the renderer writes and a
- * browser's parser reads back; Go's reader holds the whole HTML named-reference table besides,
- * which no renderer writes into an opener.
+ * The ask that `line`, an ask block's opener as `askOpenerLines` gives it, carries on it, as a
+ * Dispatch of the release before writes it there: the block id (`askOpenerBlockId`) and each of
+ * the block's server-owned attributes the line holds, its value with its character references
+ * read back (attributeValue), `state` only where it is `open`, `answered` or `resolved`, and
+ * `selected` read as the JSON list of strings it is written as. A name written twice keeps its
+ * last value. An attribute the line does not hold, a `state` that is none of those three, or a
+ * `selected` that holds no such list, is absent. Undefined where the line has no braces or names
+ * no block id. The CLI's reader of a live text and its check of a version for open ask blocks, and
+ * the web's reader of a live text of the release before, all read an opener's attributes here, so
+ * they read one line one way.
  */
 // kept for one release: release-before-text
-function openerAttributeValue(raw: string): string {
-  return raw.replace(
-    /&(?:#([xX][0-9a-fA-F]+|[0-9]+)|(amp|apos|gt|lt|quot));/g,
-    (whole: string, number: string | undefined, name: string | undefined) => {
-      if (number === undefined) return NAMED_ATTRIBUTE_REFERENCES[name ?? ""] ?? whole;
-      const codePoint =
-        number.startsWith("x") || number.startsWith("X")
-          ? Number.parseInt(number.slice(1), 16)
-          : Number.parseInt(number, 10);
-      return codePoint === 0 || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)
-        ? "\uFFFD"
-        : String.fromCodePoint(codePoint);
-    }
-  );
+export function askOpenerAttributes(line: string): TextAsk | undefined {
+  const end = line.lastIndexOf("}");
+  const start = line.indexOf("ask{");
+  if (end <= start) return undefined;
+  const attributes = line.slice(start + "ask{".length, end);
+  const values = new Map<string, string>();
+  for (const [, name = "", raw = ""] of attributes.matchAll(/([\w-]+)="([^"]*)"/g)) {
+    values.set(name, attributeValue(raw));
+  }
+  const id = askOpenerBlockId(line);
+  if (id === undefined) return undefined;
+  // The line is text a document's writer controls, so its `state` may hold any string: it is read
+  // only where it is a state an ask holds.
+  const written = values.get("state");
+  const state: TextAsk["state"] | undefined =
+    written === "open" || written === "answered" || written === "resolved" ? written : undefined;
+  return {
+    block_id: id,
+    ...optional("state", state),
+    ...optional("answered_by", values.get("answered_by")),
+    ...optional("answered_at", values.get("answered_at")),
+    ...optional("selected", selectionOf(values.get("selected"))),
+    ...optional("answer", values.get("answer")),
+    ...optional("copied_from", values.get("copied_from")),
+    ...optional("copied_from_document", values.get("copied_from_document")),
+  };
 }
 
-/**
- * The quoted attributes `line`, an ask block's opener as `askOpenerLines` gives it, carries, each
- * name with its value read back (`openerAttributeValue`): what a Dispatch of the release before
- * writes on an opener from the store, `state`, `answered_by`, `answered_at`, `selected`,
- * `answer`, `copied_from` and `copied_from_document`. A name written twice keeps its last value.
- * Empty where the line has no braces. The block's id is read by `askOpenerBlockId`. The web's
- * reader of a live text of the release before and the CLI's read opener attributes here, so the
- * two never read one opener differently.
- */
+/** `{ [name]: value }`, or nothing where value is undefined. */
 // kept for one release: release-before-text
-export function askOpenerAttributes(line: string): ReadonlyMap<string, string> {
-  const values = new Map<string, string>();
-  const start = line.indexOf("{");
-  const end = line.lastIndexOf("}");
-  if (start === -1 || end <= start) return values;
-  for (const [, name = "", raw = ""] of line
-    .slice(start + 1, end)
-    .matchAll(/([\w-]+)="([^"]*)"/g)) {
-    values.set(name, openerAttributeValue(raw));
+function optional<K extends string, V>(name: K, value: V | undefined): { [key in K]?: V } {
+  return value === undefined ? {} : ({ [name]: value } as { [key in K]?: V });
+}
+
+/** The options a `selected` attribute names, a JSON list of strings, or undefined where it holds
+ *  none or no such list. */
+// kept for one release: release-before-text
+function selectionOf(value: string | undefined): string[] | undefined {
+  if (value === undefined) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) && parsed.every((item) => typeof item === "string")
+      ? parsed
+      : undefined;
+  } catch {
+    return undefined;
   }
-  return values;
 }
 
 /** The lines of `openers`, a version's ask block openers as `askOpenerLines` gives them, that

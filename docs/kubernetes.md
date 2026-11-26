@@ -1553,9 +1553,19 @@ Two commands replace what a provider keeps refusing, and the compaction is the f
 legion claims compact --claim <token> --operator-token-file <file>
 ```
 
-It has the claim's Oh My Pi session write a summary of itself and then sends the claim whatever task it owes again, however much of the provider-error ladder's wait was left: the claim keeps its session, its workspace and everything it knows of its issue, and what goes is the length of the transcript the provider is asked to read.
-The summary is text, because the daemon asks with instructions of its own: Oh My Pi runs its image-based snapcompact method only for a compaction that carries none, and a worker resumed on those images would need a vision model to read its own past (`compactInstructions`, `packages/daemon/internal/api/compact.go`).
-The answer says whether the session was compacted and, when it was not, why — Oh My Pi's own words for a compaction it refused or skipped, `Already compacted` or `Nothing to compact (session too small)`, and the daemon's for a wait that ran out or a transport that failed — and whatever task the claim owed has gone again either way.
+It has the claim's Oh My Pi session write a handoff document of itself and then sends the claim whatever task it owes again, however much of the provider-error ladder's wait was left:
+the claim keeps its session, its workspace and everything it knows of its issue, and what goes is the length of the transcript the provider is asked to read.
+The daemon asks with Oh My Pi's `handoff` request, never its `compact` request:
+Anthropic refuses the summary request `compact` sends for a long Claude session (`Refusal (reasoning_extraction)`, dispatch://INFRA-5798), and accepts the handoff, which sends the live system prompt, tools and turns.
+Oh My Pi commits the handoff document as the session's compaction entry, method `handoff`, on the same session.
+The daemon's instructions (`compactInstructions`, `packages/daemon/internal/api/compact.go`) are the focus the document is written to, and they keep the reviewer's entry in it.
+The answer says whether the session was shortened and, when it was not, why
+— Oh My Pi's own words for a handoff it refused, such as `Cannot hand off while a response is in progress` or `Nothing to hand off (already compacted)`, the daemon's `Oh My Pi made no handoff document. The session did not change.` for a handoff Oh My Pi answered with success and no document, the daemon's `Oh My Pi gave a handoff result that is not an object. The daemon cannot say if the session changed.` for a success whose data is a boolean, a number, a string or an array, and the daemon's for a wait that ran out or a transport that failed
+— and whatever task the claim owed has gone again either way.
+Neither of the daemon's two sentences resets the claim's run of provider errors, since neither says the session was shortened.
+A task whose prompt Oh My Pi had accepted when the compaction was asked for is sent once: the handoff aborts no turn, so that prompt's turn is the task's.
+So is a prompt that reaches Oh My Pi while the handoff runs: Oh My Pi parks it until the handoff ends, and the daemon keeps a send whose prompt it wrote and whose wait ran out meanwhile as the task's prompt rather than sending it again.
+A send that runs out before its prompt is written, such as an adoption of the working copy that times out, sent nothing, so the task stays owed and goes at the next send.
 The command carries no deadline of its own, as no `legion claims` command does, and the daemon bounds that model call over the whole transcript at ten minutes (`runtime.CompactTimeout`).
 While it runs the claim reads `working`, the daemon's one word for a busy agent, so the ladder's re-send and any newer task wait for its end, a second compaction is refused in its own words, and a fresh session is refused `CLAIM_IN_A_TURN`, since a claim whose session is being compacted is read before its process and the compaction in flight owns what becomes of its agent.
 
@@ -6117,10 +6127,13 @@ Under `dispatch_token_broker: true` this holds only for a launch into a live pod
 Every other launch carries no Dispatch token, and its role trades its pod's exchange identity for a token of its own session ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)).
 
 When `dispatch_token_file` holds one of the deployment's shared agent tokens (`DISPATCH_AGENT_TOKEN`), Dispatch matches the bytes against them (`MatchesSharedAgentToken`, `packages/envoy/internal/dispatch/auth/agent_token.go`) and reads no person, no service and no project from them.
-Whatever the bearer, the acting session is the one the request body names (`bearerSessionActor`, `packages/envoy/internal/dispatch/api/server.go`), which for the daemon's own writes is `legion-daemon:<PROJECT>` (`DaemonSession`, `packages/daemon/internal/dispatch/client.go`), so a shared agent token names nobody.
+Whatever the bearer, the acting session is the one the request body names (`bearerSessionActor`, `packages/envoy/internal/dispatch/api/server.go`), which for the daemon's own writes is `legion-daemon:<PROJECT>`, PROJECT being the project of the issue that the write is on (`DaemonSession`, `packages/daemon/internal/dispatch/client.go`), so a shared agent token names nobody.
 Dispatch takes any other bearer as a service token or a personal token (`optionalActor`, `server.go`), and every role's session then carries that token's service or owner as well.
 `dispatch whoami` in a role tells the two apart:
 for a shared agent token it answers `Session <id> runs under the shared token: no owner, …` (`packages/envoy-client/src/dispatch-commands/session.ts`).
+
+Under `dispatch_token_broker: true` the daemon's token proves the session of the daemon's own project, `legion-daemon:<PROJECT>`, and Dispatch refuses a write whose actor names another session (`403 ACTOR_SESSION_MISMATCH`).
+So every write of the daemon's names that session, on an issue of another project too (`daemonDispatchClient`, `packages/daemon/internal/daemon/daemon.go`).
 
 The Kubernetes service-account tokens this runtime projects for a role are the broker's, under `runtime.kubernetes.agent_secrets` (`agentSecretsVolumes`, `manifest.go`): `agent-secrets-token` for its `audience`, and `agent-secrets-exchange` for its `exchange_audience` where that key is set (`exchangeTokenProjection`).
 Each reaches the secrets broker and nothing else.
@@ -9855,7 +9868,7 @@ each issue's pod (every role of it alike) and the image probe's.
   A message wake that the pacing lets out more than 45 minutes after its mark writes that line as a warning, with `lateForMessage`.
 
 - **AskGate's time limit** is the operator's too.
-  Every pod loads pi-envoy, whose AskGate reviews each Dispatch write of a role's main agent before it posts.
+  Every pod loads pi-envoy, whose AskGate reviews each gated write that a role's main agent sends with a `dispatch` command, before the write posts (pi-envoy's README, "AskGate", lists the gated commands).
   Its review must finish inside Oh My Pi's limit for one `tool_call` handler, `extensionHandlers.toolCallTimeoutMs`, and the gate holds its deadline 5,000 ms under that limit:
   the room its handler still needs for an aborted call's usage report and its entry.
   The Dispatch decision record is no part of it, since it runs after the handler has returned.
@@ -9867,10 +9880,12 @@ each issue's pod (every role of it alike) and the image probe's.
   A limit under 15,000 ms leaves no room for a verdict:
   the gate does not bind there, and a gate that did not load refuses every Dispatch write it would have reviewed.
   The gate binds in a pod because the pod has Dispatch; one without it gets no gate.
-  The pod's `dispatch` command enforces the review:
-  while the gate is bound, a gated write that is not one literal `dispatch` call the gate reviewed (a pipe other than one trailing `head` or `tail`, a script, `python3 -c`, an eval cell's process) is refused by the CLI, in block mode, for want of the single-use marker the gate mints.
-  It reviews the writes of a cooperating agent and is no sandbox:
-  it does not cover a direct HTTP request to Dispatch, an older or a different CLI, or a process of the pod's own user that removes the CLI's AskGate record or a marker, acts as another session id or state directory, or otherwise goes around the CLI (pi-envoy's README, "What AskGate is not").
+  The pod's `dispatch` command enforces the review for each gated command:
+  while the gate is bound, a gated write of a `dispatch` command that is not one literal `dispatch` call the gate reviewed (a pipe other than one trailing `head` or `tail`, a script, `python3 -c`, an eval cell's process) is refused by the CLI, in block mode, for want of the single-use marker the gate mints.
+  `dispatch proxy` is not a gated command, so the comment POST it sends for its command passes no review and needs no marker, in block mode too (`packages/envoy-client/README.md`, "`dispatch proxy`").
+  Dispatch's server checks no marker, so a role that holds the bearer of `DISPATCH_TOKEN_FILE` can already send the same comment with `curl` and no review.
+  AskGate reviews the writes of a cooperating agent and is no sandbox:
+  it does not cover the comment POST of `dispatch proxy`, a direct HTTP request to Dispatch, an older or a different CLI, or a process of the pod's own user that removes the CLI's AskGate record or a marker, acts as another session id or state directory, or otherwise goes around the CLI (pi-envoy's README, "What AskGate is not").
 
 - **Turning AskGate off in a pod:** put `{"askgate":{"enabled":false}}` in the `envoy.json` that the pod's pi-envoy reads.
   The image sets `OMP_PROFILE=legion`, so Oh My Pi sets `PI_CODING_AGENT_DIR` to the profile's agent directory in its own process, and pi-envoy reads `/home/legion/.omp/profiles/legion/agent/envoy.json`.
@@ -10532,7 +10547,11 @@ For the settings themselves, read the broker's generated configuration reference
 Of what Legion runs, the operator-launched controller can present such a token, and under `dispatch_token_broker: true` so can the daemon and each role it starts in a pod that carries the exchange identity ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)).
 Without that setting, a pod, the daemon and the daemon-launched controller present the daemon's shared bearer that [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) describes, and a tmux pane always does, since a tmux daemon is refused the setting.
 An operator-launched controller presents the token its own file names, or, under `dispatch_token_broker: true`, a token it trades for at this exchange.
-Dispatch decides a broker token wherever `DISPATCH_AGENT_SECRETS_URL` names the broker (`brokerTokenVerifier`, `packages/envoy/cmd/dispatch/main.go`): it acts as the session and the person or the service the token names, and holds a `named` token's writes to the one project it names, where its entry names one (`packages/envoy/internal/dispatch/api/broker_token.go`, `packages/envoy/cmd/dispatch/README.md`).
+Dispatch decides a broker token wherever `DISPATCH_AGENT_SECRETS_URL` names the broker (`brokerTokenVerifier`, `packages/envoy/cmd/dispatch/main.go`): it acts as the session and the person or the service the token names (`packages/envoy/internal/dispatch/api/broker_token.go`).
+A `named` token whose entry names one project writes every project's objects that a token naming no project may write.
+The one exception is a private project that the token does not name.
+Such a write writes nothing, and the token gets the answer of a target that does not exist at the same check.
+Dispatch still refuses such a token a write to a target that resolves to no project or to nothing (`packages/envoy/internal/dispatch/api/project_scope.go`, `packages/envoy/cmd/dispatch/README.md`).
 A `person` token's list of projects limits no Dispatch write at this release, and neither do the private projects of a job's `public` token.
 Dispatch refuses every write of a token that names a service and no person `403 SIGN_IN_REQUIRED`, unless its project scope is `named` or `public`: a job's token writes under its session, for its service and under no person, and a machine's `person` token, which no person signed in for, writes nothing.
 It serves a read-only token, one that holds `read`, on the reads of its read class (`readClasses` in `packages/envoy/internal/dispatch/api/read_classes.go`), and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`.
@@ -10559,7 +10578,8 @@ A deployment that sets it also gives the daemon these:
 
 - **The secrets broker** lists the daemon's ServiceAccount in `BROKER_EXCHANGE_ACCOUNTS` with an entry that names the daemon's project, a person and the fixed session `legion-daemon:<PROJECT>`:
   `<the daemon's ServiceAccount>=<PROJECT>=<person>=legion-daemon:<PROJECT>`.
-  Dispatch refuses every write of a token that names no person (`SIGN_IN_REQUIRED`), every write to an issue of another project (`403 PROJECT_SCOPE`), and every write the daemon makes as `legion-daemon:<PROJECT>` with a token of another session (`403 ACTOR_SESSION_MISMATCH`).
+  Dispatch refuses a write to a target that resolves to no project or to nothing (`403 PROJECT_SCOPE`), and every write the daemon makes as `legion-daemon:<PROJECT>` with a token of another session (`403 ACTOR_SESSION_MISMATCH`).
+  The project that the entry names does not limit the token's writes to that project.
   An entry that fixes its session needs no pod-session registration.
 
 - **Dispatch** decides broker tokens (`DISPATCH_AGENT_SECRETS_URL`, [The Dispatch identity the broker can issue](#the-dispatch-identity-the-broker-can-issue)), and its `DISPATCH_PROOF_ORIGINS` names the in-cluster address that every daemon and pod calls it at, where that address is not the origin of `DISPATCH_SERVER_URL`.
@@ -10590,7 +10610,10 @@ The boot refuses, in words that name the cause:
   The boot logs any other failed trade and tries it again;
 
 - a `whoami` answer whose session is not `legion-daemon:<PROJECT>`, whose project is not the daemon's, or whose owner is `null`.
-  Each of these refusals names the `403` or the `SIGN_IN_REQUIRED` that Dispatch would answer every write of the daemon's with, and says to fix the daemon's `BROKER_EXCHANGE_ACCOUNTS` entry.
+  The session refusal names the `403 ACTOR_SESSION_MISMATCH` that Dispatch would answer every write of the daemon's with.
+  The project refusal says that the token's project is not the daemon's, which is a fault of the exchange entry.
+  The owner refusal says that an exchange entry that names a project names the person it acts for.
+  Each refusal says to fix the daemon's `BROKER_EXCHANGE_ACCOUNTS` entry.
 
 The boot logs one line that names the credential, and never a token: `legion daemon's Dispatch credential`, with `credential=broker`, the `session` and, where one is named, `transitionFile`.
 Without the setting the line carries `credential=file` and the `file`.

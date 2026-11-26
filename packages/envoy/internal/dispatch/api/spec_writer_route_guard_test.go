@@ -31,18 +31,19 @@ const specWriterCheck = "api.refuseSpecWriter"
 const specWriterGuardPkg = "api"
 
 // specWriterSinks are the writes of the document service that make or change a version of a
-// document, by method name: the nine the spec's Design names, and the accept and the reject of a
-// suggestion, which change a document's text too (plan, "Where the plan departs from the spec's
-// words"). KeepAskBlockInStep is the write of a closed ask's block, which took the place of
-// SetBlockAttributes once a person's answer lives on the ask's node. A call names one through the
-// interface the handlers hold (docs.API) or through the service itself (docs.Service), and either
-// is a call of the sink. DrainOwedQueries is no sink: the version it appends re-renders from the
-// store each query document of an issue whose record a write moved and marked owed, and writes no
-// node and no relation of its own; specWriterRevisions names the routes that reach it, each with
-// the reason the version writes nothing the check guards.
+// document, by method name: the nine the spec's Design names, with KeepAskBlockInStep, the answer,
+// resolve and decline routes' write of an ask's state into the ask's block, among them; and the
+// accept and the reject of a suggestion, which change a document's text too (plan, "Where the plan
+// departs from the spec's words"). A call names one through the interface the handlers hold
+// (docs.API) or through the service itself (docs.Service), and either is a call of the sink.
+// DrainOwedQueries is no sink: the version it appends re-renders from the store each query document
+// of an issue whose record a write moved and marked owed, and writes no node and no relation of its
+// own; specWriterRevisions names the routes that reach it, each with the reason the version writes
+// nothing the check guards.
 var specWriterSinks = []string{
-	"AcceptSuggestion", "ApplyOps", "KeepAskBlockInStep", "NamedVersion", "RebuildDocument", "RejectSuggestion",
-	"ReplaceText", "SeedText", "SetAskBlockText", "SnapshotVersion", "WriteIssueAskStates",
+	"AcceptSuggestion", "ApplyOps", "KeepAskBlockInStep", "NamedVersion", "RebuildDocument",
+	"RejectSuggestion", "ReplaceText", "SeedText", "SetAskBlockText", "SnapshotVersion",
+	"WriteIssueAskStates",
 }
 
 // specWriterSinkTypes are the two types a sink is called through, as the graph names them.

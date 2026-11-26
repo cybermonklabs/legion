@@ -267,7 +267,7 @@ func storeRespelled(t *testing.T, database *store.Store, artifactID string, numb
 
 // A renderer change (pmdoc.RendererVersion) leaves every version stored before it in its
 // renderer's spelling of the document, so the restore compares an approved version that another
-// renderer version stored as this build renders it (docs.restoresVersionText). alice approves
+// renderer version stored as this build renders it (docs.restoresApprovedText). alice approves
 // version 1, stored in such a spelling of its loose list, and the agent changes the paragraph at
 // version 2 and opens an approval request there. The agent's upload of version 1's stored text
 // with one item changed is a change, version 3, and carries nothing; its upload of version 1's
@@ -362,7 +362,7 @@ func TestANamedVersionKeepsCurrentAnApprovalOfATextAnotherRendererVersionStored(
 // approveThenOthersAnswer writes restoreSpec and waveAsk into a new issue's notes.md, a document no
 // query covers (uncoveredDocument), has alice approve version 1 while the block is open, and has
 // bob answer the block, which writes version 2, its block's kept state alone (R3): the block's row
-// now holds bob's decision, and R10's case carries alice's approval to version 2. The agent cannot
+// now holds bob's decision, and R5's case carries alice's approval to version 2. The agent cannot
 // delete the block bob answered (R6): its delete is refused and writes no version. Bob then
 // deletes the block, which writes version 3 and stales the approval. On the issue's spec R14
 // carries the approval across that delete by the record carry, since the Spec query takes no ask
@@ -394,7 +394,7 @@ func approveThenOthersAnswer(t *testing.T, handler http.Handler, database *store
 // version 4, version 1's text byte for byte - the block as an agent writes it, with none of the
 // server-owned attributes - and the settlement after it wrote version 5, version 2's text byte for
 // byte, with the block's kept state from its ask's node, which bob answered (docs.keptAskState),
-// and R10's case carried alice's approval to both.
+// and R5's case carried alice's approval to both.
 func requireApprovedTextRestored(t *testing.T, handler http.Handler, database *store.Store, document approvedDocument) {
 	t.Helper()
 	waitForArtifactVersion(t, handler, document.artifactID, 4)
@@ -412,10 +412,10 @@ func requireApprovedTextRestored(t *testing.T, handler http.Handler, database *s
 }
 
 // The approved text over a block decided since is still the approved text: bob answered the block
-// alice approved open, whose state that writes into the block (R3), which R10's case carries her
+// alice approved open, whose state that writes into the block (R3), which R5's case carries her
 // approval across; bob deleted the block, and the agent inserts its approved markdown again.
 // Version 4 is version 1 byte for byte, and its block agrees with its row and its node - it shows
-// no answer state, and asks the wording the row was decided on - so R10's case carries alice's
+// no answer state, and asks the wording the row was decided on - so R5's case carries alice's
 // approval to it, and answers the approval request the agent opened at version 3; the settlement
 // after it writes the block's kept state back, and her approval is carried to that version too.
 // The document is one no query covers (approveThenOthersAnswer): on the spec R14's record carry
@@ -499,7 +499,7 @@ func TestARestoredTextAroundADecisionBlockTheAgentRewordedLeavesTheApprovalStale
 // (c) Text restored around the approver's own answer: alice answers the open block while the
 // paragraph is still changed, which writes version 3, the block's kept state alone (R3), and the
 // agent then restores the paragraph. Version 4 is version 1's text but for what a version keeps of
-// her answer - the block's state, answerer and time - so R10's case carries her approval to it.
+// her answer - the block's state, answerer and time - so R5's case carries her approval to it.
 // The document is one no query covers (approveThenChange): on the spec R14's record carry carries
 // the approval across the paragraph's edit and her answer, since the Spec query takes neither a
 // paragraph nor an ask block.

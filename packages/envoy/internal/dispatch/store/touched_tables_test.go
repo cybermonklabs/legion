@@ -14,15 +14,15 @@ import (
 // pg_total_relation_size of every table this test prints from the pull request body, so a
 // migration left off the list leaves its tables unmeasured.
 var thisChildsMigrations = []string{
-	"20261116094058_asks_node.up.sql",
-	"20261116094059_asks_node_index.up.sql",
-	"20261116094100_ask_followers_node_index.up.sql",
-	"20261116094101_graph_edges_asks.up.sql",
 	"20261117002006_block_moved_to.up.sql",
 	"20261117002045_artifacts_retired_at.up.sql",
 	"20261117093337_decisions_documents.up.sql",
-	"20261121034242_graph_edges_asks_and_tuple_arm_filter.up.sql",
-	"20261123174700_graph_supertags_decision_reading.up.sql",
+	"20261125163550_asks_node.up.sql",
+	"20261125163551_asks_node_index.up.sql",
+	"20261125163552_ask_followers_node_index.up.sql",
+	"20261125163553_graph_edges_asks.up.sql",
+	"20261125163554_graph_edges_asks_and_tuple_arm_filter.up.sql",
+	"20261125163555_graph_supertags_decision_reading.up.sql",
 	"20261126040000_refs_decisions_forms_owed.up.sql",
 	"20261126040100_refs_forms_decisions_relay_trigger.up.sql",
 	"20261126040200_block_refs_decisions_forms_insert_trigger.up.sql",
@@ -30,6 +30,7 @@ var thisChildsMigrations = []string{
 	"20261126040400_message_block_refs_decisions_forms_insert_trigger.up.sql",
 	"20261126040500_ask_block_refs_decisions_forms_insert_trigger.up.sql",
 	"20261126040600_refs_decisions_forms_seed.up.sql",
+	"20261126040700_graph_supertags_version_7.up.sql",
 }
 
 // TestTheTablesThisChildsMigrationsTouch prints, once each, the tables this child's migrations

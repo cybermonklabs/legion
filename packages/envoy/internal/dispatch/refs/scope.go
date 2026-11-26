@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -440,14 +441,14 @@ func ScopeSources(ctx context.Context, q Queryer, doc string) ([]Target, error) 
 }
 
 // QuestionMap is the question map of the document doc: each question block id its latest version
-// declares (a `:::ask{#id …}` block outside fenced and indented code, questionBlocks) to the
+// declares (a `:::ask{#id …}` block outside fenced and indented code, pmdoc.QuestionBlocks) to the
 // reference a `dispatch://` address of its ask makes, as text.Extract reads that address, so a
 // `#id` edge is stored as that address's edge is. The ask is the row settlement made for the block
 // on doc, or, for a copied block, the ask its block node's copied_from tuple names, which
 // settlement states (docs' claimCopies), or, for a block whose node holds none - a copy no
 // settlement of this build has claimed yet, in a version the release before wrote - the ask its
 // opening line names as copied_from. A block with neither (not settled yet) is absent. It reads
-// the latest version's text (sourceText) line by line for its blocks (questionBlocks), never
+// the latest version's text (sourceText) line by line for its blocks (pmdoc.QuestionBlocks), never
 // parsing the document into a tree, and takes no lock.
 //
 // The map is the document's as the reading transaction leaves it: the version and the block asks
@@ -500,13 +501,13 @@ func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (
 		}
 		markdown = stored
 	}
-	blocks := questionBlocks(markdown)
+	blocks := pmdoc.QuestionBlocks(markdown)
 	if len(blocks) == 0 {
 		return nil, nil
 	}
 	ids := make([]string, len(blocks))
 	for index, block := range blocks {
-		ids[index] = block.id
+		ids[index] = block.ID
 	}
 	queuedBlocks, queuedAsks, queuedIssues := []string{}, []string{}, []*string{}
 	if pending != nil {
@@ -552,12 +553,12 @@ func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (
 	// there the tuple is read first.
 	var unowned, unread []string
 	for _, block := range blocks {
-		if _, own := questions[block.id]; own {
+		if _, own := questions[block.ID]; own {
 			continue
 		}
-		unowned = append(unowned, block.id)
-		if !queued || block.copiedFrom == "" {
-			unread = append(unread, block.id)
+		unowned = append(unowned, block.ID)
+		if !queued || block.CopiedFrom == "" {
+			unread = append(unread, block.ID)
 		}
 	}
 	if len(unowned) == 0 {
@@ -570,11 +571,11 @@ func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (
 		}
 	}
 	for _, block := range blocks {
-		if _, own := questions[block.id]; own {
+		if _, own := questions[block.ID]; own {
 			continue
 		}
-		source := block.copiedFrom
-		if copied, held := stated[block.id]; held {
+		source := block.CopiedFrom
+		if copied, held := stated[block.ID]; held {
 			source = copied.Ask
 		}
 		if source == "" {
@@ -583,7 +584,7 @@ func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (
 		if _, listed := copiedBy[source]; !listed {
 			sources = append(sources, source)
 		}
-		copiedBy[source] = append(copiedBy[source], block.id)
+		copiedBy[source] = append(copiedBy[source], block.ID)
 	}
 	if len(sources) == 0 {
 		return questions, nil
@@ -735,13 +736,6 @@ func scanQuestions(rows pgx.Rows, err error) (map[string]text.Ref, error) {
 		found[key] = ref
 	}
 	return found, rows.Err()
-}
-
-// questionBlock is one question block a document's text declares: its id and, for a copy, the
-// uuid of the ask settlement wrote into it as copied_from, which the copy's block node's
-// copied_from tuple holds too and the question map reads first (copiedFromTuples).
-type questionBlock struct {
-	id, copiedFrom string
 }
 
 // canonicalUUID is id in the one spelling the graph and Postgres read it by, and false for a

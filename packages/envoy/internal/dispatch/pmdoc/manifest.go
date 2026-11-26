@@ -83,6 +83,12 @@ type compiledManifest struct {
 	// attributes' names, sorted.
 	linkKinds         []string
 	pointerAttributes map[string][]string
+	// serverAttributes maps each typed block declaring a server attribute to those attributes'
+	// names, in declaration order (ServerAttributes), and markdownServerAttributes maps it to the
+	// ones among them its markdown carries (BlockAttributeSchema.InMarkdown,
+	// ServerAttributesInMarkdown).
+	serverAttributes         map[string][]string
+	markdownServerAttributes map[string][]string
 	// admitted maps each typed block a type's parents name to the types it admits after its own
 	// content (BlockTypeSchema.Parents), and placed holds each type that names parents: such a
 	// type is in no node group (isBlockNodeType), so it stands only where a parent admits it.
@@ -314,17 +320,19 @@ func compileManifest(raw []byte) (*compiledManifest, error) {
 		return nil, fmt.Errorf("invalid: %w", err)
 	}
 	compiled := &compiledManifest{
-		schema:            value,
-		types:             make(map[string]BlockTypeSchema, len(value.Types)),
-		typedBlockNames:   make([]string, 0, len(value.Types)),
-		nodes:             make(map[string]bool, len(value.Nodes)),
-		marks:             make(map[string]bool, len(value.Marks)),
-		versions:          make(map[Element]BlockElementVersions),
-		uncreatable:       make(map[Element]bool),
-		pointerAttributes: map[string][]string{},
-		admitted:          map[string]map[string]bool{},
-		placed:            map[string]bool{},
-		json:              raw,
+		schema:                   value,
+		types:                    make(map[string]BlockTypeSchema, len(value.Types)),
+		typedBlockNames:          make([]string, 0, len(value.Types)),
+		nodes:                    make(map[string]bool, len(value.Nodes)),
+		marks:                    make(map[string]bool, len(value.Marks)),
+		versions:                 make(map[Element]BlockElementVersions),
+		uncreatable:              make(map[Element]bool),
+		pointerAttributes:        map[string][]string{},
+		serverAttributes:         map[string][]string{},
+		markdownServerAttributes: map[string][]string{},
+		admitted:                 map[string]map[string]bool{},
+		placed:                   map[string]bool{},
+		json:                     raw,
 	}
 	linkKinds := map[string]struct{}{}
 	declare := func(element Element, versions BlockElementVersions) error {
@@ -377,12 +385,18 @@ func compileManifest(raw []byte) (*compiledManifest, error) {
 			compiled.admitted[parent][typ.Name] = true
 			compiled.placed[typ.Name] = true
 		}
-		var pointers []string
+		var pointers, server, markdownServer []string
 		for _, attribute := range typ.Attributes {
 			name, attr := attribute.Name, attribute.BlockAttributeSchema
 			if attr.Kind == BlockAttributeBlockList {
 				linkKinds[name] = struct{}{}
 				pointers = append(pointers, name)
+			}
+			if attr.Server {
+				server = append(server, name)
+				if attr.InMarkdown() {
+					markdownServer = append(markdownServer, name)
+				}
 			}
 			if err := declare(Element{Kind: AttributeElement, Block: typ.Name, Name: name}, elementVersions(attr.Since, attr.CreatableSince)); err != nil {
 				return nil, err
@@ -416,6 +430,12 @@ func compileManifest(raw []byte) (*compiledManifest, error) {
 		if len(pointers) > 0 {
 			slices.Sort(pointers)
 			compiled.pointerAttributes[typ.Name] = pointers
+		}
+		if len(server) > 0 {
+			compiled.serverAttributes[typ.Name] = server
+		}
+		if len(markdownServer) > 0 {
+			compiled.markdownServerAttributes[typ.Name] = markdownServer
 		}
 	}
 	compiled.linkKinds = slices.Sorted(maps.Keys(linkKinds))

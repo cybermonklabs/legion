@@ -489,7 +489,7 @@ func readEachArm(t *testing.T, database *store.Store, stage string, moved []move
 }
 
 // referenceStoredInTheStore reads whether the refs row behind row, a document's mention, is one
-// the store answers (migration 20261119100000): its document's artifacts row names its node, and
+// the store answers (migration 20261126050005): its document's artifacts row names its node, and
 // its far end is inside the store's bound. Any other such row is the arm over refs'.
 func referenceStoredInTheStore(t *testing.T, database *store.Store, row graphEdgeRow) bool {
 	t.Helper()
@@ -505,7 +505,7 @@ func referenceStoredInTheStore(t *testing.T, database *store.Store, row graphEdg
 }
 
 // storeClass is whether row is one the tuple arms answer as the class `store` (migration
-// 20261117020856): a relation the store holds with no projection row behind it, of a kind
+// 20261126050002): a relation the store holds with no projection row behind it, of a kind
 // changed_by_run, has_kind, triggered_by, constrained_by or prevented_by out of any node, or
 // part_of or authored_by out of an interaction, a lens, a finding of a lens (the lens_block the
 // arm after the tuple arm writes it as), a risk or a constraint. It is the migration's own rule,
@@ -656,7 +656,7 @@ func requireTheTupleArmRendersTheList(t *testing.T, rows []graphEdgeRow, unwritt
 			kind = refs.TupleInDocument
 		case row.fromKind == graphstore.KindIssue && kind == "blocked_by" && row.toKind == graphstore.KindIssue:
 			// An issue's wait is its needs tuple, which the view names blocked_by through this
-			// release (migration 20261117140000).
+			// release (migration 20261126050003).
 			kind = graphstore.TupleNeeds
 		}
 		answered[kind]++
@@ -1350,7 +1350,7 @@ const (
 )
 
 // writeTheStoreClass states, through the store's own writer, one tuple of each kind the view's
-// tuple arm answers as its class `store` (migration 20261117020856) and a part_of out of a lens:
+// tuple arm answers as its class `store` (migration 20261126050002) and a part_of out of a lens:
 // a lens placed under CORE-1, of the kind pre-mortem, triggered by a second lens, which is placed
 // under CORE-1 before it, since a lens is triggered only by a lens invoked before it (graphstore's
 // pointerRules), written by alice and changed by a run; a risk that a check block covers; and the

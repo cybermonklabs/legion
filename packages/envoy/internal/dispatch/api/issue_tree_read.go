@@ -2680,7 +2680,7 @@ func (b *issueTreeBuilder) treeAskAnswer(ask *model.IssueTreeAsk, target refs.Ta
 	held := b.facts[target]
 	var answer asks.NodeAnswer
 	read := func(kind, value string) {
-		if _, err := answer.Read(kind, value); err != nil {
+		if err := answer.Read(kind, value); err != nil {
 			slog.Warn("dispatch: an ask's stored answer does not parse, and the tree read answers it null",
 				"issue", b.key, "ask", target.ID, "err", err)
 		}
@@ -2698,7 +2698,13 @@ func (b *issueTreeBuilder) treeAskAnswer(ask *model.IssueTreeAsk, target refs.Ta
 	if answer.Resolution != nil && answer.Resolution.Kind == model.AskResolutionDeclined {
 		return
 	}
-	ask.Answer, ask.Selected, ask.AnsweredBy, ask.AnsweredAt = answer.Answer, answer.Selected, answer.AnsweredBy, answer.AnsweredAt
+	// NodeAnswer names who answered as a string, "" for nobody, where the tree's member is null for
+	// nobody.
+	var answeredBy *string
+	if answer.AnsweredBy != "" {
+		answeredBy = &answer.AnsweredBy
+	}
+	ask.Answer, ask.Selected, ask.AnsweredBy, ask.AnsweredAt = answer.Answer, answer.Selected, answeredBy, answer.AnsweredAt
 }
 
 // treeUncertainty is the decision node target's uncertainty, low, medium or high, and the reason

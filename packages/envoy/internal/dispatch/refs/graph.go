@@ -367,7 +367,7 @@ func blockLinkArms(toKind string) []string {
 	}
 }
 
-// keyedTupleArm is graph_edges' tuple arm (migration 20261121034242) for the edges that end at
+// keyedTupleArm is graph_edges' tuple arm (migration 20261125163554) for the edges that end at
 // the block k.node_id, of storage kind blockKind: the links of the block_refs rows that name their
 // node, read by the row's target through block_refs_to_source as the arm beside it reads the rows
 // that name none. Such a row is the projection of the tuple of the node it names (node_kind and
@@ -392,7 +392,7 @@ func keyedTupleArm(blockKind string) string {
 					where live.kind = b.node_kind and live.id = b.node_address and live.state <> '` + graphstore.StateGone + `')`
 }
 
-// keyedMentionArm is graph_edges' tuple arm (migration 20261119100000_issue_tree_artifact_refs)
+// keyedMentionArm is graph_edges' tuple arm (migration 20261126050005_issue_tree_artifact_refs)
 // for a document's mention of the block k.node_id, of storage kind blockKind, where the document's
 // row names its node: the mentions tuple out of the document's node, read by its target through
 // graph_tuples_as_of_in, while it is the newest tuple of its relation and asserts (currentTuple),
@@ -418,7 +418,7 @@ func keyedMentionArm(blockKind string) string {
 
 // storeClass is true of the graph_tuples row alias while it is a relation graph_edges' tuple arm
 // answers from the tuples alone, with no projection row behind it (its store class, migrations
-// 20261116184707 and 20261117020856, as store.GraphEdgesView states it): storeArmPointers -
+// 20261126050001 and 20261126050002, as store.GraphEdgesView states it): storeArmPointers -
 // changed_by_run and each pointer graphstore.PointerKinds lists - out of any node but a finding of
 // a lens, storeArmPlacements and authored_by out of an interaction, a lens, a risk or a
 // constraint, and an issue's duplicate_of and filed_from.
@@ -462,7 +462,7 @@ func keyedFindingArm(blockKind string) string {
 // storeArmPointers are the relations keyedStoreArm reads out of a node of any kind: each pointer
 // graphstore.PointerKinds lists, read once, and changed_by_run. changed_by_run is listed because
 // the view's store class answers it from the tuples alone, out of any node, as it answers each
-// pointer (migration 20261121104002), and TupleKinds (backlink_counts.go) reads the store's own
+// pointer (migration 20261126050007), and TupleKinds (backlink_counts.go) reads the store's own
 // kinds from this list and storeArmPlacements. It is no pointer: a write made for a run appends a
 // changed_by_run out of each node it created or changed to the run's interaction (graphstore's
 // changedByRunMarks and queueChangedByRun, in the append QueueWrite and QueueCaused queue), and no

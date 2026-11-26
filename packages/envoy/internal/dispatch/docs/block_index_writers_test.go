@@ -660,11 +660,15 @@ var indexPasses = map[string]string{
 	// table projects, never a side of a projection to mend the other.
 	"docs/ask_blocks.go#claimCopies": "the copies the settlement's reconciliation read, the blocks its version indexed, and the copied_from each block node of the document holds",
 	// Beside those claims, in the same name and under the same event, a settlement states on each
-	// ask node the readability of its block that the reconciliation read (G1): the reason a block
-	// fails the strict read for, as the node's `invalid` value, and that value's retraction once
-	// the block reads again. It reads the value each node holds only to state what moved, never a
-	// side of a projection to mend the other.
-	"docs/ask_blocks.go#stateInvalidReasons": "the readability the settlement's reconciliation read of the document's ask blocks, and the invalid value each of their asks' nodes holds",
+	// ask node the readability of its block that the reconciliation read, through the writer of
+	// that value (asks.PlanInvalidReasons): the reason a block fails the strict read for, as the
+	// node's `invalid` value, and that value's retraction once the block reads again. It reads the
+	// value each node holds only to state what moved, never a side of a projection to mend the
+	// other.
+	"asks/invalid.go#PlanInvalidReasons": "the readability the settlement's reconciliation read of the document's ask blocks, and the invalid value each of their asks' nodes holds",
+	// Beside it, the retraction of each removed_by the node of an ask whose block reads again
+	// holds, which it reads only to state what moved.
+	"docs/ask_blocks.go#planRemovalRetractions": "the asks whose blocks the settlement's reconciliation read again, and the removed_by each of their nodes holds",
 	// The catch-up of a follow a process of the release before recorded: the follower rows that
 	// build wrote, stated on the ask's node where the node does not state them yet.
 	"asks/followers.go#CatchUpFollower": "the follower rows another build recorded and what the ask's node already states of them",

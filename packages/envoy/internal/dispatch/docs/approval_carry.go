@@ -291,7 +291,7 @@ func carryNewestApprovalNaming(ctx context.Context, tx pgx.Tx, broker *events.Br
 				return err
 			}
 			input := carryInput{
-				approved: approved, approvedText: approvedText, approvedOtherRenderer: otherRenderer, version: tree, agrees: agrees,
+				approved: approved, approvedText: approvedText, approvedOtherRenderer: otherRenderer, version: tree,
 				approverAnswered: approverAnswers(shown, newest), answered: answered,
 				// kept for one release: decisions-step
 				decided: decidedAskBlocks(shown), steps: steps,
@@ -435,79 +435,54 @@ type versionAsks struct {
 
 // asksAgreeWithTheirNodes is every ask block of a version, tree, by block id (askNodes), and
 // whether each agrees with its node: a block the row of artifactID indexes agrees with that row and
-// with its ask's node as the transaction reads it (askAgreesWithItsNode, askNodeAnswers), and a
-// block no row of this document indexes is a copy of an ask on another document of its owner
-// (readCopiedAskSources, settlement's own classification) that agrees with its source and its
-// source's node (copyAgreesWithItsSource). A version holding no ask
-// block agrees; one holding a block id twice, which settlement reads no block under, or a block
-// neither indexed nor a copy - one forged on the socket, or one whose update the room has not
-// credited yet - does not, and leaves its decisions unknown to every carry rule. The rows and
-// their nodes are read only for a version holding an ask block, and the sources and theirs only
-// for one holding a block no row indexes; the carry opens no ask from what it reads, so it takes
-// no copy lock. What it read of the blocks is answered beside the verdict (versionAsks).
+// with its ask's node as the transaction reads it (askAgreesWithItsNode, askNodeAnswers), or with
+// the row alone where the row names no node, its answer's only record (onItsNode), and a block no
+// row of this document indexes is a copy of an ask on another document of its owner
+// (readBlockAsks, settlement's own classification) that agrees with its source and its source's
+// node, or its source's row where that row names none (copyAgreesWithItsSource). A version
+// holding no ask block agrees; one holding a block id twice, which settlement reads no block under
+// (askNodes), or a block neither indexed nor a copy - one forged on the socket, or one whose
+// update the room has not credited yet - does not, and leaves its decisions unknown to every carry
+// rule. The rows, the sources and their nodes are read only for a version holding an ask block,
+// and the owner only for one holding a block no row indexes; the carry opens no ask from what it
+// reads, so it takes no copy lock. What it read of the blocks is answered beside the verdict
+// (versionAsks).
 func asksAgreeWithTheirNodes(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node) (versionAsks, bool, error) {
 	nodes, readable := askNodes(tree)
 	if !readable || len(nodes) == 0 {
 		return versionAsks{}, readable, nil
 	}
-	rows, err := loadAskBlocks(ctx, tx, documentAsksOf(artifactID))
-	if err != nil {
-		return versionAsks{}, false, err
-	}
-	indexed := make([]string, 0, len(nodes))
-	for id := range nodes {
-		if ask, held := rows[id]; held {
-			indexed = append(indexed, ask.ID)
+	blocks := make([]askBlock, 0, len(nodes))
+	for _, node := range nodes {
+		if block, err := parseAskBlock(node); err == nil {
+			blocks = append(blocks, block)
 		}
 	}
-	// The nodes' answers are what each block is held to beside its row, and what the answer case
-	// reads (approverAnswers).
-	answers, err := askNodeAnswers(ctx, tx, indexed)
+	read, err := readBlockAsks(ctx, tx, documentAsksOf(artifactID), nil, blocks, readCopiedAskSources)
 	if err != nil {
 		return versionAsks{}, false, err
 	}
-	var copies []askBlock
-	var unindexed []string
+	// The nodes' answers are what each block is held to beside its row or its source, and what
+	// the answer case reads (approverAnswers).
+	// kept for one release: stored-ask-state
+	answers, err := askNodeAnswers(ctx, tx, read.askIDs())
+	if err != nil {
+		return versionAsks{}, false, err
+	}
 	for id, node := range nodes {
-		if ask, held := rows[id]; held {
+		if ask, indexed := read.rows[id]; indexed {
 			if !askAgreesWithItsNode(node, ask, onItsNode(ask, answers)) {
 				return versionAsks{}, false, nil
 			}
 			continue
 		}
-		block, err := parseAskBlock(node)
-		if err != nil {
-			return versionAsks{}, false, nil
-		}
-		copies, unindexed = append(copies, block), append(unindexed, id)
-	}
-	if len(copies) == 0 {
-		return versionAsks{nodes: nodes, rows: rows, answers: answers}, true, nil
-	}
-	owner, err := documentOwner(ctx, tx, artifactID)
-	if err != nil {
-		return versionAsks{}, false, err
-	}
-	sources, err := readCopiedAskSources(ctx, tx, artifactID, owner, copies, unindexed)
-	if err != nil {
-		return versionAsks{}, false, err
-	}
-	copied := make([]string, 0, len(sources))
-	for _, source := range sources {
-		copied = append(copied, source.ask.ID)
-	}
-	// kept for one release: stored-ask-state
-	sourceAnswers, err := askNodeAnswers(ctx, tx, copied)
-	if err != nil {
-		return versionAsks{}, false, err
-	}
-	for _, block := range copies {
-		source, held := sources[block.id]
-		if !held || !copyAgreesWithItsSource(block.node, source, onItsNode(source.ask, sourceAnswers)) {
+		// A block that does not parse is no copy (readBlockAsks reads none for it).
+		source, copied := read.sources[id]
+		if !copied || !copyAgreesWithItsSource(node, source, onItsNode(source.ask, answers)) {
 			return versionAsks{}, false, nil
 		}
 	}
-	return versionAsks{nodes: nodes, rows: rows, answers: answers, sources: sources}, true, nil
+	return versionAsks{nodes: nodes, rows: read.rows, answers: answers, sources: read.sources}, true, nil
 }
 
 // approverAnswers is each ask block of a version, read as asksAgreeWithTheirNodes read it (shown),
@@ -535,9 +510,9 @@ func approverAnswers(shown versionAsks, newest model.ArtifactReview) map[string]
 		if !indexed {
 			continue
 		}
-		held := shown.answers[ask.ID].NodeAnswer
-		held.Named = true
-		held.ApplyTo(&ask)
+		// An ask whose row names no node is absent from the answers, and reads as its row holds it
+		// (asks.NodeAnswer.ApplyTo).
+		shown.answers[ask.ID].ApplyTo(&ask)
 		answer := ask.Answer
 		if ask.State != asks.StateAnswered || answer == nil || model.CanonicalLogin(answer.User) != approver ||
 			!answer.At.After(newest.CreatedAt) || !answer.Act.Holds(model.ScopeApprove) {
@@ -655,7 +630,7 @@ func showsItsAsksState(node *pmdoc.Node, ask, onNode model.Ask, copied string) b
 		// kept for one release: roll-window-attributes
 		!rollWindowAskAttributesWithheld(ask, copied)(attributesOf(node)) ||
 		// kept for one release: roll-window-attributes
-		!rollWindowAskAttributes(ask, copied)(attributesOf(node))
+		!rollWindowAskAttributes(true, ask, copied)(attributesOf(node))
 }
 
 // attributesOf is a node of node's type holding a copy of its attributes alone, for a write to an

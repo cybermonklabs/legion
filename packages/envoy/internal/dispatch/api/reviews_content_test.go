@@ -138,7 +138,7 @@ func TestEveryApprovalReadNamesTheApprovedBytes(t *testing.T) {
 	t.Fatal("no artifact.changes_requested event")
 }
 
-// A carry pins its destination bytes, not the source approval's bytes. The carry here is R10's
+// A carry pins its destination bytes, not the source approval's bytes. The carry here is R5's
 // attribute case while two builds serve: the answer is written into the block for the release
 // before's pages (docs' rollWindowAskAttributes), so the version it settles into differs from the
 // approved one in the block's server-owned attributes alone, and its bytes are not the approved

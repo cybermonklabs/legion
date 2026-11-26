@@ -18,7 +18,7 @@ import (
 // The asks and their followers. An ask's node holds the documents it is
 // anchored to, owned by and part of, who asked it, its answer and the sessions that follow it, and
 // asks and ask_followers are the projection of those tuples from the moment a row names its node
-// (20261116094058's node_kind and node_address). A row a build before this release wrote names
+// (20261125163550's node_kind and node_address). A row a build before this release wrote names
 // none, and graph_edges' old arms answer it until these two passes state the row on the node and
 // mark it, on the store's backfill contract: each walks only the rows its marker does not mark,
 // states every fact of a row in the transaction that marks it, and reads no marked row, so a run
@@ -385,11 +385,7 @@ func writeAskFollowerBatch(ctx context.Context, database *store.Store, batch []a
 			made[session] = struct{}{}
 			nodes = append(nodes, graphstore.SessionNode(session, backfillActor, since, graphstore.NoEvent))
 		}
-		tuples = append(tuples, graphstore.Tuple{
-			FromKind: graphstore.KindAsk, FromID: askID, Kind: graphstore.TupleFollowedBy,
-			ToKind: graphstore.KindSession, ToID: session,
-			At: since, Who: backfillActor, SourceEvent: graphstore.NoEvent, Asserted: true,
-		})
+		tuples = append(tuples, asks.FollowedBy(askID, session, true, backfillActor, since, graphstore.NoEvent))
 		askIDs = append(askIDs, askID)
 		sessions = append(sessions, session)
 	}
@@ -418,22 +414,40 @@ func writeAskFollowerBatch(ctx context.Context, database *store.Store, batch []a
 	return int64(len(askIDs)), int64(len(nodes)), int64(len(tuples)) + 2*int64(len(nodes)), nil
 }
 
+// AsksBackfill is what one run of BackfillAsks did: what each of its passes did (Kinds), and
+// every row its object pass left because the store holds the row's node in another project
+// (Moved, nil where there is none), as ObjectPass answers them.
+//
+// kept for one release: decisions-step
+type AsksBackfill struct {
+	Kinds []KindBackfill
+	Moved error
+}
+
 // BackfillAsks is the boot step's first phase (docs' decision step): the object nodes of every
 // issue, document, ask and message written before their writers wrote one (backfillObjectNodes),
 // so every ask a build before this release wrote has its node before a mark names it, then the
 // asks and the ask_followers rows that name no node, each in committed batches of backfillBatch.
-// It answers what each pass did; an error stops it where it stands, and every batch committed
-// before it stays.
+// It answers what each pass did. A row the object pass leaves because the store holds its node in
+// another project (graphstore.ErrProjectMoved) is one no run cures, so it holds back neither the
+// rest of that pass nor the asks passes after it, as backfillAt runs them past it: the run answers
+// every such row in Moved, after all of them, and no error. Any other error stops it where it
+// stands, and every batch committed before it stays.
 //
 // kept for one release: decisions-step
-func BackfillAsks(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
-	done, err := backfillObjectNodes(ctx, database)
-	if err != nil {
+func BackfillAsks(ctx context.Context, database *store.Store) (AsksBackfill, error) {
+	objects, err := backfillObjectNodes(ctx, database)
+	done := AsksBackfill{Kinds: objects}
+	_, onlyMoved := OnlyProjectMoved(err)
+	switch {
+	case onlyMoved:
+		done.Moved = err
+	case err != nil:
 		return done, err
 	}
 	for _, write := range decisionBackfills {
 		report, err := write(ctx, database)
-		done = append(done, report...)
+		done.Kinds = append(done.Kinds, report...)
 		if err != nil {
 			return done, err
 		}
@@ -442,25 +456,25 @@ func BackfillAsks(ctx context.Context, database *store.Store) ([]KindBackfill, e
 }
 
 // AsksOwed reports whether BackfillAsks has anything to do: a row of an object kind that names no
-// node, or an asks or ask_followers row the passes would mark. Each read stops at its first owed
-// row, so a store that owes one costs little, but a store that owes nothing is read to the end: an
-// anti-join of issues, artifacts, asks and messages to graph_nodes, then asks and ask_followers,
-// which no index keys on a null marker. The decisions step reads it only where another build can
-// have written such a row (docs' decision step, probe).
+// node and that its pass can write (writableRowLeft), or an asks or ask_followers row the passes
+// would mark. A row the object pass leaves - one whose node the store holds in another project,
+// or one naming a party the store refuses (writableRows) - is owed nothing, since no run cures it:
+// owed, it would have the decisions step run the backfill again at every boot and on every tick,
+// and the project census names it until a person reads it. Each read stops at its first batch
+// that holds an owed row, so a store that owes one costs little, but a store that owes nothing is
+// read to the end: an anti-join of issues, artifacts, asks and messages to graph_nodes, then asks
+// and ask_followers, which no index keys on a null marker. The decisions step reads it only where
+// another build can have written such a row (docs' decision step, probe).
 //
 // kept for one release: decisions-step
-func AsksOwed(ctx context.Context, q graphstore.Queryer) (bool, error) {
+func AsksOwed(ctx context.Context, database *store.Store) (bool, error) {
 	for _, kind := range objectKinds {
-		var owed bool
-		if err := q.QueryRow(ctx, `select exists (`+kind.read+`)`, kind.start, 1).Scan(&owed); err != nil {
-			return false, fmt.Errorf("read whether a %s row names no node: %w", kind.kind, err)
-		}
-		if owed {
-			return true, nil
+		if owed, err := writableRowLeft(ctx, database, kind, kind.start); err != nil || owed {
+			return owed, err
 		}
 	}
 	var owed bool
-	if err := q.QueryRow(ctx, `
+	if err := database.Pool.QueryRow(ctx, `
 		select exists (select 1 `+askRowsOwed+`) or exists (select 1 `+askFollowerRowsOwed+`)
 	`).Scan(&owed); err != nil {
 		return false, fmt.Errorf("read whether an ask or a follower names no node: %w", err)

@@ -107,7 +107,7 @@ func isLifecycleWrite(ctx context.Context) bool {
 // same version), the version changes only those attributes: the close's comes from a settlement on
 // the closed issue, which moves no approval request and carries no approval
 // (versionWrite.closedIssue), so a standing approval reads stale until the reopen; the reopen's
-// settlement carries it by R10's case. Every other block is
+// settlement carries it by R5's case. Every other block is
 // left as it is - the blocks of other asks, their copies, a block under one of asks' block ids
 // that asks something else - and so is a block settlement could not read. Classification reads
 // the database as it stands now: the caller writes the asks' rows after this for a close, and
@@ -580,7 +580,7 @@ type issueAskStateWrites struct {
 // close's withdrawal (api's planWithdrawal) - and is written as wanted gives it. It changes
 // nothing in tree.
 //
-// The one-build writes are R10's and stay; each branch on twoBuilds is the roll window's and goes
+// The one-build writes are R5's and stay; each branch on twoBuilds is the roll window's and goes
 // with it.
 func readIssueAskStateWrites(
 	ctx context.Context,
@@ -601,42 +601,24 @@ func readIssueAskStateWrites(
 	if len(blocks) == 0 {
 		return found, nil
 	}
-	rows, err := loadAskBlocks(ctx, tx, holder)
-	if err != nil {
-		return nil, err
-	}
 	// An issue's documents take no copy lock (lockProjectCopies): the caller holds the issue's
 	// owner lock, as every transaction reading or marking the copies among its documents does.
-	sources, err := readCopiedAskSources(ctx, tx, artifactID, owner, blocks, unindexedAskBlockIDs(blocks, rows))
+	read, err := readBlockAsks(ctx, tx, holder, &owner, blocks, readCopiedAskSources)
 	if err != nil {
 		return nil, err
 	}
+	rows, sources := read.rows, read.sources
 	// kept for one release: stored-ask-state
-	var nodes map[string]askNodeAnswer
-	// kept for one release: stored-ask-state
-	if !twoBuilds {
-		ids := make([]string, 0, len(blocks))
-		for _, block := range blocks {
-			if row, indexed := rows[block.id]; indexed {
-				ids = append(ids, row.ID)
-			} else if source, copied := sources[block.id]; copied {
-				ids = append(ids, source.ask.ID)
-			}
-		}
-		if nodes, err = askNodeAnswers(ctx, tx, ids); err != nil {
-			return nil, err
-		}
+	kept, err := shownAsks(ctx, tx, twoBuilds, read)
+	if err != nil {
+		return nil, err
 	}
 	// kept for one release: stored-ask-state
 	shown := func(ask, row model.Ask) model.Ask {
-		// kept for one release: roll-window-attributes
-		if twoBuilds {
-			return ask
-		}
 		if ask.State != row.State {
 			return ask
 		}
-		return keptFromItsNode(ask, nodes)
+		return kept(ask)
 	}
 	for _, block := range blocks {
 		if row, indexed := rows[block.id]; indexed {
@@ -712,7 +694,7 @@ func closedIssueAskState(row model.Ask) (model.Ask, bool) {
 //
 // kept for one release: roll-window-attributes
 func answeredCopyWrite(ask model.Ask, copied string) func(*pmdoc.Node) bool {
-	whole := askReadableWith(rollWindowAskAttributes(ask, copied))
+	whole := askReadableWith(rollWindowAskAttributes(true, ask, copied))
 	withheld := askReadableWriteWithheld(ask, copied)
 	return func(node *pmdoc.Node) bool {
 		if !whole(attributesOf(node)) {
@@ -746,9 +728,9 @@ func resolveUnindexedAskBlock(node *pmdoc.Node) bool {
 // on a closed issue's document, as the fleet stands (twoBuilds): resolveUnindexedAskBlock while
 // another build serves, whose pages read the block's state from it, and once the fleet is one
 // build none of the seven attributes a version can store (withoutStoredAskAttributes), since a
-// block that has no ask row and is no copy keeps none of them (R10); the text routes answer it
+// block that has no ask row and is no copy keeps none of them (R5); the text routes answer it
 // resolved in their asks (textAsks). It reports whether it changed the block. The one-build write
-// is R10's and stays; the roll window's branch goes with it.
+// is R5's and stays; the roll window's branch goes with it.
 func unindexedAskResolution(twoBuilds bool) func(*pmdoc.Node) bool {
 	// kept for one release: roll-window-attributes
 	if twoBuilds {
