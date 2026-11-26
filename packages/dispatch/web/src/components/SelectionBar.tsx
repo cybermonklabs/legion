@@ -25,6 +25,7 @@ import {
   focusNoScroll,
   focusOwnStop,
   inSightNow,
+  inSightWhole,
   isRowMark,
   landNearest,
   type MovedUp,
@@ -125,7 +126,7 @@ export interface MarkedList {
  * into the reader's sight takes the focus with no scroll, and the list's anchor shows it whole
  * once those rows have gone (`ViewportAnchor`).
  */
-export function useLastMarkedPlace(list: MarkedList): () => boolean {
+export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   // The ids of the list's rows, in order, as the last commit that drew the bar with the row
   // marked last in the list read them.
   const before = useRef<readonly string[]>([]);
@@ -142,12 +143,38 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
   // once more after the commit that finished it. Null while neither waits.
   const watch = useRef<(() => void) | null>(null);
   const frame = useRef<number | null>(null);
+  // How many readings one landing is given before it is let be: a landing nothing settles costs
+  // these frames and no more.
+  const readings = useRef(0);
+  // How many readings in a row have found the landing settled: the first owes one more, because an
+  // engine drops the focus as it paints the commit that reading was taken in.
+  const quiet = useRef(0);
   /** Forgets the landing owed a reading, with whatever waits on it. */
   const forget = useCallback(() => {
     landed.current = null;
+    readings.current = 0;
+    quiet.current = 0;
     watch.current?.();
     watch.current = null;
+    if (frame.current !== null) window.cancelAnimationFrame(frame.current);
+    frame.current = null;
   }, []);
+  /** Takes the next reading in the frame this one paints, up to `READINGS` of them. */
+  const again = useCallback((): void => {
+    readings.current += 1;
+    if (readings.current > READINGS) {
+      forget();
+      return;
+    }
+    if (frame.current !== null) window.cancelAnimationFrame(frame.current);
+    frame.current = window.requestAnimationFrame(() => {
+      frame.current = null;
+      read.current?.();
+    });
+  }, [forget]);
+  // What the frame calls, held in a ref because the reading and the frame that takes the next one
+  // name each other.
+  const read = useRef<(() => void) | null>(null);
   useEffect(
     () => () => {
       if (frame.current !== null) window.cancelAnimationFrame(frame.current);
@@ -187,45 +214,62 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
   // next action (`READER_ACTS`): a press, a key or a wheel of theirs means they have moved on, and
   // nothing of this follows them.
   //
-  // It is read in the frame after the landing and after every commit until it is taken, because
-  // the two hosts take their rows and their bar away differently: the Inbox's write lets its rows
-  // go in a commit after the bar's, and the project List takes both away in the one commit the
-  // bar's going hands the focus in, which no commit of its own follows.
+  // It is read after every commit and in the frame each reading paints, until the landing is both
+  // in the reader's sight and holding the focus, because neither host says when that is: the
+  // Inbox's write lets its rows go in a commit after the bar's and an engine can drop the focus
+  // in a frame after that, and the project List takes its rows and its bar away in the one commit
+  // the bar's going hands the focus in, which no commit of its own follows. Each reading is
+  // `READINGS` at most, so a landing nothing settles costs a known number of frames.
   const finish = useCallback((): void => {
     const landing = landed.current;
     if (landing === null) return;
     const list = latest.current;
-    if (list.shown) return;
     const { leaving } = list;
     const order = list.order();
-    if (leaving !== undefined && order.some((row) => leaving(row))) return;
-    forget();
+    // The press's rows and its bar are still going: read it again when they have gone, and spend
+    // none of the readings on the wait, which is as long as the write is.
+    if (list.shown || (leaving !== undefined && order.some((row) => leaving(row)))) {
+      readings.current = 0;
+      again();
+      return;
+    }
     const mark = list.control(landing.id);
-    if (mark === null || !mark.isConnected) return;
+    if (mark === null || !mark.isConnected) {
+      forget();
+      return;
+    }
     const lost = focusOnDocument();
-    if (!lost && document.activeElement !== mark) return;
+    // A control the reader moved to is theirs, and nothing here takes the focus from it.
+    if (!lost && document.activeElement !== mark) {
+      forget();
+      return;
+    }
+    // A reading that finds the landing holding the focus and whole in the reader's sight has
+    // nothing to do. It is the last, unless it is the first after the press's rows and bar went:
+    // an engine draws the row again as it paints that commit, and drops the focus then, so one
+    // reading of the frame after it is owed whatever this one finds.
+    if (!lost && inSightWhole(mark, new Map())) {
+      quiet.current += 1;
+      if (quiet.current >= 2) forget();
+      else again();
+      return;
+    }
+    quiet.current = 0;
     const head = list.head?.() ?? null;
-    // The row the mark is in is drawn again in this commit and in the frame it paints, and an
-    // engine can drop the focus either time: the frame after this one reads it once more, and puts
-    // it back on the mark where it fell to the page's body with nothing else taking it.
-    const held = (keep: HTMLElement): void => {
-      if (frame.current !== null) window.cancelAnimationFrame(frame.current);
-      frame.current = window.requestAnimationFrame(() => {
-        frame.current = null;
-        if (keep.isConnected && focusOnDocument()) focusNoScroll(keep);
-      });
-    };
     if (inSightNow(mark, new Map())) {
       if (lost) focusNoScroll(mark);
-      held(mark);
+      again();
       return;
     }
     // The row the reader marked last takes the focus wherever it stands, so its own mark is shown
     // whole rather than passed over; and so is a mark the view moved away from under them.
     if (landing.id === landing.last || viewScrollOf(mark) !== landing.at) {
-      if (lost && !focusNoScroll(mark)) return;
+      if (lost && !focusNoScroll(mark)) {
+        forget();
+        return;
+      }
       landNearest(mark, head);
-      held(mark);
+      again();
       return;
     }
     const place =
@@ -235,13 +279,33 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
     const now = place === null ? null : list.control(place);
     if (place !== null && now !== null) {
       landMark(now, undefined, head);
-      held(now);
+      again();
       return;
     }
     focusListStop(list.list());
-  }, [forget]);
+    forget();
+  }, [again, forget]);
+  read.current = finish;
   useLayoutEffect(finish);
-  return () => {
+  /** Records a landing, by the row of the mark it is on, and sees it read again as the hand-off's
+   *  own landings are. */
+  const owe = (id: string, mark: HTMLElement, last: string | null): void => {
+    forget();
+    landed.current = { at: viewScrollOf(mark), id, last };
+    readings.current = 0;
+    quiet.current = 0;
+    const acted = () => forget();
+    for (const kind of READER_ACTS) {
+      document.addEventListener(kind, acted, { capture: true, passive: true });
+    }
+    watch.current = () => {
+      for (const kind of READER_ACTS) {
+        document.removeEventListener(kind, acted, { capture: true });
+      }
+    };
+    again();
+  };
+  const land = (): boolean => {
     const last = list.lastMarked();
     const order = list.order();
     const kept = order.filter((id) => list.leaving?.(id) !== true);
@@ -259,28 +323,37 @@ export function useLastMarkedPlace(list: MarkedList): () => boolean {
       // The landing is finished once this press's rows and the bar have gone (above), and the
       // reader's own next action takes that reading back: a press, a key or a wheel of theirs
       // means they have moved on, and where they are is theirs.
-      forget();
-      landed.current = { at: viewScrollOf(mark), id, last };
-      const acted = () => forget();
-      for (const kind of READER_ACTS) {
-        document.addEventListener(kind, acted, { capture: true, passive: true });
-      }
-      watch.current = () => {
-        for (const kind of READER_ACTS) {
-          document.removeEventListener(kind, acted, { capture: true });
-        }
-      };
-      if (frame.current !== null) window.cancelAnimationFrame(frame.current);
-      frame.current = window.requestAnimationFrame(() => {
-        frame.current = null;
-        finish();
-      });
+      owe(id, mark, last);
       return true;
     }
     if (listed) return false;
     focusListStop(list.list());
     return true;
   };
+  return {
+    land,
+    own: (id: string) => {
+      const mark = list.control(id);
+      if (mark !== null) owe(id, mark, list.lastMarked());
+    },
+  };
+}
+
+/** How many readings one landing of the bar's hand-off is given (`useLastMarkedPlace`): the rows
+ *  and the bar of a press go within a few frames of each other, and an engine drops the focus in
+ *  the frame it draws the row again, so a landing nothing settles is let be after these. */
+const READINGS = 12;
+
+/** The bar's hand-off, as the hook answers it (`useLastMarkedPlace`). */
+export interface MarkedPlace {
+  /** Hands the focus to the place of the row marked last, and answers whether it moved anything:
+   *  false where the list holds that row and its window has not drawn it, which the page answers
+   *  by drawing the row and landing on it itself (`own`). */
+  readonly land: () => boolean;
+  /** The page's own landing on the mark of row `id`, which is read again as `land`'s landings are:
+   *  the rows and the bar of the press that made it go in commits after it, and what they leave
+   *  can put that mark out of the reader's sight. */
+  readonly own: (id: string) => void;
 }
 
 /** What the reader does that ends a landing's owed reading (`useLastMarkedPlace`): a press, a key

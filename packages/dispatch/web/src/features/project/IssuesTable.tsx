@@ -355,11 +355,14 @@ export function IssuesTable({
   // A table action clears the selection only once the list read after it has settled
   // (`useIssueTableActions`), so the view read here is the one the action left.
   const returnFocus = () => {
-    if (landAtPlace()) return null;
+    if (landAtPlace.land()) return null;
     // `landAtPlace` moved nothing, so the issue marked last is listed and its row is not drawn.
     const key = lastMarked.current;
     if (key === null) return focusListStop(tableStop());
     model.focusRow(key, ROW_CHECKBOX, "nearest");
+    // The bar's going takes the room its foot had back from the box, which can leave this landing
+    // below the box's own edge: the hand-off reads it again once the bar has gone.
+    landAtPlace.own(key);
     return null;
   };
   // A control of the table's head - a column filter, or the list it opened in a portal of its

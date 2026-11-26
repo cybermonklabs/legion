@@ -832,7 +832,7 @@ function PlacedList({
       <SelectionBar
         count={count}
         label="Selected rows"
-        returnFocus={() => (landAtPlace() ? null : focusListStop(list.current))}
+        returnFocus={() => (landAtPlace.land() ? null : focusListStop(list.current))}
       >
         <button type="button">Dismiss</button>
       </SelectionBar>

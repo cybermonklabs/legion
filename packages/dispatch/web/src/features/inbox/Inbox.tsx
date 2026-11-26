@@ -2375,7 +2375,7 @@ function InboxBody({
       // The bar gone with the focus, or the control in it that held the focus: the hand-off above
       // (`landAtPlace`) puts the focus itself. The list column's own stop is the last place the
       // focus can go.
-      returnFocus={() => (landAtPlace() ? null : focusListStop(listScroller.current))}
+      returnFocus={() => (landAtPlace.land() ? null : focusListStop(listScroller.current))}
       size={BAR_SIZE}
       state={barState}
     >
