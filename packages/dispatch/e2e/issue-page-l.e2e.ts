@@ -436,8 +436,11 @@ test("a reply is drawn under the entry it answers, and every node takes a reply 
     await expect(rowAct(await focusRow(page, seeded.openAsk), "answer")).toBeVisible();
 
     /** Fails unless node `id` is drawn under `parent`, `null` for the outline's top level, once
-     *  every branch is open. */
+     *  every branch is open. A node the reader just sent lands from the tree read that the send
+     *  refreshes, and its landing puts the focus on its row, so the row is waited for first: the
+     *  branches are opened, and the focus left for the page, only after that landing. */
     const drawnUnder = async (id: string, parent: string | null, what: string) => {
+      await expect(nodeRow(page, id).first(), what).toBeAttached();
       await unfoldEveryBranch(page);
       await expect.poll(() => parentOfRow(page, id), { message: what }).toBe(parent);
     };
@@ -1395,9 +1398,10 @@ test("the box's picker keeps the page one screen wide when a row's detail is lon
       content: "# Notes\n\nA zebrafish paragraph the picker's search finds.\n",
       name: `${name}.md`,
     });
-    // The row's detail: the document's address in its short form, as today's composers give it
-    // whole in the row's tooltip.
-    const detail = `${seeded.key} ${name}-md`;
+    // The row's detail: the address of what the search found in its short form - the
+    // document's, with the word "block" for the paragraph that holds the searched word - as
+    // today's composers give it whole in the row's tooltip.
+    const detail = `${seeded.key} ${name}-md block`;
     await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);

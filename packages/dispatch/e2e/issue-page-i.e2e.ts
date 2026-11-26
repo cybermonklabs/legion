@@ -4649,10 +4649,17 @@ test("a read that drops the focused row with no act of the reader's leaves the f
       await page.evaluate(() => document.activeElement === document.body),
       "a read that dropped the focused row, with no act of the reader's, took the focus off the page's body"
     ).toBe(true);
+    // The dropped row's height comes off the page, so where the page stood at its foot the
+    // browser holds the scroll to the shorter page's foot: that is the page's length and no
+    // scroll of the page's own.
+    const after = await page.evaluate(() => ({
+      most: document.documentElement.scrollHeight - window.innerHeight,
+      y: window.scrollY,
+    }));
     expect(
-      await page.evaluate(() => window.scrollY),
+      after.y,
       "a read that dropped the focused row, with no act of the reader's, scrolled the page"
-    ).toBe(scrolled);
+    ).toBe(Math.min(scrolled, after.most));
   });
 });
 

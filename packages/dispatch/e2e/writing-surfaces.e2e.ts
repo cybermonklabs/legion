@@ -4,7 +4,7 @@ import {
   dispatchWritingBox,
 } from "@legion/contracts";
 
-import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
+import { CONTROL_LABELS, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
 import { REF_PICKER_WORDS } from "../web/src/features/refs/ref-picker";
 import { agentRow } from "./agents";
 import {
@@ -27,6 +27,7 @@ import {
 import { askCard, inboxPane, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
 import { expectIssuePageDrawn, focusRow } from "./issue-page-g";
+import { expectActivePreset, pickPreset } from "./issue-page-i";
 import { withIssuePage } from "./issue-page-option";
 import { commentField, pickerRows, pickReference, refPicker } from "./ref-picker";
 import { expect, type Locator, type Page, test } from "./test";
@@ -535,6 +536,10 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       await expectRow(page, field, "issue-page-composer", "ask");
       // `r` on the reader's own message aims the line at a reply in that thread, which goes to
       // the thread's target. A target takes no kind, so Question left pressed makes no ask of it.
+      // Conversation draws no message (its kinds are root R1's), and Graph draws every node of
+      // the tree read, with the box at its foot as well, so the message's row is reached there.
+      await pickPreset(page, PRESET_NAMES.graph);
+      await expectActivePreset(page, PRESET_NAMES.graph);
       await focusRow(page, world.message);
       await page.keyboard.press("r");
       await expect(field).toBeFocused();
