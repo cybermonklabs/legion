@@ -21,4 +21,4 @@
 -- (20261125131000's header says why). A failed concurrent build leaves an INVALID index of this
 -- name on events, which the runner drops with DROP INDEX CONCURRENTLY and builds again on the next
 -- attempt.
-create index concurrently if not exists events_parked_moves on events (issue_key, seq) where type = 'issue.updated' and payload->'changed' @> '"status"'::jsonb and payload->>'status' in ('icebox', 'backlog');
+create index concurrently if not exists events_backlog_moves on events (issue_key, seq) where type = 'issue.updated' and payload->'changed' @> '"status"'::jsonb and payload->>'status' in ('icebox', 'backlog');

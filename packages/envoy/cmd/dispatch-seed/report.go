@@ -180,13 +180,13 @@ func (r *seedRun) reportDistributions(ctx context.Context) error {
 			           and not exists (select 1 from members_spread m
 			                           where m.key = s.key and m.priority = s.priority and m.depth > 0))`},
 		{"status moves", `select 'moves=' || count(*) ||
-			       ' into a parked status, the rows of events_parked_moves=' ||
+			       ' into backlog or icebox, the rows of events_backlog_moves=' ||
 			       count(*) filter (where e.payload->>'status' in (` + priorityBacklogStatuses + `)) ||
-			       ' of them on an issue parked now=' ||
+			       ' of them on an issue in backlog or icebox now=' ||
 			       count(*) filter (where e.payload->>'status' in (` + priorityBacklogStatuses + `)
 			                          and i.status in (` + priorityBacklogStatuses + `)) ||
 			       ' over ' || count(distinct i.key) filter (where i.status in (` + priorityBacklogStatuses + `)) ||
-			       ' parked issues'
+			       ' issues in backlog or icebox'
 			from events e join issues i on i.key = e.issue_key
 			where ` + statusMoveEvent},
 	}

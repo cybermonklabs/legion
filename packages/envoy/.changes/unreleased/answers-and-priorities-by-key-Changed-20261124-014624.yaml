@@ -9,7 +9,7 @@ body: |-
   every member. That time can be earlier than before only when two writes of one issue overlap,
   and then by less than the time from the start of the earlier write to the commit of the other.
   Its list of work in backlog or icebox, and the issue listing's `?moved=true`, read each such
-  issue's move there through a new partial index, `events_parked_moves` (migration
+  issue's move there through a new partial index, `events_backlog_moves` (migration
   `20261125131100`), and stop at the newest move. Both indexes are built concurrently before the
   server serves, so their build is time the server is down at the deploy that carries them, and
   they need the `btree_gin` extension of the earlier migration `20261125125703`: apply the release

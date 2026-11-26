@@ -1,9 +1,9 @@
-// priority_parked_move_test.go holds the read of each issue's move into `backlog` or `icebox`
+// priority_backlog_move_test.go holds the read of each issue's move into `backlog` or `icebox`
 // (backlogMoveLateral) to what it reads and to what it answers, in the two statements that splice
 // it: the full second fault of the priorities read (backlogQuery) and the listing with
 // `?moved=true` (listIssuesQuery with $14 true, issueMovedJoin). The lateral reads the issue's
-// events newest first through the partial index events_parked_moves
-// (store/migrations/20261125131100_events_parked_moves.up.sql) and stops at the first event that
+// events newest first through the partial index events_backlog_moves
+// (store/migrations/20261125131100_events_backlog_moves.up.sql) and stops at the first event that
 // matches. Both statements answer the rows that they answer with that index dropped, which is the
 // schema of main.
 package api
@@ -24,77 +24,78 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// parkedMoveIndex is the partial index on events (issue_key, seq) whose predicate is the lateral's
+// backlogMoveIndex is the partial index on events (issue_key, seq) whose predicate is the lateral's
 // own conditions on the event: its type issue.updated, its changed list naming status, and its
-// status one of the two parked statuses.
-const parkedMoveIndex = "events_parked_moves"
+// status backlog or icebox.
+const backlogMoveIndex = "events_backlog_moves"
 
-// parkedMoveProject is the one project of the corpus (seedParkedMoveCorpus), and the project the
+// backlogMoveProject is the one project of the corpus (seedBacklogMoveCorpus), and the project the
 // listing names.
-const parkedMoveProject = "PARK"
+const backlogMoveProject = "BACK"
 
-// The two priorities of the corpus: one stated on a root whose children are parked, so the parked
-// work under it advances it by inheritance, and one stated on each parked issue of its own. The
-// second fault lists an issue that states a priority no issue above it carries
-// (priorityBacklogQuery), so of the root's parked children it lists only the one that states the
-// second priority as well; the listing reads the move of every one of them.
+// The two priorities of the corpus: one stated on a root whose children stand in backlog or
+// icebox, so that work advances it by inheritance, and one stated on each issue in backlog or
+// icebox of its own. The second fault lists an issue that states a priority no issue above it
+// carries (priorityBacklogQuery), so of the root's children in backlog or icebox it lists only the
+// one that states the second priority as well; the listing reads the move of every one of them.
 const (
-	parkedMoveFleetPriority = "park-the-fleet"
-	parkedMoveOwnPriority   = "park-on-its-own"
+	backlogMoveFleetPriority = "backlog-the-fleet"
+	backlogMoveOwnPriority   = "backlog-on-its-own"
 )
 
-// The shape of the corpus. Each issue that was moved through the parked statuses holds
-// parkedMoveEventsFrom to parkedMoveEventsFrom+parkedMoveEventsSpan-1 events, several hundred,
-// so that without the partial index the planner reads all of a parked issue's events and sorts
-// them rather than walk them back from the newest. Beside the parked issues stand
-// parkedMoveBystanders issues in flight that advance no priority, each with 20 to 60 events.
+// The shape of the corpus. Each issue that was moved through backlog and icebox holds
+// backlogMoveEventsFrom to backlogMoveEventsFrom+backlogMoveEventsSpan-1 events, several hundred,
+// so that without the partial index the planner reads all of the events of an issue in backlog or
+// icebox and sorts them rather than walk them back from the newest. Beside those issues stand
+// backlogMoveBystanders issues in flight that advance no priority, each with 20 to 60 events.
 const (
-	parkedMoveEventsFrom    = 300
-	parkedMoveEventsSpan    = 200
-	parkedMoveFleetParked   = 8
-	parkedMoveOwnParked     = 8
-	parkedMoveUnplacedCount = 3
-	parkedMoveBystanders    = 120
+	backlogMoveEventsFrom     = 300
+	backlogMoveEventsSpan     = 200
+	backlogMoveFleetInBacklog = 8
+	backlogMoveOwnInBacklog   = 8
+	backlogMoveUnplacedCount  = 3
+	backlogMoveBystanders     = 120
 )
 
-// parkedMoveMover is the actor of the last move of every issue of the corpus, and seededWriter,
+// backlogMoveMover is the actor of the last move of every issue of the corpus, and seededWriter,
 // alice, is the actor of every other event; the two logins are theirs. A read that answered a move
-// older than a parked issue's last would answer the wrong actor as well as the wrong time.
+// older than the last move of an issue in backlog or icebox would answer the wrong actor as well as
+// the wrong time.
 const (
-	parkedMoveMover      = `{"kind":"user","id":"bob"}`
-	parkedMoveMoverLogin = "bob"
-	parkedMoveOtherLogin = "alice"
+	backlogMoveMover      = `{"kind":"user","id":"bob"}`
+	backlogMoveMoverLogin = "bob"
+	backlogMoveOtherLogin = "alice"
 )
 
-// parkedMoveStatuses are the statuses the moves before an issue's last move go to: work waiting
-// and in flight, and the two parked statuses where the history moves through them.
-var parkedMoveStatuses = []string{"triage", "todo", "in_progress", "needs_review", "backlog", "icebox"}
+// backlogMoveStatuses are the statuses the moves before an issue's last move go to: work waiting
+// and in flight, and backlog and icebox where the history moves through them.
+var backlogMoveStatuses = []string{"triage", "todo", "in_progress", "needs_review", "backlog", "icebox"}
 
-// parkedMove is the move into `backlog` or `icebox` that an issue's events record last: the event
+// backlogMove is the move into `backlog` or `icebox` that an issue's events record last: the event
 // the lateral answers, by its time and the login of its actor.
-type parkedMove struct {
+type backlogMove struct {
 	at    time.Time
 	login string
 }
 
-// parkedMoveHistory is how the events of one issue of the corpus run.
-type parkedMoveHistory struct {
+// backlogMoveHistory is how the events of one issue of the corpus run.
+type backlogMoveHistory struct {
 	// events is how many events the issue holds.
 	events int
-	// parkedBefore puts four moves into and out of the parked statuses before the last move,
-	// and lets the moves at random go to them too.
-	parkedBefore bool
+	// backlogBefore puts four moves into and out of backlog and icebox before the last move, and
+	// lets the moves at random go to them too.
+	backlogBefore bool
 	// recorded is whether an event records the last move, into the status the issue stands in.
-	// Where it is false, the status was written with no event, as the status of an issue parked
-	// before Dispatch recorded its moves was.
+	// Where it is false, the status was written with no event, as the status of an issue put in
+	// backlog before Dispatch recorded its moves was.
 	recorded bool
 }
 
 // write writes the events of the issue key, which stands in status, in rows of
 // seededEventColumns, one minute apart from start. The first is the issue's creation, in triage.
 // The last move, into status, comes 10 to 49 events before the end (fewer in a short history), so
-// the issue's newest move is not its newest event. Before it, where parkedBefore holds, four moves
-// go into and out of the parked statuses (into backlog, out to todo, into icebox, out to
+// the issue's newest move is not its newest event. Before it, where backlogBefore holds, four moves
+// go into and out of backlog and icebox (into backlog, out to todo, into icebox, out to
 // in_progress), and about one event in twelve moves the issue to another status at random. Of the
 // other events, about one in seven is an issue.updated that changes the title: its payload names
 // the status the issue stands in, as every issue.updated payload names it, and its changed list
@@ -103,17 +104,17 @@ type parkedMoveHistory struct {
 //
 // It answers the rows and the newest move into backlog or icebox that they record, which is the
 // event the lateral answers, or nil where no event records one.
-func (h parkedMoveHistory) write(t testing.TB, random *rand.Rand, key, status string, start time.Time) ([][]any, *parkedMove) {
+func (h backlogMoveHistory) write(t testing.TB, random *rand.Rand, key, status string, start time.Time) ([][]any, *backlogMove) {
 	t.Helper()
 	actorColumn := slices.Index(seededEventColumns, "actor")
 	rows := make([][]any, 0, h.events)
-	var newest *parkedMove
+	var newest *backlogMove
 	current := "triage"
 	add := func(seq int, kind, payload string, mover bool) {
 		at := start.Add(time.Duration(seq) * time.Minute)
 		row := seededEvent(key, seq, kind, payload, at)
 		if mover {
-			row[actorColumn] = parkedMoveMover
+			row[actorColumn] = backlogMoveMover
 		}
 		rows = append(rows, row)
 	}
@@ -121,24 +122,24 @@ func (h parkedMoveHistory) write(t testing.TB, random *rand.Rand, key, status st
 		current = to
 		add(seq, "issue.updated", seededIssuePayload(t, to, changed...), mover)
 		if slices.Contains(priorityBacklogStatuses, to) {
-			login := parkedMoveOtherLogin
+			login := backlogMoveOtherLogin
 			if mover {
-				login = parkedMoveMoverLogin
+				login = backlogMoveMoverLogin
 			}
-			newest = &parkedMove{at: start.Add(time.Duration(seq) * time.Minute), login: login}
+			newest = &backlogMove{at: start.Add(time.Duration(seq) * time.Minute), login: login}
 		}
 	}
 
 	last := h.events - min(10+random.IntN(40), h.events/3)
 	forced := map[int]string{}
-	if h.parkedBefore {
+	if h.backlogBefore {
 		for index, to := range []string{"backlog", "todo", "icebox", "in_progress"} {
 			forced[2+(index+1)*(last-2)/5] = to
 		}
 	}
-	pool := parkedMoveStatuses[:4]
-	if h.parkedBefore {
-		pool = parkedMoveStatuses
+	pool := backlogMoveStatuses[:4]
+	if h.backlogBefore {
+		pool = backlogMoveStatuses
 	}
 	add(1, "issue.created", seededIssuePayload(t, current), false)
 	for seq := 2; seq <= h.events; seq++ {
@@ -183,65 +184,65 @@ func (h parkedMoveHistory) write(t testing.TB, random *rand.Rand, key, status st
 	return rows, newest
 }
 
-// parkedMoveCorpus is what seedParkedMoveCorpus wrote: the server that reads it, its store, the
+// backlogMoveCorpus is what seedBacklogMoveCorpus wrote: the server that reads it, its store, the
 // live priorities it holds, the status each issue stands in, the newest move into backlog or
 // icebox each issue's events record (no entry for an issue whose events record none), the rows
 // of the second fault, and the issue among them whose events record no move.
-type parkedMoveCorpus struct {
+type backlogMoveCorpus struct {
 	served     *server
 	database   *store.Store
 	priorities []string
 	statuses   map[string]string
-	moves      map[string]parkedMove
-	parked     []string
+	moves      map[string]backlogMove
+	backlog    []string
 	unrecorded string
 }
 
-// seedParkedMoveCorpus writes the corpus the parked move is planned and compared over, in bulk
+// seedBacklogMoveCorpus writes the corpus the backlog move is planned and compared over, in bulk
 // (priority_fixture_test.go), in one project:
 //
-//   - a root in todo that states parkedMoveFleetPriority, with parkedMoveFleetParked children
-//     parked by turns in icebox and backlog, the first of which also states parkedMoveOwnPriority,
-//     and two children moved through the parked statuses that stand in todo and in_progress now;
-//   - parkedMoveOwnParked issues parked by turns in icebox and backlog, each stating
-//     parkedMoveOwnPriority, and one more stating it that was moved through the parked statuses
+//   - a root in todo that states backlogMoveFleetPriority, with backlogMoveFleetInBacklog children
+//     in icebox and backlog by turns, the first of which also states backlogMoveOwnPriority, and
+//     two children moved through backlog and icebox that stand in todo and in_progress now;
+//   - backlogMoveOwnInBacklog issues in icebox and backlog by turns, each stating
+//     backlogMoveOwnPriority, and one more stating it that was moved through backlog and icebox
 //     and stands in needs_review now;
-//   - one issue that states parkedMoveOwnPriority and stands in backlog, whose status was written
+//   - one issue that states backlogMoveOwnPriority and stands in backlog, whose status was written
 //     with no event, so no event of it records a move into backlog or icebox, although its title
 //     edits after that name backlog as its status;
-//   - parkedMoveUnplacedCount issues parked by turns in icebox and backlog that advance no
-//     priority, which the listing reads the move of and the second fault does not list;
-//   - parkedMoveBystanders issues in triage, todo, in_progress and needs_review by turns that
-//     advance no priority and were never parked.
+//   - backlogMoveUnplacedCount issues in icebox and backlog by turns that advance no priority,
+//     which the listing reads the move of and the second fault does not list;
+//   - backlogMoveBystanders issues in triage, todo, in_progress and needs_review by turns that
+//     advance no priority and were never in backlog or icebox.
 //
 // Each issue's events start a day after the previous issue's, so no two moves have the same time
 // and the second fault's order, newest move first, is one order. The random source has a fixed
-// seed, so every run writes the same rows. The second fault lists 10 rows: the root's first
-// parked child, which states parkedMoveOwnPriority, which the root does not carry, the
-// parkedMoveOwnParked issues and the issue whose status was written with no event. The root's
-// other parked children only inherit parkedMoveFleetPriority, so the fault leaves them out, and
-// the listing reads their moves. That is fewer than the 50 the fault cuts its list at, so it lists
-// every row it counts.
-func seedParkedMoveCorpus(t *testing.T) parkedMoveCorpus {
+// seed, so every run writes the same rows. The second fault lists 10 rows: the root's first child
+// in backlog or icebox, which states backlogMoveOwnPriority, which the root does not carry, the
+// backlogMoveOwnInBacklog issues and the issue whose status was written with no event. The root's
+// other children in backlog or icebox only inherit backlogMoveFleetPriority, so the fault leaves
+// them out, and the listing reads their moves. That is fewer than the 50 the fault cuts its list
+// at, so it lists every row it counts.
+func seedBacklogMoveCorpus(t *testing.T) backlogMoveCorpus {
 	t.Helper()
 	_, database, deps := newTestServer(t, testServerOptions{})
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	random := rand.New(rand.NewPCG(5, 6))
-	corpus := parkedMoveCorpus{
+	corpus := backlogMoveCorpus{
 		served: directServer(deps), database: database,
-		priorities: []string{parkedMoveFleetPriority, parkedMoveOwnPriority},
-		statuses:   map[string]string{}, moves: map[string]parkedMove{},
+		priorities: []string{backlogMoveFleetPriority, backlogMoveOwnPriority},
+		statuses:   map[string]string{}, moves: map[string]backlogMove{},
 	}
 	var issues, eventRows, nodes, tuples [][]any
-	parkedEvents := func() parkedMoveHistory {
-		return parkedMoveHistory{events: parkedMoveEventsFrom + random.IntN(parkedMoveEventsSpan), parkedBefore: true, recorded: true}
+	backlogEvents := func() backlogMoveHistory {
+		return backlogMoveHistory{events: backlogMoveEventsFrom + random.IntN(backlogMoveEventsSpan), backlogBefore: true, recorded: true}
 	}
-	addIssue := func(status string, parent *string, history parkedMoveHistory, priorities ...string) string {
+	addIssue := func(status string, parent *string, history backlogMoveHistory, priorities ...string) string {
 		number := len(issues) + 1
-		key := seededIssueKey(parkedMoveProject, number)
+		key := seededIssueKey(backlogMoveProject, number)
 		rows, move := history.write(t, random, key, status, base.Add(time.Duration(number)*24*time.Hour))
 		issues = append(issues, seededIssueRow{
-			key: key, project: parkedMoveProject, number: number, title: "Parked move work " + key,
+			key: key, project: backlogMoveProject, number: number, title: "Backlog move work " + key,
 			status: status, parent: parent, rank: seededRank(number), at: base, lastSeq: len(rows),
 		}.values())
 		eventRows = append(eventRows, rows...)
@@ -254,59 +255,59 @@ func seedParkedMoveCorpus(t *testing.T) parkedMoveCorpus {
 		}
 		return key
 	}
-	parkedStatus := func(index int) string { return priorityBacklogStatuses[index%len(priorityBacklogStatuses)] }
+	backlogStatus := func(index int) string { return priorityBacklogStatuses[index%len(priorityBacklogStatuses)] }
 
-	root := addIssue("todo", nil, parkedMoveHistory{events: 60, recorded: true}, parkedMoveFleetPriority)
-	for index := range parkedMoveFleetParked {
+	root := addIssue("todo", nil, backlogMoveHistory{events: 60, recorded: true}, backlogMoveFleetPriority)
+	for index := range backlogMoveFleetInBacklog {
 		if index == 0 {
-			corpus.parked = append(corpus.parked, addIssue(parkedStatus(index), &root, parkedEvents(), parkedMoveOwnPriority))
+			corpus.backlog = append(corpus.backlog, addIssue(backlogStatus(index), &root, backlogEvents(), backlogMoveOwnPriority))
 			continue
 		}
-		addIssue(parkedStatus(index), &root, parkedEvents())
+		addIssue(backlogStatus(index), &root, backlogEvents())
 	}
 	for _, status := range []string{"todo", "in_progress"} {
-		addIssue(status, &root, parkedEvents())
+		addIssue(status, &root, backlogEvents())
 	}
-	for index := range parkedMoveOwnParked {
-		corpus.parked = append(corpus.parked, addIssue(parkedStatus(index), nil, parkedEvents(), parkedMoveOwnPriority))
+	for index := range backlogMoveOwnInBacklog {
+		corpus.backlog = append(corpus.backlog, addIssue(backlogStatus(index), nil, backlogEvents(), backlogMoveOwnPriority))
 	}
-	addIssue("needs_review", nil, parkedEvents(), parkedMoveOwnPriority)
+	addIssue("needs_review", nil, backlogEvents(), backlogMoveOwnPriority)
 	corpus.unrecorded = addIssue("backlog", nil,
-		parkedMoveHistory{events: parkedMoveEventsFrom + random.IntN(parkedMoveEventsSpan)}, parkedMoveOwnPriority)
-	corpus.parked = append(corpus.parked, corpus.unrecorded)
-	for index := range parkedMoveUnplacedCount {
-		addIssue(parkedStatus(index), nil, parkedEvents())
+		backlogMoveHistory{events: backlogMoveEventsFrom + random.IntN(backlogMoveEventsSpan)}, backlogMoveOwnPriority)
+	corpus.backlog = append(corpus.backlog, corpus.unrecorded)
+	for index := range backlogMoveUnplacedCount {
+		addIssue(backlogStatus(index), nil, backlogEvents())
 	}
-	for index := range parkedMoveBystanders {
-		addIssue(parkedMoveStatuses[index%4], nil, parkedMoveHistory{events: 20 + random.IntN(41), recorded: true})
+	for index := range backlogMoveBystanders {
+		addIssue(backlogMoveStatuses[index%4], nil, backlogMoveHistory{events: 20 + random.IntN(41), recorded: true})
 	}
 
 	for index, id := range corpus.priorities {
-		nodes = append(nodes, seededPriorityNode(t, id, "Priority "+id, "Work parked under it.",
+		nodes = append(nodes, seededPriorityNode(t, id, "Priority "+id, "Work in backlog under it.",
 			"alice", fmt.Sprintf("p%02d", index), base))
 	}
-	copySeededRows(t, database, "projects", seededProjectColumns, [][]any{seededProject(parkedMoveProject, len(issues), base)})
+	copySeededRows(t, database, "projects", seededProjectColumns, [][]any{seededProject(backlogMoveProject, len(issues), base)})
 	copySeededRows(t, database, "issues", seededIssueColumns, issues)
 	copySeededRows(t, database, "events", seededEventColumns, eventRows)
 	copySeededRows(t, database, "priority_nodes", seededNodeColumns, nodes)
 	copySeededRows(t, database, "priority_tuples", seededTupleColumns, tuples)
 	recorded := 0
-	for _, key := range corpus.parked {
+	for _, key := range corpus.backlog {
 		if _, moved := corpus.moves[key]; moved {
 			recorded++
 		}
 	}
-	if _, moved := corpus.moves[corpus.unrecorded]; moved || recorded != len(corpus.parked)-1 {
-		t.Fatalf("the corpus records a move of %d of the second fault's %d rows, want every one but %s", recorded, len(corpus.parked), corpus.unrecorded)
+	if _, moved := corpus.moves[corpus.unrecorded]; moved || recorded != len(corpus.backlog)-1 {
+		t.Fatalf("the corpus records a move of %d of the second fault's %d rows, want every one but %s", recorded, len(corpus.backlog), corpus.unrecorded)
 	}
 	t.Logf("the corpus holds %d issues and %d events; the second fault lists %d of the issues, %d of them with a recorded move",
-		len(issues), len(eventRows), len(corpus.parked), recorded)
+		len(issues), len(eventRows), len(corpus.backlog), recorded)
 	return corpus
 }
 
-// standingParked is how many issues of the corpus the listing reads the move of: every issue that
-// stands in backlog or icebox, whatever it advances.
-func (c parkedMoveCorpus) standingParked() int {
+// standingInBacklog is how many issues of the corpus the listing reads the move of: every issue
+// that stands in backlog or icebox, whatever it advances.
+func (c backlogMoveCorpus) standingInBacklog() int {
 	listed := 0
 	for _, status := range c.statuses {
 		if slices.Contains(priorityBacklogStatuses, status) {
@@ -326,40 +327,40 @@ func projectListingArguments(project string, moved bool) []any {
 		(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, moved, false}
 }
 
-// parkedMoveSchemas are the index under the name events_parked_moves that each reading runs
+// backlogMoveSchemas are the index under the name events_backlog_moves that each reading runs
 // with: the migration's own, and the three a control runs with. Each is made by statements that
 // the reading's transaction runs before its EXPLAIN, and the transaction is rolled back after it.
-var parkedMoveSchemas = []struct {
+var backlogMoveSchemas = []struct {
 	name    string
 	setup   []string
 	control bool
 }{
-	{"with events_parked_moves", nil, false},
-	{"with events_parked_moves dropped, as on main", []string{"drop index " + parkedMoveIndex}, true},
-	{"with an index of every event under the name events_parked_moves", []string{
-		"drop index " + parkedMoveIndex,
-		"create index " + parkedMoveIndex + " on events (issue_key, seq)",
+	{"with events_backlog_moves", nil, false},
+	{"with events_backlog_moves dropped, as on main", []string{"drop index " + backlogMoveIndex}, true},
+	{"with an index of every event under the name events_backlog_moves", []string{
+		"drop index " + backlogMoveIndex,
+		"create index " + backlogMoveIndex + " on events (issue_key, seq)",
 	}, true},
-	{"with a partial index of every issue.updated under the name events_parked_moves", []string{
-		"drop index " + parkedMoveIndex,
-		"create index " + parkedMoveIndex + " on events (issue_key, seq) where type = 'issue.updated'",
+	{"with a partial index of every issue.updated under the name events_backlog_moves", []string{
+		"drop index " + backlogMoveIndex,
+		"create index " + backlogMoveIndex + " on events (issue_key, seq) where type = 'issue.updated'",
 	}, true},
 }
 
-// TestTheParkedMoveReadsTheNewestMoveThroughItsIndex holds the read of each issue's move into
-// backlog or icebox (backlogMoveLateral) to one walk back through events_parked_moves for each
+// TestTheBacklogMoveReadsTheNewestMoveThroughItsIndex holds the read of each issue's move into
+// backlog or icebox (backlogMoveLateral) to one walk back through events_backlog_moves for each
 // row it reads the move of, which stops at the first event it reads
-// (requireParkedMoveThroughItsIndex), in the full second fault and in the listing with
+// (requireBacklogMoveThroughItsIndex), in the full second fault and in the listing with
 // `?moved=true`. The fault is read with the arguments readPriorities binds: the relations of the
 // live priorities as readPriorityRelations reads them, and no project.
-// The listing is read with the arguments the route binds for `?project=PARK&moved=true`. Each is
+// The listing is read with the arguments the route binds for `?project=BACK&moved=true`. Each is
 // read under four plans, each run and measured: the generic plan that a prepared statement
 // settles on (explaintest.AnalyzedGenericPlan) and a plan made for the values, both with
 // sequential scans off and no other setting, as the package's plan tests read them
 // (explaintest.GenericPlan); a plan made for the values with the planner's default settings; and
 // a plan made for the values with bitmap scans off as well.
 //
-// The controls are three other indexes under the same name (parkedMoveSchemas): none, which is
+// The controls are three other indexes under the same name (backlogMoveSchemas): none, which is
 // the schema of main; an index of every event on (issue_key, seq); and a partial index whose
 // predicate is the type alone. The check run on each must fail under each plan, and the test fails
 // when it passes, since the check would then be one that cannot tell the read through the partial
@@ -368,9 +369,9 @@ var parkedMoveSchemas = []struct {
 // (PostgreSQL 18.7, 2026-11-24); the fourth plan is there so that the planner walks the index of
 // a control backwards instead, which only the check's Filter and its rows removed tell from the
 // read through the partial index.
-func TestTheParkedMoveReadsTheNewestMoveThroughItsIndex(t *testing.T) {
+func TestTheBacklogMoveReadsTheNewestMoveThroughItsIndex(t *testing.T) {
 	t.Parallel()
-	corpus := seedParkedMoveCorpus(t)
+	corpus := seedBacklogMoveCorpus(t)
 	settleSpeedCorpus(t, corpus.database)
 	seedKeys, seedIDs := priorityCorpusSeed(t, corpus.served, corpus.priorities)
 	ctx := context.Background()
@@ -386,12 +387,12 @@ func TestTheParkedMoveReadsTheNewestMoveThroughItsIndex(t *testing.T) {
 		arguments []any
 		reads     int
 	}{
-		{"the second fault", backlogQuery, []any{seedKeys, seedIDs, []string{}}, len(corpus.parked)},
-		{"the listing with ?moved=true", listIssuesQuery, projectListingArguments(parkedMoveProject, true), corpus.standingParked()},
+		{"the second fault", backlogQuery, []any{seedKeys, seedIDs, []string{}}, len(corpus.backlog)},
+		{"the listing with ?moved=true", listIssuesQuery, projectListingArguments(backlogMoveProject, true), corpus.standingInBacklog()},
 	}
 	for statementNumber, statement := range statements {
 		parameters, literals := benchtime.PreparedArguments(t, statement.name, statement.arguments...)
-		for schemaNumber, schema := range parkedMoveSchemas {
+		for schemaNumber, schema := range backlogMoveSchemas {
 			withSeqScansOff := append([]string{"set local enable_seqscan = off"}, schema.setup...)
 			withBitmapScansOff := append([]string{"set local enable_seqscan = off", "set local enable_bitmapscan = off"}, schema.setup...)
 			plans := []struct {
@@ -399,7 +400,7 @@ func TestTheParkedMoveReadsTheNewestMoveThroughItsIndex(t *testing.T) {
 				plan json.RawMessage
 			}{
 				{"the generic plan", explaintest.AnalyzedGenericPlan(t, ctx, connection,
-					fmt.Sprintf("parked_move_%d_%d", statementNumber, schemaNumber), statement.sql,
+					fmt.Sprintf("backlog_move_%d_%d", statementNumber, schemaNumber), statement.sql,
 					parameters, literals, withSeqScansOff...)},
 				{"the plan for its values", explaintest.AnalyzedPlan(t, ctx, corpus.database.Pool, statement.sql,
 					withSeqScansOff, statement.arguments...)},
@@ -411,22 +412,22 @@ func TestTheParkedMoveReadsTheNewestMoveThroughItsIndex(t *testing.T) {
 			for _, plan := range plans {
 				subject := fmt.Sprintf("%s under %s %s", statement.name, plan.name, schema.name)
 				if !schema.control {
-					requireParkedMoveThroughItsIndex(t, keys, plan.plan, subject, statement.reads)
+					requireBacklogMoveThroughItsIndex(t, keys, plan.plan, subject, statement.reads)
 					continue
 				}
 				explaintest.RequireControlFails(t, subject, "a control",
 					"a read through the partial index from a read of the issue's other events", plan.plan,
-					func(t testing.TB) { requireParkedMoveThroughItsIndex(t, keys, plan.plan, subject, statement.reads) })
+					func(t testing.TB) { requireBacklogMoveThroughItsIndex(t, keys, plan.plan, subject, statement.reads) })
 			}
 		}
 	}
 }
 
-// describeParkedMoveRead names node, a read of events, as EXPLAIN's text names it: its type, its
+// describeBacklogMoveRead names node, a read of events, as EXPLAIN's text names it: its type, its
 // direction where it reads an index backwards (an Index Scan reads an issue's entries of the index
 // newest first only where it is Backward), its index and its relation. A Bitmap Heap Scan names no
 // index, so the indexes of the bitmap it reads its rows through follow it.
-func describeParkedMoveRead(node analyzedNode) string {
+func describeBacklogMoveRead(node analyzedNode) string {
 	described := node.NodeType
 	if node.ScanDirection == "Backward" {
 		described += " Backward"
@@ -451,26 +452,26 @@ func describeParkedMoveRead(node analyzedNode) string {
 	return described
 }
 
-// parkedMoveRead is one read of events in a plan, with the type of the node it runs under: the
+// backlogMoveRead is one read of events in a plan, with the type of the node it runs under: the
 // first node above it that is not a Result. The listing's gate on the read is a one-time filter,
 // which a Result between the lateral's Limit and its scan tests.
-type parkedMoveRead struct {
+type backlogMoveRead struct {
 	node  analyzedNode
 	under string
 }
 
-// parkedMoveReads is every node of plan that reads events, each with the node it runs under.
-func parkedMoveReads(t testing.TB, plan json.RawMessage) []parkedMoveRead {
+// backlogMoveReads is every node of plan that reads events, each with the node it runs under.
+func backlogMoveReads(t testing.TB, plan json.RawMessage) []backlogMoveRead {
 	t.Helper()
 	var root analyzedNode
 	if err := json.Unmarshal(plan, &root); err != nil {
 		t.Fatalf("decode the plan: %v\n%s", err, plan)
 	}
-	var reads []parkedMoveRead
+	var reads []backlogMoveRead
 	var visit func(node analyzedNode, under string)
 	visit = func(node analyzedNode, under string) {
 		if node.RelationName == "events" {
-			reads = append(reads, parkedMoveRead{node: node, under: under})
+			reads = append(reads, backlogMoveRead{node: node, under: under})
 		}
 		if node.NodeType != "Result" {
 			under = node.NodeType
@@ -483,30 +484,30 @@ func parkedMoveReads(t testing.TB, plan json.RawMessage) []parkedMoveRead {
 	return reads
 }
 
-// requireParkedMoveThroughItsIndex holds plan, an analyzed plan of a statement that splices
-// backlogMoveLateral, to reading, for each parked row, one walk back through parkedMoveIndex that
-// reads the issue's newest move and no other event. Every read of events is an Index Scan
-// Backward of parkedMoveIndex whose Index Cond names issue_key, the index's first key column
-// (IndexKeys.RequireIndexKeyed), and that runs right under the lateral's Limit, so it stops at the
-// first entry it reads. It carries no Filter: the index's predicate is the lateral's every
-// condition on the event, so every entry it reads is a move the lateral wants. Each time it runs
-// it answers at most one row, and neither its Filter nor a recheck removes any row: it reads one
-// event for an issue whose events record a move, and none for one whose events record none. The
-// reads of events run reads times in all, once for each parked row the statement reads the move
-// of, and at least once, so a plan that read no event shows nothing. Each failure names subject
-// and prints the plan through t.Errorf, which is what a control reads
+// requireBacklogMoveThroughItsIndex holds plan, an analyzed plan of a statement that splices
+// backlogMoveLateral, to reading, for each row in backlog or icebox, one walk back through
+// backlogMoveIndex that reads the issue's newest move and no other event. Every read of events is
+// an Index Scan Backward of backlogMoveIndex whose Index Cond names issue_key, the index's first
+// key column (IndexKeys.RequireIndexKeyed), and that runs right under the lateral's Limit, so it
+// stops at the first entry it reads. It carries no Filter: the index's predicate is the lateral's
+// every condition on the event, so every entry it reads is a move the lateral wants. Each time it
+// runs it answers at most one row, and neither its Filter nor a recheck removes any row: it reads
+// one event for an issue whose events record a move, and none for one whose events record none.
+// The reads of events run reads times in all, once for each row in backlog or icebox the statement
+// reads the move of, and at least once, so a plan that read no event shows nothing. Each failure
+// names subject and prints the plan through t.Errorf, which is what a control reads
 // (explaintest.RequireControlFails).
-func requireParkedMoveThroughItsIndex(t testing.TB, keys *explaintest.IndexKeys, plan json.RawMessage, subject string, reads int) {
+func requireBacklogMoveThroughItsIndex(t testing.TB, keys *explaintest.IndexKeys, plan json.RawMessage, subject string, reads int) {
 	t.Helper()
-	keys.RequireIndexKeyed(t, plan, parkedMoveIndex, subject, explaintest.CondRequired)
+	keys.RequireIndexKeyed(t, plan, backlogMoveIndex, subject, explaintest.CondRequired)
 	var loops float64
-	for _, read := range parkedMoveReads(t, plan) {
-		node, described := read.node, describeParkedMoveRead(read.node)
+	for _, read := range backlogMoveReads(t, plan) {
+		node, described := read.node, describeBacklogMoveRead(read.node)
 		loops += node.Loops
 		t.Logf("%s reads events by %s under a %s, on `%s`, with the Filter `%s`: %v times, %v rows each time, %v rows removed by its Filter and %v by a recheck each time",
 			subject, described, read.under, node.IndexCond, node.Filter, node.Loops, node.Rows, node.RemovedByFilter, node.RemovedByRecheck)
-		if node.NodeType != "Index Scan" || node.ScanDirection != "Backward" || node.IndexName != parkedMoveIndex {
-			t.Errorf("%s reads events by %s, want only an Index Scan Backward using %s:\n%s", subject, described, parkedMoveIndex, plan)
+		if node.NodeType != "Index Scan" || node.ScanDirection != "Backward" || node.IndexName != backlogMoveIndex {
+			t.Errorf("%s reads events by %s, want only an Index Scan Backward using %s:\n%s", subject, described, backlogMoveIndex, plan)
 			continue
 		}
 		if read.under != "Limit" {
@@ -525,25 +526,25 @@ func requireParkedMoveThroughItsIndex(t testing.TB, keys *explaintest.IndexKeys,
 	if loops == 0 {
 		t.Errorf("%s ran no read of events, so its plan shows nothing of how it reads them:\n%s", subject, plan)
 	} else if loops != float64(reads) {
-		t.Errorf("%s reads events %v times in all, want once for each of the %d parked rows it reads the move of:\n%s",
+		t.Errorf("%s reads events %v times in all, want once for each of the %d rows in backlog or icebox it reads the move of:\n%s",
 			subject, loops, reads, plan)
 	}
 }
 
-// parkedMoveAnswer is what the two statements answer over the corpus: the second fault's count,
+// backlogMoveAnswer is what the two statements answer over the corpus: the second fault's count,
 // its counts by priority and its rows, as scanPriorityFault reads them, and the listing's rows as
 // the route resolves them (issueSummaryRow), each with its two cells of the move.
-type parkedMoveAnswer struct {
+type backlogMoveAnswer struct {
 	Count      int                   `json:"count"`
 	ByPriority map[string]int        `json:"by_priority"`
-	Parked     []model.PriorityIssue `json:"parked"`
+	Backlog    []model.PriorityIssue `json:"backlog"`
 	Listing    []model.IssueSummary  `json:"listing"`
 }
 
-// parkedMoveAnswers runs the second fault, with the arguments readPriorities binds, and the
-// listing with `?project=PARK&moved=true`, in one transaction after setup, and rolls the
+// backlogMoveAnswers runs the second fault, with the arguments readPriorities binds, and the
+// listing with `?project=BACK&moved=true`, in one transaction after setup, and rolls the
 // transaction back.
-func parkedMoveAnswers(t *testing.T, database *store.Store, seedKeys, seedIDs, setup []string) parkedMoveAnswer {
+func backlogMoveAnswers(t *testing.T, database *store.Store, seedKeys, seedIDs, setup []string) backlogMoveAnswer {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -556,17 +557,17 @@ func parkedMoveAnswers(t *testing.T, database *store.Store, seedKeys, seedIDs, s
 			t.Fatalf("%s: %v", statement, err)
 		}
 	}
-	var answer parkedMoveAnswer
-	parked, err := tx.Query(ctx, backlogQuery, seedKeys, seedIDs, []string{})
+	var answer backlogMoveAnswer
+	fault, err := tx.Query(ctx, backlogQuery, seedKeys, seedIDs, []string{})
 	if err != nil {
 		t.Fatalf("run the second fault: %v", err)
 	}
-	answer.Count, answer.ByPriority, answer.Parked, err = scanPriorityFault(parked, true)
-	parked.Close()
+	answer.Count, answer.ByPriority, answer.Backlog, err = scanPriorityFault(fault, true)
+	fault.Close()
 	if err != nil {
 		t.Fatalf("read the second fault: %v", err)
 	}
-	listed, err := tx.Query(ctx, listIssuesQuery, projectListingArguments(parkedMoveProject, true)...)
+	listed, err := tx.Query(ctx, listIssuesQuery, projectListingArguments(backlogMoveProject, true)...)
 	if err != nil {
 		t.Fatalf("run the listing: %v", err)
 	}
@@ -588,10 +589,10 @@ func parkedMoveAnswers(t *testing.T, database *store.Store, seedKeys, seedIDs, s
 	return answer
 }
 
-// requireParkedMoveCells holds the two cells of the move that read answers for key to the move the
-// corpus wrote, want: its time and its actor, or neither where want is nil. It answers whether the
-// cells hold a move.
-func requireParkedMoveCells(t *testing.T, read, key string, want *parkedMove, at *time.Time, by *model.Actor) bool {
+// requireBacklogMoveCells holds the two cells of the move that read answers for key to the move
+// the corpus wrote, want: its time and its actor, or neither where want is nil. It answers whether
+// the cells hold a move.
+func requireBacklogMoveCells(t *testing.T, read, key string, want *backlogMove, at *time.Time, by *model.Actor) bool {
 	t.Helper()
 	if want == nil {
 		if at != nil || by != nil {
@@ -606,9 +607,9 @@ func requireParkedMoveCells(t *testing.T, read, key string, want *parkedMove, at
 	return true
 }
 
-// TestTheParkedMoveAnswersTheRowsItAnswersWithoutItsIndex holds the two statements that splice
-// backlogMoveLateral to the rows they answer on the schema of main, with events_parked_moves
-// dropped in a transaction that is rolled back. Over the corpus of seedParkedMoveCorpus, the full
+// TestTheBacklogMoveAnswersTheRowsItAnswersWithoutItsIndex holds the two statements that splice
+// backlogMoveLateral to the rows they answer on the schema of main, with events_backlog_moves
+// dropped in a transaction that is rolled back. Over the corpus of seedBacklogMoveCorpus, the full
 // second fault answers the same count, the same counts by priority and the same rows, each with
 // the time and the actor of its move and its `advances` entries, and the listing with
 // `?moved=true` answers the same rows with the same two cells of the move.
@@ -617,27 +618,27 @@ func requireParkedMoveCells(t *testing.T, read, key string, want *parkedMove, at
 // comparison is of answers that hold the moves: each row of the second fault carries the newest
 // move into backlog or icebox that the corpus wrote of it, the issue whose events record no such
 // move carries neither cell, and in the listing a row that stands in neither status carries
-// neither cell, although most of those were moved through the parked statuses once.
-func TestTheParkedMoveAnswersTheRowsItAnswersWithoutItsIndex(t *testing.T) {
+// neither cell, although most of those were moved through backlog and icebox once.
+func TestTheBacklogMoveAnswersTheRowsItAnswersWithoutItsIndex(t *testing.T) {
 	t.Parallel()
-	corpus := seedParkedMoveCorpus(t)
+	corpus := seedBacklogMoveCorpus(t)
 	settleSpeedCorpus(t, corpus.database)
 	seedKeys, seedIDs := priorityCorpusSeed(t, corpus.served, corpus.priorities)
-	withIndex := parkedMoveAnswers(t, corpus.database, seedKeys, seedIDs, nil)
-	withoutIndex := parkedMoveAnswers(t, corpus.database, seedKeys, seedIDs, parkedMoveSchemas[1].setup)
+	withIndex := backlogMoveAnswers(t, corpus.database, seedKeys, seedIDs, nil)
+	withoutIndex := backlogMoveAnswers(t, corpus.database, seedKeys, seedIDs, backlogMoveSchemas[1].setup)
 
-	if withIndex.Count != len(corpus.parked) || len(withIndex.Parked) != len(corpus.parked) {
+	if withIndex.Count != len(corpus.backlog) || len(withIndex.Backlog) != len(corpus.backlog) {
 		t.Fatalf("the second fault counts %d rows and lists %d, want all %d of its rows of the corpus listed",
-			withIndex.Count, len(withIndex.Parked), len(corpus.parked))
+			withIndex.Count, len(withIndex.Backlog), len(corpus.backlog))
 	}
-	movedParked := 0
-	for _, issue := range withIndex.Parked {
-		var want *parkedMove
+	movedIntoBacklog := 0
+	for _, issue := range withIndex.Backlog {
+		var want *backlogMove
 		if move, moved := corpus.moves[issue.Key]; moved {
 			want = &move
 		}
-		if requireParkedMoveCells(t, "the second fault", issue.Key, want, issue.MovedAt, issue.MovedBy) {
-			movedParked++
+		if requireBacklogMoveCells(t, "the second fault", issue.Key, want, issue.MovedAt, issue.MovedBy) {
+			movedIntoBacklog++
 		}
 	}
 	if len(withIndex.Listing) != len(corpus.statuses) {
@@ -645,40 +646,40 @@ func TestTheParkedMoveAnswersTheRowsItAnswersWithoutItsIndex(t *testing.T) {
 	}
 	movedListed := 0
 	for _, issue := range withIndex.Listing {
-		var want *parkedMove
+		var want *backlogMove
 		if move, moved := corpus.moves[issue.Key]; moved && slices.Contains(priorityBacklogStatuses, issue.Status) {
 			want = &move
 		}
-		if requireParkedMoveCells(t, "the listing with ?moved=true", issue.Key, want, issue.MovedAt, issue.MovedBy) {
+		if requireBacklogMoveCells(t, "the listing with ?moved=true", issue.Key, want, issue.MovedAt, issue.MovedBy) {
 			movedListed++
 		}
 	}
-	if movedParked != len(corpus.parked)-1 || movedListed != corpus.standingParked()-1 {
+	if movedIntoBacklog != len(corpus.backlog)-1 || movedListed != corpus.standingInBacklog()-1 {
 		t.Fatalf("the second fault answers a move for %d rows and the listing for %d, want %d and %d: every row but %s",
-			movedParked, movedListed, len(corpus.parked)-1, corpus.standingParked()-1, corpus.unrecorded)
+			movedIntoBacklog, movedListed, len(corpus.backlog)-1, corpus.standingInBacklog()-1, corpus.unrecorded)
 	}
 
-	requireSameParkedMoveAnswer(t, "the second fault",
-		parkedMoveAnswer{Count: withIndex.Count, ByPriority: withIndex.ByPriority, Parked: withIndex.Parked},
-		parkedMoveAnswer{Count: withoutIndex.Count, ByPriority: withoutIndex.ByPriority, Parked: withoutIndex.Parked})
-	requireSameParkedMoveAnswer(t, "the listing with ?moved=true",
-		parkedMoveAnswer{Listing: withIndex.Listing}, parkedMoveAnswer{Listing: withoutIndex.Listing})
+	requireSameBacklogMoveAnswer(t, "the second fault",
+		backlogMoveAnswer{Count: withIndex.Count, ByPriority: withIndex.ByPriority, Backlog: withIndex.Backlog},
+		backlogMoveAnswer{Count: withoutIndex.Count, ByPriority: withoutIndex.ByPriority, Backlog: withoutIndex.Backlog})
+	requireSameBacklogMoveAnswer(t, "the listing with ?moved=true",
+		backlogMoveAnswer{Listing: withIndex.Listing}, backlogMoveAnswer{Listing: withoutIndex.Listing})
 }
 
-// requireSameParkedMoveAnswer fails t when read answers through the index, got, other than it
+// requireSameBacklogMoveAnswer fails t when read answers through the index, got, other than it
 // answers with the index dropped, want. The two are compared as the JSON the routes write them
 // in, so every field of every row is compared.
-func requireSameParkedMoveAnswer(t *testing.T, read string, got, want parkedMoveAnswer) {
+func requireSameBacklogMoveAnswer(t *testing.T, read string, got, want backlogMoveAnswer) {
 	t.Helper()
 	gotJSON, err := json.Marshal(got)
 	if err != nil {
-		t.Fatalf("encode what %s answers through %s: %v", read, parkedMoveIndex, err)
+		t.Fatalf("encode what %s answers through %s: %v", read, backlogMoveIndex, err)
 	}
 	wantJSON, err := json.Marshal(want)
 	if err != nil {
-		t.Fatalf("encode what %s answers without %s: %v", read, parkedMoveIndex, err)
+		t.Fatalf("encode what %s answers without %s: %v", read, backlogMoveIndex, err)
 	}
 	if string(gotJSON) != string(wantJSON) {
-		t.Errorf("%s answers through %s\n%s\nwant what it answers with the index dropped\n%s", read, parkedMoveIndex, gotJSON, wantJSON)
+		t.Errorf("%s answers through %s\n%s\nwant what it answers with the index dropped\n%s", read, backlogMoveIndex, gotJSON, wantJSON)
 	}
 }

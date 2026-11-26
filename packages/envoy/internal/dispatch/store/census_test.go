@@ -1241,10 +1241,10 @@ func TestCensusAdmitsTheBtreeGinMigrationAtAnyTableSize(t *testing.T) {
 // btree_gin, which btreeGinVersion creates.
 const answersDestinationsIndexVersion = 20261125131000
 
-// parkedMovesIndexVersion builds events_parked_moves, the partial index of (issue_key, seq) that
+// backlogMovesIndexVersion builds events_backlog_moves, the partial index of (issue_key, seq) that
 // the lateral of the second fault (backlogMoveLateral in package api) reads an issue's newest move
 // into backlog or icebox through.
-const parkedMovesIndexVersion = 20261125131100
+const backlogMovesIndexVersion = 20261125131100
 
 // eventsIndexCensus is the census of the embedded migrations through `through` over a database at
 // `at`, with the limit at one byte, and the entry of each version of versions (pendingCensus takes
@@ -1283,10 +1283,10 @@ func eventsIndexCensus(t *testing.T, at, through int, versions ...int) (*pgmigra
 // migration pending before it takes the concurrent index exemption away, so with the limit at one
 // byte each has no refusal and carries the exemption. The database is at btreeGinVersion, so the
 // two are the only pending migrations.
-func TestCensusAdmitsTheAnswersAndParkedIndexesOnceBtreeGinIsApplied(t *testing.T) {
+func TestCensusAdmitsTheAnswersAndBacklogIndexesOnceBtreeGinIsApplied(t *testing.T) {
 	t.Parallel()
-	_, entries := eventsIndexCensus(t, btreeGinVersion, parkedMovesIndexVersion, answersDestinationsIndexVersion, parkedMovesIndexVersion)
-	for _, version := range []int{answersDestinationsIndexVersion, parkedMovesIndexVersion} {
+	_, entries := eventsIndexCensus(t, btreeGinVersion, backlogMovesIndexVersion, answersDestinationsIndexVersion, backlogMovesIndexVersion)
+	for _, version := range []int{answersDestinationsIndexVersion, backlogMovesIndexVersion} {
 		if entry := entries[version]; len(entry.Refusals) != 0 || !entry.ConcurrentIndex {
 			t.Errorf("%s at a table limit of 1 byte: refusals %q, concurrent index %v; want no refusal and the concurrent build admitted",
 				entry.Migration.Name, entry.Refusals, entry.ConcurrentIndex)
@@ -1336,7 +1336,7 @@ func TestCensusRefusesTheAnswersIndexBesideItsPendingExtension(t *testing.T) {
 // reads the files themselves, and not the set pgmigrate.Load answers, so it fails on the words
 // whatever the loader makes of a second statement. The words match in any case, with each comment
 // read as a space (pgmigrate.WithoutComments) and white space folded.
-func TestTheAnswersAndParkedIndexMigrationsCreateNoExtension(t *testing.T) {
+func TestTheAnswersAndBacklogIndexMigrationsCreateNoExtension(t *testing.T) {
 	t.Parallel()
 	files, err := fs.ReadDir(migrationFiles, "migrations")
 	if err != nil {
@@ -1349,7 +1349,7 @@ func TestTheAnswersAndParkedIndexMigrationsCreateNoExtension(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", file.Name(), err)
 		}
-		if version != answersDestinationsIndexVersion && version != parkedMovesIndexVersion || !strings.HasSuffix(file.Name(), ".up.sql") {
+		if version != answersDestinationsIndexVersion && version != backlogMovesIndexVersion || !strings.HasSuffix(file.Name(), ".up.sql") {
 			continue
 		}
 		data, err := migrationFiles.ReadFile("migrations/" + file.Name())
@@ -1361,7 +1361,7 @@ func TestTheAnswersAndParkedIndexMigrationsCreateNoExtension(t *testing.T) {
 			t.Errorf("%s holds a create extension, comments aside: %q; want the one create index concurrently and nothing else", file.Name(), text)
 		}
 	}
-	for _, version := range []int{answersDestinationsIndexVersion, parkedMovesIndexVersion} {
+	for _, version := range []int{answersDestinationsIndexVersion, backlogMovesIndexVersion} {
 		if !read[version] {
 			t.Errorf("the embedded set has no migration file of version %d to read", version)
 		}

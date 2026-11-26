@@ -283,7 +283,7 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 		"document_blocks_naming_no_node",
 		"block_refs_naming_no_node",
 		"events_person_words_destinations",
-		"events_parked_moves",
+		"events_backlog_moves",
 	}
 	assertDatabaseObjects(t, ctx, store.Pool, `
 		select indexname

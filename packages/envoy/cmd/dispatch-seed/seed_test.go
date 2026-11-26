@@ -167,7 +167,7 @@ func TestSeedAtASmallScale(t *testing.T) {
 	t.Run("every answer and decline names its ask after the ask's opening event", func(t *testing.T) {
 		assertAnswersAndDeclinesNameTheirAsks(t, first)
 	})
-	t.Run("every parked issue's newest status move is into the status it stands in", func(t *testing.T) {
+	t.Run("the newest status move of every issue in backlog or icebox is into the status it stands in", func(t *testing.T) {
 		assertStatusMovesEndInTheStatus(t, first)
 	})
 	t.Run("every project's default assignee is a person who has signed in", func(t *testing.T) {
@@ -826,17 +826,17 @@ func assertAnswersAndDeclinesNameTheirAsks(t *testing.T, database *store.Store) 
 	}
 }
 
-// assertStatusMovesEndInTheStatus holds the seed's status moves to what the parked read (api's
-// backlogMoveLateral) finds of them. A status move is an `issue.updated` event whose payload names
-// `status` in `changed`, which are the lateral's own conditions beside the status. Every issue
-// that stands in `backlog` or `icebox` has a status move, and its newest one, by seq, is into the
-// status the issue stands in: so the event the lateral stops at is the issue's newest move.
-// Every other issue's newest move, where it has one, is into its status too. At least one parked
-// issue holds newer events after its newest move, so a read that stops at the move reads fewer
-// events than one that reads all of them, and at least one move into a parked status is on an
-// issue that stands elsewhere now. Each move's payload decodes as the payload of the status
-// write (model.IssueEventPayload), with no field the type does not know, and names its issue,
-// its status, the status alone in `changed`, and its own seq as the issue's last_seq.
+// assertStatusMovesEndInTheStatus holds the seed's status moves to what the backlog move read
+// (api's backlogMoveLateral) finds of them. A status move is an `issue.updated` event whose payload
+// names `status` in `changed`, which are the lateral's own conditions beside the status. Every
+// issue that stands in `backlog` or `icebox` has a status move, and its newest one, by seq, is into
+// the status the issue stands in: so the event the lateral stops at is the issue's newest move.
+// Every other issue's newest move, where it has one, is into its status too. At least one issue in
+// backlog or icebox holds newer events after its newest move, so a read that stops at the move
+// reads fewer events than one that reads all of them, and at least one move into backlog or icebox
+// is on an issue that stands elsewhere now. Each move's payload decodes as the payload of the
+// status write (model.IssueEventPayload), with no field the type does not know, and names its
+// issue, its status, the status alone in `changed`, and its own seq as the issue's last_seq.
 func assertStatusMovesEndInTheStatus(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := context.Background()
@@ -866,7 +866,7 @@ func assertStatusMovesEndInTheStatus(t *testing.T, database *store.Store) {
 		status string
 	}
 	newest := map[string]move{}
-	var moves, parkedElsewhere int
+	var moves, backlogElsewhere int
 	rows, err = database.Pool.Query(ctx, `
 		select e.issue_key, e.seq, e.payload->>'status', e.payload::text from events e
 		where `+statusMoveEvent+`
@@ -894,7 +894,7 @@ func assertStatusMovesEndInTheStatus(t *testing.T, database *store.Store) {
 				key, seq, payload.Key, payload.Status, payload.LastSeq, payload.Changed)
 		}
 		if slices.Contains(model.IssueStatusesParked, status) && !slices.Contains(model.IssueStatusesParked, issues[key].status) {
-			parkedElsewhere++
+			backlogElsewhere++
 		}
 		newest[key] = move{seq: seq, status: status}
 	}
@@ -902,7 +902,7 @@ func assertStatusMovesEndInTheStatus(t *testing.T, database *store.Store) {
 		t.Fatalf("read the status moves: %v", err)
 	}
 
-	var parked, followed int
+	var inBacklog, followed int
 	for key, issue := range issues {
 		last, moved := newest[key]
 		if !slices.Contains(model.IssueStatusesParked, issue.status) {
@@ -911,7 +911,7 @@ func assertStatusMovesEndInTheStatus(t *testing.T, database *store.Store) {
 			}
 			continue
 		}
-		parked++
+		inBacklog++
 		switch {
 		case !moved:
 			t.Errorf("%s stands in %s and has no status move", key, issue.status)
@@ -921,16 +921,16 @@ func assertStatusMovesEndInTheStatus(t *testing.T, database *store.Store) {
 			followed++
 		}
 	}
-	t.Logf("%d status moves, %d of them into a parked status on an issue that stands elsewhere; %d parked issues, %d with newer events after their newest move",
-		moves, parkedElsewhere, parked, followed)
-	if parked == 0 {
+	t.Logf("%d status moves, %d of them into backlog or icebox on an issue that stands elsewhere; %d issues in backlog or icebox, %d with newer events after their newest move",
+		moves, backlogElsewhere, inBacklog, followed)
+	if inBacklog == 0 {
 		t.Fatal("no seeded issue stands in backlog or icebox, so this check proves nothing")
 	}
 	if followed == 0 {
-		t.Error("no parked issue holds an event newer than its newest status move")
+		t.Error("no issue in backlog or icebox holds an event newer than its newest status move")
 	}
-	if parkedElsewhere == 0 {
-		t.Error("no move into a parked status is on an issue that stands elsewhere now")
+	if backlogElsewhere == 0 {
+		t.Error("no move into backlog or icebox is on an issue that stands elsewhere now")
 	}
 }
 

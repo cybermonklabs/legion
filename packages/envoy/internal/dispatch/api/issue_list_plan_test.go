@@ -20,7 +20,7 @@ import (
 // (speedWork); the buffer counts are only in a plan run with BUFFERS. The direction an index scan
 // reads its index in (an issue's entries newest first only where it is Backward), the conditions
 // it reads its index by and tests each row by, and the name of the subplan a node begins are what
-// the parked move's check and the newest event's walk read (requireParkedMoveThroughItsIndex,
+// the backlog move's check and the newest event's walk read (requireBacklogMoveThroughItsIndex,
 // logNewestEventWalk).
 type analyzedNode struct {
 	NodeType         string         `json:"Node Type"`
