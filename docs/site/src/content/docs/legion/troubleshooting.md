@@ -617,6 +617,43 @@ failure under the cause word `provider_error` for the first, and `cyber_policy` 
 with the same sentence as its `detail`; a plugin older than the contract of entry
 20261125174608 (cyber-policy) is served `provider_error` for both.
 
+**Before a `cyber_policy` refusal reaches the daemon, the plugin tries four times inside the same
+turn.** A content filter is often stochastic, so pi-legion climbs one ladder
+(`packages/pi-legion/src/cyber-policy-ladder.ts`), one try per rung:
+
+1. It sends the refused request again as it was.
+2. It sends the request again with one message appended:
+   `LEGION_CYBER_POLICY_RETRY_MESSAGE`, by default "The provider's content filter blocked your
+   last response. Continue the task, and do not reproduce exploit code, payloads or credentials
+   verbatim; describe them instead."
+3. It compacts the session and sends the request from the summary. The newest turn group, which
+   holds the refused request, is summarized too, so the request no longer carries the refused text.
+4. It sends the request again on the first model below the session's own in its
+   `retry.fallbackChains` whose family is the same as the session model's family. For an OpenAI
+   model, that is an OpenAI model. A model whose family Oh My Pi cannot tell (a gateway's alias
+   name) gets no fourth rung. The model returns after the refusal cooldown, as after a content
+   filter's step.
+
+Each rung waits first: `LEGION_CYBER_POLICY_RETRY_WAIT_MS` (15000),
+`LEGION_CYBER_POLICY_MESSAGE_WAIT_MS`, `LEGION_CYBER_POLICY_COMPACT_WAIT_MS` and
+`LEGION_CYBER_POLICY_FALLBACK_WAIT_MS` (25000 each). A wait is 0 to 25000 milliseconds, because Oh
+My Pi gives the plugin's settle handler 30 seconds; a larger value is cut to 25000, with a warning.
+Set these variables, and the message, in `runtime.kubernetes.pod.env` or `runtime.tmux.pane_env`.
+Each rung's request goes as input from outside the session, so Oh My Pi's hold ends for that one
+request, and the next refusal starts the hold again. A compaction whose own summary is refused
+counts as a refused rung. The bound is one pass per refusal: each rung once, and no refusal starts
+another pass until a model answers. The daemon's prompt stays open through the pass, so its
+result is the result of the last rung that ran. If a rung succeeds, the agent continues its work
+and the daemon gets no refusal. Only when the last rung is refused does the refusal reach the
+daemon, with its code, as described below. Two kinds of turn get no pass, and their refusal
+reaches the daemon at once: a refused reply that carries tool calls, and a turn that ends while a
+background job's result is due.
+
+**Keep the fallback chain of an OpenAI role inside the OpenAI family.** Oh My Pi itself walks the
+chain on a `cyber_policy` refusal before the plugin sees the turn: when a model of another family
+follows an OpenAI model in `retry.fallbackChains`, Oh My Pi switches to that family at once, and
+the ladder does not run. The ladder's own rungs never change family.
+
 **A claim failed under `cyber_policy` is relaunched only by a person's or its architect's
 decision.** Each copy of the refused content sent to OpenAI again adds a refusal to the
 organization's record, and a prompt from the daemon is input from outside the session, which ends

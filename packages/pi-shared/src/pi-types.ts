@@ -17,6 +17,13 @@ import type { Component } from "@oh-my-pi/pi-tui";
 export interface HostModel {
   readonly provider: string;
   readonly id: string;
+  /** The family the host's catalog reads from the model's id (`ModelIdentity`): `openai`,
+   * `anthropic`, …, or `unknown` for an id it cannot place, such as a gateway's alias. The
+   * host's OpenAI `cyber_policy` hold closes the `openai` and `unknown` classes
+   * (`closedByCyberPolicy`, `session/cyber-policy-closure.ts:9-11` at
+   * v18.18.6-sami.20261125-164517). A model the host hands back carries it; one a caller names
+   * by provider and id does not. */
+  readonly identity?: { readonly class?: string };
 }
 
 /** The host's `ModelRegistry`, as far as this package reads it: the two members a retry fallback
@@ -148,6 +155,18 @@ export interface SessionContext {
     readonly current: () => HostModel | undefined;
     readonly resolve: (spec: string) => HostModel | undefined;
   };
+  /**
+   * The host's `ctx.compact()`: compacts the session's history. A compaction aborts the turn in
+   * flight and, once the summary is committed or there was nothing to compact, resumes that turn
+   * with the host's continue nudge; a compaction that interrupts nothing never continues, and a
+   * failed one resumes nothing (`CompactOptions`, `extensibility/extensions/types.ts:545-567`, and
+   * `session/session-maintenance.ts:1999-2006, 2428-2437` at v18.18.6-sami.20261125-164517).
+   * `origin: "outside"` ends the session's cyber-policy hold first, as a person's `/compact` does
+   * (`session/agent-session.ts:9369-9373` there). Its synchronous part aborts the agent, so a
+   * caller inside a hook the agent loop awaits stops that loop's request before it is sent.
+   * Absent on a host that predates it.
+   */
+  readonly compact?: (options: { readonly origin?: "outside" | "inside" }) => Promise<void>;
   /** The host's own `ModelRegistry` (`packages/coding-agent/src/config/model-registry.ts` at the
    * pinned tag), as far as this package reads it. Every member is optional, as the neighbouring
    * host declarations are: a host build that exposes none still satisfies the type, and the
@@ -412,6 +431,31 @@ export interface SessionStopEvent {
   readonly signal: AbortSignal;
 }
 
+/**
+ * What the host is about to compact, handed to `session_before_compact` before it summarizes
+ * (`CompactionPreparation`, `packages/agent/src/compaction/compaction.ts:1393-1419` at
+ * v18.18.6-sami.20261125-164517). The host goes on with this same object after the handlers
+ * return (`session/session-maintenance.ts:2483-2507` there), so a handler that moves messages
+ * between its lists changes what is summarized and what is kept: measured on that build, moving
+ * every kept message into `messagesToSummarize` and naming the branch's leaf as the first kept
+ * entry left the next request with the summary alone. Only the members this package changes are
+ * typed.
+ */
+export interface CompactionPreparation {
+  firstKeptEntryId: string;
+  messagesToSummarize: unknown[];
+  turnPrefixMessages: unknown[];
+  recentMessages: unknown[];
+  recentEntryIds?: string[];
+  isSplitTurn: boolean;
+}
+
+export interface SessionBeforeCompactEvent {
+  readonly preparation: CompactionPreparation;
+  /** The branch from its root to the current leaf, as `getBranch()` hands it. */
+  readonly branchEntries: readonly unknown[];
+}
+
 /** `continue` with `additionalContext` makes the host queue that text as one hidden message that
  * starts the next turn, instead of settling. */
 export interface SessionStopEventResult {
@@ -549,6 +593,11 @@ export interface PiEventContract {
   readonly auto_retry_end: { readonly event: AutoRetryEndEvent; readonly result: undefined };
   /** Every provider request the session's agent loop sends, each turn and each tool round. */
   readonly context: { readonly event: ContextEvent; readonly result: ContextEventResult };
+  /** A compaction is about to summarize; a handler may change what it summarizes and keeps. */
+  readonly session_before_compact: {
+    readonly event: SessionBeforeCompactEvent;
+    readonly result: undefined;
+  };
   /** Every input before it runs: the host's typed-input ingress, `sendUserInput` included. */
   readonly input: { readonly event: InputEvent; readonly result: InputEventResult };
   readonly session_stop: {
@@ -724,6 +773,12 @@ export interface PiApi {
     options?: {
       readonly deliverAs: "steer" | "aside" | "nextTurn" | "followUp";
       readonly triggerTurn: boolean;
+      /** `"outside"` marks the message as input from outside the session, which ends the
+       *  session's cyber-policy hold before the message is queued, whatever it is delivered as
+       *  (`sendCustomMessage`, `session/agent-session.ts:12605-12616` at
+       *  v18.18.6-sami.20261125-164517). Unset, it counts as made inside the session and the hold
+       *  stays; a host without the option ignores it. */
+      readonly origin?: "outside" | "inside";
     }
   ) => void;
   /**

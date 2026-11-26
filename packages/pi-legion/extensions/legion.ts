@@ -15,7 +15,7 @@ import {
 import { createEnvoyClient } from "@legion/envoy-client/transport";
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import { currentSessionID } from "@legion/pi-shared/dispatch-session-id";
-import { nextFallbackModel } from "@legion/pi-shared/fallback-chain";
+import { fallbackModels, nextFallbackModel } from "@legion/pi-shared/fallback-chain";
 import {
   fallbackCooldownLimits,
   LEGION_FALLBACK_ENTRY,
@@ -71,6 +71,12 @@ import {
 import { createClaimSession } from "../src/claim-session";
 import { classifySession, type LegionSessionKind, requiredEnvironment } from "../src/classify";
 import { createControllerSession } from "../src/controller-session";
+import {
+  CYBER_POLICY_RETRY_ENTRY,
+  CYBER_POLICY_RETRY_NOTE,
+  createCyberPolicyLadder,
+  cyberPolicyLadderSettings,
+} from "../src/cyber-policy-ladder";
 import { createModelFallback } from "../src/model-fallback";
 import { applySessionTitle, legionSessionTitle } from "../src/session-title";
 import { daemonLaunchedController } from "../src/slack-channels";
@@ -297,6 +303,7 @@ export default function legionExtension(pi: PiApi): void {
     now: () => Date.now(),
     limits: fallbackCooldownLimits(process.env, logger),
     nextModel: nextFallbackModel,
+    fallbackModels,
     log: logger,
     armTimer: (callback, delayMs) => {
       if (paneContext === undefined) return false;
@@ -307,6 +314,46 @@ export default function legionExtension(pi: PiApi): void {
       paneContext !== undefined && (await modelFallbackSession(paneContext))
         ? paneContext
         : undefined,
+  });
+
+  // What a role does when OpenAI refuses its turn under `cyber_policy` (src/cyber-policy-ladder.ts):
+  // retry, retry with a message, compact and retry, then a weaker model of the same family from the
+  // model fallback above, each inside the turn so the daemon's prompt reads the last rung's
+  // outcome. Each rung's send is input from outside the session, so Oh My Pi's hold ends for it.
+  const ladderMessage = {
+    customType: CYBER_POLICY_RETRY_ENTRY,
+    content: CYBER_POLICY_RETRY_NOTE,
+    display: false,
+  } as const;
+  const cyberPolicyLadder = createCyberPolicyLadder<SessionContext>({
+    settings: cyberPolicyLadderSettings(process.env, logger),
+    cyberPolicyRefusal: async (message) =>
+      (await import("@oh-my-pi/pi-ai/error")).isCyberPolicyRefusal(message),
+    recordableRefusal: async (message) =>
+      (
+        await import("@oh-my-pi/pi-coding-agent/session/cyber-policy-closure")
+      ).isRecordableCyberPolicyRefusal(message),
+    sendOutside: (triggerTurn) =>
+      pi.sendMessage(ladderMessage, { deliverAs: "nextTurn", triggerTurn, origin: "outside" }),
+    sendInside: () => pi.sendMessage(ladderMessage, { deliverAs: "nextTurn", triggerTurn: true }),
+    sameFamilyFallback: (context) => modelFallback.sameFamilyFallback(context),
+    stepDownTo: (context, model) => modelFallback.stepDownTo(context, model),
+    wait: (delayMs, signal) => {
+      if (signal?.aborted === true) return Promise.resolve(false);
+      const { promise, resolve } = Promise.withResolvers<boolean>();
+      const onAbort = (): void => {
+        clearTimeout(timer);
+        resolve(false);
+      };
+      const timer = setTimeout(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve(true);
+      }, delayMs);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      return promise;
+    },
+    paneContext: () => paneContext,
+    log: logger,
   });
 
   // The fallback state of whatever session the pane is on: the record this plugin saved
@@ -570,9 +617,11 @@ export default function legionExtension(pi: PiApi): void {
   // for the same close in the log and nothing else. A subagent's turn is not this session's and
   // closes none of its calls, the `task` call that is running it least of all; the case
   // "the turn's end closes every call it held open" holds this line.
-  pi.on("turn_end", async (_event, context) => {
+  pi.on("turn_end", async (event, context) => {
     if (subagentEvent(context)) return;
     stallWatch?.turnEnded();
+    // A reply the provider gave ends a pass of the cyber_policy ladder (src/cyber-policy-ladder.ts).
+    cyberPolicyLadder.turnEnded(event.message);
   });
   // The run settled, or ended with the host going on: `turn_end` fires 3 ms before this for an
   // aborted run (measured), so this closes nothing that run left open; it is what closes a run
@@ -799,11 +848,29 @@ export default function legionExtension(pi: PiApi): void {
   // in the process's live context, so once it is sent again every later request of this process
   // would carry it twice: the first copy, where the history put it, is the one each request
   // keeps.
+  //
+  // The cyber_policy ladder reads every request first (src/cyber-policy-ladder.ts): its own
+  // messages and the refused replies come out of it, and the compacted rung starts its compaction
+  // here, which aborts this request before it is sent.
   pi.on("context", async (event, context) => {
-    if (await modelFallbackSession(context)) await modelFallback.maybeRestore(context);
-    if (resentNoticeId === undefined) return undefined;
-    const messages = withoutRepeatedWorkspaceRecreatedNotice(event.messages, resentNoticeId);
+    const legionRole = await modelFallbackSession(context);
+    const ladderKept = legionRole
+      ? await cyberPolicyLadder.request(event.messages, context)
+      : undefined;
+    if (legionRole) await modelFallback.maybeRestore(context);
+    if (resentNoticeId === undefined) {
+      return ladderKept === undefined ? undefined : { messages: ladderKept };
+    }
+    const messages =
+      withoutRepeatedWorkspaceRecreatedNotice(ladderKept ?? event.messages, resentNoticeId) ??
+      ladderKept;
     return messages === undefined ? undefined : { messages };
+  });
+
+  // The cyber_policy ladder's own compaction summarizes the newest turn group too.
+  pi.on("session_before_compact", async (event, context) => {
+    if (!(await modelFallbackSession(context))) return;
+    cyberPolicyLadder.beforeCompact(event);
   });
 
   // The host walked this session's own fallback chain: the plugin owns the return, since the
@@ -846,6 +913,8 @@ export default function legionExtension(pi: PiApi): void {
     // pane was left on is a Legion role's at all: the controller's claim moves to it, and a
     // phase worker's stays on the session it was registered for.
     restoreModelFallback(context);
+    // A pass of the cyber_policy ladder belonged to the session the pane left.
+    cyberPolicyLadder.reset();
   };
   pi.on("session_switch", (_event, context) => afterSessionChange(context));
   pi.on("session_branch", (_event, context) => afterSessionChange(context));
@@ -917,6 +986,13 @@ export default function legionExtension(pi: PiApi): void {
   // turn end (src/phase-reminder.ts).
   pi.on("session_stop", async (event, context) => {
     if (event.signal.aborted) return undefined;
+    // A cyber_policy refusal climbs the ladder's next rung inside this same turn
+    // (src/cyber-policy-ladder.ts), and only a refusal of its last rung settles the turn, which
+    // the reminder below then leaves alone, as it leaves every refused turn.
+    if (await modelFallbackSession(context)) {
+      const rung = await cyberPolicyLadder.settle(event, context);
+      if (rung !== undefined) return rung;
+    }
     if (!phaseWorkerSession(context)) {
       // An architect has no phase of its own to settle, and its pod is released on the same rule
       // as a worker's, so its turn ends with a report of its own.

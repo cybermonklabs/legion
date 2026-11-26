@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  A turn that OpenAI refuses under `cyber_policy` climbs a ladder inside the same turn before the
+  refusal reaches the daemon: the request again as it was, then with one message appended, then
+  from a compaction that summarizes the newest turn group too, then on the first weaker model of
+  the same family in `retry.fallbackChains`. Each rung waits first (`LEGION_CYBER_POLICY_RETRY_WAIT_MS`
+  15000, `LEGION_CYBER_POLICY_MESSAGE_WAIT_MS`, `LEGION_CYBER_POLICY_COMPACT_WAIT_MS` and
+  `LEGION_CYBER_POLICY_FALLBACK_WAIT_MS` 25000 each, at most 25000), and the appended message is
+  `LEGION_CYBER_POLICY_RETRY_MESSAGE`. Each rung's request is sent as input from outside the
+  session, so Oh My Pi's hold ends for it; one pass runs per refusal. Only a refusal of the last
+  rung settles the turn, so the daemon gets `cyber_policy` as before.
+time: 2026-11-26T02:37:39Z
+custom:
+    Issue: INFRA-3530
