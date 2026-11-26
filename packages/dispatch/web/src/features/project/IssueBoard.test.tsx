@@ -1973,6 +1973,38 @@ test("board: checking - the dry run answers 200, and the move goes as today", as
   }
 });
 
+// The Board may change while the dry run is out, so the move is planned again once it answers. A
+// plan the Board's rules then refuse - the Board went to Legion phase meanwhile - says why
+// (`onRefused`), and the move places and writes nothing.
+test("board: checking - a move the Board's rules refuse once the dry run answers says why, and places and writes nothing", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryKey = ["issues", "project", "CORE"] as const;
+  queryClient.setQueryData(queryKey, parentIssues);
+  const statusChanges = answerStatusChanges().mockResolvedValue(fixtureAnswer("dry-run"));
+  const patchIssue = answerIssuePatches().mockResolvedValue(saved("CORE-1"));
+  const hook = moveHook(queryClient);
+  const placed = jest.fn();
+  const refused = jest.fn();
+  // The plan as the move starts, then the plan once the dry run answers.
+  const plans = [
+    move({ rank: { after: "CORE-3" }, status: "in_progress" }, "c\u0000"),
+    { refused: DAEMON_SETS_PHASE },
+  ];
+  try {
+    await act(() => hook.result.current.move("CORE-1", () => plans.shift(), placed, refused));
+    expect(statusChanges).toHaveBeenCalledTimes(1);
+    expect(refused.mock.calls).toEqual([[DAEMON_SETS_PHASE]]);
+    expect(placed).not.toHaveBeenCalled();
+    expect(patchIssue).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData<IssueSummary[]>(queryKey)).toEqual(parentIssues);
+    expect(hook.result.current.error).toBeUndefined();
+  } finally {
+    hook.unmount();
+    patchIssue.mockRestore();
+    statusChanges.mockRestore();
+  }
+});
+
 test("board: writing - a choice that lands sends the status change, then the card's rank PATCH, and the card moves", async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const queryKey = ["issues", "project", "CORE"] as const;
@@ -2289,6 +2321,62 @@ for (const [layout, lanes] of [
         keyedAttempt
       );
       expect(status.textContent).toBe("CORE-1 → In progress, position 1 of 2");
+    } finally {
+      patchIssue.mockRestore();
+      statusChanges.mockRestore();
+    }
+  });
+}
+
+// A keyboard move the rule's dry run checks first is planned again once the dry run answers,
+// from the Board as it stands then. Another writer's change can reach the listing while the dry
+// run is out and leave the move nothing to do: the card has left the listing, or it already
+// stands where the move puts it, first in In progress. Either takes the pressed card's node off
+// the page. The move then places nothing: no PATCH goes, the live region says no place, and the
+// focus stays where the change left it.
+for (const change of ["the card left the listing", "the card stands where it moves to"] as const) {
+  test(`Shift+L of a card with an open child whose dry run answers once ${change} says no place and takes no focus`, async () => {
+    const user = userEvent.setup();
+    const dryRun = Promise.withResolvers<StatusChangeAnswer>();
+    const statusChanges = answerStatusChanges().mockImplementation(() => dryRun.promise);
+    const patchIssue = patchInFlight();
+    const rows = [...parentIssues];
+    const { client } = board(rows, "?layout=board");
+    try {
+      const region = await boardRegion();
+      const pressed = await within(region).findByRole("article", { name: "CORE-1 Parent" });
+      act(() => pressed.focus());
+      await user.keyboard("{Shift>}L{/Shift}");
+      await waitFor(() => expect(statusChanges).toHaveBeenCalledTimes(1));
+
+      // The change reaches the listing the Board draws, and every read after it.
+      const edit =
+        change === "the card left the listing"
+          ? (list: IssueSummary[]): IssueSummary[] => list.filter((row) => row.key !== "CORE-1")
+          : (list: IssueSummary[]): IssueSummary[] =>
+              list.map((row) => (row.key === "CORE-1" ? { ...row, status: "in_progress" } : row));
+      rows.splice(0, rows.length, ...edit(rows));
+      act(() => {
+        client.setQueriesData<unknown>(
+          { queryKey: ["issues", "project", "CORE"] },
+          (data: unknown) => (Array.isArray(data) ? edit(data) : data)
+        );
+      });
+      await waitFor(() => expect(pressed).not.toBeInTheDocument());
+      if (change === "the card stands where it moves to") {
+        const inProgress = within(region).getByRole("region", { name: "In progress" });
+        expect(cardKeys(inProgress)).toEqual(["CORE-1", "CORE-3"]);
+      }
+      const stood = document.activeElement;
+
+      await act(async () => {
+        dryRun.resolve(fixtureAnswer("dry-run"));
+        await settle();
+      });
+      await afterFrameAndTasks();
+      expect(liveRegion().textContent).toBe("");
+      expect(patchIssue).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(stood);
     } finally {
       patchIssue.mockRestore();
       statusChanges.mockRestore();

@@ -60,6 +60,11 @@ export function writeTableAction(project: string, action: TableAction | undefine
   writeStore(tableStorageKey(project), { action });
 }
 
+/** The step each of `writes` was sent for, by its write key. */
+export function stepsByWriteKey(writes: TableAction["writes"]): ReadonlyMap<string, string> {
+  return new Map(Object.entries(writes).map(([step, key]) => [key, step]));
+}
+
 /** Where a tab keeps its id: its `sessionStorage`, which a reload keeps and no other tab shares. */
 const TAB_STORAGE_KEY = "dispatch.table-tab";
 /** The id of a tab whose browser refuses `sessionStorage`, which lasts as long as the page. */
@@ -152,13 +157,16 @@ export function useTableRecovery(
   /** Calls off this tab's wait for the listing's lock, which it waits on for the record it looked
    *  at last. */
   const waiting = useRef<AbortController | undefined>(undefined);
+  /** The record `end` found in the store in place of the one it ended, which the holder of the
+   *  listing's lock takes into this table once the lock request settles (`withListingLock`). */
+  const endFound = useRef<UnderLock<unknown>["takeIn"]>(undefined);
   /** Looks at whether a tab holds the listing's lock. The tab that runs the move of `record`, the
    *  record in hand, holds it, and so does any tab, this one too, while its `begin`, `resume` or
    *  `dismiss` reads the store. So a look while this tab holds the lock finds it held, and draws
    *  no offer until the lock goes. That is meant for the record whose move this tab runs, which
    *  `begin` looks at under the lock, through `remember`, and `resume` too. A record that
-   *  `begin`, `resume` or `dismiss` reads in the store and takes into this table is looked at
-   *  only once the lock goes (`withListingLock`), so this tab's own hold of the lock does not
+   *  `begin`, `resume`, `end` or `dismiss` reads in the store and takes into this table is looked
+   *  at only once the lock goes (`withListingLock`), so this tab's own hold of the lock does not
    *  withdraw the offer for it. A lock held is waited on: the request is granted once the tab
    *  that holds it lets it go - its move ended, or the tab closed or crashed - and this tab lets
    *  it go again at once. Called again whenever the record changes in the store, since another
@@ -210,7 +218,7 @@ export function useTableRecovery(
     const observeRows = () => {
       let record = current.current;
       if (!record) return;
-      const steps = new Map(Object.entries(record.writes).map(([step, key]) => [key, step]));
+      const steps = stepsByWriteKey(record.writes);
       for (const row of writes.rows()) {
         const step: string | undefined =
           steps.get(row.key) ??
@@ -332,20 +340,27 @@ export function useTableRecovery(
   /** Runs `run` with `free` true while this tab holds the listing's lock, which it takes only
    *  where no tab holds it, and with `free` false where one does, and answers its `result`. A
    *  browser with no lock manager runs it as free. The record `run` answers to take in
-   *  (`takeIn`) is taken into this table once the lock request settles: under the lock, its
-   *  `look` would find the lock held, by this tab, and withdraw the offer to Finish or Dismiss
-   *  that record until the lock goes. */
+   *  (`takeIn`), or the one `end` found under the lock (`endFound`), is taken into this table
+   *  once the lock request settles: under the lock, its `look` would find the lock held, by this
+   *  tab, and withdraw the offer to Finish or Dismiss that record until the lock goes. */
   const withListingLock = async <R>(
     run: (free: boolean) => UnderLock<R> | Promise<UnderLock<R>>
   ): Promise<R> => {
-    const { result, takeIn } =
-      locks === undefined
-        ? await run(true)
-        : await locks.request(actionLockName(project), { ifAvailable: true }, (lock) =>
-            run(lock !== null)
-          );
-    if (takeIn !== undefined) adopt(takeIn.stored);
-    return result;
+    let takeIn: UnderLock<R>["takeIn"];
+    try {
+      const answer =
+        locks === undefined
+          ? await run(true)
+          : await locks.request(actionLockName(project), { ifAvailable: true }, (lock) =>
+              run(lock !== null)
+            );
+      takeIn = answer.takeIn;
+      return answer.result;
+    } finally {
+      const found = takeIn ?? endFound.current;
+      endFound.current = undefined;
+      if (found !== undefined) adopt(found.stored);
+    }
   };
   return {
     action,
@@ -426,7 +441,8 @@ export function useTableRecovery(
       if (row) owned.current.set(row.id, { ...owned.current.get(row.id), issue });
     },
     settle: async (record: TableAction) => {
-      const rows = writes.rows().filter((row) => Object.values(record.writes).includes(row.key));
+      const stepOf = stepsByWriteKey(record.writes);
+      const rows = writes.rows().filter((row) => stepOf.has(row.key));
       const outcome = (row: (typeof rows)[number]) => {
         const { promise, resolve, reject } = Promise.withResolvers<void>();
         const unsubscribe = writes.onOutcome((event) => {
@@ -467,13 +483,15 @@ export function useTableRecovery(
       if (refused?.status === "rejected") throw refused.reason;
     },
     /** Ends the record `id` of the move this tab ran, once the move is done. Called while this
-     *  tab holds the listing's lock. The record goes only while the store still holds it. In a
-     *  browser with no lock manager another tab can dismiss the move and keep a record of its own
-     *  meanwhile (`isLeftBehind`): that record stays, and this table takes it in. */
+     *  tab holds the listing's lock. The record goes only while the store still holds it.
+     *  Another tab's record can stand in its place: in a browser with no lock manager another tab
+     *  can dismiss the move and keep a record of its own meanwhile (`isLeftBehind`), and another
+     *  tab's write can reach this tab's store late. That record stays, and this table takes it in
+     *  once the lock request settles (`withListingLock`). */
     end: (id: string) => {
       const stored = readTableAction(project);
       if (stored?.id === id) remember(undefined);
-      else adopt(stored);
+      else endFound.current = { stored };
     },
     /** The reader's Dismiss of a record left behind. The offer goes at once, and the record goes
      *  once this tab holds the listing's lock: a move another tab took up meanwhile runs on, and

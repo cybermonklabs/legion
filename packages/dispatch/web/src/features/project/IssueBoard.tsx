@@ -93,7 +93,7 @@ import {
   type MoveRules,
   planMove,
 } from "./board-model";
-import { useBoardMoves } from "./board-moves";
+import { asChanged, othersMoved, useBoardMoves } from "./board-moves";
 import { IssueFlagChips, NarrowingList, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
 import { formatPhaseTime, formatWorkTime, sinceMs } from "./issues-legion";
@@ -918,8 +918,9 @@ export function IssueBoard({
   };
   /** Takes a planned move to `to`: a refusal says why, and a move is written. `placed` is told
    *  each time the move places its card, with the place the rank gives it in its cell, or
-   *  undefined where the view's sort puts it. A move answers once its write and the listings'
-   *  reads after it are done. */
+   *  undefined where the view's sort puts it. A move the Board's rules refuse once it is planned
+   *  again, before it has placed or written anything, says why too. A move answers once its write
+   *  and the listings' reads after it are done. */
   const take = (
     plan: MovePlan | undefined,
     to: BoardPlace,
@@ -936,19 +937,17 @@ export function IssueBoard({
     // A status change that moves other issues with the card - its open children - moves them into
     // cells of the Board, so the move is planned again with those issues there: the rank then
     // names a neighbour Dispatch holds, and the place the card lands counts them.
-    const planAgain = (answer: StatusChangeAnswer | null): BoardChange | undefined => {
+    const planAgain = (
+      answer: StatusChangeAnswer | null
+    ): BoardChange | { readonly refused: string } | undefined => {
       const now = latest.current;
-      const others = new Map(
-        (answer?.changed ?? []).filter((entry) => entry.key !== key).map((e) => [e.key, e])
-      );
+      const others = othersMoved(answer, key);
       const items =
         others.size === 0
           ? now.rows
           : now.rows.map((item) => {
               const entry = others.get(item.issue.key);
-              return entry === undefined
-                ? item
-                : { ...item, issue: { ...item.issue, parent: entry.parent, status: entry.status } };
+              return entry === undefined ? item : { ...item, issue: asChanged(item.issue, entry) };
             });
       const again = planMove(
         boardLines(items, now.columns, now.rules.by, now.rules.lanes),
@@ -956,11 +955,12 @@ export function IssueBoard({
         key,
         to
       );
-      if (again?.kind !== "move") return undefined;
+      if (again === undefined) return undefined;
+      if (again.kind === "refused") return { refused: again.text };
       position = again.position;
       return again.change;
     };
-    return move(key, planAgain, placed === undefined ? undefined : () => placed(position));
+    return move(key, planAgain, placed === undefined ? undefined : () => placed(position), refuse);
   };
   const onDragEnd = ({ active, over }: DragEndEvent) => {
     landCard();
@@ -1140,7 +1140,8 @@ export function IssueBoard({
     // live region reads it at once, from the listings the move has just written - after a choice,
     // with each other issue it moved already in its cell, so the count holds them - and elsewhere
     // the view's sort puts the card, which the drawn move tells (`announce`). A move that ends
-    // without placing the card (kept, cancelled or refused) says nothing and takes no focus.
+    // without placing the card (kept, cancelled or refused, or none once planned again after the
+    // dry run) says no place and takes no focus.
     let follow: MoveFollow | undefined;
     const moved = take(planMove(lines, rules, key, to), to, (position) => {
       if (position !== undefined)

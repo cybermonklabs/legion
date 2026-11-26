@@ -574,7 +574,7 @@ function TableHeaderCell<TData>({
   stacked,
 }: {
   /** A phone's box (`useTableLayout`'s `compact`), where every header stands on one line at its
-   *  column's left edge but the stacked one. */
+   *  column's left edge but the ones the table stacks (`stackColumns`). */
   compact: boolean;
   /** Whether it draws the pinned columns' divider at its right (`drawsPinnedDivider`). */
   divider: boolean;

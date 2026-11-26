@@ -13,7 +13,7 @@ import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { plainWrite, useWrites } from "../writes/write-store";
 import { type IssueListing, listingName } from "./issues-table-data";
 import { buildItems, type Item, queuedInOrder, startNextWrites } from "./issues-table-model";
-import { type TableAction, useTableRecovery } from "./issues-table-recovery";
+import { stepsByWriteKey, type TableAction, useTableRecovery } from "./issues-table-recovery";
 
 /** One step of an action: the issue it writes, its change, and the write key it was given. */
 interface Patch {
@@ -373,7 +373,7 @@ export function useIssueTableActions(listing: IssueListing): IssueTableActions {
     // at once, as `apply` ends the name of a write it sends: those writes are Pending changes' own
     // and never pass through `apply`. Each is known by its row there, the step it is for read off
     // the key the record holds: a write sent again keeps its row, and can be sent under a new key.
-    const steps = new Map(Object.entries(interrupted.writes).map(([step, key]) => [key, step]));
+    const steps = stepsByWriteKey(interrupted.writes);
     const stepOfRow = new Map(
       writes.rows().flatMap((row) => {
         const step = steps.get(row.key);

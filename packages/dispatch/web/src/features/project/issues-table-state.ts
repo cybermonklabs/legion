@@ -96,6 +96,8 @@ export interface FilterPanel {
   readonly openFilter: string | undefined;
   readonly setOpenFilter: (id: string | undefined) => void;
   readonly registry: AgentRegistry;
+  /** Whether the Claimed by filter picks Nobody or lapsed (`UNCLAIMED_FACET`). */
+  readonly wantsFree: boolean;
   /** Why the Claimed by filter cannot tell which claims have lapsed, while it is asked to. */
   readonly unclaimedUnchecked: "refilling" | "unreachable" | undefined;
 }
@@ -111,7 +113,7 @@ export function useFilterPanel(filters: View["filters"]): FilterPanel {
   let unclaimedUnchecked: FilterPanel["unclaimedUnchecked"];
   if (wantsFree && registry.isError)
     unclaimedUnchecked = registry.refilling ? "refilling" : "unreachable";
-  return { openFilter, setOpenFilter, registry, unclaimedUnchecked };
+  return { openFilter, setOpenFilter, registry, wantsFree, unclaimedUnchecked };
 }
 
 /** What every issue table reads as it opens, beside its rows: the project page's flags
@@ -370,10 +372,7 @@ export function useIssueTable({
     () => (openFilter ? facetCounts(items, openFilter, filters, search) : EMPTY_FACETS),
     [items, openFilter, filters, search]
   );
-  const registryPending =
-    picksOf(filters, "claim").includes(UNCLAIMED_FACET) &&
-    !panel.registry.known &&
-    !panel.registry.isError;
+  const registryPending = panel.wantsFree && !panel.registry.known && !panel.registry.isError;
   const filterCounted = (column: string, value: string) =>
     counted &&
     !registryPending &&

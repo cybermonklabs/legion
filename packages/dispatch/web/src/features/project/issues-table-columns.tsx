@@ -305,15 +305,23 @@ function Author({ issue, clamp }: { issue: IssueSummary; clamp: boolean }): Reac
  *  Time per phase draws in the reader's mode (`usePhaseHoursMode`), which its header's control
  *  switches. Legion phase sorts in the order of `phaseOrder`, the board's columns.
  */
-const renderings = (
-  userState: UserState | undefined,
-  onMark: (key: string) => void,
-  wrapTitles: boolean,
-  phaseMode: PhaseHoursMode,
-  setPhaseMode: (mode: PhaseHoursMode) => void,
-  descending: SortsDescending,
-  phaseOrder: readonly string[]
-): Record<ColumnId, Partial<ColumnDef<Item>>> => ({
+const renderings = ({
+  userState,
+  onMark,
+  wrapTitles,
+  phaseMode,
+  setPhaseMode,
+  descending,
+  phaseOrder,
+}: {
+  userState: UserState | undefined;
+  onMark: (key: string) => void;
+  wrapTitles: boolean;
+  phaseMode: PhaseHoursMode;
+  setPhaseMode: (mode: PhaseHoursMode) => void;
+  descending: SortsDescending;
+  phaseOrder: readonly string[];
+}): Record<ColumnId, Partial<ColumnDef<Item>>> => ({
   select: {
     header: ({ table }) => (
       <input
@@ -992,15 +1000,15 @@ export function useIssueTableColumns(
   return useMemo<ColumnDef<Item>[]>(() => {
     const descending = (id: string) => sorted.current.find((sort) => sort.id === id)?.desc === true;
     const phaseFilter = legionPhaseFilter(phases);
-    const rendering = renderings(
+    const rendering = renderings({
       userState,
       onMark,
       wrapTitles,
       phaseMode,
       setPhaseMode,
       descending,
-      phaseFilter.order
-    );
+      phaseOrder: phaseFilter.order,
+    });
     const places = new Map([...(priorityTitles?.keys() ?? [])].map((id, at) => [id, at + 1]));
     const priorityOf: PriorityOf = (id) => ({
       place: places.get(id),

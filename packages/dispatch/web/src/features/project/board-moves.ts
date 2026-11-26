@@ -3,7 +3,13 @@ import { useCallback, useState } from "react";
 
 import { ApiError, issuePatchRequest } from "../../api/client";
 import { boardMoveMutationKey, readIssueList } from "../../api/queries";
-import type { Issue, IssueSummary, StatusChangeAnswer, UpdateIssueInput } from "../../api/types";
+import type {
+  Issue,
+  IssueSummary,
+  StatusChangeAnswer,
+  StatusChangeEntry,
+  UpdateIssueInput,
+} from "../../api/types";
 import {
   cardHasParentOrOpenChild,
   isParentStatusConflict,
@@ -26,29 +32,60 @@ function movedIssue(issue: IssueSummary, { input, rank }: BoardChange): IssueSum
   };
 }
 
+/** The issues other than the card `key` that `answer`'s status change moved - a parent and its
+ *  open children - by key. An answer of null moved none. */
+export function othersMoved(
+  answer: StatusChangeAnswer | null,
+  key: string
+): ReadonlyMap<string, StatusChangeEntry> {
+  return new Map(
+    (answer?.changed ?? []).filter((entry) => entry.key !== key).map((entry) => [entry.key, entry])
+  );
+}
+
+/** `issue` at the status and under the parent its status change answered for it (`entry`). */
+export function asChanged(issue: IssueSummary, entry: StatusChangeEntry): IssueSummary {
+  return { ...issue, parent: entry.parent, status: entry.status };
+}
+
 /** What one board move sends: the issue (`key`) and its change (`input`). */
 export interface BoardMoveVariables {
   readonly input: UpdateIssueInput;
   readonly key: string;
 }
 
+/** What a function plan answers where the Board's rules refuse the move: the text that says
+ *  why. */
+interface MoveRefused {
+  readonly refused: string;
+}
+
 /** A move as the Board plans it: its change, or a function that plans it once a confirmed status
  *  change is known (`null` while none is). A move of a card whose status change moves other issues
  *  with it - a parent and its open children - is planned again with those issues in their new
  *  cells, so the card's rank names the neighbours Dispatch now holds. A function answers
- *  undefined where the card would not move. */
-type BoardMovePlan = BoardChange | ((answer: StatusChangeAnswer | null) => BoardChange | undefined);
+ *  undefined where the card would not move, and the text that says why where the Board's rules
+ *  refuse the move (`MoveRefused`). */
+type BoardMovePlan =
+  | BoardChange
+  | ((answer: StatusChangeAnswer | null) => BoardChange | MoveRefused | undefined);
 
 /** One PATCH of a move, made by a keyed write of the Board's. */
 type MoveWrite = (variables: BoardMoveVariables) => Promise<Issue | null>;
 
 /** Told each time a move places its card: in the call itself, before its PATCH goes out, for a
  *  card the Board knows no parent or open child of (`cardHasParentOrOpenChild`), and at once for a
- *  move that leaves the card where it is; once the rule's dry run answered that it asks nothing;
- *  and once a choice of the rule's question landed, with each other issue that choice moved
- *  already in its cell. A move that ends with its card not placed - kept, cancelled, or refused
- *  before it was placed - does not tell it. A keyboard move says then where the card landed. */
+ *  move that leaves the card where it is; once the rule's dry run answered that it asks nothing,
+ *  where the move planned again then still moves the card; and once a choice of the rule's
+ *  question landed, with each other issue that choice moved already in its cell. A move that ends
+ *  with its card not placed - kept, cancelled, refused before it was placed, or none once planned
+ *  again after the dry run - does not tell it. A keyboard move says then where the card landed. */
 type OnPlaced = () => void;
+
+/** Told the text of a refusal by the Board's rules, where a move planned again before it placed
+ *  its card or wrote anything is refused: at once, or after the rule's dry run. The move then
+ *  places and writes nothing. */
+type OnRefused = (text: string) => void;
 
 /** What the Board says of the move of `key` that did not land. One the reader stopped may have
  *  been made: the listings go back to where the page last read them, and the read that follows
@@ -63,7 +100,10 @@ function moveFailure(cause: unknown, key: string): string {
 }
 
 /** The change `plan` makes, once `answer` is known. */
-function planned(plan: BoardMovePlan, answer: StatusChangeAnswer | null): BoardChange | undefined {
+function planned(
+  plan: BoardMovePlan,
+  answer: StatusChangeAnswer | null
+): BoardChange | MoveRefused | undefined {
   return typeof plan === "function" ? plan(answer) : plan;
 }
 
@@ -107,17 +147,23 @@ function listingsHolding(
  * A move of a card's status that Dispatch's rule could refuse - the card has a parent or an open
  * child (`cardHasParentOrOpenChild`) - asks first (`useParentStatusMove`). It takes its turn in
  * the same scope, so a later drop waits behind it, and the card stays where it is until the
- * person confirms. Where the dry run answers that the rule asks nothing, the move goes as above.
- * Where the rule would refuse it, the Board asks the question (`question`), and a choice confirmed
- * sends the status change with that option, then a PATCH of the card's place (`rank`, and
- * `priority` for a lane move), and only then is the card placed. That PATCH's refusal leaves the
- * status as Dispatch changed it. A move of a card the Board knew no parent or open child of that
- * Dispatch refuses under the rule asks the same question. A move tells its caller each time it
- * places the card (`OnPlaced`).
+ * person confirms. Where the dry run answers that the rule asks nothing, the move is planned
+ * again and goes as above. Where the rule would refuse it, the Board asks the question
+ * (`question`), and a choice confirmed sends the status change with that option, then a PATCH of
+ * the card's place (`rank`, and `priority` for a lane move), and only then is the card placed.
+ * That PATCH's refusal leaves the status as Dispatch changed it. A move of a card the Board knew
+ * no parent or open child of that Dispatch refuses under the rule asks the same question. A move
+ * tells its caller each time it places the card (`OnPlaced`), and where the Board's rules refuse
+ * it once it is planned again, why (`OnRefused`).
  */
 export function useBoardMoves(project: string): {
   error: string | undefined;
-  move: (key: string, plan: BoardMovePlan, onPlaced?: OnPlaced) => Promise<void>;
+  move: (
+    key: string,
+    plan: BoardMovePlan,
+    onPlaced?: OnPlaced,
+    onRefused?: OnRefused
+  ) => Promise<void>;
   /** The question a move of a card's status asks while the rule would refuse it. */
   question: ParentStatusQuestion | undefined;
 } {
@@ -170,9 +216,7 @@ export function useBoardMoves(project: string): {
       onPlaced?: OnPlaced,
       answer: StatusChangeAnswer | null = null
     ): Promise<{ landed: boolean; refusal?: unknown }> => {
-      const others = new Map(
-        (answer?.changed ?? []).filter((entry) => entry.key !== key).map((e) => [e.key, e])
-      );
+      const others = othersMoved(answer, key);
       const held = listingsHolding(queryClient, project, new Set([key, ...others.keys()]));
       for (const { queryKey, issues } of held) {
         // Not awaited: the cancel takes effect synchronously, and the write must land in this
@@ -183,9 +227,7 @@ export function useBoardMoves(project: string): {
           issues.map((issue) => {
             if (issue.key === key) return movedIssue(issue, change);
             const entry = others.get(issue.key);
-            return entry === undefined
-              ? issue
-              : { ...issue, parent: entry.parent, status: entry.status };
+            return entry === undefined ? issue : asChanged(issue, entry);
           })
         );
       }
@@ -213,7 +255,9 @@ export function useBoardMoves(project: string): {
    *  Dispatch now holds the cell, so the read that follows leaves the card where it is drawn, and
    *  `onPlaced` reads the cell with every issue the change moved. Waiting for that read instead
    *  would leave those issues in their old cells until it lands, and place the card among
-   *  neighbours that lack them. Its refusal leaves the status as Dispatch changed it. */
+   *  neighbours that lack them. A move that is none once planned again, or that the Board's rules
+   *  then refuse, places nothing, sends no PATCH and says nothing: the status change is made. The
+   *  PATCH's refusal leaves the status as Dispatch changed it. */
   const placeAfterChange = useCallback(
     async (
       key: string,
@@ -222,7 +266,7 @@ export function useBoardMoves(project: string): {
       onPlaced?: OnPlaced
     ) => {
       const change = planned(plan, answer);
-      if (change === undefined) return;
+      if (change === undefined || "refused" in change) return;
       const { status: _status, ...rest } = change.input;
       const body = Object.keys(rest).length === 0 ? undefined : rest;
       await place(key, change, body, placedMove, onPlaced, answer);
@@ -247,14 +291,23 @@ export function useBoardMoves(project: string): {
   /** A move of the status of a card with a parent or an open child, inside the Board's scope. No
    *  read of the listings is awaited in it: they wait for the turn this runs in. */
   const checked = useCallback(
-    async (key: string, status: string, plan: BoardMovePlan, onPlaced?: OnPlaced) => {
+    async (
+      key: string,
+      status: string,
+      plan: BoardMovePlan,
+      onPlaced?: OnPlaced,
+      onRefused?: OnRefused
+    ) => {
       const end = await checkStatus({
         key,
         patch: async () => {
-          // Planned again: the Board may have changed while the dry run was out.
+          // Planned again: the Board may have changed while the dry run was out. A move that is
+          // none now places nothing and tells no one, and one the Board's rules refuse now says
+          // why.
           const change = planned(plan, null);
-          if (change === undefined) {
-            onPlaced?.();
+          if (change === undefined) return;
+          if ("refused" in change) {
+            onRefused?.(change.refused);
             return;
           }
           const { refusal } = await place(key, change, change.input, placedMove, onPlaced);
@@ -269,19 +322,27 @@ export function useBoardMoves(project: string): {
     [asked, checkStatus, place, placeAfterChange, placedMove]
   );
   const move = useCallback(
-    async (key: string, plan: BoardMovePlan, onPlaced?: OnPlaced) => {
+    async (key: string, plan: BoardMovePlan, onPlaced?: OnPlaced, onRefused?: OnRefused) => {
       const change = planned(plan, null);
       if (change === undefined) {
         onPlaced?.();
         return;
       }
-      // The status the move writes, where it moves the card to another column.
+      if ("refused" in change) {
+        onRefused?.(change.refused);
+        return;
+      }
+      // The status the move writes, where it moves the card to another column. Only such a move
+      // reads the card, from the first listing that holds it: each listing answered holds it.
       const status = typeof change.input.status === "string" ? change.input.status : undefined;
-      const card = listingsHolding(queryClient, project, new Set([key]))
-        .flatMap(({ issues }) => issues)
-        .find((issue) => issue.key === key);
+      const card =
+        status === undefined
+          ? undefined
+          : listingsHolding(queryClient, project, new Set([key]))[0]?.issues.find(
+              (issue) => issue.key === key
+            );
       if (status !== undefined && card !== undefined && cardHasParentOrOpenChild(card)) {
-        await inScope(() => checked(key, status, plan, onPlaced));
+        await inScope(() => checked(key, status, plan, onPlaced, onRefused));
         await refetch();
         return;
       }

@@ -413,6 +413,49 @@ test.each([
   expect(table.current.leftBehind).toEqual(other);
 });
 
+// The same rule holds for the end of this tab's own move, which runs under the listing's lock.
+// Another tab's record, left behind, reached this tab's store while that move ran, in place of
+// the move's own record. The move's end leaves that record in the store, and takes it in, and
+// looks at its lock, only once the lock goes, so it offers to Finish or Dismiss it. The browser
+// here answers no wait for the lock, so an offer this tab withdrew to wait for its own lock would
+// stay withdrawn.
+test("an end that finds another tab's record left behind in place of its own offers to Finish or Dismiss that record", async () => {
+  const client = new QueryClient();
+  undraws.push(() => client.clear());
+  const locks = locksAnsweringNoWait(browserLocks());
+  const table = tableIn("tab-one", client, locks);
+  const { promise: moving, resolve: moved } = Promise.withResolvers<void>();
+  undraws.push(moved);
+  let begun: Promise<Begun<void>> | undefined;
+  act(() => {
+    begun = table.current.begin({ kind: "startNext", keys: ["CORE-1"] }, async (record) => {
+      await moving;
+      table.current.end(record.id);
+    });
+  });
+  await waitFor(() => expect(readTableAction("CORE")?.tab).toBe("tab-one"));
+  const other: TableAction = {
+    id: "left-behind",
+    kind: "startNext",
+    project: "CORE",
+    keys: ["CORE-3"],
+    tab: "tab-two",
+    startedAt: Date.now() - 60_000,
+    writes: {},
+  };
+  localStorage.setItem(tableStorageKey("CORE"), JSON.stringify({ ...LAYOUT, action: other }));
+
+  await act(async () => {
+    moved();
+    await begun;
+  });
+  // Every lock request and query the browser answers is answered and drawn before the reading.
+  await act(settle);
+  expect(readTableAction("CORE")).toEqual(other);
+  expect(table.current.action).toEqual(other);
+  expect(table.current.leftBehind).toEqual(other);
+});
+
 // D12: the table hears another tab's record, and its end, through the window's `storage` event,
 // which reaches every tab but the one that wrote.
 test("a storage event brings another tab's record into the table, and then its end", () => {
