@@ -45,10 +45,18 @@ func partsOf(t *testing.T, name string) []string {
 }
 
 // hashed is a part cut to head and followed by `_` and the first digits lowercase hex digits of
-// sha256 of whole, as BesideBranch writes a task's id or a role too long for its room.
+// sha256 of whole, as BesideBranch writes a role too long for its room.
 func hashed(head, whole string, digits int) string {
 	sum := sha256.Sum256([]byte(whole))
 	return head + "_" + hex.EncodeToString(sum[:])[:digits]
+}
+
+// cutTask is a task's id cut to head and followed by `__` and the first 32 lowercase hex digits of
+// sha256 of whole, as BesideBranch writes an id whose escaping is longer than its room. The mark
+// is two bytes, which no escaping holds, so no id that fits is written this way.
+func cutTask(head, whole string) string {
+	sum := sha256.Sum256([]byte(whole))
+	return head + "__" + hex.EncodeToString(sum[:])[:32]
 }
 
 // roomOf is the bytes a task's part may hold in a branch of issue at generation: GitHub's 255-byte
@@ -62,7 +70,7 @@ func roomOf(issue string, generation uint64) int {
 // with legion/, the prefix every issue branch and every task branch has, so BranchIssue takes none
 // of them. A task's id is a plan block's id, which can hold any byte, so the name writes each byte
 // of it outside [A-Za-z0-9-] as `_` and two uppercase hex digits, and an escaping longer than the
-// room GitHub's 255-byte ref leaves cut on an escape's edge to 33 bytes less, then `_` and 32
+// room GitHub's 255-byte ref leaves cut on an escape's edge to 34 bytes less, then `__` and 32
 // lowercase hex digits of the id's sha256; a role over 32 bytes is cut to 15, then `_` and 16 hex
 // digits. Every non-empty id gives a name git takes as a branch whose ref is at most 255 bytes,
 // with the longest fix and role too; each name matches back to its id among the ids it is given,
@@ -73,7 +81,7 @@ func roomOf(issue string, generation uint64) int {
 func TestABesideBranchIsNoIssueOrTaskBranch(t *testing.T) {
 	const issue = "ACME-42"
 	room := roomOf(issue, 1)
-	kept := room - 33
+	kept := room - 34
 	plain255, accents := strings.Repeat("a", 255), strings.Repeat("é", 90)
 	cases := []struct {
 		issue      string
@@ -94,17 +102,17 @@ func TestABesideBranchIsNoIssueOrTaskBranch(t *testing.T) {
 		{issue, 1, "a/b", "a_2Fb", 1, RoleImplementer},
 		{issue, 1, "@{-1}", "_40_7B-1_7D", 1, RoleTester},
 		{issue, 1, strings.Repeat("a", room), strings.Repeat("a", room), 1, RoleTester},
-		{issue, 1, strings.Repeat("a", room+1), hashed(strings.Repeat("a", kept), strings.Repeat("a", room+1), 32), 1, RoleTester},
-		{issue, 1, plain255, hashed(strings.Repeat("a", kept), plain255, 32), 1, RoleImplementer},
-		{issue, 1, accents, hashed(strings.Repeat("_C3_A9", kept/6), accents, 32), 1, RoleImplementer},
+		{issue, 1, strings.Repeat("a", room+1), cutTask(strings.Repeat("a", kept), strings.Repeat("a", room+1)), 1, RoleTester},
+		{issue, 1, plain255, cutTask(strings.Repeat("a", kept), plain255), 1, RoleImplementer},
+		{issue, 1, accents, cutTask(strings.Repeat("_C3_A9", kept/6), accents), 1, RoleImplementer},
 		{issue, 1, strings.Repeat("a", kept-1) + strings.Repeat("é", 20),
-			hashed(strings.Repeat("a", kept-1), strings.Repeat("a", kept-1)+strings.Repeat("é", 20), 32), 1, RoleTester},
+			cutTask(strings.Repeat("a", kept-1), strings.Repeat("a", kept-1)+strings.Repeat("é", 20)), 1, RoleTester},
 		{issue, 1, strings.Repeat("a", kept-2) + strings.Repeat("é", 20),
-			hashed(strings.Repeat("a", kept-2), strings.Repeat("a", kept-2)+strings.Repeat("é", 20), 32), 1, RoleTester},
-		// INFRA-5392 at generation 1 leaves 169 bytes, 136 of them before the hash: 45 escapes, the
+			cutTask(strings.Repeat("a", kept-2), strings.Repeat("a", kept-2)+strings.Repeat("é", 20)), 1, RoleTester},
+		// INFRA-5392 at generation 1 leaves 169 bytes, 135 of them the cut escaping: 45 escapes, the
 		// last one the first byte of an é, with the longest fix and role.
 		{"INFRA-5392", 1, strings.Repeat("é", 200),
-			hashed(strings.Repeat("_C3_A9", 22)+"_C3", strings.Repeat("é", 200), 32), 2147483647, Role(strings.Repeat("r", 32))},
+			cutTask(strings.Repeat("_C3_A9", 22)+"_C3", strings.Repeat("é", 200)), 2147483647, Role(strings.Repeat("r", 32))},
 	}
 	ids := make([]string, len(cases))
 	for i, c := range cases {
@@ -204,7 +212,7 @@ func TestABesideBranchIsNoIssueOrTaskBranch(t *testing.T) {
 		shared := strings.Repeat("a", room+10)
 		one, two := shared+"x", shared+"y"
 		first, second := besideName(t, issue, 1, one, 1, RoleTester), besideName(t, issue, 1, two, 1, RoleTester)
-		head := strings.Repeat("a", kept) + "_"
+		head := strings.Repeat("a", kept) + "__"
 		if first == second || !strings.HasPrefix(partsOf(t, first)[2], head) || !strings.HasPrefix(partsOf(t, second)[2], head) {
 			t.Fatalf("the ids give %q and %q, want two names that each cut the shared bytes and differ in their hash", first, second)
 		}
@@ -234,7 +242,7 @@ func TestABesideBranchIsNoIssueOrTaskBranch(t *testing.T) {
 	})
 
 	t.Run("an issue's key that leaves the task no room is an error", func(t *testing.T) {
-		over := strings.Repeat("A", 145) + "-1" // 147 bytes, with the generation's 1 byte 148
+		over := strings.Repeat("A", 144) + "-1" // 146 bytes, which leaves the task 33, one under a cut id's 34
 		if name, err := BesideBranch(over, 1, "a", 1, RoleTester); err == nil || name != "" || !strings.Contains(err.Error(), over) {
 			t.Errorf("BesideBranch of a %d-byte key = %q, %v; want no name and an error naming the key", len(over), name, err)
 		}
@@ -244,11 +252,11 @@ func TestABesideBranchIsNoIssueOrTaskBranch(t *testing.T) {
 		if prefix, err := BesideTaskPrefix(over, 1, "a"); err == nil || prefix != "" {
 			t.Errorf("BesideTaskPrefix of a %d-byte key = %q, %v; want an error", len(over), prefix, err)
 		}
-		// The control: a key one byte shorter leaves the task the 33 bytes a cut id needs, and
+		// The control: a key one byte shorter leaves the task the 34 bytes a cut id needs, and
 		// gives a name within GitHub's ref even for an id that must be cut.
-		under := strings.Repeat("A", 144) + "-1"
+		under := strings.Repeat("A", 143) + "-1"
 		name := besideName(t, under, 1, plain255, 1234567890, Role(strings.Repeat("r", 32)))
-		if part := partsOf(t, name)[2]; part != hashed("", plain255, 32) {
+		if part := partsOf(t, name)[2]; part != cutTask("", plain255) {
 			t.Errorf("the task's part under a %d-byte key is %q, want the hash alone", len(under), part)
 		}
 		wellFormed(t, name)
@@ -276,8 +284,8 @@ func TestABesideBranchIsNoIssueOrTaskBranch(t *testing.T) {
 			"other/legion-beside/INFRA-1/1/a/fix-1/tester",
 			at("a b"), at("a.b"), at(""), at("_"), at("_41"), at("_2e"), at("a_2"), at("a_"), at("__"), at("_xy"),
 			at(strings.Repeat("a", roomOf("INFRA-1", 1)+1)),
-			at(strings.Repeat("a", roomOf("INFRA-1", 1)-33) + "_" + strings.Repeat("ab", 15) + "a"),
-			at(strings.Repeat("a", roomOf("INFRA-1", 1)-32) + "_" + strings.Repeat("ab", 16)),
+			at(strings.Repeat("a", roomOf("INFRA-1", 1)-34) + "__" + strings.Repeat("ab", 15) + "a"),
+			at(strings.Repeat("a", roomOf("INFRA-1", 1)-33) + "__" + strings.Repeat("ab", 16)),
 		} {
 			if _, _, task, _, _, ok := MatchBesideBranch(branch, append([]string{"a", "", "A", "a b", "_", "a.b"}, ids...)); ok {
 				t.Errorf("MatchBesideBranch(%q) matched the task %q, want no beside branch", branch, task)
@@ -294,4 +302,60 @@ func TestABesideBranchIsNoIssueOrTaskBranch(t *testing.T) {
 			t.Errorf("control: BranchIssue(%q) = %q, %t; want INFRA-1, true", "legion/INFRA-1", issue, ok)
 		}
 	})
+}
+
+// A task id whose escaping fits its room and one whose escaping is cut are never written alike, so
+// the steps beside the fixes of two tasks never share a branch. The crafted id here is the one
+// that met the long id while a single `_` marked a cut id: the bytes of the long id's escaping
+// that the cut keeps, then the byte an escaping writes as `_` and the first two digits of that
+// id's hash, then its other digits, each of which an escaping writes as it stands. The control is
+// that meeting itself: the crafted id's part is the whole of that escaping, which is the name the
+// long id had under the one-byte mark, and each name still matches its own id alone.
+func TestACraftedTaskIdIsNoCutTaskId(t *testing.T) {
+	const issue = "ACME-42"
+	room := roomOf(issue, 1)
+	// The long id's hash must begin with two decimal digits of a byte no escaping writes as it
+	// stands: an escaping writes `_` and two uppercase hex digits, and a hash is lowercase, so a
+	// letter there is no byte's escaping, and a byte in [A-Za-z0-9-] is written without the `_`.
+	var long, digits string
+	var escaped byte
+	for n := 0; long == ""; n++ {
+		if n == 1000 {
+			t.Fatal("no id of the 1000 tried hashes to two decimal digits of an escaped byte")
+		}
+		id := strings.Repeat("a", room+1) + strconv.Itoa(n)
+		sum := sha256.Sum256([]byte(id))
+		hash := hex.EncodeToString(sum[:])[:32]
+		b, err := strconv.ParseUint(hash[:2], 16, 8)
+		if err != nil || hash[0] > '9' || hash[1] > '9' || besideByte(byte(b)) {
+			continue
+		}
+		long, digits, escaped = id, hash, byte(b)
+	}
+	// crafted escapes to room bytes: the run a cut of one `_` kept (room - 33 of them), the byte
+	// written `_` and the hash's first two digits, and the hash's other 30 digits.
+	crafted := strings.Repeat("a", room-33) + string([]byte{escaped}) + digits[2:]
+
+	longName := besideName(t, issue, 1, long, 1, RoleTester)
+	craftedName := besideName(t, issue, 1, crafted, 1, RoleTester)
+	if longName == craftedName {
+		t.Fatalf("the cut id %q… and the crafted id %q… both give %q", long[:8], crafted[:8], longName)
+	}
+	if part, want := partsOf(t, longName)[2], cutTask(strings.Repeat("a", room-34), long); part != want {
+		t.Errorf("the cut id is written %q, want %q", part, want)
+	}
+	if part, want := partsOf(t, craftedName)[2], strings.Repeat("a", room-33)+"_"+digits; part != want {
+		t.Errorf("control: the crafted id is written %q, want %q, the cut id's part under a one-byte mark", part, want)
+	}
+	for name, want := range map[string]string{longName: long, craftedName: crafted} {
+		if ref := "refs/heads/" + name; len(ref) > 255 {
+			t.Errorf("%q is %d bytes, over GitHub's 255", ref, len(ref))
+		}
+		if checked, err := checkRefFormat(t, name); err != nil || checked != name {
+			t.Errorf("git check-ref-format --branch %q = %q, %v; want the name taken as it is", name, checked, err)
+		}
+		if _, _, task, _, _, ok := MatchBesideBranch(name, []string{long, crafted}); !ok || task != want {
+			t.Errorf("MatchBesideBranch(%q, both ids) = %q, %t; want the id it was made from", name, task, ok)
+		}
+	}
 }

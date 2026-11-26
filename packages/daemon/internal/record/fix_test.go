@@ -626,6 +626,43 @@ func TestAFixStartIsNoPendingPhaseStart(t *testing.T) {
 	})
 }
 
+// EnqueueFixStart takes out only an older start of the same fix of the same task, which the start's
+// own branch names (claim.BesideBranch of the implementer). Two tasks of one issue at one
+// generation give two branches (claim's besideTask), so the fix 1 of task b never takes out the
+// fix 1 of task a: without the branch in the predicate it would, and task a's implementer would
+// never start. The control, kept: a second start of task a's fix 1, which names task a's branch,
+// does take the first out, so the predicate still replaces a resend of the same fix.
+func TestEnqueueFixStartKeepsTwoTasksApart(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	records := NewStore()
+	now := time.Date(2026, 11, 23, 15, 0, 0, 0, time.UTC)
+	branchA, err := claim.BesideBranch(fixIssue, 3, "a", 1, claim.RoleImplementer)
+	must(t, err)
+	branchB, err := claim.BesideBranch(fixIssue, 3, "b", 1, claim.RoleImplementer)
+	must(t, err)
+	if branchA == branchB {
+		t.Fatalf("the branches of tasks a and b are both %q, want two names", branchA)
+	}
+	start := func(task, branch string) OutboxRow {
+		row, err := NewOutboxRow(fixIssue, SuperviseRequest{Op: "start", Tree: fixIssue, Role: claim.RoleImplementer, Generation: 3,
+			Phase: phase.Implementing, Entry: 7, Task: task, Fix: 1, FixFrom: fixHeadX, FixBranch: branch}, now)
+		must(t, err)
+		return row
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.EnqueueFixStart(ctx, tx, start("Fix a's CI.", branchA)))
+		must(t, records.EnqueueFixStart(ctx, tx, start("Fix b's CI.", branchB)))
+		if got := tasksOf(queuedStarts(t, tx, fixIssue)); !slices.Equal(got, []string{"Fix a's CI.", "Fix b's CI."}) {
+			t.Fatalf("after fix 1 of tasks a and b the issue holds the starts %q, want both: b's branch must not take a's out", got)
+		}
+		must(t, records.EnqueueFixStart(ctx, tx, start("Fix a's CI again.", branchA)))
+		if got := tasksOf(queuedStarts(t, tx, fixIssue)); !slices.Equal(got, []string{"Fix b's CI.", "Fix a's CI again."}) {
+			t.Fatalf("after a second start of task a's fix the issue holds the starts %q, want b's left and a's resend in a's place", got)
+		}
+	})
+}
+
 // A step's binding to a branch beside a fix names that fix's number (StepStart.PushBranch), and
 // the text of the step reads that fix's pushes whichever fix of the task is the latest: FixAt
 // answers fix 1, ended, with its recorded push, while fix 2 runs; a number the task has not reached

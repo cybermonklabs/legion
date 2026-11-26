@@ -34,9 +34,9 @@ const besideBranchPrefix = "legion-beside/"
 // included (its GH005), and besideRefFixed is the bytes of such a ref that hold no part of the
 // branch: refs/heads/, the prefix, and the separators with `fix-`. The task's part is one string for
 // every fix and every step of the task, so its room leaves place for a fix of besideFixDigits digits
-// and a role's part of besideRoleMax bytes. A part that does not fit is cut and followed by `_` and
-// lowercase hex digits of sha256: besideTaskHash of them for a task's id, besideRoleHash for a role
-// cut to besideRoleKept bytes.
+// and a role's part of besideRoleMax bytes. A part that does not fit is cut and followed by
+// lowercase hex digits of sha256: a task's id by `__` and besideTaskHash of them, a role cut to
+// besideRoleKept bytes by `_` and besideRoleHash of them.
 const (
 	besideRefMax    = 255
 	besideRefFixed  = len("refs/heads/") + len(besideBranchPrefix) + len("/") + len("/") + len("/fix-") + len("/")
@@ -94,9 +94,9 @@ func BesideTaskPrefix(issue string, generation uint64, task string) (string, err
 	}
 	written := strconv.FormatUint(generation, 10)
 	room := besideTaskRoom(issue, written)
-	if room-besideTaskHash-1 < 0 {
+	if room-besideTaskHash-2 < 0 {
 		return "", fmt.Errorf("the branch beside a fix of %s at generation %s: the issue's key and the generation take %d bytes, which leaves the task's part %d bytes, under the %d a cut task id needs within GitHub's %d-byte ref",
-			issue, written, len(issue)+len(written), room, besideTaskHash+1, besideRefMax)
+			issue, written, len(issue)+len(written), room, besideTaskHash+2, besideRefMax)
 	}
 	return besideBranchPrefix + issue + "/" + written + "/" + besideTask(task, room) + "/", nil
 }
@@ -174,13 +174,22 @@ func besideRole(role Role) string {
 // besideTask is a task's id, which is not empty, as one component of a git ref of at most room
 // bytes: its escaping, each byte in [A-Za-z0-9-] as it is and every other byte, `_` itself
 // included, as `_` and its two uppercase hex digits. An escaping longer than room is cut to the
-// longest run of whole bytes' escapings within room - 33 bytes and followed by `_` and the first
+// longest run of whole bytes' escapings within room - 34 bytes and followed by `__` and the first
 // besideTaskHash lowercase hex digits of sha256 of the id's bytes. So the part holds no byte
 // outside [A-Za-z0-9_-], which git takes in a component at any place, and two ids are written
 // alike only where their cut escapings and their hashes' first 128 bits are.
+//
+// `__` marks the cut form because an escaping never holds it: every `_` an escaping writes opens
+// an escape, whose next byte is a hex digit. Under a mark of one `_`, a crafted id whose escaping
+// fits is written as a longer id's cut form — the kept bytes of that escaping, then the byte
+// written `_` and the first two digits of the longer id's hash, then the rest of those digits, all
+// of which an escaping writes as they stand — so the two tasks share every branch beside a fix,
+// and a step of one task's fix pushes to the other task's branch. Two tasks of one issue at one
+// generation must meet for that, which plan.Supported refuses while it takes a plan of one task;
+// the mark makes it impossible for a plan of any number.
 func besideTask(task string, room int) string {
 	const digits = "0123456789ABCDEF"
-	kept := room - besideTaskHash - 1
+	kept := room - besideTaskHash - 2
 	written := make([]byte, 0, len(task))
 	cut := 0
 	for i := range len(task) {
@@ -197,5 +206,5 @@ func besideTask(task string, room int) string {
 		return string(written)
 	}
 	sum := sha256.Sum256([]byte(task))
-	return string(written[:cut]) + "_" + hex.EncodeToString(sum[:])[:besideTaskHash]
+	return string(written[:cut]) + "__" + hex.EncodeToString(sum[:])[:besideTaskHash]
 }
