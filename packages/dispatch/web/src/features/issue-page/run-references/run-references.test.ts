@@ -4,8 +4,17 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
 import { ApiError, api } from "../../../api/client";
-import type { Agent, DispatchUser, ReferenceTarget, ReferenceTargets } from "../../../api/types";
+import type {
+  Actor,
+  Agent,
+  DispatchUser,
+  ReferenceTarget,
+  ReferenceTargets,
+} from "../../../api/types";
+import { runningAgent } from "../../credentials/agent-fixture";
 import { agentsQuery } from "../../refs/agent-registry";
+import { POST_MARK_WORDS, type PostDeletion } from "../../refs/post-marks";
+import type { ExtraReferenceRow } from "../../refs/ReferencedBy";
 import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
 import { parseNodeReference, shortForm } from "../../refs/routes";
 import { issueDetails } from "../decisions-filter/decisions-fixtures";
@@ -108,35 +117,13 @@ test("a run's row reads its question's words from the reading the tree read send
 // plain address.
 test("a run's row links to its run's page with ?issue_page=new and the issue's key where the issue's address carries it, and without them where it does not", () => {
   const issue = issueDetails();
-  type Address = { readonly pathname: string; readonly search: string };
-  function Links({ location }: { readonly location: Address | undefined }): ReactNode {
-    const { rows } = useRunRows(issue, false, location);
-    return createElement(NamedRunRows, {
-      draw: (named) =>
-        named.map((row) => createElement("a", { href: row.href, key: row.key }, row.excerpt)),
-      issue,
-      rows,
-    });
-  }
-  const linksAt = (location: Address | undefined) => {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    client.setQueryData(
-      issueTreeQuery(issue.key).queryKey,
-      treeOf([ISSUE_NODE, runNode(RUN)], [changedBy(KEY, RUN)])
-    );
-    const view = render(
-      createElement(
-        QueryClientProvider,
-        { client },
-        createElement(ReferenceNamesProvider, null, createElement(Links, { location }))
-      )
-    );
-    const hrefs = [...view.container.querySelectorAll("a")].map((link) =>
-      link.getAttribute("href")
-    );
-    view.unmount();
-    client.clear();
-    return hrefs;
+  const linksAt = (location: PageAddress) => {
+    const view = drawQuestions([runNode(RUN)], { location });
+    try {
+      return view.links();
+    } finally {
+      view.close();
+    }
   };
   const newPage = `/runs/${RUN}?issue_page=new&issue=${issue.key}`;
   expect(
@@ -158,18 +145,25 @@ test("a run's row links to its run's page with ?issue_page=new and the issue's k
   expect(linksAt(undefined), "with no address handed").toEqual([`/runs/${RUN}`]);
 });
 
+/** Where the page is, as `useRunRows`' caller hands it, or undefined where it hands none. */
+type PageAddress = Parameters<typeof useRunRows>[2];
+
 /** Details' run rows for `runs`, the runs the issue's tree read answers, each question drawn as
- *  a paragraph of its own under the page's store of names, beside what another page publishes
- *  there (`published`) where a case gives it. The batched read of reference targets answers by
- *  `batch`, and a read of one comment or one block of its own is refused, which a case counts.
- *  `answerRuns` answers the tree read anew, as a refresh of it does. */
+ *  a link of its own to the address its row links to, under the page's store of names, beside
+ *  what another page publishes there (`published`) where a case gives it. The rows are read at
+ *  the page's address `location`, where a case gives one. The batched read of reference targets
+ *  answers by `batch`, and a read of one comment or one block of its own is refused, which a
+ *  case counts. `answerRuns` answers the tree read anew, as a refresh of it does, and `handed`
+ *  holds each list of named rows `NamedRunRows` handed its `draw`, in order. */
 function drawQuestions(
   runs: readonly TreeAnswerNode[],
   {
     batch = () => Promise.resolve({ targets: [] }),
+    location,
     published,
   }: {
     readonly batch?: (refs: readonly string[]) => Promise<ReferenceTargets>;
+    readonly location?: PageAddress;
     readonly published?: PublishedReferences;
   } = {}
 ) {
@@ -199,10 +193,16 @@ function drawQuestions(
         children
       )
     );
+  const handed: (readonly ExtraReferenceRow[])[] = [];
   function Questions(): ReactNode {
-    const { rows } = useRunRows(issue, false);
+    const { rows } = useRunRows(issue, false, location);
     return createElement(NamedRunRows, {
-      draw: (named) => named.map((row) => createElement("p", { key: row.key }, row.excerpt)),
+      draw: (named) => {
+        handed.push(named);
+        return named.map((row) =>
+          createElement("a", { href: row.href, key: row.key }, row.excerpt)
+        );
+      },
       issue,
       rows,
     });
@@ -221,7 +221,9 @@ function drawQuestions(
       blocks.mockRestore();
     },
     comments,
-    drawn: () => [...container.querySelectorAll("p")].map((row) => row.textContent ?? ""),
+    drawn: () => [...container.querySelectorAll("a")].map((row) => row.textContent ?? ""),
+    handed,
+    links: () => [...container.querySelectorAll("a")].map((row) => row.getAttribute("href")),
   };
 }
 
@@ -311,10 +313,12 @@ test("a run's bare issue key joins the one batch and is named by its key and tit
 
 // Decision 350: where the batched read answers that nothing answers to a target a run's question
 // cites, or answers with no words to name it by, the question draws the reference as its asker
-// wrote it and reads it no more, as it draws every reference the read has not answered yet. The
-// read answers a target the reader may not see as it answers one nothing addresses, gone with no
-// name (`reference_targets.go`), so the reader learns nothing of it, and the question draws it
-// the same way.
+// wrote it, as it draws every reference the read has not answered yet, and no read of its own
+// asks for it. It stays in the batch's set while the question cites it (`useRunTargets`'
+// `lastAsked`), so a read of the batch under a new set, where the references the lines cite
+// change, asks for it again. The read answers a target the reader may not see as it answers one
+// nothing addresses, gone with no name (`reference_targets.go`), so the reader learns nothing of
+// it, and the question draws it the same way.
 test("a run's reference the batch answers gone or with no name reads as its author wrote it", async () => {
   const named = "dispatch://CORE-2/comment/4a6c8e0b-2d4f-4a6c-8e0b-2d4f6a8c0e1a";
   const gone = "dispatch://CORE-2/comment/5b7d9f1c-3e5a-4b7d-9f1c-3e5a7b9d1f2b";
@@ -501,6 +505,56 @@ test("a run's role that no session holds reads as its author wrote it while its 
   } finally {
     view.close();
     agents.mockRestore();
+  }
+});
+
+// A run's question names a deleted post it cites by the post's deleted line, which names the
+// post's actor by the page's rule for an author (`LineNames.author`). The agent registry makes
+// that rule anew at every poll, so a poll that names the actor as before - a live agent heard
+// again, nothing renamed - hands `draw` the rows it handed before, named by the same names
+// (`useDeletedActorsAuthor`), and a poll that renames the actor names the row anew.
+test("a registry poll that names a deleted post's actor alike names no run row anew, and one that renames the actor does", async () => {
+  const writer = "writer-session";
+  const helper = "helper-session";
+  const comment = `dispatch://${KEY}/comment/${COMMENT}`;
+  const by: Actor = { id: writer, kind: "session" };
+  const deleted = new Map<string, PostDeletion>([[comment, { at: "2026-11-17T08:30:00Z", by }]]);
+  // The page publishes the deleted comment's name with the delete, as its batched read does: its
+  // deleted line, the actor named as no registry knows them.
+  const published = publishedNames(
+    new Map([[comment, `${POST_MARK_WORDS.deleted_by} ${writer}`]]),
+    { deleted }
+  );
+  const view = drawQuestions([runNode(RUN, ASKED_AT, `Does the release wait on ${comment}?`)], {
+    published,
+  });
+  const poll = (helperSeen: number, writerTitle: string) =>
+    act(() => {
+      view.client.setQueryData(agentsQuery().queryKey, [
+        runningAgent({ session_id: writer, title: writerTitle }),
+        runningAgent({ last_seen: helperSeen, session_id: helper, title: "Helper" }),
+      ]);
+    });
+  try {
+    poll(1, "Planner");
+    const planner = `Does the release wait on ${POST_MARK_WORDS.deleted_by} Planner?`;
+    await screen.findByText(planner);
+    const rows = view.handed.at(-1);
+    const handed = view.handed.length;
+    // A poll that answers the registry anew: the helper, still live, was heard again.
+    poll(2, "Planner");
+    expect(view.handed.length, "the rows were not drawn again at the poll").toBeGreaterThan(handed);
+    expect(view.handed.at(-1), "the rows named anew at a poll that renames nobody").toBe(rows);
+    expect(view.drawn()).toEqual([planner]);
+    // A poll that renames the deleted comment's actor.
+    poll(2, "Reviewer");
+    expect(view.handed.at(-1)).not.toBe(rows);
+    expect(view.drawn()).toEqual([
+      `Does the release wait on ${POST_MARK_WORDS.deleted_by} Reviewer?`,
+    ]);
+    expect(view.batch, "the deleted comment in the batched read").not.toHaveBeenCalled();
+  } finally {
+    view.close();
   }
 });
 

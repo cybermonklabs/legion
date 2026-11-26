@@ -23,7 +23,7 @@ import { ApiError, api } from "../../../api/client";
 import { whoAmIQuery } from "../../../api/queries";
 import { queryRetry } from "../../../api/query-client";
 import type { GraphEdge, GraphReferences, ReferenceTargets } from "../../../api/types";
-import { ReferenceNamesProvider } from "../../refs/reference-names";
+import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
 import { referencesQuery } from "../../refs/reference-target";
 import { parseNodeReference, RUN_PATH, shortForm } from "../../refs/routes";
 import { NotFoundPage } from "../../shell/NotFoundPage";
@@ -75,14 +75,27 @@ afterEach(() => {
   restore = undefined;
 });
 
-/** The page at the run `id`'s address, with `search` after it, reading through `client`. */
-function runPage(client: QueryClient, id = RUN, search = ""): ReactElement {
+/** How a case draws the page: the route's `element`, `RunPage` where none is given; the address
+ *  it opens at (`path`), the run `RUN`'s where none is given; and what another page publishes to
+ *  the page's store of names beside it (`published`), where a case gives it. */
+interface PageOptions {
+  readonly element?: ReactElement;
+  readonly path?: string;
+  readonly published?: PublishedReferences;
+}
+
+/** The page as `options` draw it (`PageOptions`), reading through `client`. */
+function runPage(
+  client: QueryClient,
+  { element = <RunPage />, path = `/runs/${RUN}`, published }: PageOptions = {}
+): ReactElement {
   return (
     <QueryClientProvider client={client}>
       <ReferenceNamesProvider>
-        <MemoryRouter initialEntries={[`/runs/${id}${search}`]}>
+        {published === undefined ? null : <Publisher published={published} />}
+        <MemoryRouter initialEntries={[path]}>
           <Routes>
-            <Route element={<RunPage />} path={RUN_PATH} />
+            <Route element={element} path={RUN_PATH} />
           </Routes>
         </MemoryRouter>
       </ReferenceNamesProvider>
@@ -90,12 +103,12 @@ function runPage(client: QueryClient, id = RUN, search = ""): ReactElement {
   );
 }
 
-/** The page at the run `id`'s address, with `search` after it, its one read answered by
- *  `answer`, in a client of its own that waits for no retry. */
-function draw(answer: () => Promise<GraphReferences>, id = RUN, search = "") {
+/** The page as `options` draw it (`PageOptions`), its one read answered by `answer`, in a client
+ *  of its own that waits for no retry. */
+function draw(answer: () => Promise<GraphReferences>, options: PageOptions = {}) {
   const getReferences = spyOn(api, "getReferences").mockImplementation(answer);
   const client = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } });
-  const view = render(runPage(client, id, search));
+  const view = render(runPage(client, options));
   restore = () => {
     getReferences.mockRestore();
     view.unmount();
@@ -158,7 +171,9 @@ test("a 404 draws NotFoundPage", async () => {
   }
   // An id that is no lowercase uuid names no run, and nothing is asked for it.
   for (const id of ["not-a-run", RUN.toUpperCase()]) {
-    const { getReferences, view } = draw(() => Promise.resolve(answerOf([])), id);
+    const { getReferences, view } = draw(() => Promise.resolve(answerOf([])), {
+      path: `/runs/${id}`,
+    });
     expectNotFoundPage(view.container, alone);
     expect(getReferences).toHaveBeenCalledTimes(0);
     restore?.();
@@ -192,17 +207,7 @@ test("a signed-in reader whose setting is off has the run's page at its address 
       // (`network.ts`).
       await client.prefetchQuery(whoAmIQuery());
     }
-    const view = render(
-      <QueryClientProvider client={client}>
-        <ReferenceNamesProvider>
-          <MemoryRouter initialEntries={[path]}>
-            <Routes>
-              <Route element={<RunRoute />} path={RUN_PATH} />
-            </Routes>
-          </MemoryRouter>
-        </ReferenceNamesProvider>
-      </QueryClientProvider>
-    );
+    const view = render(runPage(client, { element: <RunRoute />, path }));
     return {
       close: () => {
         view.unmount();
@@ -667,56 +672,43 @@ test("a changed node's line names each reference by its name once read, and as i
     asked: [unnamed],
   });
   const runAddress = `dispatch://interaction/${RUN}`;
-  const getReferences = spyOn(api, "getReferences").mockResolvedValue(answerOf([], [changed]));
   const answer = Promise.withResolvers<ReferenceTargets>();
   const batch = spyOn(api, "getReferenceTargets").mockReturnValue(answer.promise);
   const perTarget = spyOn(api, "getComment").mockRejectedValue(new ApiError(404, {}));
-  const client = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } });
-  const view = render(
-    <QueryClientProvider client={client}>
-      <ReferenceNamesProvider>
-        <Publisher published={published} />
-        <MemoryRouter initialEntries={[`/runs/${RUN}`]}>
-          <Routes>
-            <Route element={<RunPage />} path={RUN_PATH} />
-          </Routes>
-        </MemoryRouter>
-      </ReferenceNamesProvider>
-    </QueryClientProvider>
-  );
-  restore = () => {
-    getReferences.mockRestore();
+  try {
+    const { getReferences } = draw(() => Promise.resolve(answerOf([], [changed])), {
+      published,
+    });
+    await screen.findByRole("heading", { level: 1, name: RUN_WORD });
+    const what = screen.getByRole("region", { name: RUN_PAGE_WORDS.what_changed });
+    // While the batch is out, the issue reads as its author wrote it.
+    expect(
+      await within(what).findByRole("link", {
+        name: `Close ${issue} once Warm the cache first and ${unnamed} land.`,
+      })
+    ).toHaveAttribute("href", "/issues/CORE-1");
+    expect(batch.mock.calls).toEqual([[[issue]]]);
+    await act(async () =>
+      answer.resolve({
+        targets: [{ gone: false, kind: "issue", name: "Pin the release date", ref: issue }],
+      })
+    );
+    expect(
+      await within(what).findByRole("link", {
+        name: `Close CORE-2 Pin the release date once Warm the cache first and ${unnamed} land.`,
+      })
+    ).toHaveAttribute("href", "/issues/CORE-1");
+    expect(what.textContent).not.toContain(shortForm(route));
+    expect(batch).toHaveBeenCalledTimes(1);
+    expect(perTarget, "a comment read of its own").toHaveBeenCalledTimes(0);
+    expect(
+      getReferences.mock.calls.filter(([to]) => to !== runAddress),
+      "a block read of its own"
+    ).toEqual([]);
+  } finally {
     batch.mockRestore();
     perTarget.mockRestore();
-    view.unmount();
-    client.clear();
-  };
-  await screen.findByRole("heading", { level: 1, name: RUN_WORD });
-  const what = screen.getByRole("region", { name: RUN_PAGE_WORDS.what_changed });
-  // While the batch is out, the issue reads as its author wrote it.
-  expect(
-    await within(what).findByRole("link", {
-      name: `Close ${issue} once Warm the cache first and ${unnamed} land.`,
-    })
-  ).toHaveAttribute("href", "/issues/CORE-1");
-  expect(batch.mock.calls).toEqual([[[issue]]]);
-  await act(async () =>
-    answer.resolve({
-      targets: [{ gone: false, kind: "issue", name: "Pin the release date", ref: issue }],
-    })
-  );
-  expect(
-    await within(what).findByRole("link", {
-      name: `Close CORE-2 Pin the release date once Warm the cache first and ${unnamed} land.`,
-    })
-  ).toHaveAttribute("href", "/issues/CORE-1");
-  expect(what.textContent).not.toContain(shortForm(route));
-  expect(batch).toHaveBeenCalledTimes(1);
-  expect(perTarget, "a comment read of its own").toHaveBeenCalledTimes(0);
-  expect(
-    getReferences.mock.calls.filter(([to]) => to !== runAddress),
-    "a block read of its own"
-  ).toEqual([]);
+  }
 });
 
 // A key a changed node's words write bare is named as every one-line place names one: by its key
@@ -787,7 +779,7 @@ test("a run's page opened from an issue's new page keeps ?issue_page=new on its 
   );
   /** Each link of the run's page at its address with `search`, by its name. */
   const linksAt = async (search: string) => {
-    draw(() => Promise.resolve(answer), RUN, search);
+    draw(() => Promise.resolve(answer), { path: `/runs/${RUN}${search}` });
     await screen.findByRole("heading", { level: 1, name: RUN_WORD });
     const links = Object.fromEntries(
       screen.getAllByRole("link").map((link) => [link.textContent, link.getAttribute("href")])

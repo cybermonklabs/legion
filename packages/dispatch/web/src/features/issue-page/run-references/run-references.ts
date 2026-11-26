@@ -11,7 +11,7 @@ import {
 
 import { referenceTargetsQuery } from "../../../api/queries";
 import type { GraphEdge, IssueDetails } from "../../../api/types";
-import { useAgentText } from "../../refs/AgentName";
+import { type AgentText, useAgentText } from "../../refs/AgentName";
 import { isPartyRoute } from "../../refs/party-references";
 import { useReferenceNames } from "../../refs/plain-text";
 import type { ExtraReferenceRow } from "../../refs/ReferencedBy";
@@ -121,33 +121,27 @@ function runRow(run: TreeAnswerNode, newPage: string | undefined): ExtraReferenc
   };
 }
 
-/** The references a run's one-line places cite (`namedReferences`), each once. Each is named by
- *  the rule every plain line of the page names a reference by (`one-line.ts`'s
- *  `referenceStandIns`), from the names `RunReferenceNames` hands it, and is drawn as the words
- *  its author wrote until it has a name and wherever it has none. */
+/** The references a run's one-line places cite (`namedReferences`), each once, parted as
+ *  `RunReferenceNames` names them. */
 interface RunReferences {
   /** Each target the one batch may ask for (`useRunTargets`), by the route the text reader read
-   *  it to: every address but a party's, an issue among them, and each key written bare, as its
-   *  issue's own reference, since the rule names an issue, an address or a bare key, by its key
-   *  and its title only where the page published that title. */
+   *  it to: every address but a party's, and each key written bare, as its issue's own
+   *  reference. */
   readonly batched: ReadonlyMap<string, DispatchReferenceRoute>;
-  /** Each party, which the batch does not ask for and a read of its own names
-   *  (`useReferenceNames`). */
+  /** Each party, which a read of its own names (`useReferenceNames`). */
   readonly parties: readonly string[];
 }
 
 /** The references that `texts` name by the page's name, as a one-line place reads them, in each
  *  text without a typed block's source lines: the addresses `referenceStandIns` names, found as
  *  its `standIn` finds them, by `rowReferences`, and each key a text writes bare, which that
- *  reader, handed no issue keys, reads as no reference. The rule names a bare key only where the
- *  page published its issue's title (`knownIssueKeys`), and on the run's page nothing else asks
- *  for one, so each is asked of the one batch too, as its issue's own reference with the issue's
- *  route, found by the reading the outline's batch asks for it by (`citedReferences`). A word
- *  that reading takes for a key and that names no issue (`UTF-16`) is answered gone, and is drawn
- *  as its author wrote it. A reference on a typed block's own line is left out, since no line
- *  draws it. Each is sorted here, once, by the route that reader parsed it to: a party
- *  (`isPartyRoute`) to a read of its own, and every other target, an issue among them, to the
- *  one batch.
+ *  reader, handed no issue keys, reads as no reference. Each bare key is found by the reading the
+ *  outline's batch asks for it by (`citedReferences`) and given its issue's route, so the one
+ *  batch asks for it, since on the run's page nothing else does; a word that reading takes for a
+ *  key though it names no issue (`UTF-16`) is found and asked for too. A reference on a typed
+ *  block's own line is left out, since no line draws it. Each is sorted here, once, by the route
+ *  that reader parsed it to, as `RunReferenceNames` names it: a party (`isPartyRoute`) apart, and
+ *  every other target to the one batch.
  *
  *  The set holds every reference of the whole texts, so it holds more than a line draws where a
  *  caller cuts its line from a text, as the run's page cuts a changed node's first line
@@ -277,14 +271,39 @@ function useLastAnswered(asked: ReadonlySet<string>, answered: boolean): Readonl
   return last.current;
 }
 
-/** Draws a run's one-line places (`draw`) with what each reference they cite is named by
- *  (`LineNames`), as every plain line of the page names one (`referenceStandIns`): the names the
- *  page published, which hold each target the one batch named (`useRunTargets`), and each
- *  party's name from a read of its own. `issue` is the issue the page shows: the rule tells a
- *  whole document of it by it (`documentWord`), and the batch asks no title for its own spec,
- *  which the issue read names. The run's page shows none. The batch's references are handed to
- *  what `draw` draws as asked for from the first render, before the store holds them, so no
- *  surface it draws mounts a read of its own for one while the batch is out. */
+/**
+ * Draws a run's one-line places (`draw`) with what each reference they cite is named by
+ * (`LineNames`), by the rule every plain line of the page names one by (`one-line.ts`'s
+ * `referenceStandIns`): an issue by its key, a space and its title, a block or a whole document
+ * as its chip names it, a deleted post by its deleted line, which names its actor by the page's
+ * rule for an author, and a post its author edited with its mark. This is the one statement of
+ * how a run's references are named, for the run's rows in Details and for the run's page alike;
+ * every other comment points here. The names come from two places:
+ *
+ * - A party (`isPartyRoute`: an agent, a role or a person) is named by a read of its own
+ *   (`useReferenceNames`), or by the page's name for it where another surface of the page
+ *   published one, and the batch never asks for it (decision 340).
+ * - Every other target, an issue's address among them, and each key written bare, which the
+ *   batch asks for as its issue's own reference (`namedReferences`), is named by the page's
+ *   published name for it alone, and is never read on its own (decision 515). Where no other
+ *   surface of the page has named it or asked for it, that name comes from the run's one
+ *   batched read of reference targets (`referenceTargetsQuery`, `useRunTargets`). A key written
+ *   bare is read as a reference only once the page has published its issue's title
+ *   (`knownIssueKeys`).
+ *
+ * Each reference reads as the words its author wrote until its read names it, and wherever its
+ * read answers no name (decision 350): a target that is gone, one the reader may not see, which
+ * the batch answers as gone, a short reference two targets carry, which the batch answers as
+ * ambiguous, a target with no words to name it by, and a party its read names nothing for, as a
+ * person Dispatch does not know and a role no session holds. No reference is ever drawn by its
+ * short form.
+ *
+ * `issue` is the issue the page shows: the rule tells a whole document of it by it
+ * (`documentWord`), and the batch asks no title for its own spec, which the issue read names.
+ * The run's page shows none. The batch's references are handed to what `draw` draws as asked for
+ * from the first render, before the store holds them, so no surface it draws mounts a read of
+ * its own for one while the batch is out.
+ */
 export function RunReferenceNames({
   draw,
   issue,
@@ -301,8 +320,13 @@ export function RunReferenceNames({
   return createElement(PublishedReferenceNames, props);
 }
 
-/** The names a run's one-line places are drawn with, read as `RowText.tsx`'s `useRowNames` reads
- *  a row's: the page's published names, its rule for an author and the issue keys it named. */
+/** The names a run's one-line places are drawn with, as `RunReferenceNames` says, read as
+ *  `RowText.tsx`'s `useRowNames` reads a row's: the page's published names, its rule for an
+ *  author and the issue keys it named. This is `one-line.ts`'s `useIssueNames` with each party's
+ *  own read added, written again here rather than called: that hook takes the key of the issue a
+ *  page shows, and the run's page shows none, and changing it to take no issue, or exporting the
+ *  `useDeletedActorsAuthor` it reads its author by, would change a line of that file, and R6
+ *  admits none this round. */
 function RunNameReader({
   draw,
   issue,
@@ -313,13 +337,10 @@ function RunNameReader({
   parties: RunReferences["parties"];
 }): ReactNode {
   const { ambiguous, deleted, edited, lines, names: published } = useKnownReferences();
-  const { author } = useAgentText();
+  const author = useDeletedActorsAuthor(deleted);
   const issues = useMemo(() => knownIssueKeys(published), [published]);
-  // A target the batch may ask for is named by the page's name for it alone, and is never read on
-  // its own: that read would be the read per target that decision 515 removes. Only a party is
-  // read here, since the batch does not ask for it; the read answers it no name while it is out
-  // and where Dispatch knows no such party, so it stays out of the names and the rule draws it as
-  // the words its author wrote (decision 340).
+  // Only a party is read here, as `RunReferenceNames` says, and one its read names nothing for
+  // stays out of the names.
   const { names: read, reads } = useReferenceNames(parties, undefined);
   const names = useMemo(() => {
     let named: Map<string, string> | undefined;
@@ -336,6 +357,24 @@ function RunNameReader({
     [ambiguous, author, deleted, edited, issue, issues, lines, names]
   );
   return createElement(Fragment, null, reads, draw(lineNames));
+}
+
+/** The page's rule for an author (`AgentText.author`), which a run's one-line place reads only
+ *  through the deleted line of a post in `deleted`. The rule is made anew at every poll of the
+ *  agent registry, and each new one would build `LineNames` and every run row anew, so the rule
+ *  read before is kept while `deleted` stands and the new rule names every actor in it as the
+ *  kept one does. This is `one-line.ts`'s `useDeletedActorsAuthor`, written again here rather
+ *  than shared, since that file keeps it to itself: exporting it would change a line of that
+ *  file, and R6 admits none this round. */
+function useDeletedActorsAuthor(deleted: LineNames["deleted"]): AgentText["author"] {
+  const { author } = useAgentText();
+  // Each deleted post's actor as `author` names it, the name its deleted line draws, and null
+  // for a post that names no actor, whose line names none (`deletedLineText`).
+  const actors = JSON.stringify(
+    [...deleted.values()].map(({ by }) => (by === null ? null : author(by)))
+  );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `author` is kept while `deleted` and `actors` stand, since `actors` is everything `author` is read for here
+  return useMemo(() => author, [actors, deleted]);
 }
 
 /** Draws Details' run rows (`draw`) with each question's references named, mounted only while

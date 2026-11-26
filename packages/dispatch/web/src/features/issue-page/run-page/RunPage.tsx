@@ -192,12 +192,10 @@ function namedFirstLine(words: string, lineNames: LineNames): string {
 /**
  * The nodes the run changed (`RunChange`), each by its first line, beside its kind's word where
  * the page has one, as a link to the page it opens where it opens one. The line is cut by R1's
- * first-line rule (`namedFirstLine`), and each reference in it is named by the rule every plain
- * line of the page names one by (`one-line.ts`'s `referenceStandIns`), from the names
- * `run-references.ts`'s `RunReferenceNames` hands it. The naming is handed each node's whole
- * words (`RunChange.words`), not its cut line, since which references the cut line holds waits
- * on their names (`run-references.ts`'s `namedReferences`): so the one batch may ask for each
- * target the whole words cite, and each party they cite gets its read, past the cut or not.
+ * first-line rule (`namedFirstLine`), and its references are named as `run-references.ts`'s
+ * `RunReferenceNames` says. The naming is handed each node's whole words (`RunChange.words`),
+ * not its cut line, since which references the cut line holds waits on their names
+ * (`run-references.ts`'s `namedReferences` says why).
  */
 function ChangedNodes({ changed }: { changed: readonly RunChange[] }): ReactNode {
   const words = useMemo(() => changed.map((node) => node.words), [changed]);
