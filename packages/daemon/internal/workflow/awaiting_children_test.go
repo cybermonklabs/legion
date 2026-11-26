@@ -522,7 +522,7 @@ func TestFactsDuringTheWaitStartNothing(t *testing.T) {
 			got.Phase, got.ChildrenWait)
 	}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		pr, err := record.NewStore().PullRequest(t.Context(), tx, cwParent)
+		pr, err := record.NewStore().MergePullRequest(t.Context(), tx, cwParent)
 		if err != nil || pr == nil {
 			return fmt.Errorf("read the pull request of %s: %v", cwParent, err)
 		}

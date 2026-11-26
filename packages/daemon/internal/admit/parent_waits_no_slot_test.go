@@ -716,7 +716,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 			Generation: 1, Snapshot: "settled-head-42", CheckRuns: []record.AttemptRun{{Name: "unit", ID: 70}}, Failing: []string{"unit"},
 			Cancelled: []string{}})
 		inTx(t, pool, func(tx pgx.Tx) {
-			pr, err := record.NewStore().PullRequest(context.Background(), tx, spParent)
+			pr, err := record.NewStore().MergePullRequest(context.Background(), tx, spParent)
 			if err != nil || pr == nil || pr.CheckedHead != "head-42" {
 				t.Fatalf("the pull request after the settlement = %+v, %v; want the settlement of head-42 recorded", pr, err)
 			}
@@ -850,7 +850,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 			t.Fatalf("the planner's row = %+v, want the plan record %+v kept", got, plan)
 		}
 		inTx(t, pool, func(tx pgx.Tx) {
-			pr, err := record.NewStore().PullRequest(context.Background(), tx, spParent)
+			pr, err := record.NewStore().MergePullRequest(context.Background(), tx, spParent)
 			if err != nil || pr == nil || pr.Number != 42 || pr.HeadSHA != "head-42" || pr.State != record.PullRequestOpen || pr.Branch != "legion/"+spParent {
 				t.Fatalf("the pull request = %+v, %v; want #42 open at head-42 on its branch", pr, err)
 			}
