@@ -978,11 +978,11 @@ func TestBasisGateRefusals(t *testing.T) {
 
 	// P: labelled by a session and in progress, so the daemon records nothing of it; its primary
 	// document at version 2 marks P1 to P3, P:4, PN and PGONE, and the person approved it. Its
-	// Verification document serves its own P1, and its decisions document marks D1.
+	// Verification document serves its own P1, and its notes document, of no role, marks D1.
 	parent := r.create(asSession, "Coastal navigation program", map[string]any{"labels": []string{"legion"},
 		"spec": requirementsMarkdown("Navigation", "p1", "p2", "p3", "p:4", "pn", "pgone")})
 	r.setStatus(parent.Key, "in_progress")
-	r.writeDocument(parent.Key, "decisions.md", requirementsMarkdown("Decisions", "d1"))
+	r.writeDocument(parent.Key, "notes.md", requirementsMarkdown("Notes", "d1"))
 	parentVerification := r.writeDocument(parent.Key, "verification.md", checksMarkdown(verificationCheck{id: "pk1", serves: []string{specBlock(parent.Key, "p1")}}))
 	r.editDocument(parent.PrimaryArtifactID, insertParagraph("The program keeps its old charts."))
 	pv := r.approve(parent.PrimaryArtifactID).Version
@@ -1040,10 +1040,6 @@ func TestBasisGateRefusals(t *testing.T) {
 	cases.refused("a check block in R's primary document that serves P2", call(), http.StatusConflict, "VIEW_CHECK_OUTSIDE_VERIFICATION",
 		root.Key+"'s primary document", "holds check block ks")
 	rv = r.editDocument(root.PrimaryArtifactID, map[string]string{"op": "delete", "block": "ks"})
-	r.writeDocument(root.Key, "decisions.md", requirementsMarkdown("Decisions", "rd1"))
-	cases.refused("a requirement block in R's decisions document", call(), http.StatusConflict, "VIEW_HOLDS_REQUIREMENT",
-		root.Key+"'s decisions document", "holds requirement block rd1")
-	r.writeDocument(root.Key, "decisions.md", "# Decisions\n\nNone yet.\n")
 	r.writeDocument(root.Key, "verification.md", onlyP2+":::requirement{#rv1}\n**RV1.** The beacon's own requirement.\n:::\n")
 	cases.refused("a requirement block in R's Verification document", call(), http.StatusConflict, "VIEW_HOLDS_REQUIREMENT",
 		root.Key+"'s Verification document", "holds requirement block rv1")
@@ -1073,10 +1069,10 @@ func TestBasisGateRefusals(t *testing.T) {
 	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{p2}}, verificationCheck{id: "kg", serves: []string{pgone}}))
 	cases.refused("a check that serves a block id P's document does not hold", call(), http.StatusConflict, "VIEW_SERVES_OUTSIDE_BASIS",
 		"check kg", "serves "+pgone)
-	decided := "dispatch://" + parent.Key + "/artifact/decisions-md#b-d1"
-	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{decided}}))
-	cases.refused("a check that serves a requirement block of P's decisions document", call(), http.StatusConflict, "VIEW_SERVES_OUTSIDE_BASIS",
-		"serves "+decided)
+	noted := "dispatch://" + parent.Key + "/artifact/notes-md#b-d1"
+	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{noted}}))
+	cases.refused("a check that serves a requirement block of another document of P", call(), http.StatusConflict, "VIEW_SERVES_OUTSIDE_BASIS",
+		"serves "+noted)
 
 	// The checks that open.
 	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{p2 + "@v1"}}))
