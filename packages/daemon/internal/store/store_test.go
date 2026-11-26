@@ -839,6 +839,26 @@ func migrateThrough(t *testing.T, store *Store, version int) {
 	}
 }
 
+// migrateAllBut applies every embedded migration but version, in version order: the database of
+// the release before the one that adds version, with each migration that sorts above version and
+// landed beside it.
+func migrateAllBut(t *testing.T, store *Store, version int) {
+	t.Helper()
+	ctx := context.Background()
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	for _, migration := range all {
+		if migration.Version == version {
+			continue
+		}
+		if _, err := store.apply(ctx, migration); err != nil {
+			t.Fatalf("apply %s: %v", migration.Name, err)
+		}
+	}
+}
+
 // phaseRowOf is the phases row of role on issue, read through st as the record reads it, and the
 // zero row where it holds none (record.PhaseRowOf). The migration tests read a row through the
 // store they migrated and through one reopened as a daemon restart reopens it.
