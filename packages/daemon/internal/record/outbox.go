@@ -1930,9 +1930,9 @@ func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
 // nothing tells the worker, since the daemon's next task for a role waits for that role's turn to
 // end. Role is the recipient, From the phase that ended, To the phase the issue is in now, which is
 // awaiting_children, Reason the open children that hold the parent, and MergeForward the merge
-// forward of the parent's pull request that the move dropped before it landed, which chooses the
-// form of the message (Message). It stops nothing: the recipient keeps its turn, its jobs, its
-// process and its session.
+// forward of the parent's pull request that the move dropped while it was still open and not
+// withdrawn, which chooses the form of the message (Message). It stops nothing: the recipient
+// keeps its turn, its jobs, its process and its session.
 //
 // The kind is phase_ended, which the releases before dispatch://INFRA-4374 wrote for a head that
 // conflicts with its base, and whose queued rows INFRA-4374's migration 20261119003157 deleted. A
@@ -1944,12 +1944,12 @@ type PhaseEnded struct {
 	From   phase.Phase `json:"from"`
 	To     phase.Phase `json:"to"`
 	Reason string      `json:"reason"`
-	// MergeForward is the merge forward the move into awaiting_children dropped before it landed
-	// (PullRequest.MergeForward with Landed empty), nil where it dropped none.
+	// MergeForward is the merge forward the move into awaiting_children dropped while it was still
+	// open and not withdrawn (PullRequest.MergeForward, workflow's openAsk), nil where it dropped none.
 	MergeForward *DroppedMergeForward `json:"mergeForward,omitempty"`
 }
 
-// DroppedMergeForward is a merge forward a move into awaiting_children dropped before it landed
+// DroppedMergeForward is a merge forward a move into awaiting_children dropped while it was open
 // (PhaseEnded.MergeForward): Head is the head the merge forward was asked of, Base the base branch
 // it was to merge forward onto that head, and Role the role it was asked of (MergeForward.Asked):
 // the implementer, or the merger for an ask made in merging. Its one writer, workflow's
@@ -1998,8 +1998,9 @@ func (PhaseEnded) OutboxKind() OutboxKind { return OutboxKindPhaseEnded }
 // last, behind the `Reason:` label a started worker's task carries it under (workflow's task), and
 // names each open child. What the worker does with its work takes one of three forms:
 //
-//   - where the move dropped no merge forward that had not landed, the worker commits and pushes
-//     what it has and does no more work on the phase, whatever its role;
+//   - where the move named no dropped merge forward (MergeForward nil: none, or one that landed,
+//     closed or was withdrawn), the worker commits and pushes what it has and does no more work on
+//     the phase, whatever its role;
 //   - where it dropped one and the worker is the role it was asked of (DroppedMergeForward.Role),
 //     the same, with the dropped merge forward named and that role's rule for it
 //     (DroppedMergeForward.told);

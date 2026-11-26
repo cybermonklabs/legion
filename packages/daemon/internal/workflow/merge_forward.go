@@ -215,10 +215,11 @@ func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue recor
 // at - an ask of that head that has not landed, on a pull request that is open - and whether it is.
 // A close keeps the record's ask (closed), but a closed pull request gets no push and no landing,
 // so nothing it holds is owed and no worker waits for it; a reopen drops the ask
-// (pullRequestOpened). Every reader of the record's ask reads this one rule. Two checks of the
-// state stand apart, on purpose, since neither reads the record's ask: mergeForward's guards the
-// writing of a new ask, so a closed pull request is asked nothing, and leftMergeForwardAt's ends
-// every queued row of a pull request that is not open, the landed and the review among them.
+// (pullRequestOpened). Every reader of the record's ask reads this one rule, awaitChildren's drop
+// of it among them. Two checks of the state stand apart, on purpose, since neither reads the
+// record's ask: mergeForward's guards the writing of a new ask, so a closed pull request is asked
+// nothing, and leftMergeForwardAt's ends every queued row of a pull request that is not open, the
+// landed and the review among them.
 func openAsk(pr record.PullRequest) (record.MergeForward, bool) {
 	asked := pr.MergeForward
 	if pr.State != record.PullRequestOpen || asked == nil || asked.Head != pr.HeadSHA || asked.Landed != "" {
@@ -556,20 +557,21 @@ func (e *Engine) holdStartedWorker(ctx context.Context, tx pgx.Tx, issue record.
 // (record.PullRequest.MergeForward), on a move into implementing (mergeForwardOnEntry) or into
 // awaiting_children (awaitChildren) and when the issue leaves the workflow (leave): the ask, its
 // landing and the review it asked for are of a stretch of work that is over, and a later conflict
-// is asked about afresh. A record that holds none is not written. It answers the merge forward it
-// dropped, nil where it dropped none, which the move into awaiting_children names to the role it
-// asked (record.MergeForward.Asked) where it had not landed.
-func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string) (*record.MergeForward, error) {
+// is asked about afresh. A record that holds none is not written. It answers the pull request as
+// the record held it before the clear, nil where it held no merge forward, so the move into
+// awaiting_children reads the dropped ask by the one rule every reader of the record's ask reads
+// (openAsk).
+func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string) (*record.PullRequest, error) {
 	pr, err := e.store.PullRequest(ctx, tx, issue)
 	if err != nil || pr == nil || pr.MergeForward == nil {
 		return nil, err
 	}
-	cleared := pr.MergeForward
+	before := *pr
 	pr.MergeForward = nil
 	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return nil, err
 	}
-	return cleared, nil
+	return &before, nil
 }
 
 // mergeForwardLanded records that a merge forward landed (dispatch://INFRA-4374 R1): pr's head,

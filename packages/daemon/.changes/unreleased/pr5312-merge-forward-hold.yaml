@@ -12,7 +12,9 @@ body: |-
   tells the worker of the phase the issue stands in, the planner included. One merge of one head
   has one asked role: where a move leaves the implementer's ask of `implementing` owed by nobody,
   or the merger is asked for its head, the implementer is told once that the merge is no longer
-  its work, and its ask is delivered no more. A move back out of `merging` asks the merge of the
+  its work, and its ask is delivered no more. A parent that then waits on its open children is
+  told nothing of that merge, as a wait tells nothing of a merge forward that landed; nor of one
+  on a pull request that closed. A move back out of `merging` asks the merge of the
   role of the phase it enters, with its hold. Each launch of an asked role is told an owed ask
   once: an ask whose role's claim ended - it failed, an operator stopped it, or its agent reported
   its own exit - keeps its held workers held and is sent again at the ready of that role's next
