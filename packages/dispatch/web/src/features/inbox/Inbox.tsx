@@ -1870,11 +1870,16 @@ function InboxBody({
   // it will stand once they have gone, as the list's anchor lets them go (`leaving` below); where
   // their going leaves the row at the place wholly above the view, the nearest row after it in
   // sight takes the focus. A mark that will move up into sight then takes the focus with no
-  // scroll, and the anchor shows it whole once those rows have gone.
+  // scroll, and the anchor shows it whole once those rows have gone. A row a Snooze is over is
+  // passed over the same way, the bar's (`bulkSnoozing`) and a row's own (`snoozing`): the list
+  // keeps such a row in its band only until the write lands, and its move into a folded Later then
+  // is no press's doing, so a focus put on it falls to the page's body - which is what the bar's
+  // Snooze left in WebKit, eight times in eight repeats (builds Job
+  // `infra-3135-infra-3135-r29t-snp-vfht5`, which read the hand-off's own answer).
   const landAtPlace = useLastMarkedPlace({
     control: (id) => originRow(id)?.querySelector<HTMLElement>(MARK_SELECTOR) ?? null,
     lastMarked,
-    leaving: dismissedHere,
+    leaving: (id) => dismissedHere(id) || bulkSnoozing.has(id) || snoozing.has(id),
     list: () => listScroller.current,
     order: () => rows().map((row) => row.dataset.inboxRow ?? ""),
     shown: bulkBarShown,
