@@ -163,6 +163,30 @@ test("the change form opens with the caret in its field", async () => {
   }
 });
 
+// A reader who opened the Change form and ends it by its Cancel is back on the decision's Change
+// that opened it (`useFocusBack`). The form goes with the Cancel that held the focus, which would
+// leave it on the page's body, and in the tree the body of a row the focus has left closes
+// (`IssueTree.tsx`), taking Change with it.
+test("Cancel ends the Change form with the focus back on the Change that opened it", async () => {
+  const user = userEvent.setup();
+  const { unmount } = renderActions();
+  try {
+    const change = await screen.findByRole("button", { name: CONTROL_LABELS.change_decision });
+    await user.click(change);
+    await user.type(
+      screen.getByLabelText(CONTROL_LABELS.your_change),
+      "Tie it to the first statement instead."
+    );
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.cancel }));
+    expect(screen.queryByLabelText(CONTROL_LABELS.your_change)).toBeNull();
+    expect(document.activeElement, "Cancel left the focus off the Change that opened it").toBe(
+      change
+    );
+  } finally {
+    unmount();
+  }
+});
+
 // A keyboard reader who presses Keep stays on it while the Keep is out: Keep is held
 // (`heldPress`, `aria-disabled`), never disabled, which would drop the focus to the page's body in
 // a browser and does here under `emulateChromiumFocusFixup`, and a second press keeps nothing more. The

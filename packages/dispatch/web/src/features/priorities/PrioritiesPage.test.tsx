@@ -974,6 +974,48 @@ test("a person who may write adds a priority", async () => {
   expect(create.mock.calls[0]?.[0]).toEqual({ title: "Spend ruthlessly" });
 });
 
+// The New priority form a click on its Cancel ends gives the focus back to New priority, the
+// button that opened it (`useFocusBack`): the form goes with the Cancel that held the focus, which
+// would leave it on the page's body.
+test("Cancel on the New priority form gives the focus back to the New priority button that opened it", async () => {
+  const user = userEvent.setup();
+  page(FIFTEEN);
+  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
+  const opener = screen.getByRole("button", { name: "New priority" });
+  await user.click(opener);
+  const form = screen.getByRole("form", { name: "New priority" });
+  await user.click(within(form).getByRole("textbox", { name: "Title of the new priority" }));
+  await user.click(within(form).getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("form", { name: "New priority" })).toBeNull();
+  expect(document.activeElement, "Cancel left the focus off New priority").toBe(opener);
+});
+
+// The New priority form its submit ends - a click on Add priority, or Enter in its title - gives
+// the focus back to New priority as well: the form goes with the control that held the focus as
+// the priority is sent, which would leave it on the page's body.
+test("a priority added by Add priority or by Enter gives the focus back to the New priority button that opened the form", async () => {
+  const user = userEvent.setup();
+  const { create } = page(FIFTEEN);
+  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
+  const opener = screen.getByRole("button", { name: "New priority" });
+  const titleBox = () => screen.getByRole("textbox", { name: "Title of the new priority" });
+
+  await user.click(opener);
+  await user.click(titleBox());
+  await user.keyboard("Spend ruthlessly");
+  await user.click(screen.getByRole("button", { name: "Add priority" }));
+  await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+  expect(screen.queryByRole("form", { name: "New priority" })).toBeNull();
+  expect(document.activeElement, "Add priority left the focus off New priority").toBe(opener);
+
+  await user.click(opener);
+  await user.click(titleBox());
+  await user.keyboard("Ship the daemon{Enter}");
+  await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+  expect(screen.queryByRole("form", { name: "New priority" })).toBeNull();
+  expect(document.activeElement, "Enter in the title left the focus off New priority").toBe(opener);
+});
+
 // Dispatch refuses a priority title longer than an issue title may be, so the New priority form
 // holds no more than that: a longer text pasted in is cut at the bound, and no longer title is
 // sent.

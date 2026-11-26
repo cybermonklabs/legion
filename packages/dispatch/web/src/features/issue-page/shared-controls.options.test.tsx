@@ -14,6 +14,7 @@ import {
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 
+import { type HeldNotifications, holdNotifications } from "../../__tests__/commits";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { rows as listRows, panelOf, pickNamed } from "../../__tests__/list-picks";
@@ -4069,6 +4070,61 @@ test("inside NoTooltips the repository box's clear control is reached by Tab in 
     written.resolve({} as Issue);
     patchIssue.mockRestore();
     unemulate();
+    undraw(view);
+  }
+});
+
+// Inside `NoTooltips` a clear made from the box that leaves the issue no repository hands the
+// focus to the row's "None" once it lands. The box is opened by a click on the text of an issue
+// with a repository of its own, another repository is typed in it, and its clear control is
+// clicked: the clear is written once, with the focus in the box while it is out. Neither the
+// issue's parent nor its project holds a repository, so Dispatch answers the clear with an issue
+// that resolves to none. A browser tells the row's host what the caches hold a timer after the
+// write's answer (TanStack Query's notify manager), so the commit that ends the write is drawn
+// while the host still passes the repository the issue showed before, which the clear leaves it
+// marked as not its own (`useIssueRepo`), and the row draws that as its text; the host is told
+// after, and the row reads "None", which holds the focus the box held, never the page's body.
+test("inside NoTooltips the repository box's clear gives the focus to the row's None once it lands with no repository left", async () => {
+  const user = userEvent.setup();
+  const stored: Pick<Issue, "repo" | "resolved_repo"> = {
+    repo: "acme/api",
+    resolved_repo: "acme/api",
+  };
+  const read = mock(async () => ({ key: "CORE-1", ...stored }));
+  const written = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => written.promise);
+  const view = draw(<ReadRepositoryRow read={read} />, "inside");
+  let notifications: HeldNotifications | undefined;
+  try {
+    const scope = within(view.container);
+    const box = () => scope.getByRole("combobox", { name: "Repository of CORE-1" });
+    const text = await scope.findByRole("button", { name: "acme/api, Repository of CORE-1" });
+    await settleReads();
+    await user.click(text);
+    expect(document.activeElement).toBe(box());
+    await user.clear(box());
+    await user.keyboard("acme/review");
+    await user.click(scope.getByRole("button", { name: "Clear the repository of CORE-1" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: null }, keyedAttempt)
+    );
+    expect(document.activeElement).toBe(box());
+    stored.repo = null;
+    stored.resolved_repo = null;
+    notifications = holdNotifications();
+    written.resolve({ ...marginIssue, key: "CORE-1", ...stored });
+    await waitFor(() => expect(scope.queryByRole("combobox")).toBeNull());
+    notifications.tell();
+    await settleReads();
+    const none = scope.getByRole("button", {
+      name: `${CONTROL_LABELS.none}, Repository of CORE-1`,
+    });
+    expect(document.activeElement, "the landed clear left the focus off the row's None").toBe(none);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    notifications?.tell();
+    written.resolve({} as Issue);
+    patchIssue.mockRestore();
     undraw(view);
   }
 });

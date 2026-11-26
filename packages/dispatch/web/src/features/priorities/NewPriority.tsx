@@ -1,6 +1,7 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { type ReactNode, useState } from "react";
 import { controlPadding } from "../../components/control-names";
+import { useFocusBack } from "../../hooks/useFocusBack";
 import {
   borderDefault,
   focusVisibleRing,
@@ -21,16 +22,24 @@ const BUTTON = `rounded-lg border text-sm ${controlPadding.toolbar} ${borderDefa
  * alone where no priority is written yet, which is the one place a fresh deployment can write
  * its first. Drawn only for a reader who may write a priority (`usePriorityWrites`); every other
  * reader is shown nothing here. The form opens beside the button in the control row, whose slot
- * keeps one line from `sm` up, and takes a line of its own in a row that wraps.
+ * keeps one line from `sm` up, and takes a line of its own in a row that wraps. Its submit - Add
+ * priority, or Enter in its title - and its Cancel each end it with the focus back on the
+ * button, which the form's going would leave on the page's body (`useFocusBack`).
  */
 export function NewPriority(): ReactNode {
   const { add, canWrite } = usePriorityWrites();
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState("");
+  const focusBack = useFocusBack(adding);
   if (!canWrite) return null;
   return (
     <>
-      <button className={BUTTON} onClick={() => setAdding((was) => !was)} type="button">
+      <button
+        className={BUTTON}
+        onClick={() => setAdding((was) => !was)}
+        ref={focusBack.opener}
+        type="button"
+      >
         New priority
       </button>
       {adding ? (
@@ -42,6 +51,7 @@ export function NewPriority(): ReactNode {
             const named = title.trim();
             if (named === "") return;
             add.mutate({ title: named });
+            focusBack.handBack();
             setTitle("");
             setAdding(false);
           }}
@@ -64,6 +74,7 @@ export function NewPriority(): ReactNode {
           <button
             className={BUTTON}
             onClick={() => {
+              focusBack.handBack();
               setAdding(false);
               setTitle("");
             }}

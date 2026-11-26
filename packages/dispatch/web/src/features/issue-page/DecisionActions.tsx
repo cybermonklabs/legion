@@ -16,6 +16,7 @@ import { useUnsettledRead } from "../../api/read-bound";
 import type { Artifact, Decision, DisplayTree, IssueDecisions } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { useTooltips } from "../../components/tooltips";
+import { useFocusBack } from "../../hooks/useFocusBack";
 import {
   borderDefault,
   dangerText,
@@ -195,6 +196,10 @@ function DecisionControls({
     if (open) drafts?.set(decision.ref, "");
     else drafts?.delete(decision.ref);
   };
+  // Cancel, a button inside the form, ends it with the focus back on the Change that opened it,
+  // which the form's going would leave on the page's body (`useFocusBack`); a change sent ends it
+  // with the focus on the decision's row (`keepFocusOnRow`).
+  const focusBack = useFocusBack(changing);
   // Read once per answer of the decisions read, which is when the decision is a new object: the
   // block a Change is anchored to, and its words, which the write anchors to.
   const block = useMemo(() => anchorBlock(decision), [decision]);
@@ -268,6 +273,7 @@ function DecisionControls({
             aria-expanded={changing}
             className={`${DECISION_BUTTON} bg-page-paper text-page-decision`}
             onClick={() => change(!changing)}
+            ref={focusBack.opener}
             tabIndex={tabStops ? undefined : -1}
             type="button"
             {...ROW_ACTION_MARKS.change}
@@ -290,6 +296,10 @@ function DecisionControls({
           issueKey={issueKey}
           focusField={!restored}
           name={name}
+          onCancel={() => {
+            focusBack.handBack();
+            change(false);
+          }}
           onDone={() => change(false)}
           quote={quote}
           source={source}
@@ -310,6 +320,7 @@ function ChangeComposer({
   focusField,
   issueKey,
   name,
+  onCancel,
   onDone,
   quote,
   source,
@@ -325,6 +336,9 @@ function ChangeComposer({
   /** The decision's heading as plain words (`useDecisionHeadingWords`), which the form and its
    *  write are named after. */
   name: string;
+  /** Cancel's: ends the form, dropping what was typed in it. */
+  onCancel: () => void;
+  /** Ends the form once the change it sent lands. */
   onDone: () => void;
   /** The words of `block` as the decisions document holds them, which the change is anchored to
    *  (`anchorQuote`). */
@@ -566,7 +580,7 @@ function ChangeComposer({
         </button>
         <button
           className={`rounded border px-1 text-xs ${tones.rule} ${tones.muted}`}
-          onClick={onDone}
+          onClick={onCancel}
           type="button"
           {...pageChrome}
         >

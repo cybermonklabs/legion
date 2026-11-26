@@ -77,6 +77,7 @@ import { KeymapProvider } from "./features/shell/KeymapProvider";
 import { appKeymap, type KeyBindingDescription, useKeymap } from "./features/shell/keymap";
 import { NotFoundPage } from "./features/shell/NotFoundPage";
 import { RailButton } from "./features/shell/RailButton";
+import { focusOnDocument } from "./features/shell/roving";
 import { ShortcutHelp } from "./features/shell/ShortcutHelp";
 import {
   SIGN_OUT_SETTLE_MS,
@@ -533,6 +534,39 @@ function ShellProviders({
   );
 }
 
+/**
+ * The shell's rule for a move within the page, to another address of the same page (`identity`,
+ * the shell's `pageIdentity`): another of an issue's tabs, a document of a project's list. The
+ * focus stays where the page put it, so a tab that manages its own focus keeps it. Only a focus
+ * the move left on the page's body goes to the main region (`main`), as on a page change, with no
+ * scroll: the page the move drew decides what it shows. Such a move took the control holding the
+ * focus away with what the new address replaces - a list's link to a document that opens in the
+ * list's place, the New document form whose made document opens there. A move to another page is
+ * the page-change rule's. It is drawn inside the main region's `Suspense`, beside the routes, so
+ * its effect runs in the commit that draws the page the move reached: a lazy page whose module is
+ * not in yet suspends the move, and the page it replaces stays, hidden and holding the focus,
+ * until the commit that draws the new page takes it away.
+ */
+function FocusMainOnMove({
+  identity,
+  main,
+}: {
+  identity: string;
+  main: RefObject<HTMLElement | null>;
+}): null {
+  const { pathname } = useLocation();
+  const shown = useRef({ identity, pathname });
+  useEffect(() => {
+    const before = shown.current;
+    if (before.pathname === pathname) return;
+    shown.current = { identity, pathname };
+    if (before.identity === identity && focusOnDocument()) {
+      main.current?.focus({ preventScroll: true });
+    }
+  }, [identity, main, pathname]);
+  return null;
+}
+
 function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
@@ -835,9 +869,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   //
   // Whether the page is asking the other tabs what a sign-out would discard there.
   const [askingTabs, setAskingTabs] = useState(false);
-  // Tabs within the same issue manage their own focus (roving tabindex); only a
-  // genuine page change — a different issue, or a different top-level route —
-  // should move focus to the main region.
+  // Tabs within the same issue manage their own focus (roving tabindex), so only a genuine page
+  // change — a different issue, or a different top-level route — moves the focus to the main
+  // region wherever it is. A move within the page moves it there only from the page's body
+  // (`FocusMainOnMove`).
   const pageIdentity =
     parseIssuePath(location.pathname)?.key ??
     parseProjectPath(location.pathname)?.project ??
@@ -1118,6 +1153,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<PersonPage />} path={PERSON_PATH} />
                 <Route element={<NotFoundPage />} path="*" />
               </Routes>
+              <FocusMainOnMove identity={pageIdentity} main={mainRef} />
             </Suspense>
           </ErrorBoundary>
           {/* The live views the person has open, inside `<main>` so each takes the layout and

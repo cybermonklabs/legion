@@ -419,9 +419,10 @@ function RepositoryList({
  * control, and the row is given back to the text once the focus leaves both. A press of the
  * control, from the keyboard as from the pointer, leaves the focus in the box while its write is
  * out. Whichever of the text and the box takes the other's place takes the focus the other held,
- * the clear control's included, where that focus fell to the document with it. Outside a row of
- * Details the box is drawn whether or not a repository resolves, and its description says
- * `No repository` when none does.
+ * the clear control's included, where that focus fell to the document with it, and so does the
+ * "None" or the text that takes the place of the text a clear's end drew, once the host draws
+ * what Dispatch answered for that clear. Outside a row of Details the box is drawn whether or not
+ * a repository resolves, and its description says `No repository` when none does.
  */
 function RepositoryBox({
   disabled = false,
@@ -552,21 +553,38 @@ function RepositoryBox({
   // text, drawn in each other's place as the issue's repository changes under them, hand nothing
   // on, since that change is no press of the reader's: where the row drew text in its last commit
   // (`wasText`) and draws text again, the focus the one leaving held stays on the page's body, as
-  // for every change the reader did not make, and the row no longer counts it as held. Between
-  // the text and the box, only a focus still on the document is taken (`focusOnDocument`):
-  // anywhere else, the reader put it there.
+  // for every change the reader did not make, and the row no longer counts it as held. The one
+  // such change that is the reader's is the rest of a clear's end (`landing`). The commit that
+  // ends a clear made from the box draws, as the repository the issue resolves to, the one it
+  // showed before, marked as not its own, until Dispatch's answer names the one it inherits
+  // (`useIssueRepo`), and the host draws that answer in a later commit: TanStack Query tells it a
+  // timer after the clear's answer. So the text that took the focus from the box as the clear
+  // ended hands it on to "None" or the text drawn in its place by the next change the row draws,
+  // while the focus is still that text's. Between the text and the box, only a focus still on the
+  // document is taken (`focusOnDocument`): anywhere else, the reader put it there.
   const focusHeld = useRef(false);
   const wasText = useRef(showsText);
+  // Whether the last commit drew the box for a clear made from it that is out, and whether the
+  // text the row draws took the focus from the box as that clear ended.
+  const clearOut = useRef(false);
+  const landing = useRef(false);
   useEffect(() => {
     const drewText = wasText.current;
     wasText.current = showsText;
-    if (drewText && showsText) {
+    const landed = landing.current;
+    landing.current = false;
+    if (drewText && showsText && !landed) {
       focusHeld.current = false;
       return;
     }
     if (!focusHeld.current || !focusOnDocument()) return;
     (showsNone ? noneControl : showsText ? textControl : box).current?.focus();
+    landing.current = showsText && clearOut.current;
   }, [showsNone, showsText]);
+  // Recorded after every commit, once the hand-off above has read what the commit before it left.
+  useEffect(() => {
+    clearOut.current = write.pending && repo === null;
+  });
   // What the row's text does, "None" and the repository alike: a press draws the box in its
   // place. A click focuses no button in some browsers, and the box takes the focus all the same.
   const opensBox = {
