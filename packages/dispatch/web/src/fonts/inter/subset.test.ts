@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { ruleDeclarations, topLevelBlocks, withoutComments } from "../../theme/css-source";
 import { subsetScriptValue } from "./subset-script";
 
 /**
@@ -12,15 +13,15 @@ import { subsetScriptValue } from "./subset-script";
  * changed in one place alone, fails here.
  */
 
-function declarations(body: string): Map<string, string> {
-  const result = new Map<string, string>();
-  for (const declaration of body.split(";")) {
-    const colon = declaration.indexOf(":");
-    if (colon !== -1) {
-      result.set(declaration.slice(0, colon).trim(), declaration.slice(colon + 1).trim());
-    }
-  }
-  return result;
+/** The declarations of each `@font-face` rule of `css`, by property. A `;` or a `}` inside a string
+ * or a `url(…)` ends no declaration and no rule. */
+function fontFaces(css: string): Map<string, string>[] {
+  return topLevelBlocks(withoutComments(css))
+    .filter(({ prelude }) => prelude === "@font-face")
+    .map(
+      ({ body }) =>
+        new Map(ruleDeclarations(body).map(({ property, value }) => [property, value] as const))
+    );
 }
 
 test("the shipped font file is the one subset.sh holds it to", () => {
@@ -30,13 +31,9 @@ test("the shipped font file is the one subset.sh holds it to", () => {
 });
 
 test("subset.sh cuts the characters the face's unicode-range names", () => {
-  const stylesCss = readFileSync(join(import.meta.dir, "..", "..", "styles.css"), "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    ""
-  );
-  const face = [...stylesCss.matchAll(/@font-face\s*\{([^}]*)\}/g)]
-    .map((match) => declarations(match[1]))
-    .find((faceDeclarations) => faceDeclarations.get("font-family") === '"Dispatch Inter"');
+  const face = fontFaces(
+    readFileSync(join(import.meta.dir, "..", "..", "styles.css"), "utf8")
+  ).find((faceDeclarations) => faceDeclarations.get("font-family") === '"Dispatch Inter"');
   if (face === undefined) {
     throw new Error('styles.css has no @font-face rule whose font-family is "Dispatch Inter"');
   }
@@ -48,4 +45,16 @@ test("subset.sh cuts the characters the face's unicode-range names", () => {
     list.split(",").map((entry) => entry.trim().toUpperCase())
   );
   expect(faceEntries).toEqual(scriptEntries);
+});
+
+test("a face is read past a ; or a } inside a string or a url", () => {
+  const faces = fontFaces(
+    '/* { */ @font-face { font-family: "Odd;}"; src: url(data:font/woff2;base64,AAAA) format("woff2"), url("a;b.woff2"); unicode-range: U+0000-00FF; } @font-face { font-family: "Plain"; unicode-range: U+0100 }'
+  );
+  expect(faces.map((face) => face.get("font-family"))).toEqual(['"Odd;}"', '"Plain"']);
+  expect(faces[0]?.get("src")).toBe(
+    'url(data:font/woff2;base64,AAAA) format("woff2"), url("a;b.woff2")'
+  );
+  expect(faces[0]?.get("unicode-range")).toBe("U+0000-00FF");
+  expect(faces[1]?.get("unicode-range")).toBe("U+0100");
 });
