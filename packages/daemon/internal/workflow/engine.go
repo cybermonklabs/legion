@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // Hook is one hook of the deployment as the engine runs it: its words are the text, never a
@@ -324,6 +325,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.sessionLost(ctx, tx, fact)
 	case intake.SessionStoreFault:
 		return e.sessionStoreFault(ctx, tx, fact)
+	case intake.TextsFellBack:
+		return e.textsFellBack(ctx, tx, fact)
 	case intake.MemoryGuardKill:
 		return e.memoryGuardKill(ctx, tx, fact)
 	case intake.ControllerMemoryGuardKill:
@@ -1831,6 +1834,36 @@ func (e *Engine) sessionStoreFault(ctx context.Context, tx pgx.Tx, fact intake.S
 	e.warnOnCommit(ctx, "workflow: the session store could not be asked for a start", "issue", issue.Key, "role", fact.Role, "detail", fact.Detail)
 	return intake.Result{}, e.enqueue(ctx, tx, issue.Key, record.ControllerNotice(record.Notice{
 		Kind: "session-store-fault", Role: fact.Role, Phase: issue.Phase, Reason: told}))
+}
+
+// textsFellBack tells the issue that a launch of one of its roles ran Legion's own texts in place
+// of the folder of texts its arm names (intake.TextsFellBack): one message naming the launch (its
+// role, claim and generation), the arm and its experiment, the folder, the file and the cause,
+// with what the check found, so the people who cut the folder learn which check it failed. Nothing
+// else moves: the launch runs as one of no arm of the experiment, and holds no phase. The daemon
+// applies the fact under an event id that names the claim and the cause, so a message reaches here
+// once for each claim and each cause.
+//
+// The folder, the file and what the check found are the operator's words and the folder's, and
+// this message is read into an agent's prompt, so each is quoted as a Go string (strconv.Quote),
+// as sessionStoreFault quotes its detail, and so are the arm's names and the cause, which a pod's
+// launcher may have sent. An issue the record does not hold tells nobody.
+func (e *Engine) textsFellBack(ctx context.Context, tx pgx.Tx, fact intake.TextsFellBack) (intake.Result, error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || issue == nil {
+		return intake.Result{}, err
+	}
+	file := "the folder as a whole"
+	if fact.File != "" {
+		file = "the file " + strconv.Quote(fact.File)
+	}
+	found := texts.Fault{Dir: fact.Folder, Path: fact.File, Cause: fact.Cause, Detail: fact.Detail}.Error()
+	told := fmt.Sprintf("The %s of %s, claim %s at generation %d, ran Legion's own texts in place of the folder of texts %s that arm %s of experiment %s names: "+
+		"the check of %s failed with the cause %s (%s). The launch ran as one in no arm of that experiment, with none of the folder's texts and none of the arm's instructions or overlays. "+
+		"The issue is told this once for each claim and cause.",
+		fact.Role, issue.Key, fact.Claim, fact.Generation, strconv.Quote(fact.Folder), strconv.Quote(fact.Variant), strconv.Quote(fact.Experiment),
+		file, strconv.Quote(string(fact.Cause)), strconv.Quote(found))
+	return intake.Result{}, e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: told})
 }
 
 // memoryGuardKill tells the role whose process an issue pod's memory guard ended, or a microVM

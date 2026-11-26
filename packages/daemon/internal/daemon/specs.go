@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -132,6 +133,17 @@ type specs struct {
 	// folder of texts that names an agent or a skill then falls back. Boot always sets it; it is nil
 	// only in a test whose specs literal leaves it out.
 	shipped func() texts.Shipped
+	// texts is where a launch of an arm's folder of texts says what it read, and where one that
+	// falls back is logged and told to its issue (textsReports). Boot always sets it; it is nil
+	// only in a test whose specs literal leaves it out, and such a specs tells nobody of either.
+	texts *textsReports
+}
+
+// textsCopies is `<state>/texts/<claim>`, where a launch of claim's arm keeps its copy of the
+// arm's folder of texts, `<generation>/folder` (armTexts), beside which the tmux runtime builds the
+// launch's extension root. Each launch of such an arm removes what an earlier one left.
+func textsCopies(stateDir string, token claim.Token) string {
+	return filepath.Join(stateDir, "texts", string(token))
 }
 
 // rolePromptPath is where a claim's role prompt is kept for every launch of it.
@@ -189,13 +201,10 @@ func (s specs) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnS
 	return spec, nil
 }
 
-// launchBackend is the backend role runs on (backend; Oh My Pi when nil) and the path of the
-// daemon prompt part its entry names (runtime.Backends), "" when it names none.
+// launchBackend is the backend role runs on (backendOf) and the path of the daemon prompt part its
+// entry names (runtime.Backends), "" when it names none.
 func (s specs) launchBackend(role claim.Role) (runtime.Backend, string, error) {
-	backend := runtime.BackendOmp
-	if s.backend != nil {
-		backend = s.backend(role)
-	}
+	backend := s.backendOf(role)
 	info, err := runtime.LookupBackend(backend)
 	if err != nil {
 		return "", "", fmt.Errorf("the %s's backend: %w", role, err)
@@ -209,14 +218,22 @@ func (s specs) launchBackend(role claim.Role) (runtime.Backend, string, error) {
 	return backend, s.prompts.Part(info.PromptPart), nil
 }
 
+// backendOf is the backend role runs on (backend; Oh My Pi when nil).
+func (s specs) backendOf(role claim.Role) runtime.Backend {
+	if s.backend == nil {
+		return runtime.BackendOmp
+	}
+	return s.backend(role)
+}
+
 // workerSpawnSpec is SpawnSpec's own build for every claim but the controller's. It is the one
 // launch that may run in an experiment: the arms the claim's unit was drawn into (variants),
 // which decide both the overlays each runtime names last in PI_CONFIG_FILES
-// (runtime.SpawnSpec.Variants) and the instructions its prompt ends with. It is the one launch
-// that may stamp an issue key into its commits too (issueTrailer), since it is the one that
-// works a repository.
+// (runtime.SpawnSpec.Variants) and the instructions its prompt ends with, and the one arm that may
+// give it a folder of texts in place of Legion's (armTexts). It is the one launch that may stamp
+// an issue key into its commits too (issueTrailer), since it is the one that works a repository.
 func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnSpec, error) {
-	promptPaths, err := s.rolePromptPaths(c)
+	promptPaths, operatorPrompt, err := s.rolePromptPaths(c)
 	if err != nil {
 		return runtime.SpawnSpec{}, err
 	}
@@ -269,6 +286,11 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 			return runtime.SpawnSpec{}, fmt.Errorf("the experiment variants of %s: %w", c.Token, err)
 		}
 		spec.Variants, spec.Prompt.VariantInstructionsPaths = arms.Variants, arms.Instructions
+	}
+	// The arm that names a folder of texts, if any, is read now, as each launch reads the arm's
+	// instructions again, and the launch is its fallback where the folder fails a check.
+	if spec, err = s.armTexts(c, spec, operatorPrompt); err != nil {
+		return runtime.SpawnSpec{}, err
 	}
 	if s.identity != nil {
 		id, err := s.identity(ctx, c.Role, spec.Repository)
@@ -474,23 +496,123 @@ func (s specs) controllerSpawnSpec() (runtime.SpawnSpec, error) {
 	}, nil
 }
 
-// rolePromptPaths keeps an explicit operator prompt as a narrow test override. Every ordinary
-// claim uses the role prompts daemon boot snapshotted below its state directory (prompts.New).
-func (s specs) rolePromptPaths(c supervise.Claim) ([]string, error) {
+// rolePromptPaths keeps an explicit operator prompt as a narrow test override, and answers true
+// where it does. Every ordinary claim uses the role prompts daemon boot snapshotted below its state
+// directory (prompts.New), one for each part prompts.PartNames lists, in its order.
+func (s specs) rolePromptPaths(c supervise.Claim) ([]string, bool, error) {
 	override := rolePromptPath(s.stateDir, c.Token)
 	if _, err := os.Stat(override); err == nil {
-		return []string{override}, nil
+		return []string{override}, true, nil
 	} else if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("the role prompt of %s: %w", c.Token, err)
+		return nil, false, fmt.Errorf("the role prompt of %s: %w", c.Token, err)
 	}
 	if s.prompts == nil {
-		return nil, errors.New("the daemon prompt bundle was not constructed at boot")
+		return nil, false, errors.New("the daemon prompt bundle was not constructed at boot")
 	}
 	parts, err := s.prompts.Compose(c.Role, claim.IsTreeRoot(c.Issue, c.Tree))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return parts.RolePromptPaths, nil
+	return parts.RolePromptPaths, false, nil
+}
+
+// armTexts is spec, c's launch, as the arm among its Variants that names a folder of texts makes
+// it (runtime.Variant.Texts; the loader lets no two experiments give one role a folder), and spec
+// itself where no arm does. It removes what the claim's earlier launches copied (textsCopies),
+// reads the folder as it stands now (texts.Read) and checks it: every role part it holds against
+// Legion's own text at that path and as a part some role the experiment reaches reads
+// (texts.CheckRoleParts over partReadBy), and every agent and skill its texts name against the
+// names the worker image ships, as the boot read them (texts.CheckReferences; a boot that read
+// none can check no name). It then copies what it read to `<generation>/folder` under
+// textsCopies, and reads each of the launch's role parts the folder holds from that copy
+// (prompts.PartNames names the part of each path), so the prompt the runtime composes later holds
+// the bytes checked here whatever the folder holds by then. A claim with an operator prompt file
+// keeps that file as its whole role prompt, and still reads the folder's agents, skills and
+// dispatch-first, which the runtime lays out from the copy. The launch logs what it read
+// (textsReports.read).
+//
+// spec.Texts carries the folder's facts and its fallback (runtime.Texts.Fallback): the launch's
+// prompt with Legion's role parts, and its arms, with the folder's arm dropped whole: its Variants
+// entry, whose overlays go with it, and the daemon's copy of its instructions. A folder that does
+// not read, or that fails a check, makes the launch that fallback here (runtime.SpawnSpec.FallBack):
+// its first fault is logged and told to the issue (textsReports.fellBack), and nothing is copied.
+// A copy the daemon cannot write, or an earlier one it cannot remove, fails the launch: that is the
+// daemon's own disk, as its write of the prompt is, and not the folder.
+func (s specs) armTexts(c supervise.Claim, spec runtime.SpawnSpec, operatorPrompt bool) (runtime.SpawnSpec, error) {
+	at := slices.IndexFunc(spec.Variants, func(v runtime.Variant) bool { return v.Texts != "" })
+	if at < 0 {
+		return spec, nil
+	}
+	arm := spec.Variants[at]
+	instructions := config.VariantInstructionsFile(s.stateDir, arm.Experiment, config.Variant{Name: arm.Name, MemoryBlock: arm.MemoryBlock})
+	fallback := runtime.TextsFallback{Prompt: spec.Prompt, Variants: slices.Delete(slices.Clone(spec.Variants), at, at+1)}
+	fallback.Prompt.RolePromptPaths = slices.Clone(spec.Prompt.RolePromptPaths)
+	fallback.Prompt.VariantInstructionsPaths = slices.DeleteFunc(slices.Clone(spec.Prompt.VariantInstructionsPaths),
+		func(path string) bool { return path == instructions })
+	spec.Texts = &runtime.Texts{Folder: arm.Texts, Experiment: arm.Experiment, Variant: arm.Name, Fallback: fallback}
+
+	copies := textsCopies(s.stateDir, c.Token)
+	if err := os.RemoveAll(copies); err != nil {
+		return runtime.SpawnSpec{}, fmt.Errorf("remove the earlier copies of the folder of texts of %s: %w", c.Token, err)
+	}
+	folder, err := texts.Read(arm.Texts)
+	if err != nil {
+		var fault *texts.Fault
+		if !errors.As(err, &fault) {
+			fault = &texts.Fault{Cause: texts.Unreadable, Detail: err.Error()}
+		}
+		return s.textsFellBack(c, spec, *fault), nil
+	}
+	spec.Texts.Fingerprint = folder.Fingerprint
+	faults := texts.CheckRoleParts(folder, prompts.Texts(), partReadBy(arm.Reaches, s.backendOf))
+	var shipped texts.Shipped
+	if s.shipped != nil {
+		shipped = s.shipped()
+	}
+	if faults = append(faults, texts.CheckReferences(texts.References(folder), shipped)...); len(faults) > 0 {
+		return s.textsFellBack(c, spec, faults[0]), nil
+	}
+
+	spec.Texts.Copy = filepath.Join(copies, strconv.FormatUint(c.Generation, 10), "folder")
+	for path, body := range folder.Files {
+		file := filepath.Join(spec.Texts.Copy, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+			return runtime.SpawnSpec{}, fmt.Errorf("copy the folder of texts %s for %s: %w", arm.Texts, c.Token, err)
+		}
+		if err := os.WriteFile(file, body, 0o644); err != nil {
+			return runtime.SpawnSpec{}, fmt.Errorf("copy the folder of texts %s for %s: %w", arm.Texts, c.Token, err)
+		}
+		if skill, ok := strings.CutPrefix(path, "skills/"); ok {
+			skill, _, _ = strings.Cut(skill, "/")
+			if !slices.Contains(spec.Texts.Skills, skill) {
+				spec.Texts.Skills = append(spec.Texts.Skills, skill)
+			}
+		}
+	}
+	slices.Sort(spec.Texts.Skills)
+	if !operatorPrompt {
+		names, err := prompts.PartNames(c.Role, claim.IsTreeRoot(c.Issue, c.Tree))
+		if err != nil {
+			return runtime.SpawnSpec{}, err
+		}
+		for i, name := range names {
+			if _, held := folder.Files[name]; held {
+				spec.Prompt.RolePromptPaths[i] = filepath.Join(spec.Texts.Copy, filepath.FromSlash(name))
+			}
+		}
+	}
+	s.texts.read(c, spec.Texts, folder)
+	return spec, nil
+}
+
+// textsFellBack is spec, whose arm's folder of texts failed fault, as the launch of its fallback
+// (runtime.SpawnSpec.FallBack), which it reports for c's launch at c's generation
+// (textsReports.fellBack): the spec the machine builds names the claim only after this returns.
+func (s specs) textsFellBack(c supervise.Claim, spec runtime.SpawnSpec, fault texts.Fault) runtime.SpawnSpec {
+	spec, report := spec.FallBack(fault)
+	report.Claim, report.Issue, report.Role, report.Generation = c.Token, c.Issue, c.Role, c.Generation
+	s.texts.fellBack(report)
+	return spec
 }
 
 // AddressingFragment is addressingFragment for a claim whose owner is its tree's architect, a pane

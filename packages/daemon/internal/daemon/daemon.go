@@ -569,6 +569,9 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		if plan.volumeReports != nil {
 			plan.volumeReports.bind(workflow.pool, workflow.handlers)
 		}
+		// A launch that falls back from its arm's folder of texts tells its issue through the
+		// pool and the handlers the workflow has just built (textsReports).
+		plan.texts.bind(workflow.pool, workflow.handlers)
 	}
 	if cfg.Runtime.Name == "tmux" {
 		executable, err := os.Executable()
@@ -1163,6 +1166,11 @@ type plan struct {
 	// (shippedNames): made in prepare, read by every launch's spec (specs.shipped), and bound once
 	// the gate or the image probe has answered (run). Never nil once prepare has made the plan.
 	shipped *shippedNames
+	// texts is where a launch of an arm's folder of texts reports what it read and a fallback
+	// (textsReports): made in prepare, handed to the spec builder (specs.texts) and to the runtime
+	// (tmux.Options.TextsFellBack, sandbox.Options.TextsFellBack), and bound to the workflow's fact
+	// path once the workflow is open (run). Never nil once prepare has made the plan.
+	texts *textsReports
 	// taskConfirmed tells the workflow each agent that took its task; nil without a workflow.
 	taskConfirmed func(c supervise.Claim)
 	// sessionLost and sessionStoreFault tell the workflow that a claim forgot its recorded session
@@ -1388,6 +1396,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
 		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision, streamListen: o.streamListen, shipped: &shippedNames{},
+		texts: &textsReports{log: log},
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)
@@ -1467,7 +1476,7 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 			}
 			return state
 		}
-		p.newRuntime = tmuxRuntime(cfg, p.project, launchers, providerEnvDir, dispatchTokenFile, p.tools["gh"], p.repositories.servesRepository, p.installed, p.left, log)
+		p.newRuntime = tmuxRuntime(cfg, p.project, launchers, providerEnvDir, dispatchTokenFile, p.tools["gh"], p.repositories.servesRepository, p.installed, p.left, p.texts, log)
 	}
 	return nil
 }
@@ -1570,11 +1579,13 @@ func launchVariants(st *store.Store, declared []config.Experiment, stateDir stri
 // works (claimRepository over the workflow's repository), which a pane adopted after a restart
 // holds its write token for; a daemon with no GitHub Apps hands the runtime none, and its panes
 // hold no gh files. The private server's environment is scrubbed before anything is launched on
-// it.
-func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile, gh string, served func(ghrepo.Repository) bool, installed *appauth.Installed, left *appauth.LeftOut, log *slog.Logger) runtimeFactory {
+// it. A launch whose own check of its arm's folder of texts fails reports its fallback to reports
+// (tmux.Options.TextsFellBack).
+func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile, gh string, served func(ghrepo.Repository) bool, installed *appauth.Installed, left *appauth.LeftOut, reports *textsReports, log *slog.Logger) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, streamAddress string, tokens appauth.Source,
 		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts := tmuxOptions(cfg, project, launchers, providerEnvDir, dispatchTokenFile, log)
+		opts.TextsFellBack = reports.fellBack
 		opts.StreamAddress, opts.Conns = streamAddress, listener
 		if tokens != nil {
 			// The two records the credentials write, shared by both as the Kubernetes runtime's
@@ -2044,7 +2055,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
-			variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir), shipped: p.shipped.read,
+			variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir), shipped: p.shipped.read, texts: p.texts,
 		},
 		Identity:                adoptIdentity(p.identity, p.repository),
 		IssueInTurn:             sup.claimInTurn,

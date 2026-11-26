@@ -455,6 +455,12 @@ type Options struct {
 	// (internal/daemon's launchRounds). nil keeps every such pod, as every launch kept it before
 	// the hook existed.
 	RoundPodEnds runtime.RoundPodEnds
+	// TextsFellBack is the daemon's reading of a launch that runs its fallback in place of its
+	// arm's folder of texts (runtime.SpawnSpec.FallBack) for a cause the runtime finds: a pod's
+	// launcher that refused the folder or cannot check one, or a launch that installs Legion's
+	// plugins after its start (runtime.TextsFellBack). The daemon logs it, naming the experiment and
+	// the arm, and tells the claim's issue once for each claim and cause. nil tells no one.
+	TextsFellBack runtime.TextsFellBack
 	// LeakCheck reads the shared public leak check at the tag a pod's launcher names in its hello
 	// (shimwire.LauncherHello.LeakCheckTag), which the runtime pushes to that launcher before it
 	// starts any role of it (launchers.serveLeakCheck): the launcher installs the check once for

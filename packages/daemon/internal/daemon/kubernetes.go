@@ -209,6 +209,10 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	p.launchRounds = &launchRounds{}
 	opts := reads.opts
 	opts.RoundPodEnds = p.launchRounds.ends
+	// A launch whose folder of texts a pod's launcher refuses or cannot check, or that installs
+	// Legion's plugins after its start, reports its fallback where the spec builder reports one
+	// (textsReports).
+	opts.TextsFellBack = p.texts.fellBack
 	p.newRuntime = sandboxRuntime(reads.client, opts, p.repositories.servesRepository, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left, o.githubAPI,
 		p.memoryGuardKills, p.volumeReports)
 	p.clusterCheck = boot.clusterCheck

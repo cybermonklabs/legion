@@ -9,6 +9,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -223,20 +224,32 @@ func readArmTexts(cfg config.Config, experiment config.Experiment, variant confi
 }
 
 // textsPartRead is whether a launch of a role experiment reaches reads the role part at a path of
-// Legion's (prompts.PartReaders), as a folder of texts names it: some role whose launch composes
-// the part is one the experiment reaches (config.Experiment.Reaches) and runs on a harness whose
-// launch is told it (cfg.BackendFor; a part that names no harness is told to every one). The
-// controller runs in no experiment, so a part only its launches read is read by none, as is a
-// part no launch reads at all and a path where Legion has no text.
+// Legion's, as a folder of texts names it (partReadBy, over config.Experiment.Reaches and
+// cfg.BackendFor).
 func textsPartRead(cfg config.Config, experiment config.Experiment) func(path string) bool {
-	readers := prompts.PartReaders()
+	return partReadBy(experiment.Reaches, cfg.BackendFor)
+}
+
+// partReadBy is whether a launch of a role that reaches answers true for reads the role part at a
+// path of Legion's (prompts.PartReaders), as a folder of texts names it: some role whose launch
+// composes the part is reached and runs on a harness, as backendFor answers it, whose launch is
+// told the part (a part that names no harness is told to every one). The controller runs in no
+// experiment, so a part only its launches read is read by none, as is a part no launch reads at
+// all and a path where Legion has no text. Boot asks it of each declared experiment
+// (textsPartRead), and each launch of an arm's folder of its arm (specs.armTexts).
+func partReadBy(reaches func(claim.Role) bool, backendFor func(claim.Role) runtime.Backend) func(path string) bool {
+	readers := partReaders()
 	return func(path string) bool {
 		r := readers[path]
 		return slices.ContainsFunc(r.Roles, func(role claim.Role) bool {
-			return experiment.Reaches(role) && (len(r.Backends) == 0 || slices.Contains(r.Backends, cfg.BackendFor(role)))
+			return reaches(role) && (len(r.Backends) == 0 || slices.Contains(r.Backends, backendFor(role)))
 		})
 	}
 }
+
+// partReaders is prompts.PartReaders, read once: the embedded parts never change in a binary, and
+// each launch of an arm's folder asks it again.
+var partReaders = sync.OnceValue(prompts.PartReaders)
 
 // natsConnection is the NATS user the daemon's own connection authenticates as: its own seed
 // (natsauth.DaemonSeed) when it has one, else the pane seed every pane receives (launchSecrets),

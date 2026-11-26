@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // Fact is a closed vocabulary of observations that can change Legion's workflow record. Each fact
@@ -1425,6 +1426,35 @@ type SessionStoreFault struct {
 }
 
 func (f SessionStoreFault) namedIssue() (string, bool) { return f.Issue, true }
+
+// TextsFellBack is a launch that its arm's folder of texts was to run, and that ran as a launch of
+// no arm of that experiment because a check of the folder failed: Legion's texts, and none of the
+// arm's instructions or overlays (runtime.SpawnSpec.FallBack). The daemon's spec build reports the
+// checks it makes, and each runtime the checks it makes itself
+// (runtime.TextsFellBack). Claim and Generation are the launch, Experiment and Variant the arm,
+// Folder the folder and Fingerprint what it read there ("" where it read nothing), and File,
+// Cause and Detail the fault: the file by its path in the folder, "" for the folder as a whole,
+// the cause, and what the check saw.
+//
+// It is applied under an event id that names the claim and the cause, the folder's fingerprint
+// with the file and the cause (internal/daemon's textsFallbackEventID), so the issue is told once
+// for each claim and each cause, however many of the claim's launches meet it, and a folder cut
+// again is a new cause.
+type TextsFellBack struct {
+	Issue       string
+	Role        claim.Role
+	Claim       claim.Token
+	Generation  uint64
+	Experiment  string
+	Variant     string
+	Folder      string
+	Fingerprint string
+	File        string
+	Cause       texts.Cause
+	Detail      string
+}
+
+func (f TextsFellBack) namedIssue() (string, bool) { return f.Issue, true }
 
 // MemoryGuardKill is one process an issue pod's memory guard ended with SIGKILL because the pod
 // was near its memory limit, or, in a microVM pod, one that the pod's own kernel stopped because

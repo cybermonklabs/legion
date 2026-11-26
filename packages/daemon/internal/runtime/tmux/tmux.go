@@ -157,6 +157,12 @@ type Options struct {
 	// always holds its two arms, and a project that writes no `memory` block and no experiment of
 	// its own names no file in any arm. Nil is none.
 	ExperimentVariants []runtime.Variant
+	// TextsFellBack is the daemon's reading of a launch that runs its fallback in place of its
+	// arm's folder of texts (runtime.SpawnSpec.FallBack) because the runtime's own check of the
+	// folder's agents and skills against the plugins the pane loads failed (runtime.TextsFellBack).
+	// The daemon logs it, naming the experiment and the arm, and tells the claim's issue once for
+	// each claim and cause. nil tells no one.
+	TextsFellBack runtime.TextsFellBack
 	// TakeOver is the operator's `runtime.tmux.take_over`: TakeOverKubernetes to take over the
 	// claims a daemon running the project under runtime kubernetes left in the store (foreign), ""
 	// to refuse them, as every locator of another runtime is refused without it.

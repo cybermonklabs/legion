@@ -140,7 +140,7 @@ func ValidateSpawnSpec(spec SpawnSpec, runtimeOwned map[string]bool) error {
 }
 
 // validateClaimShape is a workflow claim's launch: on an issue of a tree, with a role, under the
-// token those derive.
+// token those derive, and reading a folder of texts only of an arm it runs in.
 func validateClaimShape(spec SpawnSpec, refuse func(string, ...any) error) error {
 	for _, field := range []struct{ name, value string }{
 		{"project", spec.Project}, {"tree", spec.Tree}, {"issue", spec.Issue},
@@ -175,6 +175,13 @@ func validateClaimShape(spec SpawnSpec, refuse func(string, ...any) error) error
 	if !spec.Repository.IsZero() && spec.DefaultBranch == "" {
 		return refuse("no default branch for repository %s", spec.Repository)
 	}
+	// A launch reads a folder of texts as an arm it runs in names it: its fallback drops that arm
+	// (Texts.Fallback), and a folder no arm of the launch names is a folder no draw gave its unit.
+	if t := spec.Texts; t != nil && !slices.ContainsFunc(spec.Variants, func(v Variant) bool {
+		return v.Experiment == t.Experiment && v.Name == t.Variant && v.Texts == t.Folder
+	}) {
+		return refuse("the folder of texts %s of arm %s of experiment %s is the folder of no arm the launch runs in", t.Folder, t.Variant, t.Experiment)
+	}
 	return nil
 }
 
@@ -182,8 +189,8 @@ func validateClaimShape(spec SpawnSpec, refuse func(string, ...any) error) error
 // tree, no repository and no workspace — the controller works Dispatch, never a checkout — under
 // the project's controller token, which every runtime names its Secret and pod after. It is in no
 // experiment and is told no variant instructions either: an experiment's unit is a tree or an
-// issue of one, and the controller runs in neither. It stamps no issue key into a commit either:
-// it works no repository and no issue.
+// issue of one, and the controller runs in neither, so it reads no arm's folder of texts. It stamps
+// no issue key into a commit either: it works no repository and no issue.
 func validateControllerShape(spec SpawnSpec, refuse func(string, ...any) error) error {
 	for _, field := range []struct{ name, value string }{{"project", spec.Project}, {"boot token", spec.BootToken}} {
 		if field.value == "" {
@@ -204,6 +211,9 @@ func validateControllerShape(spec SpawnSpec, refuse func(string, ...any) error) 
 	}
 	if len(spec.Variants) > 0 {
 		return refuse("the controller runs in no tree, so it is in no experiment")
+	}
+	if spec.Texts != nil {
+		return refuse("the controller runs in no tree, so it reads no arm's folder of texts (got %s)", spec.Texts.Folder)
 	}
 	if len(spec.Prompt.VariantInstructionsPaths) > 0 {
 		return refuse("the controller is told no variant instructions (got %s)", strings.Join(spec.Prompt.VariantInstructionsPaths, " "))

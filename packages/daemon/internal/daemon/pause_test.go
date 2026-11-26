@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -733,7 +734,8 @@ func TestTheResumedSpawnOfAnotherProjectsRootArchitectTouchesNoRowOfThatProjectA
 // A fact of a claim of another project's issue that the resume launched again reads the issue's
 // record by key, as its ready does: the claim's failure (workflow's claimFailed), the loss of the
 // session it recorded (sessionLost), a fault of the session store at its start
-// (sessionStoreFault) and a memory guard's kill of one of its processes (memoryGuardKill). On a
+// (sessionStoreFault), a launch that fell back from its arm's folder of texts (textsFellBack) and
+// a memory guard's kill of one of its processes (memoryGuardKill). On a
 // database shared with another project's daemon that record is that daemon's, and this daemon's
 // records answer it as no record (projectRecords.Issue). So each fact is applied as a fact of a
 // claim of an issue the daemon keeps no record of: it tells nobody and writes nothing of the
@@ -760,6 +762,10 @@ func TestAFactOfTheResumedSpawnOfAnotherProjectsIssueTouchesNoRowOfThatProject(t
 		}},
 		{name: "the session store faulted at its start", fact: func(claim.Token) intake.Fact {
 			return intake.SessionStoreFault{Issue: issue, Role: role, Detail: "the session store refused the connection"}
+		}},
+		{name: "its launch fell back from its arm's folder of texts", fact: func(token claim.Token) intake.Fact {
+			return intake.TextsFellBack{Issue: issue, Role: role, Claim: token, Generation: 1, Experiment: "shorter", Variant: "folder",
+				Folder: "/etc/legion/texts/shorter", Cause: texts.Gone}
 		}},
 		{name: "a memory guard killed one of its processes", fact: func(token claim.Token) intake.Fact {
 			return intake.MemoryGuardKill{Issue: issue, Token: token, PodUID: "pod-other-9", Report: shimwire.LauncherMemoryKill{

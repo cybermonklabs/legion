@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // Runtime is what the supervisor has instead of a process table. Every method is about one
@@ -561,7 +562,11 @@ func (k Known) Validate() error {
 // `commit_issue_trailer_repos` (which internal/daemon's specs reads); "" for a repository the
 // project does not name, for a launch with no repository, and for the controller, which works
 // neither. Backend is the harness the process runs (`worker_backends`,
-// Backends); "" is Oh My Pi (Of).
+// Backends); "" is Oh My Pi (Of). Texts is the folder of texts of the one arm among Variants that
+// names one (Variant.Texts), as the daemon read, copied and checked it for this launch, with the
+// launch that runs in its place where a runtime's own check of it fails (Texts.Fallback); nil for
+// every other launch, and for a launch whose folder failed the daemon's own check, which is that
+// fallback already (FallBack).
 type SpawnSpec struct {
 	Claim             claim.Token
 	Project           string
@@ -583,6 +588,7 @@ type SpawnSpec struct {
 	Variants          []Variant
 	IssueTrailer      string
 	Backend           Backend
+	Texts             *Texts
 }
 
 // Variant is one arm of one declared experiment a launch runs in (SpawnSpec.Variants): the
@@ -638,6 +644,82 @@ type Variant struct {
 func (variant Variant) Reaches(role claim.Role) bool {
 	return variant.Roles == nil || slices.Contains(variant.Roles, role)
 }
+
+// Texts is the folder of texts one launch reads in place of Legion's own texts
+// (SpawnSpec.Texts): the arm's folder as the daemon read it at the launch's build, the daemon's
+// own copy of what it read, and the launch of no arm of that experiment that runs in its place
+// where a check fails (Fallback), built once, beside it.
+//
+// Folder is the folder as the operator named it (Variant.Texts), which under kubernetes the
+// role's pod mounts at that same path. Fingerprint is the folder's as the daemon read it
+// (texts.Folder.Fingerprint): a later read that finds another has read another folder. Copy is
+// the daemon's copy of the files it read, `<state>/texts/<claim>/<generation>/folder`, which the
+// launch's role prompt parts are read from (PromptParts.RolePromptPaths), so the prompt holds the
+// bytes the daemon checked whatever the folder holds by the time the prompt is composed; the
+// claim's next launch removes it. Experiment and Variant name the arm (Variant.Experiment,
+// Variant.Name). Skills are the skills whose files the folder holds, sorted, each once: the
+// skills whose plugin copies the launch hides.
+//
+// Fallback is the launch's prompt and arms with the arm dropped whole: Legion's role parts, and
+// neither the arm's Variants entry, whose overlays go with it, nor the daemon's copy of its
+// instructions. A runtime whose own check of the folder fails launches it (FallBack), and so does
+// the daemon where its own check fails, so the launch that runs is one of no arm of the
+// experiment, as the model calls it makes name no arm of it.
+type Texts struct {
+	Folder      string
+	Fingerprint string
+	Copy        string
+	Experiment  string
+	Variant     string
+	Skills      []string
+	Fallback    TextsFallback
+}
+
+// TextsFallback is the launch Texts.Fallback describes: the prompt and the arms that replace the
+// spec's own where its folder of texts fails a check.
+type TextsFallback struct {
+	Prompt   PromptParts
+	Variants []Variant
+}
+
+// FallBack is spec, which carries Texts, as the launch of its fallback (Texts.Fallback): the
+// fallback's prompt and arms in place of its own, and no Texts, with the report of it a
+// TextsFellBack takes, naming fault. A fault that names no folder is given Texts.Folder.
+func (spec SpawnSpec) FallBack(fault texts.Fault) (SpawnSpec, TextsReport) {
+	t := spec.Texts
+	if fault.Dir == "" {
+		fault.Dir = t.Folder
+	}
+	report := TextsReport{Claim: spec.Claim, Issue: spec.Issue, Role: spec.Role, Generation: spec.Generation,
+		Experiment: t.Experiment, Variant: t.Variant, Folder: t.Folder, Fingerprint: t.Fingerprint, Fault: fault}
+	spec.Prompt, spec.Variants, spec.Texts = t.Fallback.Prompt, t.Fallback.Variants, nil
+	return spec, report
+}
+
+// TextsReport is one launch that ran its fallback in place of its arm's folder of texts
+// (SpawnSpec.FallBack): the launch (its claim, the claim's issue and role, and its generation),
+// the arm (its experiment and its name), the folder with the fingerprint it was read at ("" where
+// it could not be read), and the fault that failed it, which names the file, "" for the folder as
+// a whole, and the cause.
+type TextsReport struct {
+	Claim       claim.Token
+	Issue       string
+	Role        claim.Role
+	Generation  uint64
+	Experiment  string
+	Variant     string
+	Folder      string
+	Fingerprint string
+	Fault       texts.Fault
+}
+
+// TextsFellBack is the daemon's reading of a launch a runtime's own check of its folder of texts
+// sent to its fallback (a stale plugin text under tmux; under kubernetes, a launcher that refused
+// the folder, one that cannot check it, or a launch that installs Legion's plugins after its
+// start): the daemon logs it as it logs a fallback its own check finds, naming the experiment
+// and the arm, and tells the claim's issue once for each claim and cause. It returns at once: the
+// runtime calls it in the launch.
+type TextsFellBack func(TextsReport)
 
 // VariantOverlays are the Oh My Pi settings overlays of variants as one PI_CONFIG_FILES tail:
 // each variant's own files in its own order, the variants in theirs, which for a launch's
