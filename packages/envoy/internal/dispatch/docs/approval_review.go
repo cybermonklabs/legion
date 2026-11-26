@@ -36,31 +36,39 @@ const (
 // ReviewColumns selects one artifact_reviews row in the order ScanReview reads it.
 const ReviewColumns = `id::text, artifact_id::text, version, state, kind, actor, reason, ask_id::text, created_at, event_seq, content_sha256, content_sha256_source`
 
-// ReviewOrder sorts a document's reviews newest first by the order their events committed: the
-// event sequence each review kept on its document's owner, then, for a review recorded before the
-// sequence was kept, its own time and id. Every review written once migration 0120 committed
-// carries a sequence, whichever release wrote it: this release's QueueReview writes it, and the
-// migration's deferred trigger gives one to a review the release before it writes during a
-// rollout or a rollback. A row without one was committed before that migration, so every row that
-// carries a sequence is newer than every row without one, which `nulls last` says. created_at is
-// the review's transaction start, so it places two reviews only when neither carries a sequence.
-// This holds only while QueueReview is the one writer of the table: the api package's
-// TestOnlyQueueReviewWritesReviews refuses an insert into or update of artifact_reviews anywhere
-// else in the module. Its id is the table's column, artifact_reviews.id: a bare `id` in an order by
-// names the output column ReviewColumns selects, `id::text`, which orders the same and which no
-// index holds, so artifact_reviews_by_artifact_event_seq could not give the order whole. Every read
-// that orders by it selects from artifact_reviews under that name.
-const ReviewOrder = `event_seq desc nulls last, created_at desc, artifact_reviews.id desc`
+// ReviewReadColumns selects a stored review and its carry source without adding a round trip.
+// The write's RETURNING list still uses ReviewColumns: the carry row is queued after the review.
+const ReviewReadColumns = ReviewColumns + `, (select carried_from_version from artifact_review_carries where review_id = artifact_reviews.id)`
 
 // ScanReview decodes one ReviewColumns row.
 func ScanReview(row pgx.Row) (model.ArtifactReview, error) {
+	return scanReview(row, false)
+}
+
+// ScanReviewWithCarry reads ReviewReadColumns. Only a missing carry row falls back to the
+// legacy reason, so reviews stored by the previous release are readable before backfill.
+func ScanReviewWithCarry(row pgx.Row) (model.ArtifactReview, error) {
+	return scanReview(row, true)
+}
+
+func scanReview(row pgx.Row, withCarry bool) (model.ArtifactReview, error) {
 	var review model.ArtifactReview
 	var actor []byte
-	if err := row.Scan(&review.ID, &review.ArtifactID, &review.Version, &review.State, &review.Kind, &actor, &review.Reason, &review.AskID, &review.CreatedAt, &review.EventSeq, &review.ContentSHA256, &review.ContentSHA256Source); err != nil {
+	dest := [...]any{&review.ID, &review.ArtifactID, &review.Version, &review.State, &review.Kind, &actor, &review.Reason, &review.AskID, &review.CreatedAt, &review.EventSeq, &review.ContentSHA256, &review.ContentSHA256Source, &review.CarriedFromVersion}
+	columns := dest[:len(dest)-1]
+	if withCarry {
+		columns = dest[:]
+	}
+	if err := row.Scan(columns...); err != nil {
 		return model.ArtifactReview{}, err
 	}
 	if err := json.Unmarshal(actor, &review.Actor); err != nil {
 		return model.ArtifactReview{}, fmt.Errorf("decode review actor: %w", err)
+	}
+	if withCarry && review.CarriedFromVersion == nil && review.Reason != nil {
+		if version, carried := CarriedFromVersion(*review.Reason); carried {
+			review.CarriedFromVersion = &version
+		}
 	}
 	return review, nil
 }
@@ -87,6 +95,12 @@ func ScanReview(row pgx.Row) (model.ArtifactReview, error) {
 // leaves it. written receives the review and its event as the batch leaves them, and the caller,
 // which owns the transaction, publishes the event after its commit.
 func QueueReview(b *store.WriteBatch, broker *events.Broker, artifact model.Artifact, version int, state, kind string, actor model.Actor, reason *string, askID *string, written func(model.ArtifactReview, model.Event)) error {
+	return queueReview(b, broker, artifact, version, state, kind, actor, reason, askID, nil, written)
+}
+
+// queueReview is the common writer. A carry supplies its source so its row and event can be
+// written in this same batch; an explicit review never supplies one.
+func queueReview(b *store.WriteBatch, broker *events.Broker, artifact model.Artifact, version int, state, kind string, actor model.Actor, reason *string, askID *string, carriedFrom *int, written func(model.ArtifactReview, model.Event)) error {
 	actorJSON, err := json.Marshal(actor)
 	if err != nil {
 		return fmt.Errorf("encode review actor: %w", err)
@@ -107,22 +121,29 @@ func QueueReview(b *store.WriteBatch, broker *events.Broker, artifact model.Arti
 			return fmt.Errorf("insert artifact review: %w", err)
 		}
 		review = scanned
+		review.CarriedFromVersion = carriedFrom
 		if review.ContentSHA256 == nil {
 			slog.Warn("dispatch: review recorded with no content hash: the version names no stored text",
 				"artifact", artifact.ID, "version", version, "review", review.ID)
 		}
 		return nil
 	})
+	if carriedFrom != nil {
+		b.Queue("record the carried review's source", `
+			insert into artifact_review_carries (review_id, carried_from_version) values ($1, $2)
+		`, id, *carriedFrom)
+	}
 	if err := broker.QueueAppend(b, documentAskEvent(
 		artifactOwner{IssueKey: artifact.IssueKey}, artifact.ID, eventType, actor,
 		model.ArtifactReviewEventPayload{
-			ArtifactID: artifact.ID,
-			Name:       artifact.Name,
-			Version:    version,
-			Kind:       kind,
-			Actor:      actor,
-			Reason:     reason,
-			AskID:      askID,
+			ArtifactID:         artifact.ID,
+			Name:               artifact.Name,
+			Version:            version,
+			Kind:               kind,
+			Actor:              actor,
+			Reason:             reason,
+			AskID:              askID,
+			CarriedFromVersion: carriedFrom,
 			// content_sha256 and content_sha256_source are not set here: the insert's trigger
 			// derives them, and the statement after this append writes them into this payload.
 		},
@@ -203,33 +224,33 @@ func FillReviewContentHashes(ctx context.Context, q Queryer) (ReviewHashFill, er
 
 // latestApprovedReviewQuery selects the newest approval of the document $1 names. Like
 // latestReviewByQuery it reads one row from artifact_reviews_by_artifact_event_seq (migration
-// 0120), the index in ReviewOrder's own order, rather than sorting every review of the document.
+// 0120), the index in model.ReviewOrder's own order, rather than sorting every review of the document.
 const latestApprovedReviewQuery = `
-	select ` + ReviewColumns + `
+	select ` + ReviewReadColumns + `
 	from artifact_reviews
 	where artifact_id = $1 and state = 'approved'
-	order by ` + ReviewOrder + `
+	order by ` + model.ReviewOrder + `
 	limit 1
 `
 
 // latestReviewByQuery selects the newest review of the document $1 names given by the person
 // whose canonical login $2 names.
 const latestReviewByQuery = `
-	select ` + ReviewColumns + `
+	select ` + ReviewReadColumns + `
 	from artifact_reviews
 	where artifact_id = $1 and actor->>'kind' = 'user' and lower(trim(actor->>'id')) = $2
-	order by ` + ReviewOrder + `
+	order by ` + model.ReviewOrder + `
 	limit 1
 `
 
 // newestReviewQuery selects the newest review of the document $1 names, in any state. Like the
 // two above it reads one row from artifact_reviews_by_artifact_event_seq (migration 0120), the
-// index in ReviewOrder's own order, rather than sorting every review of the document.
+// index in model.ReviewOrder's own order, rather than sorting every review of the document.
 const newestReviewQuery = `
-	select ` + ReviewColumns + `
+	select ` + ReviewReadColumns + `
 	from artifact_reviews
 	where artifact_id = $1
-	order by ` + ReviewOrder + `
+	order by ` + model.ReviewOrder + `
 	limit 1
 `
 
@@ -241,7 +262,7 @@ func LatestApprovedReview(ctx context.Context, q Queryer, artifactID string) (*m
 
 // NewestReview is the newest review of artifactID in any state, whoever gave it, or nil when
 // nobody has reviewed the document. It orders as every newest-review read does, by the order the
-// reviews' events committed (ReviewOrder): artifact_reviews.created_at is its transaction's start
+// reviews' events committed (model.ReviewOrder): artifact_reviews.created_at is its transaction's start
 // and its id is random, so a review that committed later can carry the earlier pair - an approval
 // a version write carries forward (carryApproval) against an approval committed while that write
 // was open, among others.
@@ -302,7 +323,7 @@ func latestReviewBy(ctx context.Context, q Queryer, artifactID, login string) (*
 // changesRequestedSince reports whether anyone requested changes on review's document after
 // review was given, in the order the two events committed: by their sequences when both carry one,
 // else a sequenced request after one that carries none, and by time and id when neither does
-// (ReviewOrder's rule, read one row at a time).
+// (model.ReviewOrder's rule, read one row at a time).
 func changesRequestedSince(ctx context.Context, q Queryer, review model.ArtifactReview) (bool, error) {
 	var requested bool
 	if err := q.QueryRow(ctx, `
@@ -332,10 +353,10 @@ func reviewedArtifact(ctx context.Context, q Queryer, artifactID string) (model.
 	return artifact, nil
 }
 
-// newestReview runs a query selecting ReviewColumns of at most one row and returns that review,
+// newestReview runs a query selecting ReviewReadColumns of at most one row and returns that review,
 // nil when the query selects none; what names the read in the error any other failure wraps.
 func newestReview(ctx context.Context, q Queryer, what, query string, args ...any) (*model.ArtifactReview, error) {
-	review, err := ScanReview(q.QueryRow(ctx, query, args...))
+	review, err := ScanReviewWithCarry(q.QueryRow(ctx, query, args...))
 	if err == nil {
 		return &review, nil
 	}

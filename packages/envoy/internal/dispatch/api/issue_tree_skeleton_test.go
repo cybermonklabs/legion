@@ -101,9 +101,10 @@ func requireCommentsBeforeRefused(t *testing.T, handler http.Handler, key, query
 // page before it, which the comments_before of the page before names as `<made_at>,<id>`; the last
 // answers comments_before null. Only the first holds the requirement and the ask. The three pages
 // hold each comment the comment list reads once, and the reply on the first page names the first
-// comment, on the third, as its parent. A position past the end, a position of another shape and
-// one beside a view are each 400 INVALID_QUERY, naming comments_before and its field, and the
-// route's description names both.
+// comment, on the third, as its parent. A position past the end and a position of another shape
+// are each 400 INVALID_QUERY, naming comments_before and its field, and the route's description
+// names both. Beside a view comments_before is taken: the spec view of this issue carries no
+// comment, so it answers no node and comments_before null.
 func TestTheTreeReadPagesTheCommentsNewestFirst(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	createTestProject(t, handler, "CORE")
@@ -240,7 +241,17 @@ func TestTheTreeReadPagesTheCommentsNewestFirst(t *testing.T) {
 
 	requireCommentsBeforeRefused(t, handler, key, "comments_before="+url.QueryEscape(positionOf(listed[len(listed)-1].ID)), "past the end")
 	requireCommentsBeforeRefused(t, handler, key, "comments_before=abc", "of another shape")
-	requireCommentsBeforeRefused(t, handler, key, "view=spec&comments_before="+url.QueryEscape(positionOf(listed[0].ID)), "beside view=spec")
+	// R8: "Beside `view` or `kind`, it answers the next 200 older comments that answer carries, with
+	// the nodes under them, and no other node." No comment of this issue is on the text of a node
+	// the spec view returns, so that view carries none.
+	besideView := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key+"/tree?view=spec&comments_before="+url.QueryEscape(positionOf(listed[0].ID)), nil, "alice")
+	if besideView.Code != http.StatusOK {
+		t.Errorf("comments_before beside view=spec on %s answered status=%d body=%s, want 200: beside a view it pages the comments the view carries",
+			key, besideView.Code, besideView.Body.String())
+	} else if read := decodeBody[commentPageRead](t, besideView); len(read.Nodes) != 0 || read.position(t, "comments_before beside view=spec") != "" {
+		t.Errorf("comments_before beside view=spec on %s answers %d nodes and comments_before %s, want none and null: the spec view carries no comment of %s",
+			key, len(read.Nodes), read.CommentsBefore, key)
+	}
 
 	for _, route := range (&server{}).routes() {
 		if route.Method == http.MethodGet && route.Pattern == "/api/v1/issues/{key}/tree" &&

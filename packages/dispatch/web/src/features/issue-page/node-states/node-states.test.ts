@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode, useMemo } from "react";
 import { MemoryRouter, Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
 
+import { displayTree } from "../../../__tests__/display-trees";
 import { api, type WriteRequest } from "../../../api/client";
 import {
   artifactBlocksQuery,
@@ -22,6 +23,7 @@ import type {
 import { pageStateText } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
+import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { contentsEntries } from "../contents-entries";
@@ -56,11 +58,13 @@ import {
   type NodeChip,
   type ParentLine,
   type TreeNode,
+  targetNaming,
 } from "../issue-tree";
 import { LensChain } from "../lenses/LensChain";
 import type { LensChip, LensFacts } from "../lenses/lens-drafts";
 import { NodeLink } from "../lenses/NodeLink";
 import { NoTooltips } from "../NoTooltips";
+import { NO_FAILED_READS } from "../outline-reads";
 import { OutlineRequestProvider } from "../outline-request";
 import {
   BLOCK_ATTRIBUTE_LABELS,
@@ -76,7 +80,7 @@ import {
 import { PlanFilterBody } from "../plan-filter/PlanFilterBody";
 import { planOrder } from "../plan-filter/plan-order";
 import { filterSignals, presetView } from "../presets";
-import { ReferenceNamesProvider } from "../reference-names";
+import { blockReads, Publisher, publishedNames, publishedTree } from "../projection-fixture";
 import { drawAtBrowserEntry, drawnSlot } from "../slots/stage-fixtures";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
 import {
@@ -92,6 +96,7 @@ import {
   statement,
 } from "../spec-filter/spec-fixtures";
 import { outOfCounts, pathTo } from "../tree-fold";
+import { nodesInOrder } from "../tree-keys";
 import { type TreeNodeExtra, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
 import { statesOfRead } from "../tree-read/tree-nodes";
 import { type TreeAnswer, type TreeAnswerNode, viewKey } from "../tree-read/tree-read";
@@ -144,7 +149,7 @@ function node(
 
 /** A chip naming `ref`, which the batched reference read answered. */
 function chip(ref: string): NodeChip {
-  return { answered: true, gone: false, name: ref, ref };
+  return { answered: true, gone: false, reading: { words: ref }, ref };
 }
 
 /** `root` with `states` put on it by the read's own id, as the page puts the tree read's on it.
@@ -272,7 +277,7 @@ test("a chip and a parent line carry the marks of the node they name", () => {
   const marked = `dispatch://${KEY}/spec#b-r7`;
   const pinned = `${marked}@v3`;
   const plain = `dispatch://${KEY}/spec#b-r8`;
-  const line = (id: string): ParentLine => ({ id, line: `${id}.`, readId: id, type: "ask" });
+  const line = (id: string): ParentLine => ({ id, readId: id, text: `${id}.`, type: "ask" });
   const root = node(KEY, "issue", [
     node("spec#b-r7", "requirement", [], { reference: marked }),
     node("spec#b-r8", "requirement", [], { reference: plain }),
@@ -448,7 +453,8 @@ function readWide(): void {
 }
 
 /** `root` drawn by the page's tree, under the page's keymap and the providers it reads, as
- *  `IssueTree.test.tsx`'s `renderTree` draws it: no address, no filter, no document; with
+ *  `IssueTree.test.tsx`'s `renderTree` draws it: no address, no filter, no document, under the
+ *  names store with what the page publishes for the tree's chips (`publishedTree`); with
  *  `beside` drawn after the tree, under the same providers. */
 function renderTree(root: TreeNode, ...beside: ReactNode[]) {
   return renderTreeAt(undefined, root, ...beside);
@@ -465,6 +471,7 @@ function renderTreeAt(
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
+  const published = publishedTree(root);
   return render(
     createElement(
       MemoryRouter,
@@ -482,6 +489,7 @@ function renderTreeAt(
               FocusedNodeProvider,
               null,
               createElement(IssueScope),
+              createElement(Publisher, { published }),
               createElement(IssueTree, {
                 artifacts: new Map(),
                 context: new Set<string>(),
@@ -490,6 +498,7 @@ function renderTreeAt(
                 holdsEscape: false,
                 isClosed: false,
                 onEditing: () => {},
+                published,
                 reveal,
                 root,
                 rootRow: true,
@@ -499,7 +508,9 @@ function renderTreeAt(
           )
         )
       )
-    )
+    ),
+    // Under the names store, as the shell draws every page (`app.tsx`).
+    { wrapper: ReferenceNamesProvider }
   );
 }
 
@@ -692,7 +703,9 @@ function checkThat(blockId: string, passed: boolean): CheckBlock {
  *  where a case types any, with the view under no query as `whole`, which is that view itself
  *  where no query is typed, on the page's `address`, which carries the words as the page's own
  *  does (`?q=`); with `addressed`, the nodes the address names and what the body tells the slot
- *  of them, as the slot hands them on where it may tell (`slots/view-verification.tsx`). */
+ *  of them, as the slot hands them on where it may tell (`slots/view-verification.tsx`); under
+ *  the names store with what the page publishes for the tree's chips (`publishedTree`), and no
+ *  names line. */
 function drawVerification(
   root: TreeNode,
   checks: readonly CheckBlock[],
@@ -704,26 +717,34 @@ function drawVerification(
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
+  const published = publishedTree(root);
   return render(
     createElement(
       QueryClientProvider,
       { client },
       createElement(
-        MemoryRouter,
-        { initialEntries: [address] },
+        ReferenceNamesProvider,
+        null,
         createElement(
-          NoTooltips,
-          null,
-          createElement(VerificationFilterBody, {
-            ...(addressed === undefined ? {} : { addressed }),
-            checks,
-            context: preset.context,
-            reads: { state: "answered" },
-            view: preset.root,
-            whole: queryTyped(query)
-              ? presetView(root, "verification", "", new Set()).root
-              : undefined,
-          })
+          MemoryRouter,
+          { initialEntries: [address] },
+          createElement(
+            NoTooltips,
+            null,
+            createElement(Publisher, { published }),
+            createElement(VerificationFilterBody, {
+              ...(addressed === undefined ? {} : { addressed }),
+              checks,
+              context: preset.context,
+              namesLine: NO_FAILED_READS,
+              published,
+              reads: { state: "answered" },
+              view: preset.root,
+              whole: queryTyped(query)
+                ? presetView(root, "verification", "", new Set()).root
+                : undefined,
+            })
+          )
         )
       )
     )
@@ -2454,7 +2475,7 @@ test("a question's row takes the state its ask's node holds", () => {
       const { outline, question, row } = blockQuestion({}, { state: life }, line);
       const closes = life === "overtaken";
       const at = `${life} under ${line.id}`;
-      expect(question?.source, at).toEqual({ id: BLOCK_ASK, kind: "ask" });
+      expect(question?.source, at).toEqual({ id: BLOCK_ASK, issue: KEY, kind: "ask" });
       expect(question?.life, at).toBe(life);
       expect(question?.closed === true, at).toBe(closes);
       expect(readNodeOf(outline, blockReadId("spec", "r1"))?.closed === true, at).toBe(closes);
@@ -2475,7 +2496,7 @@ test("a question's row draws nothing of a state its block's node holds", () => {
     for (const line of [askLine(BLOCK_ASK), blockLine("q1")]) {
       const { outline, question, row } = blockQuestion({ state: life }, {}, line);
       const at = `${life} under ${line.id}`;
-      expect(question?.source, at).toEqual({ id: BLOCK_ASK, kind: "ask" });
+      expect(question?.source, at).toEqual({ id: BLOCK_ASK, issue: KEY, kind: "ask" });
       expect(markKeys(question), at).toEqual([]);
       expect(markKeys(readNodeOf(outline, blockReadId("spec", "r1"))), at).toEqual([]);
       expect(statesByReference(outline).size, at).toBe(0);
@@ -2492,7 +2513,7 @@ test("a question's row draws nothing of a state its block's node holds", () => {
 // closes and marks nothing.
 test("a view's row under an overtaken question drawn from a block and its ask is closed", () => {
   const overtaken = blockQuestion({}, { state: "overtaken" });
-  expect(overtaken.question?.source).toEqual({ id: BLOCK_ASK, kind: "ask" });
+  expect(overtaken.question?.source).toEqual({ id: BLOCK_ASK, issue: KEY, kind: "ask" });
   expect(readNodeOf(overtaken.outline, blockReadId("spec", "r1"))?.closed).toBe(true);
   expect(overtaken.row?.parentLine).toMatchObject({
     id: BLOCK_ASK,
@@ -2517,11 +2538,30 @@ function marksIn(element: Element | null | undefined): (string | undefined)[] {
   );
 }
 
+/** What the page publishes for the statements of `root`: each named by the page's own rule
+ *  (`targetNaming`) over the reads it names them from (`blockReads`), and each one's address as
+ *  one the page asks for, as `DecisionsFilterBody.drawn.test.tsx`'s `publishedStatements`
+ *  publishes them. */
+function publishedStatements(root: TreeNode): PublishedReferences {
+  const statements = nodesInOrder(root).flatMap((one) => {
+    if (one.type !== "requirement") return [];
+    const tree = one.tree ?? displayTree(one.text);
+    return [tree === undefined ? one : { ...one, tree }];
+  });
+  return {
+    ...targetNaming(blockReads(decisionsIssue(), statements)),
+    asked: new Set(
+      statements.flatMap(({ reference }) => (reference === undefined ? [] : [reference]))
+    ),
+  };
+}
+
 /** The Decisions view over `root`, with `made` the nodes of the decisions view the page holds on
  *  the issue's node (`TreeNode.views`), with the `shaped` tuples their links are, as the route
  *  answers them (`shapedTuples`), drawn as its slot draws it
  *  (`DecisionsFilterBody.drawn.test.tsx`'s `renderBody`): no words, and an address that names
- *  the nodes `named`, which the view keeps whatever it draws. */
+ *  the nodes `named`, which the view keeps whatever it draws; under the names store with what
+ *  the page publishes for the statements (`publishedStatements`), and no names line. */
 function drawDecisions(
   root: TreeNode,
   made: readonly TreeAnswerNode[],
@@ -2536,6 +2576,7 @@ function drawDecisions(
   client.setQueryData(["asks", KEY], []);
   client.setQueryData(["comments", KEY], []);
   const issue = decisionsIssue();
+  const published = publishedStatements(root);
   return render(
     createElement(
       MemoryRouter,
@@ -2544,25 +2585,32 @@ function drawDecisions(
         QueryClientProvider,
         { client },
         createElement(
-          KeymapProvider,
+          ReferenceNamesProvider,
           null,
           createElement(
-            MarginProvider,
+            KeymapProvider,
             null,
-            createElement(IssueScope),
             createElement(
-              NoTooltips,
+              MarginProvider,
               null,
-              createElement(DecisionsFilterBody, {
-                artifacts: artifactsBySlug(issue),
-                emptyLine: EMPTY_STATE_LINES.decisions,
-                holdsEscape: false,
-                isClosed: false,
-                issue,
-                reader: READER,
-                root: { ...root, views: { decisions: held } },
-                view: presetView(root, "decisions", "", new Set(named)).root,
-              })
+              createElement(Publisher, { published }),
+              createElement(IssueScope),
+              createElement(
+                NoTooltips,
+                null,
+                createElement(DecisionsFilterBody, {
+                  artifacts: artifactsBySlug(issue),
+                  emptyLine: EMPTY_STATE_LINES.decisions,
+                  holdsEscape: false,
+                  isClosed: false,
+                  issue,
+                  namesLine: NO_FAILED_READS,
+                  published,
+                  reader: READER,
+                  root: { ...root, views: { decisions: held } },
+                  view: presetView(root, "decisions", "", new Set(named)).root,
+                })
+              )
             )
           )
         )
@@ -2608,7 +2656,7 @@ test("Decisions draws an overtaken review row without counting it in the to-revi
       createElement(IssuePresets, {
         active: "decisions",
         issueKey: KEY,
-        signals: { ...filterSignals(root, ""), conversation: { count: 0 } },
+        signals: { ...filterSignals(root, ""), conversation: { count: 0 }, graph: undefined },
       })
     )
   );
@@ -2883,11 +2931,13 @@ function planWithOvertaken(): TreeNode {
 }
 
 /** What a case draws the Plan view under: the whole plan's tasks where the view is what the
- *  words filter left of them, the chain down to the node the address names, and the address's
- *  search, which carries the words (`?q=`); with `take`, the page's `navigate` handed to it, so a
- *  case moves the address as the reader does. */
+ *  words filter left of them, the chain down to the node the address names, the address's
+ *  search, which carries the words (`?q=`), and what the page publishes of its batched names
+ *  read, by default what it publishes for the tree's chips (`publishedTree`); with `take`, the
+ *  page's `navigate` handed to it, so a case moves the address as the reader does. */
 interface PlanPlace {
   readonly plan?: readonly TreeNode[];
+  readonly published?: PublishedReferences;
   readonly reveal?: readonly TreeNode[];
   readonly search?: string;
   readonly take?: (navigate: (to: string) => void) => void;
@@ -2895,44 +2945,58 @@ interface PlanPlace {
 
 /** The Plan view over `root`, the view's tasks, drawn as its slot draws it
  *  (`PlanFilterBody.test.tsx`'s `renderBody`), with no document read, so the plan's own order is
- *  the order the view hands the tasks over in. */
+ *  the order the view hands the tasks over in, under the names store with `published` published
+ *  to it and handed to the body, and no names line. */
 function planBody(
   root: TreeNode,
   client: QueryClient,
-  { plan = root.children, reveal, search = "", take }: PlanPlace
+  {
+    plan = root.children,
+    published,
+    reveal,
+    search = "",
+    take,
+  }: PlanPlace & { readonly published: PublishedReferences }
 ): ReactNode {
   return createElement(
-    MemoryRouter,
-    { initialEntries: [`/${search}`] },
-    take === undefined ? null : createElement(NavigateProbe, { take }),
+    ReferenceNamesProvider,
+    null,
     createElement(
-      QueryClientProvider,
-      { client },
+      MemoryRouter,
+      { initialEntries: [`/${search}`] },
+      take === undefined ? null : createElement(NavigateProbe, { take }),
       createElement(
-        KeymapProvider,
-        null,
+        QueryClientProvider,
+        { client },
         createElement(
-          MarginProvider,
+          KeymapProvider,
           null,
           createElement(
-            FocusedNodeProvider,
+            MarginProvider,
             null,
-            createElement(IssueScope),
-            createElement(PlanFilterBody, {
-              artifacts: new Map(),
-              context: new Set<string>(),
-              emptyLine: EMPTY_STATE_LINES.plan,
-              focusReveal: true,
-              holdsEscape: search !== "",
-              isClosed: false,
-              onEditing: () => {},
-              plan,
-              planBlocks: undefined,
-              reads: { state: "answered" },
-              reveal,
-              root,
-              rootRow: false,
-            })
+            createElement(
+              FocusedNodeProvider,
+              null,
+              createElement(IssueScope),
+              createElement(Publisher, { published }),
+              createElement(PlanFilterBody, {
+                artifacts: new Map(),
+                context: new Set<string>(),
+                emptyLine: EMPTY_STATE_LINES.plan,
+                focusReveal: true,
+                holdsEscape: search !== "",
+                isClosed: false,
+                namesLine: NO_FAILED_READS,
+                onEditing: () => {},
+                plan,
+                planBlocks: undefined,
+                published,
+                reads: { state: "answered" },
+                reveal,
+                root,
+                rootRow: false,
+              })
+            )
           )
         )
       )
@@ -2941,13 +3005,18 @@ function planBody(
 }
 
 /** `planBody` drawn, with `again` to draw it once more at another place, as the page does when
- *  its address moves. */
+ *  its address moves. What the page publishes is one value for as long as the tree is the same,
+ *  as the page's is: the case's, else what the page publishes for the tree's chips. */
 function drawPlan(root: TreeNode, place: PlanPlace = {}) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  const view = render(planBody(root, client, place));
-  return { ...view, again: (next: PlanPlace) => view.rerender(planBody(root, client, next)) };
+  const published = place.published ?? publishedTree(root);
+  const view = render(planBody(root, client, { ...place, published }));
+  return {
+    ...view,
+    again: (next: PlanPlace) => view.rerender(planBody(root, client, { ...next, published })),
+  };
 }
 
 // In the Plan view an overtaken task has no position: the plan's order leaves it out, so no step
@@ -3094,23 +3163,31 @@ test("the Plan chart marks a proposed step, and what a step needs and serves", (
   readWide();
   const serves: ParentLine = {
     id: "spec#b-r7",
-    line: "The page draws r7.",
     readId: "spec#b-r7",
     reference: `dispatch://${KEY}/spec#b-r7`,
+    text: "The page draws r7.",
     type: "requirement",
   };
   const needs: NodeChip = {
     answered: true,
     gone: false,
     label: BLOCK_ATTRIBUTE_LABELS.needs,
-    name: "Task t1 is carried out.",
+    reading: { words: "Task t1 is carried out." },
     ref: planRef("t1"),
   };
+  // What the page's batched read names the step's need and the statement it serves by.
+  const published = publishedNames(
+    new Map([
+      [needs.ref, "Task t1 is carried out."],
+      [serves.reference ?? "", serves.text],
+    ])
+  );
   const view = drawPlan(
     stamped(
       node(KEY, "issue", [planTask("t1"), planTask("t2", { chips: [needs], parentLine: serves })]),
       { [T1]: { life: "proposed" }, "spec#b-r7": { life: "proposed", onlyYou: true } }
-    )
+    ),
+    { published }
   );
   try {
     const bar = (id: string) =>

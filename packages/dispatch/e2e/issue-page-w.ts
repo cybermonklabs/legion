@@ -22,7 +22,7 @@ import type { NodeType } from "../web/src/features/issue-page/page-words";
 import { mergeTreePages } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { baseUrlOf, getIssueCoverage, getIssueResults, userHeaders } from "./api";
 import { issuePage } from "./issue-page";
-import { type Gate, OWED_BY, type TreeAnswerWatch } from "./issue-page-t-tree";
+import type { Gate, TreeAnswerWatch } from "./issue-page-t-tree";
 
 /**
  * What the rows of `e2e/issue-page-w.e2e.ts` write and read, and what any other row that needs
@@ -49,11 +49,16 @@ import { type Gate, OWED_BY, type TreeAnswerWatch } from "./issue-page-t-tree";
  * - **The tree read**: what the page received of `GET /api/v1/issues/{key}/tree` - its newest
  *   read whose every page answered, `e2e/issue-page-t-tree.ts`'s `treeAnswerOf`, held until it holds
  *   what a row waits for (`heldTreeAnswer`), and the pages of each read (`treePagesOf`) - and
- *   the read ids of the nodes `seedLenses` wrote, read from that answer (`lensReadIds`), so a
- *   row names each node by the id the page itself received and never builds one.
- * - **The gates** `findingGate` and `kindFilterGate`, which a clause of a row waits on as the
- *   rows wait on the gates of `e2e/issue-page-t-tree.ts`: each a `Gate`, read by that file's
- *   `owedUnless`.
+ *   Graph's read of it, the whole tree, read through the signed-in page's own request context
+ *   (`requestedTreeRead`). The read ids of the nodes `seedLenses` wrote are read from Graph's
+ *   read (`lensReadIds`), which holds each of them as a node of the issue, so a row names each
+ *   node by the id the server gave it and never builds one.
+ * - **The event feed**: each event the page's live socket (`/ws/live`) carries it from a row's
+ *   watch on (`watchEventFrames`), by its type, what it is about, its id and when it arrived: a
+ *   row that counts the requests of its own act reads it to tell that act's window from one a
+ *   server duty's event reached, since the page reads again for each event it hears.
+ * - **The gate** `findingGate`, which a clause of a row waits on as the rows wait on the gates
+ *   of `e2e/issue-page-t-tree.ts`: a `Gate`, read by that file's `owedUnless`.
  */
 
 /** What the writers answer, each the 201 body of its route as `@legion/contracts` names it:
@@ -580,6 +585,60 @@ export function treePagesOf(page: Page): () => Promise<TreePage[]> {
   return async () => (await Promise.all(kept)).filter((one) => one !== undefined);
 }
 
+// ---------------------------------------------------------------------------------------------
+// What the page received of the event feed.
+// ---------------------------------------------------------------------------------------------
+
+/** One event the page's live socket carried it, as its frame names the event. */
+export interface EventFrame {
+  /** When the frame reached the row, in ms since the epoch (`Date.now()`). */
+  readonly at: number;
+  /** When the server wrote the event (`created_at`), as the frame sends it. */
+  readonly created: string;
+  /** The issue the event is about, else its project, else empty: an event of the workspace. */
+  readonly entity: string;
+  /** The event's id in the log, as the frame sends it. */
+  readonly id: string;
+  /** The event's type, such as `architecture.synced`. */
+  readonly kind: string;
+}
+
+/** An `event` frame of the live socket, as `@legion/contracts`' `LiveEventFrame` names it: only
+ *  the fields `watchEventFrames` keeps, each optional, since a frame of another type has none. */
+interface LiveFrame {
+  readonly event?: {
+    readonly created_at?: string;
+    readonly issue_key?: string | null;
+    readonly project?: string;
+    readonly type?: string;
+  };
+  readonly id?: string;
+  readonly type?: string;
+}
+
+/** Keeps each event the page's live socket (`/ws/live`) carries from now on, in the order the
+ *  socket sent them: the frames of every socket the page opens after this call, one for each
+ *  document it loads. A row watches before its first navigation, so no socket opens unwatched.
+ *  The answer grows as frames arrive; a row reads the part after the length it noted. */
+export function watchEventFrames(page: Page): readonly EventFrame[] {
+  const frames: EventFrame[] = [];
+  page.on("websocket", (socket) => {
+    if (new URL(socket.url()).pathname !== "/ws/live") return;
+    socket.on("framereceived", ({ payload }) => {
+      const frame = JSON.parse(String(payload)) as LiveFrame;
+      if (frame.type !== "event") return;
+      frames.push({
+        at: Date.now(),
+        created: frame.event?.created_at ?? "",
+        entity: frame.event?.issue_key ?? frame.event?.project ?? "",
+        id: frame.id ?? "",
+        kind: frame.event?.type ?? "",
+      });
+    });
+  });
+  return frames;
+}
+
 /** The read ids of what `seedLenses` wrote, as the issue's tree read holds them. */
 export interface LensReadIds {
   /** The check the `prevented_by` tuple of risk A names. */
@@ -615,7 +674,9 @@ function ownNodes(answer: IssueTreeRead, key: string): IssueTreeNode[] {
  * risk by its heading and check 1 by the `prevented_by` of risk A, the threat model as the lens
  * under statement 4, each constraint by its standard or its measurement. A node of another
  * issue, and the context a view or a catalogue tuple brings in, is none of them. Throws, naming
- * the node, where the answer holds none.
+ * the node, where the answer holds none. `answer` is Graph's read (`requestedTreeRead`), which
+ * holds each of them as a node of the issue: Conversation's read, the read by kind, holds the
+ * measurement nowhere and the standard only as the context statement 5's `constrained_by` names.
  */
 export function lensReadIds(answer: IssueTreeRead, key: string, seeded: LensSeed): LensReadIds {
   const own = ownNodes(answer, key);
@@ -665,22 +726,14 @@ export function lensIdsIn(answer: IssueTreeRead): string[] {
   return (answer.nodes ?? []).flatMap((node) => (node.supertag === "lens" ? [node.id] : []));
 }
 
-// ---------------------------------------------------------------------------------------------
-// The gates: a clause whose server change is not on the base is a row of its own, which skips.
-// ---------------------------------------------------------------------------------------------
-
-/** Issue `key`'s tree read with no view, every page of it in order, read through the signed-in
- *  page's own request context, as `issue-page-t-tree.ts`'s gates read it: the whole tree, or,
- *  where `kind` is given, the read by kind that Conversation's read is (`?kind=`, once for each
- *  kind), which the model's filter by kind answers with the nodes of those kinds and a base
- *  without that filter answers as the whole tree. */
-async function requestedTreeRead(
-  page: Page,
-  key: string,
-  kind?: readonly string[]
-): Promise<IssueTreeRead> {
+/** Issue `key`'s tree read with no view and no kind - Graph's read, the whole tree - every page
+ *  of it in order, read through the signed-in page's own request context, as
+ *  `issue-page-t-tree.ts`'s gates read it. The rows take the read ids of what `seedLenses` wrote
+ *  from it (`lensReadIds`): Conversation's read (`?kind=`) holds no message, and a constraint
+ *  only as the context a statement's tuple names, which `lensReadIds` skips. */
+export async function requestedTreeRead(page: Page, key: string): Promise<IssueTreeRead> {
   const pageAt = async (cursor: string | null): Promise<IssueTreeRead> => {
-    const path = routeUrl("/api/v1/issues/{key}/tree", { key }, { cursor, kind });
+    const path = routeUrl("/api/v1/issues/{key}/tree", { key }, { cursor });
     const response = await page.request.get(path);
     if (!response.ok()) {
       throw new Error(`GET ${path} failed: ${response.status()} ${await response.text()}`);
@@ -697,6 +750,10 @@ async function requestedTreeRead(
   }
   return mergeTreePages([first, ...rest]);
 }
+
+// ---------------------------------------------------------------------------------------------
+// The gate: a clause whose server change is not on the base is a row of its own, which skips.
+// ---------------------------------------------------------------------------------------------
 
 /**
  * Whether the server's commit 5c85ffdc1b on the node model is on the base: it makes a lens
@@ -718,30 +775,5 @@ export async function findingGate(page: Page, key: string, seeded: LensSeed): Pr
     owed:
       "owed until a lens invoked on a finding stands under that finding in the tree read " +
       "(the node model's commit 5c85ffdc1b)",
-  };
-}
-
-/**
- * Whether the model's filter of the tree read by kind is on the base: the read with `kind`, which
- * Conversation's read is, answers the nodes of those kinds, and so Conversation draws no
- * constraint of the issue as a row, which no kind it names takes. A base without it answers that
- * read as the whole tree, the constraints and every other kind of node in it. The probe reads
- * every page of issue `key`'s tree read with `kind=ask` through the signed-in page's own request
- * context, as `issue-page-t-tree.ts`'s `treeReadGate` reads it: met only where that read holds
- * no node of this issue of another kind than an ask, but the issue's own node and the nodes it
- * holds as context, to place the asks (`role: "context"`).
- */
-export async function kindFilterGate(page: Page, key: string): Promise<Gate> {
-  const answer = await requestedTreeRead(page, key, ["ask"]);
-  const others = ownNodes(answer, key).filter(
-    (node) =>
-      node.supertag !== "ask" &&
-      !(node.supertag === "issue" && (node.id === key || node.parent === null))
-  );
-  return {
-    met: others.length === 0,
-    owed:
-      "owed until the model's filter of the tree read by kind is on this branch's base: the " +
-      `read with kind=ask answers nodes of other kinds here; ${OWED_BY}`,
   };
 }

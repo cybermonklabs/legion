@@ -21,8 +21,8 @@ import { blockFragment, parseBlockReference } from "./block-reference";
  * No route of `routes.ts` names one, so a reference to one is a reference without a route, which
  * text cites as the server indexes it, and which today's page links nowhere. The new issue page
  * writes one in a row's words as its node's name, linked to that node's row, where its tree read
- * holds the node, and as its kind's word otherwise (`issue-page/tree-drafts.ts`'s
- * `addressesAsShortForms`, `issue-page/lenses/store-words.ts`).
+ * holds the node, and as its kind's word otherwise (`issue-page/lenses/store-words.ts`); the row
+ * makes that link go to the node's row as it draws its words (`issue-page/lenses/store-link.ts`).
  */
 const STORE_ADDRESS = {
   /** The kinds addressed by a uuid. */

@@ -1,10 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 
-import type { Comment, IssueDetails } from "../../../api/types";
+import type { Comment, CommentWithTrees, IssueDetails } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
 import { standsFailed } from "../../refs/reference-target";
-import { wordsOf } from "../../refs/tree-fragment";
 import { type DecisionNode, decisionNodes } from "../decision-nodes/decision-nodes";
 import { type ChangeComment, decisionNodeChanges, deletedPostIds } from "../decision-review";
 import type { TreeNode } from "../issue-tree";
@@ -233,9 +232,8 @@ export function useDecisionsEntries({
     [readAsks, readTree, readView, treeRefused, viewRefused]
   );
   // How this issue addresses a node, which is the one rule the tree was built with, so a
-  // `shaped` tie resolves to the node it names (`tree-drafts.ts`). `nodeIdOf` names no block by
-  // a line, so the line rule it is handed is the reading's words, as the parts' tests hand it.
-  const nodeIdOf = useMemo(() => treeContext({ issue }, wordsOf).nodeIdOf, [issue]);
+  // `shaped` tie resolves to the node it names (`tree-drafts.ts`).
+  const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
   // Each write-up of an answered question the tree holds, by its node's id, with the question it
   // restates: a `reading` node at its first placement in the reading order, which is where the
   // tree places it (`placements`), under an ask that holds an answer, the ask the tree read
@@ -288,19 +286,20 @@ export function useDecisionsEntries({
 /**
  * The Change each of `decisions` waits on, by the decision's own address (`Decision.ref`), as
  * the parts read one (`decisionsParts`' `changes`): the comment the tree read hangs under the
- * decision's node that `decisionNodeChanges` gives it, with its words, its author, the time it
- * was made and the time its author last edited it. The decisions are the decisions view's, or
- * the tree read's, and the Changes the tree read's, which answer one node by the same id. A
- * Change its author deleted asks nothing any more, and when its author last edited one is
- * answered by `comments`, the page's comments read, which the tree read answers no mark of
- * (`deletedPostIds`). None while the tree read has not answered.
+ * decision's node that `decisionNodeChanges` gives it, with its words and the server's reading
+ * of them where the read sent one, its author, the time it was made and the time its author
+ * last edited it. The decisions are the decisions view's, or the tree read's, and the Changes
+ * the tree read's, which answer one node by the same id. A Change its author deleted asks
+ * nothing any more, and when its author last edited one is answered by `comments`, the page's
+ * comments read, which the tree read answers no mark of (`deletedPostIds`). None while the tree
+ * read has not answered.
  */
 export function changesOf(
   tree: TreeAnswer | undefined,
   decisions: readonly DecisionNode[],
   comments?: readonly Pick<Comment, "deleted_at" | "edited_at" | "id">[]
-): ReadonlyMap<string, ChangeComment> {
-  const changes = new Map<string, ChangeComment>();
+): ReadonlyMap<string, ChangeComment & Pick<CommentWithTrees, "body_tree">> {
+  const changes = new Map<string, ChangeComment & Pick<CommentWithTrees, "body_tree">>();
   if (tree === undefined) return changes;
   const asked = decisionNodeChanges(tree, undefined, deletedPostIds(comments));
   const edited = new Map((comments ?? []).map((comment) => [comment.id, comment.edited_at]));
@@ -313,6 +312,7 @@ export function changesOf(
     changes.set(decision.ref, {
       author,
       body: comment.text,
+      ...(comment.text_tree === undefined ? {} : { body_tree: comment.text_tree }),
       created_at: comment.made_at,
       edited_at: edited.get(comment.id) ?? null,
       id: comment.id,

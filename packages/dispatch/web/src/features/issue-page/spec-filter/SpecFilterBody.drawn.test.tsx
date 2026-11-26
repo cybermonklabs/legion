@@ -22,6 +22,11 @@ import { pageFocusedRow } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
 import { DESKTOP_WIDTH, PHONE_WIDTH, stubViewport } from "../../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
+import {
+  type PublishedReferences,
+  ReferenceNamesProvider,
+  usePublishReferenceNames,
+} from "../../refs/reference-names";
 import { parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
@@ -53,7 +58,7 @@ import {
   VERIFICATION_WORDS,
 } from "../page-words";
 import { presetView } from "../presets";
-import { ReferenceNamesProvider, usePublishReferenceNames } from "../reference-names";
+import { publishedNames, publishedTree } from "../projection-fixture";
 import { ProvidersSlot } from "../slots/providers";
 import { StageSlot, ViewStage } from "../slots/stage";
 import { nodeRowSelectorOf } from "../tree-focus";
@@ -108,16 +113,17 @@ function IssueScope(): ReactNode {
   return null;
 }
 
-/** The names the page's one batched read brought, published as the page publishes them
- *  (`useIssueTree.ts`), which a reference in a node's drawn words is named from (`RowText`). */
+/** What the page's one batched read brought, published as the page publishes it
+ *  (`useIssueTree.ts`), which a reference in a node's drawn words is named from (`RowText`) and
+ *  a chip of the tree is named by (`useReferenceNames`). */
 function Named({
   children,
-  names,
+  published,
 }: {
   children: ReactNode;
-  names: ReadonlyMap<string, string> | undefined;
+  published: PublishedReferences;
 }): ReactNode {
-  usePublishReferenceNames(names);
+  usePublishReferenceNames(published);
   return children;
 }
 
@@ -369,12 +375,24 @@ function drawBody(
       )}
     </HeldView>
   );
+  // What the page publishes: the names a case adds for what only a read of the target would name,
+  // and every chip the tree holds, named by its reading, which stands over a case's name for the
+  // same target.
+  const chipsPublished = publishedTree(tree);
+  const published: PublishedReferences =
+    names === undefined
+      ? chipsPublished
+      : {
+          ...chipsPublished,
+          asked: new Set([...chipsPublished.asked, ...names.keys()]),
+          readings: new Map([...publishedNames(names).readings, ...chipsPublished.readings]),
+        };
   let shown: IssueDetails = issue;
   let body = bodyOf(shown);
   const page = (drawn: boolean): ReactNode => (
     <QueryClientProvider client={client}>
       <ReferenceNamesProvider>
-        <Named names={names}>
+        <Named published={published}>
           <MemoryRouter>
             <KeymapProvider>
               <MarginProvider>
@@ -1066,6 +1084,9 @@ test("an agent's decision draws its words with each reference named, in its cell
   ].join("\n");
   const tree = displayTree(words);
   if (tree === undefined) throw new Error("the engine read no tree of the decision's words");
+  // The cell names the statement by its own read in the commit before the page's names reach the
+  // store, which reads the spec's blocks.
+  const blocks = spyOn(api, "getReferences").mockResolvedValue({ edges: [] } as never);
   const { read, view } = drawBody(
     issueTree([
       statement("r4", { text: `**R4.** ${name}.` }),
@@ -1073,7 +1094,7 @@ test("an agent's decision draws its words with each reference named, in its cell
       // batched read (`tree-drafts.ts`), which is the name the page gives it
       // (`referenceStandIns`).
       decisionNode("d1", {
-        chips: [{ answered: true, gone: false, name, ref: cited }],
+        chips: [{ answered: true, gone: false, reading: { words: name }, ref: cited }],
         text: words,
         tree,
       }),
@@ -1107,6 +1128,7 @@ test("an agent's decision draws its words with each reference named, in its cell
     );
   } finally {
     view.unmount();
+    blocks.mockRestore();
     read.mockRestore();
   }
 });
@@ -1147,7 +1169,7 @@ test("the focus on a decision draws the person's whole answer, character for cha
       // The tree names every block a decision links as a chip on it, as part F's model does
       // (`tree-drafts.ts`).
       decisionNode("d1", {
-        chips: [{ answered: true, gone: false, name: "r1", ref: statementRef("r1") }],
+        chips: [{ answered: true, gone: false, reading: { words: "r1" }, ref: statementRef("r1") }],
       }),
     ]),
     [
@@ -1366,6 +1388,70 @@ test("a failed names read says so in its own line, after the view's own, and its
   }
 });
 
+// Under the Spec filter the spec's blocks are the Spec view read's (`useTreeRead`'s `blocksOf`),
+// and the statements line runs by that read (`useBlocksRunning`), not by Conversation's, which
+// the page reads beside the view from 1024 px up. With Conversation's read out and the view read
+// refused, the line's Retry sends the view read again, the line is busy while it runs, and it
+// leaves once the view read answers.
+test("with Conversation's read out, the statements line's Retry sends the refused Spec view read, and is busy while it runs", async () => {
+  const user = userEvent.setup();
+  const issue: IssueDetails = { ...issueDetails(), artifacts: [] };
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(["whoami"], { kind: "user", login: READER });
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
+  client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
+  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
+  client.setQueryData(["comments", KEY], TWO_THREADS);
+  client.setQueryData(["issue-messages", KEY], []);
+  // Conversation's read never answers; the Spec view read is refused, and then answers when the
+  // case says.
+  const again = Promise.withResolvers<TreeAnswer>();
+  let specReads = 0;
+  const trees = spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    const asked = query as { readonly kind?: unknown; readonly view?: string };
+    if (asked.view !== "spec") return Promise.withResolvers<never>().promise;
+    specReads += 1;
+    return specReads === 1 ? Promise.reject(new Error("offline")) : again.promise;
+  });
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  void client.prefetchQuery(outlineQuery(KEY, "conversation"));
+  const view = render(
+    <MemoryRouter initialEntries={[`/issues/${KEY}/spec`]}>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <AddressedStage issue={issue} />
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const line = await waitFor(() => alertSaying(view, STATE_LINES.statements_unreadable));
+    expect(
+      client.getQueryState(outlineQuery(KEY, "conversation").queryKey)?.fetchStatus,
+      "Conversation's read is not out"
+    ).toBe("fetching");
+    const retry = within(line).getByRole("button", { name: "Retry" });
+    await user.click(retry);
+    await waitFor(() => expect(specReads, "the Retry sent no Spec view read").toBe(2));
+    expect(retry.getAttribute("aria-busy"), "the line is not busy while the view read runs").toBe(
+      "true"
+    );
+    await act(async () => again.resolve(treeAnswer([])));
+    await waitFor(() =>
+      expect(view.container.textContent).not.toContain(STATE_LINES.statements_unreadable)
+    );
+  } finally {
+    view.unmount();
+    names.mockRestore();
+    trees.mockRestore();
+  }
+});
+
 // The page acts on each of the Contents list's asks
 // once, whichever outline or body took it (`outline-request.tsx`), so a body drawn again - the
 // view turned off and on again - does not move the reader back to an ask it already went to.
@@ -1461,7 +1547,9 @@ test("each statement carries how it stands, by a shape with its own name", () =>
 });
 
 // Ruling 1 and ruling 6: a statement's own words carry its number where the spec wrote one, and
-// are drawn as the outline draws an agent's words - whole here, where no layout cuts them.
+// are drawn as the outline draws an agent's words - whole here, where no layout cuts them, and
+// without the marks the author typed to format them, which the row's reading paints as
+// formatting.
 test("a statement's words are drawn as its author wrote them", () => {
   const words =
     "**R1.** Every node's words are on the page without opening it; an agent's long words " +
@@ -1470,7 +1558,7 @@ test("a statement's words are drawn as its author wrote them", () => {
   try {
     expect(
       view.container.querySelector("[data-spec-statement] [data-node-words]")?.textContent
-    ).toBe(words);
+    ).toBe(words.replaceAll("**", ""));
   } finally {
     view.unmount();
     read.mockRestore();
@@ -2137,7 +2225,7 @@ test("a press on a decision's cell or away from it changes what the body draws o
       answeredAsk("ask-1", { text: stored }),
       statement("r1"),
       decisionNode("d1", {
-        chips: [{ answered: true, gone: false, name: "r1", ref: statementRef("r1") }],
+        chips: [{ answered: true, gone: false, reading: { words: "r1" }, ref: statementRef("r1") }],
       }),
     ]),
     [
@@ -2695,7 +2783,7 @@ test("q goes to the next open question in the conversation, where the view draws
 test("w on an address-named row goes to its decision in the conversation where that decision heads no run", async () => {
   const user = userEvent.setup();
   const behind = decisionNode("d1", {
-    chips: [{ answered: true, gone: false, name: "A remark", ref: "comment-1" }],
+    chips: [{ answered: true, gone: false, reading: { words: "A remark" }, ref: "comment-1" }],
   });
   const tree = issueTree([
     statement("r1"),
@@ -2730,7 +2818,7 @@ test("w on an address-named row says nothing of its decision while the asks read
     statement("r1"),
     node({ id: "comment-1", text: "A remark the address names.", type: "comment" }),
     decisionNode("d1", {
-      chips: [{ answered: true, gone: false, name: "A remark", ref: "comment-1" }],
+      chips: [{ answered: true, gone: false, reading: { words: "A remark" }, ref: "comment-1" }],
     }),
   ]);
   const made = [
@@ -2896,7 +2984,14 @@ test("an option label that cites a statement is drawn by the statement's name, n
   const named = "Keep R2. Every address as written";
   // The page names the statement by the words of the first chip naming it (`useReferenceNames`).
   const made = decisionNode("d1", {
-    chips: [{ answered: true, gone: false, name: "R2. Every address", ref: statementRef("r2") }],
+    chips: [
+      {
+        answered: true,
+        gone: false,
+        reading: { words: "R2. Every address" },
+        ref: statementRef("r2"),
+      },
+    ],
   });
   const { read, view } = drawBody(
     issueTree([

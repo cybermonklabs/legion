@@ -18,9 +18,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// excerptRunes bounds the head of an item's text shown beside an edge.
-const excerptRunes = 240
-
 // Query selects one node's edges. Direction "in" reads edges pointing at the node (Kind, ID
 // are its to_kind, to_id: ref_key for artifacts); "out" reads edges it writes (from_kind,
 // from_id: the uuid for artifacts). Kinds narrows edge types; Since keeps mentions whose
@@ -38,6 +35,9 @@ const excerptRunes = 240
 // A reply whose answers names the comment its replies_to names is listed once, by replies_to,
 // wherever replies_to is listed.
 type Query struct {
+	// ServerURL is the deployment the caller reads, whose dashboard URLs an edge's excerpt is cut
+	// around as references (itemExcerpt).
+	ServerURL string
 	Direction string
 	Kind      string
 	ID        string
@@ -170,19 +170,19 @@ func edgeFrom(alias string) string {
 // target no row holds through its moved_to tuples (refs.BlockLinks), the block it reaches there.
 //
 // A row that names its node is the tuple arm's (migration 20261109215947): a mention is listed
-// whatever its target's type, and a pointer only while block_ref_listed holds of the targets the
-// attribute node declares now (block_pointer_targets), so a change of an attribute's targets
-// reaches every link of that attribute at its next read, with no pass over documents nobody
-// edits. A row that names no node, which a build before the store wrote, is the old block_refs
-// arm's, whose test reads the to_types the index copied into the row: such a row follows a
-// change of the targets only once a version is indexed again. Beyond a mention it tests no row's
-// kind, as the view does not, so a decision's decided_by and from_ask, whose attributes declare no
-// targets, are listed as graph_edges lists them; the references read admits only mentions and the
-// pointer kinds the schema declares (blockRefLinked).
+// whatever its target's type, and a pointer only while block_node_listed holds of the targets the
+// attribute node declares now (block_pointer_targets), reading the target's type off its node, so
+// a change of an attribute's targets reaches every link of that attribute at its next read, with
+// no pass over documents nobody edits. A row that names no node, which a build before the store
+// wrote, is the old block_refs arm's, whose test reads the to_types the index copied into the
+// row: such a row follows a change of the targets only once a version is indexed again. Beyond a
+// mention it tests no row's kind, as the view does not, so a decision's decided_by and from_ask,
+// whose attributes declare no targets, are listed as graph_edges lists them; the references read
+// admits only mentions and the pointer kinds the schema declares (blockRefLinked).
 func blockRefListed(alias, target string) string {
 	return `(case when ` + alias + `.node_kind is null
 		then ` + alias + `.to_types is null or block_ref_listed(` + alias + `.to_types, ` + target + `)
-		else ` + alias + `.kind = 'mentions' or block_ref_listed(block_pointer_targets(` + alias + `.from_node, ` + alias + `.kind), ` + target + `) end)`
+		else ` + alias + `.kind = 'mentions' or block_node_listed(block_pointer_targets(` + alias + `.from_node, ` + alias + `.kind), ` + target + `) end)`
 }
 
 // documentBlockIDs is the node id of every current block of the document whose ref_key is the
@@ -374,7 +374,7 @@ func blockLinkArms(toKind string) []string {
 // node_address), a block's link or an answered ask's shaped, and while the row stands the view
 // answers the edge from that node, as the tuple states it: while the newest tuple of its relation
 // asserts (graphstore.CurrentTupleRead, the reading currentTuple makes), while the node is not
-// gone, as the view's join to graph_nodes keeps it, and, for a pointer, while block_ref_listed
+// gone, as the view's join to graph_nodes keeps it, and, for a pointer, while block_node_listed
 // lists its target among the targets its attribute declares now. Its time and its sequence are
 // that tuple's, as the view answers them. The source's visibility is the read's filter of a
 // source, as for every other arm.
@@ -387,7 +387,7 @@ func keyedTupleArm(blockKind string) string {
 					and t.to_kind = b.to_kind and t.to_id = b.to_id and t.to_kind <> '`+graphstore.KindValue+`'`) + `
 				) newest
 				where b.to_kind = '` + blockKind + `' and b.to_id = k.node_id and b.node_kind is not null and newest.asserted
-				and (b.kind = 'mentions' or block_ref_listed(block_pointer_targets(b.node_address, b.kind), b.to_id))
+				and (b.kind = 'mentions' or block_node_listed(block_pointer_targets(b.node_address, b.kind), b.to_id))
 				and exists (select 1 from graph_nodes live
 					where live.kind = b.node_kind and live.id = b.node_address and live.state <> '` + graphstore.StateGone + `')`
 }
@@ -607,23 +607,24 @@ func resolveEdges(ctx context.Context, q Queryer, who model.Actor, query Query) 
 			}
 			edge.Block = &block.GraphNode
 		}
-		edge.Excerpt = excerptOf(node)
+		edge.Excerpt = excerptOf(node, query.ServerURL)
 		edges = append(edges, edge)
 	}
 	return edges, nil
 }
 
-// excerptOf is the excerpt an edge at node shows: its name (resolvedNode.name), a block's stored
-// excerpt with its block id and the head of any other node's own text, and nil for a node that
-// has no text.
-func excerptOf(node resolvedNode) *model.GraphExcerpt {
+// excerptOf is the excerpt an edge at node shows: its name under serverURL (resolvedNode.name), a
+// block's stored excerpt with its block id - or a finding's text, read whole from the store, which
+// holds no excerpt of it, and so cut at the read - and the head of any other node's own text, and
+// nil for a node that has no text.
+func excerptOf(node resolvedNode, serverURL string) *model.GraphExcerpt {
 	switch {
 	case node.BlockID != "":
-		// A block's stored excerpt is already cut to BlockExcerptRunes, the excerpt a
-		// document's mention shows.
-		return &model.GraphExcerpt{BlockID: node.BlockID, Text: node.name()}
+		// A block's stored excerpt is already cut by BlockExcerpt, the excerpt a document's
+		// mention shows; name cuts a finding's whole text the same way.
+		return &model.GraphExcerpt{BlockID: node.BlockID, Text: node.name(serverURL)}
 	case node.text != "":
-		return &model.GraphExcerpt{Text: node.name()}
+		return &model.GraphExcerpt{Text: node.name(serverURL)}
 	}
 	return nil
 }
@@ -916,15 +917,16 @@ type ExcerptedNode struct {
 // a read that lists nodes rather than edges - the proposed nodes of an issue - answers each one
 // with the words a reader recognises it by. What it answers and what it leaves out is Nodes'. The
 // targets are addressed as the to side of an edge addresses them (TargetOf), so an artifact's id
-// is its ref_key, as in TargetNames.
-func ExcerptedNodes(ctx context.Context, q Queryer, who model.Actor, targets []Target) (map[Target]ExcerptedNode, error) {
+// is its ref_key, as in TargetNames; serverURL is the deployment the caller reads, whose
+// dashboard URLs each excerpt is cut around as references (excerptOf).
+func ExcerptedNodes(ctx context.Context, q Queryer, who model.Actor, targets []Target, serverURL string) (map[Target]ExcerptedNode, error) {
 	resolved, err := resolveTargets(ctx, q, who, targets)
 	if err != nil {
 		return nil, err
 	}
 	nodes := make(map[Target]ExcerptedNode, len(resolved))
 	for key, node := range resolved {
-		nodes[Target{Kind: key[0], ID: key[1]}] = ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node)}
+		nodes[Target{Kind: key[0], ID: key[1]}] = ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node, serverURL)}
 	}
 	return nodes, nil
 }
@@ -946,12 +948,12 @@ type TargetName struct {
 // TargetNames is the words each of targets is named by where who is shown a reference to it
 // rather than its own text: an issue's title, a document's name, an ask's question, a comment's
 // or a message's body, a component's title, a block's text and any other node's own text, each
-// cut to the bound an edge's excerpt is cut to (resolvedNode.name), which is what GET
-// /api/v1/references already shows beside an edge at that node. The targets are addressed as
-// the to side of an edge addresses them (TargetOf), so an artifact's id is its ref_key. A comment
-// or a message, and a block of one, carries its post's marks beside its name (TargetName). A
-// deleted post's node stands, with the empty body its delete left, so its name is "" beside its
-// delete mark.
+// cut as an edge's excerpt is cut (resolvedNode.name), which is what GET /api/v1/references
+// already shows beside an edge at that node; serverURL is the deployment whose dashboard URLs
+// are references, so no cut splits one. The targets are addressed as the to side of an edge
+// addresses them (TargetOf), so an artifact's id is its ref_key. A comment or a message, and a
+// block of one, carries its post's marks beside its name (TargetName). A deleted post's node
+// stands, with the empty body its delete left, so its name is "" beside its delete mark.
 //
 // One entry per target that resolves for who, as Nodes resolves it: a target with no entry is
 // one nothing addresses now — its node was deleted or is gone, or its kind is one this build
@@ -968,7 +970,7 @@ type TargetName struct {
 // statement per kind, not per target; a block of a comment or a message that resolves to
 // nothing, whose post targets does not name too, costs one statement more per kind of post,
 // which reads whether its post was deleted.
-func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Target) (map[Target]TargetName, error) {
+func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Target, serverURL string) (map[Target]TargetName, error) {
 	resolved, err := resolveTargets(ctx, q, who, targets)
 	if err != nil {
 		return nil, err
@@ -976,7 +978,7 @@ func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Targ
 	names := make(map[Target]TargetName, len(resolved))
 	for key, node := range resolved {
 		names[Target{Kind: key[0], ID: key[1]}] = TargetName{
-			Name: node.name(), EditedAt: node.EditedAt, DeletedAt: node.DeletedAt, DeletedBy: node.DeletedBy,
+			Name: node.name(serverURL), EditedAt: node.EditedAt, DeletedAt: node.DeletedAt, DeletedBy: node.DeletedBy,
 		}
 	}
 	if err := deletedPostBlocks(ctx, q, who, targets, names); err != nil {
@@ -1048,10 +1050,11 @@ func deletedPostBlocks(ctx context.Context, q Queryer, who model.Actor, targets 
 }
 
 // resolvedNode is a graph node with the text an excerpt is cut from: a block's is its stored
-// excerpt, already cut. wholeText says a read of the node's own address answers that text whole
-// as the node's Text (Node), which an interaction's loader says of a run's words
-// (spec requirement r-interaction): an edge at the run cuts them at excerptRunes, and
-// the run's own address answers every word of them.
+// excerpt, already cut, and a finding's (graphstore.KindLensBlock) its whole text, since the store
+// holds no excerpt of a finding (loadReasoningNodes). wholeText says a read of the node's own
+// address answers that text whole as the node's Text (Node), which an interaction's loader says
+// of a run's words (spec requirement r-interaction): an edge at the run cuts them at excerptRunes,
+// and the run's own address answers every word of them.
 type resolvedNode struct {
 	model.GraphNode
 	text      string
@@ -1059,13 +1062,19 @@ type resolvedNode struct {
 	wholeText bool
 }
 
-// name is the words shown for the node in place of its text: its own text cut to excerptRunes. A
-// block's text is its stored excerpt, already cut to BlockExcerptRunes.
-func (n resolvedNode) name() string {
-	if n.BlockID != "" {
+// name is the words shown for the node in place of its text: its own text's first excerptRunes
+// runes, cut where no reference crosses the cut (itemExcerpt; serverURL is the deployment whose
+// dashboard URLs are references). A block's text is its stored excerpt, already cut by
+// BlockExcerpt. A finding's is its whole text, read from the store, which holds no excerpt of it,
+// so it is cut here, at the read, as BlockExcerpt cuts a block's stored excerpt.
+func (n resolvedNode) name(serverURL string) string {
+	switch {
+	case n.Kind == graphstore.KindLensBlock:
+		return BlockExcerpt(n.text, serverURL)
+	case n.BlockID != "":
 		return n.text
 	}
-	return text.HeadRunes(n.text, excerptRunes)
+	return itemExcerpt(n.text, serverURL)
 }
 
 // resolveNodes loads every distinct other end by kind, each loader answering only what who may
@@ -1304,7 +1313,7 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 // current blocks of their documents' latest indexed versions. A block no current version holds
 // has no row and resolves to nothing, so every edge at it is omitted until a version holds its
 // id again. A block is made by the authors its node records, the who of each authored_by it states
-// now in their sequence order (T7 of dispatch://INFRA-1253's plan), and where it states none by the
+// now in their sequence order (T7 of the issue-tree plan), and where it states none by the
 // authors of the version that first held it, when Dispatch knows that version
 // (blockFirstVersion); it is made at that version's time. Its last change is its changed version,
 // by that version's authors. It belongs to its document at its changed version. A block of an
@@ -1346,7 +1355,8 @@ func BlockNodesAndRows(ctx context.Context, q Queryer, who model.Actor, ids []st
 	err := readBlockNodeRows(ctx, q, who, ids, false, func(row blockNodeRow) {
 		blocks[row.node.ID] = row.block
 		if row.seen {
-			nodes[row.node.ID] = ExcerptedNode{Node: row.node.GraphNode, Excerpt: excerptOf(row.node)}
+			// A block's excerpt is its stored one, which no deployment's URLs cut again (name).
+			nodes[row.node.ID] = ExcerptedNode{Node: row.node.GraphNode, Excerpt: excerptOf(row.node, "")}
 		}
 	})
 	if err != nil {
@@ -1705,13 +1715,15 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 // loadCommentNodes resolves comment nodes. A comment is made by its author, and only its author
 // edits it, so its last change is its author at edited_at; a resolution is no change of it, and
 // a delete is no change of it either: it is the mark model.DeletedPostMark reads, which the node
-// carries beside the empty body a delete leaves. A reply that names a block it answers belongs to
-// that block, another reply to its thread's head comment, a comment in an ask's thread to the
-// ask, and another comment to the document it is written on: the one its anchor names, at the
-// anchored version, else the document that owns it, at the version current when it was written
-// (written_version). A comment written on no document belongs to its issue. A reply shares its
-// head's owner, and so the owner its reference, and the reference of the block it names, are
-// written under.
+// carries beside the empty body a delete leaves. A reply belongs to what it answers, as this
+// issue's spec R8 has it (commentReplyParent): coalesce(answers, reply_to, ask_id), the comment it
+// answers, else its thread's head, else its ask. A reply that names a block of the comment it
+// answers, or a part of its ask, belongs to that comment or that ask too, and the block stays its
+// replies_to_block pointer (ReplyBlocks). A comment that answers nothing belongs to the document it
+// is written on: the one its anchor names, at the anchored version, else the document that owns
+// it, at the version current when it was written (written_version). A comment written on no
+// document belongs to its issue. A reply shares its head's owner, and so the owner its reference,
+// and the reference of the comment or the ask it answers, are written under.
 //
 // Its joins to issues and artifacts are lateral probes by key (nodeLoader), and a comment written
 // on no document probes no document: Postgres reads a small artifacts table whole rather than
@@ -1722,7 +1734,7 @@ func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string,
 	storedJoin, storedColumns, visible := visibleStoredKind("comment", "c.id::text", "$2")
 	rows, err := q.Query(ctx, `
 		select c.id::text, c.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), c.body,
-		       c.author, c.created_at, c.edited_at, c.deleted_at, c.deleted_by, c.reply_to::text, c.replies_to_block, c.ask_id::text, `+documentColumns("doc")+`,
+		       c.author, c.created_at, c.edited_at, c.deleted_at, c.deleted_by, c.reply_to::text, c.answers::text, c.ask_id::text, `+documentColumns("doc")+`,
 		       case when c.anchor->>'artifact_id' is not null then `+anchorVersion("c")+` else c.written_version end,
 		       `+storedColumns+`
 		from comments c
@@ -1742,14 +1754,14 @@ func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string,
 	defer rows.Close()
 	for rows.Next() {
 		var id, project, slug, body string
-		var issueKey, replyTo, replyBlock, askID *string
+		var issueKey, replyTo, answers, askID *string
 		var author, deletedBy []byte
 		var createdAt time.Time
 		var editedAt, deletedAt *time.Time
 		var document documentParent
 		var version *int
 		var stored StoredNode
-		targets := append([]any{&id, &issueKey, &project, &slug, &body, &author, &createdAt, &editedAt, &deletedAt, &deletedBy, &replyTo, &replyBlock, &askID}, document.targets()...)
+		targets := append([]any{&id, &issueKey, &project, &slug, &body, &author, &createdAt, &editedAt, &deletedAt, &deletedBy, &replyTo, &answers, &askID}, document.targets()...)
 		if err := rows.Scan(append(targets, &version, &stored.State, &stored.Visibility)...); err != nil {
 			return fmt.Errorf("scan comment node: %w", err)
 		}
@@ -1761,13 +1773,9 @@ func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string,
 		if node.DeletedAt, node.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
 			return fmt.Errorf("comment node %s: %w", id, err)
 		}
-		switch parent := document.parent(); {
-		case replyBlock != nil:
-			node.Parent = itemBlockParent(issueKey, project, slug, *replyBlock)
-		case replyTo != nil:
-			node.Parent = itemParent("comment", issueKey, project, slug, *replyTo)
-		case askID != nil:
-			node.Parent = itemParent("ask", issueKey, project, slug, *askID)
+		switch reply, parent := commentReplyParent(issueKey, project, slug, answers, replyTo, askID), document.parent(); {
+		case reply != nil:
+			node.Parent = reply
 		case parent != nil:
 			node.Parent, node.ParentVersion = parent, version
 		default:
@@ -1778,12 +1786,33 @@ func loadCommentNodes(ctx context.Context, q Queryer, who model.Actor, _ string,
 	return rows.Err()
 }
 
+// commentReplyParent is the parent of a comment that answers something (this issue's spec R8):
+// coalesce(answers, reply_to, ask_id), the comment it answers, else its thread's head, else its
+// ask, each addressed under the comment's own owner (itemParent); nil for a comment that answers
+// nothing. The block a reply names (replies_to_block) is never its parent: a reply to a comment's
+// block names that comment in answers, and a reply to a part of an ask names the ask in ask_id.
+// loadCommentNodes reads the three off the comment's row, and headCommentNode off its head row.
+func commentReplyParent(issueKey *string, project, slug string, answers, replyTo, askID *string) *model.NodeParent {
+	switch {
+	case answers != nil:
+		return itemParent(string(ItemComment), issueKey, project, slug, *answers)
+	case replyTo != nil:
+		return itemParent(string(ItemComment), issueKey, project, slug, *replyTo)
+	case askID != nil:
+		return itemParent(string(ItemAsk), issueKey, project, slug, *askID)
+	}
+	return nil
+}
+
 // loadMessageNodes resolves message nodes. A message is made by its author, and only its author
 // edits it (PATCH /api/v1/messages/{id}, NOT_AUTHOR), so its last change is its author at
 // edited_at, as a comment's is, and a delete is the mark model.DeletedPostMark reads, which the
-// node carries beside the empty body a delete leaves. A reply that names a block it answers
-// belongs to that block, another reply to the message it answers, which shares its issue, and
-// another message to its issue; a direct message belongs to no node.
+// node carries beside the empty body a delete leaves. A reply belongs to what it answers, as this
+// issue's spec R8 has it: coalesce(in_reply_to, replies_to_block), the message it answers, which
+// shares its issue, else the block it answers. The message write refuses in_reply_to_block without
+// in_reply_to (api's validateCreateMessage), so a reply that names a block belongs to the message
+// it answers too, and the block stays its replies_to_block pointer (ReplyBlocks). Another message
+// belongs to its issue; a direct message belongs to no node.
 //
 // Its join to issues is a lateral probe by key (nodeLoader).
 func loadMessageNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
@@ -1819,10 +1848,10 @@ func loadMessageNodes(ctx context.Context, q Queryer, who model.Actor, _ string,
 			return fmt.Errorf("message node %s: %w", id, err)
 		}
 		switch {
-		case replyBlock != nil:
-			node.Parent = itemBlockParent(issueKey, project, "", *replyBlock)
 		case inReplyTo != nil:
 			node.Parent = itemParent("message", issueKey, project, "", *inReplyTo)
+		case replyBlock != nil:
+			node.Parent = itemBlockParent(issueKey, project, "", *replyBlock)
 		default:
 			node.Parent = issueParent(issueKey)
 		}

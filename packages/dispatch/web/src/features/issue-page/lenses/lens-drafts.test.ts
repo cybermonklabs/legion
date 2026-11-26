@@ -7,16 +7,15 @@ import { artifact, READER_ACTOR } from "../decisions-filter/decisions-fixtures";
 import { issueAddress, pathToTarget, presetPath } from "../issue-address";
 import {
   buildIssueTree,
-  drawnLine,
-  firstLineOf,
   type IssueTreeReads,
-  lineWords,
+  lineWordsRaw,
   nodeWords,
   type TreeNode,
+  treeWordsOf,
 } from "../issue-tree";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { issueDetails, statementRef } from "../spec-filter/spec-fixtures";
-import { blockNodeId, treeContext } from "../tree-drafts";
+import { blockNodeId } from "../tree-drafts";
 import {
   commentNode,
   type TreeNodeExtra,
@@ -24,7 +23,7 @@ import {
   treeNode,
   treeTuple as tuple,
 } from "../tree-read/tree-fixtures";
-import { type TreeWords, treeDraftsFrom } from "../tree-read/tree-nodes";
+import { treeDraftsFrom } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 import { check } from "../verification-filter/verification-fixtures";
 import { type FactParts, factText, kindWords, type LensFacts, lensChipWords } from "./lens-drafts";
@@ -149,22 +148,16 @@ function answer(
   });
 }
 
-/** What `buildIssueTree` hands `treeDraftsFrom`, as the tree read's own cases build it. */
-function naming(reads: IssueTreeReads): TreeWords {
-  const chipLine = (tree: DisplayTree): string =>
-    drawnLine(firstLineOf(lineWords({ text: "", tree })));
-  return { ...treeContext(reads, chipLine), chipLine, lineWords };
-}
-
-/** The tree `buildIssueTree` builds from `tree`, and the drafts `treeDraftsFrom` makes of it, on
- *  the spec fixtures' issue (`spec-filter/spec-fixtures.ts`) holding the three documents the
- *  cases write their blocks in, unless a case gives reads of its own. */
+/** The tree `buildIssueTree` builds from `tree`, and the drafts `treeDraftsFrom` makes of it read
+ *  by what `buildIssueTree` reads them by (`treeWordsOf`), on the spec fixtures' issue
+ *  (`spec-filter/spec-fixtures.ts`) holding the three documents the cases write their blocks in,
+ *  unless a case gives reads of its own. */
 function drawn(
   tree: TreeAnswer,
   reads: IssueTreeReads = { issue: { ...issueDetails(), artifacts: [SPEC, PLAN, VERIFICATION] } }
 ) {
   return {
-    drafts: treeDraftsFrom(tree, reads, naming(reads)),
+    drafts: treeDraftsFrom(tree, reads, treeWordsOf(reads)),
     root: buildIssueTree({ ...reads, tree }),
   };
 }
@@ -297,8 +290,9 @@ test("a lens is found by its parent's id on an unconverted issue", () => {
 
 // A finding is a block whose read parent is a lens, by either spelling of its kind; its
 // words are its reading's, and its address is its lens's with its block id. A block under
-// anything else is no finding. A lens's read id may carry its kind, which its address does not
-// repeat.
+// anything else is no finding: a plain block under the issue is prose (decision 495), and a lens
+// block of no lens is drawn nowhere. A lens's read id may carry its kind, which its address does
+// not repeat. Another address in a verdict stays as written, for the row's renderer to name.
 test("a finding is a block whose parent is a lens", () => {
   const lensId = `lens/${FIRST}`;
   const { drafts, root } = drawn(
@@ -311,6 +305,7 @@ test("a finding is a block whose parent is a lens", () => {
         finding(`${lensId}#first`, lensId, "A second region doubles the cost."),
         finding("second", lensId, "Failover takes minutes.", "lens_block", { state: "proposed" }),
         finding("stray", KEY, "A block of no lens."),
+        finding("stray-lens-block", KEY, "A lens block of no lens.", "lens_block"),
         TRADE_OFF,
       ],
       [tuple("has_kind", lensId, TRADE_OFF.id)]
@@ -320,7 +315,7 @@ test("a finding is a block whose parent is a lens", () => {
 
   expect([row.type, row.text, row.reference]).toEqual([
     "lens",
-    "Keep one region, as CORE-2 does.",
+    "Keep one region, as dispatch://CORE-2 does.",
     `dispatch://lens/${FIRST}`,
   ]);
   expect(
@@ -329,7 +324,7 @@ test("a finding is a block whose parent is a lens", () => {
       one.type,
       one.reference,
       nodeWords(one),
-      lineWords(one),
+      lineWordsRaw(one),
       one.lens,
     ])
   ).toEqual([
@@ -350,8 +345,10 @@ test("a finding is a block whose parent is a lens", () => {
       NO_FACTS,
     ],
   ]);
-  expect(drafts.has("stray")).toBe(false);
-  expect(idsOf(root)).not.toContain("stray");
+  expect(drafts.get("stray")?.type).toBe("prose");
+  expect(parentsOf(root, "stray")).toEqual([KEY]);
+  expect(drafts.has("stray-lens-block")).toBe(false);
+  expect(idsOf(root)).not.toContain("stray-lens-block");
 });
 
 /** A store address or its uuid, which no row's words draw. */
@@ -395,7 +392,7 @@ test("a lens's, a risk's and a finding's words draw no address of a lens, a risk
   );
   const drawnWords = {
     earlyWarning: lineText(factsOf(rowOf(root, risk)).earlyWarning),
-    finding: lineWords(rowOf(root, `${lensId}#first`)),
+    finding: lineWordsRaw(rowOf(root, `${lensId}#first`)),
     heading: rowOf(root, risk).text,
     verdict: rowOf(root, lensId).text,
   };
@@ -461,7 +458,7 @@ test("a statement's and a comment's words read a lens they cite by its kind's wo
   const statement = rowOf(root, blockNodeId("spec", "r1"));
   const comment = rowOf(root, "c1");
 
-  expect([lineWords(statement), lineWords(comment)]).toEqual([
+  expect([lineWordsRaw(statement), lineWordsRaw(comment)]).toEqual([
     "Keep one region, as Trade-off analysis found.",
     "See Trade-off analysis first.",
   ]);
@@ -520,7 +517,7 @@ test("a statement's and a verdict's words read a risk they cite by its heading, 
   const statement = rowOf(root, blockNodeId("spec", "r1"));
   const verdict = rowOf(root, FIRST);
 
-  expect([lineWords(statement), verdict.text, lineWords(verdict)]).toEqual([
+  expect([lineWordsRaw(statement), verdict.text, lineWordsRaw(verdict)]).toEqual([
     "Two regions, until Failover takes minutes.",
     "Keep one region: Failover takes minutes",
     "Keep one region: Failover takes minutes",
@@ -558,7 +555,7 @@ test("a statement's and an early warning's words read a constraint they cite by 
   );
   const statement = rowOf(root, blockNodeId("spec", "r1"));
 
-  expect([lineWords(statement), lineText(factsOf(rowOf(root, "risk-1")).earlyWarning)]).toEqual([
+  expect([lineWordsRaw(statement), lineText(factsOf(rowOf(root, "risk-1")).earlyWarning)]).toEqual([
     "Answer as RFC 9110 says.",
     "A reply breaks RFC 9110 first.",
   ]);
@@ -628,7 +625,7 @@ test("an address of a risk the answer does not hold reads as the word for a risk
   );
   const statement = rowOf(root, blockNodeId("spec", "r1"));
 
-  expect([lineWords(statement), nodeWords(statement)]).toEqual([
+  expect([lineWordsRaw(statement), nodeWords(statement)]).toEqual([
     `Watch risk closely, as ${interaction} said.`,
     `Watch risk closely, as ${interaction} said.`,
   ]);
@@ -639,7 +636,9 @@ test("an address of a risk the answer does not hold reads as the word for a risk
 // body draws it; the same address outside code is named. A link to anything else that covers an
 // address keeps its own target, and the address in its words reads as the lens's name, as plain
 // words in that one link, which holds no second link. A reading that cites no store address is
-// the very reading the read sent.
+// the very reading the read sent. A check's chip, which names the check by its whole words, keeps
+// an address in a code span as written too, and reads the same address outside code by its kind's
+// word.
 test("an address in code stays as written", () => {
   const cited = `dispatch://lens/${FIRST}`;
   const tree: DisplayTree = {
@@ -663,20 +662,35 @@ test("an address in code stays as written", () => {
     type: "doc",
   };
   const quiet = reading("Nothing to name.");
+  const checked: DisplayTree = {
+    content: [
+      {
+        content: [
+          { text: "Run ", type: "text" },
+          { marks: [{ type: "inlineCode" }], text: `dispatch read ${cited}`, type: "text" },
+          { text: ` before ${cited}.`, type: "text" },
+        ],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
   const { drafts, root } = drawn(
     answer(
       [
         block("r1", "requirement", KEY, SPEC, 0, { text: "Run it.", text_tree: tree }),
         block("r2", "requirement", KEY, SPEC, 1, { text: "Nothing to name.", text_tree: quiet }),
+        block("c1", "check", "r1", VERIFICATION, 0, { text: "Run it.", text_tree: checked }),
         lens(FIRST, "r1"),
+        bare("risk-1", "risk", FIRST, { attributes: { heading: "It drifts." } }),
         TRADE_OFF,
       ],
-      [tuple("has_kind", FIRST, TRADE_OFF.id)]
+      [tuple("has_kind", FIRST, TRADE_OFF.id), tuple("prevented_by", "risk-1", "c1")]
     )
   );
   const statement = rowOf(root, blockNodeId("spec", "r1"));
 
-  expect(lineWords(statement)).toBe(
+  expect(lineWordsRaw(statement)).toBe(
     `Run dispatch read ${cited} before Trade-off analysis, or Trade-off analysis.`
   );
   expect(linksIn(statement.tree)).toEqual([
@@ -687,6 +701,9 @@ test("an address in code stays as written", () => {
     (tree.content as DisplayTree[])[1]
   );
   expect(drafts.get(blockNodeId("spec", "r2"))?.tree).toBe(quiet);
+  expect(factsOf(rowOf(root, "risk-1")).preventedBy.map((chip) => chip.words)).toEqual([
+    `Run dispatch read ${cited} before ${NODE_TYPE_NAMES.lens}.`,
+  ]);
 });
 
 /** The row of a statement whose words the server read as one paragraph holding `runs`, which
@@ -728,7 +745,7 @@ test("an autolink to a store address reads as a bare address does", () => {
     { text: ".", type: "text" },
   ]);
 
-  expect([lineWords(statement), nodeWords(statement)]).toEqual([
+  expect([lineWordsRaw(statement), nodeWords(statement)]).toEqual([
     "Two regions, until Failover takes minutes or risk.",
     "Two regions, until Failover takes minutes or risk.",
   ]);
@@ -760,7 +777,7 @@ test("an author's words linked to a store address link the node's row", () => {
     { text: ".", type: "text" },
   ]);
 
-  expect([lineWords(statement), nodeWords(statement)]).toEqual([
+  expect([lineWordsRaw(statement), nodeWords(statement)]).toEqual([
     "Two regions, until the risk or another.",
     "Two regions, until the risk or another.",
   ]);
@@ -805,7 +822,7 @@ test("a verdict draws one line of plain words whether or not it cites a risk", (
 
   expect(plain.tree).toBeUndefined();
   expect(plain.text).toBe("Keep one region: the cost doubles Failover takes minutes first");
-  expect([citing.text, nodeWords(citing), lineWords(citing)]).toEqual([
+  expect([citing.text, nodeWords(citing), lineWordsRaw(citing)]).toEqual([
     plain.text,
     plain.text,
     plain.text,
@@ -826,7 +843,7 @@ test("a verdict draws one line of plain words whether or not it cites a risk", (
   ]);
 });
 
-// A verdict's code span that holds a store address keeps it as written, as `plainWords` reads a
+// A verdict's code span that holds a store address keeps it as written, as `storedWords` reads a
 // code span; the same address outside the code is named, linked to its row, and nothing else of
 // the verdict's plain words changes.
 test("a verdict's code span keeps a store address as written while its words name it", () => {
@@ -866,8 +883,8 @@ test("a verdict's code span keeps a store address as written while its words nam
 
 // A comment the read sent no reading of is drawn as stored, its references linked by its row's
 // link pass. Where it cites a node, its reading is one paragraph of its plain words with the store
-// address named, and its other addresses stay as written: the address of a block of the issue is
-// left for the row's link pass to link, while the row's line reads it short.
+// address named, and its other addresses stay as written, in its words and in its line, for the
+// row's renderer to name: the address of a block of the issue among them.
 test("a comment with no reading keeps its other references as written where it names a risk", () => {
   const risk = "d4000000-0000-4000-8000-000000000004";
   const cited = `dispatch://risk/${risk}`;
@@ -891,7 +908,9 @@ test("a comment with no reading keeps its other references as written where it n
   );
   const comment = rowOf(root, "c1");
 
-  expect(lineWords(comment)).toBe("See Failover takes minutes and CORE-1 spec block first.");
+  expect(lineWordsRaw(comment)).toBe(
+    "See Failover takes minutes and dispatch://CORE-1/spec#b-r1 first."
+  );
   expect(comment.tree?.content).toEqual([
     {
       content: [
@@ -932,7 +951,7 @@ test("a verdict's author's link to a risk the read holds links its words to the 
   );
   const verdict = rowOf(root, FIRST);
 
-  expect([verdict.text, lineWords(verdict)]).toEqual([
+  expect([verdict.text, lineWordsRaw(verdict)]).toEqual([
     "See the failover risk first, then the runbook.",
     "See the failover risk first, then the runbook.",
   ]);
@@ -1227,11 +1246,10 @@ test("an early warning's author's link whose words carry a mark is one chip", ()
 });
 
 // A lens's row carries a chip for each lens its `triggered_by` names and for each lens whose
-// `triggered_by` names it, only for a lens the read holds, named by its kind's words as its tag
-// is, linked where a step drafted it, and with that lens's state and visibility. Every lens
-// shares one map of every lens of the answer, which the chain a lens draws reads.
-test("a trigger chip is drawn only for a lens the read holds", () => {
-  const unseen = "f9000000-0000-4000-8000-000000000009";
+// `triggered_by` names it, named by its kind's words as its tag is, linked where a step drafted
+// it, and with that lens's state and visibility. Every lens shares one map of every lens of the
+// answer, which the chain a lens draws reads.
+test("a trigger chip names each lens the read holds by its kind's words", () => {
   const { root } = drawn(
     answer(
       [
@@ -1248,7 +1266,6 @@ test("a trigger chip is drawn only for a lens the read holds", () => {
         tuple("has_kind", SECOND, PRE_MORTEM.id),
         tuple("has_kind", THIRD, PRE_MORTEM.id),
         tuple("triggered_by", SECOND, FIRST),
-        tuple("triggered_by", SECOND, unseen),
         tuple("triggered_by", THIRD, FIRST),
       ]
     )
@@ -1299,6 +1316,135 @@ test("a trigger chip is drawn only for a lens the read holds", () => {
       },
     ],
     [`dispatch://lens/${THIRD}`, { kindWords: PRE_MORTEM_WORDS }],
+  ]);
+});
+
+// The server answers a tuple with the page that holds its `from` node, wherever the whole answer
+// holds its `to` node, so a page read so far can name a node that stands on a page not yet read.
+// Its chip is drawn at once: a statement's Constrained by, a lens's Triggered by and a risk's
+// Prevented by chip each name it by the page's word for the kind its tuple names, linked by its
+// read id to Graph's row. A lens's Triggered chip comes with the lens that names it, on that
+// lens's page. Once that page is read, the answer holds the node, and each chip is that node's,
+// by its own words.
+test("a chip whose far end no page read so far holds names its kind and links its row, and takes its words once that page is read", () => {
+  const constraint = "d4000000-0000-4000-8000-000000000004";
+  const cause = "f6000000-0000-4000-8000-000000000006";
+  const follow = "f7000000-0000-4000-8000-000000000007";
+  const checkId = `${KEY}/verification-md#c1`;
+  const statement = blockNodeId("spec", "r1");
+  /** The answer as the pages read so far hold it, and with `far` and its tuples `farTuples`
+   *  once the page that holds them is read. */
+  const tree = (far: readonly TreeAnswerNode[] = [], farTuples: readonly TreeTuple[] = []) =>
+    answer(
+      [
+        block("r1", "requirement", KEY, SPEC, 0),
+        lens(FIRST, "r1", "2026-11-05T09:00:00Z"),
+        lens(SECOND, "r1", "2026-11-05T10:00:00Z"),
+        bare("risk-a", "risk", SECOND, { attributes: { heading: "The table locks." } }),
+        PRE_MORTEM,
+        TRADE_OFF,
+        ...far,
+      ],
+      [
+        tuple("has_kind", FIRST, TRADE_OFF.id),
+        tuple("has_kind", SECOND, PRE_MORTEM.id),
+        tuple("constrained_by", "r1", constraint),
+        tuple("triggered_by", SECOND, cause),
+        tuple("prevented_by", "risk-a", checkId),
+        ...farTuples,
+      ]
+    );
+  const unread = drawn(tree()).root;
+
+  expect(factsOf(rowOf(unread, SECOND)).triggeredBy).toStrictEqual([
+    {
+      address: `dispatch://lens/${cause}`,
+      chrome: true,
+      graphOnly: true,
+      id: cause,
+      words: kindWords(NODE_TYPE_NAMES.lens),
+    },
+  ]);
+  expect(
+    factsOf(rowOf(unread, FIRST)).triggered,
+    "a Triggered chip waits for the page of the lens that names it"
+  ).toStrictEqual([]);
+  expect(factsOf(rowOf(unread, "risk-a")).preventedBy).toStrictEqual([
+    {
+      address: checkId,
+      chrome: true,
+      graphOnly: true,
+      id: checkId,
+      words: kindWords(NODE_TYPE_NAMES.check),
+    },
+  ]);
+  expect(
+    factsOf(rowOf(unread, statement)),
+    "the statement draws its Constrained by chip"
+  ).toStrictEqual({
+    ...NO_FACTS,
+    constrainedBy: [
+      {
+        address: `dispatch://constraint/${constraint}`,
+        chrome: true,
+        graphOnly: true,
+        id: constraint,
+        words: kindWords(NODE_TYPE_NAMES.constraint),
+      },
+    ],
+  });
+
+  const read = drawn(
+    tree(
+      [
+        bare(constraint, "constraint", KEY, { attributes: { standard: "RFC **9110**" } }),
+        lens(cause, "r1", "2026-11-05T11:00:00Z"),
+        lens(follow, "r1", "2026-11-05T12:00:00Z"),
+        block("c1", "check", "r1", VERIFICATION, 0),
+      ],
+      [
+        tuple("has_kind", cause, TRADE_OFF.id),
+        tuple("triggered_by", follow, FIRST),
+        tuple("has_kind", follow, PRE_MORTEM.id),
+      ]
+    )
+  ).root;
+
+  expect(factsOf(rowOf(read, statement)).constrainedBy).toStrictEqual([
+    {
+      address: `dispatch://constraint/${constraint}`,
+      id: constraint,
+      state: "live",
+      visibility: "project",
+      words: "RFC 9110",
+    },
+  ]);
+  expect(factsOf(rowOf(read, SECOND)).triggeredBy).toStrictEqual([
+    {
+      address: `dispatch://lens/${cause}`,
+      id: cause,
+      state: "live",
+      visibility: "project",
+      words: "Trade-off analysis",
+    },
+  ]);
+  expect(factsOf(rowOf(read, FIRST)).triggered).toStrictEqual([
+    {
+      address: `dispatch://lens/${follow}`,
+      id: follow,
+      state: "live",
+      visibility: "project",
+      words: kindWords(PRE_MORTEM_WORDS),
+    },
+  ]);
+  expect(factsOf(rowOf(read, "risk-a")).preventedBy).toStrictEqual([
+    {
+      address: rowOf(read, blockNodeId("verification-md", "c1")).reference ?? "",
+      id: checkId,
+      state: "live",
+      visibility: "project",
+      words: "Words of c1.",
+    },
   ]);
 });
 
@@ -1361,7 +1507,7 @@ test("a check's chip takes its words whole from its node", () => {
       },
     ],
   });
-  expect(lineWords(checkRow), "the check's row draws its first block as its line").toBe(
+  expect(lineWordsRaw(checkRow), "the check's row draws its first block as its line").toBe(
     "C1. The index builds concurrently."
   );
   expect(checkRow.reference).toBe(`dispatch://${KEY}/verification#b-c1`);
@@ -1441,7 +1587,7 @@ test("a constraint is a top-level row in Graph, and in Conversation only as a le
     ],
   ]);
   expect([factsOf(rowOf(root, standard)), factsOf(rowOf(root, measured))]).toEqual([
-    { ...NO_FACTS, reference: "section 9.2.2, as CORE-2 reads it" },
+    { ...NO_FACTS, reference: "section 9.2.2, as dispatch://CORE-2 reads it" },
     { ...NO_FACTS, takenWhere: "staging, 2026-11-15" },
   ]);
   expect(factsOf(rowOf(root, blockNodeId("spec", "r1"))).constrainedBy).toStrictEqual([

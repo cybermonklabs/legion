@@ -40,7 +40,6 @@ import {
   expectActivePreset,
   focusedNodeId,
   onScreen,
-  openEveryDeeperBranch,
   pickPreset,
   rowGaps,
   treeText,
@@ -218,8 +217,7 @@ async function gotoSettled(page: Page, traffic: ApiRequests, address: string): P
 }
 
 /** The id the page draws the node `readId` names under, as the poll that found it drawn read it:
- *  each poll first opens every branch a fold or the drawn levels left shut, which ends with the
- *  focus on no row. */
+ *  each poll first opens every branch a fold left shut, which ends with the focus on no row. */
 async function drawnRowId(page: Page, readId: string, what: string): Promise<string> {
   const message = `the page draws no row for ${what}`;
   let id: string | null = null;
@@ -227,7 +225,6 @@ async function drawnRowId(page: Page, readId: string, what: string): Promise<str
     .poll(
       async () => {
         await unfoldEveryBranch(page);
-        await openEveryDeeperBranch(page);
         id = await drawnIdOf(page, readId);
         return id;
       },

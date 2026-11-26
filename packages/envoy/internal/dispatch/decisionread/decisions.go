@@ -10,10 +10,12 @@
 //   - the Keep (api's keepDecision), which compares the posted `text_sha256` with TextSum of the
 //     words this package reads, so a Keep holds the sum the read served;
 //   - the Decisions read's old `decisions` member once it answers from the store;
-//   - the tree read a later change adds, which calls Decisions for each decision node it draws.
+//   - the tree read a later change adds, which calls Decisions for each decision node it draws;
+//   - the backfill's Keep pass and its census kind (graphcensus' keep_shaped_sum), which read the
+//     same words through WordSumsOf.
 //
 // It is a package of its own because api's readers are unexported and neither docs nor refs may
-// import api. It imports graphstore, refs and model, and neither api nor docs.
+// import api. It imports graphstore, refs and model, and neither api, docs nor graphcensus.
 package decisionread
 
 import (
@@ -204,6 +206,68 @@ func markStale(ctx context.Context, q graphstore.Queryer, decisions []model.Deci
 		}
 	}
 	return nil
+}
+
+// WordSums is what WordSumsOf answers of one agent's decision: Sum, the sum of its words as every
+// read of it answers them (TextSum over refs.DecisionWords, Decision.TextSHA256), and Shaped, the
+// sum of the same block rendered with its `shaped` attribute among its words, as
+// refs.DecisionWords rendered a decision before it left that attribute out (R32 of
+// the issue-tree spec). The two are one sum for a decision that carries no `shaped`.
+type WordSums struct{ Sum, Shaped string }
+
+// WordSumsOf answers WordSums for each of nodes the store holds as an agent's decision (a block
+// node of the `decision` supertag at any state but gone, isDecision), keyed by its index among
+// nodes, reading for who. It reads each decision's block as Decisions does, through the same walk
+// (walker.changed), so Sum is the TextSHA256 Decisions answers for it. A node that is no such
+// decision, one whose document holds no such block now and one whose block does not read back are
+// left out, with no log: no Keep can match a sum of words the reads answer none of. A failure of
+// the store fails the read. It is the read of the backfill's Keep pass (graphcensus), which
+// rewrites a Keep a release before this change summed over the words with `shaped`, and of the
+// census kind that counts what that pass still owes.
+func WordSumsOf(ctx context.Context, q graphstore.Queryer, who model.Actor, nodes []Node) (map[int]WordSums, error) {
+	sums := map[int]WordSums{}
+	if len(nodes) == 0 {
+		return sums, nil
+	}
+	kinds, ids, documents := make([]string, len(nodes)), make([]string, len(nodes)), make([]string, len(nodes))
+	for index, node := range nodes {
+		kinds[index], ids[index], documents[index] = node.Kind, node.ID, node.Document
+	}
+	held, err := readNodes(ctx, q, who, kinds, ids, documents)
+	if err != nil {
+		return nil, err
+	}
+	versions := &walker{q: q, versions: map[versionKey]versionRead{}}
+	for index := range nodes {
+		node, found := held[index]
+		if !found || node.kind != refs.BlockNodeKind || !node.isDecision() {
+			continue
+		}
+		changed, err := versions.changed(ctx, node, refs.DecisionSupertag)
+		if versions.err != nil {
+			return nil, versions.err
+		}
+		if err != nil || changed.block == nil {
+			continue
+		}
+		shaped, err := shapedWords(changed.block)
+		if err != nil {
+			continue
+		}
+		sums[index] = WordSums{Sum: TextSum(changed.words), Shaped: TextSum(shaped)}
+	}
+	return sums, nil
+}
+
+// shapedWords is a decision's words as refs.DecisionWords rendered them before it left the
+// decision's `shaped` attribute out: block rendered alone, with the readings it closes with left
+// out and every attribute it carries. Its server attributes are no part of them either way, since
+// markdown carries none (pmdoc.BlockAttributeSchema.InMarkdown). Only WordSumsOf reads it.
+func shapedWords(block *pmdoc.Node) (string, error) {
+	content, _ := pmdoc.TypedContent(block)
+	own := *block
+	own.Children = content
+	return pmdoc.Render(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{&own}})
 }
 
 // heldNode is what the store holds of one node Decisions reads: the node row, the document that
@@ -693,8 +757,8 @@ type changedWords struct {
 
 // changed is the walk that answers node's block - a decision, or the ask block of an ask (typ) -
 // as it stands: its own words (ownWords) and the version of its document that last changed them,
-// which a reading written, edited or removed under it, and for an ask a write of its block's
-// attributes alone - the server's, or the `shaped` pointers - never moves.
+// which a reading written, edited or removed under it never moves, nor a write of the `shaped`
+// pointers alone, a decision's or an ask's, nor, for an ask, a write of its server's attributes.
 //
 // It reads the document as the block index left it and as it stands past that index. A document
 // that owes its block index (document_block_versions holds no version) stands at its newest
@@ -842,29 +906,19 @@ func blockWords(tree *pmdoc.Node, typ, blockID string) (string, *pmdoc.Node, boo
 }
 
 // ownWords is a typed block's own words. An ask's are its question and its options (plan v17,
-// T8): the blocks of its content rendered alone, with no attribute of the block at all - neither
-// the server's state, answered_by, answered_at, selected, answer, copied_from and
+// T8), refs.AskWords': the blocks of its content rendered alone, with no attribute of the block at
+// all - neither the server's state, answered_by, answered_at, selected, answer, copied_from and
 // copied_from_document, which the roll window and the first write on one build write or drop, nor
 // the `shaped` pointers the conversion gives it, nor its urgency - and none of the readings it
 // closes with. So a version that changes none of those words changes no ask's words. A decision's
-// are the block rendered alone with the readings it closes with left out (refs.DecisionWords); its
-// markdown carries none of its server attributes (decided_by, kept_by and kept_text_sum are
-// `markdown: false`), so they are the words a Keep sums.
+// are refs.DecisionWords': the block rendered alone with the readings it closes with, its `shaped`
+// attribute and its server attributes left out, so a write of `shaped` alone changes no
+// decision's words, and they are the words a Keep sums.
 func ownWords(block *pmdoc.Node) (string, error) {
 	if block.Type == askType {
-		content, _ := pmdoc.TypedContent(block)
-		return pmdoc.Render(&pmdoc.Node{Type: "doc", Children: content})
+		return refs.AskWords(block)
 	}
-	attributes, _ := pmdoc.BlockTypeAttributes(block.Type)
-	own := *block
-	own.Attrs = make(pmdoc.Attrs, len(block.Attrs))
-	for name, value := range block.Attrs {
-		if attribute := attributes.Get(name); attribute.Server && attribute.InMarkdown() {
-			continue
-		}
-		own.Attrs[name] = value
-	}
-	return refs.DecisionWords(&own)
+	return refs.DecisionWords(block)
 }
 
 // plainText is the text node holds, its children's included, with its lines joined by a space.

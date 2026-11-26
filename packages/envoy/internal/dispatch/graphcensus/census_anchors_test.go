@@ -16,14 +16,29 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
-// currentAnchoredIn is every anchored_in comment's node states now.
-func currentAnchoredIn(t *testing.T, database *store.Store, comment string) []graphstore.Tuple {
+// currentAnchorPair is every anchored_in and every part_of comment's node states now, by kind.
+func currentAnchorPair(t *testing.T, database *store.Store, comment string) map[string][]graphstore.Tuple {
 	t.Helper()
-	held, err := graphstore.CurrentOut(context.Background(), database.Pool, graphstore.KindComment, comment, []string{graphstore.TupleAnchoredIn})
-	if err != nil {
-		t.Fatalf("read the anchored_in of comment %s: %v", comment, err)
+	pair := map[string][]graphstore.Tuple{}
+	for _, kind := range []string{graphstore.TupleAnchoredIn, graphstore.TuplePartOf} {
+		held, err := graphstore.CurrentOut(context.Background(), database.Pool, graphstore.KindComment, comment, []string{kind})
+		if err != nil {
+			t.Fatalf("read the %s of comment %s: %v", kind, comment, err)
+		}
+		pair[kind] = held
 	}
-	return held
+	return pair
+}
+
+// requireAnchorPairAt fails t unless comment's node states one anchored_in and one part_of, each
+// to the block node block and dated at at, naming what.
+func requireAnchorPairAt(t *testing.T, what string, database *store.Store, comment, block string, at time.Time) {
+	t.Helper()
+	for kind, held := range currentAnchorPair(t, database, comment) {
+		if len(held) != 1 || held[0].ToKind != refs.BlockNodeKind || held[0].ToID != block || !held[0].At.Equal(at) {
+			t.Errorf("%s states %s %+v, want one to %s:%s dated at %s", what, kind, held, refs.BlockNodeKind, block, at)
+		}
+	}
 }
 
 // backfillAnchors runs the whole backfill and answers its line for the comments' anchor blocks.
@@ -36,9 +51,9 @@ func backfillAnchors(t *testing.T, database *store.Store) KindBackfill {
 	return reportedKind(t, report, anchorProjectionKind)
 }
 
-// requireOneAnchorDifference holds the census to reading exactly one difference, of the anchor
-// kind, at the row or the tuple at names with cause, and none of any other kind.
-func requireOneAnchorDifference(t *testing.T, what string, report *StoreReport, node bool, cause, at string) {
+// requireAnchorDifferences holds the census to reading exactly the differences of the anchor kind
+// at names, in their order, each with cause, at the rows or the tuples, and none of any other kind.
+func requireAnchorDifferences(t *testing.T, what string, report *StoreReport, node bool, cause string, at ...string) {
 	t.Helper()
 	for _, kind := range report.Kinds {
 		if kind.Kind != anchorProjectionKind {
@@ -53,8 +68,12 @@ func requireOneAnchorDifference(t *testing.T, what string, report *StoreReport, 
 		if node {
 			found, other, count = kind.ReportedNodes, kind.RowDifferences, kind.NodeDifferences
 		}
-		if count != 1 || len(found) != 1 || found[0].Cause != cause || found[0].At != at || other != 0 {
-			t.Errorf("%s: the census reads %d row and %d node difference(s) of kind %s (%+v %+v), want the one %q at %s",
+		matches := count == int64(len(at)) && len(found) == len(at) && other == 0
+		for index := 0; matches && index < len(at); index++ {
+			matches = found[index].Cause == cause && found[index].At == at[index]
+		}
+		if !matches {
+			t.Errorf("%s: the census reads %d row and %d node difference(s) of kind %s (%+v %+v), want %q at each of %q",
 				what, kind.RowDifferences, kind.NodeDifferences, kind.Kind, kind.ReportedRows, kind.ReportedNodes, cause, at)
 		}
 	}
@@ -64,15 +83,19 @@ func requireOneAnchorDifference(t *testing.T, what string, report *StoreReport, 
 }
 
 // The census holds comments.anchor's block_id to the anchored_in each comment's node states now,
-// in both directions (T17b of dispatch://INFRA-1253's plan), and the backfill gives each stored
-// anchor with a block its tuple. Over a store the census agrees with (seedAgreeingStore), a comment
-// a build before the store existed wrote, anchored on the document's inner block, is given its node
-// by the comment pass and its anchored_in to the inner block's node by the anchor pass, dated at the
-// comment's own created_at, and the census then agrees, holding one row and one tuple of the kind.
-// With the tuple retracted the census reads the row no tuple states, and the backfill states it
-// again; with the row's anchor orphaned behind the store's back the census reads the tuple no row
-// projects, and the backfill retracts it, after which the kind holds no row and no tuple and the
-// census agrees, and a second backfill levels nothing.
+// and, for a comment that answers nothing, to its part_of beside it, in both directions (T17b of
+// the issue-tree plan, its spec R31: "The census kind `comment_anchor_block` holds, for
+// each comment that answers nothing, the triple of its `part_of` beside the triple of its
+// `anchored_in`, in both directions"), and the backfill gives each stored anchor with a block both
+// tuples. Over a store the census agrees with (seedAgreeingStore), a comment a build before the
+// store existed wrote, anchored on the document's inner block and answering nothing, is given its
+// node by the comment pass and its anchored_in and its part_of to the inner block's node by the
+// anchor pass, each dated at the comment's own created_at, and the census then agrees, holding two
+// rows and two tuples of the kind. With the anchored_in retracted the census reads the row no tuple
+// states, and the backfill states it again alone; with the row's anchor orphaned behind the store's
+// back the census reads the two tuples no row projects, and the backfill retracts both, after
+// which the kind holds no row and no tuple and the census agrees, and a second backfill levels
+// nothing.
 func TestTheAnchorCensusHoldsEachAnchorBlockToItsAnchoredIn(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -91,24 +114,21 @@ func TestTheAnchorCensusHoldsEachAnchorBlockToItsAnchoredIn(t *testing.T) {
 	}
 
 	done := backfillAnchors(t, database)
-	if done.Rows != 1 || done.Tuples != 1 || !done.Complete {
-		t.Errorf("the anchor pass reports %#v, want one comment, one tuple and none left", done)
+	if done.Rows != 1 || done.Tuples != 2 || !done.Complete {
+		t.Errorf("the anchor pass reports %#v, want one comment, its anchored_in and its part_of, and none left", done)
 	}
-	held := currentAnchoredIn(t, database, comment)
-	if len(held) != 1 || held[0].ToKind != refs.BlockNodeKind || held[0].ToID != seeded.inner || !held[0].At.Equal(createdAt) {
-		t.Fatalf("the backfilled comment states anchored_in %+v, want one to %s:%s dated at its created_at %s", held, refs.BlockNodeKind, seeded.inner, createdAt)
-	}
+	requireAnchorPairAt(t, "the backfilled comment", database, comment, seeded.inner, createdAt)
 	report := storeCensusOf(t, database)
 	requireTheCensusAgrees(t, "the census after the anchor pass", report)
-	if kind := censusKind(t, report, anchorProjectionKind); kind.Rows != 1 || kind.Nodes != 1 {
-		t.Errorf("the anchor kind reads %d rows and %d tuples, want the one anchored comment's", kind.Rows, kind.Nodes)
+	if kind := censusKind(t, report, anchorProjectionKind); kind.Rows != 2 || kind.Nodes != 2 {
+		t.Errorf("the anchor kind reads %d rows and %d tuples, want the anchored comment's anchored_in and part_of", kind.Rows, kind.Nodes)
 	}
 
 	appendTuple(t, database, graphstore.Tuple{
 		FromKind: graphstore.KindComment, FromID: comment, Kind: graphstore.TupleAnchoredIn,
 		ToKind: refs.BlockNodeKind, ToID: seeded.inner, Asserted: false,
 	})
-	requireOneAnchorDifference(t, "a retracted anchored_in", storeCensusOf(t, database), false, "a row no tuple states",
+	requireAnchorDifferences(t, "a retracted anchored_in", storeCensusOf(t, database), false, "a row no tuple states",
 		"comment "+comment+" "+graphstore.TupleAnchoredIn+" -> "+refs.BlockNodeKind+" "+seeded.inner)
 	if done := backfillAnchors(t, database); done.Rows != 1 || done.Tuples != 1 || !done.Complete {
 		t.Errorf("the anchor pass over a retracted anchored_in reports %#v, want it stated again", done)
@@ -120,13 +140,16 @@ func TestTheAnchorCensusHoldsEachAnchorBlockToItsAnchoredIn(t *testing.T) {
 	`, comment); err != nil {
 		t.Fatalf("orphan the anchor as a process of the release before does: %v", err)
 	}
-	requireOneAnchorDifference(t, "an orphaned anchor whose anchored_in stands", storeCensusOf(t, database), true, "a tuple no row projects",
-		graphstore.KindComment+":"+comment+" "+graphstore.TupleAnchoredIn+" -> "+refs.BlockNodeKind+":"+seeded.inner)
-	if done := backfillAnchors(t, database); done.Rows != 1 || done.Tuples != 1 || !done.Complete {
-		t.Errorf("the anchor pass over an orphaned anchor reports %#v, want its anchored_in retracted", done)
+	requireAnchorDifferences(t, "an orphaned anchor whose anchored_in and part_of stand", storeCensusOf(t, database), true, "a tuple no row projects",
+		graphstore.KindComment+":"+comment+" "+graphstore.TupleAnchoredIn+" -> "+refs.BlockNodeKind+":"+seeded.inner,
+		graphstore.KindComment+":"+comment+" "+graphstore.TuplePartOf+" -> "+refs.BlockNodeKind+":"+seeded.inner)
+	if done := backfillAnchors(t, database); done.Rows != 1 || done.Tuples != 2 || !done.Complete {
+		t.Errorf("the anchor pass over an orphaned anchor reports %#v, want its anchored_in and its part_of retracted", done)
 	}
-	if held := currentAnchoredIn(t, database, comment); len(held) != 0 {
-		t.Errorf("the orphaned anchor's comment states anchored_in %+v, want none", held)
+	for kind, held := range currentAnchorPair(t, database, comment) {
+		if len(held) != 0 {
+			t.Errorf("the orphaned anchor's comment states %s %+v, want none", kind, held)
+		}
 	}
 	report = storeCensusOf(t, database)
 	requireTheCensusAgrees(t, "the census once the orphaned anchor's anchored_in is retracted", report)
@@ -138,14 +161,19 @@ func TestTheAnchorCensusHoldsEachAnchorBlockToItsAnchoredIn(t *testing.T) {
 	}
 }
 
-// TestTheAnchorBatchTakesTheStoreLockOrder holds writeAnchorBatch (T17b of dispatch://INFRA-1253's
+// TestTheAnchorBatchTakesTheStoreLockOrder holds writeAnchorBatch (T17b of the issue-tree
 // plan) to the store's lock order, as TestEveryBackfillBatchTakesTheStoreLockOrder holds the other
-// batches: the owner row the comment stands under, its issue's row, first, then the anchored_in. The
-// tuple is stated at the sentinel, which no repeat key holds, so no hold stands on it, and the batch
-// takes no project row. The comment is one this build wrote with its node, anchored on a block of
-// its issue's document, whose node states no anchored_in, as a process of the release before leaves
-// the row it anchors. After the run the comment states one anchored_in to the block's node, dated at
-// the comment's created_at, and the backfill reports it levelled.
+// batches: the owner row the comment stands under, its issue's row, first, then the anchored_in and
+// the part_of. The tuples are stated at the sentinel, which no repeat key holds, so no hold stands
+// on them, and the batch takes no project row. The comment is one this build wrote with its node,
+// anchored on a block of its issue's document, whose node states no anchored_in, as a process of the
+// release before leaves the row it anchors. It answers nothing, so its spec's R31 owes it the
+// part_of beside the anchored_in: "Each writer of its `anchored_in` states or retracts that
+// `part_of` in the same write: ... and `backfillAnchoredIn` in `graphcensus/census_anchors.go`,
+// which also states it for each comment anchored before this child, dated at the comment's
+// `created_at`." After the run the comment states one anchored_in and one part_of to the block's
+// node, each dated at the comment's created_at, and the backfill reports the comment levelled with
+// those two tuples.
 func TestTheAnchorBatchTakesTheStoreLockOrder(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -187,12 +215,8 @@ func TestTheAnchorBatchTakesTheStoreLockOrder(t *testing.T) {
 
 	owner, project := holdLockOwner(t, database)
 	report := followTheRun(t, database, "writeAnchorBatch", onePass(backfillAnchoredIn), []*lockstep.Hold{owner, project})
-	held := currentAnchoredIn(t, database, comment)
-	if len(held) != 1 || held[0].ToID != refKey+"#b1" || !held[0].At.Equal(createdAt) {
-		t.Errorf("the comment states anchored_in %+v, want one to %s:%s#b1 dated at its created_at %s: the run the test followed is not one that committed",
-			held, refs.BlockNodeKind, refKey, createdAt)
-	}
-	if done := reportedKind(t, report, anchorProjectionKind); done.Rows != 1 || done.Tuples != 1 || !done.Complete {
-		t.Errorf("the backfill reports %#v for anchor blocks, want 1 comment, 1 tuple and none left", done)
+	requireAnchorPairAt(t, "the comment, after a run the test followed that committed,", database, comment, refKey+"#b1", createdAt)
+	if done := reportedKind(t, report, anchorProjectionKind); done.Rows != 1 || done.Tuples != 2 || !done.Complete {
+		t.Errorf("the backfill reports %#v for anchor blocks, want 1 comment, its anchored_in and its part_of, and none left", done)
 	}
 }

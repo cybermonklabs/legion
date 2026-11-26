@@ -586,7 +586,7 @@ A task waiting on a requirement.
   "attribute \"needs\" points at $root_spec#b-r1, a \"requirement\" block; it points only at plan_task"
 
 # A needs names a plan task of its own issue or of an issue above it, so one at a task of another
-# document of the same issue is taken (dispatch://INFRA-1253/spec R10), and one at a task of an
+# document of the same issue is taken (R10 of the issue-tree spec), and one at a task of an
 # issue in another tree is refused.
 printf ':::plan_task{#u1}\nA task of another document.\n:::\n\n:::plan_task{#u2 needs="%s#b-t1"}\nA task waiting on another plan'"'"'s task.\n:::\n' \
   "$root_plan" >"$work/outside-needs.md"

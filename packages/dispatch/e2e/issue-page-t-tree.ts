@@ -1,6 +1,7 @@
 import { expect, type Locator, type Page, type Route, test } from "@playwright/test";
 
 import type { IssueDecisions, IssueTreeRead } from "../web/src/api/types";
+import { PRESET_ORDER } from "../web/src/features/issue-page/page-words";
 import type { Filter } from "../web/src/features/issue-page/presets";
 import {
   mergeTreePages,
@@ -18,19 +19,21 @@ import type { ApiRequest } from "./traffic";
  * What the rows of the `e2e/issue-page-t-*.e2e.ts` files read of what the page received
  * besides what it drew, the gates they check first, and what the page draws beside the rows.
  * These helpers are kept apart from the row readers of `e2e/issue-page-t.ts`, which the recorder
- * (`e2e/tools/issue-page-t-record.ts`) loads on a base that holds F's page and not the tree read:
- * what reads the tree read names its modules and its answer's types, which that base does not
- * hold, so it is here, so that file loads no more than the recorder needs; the steps and
- * comparisons the rows share are in `e2e/issue-page-t-rows.ts`.
+ * (`e2e/tools/issue-page-t-record.ts`) loads on a base whose page builds its tree from the old
+ * reads and holds no tree read: what reads the tree read names its modules and its answer's
+ * types, which that base does not hold, so it is here, so that file loads no more than the
+ * recorder needs; the steps and comparisons the rows share are in `e2e/issue-page-t-rows.ts`.
  *
  * `treeAnswerOf` and `viewAnswerOf` keep each answer of the tree read
  * (`GET /api/v1/issues/{key}/tree`) and of one of its views (`?view=`), every page of a read
- * merged; `decisionsReadOf` keeps the decisions read; `viewNodeIds` names the rows root R2 lets a
- * view draw. `treeReads` and `blocksReads` count what a load or a press sent. Each row's gate is
- * one `owedUnless` call on a probe (`treeReadGate`, `convertedGate`, `decisionsViewGate`,
- * `decisionNodesGate`, `partUGate`, `footLineGate`): where the gate is not on this branch's base
- * the row skips, naming the gate in an `owed` annotation, and never passes, since a row cannot
- * pass on code the base does not hold yet.
+ * merged, and `outlineAnswerOf` the read of one outline, Conversation's (`?kind=`) or Graph's;
+ * `decisionsReadOf` keeps the decisions read; `viewNodeIds` names the rows root R2 lets a view
+ * draw. `treeReads`, `outlineReads`, `kindsSent`, `olderCommentReads` and `blocksReads` count what
+ * a load or a press sent. Each row's gate is one `owedUnless` call on a probe (`treeReadGate`,
+ * `convertedGate`, `decisionsViewGate`, `decisionNodesGate`, `partUGate`, `footLineGate`,
+ * `dashboardPartGate`): where the gate is not on this branch's base the row skips, naming the gate
+ * in an `owed` annotation, and never passes, since a row cannot pass on code the base does not
+ * hold yet.
  */
 
 // ---------------------------------------------------------------------------------------------
@@ -41,7 +44,7 @@ import type { ApiRequest } from "./traffic";
 export type TreeView = Filter;
 
 /** The tree read's path, whatever issue it reads. */
-const TREE_PATH = /^\/api\/v1\/issues\/[^/]+\/tree$/;
+export const TREE_PATH = /^\/api\/v1\/issues\/[^/]+\/tree$/;
 
 /** The path of issue `key`'s tree read. */
 function treePath(key: string): string {
@@ -117,8 +120,10 @@ interface ReceivedPage {
   readonly page: IssueTreeRead;
 }
 
-/** Keeps every answer of the tree route whose `view` is `view` (none for null), from now on. */
-function watchTreeRoute(page: Page, view: TreeView | null): TreeAnswerWatch {
+/** Keeps every answer of the tree route whose `view` is `view` (none for null), from now on; for
+ *  no view and an `outline`, only that outline's read (`outlineReads`). A page of older comments
+ *  (`comments_before=`) is no page of a read, so it is not kept. */
+function watchTreeRoute(page: Page, view: TreeView | null, outline?: OutlineKind): TreeAnswerWatch {
   const received: ReceivedPage[] = [];
   let arrivals = 0;
   page.on("response", (response) => {
@@ -127,6 +132,8 @@ function watchTreeRoute(page: Page, view: TreeView | null): TreeAnswerWatch {
       response.request().method() !== "GET" ||
       !TREE_PATH.test(url.pathname) ||
       url.searchParams.get("view") !== view ||
+      url.searchParams.has("comments_before") ||
+      (outline !== undefined && url.searchParams.has("kind") !== (outline === "conversation")) ||
       !response.ok()
     ) {
       return;
@@ -175,6 +182,12 @@ export function treeAnswerOf(page: Page): TreeAnswerWatch {
 /** `treeAnswerOf` for the read of one view, `?view=<filter>`. */
 export function viewAnswerOf(page: Page, filter: TreeView): TreeAnswerWatch {
   return watchTreeRoute(page, filter);
+}
+
+/** `treeAnswerOf` for one outline's read alone: Conversation's, with `kind=`, or Graph's, with
+ *  none (`outlineReads`). */
+export function outlineAnswerOf(page: Page, outline: OutlineKind): TreeAnswerWatch {
+  return watchTreeRoute(page, null, outline);
 }
 
 /** Waits until `watch` holds a read whose every page answered, and answers it. */
@@ -263,6 +276,58 @@ export function treeReads(
       url.pathname === treePath(key) &&
       url.searchParams.get("view") === view &&
       !url.searchParams.has("cursor")
+    );
+  }).length;
+}
+
+/** Which outline a read with no view is: Conversation's, which repeats `kind=`, or Graph's, the
+ *  tree read itself, which sends none (spec R1, R9, R10). */
+export type OutlineKind = "conversation" | "graph";
+
+/** How many reads of `outline` of issue `key`'s tree `requests` hold, each read's first page
+ *  alone, as `treeReads` counts them: the requests with no view, with `kind=` for Conversation and
+ *  with none for Graph, and a page of older comments (`comments_before=`) apart, since that is
+ *  no read of the outline but one more page of its comments (`olderCommentReads`). */
+export function outlineReads(
+  requests: readonly ApiRequest[],
+  key: string,
+  outline: OutlineKind
+): number {
+  return requests.filter((request) => {
+    const url = new URL(request.path, "http://requests.invalid");
+    return (
+      request.method === "GET" &&
+      url.pathname === treePath(key) &&
+      !url.searchParams.has("view") &&
+      !url.searchParams.has("cursor") &&
+      !url.searchParams.has("comments_before") &&
+      url.searchParams.has("kind") === (outline === "conversation")
+    );
+  }).length;
+}
+
+/** The `kind` values of each Conversation read of issue `key`'s tree that `requests` hold, each
+ *  read's values in the order it sent them. */
+export function kindsSent(requests: readonly ApiRequest[], key: string): string[][] {
+  return requests.flatMap((request) => {
+    const url = new URL(request.path, "http://requests.invalid");
+    return request.method === "GET" &&
+      url.pathname === treePath(key) &&
+      url.searchParams.has("kind")
+      ? [url.searchParams.getAll("kind")]
+      : [];
+  });
+}
+
+/** How many pages of older comments of issue `key`'s tree `requests` hold: each read with
+ *  `comments_before=` (spec R15). */
+export function olderCommentReads(requests: readonly ApiRequest[], key: string): number {
+  return requests.filter((request) => {
+    const url = new URL(request.path, "http://requests.invalid");
+    return (
+      request.method === "GET" &&
+      url.pathname === treePath(key) &&
+      url.searchParams.has("comments_before")
     );
   }).length;
 }
@@ -507,6 +572,42 @@ export function partUGate(answer: IssueTreeRead, read: DecisionsRead | undefined
       `nodes of the tree read on this branch's base: ${DECISIONS_ARE_NO_NODES}; ${OWED_BY}`,
   };
 }
+
+/** The model storing a decision that settles a question under that question, which waits on
+ *  the model: the tree read answers the decision block `decision` with the ask `ask` as its
+ *  parent. The page places no node itself, so until then the decision stands where the read's
+ *  parent puts it. */
+export function decisionUnderAskGate(answer: IssueTreeRead, decision: string, ask: string): Gate {
+  return {
+    met: (answer.nodes ?? []).some(
+      (node) => node.block_id === decision && node.parent?.id.endsWith(ask) === true
+    ),
+    owed:
+      "owed until the tree read answers a decision that settles a question with that question " +
+      `as its parent: this base answers it under the issue; ${OWED_BY}`,
+  };
+}
+
+/** The reconciliation updates the index but emits no event for the page to refresh coverage.
+ *  Replace this gate with a check for that event when the server publishes it. */
+export const coverageIndexEventGate: Gate = {
+  met: false,
+  owed: `owed until the block index emits a coverage completion event; ${OWED_BY}`,
+};
+
+/** The view row's token for Dashboard's view, the line its part adds to the row's one list
+ *  (`PRESET_ORDER`) with that view (spec R12). */
+const DASHBOARD_VIEW = "dashboard";
+
+/** Dashboard's part (dispatch://INFRA-5702) first on this branch's base: the view row's one list
+ *  holds its view. That part brings Dashboard, the ask body and the decision card, which the rows
+ *  of the Dashboard's reads and of the outline's asks and decisions read (spec R16, R17). */
+export const dashboardPartGate: Gate = {
+  met: (PRESET_ORDER as readonly string[]).includes(DASHBOARD_VIEW),
+  owed:
+    "owed until INFRA-5702, Dashboard's part with the ask body and the decision card, is on " +
+    `this branch's base: the view row's list holds no Dashboard here; ${OWED_BY}`,
+};
 
 /** How many frames the page's writer looks for its line in after a Reply (`outline-writer.tsx`:
  *  ten after the first), and one more, as the rows of `e2e/issue-page-g.e2e.ts` wait them out. */

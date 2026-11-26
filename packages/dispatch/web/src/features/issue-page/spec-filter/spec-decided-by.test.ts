@@ -1,14 +1,17 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { renderHook } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
 
 import type { CheckBlock, DisplayTree } from "../../../api/types";
-import { wordsOf } from "../../refs/tree-fragment";
+import { warmMarkdownRenderer } from "../../refs/markdown-engine";
+import { ReferenceNamesProvider } from "../../refs/reference-names";
 import { decisionNodes } from "../decision-nodes/decision-nodes";
 import { issueTree, KEY, node, READER, READER_ACTOR } from "../decisions-filter/decisions-fixtures";
 import type { TreeNode } from "../issue-tree";
 import { CHIP_LIMIT } from "../node-row-chip";
 import { useReferenceNames } from "../one-line";
 import { presetView } from "../presets";
+import { Publisher, publishedTree } from "../projection-fixture";
 import { SENTENCE_TABLE } from "../sentence-table";
 import { treeContext } from "../tree-drafts";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
@@ -43,9 +46,13 @@ import {
  */
 
 /** How this issue addresses a node, which is how a tie finds the statement it names. Only the
- *  context's addresses are read here and no chip's name, so the line it names a block by is the
- *  whole reading's words (`wordsOf`), which nothing below reads. */
-const { nodeIdOf } = treeContext({ issue: issueDetails() }, wordsOf);
+ *  context's addresses are read here and no chip's name. */
+const { nodeIdOf } = treeContext({ issue: issueDetails() });
+
+// A chip is named from the reading the page published for it, which the store projects.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** A page that names no reference, so `referenceStandIns` names one by its issue's key where it
  *  is an issue, and else by its short form (`shortForm`). */
@@ -221,7 +228,7 @@ test("another person's answer is not drawn as the reader's own words", () => {
 test("an agent's decision is quoted by its own words, with how sure it was and how it stands", () => {
   const text = "One batched read names every address. The page asks the server once for them all.";
   const tree = { content: [{ content: [{ text, type: "text" }], type: "paragraph" }], type: "doc" };
-  const source = { id: "artifact-dec", kind: "artifact" } as const;
+  const source = { id: "artifact-dec", issue: KEY, kind: "artifact" } as const;
   const made = node({
     at: "2026-11-13T07:00:00Z",
     author: { id: "session-planner", kind: "agent" },
@@ -626,10 +633,13 @@ test("a person's answer that cites a block carries its whole text for the focus,
     // The tree names the block by a chip of the batched read (`tree-drafts.ts`), which is the
     // name the page gives a reference a plain line cites.
     decisionNode("d1", {
-      chips: [{ answered: true, gone: false, name: "the one-line rule", ref: cited }],
+      chips: [{ answered: true, gone: false, reading: { words: "the one-line rule" }, ref: cited }],
     }),
   ]);
-  const names = renderHook(() => useReferenceNames(tree, nodeIdOf));
+  const published = publishedTree(tree);
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(ReferenceNamesProvider, null, createElement(Publisher, { published }), children);
+  const names = renderHook(() => useReferenceNames(tree, nodeIdOf), { wrapper });
   try {
     const made = bodyOf(tree, [], READER, [], names.result.current)[0]?.runs[0]?.decision;
     expect(made?.quote).toBe("Keep it as the one-line rule says.");

@@ -70,7 +70,7 @@ func conversationItem(t *testing.T, tx pgx.Tx, table, issueKey, author, body str
 	return id, block
 }
 
-// R2's test (dispatch://INFRA-1253/spec R2), read through both of its functions. An ask, a
+// R2's test (R2 of the issue-tree spec), read through both of its functions. An ask, a
 // person's comment, an agent's reply in a person's thread, an agent's status comment, a person's
 // message and a message of the Legion daemon's session - one alone and one in the person's
 // thread - are each read by IsConversationNode, themselves and their first blocks, under every
@@ -162,7 +162,7 @@ func TestAConversationNodeIsWhatRTwoSaysItIs(t *testing.T) {
 
 	listed := func(at time.Time) ([]string, map[string]string) {
 		t.Helper()
-		nodes, err := ConversationNodes(ctx, tx, model.Actor{}, "CORE-1", at)
+		nodes, err := ConversationNodes(ctx, tx, model.Actor{}, "CORE-1", at, "")
 		if err != nil {
 			t.Fatalf("ConversationNodes(CORE-1, %s) = %v", at, err)
 		}

@@ -396,3 +396,39 @@ test("a path through an overtaken node is the path to its row", () => {
     expect(row === undefined ? undefined : rowKeyOf(row)).toBe(ids.join(">"));
   }
 });
+
+// `?node=` names a node by its id in the tree read, the row a store address in a row's words
+// links to. The outline alone reads it, Conversation's and Graph's, on an address that opens no
+// document, where it wins over `#b-`, `?ask=` and `?comment=`; Graph keeps the node its address
+// zooms to. A filter's address and a document's read it as no node.
+test("a node address names a node by its id in the tree read, on the outline's address alone", () => {
+  const readId = "CORE-1/spec#r1";
+  const search = `?q=two&node=${encodeURIComponent(readId)}&comment=comment-7`;
+  for (const [route, preset] of [
+    [{ key: "CORE-1", kind: "issue" }, "conversation"],
+    [{ key: "CORE-1", kind: "graph" }, "graph"],
+    [{ key: "CORE-1", kind: "graph", node: "comment-7" }, "graph"],
+  ] as const) {
+    const address = issueAddress(route, search, "#b-r3", "spec");
+    expect(address.target, `${preset} ${search}`).toEqual({ id: readId, kind: "node" });
+    expect(address.preset).toBe(preset);
+    expect(address.filter).toBe("two");
+    expect(address.document).toBeUndefined();
+    expect(address.zoom).toBe("node" in route ? route.node : undefined);
+  }
+  for (const route of [
+    { key: "CORE-1", kind: "spec" },
+    { key: "CORE-1", kind: "artifact", slug: "spec" },
+  ] as const) {
+    const address = issueAddress(route, `?node=${encodeURIComponent(readId)}`, "", "spec");
+    expect(address.target?.kind, `${route.kind} ?node=`).not.toBe("node");
+  }
+  // A node is found by its id in the tree read, which is not the id the tree draws it by.
+  const statement = node("spec#b-r1", "requirement", { readId });
+  const root = node("CORE-1", "issue", { children: [commentNode, statement] });
+  expect(pathToTarget(root, { id: readId, kind: "node" })?.map((one) => one.id)).toEqual([
+    "CORE-1",
+    "spec#b-r1",
+  ]);
+  expect(pathToTarget(root, { id: "spec#b-r1", kind: "node" })).toBeUndefined();
+});

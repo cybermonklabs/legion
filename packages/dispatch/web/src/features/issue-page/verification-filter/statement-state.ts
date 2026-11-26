@@ -35,8 +35,8 @@ import { outOfCounts } from "../tree-fold";
  * server still counts, and a newer result at another commit says nothing about it. Two checks
  * of one issue compare with different commits, so no check is read against the one commit the
  * page names.
- * The tree's check node holds it too (`tree-read/tree-nodes.ts`), so this body, the outline's row,
- * the fold's frontier and the filter row's failing count say one word for one check, and it is
+ * The tree's check node holds it too (`tree-read/tree-nodes.ts`), so this body, the outline's row
+ * and the filter row's failing count say one word for one check, and it is
  * the word the check's result says of itself (`check-facts.ts`'s `resultFacts`).
  *
  * A statement is a requirement of the issue's spec (`isStatement`) and a check a check of its

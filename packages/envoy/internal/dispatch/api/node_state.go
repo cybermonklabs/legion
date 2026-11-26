@@ -32,6 +32,17 @@ package api
 // check of who writes one (refuseSpecWriterOfNode, spec_writer.go), past its own rule and under the
 // issue's owner lock, and refuses any other writer 403 DOCUMENT_WRITER_NOT_ARCHITECT.
 //
+// A caller who is no person (docs.CallerIsPerson) sets no person's decision (docs.PersonDecisionOf)
+// overtaken or live (R32 of the issue tree's spec): neither an answered ask's own node nor a
+// decision a person decided, so an agent neither marks a person's decision overtaken nor undoes a
+// person's own overtaken. The refusal is 409 ANSWERED_ASK_KEPT, quoting the ask's question or the
+// decision's words and naming the node, and nothing is stored (refusePersonDecisionState). The
+// route's other refusals come first and keep their codes. On an answered ask's own node,
+// `ask/<uuid>`, the refusal comes before the settle's author rule and covers proposed too: that
+// node's author is the agent that asked, whom the author rule would let through, and its state is
+// the person's answer's. The `:::ask` block of an answered ask is 409 ASK_HOLDS_STATE first, as
+// every write on such a block is.
+//
 // A block of an ask, a comment or a message is a node every read answers, and no node the store
 // holds: no writer, the backfill among them, writes a graph_nodes row for one, so every read
 // answers it live (refs.StoredStateAndVisibility). The state route refuses it every value, naming
@@ -60,10 +71,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
-	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // Codes of the two routes' own refusals, and of a write on a gone node.
@@ -138,57 +149,51 @@ type stateTarget struct {
 	end           storedEnd
 }
 
-// askOfBlockQuery answers the ID of the ask that holds the question's state for the `:::ask`
-// block at stored kind $1 and address $2. It looks up document_blocks by
-// document_blocks_node_address (migration 20261111043000) and joins the block's own ask by
-// document and block ID, matching the block ID keys for asks_block_id_unique (migration 0127).
-// If the block has no ask of its own, it reads the source ask from the block's current asserted
-// copied_from tuple (graphstore.CurrentTupleRead). It answers null for an ask block with
-// neither and no row for any other node.
-var askOfBlockQuery = `
-	select coalesce(k.id::text, copied.to_id)
-	from document_blocks b
-	left join asks k on k.block_artifact_id = b.artifact_id
-		and block_id_key(k.block_id) = block_id_key(b.block_id) and k.block_id = b.block_id
-	left join lateral (
-		select c.to_id
-		from (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_id, t.asserted, t.seq`,
-	`t.from_kind = b.node_kind and t.from_id = b.node_address and t.kind = '`+graphstore.TupleCopiedFrom+`'
-			and t.to_kind = '`+graphstore.KindAsk+`'`) + `) c
-		where k.id is null and c.asserted
-		order by c.seq desc limit 1
-	) copied on true
-	where b.node_kind = $1 and b.node_address = $2 and b.type = 'ask'`
+// askBlockQuery answers the document and the block id of the `:::ask` block whose block node the
+// store keys by kind $1 and address $2: its row of type ask in the document's block index, which
+// document_blocks_node_address (migration 20261111043000) finds. Any other node has no such row.
+const askBlockQuery = `
+	select artifact_id::text, block_id from document_blocks
+	where node_kind = $1 and node_address = $2 and type = 'ask'`
 
 // askHoldsState refuses a write on the block node of an `:::ask` block with 409 ASK_HOLDS_STATE
-// and returns nil for other nodes. It reads in the write's transaction (q) only for nodes the
-// graph addresses as blocks (graphstore.AddressKind), not lens findings, which are also stored
-// as blocks. The refusal names the block and the ask that holds the question's state: the
-// block's own ask, or the source ask for a copy (askOfBlockQuery). Both are under the route's
-// issue key: findWrittenNode checks the block's issue and settlement takes copy sources from
-// the same owner's documents (docs' copiedAskSourcesQuery). If there is no ask yet, the refusal
-// says so. In either case the write stores nothing.
-func askHoldsState(ctx context.Context, q refs.Queryer, key string, target stateTarget) error {
+// and returns nil for other nodes. It reads in the write's transaction (q), and only for nodes the
+// graph addresses as blocks (graphstore.AddressKind), not lens findings, which are also stored as
+// blocks; a block its document's block index holds no ask row of (askBlockQuery) is no `:::ask`
+// block. The refusal names the block and the ask that holds the question's state: the ask the
+// block's id names in its document's question map for who, the reader the route found the node
+// for (refs.QuestionMap), the one rule every read of a question takes. That ask is the block's own
+// ask; else, for a copy, the ask its block node's copied_from tuple names; else, for a copy no
+// settlement of this build has claimed yet, the ask its opening line names as copied_from. An ask
+// who may not see, or a copied ask on a document who may not see, is none of these. The refusal
+// names the ask by its own address (refs.AskRef), under the ask's own issue or project document.
+// A block the rule gives no ask, one not settled yet, is refused saying no ask holds the question
+// yet. In either case the write stores nothing.
+func askHoldsState(ctx context.Context, q refs.Queryer, who model.Actor, target stateTarget) error {
 	if graphstore.AddressKind(target.end.kind, target.end.id) != refs.BlockNodeKind {
 		return nil
 	}
-	var askID *string
-	err := q.QueryRow(ctx, askOfBlockQuery, target.end.kind, target.end.id).Scan(&askID)
+	var document, blockID string
+	err := q.QueryRow(ctx, askBlockQuery, target.end.kind, target.end.id).Scan(&document, &blockID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
+		return fmt.Errorf("read the ask block %s %s: %w", target.end.kind, target.end.id, err)
+	}
+	questions, err := refs.QuestionMap(ctx, q, who, document)
+	if err != nil {
 		return fmt.Errorf("read the ask of the block %s %s: %w", target.end.kind, target.end.id, err)
 	}
-	if askID == nil {
+	ask, held := questions[blockID]
+	if !held {
 		return errorf(http.StatusConflict, codeAskHoldsState,
 			"the %s %s is an :::ask block, and an ask holds the question's state, not the block: no ask holds this question yet, so nothing was written",
 			target.kind, target.address)
 	}
-	ask := refs.AskRef(text.Ref{IssueKey: key, ID: *askID})
 	return errorf(http.StatusConflict, codeAskHoldsState,
 		"the %s %s is an :::ask block: the ask %s holds the question's state. Write the state on the ask. Nothing was written.",
-		target.kind, target.address, ask)
+		target.kind, target.address, refs.AskRef(ask))
 }
 
 // goneNodeUnderIssueQuery is whether the store holds the node whose stored kind and id are $1 and
@@ -261,10 +266,10 @@ func stateWritten(target stateTarget, node graphstore.Node, previous string) nod
 // nodeStateRule is what tells the two routes of a node's state apart, past the refusals
 // writeNodeState makes of every write: refused is the route's rule over the node as the store
 // holds it, for the credential proving that proved the caller, nil where the route writes the
-// value; and unheld is its refusal of a node the store holds no row of (errNodeNotHeld), which
-// every read answers live.
+// value, read in the write's transaction q under the issue's owner lock; and unheld is its refusal
+// of a node the store holds no row of (errNodeNotHeld), which every read answers live.
 type nodeStateRule struct {
-	refused func(target stateTarget, stored graphstore.Node, proving model.Actor) error
+	refused func(ctx context.Context, q queryer, target stateTarget, stored graphstore.Node, proving model.Actor) error
 	unheld  func(target stateTarget) error
 }
 
@@ -297,7 +302,7 @@ func (s *server) writeNodeStateAs(w http.ResponseWriter, r *http.Request, suppli
 		return
 	}
 	var writer model.Actor
-	if proving.Credential.Holds(model.ScopePerson) {
+	if docs.CallerIsPerson(proving) {
 		writer, ok = s.actingPerson(w, resolved)
 	} else {
 		writer, ok = s.requireActor(w, resolved, supplied)
@@ -321,21 +326,22 @@ func (s *server) writeNodeStateAs(w http.ResponseWriter, r *http.Request, suppli
 		s.writeHandlerError(w, err)
 		return
 	}
-	found, end, err := findWrittenNode(ctx, tx, proving.Recorded(), key, id)
+	reader := proving.Recorded()
+	found, end, err := findWrittenNode(ctx, tx, reader, key, id)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	target := stateTarget{kind: found.Kind, address: cmp.Or(found.Ref, id), end: end.stored()}
-	if err := askHoldsState(ctx, tx, key, target); err != nil {
+	if err := askHoldsState(ctx, tx, reader, target); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	checked := specWriter{actor: writer, person: proving.Credential.Holds(model.ScopePerson)}
+	checked := specWriter{actor: writer, person: docs.CallerIsPerson(proving)}
 	node, previous, err := writeNodeState(ctx, tx, nodeStateWrite{
 		issue: key, target: target, state: asked, who: writer, at: at,
 		allowed: func(stored graphstore.Node) error {
-			if err := rule.refused(target, stored, proving); err != nil {
+			if err := rule.refused(ctx, tx, target, stored, proving); err != nil {
 				return err
 			}
 			return refuseWriter(ctx, tx, checked, key, target.end, target.address)
@@ -400,16 +406,21 @@ func stateRefusal(target stateTarget, held, asked string) error {
 // written before the store existed that the backfill has not reached yet. A move into gone, which
 // the route makes on a lens, a finding, a risk or a constraint alone, is a person's alone
 // (goneNotPermitted), read off the credential and nothing under the node, since it takes the
-// node's whole part_of subtree with it. Any other move of the node into or out of proposed or
-// settled (takesTheSettleRule) then takes the settle's caller rule over the node's made_by
-// (maySettle).
+// node's whole part_of subtree with it. On an answered ask's own node, `ask/<uuid>`, a caller who
+// is no person is then refused proposed, overtaken and live alike, 409 ANSWERED_ASK_KEPT
+// (refusePersonDecisionState, R32): the ask's author is the agent that asked, whom the settle's
+// author rule would let through, and the node's state is the person's answer's, so this refusal
+// comes before that rule. Any other move of the node into or out of proposed or settled
+// (takesTheSettleRule) then takes the settle's caller rule over the node's made_by (maySettle).
 // Any other caller is 403 STATE_NOT_PERMITTED, naming the node, and nothing is stored, so the
-// shared bearer, which proves no author, makes no such move. On a requirement, criterion or check
-// node of an issue Legion runs, a writer who is no person and no architect of the issue or of an
-// issue above it is then 403 DOCUMENT_WRITER_NOT_ARCHITECT (refuseSpecWriterOfNode), and nothing is
-// stored. The write appends one state tuple, written by the caller, and a gone one on each node of
-// the subtree it takes with it too (writeNodeState); a write of the state the node holds appends
-// none.
+// shared bearer, which proves no author, makes no such move. A caller who is no person then sets
+// no decision a person decided overtaken or live, 409 ANSWERED_ASK_KEPT (refusePersonDecisionState,
+// R32), so an agent neither marks a person's decision overtaken nor undoes her own overtaken. On a
+// requirement, criterion or check node of an issue Legion runs, a writer who is no person and no
+// architect of the issue or of an issue above it is then 403 DOCUMENT_WRITER_NOT_ARCHITECT
+// (refuseSpecWriterOfNode), and nothing is stored. The write appends one state tuple, written by
+// the caller, and a gone one on each node of the subtree it takes with it too (writeNodeState); a
+// write of the state the node holds appends none.
 func (s *server) writeNodeStateRoute(w http.ResponseWriter, r *http.Request) {
 	var input nodeStateInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -417,20 +428,30 @@ func (s *server) writeNodeStateRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeNodeStateAs(w, r, input.Actor, input.State, nodeStateRule{
-		refused: func(target stateTarget, stored graphstore.Node, proving model.Actor) error {
+		refused: func(ctx context.Context, q queryer, target stateTarget, stored graphstore.Node, proving model.Actor) error {
 			if err := stateRefusal(target, stored.State, input.State); err != nil {
 				return err
 			}
+			person := docs.CallerIsPerson(proving)
 			if input.State == graphstore.StateGone {
-				if !proving.Credential.Holds(model.ScopePerson) {
+				if !person {
 					return goneNotPermitted(target)
 				}
 				return nil
+			}
+			askNode := target.end.kind == graphstore.KindAsk
+			if askNode && !person {
+				if err := refusePersonDecisionState(ctx, q, target, input.State); err != nil {
+					return err
+				}
 			}
 			if takesTheSettleRule(stored.State, input.State) && !maySettle(proving, stored.MadeBy) {
 				return errorf(http.StatusForbidden, codeStateNotPermitted,
 					"this credential may not move the %s %s from %s to %s: a person makes any move into or out of proposed or settled, and any other caller only on a node whose author is the author this credential proves",
 					target.kind, target.address, stored.State, input.State)
+			}
+			if !askNode && !person && (input.State == graphstore.StateOvertaken || input.State == graphstore.StateLive) {
+				return refusePersonDecisionState(ctx, q, target, input.State)
 			}
 			return nil
 		},
@@ -446,6 +467,22 @@ func (s *server) writeNodeStateRoute(w http.ResponseWriter, r *http.Request) {
 				target.kind, target.address, graphstore.StateLive, input.State)
 		},
 	}, refuseSpecWriterOfNode)
+}
+
+// refusePersonDecisionState is R32's refusal of a write of asked on target, by a caller who is no
+// person, where target is a person's decision (docs.PersonDecisionOf): an answered ask's own node or
+// a decision a person decided. It is 409 ANSWERED_ASK_KEPT, quoting the ask's question or the
+// decision's words and naming the node, and nil for any other node. The caller may see the node,
+// since findWrittenNode found it for them, so the refusal names it. It reads in the write's
+// transaction q, under the issue's owner lock, before anything is written.
+func refusePersonDecisionState(ctx context.Context, q queryer, target stateTarget, asked string) error {
+	decision, held, err := docs.PersonDecisionOf(ctx, q, target.end.kind, target.end.id)
+	if err != nil || !held {
+		return err
+	}
+	return errorf(http.StatusConflict, codeAnsweredAskKept,
+		"%s %s, %q, is a person's decision, and an agent cannot set its state to %s: a person sets it, or an agent acting under a token that holds the person scope. Nothing was written.",
+		decision.What, target.address, decision.Words, asked)
 }
 
 // takesTheSettleRule is whether a write of asked on a node the store holds at held is a move the
@@ -478,7 +515,7 @@ func takesTheSettleRule(held, asked string) bool {
 // this same rule, so the callers who may settle a node are the callers who may move it into or
 // out of proposed or settled.
 func maySettle(proving, author model.Actor) bool {
-	return proving.Credential.Holds(model.ScopePerson) || graphstore.SameAuthor(author, proving)
+	return docs.CallerIsPerson(proving) || graphstore.SameAuthor(author, proving)
 }
 
 // settleNode is POST /api/v1/issues/{key}/nodes/{id}/settle: the one write that settles a proposed
@@ -504,7 +541,7 @@ func (s *server) settleNode(w http.ResponseWriter, r *http.Request) {
 			target.kind, target.address, held)
 	}
 	s.writeNodeStateAs(w, r, input.Actor, graphstore.StateSettled, nodeStateRule{
-		refused: func(target stateTarget, stored graphstore.Node, proving model.Actor) error {
+		refused: func(_ context.Context, _ queryer, target stateTarget, stored graphstore.Node, proving model.Actor) error {
 			if stored.State != graphstore.StateProposed {
 				return notProposed(target, stored.State)
 			}
@@ -596,7 +633,7 @@ func (s *server) listIssueProposed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// The store keys a document by its ref_key, which is the id its loader reads it by.
-	resolved, err := refs.ExcerptedNodes(ctx, pool, reader, targets)
+	resolved, err := refs.ExcerptedNodes(ctx, pool, reader, targets, s.deps.ServerURL)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

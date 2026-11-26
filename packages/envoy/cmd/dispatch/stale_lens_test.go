@@ -18,7 +18,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -65,19 +64,22 @@ const (
 // In each case the person makes a document A of the spec's issue by typing a title through this
 // build's route, invokes a trade-off analysis LO on A with one finding FO, and the second person
 // invokes a lens LP on FO, reserved for himself (staleLensRoll.lensedDocument); LO records A's row.
-// The test then holds the block-index lease, as costHoldBlockIndex holds it, so no tick of any
-// build runs from before the earlier build's removal until the reads that must come before this
-// build's tick, and an earlier build removes A and makes a document B of the same title, which
-// takes A's address. With the lease held, this build answers LO, FO and LP as gone nodes
-// (requireAnsweredAsGone). Before it waits for this build's tick, the test stops every earlier
-// build's process, a SIGTERM and a wait for it to exit (stopProcess), because a period an earlier
-// build's process serves is a period this build's tick waits out; then it frees the lease, and
-// once this build's tick has run on B's artifact.created event (awaitThisBuildsTick), LO, FO and LP
-// each read gone in the store. It starts the earlier builds again, on the same database, for the
-// next case.
+// The test then holds the block-index lease and the reference forms drain's, as costHoldBlockIndex
+// holds them, so no tick of any build and no pass of this build's forms drain runs from before the
+// earlier build's removal until the reads that must come before this build's tick, and an earlier
+// build removes A and makes a document B of the same title, which takes A's address. With the
+// leases held, this build answers LO, FO and LP as gone nodes (requireAnsweredAsGone). Before it
+// waits for this build's tick, the test stops every earlier build's process, a SIGTERM and a wait
+// for it to exit (stopProcess), because a period an earlier build's process serves is a period
+// this build's tick waits out; then it gives the block-index lease back alone, and once this
+// build's tick has run on B's artifact.created event (awaitThisBuildsTick), LO, FO and LP each
+// read gone in the store. It keeps the forms drain's lease until the case's reads after the tick
+// are done (blockIndexHold.giveBackIndex), so what they read is the tick's work: the drain indexes
+// a document through the block index's own index, and B, which an earlier build wrote, can be owed
+// to it. It starts the earlier builds again, on the same database, for the next case.
 //
 //   - First, main's server removes A and makes B, so A's live node stands behind B's row. With the
-//     lease still held the person invokes LB on B's address through this build, which answers 201,
+//     leases still held the person invokes LB on B's address through this build, which answers 201,
 //     and LB records B's row, the row the artifacts table holds at the address, and not A's. After
 //     this build's tick LB reads live with its on naming B's address, and still so after this
 //     build's backfill, envoy-dispatch backfill-graph-store, and after B is retired through
@@ -85,7 +87,7 @@ const (
 //   - Second, main's server removes A, and cybermonklabs/legion#4173's server makes B, which
 //     writes the document's node for B.
 //   - Third, cybermonklabs/legion#4173's server removes A, which states A's node gone, and main's
-//     server makes B, which writes no node, so B's row stands behind A's gone node. With the lease
+//     server makes B, which writes no node, so B's row stands behind A's gone node. With the leases
 //     held the person's lens write on B's address answers 409 NODE_GONE; once this build's tick
 //     has run its object pass on B's artifact.created event, B's node reads live and the same
 //     write answers 201.
@@ -95,7 +97,7 @@ func TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress(t *testing.T) {
 
 	// ───── the first case: main removes A and makes B ─────
 	first := roll.lensedDocument(t, "the first case", "Made again by main.md")
-	free := roll.holdTheLease(t)
+	hold := roll.holdTheLease(t)
 	removeTypedDocument(t, roll.main.process, roll.main.name, first.a)
 	roll.makeB(t, first, roll.main)
 	roll.requireDocumentNode(t, first, graphstore.StateLive, "main's removal and create write no node, so A's live node stands behind B's row")
@@ -111,10 +113,11 @@ func TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress(t *testing.T) {
 	}
 	roll.requireAnsweredAsGone(t, first, &lb)
 	roll.stopEarlierBuilds(t)
-	free()
+	hold.giveBackIndex()
 	event := roll.awaitThisBuildsTick(t, first)
 	roll.requireGoneAfterTheTick(t, first, event)
 	roll.requireLensLive(t, first, lb, "this build's tick", first.address)
+	hold.giveBack()
 
 	code, out := runDispatchCommand(t, roll.head, roll.databaseURL, "backfill-graph-store")
 	t.Logf("backfill-graph-store:\n%s", out)
@@ -139,21 +142,22 @@ func TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress(t *testing.T) {
 	// ───── the second case: main removes A, cybermonklabs/legion#4173's build makes B ─────
 	roll.startEarlierBuilds(t)
 	second := roll.lensedDocument(t, "the second case", "Made again by the store's first build.md")
-	free = roll.holdTheLease(t)
+	hold = roll.holdTheLease(t)
 	removeTypedDocument(t, roll.main.process, roll.main.name, second.a)
 	roll.makeB(t, second, roll.base)
 	roll.requireDocumentNode(t, second, graphstore.StateLive, "A's node stands live behind B's row")
 	roll.requireStatedByBsCreate(t, second, true, "cybermonklabs/legion#4173's create writes the document's node for B, stating it gone and then live")
 	roll.requireAnsweredAsGone(t, second, nil)
 	roll.stopEarlierBuilds(t)
-	free()
+	hold.giveBackIndex()
 	event = roll.awaitThisBuildsTick(t, second)
 	roll.requireGoneAfterTheTick(t, second, event)
+	hold.giveBack()
 
 	// ───── the third case: cybermonklabs/legion#4173's build removes A, main makes B ─────
 	roll.startEarlierBuilds(t)
 	third := roll.lensedDocument(t, "the third case", "Made again over a gone node.md")
-	free = roll.holdTheLease(t)
+	hold = roll.holdTheLease(t)
 	removeTypedDocument(t, roll.base.process, roll.base.name, third.a)
 	roll.requireDocumentNode(t, third, graphstore.StateGone, "cybermonklabs/legion#4173's removal states A's node gone")
 	roll.makeB(t, third, roll.main)
@@ -164,7 +168,7 @@ func TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress(t *testing.T) {
 	}
 	roll.requireAnsweredAsGone(t, third, nil)
 	roll.stopEarlierBuilds(t)
-	free()
+	hold.giveBackIndex()
 	event = roll.awaitThisBuildsTick(t, third)
 	if state := roll.nodeState(t, graphstore.KindArtifact, third.b.ref); state != graphstore.StateLive {
 		t.Errorf("the node of %s reads %s after this build's tick ran on %s, want live: the object pass writes it for the row %s",
@@ -175,6 +179,7 @@ func TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress(t *testing.T) {
 		t.Error(third.lensWriteFailure(after, "after", "201"))
 		t.Logf("the lens write after the object pass answers %s", after)
 	}
+	hold.giveBack()
 }
 
 // earlierBuild is one build of an earlier release the run serves: what a failure calls it, which
@@ -274,16 +279,17 @@ func (r *staleLensRoll) stopEarlierBuilds(t *testing.T) {
 	}
 }
 
-// holdTheLease takes the block-index lease over the run's database (holdBlockIndexLease), so no
-// tick of any build runs until the call it answers gives it back. A test that fails while it holds
-// the lease gives it back as it ends, before its connections close.
-func (r *staleLensRoll) holdTheLease(t *testing.T) func() {
+// holdTheLease takes the block-index lease and the reference forms drain's over the run's database
+// (holdBlockIndexLease), so no tick of any build and no pass of this build's forms drain runs until
+// the hold it answers gives them back: the block-index lease alone before the wait for this
+// build's tick (giveBackIndex), and the drain's once the reads after that tick are done
+// (giveBack). A test that fails while it holds either gives it back as it ends, before its
+// connections close.
+func (r *staleLensRoll) holdTheLease(t *testing.T) *blockIndexHold {
 	t.Helper()
-	release := holdBlockIndexLease(t, r.pool, "this build", costLeaseWait, r.current.Output.String)
-	var once sync.Once
-	free := func() { once.Do(release) }
-	t.Cleanup(free)
-	return free
+	hold := holdBlockIndexLease(t, r.pool, "this build", costLeaseWait, r.current.Output.String)
+	t.Cleanup(hold.giveBack)
+	return hold
 }
 
 // staleLensNode is LO, FO, LP or LB: its address, the kind and the id graph_nodes keys it by, and
@@ -506,7 +512,7 @@ func (l staleLensesRead) listed() []string {
 	return addresses
 }
 
-// requireAnsweredAsGone holds this build's reads of LO, FO and LP, with the lease held, to what they
+// requireAnsweredAsGone holds this build's reads of LO, FO and LP, with the leases held, to what they
 // answer of gone nodes. GET /api/v1/references?to= and GET /api/v1/lenses?on= of each answer 404
 // NOT_FOUND, byte for byte as an address nobody wrote answers once the id is substituted, to the
 // person, and for LP to the second person too; GET /api/v1/lenses?on= B's address answers 200,

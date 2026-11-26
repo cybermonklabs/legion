@@ -1,5 +1,5 @@
 import { isProposed } from "./issue-address";
-import { drawnLine, firstLineOf, lineWords, type TreeNode } from "./issue-tree";
+import { drawnLine, firstLineOf, lineWordsRaw, type TreeNode } from "./issue-tree";
 
 /**
  * How much of the issue's tree is drawn. Pure, over the model `issue-tree.ts` builds, so the
@@ -30,7 +30,7 @@ export const CHILD_PAGE = 50;
 
 /** How many levels a row's indent grows through: a row deeper than this stands at the indent of
  *  this level (R11, root R16's six levels). */
-export const INDENT_LEVELS = 6;
+const INDENT_LEVELS = 6;
 
 /** What the reader has done to the outline by hand: the nodes they folded, and the pages of
  *  children they drew. */
@@ -144,16 +144,20 @@ export function treeRows(
  *  node's id: every child up to the one the path goes through. */
 function reachedChildren(root: TreeNode, named: readonly string[]): ReadonlyMap<string, number> {
   const reached = new Map<string, number>();
-  for (const id of named) {
-    const path = pathTo(root, id) ?? [];
-    for (let at = 1; at < path.length; at += 1) {
-      const parent = path[at - 1];
-      const child = path[at];
-      if (parent === undefined || child === undefined) continue;
-      const upTo = parent.children.indexOf(child) + 1;
-      reached.set(parent.id, Math.max(reached.get(parent.id) ?? 0, upTo));
+  const pending = new Set(named);
+  // Preorder finds the same first placement of each named id as pathTo.
+  const walk = (node: TreeNode): boolean => {
+    let found = pending.delete(node.id);
+    for (let at = 0; at < node.children.length && pending.size > 0; at += 1) {
+      const child = node.children[at];
+      if (child !== undefined && walk(child)) {
+        reached.set(node.id, Math.max(reached.get(node.id) ?? 0, at + 1));
+        found = true;
+      }
     }
-  }
+    return found;
+  };
+  if (pending.size > 0) walk(root);
   return reached;
 }
 
@@ -181,11 +185,12 @@ export function withEveryFoldUndone(opened: OpenedBranches): OpenedBranches {
   return opened.closed.size === 0 ? opened : { closed: new Set(), pages: opened.pages };
 }
 
-/** What a folded node's row draws of its words: its text to its first sentence end, or to the
- *  first line's limit, cut at a word (R11's first-line rule, `firstLineOf`), cut from the words
- *  every one-line drawing of a node is cut from (`lineWords`). */
+/** A folded node's one line as plain words: its text to its first sentence end, or to the first
+ *  line's limit, cut at a word (R11's first-line rule, `firstLineOf`), cut from the words its
+ *  reading opens with (`lineWordsRaw`). The row draws the same line through the shared
+ *  projection (`node-line.tsx`'s `FirstLine`), which also names each reference in it. */
 export function foldedLine(node: Pick<TreeNode, "text" | "tree">): string {
-  return drawnLine(firstLineOf(lineWords(node)));
+  return drawnLine(firstLineOf(lineWordsRaw(node)));
 }
 
 /** How many levels a row at `level` is indented, the tree's first row at none: one a level up

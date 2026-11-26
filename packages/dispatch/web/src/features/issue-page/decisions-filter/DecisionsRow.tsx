@@ -13,23 +13,23 @@ import {
   pageWordsText,
 } from "../../../theme/classes";
 import { useAgentText } from "../../refs/AgentName";
-import { EditedMark } from "../../refs/PostBody";
+import { EditedMark } from "../../refs/PostMarks";
 import { postDeletion } from "../../refs/post-marks";
 import { DecisionActions, rowActionSelector } from "../DecisionActions";
+import type { ParentLine } from "../issue-tree";
 import { NodeGlyph } from "../NodeGlyph";
 import {
   AskAnswer,
   BodyAuthor,
-  DeletedLine,
   KeepOpen,
   NODE_ROW_LAYOUT,
   NodeOptions,
-  ParentLink,
   RowActs,
   RowMargin,
   type Tone,
   useRowOnScreen,
 } from "../NodeRow";
+import { DeletedLine, lineOrKindWord, NodeParentLine, useNodeLine } from "../node-line";
 import { NodeMarks } from "../node-states/NodeMarks";
 import { shortDay } from "../node-time";
 import { type ThreadMark, ThreadReadMark } from "../outline-thread-read";
@@ -45,7 +45,7 @@ import {
   NODE_TYPE_NAMES,
 } from "../page-words";
 import { RowText } from "../RowText";
-import type { DecisionChange, DecisionsEntry, NamedEntry } from "./decisions-parts";
+import type { AskDeclined, DecisionChange, DecisionsEntry, NamedEntry } from "./decisions-parts";
 import { entryStanding } from "./entry-standing";
 
 /** Who the page names: by a name and never an id, with the kind that picks their shape and
@@ -67,10 +67,10 @@ interface RowPerson {
  * phone, with how it stands under them.
  *
  * An ask draws what its row in the conversation draws, by the same parts: its question, whole,
- * its options, which are the choices of its answer while it is open, and the person's answer
- * character for character as the store holds it, with no sentence of the page's beside it. A
- * declined ask says who declined it, and draws their note where they wrote one: a question the
- * person declined, never an answer.
+ * its options, which are the choices of its answer while it is open, and the person's answer as
+ * the store holds it, drawn by the row's own reader (`RowText`), a paragraph to each block of its
+ * words, with no sentence of the page's beside it. A declined ask says who declined it, and draws
+ * their note where they wrote one: a question the person declined, never an answer.
  *
  * A decision draws its words whole, as every entry does, with no cut and no control that opens
  * the rest (R2, decision 424), how it stands in the states the page declares
@@ -234,45 +234,12 @@ export function DecisionsRow({
             <AskAnswer answerer={agentText.author(node.answer.by)} node={node} own={ownAnswer} />
           )}
           {entry.kind !== "ask" || entry.declined === undefined ? null : (
-            <Declined by={person(entry.declined.by)} note={entry.declined.note} />
+            <Declined by={person(entry.declined.by)} declined={entry.declined} focused={focused} />
           )}
           {entry.kind !== "decision" || entry.change === undefined ? null : (
-            <Changed by={person(entry.change.by)} change={entry.change} />
+            <Changed by={person(entry.change.by)} change={entry.change} focused={focused} />
           )}
-          {/* The node's parent in the conversation, as one line: its kind's word and its first
-              line (R2, R1's first-line rule). A parent with words is drawn by the outline's own
-              `ParentLink`: its line is the link a reader follows to the parent where the model
-              gives it an address, out of the tab order as everything inside a row is, which the
-              row's own keys reach. A parent its
-              author deleted is drawn as the deleted line, and one its author edited says
-              ` · edited` after its line, as the outline's parent line draws them (INFRA-1523,
-              R2 and R3). A parent with no words of its own is named by its kind's word once, as
-              plain text with no link, which is the line G gives it, and never by its id (R7); an
-              edited one says ` · edited` after that word. */}
-          {entry.parent === undefined ? null : (
-            <p
-              className={`flex min-w-0 items-baseline gap-1 text-xs leading-5 ${pageQuietText}`}
-              data-node-parent-line=""
-              data-parent-id={entry.parent.id}
-              data-parent-type={entry.parent.type}
-            >
-              {entry.parent.line === NODE_TYPE_NAMES[entry.parent.type] ? (
-                <span className="shrink-0" {...pageChrome}>
-                  {NODE_TYPE_NAMES[entry.parent.type]}
-                  <EditedMark at={entry.parent.editedAt} />
-                </span>
-              ) : (
-                <>
-                  <span className="shrink-0" {...pageChrome}>
-                    {NODE_TYPE_NAMES[entry.parent.type]}
-                  </span>
-                  <ParentLink line={entry.parent} tabStops={false} />
-                </>
-              )}
-              {/* After the parent's words, in the line's own size. */}
-              <NodeMarks compact marks={entry.parent} />
-            </p>
-          )}
+          {entry.parent === undefined ? null : <EntryParentLine parent={entry.parent} />}
           {statements.length === 0 ? null : (
             <p
               className={`flex min-w-0 flex-wrap items-baseline gap-x-2 text-xs leading-5 ${pageQuietText}`}
@@ -305,9 +272,9 @@ export function DecisionsRow({
                     </Link>
                   )}
                   {/* The statement's marks, after its name in the chip's own size: the
-                      statement node's own, which its shape carries, since an answered
-                      question's chips are none of the ties of the decision that restates it. */}
-                  <NodeMarks compact marks={shape} />
+                      statement node's own, which its shape holds, since an answered question's
+                      chips are none of the ties of the decision that restates it. */}
+                  <NodeMarks compact marks={shape.node} />
                 </span>
               ))}
             </p>
@@ -350,8 +317,8 @@ export function DecisionsRow({
               </Link>
             )}
           </div>
-          {/* What the focus adds to the row, as the outline's body adds it (`NodeRow.tsx`'s
-              `NodeBody`), for a decision as for an ask: who made the node where the margin does
+          {/* What the focus adds to the row, as the outline's face draws it (`NodeRow.tsx`'s
+              `NodeFace`), for a decision as for an ask: who made the node where the margin does
               not say it whole - "Author unknown", with its own shape, where the model holds no
               author, and an agent's whole session title where the margin names it by its role's
               word alone (ruling 5) - and the control that keeps the body open (R6). The open
@@ -429,10 +396,23 @@ function toneOf(entry: DecisionsEntry | NamedEntry): Tone {
 /**
  * That a person declined this question, under it (R2: "a declined ask reads as a question the
  * person declined and never as an answer"): who declined, by a name and a shape as every
- * author is drawn (R9), and the note they wrote where they wrote one, word for word. The
- * reader's own note carries the ink rule their own words carry (R34).
+ * author is drawn (R9), and the note they wrote where they wrote one. The note is drawn as a
+ * person's answer under an ask is, by the row's own reader (`RowText`): from the server's
+ * reading of it, and where the read sent none from the page's own parse of it, so its marks
+ * are drawn as what they are and a reference reads as its target (R6). The reader's own note
+ * carries the ink rule their own words carry (R34).
  */
-function Declined({ by, note }: { by: RowPerson; note: string | undefined }): ReactNode {
+function Declined({
+  by,
+  declined,
+  focused,
+}: {
+  by: RowPerson;
+  declined: AskDeclined;
+  /** Whether the row holds the focus (`RowText`'s `focused`). */
+  focused: boolean;
+}): ReactNode {
+  const { note } = declined;
   const own = by.reader && note !== undefined;
   return (
     <div
@@ -453,27 +433,82 @@ function Declined({ by, note }: { by: RowPerson; note: string | undefined }): Re
         <span {...pageChrome}>{DECISIONS_WORDS.declined}</span>
       </p>
       {note === undefined ? null : (
-        <p
-          className={`text-[15px] leading-6 whitespace-pre-wrap break-words ${own ? pageInkText : pageWordsText}`}
+        <div
+          className={`text-[15px] leading-6 ${own ? pageInkText : pageWordsText}`}
           data-declined-note=""
           {...authorText}
         >
-          {note}
-        </p>
+          <RowText
+            focused={focused}
+            markdown={note}
+            source={declined.source}
+            tree={declined.tree}
+          />
+        </div>
       )}
     </div>
   );
 }
 
 /**
+ * The node's parent in the conversation, as one line (R2, R1's first-line rule): its kind's word
+ * and its one line, as every one line of a node is drawn (`node-line.tsx`'s `useNodeLine`, the
+ * reading list's `node-row-parent-line`). A parent with words is drawn by the outline's own parent
+ * line (`NodeParentLine`): its line is the link a reader follows to the parent where the model
+ * gives it an address, out of the tab order as everything inside a row is, which the row's own
+ * keys reach; a parent its author deleted is drawn as the deleted line, and one its author edited
+ * says ` · edited` after its line (deleted-post R2 and R3). A parent with no words of its own is
+ * named by its kind's word once, as plain text with no link, which is the line G gives it
+ * (`lineOrKindWord`), and never by its id (R7); an edited one says ` · edited` after that word.
+ * Either line draws the parent's marks after its words, in the line's own size (`NodeMarks`).
+ * Nothing follows the word until the projection answers, one pre-paint commit on a page whose
+ * engine is loaded.
+ */
+function EntryParentLine({ parent }: { parent: ParentLine }): ReactNode {
+  const { line, reads } = useNodeLine(parent, { surface: "node-row-parent-line" });
+  const words = lineOrKindWord(line, parent.type);
+  if (words !== "" && words !== NODE_TYPE_NAMES[parent.type]) {
+    return <NodeParentLine line={parent} tabStops={false} />;
+  }
+  return (
+    <p
+      className={`flex min-w-0 items-baseline gap-1 text-xs leading-5 ${pageQuietText}`}
+      data-node-parent-line=""
+      data-parent-id={parent.id}
+      data-parent-type={parent.type}
+    >
+      <span className="shrink-0" {...pageChrome}>
+        {NODE_TYPE_NAMES[parent.type]}
+        <EditedMark at={parent.editedAt} />
+      </span>
+      {reads}
+      {/* After the parent's words, in the line's own size, as `NodeParentLine` draws them. */}
+      <NodeMarks compact marks={parent} />
+    </p>
+  );
+}
+
+/**
  * The change a person asked of this decision, under its words (the tester's F6: "the change
  * must be drawn under, or tied to, the decision it changes"): who asked and when, as every
- * author is drawn (R9), what they wrote word for word, and a link to it in the conversation,
- * where it is replied to. The reader's own words carry the ink rule (R34). A change its author
- * edited says ` · edited` after the words (`EditedMark`, INFRA-1523, R2), in the page's own
- * words; a deleted one is no change of the decision (`decisionNodeChanges`) and is not drawn here.
+ * author is drawn (R9), what they wrote, and a link to it in the conversation, where it is
+ * replied to. What they wrote is drawn as a person's answer under an ask is (`NodeRow.tsx`'s
+ * `AskAnswer`), by the row's own reader (`RowText`): from the server's reading of it, and where
+ * the read sent none from the page's own parse of it. The reader's own words carry the ink rule
+ * (R34). A change its author edited says ` · edited` after the words (`EditedMark`, deleted-post
+ * R2), in the page's own words; a deleted one is no change of the decision
+ * (`decisionNodeChanges`) and is not drawn here.
  */
-function Changed({ by, change }: { by: RowPerson; change: DecisionChange }): ReactNode {
+function Changed({
+  by,
+  change,
+  focused,
+}: {
+  by: RowPerson;
+  change: DecisionChange;
+  /** Whether the row holds the focus (`RowText`'s `focused`). */
+  focused: boolean;
+}): ReactNode {
   return (
     <div
       className={`mt-1 flex min-w-0 flex-col ${by.reader ? pageOwnWordsRule : ""}`}
@@ -503,14 +538,19 @@ function Changed({ by, change }: { by: RowPerson; change: DecisionChange }): Rea
           {shortDay(change.at)}
         </span>
       </p>
-      <p
-        className={`text-[15px] leading-6 whitespace-pre-wrap break-words ${by.reader ? pageInkText : pageWordsText}`}
+      <div
+        className={`text-[15px] leading-6 ${by.reader ? pageInkText : pageWordsText}`}
         data-change-words=""
         {...authorText}
       >
-        {change.body}
+        <RowText
+          focused={focused}
+          markdown={change.body}
+          source={change.source}
+          tree={change.tree}
+        />
         <EditedMark at={change.editedAt} marks={pageChrome} />
-      </p>
+      </div>
     </div>
   );
 }

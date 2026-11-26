@@ -249,13 +249,13 @@ func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
 }
 
 // The seed writes issues, documents and versions as the server of the schema it fills writes them
-// (dispatch://INFRA-1253): on this release's, each issue's and document's row names its node, each
+// (the issue-tree spec): on this release's, each issue's and document's row names its node, each
 // document an issue owns hangs under that issue through its part_of, and each version is the
 // projection of a version node hanging under its document. On the schema before the marker
 // migration (20261116092210), the release before this one's, which the measurement protocol seeds
 // with --no-migrate, the rows are written without the columns that schema lacks and nothing of the
 // tree is written, as that release's server writes none, so the backfill this release runs over the
-// data set is what writes it. On that schema graph_edges is as dispatch://INFRA-1950's one
+// data set is what writes it. On that schema graph_edges is as the node-visibility spec's one
 // statement of it states it (20261117020856, which the release before this one carries and which
 // re-states the arms the migrations before the markers gave the view), and it reads neither
 // column. The view of this release reads issues' and artifacts' node_kind, so the test states the

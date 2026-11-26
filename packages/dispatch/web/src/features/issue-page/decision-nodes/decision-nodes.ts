@@ -138,23 +138,22 @@ export function decisionsOfAnswer(
 }
 
 /**
- * The words of the decision's first paragraph, which a Change is anchored to: the server matches
- * an anchor's quote against the document's own text (`pmdoc.FindQuote`), never its markdown, so
- * they are read from `own`, the reading of the decision's own content (`decision-review.ts`'
- * `decisionContent`): the tree read answers a decision node's text as its whole stored block, the
- * lines that open and close its `decision` directive included, and any reading it sends of that
- * text as one `decision` node, so its own words are that text without those two lines
- * (`ownWords`) and its own reading that node's content at the top level (`ownTree`). Of that
- * reading, whose top-level blocks are its paragraphs, the first that is no heading is quoted,
- * with a list's items one space apart and a hard break as one space (`wordsOf`): the server's
- * reading of the decision's words (`text_tree`), and where the read carried none that holds
- * blocks - as the tree read answers a decision node today, and a pod of the build before during
- * a rolling deploy - the reading of its own stored words (`storedReading`), which `holder`, the
- * decision, holds, so it is remembered while the decision lives. So a decision's quote is the
- * words of its first paragraph alone either way, never its markdown, its heading, its
- * directive's lines or another paragraph. Undefined for a decision that holds no paragraph.
+ * The decision's first paragraph, as a reading of that block alone: the block a Change quotes and
+ * is anchored to (`decisionQuote`), and the one whose plain-text projection the Change draws and
+ * names Keep and Change after (`DecisionActions.tsx`, decision 448). It is read from `own`, the
+ * reading of the decision's own content (`decision-review.ts`' `decisionContent`): the tree read
+ * answers a decision node's text as its whole stored block, the lines that open and close its
+ * `decision` directive included, and any reading it sends of that text as one `decision` node,
+ * so its own words are that text without those two lines (`ownWords`) and its own reading that
+ * node's content at the top level (`ownTree`). Of that reading, whose top-level blocks are its
+ * paragraphs, the first that is no heading is taken: from the server's reading of the decision's
+ * words (`text_tree`), and where the read carried none that holds blocks - as the tree read
+ * answers a decision node today, and a pod of the build before during a rolling deploy - from the
+ * reading of its own stored words (`storedReading`), which `holder`, the decision's node, holds,
+ * so it is remembered while the node lives. Never its heading, its directive's lines or another
+ * paragraph. Undefined for a decision that holds no paragraph.
  */
-function decisionQuote(own: DecisionContent, holder: object): string | undefined {
+function paragraphOf(own: DecisionContent, holder: object): DisplayTree | undefined {
   const reading =
     own.tree !== undefined && Array.isArray(own.tree.content)
       ? own.tree
@@ -163,7 +162,32 @@ function decisionQuote(own: DecisionContent, holder: object): string | undefined
   const block = Array.isArray(blocks)
     ? (blocks as DisplayTree[]).find((node) => node.type !== "heading")
     : undefined;
-  return block === undefined ? undefined : wordsOf(block);
+  return block === undefined ? undefined : { ...reading, content: [block] };
+}
+
+/** The first paragraph of decision node `decision` (`paragraphOf`), read from its own content,
+ *  which the node holds as `text` and `text_tree` (`blockAndWords`), by its tree node: the block a
+ *  Change quotes, whose words are the node's `heading`. */
+export function anchorBlock(
+  decision: Pick<DecisionNode, "node" | "text" | "text_tree">
+): DisplayTree | undefined {
+  const tree = decision.text_tree;
+  return paragraphOf(
+    tree === undefined ? { text: decision.text } : { text: decision.text, tree },
+    decision.node
+  );
+}
+
+/**
+ * The words of the decision's first paragraph (`paragraphOf`), which a Change is anchored to: the
+ * server matches an anchor's quote against the document's own text (`pmdoc.FindQuote`), never its
+ * markdown, so they are the words of that block's reading, with a list's items one space apart
+ * and a hard break as one space (`wordsOf`). So a decision's quote is the words of its first
+ * paragraph alone, never its markdown. Undefined for a decision that holds no paragraph.
+ */
+function decisionQuote(own: DecisionContent, holder: object): string | undefined {
+  const paragraph = paragraphOf(own, holder);
+  return paragraph === undefined ? undefined : wordsOf(paragraph);
 }
 
 /** The members of the model's decision every reader of a decision reads as the read answers

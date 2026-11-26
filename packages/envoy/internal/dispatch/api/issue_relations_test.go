@@ -86,7 +86,7 @@ func issueLinkMarker(t *testing.T, database *store.Store, issue, target string) 
 }
 
 // TestNeedsCrossesAProjectAndRefusesAProjectScopedCaller is c-one-dependency's Go half
-// (dispatch://INFRA-1253 R10). An issue's wait is the needs tuple of the issue's node, which the
+// (R10 of the issue-tree spec). An issue's wait is the needs tuple of the issue's node, which the
 // issue_links row of the pair projects, and the issue read answers it under needs and blocked_by
 // alike. Through the agent bearer, which names no project, a needs to an issue of another project
 // is taken, its tuple appended and its row naming the issue's node. A list past
@@ -198,7 +198,7 @@ func TestNeedsCrossesAProjectAndRefusesAProjectScopedCaller(t *testing.T) {
 }
 
 // TestAnIssueRelationAndItsProjectionCommitTogether holds the writers of child_of and needs to
-// their projections (dispatch://INFRA-1253 R9, R10): each tuple is appended in the transaction
+// their projections (R9, R10 of the issue-tree spec): each tuple is appended in the transaction
 // that writes the row projecting it, caused by the issue's own event. A create with a parent and a
 // wait appends child_of and needs under issue.created, beside issues.parent_key and an issue_links
 // row naming the issue's node, each tuple dated at its row's created_at. A PATCH that moves the
@@ -402,9 +402,9 @@ func graphstoreWrite(ctx context.Context, database *store.Store, tuple graphstor
 	return tx.Commit(ctx)
 }
 
-// TestDuplicateOfTakesAnIssueOfTheProjectAlone holds duplicate_of (dispatch://INFRA-1253 R9) to one
-// issue key of the issue's own project, other than the issue's own: a create and a PATCH take one,
-// the read answers it as a key and the issue's node states it as its duplicate_of, and a PATCH
+// TestDuplicateOfTakesAnIssueOfTheProjectAlone holds duplicate_of (R9 of the issue-tree spec) to
+// one issue key of the issue's own project, other than the issue's own: a create and a PATCH take
+// one, the read answers it as a key and the issue's node states it as its duplicate_of, and a PATCH
 // clears it with null. A key of another project, a key no issue holds and the issue's own key are
 // each refused 400 DUPLICATE_OF_INPUT naming the field and the value, and the issue keeps what it
 // held.
@@ -456,7 +456,7 @@ func TestDuplicateOfTakesAnIssueOfTheProjectAlone(t *testing.T) {
 	}
 }
 
-// TestFiledFromTakesAPublicItemOfTheIssuesProjectAlone holds filed_from (dispatch://INFRA-1253 R9,
+// TestFiledFromTakesAPublicItemOfTheIssuesProjectAlone holds filed_from (R9 of the issue-tree spec,
 // c-issue-relations-read) to the canonical reference of one public ask, comment or message of the
 // issue's project. It takes a comment, an ask and a message of an issue and an ask of a project
 // document, each read back as that reference and stated as the issue's filed_from to the item's

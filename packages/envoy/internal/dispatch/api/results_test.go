@@ -268,7 +268,7 @@ func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 // refused until the caller names which document it means.
 func TestResultRecordsAgainstAChecksOfTheIssueAndOfAnAncestor(t *testing.T) {
 	t.Parallel()
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	handler, _, _ := newTestServer(t, testServerOptions{})
 	parent := createInteractionIssue(t, handler, "RES", "Parent", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+parent.Key, "verification.md", twoChecks)
 	child := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
@@ -304,7 +304,14 @@ func TestResultRecordsAgainstAChecksOfTheIssueAndOfAnAncestor(t *testing.T) {
 		t.Fatalf("child's result = recorded on %s against %s, want %s against %s",
 			childResult.Result.IssueKey, childResult.Result.CheckIssueKey, child.Key, parent.Key)
 	}
-	event := lastIssueEventPayload(t, database, parent.Key)
+	// The drain writes the Verification version the result moved after the route's COMMIT, so the
+	// parent's newest event is that version's artifact.version, and the child's result is the
+	// parent's newest result.recorded (R12 of the issue tree's spec).
+	recordedOnParent := eventPayloads(t, handler, parent.Key, "result.recorded")
+	if len(recordedOnParent) == 0 {
+		t.Fatalf("%s holds no result.recorded event, want the child's result on it", parent.Key)
+	}
+	event := recordedOnParent[len(recordedOnParent)-1]
 	if event["result_id"] != childResult.Result.ID || event["issue"] != child.Key || event["check_issue"] != parent.Key {
 		t.Fatalf("result.recorded payload = %+v, want the child's result on the parent's check", event)
 	}
@@ -3891,9 +3898,11 @@ func TestCIResultIsTheRunOfTheHighestID(t *testing.T) {
 // A derived result names the artifact its check's document_blocks row is keyed by, as a recorded
 // result of a check of the same document does: on an issue born converted, the tree artifact of
 // the issue's room, and not the Verification document, which the check itself still answers as
-// its artifact_id. A check the index holds no row of yet - its document past the blocks a write
-// indexes in its own request, as TestADocumentPastTheBlockBoundLeavesItsBlocksToTheReconciliation
-// writes one - is answered the same: its derived result names the room its document is edited in.
+// its artifact_id. A check of a document past the blocks a write indexes in its own request, as
+// TestADocumentPastTheBlockBoundLeavesItsBlocksToTheReconciliation writes one, whose block index
+// the reconciliation still owes, holds the document_blocks row the write that accepted its version
+// wrote at once (R8 of the issue tree's spec) and is answered the same: its derived result names
+// the room its document is edited in.
 func TestCIResultNamesTheArtifactItsChecksRowIsKeyedBy(t *testing.T) {
 	ctx := context.Background()
 	handler, database, fake := resultsGitHubCheckRuns(t)
@@ -3934,20 +3943,20 @@ func TestCIResultNamesTheArtifactItsChecksRowIsKeyedBy(t *testing.T) {
 	}
 	writeHead(t, database, "acme/widgets", 8, newHeadCommit, "open", owed)
 	fake.set(newHeadCommit, completedRun(92, ciCheckRun, "success"))
-	unindexed := checkOf(t, readResults(t, handler, owed), "c1")
+	deferred := checkOf(t, readResults(t, handler, owed), "c1")
 	var rows int
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) from document_blocks d where `+refs.DocumentRoomBlocksSQL("d", "$1::uuid")+` and d.block_id = 'c1'`,
-		unindexed.ArtifactID).Scan(&rows); err != nil {
+		deferred.ArtifactID).Scan(&rows); err != nil {
 		t.Fatalf("count the rows of c1 of %s: %v", owed, err)
 	}
-	if version := blockIndexVersion(t, database, unindexed.ArtifactID); version != nil || rows != 0 || unindexed.Version != 0 {
-		t.Fatalf("%s's verification.md is indexed at version %v and holds %d rows of c1 (version %d), want its blocks owed to the block-index reconciliation",
-			owed, version, rows, unindexed.Version)
+	if version := blockIndexVersion(t, database, deferred.ArtifactID); version != nil || rows != 1 || deferred.Version != 1 {
+		t.Fatalf("%s's verification.md is indexed at version %v and holds %d rows of c1 (version %d), want its blocks owed to the block-index reconciliation and the one row of c1 its version's write wrote at once, at version 1",
+			owed, version, rows, deferred.Version)
 	}
-	if len(unindexed.Results) != 1 || unindexed.Results[0].ID != "ci-run:92" || unindexed.Results[0].CheckArtifactID != owedTree {
-		t.Fatalf("the unindexed c1 of %s holds %+v, want the result derived from run 92 naming the tree %s",
-			owed, unindexed.Results, owedTree)
+	if len(deferred.Results) != 1 || deferred.Results[0].ID != "ci-run:92" || deferred.Results[0].CheckArtifactID != owedTree {
+		t.Fatalf("the c1 of %s, whose block index is owed, holds %+v, want the result derived from run 92 naming the tree %s",
+			owed, deferred.Results, owedTree)
 	}
 }
 

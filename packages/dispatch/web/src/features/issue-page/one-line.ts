@@ -1,10 +1,9 @@
 import { type RefObject, useLayoutEffect, useMemo, useState } from "react";
 
 import type { IssueDetails } from "../../api/types";
-import { shortForm } from "../refs/routes";
-import { wordsOf } from "../refs/tree-fragment";
-import { drawnLine, firstLineOf, type TreeNode } from "./issue-tree";
-import { chipWords } from "./node-row-chip";
+import { useKnownReferences } from "../refs/reference-names";
+import { parseNodeReference, shortForm } from "../refs/routes";
+import { chipName, drawnLine, firstLineOf, type TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, type NodeType } from "./page-words";
 import { withoutDirectiveLines } from "./RowText";
 import { rowReferences } from "./row-references";
@@ -338,26 +337,30 @@ export function referenceStandIns(
 
 /**
  * How the page names a reference that a plain line cites (`referenceStandIns`), read once over
- * the whole tree: by the words of the first chip of the tree that names the same node, as a chip
- * draws them (`chipWords`); else, for a node the tree holds, by its kind's word; else not at
- * all. These are the names a chip draws, the page's one naming rule, so no markdown is read
- * here. `nodeIdOf` is how the issue addresses a
- * node (`treeContext`), so two addresses of one block are named alike.
+ * the whole tree: by the words of the first chip of the tree that names the same node, as that
+ * chip draws them - the line the names store projects for its target (`KnownReferences.lines`,
+ * else `names`), cut as a chip cuts it (`chipName`); else, for a node the tree holds, by its
+ * kind's word; else not at all. These are the names a chip draws, the page's one naming rule,
+ * so no markdown is read here. `nodeIdOf` is how the issue addresses a node (`treeContext`), so
+ * two addresses of one block are named alike.
  */
 export function useReferenceNames(
   root: TreeNode,
   nodeIdOf: (reference: string) => string | undefined
 ): (reference: string) => string | undefined {
+  const { lines, names: known } = useKnownReferences();
   return useMemo(() => {
     const types = new Map<string, NodeType>();
     const names = new Map<string, string>();
     const walk = (node: TreeNode): void => {
       types.set(node.id, node.type);
       for (const chip of node.chips) {
-        if (chip.gone || chip.name === "") continue;
+        if (chip.gone) continue;
+        const drawn = lines.get(chip.ref) ?? known.get(chip.ref);
+        if (drawn === undefined || drawn === "") continue;
         const id = nodeIdOf(chip.ref);
         if (id === undefined || names.has(id)) continue;
-        const words = chipWords(chip.name);
+        const words = chipName(parseNodeReference(chip.ref), drawn);
         if (words !== "") names.set(id, words);
       }
       for (const child of node.children) walk(child);
@@ -369,15 +372,14 @@ export function useReferenceNames(
       const type = types.get(id);
       return names.get(id) ?? (type === undefined ? undefined : NODE_TYPE_NAMES[type]);
     };
-  }, [nodeIdOf, root]);
+  }, [known, lines, nodeIdOf, root]);
 }
 
 /**
  * How the page names a reference that a plain line cites, for one issue's tree
  * (`useReferenceNames`), and how that issue addresses a node, which a caller that resolves a
- * decision's tie reads too. Only the addressing of the issue's context is read and no chip's
- * name, so the line that context names a block by is the whole reading's words (`wordsOf`),
- * which nothing here reads.
+ * decision's tie reads too. Only the addressing of the issue's context is read here, and the
+ * names are the page's published ones.
  */
 export function useIssueNames(
   issue: IssueDetails,
@@ -386,7 +388,7 @@ export function useIssueNames(
   readonly nameOf: (reference: string) => string | undefined;
   readonly nodeIdOf: (reference: string) => string | undefined;
 } {
-  const nodeIdOf = useMemo(() => treeContext({ issue }, wordsOf).nodeIdOf, [issue]);
+  const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
   const nameOf = useReferenceNames(root, nodeIdOf);
   return { nameOf, nodeIdOf };
 }

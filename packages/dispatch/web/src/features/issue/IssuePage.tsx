@@ -49,7 +49,7 @@ import { type ItemLanding, type ItemRoute, isItemRoute, useItemLanding } from ".
 export function IssuePage(): ReactNode {
   const { pathname, search } = useLocation();
   const route = parseIssuePath(pathname, search);
-  if (route === undefined) {
+  if (route === undefined || route.kind === "graph") {
     return <NotFoundPage />;
   }
   // key={route.key}: switching to a different issue remounts IssueDetail
@@ -365,6 +365,8 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     [issue.data?.artifacts]
   );
 
+  // The title bar holds no markup, so an issue's key and title go in as the characters they
+  // are; the reading list's `issue-page-title` (`DISPATCH_READING_SURFACES`) says why.
   useDocumentTitle(
     issue.data === undefined ? "Dispatch" : `${issue.data.key} · ${issue.data.title} · Dispatch`
   );

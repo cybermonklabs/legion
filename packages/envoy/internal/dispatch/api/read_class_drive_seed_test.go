@@ -297,9 +297,11 @@ func (w *driveWorld) seed(t *testing.T) {
 	w.values["notesSlug"] = notes.Artifact.Slug
 	openApprovalAsk(t, w.rig.handler, notes.Artifact.ID)
 	w.as(t, ada, http.MethodPost, "/api/v1/artifacts/"+notes.Artifact.ID+"/reviews", map[string]any{"state": "approved"}, http.StatusCreated)
-	decisions := uploadDocument(t, w.rig.handler, owner, "decisions.md",
+	// A document whose block links into the spec, for the block-links read: links.md, since an
+	// issue takes no new decisions.md (409 DECISIONS_ARE_NODES).
+	links := uploadDocument(t, w.rig.handler, owner, "links.md",
 		"## Read every row\n\nShapes dispatch://"+issue.Key+"/spec#r1.\n")
-	w.values["decisionsRef"] = url.QueryEscape("dispatch://" + issue.Key + "/artifact/" + decisions.Artifact.Slug)
+	w.values["linksRef"] = url.QueryEscape("dispatch://" + issue.Key + "/artifact/" + links.Artifact.Slug)
 	guide := uploadDocument(t, w.rig.handler, "/api/v1/projects/"+driveProject, "guide.md", "# Guide\n\nHow the drive project works.\n")
 	w.values["guide"] = guide.Artifact.ID
 	w.values["guideSlug"] = guide.Artifact.Slug

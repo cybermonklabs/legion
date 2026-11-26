@@ -13,10 +13,55 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
+
+// The heads of stored text that Dispatch sends a reader to draw with its references: a first
+// line, an item's excerpt and a block's excerpt. Each is cut where no reference crosses the cut
+// (text.HeadRefs), so a mention, an address, a key or a `#id` is never half of itself where it is
+// drawn: `CORE-12` of `CORE-1234` would be a working link to another issue. heads_test.go holds
+// every other cut of Dispatch text to the reason it is none of these.
+
+// firstLineRunes bounds a first line, its ellipsis included: the bound contracts.OneLineSummary
+// cuts a line to.
+const firstLineRunes = 160
+
+// excerptRunes bounds the head of an item's text shown beside an edge.
+const excerptRunes = 240
+
+// BlockExcerptRunes bounds the containing block a document mention's excerpt shows.
+const BlockExcerptRunes = 480
+
+// FirstLine is the line a person reads to tell one text from another: its first line that holds
+// more than whitespace (contracts.FirstNonEmptyLine), cut to firstLineRunes runes with `…` as
+// contracts.OneLineSummary cuts it, but where no reference crosses the cut; serverURL is the
+// deployment whose dashboard URLs are references (text.HeadRefs). It is an Inbox row's subject
+// and its reply's first line, and an id prefix candidate's first line.
+func FirstLine(body, serverURL string) string {
+	return FirstLineWithin(body, serverURL, firstLineRunes)
+}
+
+// FirstLineWithin is FirstLine cut to runes runes in place of firstLineRunes, for a surface whose
+// own design gives its first line more room: a person's page shows 240 (api/person_nodes.go).
+func FirstLineWithin(body, serverURL string, runes int) string {
+	return text.HeadRefs(contracts.FirstNonEmptyLine(body), runes, "…", serverURL)
+}
+
+// itemExcerpt is the head of an item's text shown beside an edge (Edges): its first excerptRunes
+// runes, cut where no reference crosses the cut.
+func itemExcerpt(body, serverURL string) string {
+	return text.HeadRefs(body, excerptRunes, "", serverURL)
+}
+
+// BlockExcerpt is a block's markdown as a mention it holds shows it and as the block's row stores
+// it: its first BlockExcerptRunes runes, cut where no reference crosses the cut.
+func BlockExcerpt(markdown, serverURL string) string {
+	return text.HeadRefs(markdown, BlockExcerptRunes, "", serverURL)
+}
 
 // The head read of an issue's tree reads the issue's rows of the head projection
 // (issue_head_nodes, graphstore.HeadRowsSQL) in one range of its primary key, where the issue is
@@ -66,23 +111,23 @@ type HeadRow struct {
 // block loader and BlockTexts read it (itemBlockNodes): the comment's issue and author; the
 // comment's body, or the block's text at its newest revision, nil where that revision holds none;
 // when the comment was written and last edited, or the block made and changed; the comment it
-// replies to, the block it replies to and its ask; the document its row names (artifact_id), and
-// the document and version it is written on; of a block its changed revision (Version), its id,
-// its excerpt and its position; and of both the comment's marks, when its author last edited it
-// (EditedAt) and when and by whom it was deleted (DeletedAt, DeletedBy), as model.DeletedPostMark
-// reads them.
+// replies to (its thread's head), the comment it answers and its ask, which name its parent
+// (commentReplyParent); the document its row names (artifact_id), and the document and version it
+// is written on; of a block its changed revision (Version), its id, its excerpt and its position;
+// and of both the comment's marks, when its author last edited it (EditedAt) and when and by whom
+// it was deleted (DeletedAt, DeletedBy), as model.DeletedPostMark reads them.
 type HeadItem struct {
-	IssueKey                       *string
-	Author                         []byte
-	Text                           *string
-	MadeAt, ChangedAt              *time.Time
-	ReplyTo, RepliesToBlock, AskID *string
-	ArtifactID, DocumentID         *string
-	Version                        *int
-	BlockID, Excerpt               *string
-	Position                       *int
-	EditedAt, DeletedAt            *time.Time
-	DeletedBy                      []byte
+	IssueKey                *string
+	Author                  []byte
+	Text                    *string
+	MadeAt, ChangedAt       *time.Time
+	ReplyTo, Answers, AskID *string
+	ArtifactID, DocumentID  *string
+	Version                 *int
+	BlockID, Excerpt        *string
+	Position                *int
+	EditedAt, DeletedAt     *time.Time
+	DeletedBy               []byte
 }
 
 // headRowsStatement is the rows of the issue $1 the head projection holds while a mark names the
@@ -140,7 +185,7 @@ func headRowsStatement(rows string) string {
 // rows of an issue of the most comments 2 ms to build, a record a third of that.
 const headItemSQL = `case when heads.node_kind in ('` + graphstore.KindComment + `', '` + graphstore.KindCommentBlock + `') then row(
 	       heads.item_issue_key, heads.item_author::text, heads.item_text, heads.item_made_at, heads.item_changed_at,
-	       heads.item_reply_to, heads.item_replies_to_block, heads.item_ask_id, heads.item_artifact_id::text, heads.item_document_id::text,
+	       heads.item_reply_to, heads.item_answers, heads.item_ask_id, heads.item_artifact_id::text, heads.item_document_id::text,
 	       heads.item_version, heads.item_block_id, heads.item_excerpt, heads.item_position,
 	       heads.item_edited_at, heads.item_deleted_at, heads.item_deleted_by::text) end`
 
@@ -153,7 +198,7 @@ func headItemOf(plan pgtype.ScanPlan, raw []byte) (*HeadItem, error) {
 	var item HeadItem
 	var author, deletedBy *string
 	fields := pgtype.CompositeFields{&item.IssueKey, &author, &item.Text, &item.MadeAt, &item.ChangedAt, &item.ReplyTo,
-		&item.RepliesToBlock, &item.AskID, &item.ArtifactID, &item.DocumentID, &item.Version, &item.BlockID, &item.Excerpt, &item.Position,
+		&item.Answers, &item.AskID, &item.ArtifactID, &item.DocumentID, &item.Version, &item.BlockID, &item.Excerpt, &item.Position,
 		&item.EditedAt, &item.DeletedAt, &deletedBy}
 	if err := plan.Scan(raw, fields); err != nil {
 		return nil, fmt.Errorf("decode the conversation columns of a head row: %w", err)

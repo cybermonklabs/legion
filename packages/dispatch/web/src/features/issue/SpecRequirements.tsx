@@ -14,7 +14,6 @@ import {
   textMutedOnSurface,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import { coverageNotes } from "../issue-page/page-words";
 import { BlockReferences } from "../refs/ReferencedBy";
 
 function Requirement({ requirement }: { requirement: RequirementCoverage }): ReactNode {
@@ -29,6 +28,8 @@ function Requirement({ requirement }: { requirement: RequirementCoverage }): Rea
       data-testid="spec-requirement"
     >
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        {/* The server's flattened words of the spec block: the reading list's
+            `spec-requirement-words`. */}
         <span className={textPrimaryOnSurface}>{requirement.text}</span>
         {gaps.map((gap) => (
           <span
@@ -46,13 +47,22 @@ function Requirement({ requirement }: { requirement: RequirementCoverage }): Rea
 }
 
 /**
+ * The line the coverage read writes for a document of the issue that owes its block index, in
+ * place of every missing check and plan task while it does (the server's `owedGap`): `<file
+ * name> version <n> is still being indexed; its coverage shows once that ends.`. It names a file,
+ * so it is drawn in the server's own words.
+ */
+const OWED_COVERAGE_LINE =
+  /^\S.* version \d+ is still being indexed; its coverage shows once that ends\.$/u;
+
+/**
  * The requirements of the issue's spec, each flagged with what it lacks
  * (`GET /api/v1/issues/{key}/coverage`). It sits under the spec on the Spec tab, where the
  * document itself draws the requirement's words: here they carry the flag and the Referenced-by
  * list, which the document's own drawing has nowhere to put. Over the list it draws each line of
- * the coverage's own gaps that names no requirement's gap, in the page's words for it
- * (`coverageNotes`): while a document of the issue is still being indexed, the server flags no
- * requirement as lacking a check and writes one line per such document in their place.
+ * the coverage's own gaps that says a document of the issue is still being indexed
+ * (`OWED_COVERAGE_LINE`): while one is, the server flags no requirement as lacking a check and
+ * writes that line per such document in their place.
  */
 export function SpecRequirements({ issueKey }: { issueKey: string }): ReactNode {
   const coverage = useQuery(issueCoverageQuery(issueKey));
@@ -80,7 +90,7 @@ export function SpecRequirements({ issueKey }: { issueKey: string }): ReactNode 
     );
   }
 
-  const notes = coverageNotes(coverage.data);
+  const notes = (coverage.data.gaps ?? []).filter((line) => OWED_COVERAGE_LINE.test(line));
 
   return (
     <section className="space-y-2" data-testid="spec-requirements">

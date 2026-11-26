@@ -25,7 +25,7 @@ import (
 //     checked no row of but a tie kind of decisions, readings and asks that holds no row and no
 //     node; with the store-only lines of copied_from and moved_to, which no table projects,
 //     refusing a far end of either that does not resolve; with the dangling-citation counter's
-//     line and the collision census over the restore's work (graphcensus.DanglingCitations,
+//     line and the collision census over the restore's work (graphcensus.StoreReport's Dangling,
 //     CollisionsOf); and with what the decisions step's third phase still owes
 //     (graphcensus.DecisionsCensus:
 //     the decisions documents, their unconverted sections and the specs whose answered asks left
@@ -44,6 +44,14 @@ import (
 //     yet, where the census says so and passes on the growth pass alone; where the store exists
 //     it also reads the store's type nodes, so that it parses each version against the block
 //     schema the store declares.
+//
+// The first two forms print, before their own report, the dry run of R2's daemon-thread step
+// (graphcensus.ReadDaemonThreadCensus, docs.DaemonThreadStep): one line holding
+// `daemon_thread_parent=<n>`, how many blocks stand under a message of a thread the Legion
+// daemon's session began or under a block of one, and one line for each naming the node the step
+// would move by its address. It is read in a read-only snapshot of its own and refuses nothing:
+// the step re-places those nodes at the first boot of the release, and the deployment reads the
+// count and the addresses before its server moves to this binary's image.
 //
 // Each keeps the one exit convention: 0 when nothing refuses, 1 when the report refuses (every
 // reason is in the report), 2 when the census could not be taken (errOut says why). Each prints
@@ -83,6 +91,9 @@ func census(ctx context.Context, args []string, databaseURL string, out, errOut 
 	report, err := store.Census(ctx, databaseURL)
 	if err != nil {
 		writeCensusFailure(errOut, err)
+		return 2
+	}
+	if !writeDaemonThreadCensus(ctx, databaseURL, out, errOut) {
 		return 2
 	}
 	report.Write(out)
@@ -130,6 +141,9 @@ func storeCensus(ctx context.Context, databaseURL string, sizing, verbose bool, 
 		report.Decisions = &decisions // kept for one release: decisions-documents-fn
 		report.VersionRenders = &renders
 	}
+	if !writeDaemonThreadCensus(ctx, databaseURL, out, errOut) {
+		return 2
+	}
 	if verbose {
 		report.WriteVerbose(out)
 	} else {
@@ -165,9 +179,26 @@ func versions(ctx context.Context, databaseURL string, out, errOut io.Writer) in
 	return 0
 }
 
+// writeDaemonThreadCensus prints to out the dry run of R2's daemon-thread step
+// (graphcensus.DaemonThreadCensus.Write), read in a read-only snapshot of its own
+// (inCensusSnapshot), so it writes no tuple, no version and no approval. It reports whether the
+// dry run was read; where it was not, errOut says why, and the census could not be taken.
+func writeDaemonThreadCensus(ctx context.Context, databaseURL string, out, errOut io.Writer) bool {
+	var dryRun graphcensus.DaemonThreadCensus
+	if err := inCensusSnapshot(ctx, databaseURL, "the daemon-thread census", func(tx pgx.Tx) (err error) {
+		dryRun, err = graphcensus.ReadDaemonThreadCensus(ctx, tx)
+		return err
+	}); err != nil {
+		writeCensusFailure(errOut, err)
+		return false
+	}
+	dryRun.Write(out)
+	return true
+}
+
 // inCensusSnapshot runs read in a read-only snapshot on a connection of its own, as the census
-// reads what only docs reads (docs.ReadDecisionsCensus, docs.ReadVersionRenderCensus); what names
-// that read in an error.
+// reads what only docs reads (docs.ReadDecisionsCensus, docs.ReadVersionRenderCensus) and the dry
+// run of the daemon-thread step (writeDaemonThreadCensus); what names that read in an error.
 func inCensusSnapshot(ctx context.Context, databaseURL, what string, read func(pgx.Tx) error) error {
 	conn, err := pgx.Connect(ctx, databaseURL)
 	if err != nil {

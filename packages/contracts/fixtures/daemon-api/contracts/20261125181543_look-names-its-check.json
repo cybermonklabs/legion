@@ -1,0 +1,13 @@
+{
+  "answers": [],
+  "routes": [
+    {
+      "route": "POST /legion/v1/handoff/complete",
+      "addFieldPaths": [
+        "checkOpenedAt"
+      ]
+    }
+  ],
+  "answerRows": [],
+  "enumeratedRows": []
+}

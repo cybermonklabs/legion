@@ -32,8 +32,9 @@ type pointerTarget struct{ kind, id string }
 // pointerEnds is what a pointerCheck reads of the nodes a write's ruled tuples name: the block type
 // of each block an end of one is ruled by, the project of the document that holds it and whether
 // that document is retired, the project of each near end an ownProject rule compares with its far
-// end's, the kinds each lens holds now, and where each lens at either end of a triggered_by stands
-// in the order lenses were invoked.
+// end's, the kinds each lens holds now, where each lens at either end of a triggered_by stands in
+// the order lenses were invoked, and the near ends of a single rule the write states gone, whose
+// tuples of that rule it retracts with none asserted in their place.
 type pointerEnds struct {
 	blockTypes    map[string]string
 	blockProjects map[string]string
@@ -41,6 +42,12 @@ type pointerEnds struct {
 	nodeProjects  map[pointerTarget]string
 	lensKinds     map[string][]pointerTarget
 	invoked       map[string]invocation
+	ended         map[pointerTarget]bool
+}
+
+// statesGone is whether nodes, the nodes a write writes, state the node kind and id name gone.
+func statesGone(nodes []Node, kind, id string) bool {
+	return slices.ContainsFunc(nodes, func(node Node) bool { return node.Kind == kind && node.ID == id && node.State == StateGone })
 }
 
 // invocation is where a lens stands in the order lenses were invoked (InvokedSeqSQL): at seq, the
@@ -110,7 +117,10 @@ type pointerCheck struct {
 // before it, each read off the seq of its first part_of and, for a lens the store places nowhere
 // yet, off this write's own part_of tuples (invocation). A retraction is held to nothing but the
 // has_kind rule: it ends what a write already took, and a block the index pass removes has no
-// document_blocks row left to read its type off when its pointers are retracted.
+// document_blocks row left to read its type off when its pointers are retracted. A lens the same
+// write states gone holds no kind any more, so the retraction of its has_kind tuple with none in
+// its place is taken, a pre-mortem's among them, as R7's delete of a node retracts every tuple out
+// of each node it takes, and the lens's kinds are read for no such retraction.
 //
 // A lens holds one kind at a time, which is read off the store and then off this write's own
 // has_kind tuples in their order, so a retarget - the retraction of one far end and the assertion
@@ -160,7 +170,9 @@ func planPointerCheck(nodes []Node, tuples []Tuple, written bool) (*pointerCheck
 // (a node's project never moves, ErrProjectMoved), and otherwise the one its graph_nodes row holds
 // - where each lens at either end of a triggered_by stands in the order lenses were invoked, the
 // lock of every lens whose has_kind tuples the write states and does not write the node of, and
-// the has_kind tuples each named lens holds now, which a lens the write makes holds none of.
+// the has_kind tuples each named lens holds now, which a lens the write makes holds none of. A
+// retraction of a single rule out of a node the write states gone is marked ended, and asks for
+// nothing.
 func (c *pointerCheck) planEnds(nodes []Node) {
 	if len(c.ruled) == 0 {
 		return
@@ -170,6 +182,13 @@ func (c *pointerCheck) planEnds(nodes []Node) {
 	for _, index := range c.ruled {
 		tuple := &c.tuples[index]
 		rule := pointerRuleOf(tuple.Kind, tuple.FromKind)
+		if rule.single && !tuple.Asserted && statesGone(nodes, tuple.FromKind, tuple.FromID) {
+			if c.ends.ended == nil {
+				c.ends.ended = map[pointerTarget]bool{}
+			}
+			c.ends.ended[pointerTarget{kind: tuple.FromKind, id: tuple.FromID}] = true
+			continue
+		}
 		if tuple.Asserted && tuple.FromKind == blockKind && typesBlocks(rule.from) {
 			c.blocks = append(c.blocks, tuple.FromID)
 		}
@@ -505,7 +524,7 @@ func (e pointerEnds) check(tuples []Tuple, ruled []int) error {
 			continue
 		}
 		if !tuple.Asserted {
-			if !rule.single || tuple.FromKind != KindLens {
+			if !rule.single || tuple.FromKind != KindLens || e.ended[pointerTarget{kind: tuple.FromKind, id: tuple.FromID}] {
 				continue
 			}
 			kinds := e.lensKinds[tuple.FromID]

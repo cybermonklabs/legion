@@ -161,7 +161,8 @@ type pointerRule struct {
 	// moment or later, so no tuple of the kind closes a cycle.
 	earlier bool
 	// single holds a node to one asserted tuple of the kind at a time: a second assertion is
-	// refused, and a retraction is taken only beside the assertion that replaces it.
+	// refused, and a retraction is taken only beside the assertion that replaces it, or in a write
+	// that states the node gone (R7's delete, which retracts every tuple out of what it takes).
 	single bool
 	// underKind is the lens_kind the far end, a lens, holds through its has_kind tuple.
 	underKind string

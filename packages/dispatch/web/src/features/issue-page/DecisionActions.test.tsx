@@ -1,8 +1,9 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
+import { dispatchWritingBox } from "@legion/contracts";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type ReactNode, useMemo } from "react";
+import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { ApiError, api } from "../../api/client";
@@ -11,17 +12,23 @@ import type { Artifact, DecisionKeep } from "../../api/types";
 import {
   borderDefault,
   dangerText,
+  inputClasses,
   pageFailedText,
+  pageHairBorder,
+  pageInkText,
   pageLineBorder,
   pageMutedText,
+  pagePaperBg,
   pageWordsText,
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { ReferenceNamesProvider } from "../refs/reference-names";
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
-import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
+import { Publisher, publishedNames } from "./projection-fixture";
 import { type TreeNodeExtra, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 import { outlineQuery, type TreeAnswer, type TreeAnswerNode, viewKey } from "./tree-read/tree-read";
 
@@ -490,32 +497,25 @@ test("a decision whose first paragraph holds no words draws Keep but no Change",
 const STATEMENT = `dispatch://${KEY}/spec#b-r1`;
 const STATEMENT_NAME = "Every property of the issue";
 
-/** The name of `STATEMENT`, published as the page publishes the names of its batched read. */
-function NamedStatement({ children }: { children: ReactNode }): ReactNode {
-  const names = useMemo(() => new Map([[STATEMENT, STATEMENT_NAME]]), []);
-  usePublishReferenceNames(names);
-  return children;
-}
-
-// Decision 448, root R22: the Change form draws its quote as the rows draw their words
-// (`RowText`), so the statement its first paragraph cites reads by the name the page has for it,
-// and so does the form's accessible name, never as a raw `dispatch://` address. The anchor still
-// quotes the words as the server's text holds them, address and all, which is what
-// `pmdoc.FindQuote` matches.
+// Decision 448, root R22: the Change form draws its quote by the page's plain-text projection of
+// the decision's first paragraph (`usePlainHeadline`), so the statement it cites reads by the
+// name the page published for it, and so does the form's accessible name, never as a raw
+// `dispatch://` address. The anchor still quotes the words as the server's text holds them,
+// address and all, which is what `pmdoc.FindQuote` matches.
 test("the Change form draws its quote with each reference by its name", async () => {
   const createComment = spyOn(api, "createComment").mockImplementation(
     () => new Promise<never>(() => {})
   );
   const citing = decisionNode("d1", `Shapes ${STATEMENT}.\n\nWhy it holds.`);
   const client = heldReads([citing]);
+  const names = publishedNames(new Map([[STATEMENT, STATEMENT_NAME]]));
   const user = userEvent.setup();
   const view = render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
         <ReferenceNamesProvider>
-          <NamedStatement>
-            <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
-          </NamedStatement>
+          <Publisher published={names} />
+          <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
         </ReferenceNamesProvider>
       </MemoryRouter>
     </QueryClientProvider>
@@ -524,18 +524,20 @@ test("the Change form draws its quote with each reference by its name", async ()
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
     const quote = screen.getByTestId("decision-quote");
     const form = quote.closest("form");
-    const name = form?.getAttribute("aria-label");
-    expect(
-      {
-        name,
-        quote: quote.textContent,
-        raw: `${name} ${form?.textContent}`.includes("dispatch://"),
-      },
-      "the Change form draws its quote and its name with the statement by its name, no raw address"
-    ).toEqual({
-      name: `${CONTROL_LABELS.change_decision} Shapes ${STATEMENT_NAME}.`,
-      quote: `Shapes ${STATEMENT_NAME}.`,
-      raw: false,
+    await waitFor(() => {
+      const name = form?.getAttribute("aria-label");
+      expect(
+        {
+          name,
+          quote: quote.textContent,
+          raw: `${name} ${form?.textContent}`.includes("dispatch://"),
+        },
+        "the Change form draws its quote and its name with the statement by its name, no raw address"
+      ).toEqual({
+        name: `${CONTROL_LABELS.change_decision} Shapes ${STATEMENT_NAME}.`,
+        quote: `Shapes ${STATEMENT_NAME}.`,
+        raw: false,
+      });
     });
     await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
@@ -814,5 +816,116 @@ test("the node sends no request of its own to draw Keep and Change", async () =>
     unmount();
     tree.mockRestore();
     asks.mockRestore();
+  }
+});
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
+// The Change's box is the field every box a person writes a comment in mounts, with the
+// reference picker in it (the writing list's `decisions-change`), and the line under it is that
+// row's own words. Inside `NoTooltips` it takes the page's shape - its box, its name and that
+// line in the page's own colours, no `title` anywhere, and no face of its own, so it is drawn in
+// the page's typeface - and outside it the field keeps its own box.
+test("the Change's box is the shared field, in the page's shape inside NoTooltips", async () => {
+  for (const surface of ["page", "main"] as const) {
+    const user = userEvent.setup();
+    const { unmount } = renderActions([ONE], document_, { page: surface === "page" });
+    try {
+      await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+      const box = screen.getByLabelText(CONTROL_LABELS.your_change);
+      const hint = document.getElementById(
+        box.getAttribute("aria-describedby")?.split(" ")[0] ?? ""
+      );
+      expect(hint?.textContent).toBe(dispatchWritingBox("decisions-change", "comment").hint);
+      const name = box.closest("label");
+      if (surface === "page") {
+        expect(wears(box, pageHairBorder, pagePaperBg, pageInkText), "the box's colours").toBe(
+          true
+        );
+        expect(wears(box, inputClasses(true)), "the box draws main's colours").toBe(false);
+        expect(name !== null && wears(name, pageMutedText), "the name's colour").toBe(true);
+        expect(hint !== null && wears(hint, pageMutedText), "the line's colour").toBe(true);
+        const form = box.closest("form");
+        expect(
+          form?.querySelectorAll("[title]").length,
+          "an element of the form sets a title"
+        ).toBe(0);
+        const faces = [form, ...(form?.querySelectorAll("*") ?? [])].filter((element) =>
+          [...(element?.classList ?? [])].some((one) => /^font-(?:sans|serif|mono)$/u.test(one))
+        );
+        expect(faces.length, "an element of the form draws in a face of its own").toBe(0);
+      } else {
+        expect(wears(box, inputClasses(true)), "the box keeps the field's own").toBe(true);
+      }
+    } finally {
+      unmount();
+    }
+  }
+});
+
+// A write's label and a form's name hold no markup, so Keep's write and the Change form are
+// named after the heading's plain words - the decision's first paragraph, the words a Change
+// quotes (decision 448) - as the Decisions panel names its own (the reading list's
+// `decision-heading-words`), and never after its markdown.
+test("the Change form is named after the heading's plain words", async () => {
+  const marked = decisionNode(
+    "d1",
+    "**One** tree, five presets\n\nThe presets are queries over the one tree."
+  );
+  const user = userEvent.setup();
+  const { unmount } = renderActions([marked], document_, { page: true });
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    expect(
+      await screen.findByRole("form", {
+        name: `${CONTROL_LABELS.change_decision} One tree, five presets`,
+      })
+    ).toBeTruthy();
+  } finally {
+    unmount();
+  }
+});
+
+// R6, R8 and the reading list's `decision-change-quote`: the Change quotes the words it is
+// anchored to as the reader reads the decision - the plain-text projection of its first
+// paragraph, a reference in it read as its target's name - while the change it sends is still
+// anchored to that paragraph's words as the server's text holds them, which the server matches
+// (`pmdoc.FindQuote`).
+test("the Change quotes its block's plain-text projection and anchors to the document's own words", async () => {
+  const written = "The presets read dispatch://CORE-7 first.";
+  const cited = decisionNode("d1", `## One tree, five presets\n\n${written}`);
+  // What the page's batched read publishes for the quote's row: the issue `CORE-7`, named.
+  const names = publishedNames(new Map([["dispatch://CORE-7", "Draw the rows"]]));
+  const createComment = spyOn(api, "createComment").mockImplementation(
+    () => new Promise<never>(() => {})
+  );
+  const client = heldReads([cited]);
+  const user = userEvent.setup();
+  const view = render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <ReferenceNamesProvider>
+          <Publisher published={names} />
+          <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
+        </ReferenceNamesProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await waitFor(() =>
+      expect(screen.getByTestId("decision-quote").textContent).toBe(
+        "The presets read CORE-7 Draw the rows first."
+      )
+    );
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    expect(createComment.mock.calls[0]?.[1]?.anchor?.quote).toBe(written);
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
   }
 });

@@ -50,7 +50,7 @@ func (d parentDocument) indexWhole(t *testing.T, number int, version typedVersio
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
-		_, won, write, _, err := IndexBlocks(ctx, tx, d.artifact, OneVersion(d.artifact, number, record.at), version.markdown, version.blocks, version.located, version.pointers, facts)
+		_, won, write, _, err := IndexBlocks(ctx, tx, d.artifact, OneVersion(d.artifact, number, record.at), version.markdown, version.blocks, version.located, version.pointers, "", facts)
 		if err == nil && !won {
 			err = fmt.Errorf("version %d of %s lost the revision fence", number, d.refKey)
 		}
@@ -157,11 +157,11 @@ func TestTheReferencesReadListsOnlyMentionsAndDeclaredPointers(t *testing.T) {
 	}
 
 	who := model.Actor{}
-	decided, err := Closure(ctx, database.Pool, who, decisions.issue)
+	decided, err := Closure(ctx, database.Pool, who, decisions.issue, "")
 	if err != nil {
 		t.Fatalf("read the references of %s: %v", decisions.issue, err)
 	}
-	reached, err := Closure(ctx, database.Pool, who, target.issue)
+	reached, err := Closure(ctx, database.Pool, who, target.issue, "")
 	if err != nil {
 		t.Fatalf("read the references of %s: %v", target.issue, err)
 	}

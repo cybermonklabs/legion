@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"encoding/json/jsontext"
 	"errors"
+	"math"
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -21,9 +23,9 @@ import (
 // (appendTreeString), a time in RFC 3339 with nanoseconds, a map's keys in sorted order, a display
 // tree reformatted by jsontext with the options encoding/json writes a Marshaler's output with
 // (jsontext.AppendFormat with json.DefaultOptionsV1), and each member few nodes carry - a
-// decision, an ask, a plan, a result, a check, a document, an actor with more than its kind, its
-// id and its proof - through json.Marshal itself. A value it cannot write - a time outside RFC
-// 3339, a display tree that is no JSON - is written by WriteJSON, which answers it as it always
+// decision, an ask, a plan, a result, a check, a document, an anchor, an actor with more than its
+// kind, its id and its proof - through json.Marshal itself. A value it cannot write - a time outside
+// RFC 3339, a display tree that is no JSON - is written by WriteJSON, which answers it as it always
 // did.
 
 // treeAnswerBuffers holds the buffers answers are appended into, so a read of a large tree does
@@ -37,12 +39,29 @@ var errTreeTime = errors.New("time outside RFC 3339")
 // writeIssueTreeRead writes read as the tree read's 200 answer, byte for byte as WriteJSON writes
 // it.
 func writeIssueTreeRead(w http.ResponseWriter, read *model.IssueTreeRead) {
+	writeIssueTreePage(w, read, nil)
+}
+
+// issueTreePageBytes is the most bytes of uncompressed JSON one page of the tree read answers
+// (R8): a page ends at it or at the page size of nodes, whichever comes first.
+const issueTreePageBytes = 2_000_000
+
+// writeIssueTreePage writes read as writeIssueTreeRead does, and where plan is set and read's
+// JSON holds more than issueTreePageBytes, the page plan cuts out of it first (treePagePlan.cut):
+// an answer within the bound is encoded once.
+func writeIssueTreePage(w http.ResponseWriter, read *model.IssueTreeRead, plan *treePagePlan) {
 	buffer := treeAnswerBuffers.Get().(*[]byte)
 	defer treeAnswerBuffers.Put(buffer)
 	if size := issueTreeReadSize(read); cap(*buffer) < size {
 		*buffer = make([]byte, 0, size)
 	}
 	body, err := appendIssueTreeRead((*buffer)[:0], read)
+	if err == nil && plan != nil && len(body) > issueTreePageBytes {
+		if cut, ok := plan.cut(read, issueTreePageBytes); ok {
+			*read = cut
+			body, err = appendIssueTreeRead(body[:0], read)
+		}
+	}
 	*buffer = body[:0]
 	if err != nil {
 		WriteJSON(w, http.StatusOK, *read)
@@ -51,6 +70,100 @@ func writeIssueTreeRead(w http.ResponseWriter, read *model.IssueTreeRead) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(append(body, '\n'))
+}
+
+// treePagePlan is what a page of the tree read needs to end at a bound of bytes (cut): of the
+// page's nodes, the first walk are its slice of the walk, in the walk's order, and the rest its
+// context nodes; placed is, for each context node, the index in that slice of the first node whose
+// tuple names it (issueTreeBuilder.window), walk for one the read places on its last page; tuples
+// is, for each node, the end of its tuples in the answer's Tuples, which holds them in the page's
+// order; and after is how many nodes the read holds after the page.
+type treePagePlan struct {
+	walk   int
+	placed []int
+	tuples []int
+	after  int
+}
+
+// cut is the page read, the read's page holding more than bound bytes of JSON, ends at: the
+// longest prefix of its walk slice, of one node at least, that its JSON holds within bound with
+// the context nodes that prefix places and every tuple of each node it keeps, a context node the
+// last page places standing with the slice's last node, its cursor at the first node of the slice
+// it leaves out and its remaining the nodes after it. ok is false where no shorter page is cut: a
+// slice of one node, a slice whose excess is its last node's, and a node it cannot encode.
+func (plan *treePagePlan) cut(read *model.IssueTreeRead, bound int) (model.IssueTreeRead, bool) {
+	if plan.walk < 2 {
+		return model.IssueTreeRead{}, false
+	}
+	var scratch []byte
+	sizes := make([]int, len(read.Nodes))
+	longest := 0
+	for index := range read.Nodes {
+		encoded, err := appendIssueTreeNode(scratch[:0], &read.Nodes[index])
+		if err != nil {
+			return model.IssueTreeRead{}, false
+		}
+		scratch = encoded
+		sizes[index] = len(encoded) + len(",")
+		for tuple := plan.tupleStart(index); tuple < plan.tuples[index]; tuple++ {
+			sizes[index] += len(appendTreeTuple(scratch[:0], &read.Tuples[tuple])) + len(",")
+		}
+		if index < plan.walk {
+			longest = max(longest, len(treeCursor(read.Nodes[index].Kind, read.Nodes[index].ID)))
+		}
+	}
+	// The envelope with the longest cursor and the widest remaining a cut page can answer.
+	shell := *read
+	cursor, remaining := strings.Repeat("A", longest), math.MaxInt
+	shell.Nodes, shell.Tuples, shell.Cursor, shell.Remaining = []model.IssueTreeNode{}, []model.IssueTreeTuple{}, &cursor, &remaining
+	envelope, err := appendIssueTreeRead(scratch[:0], &shell)
+	if err != nil {
+		return model.IssueTreeRead{}, false
+	}
+	brought := make([][]int, plan.walk)
+	for context, at := range plan.placed {
+		at = min(at, plan.walk-1)
+		brought[at] = append(brought[at], plan.walk+context)
+	}
+	total, keep := len(envelope), 0
+	for ; keep < plan.walk; keep++ {
+		add := sizes[keep]
+		for _, context := range brought[keep] {
+			add += sizes[context]
+		}
+		if keep > 0 && total+add > bound {
+			break
+		}
+		total += add
+	}
+	if keep == plan.walk {
+		return model.IssueTreeRead{}, false
+	}
+	cut := *read
+	cut.Nodes, cut.Tuples = make([]model.IssueTreeNode, 0, keep+len(plan.placed)), []model.IssueTreeTuple{}
+	left := plan.walk - keep
+	for index := range read.Nodes {
+		if index >= keep && (index < plan.walk || plan.placed[index-plan.walk] >= keep) {
+			if index >= plan.walk {
+				left++
+			}
+			continue
+		}
+		cut.Nodes = append(cut.Nodes, read.Nodes[index])
+		cut.Tuples = append(cut.Tuples, read.Tuples[plan.tupleStart(index):plan.tuples[index]]...)
+	}
+	next := treeCursor(read.Nodes[keep].Kind, read.Nodes[keep].ID)
+	after := plan.after + left
+	cut.Cursor, cut.Remaining = &next, &after
+	return cut, true
+}
+
+// tupleStart is where the tuples of the page's node at index begin in the answer's Tuples.
+func (plan *treePagePlan) tupleStart(index int) int {
+	if index == 0 {
+		return 0
+	}
+	return plan.tuples[index-1]
 }
 
 // issueTreeReadSize is about how many bytes read's JSON takes, a little more than most answers
@@ -128,19 +241,16 @@ func appendIssueTreeRead(b []byte, read *model.IssueTreeRead) ([]byte, error) {
 			if index > 0 {
 				b = append(b, ',')
 			}
-			tuple := &read.Tuples[index]
-			b = append(b, `{"kind":`...)
-			b = appendTreeString(b, tuple.Kind)
-			b = append(b, `,"from":`...)
-			b = appendTreeEnd(b, tuple.From)
-			b = append(b, `,"to":`...)
-			b = appendTreeEnd(b, tuple.To)
-			b = append(b, '}')
+			b = appendTreeTuple(b, &read.Tuples[index])
 		}
 		b = append(b, ']')
 	}
 	b = append(b, `,"cursor":`...)
 	b = appendTreeStringPointer(b, read.Cursor)
+	if read.Remaining != nil {
+		b = append(b, `,"remaining":`...)
+		b = strconv.AppendInt(b, int64(*read.Remaining), 10)
+	}
 	if len(read.CommentsBefore) > 0 {
 		b = append(b, `,"comments_before":`...)
 		if b, err = appendTreeMarshaled(b, read.CommentsBefore); err != nil {
@@ -198,6 +308,12 @@ func appendIssueTreeNode(b []byte, node *model.IssueTreeNode) ([]byte, error) {
 	}
 	b = append(b, `,"rank":`...)
 	b = appendTreeStringPointer(b, node.Rank)
+	b = append(b, `,"placement_seq":`...)
+	if node.PlacementSeq == nil {
+		b = append(b, "null"...)
+	} else {
+		b = strconv.AppendInt(b, *node.PlacementSeq, 10)
+	}
 	b = append(b, `,"author":`...)
 	if node.Author == nil {
 		b = append(b, "null"...)
@@ -256,6 +372,20 @@ func appendIssueTreeNode(b []byte, node *model.IssueTreeNode) ([]byte, error) {
 			return b, err
 		}
 	}
+	if node.Checks != nil {
+		b = append(b, `,"checks":`...)
+		b = strconv.AppendInt(b, int64(*node.Checks), 10)
+	}
+	if node.Title != nil {
+		b = append(b, `,"title":`...)
+		b = appendTreeString(b, *node.Title)
+	}
+	if node.Anchor != nil {
+		b = append(b, `,"anchor":`...)
+		if b, err = appendTreeMarshaled(b, node.Anchor); err != nil {
+			return b, err
+		}
+	}
 	if issue := node.IssueTreeIssue; issue != nil {
 		b = append(b, `,"converted":`...)
 		b = strconv.AppendBool(b, issue.Converted)
@@ -277,6 +407,17 @@ func appendTreeEnd(b []byte, end model.IssueTreeEnd) []byte {
 	b = appendTreeString(b, end.Kind)
 	b = append(b, `,"id":`...)
 	b = appendTreeString(b, end.ID)
+	return append(b, '}')
+}
+
+// appendTreeTuple appends a tuple, as json.Marshal writes it, to b.
+func appendTreeTuple(b []byte, tuple *model.IssueTreeTuple) []byte {
+	b = append(b, `{"kind":`...)
+	b = appendTreeString(b, tuple.Kind)
+	b = append(b, `,"from":`...)
+	b = appendTreeEnd(b, tuple.From)
+	b = append(b, `,"to":`...)
+	b = appendTreeEnd(b, tuple.To)
 	return append(b, '}')
 }
 

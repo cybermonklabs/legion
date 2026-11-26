@@ -259,7 +259,11 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 			}
 			// The answer is held on the ask's node alone. While a process of the release before
 			// serves, whose page reads it from the block, the block is kept in step with it.
+			// kept for one release: roll-window-attributes
+			// kept for one release: stored-ask-state
 			ask.State, ask.Answer = asks.StateAnswered, &answer
+			// kept for one release: roll-window-attributes
+			// kept for one release: stored-ask-state
 			return s.deps.Docs.KeepAskBlockInStep(ctx, ask, actor)
 		},
 	})
@@ -398,7 +402,11 @@ func (s *server) writeClosedBlockState(ctx context.Context, ask model.Ask, actor
 	if err := s.deps.Docs.SettleCopiesOf(ctx, ask); err != nil {
 		return err
 	}
+	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	ask.State = asks.StateResolved
+	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	return s.deps.Docs.KeepAskBlockInStep(ctx, ask, actor)
 }
 
@@ -510,15 +518,16 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
-	// A transition writes no question text, so it reconciles none of the ask's own references.
-	// An answer is a part of the ask, though, so both transitions index the parts here, where
-	// the row write they queued comes before the index: a resolution adds no part, but its
-	// indexing still takes the ask's state row, reconciles the links its parts hold and clears
-	// owed_at, and writes every part of an ask an older build left owed. The answer a transition
-	// wrote is queued before the event, so the ask's Replies rows are read by the event's insert,
-	// after it.
+	// A transition writes no question text, but it holds the ask's parts alone: an answer is a
+	// part of the ask, so both transitions index the parts here, where the row write they queued
+	// comes before the index, and the parts' step reconciles the question's references after them
+	// and settles the ask's row of the forms queue there (questionReconciled false): a resolution
+	// adds no part, but its indexing still takes the ask's state row, reconciles the links its
+	// parts hold and clears owed_at, and writes every part of an ask an older build left owed. The
+	// answer a transition wrote is queued before the event, so the ask's Replies rows are read by
+	// the event's insert, after it.
 	at := refs.AskPartsAt(ask)
-	changes, err := s.queueAskParts(ctx, ledger, ask, nil, at, model.ReferenceChanges{})
+	changes, err := s.queueAskParts(ctx, ledger, ask, nil, at, false, model.ReferenceChanges{})
 	if err != nil {
 		return model.Ask{}, nil, err
 	}

@@ -337,7 +337,7 @@ test("Settle on a question's row sends its ask's address", async () => {
   });
   const question = outline.children.find((node) => node.type === "ask");
   expect(question?.readId).toBe(`${KEY}/spec#q1`);
-  expect(question?.source).toEqual({ id: "ask-1", kind: "ask" });
+  expect(question?.source).toEqual({ id: "ask-1", issue: KEY, kind: "ask" });
   if (question === undefined) throw new Error("the outline draws no question");
   const drawn = drawRow(async () => settled(), { node: question });
   try {
