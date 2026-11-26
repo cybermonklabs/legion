@@ -239,10 +239,11 @@ func (s *Store) UnfinishedPodResumesTx(ctx context.Context, tx pgx.Tx, project s
 // Each reads the resume's stuck clock (clock_at), never the wake's own moment (at), and passes
 // over every resume of a project paused now: the pause holds the launch the resume waits for, and
 // its resume starts the clock again.
+// A queued launch has not been let out, so its clock is not running either.
 func podResumesWithoutAFirstTurn(ctx context.Context, tx pgx.Tx, project string, before time.Time, unmarked bool) ([]PodResume, error) {
 	query := `select id, release_id, project, issue, role, kind, at, clock_at, coalesce(pause_id, 0), stuck
 		from pod_resumes r where project = $1 and first_turn_at is null and closed_at is null and clock_at <= $2
-		and not exists (select 1 from project_pauses p where lower(p.project) = r.project and p.ended_at is null)`
+		and not queued and not exists (select 1 from project_pauses p where lower(p.project) = r.project and p.ended_at is null)`
 	if unmarked {
 		query += ` and not stuck`
 	} else {

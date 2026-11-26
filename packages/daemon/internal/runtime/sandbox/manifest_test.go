@@ -184,15 +184,15 @@ func TestEveryContainerOfEveryPodIsGuaranteed(t *testing.T) {
 func TestARequestBelowItsLimitRendersABurstablePod(t *testing.T) {
 	t.Parallel()
 	opts := goldenOptions()
-	bursting := config.Reservation{CPU: "3", CPURequest: "3", Memory: "32Gi", MemoryRequest: "8Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"}
+	bursting := config.Reservation{CPU: "2", CPURequest: "2", Memory: "32Gi", MemoryRequest: "8Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"}
 	opts.Resources.Issue = requirementsOf(bursting)
 	r, err := configure(opts)
 	if err != nil {
 		t.Fatalf("configure with the issue pod requesting 8Gi under a 32Gi limit: %v", err)
 	}
 	want := corev1.ResourceRequirements{
-		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3"), corev1.ResourceMemory: resource.MustParse("8Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("6Gi")},
-		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3"), corev1.ResourceMemory: resource.MustParse("32Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("80Gi")},
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("8Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("6Gi")},
+		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("32Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("80Gi")},
 	}
 	for name, spec := range map[string]runtime.SpawnSpec{"root": rootSpec(t), "implementer": childSpec(t)} {
 		t.Run(name, func(t *testing.T) {
@@ -1468,15 +1468,15 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 		"no session store": {func(o *Options) { o.SessionStore = ompsessions.Store{} }, "no session store that keeps sessions in a database"},
 		"cpu request past limit": {
 			func(o *Options) {
-				o.Resources.Issue.Requests[corev1.ResourceCPU] = resource.MustParse("3500m")
+				o.Resources.Issue.Requests[corev1.ResourceCPU] = resource.MustParse("2500m")
 			},
-			"the issue pod requests cpu 3500m past its limit 3",
+			"the issue pod requests cpu 2500m past its limit 2",
 		},
 		"memory request past limit": {
 			func(o *Options) {
-				o.Resources.Issue.Requests[corev1.ResourceMemory] = resource.MustParse("20Gi")
+				o.Resources.Issue.Requests[corev1.ResourceMemory] = resource.MustParse("9Gi")
 			},
-			"the issue pod requests memory 20Gi past its limit 19Gi",
+			"the issue pod requests memory 9Gi past its limit 8Gi",
 		},
 		"no memory": {
 			func(o *Options) {

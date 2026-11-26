@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -112,6 +113,107 @@ func TestALetOutMovesTheStuckClockOfItsOwnClaimsResumeAlone(t *testing.T) {
 	}
 	if got := clock(); !got.Equal(at.Add(10 * time.Minute)) {
 		t.Errorf("the clock of a resume that names no claim = %s, want %s", got, at.Add(10*time.Minute))
+	}
+}
+
+// A wait in the wake pacing's queue stops the stuck clock of that claim's own resume and of no
+// other claim's (SetResumeQueued), so another claim of the same role is not hidden from the stuck
+// warning by a wait that is not its own: the end of a wait starts the clock of its own claim's
+// resume alone (SetResumeClock), so a clock a wait stopped for another claim would stay stopped
+// until the next boot. The agent of key a, `…-implementer`, works the tester's step beside the
+// tester's own claim, and each claim's wake took a resume of its own. A resume the release before
+// wrote names no claim, so a wait of any claim of its role stops its clock and the end of any
+// claim's wait starts it.
+func TestAWaitInThePacingStopsTheStuckClockOfItsOwnClaimsResumeAlone(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	keyed, err := claim.NewToken("legion", rootIssue, claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	own, err := claim.NewToken("legion", rootIssue, claim.RoleTester)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	for _, token := range []claim.Token{keyed, own} {
+		if taken, err := st.TakePodWake(ctx, "legion", rootIssue, token, claim.RoleTester, pods.WakeAgentMessage, at, 0); err != nil || !taken {
+			t.Fatalf("take the wake of %s on the tester's step = %t, %v; want it taken", token, taken, err)
+		}
+	}
+	resume := func(token claim.Token) int64 {
+		t.Helper()
+		id, _, found, err := st.OpenPodResume(ctx, "legion", rootIssue, claim.RoleTester, token)
+		if err != nil || !found {
+			t.Fatalf("the open resume of %s = %t, %v; want the one its wake took", token, found, err)
+		}
+		return id
+	}
+	keyedResume, ownResume := resume(keyed), resume(own)
+	queued := func(id int64) bool {
+		t.Helper()
+		var stopped bool
+		if err := st.Pool().QueryRow(ctx, `select queued from pod_resumes where id = $1`, id).Scan(&stopped); err != nil {
+			t.Fatalf("read whether the clock of resume %d is stopped: %v", id, err)
+		}
+		return stopped
+	}
+	// stuck is the resumes the stuck warning reads an hour after the wakes, past every clock here.
+	stuck := func() []int64 {
+		t.Helper()
+		resumes, err := st.StuckPodResumes(ctx, "legion", at.Add(time.Hour))
+		if err != nil {
+			t.Fatalf("the stuck read: %v", err)
+		}
+		var ids []int64
+		for _, r := range resumes {
+			ids = append(ids, r.ID)
+		}
+		return ids
+	}
+	if got, want := stuck(), []int64{keyedResume, ownResume}; !slices.Equal(got, want) {
+		t.Fatalf("the stuck read before any wait = %v, want both claims' resumes %v", got, want)
+	}
+
+	if err := st.SetResumeQueued(ctx, "legion", rootIssue, claim.RoleTester, keyed); err != nil {
+		t.Fatalf("stop key a's clock for its wait in the queue: %v", err)
+	}
+	if !queued(keyedResume) {
+		t.Errorf("key a's resume after its wait began reads its clock running, want it stopped")
+	}
+	if queued(ownResume) {
+		t.Errorf("the tester's own claim's resume reads its clock stopped by key a's wait, want it running: that wait is not its own")
+	}
+	if got, want := stuck(), []int64{ownResume}; !slices.Equal(got, want) {
+		t.Errorf("the stuck read while key a waits = %v, want the tester's own claim's resume alone %v", got, want)
+	}
+	if _, err := st.SetResumeClock(ctx, "legion", rootIssue, claim.RoleTester, keyed, at.Add(5*time.Minute)); err != nil {
+		t.Fatalf("start key a's clock at its let-out: %v", err)
+	}
+	if got, want := stuck(), []int64{keyedResume, ownResume}; !slices.Equal(got, want) {
+		t.Errorf("the stuck read after key a's let-out = %v, want both claims' resumes %v", got, want)
+	}
+
+	if _, err := st.Pool().Exec(ctx, `update pod_resumes set closed_at = now() where issue = $1`, rootIssue); err != nil {
+		t.Fatal(err)
+	}
+	var legacy int64
+	if err := st.Pool().QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, kind, at, clock_at)
+		values (0, 'legion', $1, 'tester', $2, $3, $3) returning id`, rootIssue, pods.WakeChecks, at).Scan(&legacy); err != nil {
+		t.Fatalf("seed a resume the release before wrote: %v", err)
+	}
+	if err := st.SetResumeQueued(ctx, "legion", rootIssue, claim.RoleTester, own); err != nil {
+		t.Fatalf("stop the tester's own claim's clock for its wait in the queue: %v", err)
+	}
+	if !queued(legacy) || len(stuck()) != 0 {
+		t.Errorf("a resume that names no claim after a wait of the tester's own claim reads stopped = %t, stuck %v; want it stopped and out of the read",
+			queued(legacy), stuck())
+	}
+	if _, err := st.SetResumeClock(ctx, "legion", rootIssue, claim.RoleTester, keyed, at.Add(5*time.Minute)); err != nil {
+		t.Fatalf("start the clock at key a's let-out: %v", err)
+	}
+	if got, want := stuck(), []int64{legacy}; queued(legacy) || !slices.Equal(got, want) {
+		t.Errorf("a resume that names no claim after key a's let-out reads stuck %v, want %v with its clock running", got, want)
 	}
 }
 

@@ -18,6 +18,7 @@ import { DeviceLoginIdentity, deviceLoginSessionName, startDeviceLogin } from ".
 import { DEVICE_LOGIN_FILE_VAR, deviceLoginFile } from "../device-login-file";
 import {
   BROKER_URL_VAR,
+  BROKER_VARIABLES,
   brokerTokenClient,
   IDENTITY_DEVICE_LOGIN,
   IDENTITY_VAR,
@@ -32,6 +33,10 @@ import {
   tradeProjects,
   tradeSession,
 } from "../environment";
+import {
+  ACTIONS_ID_TOKEN_REQUEST_TOKEN_VAR,
+  ACTIONS_ID_TOKEN_REQUEST_URL_VAR,
+} from "../github-actions-identity";
 import { PERSON_TRADE_VAR } from "../signins";
 import {
   FORM_AS_OF,
@@ -114,9 +119,34 @@ test("an identity named with its variables missing is refused naming them", () =
     refused = error instanceof Error ? error.message : String(error);
   }
   expect(refused).toBe(
-    "AGENT_SECRETS_MACHINE_IDENTITY names no identity this machine can prove; it takes kubernetes, metadata, pool or device-login"
+    "AGENT_SECRETS_MACHINE_IDENTITY names no identity this machine can prove; it takes kubernetes, metadata, pool, github-actions or device-login"
   );
   expect(refused).not.toContain(pasted);
+});
+
+// GitHub sets the request URL and its token in a job that holds `id-token: write`; the audience is
+// the broker's. The identity names each by its variable, never the URL or the token (the order a
+// missing one is refused in is machine-identities.test.ts's). A caller keys the client it made by
+// BROKER_VARIABLES (envoy-client's broker-credential.ts), and Codex hands its server only the
+// variables the manifest lists from them, so the two GitHub names are among them.
+test("github-actions names its variables, never the URL or the token", () => {
+  const requestToken = fixtureSecret("request");
+  const env: Record<string, string> = {
+    [IDENTITY_VAR]: "github-actions",
+    [ACTIONS_ID_TOKEN_REQUEST_URL_VAR]: `https://token.actions.example/idtoken?sig=${requestToken}`,
+    [ACTIONS_ID_TOKEN_REQUEST_TOKEN_VAR]: requestToken,
+    [MACHINE_AUDIENCE_VAR]: "https://cipher.example",
+  };
+  expect(machineIdentity(env)?.describe()).toBe(
+    "this GitHub Actions run's OIDC token for https://cipher.example (AGENT_SECRETS_MACHINE_AUDIENCE), asked for at the URL ACTIONS_ID_TOKEN_REQUEST_URL names with the token ACTIONS_ID_TOKEN_REQUEST_TOKEN names"
+  );
+  env[MACHINE_AUDIENCE_VAR] = `https://cipher.example/?token=${requestToken}`;
+  expect(machineIdentity(env)?.describe()).toBe(
+    "this GitHub Actions run's OIDC token for the audience AGENT_SECRETS_MACHINE_AUDIENCE names, asked for at the URL ACTIONS_ID_TOKEN_REQUEST_URL names with the token ACTIONS_ID_TOKEN_REQUEST_TOKEN names"
+  );
+  expect(BROKER_VARIABLES).toEqual(
+    expect.arrayContaining([ACTIONS_ID_TOKEN_REQUEST_URL_VAR, ACTIONS_ID_TOKEN_REQUEST_TOKEN_VAR])
+  );
 });
 
 // AGENT_SECRETS_URL is where every trade goes, and every trade's error names it; a value that is

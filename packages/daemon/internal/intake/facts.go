@@ -1671,10 +1671,10 @@ type ClaimReady struct {
 	Launch uint64
 	// Paced is the second source alone saying that the catch-up this ready writes stands in place
 	// of a launch, and so is a wake the daemon's pacing holds to its turn like the launch it
-	// replaces (workflow.Config.Reserve). The launch's own ready sets none: that launch took its
-	// turn at the machine's gate (supervise's reserveWake) and the catch-up it leads to is part of
-	// the same wake. A fact applies once for the row that wrote it (ApplyFact's id), so the turn
-	// is taken once per start row however often the row runs.
+	// replaces (workflow.Config.HoldCatchUp). The launch's own ready sets none: that launch took
+	// its turn at the machine's gate (supervise's reserveWake) and the catch-up it leads to is part
+	// of the same wake. A fact applies once for the row that wrote it (ApplyFact's id), so the row
+	// joins the pacing once per start row however often the row runs.
 	Paced bool
 	// Relaunch is the sentence that tells the claim's new process what the last let-go of its
 	// process ended (supervise.RelaunchSentence), while the claim's record of it is untold
@@ -1867,7 +1867,7 @@ const (
 
 // PodBackstopDue is one armed backstop of a released pod coming due (the pod_wake_backstops row
 // at its due_at): the claim it was armed for (Claim), the worker of the open phase at its release,
-// is woken where it stands released (ReleasedClaimByToken), whatever else did or did not happen
+// is woken where it stands released (ClaimByToken), whatever else did or did not happen
 // since the release, and a backstop of an issue the record no longer holds does nothing. Role is
 // the role that claim held then; a backstop the release before armed names no claim, and wakes the
 // claim of the worker on Role's step. It is never decoded from an event — the daemon's own pass
