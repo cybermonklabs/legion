@@ -2520,6 +2520,27 @@ function rowIds(): string[] {
   );
 }
 
+/** Every scroll the page asks for from now on, by each way it has to scroll: the engine's own
+ *  nearest-edge scroll (`scrollIntoView`), and the `scrollBy` of a box or of the window, which a
+ *  least-scroll landing makes (`scrollToNearest`). Each spy passes the call on. `asked` names the
+ *  ways that were asked, so a row that reads it prints which. */
+function watchScrolls(): { asked: () => string[]; clear: () => void; restore: () => void } {
+  const spies = [
+    ["scrollIntoView", spyOn(Element.prototype, "scrollIntoView")],
+    ["a box's scrollBy", spyOn(Element.prototype, "scrollBy")],
+    ["the window's scrollBy", spyOn(window, "scrollBy")],
+  ] as const;
+  return {
+    asked: () => spies.filter(([, spy]) => spy.mock.calls.length > 0).map(([way]) => way),
+    clear: () => {
+      for (const [, spy] of spies) spy.mockClear();
+    },
+    restore: () => {
+      for (const [, spy] of spies) spy.mockRestore();
+    },
+  };
+}
+
 const ROW_HEIGHT = 200;
 
 /** A fixed geometry happy-dom lacks: rows stacked in DOM order, ROW_HEIGHT each, so a row that
@@ -4245,8 +4266,9 @@ test("the bar's Snooze keeps its rows in their band until its write lands", asyn
 });
 
 // The bar's Snooze deep in a long list folds the two rows marked into Later, the row marked last
-// among them. The row after them moves up into its place, where the reader can see it, and its
-// mark takes the focus with no scroll. The list's first row, nine rows above the window, would
+// among them. The row after them moves up into its place, where the reader can see it, and the row
+// takes the focus (R8: the item after the last of the rows acted on is selected and its row has
+// the keyboard focus), with no scroll. The list's first row, nine rows above the window, would
 // scroll the list back to its top and throw the reader's place away.
 test("a bulk Snooze deep in a long list hands the focus to the row that moves up into the place of the row marked last, with no scroll", async () => {
   const user = userEvent.setup();
@@ -4272,7 +4294,7 @@ test("a bulk Snooze deep in a long list hands the focus to the row that moves up
     await user.click(within(rowOf(marked)).getByRole("checkbox", { name: /^Select / }));
     await user.click(within(rowOf(last)).getByRole("checkbox", { name: /^Select / }));
     await screen.findByText("2 selected");
-    const landing = within(rowOf(next)).getByRole("checkbox", { name: /^Select / });
+    const landing = rowOf(next);
     const picker = screen.getByLabelText("Snooze selected asks");
     await pickIn(user, () => picker, "Tomorrow");
     await waitFor(() => expect(rowIds()).not.toContain(last));
@@ -4371,10 +4393,11 @@ function listThreads(count: number, asks: readonly OpenAskRow[] = []): () => voi
   };
 }
 
-// The bar's Dismiss deep in the list, over a thread the reader can see. The bar's hand-off puts
-// the focus on the mark of the row after it while the thread is still drawn. The thread goes, and
-// that row moves up into its place: the window stays where the reader put it, and is not scrolled
-// to hold the focused row where it stood.
+// The bar's Dismiss deep in the list, over a thread the reader can see. The row after it takes the
+// focus (R8: the item after the last of the rows acted on is selected and its row has the keyboard
+// focus) while the thread is still drawn. The thread goes, and that row moves up into its place:
+// the window stays where the reader put it, and is not scrolled to hold the focused row where it
+// stood.
 test("a bulk Dismiss of a marked thread above the focused row leaves the window's scroll and the list's scrollTop as they were", async () => {
   const user = userEvent.setup();
   const reads = listThreads(12);
@@ -4396,7 +4419,7 @@ test("a bulk Dismiss of a marked thread above the focused row leaves the window'
 
     await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
     await waitFor(() => expect(rowIds()).not.toContain(marked));
-    const landing = markOf(after);
+    const landing = shortRow(after);
     await waitFor(() => expect(landing).toHaveFocus());
     expect(moves.focused.at(-1)?.options).toEqual({ preventScroll: true });
     expect(landing.getBoundingClientRect().top).toBe(place);
@@ -4444,7 +4467,7 @@ test("a bulk Dismiss lets the row it is taking away go though the hand-off parke
     await waitFor(() => expect(moves.focused.map((move) => move.target)).toContain(parked));
     // The write is still out, and the rows go all the same.
     await waitFor(() => expect(rowIds()).toEqual(order.filter((id) => !marked.includes(id))));
-    const landing = markOf(order[4] as string);
+    const landing = shortRow(order[4] as string);
     await waitFor(() => expect(landing).toHaveFocus());
   } finally {
     await act(async () => {
@@ -4497,7 +4520,7 @@ test("a bulk Snooze lets the row it is taking away go though the hand-off parked
       await landed.promise;
     });
     await waitFor(() => expect(rowIds()).not.toContain(marked));
-    const landing = markOf(order[3] as string);
+    const landing = shortRow(order[3] as string);
     await waitFor(() => expect(landing).toHaveFocus());
   } finally {
     unmount();
@@ -4574,7 +4597,7 @@ test("after a refused bulk Dismiss, Clear selection lands on a row that came bac
     await screen.findByText("2 selected");
     await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
     await waitFor(() => expect(rowIds()).toEqual(order.filter((id) => !marked.includes(id))));
-    const landing = markOf(order[4] as string);
+    const landing = shortRow(order[4] as string);
     await waitFor(() => expect(landing).toHaveFocus());
 
     await act(async () => {
@@ -4603,13 +4626,77 @@ test("after a refused bulk Dismiss, Clear selection lands on a row that came bac
   }
 });
 
+// INFRA-2160, round 22 (the architect's condition (2) of 2026-11-26 14:20Z), ported by INFRA-4948's
+// R4: one bar press, one landing. The bar's Dismiss of the list's last two threads hands the reader
+// on to the list's empty message (R8), which the list draws only once the threads have gone. The
+// bar's landing holds the focus on the list's own stop while they stand, and gives it to the
+// message once the list draws it (`useLastMarkedPlace`), and the list's own hand-off gives that
+// target up to it (`paneSelection.takeHandOff`).
+test("the bar's Dismiss of the list's last threads lands the focus once, on the empty message, and never by the bar's landing and the list's own both", async () => {
+  const user = userEvent.setup();
+  const reads = listThreads(2);
+  const settle = Promise.withResolvers<{ dismissed: number }>();
+  answerInboxDismisses().mockReturnValue(settle.promise);
+  const real = HTMLElement.prototype.focus;
+  /** Each focus the page asks for from the press on: what takes it, by its name, and whether a
+   *  thread was still drawn as it was asked. */
+  const moves: { standing: boolean; to: string }[] = [];
+  let watching = false;
+  const focus = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
+    this: HTMLElement,
+    options?: FocusOptions
+  ) {
+    if (watching) {
+      moves.push({
+        standing: document.querySelector("[data-inbox-row]") !== null,
+        to: this.getAttribute("aria-label") ?? this.tagName,
+      });
+    }
+    real.call(this, options);
+  });
+  const { unmount } = renderInbox("/?group=none");
+  try {
+    await waitFor(() => expect(rowIds()).toHaveLength(2));
+    for (const id of rowIds()) await user.click(markOf(id));
+    await screen.findByText("2 selected");
+    const dismiss = screen.getByRole("button", { name: "Dismiss selected threads" });
+    act(() => dismiss.focus());
+    watching = true;
+    await user.keyboard("{Enter}");
+    const empty = await screen.findByRole("region", { name: "Inbox empty state" });
+    await waitFor(() => expect(empty).toHaveFocus());
+    // The foot's pass, the landing's own second look a microtask after it (`landNearest`), and
+    // the commits after them have all run: nothing moves the focus after this.
+    await afterFrameAndTasks();
+    expect(empty).toHaveFocus();
+    expect(
+      moves.filter(({ standing }) => !standing).map(({ to }) => to),
+      "the focus moves made once the threads had gone"
+    ).toEqual(["Inbox empty state"]);
+    expect(
+      moves.filter(({ standing }) => standing).map(({ to }) => to),
+      "the focus moves made while the threads stood"
+    ).toEqual(["Inbox list"]);
+  } finally {
+    await act(async () => {
+      settle.resolve({ dismissed: 2 });
+    });
+    unmount();
+    focus.mockRestore();
+    reads();
+  }
+});
+
 // The bar's Dismiss over two threads the reader marked and then scrolled above the window. Their
 // whole space goes, so every row after them moves up by it: the row now at the place of the row
-// marked last, and the next one, end wholly above the window. The bar's hand-off lands once the
-// threads have gone, reads each row where it then stands, and puts the focus on the mark of the
-// nearest row after that place that stands in sight, with no scroll. The window stays where it
-// was.
-test("a bulk Dismiss of marked threads that all stood above the view hands the focus to the nearest row after their place that ends in sight, and scrolls nothing", async () => {
+// marked last, and the next one, end wholly above the window. The row after the threads is the
+// item the reader goes to (R8: the item after the last of the rows acted on is selected and its
+// row has the keyboard focus), though it ends above the window, 300 to 200 px above its top: it
+// takes the focus with no scroll of the engine's own, and is then shown whole at its nearest
+// edge, the window's top, by the least scroll, those 300 px (`landNearest`), and not by the
+// engine's nearest-edge scroll, which counts the root's scroll padding. The list's own scroll
+// keeping moves the window no further.
+test("a bulk Dismiss of marked threads that all stood above the view hands the focus to the row after them, and brings that row into view", async () => {
   const user = userEvent.setup();
   const reads = listThreads(12);
   const settle = Promise.withResolvers<{ dismissed: number }>();
@@ -4629,17 +4716,12 @@ test("a bulk Dismiss of marked threads that all stood above the view hands the f
 
     await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
     await waitFor(() => expect(rowIds()).toEqual(order.filter((id) => !marked.includes(id))));
-    // The landing waits for the foot's own pass, which gives the list the room the bar's foot had
-    // back at a frame of its own (`hooks/useFootInset.ts`).
-    await afterFrameAndTasks();
-    // The two rows after the marked ones end above the window, and the third ends at its top
-    // edge and shows none of itself: the fourth, which stands at the window's top, is the nearest
-    // the reader can see.
-    const landing = markOf(order[7] as string);
+    const landing = shortRow(order[4] as string);
     await waitFor(() => expect(landing).toHaveFocus());
+    expect(moves.focused.at(-1)?.target).toBe(landing);
     expect(moves.focused.at(-1)?.options).toEqual({ preventScroll: true });
     expect(landing.getBoundingClientRect().top).toBe(0);
-    expect(window.scrollY).toBe(5 * LAID_ROW_PX);
+    expect(window.scrollY).toBe(2 * LAID_ROW_PX);
     expect(moves.scrolled.length).toBe(0);
   } finally {
     await act(async () => {
@@ -4688,7 +4770,7 @@ test("a bulk Dismiss of the last unread threads, whose going takes Mark all read
     expect(screen.queryByRole("button", { name: "More" })).not.toBeInTheDocument();
     // The landing waits for the foot's own pass (`hooks/useFootInset.ts`).
     await afterFrameAndTasks();
-    const landing = markOf(order[8] as string);
+    const landing = shortRow(order[8] as string);
     await waitFor(() => expect(landing).toHaveFocus());
     expect(window.scrollY).toBe(5 * LAID_ROW_PX);
     expect(landing.getBoundingClientRect().top).toBe(place);
@@ -4699,6 +4781,64 @@ test("a bulk Dismiss of the last unread threads, whose going takes Mark all read
     });
     unmount();
     moves.restore();
+    laidOut();
+    reads();
+  }
+});
+
+// The bar's Dismiss over the list's last thread, which the reader marked and left below the
+// window, 800 to 900 px down a 768 px window. No row stands after it, so the row before it, 700
+// to 800 px down, takes the focus (R8: the item after the last of the rows acted on, else the
+// nearest before it), and no row the press takes away stands above it, so it is shown whole at
+// once: the window's bottom edge cuts it by 32 px, and the hand-off scrolls those 32 px, the least
+// scroll to the window's own edge (`landNearest`), as the selection bar's own landing does. The
+// engine's nearest-edge scroll (`scrollIntoView`) counts the root's `scroll-padding-bottom`, 80 px
+// below 1280 px (`styles.css`), and would carry the row 80 px further up than the cut. happy-dom
+// scrolls nothing, so the stub below scrolls the window as an engine does under that padding.
+test("the row before a bulk Dismiss of the list's last thread, cut by the window's bottom edge by less than the root's scroll padding, is shown whole by the cut alone", async () => {
+  const user = userEvent.setup();
+  const reads = listThreads(12);
+  const settle = Promise.withResolvers<{ dismissed: number }>();
+  answerInboxDismisses().mockReturnValue(settle.promise);
+  // Three rows above the window: the eleventh row stands 700 to 800 px down it, and the twelfth,
+  // the one dismissed, 800 to 900 px.
+  const laidOut = layRowsDown(3 * LAID_ROW_PX);
+  /** The root's `scroll-padding-bottom` below 1280 px (`styles.css`). */
+  const paddingPx = 80;
+  const padded = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element
+  ) {
+    const edge = window.innerHeight - paddingPx;
+    const { bottom } = this.getBoundingClientRect();
+    if (bottom > edge) window.scrollBy({ top: bottom - edge });
+  });
+  const { unmount } = renderInbox("/?group=none");
+  try {
+    await waitFor(() => expect(rowIds()).toHaveLength(12));
+    const [before, dismissed] = rowIds().slice(10, 12) as [string, string];
+    await user.click(markOf(dismissed));
+    await screen.findByText("1 selected");
+    const landing = shortRow(before);
+    const cut = landing.getBoundingClientRect().bottom - window.innerHeight;
+    expect(cut).toBeGreaterThan(0);
+    expect(cut).toBeLessThan(paddingPx);
+
+    await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
+    await waitFor(() => expect(rowIds()).not.toContain(dismissed));
+    await waitFor(() => expect(landing).toHaveFocus());
+    await waitFor(() => expect(window.scrollY).not.toBe(3 * LAID_ROW_PX));
+    // The landing's own second look, a microtask after it (`landNearest`), and the commits after
+    // it have all run: nothing moves the window after this.
+    await afterFrameAndTasks();
+    expect(window.scrollY).toBe(3 * LAID_ROW_PX + cut);
+    expect(landing.getBoundingClientRect().bottom).toBe(window.innerHeight);
+    expect(landing).toHaveFocus();
+  } finally {
+    await act(async () => {
+      settle.resolve({ dismissed: 1 });
+    });
+    unmount();
+    padded.mockRestore();
     laidOut();
     reads();
   }
@@ -6486,7 +6626,7 @@ test("in the reading column, a question withdrawn under the reader's focus hands
   const listOpenAsks = mockInboxReads(() => served);
   const getAsk = mockAskReads([first, second]);
   const getIssue = mockIssueReads();
-  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  const scrolls = watchScrolls();
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -6513,7 +6653,7 @@ test("in the reading column, a question withdrawn under the reader's focus hands
     expect(draft).toHaveFocus();
     // The opening selection, which the settling effect hands to the first row, scrolls nothing
     // either (`pane-selection.ts`); what follows is the loss, which scrolls nothing.
-    scrolls.mockClear();
+    scrolls.clear();
 
     // The server withdraws the question the reader is answering: it leaves the list, its own
     // read says it is closed, and the card swaps to its record with the focus in its form.
@@ -6530,7 +6670,7 @@ test("in the reading column, a question withdrawn under the reader's focus hands
 
     expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus();
     expect(document.activeElement?.closest("[data-inbox-row]") ?? null).toBeNull();
-    expect(scrolls).not.toHaveBeenCalled();
+    expect(scrolls.asked()).toEqual([]);
 
     await user.keyboard("j");
     await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
@@ -6538,7 +6678,7 @@ test("in the reading column, a question withdrawn under the reader's focus hands
   } finally {
     view.unmount();
     narrow();
-    scrolls.mockRestore();
+    scrolls.restore();
     getAsk.mockRestore();
     listOpenAsks.mockRestore();
     getIssue.mockRestore();
@@ -6745,6 +6885,50 @@ test("a Snooze pick in the column's head hands the focus to the next question's 
     listOpenAsks.mockRestore();
     getIssue.mockRestore();
     snoozeAsk.mockRestore();
+  }
+});
+
+// Beside the reading column the list keeps the selected row in the reader's sight as `j` walks it
+// (`pane-selection.ts`), at its nearest edge by the least scroll, against the window's and each
+// box's visible edges (`scrollToNearest`), the rule the selection bar lands by. Here the eighth
+// row stands 700 to 800 px down a 768 px window, so `j` onto it from the seventh scrolls the
+// window by the 32 px the window's bottom edge cuts it by, and the focus stays where the reader
+// had it.
+test("j onto a row the window's bottom edge cuts, beside the reading column, shows that row whole by the cut alone", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = Array.from({ length: 12 }, (_, index) =>
+    inboxIssue(`ask-${index + 1}`, `CORE-${index + 1}`, `Question ${index + 1}?`)
+  );
+  const listOpenAsks = mockInboxReads(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const laidOut = layRowsDown(0);
+  const { unmount } = renderInbox("/?group=none");
+  try {
+    await screen.findByTestId("inbox-pane");
+    const order = rowIds();
+    const [seventh, eighth] = order.slice(6, 8) as [string, string];
+    const cut = shortRow(eighth).getBoundingClientRect().bottom - window.innerHeight;
+    expect(cut).toBeGreaterThan(0);
+    await user.click(shortRow(seventh));
+    await waitFor(() => expect(selectedIds()).toEqual([seventh]));
+    expect(window.scrollY).toBe(0);
+    const focused = document.activeElement;
+
+    await user.keyboard("j");
+    await waitFor(() => expect(selectedIds()).toEqual([eighth]));
+    await afterFrameAndTasks();
+    expect(window.scrollY).toBe(cut);
+    expect(shortRow(eighth).getBoundingClientRect().bottom).toBe(window.innerHeight);
+    expect(document.activeElement).toBe(focused);
+  } finally {
+    unmount();
+    laidOut();
+    narrow();
+    getIssue.mockRestore();
+    getAsk.mockRestore();
+    listOpenAsks.mockRestore();
   }
 });
 
@@ -8567,7 +8751,9 @@ test("a bulk snooze of the selected row keeps the list and the picker the reader
 // pick's press through its write. The write lands past the pick's own frame and task, as a server
 // slower than a frame keeps it, and the bar goes with the rows it snoozed: that going is the pick's
 // doing, so the focus goes to the row that moves up into the place of the row marked last, as it
-// does in the narrow list, and never to the body.
+// does in the narrow list, and never to the body. INFRA-2160's R8, merged over this case: that row
+// is the item after the last of the snoozed rows, which is selected and takes the keyboard focus
+// on the row itself, not on its mark.
 test("a bulk Snooze that lands after its pick's frame, at the reading column's width, hands the focus to the row now at the place of the row marked last, never the body", async () => {
   const user = userEvent.setup();
   const narrow = widenToReadingPane();
@@ -8608,7 +8794,8 @@ test("a bulk Snooze that lands after its pick's frame, at the reading column's w
     });
     await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-d"]));
     expect(screen.queryByRole("toolbar", { name: "Selected rows" })).not.toBeInTheDocument();
-    await waitFor(() => expect(markOf("ask-d")).toHaveFocus());
+    await waitFor(() => expect(shortRow("ask-d")).toHaveFocus());
+    expect(selectedIds()).toEqual(["ask-d"]);
   } finally {
     unmount();
     narrow();
@@ -8616,6 +8803,104 @@ test("a bulk Snooze that lands after its pick's frame, at the reading column's w
     listOpenAsks.mockRestore();
     getIssue.mockRestore();
     snoozeAsk.mockRestore();
+  }
+});
+
+/** How tall `layRowsInBox` draws each row and its mark. */
+const BOX_ROW_PX = 100;
+
+/** Lays the Inbox's rows down the list's own box, as happy-dom does not, for the list beside the
+ *  reading column: the box, `list`, stands from the window's top to `height` and clips what
+ *  overflows it, and each row and its mark are `BOX_ROW_PX` tall, in the order the list draws
+ *  them, less the box's `scrollTop`. The box's `scrollTop` starts at 0, and its `scrollBy` moves
+ *  it. Every other element keeps happy-dom's own box. Answers the box's scroll, and the function
+ *  that gives happy-dom its own boxes back. */
+function layRowsInBox(
+  list: HTMLElement,
+  height: number
+): { restore: () => void; top: () => number } {
+  let top = 0;
+  list.style.overflowY = "auto";
+  Object.defineProperty(list, "scrollTop", {
+    configurable: true,
+    get: () => top,
+    set: (value: number) => {
+      top = value;
+    },
+  });
+  list.scrollBy = ((options: ScrollToOptions) => {
+    top += options.top ?? 0;
+  }) as typeof list.scrollBy;
+  const real = Element.prototype.getBoundingClientRect;
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    if (this === list) return new DOMRect(0, 0, 600, height);
+    const row = this.matches('[data-inbox-row], input[type="checkbox"]')
+      ? this.closest("[data-inbox-row]")
+      : null;
+    if (row === null) return real.call(this);
+    const index = [...document.querySelectorAll("[data-inbox-row]")].indexOf(row);
+    return new DOMRect(0, index * BOX_ROW_PX - top, 600, BOX_ROW_PX);
+  });
+  return { restore: () => rect.mockRestore(), top: () => top };
+}
+
+// Beside the column, the bar's Dismiss over two threads the reader marked, the upper one last,
+// with its row cut by 30 px at the bottom edge of the list's own box, where the bar stands over the
+// list from `sm` up. The press selects the row after the marked ones in the commit the bar goes in
+// (R8), while the marked rows still stand above it, and the selection's keeping of its row in sight
+// scrolled the box to that row there in #4304: by the height of the two rows past the cut once they
+// had gone, 162 px at 1440x900 (`e2e/table-controls.e2e.ts`, builds Job `infra-2160-r22-l-qs6mx`).
+// The bar's hand-off lands that row instead, once the rows have gone and the foot's pass has given
+// the list back the room the bar took: the row takes the focus where the row marked last stood,
+// and is shown whole by the cut alone (`landNearest`).
+test("beside the column the bar's Dismiss with the row marked last cut at the list box's foot gives the row after the marked ones the focus and scrolls the box by that cut alone", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const reads = listThreads(12);
+  const settle = Promise.withResolvers<{ dismissed: number }>();
+  answerInboxDismisses().mockReturnValue(settle.promise);
+  const { unmount } = renderInbox("/?group=none");
+  let laidOut: { restore: () => void; top: () => number } | undefined;
+  try {
+    await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(rowIds()).toHaveLength(12));
+    // The box ends 700 px down the window.
+    const box = layRowsInBox(screen.getByTestId("inbox-list"), 700);
+    laidOut = box;
+    const order = rowIds();
+    const [upper, lower, after] = order.slice(7, 10) as [string, string, string];
+    for (const id of [lower, upper]) await user.click(markOf(id));
+    await screen.findByText("2 selected");
+    // The box scrolled 70 px: the upper row stands at 630 to 730, cut by 30 px at the box's foot.
+    act(() => {
+      screen.getByTestId("inbox-list").scrollTop = 70;
+    });
+    const cut = shortRow(upper).getBoundingClientRect().bottom - 700;
+    expect(cut).toBe(30);
+
+    await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
+    await waitFor(() =>
+      expect(rowIds()).toEqual(order.filter((id) => id !== upper && id !== lower))
+    );
+    const landing = shortRow(after);
+    await waitFor(() => expect(landing).toHaveFocus());
+    // The foot's pass, the landing's own second look a microtask after it (`landNearest`), and
+    // the commits after it have all run: nothing moves the box after this.
+    await afterFrameAndTasks();
+    expect(landing).toHaveFocus();
+    expect(selectedIds()).toEqual([after]);
+    expect(box.top()).toBe(70 + cut);
+    expect(landing.getBoundingClientRect().bottom).toBe(700);
+  } finally {
+    await act(async () => {
+      settle.resolve({ dismissed: 2 });
+    });
+    unmount();
+    laidOut?.restore();
+    narrow();
+    reads();
   }
 });
 

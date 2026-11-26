@@ -289,6 +289,11 @@ control reads **Move to Inbox** and one press puts the thread back. Somebody els
 thread you dismissed brings it back to the Inbox, unread, on its own; a reply you send from the
 **Dismissed** view leaves the thread where it is.
 
+When **Dismiss**, **Snooze**, or **Move to Inbox** on the selection bar removes rows, keyboard focus moves to the row after the last one you acted on.
+If no row follows, focus moves to the nearest row before it that you did not act on.
+If no row remains, focus moves to the empty message.
+**Clear selection** returns focus to the last checkbox you marked if its row is still listed.
+
 The **Type** filter has a value for each kind, so **Threads** narrows the list to those threads
 alone, which is also what the address `/replies` opens.
 

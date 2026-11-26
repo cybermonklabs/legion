@@ -120,6 +120,7 @@ import {
 import { focusThePage } from "./issue-page-g";
 import { rowSnooze } from "./keyboard-inbox";
 import { seedLegionDaemon } from "./legion-seed";
+import { inboxRead } from "./pick-writes";
 import { sql } from "./psql";
 import { sessionIds } from "./session-ids";
 import { expandedState, settledState } from "./settled";
@@ -1220,7 +1221,7 @@ test("a chip taken off from the keyboard hands the focus to the next chip, then 
 });
 
 // SLOW(>=2s): two pages at two widths, each page's selection bar taken away from the keyboard.
-test("the selection bar gone from the keyboard hands the focus to the row marked last, else to the row now at its place, never the body, on the Inbox and the project List", async ({
+test("the selection bar gone from the keyboard hands the focus to the row marked last, or after a snooze to the row after the snoozed rows, never the body, on the Inbox and the project List", async ({
   page,
 }) => {
   await seedLongInbox();
@@ -1347,19 +1348,43 @@ test("the selection bar gone from the keyboard hands the focus to the row marked
       (await inboxBox(3).getAttribute("aria-label")) ?? ""
     );
     // A snooze picked in the bar folds every marked row into Later, the row marked last with
-    // them, and the bar goes once the write lands: the focus goes, with no scroll, to the row that
-    // moved up into the place of the row marked last, the second row now, which the reader sees.
+    // them, and the bar goes once the write lands: the focus goes to the row of the item after
+    // the last of them in the list (dispatch://INFRA-2160, R8), which is the row that moved up
+    // into the place of the row marked last, and the hand-off brings that row into view.
     await mark(inboxBox(2));
     await mark(inboxBox(1));
+    const afterMarked = (await rows.nth(3).getAttribute("data-inbox-row")) ?? "";
     const picker = listTrigger(inboxBar, "Snooze selected asks");
     await picker.focus();
     await pickFromList(picker, "Later today");
     await expect(inboxBar, `${where}: the snooze left the bar up`).toHaveCount(0);
-    await focusOn(
-      where,
-      "a snooze took the marked rows away",
-      (await inboxBox(1).getAttribute("aria-label")) ?? ""
-    );
+    // The row is read by its id rather than its name: a row's text holds its age, which moves.
+    // Its top is what must be in sight, since a card row at 390 px can be taller than the window.
+    const handedTo = () =>
+      page.evaluate(() => {
+        const focused = document.activeElement;
+        const top = focused?.getBoundingClientRect().top ?? -1;
+        return {
+          row: focused?.getAttribute("data-inbox-row") ?? focused?.tagName ?? "nothing",
+          seen: top >= 0 && top < window.innerHeight,
+        };
+      });
+    const landed = await expect
+      .poll(async () => (await handedTo()).row, { timeout: 2_000 })
+      .toBe(afterMarked)
+      .then(() => true)
+      .catch(() => false);
+    // The poll above waited for the hand-off to land, so this reads where it settled.
+    const handed = await handedTo();
+    if (!landed) {
+      wrong.push(
+        `${where}: after a snooze took the marked rows away the focus is on ${handed.row}, not on the row after them`
+      );
+    } else if (!handed.seen) {
+      wrong.push(
+        `${where}: after a snooze took the marked rows away their next row is not in view`
+      );
+    }
     // The bar never held the focus, so it is not the bar's to move: on a control of the page's
     // own, Escape clears the selection and leaves the focus there.
     const trigger = control(controlRow(main), CONTROL.panelTrigger).first();
@@ -1377,16 +1402,22 @@ test("the selection bar gone from the keyboard hands the focus to the row marked
       );
     }
     // And on a row: `x` takes the one mark off the row in hand, the bar goes, and the focus stays
-    // on the row. Escape is not this case: on a row it steps off the row first.
-    await rows.nth(0).focus();
+    // on the row. Escape is not this case: on a row it steps off the row first. The row in hand
+    // is the one the snooze above handed the reader to (R8), which beside the column is also
+    // the selected row, the one `x` marks there.
+    const handRow = page.locator(`[data-inbox-row="${afterMarked}"]`);
+    await handRow.focus();
     await page.keyboard.press("x");
-    await expect(inboxBox(0), `${where}: x marked another row than the focused one`).toBeChecked();
+    await expect(
+      handRow.getByRole("checkbox").first(),
+      `${where}: x marked another row than the focused one`
+    ).toBeChecked();
     await expect(inboxBar).toContainText("1 selected");
     await page.keyboard.press("x");
     await expect(inboxBar, `${where}: x on the only marked row left the bar up`).toHaveCount(0);
     // The bar was waited gone above, and for a key press its hand-off lands with that commit, so
     // this reads where the `x` left the focus.
-    if (!(await rows.nth(0).evaluate((node) => node === document.activeElement))) {
+    if (!(await handRow.evaluate((node) => node === document.activeElement))) {
       // The check above found the focus off the row, and this names where it went instead.
       const focus = await focusNow();
       wrong.push(`${where}: x on the focused row moved the focus to ${focus.label}, off the row`);
@@ -1452,7 +1483,7 @@ test("the selection bar gone from the keyboard hands the focus to the row marked
 });
 
 // SLOW(>=2s): two widths, a thread dismissed from the bar and moved back to the Inbox from it.
-test("a thread dismissed from the selection bar, or moved back to the Inbox from it, hands the focus to the row now at its place or the list's own stop, never the body", async ({
+test("a thread dismissed from the selection bar, or moved back to the Inbox from it, hands the focus to the item after it or to the view's empty message, never the body", async ({
   page,
 }) => {
   await seedLongInbox();
@@ -1467,14 +1498,20 @@ test("a thread dismissed from the selection bar, or moved back to the Inbox from
   const bar = main.locator(`[data-control="${CONTROL.selectionBar}"]`);
   const threads = main.locator('[data-inbox-row^="reply:"]');
   const wrong: string[] = [];
-  /** The focused element's name, or the tag of what holds the focus when it is no control. */
+  /** The focused row's id, else the focused element's name, else the tag of what holds the
+   *  focus when it is no control. A row is read by its id: its text holds its age, which moves. */
   const focused = () =>
     page.evaluate(() => {
       const element = document.activeElement;
       if (!(element instanceof HTMLElement) || element === document.body) {
         return element?.tagName ?? "nothing";
       }
-      return element.getAttribute("aria-label") ?? element.textContent?.trim() ?? element.tagName;
+      return (
+        element.getAttribute("data-inbox-row") ??
+        element.getAttribute("aria-label") ??
+        element.textContent?.trim() ??
+        element.tagName
+      );
     });
   /** The focus once it lands on `wanted` within two seconds, or wherever it is then. */
   const settled = async (wanted: string) =>
@@ -1483,6 +1520,16 @@ test("a thread dismissed from the selection bar, or moved back to the Inbox from
       .toBe(wanted)
       .then(() => wanted)
       .catch(() => focused());
+  /** The item after `id` in the list as it is drawn now, else the item before it: where a press
+   *  on `id` hands the reader on to (dispatch://INFRA-2160, R8), or "Inbox empty state", the
+   *  name of the list's empty message, where `id` is all the list holds. */
+  const handOffFrom = async (id: string) => {
+    const drawn = await rows.evaluateAll((all) =>
+      all.map((row) => row.getAttribute("data-inbox-row") ?? "")
+    );
+    const at = drawn.indexOf(id);
+    return drawn[at + 1] ?? drawn[at - 1] ?? "Inbox empty state";
+  };
   for (const size of [
     { height: 900, width: 1440 },
     { height: 664, width: 390 },
@@ -1490,43 +1537,32 @@ test("a thread dismissed from the selection bar, or moved back to the Inbox from
     await page.setViewportSize(size);
     const where = `Inbox at ${size.width}x${size.height}`;
 
-    // Dismiss: the marked thread leaves this view with the bar, so the focus goes, with no scroll,
-    // to the checkbox of the row that moves up into its place - the row marked last is gone.
+    // Dismiss: the marked thread leaves this view with the bar, so the focus goes to the row of
+    // the item after it in the list.
     await page.goto("/");
     await expect(threads, `${where}: no thread row is listed`).toHaveCount(2);
-    const thread = await threads.first().getAttribute("data-inbox-row");
+    const thread = (await threads.first().getAttribute("data-inbox-row")) ?? "";
+    const next = await handOffFrom(thread);
     await threads.first().getByRole("checkbox").first().check();
-    // The row after the thread, which moves up into its place once the thread goes.
-    const after = await main
-      .locator(`[data-inbox-row="${thread}"]`)
-      .locator("xpath=following::*[@data-inbox-row][1]")
-      .getAttribute("data-inbox-row");
     const dismiss = bar.getByRole("button", { exact: true, name: "Dismiss selected threads" });
     await dismiss.focus();
     await page.keyboard.press("Enter");
     await expect(main.locator(`[data-inbox-row="${thread}"]`)).toHaveCount(0);
     await expect(bar, `${where}: Dismiss left the bar up`).toHaveCount(0);
-    // The dismissed row and the bar were both waited gone above, and `getAttribute` waits for the
-    // checkbox of the row that moved up to attach.
-    const movedUp = await main
-      .locator(`[data-inbox-row="${after}"]`)
-      .getByRole("checkbox")
-      .first()
-      .getAttribute("aria-label");
     // The hand-off may land a moment after the bar goes, so the focus is read until it settles.
-    const afterDismiss = await settled(movedUp ?? "");
-    if (afterDismiss !== movedUp) {
+    const afterDismiss = await settled(next);
+    if (afterDismiss !== next) {
       wrong.push(
-        `${where}: after Enter on Dismiss the focus is on ${afterDismiss}, not on "${movedUp}"`
+        `${where}: after Enter on Dismiss the focus is on ${afterDismiss}, not on "${next}"`
       );
     }
 
-    // Move to Inbox, from the dismissed view: the thread leaves that view with the bar, and it is
-    // the one thread the turn dismissed, so the view is left empty and the focus goes, with no
-    // scroll, to the list column's own stop, named "Inbox list".
+    // Move to Inbox, from the dismissed view: the thread leaves that view with the bar, so the
+    // focus goes to the item after it there, or to the view's empty message when none is left.
     await page.goto("/?show=dismissed");
     const back = main.locator(`[data-inbox-row="${thread}"]`);
     await expect(back, `${where}: the dismissed thread is not listed`).toHaveCount(1);
+    const target = await handOffFrom(thread);
     await back.getByRole("checkbox").first().check();
     const restore = bar.getByRole("button", {
       exact: true,
@@ -1537,7 +1573,6 @@ test("a thread dismissed from the selection bar, or moved back to the Inbox from
     await expect(back).toHaveCount(0);
     await expect(bar, `${where}: Move to Inbox left the bar up`).toHaveCount(0);
     await expect(rows, `${where}: the dismissed view still lists a thread`).toHaveCount(0);
-    const target = "Inbox list";
     const afterRestore = await settled(target);
     if (afterRestore !== target) {
       wrong.push(
@@ -1545,9 +1580,8 @@ test("a thread dismissed from the selection bar, or moved back to the Inbox from
       );
     }
   }
-  // The rule the bar's hand-off is built to: a focus the bar held goes to the row marked last
-  // while the list holds it, else to the row now at its place or the nearest row before it that
-  // the reader can see, else to the list's own stop, and never to the body.
+  // The ruling the bar's hand-off is built to: a press of the bar hands the focus to the item
+  // after the rows it took (R8), or to the view's empty message, and never to the body.
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
 
@@ -12912,10 +12946,15 @@ test("with the agent list refused, the project List's header filters keep each c
 // and it passes in every Chromium and Firefox run there, where the landing is right; at 4f1ad776
 // WebKit's landing at 1440 was whole in 3 of 3 probe runs. So a pass at a fixed head counts only
 // over 8 or more WebKit repeats (the architect, 2026-11-25 21:20Z).
+// INFRA-2160's R8, merged over this row by the architect's ruling of 2026-11-26T10:51Z (option
+// b): the item after the last of the rows a bulk action is on is selected and its row has the
+// keyboard focus, not a control in it. So the landing is read on the row now at the place, and
+// the least scroll by the rows' own boxes: the hand-off shows that row whole at its nearest edge
+// (`landNearest`), and the row marked last is cut by more than its checkbox is.
 // Its engines: the clause of the `webkit` and `firefox` projects that names the rows
 // INFRA-3135's round-28 tester pinned (e2e/playwright.config.ts).
 // SLOW(>=2s): eighty threads seeded, and two Dismiss presses read once the scroll settles.
-test("the Inbox bar's Dismiss with the row marked last cut by 30% at the bottom of the reader's sight shows the checkbox of the row now at the place whole by the least scroll, at 1440 and 390 @firefox @webkit", async ({
+test("the Inbox bar's Dismiss with the row marked last cut by 30% at the bottom of the reader's sight shows the row now at the place whole by the least scroll, at 1440 and 390 @firefox @webkit", async ({
   page,
 }) => {
   test.setTimeout(240_000);
@@ -12957,6 +12996,12 @@ test("the Inbox bar's Dismiss with the row marked last cut by 30% at the bottom 
         top: own?.top ?? Number.NaN,
       };
     }, id);
+  /** The rect of the Inbox row `id` itself, the element R8's landing gives the focus to. */
+  const rowRect = (id: string) =>
+    page.evaluate((id) => {
+      const own = document.querySelector(`[data-inbox-row="${id}"]`)?.getBoundingClientRect();
+      return { bottom: own?.bottom ?? Number.NaN, top: own?.top ?? Number.NaN };
+    }, id);
   const landings: { ok: boolean; text: string }[] = [];
   for (const size of [
     { height: 900, width: 1440 },
@@ -12995,7 +13040,7 @@ test("the Inbox bar's Dismiss with the row marked last cut by 30% at the bottom 
     await settledScrollTop(page.getByTestId("inbox-list"));
     await nextFrames(page);
     const before = await readerSight();
-    const placed = await checkboxRect(upper);
+    const placed = await rowRect(upper);
     const cut = placed.bottom - before.bottom;
     await bar.getByRole("button", { name: /selected threads$/u }).focus();
     await page.keyboard.press("Enter");
@@ -13005,12 +13050,10 @@ test("the Inbox bar's Dismiss with the row marked last cut by 30% at the bottom 
       .poll(
         () =>
           page.evaluate(
-            (id) =>
-              document.activeElement ===
-              document.querySelector(`[data-inbox-row="${id}"] input[type="checkbox"]`),
+            (id) => document.activeElement === document.querySelector(`[data-inbox-row="${id}"]`),
             after
           ),
-        { message: `${where}: the focus is not on the checkbox of the row now at the place` }
+        { message: `${where}: the focus is not on the row now at the place` }
       )
       .toBe(true);
     await settledScrollTop(page);
@@ -13020,7 +13063,7 @@ test("the Inbox bar's Dismiss with the row marked last cut by 30% at the bottom 
     // still, so nothing moves the focus or the rows after this.
     const now = await readerSight();
     // Read in the same settled moment as the sight above, so it is where the press left it.
-    const landed = await checkboxRect(after);
+    const landed = await rowRect(after);
     const scrolled = Math.round(now.scroll - before.scroll);
     landings.push({
       ok:
@@ -13028,8 +13071,8 @@ test("the Inbox bar's Dismiss with the row marked last cut by 30% at the bottom 
         landed.bottom <= now.bottom + 1 &&
         Math.abs(scrolled) <= cut + 1,
       text:
-        `${where}: the checkbox of the row marked last was cut by ${Math.round(cut * 10) / 10} px, ` +
-        `the rows scrolled ${scrolled} px, and the checkbox now at the place stands at top ` +
+        `${where}: the row marked last was cut by ${Math.round(cut * 10) / 10} px, ` +
+        `the rows scrolled ${scrolled} px, and the row now at the place stands at top ` +
         `${Math.round(landed.top)} to bottom ${Math.round(landed.bottom)} in a sight from ` +
         `${Math.round(now.top)} to ${Math.round(now.bottom)}`,
     });
@@ -13170,10 +13213,15 @@ test("at 390 Take out of epic with the rows marked last far below the view and n
 // row marked last cut by 70% at the bottom edge of the Inbox list's box, the bar's Snooze
 // (Tomorrow) lands the focus on the checkbox of the row now at the place in Chromium and Firefox,
 // shown whole by a scroll of the cut (11 px). In WebKit it leaves the focus on the page body.
+// INFRA-2160's R8, merged over this row by the architect's ruling of 2026-11-26T10:51Z (option
+// b): the item after the last of the rows a bulk action is on is selected and its row has the
+// keyboard focus, not a control in it. So the landing is read on the row now at the place, and
+// the least scroll by the rows' own boxes: the hand-off shows that row whole at its nearest edge
+// (`landNearest`), and the row marked last is cut by more than its checkbox is.
 // Its engines: the clause of the `webkit` and `firefox` projects that names the rows
 // INFRA-3135's round-28 tester pinned (e2e/playwright.config.ts).
 // SLOW(>=2s): thirty asks seeded, and one Snooze read once the list's box settles.
-test("the Inbox bar's Snooze with the row marked last cut by 70% at the list's bottom edge shows the checkbox of the row now at the place whole by the least scroll @firefox @webkit", async ({
+test("the Inbox bar's Snooze with the row marked last cut by 70% at the list's bottom edge shows the row now at the place whole by the least scroll @firefox @webkit", async ({
   page,
 }) => {
   test.setTimeout(180_000);
@@ -13207,6 +13255,12 @@ test("the Inbox bar's Snooze with the row marked last cut by 70% at the list's b
         top: own?.top ?? Number.NaN,
       };
     }, id);
+  /** The rect of the Inbox row `id` itself, the element R8's landing gives the focus to. */
+  const rowRect = (id: string) =>
+    page.evaluate((id) => {
+      const own = document.querySelector(`[data-inbox-row="${id}"]`)?.getBoundingClientRect();
+      return { bottom: own?.bottom ?? Number.NaN, top: own?.top ?? Number.NaN };
+    }, id);
   await page.goto("/?group=none");
   await expect.poll(() => page.locator("[data-inbox-row]").count()).toBeGreaterThanOrEqual(20);
   // The rows read once the poll above found the list drawn; they only name the rows marked and
@@ -13230,13 +13284,15 @@ test("the Inbox bar's Snooze with the row marked last cut by 70% at the list's b
   await settledScrollTop(list);
   await nextFrames(page);
   const before = await readerSight();
-  const placed = await checkboxRect(upper);
+  const placed = await rowRect(upper);
   const cut = placed.bottom - before.bottom;
   const trigger = listTrigger(bar, "Snooze selected asks");
   await trigger.focus();
   await page.keyboard.press("Enter");
   await page.keyboard.type("tom");
-  await expect(listOf(trigger).getByRole("option")).toHaveText(["Tomorrow"]);
+  // The Snooze list stands in a menu's place and draws each choice's digit after its words
+  // (dispatch://INFRA-2160, D5), so the option is read by the words it starts with.
+  await expect(listOf(trigger).getByRole("option")).toHaveText([/^Tomorrow/]);
   await page.keyboard.press("Enter");
   await expect(page.locator(`[data-inbox-row="${upper}"]`)).toHaveCount(0, { timeout: 15_000 });
   await expect(page.locator(`[data-inbox-row="${lower}"]`)).toHaveCount(0, { timeout: 15_000 });
@@ -13247,7 +13303,7 @@ test("the Inbox bar's Snooze with the row marked last cut by 70% at the list's b
   // focus or the rows after this.
   const now = await readerSight();
   // Read in the same settled moment as the sight above, so it is where the press left it.
-  const landed = await checkboxRect(after);
+  const landed = await rowRect(after);
   // The focus read once, in that same settled moment: nothing moves it after the box holds still.
   const focused = await page.evaluate(
     (id) => ({
@@ -13255,20 +13311,18 @@ test("the Inbox bar's Snooze with the row marked last cut by 70% at the list's b
         document.activeElement?.getAttribute("aria-label") ??
         document.activeElement?.tagName ??
         "nothing",
-      onMark:
-        document.activeElement ===
-        document.querySelector(`[data-inbox-row="${id}"] input[type="checkbox"]`),
+      onRow: document.activeElement === document.querySelector(`[data-inbox-row="${id}"]`),
     }),
     after
   );
   const scrolled = Math.round(now.scroll - before.scroll);
   const text =
-    `the checkbox of the row marked last was cut by ${Math.round(cut * 10) / 10} px; the focus is on ` +
-    `${focused.name}, the box scrolled ${scrolled} px, and the checkbox now at the place stands at ` +
+    `the row marked last was cut by ${Math.round(cut * 10) / 10} px; the focus is on ` +
+    `${focused.name}, the box scrolled ${scrolled} px, and the row now at the place stands at ` +
     `top ${Math.round(landed.top)} to bottom ${Math.round(landed.bottom)} in a sight from ` +
     `${Math.round(now.top)} to ${Math.round(now.bottom)}`;
   expect(
-    focused.onMark &&
+    focused.onRow &&
       landed.top >= now.top - 1 &&
       landed.bottom <= now.bottom + 1 &&
       Math.abs(scrolled) <= cut + 1,
@@ -13294,6 +13348,11 @@ test("the Inbox bar's Snooze with the row marked last cut by 70% at the list's b
 // held read left it. `@firefox` and `@webkit`: WebKit drew a snoozed row in its band in a commit
 // after its write had settled (builds Job `infra-3135-infra-3135-r30f-s70p`), so the row runs in
 // each engine.
+// INFRA-2160's R8, merged over this row by the architect's ruling of 2026-11-26T10:51Z (option
+// b): the item after the last of the rows a bulk action is on is selected and its row has the
+// keyboard focus, not a control in it, so the landing is read on that row. The reads it holds are
+// the one read's Inbox state (`GET /api/v1/me/inbox?state=inbox`, `inboxRead`), the Inbox's own
+// read since dispatch://INFRA-1152 moved its callers.
 // SLOW(>=2s): thirty asks seeded, and the reads of the Inbox held for two seconds.
 test("the Inbox bar's Snooze with the Inbox's own read held lands while the read is out, on the row now at the snoozed rows' place, and the held read's answer moves nothing once the page has it @firefox @webkit", async ({
   page,
@@ -13324,7 +13383,8 @@ test("the Inbox bar's Snooze with the Inbox's own read held lands while the read
   const unanswered = new Set<Request>();
   page.on("requestfinished", (request) => unanswered.delete(request));
   page.on("requestfailed", (request) => unanswered.delete(request));
-  await page.route(/\/api\/v1\/inbox(?:\?|$)/u, async (route) => {
+  await page.route(inboxRead, async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
     unanswered.add(route.request());
     heldNow += 1;
     await new Promise((settle) => setTimeout(settle, 2_000));
@@ -13335,16 +13395,18 @@ test("the Inbox bar's Snooze with the Inbox's own read held lands while the read
   await trigger.focus();
   await page.keyboard.press("Enter");
   await page.keyboard.type("tom");
-  await expect(listOf(trigger).getByRole("option")).toHaveText(["Tomorrow"]);
+  // The Snooze list stands in a menu's place and draws each choice's digit after its words
+  // (dispatch://INFRA-2160, D5), so the option is read by the words it starts with.
+  await expect(listOf(trigger).getByRole("option")).toHaveText([/^Tomorrow/]);
   await page.keyboard.press("Enter");
-  const landing = inboxRow(page, after).getByRole("checkbox").first();
+  const landing = inboxRow(page, after);
   await expect(landing).toBeFocused({ timeout: 1_500 });
   expect(heldNow, "no read of the Inbox was out when the landing was made").toBeGreaterThan(0);
   await expect(page.locator(`[data-inbox-row="${upper}"]`)).toHaveCount(0);
   await expect(page.locator(`[data-inbox-row="${lower}"]`)).toHaveCount(0);
   // The route lets every held read go, and is taken off, so no later read is held.
   await expect.poll(() => heldNow, { timeout: 15_000 }).toBe(0);
-  await page.unroute(/\/api\/v1\/inbox(?:\?|$)/u);
+  await page.unroute(inboxRead);
   // Each held read's answer reaches the page, and the page draws two frames after the last of
   // them, in which the list adopts it: the focus stays where the landing put it.
   await expect.poll(() => unanswered.size, { timeout: 15_000 }).toBe(0);
@@ -13365,10 +13427,15 @@ test("the Inbox bar's Snooze with the Inbox's own read held lands while the read
 // at 876. Chromium and Firefox show that checkbox whole by the cut alone. The same landing at 30%
 // is the row above; this one is its deeper cut, where the rows the press takes away free the most
 // space above the place.
+// INFRA-2160's R8, merged over this row by the architect's ruling of 2026-11-26T10:51Z (option
+// b): the item after the last of the rows a bulk action is on is selected and its row has the
+// keyboard focus, not a control in it. So the landing is read on the row now at the place, and
+// the least scroll by the rows' own boxes: the hand-off shows that row whole at its nearest edge
+// (`landNearest`), and the row marked last is cut by more than its checkbox is.
 // Its engines: the clause of the `webkit` and `firefox` projects that names the rows
 // INFRA-3135's round-28 tester pinned (e2e/playwright.config.ts).
 // SLOW(>=2s): eighty threads seeded, and one Dismiss read once the box settles.
-test("the Inbox bar's Dismiss with the row marked last cut by 70% at the list's bottom edge shows the checkbox of the row now at the place whole by the least scroll @firefox @webkit", async ({
+test("the Inbox bar's Dismiss with the row marked last cut by 70% at the list's bottom edge shows the row now at the place whole by the least scroll @firefox @webkit", async ({
   page,
 }) => {
   test.setTimeout(180_000);
@@ -13406,6 +13473,12 @@ test("the Inbox bar's Dismiss with the row marked last cut by 70% at the list's 
         top: own?.top ?? Number.NaN,
       };
     }, id);
+  /** The rect of the Inbox row `id` itself, the element R8's landing gives the focus to. */
+  const rowRect = (id: string) =>
+    page.evaluate((id) => {
+      const own = document.querySelector(`[data-inbox-row="${id}"]`)?.getBoundingClientRect();
+      return { bottom: own?.bottom ?? Number.NaN, top: own?.top ?? Number.NaN };
+    }, id);
   await page.goto("/?group=none");
   await expect.poll(() => page.locator("[data-inbox-row]").count()).toBeGreaterThanOrEqual(20);
   // The rows read once the poll above found the list drawn; they only name the rows marked and
@@ -13429,7 +13502,7 @@ test("the Inbox bar's Dismiss with the row marked last cut by 70% at the list's 
   await settledScrollTop(list);
   await nextFrames(page);
   const before = await readerSight();
-  const placed = await checkboxRect(upper);
+  const placed = await rowRect(upper);
   const cut = placed.bottom - before.bottom;
   await bar.getByRole("button", { name: /selected threads$/u }).focus();
   await page.keyboard.press("Enter");
@@ -13442,7 +13515,7 @@ test("the Inbox bar's Dismiss with the row marked last cut by 70% at the list's 
   // focus or the rows after this.
   const now = await readerSight();
   // Read in the same settled moment as the sight above, so it is where the press left it.
-  const landed = await checkboxRect(after);
+  const landed = await rowRect(after);
   // The focus read once, in that same settled moment: nothing moves it after the box holds still.
   const focused = await page.evaluate(
     (id) => ({
@@ -13450,20 +13523,18 @@ test("the Inbox bar's Dismiss with the row marked last cut by 70% at the list's 
         document.activeElement?.getAttribute("aria-label") ??
         document.activeElement?.tagName ??
         "nothing",
-      onMark:
-        document.activeElement ===
-        document.querySelector(`[data-inbox-row="${id}"] input[type="checkbox"]`),
+      onRow: document.activeElement === document.querySelector(`[data-inbox-row="${id}"]`),
     }),
     after
   );
   const scrolled = Math.round(now.scroll - before.scroll);
   const text =
-    `the checkbox of the row marked last was cut by ${Math.round(cut * 10) / 10} px; the focus is on ` +
-    `${focused.name}, the box scrolled ${scrolled} px, and the checkbox now at the place stands at ` +
+    `the row marked last was cut by ${Math.round(cut * 10) / 10} px; the focus is on ` +
+    `${focused.name}, the box scrolled ${scrolled} px, and the row now at the place stands at ` +
     `top ${Math.round(landed.top)} to bottom ${Math.round(landed.bottom)} in a sight from ` +
     `${Math.round(now.top)} to ${Math.round(now.bottom)}`;
   expect(
-    focused.onMark &&
+    focused.onRow &&
       landed.top >= now.top - 1 &&
       landed.bottom <= now.bottom + 1 &&
       Math.abs(scrolled) <= cut + 1,

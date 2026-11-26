@@ -819,8 +819,9 @@ const PLACED_KEYS = Array.from({ length: 20 }, (_, index) => `CORE-${index + 1}`
  *  group's heading is drawn right before, and `last` the row marked last, null where no row is
  *  marked. With `cards`, each row draws a card of its own after its mark, an `<article>` and so a
  *  row nested in it, as an Inbox row draws an ask card. `head` is the list's sticky head, as the
- *  List names its table's. Its `returnFocus` ends at the list's own stop where the hand-off moves
- *  nothing, as the Inbox's does. */
+ *  List names its table's. `to` names the row the page's press hands the reader on to, the target
+ *  its `land` is given (`MarkedPlace`'s `land`), as the Inbox names R8's row. Its `returnFocus`
+ *  ends at the list's own stop where the hand-off moves nothing, as the Inbox's does. */
 function PlacedList({
   cards = false,
   count,
@@ -830,6 +831,7 @@ function PlacedList({
   last,
   leaving = [],
   listed,
+  to,
   undrawn = [],
 }: {
   cards?: boolean;
@@ -841,6 +843,7 @@ function PlacedList({
   last: string | null;
   leaving?: readonly string[];
   listed: readonly string[];
+  to?: string;
   undrawn?: readonly string[];
 }): ReactNode {
   const list = useRef<HTMLUListElement>(null);
@@ -868,7 +871,9 @@ function PlacedList({
                     Group
                   </li>
                 ) : null,
-                <li data-row={key} key={key}>
+                // The row a press hands the reader on to takes the focus itself, as an Inbox row
+                // does: it is a focus stop of its own.
+                <li data-row={key} key={key} tabIndex={key === to ? -1 : undefined}>
                   <input aria-label={`Select ${key}`} type="checkbox" />
                   {cards ? <article aria-label={`Card of ${key}`} /> : null}
                 </li>,
@@ -878,7 +883,15 @@ function PlacedList({
       <SelectionBar
         count={count}
         label="Selected rows"
-        returnFocus={() => (landAtPlace.land() ? null : focusListStop(list.current))}
+        returnFocus={() =>
+          landAtPlace.land(
+            to === undefined
+              ? undefined
+              : () => list.current?.querySelector<HTMLElement>(`[data-row="${to}"]`) ?? null
+          )
+            ? null
+            : focusListStop(list.current)
+        }
       >
         <button type="button">Dismiss</button>
       </SelectionBar>
@@ -1371,6 +1384,60 @@ test("a landing with nothing leaving moves the focus once, onto its mark", () =>
       ["Select CORE-14"]
     );
   } finally {
+    moves.restore();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// INFRA-2160, round 22 (the architect's condition (1) of 2026-11-26 14:20Z), ported by INFRA-4948's
+// R4: where the page names the row its press hands the reader on to (`land`'s `to`, R8's row in
+// the Inbox) and the list has not drawn it yet, the focus waits on the list's own stop, with no
+// scroll: not on the body, not on the mark of the row marked last, which is still drawn here, and
+// with no scroll to the place. The list draws that row a frame later, and the landing gives it the
+// focus then, shown whole at its nearest edge, which here, 400 to 500 px down a 768 px window,
+// scrolls nothing.
+test("a landing on a row the list draws a frame later holds the focus on the list's own stop with no scroll, and gives that row the focus once it is drawn", async () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(
+    <PlacedList count={1} last="CORE-13" listed={PLACED_KEYS} to="CORE-14" undrawn={["CORE-14"]} />
+  );
+  const moves = watchMoves();
+  const scroll = spyOn(window, "scrollBy").mockImplementation(() => {});
+  try {
+    pressInBar("Dismiss");
+    const from = moves.focused.length;
+    view.rerender(
+      <PlacedList
+        count={0}
+        last="CORE-13"
+        listed={PLACED_KEYS}
+        to="CORE-14"
+        undrawn={["CORE-14"]}
+      />
+    );
+    expect(screen.getByRole("list", { name: "Rows" })).toHaveFocus();
+    await nextFrame();
+    view.rerender(<PlacedList count={0} last="CORE-13" listed={PLACED_KEYS} to="CORE-14" />);
+    const landing = document.querySelector<HTMLElement>('[data-row="CORE-14"]');
+    expect(landing).not.toBeNull();
+    expect(landing).toHaveFocus();
+    // The stop, then the row, each with no scroll of the engine's own; and no scroll of the page's.
+    expect(
+      moves.focused
+        .slice(from)
+        .map(({ options, target }) => [
+          target.dataset.row ?? target.getAttribute("aria-label"),
+          options?.preventScroll,
+        ])
+    ).toEqual([
+      ["Rows", true],
+      ["CORE-14", true],
+    ]);
+    expect<readonly unknown[]>(scroll.mock.calls).toEqual([]);
+    expect(moves.scrolled).toEqual([]);
+  } finally {
+    scroll.mockRestore();
     moves.restore();
     view.unmount();
     laidOut();

@@ -1,5 +1,8 @@
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import { scrollToNearest } from "../../components/focus-place";
+import type { LandingTarget } from "../../components/SelectionBar";
+import { focusOnDocument } from "../shell/roving";
 import { answerDraft } from "./answer-drafts";
 import type { InboxRoute } from "./inbox-route";
 import { ROW_ATTRIBUTE } from "./inbox-row";
@@ -20,6 +23,48 @@ export interface PlacedRow {
 interface Neighbours {
   above: string | undefined;
   below: string | undefined;
+}
+
+/** The list's empty message: what a hand-off gives the focus to when the reader's press leaves no
+ *  row (R8). */
+const EMPTY_SELECTOR = "[data-inbox-empty]";
+
+/** Where a hand-off sends the reader: a row, by its `rowId`, or null for the list's empty
+ *  message. */
+type HandOffTarget = string | null;
+
+/** One press of the selection bar's on rows of the list, and where it sends the reader. */
+interface HandOff {
+  /** The rows the press is on, by `rowId`. */
+  readonly acted: ReadonlySet<string>;
+  readonly target: HandOffTarget;
+  /** What held the focus as the reader pressed, which still holding it when the press lands
+   *  says they are where they were. */
+  readonly focused: Element | null;
+  /** The row the column showed as the reader pressed, by `rowId`. */
+  readonly selected: string | undefined;
+}
+
+/**
+ * The row the reader goes to after acting on the rows `acted` (R8), in `drawn`, the rows as the
+ * reader sees them: the first row after the last acted one, else the nearest row before it that
+ * was not acted on, else none. A row the action is on is never the answer, so a bulk action's
+ * rows are passed over together - for rows that stand together, the row before the first of
+ * them - and a folded band's rows are not in `drawn` at all. None too where no acted row is
+ * drawn, since there is then no place to go on from.
+ */
+function itemAfter(drawn: readonly PlacedRow[], acted: ReadonlySet<string>): string | undefined {
+  const ids = drawn.map(({ row }) => rowId(row));
+  let last = ids.length - 1;
+  while (last >= 0 && !acted.has(ids[last] ?? "")) last -= 1;
+  if (last === -1) return undefined;
+  const after = ids[last + 1];
+  if (after !== undefined) return after;
+  for (let before = last - 1; before >= 0; before -= 1) {
+    const id = ids[before];
+    if (id !== undefined && !acted.has(id)) return id;
+  }
+  return undefined;
 }
 
 export interface PaneSelectionOptions {
@@ -44,6 +89,9 @@ export interface PaneSelectionOptions {
    *  The list keeps this record for its own motion hold, and the selection is answered against
    *  exactly the rows in it. */
   presented: RefObject<readonly PlacedRow[]>;
+  /** This list's own column - its rows, or its empty message - where a hand-off's target is
+   *  looked up, so the drawer's list never reaches into the page under it. */
+  region: RefObject<HTMLElement | null>;
   /** Ask ids whose own snooze write is out. */
   snoozing: ReadonlySet<string>;
 }
@@ -72,11 +120,31 @@ export interface PaneSelection {
   /** Where the selection goes when the row it is on leaves the bands: the row below where that
    *  one stood, else the row above it, read off the list as it stood while it still held it. */
   nextAfterSelected: () => string | undefined;
+  /** At a press of the selection bar that takes rows away, before any optimistic write takes
+   *  its rows `ids` off the list: where the reader goes is read off the list as they pressed. */
+  beginHandOff: (ids: readonly string[]) => void;
+  /** Once the press has taken the rows `ids` away (every id it took): beside the column the row
+   *  after them is selected, and the hand-off waits for the bar's landing to take its target
+   *  (`takeHandOff`), while the reader has not moved on. */
+  landHandOff: (ids: readonly string[]) => void;
+  /** Dispatch refused the press on `ids` whole: its rows are back, and nobody is sent anywhere. */
+  dropHandOff: (ids: readonly string[]) => void;
+  /** Takes the landed hand-off whose target has not taken the focus yet off the record, and
+   *  answers that target - the row after the rows acted on, or the list's empty message - as a
+   *  reading of the element this list draws for it, null while it draws none; undefined where no
+   *  hand-off is waiting. The bar of selected rows lands it itself (`SelectionBar`'s
+   *  `useLastMarkedPlace`): once the rows its press takes away have gone and the target is drawn,
+   *  with the list's own stop holding the focus until then. So one landing runs per press
+   *  (`Inbox.tsx`'s `returnFocus`). */
+  takeHandOff: () => LandingTarget | undefined;
 }
 
 /**
  * The Inbox reading column's selection: which row the column shows, how the keys and the
- * address move it, and what keeps it on a question whose row has gone.
+ * address move it, and what keeps it on a question whose row has gone. And, in both modes, the
+ * hand-off after a press of the selection bar that takes rows away (R8): the row after the rows
+ * the press is on is selected beside the column, and its row takes the keyboard focus beside it
+ * and below its width alike, through the bar's own landing.
  *
  * The address holds the selection (`?item=`), so a reload or a link keeps the reader's place;
  * below the column's width, and in the drawer, there is no selection and nothing is written.
@@ -90,6 +158,7 @@ export function usePaneSelection({
   openFoldedBand,
   paneShown,
   presented,
+  region,
   snoozing,
 }: PaneSelectionOptions): PaneSelection {
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
@@ -184,6 +253,149 @@ export function usePaneSelection({
           ) ?? null),
     [listRef, selectedId]
   );
+
+  /** The bar's presses begun and not yet landed: a Snooze whose write is out. */
+  const begun = useRef<readonly HandOff[]>([]);
+  /** The hand-off that has landed and whose target the bar's landing has not taken yet. */
+  const focusTo = useRef<HandOff | undefined>(undefined);
+  /** The row a hand-off has just selected (`landHandOff`, and the settling effect's hand-on to a
+   *  press still in the air), which the selection's keeping on screen (below) leaves to the bar's
+   *  landing: it is selected as the reader acts, while the rows acted on may still stand above it,
+   *  and a scroll to it there would carry the view past their place by their height once they have
+   *  gone - beside the column the bar's Dismiss carried the list's box 162 px, the height of the
+   *  two rows it took away, past the cut of the row marked last (#4304's builds Job
+   *  `infra-2160-r22-l-qs6mx`). */
+  const selectedByHandOff = useRef<string | undefined>(undefined);
+  /** Whether the list still draws any row of `acted`. */
+  const drawsAny = (acted: ReadonlySet<string>): boolean =>
+    presented.current.some((placed) => acted.has(rowId(placed.row)));
+  /** Takes the begun press on rows that include every one of `ids` off the record, and gives it
+   *  back, or undefined where none was begun on them. */
+  const takeBegun = (ids: readonly string[]): HandOff | undefined => {
+    const handOff =
+      ids.length === 0
+        ? undefined
+        : begun.current.find((each) => ids.every((id) => each.acted.has(id)));
+    if (handOff !== undefined) begun.current = begun.current.filter((each) => each !== handOff);
+    return handOff;
+  };
+  /**
+   * Where a press goes once it lands when the row it began with has gone meanwhile: the row
+   * after the acted ones while the list still draws them, and, beside the column, the row below
+   * where the selected one stood, else the row above, else the first. Undefined where nothing
+   * says where the row stood.
+   */
+  const targetNow = (acted: ReadonlySet<string>): HandOffTarget | undefined => {
+    const visible = presented.current;
+    if (drawsAny(acted)) return itemAfter(visible, acted) ?? null;
+    if (!paneShown || selectedNow.current === undefined || !acted.has(selectedNow.current)) {
+      return visible.length === 0 ? null : undefined;
+    }
+    const next = nextAfterSelected();
+    if (next !== undefined && visible.some((placed) => rowId(placed.row) === next)) return next;
+    const first = visible[0];
+    return first === undefined ? null : rowId(first.row);
+  };
+  /**
+   * Whether the reader is still where they pressed, so the landing may move them: beside the
+   * column the selection is still on a row acted on, or on the row the press sends them to, or
+   * where it was as they pressed - or on nothing, where the press leaves no row and sends them to
+   * the empty message, since a bar's Snooze that takes the selected row with the last of the rest
+   * has the settling effect leave the selection with nothing before its write's landing hands
+   * the reader on (`Inbox.tsx`); below it the focus is on nothing, in a row acted on or the row it
+   * sends them to, or still on what held it as they pressed. A reader who has walked off -
+   * another row selected, the focus somewhere of their own - is left where they are.
+   */
+  const stillThere = (handOff: HandOff): boolean => {
+    const { acted, target } = handOff;
+    if (paneShown) {
+      const now = selectedNow.current;
+      if (now === undefined) return target === null;
+      return acted.has(now) || now === target || now === handOff.selected;
+    }
+    if (focusOnDocument()) return true;
+    const active = document.activeElement;
+    const row = active?.closest<HTMLElement>(`[${ROW_ATTRIBUTE}]`)?.getAttribute(ROW_ATTRIBUTE);
+    return (
+      (row !== null && row !== undefined && (acted.has(row) || row === target)) ||
+      (handOff.focused !== null && active === handOff.focused)
+    );
+  };
+
+  const beginHandOff = (ids: readonly string[]): void => {
+    const acted = new Set(ids);
+    begun.current = [
+      ...begun.current.filter((handOff) => !ids.some((id) => handOff.acted.has(id))),
+      {
+        acted,
+        focused: document.activeElement,
+        selected: selectedNow.current,
+        target: itemAfter(presented.current, acted) ?? null,
+      },
+    ];
+  };
+
+  const dropHandOff = (ids: readonly string[]): void => {
+    takeBegun(ids);
+  };
+
+  const landHandOff = (ids: readonly string[]): void => {
+    const began = takeBegun(ids);
+    const acted = began?.acted ?? new Set(ids);
+    // The row the press began with, while the list still draws it; else where the press goes
+    // read now, since the server may have taken that row away meanwhile.
+    const target =
+      began !== undefined &&
+      (began.target === null ||
+        presented.current.some((placed) => rowId(placed.row) === began.target))
+        ? began.target
+        : targetNow(acted);
+    if (target === undefined) return;
+    const handOff: HandOff = {
+      acted,
+      focused: began?.focused ?? null,
+      selected: began?.selected,
+      target,
+    };
+    if (!stillThere(handOff)) return;
+    // The empty message is no row to select. Beside the column, a selected row the press took
+    // off the list goes with the selection, so the column shows nothing once nothing is left. A
+    // row the list still draws - a dismiss whose rows go at the next commit - keeps the
+    // selection, which leaves with it as the settling effect hands it on.
+    if (paneShown && target !== null) {
+      // Its own landing shows the row once the rows acted on have gone (`selectedByHandOff`). The
+      // settling effect has already handed the selection to it where a snooze took the selected
+      // row away with the rest.
+      if (target !== selectedNow.current) {
+        selectedByHandOff.current = target;
+        select(target);
+      }
+    } else if (paneShown && !drawsAny(acted) && acted.has(selectedNow.current ?? "")) {
+      select(undefined);
+    }
+    focusTo.current = handOff;
+    // The target can wait on a commit still to come - the empty message is drawn once the acted
+    // rows go - and the reader's next press says they have moved on without it.
+    const movedOn = () => {
+      if (focusTo.current === handOff) focusTo.current = undefined;
+      document.removeEventListener("keydown", movedOn, true);
+      document.removeEventListener("pointerdown", movedOn, true);
+    };
+    document.addEventListener("keydown", movedOn, true);
+    document.addEventListener("pointerdown", movedOn, true);
+  };
+
+  const takeHandOff = (): LandingTarget | undefined => {
+    const handOff = focusTo.current;
+    if (handOff === undefined) return undefined;
+    focusTo.current = undefined;
+    // The element the target names in this list, the row or the empty message, read when the
+    // bar's landing asks for it.
+    const { target } = handOff;
+    const selector =
+      target === null ? EMPTY_SELECTOR : `[${ROW_ATTRIBUTE}="${CSS.escape(target)}"]`;
+    return () => region.current?.querySelector<HTMLElement>(selector) ?? null;
+  };
 
   /**
    * What the column shows this commit, given the selected row among the ones the list renders
@@ -292,40 +504,59 @@ export function usePaneSelection({
     // took it with others, the server took it away - so the selection goes where that row was
     // heading and the address follows it, down to naming no row at all when the list has none
     // left to show. The list stays where it stands: the row the selection moves to is not
-    // scrolled to.
-    const next = nextAfterSelected();
+    // scrolled to. A press of the bar's still in the air said where as the reader pressed: a
+    // bulk snooze takes its rows at once, and the row below the selected one may be going with it.
+    const handedTo =
+      selectedId === undefined
+        ? undefined
+        : begun.current.find((handOff) => handOff.acted.has(selectedId))?.target;
+    const next = handedTo ?? nextAfterSelected();
     const first = visible[0];
-    select(
-      visible.some((placed) => rowId(placed.row) === next)
-        ? next
-        : first === undefined
-          ? undefined
-          : rowId(first.row)
-    );
+    const handedOn = visible.some((placed) => rowId(placed.row) === next)
+      ? next
+      : first === undefined
+        ? undefined
+        : rowId(first.row);
+    select(handedOn);
     revealNext.current = false;
+    // The row a press still in the air sends the reader to is that press's landing to show
+    // (`selectedByHandOff`).
+    if (handedTo !== undefined && handedOn === handedTo) selectedByHandOff.current = handedTo;
   });
 
   // The selected row is kept on screen as the reader walks the list: the column beside it shows
-  // the row they cannot see otherwise. A selection the settling effect hands on scrolls nothing
-  // (revealNext).
+  // the row they cannot see otherwise. It is shown at its nearest edge by the least scroll, by the
+  // window's and each box's visible edges and not the root's scroll padding (`scrollToNearest`),
+  // as the bar's landing shows its target (`landNearest`), but moves no focus: the reader's focus
+  // can be in the column while `j` and `k` step the selection. A selection the settling effect
+  // hands on scrolls nothing (revealNext), and neither does a row a hand-off selected, which is
+  // that hand-off's own landing to show (`selectedByHandOff`): the address the selection writes
+  // follows on a lane of its own, and the settling effect's write of it again counts as a pick.
   useEffect(() => {
     const reveal = revealNext.current;
     revealNext.current = true;
-    if (!paneShown || selectedId === undefined) {
+    const handed = selectedByHandOff.current;
+    selectedByHandOff.current = undefined;
+    if (!paneShown || selectedId === undefined || selectedId === handed) {
       return;
     }
     if (reveal) {
-      selectedRow()?.scrollIntoView?.({ block: "nearest" });
+      const row = selectedRow();
+      if (row !== null) scrollToNearest(row);
     }
   }, [paneShown, selectedId, selectedRow]);
 
   return {
+    beginHandOff,
+    dropHandOff,
     id: selectedId,
+    landHandOff,
     nextAfterSelected,
     select,
     selectedNow,
     selectedRow,
     showing,
     step,
+    takeHandOff,
   };
 }
