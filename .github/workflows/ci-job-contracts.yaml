@@ -35,11 +35,11 @@ jobs:
       - name: Typecheck contracts
         run: bun run typecheck
         working-directory: packages/contracts
+      # scripts/adopt-api-layout.test.ts runs the real jj in scratch repositories for two cases, and
+      # refuses on GitHub Actions without one.
+      - uses: ./.github/actions/install-jj
       - name: Test contracts
         run: bun run test
-        working-directory: packages/contracts
-      - name: Check the Dispatch API types are generated from the OpenAPI document
-        run: bun run check:api
         working-directory: packages/contracts
       - name: Build contracts
         run: bun run build

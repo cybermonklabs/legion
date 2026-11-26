@@ -16,7 +16,7 @@ const GiB = 1073741824;
 // The run's override (stage4b-sandbox-tree.sh's override_issue over the defaults): 2.95 CPU and
 // 16 GiB a pod.
 const overridden = { ...defaults, issue: { ...defaults.issue, cpu: "2950m", memory: "16Gi" } };
-const defaultPod = { cpu: 3, memory: 19 * GiB };
+const defaultPod = { cpu: 2, memory: 8 * GiB };
 // The obsolete per-role run_resources shape used by the failing rehearsal. Its missing issue key
 // makes the preflight's issue-pod reservation unreadable.
 const legacyPerRoleResources = {
@@ -206,7 +206,7 @@ describe("pool_room", () => {
           conditions: [{ type: "Ready", status: "False" }],
         },
       },
-      // 7.91 CPU and 60 GiB, one issue pod of another project on it and a finished one: room for one more.
+      // 7.91 CPU and 60 GiB, one issue pod of another project on it and a finished one: room for two more.
       node("large", { cpu: "7910m", memory: "60Gi" }),
     ],
   };
@@ -217,8 +217,8 @@ describe("pool_room", () => {
         [{ cpu: "100m", memory: "128Mi" }, { cpu: "200m" }],
         [{ cpu: "2", memory: "64Mi" }]
       ),
-      placed("large", [{ cpu: "3", memory: "19Gi" }]),
-      placed("large", [{ cpu: "3", memory: "19Gi" }], [], "Succeeded"),
+      placed("large", [{ cpu: "2", memory: "8Gi" }]),
+      placed("large", [{ cpu: "2", memory: "8Gi" }], [], "Succeeded"),
       placed("cordoned", [{ cpu: "1", memory: "1Gi" }]),
     ],
   };
@@ -245,22 +245,23 @@ describe("pool_room", () => {
     expect(got.pod).toEqual(defaultPod);
     expect(got.free_nodes.map((n: { node: string; fits: number }) => [n.node, n.fits])).toEqual([
       ["small", 0],
-      ["large", 1],
+      ["large", 2],
     ]);
     expect(got.free_nodes[0].free.cpu).toBeCloseTo(1.92);
-    expect(got.free_nodes[1].free).toEqual({ cpu: 4.91, memory: 41 * GiB });
-    // (16 - 8) / 3 and (70 - 32) GiB / 19 GiB both floor to 2.
-    expect(got.new_pods).toBe(2);
-    expect(got.room).toBe(3);
+    expect(got.free_nodes[1].free).toEqual({ cpu: 5.91, memory: 52 * GiB });
+    // (16 - 8) / 2 and (70 - 32) GiB / 8 GiB both floor to 4.
+    expect(got.new_pods).toBe(4);
+    expect(got.room).toBe(6);
   });
 
   test("is bounded by the tighter of the cpu and memory limits, never below 0", () => {
+    // The memory limit, (40 - 32) GiB / 8 GiB, leaves room for 1, below the cpu limit's 4.
     expect(
       room(nodePool([cpuFloor], { cpu: "16", memory: "40Gi" }, { cpu: "8", memory: "32Gi" }))
         .new_pods
-    ).toBe(0);
+    ).toBe(1);
     expect(room(nodePool([cpuFloor], { cpu: "6" }, { cpu: "8" })).new_pods).toBe(0);
-    expect(room(nodePool([cpuFloor], { cpu: "6" }, { cpu: "8" })).room).toBe(1);
+    expect(room(nodePool([cpuFloor], { cpu: "6" }, { cpu: "8" })).room).toBe(2);
   });
 
   test("bounds nothing when the pool sets no limit", () => {
@@ -282,19 +283,20 @@ describe("two_pods_per_instance", () => {
     const got = decide([
       cpuFloor,
       requirement("karpenter.k8s.aws/instance-cpu", "Lt", "9"),
-      requirement("karpenter.k8s.aws/instance-memory", "Lt", "17000"),
+      requirement("karpenter.k8s.aws/instance-memory", "Lt", "16000"),
     ]);
     expect(got.fit).toBe(false);
     expect(got.reason).toBe(
-      "the NodePool allows at most 16999 MiB an instance, under the 38912 two pods reserve, so no node holds two of the run's pods"
+      "the NodePool allows at most 15999 MiB an instance, under the 16384 two pods reserve, so no node holds two of the run's pods"
     );
   });
 
   test("says no node holds two when the instance-cpu bound is under two pods' worth, an In list included", () => {
-    const got = decide([cpuFloor, requirement("karpenter.k8s.aws/instance-cpu", "In", "4", "5")]);
+    // No instance of the In list meets cpuFloor's Gt 3, so the NodePool carries the list alone.
+    const got = decide([requirement("karpenter.k8s.aws/instance-cpu", "In", "2", "3")]);
     expect(got.fit).toBe(false);
     expect(got.reason).toBe(
-      "the NodePool allows at most 5 vCPUs an instance, under the 6 two pods reserve, so no node holds two of the run's pods"
+      "the NodePool allows at most 3 vCPUs an instance, under the 4 two pods reserve, so no node holds two of the run's pods"
     );
   });
 
@@ -306,7 +308,7 @@ describe("two_pods_per_instance", () => {
     ]);
     expect(got.fit).toBe(true);
     expect(got.reason).toBe(
-      "the NodePool allows instances of up to 16 vCPUs and 65536 MiB, room for two pods (6 vCPUs, 38912 MiB) on paper, so the pods may share a node"
+      "the NodePool allows instances of up to 16 vCPUs and 65536 MiB, room for two pods (4 vCPUs, 16384 MiB) on paper, so the pods may share a node"
     );
   });
 
@@ -314,12 +316,12 @@ describe("two_pods_per_instance", () => {
     expect(decide([cpuFloor])).toEqual({
       fit: null,
       reason:
-        "the NodePool bounds no maximum instance-cpu, so whether two of the run's pods (6 vCPUs, 38912 MiB) can share a node cannot be read from it",
+        "the NodePool bounds no maximum instance-cpu, so whether two of the run's pods (4 vCPUs, 16384 MiB) can share a node cannot be read from it",
     });
     expect(
       decide([cpuFloor, requirement("karpenter.k8s.aws/instance-cpu", "Lt", "17")]).reason
     ).toBe(
-      "the NodePool bounds no maximum instance-memory, so whether two of the run's pods (6 vCPUs, 38912 MiB) can share a node cannot be read from it"
+      "the NodePool bounds no maximum instance-memory, so whether two of the run's pods (4 vCPUs, 16384 MiB) can share a node cannot be read from it"
     );
   });
 });

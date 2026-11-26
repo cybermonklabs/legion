@@ -4,7 +4,7 @@ import type { RecordResponse } from "../../api/types";
 import { quoteAccentBorder, quoteBodyText, textMutedOnCanvas } from "../../theme/classes";
 import { textPrimaryOnCanvas } from "../../theme/shell-classes";
 import { Timestamp } from "../refs/Timestamp";
-import { machineName } from "./machineLogins";
+import { machineName } from "./logic/machineLogins";
 
 const LIFETIME_UNITS: ReadonlyArray<{ seconds: number; unit: string }> = [
   { seconds: 86400, unit: "day" },

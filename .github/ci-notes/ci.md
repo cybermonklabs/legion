@@ -282,7 +282,9 @@ tests read outside the daemon: the contracts fixtures `packages/daemon/internal/
 `packages/daemon/internal/intake/intake_test.go#TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer` and `packages/daemon/internal/intake/intake_test.go#TestAWorkflowRunEnvelopeIsNoFact`
 read, the agents `packages/daemon/internal/prompts/roles_test.go#TestEveryTaskAgentARolePromptDispatchesIsShipped`
 stats, the tools skill `packages/daemon/internal/prompts/roles_test.go#TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI`
-holds roles/mechanics/headless.md to, the merge gate
+holds roles/mechanics/headless.md to, the rule file
+`packages/daemon/internal/prompts/roles_test.go#TestNoReusablePartNamesARepositoryOrLibrary`
+runs over each reusable role part, the merge gate
 `packages/daemon/internal/workflow/engine_test.go#TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries`
 holds the reviewer's prompt to, the GitHub App helper
 `packages/daemon/internal/api/real_github_test.go#runGitHubAppsLib` sources, and the examples and
@@ -309,6 +311,13 @@ stats `agents/<name>.md`.
 With its manifest, which the Stage 1 proof (ci-job-daemon-go.yaml's "Stage 1 live proof" step) reads, they are the files of
 pi-legion this suite reads. The pack and prompt probes, which read the rest of
 it, are the plugin-pack job's.
+
+## daemon_go_tests: The rule file internal/prompts/roles_test.go holds the role parts to
+
+The repository's own rule file, .github/private-names.toml, which
+internal/prompts/roles_test.go's TestNoReusablePartNamesARepositoryOrLibrary reads and
+runs over every reusable role part, since the `legion` binary embeds no rule. A change
+to that file alone changes what the test refuses, so it starts this job.
 
 ## plugin_pack: The plugin-pack job: internal/daemon's three tests of
 
@@ -377,14 +386,23 @@ of the tool specs for the rule and the bounds each tool states. Not pmdoc/schema
 block schema those generated types are the shape of: this job generates that Go from
 packages/contracts/schemas, and reads no file of pmdoc/schema itself.
 
-## contracts: `bun run check:api` renders schemas/dispatch-openapi.json into
+## dispatch_api_types: The two files the Dispatch API types are rendered from
 
-`bun run check:api` renders schemas/dispatch-openapi.json into
-src/dispatch-api.generated.ts and compares, and reads no Go at all
-(`packages/contracts/scripts/gen-api.ts#schemaFile`), so the Go that document is emitted from is not named here:
-a change to it is judged by envoy-go-build's `openapi --check`, whose filter
-(envoy_go_build) selects both that Go and this document, so either one alone
-starts the job.
+packages/contracts/src/dispatch-api.generated.ts, the Dispatch API's TypeScript types,
+is in no commit: every `bun install` renders it from schemas/dispatch-openapi.json
+with scripts/gen-api.ts (the root package.json's postinstall), and so does the
+`typecheck` script of each package that compiles it, so two pull requests
+that each add a route never edit one generated file; every CI typecheck runs after
+the job's install. Only a type check reads it:
+dispatch-api.ts re-exports it with `export type *` and every other import of it is
+an `import type`, so Bun, `bun build`, Vite and Astro erase each of them. A change
+to what a typecheck compiles there is a change to one of those two files, so the gate
+of every job whose tsc program holds the module declares both
+(`.github/scripts/ci_job_reads.py#dispatch_api_types`), and the listing of a program gives the two
+in the module's place (`.github/scripts/ci_ts_listing.py#RENDERED`), so check-ts-filters.sh holds each
+gate to them. The contracts gate takes the whole package. The Go the document is
+emitted from is not named here: a change to it is judged by envoy-go-build's
+`openapi --check`, whose gate declares both that Go and the document.
 
 ## guide_layout_files: The six guides scripts/semantic-line-breaks.guides.test.ts reads, the checker it
 
@@ -407,6 +425,13 @@ test-lib.sh, which each of them sources for `check`, `is` and `summary`.
 Before these the job's filter carried one pattern, '.github/scripts/*', for all of
 them: a change to any one script ran every harness, and 28 of the 66 commits that
 touched that directory since 2026-10-01 changed no Go file (dispatch://INFRA-1413).
+
+## release_push_test: The rule file release-push.sh reads beside itself
+
+`.github/scripts/release-push.sh#leak_guard` finds .github/private-names.toml
+beside itself and runs gitleaks with it, and
+`.github/scripts/release-push.test.sh#leak_rules_into` copies it into each
+fixture checkout it runs a copy of the script from.
 
 ## test: The test job: the script harnesses and the Bun suites of scripts/
 
@@ -1077,13 +1102,19 @@ its own tests read - this package's, and pmdoc's, which one of them names throug
 
 The private-name port harness, in a job of its own: it builds the `legion` binary
 of this head (.github/scripts/check-private-names-port.test.sh, its `go build` of
-./cmd/legion) and holds the rules that binary carries to the frozen shell
-script's verdicts, case for case.
-That build is why this list is as long as it is - legion_command is what the
-binary is made of, the rule file packages/daemon/internal/leakguard embeds among
-it - and why the step has a job: while it was the test job's, the whole closure
-sat on the `test` filter, so a change to one package of the daemon ran thirty-odd
-shell harnesses and the Bun suites of scripts/ with it (dispatch://INFRA-1413).
+./cmd/legion) and holds the rules of .github/private-names.toml, as that binary
+runs them, to the frozen shell script's verdicts, case for case. That build is why
+this list is as long as it is - legion_command is what the binary is made of - and
+why the step has a job: while it was the test job's, the whole closure sat on the
+`test` filter, so a change to one package of the daemon ran thirty-odd shell
+harnesses and the Bun suites of scripts/ with it (dispatch://INFRA-1413).
+
+## private_names_port: The rule file the harness names to the binary
+
+The rule file the harness names to the binary in LEGION_PRIVATE_NAME_RULES_FILE
+(.github/scripts/check-private-names-port.test.sh, its `rule_file` and the line
+that exports it), since the binary embeds none, and reads each rule's description
+out of (its `description=` line).
 
 ## private_names_port: test-lib.sh, which the harness sources for check/is/summary
 
@@ -2685,8 +2716,13 @@ The first-rollout row runs the first-rollout build instead, the newest release b
 that registers its schema numbers: the job pins it by its commit (FIRST_ROLLOUT_COMMIT), the
 resolve step fails when its tag, legion-envoy-v30.20.2, names another commit, and the job builds
 it the same way.
-Each build is cached by its commit and the hash of the script that built it, with its src/ left
-out, since the test reads only the parts the script copies out of it. The job restores each and
+Each build is cached by its commit and the hash of the script that built it. The script removes
+the archive it built in (src/) once it has copied the parts out, since the test reads only those
+parts, so the entry holds the build alone. The `!<dir>/src` line the cache steps' path lists
+carried before left nothing out: actions/cache resolves its list with @actions/glob and
+`implicitDescendants: false`, so `<dir>` yields that one directory and tar archives it whole (a
+round trip of a `!` line under a listed directory kept every file it named: run 45722872215, job
+139585272669). The job restores each and
 saves neither: .github/workflows/ci-caches.yaml's dispatch-builds job builds both on a push to
 main, and again when release-envoy-listener.yaml has tagged a release (it dispatches
 ci-caches.yaml with `only: dispatch-builds`), and saves them in main's scope, which every pull
@@ -2718,8 +2754,8 @@ go commands of the job, and they download and compile the set from nothing. In t
 merge groups after 2026-11-24T08:40Z, the sizing step took 27 s, against 2 s before, when
 the previous build's compile had filled the caches first. In the dispatch-two-builds job of run
 45360231949, the two steps printed 16 and 67 `go: downloading` lines. Each push to main fills
-go-envoy-test with `go test -c -o /dev/null ./...` over the envoy module, so it holds what both
-steps build. Measured with
+go-envoy-test with `go test -count=1 -run '^$' ./...` over the envoy module, which builds the
+test binary of every package and runs no test, so it holds what both steps build. Measured with
 `go list -deps -test -tags twobuild ./cmd/dispatch ./internal/dispatch/store/cmd/connections`
 at main 1b636f3193e, the steps need 626 packages of 80 modules, and `go list -deps -test ./...`
 holds every one. go-envoy's build of the listener and natsd lacks 485 of the packages and 53

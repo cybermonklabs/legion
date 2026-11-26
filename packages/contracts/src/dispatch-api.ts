@@ -12,8 +12,10 @@
  *
  * The wire shapes are generated from the Go route table through `schemas/dispatch-openapi.json`:
  * `dispatch-api.generated.ts` is the one definition of every HTTP request and response body of
- * that table, and this file re-exports it whole. What the route table does not hold is written
- * by hand, one module per area:
+ * that table, and this file re-exports it whole. That module is rendered by every `bun install`
+ * and committed nowhere (`scripts/gen-api.ts`), and it declares types alone, so it is re-exported
+ * with `export type *`: Bun and every bundler erase the line, and only a type check reads the
+ * module. What the route table does not hold is written by hand, one module per area:
  *   - the Dispatch event payloads and the event envelope, which travel the message bus;
  *   - the `GET /ws/live` socket's frames, a route the table does not carry, held against Go by
  *     `fixtures/live/` and the server's `delivery_live_diff_test.go`;
@@ -54,7 +56,7 @@
  * one imports it from there. Every import of this module, and of the package index, answers
  * what it always answered.
  */
-export * from "./dispatch-api.generated";
+export type * from "./dispatch-api.generated";
 export * from "./dispatch-api-asks";
 export * from "./dispatch-api-comments";
 export * from "./dispatch-api-constants";

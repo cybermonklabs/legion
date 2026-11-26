@@ -5,7 +5,7 @@ import { api } from "../../api/client";
 import type { ApproverGrantResp } from "../../api/types";
 import { textSecondaryOnSurface } from "../../theme/shell-classes";
 import { Timestamp } from "../refs/Timestamp";
-import { credentialGrantsQuery } from "./grants";
+import { credentialGrantsQuery } from "./logic/grants";
 import { type RevocableColumn, RevocableList } from "./RevocableList";
 
 /**

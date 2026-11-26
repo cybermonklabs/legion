@@ -71,6 +71,62 @@ none by itself), so it grows only with a change to a module file, until a Go bum
 family again: after a bump the fill finds no entry of the new Go (unless an older version's text
 starts with the new one's, as the workflow's prefix note says) and builds from nothing.
 
+## Why the go-envoy-test fill starts each test binary
+
+The fill used to build each test binary with `go test -c -o /dev/null ./...`, and that left out
+one compile per package that envoy-go then made on every run: the compile of the package's test
+main. go test compiles the test main of a binary it runs and then deletes without DWARF, and the
+test main of a binary `-c` writes with it (cmd/go/internal/test/test.go of go1.27.3 sets the test
+main's OmitDebug to `!testC && !testNeedBinary()`), and the compile's action ID hashes that
+choice (cmd/go/internal/work/exec.go: `omitdebug %v`), so the two are different entries of
+the build cache. The fill now runs `go test -count=1 -run '^$'`, which builds and starts each
+binary as envoy-go's go test does, to the last cached action, and runs no test, since `^$`
+matches none. Every TestMain of the module opens a database, a NATS server or a build only when
+a test asks for one (storetest, testdb, testnats and cmdtest are lazy), so each binary starts and
+exits; the fill has no Postgres, so a TestMain that opened one at its start would fail the fill
+and say so. The natslive build covers the five packages envoy-go's natslive step tests, not
+internal/testnats alone. -count=1 keeps the fill from saving test results, as every reader passes
+it too.
+
+Measured on one tree, each fill followed by an envoy-go that restored what it saved (scratch
+runs 45722872667 before and 45722872215 after; the unit step under `go test -debug-actiongraph`):
+after the `-c` fill the unit step compiled 157 of its 162 test mains again, and after this fill
+none (jobs 139586633736 and 139586508026). The compiles are small, 4.9 s of compiler time in all,
+so the unit step's wall time moved within its noise (1,224 s, then 1,211 s). Its 162 links run
+either way, 78 to 80 s of linker time, since Go caches no test binary. From an empty cache this
+fill's test binaries took 212 s and 199 s (x64, arm64; jobs 139585272567 and 139585272758, the
+whole jobs 4.5 and 4.2 min), against 274 s and 214 s for the `-c` fill (jobs 139585274552 and
+139585275017). On main's entry this fill's jobs took 2.9 and 2.7 min, an 8 s save included (jobs
+139585272770 and 139585272357).
+
+## Why the go-envoy-test fill deletes the module zips
+
+Go reads a module it has extracted from its tree, ~/go/pkg/mod/<module>@<version>. The zip that
+tree came from, under ~/go/pkg/mod/cache/download/<module>/@v/, is read only to extract the tree
+again when it is missing, and by `go mod download` and `go mod verify`, which no job that
+restores this entry runs: a build checks that the tree and its .ziphash exist
+(cmd/go/internal/modfetch/fetch.go, DownloadDir), and the .info, .mod and .ziphash files beside
+the zip stay. So the fill deletes the zips before it saves. A job that does need a zip downloads
+it again, as it downloads a module the entry never held.
+
+Measured in the same runs: the zips were 160 files and 272 MB of the arm64 entry's module cache
+(150 and 210 MB on x64), stored as they are, since a zip does not compress again. The saved entry
+went from 939 MB to 708 MB on arm64 and from 859 MB to 690 MB on x64, though this fill keeps
+about 330 more build cache entries (the test mains and the natslive packages), and envoy-go's
+restore from 20 s to 16 s. On the entry without zips, `GOPROXY=off go list -deps -test ./...`
+passed, so every package of the module and of its tests is served from the trees; with one tree
+removed from a copy of that cache it failed, naming the module it had to download, and on the
+entry with zips the same removal passed, since the zip extracted the tree again.
+
+The zips are not left out by a `!` line in the save's path list. actions/cache resolves its path
+list with @actions/glob and `implicitDescendants: false`
+(@actions/cache's internal/cacheUtils.ts, resolvePaths), so `~/go/pkg/mod` yields that one
+directory, tar archives it whole, and a `!~/go/pkg/mod/cache/download/**/*.zip` line matches no
+path the glob yields and excludes nothing: a save and restore of a module cache with that line
+brought back both of its 2 zips (scratch run 45722872215, job 139585272669). It still changes the
+entry's version, which hashes the path list (getCacheVersion), so every restore of the family
+would have to carry the same line or miss.
+
 ## Why a lookup's save takes the lookup's key
 
 The build can change a hashed file (a go command may add the checksums it fetched to go.sum or

@@ -28,7 +28,7 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildIssuePath } from "../refs/page-routes";
 import { referenceTriggerProps } from "../refs/reference-trigger";
 import { Timestamp } from "../refs/Timestamp";
-import { expansionStorageKey, placeChild, splitWork } from "./architecture-model";
+import { expansionStorageKey, placeChild, splitWork } from "./logic/architecture-model";
 
 function readExpansion(storageKey: string): string[] {
   try {

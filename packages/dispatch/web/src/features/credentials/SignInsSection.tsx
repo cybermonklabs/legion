@@ -5,8 +5,8 @@ import { api } from "../../api/client";
 import type { PersonSignInResp } from "../../api/types";
 import { textSecondaryOnSurface } from "../../theme/shell-classes";
 import { Timestamp } from "../refs/Timestamp";
+import { shortThumbprint, signInsQuery } from "./logic/signins";
 import { type RevocableColumn, RevocableList } from "./RevocableList";
-import { shortThumbprint, signInsQuery } from "./signins";
 
 const columns: readonly RevocableColumn<PersonSignInResp>[] = [
   {

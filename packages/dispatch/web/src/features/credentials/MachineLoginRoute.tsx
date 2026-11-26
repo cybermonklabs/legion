@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 
 import { lazyChunk } from "../shell/chunk-loads";
 import { NotFoundPage } from "../shell/NotFoundPage";
-import { credentialCapabilitiesQuery } from "./capabilities";
+import { credentialCapabilitiesQuery } from "./logic/capabilities";
 
 // Through `lazyChunk` like every route chunk of `app.tsx`: the gate renders this page as soon as
 // the capabilities answer, so a reader is waiting on the download and its failure is one the
