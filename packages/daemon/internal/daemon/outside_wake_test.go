@@ -37,11 +37,11 @@ type owedWork struct {
 	at    time.Time
 }
 
-// bootOwing stops the rig's supervisor and starts a new one over the same database, as restart
-// does, with each claim of owed holding a task queued at its moment, so the owed order of the
-// boot's pass is the test's alone. It runs that pass over the launches the first supervisor left
-// unfinished and the ends its claims record decided (recordedDeaths), and answers the claims the
-// boot read.
+// bootOwing stops the rig's supervisor and starts a new one over the same database, as a
+// daemon's restart does, with each claim of owed holding a task queued at its moment, so the
+// owed order of the boot's pass is the test's alone. It runs that pass over the launches the
+// first supervisor left unfinished and the ends its claims record decided (recordedDeaths), and
+// answers the claims the boot read. restart (message_wake_test.go) boots through it.
 func (r *priorityWakeRig) bootOwing(owed ...owedWork) []supervise.Claim {
 	r.t.Helper()
 	r.sup.stop()

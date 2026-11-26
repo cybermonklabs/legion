@@ -2365,7 +2365,7 @@ func (s sessionStop) send(session string, goneAt time.Time) {
 // resolved, on a goroutine of their own, so start returns, and the API serves, without waiting for
 // any (relaunchUnfinished): every re-adopted claim on another plugin contract is posted its boot
 // stale-plugin relaunch (refreshStalePlugins) before any claim is relaunched, but for one whose
-// record says its process died (recordedDeaths), which is relaunched for that death in the
+// record says its end is decided (recordedDeaths), which is relaunched for that end in the
 // unfinished launches' own pass and order, on this daemon's contract; a claim a refused attempt
 // leaves stale is retried at the orphan sweep's own cadence
 // from then on (reconcileOrphans), not just at this boot pass. A daemon that leaves the controller

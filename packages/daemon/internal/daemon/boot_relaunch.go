@@ -81,7 +81,7 @@ func waitingLaunches(tokens []claim.Token) map[claim.Token]*wakepace.Place {
 // chance, and a claim that had waited most of an hour went back to a random place behind hundreds
 // at each restart (dispatch://INFRA-5482).
 //
-// deaths is the claims whose record says their process died (recordedDeaths), whose relaunches
+// deaths is the claims whose record says their end is decided (recordedDeaths), whose relaunches
 // were the rest of that queue: each still standing over its dead process (recordedDeath) is placed
 // in the queue its claim's class names (supervise.WakeQueue, dispatch://INFRA-5682 R2), a charged
 // death in the first, ahead of the restart's backlog, and an end from outside the pod, which
@@ -347,7 +347,7 @@ func compareOwed(a, b time.Time) int {
 // sweep retries only the releases the store did not take, with the places they were handed
 // (launchUnfinished), since the reconciliation's proof that no predecessor runs still holds.
 //
-// deaths is the claims whose record says their process died (recordedDeaths). They join the first
+// deaths is the claims whose record says their end is decided (recordedDeaths). They join the first
 // pass, each in the queue its claim's class names: a charged death's in the first, ahead of the
 // unfinished launches, and an end from outside the pod's in the second (placeRelaunches). A
 // recorded death needs no reconciliation, since its claim records the process it replaces, so

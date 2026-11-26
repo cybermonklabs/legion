@@ -276,34 +276,15 @@ func TestMessageWakesKeepTheirOrderTheShareAndTheRate(t *testing.T) {
 }
 
 // restart stops the rig's supervisor and starts a new one over the same database, as a daemon's
-// restart does, and runs the boot's pass over the launches the first left unfinished. older's
-// work is owed an hour before priority's, so the owed order alone would launch older first: the
-// pass must place priority in the first queue, where it runs first and says so in its wake line.
+// restart does, and runs the boot's pass over the launches the first left unfinished (bootOwing).
+// older's work is owed an hour before priority's, so the owed order alone would launch older
+// first: the pass must place priority in the first queue, where it runs first and says so in its
+// wake line.
 func (r *priorityWakeRig) restart(older, priority claim.Token) {
 	r.t.Helper()
-	r.sup.stop()
 	// Boot sorts owed work within each queue. Write the competing tasks' owed times explicitly
 	// so equal times or the order the SQL read returns cannot make the priority claim win.
-	if err := r.st.PutDelivery(r.t.Context(), older, supervise.Delivery{ID: "older", Task: "Older work", QueuedAt: wakeOrigin.Add(-time.Hour)}); err != nil {
-		r.t.Fatal(err)
-	}
-	if err := r.st.PutDelivery(r.t.Context(), priority, supervise.Delivery{ID: "later", Task: "Later work", QueuedAt: wakeOrigin.Add(-time.Minute)}); err != nil {
-		r.t.Fatal(err)
-	}
-	r.st = outboxTreeStore(r.t, r.pool)
-	claims, err := r.st.Claims(r.t.Context())
-	if err != nil {
-		r.t.Fatal(err)
-	}
-	r.open()
-	unfinished, err := r.sup.restore(r.t.Context(), claims)
-	if err != nil {
-		r.t.Fatal(err)
-	}
-	s := supervision{supervisor: r.sup, log: quietLogger()}
-	if refused := s.launchUnfinished(r.t.Context(), waitingLaunches(unfinished), recordedDeaths(claims)...); len(refused) != 0 {
-		r.t.Fatalf("boot relaunches refused: %v", refused)
-	}
+	r.bootOwing(owedWork{older, wakeOrigin.Add(-time.Hour)}, owedWork{priority, wakeOrigin.Add(-time.Minute)})
 	wantWakeOrder(r.t, r.run(2), []claim.Token{priority, older})
 	if line, ok := wakeLineOf(r.t, r.logged, priority); !ok || line["queue"] != "message" {
 		r.t.Fatalf("the restart's first launch wrote %v; want the first queue", line)

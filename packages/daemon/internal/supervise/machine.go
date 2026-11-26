@@ -464,10 +464,10 @@ type Claim struct {
 	//     decided and decides it no second time.
 	//
 	// A reader that asks whether a death was charged takes Claim.chargedDeath, which is true of
-	// the first alone: the queue a paced relaunch waits in (WakeQueue), and the launch failure a
-	// death's relaunch charges once (deathLaunchFailureCharged). A reader that asks whether the
-	// end is decided, whichever of the two it was, reads this field itself: died's guard against
-	// a second charge, the boot's choice of the claims whose decision it replays
+	// the first alone: the queue a paced relaunch waits in (WakeQueue). A reader that asks
+	// whether the end is decided, whichever of the two it was, reads this field itself: died's
+	// guard against a second charge, the launch failure a death's relaunch charges once
+	// (deathLaunchFailureCharged), the boot's choice of the claims whose decision it replays
 	// (internal/daemon's recordedDeaths and recordedDeath) and the replay's own guard
 	// (relaunchRecordedDeath), the launch a stop owes (stopOwesLaunch), and the clear a running
 	// verdict writes (reportedProcess). The rule it keeps is written where it is applied (died,

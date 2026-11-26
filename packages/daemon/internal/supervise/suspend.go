@@ -380,10 +380,10 @@ func (m *Machine) suspendNow(ctx context.Context, request RequestSuspend, launch
 
 // stopOwesLaunch is whether a stop of the claim's process owes the role a launch, which a project
 // pause's stop records for the resume (suspendedFor, PauseStop.LaunchOwed): a launch still waiting
-// on the machine (launchMet), or the relaunch of the death the claim's record charges
-// (Claim.DeathCharged). A restart forgets the wake that death parked, and the boot's stop of a
-// paused project can reach the claim before the boot replays the death (RecordedDeath), so the
-// record is what says the launch is owed.
+// on the machine (launchMet), or the relaunch of the end the claim's record says is decided
+// (Claim.DeathCharged), a death's or an end from outside the pod's. A restart forgets the wake
+// that end parked, and the boot's stop of a paused project can reach the claim before the boot
+// replays the end (RecordedDeath), so the record is what says the launch is owed.
 func (m *Machine) stopOwesLaunch() bool {
 	return m.launchMet() || m.claim.DeathCharged
 }

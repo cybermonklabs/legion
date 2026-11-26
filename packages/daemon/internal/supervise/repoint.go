@@ -90,7 +90,9 @@ func (m *Machine) displaced(ctx context.Context, observation runtime.Observation
 // one, so the claim it writes carries the record. cause is who ended the process, in the
 // daemon's words, and fromOutside whether that was something outside the pod, which the record
 // carries from its making (EndedWork.FromOutside): endDisplaced and false for displaced,
-// endFromOutside and true for endedFromOutside.
+// endFromOutside and true for endedFromOutside. An end from outside the pod over an end the
+// claim holds decided (Claim.DeathCharged) records nothing: the first decision of the process
+// stands, with the record it left or with none (endedFromOutside).
 func (m *Machine) recordDisplaced(ctx context.Context, observation runtime.Observation, cause string, fromOutside bool) {
 	// Guarded as repoint's own read is, and for the reason its comment gives
 	// (backstopStalledTurn, noProcessRecorded).
@@ -101,7 +103,11 @@ func (m *Machine) recordDisplaced(ctx context.Context, observation runtime.Obser
 	m.log.Warn("supervise: the process was displaced through no fault of its own, its pod replaced by the daemon, its pod ended by something outside it, or it another runtime's process this daemon takes over; relaunching it uncharged",
 		"incarnation", incarnation, "process", process, "observed", string(observation.Kind),
 		"podEndReading", string(observation.EndReading), "detail", observation.Detail, "cause", cause)
-	m.recordGoneEnd(ctx, cause, "", fromOutside)
+	record := cause
+	if fromOutside && m.claim.DeathCharged {
+		record = noEnd
+	}
+	m.recordGoneEnd(ctx, record, "", fromOutside)
 }
 
 // displacedMidTurn is the sentence the replacement of a displaced process logs the take-back of
@@ -155,28 +161,28 @@ const displacedMidTurn = "the process was displaced mid-turn, its pod replaced b
 // it stands (recordDisplaced), finds nothing confirmed to take back and replaces the process,
 // but records none of the three things below again and writes nothing for them. The claim
 // reads working while its relaunch waits, so the end of the turn, which operators are shown
-// (Claim.LastTurnEnd), would otherwise move to the moment of each such report. A process died
-// decided first (a report read neither way) is no end decided from outside the pod, and a later
-// report of the same pod read as outside, from a restarted daemon or over a relaunch the
-// lifecycle refused, comes here with the end not yet decided as one from outside. Where died
-// recorded what the death ended, that record is of this launch and stays a death's, since
-// neither recordDisplaced nor markFromOutside replaces a record of this launch: the claim stays a
-// charged death (chargedDeath), its relaunch waits in the first queue, and the boot raises it as
-// the death's. Where the death ended nothing worth telling, died recorded nothing, and the record
-// made here is of an end from outside the pod, so from then on the claim reads as a decided end
-// from outside. Either way this writes the claim and leaves the end of the turn where died put
-// it, so the first decision of the process, died's or this one, writes it once.
+// (Claim.LastTurnEnd), would otherwise move to the moment of each such report.
 //
-// With the task back it records three things, before the relaunch, because a parked relaunch
-// writes nothing until its turn; a write the store would not take is owed and the relaunch goes
-// on under it (died states why):
+// The first decision of the process stands. A process died decided first (a report read
+// neither way) is no end decided from outside the pod, and a later report of the same pod read
+// as outside, from a restarted daemon or over a relaunch the lifecycle refused, comes here with
+// the end decided already (Claim.DeathCharged, read on entry). Such a report changes neither
+// that decision nor its type: it records no end of this launch (recordDisplaced) and types none
+// as one from outside the pod (markFromOutside), whether or not died recorded what the death
+// ended, so the claim stays a charged death (chargedDeath), its relaunch waits in the first
+// queue, and the boot raises it as the death's. It writes the claim, records none of the three
+// things below and leaves the end of the turn where died put it. An end is continued uncharged
+// only where the daemon read it as one from outside the pod before died decided it.
+//
+// With the task back, over an end not decided yet (Claim.DeathCharged false on entry), it
+// records three things, before the relaunch, because a parked relaunch writes nothing until its
+// turn; a write the store would not take is owed and the relaunch goes on under it (died states
+// why):
 //
 //   - the end of the turn the end cut off (Claim.LastTurnEnd), as a charged death records it
 //     (chargeDeath), for the reason chargeDeath gives: the agent that turn belonged to is gone
 //     and never ends it, so without that record a later death of the relaunched agent, idle with
-//     nothing pending, would find the dead turn open and be charged against it. It is written
-//     only where the process was not charged already (Claim.DeathCharged false on entry), since
-//     died writes it where it charged the process first;
+//     nothing pending, would find the dead turn open and be charged against it;
 //   - that the ended process is decided (Claim.DeathCharged), the record died keeps for one dead
 //     process, so a later report of that same process — the orphan sweep's, over a claim whose
 //     relaunch the lifecycle refused, or a restarted daemon's first — comes back here, finds the
@@ -209,11 +215,13 @@ func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Obse
 	}
 	var written error
 	if !decided {
-		m.claim.DeathCharged = true
-		if !charged && m.turnOpen() {
-			m.claim.LastTurnEnd = m.deps.Clock.Now()
+		if !charged {
+			m.claim.DeathCharged = true
+			if m.turnOpen() {
+				m.claim.LastTurnEnd = m.deps.Clock.Now()
+			}
+			m.markFromOutside()
 		}
-		m.markFromOutside()
 		written = m.persist(ctx)
 	}
 	_, err := m.replaceProcess(ctx, displacedMidTurn, observation.OutOfMemory, endFromOutside)
@@ -235,8 +243,9 @@ func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Obse
 // this end's cause and moment, as a newer record replaces one still untold (joined), so what the
 // earlier process ended is still told, under the end that came last.
 //
-// A record of this launch that already stands is left as it is, as recordEnd leaves it: the death
-// a report read neither way decided first (died), whose relaunch the boot raises as that death's.
+// A record of this launch that already stands is left as it is, as recordEnd leaves it. A death
+// died decided first never comes here: endedFromOutside types nothing over an end decided on
+// entry, so that death keeps the record died left of it, or its lack of one, and stays a death.
 func (m *Machine) markFromOutside() {
 	held := m.claim.EndedWork
 	if held.Cause != "" && held.Generation == m.claim.Generation {
@@ -282,10 +291,9 @@ func (c Claim) decidedFromOutside() bool {
 // chargedDeath is whether the end the claim holds decided is a death of the claim's own process:
 // died's decision, the death charged or found to have nothing to charge (Claim.DeathCharged), and
 // not an end from outside the pod, which writes the same mark and charges nothing
-// (decidedFromOutside). It is what a reader asking whether a death was charged reads: the queue a
-// paced wake of the claim waits in (WakeQueue), since a relaunch after such an end waits in the
-// second, as a displaced relaunch does (dispatch://INFRA-5682 R2), and whether a raise of a
-// death's relaunch finds its launch failure charged already (deathLaunchFailureCharged).
+// (decidedFromOutside). Its one reader is the queue a paced wake of the claim waits in
+// (WakeQueue): a relaunch after such an end waits in the second, as a displaced relaunch does
+// (dispatch://INFRA-5682 R2).
 func (c Claim) chargedDeath() bool {
 	return c.DeathCharged && !c.decidedFromOutside()
 }
