@@ -266,11 +266,6 @@ test("a press the browser answers inside an atom, past the end of its last line,
       const rtl = `<p style="direction: rtl">${NOTE}${html}</p>`;
       expect(pressPast(rtl), `${past} px past, right to left`).toEqual(after);
     }
-    // An atom the browser draws in two boxes on one line has no line before its last.
-    earlier = new DOMRect(-90, -8, 30, 20);
-    line = new DOMRect(-60, -8, 30, 20);
-    expect(pressPast(`<p>${NOTE}${html}</p>`), "past two boxes on one line").toEqual(after);
-    earlier = undefined;
     // On the end of the atom's last line, inside the line, on the atom's line before its last,
     // and past the right edge of a line that runs right to left, whose end is its left edge.
     const stays = [
@@ -354,4 +349,66 @@ test("a press below an atom's box on the line before its last stays at the atom'
   );
   expect(at).toEqual(AT_NOTE_END);
   expect(at.next).toBeUndefined();
+});
+
+// An atom the browser draws in two boxes on one line, as it draws one that a run of another
+// direction splits, has no line before its last, so a press past the two boxes goes after it.
+test("a press past an atom drawn in two boxes on one line says the caret goes after it", () => {
+  const boxes = [new DOMRect(-90, -8, 30, 20), new DOMRect(-60, -8, 30, 20)];
+  const at = withLines(boxes, () =>
+    pressAt(`<p>${NOTE}<span data-type="html">&lt;name&gt;</span></p>`, (words) => {
+      const atom = words.firstElementChild?.lastElementChild ?? words;
+      return [atom.firstChild ?? atom, "<name>".length];
+    })
+  );
+  expect(at).toEqual({ ...AT_NOTE_END, next: true });
+});
+
+// Chromium draws an atom in one box for each run of one direction, so an atom whose last line
+// holds right-to-left text draws that line in several boxes: inline HTML ending in Hebrew drew its
+// last line as two. The box before the last then stands on the last line, and the line before it
+// is the last box above that line. A press on that earlier line, right of the last line's end,
+// stays inside the atom, at its start.
+test("a press on the line before an atom's last, where the last line holds two boxes, stays at the atom's start", () => {
+  const boxes = [
+    new DOMRect(300, 147, 300, 18),
+    new DOMRect(0, 171, 50, 18),
+    new DOMRect(50, 171, 50, 18),
+  ];
+  const at = withLines(boxes, () =>
+    pressAt(
+      `<p>${NOTE}<span data-type="html">&lt;name&gt;</span></p>`,
+      (words) => {
+        const atom = words.firstElementChild?.lastElementChild ?? words;
+        return [atom.firstChild ?? atom, 2];
+      },
+      [400, 150]
+    )
+  );
+  expect(at).toEqual({ ...AT_NOTE_END, x: 400, y: 150 });
+  expect(at.next).toBeUndefined();
+});
+
+// The boxes of one line come in the order of the text, not of the screen, so the last box can end
+// short of the line's end: a run of the other direction stands after it. The line ends at its
+// greatest right where it runs left to right, and at its least left where it runs right to left. A
+// press past the last box, short of that end, is inside the line and stays at the atom's start.
+test("a press past an atom's last box, short of the end of its line, stays at the atom's start", () => {
+  const cases = [
+    ["ltr", [new DOMRect(-20, -8, 40, 20), new DOMRect(-60, -8, 40, 20)]],
+    ["rtl", [new DOMRect(-20, -8, 40, 20), new DOMRect(20, -8, 40, 20)]],
+  ] as const;
+  for (const [direction, boxes] of cases) {
+    const at = withLines(boxes, () =>
+      pressAt(
+        `<p style="direction: ${direction}">${NOTE}<span data-type="html">&lt;name&gt;</span></p>`,
+        (words) => {
+          const atom = words.firstElementChild?.lastElementChild ?? words;
+          return [atom.firstChild ?? atom, "<name>".length];
+        }
+      )
+    );
+    expect(at, direction).toEqual(AT_NOTE_END);
+    expect(at.next, direction).toBeUndefined();
+  }
 });
