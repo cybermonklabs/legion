@@ -814,8 +814,8 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 		r.token(r.ladder, r.onClaude), r.ladder, r.onClaude,
 		http.StatusConflict, "CLAIM_NOT_ON_OMP", runtime.Backends[runtime.BackendClaude].Name, compactNamesFreshSession)
 
-	// The project's controller is no role a claim token is built from, so the controller's own
-	// door — the only one that names a role at all — refuses it by name, for both operations.
+	// The controller's own door, the only one that names a role at all, takes only the six
+	// workflow roles, so it refuses the project's controller by name, for both operations.
 	r.refusedByController("compact naming role controller", "/legion/v1/claims/compact",
 		api.ClaimRequest{Issue: r.refusing, Role: string(claim.RoleController)},
 		http.StatusBadRequest, "INVALID_ROLE", "the project's controller is none of them")

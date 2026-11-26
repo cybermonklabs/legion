@@ -25,11 +25,11 @@ starts `Your issue's repository is` (`Your issue's repository is <owner>/<name> 
 reaches every repository of those owners.`); that sentence is missing only when your issue
 carries no repository at all.
 Use plain `gh` for GitHub operations.
-`LEGION_GH_OWNERS_DIR` holds one directory for each GitHub owner your role's App is installed on, one more for each owner a configured rename moved a repository away from while the project serves the name it moved to, and one for your issue's own owner.
+`LEGION_GH_OWNERS_DIR` holds a directory for your issue's own owner, and at most one for each other GitHub owner your role's App is installed on. It also holds one for each owner a configured rename moved a repository away from, while the project serves the name it moved to.
 Each directory holds one token of your role's own App, the implement App for the implementer and the merger and the review App for every other role, minted on that owner's installation.
 A token reaches every repository that installation holds, and the daemon makes it reach no less.
 The account that installs the App decides that set.
-Every directory's token is asked for with the same permissions, your role's own, and no directory holds a read-only token: your token writes in every repository your role's App reaches, whichever owner holds it, as it writes in your issue's own.
+The daemon asks for every directory's token with your role's own permissions, and no directory holds a read-only token. Your token writes in every repository your role's App reaches under an owner you hold a directory for, as it writes in your issue's own.
 One directory can hold another owner's token: where your role's App is not installed on an owner a rename moved a repository away from, that owner's directory holds the token of the owner the repository moved to.
 `GH_CONFIG_DIR` names the directory your issue's repository is answered from: its owner's, or, where a configured rename moved it, the directory of the owner it moved to.
 `gh` and `git` pick the directory of the owner of the repository a command acts on — for `gh`, `repos/owner/repo` in `gh api`, a pull request or issue URL, `-R owner/repo`, or `gh repo <command> owner/repo`, and otherwise the repository of the directory you run it in, as gh itself picks it; for `git`, the remote URL's owner — so name the repository whenever it is not your workspace's.

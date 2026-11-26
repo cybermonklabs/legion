@@ -42,8 +42,8 @@ func SecretFilePath(stateDir, name string) string { return filepath.Join(Secrets
 // holds and the daemon asks GitHub to narrow it no further (INFRA-2543). The bundle's default,
 // which GH_CONFIG_DIR names, is the directory repo routes to (ghconfig.RouteDir): its recorded
 // owner's, or, for a repository a configured rename moved, the directory of the owner it moved
-// to. That is the whole of what repo decides: a role writes in every repository its App
-// reaches, whichever owner's it is.
+// to. That is the whole of what repo decides: a role's bundle holds a token for every repository
+// its App reaches, whichever owner's it is.
 // The runtime writes the bundle under the agent's bundle root (LEGION_GH_OWNERS_DIR) and
 // rewrites it from the same function, asked for the same repository, as the leases near their
 // expiry. A call that names no repository takes the first owner the mint answered for, sorted,
