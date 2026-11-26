@@ -9,8 +9,17 @@ body: |-
     on nodes of their own.
 
     Before this release runs, the deployment removes any admission rule that requires the
-    `legion.dev/pool` label on Legion's pods. A pod that runs when the daemon restarts keeps its
-    placement until the daemon replaces it.
+    `legion.dev/pool` label on Legion's pods. It also removes the taint
+    `legion.dev/pool=legion:NoSchedule` from the nodes Legion's pods use, or names its toleration
+    in `scheduling.tolerations`, which the loader accepts: no pod tolerates that taint any more,
+    so where every node carries it, every pod stays Unschedulable, the image probe's included.
+
+    A pod that runs when the daemon restarts keeps its placement until the daemon replaces it. The
+    daemon replaces a repository cache pod whose Sandbox's pod template places it otherwise than
+    the daemon would now, the pool's selector and toleration included, at the first boot, sweep
+    or launch of its repository that finds the pod serving no stream, and keeps the cache's
+    Sandbox and volume; the cache of a repository no live issue record names keeps its placement
+    until its retention deletes it.
 time: 2026-11-26T05:44:08Z
 custom:
     Issue: pods-share-general-nodes

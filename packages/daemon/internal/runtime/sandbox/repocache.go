@@ -135,7 +135,8 @@ func (r *Runtime) cacheManifest(repo ghrepo.Repository) sandbox {
 
 // cachePodTemplate is a cache's pod: one container, cacheContainer, running `legion workspace-init
 // cache` on the runtime's image, under gVisor with the workers' pod security and the probe's
-// placement, mounting its volume at CacheRoot and its Secret's two tokens read-only —
+// placement (which templateMoved holds a stored template to), mounting its volume at CacheRoot and
+// its Secret's two tokens read-only —
 // the provisioning token, as workspace-fetch mounts the issue pod's (LEGION_PROVISION_TOKEN_FILE),
 // and the bearer token its clients present (LEGION_REPOSITORY_CACHE_TOKEN_FILE) — with a memory
 // TMPDIR for the fetch's one-shot credential and a readinessProbe of GET /readyz on
@@ -427,27 +428,31 @@ func (r *Runtime) cacheURL(name string) string {
 
 // reconcileCachePod makes s's pod (again) when it must be: s is Suspended (a fresh create, or one a
 // failed earlier run left Suspended), s's pod template reserves other than the configuration's
-// runtime.kubernetes.repository_cache.resources (templateResized: the operator changed them), or
-// the pod it owns runs an image other than the runtime's (imageDrift), runs as a ServiceAccount
-// other than the configured runtime.kubernetes.pod.service_account (accountDrift: the account is
-// fixed for the pod's life, so a cache pod reaches the new one only by being made again), or has
-// ended (terminal: evicted, say). A pod it would replace while that pod still runs waits until the
-// cache serves no stream (cacheStreams), for either drift: replacing it ends every tar it is
-// sending, which fails each fetch reading one and has the daemon make its issue pod again, so the
-// replacement is left to a later sweep while a tar is sent or queued. It then suspends s when it
-// is not already, waits the old pod out (awaitPodGone), and sets the pod template, on the
-// runtime's image and reservation, and Running in one patch, as relaunch does. The Sandbox and
-// its volume are kept through every replacement: a drifted pod costs a new pod, not a new clone.
-// A Running Sandbox whose template reserves what the configuration does, and whose pod is live on
-// the right image under the right account or not made yet — the controller makes one — is left
-// alone.
+// runtime.kubernetes.repository_cache.resources (templateResized: the operator changed them) or
+// places the pod other than cachePodTemplate places it now (templateMoved: a cache an earlier
+// release made on the retired Legion pool, or the operator changed
+// runtime.kubernetes.scheduling), or the pod it owns runs an image other than the runtime's
+// (imageDrift), runs as a ServiceAccount other than the configured
+// runtime.kubernetes.pod.service_account (accountDrift: the account is fixed for the pod's life,
+// so a cache pod reaches the new one only by being made again), or has ended (terminal: evicted,
+// say). A pod it would replace while that pod still runs waits until the cache serves no stream
+// (cacheStreams), whichever of those replaces it: replacing it ends every tar it is sending, which
+// fails each fetch reading one and has the daemon make its issue pod again, so the replacement is
+// left to a later sweep while a tar is sent or queued. It then suspends s when it is not already,
+// waits the old pod out (awaitPodGone), and sets the pod template, on the runtime's image,
+// reservation and placement, and Running in one patch, as relaunch does. The Sandbox and its
+// volume are kept through every replacement: a drifted pod costs a new pod, not a new clone. A
+// Running Sandbox whose template reserves and places as the configuration does, and whose pod is
+// live on the right image under the right account or not made yet — the controller makes one — is
+// left alone.
 func (r *Runtime) reconcileCachePod(ctx context.Context, s *sandbox, repo ghrepo.Repository) error {
 	pod := r.storedPod(s.Name)
 	owned := ownedBy(pod, s.UID) && pod.DeletionTimestamp == nil
 	_, imageDrifted := imageDrift(pod, r.image)
 	_, accountDrifted := accountDrift(pod, r.pod.ServiceAccount)
 	drifted := imageDrifted || accountDrifted
-	if s.mode() != modeSuspended && !templateResized(s, r.cacheConfig.Resources) && (!owned || (!drifted && !terminal(pod))) {
+	retemplated := templateResized(s, r.cacheConfig.Resources) || templateMoved(s, r.scheduling)
+	if s.mode() != modeSuspended && !retemplated && (!owned || (!drifted && !terminal(pod))) {
 		return nil
 	}
 	if s.mode() != modeSuspended && owned && !terminal(pod) {
@@ -485,6 +490,20 @@ func templateResized(s *sandbox, want corev1.ResourceRequirements) bool {
 		}
 	}
 	return true
+}
+
+// templateMoved is whether s's pod template places the cache's pod other than cachePodTemplate
+// places it under scheduling: a RuntimeClass other than gvisor, or a node selector or tolerations
+// other than scheduling's (nodeSelector, tolerations), an absent and an empty one alike. A cache
+// an earlier release made selects the retired Legion pool's label and tolerates its taint, and the
+// Sandbox controller makes every later pod of the cache from that template, after a drain deletes
+// the pod, say. It reads the template, never the pod: RuntimeClass admission adds the class's own
+// selector and tolerations to the pod, so a pod need not match the template it was made from.
+func templateMoved(s *sandbox, scheduling Scheduling) bool {
+	spec := s.Spec.PodTemplate.Spec
+	return spec.RuntimeClassName == nil || *spec.RuntimeClassName != gvisor ||
+		!equality.Semantic.DeepEqual(spec.NodeSelector, scheduling.NodeSelector) ||
+		!equality.Semantic.DeepEqual(spec.Tolerations, scheduling.Tolerations)
 }
 
 // The states of a repository cache, as legion state shows them and a failed fetch names them.
