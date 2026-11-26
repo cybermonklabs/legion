@@ -80,7 +80,7 @@ func printRenderedLabels(w io.Writer, tasks []eval.Task, seed *eval.Seed) error 
 func writeCalibration(w io.Writer, deployment string, c calibrationResult) string {
 	fmt.Fprintln(w, "## The judge")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "The judge reads each answer with its links rendered as the bar's chips (going/chips RenderAnswer).")
+	fmt.Fprintln(w, "The judge reads each answer as the bar draws it (going/chips RenderAnswer): the first link to each issue as the issue's chip, and a later link to that issue, or a link to another item with words of its own, as those words.")
 	if c.err != nil {
 		fmt.Fprintf(w, "The calibration did not run: %v\n\n", c.err)
 		return "the judge's calibration did not run"

@@ -30,11 +30,12 @@
 // the task's grade says, and reads the run to its end. A change task is graded by the store it
 // leaves (eval.GradeEnd), an answer task by a judge model reading the answer against the task's
 // facts, and every message and comment of the person's by c13's rule (eval.CheckPersonWrites).
-// The judge reads an answer as the person reads it in the bar, with each link rendered as the
-// bar's chip draws it from the store the try left (chips.RenderAnswer); the check of the links it
-// holds reads it as written. A try the judge cannot read is unjudged, neither a pass nor a fail,
-// and is put to the judge again once at the run's end. The tries of one task run before the next
-// task starts, --parallel of them at once.
+// The judge reads an answer as the person reads it in the bar, drawn from the store the try left
+// as the bar draws it (chips.RenderAnswer): the first link to each issue as the issue's chip, and
+// a later link to that issue, or a link to another item with words of its own, as those words; the
+// check of the links it holds reads it as written. A try the judge cannot read is unjudged,
+// neither a pass nor a fail, and is put to the judge again once at the run's end. The tries of
+// one task run before the next task starts, --parallel of them at once.
 //
 // The chat model is the one the server's own settings name, read from run's environment:
 // DISPATCH_AZURE_CHAT_ENDPOINT, DISPATCH_AZURE_CHAT_DEPLOYMENT, DISPATCH_AZURE_CHAT_API_VERSION,

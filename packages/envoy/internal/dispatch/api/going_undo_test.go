@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/going/agent/agenttest"
+	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -624,7 +625,10 @@ func TestUndoOfOneRun(t *testing.T) {
 // reload. Of those, only a write Undo refuses stands; a message and a reason, sent, not undone by
 // design, and a claim and a create that changed nothing are in no count. A change Undo keeps
 // because another writer changed it since the run stands once Undo kept it, and a second press
-// answers it as the first did.
+// answers it as the first did. A reasoned close of which only the reason landed, left unticked
+// while its person approves the other row of its plan, keeps the reason as its row's: the run
+// counts the other row's change alone, and Undo takes that back and names the reason, on the
+// close's row, sent, not undone.
 func TestARunSaysWhetherUndoTakesItBack(t *testing.T) {
 	t.Parallel()
 	rig := newGoingPlanRig(t)
@@ -851,6 +855,83 @@ func TestARunSaysWhetherUndoTakesItBack(t *testing.T) {
 			t.Fatalf("the second press answered %+v with the raced write back sent %d times; want the first press's %+v, sent once", second, writes.Load(), first)
 		}
 		stood(t, "after a second press")
+	})
+
+	// A reasoned close of which only the reason landed waits for its person again beside a rename,
+	// the other row of its plan, and the person approves the rename and leaves the close unticked.
+	// The reason's landing stays the close's row, which keeps the key of that earlier try (its
+	// resumes, goingLandedWrites), so the run counts the rename alone to take back, and Undo writes
+	// the rename back and names the reason, on the close's row, sent, not undone, with no line of a
+	// call that names no row. The test stops the rig's agent loop and is the run's agent until the
+	// close waits again, as partlyLandedWaiting is, then starts the loop again to run the rename.
+	t.Run("a row left unticked after only its reason landed keeps the reason, sent, not undone", func(t *testing.T) {
+		issue, other := rig.issue(t, "Left unticked after its reason landed"), rig.issue(t, "Renamed beside an unticked close")
+		const words = "close Left unticked after its reason landed, saying why, and rename Renamed beside an unticked close"
+		reason := "Shipped in the last release."
+		closing := map[string]any{"issue": issue, "status": "done", "reason": reason}
+		rig.loop.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return proposing(goingChange("dispatch_issue_update", closing), goingChange("dispatch_issue_update", retitle(other, "Renamed by the run")))
+			}
+			return answered("Renamed, and the close left out.")
+		})
+		run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+		rig.waiting(t, run)
+		rig.loop.stop()
+		// Bob renames the other issue after the plan showed it, so the approval leaves the rename
+		// waiting again and runs the close alone.
+		rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+other, map[string]any{"title": "Bob's"})
+		if plan := rig.answer(t, run, "approve", map[string]any{"plan": 1}); !slices.Equal(rowStates(plan), []string{"approved", "waiting"}) {
+			t.Fatalf("the first approval left rows %v, want the close approved and the rename waiting again", rowStates(plan))
+		}
+		// The close's reason lands and its close fails in the server; Bob moves the issue, so the
+		// retry of the key makes the close wait again, the reason already written.
+		claimed := rig.claim(t, "i-unticked-"+issue)
+		if claimed == nil || claimed.ID != run {
+			t.Fatalf("the claim took %+v, want run %s", claimed, run)
+		}
+		var patches atomic.Int32
+		rig.hooks.set(t, http.MethodPatch, "/api/v1/issues/"+issue, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+			if patches.Add(1) == 1 {
+				panic("the close crashed")
+			}
+			inner.ServeHTTP(w, r)
+		})
+		call := goingRouteCall(run, claimed.LeaseToken, 7, 1, "dispatch_issue_update", closing)
+		call.Row = &agentwire.PlanRow{Plan: 1, Row: 0}
+		_, err := rig.call(call)
+		requireAgentCode(t, err, agentwire.CodeCallPanicked, "the call whose close panicked")
+		rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"status": "in_progress"})
+		_, err = rig.call(call)
+		requireAgentCode(t, err, agentwire.CodeRowWaits, "the retry of the key after Bob's change")
+		if err := rig.client.End(context.Background(), agentwire.EndRequest{Run: run, LeaseToken: claimed.LeaseToken, State: agentwire.StateWaiting}); err != nil {
+			t.Fatalf("end the turn waiting: %v", err)
+		}
+		plan := rig.answer(t, run, "approve", map[string]any{"plan": 1, "rows": []map[string]any{{"row": 0, "tick": false}, {"row": 1, "tick": true}}})
+		if !slices.Equal(rowStates(plan), []string{"unticked", "approved"}) {
+			t.Fatalf("the second approval left rows %v, want the close unticked and the rename approved", rowStates(plan))
+		}
+		rig.loop.start(rig.goingAgentRig)
+		if record := rig.ended(t, run, time.Minute); record.state != "done" {
+			t.Fatalf("after the second approval the run ended %s with %q, want done; its calls were told %q", record.state, record.reason, rig.toolResults(t, run))
+		}
+		if reasons, status, title := rig.goingReasonsOn(t, issue, reason), rig.issueRead(t, issue).Status, rig.title(t, other); reasons != 1 || status != "in_progress" || title != "Renamed by the run" {
+			t.Fatalf("%s holds %d reasons and status %s, and %s is titled %q; want the one reason, Bob's status and the rename", issue, reasons, status, other, title)
+		}
+		if got := read(t, run); !got.Undoable || got.UndoneAt != nil || goingUndoCountsOf(got) != (goingUndoCounts{undoable: 1}) {
+			t.Fatalf("before Undo the run reads undoable %v, undone at %v, counts %+v; want the rename to take back and the reason in no count",
+				got.Undoable, got.UndoneAt, goingUndoCountsOf(got))
+		}
+		lines := rig.undone(t, run, "dispatch_issue_update", "dispatch_issue_update")
+		at := slices.IndexFunc(lines, func(line goingUndoLine) bool { return line.Undo == goingUndoWriteBack })
+		if at < 0 || lines[at].Plan != 1 || lines[at].Row != 1 || !lines[at].Outcome.OK || rig.title(t, other) != "Bob's" {
+			t.Fatalf("the undo lines are %+v and %s is titled %q, want the rename of row 1 of plan 1 written back to Bob's", lines, other, rig.title(t, other))
+		}
+		goingReasonOnlyLine(t, lines[1-at], issue)
+		if got := read(t, run); got.Undoable || got.UndoneAt == nil || goingUndoCountsOf(got) != (goingUndoCounts{undone: 1}) {
+			t.Fatalf("after Undo the run reads undoable %v, undone at %v, counts %+v; want the rename taken back and the reason in no count",
+				got.Undoable, got.UndoneAt, goingUndoCountsOf(got))
+		}
 	})
 
 	// Last: partlyLandedWaiting stops the rig's agent loop.

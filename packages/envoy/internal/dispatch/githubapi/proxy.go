@@ -26,10 +26,10 @@ const Prefix = "/api/github/rest/"
 // pull request, an issue (which also answers for a pull request), the check runs of a commit, and
 // the workflow runs (`actions/runs`, the group named runs) whose query names one commit, held to
 // workflowRunsQuery. The App can read more of a repository than that. For a person, the command
-// bar's agent reads some of the rest through the server (api/going_agent_reads.go,
-// goingGitHubReadable): a pull request, its reviews, files and commits; a commit, its checks and
-// statuses; a compare; and contents. No other part of a repository - its hooks, its
-// collaborators, its settings - is read for a person or shown anywhere.
+// bar's agent reads some of the rest through the server, with its github_read
+// (api/going_agent_reads.go, goingGitHubReadable): a pull request, its reviews, files and
+// commits; a commit, its checks and statuses; a compare; and contents. Neither this proxy nor
+// github_read reads any other part of a repository.
 var readable = regexp.MustCompile(`^repos/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/(?:pulls/[0-9]+|issues/[0-9]+|commits/[0-9A-Fa-f]{7,64}/check-runs|(?<runs>actions/runs))$`)
 
 // runsGroup is the index of readable's group that a workflow-runs read fills.
