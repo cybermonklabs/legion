@@ -11,11 +11,18 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // leakCheckChildEnv selects TestLeakCheckChild's case in a child of this test binary.
 const leakCheckChildEnv = "DOCS_LEAK_CHECK_CHILD"
+
+// leakCheckDatabaseEnv names, in a child, the database its parent built for the child's service
+// (buildLeakCheckDatabase): the child only connects to it, so the work under its -test.timeout is
+// its own test and not a database build, whose migration costs what the machine gives it.
+const leakCheckDatabaseEnv = "DOCS_LEAK_CHECK_DATABASE_URL"
 
 // leakCheckHeld keeps the never-shut-down child's service alive until its binary exits.
 var leakCheckHeld *Service
@@ -36,7 +43,10 @@ var leakCheckReported = regexp.MustCompile(`still alive after (\S+)\n`)
 //     it is waiting for, waits it out and passes;
 //   - one service shut down and held 5 s, in a child whose tests end later than its -test.timeout
 //     less leakCheckMargin: the check still gives it leakWaitBudget, since the binary's alarm has
-//     stopped by then (m.Run stops it before TestMain's check runs), and passes;
+//     stopped by then (m.Run stops it before TestMain's check runs), and passes. A child's
+//     -test.timeout covers its test alone: its database is built before the child starts, so a
+//     build slower than the child's timeout - as a migration under -race on a loaded runner is -
+//     leaves the case as it is;
 //   - one service never shut down: the check fails it by the name of the test that built it, and
 //     no later than leakWaitBudget allows, far sooner than the child's deadline, at which a
 //     shut-down service would be given up on.
@@ -55,12 +65,20 @@ func TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown(t *testing
 		want     []string
 		// reportedWithin, when set, bounds how long the check waited before it reported.
 		reportedWithin time.Duration
+		// buildDelay is added to the build of the child's database (buildLeakCheckDatabase).
+		buildDelay time.Duration
 	}{
 		{child: "shut-down-held", timeout: "3m", wantExit: 0, want: []string{
 			"docs: the service built by docs.TestLeakCheckChild was shut down and is still reachable after 30s; waiting for it to be collected until",
 			"docs: 1 services built, 0 still alive after",
 		}},
 		{child: "shut-down-near-the-timeout", timeout: "40s", wantExit: 0, want: []string{"docs: 1 services built, 0 still alive after"}},
+		// The same case on a database whose build takes longer than the child's -test.timeout, as
+		// a build under -race on a loaded runner can: the child's 40 s alarm went off while its
+		// database's migration was still compiling libpg_query (envoy-go-race-docs soak pod
+		// legion-ci-docsfork-soakb1, 2026-11-25). Its timeout keeps the case's shape, 1 s past
+		// leakCheckMargin, and the build takes 1 s longer than that timeout.
+		{child: "slow-database-near-the-timeout", timeout: "31s", buildDelay: 32 * time.Second, wantExit: 0, want: []string{"docs: 1 services built, 0 still alive after"}},
 		{child: "never-shut-down", timeout: "3m", wantExit: 1, want: []string{
 			"docs: 1 services built, 1 still alive after",
 			"docs: a service built by docs.TestLeakCheckChild is still alive and was never shut down",
@@ -69,10 +87,11 @@ func TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown(t *testing
 	} {
 		t.Run(test.child, func(t *testing.T) {
 			t.Parallel()
+			database := buildLeakCheckDatabase(t, test.buildDelay)
 			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 			defer cancel()
 			child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLeakCheckChild$", "-test.timeout="+test.timeout)
-			child.Env = append(os.Environ(), leakCheckChildEnv+"="+test.child)
+			child.Env = append(os.Environ(), leakCheckChildEnv+"="+test.child, leakCheckDatabaseEnv+"="+database.Pool.Config().ConnString())
 			output, err := child.CombinedOutput()
 			exit := 0
 			if err != nil {
@@ -122,7 +141,11 @@ func TestLeakCheckChild(t *testing.T) {
 	if child == "" {
 		t.Skip(leakCheckChildEnv + " is not set: this test is the child of TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown")
 	}
-	database := storetest.Open(t)
+	database, err := store.Open(context.Background(), os.Getenv(leakCheckDatabaseEnv))
+	if err != nil {
+		t.Fatalf("open the database the parent built, %s: %v", leakCheckDatabaseEnv, err)
+	}
+	testcleanup.Add(t, database.Pool.Close)
 	service := New(Deps{
 		Store:     database,
 		Events:    events.NewBroker(),
@@ -136,7 +159,7 @@ func TestLeakCheckChild(t *testing.T) {
 			t.Fatalf("shutdown document service: %v", err)
 		}
 		holdFromTheCheck(service, leakWaitBudget+5*time.Second)
-	case "shut-down-near-the-timeout":
+	case "shut-down-near-the-timeout", "slow-database-near-the-timeout":
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Fatalf("shutdown document service: %v", err)
 		}
@@ -153,6 +176,14 @@ func TestLeakCheckChild(t *testing.T) {
 	default:
 		t.Fatalf("unknown %s case %q", leakCheckChildEnv, child)
 	}
+}
+
+// buildLeakCheckDatabase builds the database a child's service runs on, in the parent, delay later
+// than its build would take.
+func buildLeakCheckDatabase(t *testing.T, delay time.Duration) *store.Store {
+	t.Helper()
+	time.Sleep(delay)
+	return storetest.Open(t)
 }
 
 // holdFromTheCheck keeps service reachable until hold has passed since the end-of-run check began,

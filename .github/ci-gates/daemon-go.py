@@ -67,6 +67,9 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
 ], reads=reads(
     (GO_LEGS_SCRIPT, at(DAEMON_PLAIN_LEGS_JOB, DAEMON_PLAIN_STEP, DAEMON_FILE)),
     (GO_LEGS, f"{GO_LEGS_SCRIPT} reads each leg's packages from it"),
+    (f"{GO_LEGS_GROUPS}/**", f"{GO_LEGS_SCRIPT} reads the groups of a split package's tests from "
+                             f"{GO_LEGS_GROUPS}/<module>/<package>.yaml, one per leg that runs a share of it "
+                             f"({at(DAEMON_RACE_LEGS_JOB, DAEMON_RACE_STEP, DAEMON_FILE)}, internal/daemon)"),
     ("scripts/daemon-contract-order.sh", at(DAEMON_PLAIN_LEGS_JOB, DAEMON_CONTRACT_ORDER_STEP, DAEMON_FILE)),
     ("scripts/e2e/stage1-skeleton.sh", at(DAEMON_PLAIN_LEGS_JOB, "Stage 1 live proof", DAEMON_FILE)),
     ("scripts/e2e/lib/rig.sh", "`scripts/e2e/stage1-skeleton.sh#$root/scripts/e2e/lib/rig.sh` sources it"),

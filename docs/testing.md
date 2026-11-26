@@ -17,7 +17,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   `Receive`, in both modules, waits for one receive from a channel, such as the answer of a call the test started, and sets no span of its own: it gives up 30 s before the binary's deadline (the daemon module's, a quarter of a `-timeout` under 2 minutes, so its waits still wait under a short `-timeout`), writes why to stderr at once and then fails the test, so a call that waits for ever fails by name, even without `-v`, and a call that is merely slow passes; the launcher rig's waits for a role's connection and for its next frame are such waits.
   A row whose verdict is what a call answers, a refusal or a replaced file, waits for it with `Receive`.
   In both modules, `Until` waits until a reading holds and returns it, at `Poll`, and `Context` is a context for a call that takes one, or for a socket's deadline; `packages/envoy`'s `UntilPolling` is `Until` at a pace of the caller's. Like `Receive`, they end at the binary's own deadline less 30 s, the time the failing test's cleanups run in, and take no bound of their own, so a step that is only slow on a loaded machine fails nothing. Under a `-timeout` of 30 s or less that moment has passed before the test starts, so each of them, and the daemon module's `Eventually`, fails at once.
-  The daemon module's `Eventually` and `Until` have no cap, and that has a cost: a wait whose fact never comes holds its test binary until 30 s before the deadline (in the `daemon-go-race` legs, `-timeout 40m`, about 39.5 minutes), and every later `Eventually` or `Until` in that binary then begins past that moment, asks once and fails. Such a give-up line adds ", a moment that had passed before this wait began: the first give-up line in time order is the cause", so read a red package run from its first give-up line in time order: that one names the wait that never held, and the lines of tests that failed after it in 0.00 s are its side effects.
+  The daemon module's `Eventually` and `Until` have no cap, and that has a cost: a wait whose fact never comes holds its test binary until 30 s before the deadline (in `daemon-go-race`, `-timeout 30m`, about 29.5 minutes), and every later `Eventually` or `Until` in that binary then begins past that moment, asks once and fails. Such a give-up line adds ", a moment that had passed before this wait began: the first give-up line in time order is the cause", so read a red package run from its first give-up line in time order: that one names the wait that never held, and the lines of tests that failed after it in 0.00 s are its side effects.
   A loop that is not a wait-for keeps its body: one that runs its check for a whole span rather than stopping at the first success, one that sends or serves on a tick, one that drives a stand-in process's own main loop, and one that retries a compare-and-set.
 
 - A fifo that the code under test must replace without opening it for writing is planted with the daemon module's `internal/testfifo`.
@@ -36,6 +36,11 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   The `switch`, its `default:` arm and the fake's own state stay the caller's, because they are what each test proves: a fake that reads the per-owner token the daemon minted must answer a request it then reads, and a `default:` that logs, that answers 400 or that is the happy path says something a shared arm would take away.
   A server that is no fake GitHub keeps its body, whatever it mentions: the daemon's own API, the issue-sandbox API, a fake Dispatch, a fake secrets broker, a reverse proxy in front of another fake, and a real `git http-backend` CGI behind a TLS proxy.
   A fake a test builds inline, in its own body rather than in a function of its own, is the same skeleton and takes the helper the same way; it is no shared copy, though, so nothing counts it, and most of the two modules' inline fakes still write it out.
+
+- A test of the leak guard, or of code that runs it, names the fixture rule file of `packages/daemon/internal/leakguard/leakguardtest`.
+  `WriteRules` writes the file into a directory of the test's and returns its path, which the test gives `LEGION_PRIVATE_NAME_RULES_FILE`, and `Rules` is the file's text, which a test compiles with `leakguard.LoadRules` where it runs a compiled set itself (`RuleSet.Check`) or hands one to the daemon's branch create.
+  Every name in it is an invented word, and its constants (`RulesHost`, `PairName` and `PairWord`, `Word`, and each rule's class) are what a test puts in the write it checks and looks for in the report, so a Go test of the guard assembles no name of any deployment's rules.
+  It holds no file the guard refuses: a test of a refused rule file builds that file in its own body, often from `Rules` with one change.
 
 - An in-test `go build` in `packages/envoy` goes through `internal/cmdtest`: `Build`, `BuildStamped`, or `BuildCommand` for a build that needs a directory, a target, flags or an environment of its own.
   One body holds `ENVOY_TEST_GO_OVERLAY`, the output and the failure; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
@@ -617,25 +622,30 @@ package, while `go list ./...` and the file disagree. Put a new package in the l
 time fits, longest first; `.github/ci-notes/ci-job-daemon-go.md` says how the legs are balanced.
 
 `packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI runs it only
-under the race detector, once per run, in the race leg `.github/go-legs.yaml` gives it, whose step
+under the race detector, once per run, split by test name over the three race legs
+`.github/go-legs.yaml` gives it, a group of
+`.github/go-legs/packages/daemon/internal/daemon.yaml` each, whose step
 is "Test the concurrent packages under the race detector" (`.github/workflows/ci-job-daemon-go.yaml`,
 job `daemon-go-race-legs`), beside the plain legs; the plain step ("Test the Go daemon") leaves it
-out, and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. The
-figures below were measured while these steps were the `test` job's, but for those of 2026-11-20,
-which are `daemon-go`'s race step's. On CI's runners, while the plain step still ran it, it took at
-most 625 s there over the 49 green main `test` jobs of 2026-11-01 to 2026-11-03, and up to
-733.581 s in the jobs whose race step timed out (job 125688799071). Under `-race` it took up
+out, and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. A
+test you add, rename or delete needs no edit of that file to keep CI green: a test no group names
+runs in the group `.github/scripts/go_legs.py` places it in, the same in every leg, and a name the
+package no longer declares matches nothing, each with a warning on the legs' logs for the next
+rebalance. The
+figures below were measured while these steps were the `test` job's. On CI's runners, while the
+plain step still ran it, it took at most 625 s there over the 49 green main `test` jobs of
+2026-11-01 to 2026-11-03, and up to 733.581 s in the jobs whose race step timed out (job
+125688799071). Under `-race` it took up
 to 570 s over the 51 green `test` jobs of 2026-11-02 and 2026-11-03 that sjawhar/legion#2709
 measured, on main and on pull requests, and ran go test's own ten minutes out on main at
-job 125691048644 of run 41562777668; on a busy machine it took longer still (908 s under
-`-race` on a shared devbox). With the project release's tests it took 1,766.673 s in `daemon-go`'s
-race step at d8582528 (job 136067045968), 1,731.355 s at b9eddd39 (job 136272918493) and
-1,853.104 s at 831a1845 (job 136372026117), and at 81a1bd12 (job 136467164419) it ran into the
-33 minutes the step then gave it, so 1,980.274 s is a lower bound of that run's time, all on
-2026-11-20. On main, without the project release's tests, it took 1,409.674 s to 1,475.337 s in
-that day's merge groups. The race step gives it 40 minutes, that bound plus 21% rounded up, and a
+job 125691048644 of run 41562777668. CI now splits its tests over three race legs, and each leg's
+`-timeout 30m` is that leg's deadline for its group of the tests. With the project release's tests
+the whole package took 1,731.355 s to more than 1,980.274 s in `daemon-go`'s race step on
+2026-11-20, against main's 1,409.674 s to 1,475.337 s that day, so a leg, which runs about a third
+of it, stays well inside its 30 minutes, while the whole package does not fit them. On a busy
+machine it takes longer still (908 s under `-race` on a shared devbox, before those tests), so a
 command that runs the whole package, alone or in a pattern that includes it, passes
-`-timeout 40m`:
+`-timeout 40m`, the 1,980.274 s plus 21% rounded up:
 
 ```sh
 cd packages/daemon

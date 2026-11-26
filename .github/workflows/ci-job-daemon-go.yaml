@@ -347,8 +347,12 @@ jobs:
           job-status: ${{ job.status }}
 
   # The race step's legs, each over its share of .github/go-legs.yaml's daemon-go-race packages,
-  # beside the plain legs.
-  # why: .github/ci-notes/ci-job-daemon-go.md#why-the-race-step-is-a-job-of-its-own
+  # beside the plain legs. Three of them run a group of internal/daemon's tests each, from
+  # .github/go-legs/packages/daemon/internal/daemon.yaml, which go_legs.py prints as the leg's
+  # own -run before the package: that package alone took 616 s on this runner where the four
+  # other packages took 290 s together, and its tests wait rather than compute (the step's CPU
+  # was 60.4% busy of four cores), so its legs are more test slots and not more cores.
+  # why: .github/ci-notes/ci-job-daemon-go.md#why-internaldaemons-tests-run-in-three-legs
   # Its setup is the plain legs', less what only the plain step and Stage 1 read: no uv
   # (internal/runtime/sandbox's), no LEGION_E2E_PG_DSN (Stage 1's) and no LEGION_RUN_FUZZ_ITERS
   # (internal/classify's). The comment
@@ -360,14 +364,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        leg: [1, 2]
+        leg: [1, 2, 3, 4]
     # A step's worst case is its largest measured green duration plus its own -timeout, as
     # daemon-go's says: over the same 158 green daemon-go jobs, the setup's 1.7 min
     # at most, then the Postgres sizing step's 19 s (its cold build of the connections command
     # and the service's restart, as envoy-go-race's job 137890840698 took them), then the race
-    # step's 36.3 and its 40 minutes (the step's own comment says why 40), then the report. That is
-    # under 79 minutes, and 80 is the limit.
-    timeout-minutes: 80
+    # step's 36.3 and its 30 minutes, then the report. That is under 69 minutes, and 70 is the
+    # limit.
+    timeout-minutes: 70
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -381,7 +385,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 80 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 70 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # internal/daemon's, internal/launcher's and internal/intake's store (testpg).
       LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # internal/daemon's broker tests (release_broker_test.go, dispatchcredential_test.go) drive
@@ -507,22 +511,9 @@ jobs:
       # The step carries a package deadline of its own, as the envoy race lanes do: under go
       # test's ten-minute default, internal/daemon, by far the slowest of the five packages, took
       # up to 570 s on the green runs of 2026-11-02 and 2026-11-03 and ran the ten minutes out on
-      # main at job 125691048644 (run 41562777668). The project release's tests run in this step
-      # too, its two move tests among them (TestAProjectMovesToAnotherClusterAndBack took 243 s
-      # without -race in an issue pod on 2026-11-15). With them internal/daemon took 1,766.673 s
-      # on run 44669548677 (job 136067045968, the step 03:55:46Z to 04:25:57Z, 1,811 s) at
-      # d8582528, a head of the pull request that added them, while each of its test binaries
-      # built `legion` four times. The four builds became one (9ac96a1c), and the package still
-      # took 1,731.355 s on run 44731626340 (job 136272918493, the step 12:09:33Z to 12:39:02Z,
-      # 1,769 s) at b9eddd39. It took 1,853.104 s on run 44760054868 (job 136372026117, the step
-      # 15:27:15Z to 15:58:56Z, 1,901 s) at 831a1845, and at 81a1bd12 it ran into the 33 minutes
-      # the step then gave it, with no test failing first, on run 44787767496 (job 136467164419,
-      # the step 18:08:34Z to 18:42:25Z, 2,031 s), so 1,980.274 s is a lower bound of that run's
-      # time. On main, without the project release's tests, the package took 1,409.674 s (run
-      # 44759465127), 1,413.201 s (run 44768586470) and 1,475.337 s (run 44754421273) in the merge
-      # groups of 2026-11-20. The runs of that pull request's heads on 2026-11-20 spread from
-      # 1,731.355 s to more than 1,980.274 s, so the deadline is that lower bound plus 21%,
-      # 2,396 s, rounded up to whole minutes: 40 minutes, 2,400 s.
+      # main at job 125691048644 (run 41562777668). No single test dominates it: a local run timed
+      # 648 tests one after another, the slowest at 44 s. The 30 minutes leave it three times its
+      # slowest run.
       #
       # The -skip is the plugin-pack job's three tests, the ones of internal/daemon that
       # ci_job_reads.py's PLUGIN_PACK_TESTS names, a fourth test of that package loading a plugin
@@ -536,7 +527,7 @@ jobs:
       - name: Test the concurrent packages under the race detector
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go-race ${{ matrix.leg }} ${{ strategy.job-total }} | xargs go test -count=1 -race -timeout 40m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$'
+          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go-race ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$'
         working-directory: packages/daemon
 
       - name: Report the service's peak connections

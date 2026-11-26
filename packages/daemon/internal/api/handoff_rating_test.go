@@ -143,7 +143,7 @@ func TestARatingOnAProductionChecksReportIsRefused(t *testing.T) {
 		reason *string
 	}{{rating: new(3), reason: new("The plan fit the work.")}, {reason: new("")}} {
 		message := refused(t, h.complete(HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "looked", Verdict: "pass",
-			PlanRating: named.rating, PlanReason: named.reason}), http.StatusBadRequest, "PLAN_RATING_UNEXPECTED")
+			PlanRating: named.rating, PlanReason: named.reason, CheckOpenedAt: &checkOpenedAt}), http.StatusBadRequest, "PLAN_RATING_UNEXPECTED")
 		for _, want := range []string{"this report on look 2 of LEGION-208's production check", "only the completion that ends the retro rates the plan", "nothing was recorded"} {
 			if !strings.Contains(message, want) {
 				t.Fatalf("the refusal = %q, want it to say %q", message, want)
@@ -157,7 +157,7 @@ func TestARatingOnAProductionChecksReportIsRefused(t *testing.T) {
 		t.Fatalf("GitHub was asked for %v before the refusals, want nothing: the rating is refused before any read", served)
 	}
 
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "looked", Verdict: "pass"}))
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "looked", Verdict: "pass", CheckOpenedAt: &checkOpenedAt}))
 	got := facts.recorded()
 	if report, ok := got[len(got)-1].(intake.CheckReport); len(got) != 1 || !ok || report.Claim != worker.token {
 		t.Fatalf("facts after the report without the rating = %#v, want %s's one report", got, worker.token)
@@ -849,6 +849,7 @@ func TestALateCompletionWhileTheIssueStandsInRetroEndsNoRetro(t *testing.T) {
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
 	seedApproval(t, h, "LEGION-208", "ccddee")
 	reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
+	markPhaseStarted(t, h, "LEGION-208", claim.RoleReviewer)
 	if got := pluginContractOf(t, h, reviewer.token); got < PlanRatingContract {
 		t.Fatalf("the reviewer's plugin declared contract %d, below PlanRatingContract %d: this case proves nothing", got, PlanRatingContract)
 	}
