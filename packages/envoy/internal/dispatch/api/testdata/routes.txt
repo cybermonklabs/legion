@@ -211,6 +211,7 @@ DELETE /api/v1/projects/{key}/proven-sessions any
 PUT /api/v1/projects/{key}/proven-sessions any
 GET /api/v1/projects/{key}/related any
 POST /api/v1/projects/{key}/related any
+GET /api/v1/reference-targets any
 GET /api/v1/references any
 GET /api/v1/references/questions any
 GET /api/v1/related-checks any
