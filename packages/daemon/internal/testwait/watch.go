@@ -132,7 +132,10 @@ func watchBound(t testing.TB, fn string, at time.Time, span bool) {
 
 // readOnceFailed reads the stacks for b, a span that has just ended, as soon as t reads as failed,
 // asking every failedPoll for readLead; it reads nothing when t has not failed by then, or ends
-// (its end reads them then, when it failed).
+// (its end reads them then, when it failed). It asks t.Failed only while it holds the watch's lock
+// and finds the test not ended: the testing package marks a test done, after its cleanups and so
+// after the watch's end has taken the lock, with no lock of its own, so a call of Failed from this
+// goroutine that could come after that mark would race with it.
 func (w *watch) readOnceFailed(t testing.TB, b bound) {
 	defer func() {
 		w.mu.Lock()
@@ -142,11 +145,12 @@ func (w *watch) readOnceFailed(t testing.TB, b bound) {
 	for until := time.Now().Add(readLead); time.Now().Before(until); time.Sleep(failedPoll) {
 		w.mu.Lock()
 		ended := w.ended
+		failed := !ended && t.Failed()
 		w.mu.Unlock()
 		if ended {
 			return
 		}
-		if t.Failed() {
+		if failed {
 			w.read(t.Name(), b.waiter, b, "as the test read as failed, "+time.Since(b.at).Round(time.Millisecond).String()+" after the end of "+b.String())
 			return
 		}
@@ -173,13 +177,13 @@ func (w *watch) read(name string, waiter int, b bound, when string) {
 }
 
 // end stops t's watch as t ends and, when t failed, prints the latest reading, then a line with
-// when the test ended. When a bound has ended and nothing was read, the stacks are read now, the
-// goroutine that took that bound first, as of the latest such bound: a deadline bound whose timer
-// ran late beyond its lead, or a span that ended no more than readLead ago, whose test failed
-// and ended before the watch asked (t.Fatal runs the cleanups at once, so this is the usual way a
-// span's give-up is read; the waiting goroutine, inside its t.Fatal, still runs through the wait).
-// A span that ended longer ago is not read here: its test did not fail within readLead of its
-// end, so the failure is not that span's give-up.
+// when the test ended. When a bound has ended later than the one the latest reading is of, or
+// nothing was read, the stacks are read now, the goroutine that took that bound first, as of the
+// latest such bound: a deadline bound whose timer ran late beyond its lead, or a span that ended no
+// more than readLead ago, whose test failed and ended before the watch asked (t.Fatal runs the
+// cleanups at once, so this is the usual way a span's give-up is read; the waiting goroutine,
+// inside its t.Fatal, still runs through the wait). A span that ended longer ago is not read here:
+// its test did not fail within readLead of its end, so the failure is not that span's give-up.
 func (w *watch) end(t testing.TB) {
 	failed := t.Failed()
 	now := time.Now()
@@ -192,13 +196,14 @@ func (w *watch) end(t testing.TB) {
 	}
 	var late bound
 	found := false
-	if w.stacks == "" && !w.printed {
+	if !w.printed {
 		for _, b := range w.ends {
 			ended := !now.Before(b.at) && (!b.span || now.Sub(b.at) <= readLead)
 			if ended && (!found || b.at.After(late.at)) {
 				late, found = b, true
 			}
 		}
+		found = found && (w.stacks == "" || late.at.After(w.readOf.at))
 	}
 	w.mu.Unlock()
 	if failed && found {
