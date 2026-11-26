@@ -49,8 +49,14 @@ func initEnd(status corev1.ContainerStatus) *corev1.ContainerStateTerminated {
 // startingAgain is whether a non-zero end of pod's init container status is the kubelet bringing
 // that container back, the pod still coming up, rather than the pod's death: workspace-init inside
 // the grace, in a pod that is still Pending. No init container of a pod that has already succeeded
-// or failed is started again, whatever its own status says it did.
+// or failed is started again, whatever its own status says it did. A container the kubelet lost
+// (the reason ContainerStatusUnknown, which the kubelet writes when the node or its container
+// runtime restarted) is a node loss and never inside the grace: the next launch replaces the pod
+// and keeps its volume.
 func startingAgain(pod *corev1.Pod, status corev1.ContainerStatus) bool {
+	if ended := initEnd(status); ended != nil && ended.Reason == "ContainerStatusUnknown" {
+		return false
+	}
 	return phaseOf(pod) == corev1.PodPending && status.Name == initContainer && status.RestartCount <= initRestartGrace
 }
 
