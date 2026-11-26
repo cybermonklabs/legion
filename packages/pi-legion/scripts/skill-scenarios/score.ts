@@ -148,9 +148,12 @@ const MessageRead = z.looseObject({ message: z.looseObject({ body: z.string() })
 /** One line gh-standin.ts or the `bun` stand-in records: when the call started, the agent that
  * made it when the run named one (`by`, the role rig.sh booted that agent as: a run that boots
  * one agent per role of a loop), its exit, (a gh call that edited the pull request's body) the
- * body the stand-in kept and serves from then on, and (a `bun` call) the directory it ran in and
- * that directory's `git rev-parse HEAD`, empty outside a repository, which a `bun` call recorded
- * before the stand-in kept them does not carry (rig.sh's standins; `ownRun`). */
+ * body the stand-in kept and serves from then on, and (a `bun` call) the directory it ran in,
+ * that directory's `git rev-parse HEAD`, empty outside a repository, and, for a call in no
+ * repository inside a directory named by a full commit id, as `git archive --prefix=<commit>/`
+ * names a read-only copy of that commit, the commit (`copy`), which a call in a repository never
+ * carries. A `bun` call recorded before the stand-in kept its tree carries none of the three
+ * (rig.sh's standins; `ranCheck`). */
 const Call = z.looseObject({
   at: z.string(),
   as: z.string(),
@@ -162,6 +165,7 @@ const Call = z.looseObject({
   body: z.string().optional(),
   cwd: z.string().optional(),
   head: z.string().optional(),
+  copy: z.string().optional(),
 });
 /** One call of the run's calls.jsonl, as `Call` reads it. */
 export type StandInCall = z.infer<typeof Call>;
@@ -881,19 +885,24 @@ export function backwardMoves(runDir: string): DaemonLine[] {
 /** Whether `call` is the run's `bun` stand-in's record of the world's check, `bun greet.ts Ada`
  * (the first two arguments that are not flags, after an optional `run`: a path ending in
  * greet.ts, then `Ada`), made by `role` where the call names the role its pane was booted as
- * (`by`), in a tree whose `git rev-parse HEAD` (the call's `head`) `commit` names, by a prefix of
- * seven digits or more as a review names a head (`namesHead`). A call recorded before the
- * stand-in kept its tree carries no `head`, and is a run at no commit. */
+ * (`by`), in a tree at a commit `commit` names, by a prefix of seven digits or more as a review
+ * names a head (`namesHead`): a repository whose `git rev-parse HEAD` is that commit (the call's
+ * `head`), or, where the call ran in no repository and so its `head` is empty, a read-only copy
+ * of that commit, a directory named by its full id as `git archive --prefix=<commit>/` names one
+ * (the call's `copy`; Verification v47's rule 8 counts a run in that copy as a run at that
+ * commit). A call recorded before the stand-in kept its tree carries no `head`, and is a run at
+ * no commit. */
 function ranCheck(call: StandInCall, role: string, commit: string): boolean {
   if (call.as !== "bun" || call.head === undefined) return false;
   if (call.by !== undefined && call.by !== role) return false;
   const args = call.argv.filter((arg) => !arg.startsWith("-"));
   const [script, name] = args[0] === "run" ? args.slice(1) : args;
-  return (script?.endsWith("greet.ts") ?? false) && name === "Ada" && namesHead(call.head, commit);
+  const tree = call.head === "" ? (call.copy ?? "") : call.head;
+  return (script?.endsWith("greet.ts") ?? false) && name === "Ada" && namesHead(tree, commit);
 }
 /** Whether `result` is its recorder's own run of the world's check (Verification v47's rule 8):
- * a run of it by the recording role in a tree at the result's commit (`ranCheck`), before
- * Dispatch recorded the result. */
+ * a run of it by the recording role in a tree at the result's commit, a repository there or a
+ * read-only copy of that commit (`ranCheck`), before Dispatch recorded the result. */
 export function ownRun(calls: readonly StandInCall[], result: RunResult): boolean {
   const recorded = instant(result.at, "a result's time");
   return calls.some(

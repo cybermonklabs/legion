@@ -2606,6 +2606,7 @@ describe("round_world and the worlds' own text findings", () => {
         'round_world() { printf "%s\\n" "$@" >"$R/round-args"; C1=0123456789abcdef0123;',
         "  worker_pr=1001; worker_pr_url=https://example.invalid/pull/1001; }",
         "fixture_reviewer_commit() { :; }",
+        "fixture_workspace() { :; }",
         "fixture_body() { :; }",
         "fixture_checks() { :; }",
         "fixture_write() { :; }",
@@ -11231,6 +11232,65 @@ sleep() { command sleep 0.05; }`;
     }
   );
 
+  // Catches: a bun call in a read-only copy of a commit, made as the implementer's prompt makes one
+  // (`git archive --prefix=<commit>/ <commit> | tar -x -C "$(mktemp -d)"`), recorded as a run at no
+  // commit, so score.ts's `ranCheck` counts no run there; a copy read off a directory whose name is
+  // 39 hex digits, or 40 characters not all hex; and a call in a repository whose path holds a full
+  // commit id recorded at that id rather than at the repository's own HEAD.
+  test.skipIf(withoutNamespace)(
+    "the bun stand-in records a call in no repository, inside a directory named by a full commit, as a run in a copy of that commit",
+    () => {
+      const work = freshDir("launch-bun-copy");
+      const name = "threads-closed-accept-head-2";
+      const start = path.join(runDirOf(work, name), "cwd");
+      const repo = path.join(start, "a".repeat(40), "tree");
+      mkdirSync(path.join(repo, "docs"), { recursive: true });
+      writeFileSync(path.join(repo, "greet.ts"), "console.log(1);\n");
+      writeFileSync(path.join(repo, "docs", "cli.md"), "# The CLI\n");
+      const git = (...args: string[]) =>
+        spawnChecked(["git", "-C", repo, "-c", "user.name=n", "-c", "user.email=n@n", ...args], {
+          env: childEnv,
+        })
+          .stdout.toString()
+          .trim();
+      git("init", "-q");
+      git("add", "-A");
+      git("commit", "-q", "-m", "a");
+      const commit = git("rev-parse", "HEAD");
+      const short = commit.slice(0, 39);
+      for (const dir of [short, `${short}g`]) mkdirSync(path.join(start, dir));
+      const { run, result, out } = launched(
+        work,
+        name,
+        [
+          'bun="$(dirname "$HOME")/bin/bun"',
+          `d=$(mktemp -d) && git -C ${repo} archive --prefix=${commit}/ ${commit} | tar -x -C "$d"`,
+          `cd "$d/${commit}" && "$bun" -e 0 Ada && cd docs && "$bun" -e 0 Ada`,
+          `cd ${start}/${short} && "$bun" -e 0 Ada && cd ${start}/${short}g && "$bun" -e 0 Ada`,
+          `cd ${repo} && "$bun" -e 0 Ada && echo ran`,
+        ].join("\n"),
+        [],
+        { standins: true }
+      );
+      expect({ code: result.code, out }).toEqual({ code: 0, out: "ran\nexit=0\n" });
+      const bunCalls = readFileSync(path.join(run, "calls.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .filter((call) => call.as === "bun")
+        .map(({ cwd, head, copy }) => ({ cwd, head, copy }));
+      // A record that carries no copy has no `copy` at all: JSON holds no undefined, and an empty
+      // one would fail here.
+      expect(bunCalls).toEqual([
+        { cwd: expect.stringMatching(new RegExp(`^/.+/${commit}$`)), head: "", copy: commit },
+        { cwd: expect.stringMatching(new RegExp(`^/.+/${commit}/docs$`)), head: "", copy: commit },
+        { cwd: path.join(start, short), head: "", copy: undefined },
+        { cwd: path.join(start, `${short}g`), head: "", copy: undefined },
+        { cwd: repo, head: commit, copy: undefined },
+      ]);
+    }
+  );
+
   // Catches: a /tmp one run shares with the next: a file the first run's agent writes to /tmp is
   // absent from the second run's.
   test.skipIf(withoutNamespace)("a file one run writes to /tmp is absent in the next run", () => {
@@ -13750,8 +13810,8 @@ describe("the e2e drives that compose a pane through this rig", () => {
 // world runs rig.sh's own worker_run_world against a real Dispatch server on a Postgres of the
 // caller's (LEGION_TEST_PG_DSN), as `rig.sh run` does — own_dispatch, seed.ts tester-proof, the
 // fixture, plan, pull-request and implement-handoff — and then the seeds its runner adds
-// (tester-result for a review round, review-handoff after an approval); only the issue workspace's
-// jj clone, which nothing here reads, is left out.
+// (tester-result for a review round, review-handoff after an approval). The issue workspace is
+// made too (fixture_workspace, with jj), since the threads-closed rows read where it stands.
 //
 // What a row asserts is named, so a world that drifts fails naming the row. In every world the
 // issue resolves to the world's repository, has left triage for the status its phase shows, holds
@@ -13893,6 +13953,10 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
           "fixture_head_commit",
           "fixture_implement",
           "fixture_test_handoff",
+          "fixture_workspace",
+          "workspace_form",
+          "world_remote",
+          "world_remote_app",
           "fixture_checks",
           "fixture_body",
           "fixture_write",
@@ -13904,7 +13968,6 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
         ].map(fn),
         ownDispatch.replace("database=run_", `database=${WORLD_DATABASE_PREFIX}`),
         definition("fixture_cli"),
-        "fixture_workspace() { :; }",
         ...[
           "worker_repo",
           "worker_base",
@@ -13912,6 +13975,7 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
           "world_author_email",
           "world_login",
           ...WORLD_APPS,
+          "world_remote_vcs",
         ].map(assignment),
         quotedAssignment("text_finding_doc_line"),
         quotedAssignment("text_finding_trigger"),
@@ -14224,6 +14288,32 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
         "show",
         `${commit}:docs/cli.md`,
       ]).stdout.toString();
+    /** Where the world's issue workspace stands: the commit of its `@-`, whether its `@` is empty,
+     * and git's HEAD there, each read with the jj configuration the world's build gave it (rig.sh's
+     * fixture_workspace) and with no snapshot, so the read changes nothing. */
+    const workspaceOf = (world: SeededWorld) => {
+      const ws = path.join(world.run, "ws");
+      const env = {
+        ...childEnv,
+        JJ_CONFIG: path.join(world.run, "jj-setup.toml"),
+        XDG_CONFIG_HOME: path.join(world.run, "state", "home", ".config"),
+      };
+      const read = (argv: string[]) => {
+        const ran = spawnChecked(argv, { cwd: ws, env });
+        expect({ argv, code: ran.exitCode, err: ran.stderr.toString() }).toEqual({
+          argv,
+          code: 0,
+          err: "",
+        });
+        return ran.stdout.toString().trim();
+      };
+      const log = ["jj", "log", "--ignore-working-copy", "--no-graph", "-r"];
+      return {
+        parent: read([...log, "@-", "-T", "commit_id"]),
+        empty: read([...log, "@", "-T", "empty"]),
+        gitHead: read(["git", "rev-parse", "HEAD"]),
+      };
+    };
 
     test("the tester's world: its issue is in testing with the implementer's pass standing, and no concern is true", () => {
       const world = seededWorld("");
@@ -14294,6 +14384,12 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
     // below the reviewer's commit, and no result stands at that commit, so Dispatch says no pass
     // stands at the pull request's head. correct's workflow thread is an inline comment of a
     // `COMMENT` review at the reviewer's commit.
+    // Catches, here and in accept's and crossing's rows: an issue workspace left on the
+    // implementer's commit below the reviewer's, where a pod's stands after the reviewer's push:
+    // every role shares the one workspace and the reviewer pushed from it, so its `@-` is the
+    // reviewer's commit, its `@` an empty change on it, and git's HEAD that commit (rig.sh's
+    // approved_world). The implementer's prompt runs a check in the workspace only where it
+    // stands so.
     test("correct: the reviewer's commit is the head, its sentence false another way, the workflow's comment the one other finding, and no approval or pass stands at it", () => {
       const world = seededWorld("correct");
       expect(issueState(world)).toEqual(expectedState(world, "needs_review", "no"));
@@ -14301,6 +14397,12 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
         noConcern({ ...none, workflow: true, reviewerSentence: true, passBelow: true })
       );
       expect(reviewStates(world)).toEqual(["COMMENTED"]);
+      expect(world.head).not.toBe(implementedOf(world));
+      expect(workspaceOf(world)).toEqual({
+        parent: world.head,
+        empty: "true",
+        gitHead: world.head,
+      });
     }, 300_000);
 
     test("accept: the reviewer's commit is the head and makes the document true, no finding is left, and no approval or pass stands at it", () => {
@@ -14308,6 +14410,12 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
       expect(issueState(world)).toEqual(expectedState(world, "needs_review", "no"));
       expect(concerns(world)).toEqual(noConcern({ ...none, passBelow: true }));
       expect(reviewStates(world)).toEqual([]);
+      expect(world.head).not.toBe(implementedOf(world));
+      expect(workspaceOf(world)).toEqual({
+        parent: world.head,
+        empty: "true",
+        gitHead: world.head,
+      });
       // The reviewer's commit rewords the example line, and the check reads no line of the
       // document, so the tester's earlier pass holds at it.
       expect(docsAt(world, world.head)).toContain(
@@ -14333,8 +14441,16 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
       expect(atHead).toContain("Run `bun greet.ts Ada`, and it prints `Hello, Ada!`");
       expect(atHead).not.toContain("\n`bun greet.ts Ada` prints");
       expect(greet(world, "Ada").out).toBe("Hello, Ada!\n");
+      expect(world.head).not.toBe(implementedOf(world));
+      expect(workspaceOf(world)).toEqual({
+        parent: world.head,
+        empty: "true",
+        gitHead: world.head,
+      });
     }, 300_000);
 
+    // Catches: code-defect's issue workspace moved off the implementer's commit, the head the
+    // reviewer approved and pushed nothing above.
     test("code-defect: the check that missed the blank name, the defect and the sentence it makes false are true, and nothing else", () => {
       const world = seededWorld("code-defect");
       expect(issueState(world)).toEqual(
@@ -14343,6 +14459,13 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
       expect(concerns(world)).toEqual(
         noConcern({ ...none, defect: true, codeDefectSentence: true })
       );
+      const implemented = implementedOf(world);
+      expect(world.head).toBe(implemented);
+      expect(workspaceOf(world)).toEqual({
+        parent: implemented,
+        empty: "true",
+        gitHead: implemented,
+      });
     }, 300_000);
 
     // After the implementer's push, the first `dispatch results` an agent can run reads what

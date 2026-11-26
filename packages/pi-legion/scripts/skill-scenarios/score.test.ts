@@ -11706,6 +11706,53 @@ test("an own run is the recording role's bun greet.ts Ada in a tree at the resul
   });
 });
 
+/** A directory a read-only copy of the world's head is extracted into outside any repository, as
+ * `d=$(mktemp -d) && git archive --prefix=<commit>/ <commit> | tar -x -C "$d"` makes one. */
+const copyDir = "/rig/tmp/tmp.Qx3c9GzT1a";
+/** The bun stand-in's record of `bun greet.ts Ada` by the implementer's pane in that copy, at
+ * `<dir>/<head>`: an empty `head`, since the copy is in no repository, and the copy's commit
+ * (rig.sh's standins). */
+const ranInCopy = { ...ranAtHead, cwd: `${copyDir}/${head}`, head: "", copy: head };
+
+// Catches: a run in a read-only copy of the result's commit (the copy the implementer's prompt has
+// a check run in) read as a run at no commit, in the copy or below it; a copy at another commit,
+// after the result or by another role counted; a commit the score reads off a directory's name
+// itself, though only the stand-in, which ran there, can tell a directory in no repository, and it
+// records no `copy` for a name of 39 characters or of 40 that are not all hex digits; and a commit
+// a repository's path names read in place of that repository's own HEAD.
+test("an own run in a read-only copy outside any repository is one at the copy's commit, read from the stand-in's copy", () => {
+  const { copy: _copy, ...noCopy } = ranInCopy;
+  expect({
+    copy: ownRun([ranInCopy], recorded),
+    copySubdirectory: ownRun([{ ...ranInCopy, cwd: `${copyDir}/${head}/docs` }], recorded),
+    copyOfAnother: ownRun([{ ...ranInCopy, copy: "7".repeat(40) }], recorded),
+    copyAfter: ownRun([{ ...ranInCopy, at: "2026-09-30T17:31:00.000Z" }], recorded),
+    copyByAnother: ownRun([{ ...ranInCopy, by: "reviewer" }], recorded),
+    nameAlone: ownRun([noCopy], recorded),
+    shortName: ownRun([{ ...noCopy, cwd: `${copyDir}/${head.slice(0, 39)}` }], recorded),
+    notHex: ownRun([{ ...noCopy, cwd: `${copyDir}/${head.slice(0, 39)}g` }], recorded),
+    repositoryUnderName: ownRun(
+      [{ ...ranAtHead, cwd: `/rig/cwd/${head}/widgets`, head: "7".repeat(40) }],
+      recorded
+    ),
+    repositoryAtCommit: ownRun(
+      [{ ...ranAtHead, cwd: `/rig/cwd/${"7".repeat(40)}/widgets` }],
+      recorded
+    ),
+  }).toEqual({
+    copy: true,
+    copySubdirectory: true,
+    copyOfAnother: false,
+    copyAfter: false,
+    copyByAnother: false,
+    nameAlone: false,
+    shortName: false,
+    notHex: false,
+    repositoryUnderName: false,
+    repositoryAtCommit: true,
+  });
+});
+
 // Catches: a read of the commit that counts any git, jj or gh call, or only one of the forms the
 // scorer's rule names: git and jj show, diff and log -p, and jj file show, of the commit by a SHA
 // prefix (jj is the pane's own tool: a real accept run read the commit with

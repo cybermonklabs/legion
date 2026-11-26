@@ -653,7 +653,9 @@ pane names the world's run of that check instead (below).
 A worker world's issue workspace, `<run>/ws`, is made as production's provisioning makes an issue
 pod's (`rig.sh`'s `fixture_workspace`): a shared clone, `<run>/repos/github.com/<owner>/<repo>`,
 cloned with no working tree from the run's own bare remote as a pod's is from its feed, and the
-workspace added to it with `jj workspace add`, which jj colocates as a locked git worktree, so
+workspace added to it with `jj workspace add` at the issue branch's head once the world's last
+push is made (the reviewer's text commit, in `threads-closed`'s accept, correct and crossing), so
+its `@` is an empty change on that head. jj colocates it as a locked git worktree, so
 `<run>/ws/.git` is the file a pod's is (`gitdir: <clone>/.git/worktrees/ws`). Both of the
 worktree's links are absolute and the clone's format is 0 with no extension, as a pod's git
 2.47.3 writes them, whatever the host's git. jj asks git for relative links (`git -c
@@ -1166,8 +1168,14 @@ approval stands, so GitHub reports `REVIEW_REQUIRED` and the head `BLOCKED`, and
 of the world's check are seeded at `C1` (`worker_run_world`'s `$implemented`), and no result
 stands at the reviewer's commit, so `dispatch results` says no pass stands at the head, and the
 daemon stand-in's rows of the two roles name `C1`, the head their own seeded records name. The
-reviewer's seeded handoff is `{head}` alone, the reviewer's commit, with no note, as #5287's shape
-holds it: the decision and the findings are the reviews on GitHub. The threads the reviewer left
+issue workspace stands where a pod's stands after the reviewer's push, since every role of a pod
+shares the one workspace and the reviewer commits and pushes from it: in accept, correct and
+crossing its `@-` is the reviewer's commit, its `@` an empty change on it, and git's HEAD there
+that commit (the world makes the workspace after that push, `fixture_workspace` at the branch's
+head); in code-defect it stands on `C1`. So correct's fix is a commit on the reviewer's, which
+the issue branch takes as a fast-forward. The reviewer's seeded handoff is `{head}` alone, the
+reviewer's commit, with no note, as #5287's shape holds it: the decision and the findings are the
+reviews on GitHub. The threads the reviewer left
 are in the world's GraphQL graph, in the body's `Threads:` section and in `<run>/threads.json`,
 which the score reads. Every round world's `docs/cli.md` carries the example line
 `` `bun greet.ts Ada` prints `Hello, Ada!` `` (`rig.sh`'s `cli_example_line`), true of the CLI in
@@ -1187,8 +1195,11 @@ judge's.
   `docs/cli.md`. No reviewer is booted (`completion-answers.ts`'s `SKIPS`). The implementer's
   terms: (a) its transcript reads the commit (`readsCommit`); (b) a `gh pr comment` names the
   commit; (c) a result of the world's check at the commit by its session, either its own run of
-  the check there (`ownRun`: the bun stand-in's `bun greet.ts Ada` by its pane in a tree at the
-  commit, before the result) or a pass recorded as holding whose reason names the tester's result,
+  the check there (`ownRun`: the bun stand-in's `bun greet.ts Ada` by its pane, before the
+  result, in a tree at the commit: a repository whose `git rev-parse HEAD` is the commit, or,
+  outside any repository, a read-only copy of it in a directory named by its full 40-hex id, as
+  `git archive --prefix=<commit>/ <commit>` names one, which the stand-in records as the call's
+  `copy`) or a pass recorded as holding whose reason names the tester's result,
   by the names judge, and its commit, by SHA; (d) a message on the reviewer's role topic and one on
   the architect's, each naming the commit by SHA and accepting it, by the accepts judge; (e) no
   push, no thread resolved by any call of the run, and no move back the daemon took. Each accept

@@ -177,7 +177,8 @@
 #                   first left (run_threads_closed, worker_boot). First the implementer, which
 #                   the reviewer's message naming its commit and its threads reaches in its own
 #                   live session; its world is worker_fixture's with the round's additions: the
-#                   reviewer's own text commit is the pull request's head and no approval stands
+#                   reviewer's own text commit is the pull request's head, the issue workspace
+#                   stands on it as a pod's does after the reviewer's push, and no approval stands
 #                   (the issue in `reviewing`), or, in code-defect, the reviewer pushed nothing and
 #                   its approval stands on the implementer's commit (the issue in `accepting`);
 #                   the threads it left open are in the world's GraphQL graph and
@@ -1207,10 +1208,17 @@ base_env() {
 # The run's stand-ins in $R/bin: `gh`, which records the call and answers from $R/fixtures.json,
 # and `bun`, which runs the bun this script runs on (a caller's `bun` may be a shim that resolves
 # nothing under the agent's HOME) and records the call to $R/calls.jsonl as gh-standin.ts records
-# its own, with the directory it ran in (`cwd`) and that directory's `git rev-parse HEAD` (`head`,
-# empty outside a repository), read before bun runs. The score reads the tester's run of the CLI
-# from that record, and an agent's own run of the world's check at a commit from its `head`
-# (score.ts's `ownRun`). No `legion` stands in: an
+# its own, with the directory it ran in (`cwd`), that directory's `git rev-parse HEAD` (`head`,
+# empty outside a repository), and, for a call in no git repository whose directory is, or is
+# inside, one named by a full commit id (a path component of exactly 40 lowercase hex digits, the
+# innermost where several are), that commit (`copy`), each read before bun runs. The read-only
+# copy of a commit the implementer's prompt has a check run in is made so (`git archive
+# --prefix=<commit>/ <commit>`, extracted outside the workspace): it is in no repository, and its
+# directory's name is the one mark of the commit it was made from, so a run in it is a run at
+# that commit (Verification v47's rule 8). A call in a repository reads that repository's HEAD
+# alone, whatever its path holds. The score reads the tester's run of the CLI from that record,
+# and an agent's own run of the world's check at a commit from its `head`, or from its `copy`
+# where its `head` is empty (score.ts's `ranCheck` and `ownRun`). No `legion` stands in: an
 # agent reaches the daemon stand-in through its `legion` tool alone, never `legion` from bash.
 #
 # `gh` runs $R/lib/gh.js, a bundle of gh-standin.ts built here (`bun build --target=bun`), and
@@ -1236,10 +1244,14 @@ standins() {
 at=\$(date -u +%FT%T.%3NZ)
 cwd=\$PWD
 head=\$(git rev-parse HEAD 2>/dev/null) || head=
+copy=
+if [ -z "\$head" ] && ! git rev-parse --git-dir >/dev/null 2>&1 && [[ \$cwd/ =~ .*/([0-9a-f]{40})/ ]]; then
+  copy=\${BASH_REMATCH[1]}
+fi
 status=0
 $(printf %q "$bun_real") "\$@" || status=\$?
-jq -cn --arg at "\$at" --arg by "\${LEGION_ROLE:-}" --arg cwd "\$cwd" --arg head "\$head" --argjson exit "\$status" \\
-  '{at:\$at, as:"bun", argv:\$ARGS.positional, exit:\$exit, cwd:\$cwd, head:\$head} + (if \$by == "" then {} else {by:\$by} end)' \\
+jq -cn --arg at "\$at" --arg by "\${LEGION_ROLE:-}" --arg cwd "\$cwd" --arg head "\$head" --arg copy "\$copy" --argjson exit "\$status" \\
+  '{at:\$at, as:"bun", argv:\$ARGS.positional, exit:\$exit, cwd:\$cwd, head:\$head} + (if \$copy == "" then {} else {copy:\$copy} end) + (if \$by == "" then {} else {by:\$by} end)' \\
   --args -- "\$@" >>$(printf %q "$R/calls.jsonl")
 exit "\$status"
 EOF
@@ -3268,8 +3280,10 @@ cli_example_line='`bun greet.ts Ada` prints `Hello, Ada!`'
 # files such a round reads — docs/cli.md, whose last sentence is DOC_LINE, and
 # .github/workflows/greet.yml, whose comment names TRIGGER beside the pull request trigger `on:`
 # carries (a file the implement App may push and the review App may not) — the implementer's
-# handoff at its commit, whose diff touches four files, the tester's handoff body at $R/test.json,
-# which the runner records beside the implementer's, and the issue workspace. DOC_LINE and
+# handoff at its commit, whose diff touches four files, and the tester's handoff body at
+# $R/test.json, which the runner records beside the implementer's. It makes no issue workspace:
+# each world makes its own once the last push of its build is made (fixture_workspace), so the
+# workspace stands where a pod's stands when the run's first agent starts. DOC_LINE and
 # TRIGGER are the world's own and are required: every caller names the text findings it means
 # its world to carry, an empty TRIGGER being an honest comment and so a finding the world has
 # not got. GUARD is fixture_cli's: `dropped` drops the CLI's blank-name guard, so a blank name
@@ -3295,14 +3309,14 @@ round_world() {
   fixture_head_commit
   fixture_implement
   fixture_test_handoff
-  fixture_workspace
 }
 
 # review_world INDEX START GUARD [CASE] builds the world a review round reads, which
 # reviewer-text-findings' three cases build: the round's base world (round_world), whose two
-# findings this round is the first to read, and the pull request's
-# one unresolved bot thread, whose finding is a wording nit the reviewer answers and closes
-# nothing for. The bot left it as GitHub leaves every inline comment, in a review of its own
+# findings this round is the first to read, its issue workspace at the implementer's commit, the
+# pull request's head (fixture_workspace), and the pull request's one unresolved bot thread,
+# whose finding is a wording nit the reviewer answers and closes nothing for. The bot left it as
+# GitHub leaves every inline comment, in a review of its own
 # (COMMENTED, with no body), so the reviews list holds that review and the thread's comment is a
 # review comment of it, read the same through GraphQL and REST. `dropped` is that change with the
 # blank-name guard gone, the negative control's behavioural finding. The run's remote takes a push
@@ -3329,6 +3343,7 @@ review_world() {
   local index=$1 start=$2 guard=$3 last_push=false src when worker_pr worker_pr_url C1 body threads reviews
   [ "${4:-}" != last-push ] || last_push=true
   round_world "$index" "$start" "$guard" "$text_finding_doc_line" "$text_finding_trigger"
+  fixture_workspace
   fixture_body "**Threads:** 0 resolved, 1 unresolved." "$(fixture_checks implementer tester)"
   threads=$(jq -n '[{id:"PRRT_kwDOrig0001", isResolved:false, path:"greet.test.ts", line:4, review:4001,
     comments:[{author:{__typename:"Bot", login:"style-bot"},
@@ -3354,9 +3369,16 @@ review_world() {
 # The implementer's and the tester's passes stand at the implementer's commit, $C1, in the body's
 # check lines and in the run's seeds (worker_run_world, run_threads_closed), and no result stands
 # at the reviewer's commit: whether an earlier pass holds there is the implementer's to decide, as
-# it did not make that commit. The issue workspace was cloned before the reviewer's push, so it
-# stands at the implementer's commit until the implementer fetches, as a pod's does. The threads
-# are GitHub's state and so the run's: `resolveReviewThread` answers as GitHub answers a role with
+# it did not make that commit. The issue workspace stands where a pod's stands after the
+# reviewer's push: every role of a pod shares the one workspace and the reviewer commits and
+# pushes from it, so in accept, correct and crossing the workspace's `@-` is the reviewer's commit
+# and `@` an empty change on it, and git's HEAD there is that commit, since the workspace is a
+# colocated jj workspace. The world makes the workspace once the reviewer's push is made
+# (fixture_workspace, at the issue branch's head), which puts it there; in code-defect, where the
+# reviewer pushed nothing, it stands on $C1. So the implementer finds the reviewer's commit
+# checked out, as in a pod, and correct's fix is a commit on it that legion/<key> takes as a
+# fast-forward. The threads are GitHub's state and so the run's: `resolveReviewThread` answers as
+# GitHub answers a role with
 # write access, the thread resolved, a reply by GraphQL or by the REST route is its thread's last
 # comment from then on, and every later read of the threads finds both (gh-standin.ts's
 # `threadState`). It encodes no verdict of its own — a stand-in that refused the mutation would
@@ -3442,6 +3464,9 @@ approved_world() {
   round_world "$index" "$start" "$guard" "$doc_line" "$trigger"
   pr_head=$C1
   [ -z "$fix" ] || pr_head=$(fixture_reviewer_commit "$doc_line" "$fix" "${reworded[@]}")
+  # The issue workspace, made once the reviewer's push is made, stands on that push's commit, or on
+  # $C1 where the reviewer pushed none (the header says why).
+  fixture_workspace
   # The section as the reviewer left it (skill://legion-worker/references/pr-body.md): the count
   # of what is open, then one entry per open thread, each stamped with the head the reviewer
   # reviewed. The count line says what the counts are and nothing about who answers or resolves a
@@ -3875,8 +3900,9 @@ fixture_head_commit() {
 # as FIX, and each further LINE as its TEXT, and nothing else, commits it as the review App
 # (role_identity) and pushes it onto legion/<key>, which the run's remote takes since it changes no
 # workflow file, and prints the commit: the reviewer's own text commit above the implementer's
-# (approved_world). The push log is emptied of the world's own push, as fixture_head_commit
-# empties it of the implementer's.
+# (approved_world, which makes the issue workspace after it, so the workspace stands on it). The
+# push log is emptied of the world's own push, as fixture_head_commit empties it of the
+# implementer's.
 fixture_reviewer_commit() {
   local doc
   doc=$(<"$src/docs/cli.md")
@@ -3984,15 +4010,19 @@ world_remote_app() {
 # provisioning makes an issue pod's (packages/daemon/internal/workspace: provision.go's Provision,
 # clone.go's feedClone, bookmark.go's createWorkspace), as the implement App, the App it
 # provisions with (packages/daemon/internal/daemon's outbox `createBranch`); each role then adopts
-# its working copy at its boot (adopt_workspace):
+# its working copy at its boot (adopt_workspace). Each world makes it once the last push of its
+# build is made, so it stands on the issue branch's head as the run's remote then holds it: the
+# implementer's commit, or the reviewer's text commit above it in approved_world's accept, correct
+# and crossing, where a pod's workspace stands once the reviewer has pushed from it:
 #   - the shared clone, $R/repos/github.com/<owner>/<repo> where a pod's is /legion/repos/github.com/
 #     <owner>/<repo>: cloned from the run's remote with no working tree, as a pod's is from its feed
 #     (`git clone --no-checkout`), its origin GitHub's URL with the world's helper (world_remote),
 #     made jj's with no working copy of its own (`jj git init --colocate`, `jj sparse set --clear`,
 #     then `jj abandon @`), the default branch tracked, and unreachable commits kept (`jj config
 #     set --repo git.abandon-unreachable-commits false`, ensureFetchConfiguration);
-#   - the workspace, added to it at the issue branch with `jj workspace add --sparse-patterns
-#     empty`, which jj colocates as a git worktree, so $R/ws/.git is the file a pod's is (`gitdir:
+#   - the workspace, added to it at that head with `jj workspace add --sparse-patterns empty`,
+#     which leaves `@` an empty change on it and git's HEAD at it and which jj colocates as a git
+#     worktree, so $R/ws/.git is the file a pod's is (`gitdir:
 #     <clone>/.git/worktrees/ws`), its creation recorded in .jj/legion-created as RecordCreated
 #     writes it (an RFC 3339 instant in UTC, its fraction's trailing zeros dropped, as Go's
 #     RFC3339Nano prints one), locked with provisioning's reason (lockGitWorktree), the clone's
