@@ -640,43 +640,74 @@ test("a kill with its own signal and pause sends SIGKILL through process.kill an
   });
 });
 
+/** Every process `/proc` lists now, by pid, with its start time (`listedOf`, field 22 of its
+ *  stat), each read in one synchronous call. A process that ended between the directory read and
+ *  the read of its stat is not listed. */
+function procStarts(): Map<number, number> {
+  const starts = new Map<number, number>();
+  for (const entry of readdirSync("/proc")) {
+    if (!/^\d+$/.test(entry)) continue;
+    let stat: string;
+    try {
+      stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+    } catch {
+      // The process ended between the directory read and the read of its stat.
+      continue;
+    }
+    const listed = listedOf(Number(entry), stat, undefined);
+    if (listed !== undefined) starts.set(listed.pid, listed.start);
+  }
+  return starts;
+}
+
 // The kill `runBounded` runs once a child ends reads each process's files under `/proc` through
 // `Bun.file` (`processTableYielding`), whose read waits off this process's event loop, so a server
 // this process runs, as the origin stand-ins of `outside-edge.test.ts` do, answers while it reads;
 // the slow-read row below holds that such a read holds no timer. This row stands in for
-// `Bun.file` and counts the files under `/proc` it is asked for while one bounded `true` runs and
+// `Bun.file` and records the files under `/proc` it is asked for while one bounded `true` runs and
 // its kill reads the table. A kill that read the table synchronously, as `stopTree` does, asks for
-// none. The row skips where `/proc` is missing. It counts the processes just before the child
-// starts, and not when the file loads: the rows run in random order, and a count taken minutes
-// before the kill's read, on a machine whose processes come and go by the thousand, could hold
-// many more processes than that read finds.
+// none. The row skips where `/proc` is missing.
+//
+// It holds the kill to the processes that ran through the whole kill: each one `/proc` lists, with
+// the same start time, both just before the child starts and once `runBounded` has answered, which
+// is after its kill. The kill's read of the directory lists each of them, and it reads every listed
+// process's stat first, so each such stat is among the files it asked `Bun.file` for, and a kill
+// that read even one entry synchronously misses it. This process is always one of them. A count of
+// the processes taken before the child, against the files read after it, read the machine instead:
+// in a builds pod running the whole harness beside it, the processes that ended in between made a
+// correct kill read fewer files than half that count, and the row failed (dispatch://INFRA-3904).
 test.skipIf(!present("/proc/self/stat"))(
   "a bounded child's kill hands this process's event loop back while it reads the process table",
   async () => {
     const realFile = Bun.file;
-    let asked = 0;
-    let procProcesses = 0;
+    const asked = new Set<string>();
+    let before = new Map<number, number>();
     try {
       Object.assign(Bun, {
         file: (...args: unknown[]) => {
-          if (typeof args[0] === "string" && args[0].startsWith("/proc/")) asked += 1;
+          if (typeof args[0] === "string" && args[0].startsWith("/proc/")) asked.add(args[0]);
           return Reflect.apply(realFile, Bun, args);
         },
       });
       expect(Bun.file, "Bun.file is not the stand-in").not.toBe(realFile);
-      procProcesses = readdirSync("/proc").filter((entry) => /^\d+$/.test(entry)).length;
+      before = procStarts();
       await runBounded({ argv: ["true"], bound: "short", from: import.meta.url });
     } finally {
       Object.assign(Bun, { file: realFile });
     }
-    // At least one file, its stat, for every two of the processes this row counted, so a kill
-    // that read half the table synchronously fails too, while the table may have lost processes
-    // between this row's count and the kill's read. A count of none would hold nothing.
-    expect(procProcesses, "processes this row counted under /proc").toBeGreaterThan(0);
+    const after = procStarts();
+    const throughout = [...before]
+      .filter(([pid, start]) => after.get(pid) === start)
+      .map(([pid]) => pid);
+    expect(throughout, "processes listed under /proc before the child and after its kill").toContain(
+      process.pid
+    );
     expect(
-      asked,
-      `files the kill read through Bun.file, of ${procProcesses} processes under /proc`
-    ).toBeGreaterThanOrEqual(Math.floor(procProcesses / 2));
+      throughout.filter((pid) => !asked.has(`/proc/${pid}/stat`)),
+      `processes that ran through the whole kill whose stat it did not read through Bun.file, of ` +
+        `${throughout.length} such processes (${before.size} listed before the child, ` +
+        `${after.size} after its kill, ${asked.size} files under /proc read through Bun.file)`
+    ).toEqual([]);
   },
   rowLimit("short")
 );
