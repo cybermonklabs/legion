@@ -15,6 +15,7 @@ import { IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
 import { OutlineRequestProvider, useAskOutline, useOutlineRequest } from "./outline-request";
 import { publishedTree } from "./projection-fixture";
+import { ViewStage } from "./slots/stage";
 
 /**
  * What the cases of the rows drawn in slices share (`drawn-in-slices.test.tsx`,
@@ -309,8 +310,12 @@ function OutlineAt({
 /** The outline drawn over `first`, under the page's keymap, the Contents list's asks and the
  *  names store, with the reader signed in: `ask` asks the Contents list for node `id`, and
  *  `redraw` draws the outline again with what changed, as a read answering or a link followed
- *  does. */
-export function drawOutline(first: OutlineDrawn): {
+ *  does. `stage` draws it in the stage, as Graph's slot draws it (`slots/view-graph.tsx`), whose
+ *  stage gives the focus to its tab-stop row (`ViewStage`). */
+export function drawOutline(
+  first: OutlineDrawn,
+  { stage = false }: { readonly stage?: boolean } = {}
+): {
   readonly ask: (id: string) => Promise<void>;
   readonly redraw: (next: Partial<OutlineDrawn>) => void;
   readonly view: RenderResult;
@@ -329,7 +334,13 @@ export function drawOutline(first: OutlineDrawn): {
             <FocusedNodeProvider>
               <OutlineRequestProvider>
                 <IssueScope />
-                <OutlineAt drawn={drawn} held={held} />
+                {stage ? (
+                  <ViewStage>
+                    <OutlineAt drawn={drawn} held={held} />
+                  </ViewStage>
+                ) : (
+                  <OutlineAt drawn={drawn} held={held} />
+                )}
               </OutlineRequestProvider>
             </FocusedNodeProvider>
           </MarginProvider>
