@@ -1150,23 +1150,36 @@ func readFoldGroups(ctx context.Context, q delivery.Querier, scope figureScope, 
 	return groups, nil
 }
 
-// add adds to p the stored row of each of days, days of group's rows of key, and of each range of
-// those rows whose span holds one of days and that ends by through, or its deletion where group is
-// nil (the eval holds no row the read spans).
+// add adds to p the stored row of each of days, days of group's rows of key in day order, and of
+// each range of those rows whose span holds one of days and that ends by through, each once, or
+// its deletion where group is nil (the eval holds no row the read spans). The ranges of length n
+// whose span holds a day end on each day from the day after it through n days after it, and add
+// adds, for each length, the union of those runs of end days: it walks the days in order and adds
+// each day's run from where the run of the day before stopped, where that is later than the run's
+// first day. Every end day before it is one an earlier day's run added, since that run began no
+// later, so each end day is added once and no set of the keys is kept. A map of every day's every
+// (length, end day) pair took a write for each: 1.9 million writes for the 64,640 ranges of a
+// settings rewrite's 200 days of 40 groups, whose plan, its sort included, took 350-365 ms on the
+// farm where this takes 86-92 ms, the two timed in turn in one process
+// (BenchmarkTheFigurePlanOfASettingsRewrite).
 func (p *figurePlan) add(group *figureGroup, key figureGroupKey, days []time.Time, through time.Time) {
-	ranges := map[rangeFigureKey]bool{}
-	for _, day := range days {
-		for _, n := range FigureLengths {
-			for end := day.AddDate(0, 0, 1); !end.After(day.AddDate(0, 0, n)) && !end.After(through); end = end.AddDate(0, 0, 1) {
-				ranges[rangeFigureKey{repo: key.repo, days: n, end: end, eval: key.eval, deployRepo: key.deployRepo}] = true
+	for _, n := range FigureLengths {
+		// next is where the run of the day before stopped: no end day before it is left to add.
+		var next time.Time
+		for _, day := range days {
+			end, last := day.AddDate(0, 0, 1), day.AddDate(0, 0, n)
+			if end.Before(next) {
+				end = next
 			}
-		}
-	}
-	for target := range ranges {
-		if group == nil {
-			p.goneRanges = append(p.goneRanges, target)
-		} else {
-			p.ranges = append(p.ranges, rangeTarget{rangeFigureRow: rangeFigureRow{rangeFigureKey: target, key: group.key}, group: group})
+			for ; !end.After(last) && !end.After(through); end = end.AddDate(0, 0, 1) {
+				target := rangeFigureKey{repo: key.repo, days: n, end: end, eval: key.eval, deployRepo: key.deployRepo}
+				if group == nil {
+					p.goneRanges = append(p.goneRanges, target)
+				} else {
+					p.ranges = append(p.ranges, rangeTarget{rangeFigureRow: rangeFigureRow{rangeFigureKey: target, key: group.key}, group: group})
+				}
+			}
+			next = end
 		}
 	}
 	for _, day := range days {
