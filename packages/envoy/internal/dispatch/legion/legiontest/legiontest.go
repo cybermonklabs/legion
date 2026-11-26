@@ -82,10 +82,13 @@ const person = `{"kind":"user","id":"alice"}`
 // field takes its default: the package's own project, DefaultTrees, and this moment.
 //
 // The other fields are off where zero, and a Spec that sets none of them writes the history every
-// golden file of this change was recorded over, row for row. They shape the history a check of
-// the eval registry's Legion measures reads (dispatch://INFRA-2916, k6 and k17), which needs a
-// window before the project's first observation and one after it, finished issues that sat
-// parked, merged pull requests and filings of every class.
+// golden file of this change was recorded over, row for row, but for the open child's two hours
+// in `awaiting_children` (tree), which move no value a golden file holds: those are finished
+// issues' values, and the open child's root waits on it through those hours in either phase
+// (metrics' childWorkingPhases). They shape the history a check of the eval registry's Legion
+// measures reads (dispatch://INFRA-2916, k6 and k17), which needs a window before the project's
+// first observation and one after it, finished issues that sat parked, merged pull requests and
+// filings of every class.
 type Spec struct {
 	Project string
 	Trees   int
@@ -309,10 +312,10 @@ type phaseMark struct {
 // implemented, tested and sent back once, so its facts hold two review rounds. The second is
 // reviewed and merged, and a person answered an ask of it, so its hours land on waiting for a
 // person as well as on its phases. The third never closed, so its hours run to the moment of the
-// computation, and it sat parked for six of them. The fourth recorded its one handoff at the
-// moment it closed, so its work took no measured time and its facts hold an entry with no phase
-// hours. The fifth is a follow-up a person filed and no Legion role worked, so it gets no facts
-// entry at all.
+// computation, it sat parked for six of them, and it waited two of them in `awaiting_children`
+// before its testing started. The fourth recorded its one handoff at the moment it closed, so its
+// work took no measured time and its facts hold an entry with no phase hours. The fifth is a
+// follow-up a person filed and no Legion role worked, so it gets no facts entry at all.
 func (s *seeding) tree(index int) {
 	start := s.spec.Now.Add(-(treeSpan + time.Duration(index)*s.spec.spacing()))
 	at := func(hours float64) time.Time {
@@ -437,8 +440,13 @@ func (s *seeding) tree(index int) {
 	s.waiting(reviewed, "ask", at(28), at(31))
 
 	// The child nobody closed. Its work time runs to the moment of the computation, and the six
-	// hours it sat parked are off it. It ends in `held`, the one phase that leaves its root free
-	// to accept and to merge while the child is still open.
+	// hours it sat parked are off it. Its implementing ends two hours before its testing starts:
+	// it waits those two hours in `awaiting_children`, the phase a parent stands in while a
+	// Dispatch child of it is open (dispatch://INFRA-3320), which holds the start of its testing
+	// until the return. The history writes no child of it: the facts read the phase's hours, on the
+	// no-role bar and under the board's Waiting on children column, and no rule of them reads the
+	// children of an issue that is not a root. It ends in `held`, the one phase that leaves its
+	// root free to accept and to merge while the child is still open.
 	open := s.issue(number+3, "An open child", root, 2, at(8), nil)
 	s.fixture.Open = append(s.fixture.Open, open)
 	s.event(open, "issue.created", SessionActor("architect", root), filing(root), at(8))
@@ -452,6 +460,7 @@ func (s *seeding) tree(index int) {
 		{12, legion.PhaseImplementing},
 		{20, legion.PhaseHeld},
 		{26, legion.PhaseImplementing},
+		{36, legion.PhaseAwaitingChildren},
 		{38, legion.PhaseTesting},
 		{44, legion.PhaseHeld},
 	})

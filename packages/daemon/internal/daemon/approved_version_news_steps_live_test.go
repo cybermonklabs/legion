@@ -241,17 +241,19 @@ func (r *sessionsRun) publishedBy(architect sessionsTranscript, who string, memb
 	return ""
 }
 
-// Step off. Under gates.design off a root in implementing and its child in reviewing are each held
-// by a live worker, and the child has its own live architect, which its first phase start started,
-// as it starts every child's (workflow.Engine.StartFirstPhase). The root architect is asked to
-// write version 2 of the root's spec, which a deployment that gates nothing sends no news of: each
-// holder hears of it only from the architect, by its own envoy_publish to that holder's role
-// topic.
+// Step off. Under gates.design off a root in retro and its child in reviewing are each held by a
+// live worker, and the child has its own live architect, which its first phase start started, as
+// it starts every child's (workflow.Engine.StartFirstPhase). The root stands in retro, a phase the
+// wait on an open child does not hold: a root in planning through accepting with its child open
+// would be moved to awaiting_children at the first admission pass, its implementer stopped
+// (dispatch://INFRA-3320 R9). The root architect is asked to write version 2 of the root's spec,
+// which a deployment that gates nothing sends no news of: each holder hears of it only from the
+// architect, by its own envoy_publish to that holder's role topic.
 func (r *sessionsRun) off() (sessionsOutcome, string) {
-	root := &sessionsMember{phase: phase.Implementing, roles: []claim.Role{claim.RoleArchitect, claim.RoleImplementer}, tasks: map[claim.Role]string{}}
+	root := &sessionsMember{phase: phase.Retro, roles: []claim.Role{claim.RoleArchitect, claim.RoleImplementer}, tasks: map[claim.Role]string{}}
 	child := &sessionsMember{phase: phase.Reviewing, roles: []claim.Role{claim.RoleArchitect, claim.RoleReviewer}, tasks: map[claim.Role]string{}}
 	r.tree(sessionsSpec("A reader that pages.", sessionsDesign+" The child issue builds the reader's fetch, and the root builds the cache in front of it.", sessionsLater), root, child)
-	root.tasks[claim.RoleImplementer] = holderStart(root.key, phase.Implementing)
+	root.tasks[claim.RoleImplementer] = holderStart(root.key, phase.Retro)
 	child.tasks[claim.RoleReviewer] = holderStart(child.key, phase.Reviewing)
 	r.boot()
 	r.checkArm(root, claim.RoleArchitect, sessionsArchitectMark)
@@ -260,7 +262,7 @@ func (r *sessionsRun) off() (sessionsOutcome, string) {
 	}
 	r.deliver(root, claim.RoleArchitect, architectTask(
 		fmt.Sprintf("spec (document %s)", root.spec), root.key, sessionsDesign, sessionsDesignAgain,
-		fmt.Sprintf("%s, the root, in implementing, where its implementer holds it; %s, its child, in reviewing, where its reviewer holds it", root.key, child.key)))
+		fmt.Sprintf("%s, the root, in retro, where its implementer holds it; %s, its child, in reviewing, where its reviewer holds it", root.key, child.key)))
 	change := sessionsSpecChange
 	holders := []struct {
 		member *sessionsMember

@@ -40,7 +40,9 @@ every slot is taken, the issue waits in `todo` for a free slot, in the order the
 A slot is one issue the daemon has started, a root or a child, so a tree of four issues at work
 holds four of them. An issue keeps its slot through a wait on you or on a review, and its
 agents stay live beside it. A started issue that waits on another issue gives its slot back, and
-nothing of its work stops; in `accepting`, `retro` and `merging` an issue holds no slot at all,
+nothing of its work stops, except a parent that an open child of its own holds: its phase stops,
+and it waits in `awaiting_children` until no child under it is open; in `accepting`, `retro` and
+`merging` an issue holds no slot at all,
 and a step after `accepting` whose phase keeps a slot waits for one again
 ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)).
 A label an agent session set on an issue in `triage` goes to the controller instead: the controller
@@ -58,7 +60,9 @@ Answer with `File it for Legion` and the controller files it labelled `legion`.
 
 Do not label child issues: a child runs under its tree once the root is admitted. The children do
 the work first: an issue starts no phase of its own while Dispatch shows an open child under it,
-so a parent's own pull request is built and merged after its children's.
+so a parent's own pull request is built and merged after its children's. A child filed under an
+issue already at work stops that issue's phase. The issue waits, shown `in_progress`, and goes on
+by itself once its children are done ([Concepts](/legion/legion/concepts/#trees-and-the-architect)).
 
 ## Ask Legion in Slack
 
