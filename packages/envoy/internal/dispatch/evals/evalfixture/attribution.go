@@ -151,9 +151,6 @@ func WriteAttribution(ctx context.Context, pool *store.Pool, project string, now
 		}
 		return nil
 	}
-	if _, err := delivery.PutSettings(ctx, pool, deliverySettingsOf(deployRepo), actor); err != nil {
-		return AttributionResult{}, fmt.Errorf("write the delivery settings of k15's case: %w", err)
-	}
 	// Each project names alice as its default assignee, the column every project fills (store
 	// migration 20261111210103), as the Legion mode's history does; no attribution reads it. A
 	// project the database holds already takes the case's default repository too.
@@ -163,6 +160,11 @@ func WriteAttribution(ctx context.Context, pool *store.Pool, project string, now
 		on conflict (key) do update set default_repo = excluded.default_repo`,
 		result.Projects, []string{deployRepo, otherRepo, ""}); err != nil {
 		return AttributionResult{}, err
+	}
+	// The one delivery_settings row is replaced only once the projects are written, so a case
+	// whose projects the database refuses leaves the settings an earlier load wrote.
+	if _, err := delivery.PutSettings(ctx, pool, deliverySettingsOf(deployRepo), actor); err != nil {
+		return AttributionResult{}, fmt.Errorf("write the delivery settings of k15's case: %w", err)
 	}
 	day := measures.Midnight(now).AddDate(0, 0, -1)
 	at := func(minutes int) time.Time { return day.Add(10*time.Hour + time.Duration(minutes)*time.Minute) }
@@ -216,6 +218,18 @@ func WriteAttribution(ctx context.Context, pool *store.Pool, project string, now
 			fmt.Sprintf("pull request %s#%d (%s, merged %s)", pr.repo, pr.number, named, pr.merged.Format(time.RFC3339)), pr.merged, reached))
 	}
 
+	// Two PR-checks runs of the deploy repository, the one repository whose runs Dispatch reads,
+	// with one job each: one of #1, whose issue is the other project's, and one GitHub names no
+	// pull request of (a pull_request run whose pull request it does not report, as it does not
+	// for a fork's). They are created before either deploy run, so they take the first run ids.
+	checks := []struct {
+		number  *int
+		started time.Time
+	}{
+		{new(1), at(10)},
+		{nil, at(15)},
+	}
+
 	// Two deploy runs on main that reach production: the first, created after every merge, ships
 	// the deploy repository's two pull requests (containment ships the pull requests of its own
 	// repository alone); the second, created after it with nothing merged between, ships none.
@@ -228,7 +242,7 @@ func WriteAttribution(ctx context.Context, pool *store.Pool, project string, now
 		{at(180), "ships none", nil},
 	}
 	for index, deploy := range deploys {
-		runID := int64(firstRunID + index)
+		runID := int64(firstRunID + len(checks) + index)
 		started := deploy.created.Add(30 * time.Second)
 		completed := started.Add(10 * time.Minute)
 		run := delivery.DeliveryRun{
@@ -254,19 +268,8 @@ func WriteAttribution(ctx context.Context, pool *store.Pool, project string, now
 			rule.deploy(deployRepo, shipped)))
 	}
 
-	// Two PR-checks runs of the deploy repository, the one repository whose runs Dispatch reads,
-	// with one job each: one of #1, whose issue is the other project's, and one GitHub names no
-	// pull request of (a pull_request run whose pull request it does not report, as it does not
-	// for a fork's).
-	checks := []struct {
-		number  *int
-		started time.Time
-	}{
-		{new(1), at(10)},
-		{nil, at(15)},
-	}
 	for index, check := range checks {
-		runID := int64(firstRunID + len(deploys) + index)
+		runID := int64(firstRunID + index)
 		completed := check.started.Add(8 * time.Minute)
 		branch, of, pull := "feature/fork", "no pull request", counts(nil)
 		if check.number != nil {

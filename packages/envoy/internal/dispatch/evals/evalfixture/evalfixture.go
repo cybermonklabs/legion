@@ -1,8 +1,8 @@
 // Package evalfixture loads the histories the eval registry's checks read (dispatch://INFRA-2916,
-// k6, k12, k14, k15 and k17) into a database that already holds Dispatch's schema: the local
-// stack's, which migrates its database when it starts, or the base's for k14, main at the commit
-// this head merges. Each mode adds to one project and writes that project's row only where it has
-// none, so modes combine; cmd is the command a checker types.
+// k6, k12 and k15, and the base whose first paint k8's and k13's negative controls read) into a
+// database that already holds Dispatch's schema: the local stack's, which migrates its database
+// when it starts, or the base's, main at the commit this head merges. cmd is the command a
+// checker types.
 //
 // The modes:
 //
@@ -10,18 +10,28 @@
 //     with phase, slot and claim observations that start partway through it (LegionSpec), and the
 //     project's legion_settings row, which names the project's daemon.
 //     It answers the two day-aligned windows k6 reads (Windows): one that starts before the
-//     project's first observation and one that starts after it.
+//     project's first observation and one that starts after its first slot and claim
+//     observations.
 //   - Base (-base): the same history into a database of the base, main at the commit this head
-//     merges (git merge-base <head> origin/main), for k14's base binary. The Legion history is
-//     written into the same tables in both, since every table it writes is one main has; the
-//     tables this head derives from those rows (DerivedTables) the fixture never writes, so the
-//     mode differs from Legion only in the schema it requires of the database.
+//     merges (git merge-base <head> origin/main), for the base's first paint that evalbench
+//     measures. The Legion history is written into the same tables in both, since every table it
+//     writes is one main has; the tables this head derives from those rows (DerivedTables) the
+//     fixture never writes, so the mode differs from Legion only in the schema it requires of the
+//     database.
 //   - Attribution (-attribution): k15's case of D1 (Attribution).
 //   - Delivery (-delivery): deliverytest's delivery history of the project over the days its
 //     caller names (the command's -days, a week by default), or deliverytest's own default of
 //     120 days (deliverytest.DefaultDays) for a caller that names none.
 //   - MergePR (-merge-pr): one pull request of those rows merged at a given moment, k12's one
 //     change.
+//
+// Legion adds to one project and writes that project's row only where it has none, so it combines
+// with Attribution, Delivery and MergePR; Base writes the same history alone, into a database of
+// the base. Delivery adds to one project too, beside deliverytest's second project, and gives the
+// project the deploy repository as its default repository where it has none; Attribution writes
+// its three projects with their default repositories; and each of the two replaces the one
+// delivery_settings row, so they are not combined with each other. MergePR writes no project's
+// rows.
 //
 // Every time is relative to the moment the caller names (-now), so two loads with one -now hold
 // the same history at the same times. The rows bypass the server's own writers (legiontest's
@@ -98,8 +108,8 @@ const HeadTable = "eval_days"
 // issues finished issues, ending at now, with the older half of the trees unobserved and every
 // observed root waiting for its slot (legiontest.Spec's Unobserved and Queued), finished issues
 // that sat parked in `icebox` and in `backlog`, a merged pull request for each issue the merger
-// closes and filings of all four classes (Parked, Merged and Filings, what k6 and k17 read),
-// numbered after the offset issue numbers the project has already.
+// closes and filings of all four classes (Parked, Merged and Filings, what k6 reads), numbered
+// after the offset issue numbers the project has already.
 func LegionSpec(project string, issues int, now time.Time, offset int) legiontest.Spec {
 	if issues <= 0 {
 		issues = DefaultIssues
@@ -126,24 +136,30 @@ func (w Window) Days() int {
 // maxWindow is the widest window the eval routes read (api/delivery.go's maxDeliveryWindow).
 const maxWindow = 84 * 24 * time.Hour
 
-// Windows is the two windows k6 reads over a Legion history: Before starts on the day of its first
-// finished issue, which is the first day a Legion measure has input, and ends at the first UTC
-// midnight at or after its first observation, so it starts before that observation; After starts
-// at that midnight and ends at the midnight after the history's end. Each is at most the 84 days
-// the routes read.
+// Windows is the two windows k6 reads over a Legion history. Before starts on the day of its first
+// finished issue, which is the first day a Legion measure has input, so it starts before the
+// project's first observation. After starts at the first UTC midnight at or after the project's
+// first slot and first claim observations, from which slot wait and idle time have input (R6), so
+// every measure holds values over it, and ends at the midnight after the history's end. Before
+// ends where After starts, and each is at most the 84 days the routes read.
 type Windows struct {
 	Before Window `json:"before"`
 	After  Window `json:"after"`
 }
 
-// WindowsOf is the two windows of a Legion history, refused for a history with no observation or
-// no finished issue, and for one whose first finished issue's day starts at or after its first
-// observation, since no window then starts on a day with input before that observation.
-func WindowsOf(history legiontest.Fixture) (Windows, error) {
+// WindowsOf is the two windows of a Legion history whose project's first slot and first claim
+// observations are firstSlot and firstClaim (firstObservations). It refuses a history with no
+// observation, no slot or claim observation or no finished issue, and one whose first finished
+// issue's day starts at or after its first observation, since no window then starts on a day with
+// input before that observation.
+func WindowsOf(history legiontest.Fixture, firstSlot, firstClaim time.Time) (Windows, error) {
 	if history.FirstObserved.IsZero() || history.FirstFinished.IsZero() {
 		return Windows{}, errors.New("the history holds no observation or no finished issue, so no window falls on either side of the first observation")
 	}
-	boundary := nextMidnight(history.FirstObserved)
+	if firstSlot.IsZero() || firstClaim.IsZero() {
+		return Windows{}, errors.New("the project holds no slot or no claim observation, so slot wait or idle time reads no data in every window")
+	}
+	boundary := nextMidnight(slices.MaxFunc([]time.Time{history.FirstObserved, firstSlot, firstClaim}, time.Time.Compare))
 	before := Window{From: measures.Midnight(history.FirstFinished), To: boundary}
 	if !before.From.Before(history.FirstObserved) {
 		return Windows{}, fmt.Errorf("the first issue finished on %s, a day that starts at or after the first observation (%s), so no window starts on a day with input before it",
@@ -159,8 +175,28 @@ func WindowsOf(history legiontest.Fixture) (Windows, error) {
 	return Windows{Before: before, After: after}, nil
 }
 
+// firstObservations is the moments of project's first slot and first claim observation, from which
+// slot wait and idle time have input (R6), each zero where the project has none.
+func firstObservations(ctx context.Context, pool *store.Pool, project string) (time.Time, time.Time, error) {
+	var slot, claim *time.Time
+	if err := pool.QueryRow(ctx, `
+		select min(observed_at) filter (where field = $2), min(observed_at) filter (where starts_with(field, $3))
+		from legion_observations
+		where project = $1`, project, legion.FieldSlot, legion.ClaimFieldPrefix).Scan(&slot, &claim); err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("read the first slot and claim observations of %s: %w", project, err)
+	}
+	var firstSlot, firstClaim time.Time
+	if slot != nil {
+		firstSlot = slot.UTC()
+	}
+	if claim != nil {
+		firstClaim = claim.UTC()
+	}
+	return firstSlot, firstClaim, nil
+}
+
 // LegionResult is what the Legion and Base modes wrote: the history, how many of its issues
-// finished, and the two windows.
+// finished, when the project's observations begin, and the two windows.
 type LegionResult struct {
 	Project       string    `json:"project"`
 	Issues        int       `json:"issues"`
@@ -168,6 +204,8 @@ type LegionResult struct {
 	Trees         int       `json:"trees"`
 	Unobserved    int       `json:"unobserved_trees"`
 	FirstObserved time.Time `json:"first_observation"`
+	FirstSlot     time.Time `json:"first_slot_observation"`
+	FirstClaim    time.Time `json:"first_claim_observation"`
 	FirstFinished time.Time `json:"first_finished"`
 	From          time.Time `json:"history_from"`
 	To            time.Time `json:"history_to"`
@@ -220,14 +258,18 @@ func writeLegion(ctx context.Context, pool *store.Pool, project string, issues i
 	if _, err := legion.PutSettings(ctx, pool, project, StateURL, actor); err != nil {
 		return LegionResult{}, err
 	}
-	windows, err := WindowsOf(history)
+	firstSlot, firstClaim, err := firstObservations(ctx, pool, project)
+	if err != nil {
+		return LegionResult{}, err
+	}
+	windows, err := WindowsOf(history, firstSlot, firstClaim)
 	if err != nil {
 		return LegionResult{}, err
 	}
 	return LegionResult{
 		Project: project, Issues: len(history.Keys), Finished: spec.Trees * legiontest.FinishedPerTree,
 		Trees: spec.Trees, Unobserved: spec.Unobserved,
-		FirstObserved: history.FirstObserved, FirstFinished: history.FirstFinished,
+		FirstObserved: history.FirstObserved, FirstSlot: firstSlot, FirstClaim: firstClaim, FirstFinished: history.FirstFinished,
 		From: history.From, To: history.To, Windows: windows,
 		Tables: LegionTables, DerivedByThisHead: DerivedTables, History: history,
 	}, nil
@@ -269,19 +311,25 @@ func WriteDelivery(ctx context.Context, pool *store.Pool, project string, days i
 }
 
 // MergeResult is one pull request MergePR merged: when it is merged now, and when it was merged
-// before, with the UTC day of each, which are the days whose rows the merge moves.
+// before, with the UTC day of each; the start day of the deploy run that ships it now and of the
+// one that shipped it before (ShipDay and WasShipDay, nil for none); and DaysAffected, each of
+// those days once, which are the days whose rows the merge moves.
 type MergeResult struct {
 	PullRequest  string     `json:"pull_request"`
 	MergedAt     time.Time  `json:"merged_at"`
 	MergeDay     string     `json:"merge_day"`
 	WasMergedAt  *time.Time `json:"was_merged_at"`
 	WasMergeDay  *string    `json:"was_merge_day"`
+	ShipDay      *string    `json:"ship_day"`
+	WasShipDay   *string    `json:"was_ship_day"`
 	DaysAffected []string   `json:"days_affected"`
 }
 
 // MergePR is the MergePR mode: the pull request ref names (`<owner>/<repo>#<number>`) merged at
 // at, refused where no row holds it or where at is before it was opened. A pull request the
-// history merged already is merged again at at, so both its old and its new merge day move.
+// history merged already is merged again at at, so both its old and its new merge day move, and
+// so does the day of each deploy run that ships it, before and after (shipDays): a deploy's row is
+// on the day the deploy run started, and it counts the pull requests the deploy ships.
 func MergePR(ctx context.Context, pool *store.Pool, ref string, at time.Time) (MergeResult, error) {
 	repo, number, err := parsePullRequest(ref)
 	if err != nil {
@@ -297,19 +345,68 @@ func MergePR(ctx context.Context, pool *store.Pool, ref string, at time.Time) (M
 	if created != nil && at.Before(*created) {
 		return MergeResult{}, fmt.Errorf("%s was opened at %s, after %s, so it cannot merge then", ref, created.Format(time.RFC3339), at.Format(time.RFC3339))
 	}
+	result := MergeResult{PullRequest: ref, MergedAt: at, MergeDay: at.Format(time.DateOnly)}
+	if was != nil {
+		result.WasMergedAt, result.WasMergeDay = new(was.UTC()), new(was.UTC().Format(time.DateOnly))
+	}
+	if result.ShipDay, result.WasShipDay, err = shipDays(ctx, pool, repo, at, was); err != nil {
+		return MergeResult{}, err
+	}
 	if _, err := pool.Exec(ctx, `update delivery_pull_requests set merged_at = $3, updated_at = now() where repo = $1 and number = $2`,
 		repo, number, at); err != nil {
 		return MergeResult{}, fmt.Errorf("merge %s: %w", ref, err)
 	}
-	result := MergeResult{PullRequest: ref, MergedAt: at, MergeDay: at.Format(time.DateOnly), DaysAffected: []string{at.Format(time.DateOnly)}}
-	if was != nil {
-		day := was.UTC().Format(time.DateOnly)
-		result.WasMergedAt, result.WasMergeDay = new(was.UTC()), &day
-		if day != result.MergeDay {
-			result.DaysAffected = append([]string{day}, result.DaysAffected...)
+	for _, day := range []*string{&result.MergeDay, result.WasMergeDay, result.ShipDay, result.WasShipDay} {
+		if day != nil {
+			result.DaysAffected = append(result.DaysAffected, *day)
 		}
 	}
+	slices.Sort(result.DaysAffected)
+	result.DaysAffected = slices.Compact(result.DaysAffected)
 	return result, nil
+}
+
+// shipDays is the UTC start day of the deploy run that ships a pull request of repo merged at at,
+// and of the one that ships it merged at was (nil for a pull request that had not merged): the
+// run of its first shipping apply (delivery.FirstShippingApply over the deploy repository's
+// production applies, as delivery.ContainingRun ships a pull request). Each is nil where no run
+// ships it, and both are nil for a repository that is not the deploy repository the delivery
+// settings name, or where no settings are written.
+func shipDays(ctx context.Context, pool *store.Pool, repo string, at time.Time, was *time.Time) (*string, *string, error) {
+	settings, err := delivery.GetSettings(ctx, pool)
+	if errors.Is(err, delivery.ErrNoSettings) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the delivery settings: %w", err)
+	}
+	if repo != settings.DeployRepo {
+		return nil, nil, nil
+	}
+	from := at
+	if was != nil && was.Before(from) {
+		from = *was
+	}
+	read, err := delivery.ReadApplyRows(ctx, pool, settings, from)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the deploy runs of %s created from %s on: %w", repo, from.Format(time.RFC3339), err)
+	}
+	applies := delivery.ProductionApplies(read.Runs, read.Jobs, settings.Production()).Applies
+	started := make(map[int64]time.Time, len(read.Runs))
+	for _, run := range read.Runs {
+		started[run.RunID] = run.StartedAt
+	}
+	shipDay := func(merged *time.Time) *string {
+		if merged == nil {
+			return nil
+		}
+		apply := delivery.FirstShippingApply(*merged, applies)
+		if apply == nil {
+			return nil
+		}
+		return new(started[apply.RunID].UTC().Format(time.DateOnly))
+	}
+	return shipDay(&at), shipDay(was), nil
 }
 
 // parsePullRequest reads `<owner>/<repo>#<number>`.
