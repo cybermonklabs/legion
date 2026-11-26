@@ -780,7 +780,7 @@ test("each write hands on the text the field held as its edit began, and a field
     await user.type(field(), "A");
     await jump(SAVE_AFTER_MS);
   });
-  // "A" is stopped: the page answers it did not land, and the reader writes on from it.
+  // "A" ends without landing - Dispatch refused it - and the reader writes on from it.
   await answerAt(answers, 0, false);
   await onFakeClock(async () => {
     await user.type(field(), "B");
@@ -834,7 +834,7 @@ test("Use my text of typing the field never wrote is made on the text the field 
 
 // The text an edit was made on is the field's own, apart from what it compares the reader's text
 // with (`base`), which a read moves under typing she has not written. "A", made on "Old", lands,
-// and the read that shows it is slow; "AB", made on "A", ends without landing (she stopped it).
+// and the read that shows it is slow; "AB", made on "A", ends without landing (refused, say).
 // She types on, and the read answers "A" while her typing waits: the field compares with "A" from
 // then on, but her typing was made on "AB", and its write says so.
 test("a read that answers an earlier write while the reader's typing waits leaves that typing made on the text it began on", async () => {

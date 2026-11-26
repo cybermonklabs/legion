@@ -1090,10 +1090,13 @@ const UNAVAILABLE = new ApiError(503, { code: "UNAVAILABLE", error: "the server 
 /** Dispatch as the rows below meet it, for `attribute` of the page's priority: its answer to a
  *  write (`write`), which answers no attempt of `lost` - the network loses each - refuses one
  *  naming a text it does not hold, as another person's text refuses it, and takes any other; and
- *  a read of the priorities (`read`), which shows what it holds. */
+ *  a read of the priorities (`read`), which shows what it holds. Where `reaches` is set, an
+ *  attempt of `lost` reaches it all the same, and it takes that as it takes any other: only its
+ *  answer is lost. */
 function dispatchLosing(
   attribute: "description" | "title",
-  lost: string
+  lost: string,
+  reaches = false
 ): {
   read: () => Promise<Priorities>;
   write: (id: string, input: PatchPriorityInput) => Promise<Priority>;
@@ -1103,7 +1106,10 @@ function dispatchLosing(
   return {
     read: async () => writtenOver("rocq-lean", holding()),
     write: async (id, input) => {
-      if (input[attribute] === lost) throw UNAVAILABLE;
+      if (input[attribute] === lost) {
+        if (reaches && input.expected?.[attribute] === stored) stored = lost;
+        throw UNAVAILABLE;
+      }
       if (input.expected?.[attribute] !== stored) {
         throw attribute === "title" ? PRIORITY_TITLE_CHANGED : PRIORITY_DESCRIPTION_CHANGED;
       }
@@ -1199,6 +1205,162 @@ test.each(
   await waitFor(() => expect(writes.rows()).toEqual([]));
   expect(patch).toHaveBeenCalledTimes(sent);
   expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
+});
+
+/** What `editAfterStop` answers, once the reader's second write has gone out. */
+interface StoppedEdit {
+  readonly attribute: "description" | "title";
+  readonly client: QueryClient;
+  /** Dispatch's read of the priorities, which shows what it holds (`dispatchLosing`). */
+  readonly read: () => Promise<Priorities>;
+  /** The text the field started from, and the texts of her two writes. */
+  readonly start: string;
+  readonly first: string;
+  readonly second: string;
+  /** What her write of `second` changed. */
+  readonly sent: PatchPriorityInput | undefined;
+  /** Whether a notice of another person's text was drawn at any point since she stopped her
+   *  first write; the page is watched no more once this is asked. */
+  readonly noticed: () => boolean;
+}
+
+/**
+ * The reader writes the title or the description on twice, at the end of the field's text, each
+ * write going once her typing rests: "A", then "AB", made on it. Dispatch answers no attempt of
+ * "A" (`dispatchLosing`), which reaches it where `reaches` is set, and she stops it once it is
+ * late, as the shell's Stop trying does; the page is watched for a notice from then on. Her typing
+ * of "AB" rests before the field takes in any read of the priorities: with none answered since,
+ * or, with `answered`, as the page draws one it has answered since - the live feed's, of her
+ * write's own event - before its effects take it in.
+ */
+async function editAfterStop(
+  attribute: "description" | "title",
+  reaches: boolean,
+  answered = false
+): Promise<StoppedEdit> {
+  const user = userEvent.setup({ delay: null });
+  const { beforeEffects, client, editors, patch, priorities } = page();
+  const start = ROWS[1]?.[attribute] ?? "";
+  const ends = attribute === "title" ? [", A", "B"] : [" A", " B"];
+  const [first = "", second = ""] = ends.map((_end, at) => {
+    const typed = `${start}${ends.slice(0, at + 1).join("")}`;
+    return attribute === "title" ? typed : `${typed}\n`;
+  });
+  const dispatch = dispatchLosing(attribute, first, reaches);
+  patch.mockImplementation(dispatch.write);
+  priorities.mockImplementation(dispatch.read);
+  let type: (end: string) => Promise<void>;
+  if (attribute === "title") {
+    const title = await openTitle(user);
+    type = (end) => user.type(title, end);
+  } else {
+    const { handle } = await editors.named("Description");
+    type = async (end) => {
+      handle.view.focus();
+      writeAtEnd(handle, end);
+    };
+  }
+  let noticed = false;
+  const look = () => {
+    noticed ||= screen.queryByRole("alert", { name: /changed by another person/ }) !== null;
+  };
+  const watch = new MutationObserver(look);
+  restores.push(() => watch.disconnect());
+  await onFakeClock(async () => {
+    await type(ends[0] ?? "");
+    await jump(SAVE_AFTER_MS);
+    await stopTheLateWrite(client);
+    watch.observe(document.body, { characterData: true, childList: true, subtree: true });
+    await type(ends[1] ?? "");
+    if (answered) {
+      const read = await dispatch.read();
+      beforeEffects(() => jest.advanceTimersByTime(SAVE_AFTER_MS));
+      act(() => client.setQueryData(prioritiesQuery().queryKey, read));
+    } else {
+      await jump(SAVE_AFTER_MS);
+    }
+    // The write goes out, and its answer comes back, before the clock comes back.
+    await act(async () => {
+      await settle();
+    });
+  });
+  await waitFor(() => expect(patch.mock.calls.at(-1)?.[1]?.[attribute]).toBe(second));
+  return {
+    attribute,
+    client,
+    first,
+    noticed: () => {
+      watch.takeRecords();
+      look();
+      watch.disconnect();
+      return noticed;
+    },
+    read: dispatch.read,
+    second,
+    sent: patch.mock.calls.at(-1)?.[1],
+    start,
+  };
+}
+
+/** That the reader's write of `second` landed: Dispatch holds it, and once the page has read it,
+ *  the store holds nothing of hers but her stopped write of `first`, which stays on the shell's
+ *  line, and no notice of another person's text was drawn at any point since she stopped it. */
+async function expectLanded({ attribute, client, first, noticed, read, second }: StoppedEdit) {
+  const held = (await read()).priorities?.find((row) => row.id === "rocq-lean");
+  expect(held?.[attribute]).toBe(second);
+  await waitFor(() =>
+    expect(
+      client
+        .getQueryData(prioritiesQuery().queryKey)
+        ?.priorities?.find((row) => row.id === "rocq-lean")?.[attribute]
+    ).toBe(second)
+  );
+  await waitFor(() =>
+    expect(writesOf(client).rows()).toMatchObject([{ detail: { text: first }, status: "refused" }])
+  );
+  expect(noticed()).toBe(false);
+}
+
+// Dispatch took the reader's write and only its answer was lost; she stops it, and edits on
+// before the field takes in any read: the field still starts from the text before her write. Her
+// next write waits for a read that left after the stopped one ended - one it starts, where the
+// page has answered none - which shows her stopped text, so it names that text, which Dispatch
+// holds, and lands (`usePriorityWrites`' `writeText`). The page answered the stopped write that
+// whether it landed is not known (`NOT_KNOWN`), so the field reads her stopped text, arriving
+// while her newer write is out, as her own text coming back: no notice of another person's text.
+test.each(
+  (["title", "description"] as const).flatMap((attribute) =>
+    (
+      [
+        ["with no read answered since", false],
+        ["with one answered since, before the field takes it in", true],
+      ] as const
+    ).map(([when, answered]) => [attribute, when, answered] as const)
+  )
+)("a %s write whose answer was lost, stopped, then an edit before any read is drawn, %s: its write names the stopped text, and lands with no notice of another person's text", async (attribute, _when, answered) => {
+  const edit = await editAfterStop(attribute, true, answered);
+  expect(edit.sent).toEqual(
+    attribute === "title"
+      ? { expected: { title: edit.first }, title: edit.second }
+      : { description: edit.second, expected: { description: edit.first } }
+  );
+  await expectLanded(edit);
+});
+
+// The same where her write never reached Dispatch: the read her next write waits for shows the
+// text before her stopped one, which the field started from, so the write names that text, and
+// lands, with no notice of another person's text.
+test.each([
+  "title",
+  "description",
+] as const)("a %s write that never reached Dispatch, stopped, then an edit: its write names the text before it, and lands with no notice of another person's text", async (attribute) => {
+  const edit = await editAfterStop(attribute, false);
+  expect(edit.sent).toEqual(
+    attribute === "title"
+      ? { expected: { title: edit.start }, title: edit.second }
+      : { description: edit.second, expected: { description: edit.start } }
+  );
+  await expectLanded(edit);
 });
 
 /** Dispatch's refusal of a description it will not take: its body, not another person's text. */

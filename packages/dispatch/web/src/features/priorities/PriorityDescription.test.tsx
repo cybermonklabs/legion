@@ -386,7 +386,7 @@ test("each write hands on the text the editor held as its edit began, in the for
 // The text an edit was made on is the editor's own, apart from the text it compares what it holds
 // with (`base`), which a read moves under typing the reader has not written. " A", made on the
 // text the editor opened on, lands, and the read that shows it is slow; " B", made on " A", ends
-// without landing (she stopped it). She types on, and the read answers " A" while her typing
+// without landing (refused, say). She types on, and the read answers " A" while her typing
 // waits: the editor compares with " A" from then on, but her typing was made on " B", and its
 // write says so.
 test("a read that answers an earlier write while the reader's typing waits leaves that typing made on the text it began on", async () => {
@@ -761,7 +761,7 @@ test("a writer's editor draws the reading of a text the server cannot read as ma
 
 // INFRA-2947 tester, review round 6's second finding: the server says it cannot read the stored
 // text as markdown while a write of the writer's is out, so the editor keeps the typing in the
-// markdown it was made in. The write then ends without landing - refused, or stopped - and no
+// markdown it was made in. The write then ends without landing - Dispatch refused it - and no
 // answer of the server's will bring its text back: the editor draws the stored text's reading at
 // once, rather than holding the writer's markdown until some other text arrives.
 test("a writer's write that ends without landing, after the server said it cannot read the stored text as markdown, leaves the editor on that text's reading", async () => {

@@ -74,8 +74,9 @@ test("an edit started from another person's text while a write is out names that
   expect(press(over.chain, "Mine, again", "Written elsewhere").expected).toBe("Mine");
 });
 
-// A write that ends any way but landing is never named, whether or not it landed: where it did,
-// a read brings its text to the field.
+// A write that ends any way but landing leaves the chain: one that ended with no verdict comes
+// back only where a read shows its text (`usePriorityWrites`' `writeText`), and where it landed
+// later still, a read brings its text to the field.
 test("a write that ends any way but landing leaves the chain", () => {
   const first = press(undefined, "One", "Old");
   const ended = settledText(first.chain, first.press);
@@ -405,18 +406,21 @@ test.each([
 });
 
 // Stopped, its key spent, or refused after an attempt that went unanswered, a write ended with no
-// verdict, and here it never reached Dispatch. The page reads nothing for it - a landing would
-// bring its own event's read - so the field holds the text before it.
+// verdict, and here it never reached Dispatch. The page reads nothing as it ends - a landing would
+// bring its own event's read - but it may have landed unseen, so the next write waits for a read
+// it starts, which shows the text before it: the field holds that text, and the write names it.
 test("a write the reader stopped: the next names the text the field took in", async () => {
   const { read, readCount, rename, sentAt, stopLate } = pageWrites();
   await read(0, "Old");
   await onFakeClock(async () => {
     rename("Mine", "Old");
     await stopLate(0);
+    expect(readCount()).toBe(1);
     rename("Mine, more", "Old");
+    await read(1, "Old");
     expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "Mine, more" });
   });
-  expect(readCount()).toBe(1);
+  expect(readCount()).toBe(2);
 });
 
 test("a write whose key Dispatch no longer holds: the next names the text the field took in", async () => {
@@ -430,10 +434,12 @@ test("a write whose key Dispatch no longer holds: the next names the text the fi
     expect(writesOf(client).rows()).toMatchObject([
       { refusal: { name: "SendExpiredError" }, status: "refused" },
     ]);
+    expect(readCount()).toBe(1);
     rename("Mine, more", "Old");
+    await read(1, "Old");
     expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "Mine, more" });
   });
-  expect(readCount()).toBe(1);
+  expect(readCount()).toBe(2);
 });
 
 test("a write refused after an attempt of it went unanswered: the next names the text the field took in", async () => {
@@ -444,10 +450,12 @@ test("a write refused after an attempt of it went unanswered: the next names the
     await answer(0, UNAVAILABLE);
     await tick(FIRST_BACKOFF_MS);
     await answer(1, inputRefused());
+    expect(readCount()).toBe(1);
     rename("Mine, more", "Old");
+    await read(1, "Old");
     expect(await sentAt(2)).toEqual({ expected: { title: "Old" }, title: "Mine, more" });
   });
-  expect(readCount()).toBe(1);
+  expect(readCount()).toBe(2);
 });
 
 // "B" waited its turn behind "A", and the reader discarded it before it went. "A" lands, and an
@@ -471,7 +479,8 @@ test("a write discarded before it went: the next names the write before it that 
 });
 
 // A write stopped and then discarded on the shell's line, and four renames, each from the text
-// the read before it showed. Each names the text the server holds, so each lands.
+// the read before it showed. The first waits for a read it starts, since the stopped write may
+// have landed unseen. Each names the text the server holds, so each lands.
 test("a write stopped and then discarded: each of four renames after it names the text the server holds", async () => {
   const { answer, client, read, rename, sentAt, stopLate } = pageWrites();
   await read(0, "Old");
@@ -486,10 +495,11 @@ test("a write stopped and then discarded: each of four renames after it names th
     let held = "Old";
     for (const [at, title] of ["One", "Two", "Three", "Four"].entries()) {
       rename(title, held);
+      if (at === 0) await read(1, held);
       expect(await sentAt(at + 1)).toEqual({ expected: { title: held }, title });
       await answer(at + 1, false);
       held = title;
-      await read(at + 1, held);
+      await read(at + 2, held);
     }
   });
 });
@@ -545,9 +555,10 @@ test("A over Old, B over A, A stopped late: B is refused 409 and kept beside the
 });
 
 // "A" over "Old" was stopped with no verdict and stays on the shell's line. The field still holds
-// "A" as the reader edits on, so "B" is made on "A", and it lands. "B" carries "A", so "A" is let
-// go: its Retry sends nothing, where a write naming the text "A" went over would be refused and
-// offer the older text back as another person's.
+// "A" as the reader edits on, so "B" is made on "A"; it waits for a read it starts, which shows
+// "Old", so "A" did not land, and "B" names "Old" and lands. "B" carries "A", so "A" is let go:
+// its Retry sends nothing, where a write naming the text "A" went over would be refused and offer
+// the older text back as another person's.
 test("a stopped write that a newer landed write made on its text carries is let go: its Retry sends nothing", async () => {
   const { answer, client, read, rename, sentAt, sentCount, stopLate } = pageWrites(SHOWS_P1);
   await read(0, "Old");
@@ -563,6 +574,7 @@ test("a stopped write that a newer landed write made on its text carries is let 
       text: "A",
     });
     rename("B", "Old", "A");
+    await read(1, "Old");
     expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "B" });
     await answer(1, false);
     expect(writes.rows()).toMatchObject([{ id: stopped?.id, status: "refused" }]);
@@ -586,6 +598,7 @@ test("a stopped write that a newer landed write made on its text carries is kept
       detail: { expected: "Old", made: { on: "Old" }, text: "A" },
     });
     rename("B", "Old", "A");
+    await read(1, "Old");
     await sentAt(1);
     await answer(1, false);
   });
@@ -597,8 +610,9 @@ test("a stopped write that a newer landed write made on its text carries is kept
 });
 
 // A run of stopped writes, each made on the one before: "A" over "Old", and "B", which the field
-// made on "A", both stopped; then "C", made on "B", lands. "C" carries "B", which carries "A": both
-// are let go, from the line and from the tab, and their Retries send nothing.
+// made on "A", both stopped; then "C", made on "B", lands. Each of "B" and "C" waits for a read it
+// starts, which shows "Old". "C" carries "B", which carries "A": both are let go, from the line
+// and from the tab, and their Retries send nothing.
 test("stopped writes each made on the one before are let go together once a write made on the last of them lands", async () => {
   const { answer, client, read, rename, sentAt, sentCount, stopLate } = pageWrites(SHOWS_P1);
   await read(0, "Old");
@@ -608,12 +622,14 @@ test("stopped writes each made on the one before are let go together once a writ
     rename("A", "Old");
     stopped.push(await stopLate(0));
     rename("B", "Old", "A");
+    await read(1, "Old");
     stopped.push(await stopLate(1));
     expect(stopped.map((write) => write?.detail)).toMatchObject([
       { made: { on: "Old" }, text: "A" },
       { made: { on: "A" }, text: "B" },
     ]);
     rename("C", "Old", "B");
+    await read(2, "Old");
     expect(await sentAt(2)).toEqual({ expected: { title: "Old" }, title: "C" });
     await answer(2, false);
     expect(writes.rows().map((write): number | undefined => write.id)).toEqual(
@@ -681,6 +697,7 @@ test("a stopped write retried after a newer one made on it, behind it after a re
     rename("A", "Old");
     const older = await stopLate(0);
     rename("B", "Old", "A");
+    await read(1, "Old");
     expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "B" });
     const newer = await stopLate(1);
     act(() => writes.retry(older?.id ?? 0));
@@ -719,6 +736,7 @@ test.each([
     rename("A", "Old");
     const stopped = await stopLate(0);
     rename("AB", "Old", "A");
+    await read(1, "Old");
     expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "AB" });
     await answer(1, refusal === true ? true : refusal());
     rename("ABC", "Old", "AB");
@@ -881,6 +899,7 @@ test("a stopped write that a newer landed write made in the field drawn again do
   act(() => {
     void again.result.current.rename("p1", "B", "Old", "Old", "Rename the priority");
   });
+  await read(1, "Old");
   expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "B" });
   await answer(1, false);
   expect(writes.rows()).toMatchObject([{ id: stopped?.id, status: "refused" }]);

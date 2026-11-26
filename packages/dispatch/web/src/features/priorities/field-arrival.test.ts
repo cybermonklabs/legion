@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
-import { answered, arrival, type FieldStand, NOTHING_KEPT, type SentText } from "./field-arrival";
+import {
+  answered,
+  arrival,
+  type FieldStand,
+  NOT_KNOWN,
+  NOTHING_KEPT,
+  type SentText,
+} from "./field-arrival";
 
 /** A field that took "Old" in and holds nothing of the reader's: nothing out, nothing kept. */
 const SETTLED: FieldStand = { base: "Old", kept: NOTHING_KEPT, made: "Old", sent: [] };
@@ -174,4 +181,27 @@ test("the page's answer marks a write that landed, and takes out one that did no
   // A write no entry stands for any longer - a read answered it - changes nothing.
   const none = [two];
   expect(answered(none, one, false)).toBe(none);
+});
+
+// "A" ended with no verdict - the reader stopped it - so whether it landed is not known, and
+// "AB", made on it, is out. A read of "A" is her own text coming back, landed after all: nothing
+// is taken in and nothing kept. "A" is no write still out, though: another person's text over it
+// alone is taken in with nothing kept, as over a write that did not land.
+test("a read of a text whose write's landing is not known is the reader's own text coming back", () => {
+  const [a, ab] = out("A", "AB") as [SentText, SentText];
+  const stopped = answered([a, ab], a, NOT_KNOWN);
+  expect(stopped).toEqual([{ landed: NOT_KNOWN, text: "A" }, ab]);
+  expect(arrival("A", "AB", { base: "AB", kept: NOTHING_KEPT, made: "AB", sent: stopped })).toEqual(
+    { base: "AB", kept: [], made: "AB", sent: [ab], take: false }
+  );
+  const alone = answered([a], a, NOT_KNOWN);
+  expect(
+    arrival("Written elsewhere", "A", { base: "A", kept: NOTHING_KEPT, made: "A", sent: alone })
+  ).toEqual({
+    base: "Written elsewhere",
+    kept: [],
+    made: "Written elsewhere",
+    sent: [],
+    take: true,
+  });
 });

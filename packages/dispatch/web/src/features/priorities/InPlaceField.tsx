@@ -27,7 +27,15 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { answered, arrival, NOTHING_KEPT, type SentText, usedOn } from "./field-arrival";
+import {
+  answered,
+  arrival,
+  NOT_KNOWN,
+  NOTHING_KEPT,
+  type SentText,
+  usedOn,
+  type WriteAnswer,
+} from "./field-arrival";
 
 /** How long the reader may stop typing before what they wrote is saved. Nothing else in
  *  Dispatch asks a person to press Save, so a priority's fields are saved as they are written:
@@ -183,7 +191,9 @@ export const FIELD_CHIP = `inline-flex min-h-11 max-w-full items-center gap-1 ro
  * with whether it landed: one that did is no write of the reader's still out when another person's
  * text arrives, and one that did not is no write whose answer the field waits for (`sent`), and no
  * text the field writes again on its own once the write before it comes back: the reader discarded
- * it, or the shell's line holds it, with its Retry. Each write hands on too the text the field
+ * it, or the shell's line holds it, with its Retry. One that ended with no verdict - she stopped
+ * it - is answered not known (`NOT_KNOWN`): no write still out either, but its text arriving is
+ * hers, landed after all, and no other person's. Each write hands on too the text the field
  * held as its edit began (`onSave`'s `on`, `made`): Use my text's as well, since it puts the
  * kept text in place of what the field holds - but for Use my text of a text a write of the
  * reader's carried, which is that same edit, and hands on what that write was made on: the
@@ -249,9 +259,10 @@ export function InPlaceField({
    *  it wrote, though that write did not land, or the last it took in, whichever came last - or,
    *  for Use my text of a text whose own write is known, what that write was made on, since it
    *  writes that same edit again. So a write made on a stopped one's text is known to carry it
-   *  (`PriorityTextWrite.made`). Answers, where the page tells, whether the write landed. */
+   *  (`PriorityTextWrite.made`). Answers, where the page tells, whether the write landed, or that
+   *  it is not known (`WriteAnswer`). */
   // biome-ignore lint/suspicious/noConfusingVoidType: a page that does not say whether its write landed - the owner's - hands any callback, as a void callback takes one
-  onSave: (next: string, from: string, on: string) => Promise<boolean> | void;
+  onSave: (next: string, from: string, on: string) => Promise<WriteAnswer> | void;
   /** What other rows already hold, offered beside the field: a reader picks one of the owners
    *  the deployment uses, or writes a new one, since nothing bounds what an owner may be. */
   options?: readonly string[];
@@ -297,8 +308,8 @@ export function InPlaceField({
   latest.current = { draft, kept, onSave, required, setKept };
 
   // Writes `text`, made on `on`: `made`, unless Use my text says otherwise. The page's answer is
-  // that write's own (`answered`): one that landed is no write still out, and one that did not
-  // never comes back, so the field waits for no answer with it.
+  // that write's own (`answered`): one that landed is no write still out, one that did not never
+  // comes back, so the field waits for no answer with it, and one not known may still come back.
   const write = (text: string, on = made.current) => {
     base.current = text;
     made.current = text;
@@ -398,8 +409,9 @@ export function InPlaceField({
     stopTimer(timer);
     setKept(NOTHING_KEPT);
     setDraft(text);
-    const newest = sent.current.at(-1);
-    if (newest?.text === text && !newest.landed) return;
+    // A write whose landing is not known is no write still out, and does not count as the newest.
+    const newest = sent.current.filter((one) => one.landed !== NOT_KNOWN).at(-1);
+    if (newest?.text === text && newest.landed === false) return;
     const on = usedOn(text, kept, (one) => madeOn.get(one) ?? keptMadeOn?.(one)) ?? made.current;
     write(text, on);
   };

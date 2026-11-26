@@ -15,7 +15,7 @@ import {
   useWrites,
   type Write,
 } from "../writes/write-store";
-import { NOTHING_KEPT } from "./field-arrival";
+import { NOT_KNOWN, NOTHING_KEPT, type WriteAnswer } from "./field-arrival";
 
 /** One write of an existing priority's owner or order: its id, what it changes, and the words the
  *  shell's pending-writes indicator names the write by while it is out. A title or a description
@@ -52,10 +52,13 @@ export interface ChainedWrite {
  * priority go out in press order (`priority:<id>`), so where they land the server holds the
  * newest of them by the time a write pressed now goes, and that write names it (`expectedText`).
  * A write that ends any way but landing - refused, for whatever reason, stopped, its key spent,
- * refused after an attempt that went unanswered, or discarded - leaves at once (`settledText`)
- * and is never named, whether or not it landed: where it did, a later read brings its text to
- * the field, which takes it in (`arrival`) as no change where the field still holds that text,
- * and else as another person's, and the field's `from` moves to it.
+ * refused after an attempt that went unanswered, or discarded - leaves at once (`settledText`).
+ * One Dispatch gave its verdict on, a conflict whatever came before it, or one discarded before
+ * it went, wrote nothing, and is never named. Any other that ended with no verdict
+ * (`endedWithoutVerdict`) may have landed unseen, and the field's `from` moves to its text only
+ * as a read that shows it is drawn: it is kept as unseen (`TextWrites.unseen`), and the next
+ * write of its text waits for a read that left after it ended, in which it comes back as landed
+ * where that read shows its text (`seenText`).
  */
 export type TextChain = readonly ChainedWrite[];
 
@@ -103,6 +106,22 @@ export function pressedText(
 export function settledText(chain: TextChain, press: number, landed?: number): TextChain {
   if (landed === undefined) return chain.filter((write) => write.press !== press);
   return chain.map((write) => (write.press === press ? { ...write, landed } : write));
+}
+
+/** `chain` once a read of the priorities that left after each write of `unseen` ended with no
+ *  verdict answered, the `read`th to answer, showing `shown`: the newest of them whose text it
+ *  shows landed, and goes back in, in press order, as landed before that read
+ *  (`ChainedWrite.landed`), so the page drawing that read lets it go as the field takes its text
+ *  in. Where the read shows none of their texts, none of them landed before it left. */
+function seenText(
+  chain: TextChain,
+  unseen: TextChain,
+  shown: string | undefined,
+  read: number
+): TextChain {
+  const landed = [...unseen].reverse().find((write) => write.text === shown);
+  if (landed === undefined) return chain;
+  return [...chain, { ...landed, landed: read - 1 }].sort((one, other) => one.press - other.press);
 }
 
 /** One write of a priority's title or description as the write store holds it, and a reload
@@ -175,6 +194,14 @@ interface TextPress {
 
 /** The answer to a write of a field's text that is not sent: it does not land. */
 const NOT_LANDED = Promise.resolve(false);
+
+/** Whether a write of a text that ended with `error` may have landed unseen, or may land still:
+ *  it ended with no verdict (`endedWithoutVerdict`) - stopped, its key spent, or refused after an
+ *  attempt that went unanswered - and with no conflict, which wrote nothing, for anyone. Its chain
+ *  keeps it as unseen (`TextWrites.unseen`), and its field is answered not known (`NOT_KNOWN`). */
+function landedUnseen(error: unknown): boolean {
+  return !isConflict(error) && endedWithoutVerdict(error);
+}
 
 /** A page mounted now that shows priorities (`usePriorityWrites`): the app's client it reads them
  *  through, and what it does with a write of a text a conflict refused - one of a priority it
@@ -326,17 +353,27 @@ function textKey(attribute: EditedText, id: string): string {
 }
 
 /** What one app - one query client - knows of the writes of titles and descriptions its pages
- *  made: each text's chain (`TextChain`, by `textKey`), the press each write was, by the record
- *  the write store holds of it (`PriorityTextWrite`), how many presses were made, and when the
- *  newest write was made (`stamp`). Kept with the client, as the write store is (`writesOf`), and
- *  not with a page: a write outlives the page that pressed it, so a page drawn while one is out -
- *  the reader left the page and came back, or the priority's own page and the table were drawn in
- *  turn - goes after it as the page before would have, and names its text. A reload starts a new
- *  client, which knows none: an edit made there before a read shows a write the tab before it
- *  made names the text before that write, is refused, and is offered back beside the field, so
- *  nothing is lost. */
+ *  made: each text's chain (`TextChain`, by `textKey`), the writes of each that ended with no
+ *  verdict (`unseen`) and the press of each that waits for a read (`pressing`), the press each
+ *  write was, by the record the write store holds of it (`PriorityTextWrite`), how many presses
+ *  were made, and when the newest write was made (`stamp`). Kept with the client, as the write
+ *  store is (`writesOf`), and not with a page: a write outlives the page that pressed it, so a
+ *  page drawn while one is out - the reader left the page and came back, or the priority's own
+ *  page and the table were drawn in turn - goes after it as the page before would have, and
+ *  names its text. A reload starts a new client, which knows none: an edit made there before a
+ *  read shows a write the tab before it made names the text before that write, is refused, and
+ *  is offered back beside the field, so nothing is lost. */
 interface TextWrites {
   readonly chains: Map<string, TextChain>;
+  /** The writes of each text that left its chain with no verdict (`endedWithoutVerdict`) since
+   *  that text's last press, each of which may have landed unseen, and how many reads of the
+   *  priorities had answered as the newest of them ended, a read still out then counted among
+   *  them (`past`): a read counted past that left after they all ended (`writeText`). */
+  readonly unseen: Map<string, { readonly writes: TextChain; readonly past: number }>;
+  /** The newest press of each text that waits for such a read, or for a press of that text
+   *  before it that does: it answers once that press is made, so the presses of one text go out
+   *  in the order they were made (`writeText`). */
+  readonly pressing: Map<string, Promise<void>>;
   readonly presses: WeakMap<PriorityTextWrite, number>;
   made: number;
   /** When the newest write its pages made was made (`PriorityTextWrite.made`'s `at`): the next
@@ -350,7 +387,14 @@ const textWrites = new WeakMap<QueryClient, TextWrites>();
 function textWritesOf(client: QueryClient): TextWrites {
   let known = textWrites.get(client);
   if (known === undefined) {
-    known = { chains: new Map(), made: 0, presses: new WeakMap(), stamp: 0 };
+    known = {
+      chains: new Map(),
+      made: 0,
+      presses: new WeakMap(),
+      pressing: new Map(),
+      stamp: 0,
+      unseen: new Map(),
+    };
     textWrites.set(client, known);
   }
   return known;
@@ -386,17 +430,22 @@ const NO_PRIORITIES: readonly string[] = [];
  * their text and go over it - or, while a write of that text this app's pages made is out, or
  * landed and not yet drawn by a read, the newest of those, which the server holds by its turn
  * (`TextChain`): a page drawn while one is out goes after it, as the page that pressed it would
- * (`TextWrites`). A write that ends any way but landing is never named, whether or not it landed:
- * where it did, a later read brings its text to the field, which takes it in (`arrival`) as no
- * change where the field still holds that text, and else as another person's. Where somebody else
+ * (`TextWrites`). A write that ends any way but landing leaves its chain. One Dispatch gave its
+ * verdict on wrote nothing, and is never named. One that ended with no verdict - the reader
+ * stopped it, say - may have landed unseen, though the field's `from` is the text before it
+ * until a read that shows it is drawn: the next write of that text waits for a read that left
+ * after it ended, and names its text where that read shows it (`writeText`). Where it lands
+ * later still, a read brings its text to the field, which takes it as the reader's own text
+ * coming back (`arrival`), unless it took another person's text in since. Where somebody else
  * wrote the text meanwhile the server refuses the write `409 PRIORITY_CHANGED` and writes nothing,
  * so nobody's text is written over unseen. "Use my text" is written as any write is: a write of
  * the reader's own still out - the one the field's blur made as they pressed it - is theirs to
  * replace, and it goes after that. A write that would change nothing is not sent. Each write is
  * answered with whether it landed, once its chain has heard: one that did not never comes back
- * to the field. Each records too what its edit was made on, as the field hands it, and when
- * (`PriorityTextWrite.made`), by which one that lands lets go a stopped write made before it
- * whose text it was made on (`priorityTextWrite.outdates`).
+ * to the field, and one that ended with no verdict is answered not known (`NOT_KNOWN`), so the
+ * field takes its text, where a read brings it, as its own. Each records too what its edit was
+ * made on, as the field hands it, and when (`PriorityTextWrite.made`), by which one that lands
+ * lets go a stopped write made before it whose text it was made on (`priorityTextWrite.outdates`).
  *
  * The reader's own texts a title or a description keeps beside itself while it shows another
  * person's (`ChangedMeanwhile`) are writes of the store, by priority and attribute (`kept`,
@@ -499,11 +548,13 @@ export function usePriorityWrites(
     request: ({ write }) => textRequest(write),
     // Counted here, on every write, rather than in the press's own callbacks, which TanStack
     // calls for the last press alone. A write that landed stays in its chain until a read that
-    // left after it is drawn; any other ending leaves it at once.
+    // left after it is drawn; any other ending leaves it at once, and one with no verdict waits as
+    // unseen for the next press of its text (`TextWrites.unseen`).
     onSettled: (_data, error, press) => {
       const key = textKey(press.write.attribute, press.write.id);
       const chain = own.chains.get(key);
       const landed = error === null;
+      const unseen = landedUnseen(error);
       if (chain !== undefined) {
         const now = queryClient.getQueryState(prioritiesQuery().queryKey);
         // A read still out may have left before the write committed, and the app's client lets
@@ -512,17 +563,24 @@ export function usePriorityWrites(
         const past =
           now === undefined ? 0 : now.dataUpdateCount + (now.fetchStatus === "idle" ? 0 : 1);
         own.chains.set(key, settledText(chain, press.press, landed ? past : undefined));
+        // The next press of its text names it where a read counted past it shows its text
+        // (`writeText`). One the chain no longer held went behind another person's text.
+        const ended = chain.find((write) => write.press === press.press);
+        if (unseen && ended !== undefined) {
+          const writes = own.unseen.get(key)?.writes ?? NO_WRITES;
+          own.unseen.set(key, { past, writes: [...writes, ended] });
+        }
       }
-      // A conflict wrote nothing, for anyone: the page that took it reads the priorities itself
-      // (`takeWrites`), and one no page took has nothing on the page to read again for.
+      // The page that took a conflict reads the priorities itself (`takeWrites`), and one no page
+      // took has nothing on the page to read again for.
       if (isConflict(error)) return;
-      // A write that ended with no verdict - stopped, its key spent, or refused after an attempt
-      // that went unanswered - may land later, or did land unseen: its own event reads the
-      // priorities then (`useEventFeed`), and a read now would show nothing of a later landing
-      // and hold that one back by the event feed's one read a second (`MIN_REFETCH_INTERVAL_MS`),
-      // so the field would edit on from the text before it. Dispatch's other verdicts, a discard
-      // and a landing read the priorities at once.
-      if (endedWithoutVerdict(error)) return;
+      // One with no verdict reads nothing now: its own event reads the priorities where it landed
+      // (`useEventFeed`), and the next press of its text reads them where no read has answered
+      // since (`writeText`). A read now would show nothing of a later landing and hold that one
+      // back by the event feed's one read a second (`MIN_REFETCH_INTERVAL_MS`), so the field would
+      // edit on from the text before it. Dispatch's other verdicts, a discard and a landing read
+      // the priorities at once.
+      if (unseen) return;
       const refreshed = refresh();
       if (!landed) return;
       // That read may answer with the priorities the page draws already, which draws nothing
@@ -680,22 +738,24 @@ export function usePriorityWrites(
     letGo(landed.map((write) => write.id));
   }, [claimMarks, conflicts, letGo, stored]);
   const { mutateAsync } = text;
-  /** Writes `written` as priority `id`'s `attribute`, where the field last took `from` in from the
-   *  server and made the edit on `on` (`PriorityTextWrite.made`): over the newest write of its
-   *  chain it goes after (`aheadOf`), or over `from`. Answers whether the write landed, once its
-   *  chain has heard (`text`'s `onSettled`, which TanStack runs before it settles the press): one
-   *  not sent did not. */
-  const writeText = useCallback(
+  /** Presses `written` as priority `id`'s `attribute`, where the field last took `from` in from
+   *  the server, the page drawing the read of the priorities that was the `read`th to answer, and
+   *  made the edit on `on` (`PriorityTextWrite.made`): over the newest write of its chain it goes
+   *  after (`aheadOf`), or over `from`. Answers whether the write landed, once its chain has heard
+   *  (`text`'s `onSettled`, which TanStack runs before it settles the press): one not sent did
+   *  not, and of one that may have landed unseen it is not known (`landedUnseen`, `NOT_KNOWN`). */
+  const pressText = useCallback(
     (
       id: string,
       attribute: EditedText,
       written: string,
       from: string,
       on: string,
-      label: string
-    ): Promise<boolean> => {
+      label: string,
+      read: number
+    ): Promise<WriteAnswer> => {
       const key = textKey(attribute, id);
-      const chain = aheadOf(own.chains.get(key), from, drawn.current.reads);
+      const chain = aheadOf(own.chains.get(key), from, read);
       const expected = expectedText(chain, from);
       if (written === expected) return NOT_LANDED;
       // The record the store holds of the write (`priorityTextWrite`). It is stamped after every
@@ -719,10 +779,70 @@ export function usePriorityWrites(
       own.chains.set(key, pressedText(chain, press, written, expected));
       return mutateAsync({ label, press, write: detail }).then(
         () => true,
-        () => false
+        (error: unknown) => (landedUnseen(error) ? NOT_KNOWN : false)
       );
     },
     [claimMarks, conflicts, holdText, mutateAsync, own, refresh, writes]
+  );
+  /** Takes the writes of priority `id`'s `attribute` that ended with no verdict
+   *  (`TextWrites.unseen`) as the page's read of the priorities shows them now: the newest whose
+   *  text it shows goes back in its chain, landed (`seenText`), and the others go. */
+  const seen = useCallback(
+    (id: string, attribute: EditedText) => {
+      const key = textKey(attribute, id);
+      const unseen = own.unseen.get(key);
+      if (unseen === undefined) return;
+      own.unseen.delete(key);
+      const now = queryClient.getQueryState(prioritiesQuery().queryKey);
+      const shown = now?.data?.priorities?.find((row) => row.id === id)?.[attribute];
+      const chain = own.chains.get(key) ?? NO_WRITES;
+      own.chains.set(key, seenText(chain, unseen.writes, shown, now?.dataUpdateCount ?? 0));
+    },
+    [own, queryClient]
+  );
+  /** Writes `written` as priority `id`'s `attribute`, where the field last took `from` in from the
+   *  server and made the edit on `on`, and answers whether it landed (`pressText`). A write of
+   *  that text that ended with no verdict since its last press (`TextWrites.unseen`) may have
+   *  landed unseen, and `from` be the text before it: the press waits for a read of the
+   *  priorities that left after it ended - one the page has answered already, or else one started
+   *  now (`refresh`) - and names its text where that read shows it (`seen`). It is made on what
+   *  the page had drawn as it was pressed, however long it waits, and a press of the same text
+   *  made while it waits goes after it (`TextWrites.pressing`), so the two go out in the order
+   *  they were made. */
+  const writeText = useCallback(
+    (
+      id: string,
+      attribute: EditedText,
+      written: string,
+      from: string,
+      on: string,
+      label: string
+    ): Promise<WriteAnswer> => {
+      const key = textKey(attribute, id);
+      const read = drawn.current.reads;
+      const press = () => {
+        seen(id, attribute);
+        return pressText(id, attribute, written, from, on, label, read);
+      };
+      const before = own.pressing.get(key);
+      if (before === undefined) {
+        const unseen = own.unseen.get(key);
+        const answered =
+          queryClient.getQueryState(prioritiesQuery().queryKey)?.dataUpdateCount ?? 0;
+        if (unseen === undefined || answered > unseen.past) return press();
+      }
+      const turn = Promise.withResolvers<void>();
+      own.pressing.set(key, turn.promise);
+      return (before ?? refresh()).then(() => {
+        if (own.pressing.get(key) === turn.promise) own.pressing.delete(key);
+        try {
+          return press();
+        } finally {
+          turn.resolve();
+        }
+      });
+    },
+    [own, pressText, queryClient, refresh, seen]
   );
   /** Writes `title` as priority `id`'s title, where its field last took `from` in from the server
    *  and made the edit on `on` (`writeText`), and answers whether it landed. A title with nothing
