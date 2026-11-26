@@ -37,6 +37,11 @@ import (
 // whose tree is live, and a role comes back once while its pod is on its way: the role's one open
 // resume is what says so, so one head that settles again as each of its checks finishes wakes the
 // pod once.
+//
+// The listener's report of a message is also a mark on the claim it names, whatever that claim's
+// state (listenerWake, dispatch://INFRA-5682 R1): a wake of that claim that waits in the daemon's
+// pacing, or the one this report raises, goes ahead of the wakes that carry no message, because
+// Envoy keeps a role's message an hour and then drops it.
 
 // Pods is the daemon's record of its released pods as the workflow reads and writes it: the Envoy
 // listener's liveness report, the claims a release left released, the wake that brings one back,
@@ -54,11 +59,17 @@ type Pods interface {
 	RecordListenerReady(ctx context.Context, tx pgx.Tx, at time.Time) error
 	// ReleasedClaimOfRole is the released claim of issue's role, and whether there is one.
 	ReleasedClaimOfRole(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (supervise.Claim, bool, error)
-	// ReleasedClaimByToken and ReleasedClaimBySession are the released claim a listener's report
-	// names, by the role token a message was published to and by the session one was sent to.
-	// Every daemon reads the report and only the one holding a released claim of that name acts.
-	ReleasedClaimByToken(ctx context.Context, tx pgx.Tx, token string) (supervise.Claim, bool, error)
-	ReleasedClaimBySession(ctx context.Context, tx pgx.Tx, session string) (supervise.Claim, bool, error)
+	// ClaimByToken and ClaimBySession are the claim a listener's report names, by the role token a
+	// message was published to and by the session one was sent to, in whatever state it is. Every
+	// daemon reads the report and only the one holding a claim of that name acts.
+	ClaimByToken(ctx context.Context, tx pgx.Tx, token string) (supervise.Claim, bool, error)
+	ClaimBySession(ctx context.Context, tx pgx.Tx, session string) (supervise.Claim, bool, error)
+	// MarkMessage marks the claim token for an Envoy message that has waited since at, and
+	// answers the mark it wrote, or else the mark that stands once it has: the earliest of the
+	// marks the role has taken no turn since, and the zero time for a claim that takes none. A mark
+	// written where none stood can be one the role has taken a turn since, which stands not at all
+	// (the store's MarkClaimMessageTx).
+	MarkMessage(ctx context.Context, tx pgx.Tx, token claim.Token, at time.Time) (time.Time, error)
 	// TakePodWake takes one wake of issue's role and answers whether this call took it; false is
 	// a wake another pass already took, which is already bringing the pod back. pause is the
 	// project pause that holds the wake, 0 for none: a held wake records its pause and pairs with
@@ -209,8 +220,14 @@ func WakeTask(kind, detail string, stop WakeStop) string {
 // listenerWake applies one wake report of the Envoy listener (intake.ListenerWake). A
 // `listener_ready` report is the positive liveness signal R7's gate reads and wakes nothing. A
 // role or agent report names a role token or a session, and this daemon acts only when one of its
-// own claims is released under that name: every daemon consumes the subject, because the listener
-// does not know which daemon owns a session and must not learn.
+// own claims has that name: every daemon consumes the subject, because the listener does not know
+// which daemon owns a session and must not learn.
+//
+// The report marks that claim for the message it carried, in this transaction and whatever the
+// claim's state (Pods.MarkMessage, dispatch://INFRA-5682 R1), and once the fact commits the
+// claim's machine is told the mark the store holds (Config.MessageMarked), so a wake of the claim
+// that already waits in the pacing moves to the message queue. A claim that is released is woken
+// as well, and the start that wake queues finds the claim marked.
 func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.ListenerWake) (intake.Result, error) {
 	if e.cfg.Pods == nil {
 		return intake.Result{}, nil
@@ -218,20 +235,29 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 	if fact.Kind == intake.ListenerWakeReady {
 		return intake.Result{}, e.cfg.Pods.RecordListenerReady(ctx, tx, fact.At)
 	}
-	var released supervise.Claim
+	var named supervise.Claim
 	var found bool
 	var err error
 	kind, detail := pods.WakeRoleMessage, fact.Role
 	if fact.Kind == intake.ListenerWakeAgent {
 		kind, detail = pods.WakeAgentMessage, fact.Session
-		released, found, err = e.cfg.Pods.ReleasedClaimBySession(ctx, tx, fact.Session)
+		named, found, err = e.cfg.Pods.ClaimBySession(ctx, tx, fact.Session)
 	} else {
-		released, found, err = e.cfg.Pods.ReleasedClaimByToken(ctx, tx, fact.Role)
+		named, found, err = e.cfg.Pods.ClaimByToken(ctx, tx, fact.Role)
 	}
 	if err != nil || !found {
 		return intake.Result{}, err
 	}
-	_, err = e.wakeReleased(ctx, tx, released, kind, detail, fact.At)
+	mark, err := e.cfg.Pods.MarkMessage(ctx, tx, named.Token, fact.At)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if notify := e.cfg.MessageMarked; notify != nil && !mark.IsZero() {
+		store.OnCommit(ctx, func() { notify(named.Token, mark) })
+	}
+	if named.Released() {
+		_, err = e.wakeReleased(ctx, tx, named, kind, detail, fact.At)
+	}
 	return intake.Result{}, err
 }
 

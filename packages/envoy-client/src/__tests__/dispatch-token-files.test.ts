@@ -524,6 +524,40 @@ describe("the dispatch command's token files", () => {
     expect(refusal).not.toContain(copy.token);
   });
 
+  test("`dispatch api` sends the file's token and a proof made with the file's key, with a host and with none", async () => {
+    const dispatch = standInDispatch();
+    const copy = copyFiles();
+    const hosted = commandEnvironment(copy, dispatch.url);
+    // With no host, as in a job no plugin runs: no DISPATCH_HOST, no envoy.json and no parent
+    // process that names one.
+    const unhosted = commandEnvironment(copy, dispatch.url, {
+      DISPATCH_HOST: undefined,
+      ENVOY_CONFIG_FILE: undefined,
+    });
+    for (const env of [hosted, unhosted]) {
+      let stdout = "";
+      let stderr = "";
+      const code = await runDispatchCli(["api", "--path", "/api/v1/issues/DSP-1"], env, {
+        stdout: (text) => {
+          stdout += text;
+        },
+        stderr: (text) => {
+          stderr += text;
+        },
+        readText: (file) => readFileSync(file, "utf8"),
+        cwd: copy.dir,
+        nearestAncestorNamed: () => undefined,
+      });
+      expect([env.DISPATCH_HOST, code, stderr]).toEqual([env.DISPATCH_HOST, 0, ""]);
+      expect(JSON.parse(stdout)).toEqual(issue);
+      const presented = dispatch.presented.splice(0);
+      expect(presented.map(({ method, url }) => `${method} ${url.pathname}`)).toEqual([
+        "GET /api/v1/issues/DSP-1",
+      ]);
+      expectFileCredential(presented[0] as Presented, copy.token, copy.key, dispatch.url);
+    }
+  });
+
   test("a write whose result names an owner sends the listener nothing of the file's token", async () => {
     const dispatch = standInDispatch();
     const listener = standInListener();
