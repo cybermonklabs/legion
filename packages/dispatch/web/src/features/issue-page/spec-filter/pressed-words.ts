@@ -120,23 +120,33 @@ export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt 
   return { x, y, offset: at, word: pressedWord(held, at), next: next || undefined };
 }
 
-/** Whether the point (`x`, `y`) stands past the end of `atom`'s last line: right of it where the
- *  atom runs left to right, and left of it where it runs right to left. The browser put the point
- *  on one of the atom's lines, and an atom's box is as tall as its font, not as its line, so `y`
- *  only tells the last line from the one before it, where the box before the last stands above
- *  it: the two lines meet half way between the two boxes, and a point at or above that is on no
- *  last line. Where the browser names the atom neither direction, the point is past no end of it.
- *  Read only for a place the browser answered inside an atom, so no other press lays the words
- *  out. */
+/** Whether the point (`x`, `y`) stands past the end of `atom`'s last line: right of its greatest
+ *  right where the atom runs left to right, and left of its least left where it runs right to
+ *  left. Chromium draws an atom in one box for each run of one direction, in the order of the text,
+ *  so the last line is every box that stands beside the last box, its top to its bottom, and its
+ *  end need not be the last box's. An atom's box is as tall as its font, not as its line, so `y`
+ *  only tells the last line from the one before it, the last box above the last line: the two
+ *  lines meet half way between them, and a point at or above that is on no last line. An atom
+ *  whose boxes all stand on one line has no line before its last. Where the browser names the atom
+ *  neither direction, the point is past no end of it. Read only for a place the browser answered
+ *  inside an atom, so no other press lays the words out. */
 function pastAtomEnd(atom: Element, x: number, y: number): boolean {
   const lines = atom.getClientRects();
   const last = lines[lines.length - 1];
   if (last === undefined) return false;
-  const earlier = lines[lines.length - 2];
-  const above = earlier !== undefined && earlier.top < last.top;
-  if (above && y <= (earlier.bottom + last.top) / 2) return false;
+  let earlier: DOMRect | undefined;
+  let { top, left, right } = last;
+  for (const box of lines) {
+    if (box.bottom <= last.top) earlier = box;
+    else if (box.top < last.bottom) {
+      top = Math.min(top, box.top);
+      left = Math.min(left, box.left);
+      right = Math.max(right, box.right);
+    }
+  }
+  if (earlier !== undefined && y <= (earlier.bottom + top) / 2) return false;
   const direction = atom.ownerDocument.defaultView?.getComputedStyle(atom).direction;
-  return direction === "rtl" ? x < last.left : direction === "ltr" && x > last.right;
+  return direction === "rtl" ? x < left : direction === "ltr" && x > right;
 }
 
 /** The word at `offset` in `text` - the run of characters that are no space around it - with
