@@ -491,14 +491,14 @@ test("Open page opens the document of the question, at its section, for each kin
     seed.runbookDecision,
     seed.beforeHeading,
   ];
-  const inbox = await listOpenAsks();
+  const open = await listOpenAsks();
   expect(
-    inbox.find((row) => row.id === seed.talkDecision),
+    open.find((row) => row.id === seed.talkDecision),
     "question 1's Inbox row names no project document"
   ).not.toHaveProperty("document");
   expect(
     questions.map((id) => {
-      const row = inbox.find((listed) => listed.id === id);
+      const row = open.find((listed) => listed.id === id);
       return { id, waiting_on: row?.waiting_on, waiting_on_person: row?.waiting_on_person };
     }),
     "items 1 to 7 each wait on alice"

@@ -517,7 +517,7 @@ type InboxRead =
       readonly limit: number;
       readonly state: "unread";
     }
-  | { readonly cursor?: string; readonly limit: number; readonly state: "dismissed" };
+  | { readonly cursor?: string; readonly state: "dismissed" };
 
 /** `query` as the page's read of the one read that it is (`InboxRead`), or undefined for a read
  *  that names anything else, which the reads of the release before do not narrow as the one read
@@ -540,7 +540,7 @@ function inboxReadOf(query: Query<"/api/v1/me/inbox", "get">): InboxRead | undef
     artifact === undefined &&
     issue === undefined
   ) {
-    return { cursor, limit, state };
+    return { state, cursor };
   }
   return undefined;
 }
@@ -933,9 +933,8 @@ export class DispatchApiClient {
    *  goes up (an upload's), as the response's headers arrive and as each piece of its body does,
    *  `read` included: a transfer that keeps moving goes on however slowly, either way, and one
    *  that stops fails as headers that never come do. A caller's `init.signal` still aborts the
-   *  request, as itself. `noRoute` is the caller's own answer to a Dispatch without the request's
-   *  route: given one, the request is sent once (`answered`), and an answer of no route to it is
-   *  answered with what `noRoute` answers. */
+   *  request, as itself. A request sent `once` is sent once, and an answer of no route to it is
+   *  thrown as it came (`answered`). */
   private async exchange<T>(
     path: string,
     init: RequestInit,
@@ -943,7 +942,7 @@ export class DispatchApiClient {
     read: (response: Response) => Promise<T>,
     uploaded?: (loaded: number, total: number) => void,
     // kept for one release: inbox-page-fallback
-    noRoute?: () => Promise<T>
+    once = false
   ): Promise<T> {
     const limit =
       deadlineMs !== undefined
@@ -951,17 +950,7 @@ export class DispatchApiClient {
         : (init.method ?? "GET").toUpperCase() === "GET"
           ? REQUEST_DEADLINE_MS
           : null;
-    // kept for one release: inbox-page-fallback
-    const once = noRoute !== undefined;
-    if (limit === null) {
-      try {
-        return read(await this.answered(path, init, undefined, uploaded, once));
-      } catch (error) {
-        // kept for one release: inbox-page-fallback
-        if (noRoute !== undefined && isNoRoute(error)) return noRoute();
-        throw error;
-      }
-    }
+    if (limit === null) return read(await this.answered(path, init, undefined, uploaded, once));
     const deadline = new AbortController();
     let timer = setTimeout(() => deadline.abort(), limit);
     const caller = init.signal ?? undefined;
@@ -974,8 +963,6 @@ export class DispatchApiClient {
         caller === undefined ? deadline.signal : AbortSignal.any([caller, deadline.signal]);
       return await read(await this.answered(path, { ...init, signal }, arrived, uploaded, once));
     } catch (error) {
-      // kept for one release: inbox-page-fallback
-      if (noRoute !== undefined && isNoRoute(error)) return noRoute();
       // An answer Dispatch gave stays its answer and the caller's abort stays the caller's: only
       // what the deadline cut short is a timeout.
       if (deadline.signal.aborted && !(error instanceof ApiError) && caller?.aborted !== true) {
@@ -1004,7 +991,7 @@ export class DispatchApiClient {
    *  `NO_ROUTE_ROLLING_RELEASE_MESSAGE`. An abort of `init.signal` during a wait - the caller's,
    *  or the deadline's - rejects at once with the abort's reason and sends nothing more. A request
    *  sent `once` is sent once, and an answer of no route to it is thrown as it came: its caller
-   *  has an answer of its own to a Dispatch without the route (`exchange`'s `noRoute`). */
+   *  has an answer of its own to a Dispatch without the route (`getMeInbox`). */
   private answered(
     path: string,
     init: RequestInit,
@@ -1045,7 +1032,8 @@ export class DispatchApiClient {
       return response;
     };
     // kept for one release: inbox-page-fallback
-    return retryNoRoute(attempt, once ? () => false : isNoRoute, {
+    if (once) return attempt();
+    return retryNoRoute(attempt, isNoRoute, {
       exhausted: () =>
         new ApiError(404, { code: "NOT_FOUND", error: NO_ROUTE_ROLLING_RELEASE_MESSAGE }),
       signal: init.signal,
@@ -1068,7 +1056,7 @@ export class DispatchApiClient {
     init: RequestInit = {},
     deadlineMs?: number | null,
     // kept for one release: inbox-page-fallback
-    noRoute?: () => Promise<T>
+    once = false
   ): Promise<T> {
     return this.exchange(
       path,
@@ -1076,7 +1064,7 @@ export class DispatchApiClient {
       deadlineMs,
       (response) => response.json() as Promise<T>,
       undefined,
-      noRoute
+      once
     );
   }
 
@@ -1157,8 +1145,9 @@ export class DispatchApiClient {
    *  shaped read, so the trees are part of the body the document holds. A read states a response
    *  shape of its own only where the document cannot hold it, each saying beside it what that
    *  is: `getIssueEvents` and `listIssueAskThreads`, which go through `json` with `routeUrl`, and
-   *  `getIssueReferences`, which a build older than the document answers with less. `noRoute` is
-   *  the caller's own answer to a Dispatch without the route (`exchange`). */
+   *  `getIssueReferences`, which a build older than the document answers with less. A read sent
+   *  `once` is sent once, and an answer of no route to it is thrown as it came (`answered`), for a
+   *  caller with an answer of its own to a Dispatch without the route (`getMeInbox`). */
   private async read<P extends PathsOf<"get">>(
     pattern: P,
     params: PathParams<Op<P, "get">>,
@@ -1166,13 +1155,13 @@ export class DispatchApiClient {
     init: RequestInit = {},
     deadlineMs?: number | null,
     // kept for one release: inbox-page-fallback
-    noRoute?: () => Promise<Json200<Op<P, "get">>>
+    once = false
   ): Promise<Json200<Op<P, "get">>> {
     return this.json<Json200<Op<P, "get">>>(
       routeUrl(pattern, params, query),
       init,
       deadlineMs,
-      noRoute
+      once
     );
   }
 
@@ -1505,15 +1494,12 @@ export class DispatchApiClient {
   getMeInbox(query: Query<"/api/v1/me/inbox", "get"> = {}) {
     // kept for one release: inbox-page-fallback
     const page = inboxReadOf(query);
-    return this.read(
-      "/api/v1/me/inbox",
-      {},
-      query,
-      {},
-      undefined,
-      // kept for one release: inbox-page-fallback
-      page === undefined ? undefined : () => this.inboxOfTheReleaseBefore(page)
-    );
+    if (page === undefined) return this.read("/api/v1/me/inbox", {}, query);
+    // kept for one release: inbox-page-fallback
+    return this.read("/api/v1/me/inbox", {}, query, {}, undefined, true).catch((error: unknown) => {
+      if (!isNoRoute(error)) throw error;
+      return this.inboxOfTheReleaseBefore(page);
+    });
   }
 
   /**
@@ -1530,9 +1516,12 @@ export class DispatchApiClient {
    * which that route refuses there: it answers `INBOX_DISMISSED_PAGE` rows a page, and its
    * `next_cursor` is one only it reads back. Each read of that route names both kinds of row.
    *
-   * Each entry carries its row under the node and the moment the one read gives that row, and an
-   * Agent row carries the conversation its reading pane draws (`agentConversation`), read from
-   * `GET /api/v1/messages/{id}` by its root message, which every build serves. No read of the
+   * Each entry carries its row under the node and the moment the one read gives that row. An
+   * Agent row of the reader's own rows or of a page of what they dismissed carries the
+   * conversation its reading pane draws (`agentConversation`), read from
+   * `GET /api/v1/messages/{id}` by its root message, which every build serves; one of their
+   * unread threads is a thread entry with no conversation read, since the page reads that answer
+   * only for its `total` (the count) and an owner's unread set holds no Agent row. No read of the
    * release before answers an entry's relations, the reader's `person` or the `horizon`, and the
    * page reads none of them: each entry's relations are none, and the other two are empty.
    * kept for one release: inbox-page-fallback
@@ -1541,36 +1530,31 @@ export class DispatchApiClient {
     const kind = INBOX_THREAD_KINDS.join(",");
     const [asks, replies] = await Promise.all([
       query.state === "inbox" ? this.read("/api/v1/inbox", {}, { assignee: "me" }) : [],
-      this.read(
-        "/api/v1/me/replies",
-        {},
-        query.state === "dismissed"
-          ? { kind, state: query.state, cursor: query.cursor }
-          : { kind, ...query }
-      ),
+      this.read("/api/v1/me/replies", {}, { kind, ...query }),
     ]);
-    const rows = replies.rows ?? [];
-    const conversations = await Promise.all(
-      rows.map((row) =>
-        row.kind === "agent" ? this.read("/api/v1/messages/{id}", { id: row.thread_id }) : undefined
-      )
+    const threads = await Promise.all(
+      (replies.rows ?? []).map(async (row): Promise<MeInboxEntry> => {
+        const moment =
+          query.state === "dismissed" && row.dismissed_at !== undefined
+            ? row.dismissed_at
+            : row.reply.created_at;
+        if (row.kind !== "agent" || query.state === "unread") {
+          return {
+            moment,
+            node: { id: row.thread_id, kind: row.kind },
+            relations: [],
+            thread: row,
+          };
+        }
+        const conversation = await this.read("/api/v1/messages/{id}", { id: row.thread_id });
+        return {
+          agent: { ...row, conversation },
+          moment,
+          node: { id: row.thread_id, kind: "message" },
+          relations: [],
+        };
+      })
     );
-    const threads = rows.map((row, index): MeInboxEntry => {
-      const moment =
-        query.state === "dismissed" && row.dismissed_at !== undefined
-          ? row.dismissed_at
-          : row.reply.created_at;
-      const conversation = conversations[index];
-      if (conversation === undefined) {
-        return { moment, node: { id: row.thread_id, kind: row.kind }, relations: [], thread: row };
-      }
-      return {
-        agent: { ...row, conversation },
-        moment,
-        node: { id: row.thread_id, kind: "message" },
-        relations: [],
-      };
-    });
     const entries = [
       ...asks.map(
         (ask): MeInboxEntry => ({

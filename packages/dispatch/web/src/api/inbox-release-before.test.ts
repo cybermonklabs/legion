@@ -73,23 +73,26 @@ function repliesAnswer(
 
 /**
  * Answers the page as a Dispatch process of the release before does: `GET /api/v1/me/inbox` with
- * no route, in the words a router with none answers (`isNoRoute`); `GET /api/v1/inbox` with
- * `asks`; `GET /api/v1/me/replies` with what `replies` makes of the query; and
- * `GET /api/v1/messages/{id}` with the conversation of `agentRow("message-1")`. It answers the
- * requests it is sent, each by its path and query, in the order they came.
+ * what `oneRead` makes of the request, by default no route, in the words a router with none
+ * answers (`isNoRoute`); `GET /api/v1/inbox` with `asks`; `GET /api/v1/me/replies` with what
+ * `replies` makes of the query; and `GET /api/v1/messages/{id}` with the conversation of
+ * `agentRow("message-1")`. It answers the requests it is sent, each by its path and query, in the
+ * order they came.
  */
 function serveTheReleaseBefore(
   replies: (query: URLSearchParams) => unknown,
-  asks: readonly OpenAskRow[] = []
+  asks: readonly OpenAskRow[] = [],
+  oneRead: (request: Request) => Response = (request) =>
+    Response.json(
+      { code: "NOT_FOUND", error: `no route for GET ${new URL(request.url).pathname}` },
+      { status: 404 }
+    )
 ): string[] {
   const asked: string[] = [];
   answerRequests(
     http.get("/api/v1/me/inbox", ({ request }) => {
       asked.push(pathOf(request));
-      return Response.json(
-        { code: "NOT_FOUND", error: `no route for GET ${new URL(request.url).pathname}` },
-        { status: 404 }
-      );
+      return oneRead(request);
     }),
     http.get("/api/v1/inbox", ({ request }) => {
       asked.push(pathOf(request));
@@ -177,6 +180,20 @@ test("the reader's own rows are read from the two reads of the release before, t
 test("the unread count is the total of the release before's one-row page of unread threads", async () => {
   const asked = serveTheReleaseBefore(() =>
     repliesAnswer([replyRow("c1")], { limit: 1, total: 4 })
+  );
+
+  expect(await inboxClient().fetchQuery(meInboxCountQuery())).toBe(4);
+  expect(asked).toEqual([
+    "/api/v1/me/inbox?limit=1&state=unread",
+    "/api/v1/me/replies?kind=reply%2Cagent&limit=1&state=unread",
+  ]);
+});
+
+// The count is read for its `total` alone, so an Agent row on its one-row page is a thread entry
+// whose conversation is never read.
+test("the unread count reads no Agent row's conversation", async () => {
+  const asked = serveTheReleaseBefore(() =>
+    repliesAnswer([agentRow("message-1")], { limit: 1, total: 4 })
   );
 
   expect(await inboxClient().fetchQuery(meInboxCountQuery())).toBe(4);
@@ -276,20 +293,10 @@ test.each([
   ],
   ["a server failure", 500, { code: "INTERNAL", error: "the database went away" }],
 ])("%s is the one read's own failure, and nothing else is read", async (_what, status, refusal) => {
-  const asked: string[] = [];
-  answerRequests(
-    http.get("/api/v1/me/inbox", ({ request }) => {
-      asked.push(pathOf(request));
-      return Response.json(refusal, { status });
-    }),
-    http.get("/api/v1/inbox", ({ request }) => {
-      asked.push(pathOf(request));
-      return Response.json([]);
-    }),
-    http.get("/api/v1/me/replies", ({ request }) => {
-      asked.push(pathOf(request));
-      return Response.json(repliesAnswer([]));
-    })
+  const asked = serveTheReleaseBefore(
+    () => repliesAnswer([]),
+    [],
+    () => Response.json(refusal, { status })
   );
 
   const thrown = await inboxClient()

@@ -123,7 +123,7 @@ async function toggleType(page: Page, label: string): Promise<void> {
 }
 
 // SLOW(>=2s): each of the four rows' links is followed to the page it opens and back, eight page
-// loads, and the rows are read again below the reading column's width.
+// loads, and each row is picked and its author read in its pane.
 test("the inbox lists everything that reached a person in one list", async ({ browser }) => {
   // A server that has just started serves each of those page loads in about five seconds, which
   // takes the row past the 60 s budget (`testTimeout`); served warm, the same row takes 30 s.

@@ -1464,11 +1464,11 @@ So for each surface the two builds share, this is what build N+1 may change whil
 - **Routes.**
   A route is added freely.
   Build N answers a route that only build N+1 serves with the JSON `404 NOT_FOUND` `no route for <METHOD> <path>`, and it answers a known path asked with a method it does not serve the same way (Routes, below).
-  The page (`web/src/api/client.ts`) and the `dispatch` command (`packages/envoy-client/src/dispatch-http.ts`) send that request again, with the same body, after 1, 2 and 4 seconds, each wait jittered by a quarter:
+  The page (`web/src/api/client.ts`) and the `dispatch` command (`packages/envoy-client/src/dispatch-http.ts`) send that request again, with the same body, after 1, 2 and 4 seconds, each wait jittered by a quarter, but for the Inbox page's reads of `GET /api/v1/me/inbox` and `dispatch inbox`'s, which fall back (below):
   no handler ran, and the next attempt can reach the other build.
   After the last attempt they say that the action is not offered yet because a release is in progress.
   A route is removed only in the release after the one that stops calling it, so no page or command still serving calls a route that is gone.
-  `dispatch inbox` calls `GET /api/v1/me/inbox`, which this release adds, so where the server answers `404` for it, it falls back to `GET /api/v1/inbox` and `GET /api/v1/me/replies`, the reads it replaces.
+  The Inbox page (`getMeInbox` and `inboxOfTheReleaseBefore` in `web/src/api/client.ts`) and `dispatch inbox` call `GET /api/v1/me/inbox`, which this release adds, so each asks it once, and where the server answers `404` for it, falls back to `GET /api/v1/inbox` and `GET /api/v1/me/replies`, the reads it replaces.
 
 - **Query values and opaque tokens** (a cursor, a `kind`, an enum value in a query): reader-first.
   The release that reads a new value or token shape ships before the release that sends or mints it.
@@ -5180,7 +5180,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/inbox?project=&assignee=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
-  Kept for one release, for a page or `dispatch` command of the release before: no page or command of this release calls it but the two fallbacks of a roll (Two builds at once, above), the page's read of every project's open asks (`openAsksOfTheReleaseBefore`) and `dispatch inbox`'s (`inboxReadOfTheReleaseBefore`), and the Inbox reads `GET /api/v1/me/inbox`.
+  Kept for one release, for a page or `dispatch` command of the release before: no page or command of this release calls it but the three fallbacks of a roll (Two builds at once, above), the page's read of every project's open asks (`openAsksOfTheReleaseBefore`), the Inbox page's reads of its rows (`getMeInbox` and `inboxOfTheReleaseBefore` in `web/src/api/client.ts`), which ask `GET /api/v1/me/inbox` once and read this route and `GET /api/v1/me/replies` where it has no route, and `dispatch inbox`'s (`inboxReadOfTheReleaseBefore`), and the Inbox reads `GET /api/v1/me/inbox`.
   List open asks newest-first, including their issue key, title, and assignee.
   `assignee=me|unassigned|<email>` filters on the person each ask waits on — whoever it was handed to, the assignee of its issue until somebody hands it on, and the default assignee of its project while the issue holds nobody — so it keeps the asks waiting on the caller or on that person, and `unassigned` keeps the asks that chain names nobody for, which every project naming a default assignee leaves none of;
   an email nobody has signed in with is `400 ASSIGNEE_NOT_ALLOWED`.
@@ -5194,7 +5194,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/me/replies?kind=&state=&limit=&offset=&cursor=&issue=|artifact=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
-  Kept for one release, for a page or `dispatch` command of the release before: no page or command of this release calls it but `dispatch inbox`'s fallback of a roll (`inboxReadOfTheReleaseBefore`, Two builds at once, above), and the Inbox reads `GET /api/v1/me/inbox`.
+  Kept for one release, for a page or `dispatch` command of the release before: no page or command of this release calls it but two of the three fallbacks of a roll (Two builds at once, above), the Inbox page's reads of its rows (`getMeInbox` and `inboxOfTheReleaseBefore` in `web/src/api/client.ts`), which ask `GET /api/v1/me/inbox` once and read `GET /api/v1/inbox` and this route where it has no route, and `dispatch inbox`'s (`inboxReadOfTheReleaseBefore`), and the Inbox reads `GET /api/v1/me/inbox`.
   List the caller's Inbox threads, in the state's own order, of the kinds `kind` names:
   `reply`, the default, the threads they wrote in (an ask, a comment thread, an issue message thread) where somebody else has written since they last read it, less an open ask on an open issue that waits on them, which the Inbox already lists;
   `agent`, their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or an Aside the session did not take as a turn of its live conversation) holding a reply from that session;
