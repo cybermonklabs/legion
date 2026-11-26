@@ -19,6 +19,7 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 // runs again, so both delivery arms read the two states alike (INFRA-626). An attempt that
 // failed, and one still pending, reach nobody and are left out.
 func TestAQueuedDeliveryIsListedAsASentOneIs(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	for state, want := range map[string]int{"sent": 1, "queued": 1, "failed": 0, "pending": 0} {
@@ -59,6 +60,7 @@ func TestAQueuedDeliveryIsListedAsASentOneIs(t *testing.T) {
 // the generic plan Postgres caches for it afterwards, which knows neither the session nor the
 // window's start.
 func TestTheReadOfASessionsMessageDeliveriesReadsItsWindowsRange(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	var messageID string

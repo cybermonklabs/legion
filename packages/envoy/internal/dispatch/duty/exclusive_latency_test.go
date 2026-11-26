@@ -38,6 +38,7 @@ func (c slowWrites) Write(b []byte) (int, error) {
 // as served, and a lone loop loses that period, the defect
 // TestExclusiveCountsALateTickInThePeriodItWasDueIn covers for a delay before the query.
 func TestExclusiveCountsATickStalledAfterItsMeasureInThePeriodItWasDueIn(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	const name = "suggestion-outcomes"

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenfd"
 )
 
@@ -69,6 +70,7 @@ func heldPortChild() int {
 // that process holding it once Start returns: another program's bind in the meantime is refused,
 // the process serves on the socket, and nothing holds the socket once it exits.
 func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
+	t.Parallel()
 	held := HoldPort(t)
 	// The socket's inode names it whoever holds a descriptor of it, which a port does not: once the
 	// socket is closed, another program may bind the port and listen there.
@@ -108,8 +110,10 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial %s: %v\n%s", held.Addr, err, child.Output.String())
 	}
-	if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
-		t.Fatal(err)
+	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+		if err := conn.SetDeadline(deadline); err != nil {
+			t.Fatal(err)
+		}
 	}
 	answer, err := bufio.NewReader(conn).ReadString('\n')
 	if err != nil {
@@ -137,6 +141,7 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 // that waits on Exited sees what afterExit did. afterExit sleeps before it records anything, so
 // an Exited closed before afterExit returned would show here as nothing recorded.
 func TestStartThenRunsAfterExitBeforeExited(t *testing.T) {
+	t.Parallel()
 	// -test.run=^$ makes this test binary run no test and exit 0.
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	var runs int

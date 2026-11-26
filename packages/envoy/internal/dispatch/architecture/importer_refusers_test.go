@@ -160,6 +160,7 @@ func commitOf(answer syncAnswer) string {
 // three callers make two head lookups: the first flight's, and the next one's, which the two
 // refusers share.
 func TestCallersThatRefusedOneFlightShareTheNextOneHoweverLateTheyLook(t *testing.T) {
+	t.Parallel()
 	rig := newRefusersRig(t, 2)
 	first := rig.holdTheFirstFlight(t)
 	refusers := rig.joinTheFirstFlight(t, 2)
@@ -194,6 +195,7 @@ func TestCallersThatRefusedOneFlightShareTheNextOneHoweverLateTheyLook(t *testin
 // starting a flight of its own. So the three callers make two head lookups, and both refusers
 // answer the one failure.
 func TestARefuserThatLooksAgainLateSharesTheNextFlightsFailure(t *testing.T) {
+	t.Parallel()
 	rig := newRefusersRig(t, 2)
 	first := rig.holdTheFirstFlight(t)
 	refusers := rig.joinTheFirstFlight(t, 2)
@@ -225,6 +227,7 @@ func TestARefuserThatLooksAgainLateSharesTheNextFlightsFailure(t *testing.T) {
 // second source of the project, acme/infra, syncs to its end while the refuser of archRepo's
 // first flight is held, and the refuser, released, answers archRepo's row.
 func TestARefuserOfOneSourceIsNeverAnsweredAnotherSourcesFlight(t *testing.T) {
+	t.Parallel()
 	rig := newRefusersRig(t, 1)
 	if _, err := rig.database.Pool.Exec(context.Background(), `
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by)

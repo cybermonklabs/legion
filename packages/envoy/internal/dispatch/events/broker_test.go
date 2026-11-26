@@ -16,6 +16,7 @@ import (
 )
 
 func TestPublishDisconnectsOverflowedSubscriber(t *testing.T) {
+	t.Parallel()
 	broker := NewBroker()
 	stream, cancel := broker.Subscribe()
 	defer cancel()
@@ -38,6 +39,7 @@ func TestPublishDisconnectsOverflowedSubscriber(t *testing.T) {
 }
 
 func TestAnchorRefreshEventsDoNotWakeAgents(t *testing.T) {
+	t.Parallel()
 	broker := NewBroker()
 	for _, eventType := range []string{"comment.anchor_refreshed", "ask.anchor_refreshed"} {
 		if broker.Notify(model.Event{Type: eventType, Actor: model.Actor{Kind: "user", ID: "alice"}}) {
@@ -50,6 +52,7 @@ func TestAnchorRefreshEventsDoNotWakeAgents(t *testing.T) {
 // an agent's comment, document or ask wakes nobody (Notify false) but is the activity a session
 // following `notifications.dispatch.issue.<KEY>.>` subscribed for, so it is not quiet.
 func TestQuietSeparatesAnAgentsActivityFromBookkeeping(t *testing.T) {
+	t.Parallel()
 	broker := NewBroker()
 	agent := model.Actor{Kind: "session", ID: "5a660655-04ad-4ce0-8a9b-93dd03c412b7"}
 	person := model.Actor{Kind: "user", ID: "alice"}
@@ -138,6 +141,7 @@ func TestQuietSeparatesAnAgentsActivityFromBookkeeping(t *testing.T) {
 }
 
 func TestAppendSequencesArtifactOwnedEvents(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('PP', 'Project', 'alice')`); err != nil {
@@ -205,6 +209,7 @@ func TestAppendSequencesArtifactOwnedEvents(t *testing.T) {
 }
 
 func TestAppendRejectsEventsWithoutAValidOwnerOrAgentTarget(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('PP', 'Project', 'alice')`); err != nil {
@@ -301,6 +306,7 @@ func TestAppendRejectsEventsWithoutAValidOwnerOrAgentTarget(t *testing.T) {
 // last_seq, and is quiet, so a person's write of one wakes nobody. The three are queued on one
 // write phase's batch, as a write phase appends its events (QueueAppend).
 func TestAppendWritesAPriorityEventWithNoOwnerAndNoWake(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	log := &statementLog{}
@@ -364,6 +370,7 @@ func TestAppendWritesAPriorityEventWithNoOwnerAndNoWake(t *testing.T) {
 }
 
 func TestChildAndParentPatchesCompleteWithoutDeadlock(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seed := context.Background()
 	if _, err := database.Pool.Exec(seed, `insert into projects (key, name, default_assignee) values ('PP', 'Project', 'alice')`); err != nil {
@@ -516,6 +523,7 @@ func (l *statementLog) mark() int {
 // leave that allocation exactly as strict. Concurrent appends on one owner must still produce
 // a dense, gapless, duplicate-free run, and leave last_seq at its end.
 func TestConcurrentAppendsKeepOwnerSequencesDense(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `
@@ -641,6 +649,7 @@ func issueUpdated(key string) model.Event {
 // owner's row (Broker.Append). The second write here must commit while the first is still open,
 // and its own backend must never queue behind a lock the first holds.
 func TestAppendsOnDifferentIssuesDoNotWaitForEachOther(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	seedEventOwners(t, database)
@@ -722,6 +731,7 @@ func TestAppendsOnDifferentIssuesDoNotWaitForEachOther(t *testing.T) {
 // rests on the owner row alone: a second write on the owner must wait for the first to commit,
 // and only then draw its id.
 func TestAppendsOnOneOwnerCommitInIDOrder(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := seedEventOwners(t, database)
 	broker := NewBroker()
@@ -787,6 +797,7 @@ func TestAppendsOnOneOwnerCommitInIDOrder(t *testing.T) {
 // backend draws from a block of its own, a later write can hold a lower id, and a reader capped at
 // the horizon could pass an id that is still open and never read it.
 func TestEventIDSequenceCachesOneValue(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	var cache int64
 	if err := database.Pool.QueryRow(context.Background(), `

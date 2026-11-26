@@ -73,6 +73,7 @@ func (g *countingGitHub) Redeliver(context.Context, int64) error {
 // KV compare-and-set on each delivery's record is); it is what keeps N processes from spending N
 // times the listing calls on one installation's rate limit for one result.
 func TestARunningSweepWhoseLeaseIsHeldElsewhereListsNothing(t *testing.T) {
+	// Not parallel: it replaces the default logger (captureDefaultLogs), where the lease logs.
 	leases := redeliverTestLeases(t)
 	logs := captureDefaultLogs(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -272,6 +273,8 @@ func (s *drawSequence) calls() []time.Duration {
 // period always reaches the next period, which is what keeps a sweep from being skipped as served,
 // is the row below against the real one.
 func TestTheRunningSweepSweepsAtStartThenWaitsMoreThanNineTenthsAndAtMostOneInterval(t *testing.T) {
+	// Not parallel: it writes the package variable jittered (redeliver.FixJitter), which every
+	// sweep loop draws its waits from.
 	const (
 		interval = time.Minute
 		tenth    = interval / 10
@@ -363,6 +366,8 @@ func TestTheRunningSweepSweepsAtStartThenWaitsMoreThanNineTenthsAndAtMostOneInte
 // for one wait after each sweep and before the next one listed, and the first sweep listed before
 // any wait.
 func TestNoSweepOfALoneProcessIsSkippedAsAPeriodAlreadyServed(t *testing.T) {
+	// Not parallel: it writes the package variable jittered (redeliver.FixJitter) and replaces the
+	// default logger (captureDefaultLogs).
 	const (
 		interval = 100 * time.Millisecond
 		sweeps   = 4

@@ -49,6 +49,7 @@ func (s *fakeAssetStore) GetAsset(_ context.Context, key string) ([]byte, error)
 // a NUL byte or invalid UTF-8 is never asked of the store, whose Postgres key cannot carry either.
 // Nothing but a store failure logs an ERROR.
 func TestStaticHandlerRetainedAssets(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	const retained = "console.log('previous build')"
 	for _, tc := range []struct {
 		name         string
@@ -229,6 +230,7 @@ func TestStaticHandlerRetainedAssets(t *testing.T) {
 // never a miss: a build the server cannot read is not a file that is not there, so neither the
 // store nor the SPA shell answers for it.
 func TestStaticHandlerAnswers500WhenTheFilesystemFails(t *testing.T) {
+	t.Parallel()
 	webDist := t.TempDir()
 	locked := filepath.Join(webDist, "assets", "locked")
 	if err := os.MkdirAll(locked, 0o700); err != nil {
@@ -272,6 +274,7 @@ func (c slowClient) Write(p []byte) (int, error) {
 // receive a retained asset the store answered at once still receives all of it, as it would the
 // same file served from the local build.
 func TestStaticHandlerDeliversAWholeRetainedAssetToASlowClient(t *testing.T) {
+	t.Parallel()
 	body := bytes.Repeat([]byte("/"), 1<<20)
 	handler, context := newTestRouter(t)
 	context.WebDistDir = t.TempDir()
@@ -291,6 +294,7 @@ func TestStaticHandlerDeliversAWholeRetainedAssetToASlowClient(t *testing.T) {
 // cap gives, 503, not a 502 store failure: the store was never shown to be broken, only asked too
 // late to answer, and the client never gets a 200 carrying a year's immutable caching.
 func TestStaticHandlerAnswers503ForARetainedAssetThatStallsPastTheFetchBound(t *testing.T) {
+	t.Parallel()
 	handler, context := newTestRouter(t)
 	context.WebDistDir = t.TempDir()
 	context.AssetStore = latentStore{delay: time.Hour, object: []byte("never")}
@@ -312,6 +316,7 @@ func TestStaticHandlerAnswers503ForARetainedAssetThatStallsPastTheFetchBound(t *
 // A failing store is otherwise invisible from inside the task: the browser fails the chunk as it
 // would a 404. Each failure leaves one ERROR record naming the key and the store's error.
 func TestStaticHandlerLogsARetainedAssetStoreFailure(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	var logs bytes.Buffer
 	logtest.SetDefault(t, slog.NewJSONHandler(&logs, nil))
 
@@ -406,6 +411,7 @@ func stallRetainedReaders(t *testing.T, handler http.Handler, n int) []*stalledC
 // client takes, so the bytes held at once are capped. A request that finds no room before its
 // fetch bound runs out is refused without asking the store: 503, not kept, retried after a second.
 func TestStaticHandlerCapsRetainedBytesHeldAtOnce(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	var logs bytes.Buffer
 	logtest.SetDefault(t, slog.NewJSONHandler(&logs, nil))
 
@@ -450,6 +456,7 @@ func TestStaticHandlerCapsRetainedBytesHeldAtOnce(t *testing.T) {
 
 // A client that goes away mid-response gives its bytes back, so the next request is served.
 func TestStaticHandlerReleasesRetainedBytesWhenAClientGoesAway(t *testing.T) {
+	t.Parallel()
 	handler, context := newTestRouter(t)
 	context.WebDistDir = t.TempDir()
 	store := &countingStore{object: bytes.Repeat([]byte("/"), int(MaxRetainedAssetSize))}
@@ -474,6 +481,7 @@ func TestStaticHandlerReleasesRetainedBytesWhenAClientGoesAway(t *testing.T) {
 
 // A failed read gives back what it reserved: more failures than the cap holds objects, then a hit.
 func TestStaticHandlerReleasesRetainedBytesWhenTheStoreFails(t *testing.T) {
+	t.Parallel()
 	handler, context := newTestRouter(t)
 	context.WebDistDir = t.TempDir()
 	failing := &fakeAssetStore{err: errors.New("object store unavailable")}
@@ -514,6 +522,7 @@ func (s latentStore) GetAsset(ctx context.Context, _ string) ([]byte, error) {
 // issue page imports eight), and another tab can be doing the same. Small chunks hold almost
 // nothing of the memory cap, so a burst of them is served rather than refused.
 func TestStaticHandlerServesABurstOfSmallRetainedAssets(t *testing.T) {
+	t.Parallel()
 	handler, context := newTestRouter(t)
 	context.WebDistDir = t.TempDir()
 	context.AssetStore = latentStore{delay: 50 * time.Millisecond, object: []byte("console.log('previous build')")}
@@ -547,6 +556,7 @@ func TestStaticHandlerServesABurstOfSmallRetainedAssets(t *testing.T) {
 // share the cap rather than each holding the most one object can be: 32 stalled readers of the
 // dashboard's largest chunk, 1,747,955 bytes, fit under the cap, and every one is served.
 func TestStaticHandlerHoldsOnlyEachRetainedObjectsSize(t *testing.T) {
+	t.Parallel()
 	handler, context := newTestRouter(t)
 	context.WebDistDir = t.TempDir()
 	const size, readers = 1747955, 32
@@ -566,6 +576,7 @@ func TestStaticHandlerHoldsOnlyEachRetainedObjectsSize(t *testing.T) {
 // ran out mostly waiting on the memory cap, so the fetch's shared ctx expires in milliseconds
 // rather than the full three seconds.
 func TestStaticHandlerAnswers503WhenTheFetchRunsOutOfTheSharedBound(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	shortBound, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 
@@ -636,6 +647,7 @@ func (w *neverWrittenResponseWriter) Write(p []byte) (int, error) {
 // nothing and logs no WARN (the cap-refusal line would otherwise double as a false capacity alarm
 // on every ordinary aborted page load).
 func TestStaticHandlerWritesNoResponseWhenTheClientCancelsWhileQueuedForTheMemoryCap(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -667,6 +679,7 @@ func TestStaticHandlerWritesNoResponseWhenTheClientCancelsWhileQueuedForTheMemor
 // and a store failure line on every navigation would be a false alarm. The read it started still
 // finishes, for the next request of the same chunk.
 func TestStaticHandlerWritesNoResponseWhenTheClientCancelsWhileTheStoreReads(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	var logs bytes.Buffer
 	logtest.SetDefault(t, slog.NewJSONHandler(&logs, nil))
 
@@ -731,6 +744,9 @@ func (s *blockingStore) GetAsset(_ context.Context, key string) ([]byte, error) 
 // the memory cap has room for. Once those reads end, every reservation comes back: the cap's whole
 // room is served again.
 func TestStaticHandlerHoldsTheReservationOfAnAbandonedRequestUntilItsReadEnds(t *testing.T) {
+	// Not parallel: it ends its abandoning loop after a 250 ms window in which no read reaches the
+	// store, which the load of tests beside it can open before the cap's room is taken, so its
+	// bound on the reads held at once would pass without being tried.
 	handler, appContext := newTestRouter(t)
 	appContext.WebDistDir = t.TempDir()
 	const requests = 20
@@ -789,6 +805,7 @@ func TestStaticHandlerHoldsTheReservationOfAnAbandonedRequestUntilItsReadEnds(t 
 // without asking the store, and without a reservation, so it is served even while stalled readers
 // hold every byte of the cap and a miss would be refused.
 func TestStaticHandlerServesACachedAssetWithoutTheStore(t *testing.T) {
+	t.Parallel()
 	handler, context := newTestRouter(t)
 	context.WebDistDir = t.TempDir()
 	store := &countingStore{object: bytes.Repeat([]byte("/"), int(MaxRetainedAssetSize))}
@@ -840,6 +857,7 @@ func (s *gatheringStore) GetAsset(ctx context.Context, _ string) ([]byte, error)
 // A route of a stale tab, or many tabs of one build at once, ask for one chunk together before the
 // store has answered any of them: the store is read once and every request is answered with it.
 func TestStaticHandlerReadsTheStoreOnceForConcurrentMisses(t *testing.T) {
+	t.Parallel()
 	handler, context := newTestRouter(t)
 	context.WebDistDir = t.TempDir()
 	const object = "console.log('another build')"
@@ -874,6 +892,7 @@ func TestStaticHandlerReadsTheStoreOnceForConcurrentMisses(t *testing.T) {
 // are not the ones lost. That the bytes it counts are the bytes it holds is the shared cache's
 // own invariant (bytelru).
 func TestAssetCacheKeepsAtMostItsLimitEvictingTheLeastRecentlyUsed(t *testing.T) {
+	t.Parallel()
 	cache := newAssetCache(maxCachedAssetBytes)
 	sizes := []int64{MaxRetainedAssetSize, 3 << 20, 1, MaxRetainedAssetSize - 1, 5 << 20, 1747955}
 	for i := range 60 {
