@@ -973,7 +973,7 @@ func ReadRoleIdentities(value string) (map[claim.Role]GitIdentity, string) {
 	for _, name := range slices.Sorted(maps.Keys(read)) {
 		role, identity := claim.Role(name), read[name]
 		switch {
-		case !claim.IsRole(role):
+		case !claim.IsBuiltin(role):
 			return nil, fmt.Sprintf("a table with %q, which is no role", name)
 		case identity == nil || identity.Name == "":
 			return nil, "a table with an empty name for " + name
