@@ -6479,53 +6479,17 @@ await_merger_merge "$repo" "$pr_number" --delete-branch
 handoff_pushes=$(pull_request_legion_only_commits) || fail "could not read the commits of pull request #$pr_number"
 [ -z "$handoff_pushes" ] || fail "merged pull request #$pr_number carries commits that change only .legion/: $(tr '\n' ' ' <<<"$handoff_pushes")"
 note "merged pull request #$pr_number holds $(gh api --paginate "repos/$repo/pulls/$pr_number/commits" --jq '.[].sha' | grep -c .) commits, none changing only .legion/"
-# The merge is recorded and the root waits for the rest of its tree (INFRA-229).
-merge_recorded() {
-  daemon_state | jq -e --arg issue "$tree1" '.issues[$issue] | .phase == "merging" and .pullRequest.state == "merged"' >/dev/null
-}
-on_tree "$tree1" until_true 600 "the daemon to record pull request #$pr_number merged on $tree1, which stays in merging" merge_recorded
-waiting_for=$(log_lines "workflow: a merged root's close waits for the rest of its tree" |
-  jq -r -s --arg issue "$tree1" '[.[] | select(.issue == $issue)] | last | .waitingFor // empty')
-[ "$waiting_for" = "$child3, $child4" ] ||
-  fail "the daemon logged $tree1's merged close waiting for '${waiting_for:-nothing}', want \"$child3, $child4\""
-until_true 300 "the pr-merged notice on $tree1's architect" notice_delivered "$tree1" architect "$(notice_needle pr-merged "$tree1")"
-merged_notice=$(notice_line "$tree1" architect "$(notice_needle pr-merged "$tree1")")
-for want in "#$pr_number" "$child3" "$child4"; do
-  grep -qF -- "$want" <<<"$merged_notice" ||
-    fail "the pr-merged notice on $tree1's architect does not name $want: $(cut -c1-300 <<<"$merged_notice")"
-done
-state_file merged-waiting
-jq -e --arg issue "$tree1" '(.admission.active | index($issue)) == null and .issues[$issue].check == null' "$evidence/merged-waiting.json" >/dev/null ||
-  fail "the merge left $tree1 holding an admission slot in merging, which keeps none, or opened its production check while its tree still ran: $(jq -c --arg issue "$tree1" '{active: .admission.active, check: .issues[$issue].check}' "$evidence/merged-waiting.json")"
-dispatch_status_is "$tree1" retro >/dev/null ||
-  fail "the board shows $tree1 $(dispatch_get "issues/$tree1" | jq -r .status) at its merge, want the retro it stands in: the done is the close's"
-lingered=$(log_lines "workflow: tree lingers" | jq -c --arg tree "$tree1" 'select(.tree == $tree)' | grep -c . || true)
-[ "$lingered" = 0 ] ||
-  fail "the daemon lingered tree $tree1 at its merge ($lingered times) while $child3 and $child4 were still in the workflow"
-merge_claims=$(issue_claim_states "$tree1" | paste -sd ',' -)
-case $merge_claims in *suspended*) fail "the merge suspended a claim of $tree1 while its tree still ran: $merge_claims" ;; esac
-note "$repo#$pr_number merged by $merge_when_clean_by at $merge_when_clean_commit: the daemon recorded the merge and left $tree1 in merging (claims $merge_claims, no slot as merging keeps none, Dispatch retro, no linger, no production check), telling its architect once that the close waits for $waiting_for"
-# The children leave one at a time, and only the last park closes the root. A parked child leaves
-# the workflow (phase done) with its claims suspended, and the park deletes its Sandbox with the six
-# role Secrets it owned once its pod is gone, the disk going with that pod: the path child-release
-# took for child 2, read the same way (child_parked).
-for child in "$child3" "$child4"; do
-  if [ "$child" = "$child3" ]; then child_pod=$child3_pod; else child_pod=$child4_pod; fi
-  set_status "$child" backlog
-  until_true 600 "$child to leave the workflow" issue_phase "$child" "done"
-  until_true "$phase_seconds" "$child's park to suspend its planner" issue_worker_state "$child" planner suspended
-  until_true 600 "$child's Sandbox, pod and disk to be gone after its backlog" child_parked "$child" "$child_pod"
-  note "the proof human parked $child (backlog): it left the workflow, its planner is suspended, and it has no Sandbox, no pod and no disk (its pod $child_pod took the disk $child_pod-issue with it)"
-  [ "$child" = "$child4" ] || issue_phase "$tree1" merging >/dev/null ||
-    fail "$tree1 left merging on $child3's park, with $child4 still in the workflow"
-done
-# The last park closes the root, as the merge of a finished tree's root does.
+# The merge closes tree 1 at once: children 3 and 4 left the workflow at children-first-acceptance,
+# so no close waits for the rest of the tree and no pr-merged notice is sent.
 on_tree "$tree1" wait_for_phase "$tree1" "done" 900
 phase_change_logged "$tree1" merging "done" pull_request_merged ||
   fail "the daemon log has no \"workflow: phase changed\" line moving $tree1 from merging to done on pull_request_merged"
-closed_last=$(log_lines "workflow: a merged root closes once its last child left the workflow" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
-[ "$closed_last" = 1 ] ||
-  fail "the daemon logged \"a merged root closes once its last child left the workflow\" for $tree1 $closed_last times, want once, at $child4's park"
+waited=$(log_lines "workflow: a merged issue's close waits for the issues beneath it" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
+[ "$waited" = 0 ] ||
+  fail "the daemon logged \"a merged issue's close waits for the issues beneath it\" for $tree1 $waited times, want none: nothing of its tree was in the workflow at the merge"
+merged_notice=$(notice_line "$tree1" architect "$(notice_needle pr-merged "$tree1")")
+[ -z "$merged_notice" ] ||
+  fail "$tree1's architect holds a pr-merged notice, want none, since the merge closed $tree1: $(cut -c1-300 <<<"$merged_notice")"
 until_true 120 "the daemon's done status on the Dispatch board" dispatch_status_is "$tree1" "done"
 state_file merged-closed
 # No issue of tree 1 holds an admission slot once it closes: the root's row went when it reached

@@ -29,7 +29,8 @@
 # It is the tmux proof's rig (scripts/e2e/claude-backend-tmux.sh) on the cluster proof's cluster
 # (scripts/e2e/stage4a-sandbox-runtime.sh): scratch Postgres, NATS, Envoy listener and Dispatch from
 # lib/rig.sh, `admission_cap: 1`, `gates.design: off`, the smoke repository sjawhar/legion-smoke
-# where the implementer pushes a branch and opens no pull request — and, for the runtime, an
+# where the implementer pushes a branch and opens a pull request from it, which the teardown
+# closes — and, for the runtime, an
 # existing cluster named by LEGION_E2E_RUNTIME_CONTEXT, the namespace `legion`, LEGION_E2E_IMAGE
 # pinned by digest, and a scratch session database of the run's own (`session_store: postgres`),
 # which every pod of the run keeps its sessions in, the Claude Code implementer's transcript among
@@ -1027,8 +1028,9 @@ collect_transcripts() {
     rm -f "$evidence/transcripts/implementer.jsonl"
 }
 # remove_run_branch closes any pull request of the run's project on the smoke repository and deletes
-# the issue's branch, which the implementer pushed: a passing run opens no pull request, so neither
-# outlives it. It makes no gh call before the proof human is established.
+# the issue's branch, which the implementer pushed: the pull request the implementer opens for its
+# completion is closed here, so neither outlives the run. It makes no gh call before the proof human
+# is established.
 remove_run_branch() {
   [ -n "$proof_human" ] && [ -n "$issue" ] || return 0
   close_run_pull_requests >&2 || printf "some of this run's pull requests may still be open on %s (above)\n" "$repo" >&2
@@ -1576,18 +1578,24 @@ pass
 
 # Check 4. The phase is completed through the `legion` MCP tool, naming the Dispatch handoff record
 # the implementer wrote under its own claim session, and its pushed commit, from the pod's own
-# workspace and by its own App, carries no `.legion/` path.
+# workspace and by its own App, carries no `.legion/` path. The daemon refuses a completion of
+# implementing while no pull request is open on the issue branch (HANDOFF_NO_PULL_REQUEST,
+# packages/daemon/internal/api/handoff.go), so the implementer opens one first, and exactly one is
+# open on the branch; the teardown closes it (remove_run_branch).
 begin claude-implementer-handoff
 marker="claude-sandbox-marker-$run_label-$RANDOM$RANDOM"
-send_agent "$issue" implementer "Claude backend sandbox proof implementation operation ($marker): make the smallest one-file change this issue's spec describes in your $repo workspace, commit it on legion/$issue, push the branch to origin, write the required implementation handoff with dispatch handoff-write, then call the legion tool's handoff_complete with a concise summary. Do not open a pull request and do not merge."
+send_agent "$issue" implementer "Claude backend sandbox proof implementation operation ($marker): make the smallest one-file change this issue's spec describes in your $repo workspace, commit it on legion/$issue, push the branch to origin, write the required implementation handoff with dispatch handoff-write, open a pull request from legion/$issue to the repository's default branch, then call the legion tool's handoff_complete with a concise summary. Do not merge."
 until_true 1200 "the daemon to record the implementer's handoff_complete" handoff_recorded
 commit=$(role_handoff "$issue" implementer implementing)
 assert_handoff_record "$issue" implementer implementing 0
 files=$(smoke_commit_files "$commit") || exit 1
 ! grep -q '^\.legion/' <<<"$files" || fail "the implementer's commit $commit changes files under .legion/, where no handoff goes now: $(tr '\n' ' ' <<<"$files")"
+open_prs=$(gh -R "$repo" pr list --state open --head "legion/$issue" --json number --jq length) ||
+  fail "could not list the open pull requests on $repo branch legion/$issue"
+[ "$open_prs" = 1 ] || fail "$repo has $open_prs open pull requests on legion/$issue at the implementer's completion, want exactly 1"
 legion_handoff_in || fail "the transcript $transcript holds no successful legion handoff_complete call"
 until_true 300 "the implementer's turn to end" issue_worker_state "$issue" implementer idle
-note "handoff_complete through mcp__legion__legion named the implementer's Dispatch handoff record, written under its Claude Code session $session, and its pushed commit $commit on $repo, which changes nothing under .legion/"
+note "handoff_complete through mcp__legion__legion named the implementer's Dispatch handoff record, written under its Claude Code session $session, and its pushed commit $commit on $repo, which changes nothing under .legion/, with one pull request open on legion/$issue"
 pass
 
 # Check 5. The pod is deleted, and its disk with it, the transcript's file included

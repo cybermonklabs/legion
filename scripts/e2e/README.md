@@ -1179,9 +1179,10 @@ The checks:
   The run moves no `LEGION_STALL_*` number:
   this first reminder of a run is the hook's own answer as the turn settles, not a timer's, and the instruction before it resets the run of reminders, so no wait here rides on those four delays.
 
-- `claude-implementer-handoff`: told through Dispatch to make the spec's one-file change, push it, write its handoff with `dispatch handoff-write` and call the `legion` tool's `handoff_complete`, it does:
+- `claude-implementer-handoff`: told through Dispatch to make the spec's one-file change, push it, write its handoff with `dispatch handoff-write`, open a pull request from the issue branch and call the `legion` tool's `handoff_complete`, it does:
   the daemon records the completion's Dispatch handoff record, which Dispatch holds as the issue's `implement` handoff written by the implementer's claim session (its Claude Code session, `assert_handoff_record`), and its commit, which the implement App authored and committed, which is on `sjawhar/legion-smoke` and which changes nothing under `.legion/`, and the transcript holds the `mcp__legion__legion` call with a result that is not an error.
-  No pull request is opened.
+  Exactly one pull request is open on `legion/<issue>` at the completion, and the teardown closes it.
+  The daemon refuses a completion of implementing with none (`HANDOFF_NO_PULL_REQUEST`).
 
 - `claude-background-tasks`: the implementer's Claude Code carries no `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` and keeps `CLAUDE_CODE_DISABLE_CRON=1`, read once from `/proc/<pid>/environ` (the runtime never sets the first,
   so an operator who wants background tasks off sets it itself).
@@ -1318,9 +1319,10 @@ The checks, in order, which is the tmux proof's:
   The transcript holds the block's reason as one `Stop hook feedback` user turn carrying the reminder's own wording, "Your turn ended with your Legion phase still open" (a fragment of `REMINDER` in `packages/pi-shared/src/phase-stall.ts`, so a later rewording of the rest of that paragraph does not break the proof silently), and an assistant turn follows that feedback, so the block carried the turn on in the same session.
   The run moves no `LEGION_STALL_*` number.
 
-- `claude-implementer-handoff`: told through Dispatch to make the spec's one-file change, push it, write its handoff with `dispatch handoff-write` and call the `legion` tool's `handoff_complete`, it does:
+- `claude-implementer-handoff`: told through Dispatch to make the spec's one-file change, push it, write its handoff with `dispatch handoff-write`, open a pull request from the issue branch and call the `legion` tool's `handoff_complete`, it does:
   the daemon records the completion's Dispatch handoff record, which Dispatch holds as the issue's `implement` handoff written by the implementer's claim session (its Claude Code session, `assert_handoff_record`), and its commit, which the implement App authored and committed (read with `jj` in the pod's own workspace), which is on `sjawhar/legion-smoke` and which changes nothing under `.legion/`, and the transcript holds the `mcp__legion__legion` call with a result that is not an error.
-  No pull request is opened.
+  Exactly one pull request is open on `legion/<issue>` at the completion, and the teardown closes it.
+  The daemon refuses a completion of implementing with none (`HANDOFF_NO_PULL_REQUEST`).
 
 - `pod-deleted-resumes-the-same-claude-session`:
   the transcript's size and the `sha256sum` of those bytes are read in the pod, and the pod is deleted, its disk and the transcript's file with it.
@@ -1381,7 +1383,7 @@ by default it is a fresh one under `/tmp`, kept and printed, holding the transcr
 The six ports are required in both modes, have no default and must differ:
 `LEGION_E2E_DAEMON_PORT`, `LEGION_E2E_WORKER_STREAM_PORT`, `LEGION_E2E_DISPATCH_PORT`, `LEGION_E2E_ENVOY_PORT`, `LEGION_E2E_NATS_PORT` and `LEGION_E2E_SESSION_DB_PORT`;
 `prerequisites` refuses one that is unset, not a number, the same as another, or taken.
-The rig is the tmux proof's — scratch Postgres, NATS, Envoy listener and native Dispatch from [`lib/rig.sh`](#librigsh), the workflow's vocabulary from [`lib/workflow.sh`](#libworkflowsh), `admission_cap: 1`, the design gate off, and the smoke repository `sjawhar/legion-smoke`, where the implementer pushes a branch and opens no pull request
+The rig is the tmux proof's — scratch Postgres, NATS, Envoy listener and native Dispatch from [`lib/rig.sh`](#librigsh), the workflow's vocabulary from [`lib/workflow.sh`](#libworkflowsh), `admission_cap: 1`, the design gate off, and the smoke repository `sjawhar/legion-smoke`, where the implementer pushes a branch and opens a pull request from it, which the teardown closes
 — plus the scratch session database, a second Postgres (the pinned image CI tests against, on tmpfs, `--cpus 1`), whose password reaches docker through an owner-only env file and whose pod-facing URL, `postgres://legion:<password>@<host>:<port>/sessions`, is written only to an owner-only file the providers Secret's `SESSION_DSN` key is made from (`session_dsn_secret: SESSION_DSN`), neither printed.
 Its services are dialled from inside a pod, so every one of them binds the address [Pod reachability](#pod-reachability) picks:
 the devbox's private address under `aws-private-ip`, on a port the devbox's security group admits from the Legion nodes ([Port admission](#port-admission)), or its loopback under `bridge`, on a port that need only be free on the devbox.
@@ -3037,16 +3039,9 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
   before the merger merges, since that merge can follow its assignment by seconds: the smoke main's lock is taken (`hold_smoke_main`).
   Then the merger's own merge of the head it read — the proof only reads the pull request until it merges (`await_merger_merge`) and never merges it by hand; the note names the merge commit.
-  **The merge does not close tree 1**, since children 3 and 4 are still in the workflow (INFRA-229):
-  the daemon records it (`legion state`: the root's `pullRequest.state` `merged` while its phase stays `merging`) and logs `workflow: a merged root's close waits for the rest of its tree` with `waitingFor` naming both children in order;
-  its architect gets one `pr-merged` notice naming the pull request and both;
-  the root holds no slot (its row went at `accepting`), no production check is open, Dispatch still reads `retro`, no `workflow: tree lingers` line names tree 1, and no claim of it is suspended.
-  The proof human then parks the children one at a time (`backlog`, each leaving the workflow with its planner suspended, and within 600 s with no Sandbox, no pod and no disk:
-  the park deletes the child's Sandbox as a close does, and the disk goes with the pod, read inside the same wait, `child_parked`):
-  child 3's park leaves the root in `merging`, and child 4's
-  — the last member of the tree to leave — closes it, as the merge of a finished tree's root does.
-  `merging` → `done` within 900 s (the log's `workflow: phase changed … from=merging to=done trigger=pull_request_merged` and `workflow: a merged root closes once its last child left the workflow`;
-  Dispatch `done` within 120 s), the production check opens on the merge commit at its first look, woken by the merge (`check_opened_on`:
+  **The merge closes tree 1 at once**, since children 3 and 4 left the workflow at `children-first-acceptance`, before the sign-off the daemon held for them:
+  `merging` → `done` within 900 s (the log's `workflow: phase changed … from=merging to=done trigger=pull_request_merged`; Dispatch `done` within 120 s), with no `workflow: a merged issue's close waits for the issues beneath it` line for tree 1 and no `pr-merged` notice on its architect;
+  the production check opens on the merge commit at its first look, woken by the merge (`check_opened_on`:
   `looks: 1`, `lookOpen: true`, `lastWake.kind: merge`, `role: tester`), and the close hands the tester — the role a project that names no `production_check` gets — that look in the still-live pod.
   No issue of tree 1 holds an admission slot at the close: the root's row went when it reached `accepting`, its children's at their parks, and the close frees whatever is left.
   The proof sends it nothing, so the fixture tells a check task to wait for no targeted message and act on the daemon's task as written
