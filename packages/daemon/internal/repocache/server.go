@@ -1,7 +1,6 @@
 // Package repocache is the Kubernetes runtime's per-repository cache: one process per repository
-// the runtime keeps a cache of, holding a bare clone on its own volume, fetched from GitHub with
-// the implement App's token on a schedule, and streaming that clone to issue pods, whose fetch
-// container unpacks it as its feed and asks GitHub only for what the cache lacks.
+// the runtime keeps a bare clone on its own volume, fetched from GitHub with the implement App's
+// token on a schedule, and streaming its default branch to issue pods' workspace-init containers.
 package repocache
 
 import (
@@ -42,17 +41,17 @@ const Port = 8418
 const tokenFileEnv = "LEGION_PROVISION_TOKEN_FILE"
 
 // CacheTokenFileEnv names the variable that points at the cache's bearer token: in the cache's
-// container the token every request but /readyz must present, and in an issue pod's fetch container
-// the token it presents. Both are projected from Secrets the daemon writes, never an environment
-// literal.
+// container the token every request but /readyz must present, and in an issue pod's workspace-init
+// container the token it presents. Both are projected from Secrets the daemon writes, never an
+// environment literal.
 const CacheTokenFileEnv = "LEGION_REPOSITORY_CACHE_TOKEN_FILE"
 
 // Options is one cache's: the repository, the volume its bare clone lives on (at
-// <Root>/<owner>/<repo>.git, workspace.FeedRepository's layout), the provisioning token's file, the
-// file holding the bearer token its clients present (read again for every request, so a token the
-// Secret's projection rewrote is the one taken), where each fetch's one-shot credential goes (the
-// container's TMPDIR), how long between fetches, the address it serves on, its log, and the runner
-// its git runs under.
+// <Root>/<owner>/<repo>.git, workspace.CacheRepository's layout), the provisioning token's file,
+// the file holding the bearer token its clients present (read again for every request, so a token
+// the Secret's projection rewrote is the one taken), where each fetch's one-shot credential goes
+// (the container's TMPDIR), how long between fetches, the address it serves on, its log, and the
+// runner its git runs under.
 type Options struct {
 	Repo           ghrepo.Repository
 	Root           string
@@ -65,24 +64,27 @@ type Options struct {
 	Run            workspace.Runner
 }
 
-// Health is what GET /healthz answers: whether the cache has a clone to serve, its repository, the
-// default branch's head, when its last fetch in this process succeeded (zero before one has), how
-// many bytes /tar streams, and how many /tar requests it is sending or holding in its queue at the
-// answer (Streams), which the daemon waits to reach zero before it replaces a live cache pod.
+// Health is what GET /healthz answers: whether the cache has a clone narrowed to the default branch
+// to serve, its repository, the default branch's head, when its last fetch in this process succeeded
+// (zero before one has), how many bytes /tar streams, and how many /tar requests it is sending or
+// holding in its queue at the answer (Streams), which the daemon waits to reach zero before it
+// replaces a live cache pod. DefaultBranchOnly is absent from an earlier cache release and true only
+// after this process validated the clone and its marker.
 //
 // It carries the cache's room on its volume too, which the daemon's capability report reads: the
 // volume's size (VolumeBytes) and the bytes available to the cache (AvailableBytes), from a statfs
 // of Options.Root read at the answer, or the error of that statfs where it failed (VolumeError),
-// with neither figure; and, for the fetch and for the repack, the time of that step's last failure
-// for lack of space since its last success (FetchOutOfSpaceAt, RepackOutOfSpaceAt; outOfSpace says
-// what counts as one), zero while there is none. The Health a fetch or a repack stores holds none
-// of these: the handler joins them at each answer (fillRoom), in the 503 answer too, since a volume
-// exists before the first clone does.
+// with neither figure; and, for the fetch and for the daily repack, the time of that step's last
+// failure for lack of space since its last success (FetchOutOfSpaceAt, RepackOutOfSpaceAt;
+// outOfSpace says what counts as one), zero while there is none. The Health a fetch or a repack
+// stores holds none of these: the handler joins them at each answer (fillRoom), in the 503 answer
+// too, since a volume exists before the first clone does.
 //
 // A cache of an earlier release answers no streams and none of the room fields, so Streams and the
 // two figures are nil there and the rest empty, which counts for nothing.
 type Health struct {
 	Ready              bool      `json:"ready"`
+	DefaultBranchOnly  bool      `json:"defaultBranchOnly,omitempty"`
 	Repo               string    `json:"repo"`
 	Head               string    `json:"head,omitempty"`
 	LastFetchAt        time.Time `json:"lastFetchAt,omitzero"`
@@ -141,20 +143,20 @@ var maxStreams = 32
 // Serve listens, then clones the repository onto the volume — or, when the volume holds it, fetches
 // into it — then serves until ctx ends:
 //
-//	GET /readyz   the kubelet's readiness probe, which carries no token: 200 once the clone is
-//	              there to serve, 503 before, and nothing else.
-//	GET /healthz  200 {"ready":true,"repo":"acme/widgets","head":"<default branch sha>","lastFetchAt":"…","bytes":N,"streams":S,
-//	              "volumeBytes":V,"availableBytes":A,"fetchOutOfSpaceAt":"…","repackOutOfSpaceAt":"…"}
-//	              once the clone is there to serve; 503 {"ready":false,…} before. streams is the
-//	              /tar requests being sent or waiting at the answer; volumeBytes and availableBytes
-//	              are a statfs of the volume read at the answer, in the 503 answer too, with
-//	              volumeError in their place when it fails; each …OutOfSpaceAt is that step's last
-//	              failure for lack of space since its last success, absent while there is none
-//	              (Health).
-//	GET /tar      a tar stream of the bare clone's refs and packs (workspace.FeedEntry), taken under
-//	              the read lock, so no fetch moves refs or packs while it streams, at most
-//	              maxStreams at once, a request past them waiting its turn; 503 before the clone
-//	              is there.
+//	GET /readyz   the kubelet's readiness probe, which carries no token: 200 once the narrowed clone
+//	              is there to serve, 503 before, and nothing else.
+//	GET /healthz  200 {"ready":true,"defaultBranchOnly":true,"repo":"acme/widgets","head":"<default branch sha>",
+//	              "lastFetchAt":"…","bytes":N,"streams":S,"volumeBytes":V,"availableBytes":A,
+//	              "fetchOutOfSpaceAt":"…","repackOutOfSpaceAt":"…"} once the narrowed clone is
+//	              there to serve; 503 {"ready":false,…} before. streams is the /tar requests being
+//	              sent or waiting at the answer; volumeBytes and availableBytes are a statfs of the
+//	              volume read at the answer, in the 503 answer too, with volumeError in their place
+//	              when it fails; each …OutOfSpaceAt is that step's last failure for lack of space
+//	              since its last success, absent while there is none (Health).
+//	GET /tar      a tar stream of the bare clone's refs and packs (workspace.CacheEntry), taken
+//	              under the read lock, so no fetch moves refs or packs while it streams, at most
+//	              maxStreams at once, a request past them waiting its turn; 503 before the narrowed
+//	              clone is there.
 //
 // /tar answers only a request whose `Authorization: Bearer` is the token CacheTokenFile holds now,
 // compared in constant time; any other is 401 and names nothing. /healthz answers any request: its
@@ -165,17 +167,17 @@ var maxStreams = 32
 //
 // Every fetch holds the write lock for workspace.Fetch, which reaches GitHub with the one-shot
 // credential, the isolated git configuration and the pins every holder of a provisioning token
-// uses, fetching every branch and pruning the deleted ones, and turned the clone's automatic gc
-// off when it cloned. Once repackEvery has passed, the fetch is followed by a repack
-// (`git repack -a -d`, within repackTimeout) that holds no lock /tar takes: a tar is served while
-// it runs (snapshot), and only the next fetch waits for it. /readyz and /healthz take no lock, so
-// neither the readiness probe nor a health read ever waits on a fetch or a repack. A fetch that
-// fails is logged and tried at the next tick; the cache stays ready on its last good state, a
-// restart's clone on the volume included. A fetch or a repack that fails for lack of space is
-// reported at /healthz until that step next succeeds, the repack's across a restart too
-// (repackOutOfSpaceFile, read before the listener serves). A first clone that fails ends Serve
-// with its failure: there is nothing to serve, and the kubelet restarts the container. As its
-// container's PID 1, Serve reaps every orphan git leaves it after each refresh (reapOrphans).
+// uses. The cache narrows an old volume before its first fetch, then checks after every fetch that
+// it still holds only HEAD's default branch. The daily repack after repackEvery stays outside the
+// write lock, so a tar is served while it runs (snapshot), and only the next fetch waits for it.
+// /readyz and /healthz take no lock, so neither the readiness probe nor a health read ever waits on
+// a fetch or a repack. A fetch that fails is logged and tried at the next tick; a previously
+// narrowed clone stays ready on its last good state, a restart's clone on the volume included. A
+// fetch or a repack that fails for lack of space is reported at /healthz until that step next
+// succeeds, the repack's across a restart too (repackOutOfSpaceFile, read before the listener
+// serves). A first clone that fails ends Serve with its failure: there is nothing to serve, and the
+// kubelet restarts the container. As its container's PID 1, Serve reaps every orphan git leaves it
+// after each refresh (reapOrphans).
 func Serve(ctx context.Context, opts Options) error {
 	if err := opts.check(); err != nil {
 		return err
@@ -204,23 +206,24 @@ func Serve(ctx context.Context, opts Options) error {
 	}()
 	opts.Log(fmt.Sprintf("serving %s on %s", opts.Repo, listener.Addr()))
 
-	present, err := pathExists(dir)
-	if err != nil {
-		return err
-	}
-	if present {
-		c.removePartialPacks()
-	}
 	if err := c.refresh(ctx); err != nil {
 		if ctx.Err() != nil {
 			return nil
+		}
+		present, pathErr := pathExists(dir)
+		if pathErr != nil {
+			return pathErr
 		}
 		if !present {
 			return err
 		}
 		opts.Log("fetch failed; serving the clone as it was: " + oneLine(err))
 		if err := c.publish(ctx, time.Time{}); err != nil {
-			return err
+			if errors.Is(err, errDefaultBranchOnly) {
+				opts.Log("cache remains unavailable: " + oneLine(err))
+			} else {
+				return err
+			}
 		}
 	}
 	ticker := time.NewTicker(opts.Refresh)
@@ -273,6 +276,8 @@ type cache struct {
 	opts       Options
 	dir        string
 	lock       sync.RWMutex
+	owned      bool
+	narrowed   bool
 	maint      sync.Mutex
 	health     atomic.Pointer[Health]
 	room       room
@@ -367,14 +372,15 @@ func (c *cache) refresh(ctx context.Context) error {
 		if failed := time.Now(); !first && c.outOfSpace(err) {
 			c.room.setFetch(failed)
 		}
-		c.removePartialPacks()
+		if c.owned {
+			c.removePartialPacks()
+		}
 		return err
 	}
 	c.room.setFetch(time.Time{})
 	if c.lastRepack.IsZero() {
 		at, ok := c.recordedRepack()
 		if !ok {
-			c.lastRepack = fetched
 			c.recordRepack(fetched)
 			return nil
 		}
@@ -404,9 +410,10 @@ func (c *cache) recordedRepack() (time.Time, bool) {
 	return at, err == nil
 }
 
-// recordRepack writes at to lastRepackFile, logging a failure: a lost record costs one repack too
-// early, nothing more.
+// recordRepack takes at as the clone's last repack, or last tried one, in memory and in
+// lastRepackFile, logging a failed write: a lost record costs one repack too early, nothing more.
 func (c *cache) recordRepack(at time.Time) {
+	c.lastRepack = at
 	if err := c.writeTime(lastRepackFile, at); err != nil {
 		c.opts.Log("record the last repack: " + oneLine(err))
 	}
@@ -469,35 +476,259 @@ func (c *cache) readTime(name string) (time.Time, error) {
 	return time.Parse(time.RFC3339, strings.TrimSpace(string(body)))
 }
 
-// fetch fetches the clone under the write lock and publishes what it holds, answering when, and
-// whether it was the first clone, onto a volume that held none. The cache fills its own clone from
-// GitHub, so every stage of this fetch is clocked, with no stream from a cache among them: the
-// first clone gets workspace.CacheFetchTimeout rather than an issue pod's FetchTimeout, since it is
-// the repository's one full download; a fetch into the clone keeps FetchTimeout, since it holds
-// the lock every tar waits on and brings only what GitHub gained. No clone borrows objects from
-// the cache's, since an issue pod takes a tar of it, so a clone of the cache's that the fetch did
-// not write is removed and filled afresh (workspace.FetchRequest.ReplaceForeign), where an issue
-// pod's feed is kept and fails its fetch.
 func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	cloned, err := pathExists(c.dir)
+	c.owned, c.narrowed = false, false
+	defer func() {
+		if !c.narrowed {
+			c.health.Store(&Health{Repo: c.opts.Repo.String()})
+		}
+	}()
+	cloned, err := workspace.OwnCacheRepository(c.dir, c.opts.Repo, time.Now(), c.opts.Log)
 	if err != nil {
 		return time.Time{}, false, err
 	}
-	bound := workspace.CacheFetchTimeout
-	if cloned {
-		bound = workspace.FetchTimeout
+	c.owned = true
+	first := !cloned
+	previous := ""
+	interrupted, err := c.marker(defaultBranchFetchFile)
+	if err != nil {
+		return time.Time{}, first, err
 	}
-	if _, err := workspace.Fetch(ctx, c.opts.Run, workspace.FetchRequest{
+	headMissing := false
+	bound := workspace.FetchTimeout
+	if first {
+		bound = workspace.CacheFetchTimeout
+	} else if err := c.narrow(ctx, false, interrupted); err != nil {
+		if !errors.Is(err, errCacheHeadMissing) {
+			return time.Time{}, first, fmt.Errorf("narrow the cache before its fetch: %w", err)
+		}
+		headMissing = true
+	} else if previous, err = c.defaultBranchHead(ctx); err != nil {
+		return time.Time{}, first, err
+	}
+	if !first {
+		if interrupted {
+			if err := c.clear(defaultBranchFetchFile); err != nil {
+				return time.Time{}, first, err
+			}
+			interrupted = false
+		}
+		if err := c.mark(defaultBranchFetchFile); err != nil {
+			return time.Time{}, first, err
+		}
+	}
+	_, fetchErr := workspace.Fetch(ctx, c.opts.Run, workspace.FetchRequest{
 		Repo: c.opts.Repo, CredentialDir: c.opts.CredentialDir, Feed: c.opts.Root,
 		Token: func() (string, error) { return config.ReadSecretPointer(tokenFileEnv, c.opts.TokenFile) },
 		Log:   c.opts.Log, Clock: clock.Real(), Bound: bound, ReplaceForeign: true,
-	}); err != nil {
-		return time.Time{}, !cloned, err
+	})
+	present, err := pathExists(c.dir)
+	if err != nil {
+		return time.Time{}, first, err
+	}
+	if present {
+		rewritten := interrupted || headMissing
+		if previous != "" {
+			changed, err := c.defaultBranchRewritten(ctx, previous)
+			if err != nil {
+				return time.Time{}, first, err
+			}
+			rewritten = rewritten || changed
+		}
+		if err := c.narrow(ctx, first, rewritten); err != nil {
+			return time.Time{}, first, fmt.Errorf("narrow the cache after its fetch: %w", err)
+		}
+	} else {
+		c.narrowed = false
+	}
+	if !first {
+		if err := c.clear(defaultBranchFetchFile); err != nil {
+			return time.Time{}, first, err
+		}
+	}
+	if fetchErr != nil {
+		return time.Time{}, first, fetchErr
 	}
 	fetched := time.Now()
-	return fetched, !cloned, c.publishLocked(ctx, fetched)
+	return fetched, first, c.publishLocked(ctx, fetched)
+}
+
+const (
+	defaultBranchOnlyFile  = ".legion-default-branch-only"
+	defaultBranchFetchFile = ".legion-default-branch-fetching"
+)
+
+var (
+	errDefaultBranchOnly = errors.New("the repository cache clone is not narrowed to its default branch")
+	errCacheHeadMissing  = errors.New("the repository cache's HEAD branch is missing")
+)
+
+func (c *cache) narrow(ctx context.Context, freshClone, rewritten bool) (err error) {
+	c.narrowed = false
+	defer func() { c.narrowed = err == nil }()
+	head, err := workspace.CacheGit(ctx, c.opts.Run, c.dir, "symbolic-ref", "HEAD")
+	if err != nil {
+		return fmt.Errorf("read the cache's HEAD branch: %w", err)
+	}
+	branch := strings.TrimSuffix(head.Stdout, "\n")
+	if !strings.HasPrefix(branch, "refs/heads/") {
+		return fmt.Errorf("the cache's HEAD names %q, not a branch", branch)
+	}
+	refs, err := workspace.CacheGit(ctx, c.opts.Run, c.dir, "for-each-ref", "--format=%(refname)")
+	if err != nil {
+		return fmt.Errorf("list the cache's refs: %w", err)
+	}
+	var (
+		hasHead bool
+		remove  []string
+	)
+	for _, ref := range strings.Split(strings.TrimSuffix(refs.Stdout, "\n"), "\n") {
+		if ref == "" {
+			continue
+		}
+		if ref == branch {
+			hasHead = true
+			continue
+		}
+		remove = append(remove, ref)
+	}
+	if !hasHead {
+		return fmt.Errorf("%w: %s", errCacheHeadMissing, branch)
+	}
+	marked, err := c.defaultBranchOnlyMarked()
+	if err != nil {
+		return err
+	}
+	if len(remove) == 0 && marked && !rewritten {
+		return nil
+	}
+	if len(remove) == 0 && freshClone && !rewritten {
+		return c.markDefaultBranchOnly()
+	}
+	before, err := c.objectBytes()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(filepath.Join(c.opts.Root, defaultBranchOnlyFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove the old default-branch-only marker: %w", err)
+	}
+	if err := c.removeKeptPacks(); err != nil {
+		return err
+	}
+	if len(remove) != 0 {
+		input := "delete " + strings.Join(remove, "\ndelete ") + "\n"
+		if _, err := workspace.CacheGitStdin(ctx, c.opts.Run, c.dir, input, "update-ref", "--no-deref", "--stdin"); err != nil {
+			return fmt.Errorf("delete the cache's extra refs: %w", err)
+		}
+	}
+	if err := c.runRepack(ctx); err != nil {
+		c.removePartialPacks()
+		return fmt.Errorf("repack the narrowed cache: %w", err)
+	}
+	after, err := c.objectBytes()
+	if err != nil {
+		return err
+	}
+	c.recordRepack(time.Now())
+	if err := c.markDefaultBranchOnly(); err != nil {
+		return err
+	}
+	c.opts.Log(fmt.Sprintf("narrowed %s %d %d", c.dir, before, after))
+	return nil
+}
+
+func (c *cache) defaultBranchHead(ctx context.Context) (string, error) {
+	head, err := workspace.CacheGit(ctx, c.opts.Run, c.dir, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("read the cache's default branch head: %w", err)
+	}
+	return strings.TrimSuffix(head.Stdout, "\n"), nil
+}
+
+func (c *cache) defaultBranchRewritten(ctx context.Context, before string) (bool, error) {
+	after, err := c.defaultBranchHead(ctx)
+	if err != nil {
+		return false, err
+	}
+	if before == after {
+		return false, nil
+	}
+	result, err := workspace.CacheGit(ctx, c.opts.Run, c.dir, "merge-base", "--is-ancestor", before, after)
+	if err == nil {
+		return false, nil
+	}
+	if result.ExitCode == 1 {
+		return true, nil
+	}
+	return false, fmt.Errorf("compare the cache's default branch heads: %w", err)
+}
+
+func (c *cache) objectBytes() (int64, error) {
+	var bytes int64
+	err := filepath.WalkDir(filepath.Join(c.dir, "objects"), func(_ string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		bytes += info.Size()
+		return nil
+	})
+	return bytes, err
+}
+
+func (c *cache) marker(name string) (bool, error) {
+	path := filepath.Join(c.opts.Root, name)
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", name, err)
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("%s %s is not a regular file", name, path)
+	}
+	return true, nil
+}
+
+func (c *cache) defaultBranchOnlyMarked() (bool, error) {
+	return c.marker(defaultBranchOnlyFile)
+}
+
+func (c *cache) mark(name string) error {
+	marker := filepath.Join(c.opts.Root, name)
+	file, err := os.CreateTemp(c.opts.Root, name+".tmp-")
+	if err != nil {
+		return fmt.Errorf("create %s: %w", name, err)
+	}
+	path := file.Name()
+	defer os.Remove(path)
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", name, err)
+	}
+	if err := os.Rename(path, marker); err != nil {
+		return fmt.Errorf("write %s: %w", name, err)
+	}
+	return nil
+}
+
+func (c *cache) markDefaultBranchOnly() error {
+	return c.mark(defaultBranchOnlyFile)
+}
+
+func (c *cache) clear(name string) error {
+	if err := os.Remove(filepath.Join(c.opts.Root, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove %s: %w", name, err)
+	}
+	return nil
 }
 
 // repackMemory bounds the repack's memory, which git leaves unbounded by default: one thread, a
@@ -506,12 +737,19 @@ func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 // resident without it, past the cache container's 4Gi default memory limit, and at 1.78 GiB with
 // it, taking 7m04s rather than 6m07s at one core (sjawhar/legion#2240). It writes no bitmap
 // either: the cache serves no git protocol and streams no `.bitmap`, so one costs time and memory
-// for nothing. FeedGitWithin puts these after the smaller pack settings every other git of the
-// cache gets (workspace's feedGit), so these win for the repack.
+// for nothing. CacheGitWithin puts these after the smaller pack settings every other cache git
+// command gets, so these win for the repack.
 var repackMemory = []string{
 	"-c", "pack.threads=1", "-c", "pack.windowMemory=256m", "-c", "pack.deltaCacheSize=64m",
 	"-c", "core.deltaBaseCacheLimit=64m", "-c", "core.packedGitLimit=512m", "-c", "core.packedGitWindowSize=64m",
 	"-c", "repack.writeBitmaps=false",
+}
+
+// runRepack runs `git repack -a -d` on the clone within repackTimeout and repackMemory: the
+// narrowing's repack and the daily one alike.
+func (c *cache) runRepack(ctx context.Context) error {
+	_, err := workspace.CacheGitWithin(ctx, c.opts.Run, c.dir, repackTimeout, slices.Concat(repackMemory, []string{"repack", "-a", "-d", "--quiet"})...)
+	return err
 }
 
 // repack runs `git repack -a -d` on the clone within repackTimeout and repackMemory. One that fails
@@ -527,9 +765,8 @@ var repackMemory = []string{
 // recorded in room and kept in repackOutOfSpaceFile, written once the removal has freed that room,
 // so the write has some; one that succeeds clears both. Neither changes when the next repack runs.
 func (c *cache) repack(ctx context.Context, fetched time.Time) {
-	c.lastRepack = fetched
 	c.recordRepack(fetched)
-	if _, err := workspace.CacheGitWithin(ctx, c.opts.Run, c.dir, repackTimeout, append(slices.Clone(repackMemory), "repack", "-a", "-d", "--quiet")...); err != nil {
+	if err := c.runRepack(ctx); err != nil {
 		c.opts.Log(fmt.Sprintf("repack failed; tried again in %s: %s", repackEvery, oneLine(err)))
 		failed := time.Now()
 		outOfSpace := c.outOfSpace(err)
@@ -550,10 +787,10 @@ func (c *cache) repack(ctx context.Context, fetched time.Time) {
 // removePartialPacks removes, and logs, each partial pack a killed git left in the clone's
 // objects/pack: every `tmp_*` git writes there (a pack, its index, reverse index, bitmap and mtimes
 // as it receives or writes them), and the `.tmp-*` pack pack-objects writes for a repack before
-// renaming it. Its callers run it only while no git of the cache runs: before the
-// first fetch of a process (a pod killed mid-repack leaves its partial packs on the volume), and
-// after a fetch or a repack that failed, under maint. It looks only in objects/pack, and only when neither
-// objects nor objects/pack is a link.
+// renaming it. Its callers run it only while no git of the cache runs: after a failed narrowing,
+// fetch, or repack under maint. OwnCacheRepository clears a cache clone's stale packs before the
+// first git command of a process. It looks only in objects/pack, and only when neither objects nor
+// objects/pack is a link.
 func (c *cache) removePartialPacks() {
 	pack := filepath.Join(c.dir, "objects", "pack")
 	for _, dir := range []string{filepath.Dir(pack), pack} {
@@ -577,6 +814,33 @@ func (c *cache) removePartialPacks() {
 		}
 		c.opts.Log("removed the partial pack " + name + ", which a killed git left")
 	}
+}
+
+func (c *cache) removeKeptPacks() error {
+	pack := filepath.Join(c.dir, "objects", "pack")
+	for _, dir := range []string{filepath.Dir(pack), pack} {
+		info, err := os.Lstat(dir)
+		if err != nil {
+			return fmt.Errorf("read %s for kept packs: %w", dir, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("read %s for kept packs: not a directory", dir)
+		}
+	}
+	entries, err := os.ReadDir(pack)
+	if err != nil {
+		return fmt.Errorf("read %s for kept packs: %w", pack, err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.Type().IsRegular() || !strings.HasPrefix(name, "pack-") || !strings.HasSuffix(name, ".keep") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(pack, name)); err != nil {
+			return fmt.Errorf("remove the kept pack %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // reapOrphans reaps, when this process is its container's PID 1, every exited process it was
@@ -628,6 +892,16 @@ func (c *cache) publish(ctx context.Context, fetched time.Time) error {
 }
 
 func (c *cache) publishLocked(ctx context.Context, fetched time.Time) error {
+	if !c.narrowed {
+		return errDefaultBranchOnly
+	}
+	marked, err := c.defaultBranchOnlyMarked()
+	if err != nil {
+		return err
+	}
+	if !marked {
+		return errDefaultBranchOnly
+	}
 	head, err := workspace.CacheGit(ctx, c.opts.Run, c.dir, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
 	if err != nil {
 		return fmt.Errorf("read the default branch's head: %w", err)
@@ -641,13 +915,13 @@ func (c *cache) publishLocked(ctx context.Context, fetched time.Time) error {
 	}); err != nil {
 		return err
 	}
-	c.health.Store(&Health{Ready: true, Repo: c.opts.Repo.String(), Head: strings.TrimSpace(head.Stdout), LastFetchAt: fetched, Bytes: size})
+	c.health.Store(&Health{Ready: true, DefaultBranchOnly: true, Repo: c.opts.Repo.String(), Head: strings.TrimSpace(head.Stdout), LastFetchAt: fetched, Bytes: size})
 	return nil
 }
 
 // walk calls visit, in lexical order, for every regular file and directory of the clone the tar
 // streams, with its slash-separated path relative to the clone: the clone's history and refs
-// (workspace.FeedEntry), nothing of its own configuration, and no temporary or lock file git is
+// (workspace.CacheEntry), nothing of its own configuration, and no temporary or lock file git is
 // writing.
 func (c *cache) walk(visit func(name string, entry fs.DirEntry, info fs.FileInfo) error) error {
 	return filepath.WalkDir(c.dir, func(path string, entry fs.DirEntry, err error) error {
@@ -743,6 +1017,10 @@ func (c *cache) serveTar(w http.ResponseWriter, r *http.Request) {
 	}
 	entries, err := c.snapshot()
 	if err != nil {
+		if errors.Is(err, errDefaultBranchOnly) {
+			http.Error(w, "the repository cache is not narrowed to its default branch", http.StatusServiceUnavailable)
+			return
+		}
 		c.opts.Log("take the clone's tar for " + r.RemoteAddr + ": " + oneLine(err))
 		http.Error(w, "the repository cache cannot read its clone", http.StatusInternalServerError)
 		return
@@ -827,6 +1105,9 @@ var errPacksMoved = errors.New("the clone's packs changed while the snapshot too
 func (c *cache) snapshotOnce() ([]tarEntry, error) {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
+	if !c.narrowed {
+		return nil, errDefaultBranchOnly
+	}
 	var entries []tarEntry
 	taken := map[string]bool{}
 	err := c.walk(func(name string, entry fs.DirEntry, info fs.FileInfo) error {
