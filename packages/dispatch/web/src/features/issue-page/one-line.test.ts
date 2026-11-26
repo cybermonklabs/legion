@@ -9,8 +9,7 @@ import { ReferenceNamesProvider } from "../refs/reference-names";
 import { drawnLine, firstLineOf } from "./first-line";
 import { type LineNames, oneLineCut, referenceStandIns, useIssueNames } from "./one-line";
 import { NODE_TYPE_NAMES } from "./page-words";
-import { Publisher, publishedNames } from "./projection-fixture";
-import { knownIssueKeys } from "./row-references";
+import { lineNamesOf, Publisher, publishedNames } from "./projection-fixture";
 
 /** A face that draws every character 7 px wide, so each budget below is a sum a reader can
  *  check by hand. */
@@ -21,25 +20,9 @@ function alone(text: string, room: number) {
   return oneLineCut({ after: 0, before: 0, room, text, widthOf });
 }
 
-/** What a page that published `names` - each target's name, an issue's title among them - and
- *  `lines` - the line a chip names a block by - names a plain line's references by
- *  (`useIssueNames`), on the issue `KEY-1`; nothing deleted, edited or ambiguous. */
-function published(
-  names: Readonly<Record<string, string>> = {},
-  lines: Readonly<Record<string, string>> = {}
-): LineNames {
-  const named = new Map(Object.entries(names));
-  return {
-    ambiguous: new Set(),
-    author: () => "",
-    deleted: new Map(),
-    edited: new Set(),
-    issue: "KEY-1",
-    issues: knownIssueKeys(named),
-    lines: new Map(Object.entries(lines)),
-    names: named,
-  };
-}
+/** What a page on the issue `KEY-1` that published `named` names a plain line's references by
+ *  (`lineNamesOf`). */
+const published = (named?: Parameters<typeof lineNamesOf>[1]) => lineNamesOf("KEY-1", named);
 
 /**
  * R1, R14: a Contents entry draws its node's first line on one line, and no entry truncates a
@@ -175,7 +158,10 @@ test("a plain line names each reference and drops a typed block's source line", 
     `The page cites ${block}, dispatch://KEY-1 and dispatch://KEY-1/artifact/notes.`,
   ].join("\n");
   const references = referenceStandIns(
-    published({ "dispatch://KEY-1": "The first issue" }, { [block]: "the whole issue" })
+    published({
+      lines: new Map([[block, "the whole issue"]]),
+      names: new Map([["dispatch://KEY-1", "The first issue"]]),
+    })
   );
   const line = references.named(references.standIn(text));
   expect(line).toBe(
@@ -191,7 +177,9 @@ test("a plain line names each reference and drops a typed block's source line", 
 // for - it has not answered, or is gone - reads as the words its author wrote, as the row draws
 // it, and never by its key alone, which the row never draws.
 test("a plain line names a resolved issue by its key and title, and an unresolved one as written", () => {
-  const references = referenceStandIns(published({ "dispatch://KEY-7": "The new issue page" }));
+  const references = referenceStandIns(
+    published({ names: new Map([["dispatch://KEY-7", "The new issue page"]]) })
+  );
   expect(
     references.named(references.standIn("See dispatch://KEY-7 and dispatch://KEY-9 first."))
   ).toBe("See KEY-7 The new issue page and dispatch://KEY-9 first.");
@@ -214,7 +202,9 @@ test("a reference the page published no name for reads as written, never as its 
 // links one, and reads as the key and the title; a key the page named nothing for is the words
 // it is.
 test("a bare key the page named an issue for reads as its key and title", () => {
-  const references = referenceStandIns(published({ "dispatch://KEY-7": "The new issue page" }));
+  const references = referenceStandIns(
+    published({ names: new Map([["dispatch://KEY-7", "The new issue page"]]) })
+  );
   expect(references.named(references.standIn("Ask KEY-7 first, not KEY-9."))).toBe(
     "Ask KEY-7 The new issue page first, not KEY-9."
   );
@@ -225,7 +215,7 @@ test("a bare key the page named an issue for reads as its key and title", () => 
 test("a plain line names a block as its chip names it", () => {
   const block = "dispatch://KEY-1/spec#b-r3";
   const references = referenceStandIns(
-    published({}, { [block]: "Every address in a node's words is drawn by its name" })
+    published({ lines: new Map([[block, "Every address in a node's words is drawn by its name"]]) })
   );
   expect(references.named(references.standIn(`Keep ${block} as it is.`))).toBe(
     "Keep Every address in a node's words… as it is."
@@ -238,7 +228,9 @@ test("a plain line names a block as its chip names it", () => {
 // inside the limit.
 test("a long title is cut at a word inside it, with one ellipsis", () => {
   const title = `The new issue page ${"draws a line ".repeat(8)}whole`;
-  const references = referenceStandIns(published({ "dispatch://KEY-7": title }));
+  const references = referenceStandIns(
+    published({ names: new Map([["dispatch://KEY-7", title]]) })
+  );
   const line = references.named(
     drawnLine(firstLineOf(references.standIn("Read dispatch://KEY-7 before the rest.")))
   );
@@ -255,10 +247,13 @@ test("a long title is cut at a word inside it, with one ellipsis", () => {
  */
 test("a line is cut with each reference still unnamed, and each is named after the cut", () => {
   const block = "dispatch://KEY-1/spec#b-r2";
-  const names = published(
-    { "dispatch://KEY-2": "Two", "dispatch://KEY-3": "Three" },
-    { [block]: "R2. Every address" }
-  );
+  const names = published({
+    lines: new Map([[block, "R2. Every address"]]),
+    names: new Map([
+      ["dispatch://KEY-2", "Two"],
+      ["dispatch://KEY-3", "Three"],
+    ]),
+  });
   const lineOf = (text: string) => {
     const references = referenceStandIns(names);
     return references.named(drawnLine(firstLineOf(references.standIn(text))));
@@ -295,7 +290,9 @@ test("a line is cut with each reference still unnamed, and each is named after t
 // read "<U+E000> dispatch://ACME-7 then" drew its Contents entry as "ACME-7 ACME-7…":
 // the author's own character was drawn as the reference's name.
 test("a private-use character the author wrote is drawn as written, never as a reference's name", () => {
-  const references = referenceStandIns(published({ "dispatch://KEY-2": "Two" }));
+  const references = referenceStandIns(
+    published({ names: new Map([["dispatch://KEY-2", "Two"]]) })
+  );
   const text = "\ue000 marks dispatch://KEY-2 here, and \ue001 is the next icon.";
   expect(references.named(references.standIn(text))).toBe(
     "\ue000 marks KEY-2 Two here, and \ue001 is the next icon."
@@ -310,7 +307,9 @@ test("a private-use character the author wrote is drawn as written, never as a r
 // shows the……".
 test("a line cut right after a name that ends with an ellipsis draws one ellipsis", () => {
   const block = "dispatch://KEY-1/spec#b-r2";
-  const references = referenceStandIns(published({}, { [block]: "R2. Every address…" }));
+  const references = referenceStandIns(
+    published({ lines: new Map([[block, "R2. Every address…"]]) })
+  );
   // 78 characters, then the name's 18: the space after it is the last one inside the limit.
   const before = `${"word ".repeat(15)}as `;
   const text = `${before}${block} says the rest of it, and more words follow on.`;
@@ -325,7 +324,9 @@ test("a line cut right after a name that ends with an ellipsis draws one ellipsi
 // draws no second one.
 test("a line cut right after a name that ends with a full stop still draws its ellipsis", () => {
   const block = "dispatch://KEY-1/spec#b-r2";
-  const references = referenceStandIns(published({}, { [block]: "R2. Every address." }));
+  const references = referenceStandIns(
+    published({ lines: new Map([[block, "R2. Every address."]]) })
+  );
   // 78 characters, then the name's 18: the space after it is the last one inside the limit.
   const before = `${"word ".repeat(15)}as `;
   const text = `${before}${block} says the rest of it, and more words follow on.`;

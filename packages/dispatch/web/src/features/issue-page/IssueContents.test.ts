@@ -25,7 +25,7 @@ import { type LineNames, useIssueNames } from "./one-line";
 import { OutlineRequestProvider, useAskOutline } from "./outline-request";
 import { CONTROL_LABELS, type NodeType } from "./page-words";
 import { presetView } from "./presets";
-import { Publisher, publishedNames } from "./projection-fixture";
+import { lineNamesOf, Publisher, publishedNames } from "./projection-fixture";
 import { RowText } from "./RowText";
 import { SENTENCE_TABLE } from "./sentence-table";
 
@@ -66,24 +66,8 @@ const alice: Actor = { id: "alice", kind: "user" };
 const bob: Actor = { id: "bob", kind: "user" };
 const agent: Actor = { id: "session-1", kind: "agent" };
 
-/** What a page that published `lines`, the line a chip names each block by, and no other name
- *  names an entry's references by (`useIssueNames`): a reference with no line reads as its
- *  author wrote it. */
-function lineNamesOf(lines: ReadonlyMap<string, string> = new Map()): LineNames {
-  return {
-    ambiguous: new Set(),
-    author: () => "",
-    deleted: new Map(),
-    edited: new Set(),
-    issue: "CORE-1",
-    issues: [],
-    lines,
-    names: new Map(),
-  };
-}
-
 /** A page that has published no name. */
-const NO_NAMES = lineNamesOf();
+const NO_NAMES = lineNamesOf(KEY);
 
 /** Each entry as its id, with the entries under it after a colon. */
 function shape(entries: readonly ContentsEntry[]): string[] {
@@ -553,7 +537,7 @@ test("an entry draws its node's first block as its line, never its first two blo
 // inside one: each word of a name is a token of its own.
 test("an entry that cites a labelled statement is cut before the name goes in, never inside a word of it", () => {
   const cited = "dispatch://CORE-1/spec#b-r1";
-  const lineNames = lineNamesOf(new Map([[cited, "R1. Every node is whole"]]));
+  const lineNames = lineNamesOf(KEY, { lines: new Map([[cited, "R1. Every node is whole"]]) });
   const opened = node("CORE-1", "issue", [
     node("ask-1", "ask", [], { text: `Should ${cited} stay as it is? Then more.` }),
   ]);

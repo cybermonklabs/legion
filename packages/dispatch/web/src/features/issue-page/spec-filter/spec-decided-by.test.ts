@@ -7,7 +7,7 @@ import type { TreeNode } from "../issue-tree";
 import { CHIP_LIMIT } from "../node-row-chip";
 import { type LineNames, useIssueNames } from "../one-line";
 import { presetView } from "../presets";
-import { publishingNames } from "../projection-fixture";
+import { lineNamesOf, publishingNames } from "../projection-fixture";
 import { SENTENCE_TABLE } from "../sentence-table";
 import { treeContext } from "../tree-drafts";
 import {
@@ -42,25 +42,9 @@ import {
  *  context's addresses are read here. */
 const { nodeIdOf } = treeContext({ issue: issueDetails() });
 
-/** What a page that published `lines`, the line a chip names each block by, and no other name
- *  names a plain line's references by (`useIssueNames`): a reference with no line reads as its
- *  author wrote it. */
-function lineNamesOf(lines: ReadonlyMap<string, string> = new Map()): LineNames {
-  return {
-    ambiguous: new Set(),
-    author: () => "",
-    deleted: new Map(),
-    edited: new Set(),
-    issue: KEY,
-    issues: [],
-    lines,
-    names: new Map(),
-  };
-}
-
 /** A page that has published no name, so `referenceStandIns` names a reference as its author
  *  wrote it. */
-const NO_NAMES = lineNamesOf();
+const NO_NAMES = lineNamesOf(KEY);
 
 /** The Spec filter's body over `tree`, as the page reads it once the asks read holds its answer;
  *  `lineNames` is what a reference a plain line cites is named by (`useIssueNames`). */
@@ -302,7 +286,7 @@ test("a reference named in an agent's quote ends no sentence at its name's label
     [decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))], text })],
     READER,
     [],
-    lineNamesOf(new Map([[cited, "R2. Every address…"]]))
+    lineNamesOf(KEY, { lines: new Map([[cited, "R2. Every address…"]]) })
   );
   expect(groups[0]?.runs[0]?.decision?.quote).toBe(
     "Keep every address, as R2. Every address… says."
@@ -342,7 +326,7 @@ test("a statement informed by two decisions names the second by its words within
     ],
     READER,
     [],
-    lineNamesOf(new Map([[cited, "the second statement"]]))
+    lineNamesOf(KEY, { lines: new Map([[cited, "the second statement"]]) })
   );
   const informed = groups[0]?.runs[0]?.statements[0]?.alsoShapedBy ?? [];
   expect(informed.map((one) => one.id)).toEqual(["decisions-md#b-d2"]);
@@ -376,7 +360,7 @@ test("the name of a decision that informed a statement is cut before its referen
     ],
     READER,
     [],
-    lineNamesOf(new Map([[cited, "R2. Every address is drawn by…"]]))
+    lineNamesOf(KEY, { lines: new Map([[cited, "R2. Every address is drawn by…"]]) })
   );
   const informed = groups[0]?.runs[0]?.statements[0]?.alsoShapedBy[0];
   expect(informed?.quote).toBe("See R2. Every address is drawn by… as the reader reads it.");
@@ -777,7 +761,7 @@ test("a first sentence runs past an abbreviation that 1 follows, and a list of t
 });
 
 /** The page's name for the statement r2, which opens with its label ("R2."). */
-const LABELLED = lineNamesOf(new Map([[statementRef("r2"), "R2. Every address…"]]));
+const LABELLED = lineNamesOf(KEY, { lines: new Map([[statementRef("r2"), "R2. Every address…"]]) });
 
 // R5 with the tester's F20: a person's quote is the first sentence they wrote, cut with each
 // reference in it still unnamed, so a name that opens with its label ends no sentence of theirs.
