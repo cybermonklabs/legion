@@ -1,5 +1,5 @@
 /** the Spec view reads the server's stored decisions, ties and results */
-import type { Locator } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 import { firstLineOf } from "../web/src/features/issue-page/first-line";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
@@ -2027,6 +2027,21 @@ test("the Spec view opened at its address with its statements' reads refused put
   });
 });
 
+/** A full load of Settings, waited on until it is drawn, then a full load of `address`, as a
+ *  reader who follows a link to it from another page loads it, watched from its start so the
+ *  page going quiet can be waited on (`expectLoadSettled`). `what` names the address in the
+ *  message of a Settings that is not drawn. */
+async function fromSettings(page: Page, address: string, what = address): Promise<ApiRequests> {
+  await page.goto("/settings");
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Settings" }),
+    `Settings is not drawn before ${what} is loaded`
+  ).toBeVisible();
+  const traffic = watchApiRequests(page);
+  await gotoIssue(page, address);
+  return traffic;
+}
+
 // An address on the Spec view, loaded whole from another page as a reader who follows a link to
 // it loads it, lands on the row it names with that row inside the viewport once the page has
 // gone quiet: a statement, a comment the view draws, and a comment the issue holds none of. Each
@@ -2060,8 +2075,8 @@ test("the Spec view opened at its address with its statements' reads refused put
 //
 // A comment id of the right shape that no comment of the issue has draws the outline's line for
 // it in the view's place, with the focus on that line's heading, which stands in view.
-// SLOW(>=2s): a seeded issue of sixty statements, then four loads of Settings and four of the
-// Spec view, each waited on until the page goes quiet.
+// SLOW(>=2s): a seeded issue of sixty statements, then four loads of Settings, each waited on
+// until it is drawn, and four of the Spec view, each waited on until the page goes quiet.
 test("an address on the Spec view lands on a statement, on a comment it draws and on a comment the issue holds none of, each loaded from another page with the focused row in view", async ({
   browser,
 }) => {
@@ -2071,25 +2086,13 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
     const spec = presetPath(seeded.key, "spec");
     const body = issuePage(page).locator("[data-spec-body]");
     const statements = body.locator("[data-spec-statement]");
-    /** A full load of Settings, waited on until it is drawn, then a full load of `address`,
-     *  watched from its start so the page going quiet can be waited on. */
-    const fromSettings = async (address: string): Promise<ApiRequests> => {
-      await page.goto("/settings");
-      await expect(
-        page.getByRole("heading", { level: 1, name: "Settings" }),
-        `Settings is not drawn before ${address} is loaded`
-      ).toBeVisible();
-      const traffic = watchApiRequests(page);
-      await gotoIssue(page, address);
-      return traffic;
-    };
 
     // The last statement, by its fragment.
     const last = seeded.requirements.at(-1) ?? "";
     const statement = body.locator(
       `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, last)}"]`
     );
-    await expectLoadSettled(await fromSettings(`${spec}#b-${last}`));
+    await expectLoadSettled(await fromSettings(page, `${spec}#b-${last}`));
     await expect(
       statements,
       "the last statement's fragment does not draw every statement of the spec"
@@ -2113,7 +2116,7 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
       await held.promise;
       await route.continue();
     });
-    const traffic = await fromSettings(`${spec}?comment=${seeded.commentId}`);
+    const traffic = await fromSettings(page, `${spec}?comment=${seeded.commentId}`);
     await expect(
       comment,
       "the comment's address draws no row of the Spec view for it while the coverage and the spec's blocks are held"
@@ -2138,7 +2141,7 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
       await keyHeld.promise;
       await route.continue();
     });
-    const keyTraffic = await fromSettings(`${spec}?comment=${seeded.commentId}`);
+    const keyTraffic = await fromSettings(page, `${spec}?comment=${seeded.commentId}`);
     await expect(
       comment,
       "the comment's address draws no row of the Spec view for it while the coverage and the spec's blocks are held, before End"
@@ -2170,7 +2173,7 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
       `a comment of the seeded issue has the id ${GONE_COMMENT}`
     ).not.toContain(GONE_COMMENT);
     const fallback = FALLBACK_LINES.comment(seeded.key);
-    await expectLoadSettled(await fromSettings(`${spec}?comment=${GONE_COMMENT}`));
+    await expectLoadSettled(await fromSettings(page, `${spec}?comment=${GONE_COMMENT}`));
     const heading = await expectFallbackLine(page, fallback, body, "a gone comment under Spec");
     await expectOnScreen(heading, "a gone comment under Spec");
   });
@@ -2209,12 +2212,11 @@ test("at 390 px the row a key left the reader on during the Spec view's load sta
         await keyHeld.promise;
         await route.continue();
       });
-      await page.goto("/settings");
-      await expect(
-        page.getByRole("heading", { level: 1, name: "Settings" }),
-        `Settings is not drawn before the comment's address is loaded, for ${key}`
-      ).toBeVisible();
-      await gotoIssue(page, `${spec}?comment=${seeded.commentId}`);
+      await fromSettings(
+        page,
+        `${spec}?comment=${seeded.commentId}`,
+        `the comment's address (for ${key})`
+      );
       await expect(
         comment,
         `the comment's address draws no row of the Spec view for it while the coverage and the spec's blocks are held, before ${key}`
@@ -2459,13 +2461,11 @@ test("a comment the Spec view's address keeps is drawn whole with the focus on i
   await phase(browser, seed, async (page, seeded) => {
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     const body = issuePage(page).locator("[data-spec-body]");
-    await page.goto("/settings");
-    await expect(
-      page.getByRole("heading", { level: 1, name: "Settings" }),
-      "Settings is not drawn before the comment's address is loaded"
-    ).toBeVisible();
-    const traffic = watchApiRequests(page);
-    await gotoIssue(page, `${presetPath(seeded.key, "spec")}?comment=${seeded.longCommentId}`);
+    const traffic = await fromSettings(
+      page,
+      `${presetPath(seeded.key, "spec")}?comment=${seeded.longCommentId}`,
+      "the comment's address"
+    );
     await expectLoadSettled(traffic);
     const comment = body.locator(`[data-node-row][data-node-id="${seeded.longCommentId}"]`);
     await expect(
@@ -2904,12 +2904,11 @@ test("a link to an approval request opens the Spec view rather than a blank page
   };
   await phase(browser, seed, async (page, seeded) => {
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
-    await page.goto("/settings");
-    await expect(
-      page.getByRole("heading", { level: 1, name: "Settings" }),
-      "Settings is not drawn before the approval request's link is loaded"
-    ).toBeVisible();
-    await gotoIssue(page, `${presetPath(seeded.key, "decisions")}?ask=${seeded.approvalId}`);
+    await fromSettings(
+      page,
+      `${presetPath(seeded.key, "decisions")}?ask=${seeded.approvalId}`,
+      "the approval request's link"
+    );
     await expect(
       page,
       "the approval request's link does not land on the spec's address with the request marked"
