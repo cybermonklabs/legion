@@ -29,7 +29,7 @@ import {
   documentFileRead,
   uploadedFile,
 } from "./dispatch-commands/stored-text";
-import { type DispatchToolName, dispatchCommands } from "./dispatch-commands/table";
+import { dispatchCommandOf } from "./dispatch-commands/table";
 import {
   checkDispatchCall,
   dispatchServerUrls,
@@ -391,7 +391,7 @@ export async function runDispatchCli(
   // where it runs, and the call, which read the file and throw the read's own error. It does not
   // read a FIFO, a device or a socket, whose read can wait forever, so the dry run's step asks
   // Dispatch nothing about it, and the call uploads it unchecked, for Dispatch's upload to judge.
-  const command = dispatchCommands[parsed.tool as DispatchToolName];
+  const command = dispatchCommandOf(parsed.tool);
   const documentFields = command?.documentFields ?? [];
   if (parsed.kind === "unstorable") {
     const { tool, field, bytes } = parsed;
