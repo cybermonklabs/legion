@@ -221,21 +221,22 @@ const FIRST = "c3000000-0000-4000-8000-000000000003";
 const SECOND = "b2000000-0000-4000-8000-000000000002";
 const THIRD = "a1000000-0000-4000-8000-000000000001";
 
-// A node's lenses stand one level under it, after its ranked children, in the read's order,
-// which is the order they were invoked in, though their ids sort the other way; a lens's
-// findings in the order they were written; a lens on the issue at the top level.
+// A node's lenses stand one level under it, among its conversation nodes, which the read answers
+// first by `made_at`, before its ranked children (INFRA-1253's spec at version 247): the order they
+// were invoked in, though their ids sort the other way; a lens's findings in the order they were
+// written; a lens on the issue at the top level.
 test("a lens hangs under its parent, after its other children, in invocation order", () => {
   const { root } = drawn(
     answer(
       [
         block("r1", "requirement", KEY, SPEC, 0),
-        block("c1", "check", "r1", VERIFICATION, 0),
-        block("t1", "plan_task", "r1", PLAN, 0),
         lens(FIRST, "r1", "2026-11-05T09:00:00Z"),
         finding(`lens/${FIRST}#f-b`, FIRST, "The bill doubles."),
         finding(`lens/${FIRST}#f-a`, FIRST, "Failover takes minutes."),
         lens(SECOND, "r1", "2026-11-05T10:00:00Z"),
         lens(THIRD, "r1", "2026-11-05T11:00:00Z"),
+        block("c1", "check", "r1", VERIFICATION, 0),
+        block("t1", "plan_task", "r1", PLAN, 0),
         lens("on-issue", KEY),
         TRADE_OFF,
       ],
@@ -246,15 +247,15 @@ test("a lens hangs under its parent, after its other children, in invocation ord
 
   expect(childIds(root)).toEqual([blockNodeId("spec", "r1"), "on-issue"]);
   expect(childIds(statement)).toEqual([
-    blockNodeId("verification-md", "c1"),
-    blockNodeId("plan-md", "t1"),
     FIRST,
     SECOND,
     THIRD,
+    blockNodeId("verification-md", "c1"),
+    blockNodeId("plan-md", "t1"),
   ]);
   expect(childIds(rowOf(root, FIRST))).toEqual([`lens/${FIRST}#f-b`, `lens/${FIRST}#f-a`]);
   expect(
-    statement.children.slice(2).map((row) => [row.type, row.readId, row.at, row.author])
+    statement.children.slice(0, 3).map((row) => [row.type, row.readId, row.at, row.author])
   ).toEqual([
     ["lens", FIRST, "2026-11-05T09:00:00Z", READER_ACTOR],
     ["lens", SECOND, "2026-11-05T10:00:00Z", READER_ACTOR],
