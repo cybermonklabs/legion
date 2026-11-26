@@ -261,5 +261,5 @@ func readForwarderArgs(path string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("--github-forwarder: find this legion executable: %w", err)
 	}
-	return append([]string{self, "forwarder"}, flags...), nil
+	return append([]string{self, shimwire.ForwarderCommand}, flags...), nil
 }

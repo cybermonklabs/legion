@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubproxy"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 const forwarderUsage = "legion forwarder --role <role> --listen <127.0.0.1:port> --secret <NAME>... --reason <text> --github-host <host>... --gh-dir <dir> [--default-owner <owner>] [--rename <from>=<to>]...  (a role's GitHub forwarder; its shim runs it, never a person)"
@@ -35,7 +36,7 @@ const forwarderUsage = "legion forwarder --role <role> --listen <127.0.0.1:port>
 // lines go to stderr.
 func newForwarderCommand(stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:    "forwarder",
+		Use:    shimwire.ForwarderCommand,
 		Short:  "a role's GitHub forwarder: the loopback proxy that sends GitHub's hosts to the secrets broker's proxy under the role's grant (a role's shim runs it, never a person)",
 		Args:   noArguments,
 		Hidden: true,
