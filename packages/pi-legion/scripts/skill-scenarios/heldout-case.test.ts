@@ -219,6 +219,38 @@ describe("parseHeldoutFile", () => {
     extra.cases[0].agent = "oracle";
     expect(() => parseHeldoutFile(JSON.stringify(extra))).toThrow("case P05: agent:");
   });
+
+  test("an A case may name no action and run under no daemon, and each trace carries its report", () => {
+    const agentCase = () => {
+      const file = heldoutJson();
+      Object.assign(file.cases[0], {
+        kind: "A",
+        agent: "oracle",
+        actions: [],
+        allowedRefusals: [],
+      });
+      Object.assign(file.cases[0], { forbidden: [], waitRequired: null });
+      file.cases[0].world.daemon = null;
+      delete file.cases[0].plantedOmission;
+      file.cases[0].traces.good.agentReport = "The trade-off, with its evidence.";
+      file.cases[0].traces.bad.agentReport = "An answer with no evidence.";
+      return file;
+    };
+    expect(parseHeldoutFile(JSON.stringify(agentCase())).cases[0].kind).toBe("A");
+    const noReport = agentCase();
+    delete noReport.cases[0].traces.bad.agentReport;
+    expect(() => parseHeldoutFile(JSON.stringify(noReport))).toThrow(
+      "case P05: traces.bad.agentReport: an A case's trace carries its report"
+    );
+    const roleCase = heldoutJson();
+    roleCase.cases[0].actions = [];
+    roleCase.cases[0].allowedRefusals = [];
+    roleCase.cases[0].forbidden = [];
+    expect(() => parseHeldoutFile(JSON.stringify(roleCase))).toThrow("case P05: actions:");
+    const noDaemon = heldoutJson();
+    noDaemon.cases[0].world.daemon = null;
+    expect(() => parseHeldoutFile(JSON.stringify(noDaemon))).toThrow("case P05: world.daemon:");
+  });
 });
 
 describe("parseSkillUseFile", () => {

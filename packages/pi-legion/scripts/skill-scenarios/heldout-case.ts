@@ -556,7 +556,9 @@ const CHECK_RUBRIC = ["diagnosis", "scheduling"];
 
 /** One held-out or development case. `actions` lists every correct next action in the order the
  * role must take them. `rubric` is one or more named lines. `traces.bad` and `plantedOmission`
- * may be absent while a case is drafted; the inventory names each missing one. */
+ * may be absent while a case is drafted; the inventory names each missing one. An A case is a task
+ * agent's own run in a plain session: what it returns is its report, so it may name no action and
+ * run under no daemon, and each of its traces carries the report it is judged on. */
 export const HeldoutCase = z
   .strictObject({
     id: Name,
@@ -567,7 +569,7 @@ export const HeldoutCase = z
     world: World,
     task: Text,
     tools: z.array(Name).min(1),
-    actions: z.array(CaseAction).min(1),
+    actions: z.array(CaseAction),
     allowedRefusals: z.array(AllowedRefusal),
     forbidden: z.array(Forbidden),
     waitRequired: WaitRequired.nullable(),
@@ -582,8 +584,16 @@ export const HeldoutCase = z
       refuse(context, ["plantedOmission"], "only an S or B case plants an omission");
     if (each.kind === "B" && each.waitRequired === null)
       refuse(context, ["waitRequired"], "a B case says how the role stops or waits");
-    if (each.world.daemon === null)
+    if (each.kind !== "A" && each.actions.length === 0)
+      refuse(context, ["actions"], "a case that is not an A case names at least one action");
+    if (each.kind !== "A" && each.world.daemon === null)
       refuse(context, ["world", "daemon"], "every held-out role runs under the daemon");
+    if (each.kind === "A") {
+      if (each.traces.good.agentReport === undefined)
+        refuse(context, ["traces", "good", "agentReport"], "an A case's trace carries its report");
+      if (each.traces.bad !== undefined && each.traces.bad.agentReport === undefined)
+        refuse(context, ["traces", "bad", "agentReport"], "an A case's trace carries its report");
+    }
     refuseRepeats(context, each.tools, (index) => ["tools", index]);
     const names = each.actions.map((action) => action.name);
     refuseRepeats(context, names, (index) => ["actions", index, "name"]);
