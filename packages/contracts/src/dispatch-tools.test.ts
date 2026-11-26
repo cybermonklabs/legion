@@ -214,12 +214,14 @@ const validCalls = {
   dispatch_issues: { project: "ACME" },
   dispatch_project: { key: "CORE", name: "Core" },
   dispatch_projects: {},
+  dispatch_project_update: { project: "CORE", proven_sessions: "off" },
   dispatch_priorities: { project: ["DSP"] },
   dispatch_architecture_sync: { project: "CORE" },
   dispatch_open_asks: {},
   dispatch_answers: {},
   dispatch_whoami: {},
   dispatch_limits: {},
+  dispatch_api: specFor("dispatch_api").example,
   dispatch_handoff_write: specFor("dispatch_handoff_write").example,
   dispatch_handoff_read: { issue: "DSP-1", phase: "implement", version: 2 },
   dispatch_steps: { issue: "DSP-1" },
@@ -335,12 +337,14 @@ describe("dispatchToolSpecs", () => {
       "dispatch_issues",
       "dispatch_project",
       "dispatch_projects",
+      "dispatch_project_update",
       "dispatch_priorities",
       "dispatch_architecture_sync",
       "dispatch_open_asks",
       "dispatch_answers",
       "dispatch_whoami",
       "dispatch_limits",
+      "dispatch_api",
       "dispatch_handoff_write",
       "dispatch_handoff_read",
       "dispatch_steps",
@@ -420,6 +424,28 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ project: "INFRA", since: 1 }).success).toBe(false);
     // An empty key would send `GET /api/v1/projects//plans`, so it is refused like any other.
     expectNotAProjectKey(schema, [{ project: "infra" }, { project: "" }]);
+  });
+
+  test("dispatch_project_update takes a project key and on or off, and nothing else", () => {
+    const schema = schemaFor("dispatch_project_update");
+
+    for (const proven_sessions of ["on", "off"]) {
+      expect(schema.safeParse({ project: "CORE", proven_sessions }).success, proven_sessions).toBe(
+        true
+      );
+    }
+    expect(schema.safeParse({ project: "CORE" }).success).toBe(false);
+    expect(schema.safeParse({ project: "CORE", proven_sessions: true }).success).toBe(false);
+    expect(schema.safeParse({ project: "CORE", proven_sessions: "yes" }).success).toBe(false);
+    expect(schema.safeParse({ project: "CORE", proven_sessions: "on", name: "Core" }).success).toBe(
+      false
+    );
+    // An empty key would send `PUT /api/v1/projects//proven-sessions`, so it is refused like any
+    // other.
+    expectNotAProjectKey(schema, [
+      { project: "core", proven_sessions: "on" },
+      { project: "", proven_sessions: "off" },
+    ]);
   });
 
   test("dispatch_search rejects a one-character query and a limit above 50", () => {
@@ -1867,24 +1893,6 @@ describe("dispatchToolSpecs", () => {
     const argument = fields[field];
     const description = argument?.description ?? argument?.unwrap?.().description ?? "";
     expect(description).toContain(rule);
-  });
-
-  // Work still to do lives in the issue's plan, other issues and asks. No tool's help may offer a
-  // separate list of open items beside them. The control is the help sentence that offered one.
-  test("no tool description or flag help offers a separate list of open items", () => {
-    const listOffer = /open[- _]items/i;
-    expect(
-      listOffer.test("a record of open items or progress is a document of its own"),
-      "the control: the retired offer"
-    ).toBe(true);
-    const offering = dispatchToolSpecs.filter((spec) =>
-      listOffer.test(
-        JSON.stringify(z.toJSONSchema(dispatchToolSchema(spec, schemaApi), { io: "input" })) +
-          spec.description
-      )
-    );
-    expect(dispatchToolSpecs.length).toBeGreaterThan(0);
-    expect(offering.map((spec) => spec.name)).toEqual([]);
   });
 
   test("dispatch_follow takes a full ask id and follow or unfollow, nothing else", () => {

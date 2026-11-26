@@ -33,6 +33,7 @@ import (
 // too, which puts the settle counter at its number while all 100 forwards are still outstanding -
 // the window a read of the settle counter took for the gauge - and the test alone ends it.
 func TestRoleLaneForwarderPublishesEachHoldersForwardsInOrderWithoutWaitingForOutcomes(t *testing.T) {
+	t.Parallel()
 	const perHolder = 50
 	harness := newListenerDeliveryHarness(t)
 	silent, live := contracts.LegacyAgentSubject("ses_forwarder_silent"), contracts.LegacyAgentSubject("ses_forwarder_live")
@@ -290,6 +291,7 @@ func metricValue(t *testing.T, listener *listenerProcess, name string) int64 {
 // message on the holder's agent subject, and the two listeners forwarded 100 in all. In machine
 // groups each listener forwards every message, 200 in all, and the holder receives each twice.
 func TestRoleLaneForwardsAndStoresEachRoleMessageOnceAcrossTwoListeners(t *testing.T) {
+	t.Parallel()
 	const messages = 100
 	uri := testnats.URL(t)
 	listeners := startRoleLaneListeners(t, uri, nil, "role-lane-once-a", "role-lane-once-b")
@@ -456,6 +458,7 @@ func TestRoleLaneRefusedSharedQueueFallsBackToMachineGroupsAndStoresOneCopy(t *t
 // the agent subjects taken out of the stream, no acknowledgement comes back, and the listener
 // reports the role message delivery_failed.
 func TestRoleLaneForwardTheStreamDoesNotStoreIsDeliveryFailed(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	listener := startRoleLaneListeners(t, uri, nil, "role-lane-unstored")[0]
 	role := "role-lane-unstored-" + id.New()

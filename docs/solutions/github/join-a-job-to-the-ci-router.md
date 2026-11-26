@@ -39,10 +39,11 @@ its own workflows; this page covers this repository only.
 1. **A gate in `.github/ci-gates/<job id>.py`** that says what the job reads (the section below);
    the `changes` job computes the job's filter from it.
 2. **An output of `changes`** for that filter.
-   Every output carries the dispatched term, since a dispatched run skips the filter step and selects every job:
-   `<filter>: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.<filter> }}`.
+   Every output carries the every-job term, since a run that selects every job (a dispatch of main, or one given `every-job`) skips the filter step:
+   `<filter>: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.<filter> }}`.
+   `ci-router-outputs.test.sh` fails an output without it, since a dispatch of main then leaves its job off.
    A slow suite carries the `full-ci` term too, with its own `lane:<filter>` label beside it (step 5 says why), and ends with the `'false'` that makes the skip `changes`' own:
-   `<filter>: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:<filter>')) && steps.filter.outputs.<filter> || 'false' }}`.
+   `<filter>: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:<filter>')) && steps.filter.outputs.<filter> || 'false' }}`.
    Which jobs are slow suites is `.github/ci-notes/ci.md`'s rule ("Which lane a job runs in: the pull request or the merge queue"): a test job above 10 minutes at the 90th percentile of its pull-request runs. A build, vet, format, typecheck or lint check runs on every pull request whatever its time, so it never takes this term. No job runs in part: a job that mixes such checks with slow tests is split in two, the checks in a job of their own that a pull request runs and the tests in the job that keeps the old id and takes this term, so each runs all its steps wherever it runs (step 4 says where the second job's steps go).
 3. **`needs: changes`** on the job, and
    `if: needs.changes.outputs.<filter> == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')`.
@@ -333,9 +334,14 @@ script runs. A step off its pin is refused, naming the line that differs.
 
 It fails too when a pinned text or an exact entry's step is gone, when a job or step is gated on a
 filter no gate declares, when a read a gate or a `//ci:` line declares matches no file, and when a
-`//ci:` line cannot be read. It runs go with `GOPROXY=off` over an empty module cache. Run it
-locally from anywhere: `.github/scripts/check-ci-filters.sh` (its header gives the recipe for a
-machine whose go is a bootstrap).
+`//ci:` line cannot be read. It runs the go list behind each closure with `GOPROXY=off` over an
+empty module cache. The tag sets of the darwin vet steps come from `go_build_tags.py`, whose go
+list runs under the machine's own proxy and module cache and can write a checksum a committed
+`go.work.sum` lacks. A run that changes a file of the tree fails naming each, except the files its
+mode writes (each `PUSH_WORKFLOWS` workflow for `write`, the filters and their `.inputs` file for
+`generate`): commit the checksum lines it wrote. Run it locally from anywhere:
+`.github/scripts/check-ci-filters.sh` (its header gives the recipe for a machine whose go is a
+bootstrap).
 
 ## Caches: no job of the router writes one
 

@@ -541,17 +541,22 @@ type rig struct {
 	// leakCheckTag and leakCheckInstalled are what every fake launcher's hello says of the shared
 	// public leak check: its pin, "" for none, and whether it holds that pin installed
 	// (withLeakCheckHello). refuseLeakCheck, when set, is the cause every fake launcher answers
-	// each launcher_leak_check slice with, silentLeakCheck has it answer none at all, and
-	// causelessLeakCheck has it refuse each slice with no cause.
+	// each launcher_leak_check slice with, silentLeakCheck has it answer none at all,
+	// causelessLeakCheck has it refuse each slice with no cause, and deafLauncher has it read
+	// nothing after its first state, so the daemon's first command waits in its write.
 	leakCheckTag       string
 	leakCheckInstalled bool
 	refuseLeakCheck    string
 	silentLeakCheck    bool
 	causelessLeakCheck bool
+	deafLauncher       bool
 	// resumesBySession is what every fake launcher's hello says of looking a session up by its id
 	// (shimwire.LauncherHello.ResumesBySession, withResumesBySession): unset, each is a launcher
 	// built before it could.
 	resumesBySession bool
+	// heldStops, when set, holds every fake launcher's answer to a stop until it is closed
+	// (withHeldStops), as a launcher whose child takes its grace to exit holds it.
+	heldStops <-chan struct{}
 }
 
 type rigOption func(*rig, *Options)
@@ -578,6 +583,11 @@ func withRefusedLeakCheck(cause string) rigOption {
 // one whose install is still running when the daemon's hop ends.
 func withSilentLeakCheck() rigOption { return func(g *rig, _ *Options) { g.silentLeakCheck = true } }
 
+// withDeafLauncher has every fake launcher report its first state and then read nothing, as one
+// whose process stopped reading its connection does: the daemon's next write to it never ends
+// until its deadline.
+func withDeafLauncher() rigOption { return func(g *rig, _ *Options) { g.deafLauncher = true } }
+
 // withCauselessLeakCheck has every fake launcher refuse each slice of the leak check with no
 // cause, an answer no launcher of this release gives and the daemon refuses as malformed.
 func withCauselessLeakCheck() rigOption {
@@ -587,6 +597,12 @@ func withCauselessLeakCheck() rigOption {
 // withResumesBySession has every fake launcher's hello say it can look a session up by its id and
 // resume the file it finds, as a launcher of this release says.
 func withResumesBySession() rigOption { return func(g *rig, _ *Options) { g.resumesBySession = true } }
+
+// withHeldStops has every fake launcher of this rig receive a stop and answer it only once release
+// is closed.
+func withHeldStops(release <-chan struct{}) rigOption {
+	return func(g *rig, _ *Options) { g.heldStops = release }
+}
 
 // testLaunchers is a launchers of its own, outside any rig, with no receiver for a memory guard's
 // reports and no volume seam behind it: the tests that build one drive the launcher protocol
@@ -1080,7 +1096,7 @@ func (g *rig) reportLauncher(token claim.Token, state shimwire.LauncherState) {
 	if pod == nil {
 		g.t.Fatal("cannot report launcher state without its pod")
 	}
-	s := g.r.launchers.accept(token, launcherIssue(token), shimwire.LauncherHello{LauncherID: "test-" + string(token), PodUID: string(pod.UID)})
+	s := g.r.launchers.accept(token, launcherIssue(token), g.keptSince(token), shimwire.LauncherHello{LauncherID: "test-" + string(token), PodUID: string(pod.UID)})
 	s.mu.Lock()
 	s.state = state
 	close(s.ready)
@@ -1177,10 +1193,12 @@ func (g *rig) secret(name string) *corev1.Secret {
 	return object.(*corev1.Secret)
 }
 
-// eventually fails the test unless ok holds within a second.
+// eventually fails the test unless ok holds before the test binary's deadline (testwait.Eventually):
+// the rig's controller, informers and launchers run on goroutines of their own, and beside the
+// package's other parallel tests a loaded machine may take them longer than any fixed span.
 func (g *rig) eventually(what string, ok func() bool) {
 	g.t.Helper()
-	testwait.WithinPolling(g.t, time.Second, 5*time.Millisecond, what, ok)
+	testwait.Eventually(g.t, what, ok)
 }
 
 // spawn launches spec and fails the test on an error.
@@ -1321,7 +1339,7 @@ func (g *rig) connect(token claim.Token) { g.connectRunning(token, 0) }
 func (g *rig) connectRunning(token claim.Token, running uint64) {
 	server, client := net.Pipe()
 	pod := g.pod(SandboxName(token))
-	session := g.r.launchers.accept(token, launcherIssue(token), shimwire.LauncherHello{
+	session := g.r.launchers.accept(token, launcherIssue(token), g.keptSince(token), shimwire.LauncherHello{
 		LauncherID: "test-" + string(token), PodUID: string(pod.UID),
 		LeakCheckTag: g.leakCheckTag, LeakCheckInstalled: g.leakCheckInstalled, ResumesBySession: g.resumesBySession,
 	})
@@ -1330,6 +1348,10 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 	go func() {
 		writer := shimwire.NewWriter(client)
 		_ = writer.WriteFrame(launcherFirstState(running))
+		if g.deafLauncher {
+			<-g.ctx.Done()
+			return
+		}
 		// checks is the slices of each leak check sequence that arrived and installed whether
 		// this launcher process holds the check installed, as the real launcher's checkInstall
 		// does: it installs nothing, and answers the last slice of a sequence, and every slice
@@ -1354,6 +1376,9 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 			g.commandsMu.Unlock()
 			switch command := frame.(type) {
 			case shimwire.LauncherStart, shimwire.LauncherStop:
+				if _, stop := frame.(shimwire.LauncherStop); stop && g.heldStops != nil {
+					<-g.heldStops
+				}
 				answers, _ := answerGeneration(frame, &running)
 				for _, answer := range answers {
 					_ = writer.WriteFrame(answer)
@@ -1376,6 +1401,27 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 			}
 		}
 	}()
+}
+
+// keptSince is what the resolver reads off the Sandbox of token's pod for a hello
+// (LauncherResolver, keptVolumeSince): when that Sandbox was created, where it owns the issue's
+// kept volume, and the zero time otherwise. It reads the Sandbox the tracker holds, and a Sandbox
+// the tracker does not hold or cannot decode reads as the zero time, since a fake launcher may
+// connect from the controller stand-in's goroutine, where the test cannot fail.
+func (g *rig) keptSince(token claim.Token) time.Time {
+	object, err := g.dyn.Tracker().Get(sandboxGVR, testNamespace, SandboxName(token))
+	if err != nil {
+		return time.Time{}
+	}
+	u, ok := object.(*unstructured.Unstructured)
+	if !ok {
+		return time.Time{}
+	}
+	s, err := decodeSandbox(u)
+	if err != nil {
+		return time.Time{}
+	}
+	return keptVolumeSince(s)
 }
 
 // issueLaunchers connects a fake launcher for every role of token's issue.

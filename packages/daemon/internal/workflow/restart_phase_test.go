@@ -18,6 +18,7 @@ import (
 // from it, where its worker's failure left it, both reach the same start, and the held one leaves
 // its hold behind. A role that works neither is refused, and nothing is started under its name.
 func TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask(t *testing.T) {
+	t.Parallel()
 	root := "LEGION-208"
 	until := time.Date(2026, 9, 26, 13, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {

@@ -95,7 +95,7 @@ func appliedRead(t *testing.T, pool *store.Pool, api, base string, mergeable boo
 	pull.Base.Ref, pull.Head.Ref, pull.Head.SHA = base, "legion/CAPTURE-1", "code"
 	github := githubrest.Client{Token: "outbox-token", API: githubrest.RepositoryAPI(api, ghrepo.MustParse("acme/widgets"))}
 	pr := record.PullRequest{State: record.PullRequestOpen, Issue: "CAPTURE-1", Repo: "acme/widgets", Number: 86, Base: base, HeadSHA: "code"}
-	if err := w.applyMergeability(context.Background(), github, pr, pull, time.Now().UTC(), eventID); err != nil {
+	if _, err := w.applyMergeability(context.Background(), github, pr, pull, time.Now().UTC(), eventID); err != nil {
 		t.Fatalf("apply the read: %v", err)
 	}
 	applied := facts.facts()
