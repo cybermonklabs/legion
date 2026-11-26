@@ -3226,7 +3226,8 @@ const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null 
 // issue_branch row of the issue is unfinished, so no role starts before its issue's branch exists
 // on GitHub (IssueBranch), and a create GitHub keeps refusing holds the issue's roles back while
 // the row retries. A start of an issue's role also waits while an older issue_release row of the
-// issue is in the outbox, so no role starts in the pod the release's teardown is about to take
+// issue is in the outbox, and, once that release is committed, while its teardown row is, whatever
+// the start's age, so no role starts in the pod the release's teardown is about to take
 // (IssueRelease). And a start marked as waiting for the issue's admission slot
 // (SuperviseRequest.NeedsSlot) waits while the slots table names no slot of that issue: the
 // admission cap counts the issues the daemon has started, and this row is the delivery that puts one to work, so
@@ -3238,15 +3239,37 @@ const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null 
 // (claims.last_start_row), so ordering them here would buy nothing that survives a retry the
 // runtime delayed.
 //
-// The teardown rule is what makes a wake taken after a release recorded its role's claim as
+// The teardown rule has two halves. Before the release commits, a start waits only for an older
+// teardown row. That is what makes a wake taken after a release recorded its role's claim as
 // `released` start that role once, in the pod that comes back (store.IssueRelease passes over that
-// wake's start). The lifecycle lane lists its rows by next_at and then by id, so without the rule
-// a teardown on its backoff would let a newer start run first: the start would launch the role in
-// the old pod, under the runtime's pod lock, and the teardown would then cancel the release. Only
-// a `start` is held. The release's own role stops are supervise rows of op `release`, below the
-// teardown, and the teardown waits for no start (store's issueStopFences), so the rule cannot
-// deadlock. A cancel's resumes are queued above the teardown row and run once it finishes, and the
-// teardown of a release that is over finishes at once (store.ReleaseOver).
+// wake's start). The lifecycle lane lists its rows by next_at and then by id, so without it a
+// teardown on its backoff would let a newer start run first: the start would launch the role in
+// the old pod, under the runtime's pod lock, and the teardown would then cancel the release. A
+// start older than the teardown row still runs when it comes due: it is work the pod was given,
+// and the teardown's read of the queued starts cancels the release for it (store.IssueRelease,
+// releaseOvertaken), or passes over it while it waits for its slot (store's idleWaitingRow).
+//
+// Once the runtime's read under the pod's launch turn commits the release (issue_releases.committed,
+// store.CommitIssueRelease), nothing cancels it, and the teardown's retry takes the pod whatever
+// runs in it. So from that commit until the teardown finishes, every start of the issue waits,
+// whatever its id: an older start that comes due during the teardown's backoff — a worker start
+// whose slot came since, or a start on its own retry backoff — would otherwise launch its role in
+// the pod the retry then takes. The mark is read by its issue alone, since its project column is
+// the daemon's project name, not the Dispatch key an issue key starts with, and one issue key
+// names one issue across projects. It is tied to the teardown row by its last_row, which is always
+// its release's teardown (store.ReleaseIdleIssue writes the release's rows with the teardown last),
+// so a teardown row of an earlier release still on the lane holds nothing for it, and the hold
+// ends when the committed release's own row leaves the outbox. The teardown clears the mark before
+// that, and its live lease holds the issue's other lifecycle rows until the row is gone
+// (outboxLaneFree).
+//
+// Neither half can deadlock. Only a `start` is held. The release's own role stops are supervise
+// rows of op `release`, below the teardown, and the teardown waits for no start: store's
+// issueStopFences reads the stop ops and the claims that may hold a process, never a start row,
+// and a committed teardown reads not even those, since store.IssueRelease answers a committed mark
+// ReleaseActs first. A cancel's resumes are queued above the teardown row and run once it
+// finishes, the teardown of a release that is over finishes at once (store.ReleaseOver), and a
+// committed release is never cancelled (store.CancelIssueRelease refuses it).
 //
 // None of the four holds an issue's later rows back. A row that is merely unclaimable takes no
 // lease, and the lane rule (outboxLaneFree) blocks only on a live lease, so an issue whose worker
@@ -3257,7 +3280,9 @@ const outboxInOrder = `not (outbox.kind = $2 and exists (select 1 from outbox ol
 		and not (outbox.kind = $3 and outbox.payload->>'op' = 'start' and exists (select 1 from outbox branch
 			where branch.kind = $4 and branch.issue = outbox.issue and branch.id < outbox.id))
 		and not (outbox.kind = $3 and outbox.payload->>'op' = 'start' and exists (select 1 from outbox teardown
-			where teardown.kind = $6 and teardown.issue = outbox.issue and teardown.id < outbox.id))
+			where teardown.kind = $6 and teardown.issue = outbox.issue and (teardown.id < outbox.id
+				or exists (select 1 from issue_releases mark
+					where mark.issue = teardown.issue and mark.last_row = teardown.id and mark.committed))))
 		and not (outbox.kind = $3 and outbox.payload->>'op' = 'start' and coalesce(outbox.payload->>'needsSlot', '') = 'true'
 			and not exists (select 1 from slots where slots.issue = outbox.issue))`
 
@@ -3551,9 +3576,10 @@ func (s *Postgres) UnfinishedLanes(ctx context.Context, tx pgx.Tx, project strin
 // state shows held is exactly what the lanes hold back. A start fenced behind an older issue_branch
 // row of its issue is held while the branch row runs — issue_branch is a lifecycle kind, so the
 // start waits on it — and listed by nothing while the branch row waits unleased for its retry, since
-// it then waits on no running row, as it did before the lanes. A start fenced behind an older
-// issue_release row of its issue is held and listed the same way: on the release's teardown while
-// it runs, and by nothing while the teardown waits for its retry. Board rows are never held: their lane
+// it then waits on no running row, as it did before the lanes. A start fenced behind an
+// issue_release row of its issue — an older one, or the teardown of a committed release whatever
+// the start's age (outboxInOrder) — is held and listed the same way: on the release's teardown
+// while it runs, and by nothing while the teardown waits for its retry. Board rows are never held: their lane
 // runs them as they come due. A row the lane rule holds fails the claim, so the claim's negation
 // adds no row to the lane rule's; it is written out because Postgres types a parameter by its uses
 // and refuses a statement with one it never uses, and the ordering rules' kinds are among the

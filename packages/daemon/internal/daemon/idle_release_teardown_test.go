@@ -1017,3 +1017,83 @@ func TestACommittedTeardownRetriedAfterItTookItsReadPodFinishes(t *testing.T) {
 		t.Fatalf("the retry logged %d lines %q, want one: its record is the release's", len(lines), idleRigUnownedTeardown)
 	}
 }
+
+// A committed release holds every start of its issue until its teardown finishes, a start queued
+// before the teardown row included (record's outboxInOrder). An idle release commits while a
+// worker start queued before its rows waits for the issue's admission slot: such a start holds no
+// pod (store's idleWaitingRow), so neither the release's boundary nor its teardown is cancelled for
+// it. Here the runtime fails once after it authorized the teardown (failsAfterAuthorize), so the
+// release is committed and its teardown backs off, and then the issue's slot comes, which makes the
+// start due. The outbox run while the teardown waits for its retry leaves the start queued and
+// resumes the role in no pod. The retry finishes the release and clears its mark, and the start
+// then runs once, after it: the role is resumed once, in the pod that comes back. Under the id rule
+// alone the start, older than the teardown row, ran in that outbox run, and resumed the role in the
+// pod the retry then took.
+func TestACommittedTeardownHoldsAnOlderStartUntilItFinishes(t *testing.T) {
+	t.Parallel()
+	rig := newIdleRig(t)
+	ctx := context.Background()
+	rig.rt.failsAfterAuthorize = 1
+	// The implementer's start as a re-admission writes it for an issue that holds no slot: it
+	// waits for the slot, and it keeps the phase's task the claim holds (outbox_suspended_start_test.go).
+	owed := record.SuperviseRequest{Op: "start", Tree: rig.issue.Tree, Role: claim.RoleImplementer,
+		Generation: rig.issue.Generation, Phase: rig.issue.Phase, Task: "Continue. Reason: the tree came back.",
+		ResumeTask: true, NeedsSlot: true}
+	enqueueOutbox(t, rig.pool, rig.issues, mustOutboxRow(t, rig.issue.Key, owed, time.Now().UTC()))
+	resumes := len(rig.rt.CallsOf("Resume"))
+
+	// The release marks over the start, checks the workspace and stops the implementer.
+	teardown := rig.heldTeardown(t)
+	if starts := rig.implementerStarts(t); starts != 1 {
+		t.Fatalf("the implementer's queued starts after the release's stop = %d, want the one waiting for its slot", starts)
+	}
+
+	// The teardown's first attempt, run by its lane: the runtime's read commits the release, and the
+	// runtime takes the pod and fails after it, so the row backs off.
+	teardownDueAgain(t, rig, false)
+	if err := rig.runner.RunOnce(ctx); err != nil {
+		t.Fatalf("run the teardown's first attempt: %v", err)
+	}
+	var committed bool
+	var attempts int
+	var nextAt time.Time
+	if err := rig.pool.QueryRow(ctx, `select r.committed, o.attempts, o.next_at from outbox o
+		join issue_releases r on r.issue = o.issue and r.last_row = o.id where o.id = $1`, teardown.ID).Scan(&committed, &attempts, &nextAt); err != nil {
+		t.Fatalf("read the teardown row and its mark after the first attempt: %v", err)
+	}
+	if _, taken := rig.rt.reads(); taken != 1 || !committed || attempts != 1 || !nextAt.After(rig.runner.now()) {
+		t.Fatalf("after the first attempt the runtime took %d pods, the mark is committed = %t, and the teardown has %d attempts, due at %s; want the pod taken once, the mark committed and the row backing off past %s",
+			taken, committed, attempts, nextAt, rig.runner.now())
+	}
+
+	// The issue's slot comes while the teardown backs off: the start is due, and older than the
+	// teardown row.
+	holdSlot(t, rig.pool, rig.issue.Key)
+	rig.drain(t)
+	if got := rig.machine.Claim(); !got.Released() || len(rig.rt.CallsOf("Resume")) != resumes || rig.implementerStarts(t) != 1 {
+		t.Fatalf("while the committed teardown waits for its retry the claim = %s by %s after %d resumes, with %d starts queued; want it released, resumed in no pod, and its start queued: the retry takes the pod",
+			got.State, got.SuspendedBy, len(rig.rt.CallsOf("Resume"))-resumes, rig.implementerStarts(t))
+	}
+
+	// The retry asks the runtime again; at that ask, no start of the role has resumed it.
+	var resumedAtRetry atomic.Int32
+	resumedAtRetry.Store(-1)
+	rig.rt.mu.Lock()
+	rig.rt.beforeAuthorize = func() { resumedAtRetry.Store(int32(len(rig.rt.CallsOf("Resume")))) }
+	rig.rt.mu.Unlock()
+	teardownDueAgain(t, rig, false)
+	rig.drain(t)
+	records := rig.records(t)
+	if _, _, queued := rig.teardownRow(t); queued || rig.marked(t) || len(records.Releases) != 1 ||
+		!slices.Equal(rig.rt.teardownsAsked(), []string{"ReleaseIssue", "ReleaseIssue"}) {
+		t.Fatalf("after the retry the teardown row is queued = %t, the mark stands = %t, the releases = %+v and the runtime was asked %v; want the release finished once, with the runtime asked again",
+			queued, rig.marked(t), records.Releases, rig.rt.teardownsAsked())
+	}
+	if at := resumedAtRetry.Load(); at != int32(resumes) {
+		t.Fatalf("resumes when the teardown's retry asked the runtime = %d, want %d: the start resumed nothing before the release", at, resumes)
+	}
+	if got := rig.machine.Claim(); got.Released() || len(rig.rt.CallsOf("Resume")) != resumes+1 || rig.implementerStarts(t) != 0 {
+		t.Fatalf("after the release the claim = %s by %s after %d resumes, with %d starts queued; want it resumed once, by its one start, and the start finished",
+			got.State, got.SuspendedBy, len(rig.rt.CallsOf("Resume"))-resumes, rig.implementerStarts(t))
+	}
+}

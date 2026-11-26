@@ -76,7 +76,10 @@ body: |-
   its own, as after a recorded release.
   While such a release has not finished, the issue's whole workflow waits: every start of its
   roles, and every notice, hook prompt, merge-queue removal message and merge-forward message to a
-  released role. The docs say how an operator ends it when the cluster cannot be fixed. A delivery
+  released role. That includes a start queued before the release's teardown, such as a worker
+  start whose admission slot comes while the teardown waits for its retry, which before ran in the
+  pod the teardown then took; it now starts its role once, after the release. The docs say how an
+  operator ends it when the cluster cannot be fixed. A delivery
   wake that meets a wake whose start is still queued logs at debug, not as a resume with no process
   behind it, and one whose take a pause's held wake refused in the same moment logs at info and
   names that pause, since the take reads the open resume after the refusal, under the lock it
