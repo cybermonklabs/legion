@@ -1,0 +1,105 @@
+{
+  "answers": [
+    {
+      "answer": "issue-record",
+      "addValues": {
+        "architect.failure.cause": [
+          "cyber_policy"
+        ],
+        "architect.pendingCause": [
+          "cyber_policy"
+        ],
+        "workers.*.claim.failure.cause": [
+          "cyber_policy"
+        ],
+        "workers.*.claim.pendingCause": [
+          "cyber_policy"
+        ]
+      }
+    },
+    {
+      "answer": "state",
+      "addValues": {
+        "issues.*.architect.failure.cause": [
+          "cyber_policy"
+        ],
+        "issues.*.architect.pendingCause": [
+          "cyber_policy"
+        ],
+        "issues.*.workers.*.claim.failure.cause": [
+          "cyber_policy"
+        ],
+        "issues.*.workers.*.claim.pendingCause": [
+          "cyber_policy"
+        ]
+      }
+    }
+  ],
+  "routes": [
+    {
+      "route": "POST /legion/v1/claims/turn-outcome",
+      "addFieldPaths": [
+        "code"
+      ]
+    }
+  ],
+  "answerRows": [],
+  "enumeratedRows": [
+    {
+      "answer": "state",
+      "keyPath": "issues.*.architect.failure.cause",
+      "values": [
+        "cyber_policy"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.workers.*.claim.failure.cause",
+      "values": [
+        "cyber_policy"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.architect.pendingCause",
+      "values": [
+        "cyber_policy"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.workers.*.claim.pendingCause",
+      "values": [
+        "cyber_policy"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "architect.failure.cause",
+      "values": [
+        "cyber_policy"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "workers.*.claim.failure.cause",
+      "values": [
+        "cyber_policy"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "architect.pendingCause",
+      "values": [
+        "cyber_policy"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "workers.*.claim.pendingCause",
+      "values": [
+        "cyber_policy"
+      ]
+    }
+  ]
+}

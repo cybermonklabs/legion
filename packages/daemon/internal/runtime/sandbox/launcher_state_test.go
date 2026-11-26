@@ -18,6 +18,7 @@ import (
 )
 
 func TestLauncherWithoutInitialStateIsUncertain(t *testing.T) {
+	t.Parallel()
 	launchers := testLaunchers()
 	launchers.accept(workerToken, testTree, time.Time{}, shimwire.LauncherHello{PodUID: "pod", LauncherID: "launcher"})
 	if state, connected := launchers.state(workerToken, "pod"); connected {
@@ -26,6 +27,7 @@ func TestLauncherWithoutInitialStateIsUncertain(t *testing.T) {
 }
 
 func TestLauncherExitBeforeStartResultStaysExited(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	launchers := testLaunchers()
@@ -65,6 +67,7 @@ func TestLauncherExitBeforeStartResultStaysExited(t *testing.T) {
 // No digest or record is prepared before the exact launcher session that will receive the first
 // slice exists: a caller that decided one before that session connected fails the configured row.
 func TestServeLeakCheckWithoutALauncherIsNoLeakCheckRefusal(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		setting leakguard.Setting
 		source  LeakCheckReader
@@ -101,6 +104,7 @@ func TestServeLeakCheckWithoutALauncherIsNoLeakCheckRefusal(t *testing.T) {
 // session. The replacement is connected and ready, so a start routed by token rather than by the
 // prepared session would reach it; the row fails if it receives any frame.
 func TestStartPreparedForAReplacedLauncherSessionRefuses(t *testing.T) {
+	t.Parallel()
 	launchers := testLaunchers()
 	old := launchers.accept(workerToken, testTree, time.Time{}, shimwire.LauncherHello{PodUID: "pod", LauncherID: "old"})
 	replacement := launchers.accept(workerToken, testTree, time.Time{}, shimwire.LauncherHello{PodUID: "pod", LauncherID: "replacement"})
@@ -134,6 +138,7 @@ func TestStartPreparedForAReplacedLauncherSessionRefuses(t *testing.T) {
 }
 
 func TestLauncherClosesAnOversizedUnterminatedFrame(t *testing.T) {
+	t.Parallel()
 	launchers := testLaunchers()
 	session := launchers.accept(workerToken, testTree, time.Time{}, shimwire.LauncherHello{PodUID: "pod", LauncherID: "launcher"})
 	server, peer := net.Pipe()
@@ -152,6 +157,7 @@ func TestLauncherClosesAnOversizedUnterminatedFrame(t *testing.T) {
 }
 
 func TestLauncherFromPreviousPodCannotAnswerForReplacement(t *testing.T) {
+	t.Parallel()
 	launchers := testLaunchers()
 	old := launchers.accept(workerToken, testTree, time.Time{}, shimwire.LauncherHello{PodUID: "old-pod", LauncherID: "old-launcher"})
 	old.state.Child = &shimwire.LauncherChild{Generation: 7}
@@ -172,6 +178,7 @@ func TestLauncherFromPreviousPodCannotAnswerForReplacement(t *testing.T) {
 }
 
 func TestLauncherCommandWriteHonorsItsDeadline(t *testing.T) {
+	t.Parallel()
 	launchers := testLaunchers()
 	session := launchers.accept(workerToken, testTree, time.Time{}, shimwire.LauncherHello{PodUID: "pod", LauncherID: "launcher"})
 	server, peer := net.Pipe()
@@ -205,6 +212,7 @@ func TestLauncherCommandWriteHonorsItsDeadline(t *testing.T) {
 // control is ServeLauncher with no launcher_restored case, where the first report falls to the
 // default and the state read below finds nothing connected.
 func TestAnEarlierLaunchersRestoreReportIsDroppedAndLeavesTheConnection(t *testing.T) {
+	t.Parallel()
 	logs := &bytes.Buffer{}
 	launchers := newLaunchers(testLeakCheck, nil, nil, nil, nil, nil, slog.New(slog.NewTextHandler(logs, nil)))
 	session := launchers.accept(workerToken, testTree, time.Time{}, shimwire.LauncherHello{PodUID: "pod", LauncherID: "launcher"})

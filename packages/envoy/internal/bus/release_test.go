@@ -370,11 +370,7 @@ func TestDrainSubscriptionWhileTheDrainIsInFlightLeavesNoPushBindingBehind(t *te
 	// message pending until its handler returns, and a drain ends at the pass that finds nothing
 	// pending.
 	publishReleaseProbe(t, direct, "notifications.github.test.held")
-	select {
-	case <-handling:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the handler was never handed the message that holds the drain open")
-	}
+	testwait.Receive(t, "the handler to be handed the message that holds the drain open", handling)
 
 	relay.arm("UNSUB")
 	drained, err := client.DrainSubscription(sub)
@@ -384,11 +380,7 @@ func TestDrainSubscriptionWhileTheDrainIsInFlightLeavesNoPushBindingBehind(t *te
 	if drained != sub {
 		t.Fatalf("DrainSubscription returned %p to wait on, want the drained handle (%p): the give-up took no drain, so no drain was in flight at the drop", drained, sub)
 	}
-	select {
-	case <-relay.swallowed:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the drain's UNSUB never reached the link, so the drop did not land on a drain in flight")
-	}
+	testwait.Receive(t, "the drain's UNSUB to reach the link, so the drop lands on a drain in flight", relay.swallowed)
 
 	relay.refuse.Store(true)
 	relay.drop()

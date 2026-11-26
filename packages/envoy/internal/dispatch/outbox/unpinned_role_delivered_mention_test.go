@@ -45,6 +45,7 @@ import (
 // to a session this comment mentions (resolveRoleHolders, destinations.leftToMention leaving
 // that session's own copy to the mention that delivered it).
 func TestAForwardKeyedByADeliveredMentionSkipsTheWaitForAnUnnamedMention(t *testing.T) {
+	t.Parallel()
 	const routed = "routed-to-a-session-either-unnamed-mention-may-name"
 	const first = "mentioned-first-whose-attempt-is-past-its-lease"
 	const second = "mentioned-second-whose-attempt-is-past-its-lease"
@@ -114,10 +115,7 @@ func TestAForwardKeyedByADeliveredMentionSkipsTheWaitForAnUnnamedMention(t *test
 			rows)
 	}
 
-	waitFor(t, 10*time.Second, "the comment's forward and the owner's later event at the holder",
-		func() bool { return len(recv.received()) > 1 })
-	time.Sleep(time.Second)
-	copies := recv.received()
+	copies := recv.receivedNow(t, rig.client)
 	if len(copies) != 2 {
 		t.Fatalf("%s was sent %+v, want two copies: the comment's forward under its own mention's key and the owner's later event behind it. The copy bound for the holder's own topic is left to the mention that delivered the comment (destinations.leftToMention)",
 			holder, copies)
@@ -147,6 +145,7 @@ func TestAForwardKeyedByADeliveredMentionSkipsTheWaitForAnUnnamedMention(t *test
 // pins that line, the comment's other mentions naming no session at all
 // (TestAForwardCarriesTheKeyOfALiveUnnamedMentionBesideASettledOne).
 func TestAForwardKeyedByAFailedMentionStillWaitsForAnUnnamedMention(t *testing.T) {
+	t.Parallel()
 	const routed = "routed-to-a-session-either-unnamed-mention-may-name"
 	const first = "mentioned-first-whose-attempt-is-past-its-lease"
 	const second = "mentioned-second-whose-attempt-is-past-its-lease"
@@ -195,10 +194,9 @@ func TestAForwardKeyedByAFailedMentionStillWaitsForAnUnnamedMention(t *testing.T
 	before := time.Now()
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 	after := time.Now()
-	time.Sleep(time.Second)
 
 	failedKey := contracts.AgentSendDedupeKey(holder, model.CommentMentionIdempotencyKey(commentID, holderTarget, "steer"))
-	if got := recv.received(); len(got) != 0 {
+	if got := recv.receivedNow(t, rig.client); len(got) != 0 {
 		t.Fatalf("%s was sent %v while a resend of two unnamed mentions no key stands for is owed, want nothing: the only key this forward has is %q, the key of this holder's own mention of the comment, whose send failed and may never have landed - that host may never have claimed it, so the copy stands beside the mention a resend pins here rather than being dropped. Only a mention that delivered claims its key at the host (mentionHolds.keyedByADeliveredMention, settledMention.beats)",
 			holder, keysOf(got), failedKey)
 	}

@@ -448,13 +448,13 @@ func gateStanding(gate record.TreeGate) string {
 }
 
 // gatedDocuments names every gated step's own document, in the deployment's order, as a sentence
-// lists them: "its decisions document and its Verification document".
+// lists them (listed): "its decisions document and its Verification document".
 func gatedDocuments(steps []record.DesignStep) string {
 	named := make([]string, len(steps))
 	for i, step := range steps {
 		named[i] = "its " + step.Document()
 	}
-	return joinWords(named, "and")
+	return listed(named)
 }
 
 // NarrowRootTask is a root architect's held task rewritten from what it still names of its tree's
