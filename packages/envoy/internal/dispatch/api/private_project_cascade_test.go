@@ -134,6 +134,63 @@ func TestAScopedIncludeChildrenStopsAtAPrivateChild(t *testing.T) {
 	}
 }
 
+// TestAScopedIncludeChildrenStopsAtAPrivateChildThatIsNoStep: the private child is already in the
+// group of the status the call sets (in work, as todo is), so the call moves it nowhere and it is
+// no step of the plan; its public child is not started, so a call without the leave-out would move
+// it to todo. The call still walks through the private child: a scoped status change of the own
+// issue to todo with include_children, and its dry run, move neither the private child nor the
+// public grandchild, and their answers name neither. The token that names the private project
+// moves the public grandchild and lists it, and leaves the private child as it was.
+func TestAScopedIncludeChildrenStopsAtAPrivateChildThatIsNoStep(t *testing.T) {
+	t.Parallel()
+	rig := newCascadeRig(t)
+	inWork := func(name string) (cascadeFamily, cascadeTitles) {
+		family, titles := rig.cascadeBelow(t, name)
+		for _, key := range []string{family.own, family.secret} {
+			if moved := rig.asPerson(t, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"status": "in_progress"}); moved.Code != http.StatusOK {
+				t.Fatalf("move %s to in_progress: status=%d body=%s", key, moved.Code, moved.Body.String())
+			}
+		}
+		return family, titles
+	}
+	scoped, scopedTitles := inWork("Picked up over a private child already in work")
+	named, _ := inWork("Picked up by the naming token over a private child already in work")
+	rig.makePrivate(t)
+	body := map[string]any{"status": "todo", "include_children": true}
+
+	for _, call := range []struct {
+		name    string
+		members map[string]any
+	}{{"the dry run", map[string]any{"dry_run": true}}, {"the call", nil}} {
+		answer := rig.send(t, scopedToken, http.MethodPost, "/api/v1/issues/"+scoped.own+"/status-change", withMembers(body, call.members))
+		text := answer.Body.String()
+		if answer.Code != http.StatusOK && answer.Code != http.StatusConflict {
+			t.Fatalf("%s: status=%d body=%s", call.name, answer.Code, text)
+		}
+		for _, hidden := range []string{scoped.secret, scoped.far, scopedTitles.secret, scopedTitles.far} {
+			if strings.Contains(text, hidden) {
+				t.Errorf("%s names %q, an issue the cascade leaves out: %s", call.name, hidden, text)
+			}
+		}
+	}
+	for key, want := range map[string]string{scoped.own: "todo", scoped.secret: "in_progress", scoped.far: model.IssueStatusTriage} {
+		if got := rig.cascadeStatus(t, key); got != want {
+			t.Errorf("after the scoped call %s is %s, want %s", key, got, want)
+		}
+	}
+
+	moved := rig.send(t, namingToken, http.MethodPost, "/api/v1/issues/"+named.own+"/status-change", body)
+	requireTaken(t, "the status change of the token that names the private project", moved, http.StatusOK)
+	if keys := cascadeChanged(t, moved.Body.String()); !slices.Contains(keys, named.far) {
+		t.Errorf("the naming token's answer lists %v as changed, want %s among them", keys, named.far)
+	}
+	for key, want := range map[string]string{named.own: "todo", named.secret: "in_progress", named.far: "todo"} {
+		if got := rig.cascadeStatus(t, key); got != want {
+			t.Errorf("after the naming token's call %s is %s, want %s", key, got, want)
+		}
+	}
+}
+
 // TestAScopedIncludeParentStopsAtAPrivateParent: an issue of the token's own project has a private
 // parent, which has a public parent of its own. A scoped status change of the own issue to
 // in_progress with include_parent, and its dry run, move neither parent, and their answers name
