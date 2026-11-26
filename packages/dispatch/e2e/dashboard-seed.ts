@@ -141,7 +141,7 @@ export async function mainHolds(): Promise<MainHolds> {
 
 /** A phase the daemon's list does not hold, for the row that reads "In another phase", and a
  *  claim state it does not hold, for the role that reads "in another state". */
-export const UNLISTED = "parked";
+export const UNLISTED = "unknown_state";
 
 /** A phase as the sampler stores it: the daemon's own word (`LEGION_PHASES`); `awaiting_merge`,
  *  which a daemon before its contract 86 reports and Dispatch still names
@@ -567,7 +567,10 @@ interface DecisionRead {
 
 /** The issue's decisions: the bare member's `decisions`, or the `entries` of a main where
  *  decisions are nodes, read for the fields the seed waits on. */
-async function readDecisions(key: string, holds: MainHolds): Promise<readonly DecisionRead[]> {
+export async function readDecisions(
+  key: string,
+  holds: MainHolds
+): Promise<readonly DecisionRead[]> {
   const read = await getIssueDecisions(key);
   if (!holds.decisionsAreNodes) {
     return (read.decisions ?? []).map((decision) => ({

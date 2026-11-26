@@ -45,8 +45,8 @@ export function fromDecision(decision: Decision): CardDecision {
 /** `card` with the words of each statement it shaped that the decision's read holds none for -
  *  the bare read sends none today - from the caller's one batched read of the statements' names
  *  (`statementOf`: `useStatementExcerpts`, or Dashboard's names read), which gives none until it
- *  answers for one, so the card reads no statement of its own and draws no line for it until
- *  then. */
+ *  answers for one, so the card reads no statement of its own and draws the card's word for a
+ *  statement it shaped (`DECISION_LINK_WORDS.statement`) until then. */
 export function withStatementTexts(
   card: CardDecision,
   statementOf: (reference: string) => StatementWords

@@ -32,36 +32,18 @@ export interface DashboardTabProps {
   readonly page: DashboardPage;
 }
 
-/** What a thread's own read holds of the texts its item draws. */
-function threadTexts(read: unknown): readonly string[] {
-  if (typeof read !== "object" || read === null) return [];
-  const bodies = (writes: unknown): string[] =>
-    Array.isArray(writes)
-      ? writes.flatMap((write: { body?: unknown }) =>
-          typeof write.body === "string" ? [write.body] : []
-        )
-      : [];
-  const replies = "replies" in read ? bodies(read.replies) : [];
-  if ("comment" in read) return [...bodies([read.comment]), ...replies];
-  if ("message" in read) return [...bodies([read.message]), ...replies];
-  if (
-    "ask" in read &&
-    typeof read.ask === "object" &&
-    read.ask !== null &&
-    "question" in read.ask
-  ) {
-    return typeof read.ask.question === "string" ? [read.ask.question, ...replies] : replies;
-  }
-  return replies;
-}
-
 /** What the reads of the threads drawn answer, which Dashboard waits on before it asks for the
- *  names they cite: whether any is still out, and the texts they hold. One function for every
- *  render, so `useQueries` combines the answers again only when they change. */
-function threadReads(answers: readonly { readonly data: unknown; readonly isPending: boolean }[]) {
+ *  names they cite: whether any is still out, and the texts each holds (`threadQuery`). One
+ *  function for every render, so `useQueries` combines the answers again only when they change. */
+function threadReads(
+  answers: readonly {
+    readonly data: readonly string[] | undefined;
+    readonly isPending: boolean;
+  }[]
+) {
   return {
     pending: answers.some((answer) => answer.isPending),
-    texts: answers.flatMap((answer) => threadTexts(answer.data)),
+    texts: answers.flatMap((answer) => answer.data ?? []),
   };
 }
 

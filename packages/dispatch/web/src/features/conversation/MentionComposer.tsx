@@ -195,13 +195,14 @@ function askOptionRows(ask: SentRequest["ask"] | undefined): AskOptionDraft[] {
 
 /**
  * The colours of a reply's quote, of the body's box with its label and the line under it, and of
- * the line under Send, by the palette the host hands (`MentionComposerProps.palette`), as
+ * the composer's muted lines (`foot`: the line under Send, the paste line, the status lines,
+ * Cancel reply's ×), by the palette the host hands (`MentionComposerProps.palette`), as
  * `issue-page/DecisionActions.tsx` keeps its own: `main`'s are the classes every surface of
  * today's pages draws, and on the new issue page the quote is the page's (`ReplyQuote`'s
  * `palette`), the box the page's field, which keeps `main`'s focus rule, its label the muted
- * grey, and the lines under the box and under Send the quiet grey, as the ask body's answer box
- * draws them (`AskBody`'s `ON_PAGE`). Send is the page's inside `NoTooltips` whatever the host
- * hands (`RefusableButton`'s `PAGE_LOOKS`).
+ * grey, and the line under the box and the muted lines the quiet grey, as the ask body's answer
+ * box draws them (`AskBody`'s `ON_PAGE`). Send is the page's inside `NoTooltips` whatever the
+ * host hands (`RefusableButton`'s `PAGE_LOOKS`).
  */
 const TONES = {
   main: { field: undefined, foot: textMutedOnSurfaceMuted, hint: undefined, label: undefined },
@@ -294,8 +295,8 @@ interface MentionComposerProps {
    *  message - and what the composer holds stays with the address it was made for. */
   readonly ownMoves?: number;
   /** The palette the reply's quote, the body's box with its label and the line under it, and the
-   *  line under Send draw in (`TONES`): `main`'s, unless the host hands the new issue page's, as
-   *  Dashboard's thread items there do (dispatch://INFRA-3940 R13). */
+   *  composer's muted lines draw in (`TONES`): `main`'s, unless the host hands the new issue
+   *  page's, as Dashboard's thread items there do (dispatch://INFRA-3940 R13). */
   readonly palette?: keyof typeof TONES;
   readonly replyTo?: ReplyTarget | null;
   /** The post `replyTo` quotes, as the host's read of it stands now (`ReplyParent`), whose
@@ -969,6 +970,12 @@ export function MentionComposer({
   );
 
   const tones = TONES[palette];
+  // The theme's muted token, shadowed in this function by the palette's, so `main`'s lines that
+  // name it stay as they are (spec R26): on `main`'s palette it is the token itself (`TONES.main`
+  // reads the import, at module scope), and on the new page's every muted line of the composer -
+  // the line under Send, the paste line, the status lines, Cancel reply's × - is the page's quiet
+  // grey. Nothing in this function names it above this line.
+  const textMutedOnSurfaceMuted = tones.foot;
   const composerControls = (
     <fieldset
       className={
@@ -1334,7 +1341,7 @@ export function MentionComposer({
       </RefusableButton>
       {/* While Send refuses, the line under it says why - on screen, for a reader with no
           pointer to hover it - and once the draft can go, how to send it. */}
-      <p className={`text-xs ${tones.foot}`} id={footId}>
+      <p className={`text-xs ${textMutedOnSurfaceMuted}`} id={footId}>
         {submitReason ?? "Ctrl/Cmd+Enter to send · Enter for a new line"}
       </p>
     </fieldset>

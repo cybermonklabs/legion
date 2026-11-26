@@ -21,8 +21,8 @@ import type { CheckState, StatementState } from "./page-words";
  *
  * They hold no React, make no request, and import nothing of the tree's model - `tree-drafts.ts`,
  * `issue-tree.ts`, `useIssueTree.ts` - not even its types, so Dashboard reads the one rule the
- * tree reads without carrying the tree in its chunk (R14), and a row's text, which reads
- * `titleReading`, reaches no module of the model (`RowText.closure.test.ts`).
+ * tree reads without carrying the tree in its chunk (R14), and a part that reads one of them, as
+ * `RowText.tsx` reads `titleReading`, carries none of the tree's model in its imports.
  */
 
 /** The id of the row of one block of one document, which is the block's own address inside the
@@ -286,10 +286,9 @@ export function stateAtCommit(standing: CheckStanding, commit: string | undefine
  * one reads Failed there, and Unknown otherwise, which is where it carries no check, where a
  * check's result was recorded at another commit than the one the page names, where a check's
  * evidence was recorded against another commit than the one the server names for it, and where a
- * check stands in any of the other five states. Each check's `atCommit` is undefined where the
- * results read has not answered for it. Dashboard's Met tile, the Verification view's body and
- * `statementStandings`, the Spec view's reading of the same statements, all read it, so one
- * statement reads one state in each.
+ * check stands in any of the other five states. Dashboard's Met tile, the Verification view's
+ * body and `statementStandings`, the Spec view's reading of the same statements, all read it, so
+ * one statement reads one state in each.
  */
 export function statementState(
   checks: readonly { readonly atCommit?: CheckState }[]

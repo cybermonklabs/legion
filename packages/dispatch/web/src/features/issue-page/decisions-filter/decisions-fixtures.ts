@@ -7,6 +7,7 @@ import type {
   IssueDecisions,
   IssueDetails,
 } from "../../../api/types";
+import { DECISIONS_SLUG, decision, decisionRef, KEY } from "../../decision-card/decision-fixture";
 import type { TreeNode } from "../issue-tree";
 import type { NodeType } from "../page-words";
 import type { DecisionsAsk } from "./decisions-parts";
@@ -20,11 +21,14 @@ import type { DecisionsAsk } from "./decisions-parts";
  * a decision a block of `decisions.md`, and an ask its own id, so a tie resolves through the
  * page's own rule for addressing a node (`tree-drafts.ts`'s `treeContext`) and not through a
  * rule written here.
+ *
+ * The issue's key, the decisions document's slug, a decision's address and one decision of the
+ * decisions read are the decision card's own fixture (`decision-card/decision-fixture.ts`),
+ * which its tests read without importing this file (R22), exported again here.
  */
 
-export const KEY = "CORE-1";
+export { DECISIONS_SLUG, decision, decisionRef, KEY };
 export const SPEC_SLUG = "spec";
-export const DECISIONS_SLUG = "decisions-md";
 
 /** Who is reading, whose own words read as theirs (R34). */
 export const READER = "alice";
@@ -132,10 +136,6 @@ export function issueTree(children: readonly TreeNode[]): TreeNode {
 /** The address of one block of the issue's spec. */
 export const specRef = (block: string) => `dispatch://${KEY}/spec#b-${block}`;
 
-/** The address of one decision, which is one block of the issue's decisions document. */
-export const decisionRef = (block: string) =>
-  `dispatch://${KEY}/artifact/${DECISIONS_SLUG}#b-${block}`;
-
 /** One statement of the spec, by its block id. */
 export function statement(block: string, partial: Partial<TreeNode> = {}): TreeNode {
   return node({
@@ -221,28 +221,6 @@ export function shaped(ref: string, stale = false): DecisionLink {
       parent_version: null,
       ref,
     },
-  };
-}
-
-/** One decision of the decisions document, as the decisions read answers it: an agent's, which
- *  waits for review unless the case says otherwise. */
-export function decision(block: string, partial: Partial<Decision> = {}): Decision {
-  return {
-    asks: [],
-    block_id: block,
-    changed_at: "2026-11-10T12:00:00Z",
-    changed_version: 1,
-    heading: `The decision ${block}`,
-    kept: null,
-    kind: "agent",
-    links: [],
-    ref: decisionRef(block),
-    replaced: false,
-    text: `The decision ${block}.`,
-    text_sha256: `sha256:${block}`,
-    unsure: false,
-    waiting_review: true,
-    ...partial,
   };
 }
 

@@ -3,6 +3,7 @@ import { type FormEvent, type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Actor, DisplayTree } from "../../api/types";
+import { PAGE_LOOKS } from "../../components/RefusableButton";
 import { Dot, KindBullet } from "../../components/RowMarks";
 import type { PageWords } from "../../components/tooltips";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -14,7 +15,6 @@ import {
   linkText,
   pageFailedText,
   pageHairBorder,
-  pageInkFill,
   pageInkText,
   pageKindBullet,
   pageKindTag,
@@ -52,9 +52,11 @@ import {
  * as the page's own row draws a decision's margin (`NodeRow.tsx`); the level's reason the muted
  * grey; the quoted words the page's words inside its rule, as the page's own Change quotes them;
  * a refusal the failed red. Keep, Change and Cancel are the page's compact secondary and Send
- * change its primary, each refused as the page refuses (`components/RefusableButton.tsx`'s
- * `PAGE_LOOKS`), and the Change box is the page's field, which keeps `main`'s focus rule. Each
- * pair is one `theme/classes.ts` registers for the page.
+ * change its primary, each refused as the page refuses: they are `RefusableButton`'s own page
+ * looks (`components/RefusableButton.tsx`'s `PAGE_LOOKS`), the one source of both, so the card's
+ * buttons draw as every page button of those looks does. The Change box is the page's field,
+ * which keeps `main`'s focus rule. Each other pair is one `theme/classes.ts` registers for the
+ * page.
  */
 const TONES = {
   main: {
@@ -73,7 +75,7 @@ const TONES = {
   page: {
     failed: pageFailedText,
     field: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
-    filled: `rounded-lg px-3 py-2 text-sm font-semibold ${pageInkFill} refused:cursor-not-allowed refused:bg-page-hair refused:text-page-muted`,
+    filled: PAGE_LOOKS.primary,
     hint: `text-xs ${pageQuietText}`,
     ink: pageInkText,
     level: pageQuietText,
@@ -81,7 +83,7 @@ const TONES = {
     meta: pageQuietText,
     quote: `${pageLineBorder} ${pageWordsText}`,
     reason: pageMutedText,
-    secondary: `min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${pageLineBorder} ${pagePaperBg} ${pageMutedText} refused:text-page-quiet`,
+    secondary: PAGE_LOOKS["secondary-compact"],
   },
 } as const;
 
@@ -103,7 +105,8 @@ export interface CardLink {
    *  read of the decision holds none (`withStatementTexts`). */
   readonly ref?: string;
   /** The statement's words, whose first line is the link: the read of the decision's, else the
-   *  caller's batched read of the statements' names; none, or `""`, draws no line. */
+   *  caller's batched read of the statements' names; none, or `""`, draws the card's word for a
+   *  statement it shaped (`DECISION_LINK_WORDS.statement`) as the link. */
   readonly text?: string;
   /** The server's reading of `text`, where the read that gave the words sent one. */
   readonly text_tree?: DisplayTree;
@@ -243,12 +246,15 @@ function levelWord(decision: CardDecision, authorLine: boolean): string | undefi
 /** One statement the decision shaped, as a link by its first line, with "Changed since" and
  *  "out of date" where they apply. Its words are the link's own (`CardLink.text`), which the
  *  caller filled from one batched read of the statements' names where the decision's read holds
- *  none, which is how the server answers a tie today (`withStatementTexts`); a statement with no
- *  words is drawn as nothing, and never by its block's id. A link holds no markup, so the line
- *  is the first line of the statement's text as plain words, from the reading the server made of
- *  it where the read sent one (`usePlainHeadline`): the reading list's
- *  `decision-statement-line`. The line is the statement's own words, which a host that hands
- *  `marks` gets inside the mark of a value. */
+ *  none, which is how the server answers a tie today (`withStatementTexts`). A statement with no
+ *  words - that read has not answered, failed, or names the statement gone - is still drawn, as
+ *  `main`'s tab drew every link with its "out of date": as a link to the same place by the card's
+ *  word for a statement it shaped (`DECISION_LINK_WORDS.statement`), and never by its block's id.
+ *  A link holds no markup, so the line is the first line of the statement's text as plain words,
+ *  from the reading the server made of it where the read sent one (`usePlainHeadline`): the
+ *  reading list's `decision-statement-line`. The line is the statement's own words, which a host
+ *  that hands `marks` gets inside the mark of a value; the card's word in their place is the
+ *  card's own, inside the mark of the card's words. */
 function StatementLink({
   link,
   marks,
@@ -269,12 +275,15 @@ function StatementLink({
   // `decision-statement-line`.
   const asWritten = (link.text ?? "").trim().split("\n", 1)[0]?.replace(/\s+/gu, " ").trim() ?? "";
   const line = text?.text ?? asWritten;
-  if (line === "") return null;
   return (
     <li>
       {reads}
-      <Link className={tones.link} to={to} {...marks?.authorText}>
-        {line}
+      <Link
+        className={tones.link}
+        to={to}
+        {...(line === "" ? marks?.pageChrome : marks?.authorText)}
+      >
+        {line === "" ? DECISION_LINK_WORDS.statement : line}
       </Link>
       {link.changed_at != null && compareTimestamps(link.changed_at, link.created_at) > 0 ? (
         <span className={`ml-2 text-xs ${tones.meta}`} {...marks?.pageChrome}>
@@ -359,14 +368,28 @@ export function DecisionCard({
         <Dot />
       </span>
     );
+  // The first line: the heading, and at its right end the kind, the author and the time, which
+  // take up to three quarters of the row. In a card narrower than 32rem - today's comments
+  // margin at its default 384 px, a phone - the heading takes the whole line and that end stands
+  // under it, in the same order from the left, each part moving to a line of its own before it
+  // gives up width: the rule of the ask body's first line (`firstLineEnd` in
+  // `ask-body/AskBody.tsx`). The rule reads the card's own box (`@container/decision-card` on its
+  // root), never the window's: beside the end of the line, the margin left the heading about 120
+  // px, too few for a long word such as "internationalization". At 32rem and wider the line is
+  // as it was.
+  // The root is drawn as a block as wide as the box each caller gives the card, so the
+  // inline-size containment a container takes - its own content no longer widens it - takes no
+  // width from the card.
   return (
     // The bullet hangs left of the heading, and everything under it stands at the heading's left
     // edge: an 18 px column, its 7 px dot centred on the first line.
-    <div className="flex gap-x-2" data-decision-card="">
+    <div className="@container/decision-card flex gap-x-2" data-decision-card="">
       <KindBullet colour={pageKindBullet.decision} mark="data-decision-bullet" />
       <div className="min-w-0 flex-1 space-y-2">
-        <div className="flex items-start justify-end gap-x-3">
-          <h3 className={`min-w-0 flex-1 text-[15px] leading-6 font-medium ${tones.ink}`}>
+        <div className="flex items-start justify-end gap-x-3 @max-[32rem]/decision-card:flex-wrap @max-[32rem]/decision-card:justify-start">
+          <h3
+            className={`min-w-0 flex-1 text-[15px] leading-6 font-medium @max-[32rem]/decision-card:basis-full ${tones.ink}`}
+          >
             {paths.decision === undefined ? (
               heading.node
             ) : (
@@ -377,7 +400,7 @@ export function DecisionCard({
             )}
           </h3>
           <p
-            className={`flex min-w-0 max-w-[75%] shrink-0 items-center justify-end gap-x-1.5 text-xs leading-6 whitespace-nowrap ${tones.meta}`}
+            className={`flex min-w-0 max-w-[75%] shrink-0 items-center justify-end gap-x-1.5 text-xs leading-6 whitespace-nowrap @max-[32rem]/decision-card:max-w-full @max-[32rem]/decision-card:basis-full @max-[32rem]/decision-card:flex-wrap @max-[32rem]/decision-card:justify-start ${tones.meta}`}
           >
             <span
               className={`shrink-0 font-semibold ${pageKindTag.decision}`}
@@ -388,7 +411,12 @@ export function DecisionCard({
             {author === undefined ? null : (
               <>
                 {dot}
-                <span className="min-w-0 truncate" {...authorMark}>
+                {/* In a narrow card the author's name wraps onto a second line before it is
+                    cut, as the ask body's asker does (`askerName` in `ask-body/AskBody.tsx`). */}
+                <span
+                  className="min-w-0 truncate @max-[32rem]/decision-card:line-clamp-2 @max-[32rem]/decision-card:whitespace-normal @max-[32rem]/decision-card:[overflow-wrap:anywhere]"
+                  {...authorMark}
+                >
                   {author}
                 </span>
               </>

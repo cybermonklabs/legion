@@ -14,7 +14,9 @@ import { DECISION_KIND_WORDS } from "../web/src/features/decision-card/decision-
 import {
   createAsk,
   createIssue,
+  createIssueArtifact,
   createProject,
+  editArtifact,
   getAsk,
   getInbox,
   getIssueDecisions,
@@ -28,6 +30,7 @@ import {
   type MainHolds,
   mainHolds,
   READER,
+  readDecisions,
   seedAskToday,
 } from "./dashboard-seed";
 import { literal } from "./dashboard-support";
@@ -44,6 +47,7 @@ import {
 } from "./inbox-pane";
 import { inboxAt } from "./inbox-pane-scroll";
 import { replyRowId } from "./inbox-threads";
+import { specBlockRef } from "./issue-layout-seed-text";
 import { viewportAt } from "./issue-page";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
@@ -402,24 +406,38 @@ test("the answer box stands in place on every surface", async ({ page }) => {
   }
 });
 
-/** The words of `words` that the page breaks over two lines: each word's own text rectangles,
- *  read where it stands, sit on more than one line. A word that fits its line is one rectangle. */
-async function brokenWords(words: Locator): Promise<string[]> {
+/** The words of `words` that the page draws wrong, each read by its own text rectangles where it
+ *  stands. `broken`: a word the page breaks over two lines, whose rectangles sit on more than one
+ *  line; a word that fits its line is one rectangle. `overrun`: a word that runs past the box of
+ *  `words` itself on the left or the right, a word longer than the room its line leaves, which the
+ *  page neither breaks nor wraps, so it stands over whatever is drawn beside it. */
+async function wordFaults(words: Locator): Promise<{ broken: string[]; overrun: string[] }> {
   return words.evaluate((element) => {
+    const box = element.getBoundingClientRect();
     const broken: string[] = [];
+    const overrun: string[] = [];
     const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
       for (const match of (node.textContent ?? "").matchAll(/\S+/g)) {
         const range = document.createRange();
         range.setStart(node, match.index);
         range.setEnd(node, match.index + match[0].length);
-        const lines = new Set([...range.getClientRects()].map((rect) => Math.round(rect.top)));
-        if (lines.size > 1) broken.push(match[0]);
+        const rects = [...range.getClientRects()];
+        if (new Set(rects.map((rect) => Math.round(rect.top))).size > 1) broken.push(match[0]);
+        if (rects.some((rect) => rect.left < box.left - 1 || rect.right > box.right + 1)) {
+          overrun.push(match[0]);
+        }
       }
     }
-    return broken;
+    return { broken, overrun };
   });
 }
+
+/** The agent both whole-words rows write as. */
+const WHOLE_WORDS_AGENT = {
+  actor: { id: "whole-words-tester", kind: "session", origin: { session_title: "Tester" } },
+  as: "agent",
+} as const;
 
 // The comments margin is a column about 384 px wide at a desktop width, where the first line's
 // end (the kind, an agent's name control and the time) stands beside the words. The words must
@@ -438,10 +456,7 @@ test("in today's comments margin an agent's ask keeps each word of its question 
   const asked = await createAsk(
     issue.key,
     { anchor: { artifact: "spec", quote: "reseed" }, question },
-    {
-      actor: { id: "whole-words-tester", kind: "session", origin: { session_title: "Tester" } },
-      as: "agent",
-    }
+    WHOLE_WORDS_AGENT
   );
   await wide(page);
   await page.goto(`/issues/${issue.key}/spec`);
@@ -449,8 +464,87 @@ test("in today's comments margin an agent's ask keeps each word of its question 
   const words = body.getByText(question, { exact: true }).first();
   await expect(words).toBeVisible();
   expect(
-    await brokenWords(words),
+    (await wordFaults(words)).broken,
     "the margin breaks a word of the question over two lines"
+  ).toEqual([]);
+});
+
+/** Whether the issue's decisions read holds the agent's decision `heading` with its tie indexed,
+ *  as the seed reads and waits for its own (`readDecisions` and `awaitDecisions` in
+ *  `dashboard-seed.ts`): on a bare main the bare member waiting for review with a link, and where
+ *  decisions are nodes the entry of the `decision` block `block`. */
+async function decisionWritten(key: string, heading: string, block: string): Promise<boolean> {
+  const main = holds;
+  if (main === undefined) throw new Error("The server probe did not run");
+  return (await readDecisions(key, main)).some((decision) =>
+    main.decisionsAreNodes
+      ? decision.id === block
+      : decision.heading === heading && decision.waiting
+  );
+}
+
+// The same margin draws an agent's decision by the decision card, whose first line's end (the
+// kind and the time) stood beside its heading and left the heading some 120 px: too few for a
+// word such as "internationalization", which ran past the heading's line under the kind. The
+// heading must take the whole line there and keep each word whole, neither broken over two
+// lines nor run past its line's end.
+test("in today's comments margin an agent's decision keeps each word of its heading whole", async ({
+  page,
+}) => {
+  test.skip(inventoryMode, "The inventory run reads the legacy layout as well");
+  if (holds === undefined) throw new Error("The server probe did not run");
+  const heading = "Keep the internationalization troubleshooting section in the runbook";
+  const why = "Chosen so a reader finds each fix where they look for it.";
+  await createProject({ key: "WHOLE", name: "Whole words" });
+  const issue = await createIssue({
+    project: "WHOLE",
+    spec: ":::requirement{#r1}\nThe runbook keeps its troubleshooting section.\n:::\n",
+    title: "Whole words",
+  });
+  const shaped = specBlockRef(issue.key, "r1");
+  // The decision as the seed writes its own on each main R27 names (`writeDecisions` in
+  // `dashboard-seed.ts`): a `decision` block of the spec that shapes r1, where the server refuses
+  // a new `decisions.md` with `409 DECISIONS_ARE_NODES`, and else a section of a `decisions.md`
+  // whose reference to r1 ties it.
+  if (holds.decisionsAreNodes) {
+    await editArtifact(
+      issue.primary_artifact_id ?? "",
+      {
+        ops: [
+          {
+            after: "end",
+            markdown: `:::decision{#d-whole shaped="${shaped}"}\n### ${heading}\n\n${why}\n:::`,
+            op: "insert",
+          },
+        ],
+      },
+      WHOLE_WORDS_AGENT
+    );
+  } else {
+    await createIssueArtifact(
+      issue.key,
+      { content: `## ${heading}\n\n${why} Shapes ${shaped}.\n`, name: "decisions.md" },
+      WHOLE_WORDS_AGENT
+    );
+  }
+  await expect
+    .poll(() => decisionWritten(issue.key, heading, "d-whole"), {
+      message: "the decisions read never held the seeded decision with its tie",
+    })
+    .toBe(true);
+  await wide(page);
+  await page.goto(`/issues/${issue.key}/spec`);
+  const card = margin(page).locator(CARD).filter({ hasText: heading }).first();
+  const words = card.getByRole("heading", { exact: true, name: heading });
+  await expect(words).toBeVisible();
+  const faults = await wordFaults(words);
+  expect(
+    faults.broken,
+    "the margin breaks a word of the decision's heading over two lines"
+  ).toEqual([]);
+  expect(
+    faults.overrun,
+    "a word of the decision's heading runs past its line, under the kind and the time beside it"
   ).toEqual([]);
 });
 
@@ -904,8 +998,8 @@ test("today's Decisions tab and Spec margin read every statement's first line in
       await wide(page);
       const traffic = watchApiRequests(page);
       await page.goto(`/issues/${data.key}/${where}`);
-      // A card draws a statement by its first line once the batch has answered for it, and
-      // draws nothing for it before, so each line drawn here is the batch's.
+      // A card draws a statement by its first line once the batch has answered for it, and by
+      // the card's word for a statement it shaped before, so each line drawn here is the batch's.
       for (const entry of data.decisionCases) {
         if (where === "spec" && entry.case === "replaced") continue;
         const statements = decisionRoots(page, entry, where === "spec")

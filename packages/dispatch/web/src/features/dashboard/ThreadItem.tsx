@@ -5,8 +5,11 @@ import { Link } from "react-router-dom";
 import { askThreadQuery, myRepliesKey } from "../../api/queries";
 import type {
   Actor,
+  AskRead,
+  CommentRead,
   CommentWithTrees,
   DisplayTree,
+  MessageRead,
   MessageWithTrees,
   MyReplyRow,
 } from "../../api/types";
@@ -41,16 +44,32 @@ import { DashboardAskBody } from "./DashboardAskBody";
  * and the item leaves.
  */
 
-/** The read of a thread's own route: the one this item draws from, which Dashboard waits on
- *  before it asks for the names of what the thread cites. */
+/** The texts a thread's own read holds of what its item draws, which name what the thread cites:
+ *  the root's body - an ask's question - and each reply's body. */
+function threadTexts(
+  root: string,
+  replies: readonly { readonly body: string }[] | null | undefined
+): readonly string[] {
+  return [root, ...(replies ?? []).map((reply) => reply.body)];
+}
+
+const askTexts = (read: AskRead) => threadTexts(read.ask.question, read.replies);
+const commentTexts = (read: CommentRead) => threadTexts(read.comment.body, read.replies);
+const messageTexts = (read: MessageRead) => threadTexts(read.message.body, read.replies);
+
+/** The read of a thread's own route, the one this item draws from, answering its texts
+ *  (`threadTexts`) from that kind's own read, by the row's kind: Dashboard waits on it before it
+ *  asks for the names those texts cite. Each `select` is one function for every render, so a read
+ *  is selected again only when it changes, and a read that changes shape fails to type-check
+ *  rather than answering no texts. */
 export function threadQuery(issueKey: string, row: Pick<MyReplyRow, "kind" | "thread_id">) {
   switch (row.kind) {
     case "ask":
-      return askThreadQuery(row.thread_id);
+      return { ...askThreadQuery(row.thread_id), select: askTexts };
     case "message":
-      return { ...messageQuery(issueKey, row.thread_id), ...EVENT_FRESH };
+      return { ...messageQuery(issueKey, row.thread_id), ...EVENT_FRESH, select: messageTexts };
     default:
-      return { ...commentQuery(row.thread_id), ...EVENT_FRESH };
+      return { ...commentQuery(row.thread_id), ...EVENT_FRESH, select: commentTexts };
   }
 }
 

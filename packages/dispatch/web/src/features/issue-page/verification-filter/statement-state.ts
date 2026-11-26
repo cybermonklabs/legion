@@ -58,13 +58,13 @@ export interface CheckReading {
   /** Whether the result its state stands on stands for something at the commit the server names
    *  for the check: at the basis the check compares with (`commit_stands` is `at_basis`) and
    *  recorded against the check's words now, as the server's `standingCommit` reads it. It is
-   *  `statement-rules.ts`'s `standsAtBasis`, which `checkStanding` reads too, so this mark and
-   *  the check's state never disagree. */
+   *  `standsAtBasis`, which `checkStanding` reads too, so this mark and the check's state never
+   *  disagree. */
   readonly atBasis: boolean;
   /** How the check stands at the one commit the page names (`stateAtCommit`), which its
-   *  statement's state reads (R6, `statementState`), or `undefined` where `state` is. The row
-   *  draws `state`, the check's own (decision 152), so a pass at its own basis older than the
-   *  commit the page names reads Passed on its row and Out of date here. */
+   *  statement's state reads (R6), or `undefined` where `state` is. The row draws `state`, the
+   *  check's own (decision 152), so a pass at its own basis older than the commit the page names
+   *  reads Passed on its row and Out of date here. */
   readonly atCommit?: CheckState;
   /** Every other result of the check, newest first, which the body folds into one line with
    *  their count under the latest (a check with 431 results drew a page 149,936 px tall). */

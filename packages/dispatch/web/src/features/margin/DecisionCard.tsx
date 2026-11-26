@@ -3,6 +3,7 @@ import { type ReactNode, useCallback, useMemo } from "react";
 
 import { issueQuery } from "../../api/queries";
 import type { DisplayTree } from "../../api/types";
+import { QueryError } from "../../components/QueryError";
 import {
   card,
   decisionUnsureBorder,
@@ -189,6 +190,8 @@ const decisionKey = (item: DecisionMarginItem): string => item.id;
  * is two cards, which both read `["decisions", <key>]`, so a write from one settles both. The
  * one read the margin sends of its own is the names of the statements the cards' decisions
  * shaped, which their read holds no words for: one for the whole list (`useStatementExcerpts`).
+ * Where it fails, the list says so below its cards as the margin says of its other failed reads
+ * (`QueryError`), and each card still draws each statement as a link.
  */
 export function DecisionList({
   blockPlacements,
@@ -213,7 +216,7 @@ export function DecisionList({
     ? undefined
     : decisionsDocumentId(issue.data?.artifacts, decisionsRead.data);
   const drawn = useMemo(() => decisions.map((item) => item.decision), [decisions]);
-  const statementExcerpt = useStatementExcerpts(drawn);
+  const { failure: namesFailure, statementOf: statementExcerpt } = useStatementExcerpts(drawn);
   // A card wants its block's height in the document; one whose block has no placement yet
   // stacks below the card before it.
   const wantedTop = useCallback(
@@ -232,24 +235,37 @@ export function DecisionList({
     return null;
   }
   return (
-    <section aria-label="Decisions" className="relative" ref={region} style={{ minHeight: height }}>
-      {decisions.map((item) => (
-        <div
-          key={item.id}
-          ref={cardRef(item.id)}
-          style={{ left: 0, position: "absolute", right: 0, top: topOf(item.id) }}
-        >
-          <DecisionCard
-            decisionsDocument={decisionsDocument}
-            hovered={hoveredItemId === item.id}
-            issueKey={issueKey}
-            item={item}
-            onSelect={(id) => onSelect(id, item.blockId)}
-            selected={selectedItemId === item.id}
-            statementExcerpt={statementExcerpt}
-          />
-        </div>
-      ))}
-    </section>
+    <>
+      <section
+        aria-label="Decisions"
+        className="relative"
+        ref={region}
+        style={{ minHeight: height }}
+      >
+        {decisions.map((item) => (
+          <div
+            key={item.id}
+            ref={cardRef(item.id)}
+            style={{ left: 0, position: "absolute", right: 0, top: topOf(item.id) }}
+          >
+            <DecisionCard
+              decisionsDocument={decisionsDocument}
+              hovered={hoveredItemId === item.id}
+              issueKey={issueKey}
+              item={item}
+              onSelect={(id) => onSelect(id, item.blockId)}
+              selected={selectedItemId === item.id}
+              statementExcerpt={statementExcerpt}
+            />
+          </div>
+        ))}
+      </section>
+      {namesFailure === undefined ? null : (
+        <QueryError
+          message="Could not load the statements these decisions shaped."
+          {...namesFailure}
+        />
+      )}
+    </>
   );
 }

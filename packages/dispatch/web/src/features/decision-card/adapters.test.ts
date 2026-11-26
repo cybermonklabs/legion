@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 
 import { graphNode } from "../../__tests__/graph-fixture";
 import type { Decision } from "../../api/types";
-import { decision } from "../issue-page/decisions-filter/decisions-fixtures";
 import { fromDecision } from "./adapters";
+import { decision } from "./decision-fixture";
 
 /** The bare `decisions` member, whose asks and links the read left out (`null`), of a decision
  *  its maker was unsure of. */
