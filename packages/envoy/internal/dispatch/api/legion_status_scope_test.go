@@ -123,18 +123,7 @@ func newLegionStatusRigOn(t *testing.T, serving testServerOptions) *legionStatus
 			return rig.serve(caller.presenting(t, method, path, token, body))
 		}
 	}
-	bearer := func(token string, actor map[string]any) func(*testing.T, string, string, map[string]any) *httptest.ResponseRecorder {
-		return func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
-			named := maps.Clone(body)
-			if named == nil {
-				named = map[string]any{}
-			}
-			if _, ok := named["actor"]; !ok {
-				named["actor"] = actor
-			}
-			return rig.serve(brokerRequest(t, method, path, named, "Bearer "+token, ""))
-		}
-	}
+	bearer := rig.bearer
 	personScoped := liveNamedToken(caller.jkt)
 	personScoped.ProjectScope, personScoped.Projects = ciphertoken.ProjectScopePerson, nil
 	rig.credentials = []legionCredential{
@@ -166,6 +155,21 @@ func newLegionStatusRigOn(t *testing.T, serving testServerOptions) *legionStatus
 			send: broker("a-service-token", serviceOnlyToken(caller.jkt))},
 	}
 	return rig
+}
+
+// bearer sends a request with token as its bearer, naming actor in the body where the body names
+// no actor: a bearer that proves no session names the one it acts as.
+func (rig *legionStatusRig) bearer(token string, actor map[string]any) func(*testing.T, string, string, map[string]any) *httptest.ResponseRecorder {
+	return func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
+		named := maps.Clone(body)
+		if named == nil {
+			named = map[string]any{}
+		}
+		if _, ok := named["actor"]; !ok {
+			named["actor"] = actor
+		}
+		return rig.serve(brokerRequest(t, method, path, named, "Bearer "+token, ""))
+	}
 }
 
 // credential is the credential of the inventory named name.
