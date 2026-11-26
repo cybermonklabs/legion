@@ -1135,15 +1135,15 @@ test("the approval chip's keys press its own actions, and only while those take 
     );
 
   try {
-    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    await screen.findByRole("heading", { level: 1, name: issue.title });
     const stateActions = screen.getByTestId("issue-state-actions");
     const approve = await within(stateActions).findByRole("button", { name: "Approve v2" });
     const requestChanges = within(stateActions).getByRole("button", { name: "Request changes" });
     const chip = stateActions.querySelector<HTMLElement>("[data-approval-artifact]");
     if (chip === null) throw new Error("the header draws no approval chip");
 
-    // Off the chip neither key applies, and `a` sends no review.
-    act(() => heading.focus());
+    // Off the chip, on Edit title, neither key applies, and `a` sends no review.
+    act(() => editTitleButton().focus());
     expect(bothApply()).toEqual([false, false]);
     await user.keyboard("a");
     expect(createArtifactReview).not.toHaveBeenCalled();
@@ -1589,18 +1589,147 @@ test.each([
   }
 });
 
-/** Opens the title's editor by a click on the heading, which reads `title`, as a reader does, and
- *  answers the heading and the editor, which holds the focus. */
+/** Edit title, the button laid over the title's heading that opens its editor, as the header
+ *  draws it while the issue is open and its title is not being edited. */
+function editTitleButton(): HTMLElement {
+  return screen.getByRole("button", { name: CONTROL_LABELS.edit_title });
+}
+
+/** Opens the title's editor by a click on Edit title, laid over the heading, which reads `title`,
+ *  as a reader does, and answers the heading and the editor, which holds the focus. */
 async function openTitleEditor(
   user: UserEvent,
   title = issue.title
 ): Promise<{ editor: HTMLElement; heading: HTMLElement }> {
   const heading = await screen.findByRole("heading", { level: 1, name: title });
-  await user.click(heading);
+  await user.click(editTitleButton());
   const editor = await screen.findByRole("textbox", { name: "Issue title" });
   await waitFor(() => expect(editor).toHaveFocus());
   return { editor, heading };
 }
+
+// The heading holds the title and is no control: it takes no Tab stop. Edit title, the button laid
+// over the heading's box, is the control: Tab reaches it, it is named for what it does with the
+// title as its description, it draws no words of its own, and it opens the editor on its own
+// activation - a click, Enter or Space - and never as it takes the focus. A heading that took a
+// Tab stop and opened the editor itself was a control with no role and no name (WCAG 2.2, 4.1.2).
+test("the title's heading takes no Tab stop, and Tab reaches Edit title, a button described by the title whose activation opens the editor", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    expect(heading).not.toHaveAttribute("tabindex");
+    const status = within(screen.getByTestId("issue-state-actions")).getByRole("combobox", {
+      name: "Status",
+    });
+    // Every Tab stop from the page's start to the Status, which the header draws after the title.
+    const stops: Element[] = [];
+    for (let press = 0; press < 30 && document.activeElement !== status; press += 1) {
+      await user.tab();
+      if (document.activeElement !== null) stops.push(document.activeElement);
+    }
+    expect(status).toHaveFocus();
+    expect(stops).not.toContain(heading);
+    const edit = editTitleButton();
+    expect(stops).toContain(edit);
+    expect(edit).toHaveAccessibleName(CONTROL_LABELS.edit_title);
+    expect(edit).toHaveAccessibleDescription(issue.title);
+    expect(edit).toHaveAttribute("type", "button");
+    expect(edit.textContent).toBe("");
+    expect(heading).toHaveAccessibleName(issue.title);
+
+    const activations: Record<string, () => Promise<void>> = {
+      click: () => user.click(editTitleButton()),
+      Enter: () => user.keyboard("{Enter}"),
+      Space: () => user.keyboard(" "),
+    };
+    for (const [by, activate] of Object.entries(activations)) {
+      act(() => editTitleButton().focus());
+      expect(editTitleButton(), by).toHaveFocus();
+      expect(
+        screen.queryByRole("textbox", { name: "Issue title" }),
+        `the focus on Edit title before its ${by} opened the editor`
+      ).not.toBeInTheDocument();
+      await activate();
+      const editor = await screen.findByRole("textbox", { name: "Issue title" });
+      await waitFor(() => expect(editor, by).toHaveFocus());
+      expect(editor, by).toHaveValue(issue.title);
+      await user.keyboard("{Escape}");
+      await waitFor(() => expect(editTitleButton(), by).toHaveFocus());
+    }
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// Escape and Enter end the title's edit from the keyboard and give the focus back to Edit title,
+// the button the reader opened the editor from, so the keyboard reader is where they were: the
+// heading takes none. The header's `e` clicks Edit title, from the page's body and from the button
+// once the focus is back on it. Escape keeps the issue's title, and Enter sends what was typed.
+test("Escape and Enter each end the title's edit with the focus back on Edit title, from which e opens it again", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, title: "Review the plan" });
+  const view = renderHeader();
+  const editor = () => screen.getByRole("textbox", { name: "Issue title" });
+
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    expect(document.activeElement).toBe(document.body);
+    await user.keyboard("e");
+    await waitFor(() => expect(editor()).toHaveFocus());
+    expect(editor()).toHaveValue(issue.title);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(editTitleButton()).toHaveFocus());
+    expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
+    expect(heading).toHaveTextContent(issue.title);
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    await user.keyboard("e");
+    await waitFor(() => expect(editor()).toHaveFocus());
+    expect(editor()).toHaveValue(issue.title);
+    await user.clear(editor());
+    await user.keyboard("Review the plan");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(editTitleButton()).toHaveFocus());
+    expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// A closed issue's title edits nothing: it is the heading alone, with no Edit title, no Tab stop
+// and nothing a press on it opens, and the header's `e` is not offered.
+test("a closed issue's title is its heading alone, with no Edit title", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader({ ...issue, closed_at: "2026-09-12T10:00:00Z", status: "done" });
+  const view = renderHeader();
+
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    expect(heading).not.toHaveAttribute("tabindex");
+    expect(
+      screen.queryByRole("button", { name: CONTROL_LABELS.edit_title })
+    ).not.toBeInTheDocument();
+    await user.click(heading);
+    expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
+    expect(
+      appKeymap.describe().find((key) => key.scope === "issue" && key.id === "title")?.enabled
+    ).toBe(false);
+    await user.keyboard("e");
+    expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
 
 // A press of the primary button that the browser turns into a drag, as when the reader drags the
 // words they selected in the editor, sends no mouseup: Chromium sends dragstart, pointercancel and
@@ -1625,7 +1754,7 @@ test("a press a drag takes leaves the title clamped once Enter ends the edit", a
     fireEvent.dragEnd(editor);
     expect(editor).toHaveFocus();
     await user.keyboard("{Enter}");
-    await waitFor(() => expect(heading).toHaveFocus());
+    await waitFor(() => expect(editTitleButton()).toHaveFocus());
     expect(heading.className).toContain("line-clamp-2");
   } finally {
     view.unmount();
@@ -1690,7 +1819,7 @@ test("a right press whose context menu takes its release leaves the title clampe
     fireEvent.contextMenu(document.body, { button: 2 });
     expect(editor).toHaveFocus();
     await user.keyboard("{Enter}");
-    await waitFor(() => expect(heading).toHaveFocus());
+    await waitFor(() => expect(editTitleButton()).toHaveFocus());
     expect(heading.className).toContain("line-clamp-2");
   } finally {
     view.unmount();
@@ -2054,7 +2183,7 @@ test("a draft a switch queued behind a title's write that Dispatch then refuses 
     await user.keyboard("{Enter}");
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
-    await waitFor(() => expect(heading).toHaveFocus());
+    await waitFor(() => expect(editTitleButton()).toHaveFocus());
 
     const { editor } = await openTitleEditor(user, "Review the plan");
     await user.clear(editor);
@@ -2103,10 +2232,10 @@ test("a draft a switch queued that went as the write ahead of it landed, and tha
   const view = renderHeader("/issues/CORE-1", queryClient);
 
   try {
-    const { heading } = await editTitle(user, "Review the plan");
+    await editTitle(user, "Review the plan");
     await user.keyboard("{Enter}");
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(heading).toHaveFocus());
+    await waitFor(() => expect(editTitleButton()).toHaveFocus());
 
     const { editor } = await openTitleEditor(user, "Review the plan");
     await user.clear(editor);
@@ -2157,11 +2286,11 @@ test("a draft a switch queued behind a title's write that Dispatch then refuses 
   const view = renderHeader("/issues/CORE-1", queryClient);
 
   try {
-    const { heading } = await editTitle(user, "Review the plan");
+    await editTitle(user, "Review the plan");
     await user.keyboard("{Enter}");
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
-    await waitFor(() => expect(heading).toHaveFocus());
+    await waitFor(() => expect(editTitleButton()).toHaveFocus());
 
     const { editor } = await openTitleEditor(user, "Review the plan");
     await user.clear(editor);
@@ -2262,7 +2391,7 @@ test("an Escape after the reader typed more while a switch's write of the title 
     await user.keyboard(" today");
     expect(editor).toHaveValue("Review the plan today");
     await user.keyboard("{Escape}");
-    await waitFor(() => expect(heading).toHaveFocus());
+    await waitFor(() => expect(editTitleButton()).toHaveFocus());
     expect(heading).toHaveTextContent(/^Review the plan$/);
 
     await act(async () => {
@@ -2306,7 +2435,7 @@ test("an Escape after a switch's write landed, another write changed the title a
     await user.keyboard(" today");
     expect(editor).toHaveValue("Plan the review today");
     await user.keyboard("{Escape}");
-    await waitFor(() => expect(heading).toHaveFocus());
+    await waitFor(() => expect(editTitleButton()).toHaveFocus());
     expect(heading).toHaveTextContent(/^Plan the review$/);
 
     await openTitleEditor(user, "Plan the review");
@@ -2369,14 +2498,14 @@ test("a title typed back to the issue's title while a write of another is out st
   const view = renderHeader("/issues/CORE-1", queryClient);
 
   try {
-    const { heading } = await editTitle(user, "Review the plan");
+    await editTitle(user, "Review the plan");
     await user.keyboard("{Enter}");
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
-    await waitFor(() => expect(heading).toHaveFocus());
+    await waitFor(() => expect(editTitleButton()).toHaveFocus());
 
     // The write is out. The reader opens the edit again and types the issue's title back.
-    await user.click(heading);
+    await user.click(editTitleButton());
     const reopened = await screen.findByRole("textbox", { name: "Issue title" });
     await waitFor(() => expect(reopened).toHaveFocus());
     await user.clear(reopened);
@@ -2418,11 +2547,11 @@ test("a space typed after a saved title while its write is out stays in the open
   const view = renderHeader("/issues/CORE-1", queryClient);
 
   try {
-    const { heading } = await editTitle(user, "a");
+    await editTitle(user, "a");
     await user.keyboard("{Enter}");
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "a" }, keyedAttempt);
-    await waitFor(() => expect(heading).toHaveFocus());
+    await waitFor(() => expect(editTitleButton()).toHaveFocus());
 
     // The write is out. The reader opens the edit again and types a space after the title.
     const { editor } = await openTitleEditor(user, "a");
@@ -2467,7 +2596,7 @@ test("a title typed back to the issue's title and ended while a write of another
     await user.keyboard("{Enter}");
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
-    await waitFor(() => expect(heading).toHaveFocus());
+    await waitFor(() => expect(editTitleButton()).toHaveFocus());
 
     // The write is out. The reader opens the edit again, types the issue's title back and ends
     // the edit.
@@ -2475,7 +2604,7 @@ test("a title typed back to the issue's title and ended while a write of another
     await user.clear(reopened);
     await user.keyboard(issue.title);
     await user.keyboard("{Enter}");
-    await waitFor(() => expect(heading).toHaveFocus());
+    await waitFor(() => expect(editTitleButton()).toHaveFocus());
     // One write of the issue's fields at a time: the title typed back waits for the first.
     expect(patchIssue).toHaveBeenCalledTimes(1);
 
@@ -2513,13 +2642,13 @@ test("an edit ended with nothing typed while a title's write is out leaves the h
     await user.keyboard("{Enter}");
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
-    await waitFor(() => expect(heading).toHaveFocus());
+    await waitFor(() => expect(editTitleButton()).toHaveFocus());
 
     // The write is out. The reader opens the edit again and ends it with nothing typed.
     const { editor: reopened } = await openTitleEditor(user, "Review the plan");
     expect(reopened).toHaveValue("Review the plan");
     await user.keyboard("{Enter}");
-    await waitFor(() => expect(heading).toHaveFocus());
+    await waitFor(() => expect(editTitleButton()).toHaveFocus());
     expect(heading).toHaveTextContent(/^Review the plan$/);
     expect(patchIssue).toHaveBeenCalledTimes(1);
 
@@ -2568,10 +2697,10 @@ test("a title an edit ended with nothing typed while its write was out stays the
     const { heading } = await editTitle(user, "Review the plan");
     await user.keyboard("{Enter}");
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(heading).toHaveFocus());
+    await waitFor(() => expect(editTitleButton()).toHaveFocus());
     await openTitleEditor(user, "Review the plan");
     await user.keyboard("{Enter}");
-    await waitFor(() => expect(heading).toHaveFocus());
+    await waitFor(() => expect(editTitleButton()).toHaveFocus());
 
     await act(async () => {
       landing.reject(new ApiError(400, { code: "INVALID_ISSUE", error: "the write was refused" }));
@@ -2666,7 +2795,7 @@ test("a status pick that lands while a title saved after it waits behind it leav
     );
     const { heading } = await editTitle(user, "Review the plan");
     await user.keyboard("{Enter}");
-    await waitFor(() => expect(heading).toHaveFocus());
+    await waitFor(() => expect(editTitleButton()).toHaveFocus());
     // The title's write waits behind the pick in the issue's line.
     expect(patchIssue).toHaveBeenCalledTimes(1);
 
@@ -2893,7 +3022,7 @@ test("a title a switch sent that Dispatch refuses because the issue was closed m
 // method's keys: the editor stays open with the reader's draft and sends nothing, where an Enter
 // would write the title mid-word. Chromium and Firefox mark such a key `isComposing`; Safari sends
 // it after the composition's end, unmarked, with keyCode 229. A plain key after it still ends the
-// edit and gives the focus back to the heading: Escape restores the title and sends nothing, and
+// edit and gives the focus back to Edit title: Escape restores the title and sends nothing, and
 // Enter writes the title, once.
 test.each([
   ["Escape", "isComposing"],
@@ -2921,7 +3050,7 @@ test.each([
     expect(patchIssue).not.toHaveBeenCalled();
 
     await user.keyboard(`{${key}}`);
-    await waitFor(() => expect(heading).toHaveFocus());
+    await waitFor(() => expect(editTitleButton()).toHaveFocus());
     expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
     if (key === "Escape") {
       expect(heading).toHaveTextContent(issue.title);
