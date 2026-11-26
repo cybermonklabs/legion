@@ -401,4 +401,4 @@ Expected: `plan mirror: OK`
 - `jq` for JSON validation and querying
 - `diff` for mirror verification
 - `grep` for content verification
-- `find` for file counting
+- `find` for file counting (a throwaway priority edit for a CI proof)
