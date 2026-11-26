@@ -850,9 +850,9 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
-  // `skill://dispatch` says "Exit 2 is a usage error" and exit 1 any other failure, so a call
-  // Dispatch never saw because an argument is missing exits 2: a script reading the code alone
-  // tells it from a write Dispatch refused (a near copy, an AskGate block), which exits 1.
+  // `skill://dispatch` says "Exit 1 is a refusal, 2 a usage error", so a call Dispatch never saw
+  // because an argument is missing exits 2: a script reading the code alone tells it from a write
+  // Dispatch refused (a near copy, an AskGate block), which exits 1.
   test("a command missing a required argument is a usage error, exit 2", async () => {
     const { code, stdout } = await run(["issue", "--project", "DSP"], omp);
     expect(code).toBe(2);
@@ -1884,9 +1884,8 @@ describe("the dispatch entry as its own process", () => {
   }
 
   // Exit 2, not 1: an argument this CLI refuses before it calls Dispatch is a usage error, and 1
-  // is any other failure, a write Dispatch refused among them (`skill://dispatch`, "Exit 2 is a
-  // usage error"). The browser row this replaced asserted 1 until cybermonklabs/legion#2781 made
-  // the codes distinct.
+  // is a write Dispatch refused (`skill://dispatch`, "Exit 1 is a refusal, 2 a usage error"). The
+  // browser row this replaced asserted 1 until cybermonklabs/legion#2781 made the codes distinct.
   //
   // The 30 s limit is a hang guard, not a budget: the row runs the entry as a child process, and
   // bun's unwritten 5,000 ms per-test default is a limit on that work rather than on a hang.
