@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // edgeLiveCheck is how long after a token ends the edge listener closes a socket it opened: its
@@ -197,7 +198,7 @@ func TestARestrictedTokensLifetimeCountsFromItsProjectCheck(t *testing.T) {
 	waiting := func() bool {
 		var n int
 		if err := f.pool.QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock'
+			where datname = current_database() and pid <> pg_backend_pid() and `+lockwaittest.Waiting+`
 			and query like '%from launcher_credentials%'`).Scan(&n); err != nil {
 			t.Fatalf("read whether the trade waits on the lock: %v", err)
 		}
