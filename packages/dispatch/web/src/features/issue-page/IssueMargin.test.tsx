@@ -8234,6 +8234,30 @@ function namedTargets(
   };
 }
 
+/** The names read's answer (`getReferenceTargets`) for `refs` in the relation cases: each target
+ *  `RELATED_NAMES` holds, with the message CORE-1 was filed from named by `body`, its text as
+ *  stored, and carrying `marks`, its author's corrections of it as the read answers them
+ *  (`reference_targets.go`). */
+function filedMarked(
+  refs: readonly string[],
+  body: string,
+  marks: {
+    readonly deleted_at?: string;
+    readonly deleted_by?: Actor;
+    readonly edited_at?: string;
+  } = {}
+): ReferenceTargets {
+  const named = namedTargets(refs, {
+    ...RELATED_NAMES,
+    [FILED_MESSAGE]: { kind: "message", name: body },
+  });
+  return {
+    targets: (named.targets ?? []).map((target) =>
+      target.ref === FILED_MESSAGE ? { ...target, ...marks } : target
+    ),
+  };
+}
+
 /** Every names read `titles` made, each by the addresses it named, sorted: in the relation cases
  *  below, which hold no blocker and nothing that waits on CORE-1, each is a read of the issue's
  *  relations. */
@@ -8541,6 +8565,7 @@ const RETRIED_RELATIONS: readonly (readonly [string, string, string])[] = [
 test.each(
   RETRIED_RELATIONS
 )("%s's Retry of the relations' failed names read keeps the focus while the read is out, and hands it to the row's first link once it answers", async (label, failedWords, first) => {
+  await warmMarkdownRenderer();
   const user = userEvent.setup();
   const { restore, titles } = stubRelations(relatedIssue, async (refs) =>
     namedTargets(refs, RELATED_NAMES)
@@ -8857,18 +8882,12 @@ const FILED_DELETES: readonly (readonly [string, Actor | undefined, string])[] =
 test.each(
   FILED_DELETES
 )("Filed from draws a message deleted %s by the deleted line, as a link to it", async (_name, by, deletedWords) => {
-  const { restore } = stubRelations(relatedIssue, async (refs) => ({
-    targets: (namedTargets(refs, RELATED_NAMES).targets ?? []).map((target) =>
-      target.ref === FILED_MESSAGE
-        ? {
-            ...target,
-            deleted_at: FILED_DELETED_AT,
-            ...(by === undefined ? {} : { deleted_by: by }),
-            name: "",
-          }
-        : target
-    ),
-  }));
+  const { restore } = stubRelations(relatedIssue, async (refs) =>
+    filedMarked(refs, "", {
+      deleted_at: FILED_DELETED_AT,
+      ...(by === undefined ? {} : { deleted_by: by }),
+    })
+  );
   const { unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
@@ -8932,9 +8951,7 @@ test("Filed from draws a first line holding a mention and an address as projecte
   const published = publishedNames(new Map([[cited, "the old notes"]]));
   // The mentioned session is one Dispatch holds no record of.
   const known = spyOn(api, "getKnownSessions").mockResolvedValue({ sessions: [] });
-  const { restore } = stubRelations(relatedIssue, async (refs) =>
-    namedTargets(refs, { ...RELATED_NAMES, [FILED_MESSAGE]: { kind: "message", name: body } })
-  );
+  const { restore } = stubRelations(relatedIssue, async (refs) => filedMarked(refs, body));
   const { unmount } = renderDetails(() => <Publisher published={published} />, OPEN_DRAWER);
 
   try {
@@ -9043,30 +9060,6 @@ test("a closed Development publishes the filed item's names no more, so a newer 
     window.localStorage.removeItem(kept);
   }
 });
-
-/** The names read's answer (`getReferenceTargets`) for `refs` in the cases below: each target
- *  `RELATED_NAMES` holds, with the message CORE-1 was filed from named by `body`, its text as
- *  stored, and carrying `marks`, its author's corrections of it as the read answers them
- *  (`reference_targets.go`). */
-function filedMarked(
-  refs: readonly string[],
-  body: string,
-  marks: {
-    readonly deleted_at?: string;
-    readonly deleted_by?: Actor;
-    readonly edited_at?: string;
-  } = {}
-): ReferenceTargets {
-  const named = namedTargets(refs, {
-    ...RELATED_NAMES,
-    [FILED_MESSAGE]: { kind: "message", name: body },
-  });
-  return {
-    targets: (named.targets ?? []).map((target) =>
-      target.ref === FILED_MESSAGE ? { ...target, ...marks } : target
-    ),
-  };
-}
 
 // R4 and R1's first-line rule (the plan's D-R4-words): Filed from draws the item's first line as
 // the outline draws a node's one line (`node-line.tsx`'s `useNodeLine`), from the post's own text:
@@ -9247,6 +9240,64 @@ test("Filed from draws a message that opens with a heading by the heading alone,
     ).toBe(`${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} Notes`);
     expect(drawn, "Filed from draws the paragraph under the heading").not.toContain("Split");
     expect(drawn, "Filed from draws the heading's marker").not.toContain("#");
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+/** Messages whose text holds no words, which the case below files CORE-1 from: how each is
+ *  named, its text as stored, whether the names read answers the server's reading of it beside
+ *  that text (`text_tree`, which a block of no words holds none of), and whether its author edited
+ *  it. */
+const WORDLESS_FILED: readonly (readonly [string, string, boolean, boolean])[] = [
+  ["an image alone, read from its stored text", "![](https://example.invalid/a.png)", false, false],
+  ["a horizontal rule, read from the server's reading", "---", true, false],
+  ["a horizontal rule its author edited", "---", true, true],
+];
+
+// R7 and R22 over Filed from: an item whose text holds no words is named by the page's word for
+// its kind once, as the link to it, and never by its id, as a decision's parent line with no words
+// of its own is (`DecisionsRow.tsx`'s `EntryParentLine`); an edited one says ` · edited` after the
+// word. Drawn as a line with words, the row wrote the word in front of the link and again as the
+// link: "message message".
+test.each(
+  WORDLESS_FILED
+)("Filed from names a message whose text holds no words, %s, by its kind's word once, as the link", async (_name, body, read, edited) => {
+  await warmMarkdownRenderer();
+  const reading = read ? displayTree(body) : undefined;
+  const { restore } = stubRelations(relatedIssue, async (refs) => {
+    const answer = filedMarked(refs, body, edited ? { edited_at: FILED_EDITED_AT } : {});
+    return {
+      targets: (answer.targets ?? []).map((target) =>
+        target.ref === FILED_MESSAGE && reading !== undefined
+          ? { ...target, text_tree: reading }
+          : target
+      ),
+    };
+  });
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    const word = NODE_REFERENCES_WORDS.kinds.message;
+    const mark = edited ? ` · ${CONTROL_LABELS.post_edited}` : "";
+    // The names read has answered once the duplicate's title is drawn, the same read's answer: the
+    // row draws the kind's word alone while it is out too.
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.duplicate_of)).toHaveTextContent(DUPLICATE_TITLE)
+    );
+    await waitFor(() =>
+      expect(
+        detailsRow(PROPERTY_LABELS.filed_from).textContent,
+        "Filed from does not name the message by its kind's word once"
+      ).toBe(`${PROPERTY_LABELS.filed_from}${word}${mark}`)
+    );
+    const link = filedRow().getByRole("link");
+    expect(link.textContent, "Filed from does not link the message by its kind's word").toBe(
+      `${word}${mark}`
+    );
+    expect(link, "Filed from does not link the message").toHaveAttribute("href", FILED_PATH);
+    expect(link, "the kind's word is not the page's own").toHaveAttribute("data-page-chrome");
   } finally {
     unmount();
     restore();

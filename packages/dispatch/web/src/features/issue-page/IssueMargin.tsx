@@ -87,7 +87,7 @@ import { statusGlyph, statusTone } from "./issue-status";
 import { useMarginDrawer, useMarginDrawsSlot } from "./margin-slot";
 import { NodeGlyph } from "./NodeGlyph";
 import { NoTooltips } from "./NoTooltips";
-import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
+import { DeletedLine, useNodeLine } from "./node-line";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import {
   CONTROL_LABELS,
@@ -157,15 +157,28 @@ function keptUntilFailed(queryClient: QueryClient, queryKey: QueryKey) {
  * references a row (`NodeReferences.tsx`): the page's word for its kind
  * (`NODE_REFERENCES_WORDS.kinds`, so an ask is a question), then its one line as the way to it,
  * drawn from what the relations' names read answered for it (`IssueMarginPanel`) as a parent's
- * line under a filter is drawn (`node-line.tsx`'s `ParentLink`): its first line
- * (`FiledItemWords`), and ` · edited` after it where its author edited it. While that read has
- * not answered for it, or has failed, the word alone is the way to it, since an address is no
- * name. A comment or a message its author deleted keeps its page, and is drawn by its deleted
- * line, as its row in the outline draws it (`DeletedLine`): who deleted it, named as the page
- * names an author, and when, and no edited mark, since that line already says what became of the
- * text. An item Dispatch answers gone - one nothing answers to now, or one the reader may not
- * see - opens no page, so it is drawn as the page's chip draws one: its word, then Deleted, with
- * no link.
+ * line under a filter is drawn (`node-line.tsx`'s `ParentLink`), and ` · edited` after it where
+ * its author edited it (`EditedMark`, INFRA-1523 R2).
+ *
+ * The line is the item's one line, as every one line of a node is drawn (`useNodeLine`): the
+ * first line of the post's own text - an ask's question, a comment's or a message's body - as the
+ * names read answers it (`ReferenceTarget.name`, with the server's reading of it where the read
+ * sends one), with the record as the source its references are read against. The shared
+ * plain-text projection reads it, so no mark of the stored Markdown is drawn and each reference
+ * in it reads as its target's name (R8), and R1's first-line rule cuts it: the whole first
+ * sentence up to the line's 100 characters, and no word of a later block (R4). Nothing of it is
+ * drawn until the projection has answered. No name the names store holds for the item is read:
+ * that name is a link's title, cut to a title's room with every block of the text joined into it.
+ *
+ * The page's word for the kind alone is the way to the item while that read has not answered for
+ * it, or has failed, since an address is no name, and where its text holds no words, as a
+ * decision's parent line with no words of its own is named (`DecisionsRow.tsx`'s
+ * `EntryParentLine`, R7 and R22): once, and never by its id. A comment or a message its author
+ * deleted keeps its page, and is drawn by its deleted line, as its row in the outline draws it
+ * (`DeletedLine`): who deleted it, named as the page names an author, and when, and no edited
+ * mark, since that line already says what became of the text. An item Dispatch answers gone - one
+ * nothing answers to now, or one the reader may not see - opens no page, so it is drawn as the
+ * page's chip draws one: its word, then Deleted, with no link.
  */
 function FiledItemLine({
   item,
@@ -180,21 +193,41 @@ function FiledItemLine({
   const href = referenceHref(route);
   const gone = target?.gone === true;
   const deleted = gone ? null : postDeletion(target);
-  // The way to the item: its words once the read has answered for it, which are its author's, or
-  // the page's word alone. The link stays one element as the read answers, so a focus a Retry
-  // handed it stays on it (`useTitlesRetry`).
-  const marks = target === undefined ? pageChrome : authorText;
+  // The answer the line is read from: none while the read has not answered for the item, and none
+  // for a gone or a deleted one, whose line is not its words. The line is read on every render, so
+  // the link below stays one element as the read answers, and a focus a Retry handed it stays on
+  // it (`useTitlesRetry`).
+  const worded = target === undefined || gone || deleted !== null ? undefined : target;
+  const { line, reads } = useNodeLine(
+    {
+      id: item.id,
+      // The issue the item is on, by which a role in its words is read; a project document's ask
+      // or comment is on none.
+      source: textSourceOf(item.kind, item.id, "key" in route ? route.key : undefined),
+      text: worded?.name ?? "",
+      tree: worded?.text_tree,
+      // An item's kind is the page's own token for the node it is (`NODE_TYPE_NAMES`).
+      type: item.kind,
+    },
+    { surface: "issue-filed-from" }
+  );
+  // Whether the kind's word is the way to the item, the page's own words: the read has not
+  // answered for it, or its words hold none.
+  const wordOnly = target === undefined || (worded !== undefined && line === "");
+  const marks = wordOnly ? pageChrome : authorText;
   const shown: ReactNode =
-    target === undefined ? (
-      word
-    ) : deleted !== null ? (
+    deleted !== null ? (
       <DeletedLine deleted={deleted} />
     ) : (
-      <FiledItemWords item={item} route={route} target={target} />
+      <>
+        {reads}
+        {wordOnly ? word : <span {...authorText}>{line ?? ""}</span>}
+        <EditedMark at={worded?.edited_at} marks={pageChrome} />
+      </>
     );
   return (
     <span className="block w-full min-w-0 [overflow-wrap:anywhere]">
-      {target === undefined ? null : (
+      {wordOnly ? null : (
         <>
           <span className={`text-xs ${pageQuietText}`} {...pageChrome}>
             {word}
@@ -211,50 +244,6 @@ function FiledItemLine({
         </Link>
       )}
     </span>
-  );
-}
-
-/**
- * The one line of the item an issue was filed out of (`FiledItemLine`), as every one line of a
- * node is drawn (`useNodeLine`): the first line of the post's own text - an ask's question, a
- * comment's or a message's body - as the names read answers it (`ReferenceTarget.name`, with the
- * server's reading of it where the read sends one), with the record as the source its references
- * are read against. The shared plain-text projection reads it, so no mark of the stored Markdown
- * is drawn and each reference in it reads as its target's name (R8), and R1's first-line rule
- * cuts it: the whole first sentence up to the line's 100 characters, and no word of a later block
- * (R4). The page's word for the item's kind where its words hold none (R22), and nothing until the
- * projection has answered. A post its author edited says ` · edited` after its line
- * (`EditedMark`, INFRA-1523 R2). No name the names store holds for the item is read here: that
- * name is a link's title, cut to a title's room with every block of the text joined into it.
- */
-function FiledItemWords({
-  item,
-  route,
-  target,
-}: {
-  item: { readonly id: string; readonly kind: BlockItemKind };
-  route: DispatchReferenceRoute;
-  target: ReferenceTarget;
-}): ReactNode {
-  const { line, reads } = useNodeLine(
-    {
-      id: item.id,
-      // The issue the item is on, by which a role in its words is read; a project document's ask
-      // or comment is on none.
-      source: textSourceOf(item.kind, item.id, "key" in route ? route.key : undefined),
-      text: target.name,
-      tree: target.text_tree,
-      // An item's kind is the page's own token for the node it is (`NODE_TYPE_NAMES`).
-      type: item.kind,
-    },
-    { surface: "issue-filed-from" }
-  );
-  return (
-    <>
-      {reads}
-      <span {...(line === "" ? pageChrome : authorText)}>{lineOrKindWord(line, item.kind)}</span>
-      <EditedMark at={target.edited_at} marks={pageChrome} />
-    </>
   );
 }
 
