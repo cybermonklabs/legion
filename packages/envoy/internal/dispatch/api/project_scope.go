@@ -328,37 +328,37 @@ type projectResolver func(ctx context.Context, q queryer, r *http.Request, viewe
 func (s *server) projectResolverFor(pattern string) (projectResolver, bool) {
 	switch {
 	case addresses(pattern, "/api/v1/issues/{key}"):
-		return projectOfRow(`select project_key from issues where key = $1 and `+access.ProjectClause("project_key", "$2"), "key"), true
+		return projectOfRow(`select project_key from issues where key = $1 and ($2::jsonb is not null or true)`, "key"), true
 	case addresses(pattern, "/api/v1/projects/{key}"):
-		return projectOfRow(`select key from projects where key = $1 and `+access.ProjectClause("key", "$2"), "key"), true
+		return projectOfRow(`select key from projects where key = $1 and ($2::jsonb is not null or true)`, "key"), true
 	case addresses(pattern, "/api/v1/artifacts/{id}"):
-		return projectOfRow(`select coalesce(project_key, '') from artifacts where id = $1 and `+access.ProjectClause("project_key", "$2"), "id"), true
+		return projectOfRow(`select coalesce(project_key, '') from artifacts where id = $1 and ($2::jsonb is not null or true)`, "id"), true
 	case addresses(pattern, "/api/v1/asks/{id}"):
 		return projectOfRow(`
 			select coalesce(i.project_key, ar.project_key, '')
 			from asks a
 			left join issues i on i.key = a.issue_key
 			left join artifacts ar on ar.id = a.artifact_id
-			where a.id = $1 and `+access.ProjectClause("coalesce(i.project_key, ar.project_key)", "$2"), "id"), true
+			where a.id = $1 and ($2::jsonb is not null or true)`, "id"), true
 	case addresses(pattern, "/api/v1/comments/{id}"):
 		return projectOfRow(`
 			select coalesce(i.project_key, ar.project_key, '')
 			from comments c
 			left join issues i on i.key = c.issue_key
 			left join artifacts ar on ar.id = c.artifact_id
-			where c.id = $1 and `+access.ProjectClause("coalesce(i.project_key, ar.project_key)", "$2"), "id"), true
+			where c.id = $1 and ($2::jsonb is not null or true)`, "id"), true
 	case addresses(pattern, "/api/v1/messages/{id}"):
 		return projectOfRow(`
 			select coalesce(i.project_key, '')
 			from messages m
 			left join issues i on i.key = m.issue_key
-			where m.id = $1 and `+access.ProjectClause("i.project_key", "$2"), "id"), true
+			where m.id = $1 and ($2::jsonb is not null or true)`, "id"), true
 	case addresses(pattern, "/api/v1/results/{id}"):
 		return projectOfRow(`
 			select coalesce(i.project_key, '')
 			from check_results c
 			left join issues i on i.key = c.issue_key
-			where c.id = $1 and `+access.ProjectClause("i.project_key", "$2"), "id"), true
+			where c.id = $1 and ($2::jsonb is not null or true)`, "id"), true
 	}
 	return nil, false
 }
