@@ -78,6 +78,17 @@ func TestNewRefusesAnOperatorPaneVariableTheRuntimeOwns(t *testing.T) {
 	}
 }
 
+// A Dispatch token file whose path is not absolute is refused without its path: a made-up token
+// pasted where dispatch_token_file's path goes would print.
+func TestNewRefusesARelativeDispatchTokenFileNamingNoPath(t *testing.T) {
+	const pasted = "madeUpDispatchToken0123456789"
+	opts := paneEnvOptions(t, nil, nil)
+	opts.DispatchURL, opts.DispatchTokenFile = "https://dispatch.example", pasted
+	if _, err := New(opts); err == nil || err.Error() != "tmux runtime: the Dispatch token file's path is not absolute" {
+		t.Fatalf("New with a relative Dispatch token file = %v, want the refusal naming no path", err)
+	}
+}
+
 // At boot the runtime also refuses, before any pane opens, a pane variable that places the session
 // a resume reads, one a Claude Code pane is told after the operator's, a launch secret's pointer,
 // which every launch would then be refused over, and a value that is a URL carrying a password:

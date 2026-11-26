@@ -122,7 +122,8 @@ func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
 			// A row that must not be refused has to reach the dial. Reading `refused` off
 			// the message alone would pass a detector that rejected a valid quoted
 			// password as unparseable, which is the same boot outage under another name.
-			if !tc.refused && err != nil && strings.Contains(err.Error(), "parse Postgres URL") {
+			var unparsed *pgconn.ParseConfigError
+			if !tc.refused && errors.As(err, &unparsed) {
 				t.Fatalf("connection string rejected at the parse, want it to reach the dial: %v", err)
 			}
 		})
