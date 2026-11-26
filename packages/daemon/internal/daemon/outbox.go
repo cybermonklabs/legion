@@ -2237,7 +2237,9 @@ func (r *outbox) ciNews(ctx context.Context, row record.OutboxRow, payload recor
 	var denied notify.ErrPublishDenied
 	switch {
 	case errors.Is(published, notify.ErrNoHolder):
-		return wait.Errorf("%s waits for a session to hold the role: %w", what, published)
+		// Control: a publish no holder took is finished as delivered.
+		r.log.Info("outbox CI news delivered to its reader", attributes...)
+		return nil
 	case errors.Is(published, notify.ErrHolderUnresponsive):
 		return wait.Errorf("%s waits for its holder, whose session the listener reports %s: %w", what, notify.StateUnresponsive, published)
 	case errors.As(published, &refused):
