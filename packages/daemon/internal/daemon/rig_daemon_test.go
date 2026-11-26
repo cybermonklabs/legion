@@ -22,7 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/plan"
+	planwords "github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -186,7 +186,7 @@ func rigDaemonOver(t *testing.T, proof liveProof, dispatch *scratchDispatch, sta
 	if !ok {
 		t.Fatalf("the issue %q is no Dispatch issue key", world.issue)
 	}
-	steps, err := plan.ParseSteps(strings.Join(world.steps, " "))
+	steps, err := planwords.ParseSteps(strings.Join(world.steps, " "))
 	if err != nil {
 		t.Fatalf("the steps %q: %v", world.steps, err)
 	}
