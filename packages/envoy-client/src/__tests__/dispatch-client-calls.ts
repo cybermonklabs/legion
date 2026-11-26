@@ -2,9 +2,10 @@
 //
 // One call of each DispatchClient method, for the tests that drive every method of the class
 // through a fetch of their own: dispatch-client-census.test.ts, which reads the key of each write,
-// and dispatch-proxy.test.ts, which sends each request but a GET through the proxy's socket. A
-// method added to the class and left out of `CALLS` fails the census's check of
-// `clientMethodNames`, and `tsc` reads `CALLS` as a record of every public method.
+// dispatch-api-routes.test.ts, which holds each write's route to a row of `WRITE_ROUTES`, and
+// dispatch-proxy.test.ts, which sends each request but a GET through the proxy's socket. A method
+// added to the class and left out of `CALLS` fails the census's check of `clientMethodNames`, and
+// `tsc` reads `CALLS` as a record of every public method.
 
 import { DispatchClient } from "../dispatch-http";
 
