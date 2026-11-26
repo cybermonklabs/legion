@@ -314,9 +314,10 @@ export function asObject(value: unknown): Record<string, unknown> | null {
 }
 
 /**
- * What every command is handed: the call as `checkDispatchCall` left it, and the Dispatch this
- * session speaks to. A command that answers before the origin is resolved (`dispatch_open_asks`,
- * `dispatch_answers`, `dispatch_whoami`) takes this alone, so it starts no subprocess.
+ * What every spec command is handed: the call as `checkDispatchCall` left it, and the Dispatch
+ * this session speaks to. A command that answers before the origin is resolved
+ * (`dispatch_open_asks`, `dispatch_answers`, `dispatch_whoami`) takes this alone, so it starts no
+ * subprocess.
  */
 export interface SessionContext {
   readonly input: ExecuteDispatchToolInput;
@@ -387,7 +388,7 @@ export interface CommandContext extends SessionContext {
 export type DispatchCommand = (context: CommandContext) => Promise<DispatchToolResult>;
 
 /**
- * The context every command starts from, built from the checked call. The client names the
+ * The context every spec command starts from, built from the checked call. The client names the
  * configured server in a transport error (`DispatchClient`: its URL by `urlForText`, the failure
  * by `errorClass`), since a session whose Dispatch moved reads that message and nothing else;
  * every link is built on a clean base or printed as its reference (`linkBaseOf`). The client's

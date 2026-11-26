@@ -947,8 +947,14 @@ func bodyOf(t *testing.T, answer *http.Response) string {
 // does.
 func newTestAuthority(t *testing.T) *Authority {
 	t.Helper()
+	return newTestAuthorityOn(t, nil)
+}
+
+// newTestAuthorityOn is newTestAuthority signing by clock, and nil is the system's.
+func newTestAuthorityOn(t *testing.T, clock Clock) *Authority {
+	t.Helper()
 	certFile, keyFile := writeCAFiles(t)
-	authority, err := NewAuthority(certFile, keyFile)
+	authority, err := NewAuthority(certFile, keyFile, AuthorityOptions{Clock: clock})
 	if err != nil {
 		t.Fatalf("the test certificate authority: %v", err)
 	}

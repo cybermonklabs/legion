@@ -33,9 +33,15 @@ const PRODUCTION_UNDER_TEST_SEGMENTS: Readonly<Record<string, true>> = {
   "scripts/e2e/lib/dispatch-live-events.ts": true,
 };
 
-/** The trees rule 2 leaves out, each for its reason. */
-const OUTSIDE_RULE_2: readonly { readonly tree: string; readonly why: string }[] = [
-  { tree: "packages/envoy-client/src/", why: "the client and its check themselves" },
+/** The trees rule 2 leaves out, each for its reason. A tree whose `ownRequests` is set is left out
+ *  of the rule's import test alone: a request a file there sends itself, or a socket it opens
+ *  itself, around the client, is still judged, but in the client's own files (`CLIENT_FILES`). */
+const OUTSIDE_RULE_2: readonly {
+  readonly tree: string;
+  readonly why: string;
+  readonly ownRequests?: true;
+}[] = [
+  { tree: "packages/envoy-client/src/", why: "the client and its check", ownRequests: true },
   { tree: "packages/contracts/", why: "declares the routes and sends no request" },
   {
     tree: "packages/dispatch/web/",
@@ -43,6 +49,12 @@ const OUTSIDE_RULE_2: readonly { readonly tree: string; readonly why: string }[]
   },
   { tree: "docs/", why: "sends no request" },
 ];
+
+/** The client and its check, whose own requests are the ones the check judges or asks. */
+const CLIENT_FILES: Readonly<Record<string, true>> = {
+  "packages/envoy-client/src/dispatch-http.ts": true,
+  "packages/envoy-client/src/private-check.ts": true,
+};
 
 /**
  * The files rule 2 leaves out by name, each with its reason, which the test reads: a file named
@@ -217,7 +229,11 @@ function scan(listed: readonly string[], read: (path: string) => string): Scan {
   const constructions: string[] = [];
   let inFactory = 0;
   let clientHoldsAPath = false;
-  const holdingPaths: { readonly path: string; readonly file: ReadFile }[] = [];
+  const holdingPaths: {
+    readonly path: string;
+    readonly file: ReadFile;
+    readonly ownRequestsOnly: boolean;
+  }[] = [];
   const reachesCheck = new Map<string, boolean>();
   for (const path of files) {
     const file = readSource(path, read(path));
@@ -237,12 +253,14 @@ function scan(listed: readonly string[], read: (path: string) => string): Scan {
     reachesCheck.set(path, file.importsChecked);
     if (!API_PATH.test(file.code)) continue;
     if (path === FACTORY_FILE) clientHoldsAPath = true;
-    if (OUTSIDE_RULE_2.some(({ tree }) => path.startsWith(tree))) continue;
+    const outside = OUTSIDE_RULE_2.find(({ tree }) => path.startsWith(tree));
+    if (outside !== undefined && (outside.ownRequests !== true || CLIENT_FILES[path] === true))
+      continue;
     if (Object.hasOwn(OUTSIDE_RULE_2_FILES, path)) continue;
-    holdingPaths.push({ path, file });
+    holdingPaths.push({ path, file, ownRequestsOnly: outside !== undefined });
   }
   const unchecked: string[] = [];
-  for (const { path, file } of holdingPaths) {
+  for (const { path, file, ownRequestsOnly } of holdingPaths) {
     // A request or a socket the file opens itself is checked only by the check it calls: the
     // factory or a reader it imports checks only the requests they send.
     if (file.opensSocket && !file.importsCheckedSocket) {
@@ -251,7 +269,7 @@ function scan(listed: readonly string[], read: (path: string) => string): Scan {
     if (file.sendsItself && !file.importsCheckedFetch) {
       unchecked.push(`${path} sends a request itself without checkedDispatchFetch`);
     }
-    if (file.sendsItself || file.opensSocket) continue;
+    if (file.sendsItself || file.opensSocket || ownRequestsOnly) continue;
     if (file.importsChecked) continue;
     const readers = file.imported.flatMap((specifier) => importedPath(path, specifier));
     if (
@@ -326,6 +344,21 @@ describe("every production request to Dispatch goes through the private-project 
       ).toEqual([]);
     }
   });
+
+  test(
+    "a request a file of the client package sends around the client is named",
+    () => {
+      const proxy = "packages/envoy-client/src/dispatch-proxy.ts";
+      const unchecked = fromDisk(proxy)
+        .replace('import { checkedDispatchFetch } from "./private-check";\n', "")
+        .replace("checkedDispatchFetch(run.config.url)(url, init)", "fetch(url, init)");
+      expect(unchecked).not.toContain("checkedDispatchFetch(");
+      expect(scanWith({ [proxy]: unchecked })).toEqual([
+        `rule 2: ${proxy} sends a request itself without checkedDispatchFetch`,
+      ]);
+    },
+    SCAN_MS
+  );
 
   test(
     "a socket opened without checkDispatchSocket is named",
