@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -76,6 +75,7 @@ func seedCreatedAttempt(t *testing.T, database *store.Store, commentID, target, 
 // Past that lease every copy of the comment is the fallback pass's, this one and a thread
 // session's alike (TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend).
 func TestACommentAnUnansweredRoleMentionWhoseHolderTheOutboxCannotNameReachesThatSessionOnce(t *testing.T) {
+	t.Parallel()
 	const role = "claimed-after-the-comment-was-published"
 	const holder = "ses_claims_the_issue_and_takes_the_role"
 	ctx := store.WithTransactionTracking(context.Background())
@@ -140,8 +140,7 @@ func TestACommentAnUnansweredRoleMentionWhoseHolderTheOutboxCannotNameReachesTha
 		t.Fatalf("the comment was not published once the mention of %s settled: attempt_count %d, publish_error %v, reached %v",
 			target, attempts, failure, reached)
 	}
-	time.Sleep(time.Second)
-	if got := claimant.received(); len(got) != 0 {
+	if got := claimant.receivedNow(t, rig.client); len(got) != 0 {
 		t.Fatalf("%s was sent %+v, want nothing: its own mention of %s delivered the comment, and a copy under %s would show it that comment twice",
 			holder, got, target, fmt.Sprintf("dispatch-%d", comment.ID))
 	}

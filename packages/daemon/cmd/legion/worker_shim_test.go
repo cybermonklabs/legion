@@ -489,7 +489,7 @@ ticks=0
 while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks=$((ticks+1)); done
 exit 9
 `
-			command := exec.Command(os.Args[0], "worker-shim",
+			command := exec.Command(legionCopy(t), "worker-shim",
 				"--connect", "unix://"+socket, "--boot-token-file", token,
 				"--", "sh", "-c", agent, "sh", record, running)
 			command.Env = append(os.Environ(), testMainEnv+"=1")

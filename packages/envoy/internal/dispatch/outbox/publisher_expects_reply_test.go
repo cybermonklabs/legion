@@ -20,6 +20,7 @@ import (
 // envelope Validate() refuses is backed off forever and holds every later event of its owner
 // behind it.
 func TestNoEventEnvelopeSaysAnythingAboutAReply(t *testing.T) {
+	t.Parallel()
 	const ask = "00000000-0000-0000-0000-000000000030"
 	for _, tc := range []struct {
 		name  string
@@ -60,6 +61,7 @@ func TestNoEventEnvelopeSaysAnythingAboutAReply(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			item, err := envelope(tc.event, "")
 			if err != nil {
 				t.Fatalf("envelope: %v", err)
