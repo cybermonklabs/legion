@@ -20,9 +20,10 @@
 #
 # Run inside the repository: .github/scripts/fetch-depth-if-shallow.sh --depth=2 origin <sha>
 # .github/scripts/edited-migrations-base.sh and .github/scripts/ci-filters-generate.sh fetch
-# through it, and check-ci-filters.sh's rule 26 refuses any other git fetch or git pull with a
-# depth under .github/scripts, .github/actions and .github/workflows. Its tests are in
-# fetch-depth-if-shallow.test.sh, which ci.yaml's test job runs.
+# through it. check-ci-filters.sh's rule 26 refuses a git fetch or git pull that names a depth
+# option under .github/scripts, .github/actions and .github/workflows, but a fixture fetch
+# ci_job_reads.py lists; this script's own fetch passes the depth in a variable, which the rule
+# does not read. Its tests are in fetch-depth-if-shallow.test.sh, which ci.yaml's test job runs.
 set -euo pipefail
 shopt -s inherit_errexit
 

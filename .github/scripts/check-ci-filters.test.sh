@@ -201,8 +201,8 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/.github/ci-gates" "$root/mod/cmd/app" \
     "$root/mod/lib" "$root/mod/other" "$root/fixtures" "$root/docs" "$root/packages/widget"
-  for linked in check-ci-filters.sh ci_filter_coverage.py ci_filter_sources.py ci_workflow_rules.py workflow_paths.py \
-    go_build_tags.py ci-filters-generate.sh fetch-depth-if-shallow.sh ci_ts_listing.py; do
+  for linked in check-ci-filters.sh ci_filter_coverage.py ci_filter_sources.py ci_workflow_rules.py shell_commands.py \
+    workflow_paths.py go_build_tags.py ci-filters-generate.sh fetch-depth-if-shallow.sh ci_ts_listing.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   printf 'PROGRAMS = []\nBUNDLES = []\nLISTED = []\n' > "$root/.github/scripts/ci_ts_programs.py"
@@ -244,6 +244,7 @@ RACE_FILLS = [(DAEMON_RACE_FILL_JOB, "DAEMON_RACE_FILL_JOB", [f"./{p}/" for p in
                "DAEMON_RACE_PACKAGES", ".github/workflows/ci.yaml's race step", ".github/workflows/ci.yaml",
                ".github/workflows/ci.yaml's two race steps follow it already")]
 TAG_RUNS = []
+SHALLOW_FETCH_FIXTURES = {}
 READ_SETS = {}
 GATES, EXCLUDED = load_gate_files(globals())
 RULES, DIRECTIVES = load_directives(repo_files(), READ_SETS)
@@ -838,66 +839,127 @@ check "the checkout is still shallow" "$(is "$(git -C "$shallow" rev-parse --is-
 check "  and the base came one commit deep: its history reads 1 commit" \
   "$(is "$(git -C "$shallow" rev-list --count "$base_commit")" 1)"
 
-# Rule 26: a git fetch or pull under .github that passes a depth is refused by file and line, but
-# the one in fetch-depth-if-shallow.sh and a harness's fetch into a fixture it made. The planted
-# lines are written from pieces, so this harness's own text holds no such command for the rule.
-depth_option=--depth
-echo "case: a script's fetch with a depth is refused, naming the file, the line and the command"
-root=$(fixture shallow-fetch-script)
-printf '#!/usr/bin/env bash\n# A comment that names git fetch %s=1 runs nothing.\ngit fetch -q --no-tags %s=2 origin "$1"\n' \
-  "$depth_option" "$depth_option" > "$root/.github/scripts/fetch-base.sh"
+# Rule 26: a git fetch or git pull under .github that passes a depth is refused by file and line,
+# but a fixture fetch ci_job_reads.py's SHALLOW_FETCH_FIXTURES lists. Every planted line is a word
+# of a printf (plant), which prints its words, so this harness's own text holds no such command.
+# plant <file> <line>...: writes each line to the file, in order.
+plant() {
+  local file=$1
+  shift
+  mkdir -p "$(dirname "$file")"
+  printf '%s\n' "$@" > "$file"
+}
+
+echo "case: each shape of a shell fetch with a depth is refused by its line, through quotes, -c, a heredoc and a prefix"
+root=$(fixture shallow-fetch-shell)
+plant "$root/.github/scripts/misses.sh" \
+  '#!/usr/bin/env bash' \
+  'git fetch "--depth=${DEPTH}" origin main' \
+  "git fetch '--depth=1' origin main" \
+  '"git" fetch --depth=1 origin main' \
+  'git "fetch" --depth=1 origin main' \
+  'x="`git fetch --depth=1 origin main`"' \
+  "echo \$'it\\'s'; git fetch --depth=1 origin main" \
+  "sh -c 'cd \"\$repo\" && git fetch --depth=1 origin main'" \
+  "true # it's \\" \
+  'git fetch --depth=1 origin main' \
+  'git fetch --dept=1 origin main' \
+  'git -C "$work" init -q && git fetch --depth=1 origin main' \
+  'timeout -k 5 60 git fetch -q --depth=1 origin main 2>&1 | tail -3' \
+  'git fetch -q \' \
+  '  --deepen=3 origin main' \
+  "python3 - <<'PY'" \
+  'subprocess.run(["git", "fetch", "--shallow-exclude=v1", "origin"])' \
+  'PY'
+# The helper's own path is no exemption: a depth fetch written there is refused as anywhere.
+rm "$root/.github/scripts/fetch-depth-if-shallow.sh"
+plant "$root/.github/scripts/fetch-depth-if-shallow.sh" '#!/usr/bin/env bash' 'git fetch --depth=1 "$@"'
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the file, its line 3 and the command" \
-  "$(contains "$out" "fetch-base.sh line 3 runs .git fetch -q --no-tags ${depth_option}=2 origin ")"
-check "  and why, with the way through the helper" \
-  "$(contains "$out" "with ${depth_option} makes a whole clone shallow, .* Fetch through .github/scripts/fetch-depth-if-shallow.sh ${depth_option}=<n>")"
-check "does not refuse the comment on line 2" "$(is "$(contains "$out" 'fetch-base.sh line 2 ')" false)"
+for case in "2 a quoted word that expands a variable" "3 a single-quoted depth word" "4 a quoted git" "5 a quoted fetch" \
+  "6 backticks inside double quotes" "7 a fetch after an ANSI-C \$'...' quote" "8 a fetch an sh -c script runs after a cd" \
+  "10 a fetch after a comment that ends in a backslash" "11 the abbreviation --dept" "12 a fetch after git -C \$work init &&" \
+  "13 a fetch timeout runs" "14 a fetch continued on the next line, named at its first" \
+  "17 a Python list in a heredoc"; do
+  check "refuses line ${case%% *}: ${case#* }" "$(contains "$out" "^::error file=.github/scripts/misses.sh::.github/scripts/misses.sh line ${case%% *} runs ")"
+done
+check "names the joined command of the continued fetch" \
+  "$(contains "$out" 'misses.sh line 14 runs .git fetch -q --deepen=3 origin main.: a git fetch or git pull with --deepen=3 makes')"
+check "says how git reads the abbreviation" "$(contains "$out" 'misses.sh line 11 .* with --dept=1 (git reads it as --depth) makes')"
+check "  and the way through the helper" \
+  "$(contains "$out" 'Fetch through .github/scripts/fetch-depth-if-shallow.sh --depth=<n> <git fetch arguments>')"
+check "refuses nothing on the comment line 9" "$(is "$(contains "$out" 'misses.sh line 9 ')" false)"
+# The helper's name and its line are matched apart: ci_citations.py refuses a path followed by a
+# line number anywhere under .github.
+check "refuses the depth fetch planted at the helper's own path" \
+  "$(contains "$out" '::error file=.github/scripts/fetch-depth-if-shallow.sh::.* runs .git fetch --depth=1 \$@.')"
+check "counts the 14 it refuses" "$(contains "$out" 'rule 26: .* 14 git fetch or pull command(s) with a depth, 0 of them listed in SHALLOW_FETCH_FIXTURES, 14 refused$')"
 
-echo "case: a workflow's run: line that pulls with a depth is refused, naming the workflow and the line"
-root=$(fixture shallow-fetch-workflow)
-printf '      - run: git pull %s=2020-01-01 origin main\n' "--shallow-since" >> "$root/.github/workflows/site.yaml"
-line_number=$(grep -n -- '- run: git pull' "$root/.github/workflows/site.yaml" | cut -d: -f1)
+echo "case: a workflow's and a composite action's run: steps are read as shell, a Python step's as Python"
+root=$(fixture shallow-fetch-steps)
+printf '%s\n' '      - name: Pull main shallow' '        run: |' '          echo "git fetch --depth=1 is what this step avoids"' \
+  '          git pull --shallow-since=2020-01-01 origin main' '      - name: "git fetch --depth=1 in a name runs nothing"' \
+  '        run: echo ok' '      - name: Fetch from Python' '        shell: python' '        run: |' '          import subprocess' \
+  '          subprocess.run(["git", "fetch",' '                          "--depth=1"])' >> "$root/.github/workflows/site.yaml"
+plant "$root/.github/actions/fetcher/action.yml" 'name: fetcher' 'description: a fixture action' 'runs:' '  using: composite' \
+  '  steps:' '    - name: Fetch' '      shell: bash' '      run: git fetch --deepen=1 origin main'
+plant "$root/.github/actions/fetcher/README.md" 'Never run git fetch --depth=1 here.'
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the workflow, the line and the command" \
-  "$(contains "$out" "site.yaml line $line_number runs .- run: git pull --shallow-since=2020-01-01 origin main.: a git fetch or pull with --shallow-since")"
+check "names the workflow, the job, the step, the run:'s line and the command" \
+  "$(contains "$out" "site.yaml job build step 'Pull main shallow', line 2 of its run: runs .git pull --shallow-since=2020-01-01 origin main.")"
+check "  refuses nothing for the step's echo or the step named with the words" \
+  "$(is "$(grep -c '^::error file=.github/workflows/site.yaml::' <<<"$out")" 2)"
+check "names the Python step's list, split over two lines, at the line it opens" \
+  "$(contains "$out" "site.yaml job build step 'Fetch from Python', line 2 of its run: runs .\\[git, fetch, --depth=1\\].")"
+check "names the composite action's step" \
+  "$(contains "$out" "action.yml step 'Fetch', line 1 of its run: runs .git fetch --deepen=1 origin main.")"
+check "reads no README" "$(is "$(contains "$out" 'README.md')" false)"
 
-echo "case: a fetch split over lines by a backslash is refused at its first line"
-root=$(fixture shallow-fetch-continued)
-printf '#!/usr/bin/env bash\ngit fetch -q \\\n  %s=3 origin main\n' "--deepen" > "$root/.github/scripts/deepen.sh"
-run_check "$root"
-check "fails" "$(is "$status" 1)"
-check "names line 2, where the command starts, and the joined command" \
-  "$(contains "$out" "deepen.sh line 2 runs .git fetch -q --deepen=3 origin main.: a git fetch or pull with --deepen")"
-
-echo "case: an argument list that fetches with a depth is refused"
-root=$(fixture shallow-fetch-list)
-printf 'import subprocess\nsubprocess.run(["git", "fetch", "%s=1", "origin", "main"], check=True)\n' "$depth_option" \
-  > "$root/.github/scripts/fetch_base.py"
-run_check "$root"
-check "fails" "$(is "$status" 1)"
-check "names the file and line 2" "$(contains "$out" "fetch_base.py line 2 runs .*: a git fetch or pull with ${depth_option}")"
-
-echo "case: a fetch through the helper, and a harness's fetch into a fixture it made, pass"
-root=$(fixture shallow-fetch-allowed)
-printf '#!/usr/bin/env bash\n.github/scripts/fetch-depth-if-shallow.sh %s=2 --no-tags origin "$1"\n' "$depth_option" \
-  > "$root/.github/scripts/through-helper.sh"
-printf '#!/usr/bin/env bash\nwork=$(mktemp -d)\ninto="$work/r"\ngit -C "$into" fetch -q %s=1 origin x\ngit -C "$work/s" fetch -q %s=1 origin x\n' \
-  "$depth_option" "$depth_option" > "$root/.github/scripts/fixture.test.sh"
+echo "case: words that print, comment, name or follow -- a depth, and depth options git refuses or a clone takes, pass"
+root=$(fixture shallow-fetch-quiet)
+plant "$root/.github/scripts/quiet.sh" '#!/usr/bin/env bash' 'printf %s git fetch --depth=1' \
+  'echo "git fetch --depth=1 makes a whole clone shallow"' 'git fetch origin "$sha"  # no --depth here' \
+  'git fetch --de=1 origin main' 'git fetch --filter=blob:none --unshallow origin main' 'git clone -q --depth=1 file:///x y' \
+  'git fetch origin -- --depth=1' 'git fetch "$option" "$@"' \
+  '.github/scripts/fetch-depth-if-shallow.sh --depth=2 --no-tags origin "$sha"'
+plant "$root/.github/scripts/quiet.py" 'import subprocess' '"""Never git fetch --depth=1 here."""' \
+  'depth = ["--depth=1"] if shallow else []' 'git(["fetch", "--no-tags", *depth, "origin", sha])'
+plant "$root/.github/scripts/notes.yaml" 'run: git fetch --depth=1 origin main'
 run_check "$root"
 check "passes" "$(is "$status" 0)"
-check "and counts the two fixture fetches it lets through" \
-  "$(contains "$out" "rule 26: .* 2 git fetch or pull line(s) with a depth, 2 of them a harness's fetch into its own fixture, 0 refused")"
+check "and reads them as no fetch with a depth" \
+  "$(contains "$out" 'rule 26: .* 0 git fetch or pull command(s) with a depth, 0 of them listed in SHALLOW_FETCH_FIXTURES, 0 refused$')"
 
-echo "case: a harness's fetch with a depth into a repository it did not make is refused"
-root=$(fixture shallow-fetch-escape)
-printf '#!/usr/bin/env bash\nwork=$(mktemp -d)\nrepo=$(git rev-parse --show-toplevel)\ngit -C "$repo" fetch -q %s=1 origin x\ngit fetch -q %s=1 origin x\n' \
-  "$depth_option" "$depth_option" > "$root/.github/scripts/escape.test.sh"
+echo "case: a listed fixture fetch passes in its own file alone, and every other depth fetch of a harness is refused"
+root=$(fixture shallow-fetch-fixtures)
+plant "$root/.github/scripts/fx.test.sh" '#!/usr/bin/env bash' 'work=$(mktemp -d)' 'git -C "$work/r" fetch -q --depth=1 origin x' \
+  'git -C "$work" init -q && git fetch --depth=1 origin x' 'git worktree add "$work/wt" && git -C "$work/wt" fetch --depth=1 origin x' \
+  '# tmp=$(mktemp -d)' 'git -C "$tmp" fetch --depth=1 origin x' 'git -C "$work/../.." fetch --depth=1 origin x'
+plant "$root/.github/scripts/other.test.sh" '#!/usr/bin/env bash' 'work=$(mktemp -d)' 'git -C "$work/r" fetch -q --depth=1 origin x'
+replace "$root/.github/scripts/ci_job_reads.py" 'SHALLOW_FETCH_FIXTURES = {}' \
+  'SHALLOW_FETCH_FIXTURES = {(".github/scripts/fx.test.sh", "git -C $work/r fetch -q --depth=1 origin x"): "a fixture it git-inits"}'
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the fetch into the checkout it runs in, line 4" "$(contains "$out" 'escape.test.sh line 4 runs ')"
-check "  and the fetch that names no repository, line 5" "$(contains "$out" 'escape.test.sh line 5 runs ')"
+check "lets the listed fetch, line 3, through" "$(is "$(contains "$out" 'fx.test.sh line 3 ')" false)"
+check "refuses the fetch after git -C \$work init &&, line 4" "$(contains "$out" 'fx.test.sh line 4 runs .git fetch --depth=1 origin x.')"
+check "refuses the fetch into a worktree made under the mktemp directory, line 5" \
+  "$(contains "$out" 'fx.test.sh line 5 runs .git -C \$work/wt fetch --depth=1 origin x.')"
+check "refuses the fetch into a directory a comment assigns, line 7" "$(contains "$out" 'fx.test.sh line 7 runs ')"
+check "refuses the fetch into \$work/../.., line 8" "$(contains "$out" 'fx.test.sh line 8 runs ')"
+check "refuses the listed command in a file the entry does not name" "$(contains "$out" 'other.test.sh line 3 runs ')"
+check "counts one listed" "$(contains "$out" 'rule 26: .* 6 git fetch or pull command(s) with a depth, 1 of them listed in SHALLOW_FETCH_FIXTURES, 5 refused$')"
+
+echo "case: a listed fixture fetch that no command of its file runs is refused"
+root=$(fixture shallow-fetch-stale)
+plant "$root/.github/scripts/fx.test.sh" '#!/usr/bin/env bash' 'work=$(mktemp -d)' 'git -C "$work/r" fetch -q --depth=2 origin x'
+replace "$root/.github/scripts/ci_job_reads.py" 'SHALLOW_FETCH_FIXTURES = {}' \
+  'SHALLOW_FETCH_FIXTURES = {(".github/scripts/fx.test.sh", "git -C $work/r fetch -q --depth=1 origin x"): "a fixture it git-inits"}'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the entry and its file" \
+  "$(contains "$out" "SHALLOW_FETCH_FIXTURES lets .git -C \$work/r fetch -q --depth=1 origin x. through in .github/scripts/fx.test.sh, and no command of that file runs it")"
+check "  and refuses the changed fetch the entry no longer names" "$(contains "$out" 'fx.test.sh line 3 runs .git -C \$work/r fetch -q --depth=2 origin x.')"
 
 # The go commands run in a pool (CI_FILTERS_JOBS); each answer is keyed by what it asks, so the
 # filters are one text whatever the pool's size, and a command that fails in the pool fails the

@@ -2,7 +2,9 @@
 
 check-release-credentials.sh imports it from the repository it checks, running
 `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3` from that repository's root, and
-classifies each command commands_of returns.
+classifies each command commands_of returns. check-ci-filters.sh's rule 26
+(ci_workflow_rules.py's check_shallow_fetches) reads each shell script and `run:` under .github
+with commands_at, which gives each command the line its first word starts on.
 
 Command position is found by one quote-aware scan of the `run:` (its `${{ … }}` expressions
 elided first), as bash reads it: a `#` starts a comment only at word start — the start of the run,
@@ -12,7 +14,8 @@ so a backslash inside it continues nothing; escaped whitespace and an escaped `#
 characters (`echo a\\ #` has no comment); a backslash-newline joins lines outside single quotes,
 whatever the number of backslashes before it (an escaped backslash is a character: `printf 'x' \\\\`
 ends its command, `printf 'x' \\\\\\` continues it, and `a\\` + newline + `#` glues `a#`); a quote
-carries across newlines, and `;`, `&`, `|` and `#` inside one are literal; `$(…)`, `<(…)`, `(…)`
+carries across newlines, and `;`, `&`, `|` and `#` inside one are literal; a `$'…'` quote (bash's
+ANSI-C quoting) ends at the first `'` no backslash escapes, so `$'it\\'s'` is one word; `$(…)`, `<(…)`, `(…)`
 and backticks open a command of their own, inside a double-quoted string too, and the string
 resumes at the close; an unquoted `;`, `&`, `|`, `(`, `)` or newline ends a command, and a
 redirection's target (`>/dev/null`, `>> "$GITHUB_OUTPUT"`, `2>&1`) is not one of its words. Each
@@ -25,6 +28,7 @@ behind `eval`, is scanned the same way (`sh -c 'bun install'`, `eval "bun instal
 install` run `bun`).
 """
 
+import bisect
 import re
 
 EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
@@ -48,16 +52,27 @@ class Scanner:
 
     def __init__(self) -> None:
         self.commands: list[list[str]] = []
+        # The index in the scanned text of each command's first character, one per command.
+        self.starts: list[int] = []
         self.words: list[str] = []
         self.word = ""
         self.started = False
         self.at_word_start = True
         self.redirect_target = False
+        self.pos = 0
+        self.command_start = 0
 
-    def add(self, char: str) -> None:
-        self.word += char
+    def begin(self) -> None:
+        """A word starts or goes on at the character being read; the first word of a command
+        marks where the command starts."""
+        if not self.started and not self.words:
+            self.command_start = self.pos
         self.started = True
         self.at_word_start = False
+
+    def add(self, char: str) -> None:
+        self.begin()
+        self.word += char
 
     def end_word(self) -> None:
         if self.started:
@@ -71,7 +86,9 @@ class Scanner:
     def end_command(self) -> None:
         self.end_word()
         if self.words:
-            self.commands += command_of(self.words)
+            found = command_of(self.words)
+            self.commands += found
+            self.starts += [self.command_start] * len(found)
         self.words = []
         self.redirect_target = False
 
@@ -82,6 +99,7 @@ class Scanner:
         open_subs: list[tuple[str, str | None]] = []
         i = 0
         while i < len(text):
+            self.pos = i
             char = text[i]
             after = text[i + 1:i + 2]
             if quote == "'":
@@ -89,6 +107,18 @@ class Scanner:
                     quote = None
                 else:
                     self.add(char)
+            elif quote == "$'":
+                if char == "'":
+                    quote = None
+                elif char == "\\" and after:
+                    self.add(after if after in "'\\\"" else char + after)
+                    i += 1
+                else:
+                    self.add(char)
+            elif char == "$" and after == "'" and quote is None:
+                quote = "$'"
+                self.begin()
+                i += 1
             elif char == "`":
                 self.end_command()
                 if open_subs and open_subs[-1][0] == "tick":
@@ -123,8 +153,7 @@ class Scanner:
                 i += 1
             elif char in "'\"":
                 quote = char
-                self.started = True
-                self.at_word_start = False
+                self.begin()
             elif char == "(" or (char in "<>" and after == "("):
                 if char != "(":
                     i += 1
@@ -153,6 +182,17 @@ class Scanner:
 def commands_of(run: str) -> list[list[str]]:
     """Each simple command of a `run:`, as its words with the command first."""
     return Scanner().scan(EXPRESSION.sub("EXPR", run))
+
+
+def commands_at(run: str) -> list[tuple[int, list[str]]]:
+    """Each simple command of a script or a `run:`, as (the number of the line its first word starts
+    on, from 1, its words with the command first). A command an interpreter's `-c` or `eval` runs
+    takes the line of the command that hands it on."""
+    scanner = Scanner()
+    text = EXPRESSION.sub("EXPR", run)  # an expression holds no newline, so lines keep their numbers
+    commands = scanner.scan(text)
+    breaks = [i for i, char in enumerate(text) if char == "\n"]
+    return [(bisect.bisect_left(breaks, start) + 1, words) for start, words in zip(scanner.starts, commands)]
 
 
 def command_of(words: list[str]) -> list[list[str]]:

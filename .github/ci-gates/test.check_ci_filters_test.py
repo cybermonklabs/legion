@@ -3,6 +3,7 @@ GATE = harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/
     (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh's fixture function)"),
     (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
     (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
+    (f"{SCRIPTS}/shell_commands.py", "ci_workflow_rules.py's rule 26 reads shell through it; the fixtures link it in"),
     (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
     (f"{SCRIPTS}/go_build_tags.py", "the build-tag reader rule 20 imports, linked in beside it"),
     (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh's derived function imports this table to derive the plain step's -run lists"),

@@ -24,7 +24,8 @@ GATE = gate("ci_filters", "ci-filters", runs=[
                                 "from the project it runs in"),
     (".github/actions/**", f"{at('ci-filters', ACTIONLINT_STEP)}: actionlint reads the action.yml of every "
                            "local action a step's `uses:` names, for the inputs it checks; and "
-                           "ci_workflow_rules.py's check_shallow_fetches (rule 26) reads every file under it"),
+                           "ci_workflow_rules.py's check_shallow_fetches (rule 26) reads each action's run: steps "
+                           "and each script under it"),
     (".github/scripts/ci_filter_coverage.py", "check-ci-filters.sh's engine"),
     (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
     (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and the "
@@ -49,8 +50,9 @@ GATE = gate("ci_filters", "ci-filters", runs=[
                              "that adds it, check_cache_round_trip, which holds every restore of a filled family to "
                              "the fill's key, ci_only_documents, which finds the files only ci.yaml calls, and "
                              "check_shallow_fetches (rule 26), which refuses a run: line that fetches with a depth"),
-    (".github/scripts/**", "ci_workflow_rules.py's check_shallow_fetches (rule 26) reads every file under it for a "
-                           "git fetch or git pull with a depth, so the change that adds one has to run this check"),
+    (".github/scripts/**", "ci_workflow_rules.py's check_shallow_fetches (rule 26) reads each shell, Python, TypeScript "
+                           "and Go file under it for a git fetch or git pull with a depth, so the change that adds one "
+                           "has to run this check"),
     # Every filter is computed from two sets this check reads in every Go file: the //ci: lines
     # of the tests, and the repository's Go test files the `!` patterns keep a filter off. A test
     # file added, deleted or given a //ci: line anywhere changes what the changes job computes, so

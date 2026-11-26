@@ -378,15 +378,22 @@
 #      arm, with two, or with one that lists no file, a dispatch-browser.yaml that runs the script
 #      from no step or from two directories, and no file of .github/ci-gates that declares that
 #      filter, fail too, rather than holding the filter to nothing.
-#  26. a line of a file under .github/scripts, .github/actions or .github/workflows - a comment
-#      aside, a line that ends in a backslash joined to the next - that runs a git fetch or git pull
-#      with --depth, --deepen, --shallow-since or --shallow-exclude, naming the file, the line and
-#      the command. In a whole clone such a fetch makes the clone shallow, and every worktree of it
-#      then reads a cut history. The one fetch that may pass a depth is
-#      .github/scripts/fetch-depth-if-shallow.sh's, which passes it only to a shallow repository;
-#      a harness (`*.test.sh`) may also fetch with a depth into a fixture repository it made, named
-#      by `git -C <dir>` where <dir> is under a directory the harness assigns from mktemp
-#      (ci_workflow_rules.py fixture_fetch). A depth handed to git through a variable is not seen.
+#  26. a git fetch or git pull with a depth option - --depth, --deepen, --shallow-since,
+#      --shallow-exclude, or a prefix of one git takes (`--dept`) - under .github/scripts,
+#      .github/actions or .github/workflows, naming the file, the line and the command. In a whole
+#      clone such a fetch makes the clone shallow, and every worktree of it then reads a cut
+#      history. The rule reads each shell script (`.sh`, or a `#!` line naming a shell) and each
+#      `run:` of a workflow or composite action as bash reads it, through
+#      .github/scripts/shell_commands.py (quotes, `$(...)` and backticks, `sh -c` and `eval`,
+#      comments and backslash-newlines), and a command that only prints its words (echo, printf) is
+#      no fetch; it reads the Python, TypeScript and Go files, and a Python step's `run:`, for
+#      argument lists and list literals, and no other file. The fetches that let a depth through are
+#      .github/scripts/fetch-depth-if-shallow.sh's and check-daemon-api-contract.sh's fetched(), each
+#      after its own shallow test, with the depth in a variable, which the rule does not read; and
+#      a harness's fetch into a fixture repository it made passes only by an entry of its own, file
+#      and command, in ci_job_reads.py's SHALLOW_FETCH_FIXTURES, which also refuses an entry no
+#      command of its file runs. Not read: a depth or a git in a variable, and a command a Python or
+#      TypeScript string hands a shell.
 #
 # A branch made before the gates and the //ci: lines moved out of ci_job_reads.py keeps its old
 # RULES and GATES there, and .github/ci-filters.yaml, when it merges main: the table refuses to

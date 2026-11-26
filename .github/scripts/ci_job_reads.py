@@ -309,6 +309,25 @@ def root_workspaces():
 # needs no edit here.
 WORKSPACES = root_workspaces()
 
+# The git fetches with a depth check-ci-filters.sh's rule 26 lets through, each (file, the command's
+# words as .github/scripts/shell_commands.py's commands_at reads them, quotes removed) -> why: a
+# harness's fetch into a fixture repository it git-inits or clones itself, whose shallow file no
+# other clone or worktree shares. Rule 26 refuses every other git fetch or git pull with a depth
+# under .github (ci_workflow_rules.py check_shallow_fetches), so a new fixture fetch needs an entry
+# of its own here, and an entry that no command of its file runs is refused too.
+SHALLOW_FETCH_FIXTURES = {
+    (".github/scripts/check-daemon-api-contract.test.sh", "git -C $into fetch -q --no-tags --depth=1 origin $2"):
+        "checkout() git-inits $work/<name> and fetches the commit under test into it one commit deep, as "
+        "actions/checkout leaves a run's tree",
+    (".github/scripts/fetch-depth-if-shallow.test.sh",
+     "git -C $work/whole-control fetch -q --depth=1 --no-tags origin $tip"):
+        "the harness's control: plain git with a depth in a whole clone the harness made, which it then sees made "
+        "shallow",
+    (".github/scripts/worker-image-contract-order.test.sh", "git -C $clone fetch -q --depth=1 origin $sha"):
+        "run_step() git-inits ${scratch}/<name> and fetches the commit under test into it one commit deep, as "
+        "actions/checkout does",
+}
+
 
 def setup_bun(job, workflow=""):
     """.github/actions/setup-bun alone: the Bun a job runs its own file with, where no step of it

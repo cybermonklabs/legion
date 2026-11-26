@@ -985,6 +985,10 @@ the fill's key, and ci_only_documents reads them all to find the files only this
 calls - and a rule that reads a
 workflow has to run on the change that adds or edits one, which a list of the
 names already there cannot select.
+The gate reads `.github/scripts/**` and `.github/actions/**` whole for the same reason:
+check-ci-filters.sh's rule 26 (ci_workflow_rules.check_shallow_fetches) reads every script
+and action there, and every workflow, for a git fetch or git pull with a depth, so the change
+that adds one has to run this check.
 
 ## tool_fallback: ci.yaml's tool-fallback and tool-fallback-arm jobs, the
 
