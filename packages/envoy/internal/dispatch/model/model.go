@@ -477,7 +477,8 @@ type Project struct {
 	// ProvenSessions is the project's setting that a session's credential must prove the
 	// session: when it is on, an architect's write of an issue's spec or Verification document
 	// passes only on a credential that proves the architect's session, and a role-holder
-	// publication only on one that proves legion-daemon:<project>
+	// publication only on one that proves legion-daemon:<project>, or legion-daemon:<P> of
+	// another project's daemon on a broker token that names P
 	// (PUT and DELETE /api/v1/projects/{key}/proven-sessions). Off by default, and always
 	// present, so a reader never has to tell an absent setting from one that is off.
 	ProvenSessions bool      `json:"proven_sessions"`

@@ -19,6 +19,7 @@ import (
 // held as a row another transaction inserted and has not committed, and they are listed with the
 // higher one first.
 func TestTheSeedsFollowerWriteTakesTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	lower := graphstore.SessionNode("seed-lock-follower-a", seedAuthor, baseTime, graphstore.NoEvent)

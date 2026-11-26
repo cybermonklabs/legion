@@ -1335,11 +1335,11 @@ func (s *server) heldAnswerRefusal(r *http.Request, pattern string, held heldReq
 	// row the server does not find. A row of no project is neither.
 	hidden, missing := false, false
 	if resolve, addressed := s.projectResolverFor(pattern); addressed {
-		project, found, err := resolve(ctx, pool, r, refs.VisibilityArg(model.ServerReader))
+		project, _, found, err := resolve(ctx, pool, r, refs.VisibilityArg(model.ServerReader))
 		if err != nil {
 			return err
 		}
-		_, seen, err := resolve(ctx, pool, r, refs.VisibilityArg(reader))
+		_, _, seen, err := resolve(ctx, pool, r, refs.VisibilityArg(reader))
 		if err != nil {
 			return err
 		}
@@ -1507,7 +1507,7 @@ func (s *server) heldRequestNamed(r *http.Request, held heldRequestKey) (bool, e
 	for name, value := range values {
 		first.SetPathValue(name, value)
 	}
-	_, seen, err := resolve(r.Context(), s.deps.Store.Pool, first, refs.VisibilityArg(reader))
+	_, _, seen, err := resolve(r.Context(), s.deps.Store.Pool, first, refs.VisibilityArg(reader))
 	return seen, err
 }
 
