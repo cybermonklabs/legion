@@ -13,6 +13,10 @@
       "negative_control": "",
       "pass_stands": {
         "answer": "yes",
+        "commit": "1111111111111111111111111111111111111111",
+        "results": [
+          "00000000-0000-4000-8000-000000000002"
+        ],
         "roles": [
           "tester"
         ]
