@@ -310,7 +310,7 @@ jobs:
           persist-credentials: false
       - name: Check this change against every approved or queued priority pull request
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: not-a-token # throwaway: GitHub refuses the label read, which must fail the check
         run: .github/scripts/priority-conflicts.sh
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
