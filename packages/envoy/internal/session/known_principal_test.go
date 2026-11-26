@@ -289,7 +289,9 @@ func behindCopy(t *testing.T, known *KnownSessions, sessionID string, topics []s
 // did not answer counts as its confirmation. A registration whose record this listener's copy
 // holds unchanged is still written where its admission cleared the leader's record of another
 // principal that the copy is behind, since a skip on the copy alone would leave no principal
-// recorded; a registration whose leader does not answer is refused at its admission
+// recorded, and is refused (ErrPrincipalUnrecorded) where another listener recorded another
+// principal since its admission, since a skip there would answer the registration 200 while that
+// principal stands; a registration whose leader does not answer is refused at its admission
 // (ErrPrincipalUnrecorded) and writes nothing; a write that keeps the stored principal writes
 // nothing where the leader does not answer, rather than the principal the copy names; and a
 // registration whose write failed says so (ErrPrincipalUnrecorded), for the registration route's
@@ -334,6 +336,26 @@ func TestKnownSessionsWriteNoPrincipalTheLeaderDidNotConfirm(t *testing.T) {
 		}
 		if got := revisionOf(t, known, sessionID); got != revision {
 			t.Errorf("the record is at revision %d after a registration of unchanged content; want it left at %d", got, revision)
+		}
+	})
+	t.Run("case: a registration the copy holds unchanged is refused where another listener recorded another principal since its admission", func(t *testing.T) {
+		known := openKnown(t, now)
+		const sessionID = "ses_confirm_registration_moved"
+		topics := []string{"notifications.team.confirm"}
+		behindCopy(t, known, sessionID, topics, clock.UnixMilli(), person, person)
+		admission, err := known.AdmitRegistration(t.Context(), sessionID, person)
+		if err != nil || !admission.holds {
+			t.Fatalf("the admission answered %+v, %v; the case needs it admitted on the record naming %q", admission, err, person)
+		}
+		// Another listener admits and records the session as the service after this admission;
+		// this listener's copy still holds the person's record, unchanged.
+		revision := behindCopy(t, known, sessionID, topics, clock.UnixMilli(), service, person)
+		err = known.RecordRegistrationWithin(t.Context(), admission, KnownSession{SessionID: sessionID, Topics: topics, Principal: person})
+		if !errors.Is(err, ErrPrincipalUnrecorded) {
+			t.Errorf("the registration answered %v over a record written since its admission; want ErrPrincipalUnrecorded, for the route's 503", err)
+		}
+		if got, stored := revisionOf(t, known, sessionID), storedPrincipal(t, known, sessionID); got != revision || stored != service {
+			t.Errorf("the record is at revision %d naming %q; want the other listener's at %d naming %q, untouched", got, stored, revision, service)
 		}
 	})
 	t.Run("case: a registration the copy holds unchanged is refused where the leader does not answer", func(t *testing.T) {

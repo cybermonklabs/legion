@@ -45,7 +45,8 @@ body: |-
     session or any other write, is left as it is, and the registration writes nothing and is
     answered the same `503`, so a delayed registration can no longer put back a principal another
     registration's admission cleared. A registration whose record a listener's copy holds
-    unchanged is skipped only where its admission found the leader's record naming its principal.
+    unchanged is skipped only where its admission found the leader's record naming its principal
+    and the leader still holds that revision; otherwise it is the same compare-and-swap write.
     One whose write failed is answered the same `503` unless the leader confirms the record names
     its principal, none recorded, or nothing; so the session registers again until the record
     names its principal. A pass also reads, before each copy, whether the replaced

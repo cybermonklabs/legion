@@ -839,10 +839,13 @@ func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) e
 // principal that admission cleared, or write over the principal the other registration recorded.
 //
 // The refresh-age skip of an unchanged record holds for a registration only where the record its
-// admission read at the bucket's leader names this principal, recorded (Admission): this
-// listener's copy can be behind a registration of the session as another principal through
-// another listener, and a skip on that copy alone would leave the other principal standing as the
-// one the session last registered as.
+// admission read at the bucket's leader names this principal, recorded (Admission), and the
+// leader still holds that very revision when the skip is taken (leaderAt): this listener's copy
+// can be behind a registration of the session as another principal through another listener,
+// before this admission or after it, and a skip on that copy alone would answer the registration
+// as recorded while the other principal stands as the one the session last registered as. A skip
+// the leader does not confirm is the compare-and-swap write instead, which a record written since
+// the admission refuses as above.
 //
 // Any other write that failed is ErrPrincipalUnrecorded unless the bucket's leader confirms the
 // record it holds is one the handover gate reads rightly (principalMayDiffer): one naming this
@@ -879,8 +882,9 @@ type Admission struct {
 	// write is an update at exactly this revision, 0 included: nats.go's Update sends an expected
 	// last subject sequence of 0, which the stream holds only while it holds no message for the key.
 	revision uint64
-	// holds says the record at revision names the admitted principal, recorded: the confirmation
-	// a registration's skip of a record its copy holds unchanged needs (writeWithin).
+	// holds says the record at revision names the admitted principal, recorded: with the leader
+	// still at revision, the confirmation a registration's skip of a record its copy holds
+	// unchanged needs (writeWithin).
 	holds bool
 }
 
@@ -1021,10 +1025,14 @@ func (s *KnownSessions) principalMayDiffer(ctx context.Context, sessionID, princ
 //
 // A write that keeps the stored principal skips an unchanged record on this listener's copy
 // alone, since it changes no principal. A registration's skip is confirmed by its admission,
-// which read the record at the bucket's leader (Admission): the copy can be behind a registration
-// of the session as another principal through another listener a moment ago, and skipping on it
-// alone would leave that principal recorded as the one the session last registered as. A write
-// that carries a principal and is no registration's is never skipped.
+// which found the record naming its principal at the bucket's leader (Admission), and by one more
+// leader read that finds the record still at the admission's revision (leaderAt): the copy can
+// be behind a registration of the session as another principal through another listener, made
+// before the admission or after it, and skipping on it alone would answer the registration as
+// recorded while that principal stands as the one the session last registered as. That costs each
+// heartbeat the copy throttles one leader read. A skip the leader does not confirm, or does not
+// answer for, is the registration's compare-and-swap write instead. A write that carries a
+// principal and is no registration's is never skipped.
 //
 // A registration's write is one compare-and-swap at its admission's revision: a write another one
 // beat writes nothing and is ErrPrincipalUnrecorded (RecordRegistrationWithin). The keep reads
@@ -1068,7 +1076,7 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 		if err != nil {
 			return err
 		}
-		if bytes.Equal(buf, stored) && (keep || (admission != nil && admission.holds)) {
+		if bytes.Equal(buf, stored) && (keep || (admission != nil && admission.holds && s.leaderAt(ctx, watcher, record.SessionID, admission.revision))) {
 			return nil
 		}
 	}
@@ -1116,6 +1124,18 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 			return fmt.Errorf("session: the known-session record of %s was written by another write before each of %d writes over the revision the bucket's leader held", record.SessionID, knownKeepAttempts)
 		}
 	}
+}
+
+// leaderAt reports whether the bucket's leader holds sessionID's newest message at revision, the
+// confirmation a registration's skip of a record its copy holds unchanged needs beside its
+// admission's (writeWithin): a record written since the admission, by another registration of the
+// session through any listener, is one the registration's write would be refused over, so its
+// skip may not answer as if it had written. A leader read that did not answer within ctx confirms
+// nothing, and reports false.
+func (s *KnownSessions) leaderAt(ctx context.Context, watcher *kvwatch.Watcher, sessionID string, revision uint64) bool {
+	kv, _ := watcher.Handle()
+	stored, err := kv.ReadFromLeader(ctx, sessionID)
+	return err == nil && stored.Revision == revision
 }
 
 // writeRecord writes record, encoded as buf, under its session id through kv with head, the write

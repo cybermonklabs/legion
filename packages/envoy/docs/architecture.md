@@ -726,7 +726,8 @@ registrations of one session admitted before either writes, the one that writes 
 and the other registers again at once; until it does, its session entry can stand beside a
 record naming the first one's principal. A registration whose record a listener's copy holds
 unchanged inside the refresh age is skipped only where its admission found the leader's record
-naming its principal.
+naming its principal and the leader still holds that revision; otherwise it is the
+compare-and-swap write, so a skip never answers `200` over a record written since the admission.
 A registration whose write failed is answered the same `503` unless the leader confirms the
 record names its principal, none recorded, or nothing; so the session registers again until the
 record names the principal it registers as. What no step fences is a registration whose listener
