@@ -1114,7 +1114,7 @@ func fillTable(t *builder) {
 	t.ignore(onClosed, noProcess, processless...)
 
 	// The prompt's own outcome, from the send's goroutine.
-	t.row(onAcked, "the prompt was acknowledged: wait for its turn, or, for a task a turn has already confirmed, only record the prompt (ackedInTurn)", acked, nil, prompted...)
+	t.row(onAcked, "the prompt was acknowledged: wait for its turn, or, for a task a turn has already confirmed, only record the prompt (takeAck)", acked, nil, prompted...)
 	t.row(onAcked, "a turn already confirmed the delivery: the prompt is still outstanding until its result (under a compaction, the plain acknowledgement)", ackedInTurn, nil, StateWorking)
 	t.ignore(onAcked, noSend, unready...)
 	t.ignore(onAcked, noSend, gone...)
@@ -1642,17 +1642,17 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 // a send under an id it already carried (shimwire's Dedupe), is of the same news as the send it
 // forwarded, since every send under one id carries the same news.
 //
-// An acknowledgement that reaches the machine after its prompt's result is stale, and nothing is
-// recorded of it (takeAck). One of a task a turn already confirmed — a turn that started and ended
-// before the acknowledgement reached the machine, which keeps the task while its send is in flight
-// (settle) — is ackedInTurn's case in a claim that turn left ready or idle: the prompt is recorded
-// outstanding for its result, and no wait is armed for a turn that has already run. Armed, that
-// wait would outlive the task, whose result confirms nothing more and so disarms nothing
-// (confirmCarrying), and hold the next task behind it (sendPending), or charge the prompt for a
-// turn it ran (noTurn).
+// An acknowledgement whose prompt's result was already handled is dropped by fenceOutcome, which
+// sees the result's sending record marked answered before acked and takeAck run. One of a task a
+// turn already confirmed — a turn that started and ended before the acknowledgement reached the
+// machine, which keeps the task while its send is in flight (settle) — is takeAck's case in a
+// claim that turn left ready or idle: the prompt is recorded outstanding for its result, and no
+// wait is armed for a turn that has already run. Armed, that wait would outlive the task, whose
+// result confirms nothing more and so disarms nothing (confirmCarrying), and hold the next task
+// behind it (sendPending), or charge the prompt for a turn it ran (noTurn).
 func acked(m *Machine, ctx context.Context, ev Event) error {
-	p, recorded := m.takeAck(ev)
-	if !recorded || !p.ConfirmedAt.IsZero() {
+	p := m.takeAck(ev)
+	if !p.ConfirmedAt.IsZero() {
 		return nil
 	}
 	m.markRead(p)
@@ -1663,22 +1663,12 @@ func acked(m *Machine, ctx context.Context, ev Event) error {
 
 // takeAck is what every acknowledgement of a prompt of the pending task does, whatever the claim's
 // state: it ends the send's own marks (helloDuringSend, heldSend), and records the prompt
-// outstanding with the news it carried (awaitResult), unless the acknowledgement is stale. It
-// answers the pending delivery and whether the prompt was recorded.
-//
-// An acknowledgement is stale when it reached the machine after that prompt's result
-// (Machine.resulted). The result has ended the wait for every prompt of the task, and recorded as
-// outstanding this one would wait for a result that has already come, holding the finished task
-// on the claim (resultPending, settle). The send it ends is over all the same (fenceOutcome), so
-// the settle after it retires the task where its turn is over.
-func (m *Machine) takeAck(ev Event) (*Delivery, bool) {
+// outstanding with the news it carried (awaitResult). It answers the pending delivery.
+func (m *Machine) takeAck(_ Event) *Delivery {
 	m.helloDuringSend, m.heldSend = false, ""
 	p := m.claim.Pending
-	if ev.(PromptAcked).DeliveryID == m.resulted {
-		return p, false
-	}
 	m.awaitResult(p.ID, p.News)
-	return p, true
+	return p
 }
 
 // ackedInTurn is the acknowledgement of a prompt whose turn the stream reported first: Oh My Pi's
@@ -2690,8 +2680,8 @@ func (m *Machine) waitedOutAnswer(ctx context.Context, id string, read, busy boo
 //     The send's outcome reaches the machine on the send's own goroutine, and the turn the prompt
 //     starts, its end and its result reach it from the stream's queue, so all three can be decided
 //     before the outcome (sending); and
-//   - the outstanding window: a prompt of the task has been acknowledged and its result is still
-//     to come (Machine.outstanding).
+//   - the outstanding window: a prompt of the task has been acknowledged or held
+//     (awaitedPrompt), and its result is still to come (Machine.outstanding).
 //
 // The send window is open wherever the send is: a claim whose process a suspension, a death or a
 // retirement has taken has forgotten its send (letGo, forgetSend). The outstanding window is open

@@ -1629,26 +1629,19 @@ type Machine struct {
 	// and credits the delivery's own copy (Delivery.Carried).
 	outstanding awaitedPrompts
 	// resulted is the delivery id of the last prompt whose result promptResulted took, a turn
-	// that ran or one that ended in a provider error. Oh My Pi writes a prompt's acknowledgement
-	// before its result, but the two reach the machine on different paths — the acknowledgement
-	// through the send's own goroutine (startSend), the result through the stream's event queue —
-	// so the machine can take the result first and the acknowledgement after it. An
-	// acknowledgement of this id is then stale, and recording its prompt as outstanding would wait
-	// for a result that has already come: the claim would hold its finished task for ever
-	// (resultPending, settle). It still passes the fence wherever the task is still pending: a
-	// claim working through a compaction keeps the task past the result's turn end, and settle
-	// keeps a confirmed task while its send is in flight (takeAck). No prompt is sent under this
-	// id again: every answer that keeps the task takes it back under a new one (takeBackPending),
-	// and a send finds the task still under it only where that take-back's write failed, which it
-	// makes again before anything goes (sendPending). So the last id is the only one this has to
-	// hold. It is memory only.
+	// that ran or one that ended in a provider error. A result of a prompt whose task still holds
+	// that id prevents sendPending from sending it again under the same id after the take-back's
+	// write failed: the shim would answer from its old record, without a second turn. The result
+	// also marks that prompt's sending record answered, so fenceOutcome drops a later
+	// acknowledgement before acked and takeAck see it. It is memory only.
 	resulted string
 	// ranTask is the pending delivery's id when promptResulted last took a result as a turn that
 	// ran with no provider error — the task that result completed, under whichever id the task held
 	// then. resulted names the prompt, which can be an earlier prompt of the task whose wait for its
 	// turn moved the task to a new id while it stayed outstanding (takeBackPending); ranTask names
-	// the task. It is what ends the doubt a send of the task still in flight leaves (sendUnproven,
-	// confirmationInDoubt). It is memory only.
+	// the task. It ends confirmationInDoubt only where that task's successful result leaves a
+	// different send unanswered, so the result did not already make sendUnanswered false. It is
+	// memory only.
 	ranTask string
 	// carryPending is whether the next claim write must carry the pending delivery in the same
 	// transaction (carriesPending): set by a let-go's take-back of a confirmation (letGo), cleared

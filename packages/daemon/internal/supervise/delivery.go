@@ -1798,24 +1798,15 @@ func (m *Machine) turnAnswers() (news []byte, inFlight bool) {
 // turn the prompt ran, so the wait is milliseconds; a prompt the agent refused or a daemon
 // restart leaves none outstanding, and the turn's end decides as it always did.
 //
-// Nor is a confirmed delivery retired while its confirmation rests on its own send still in flight
-// and no answer has made it moot (sendUnproven, sending.resulted): a turn taken for the task's
-// while its send was adopting the working copy or minting its identity may be another input's
-// (turnAnswers), and only the send's own outcome says whether the prompt went out at all. A
-// refused or lost send takes that confirmation back and the task goes again (refused); retired at
-// the foreign turn's end, the task would be gone before that outcome came, and the refusal would
-// find nothing to take back. The outcome is a decision of its own, and the settle that follows it
-// retires the task where its turn is over (acked, ackedInTurn).
-//
-// The same holds while a send of the task's prompt is in flight and no answer has made it moot:
-// its own result or its refusal after the acknowledgement, or a turn-reporting result of any
-// prompt of the task (resultPending's send window). A turn that starts then is taken for the task's
-// (turnAnswers), and its end can be decided before the send's acknowledgement, which reaches the
-// machine on the send's own goroutine (sending). A task retired at that end would have its prompt's
-// result dropped as stale (fence), and with it the final credit of the news the prompt carried,
-// which would then be owed and sent again, or the provider error that leaves the work owed
-// (providerErrored). The send's outcome and the prompt's result say which turn it was, as they do
-// for a prompt acknowledged first.
+// A confirmed task likewise stays while a send of the task's prompt is in flight and no answer has
+// made it moot (sending.resulted): its own result or its refusal after the acknowledgement, or a
+// turn-reporting result of any prompt of the task (resultPending's send window). A turn that starts
+// then is taken for the task's (turnAnswers), and its end can be decided before the send's
+// acknowledgement, which reaches the machine on the send's own goroutine (sending). A task retired
+// at that end would have its prompt's result dropped as stale (fence), and with it the final credit
+// of the news the prompt carried, which would then be owed and sent again, or the provider error
+// that leaves the work owed (providerErrored). The send's outcome and the prompt's result say which
+// turn it was, as they do for a prompt acknowledged first.
 //
 // A daemon suspension ends the claim's phase, so a task queued for a phase is the finished phase's
 // and goes with it; the next resume is handed its new phase's task, never that one. An operator
@@ -1834,7 +1825,7 @@ func (m *Machine) settle(ctx context.Context) error {
 			m.log.Warn("supervise: the pending delivery is still not written", "delivery", p.ID, "error", err)
 		}
 	}
-	turnOver := !p.ConfirmedAt.IsZero() && m.claim.State != StateWorking && !m.resultPending() && !m.sendUnproven()
+	turnOver := !p.ConfirmedAt.IsZero() && m.claim.State != StateWorking && !m.resultPending()
 	suspended := m.claim.State == StateSuspended && p.Phase != "" && m.claim.SuspendedBy.RetiresPhaseTask()
 	if !turnOver && !suspended {
 		return nil
@@ -1847,8 +1838,8 @@ func (m *Machine) settle(ctx context.Context) error {
 // Pi admitted: no acknowledged prompt of the task is outstanding, and either the task's own send is
 // still in flight or only held prompts are outstanding (awaitedPrompt's two states). A turn took the
 // task for its own on the strength of a send whose answer has not come, so it may have been another
-// input's. Such a confirmation retires nothing (settle), and a let-go, which fences out the answer
-// that would settle it, takes it back (letGo). It is the one reading of that rule both make.
+// input's. A let-go fences out the answer that would settle it and takes the confirmation back
+// (letGo). It is the one reading of that rule there.
 func (m *Machine) sendUnproven() bool {
 	if !m.confirmationInDoubt() || slices.ContainsFunc(m.outstanding, func(o awaitedPrompt) bool { return !o.held }) {
 		return false

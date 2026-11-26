@@ -605,10 +605,10 @@ func TestARealTurnStartConfirmsTheDeliveryInFlight(t *testing.T) {
 // The stream hands the machine a turn's frames on its queue and the send's acknowledgement on the
 // send's own goroutine, so a turn the prompt started can start and end before the acknowledgement
 // is read. The claim is idle again then, holding the task its turn confirmed for the send's
-// answer (resultPending's send window), and the acknowledgement only records the prompt
-// (ackedInTurn). It arms no wait for a turn (acked): that turn has run, and a wait armed for it
-// would charge the prompt when the result comes after the bound, and take the task back under a
-// new id (noTurn) which the result then names no longer. The result retires the task, once.
+// answer (resultPending's send window), and takeAck only records the prompt. It arms no wait for a
+// turn (acked): that turn has run, and a wait armed for it would charge the prompt when the result
+// comes after the bound, and take the task back under a new id (noTurn) which the result then names
+// no longer. The result retires the task, once.
 func TestAnAcknowledgementReadAfterItsTurnEndedArmsNoWaitForATurn(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -1614,9 +1614,9 @@ func TestASuspensionsTakeBackOfAConfirmationIsOneWriteWithTheClaim(t *testing.T)
 }
 
 // The send's acknowledgement is still on its way when the turn it started ends and the prompt's
-// successful result comes. The result says a turn ran the prompt, so it ends the doubt the send
-// in flight left (Machine.resulted): the task is retired then, and an operator's suspension
-// before the acknowledgement takes back nothing and sends nothing again.
+// successful result comes. The result says a turn ran the prompt and marks the send answered
+// (sending.resulted), so the task is retired then, and an operator's suspension before the
+// acknowledgement takes back nothing and sends nothing again.
 func TestAPromptsResultEndsTheDoubtItsSendInFlightLeft(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -1649,6 +1649,26 @@ func TestAPromptsResultEndsTheDoubtItsSendInFlightLeft(t *testing.T) {
 	}
 	if prompts := gated.Prompts(); len(prompts) != 1 {
 		t.Fatalf("the task was prompted %d times, %+v, want once", len(prompts), prompts)
+	}
+}
+
+// A successful result of the task can end the doubt only where another send is still unanswered:
+// the task's own send is marked answered with its result (sending.resulted), so ranTask is needed
+// only when the in-flight send is under another id (confirmationInDoubt).
+func TestARanTaskResultEndsDoubtOfAnotherSend(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.m.mu.Lock()
+	defer h.m.mu.Unlock()
+	h.m.claim.Pending = &Delivery{ID: "task", ConfirmedAt: h.clock.Now()}
+	h.m.send = &sending{id: "another"}
+	h.m.ranTask = "task"
+	if h.m.confirmationInDoubt() {
+		t.Fatal("a successful result of task ended no doubt of another unanswered send")
+	}
+	h.m.ranTask = ""
+	if !h.m.confirmationInDoubt() {
+		t.Fatal("without the successful result of task, another unanswered send leaves the confirmation in doubt")
 	}
 }
 
@@ -1698,11 +1718,12 @@ func TestAnEarlierPromptsResultEndsTheDoubtALaterSendLeft(t *testing.T) {
 	}
 }
 
-// The same earlier prompt, and its turn ends in a provider error, whose take-back's write the
-// store does not take, so the task keeps the id the later send carries. A result in an error is no
-// proof the task ran (Machine.ranTask): an Envoy turn that starts while the later send is still
-// adopting the working copy confirms the task, and its end retires nothing, since only that send's
-// outcome says whether the prompt went out.
+// An earlier prompt's turn ends in a provider error, whose take-back's write the store does not
+// take, so the task keeps the id the later send carries. The errored result marks that later send
+// answered (sending.resulted), so an Envoy turn that starts after it confirms nothing: neither the
+// send nor a prompt still says that turn is the task's. The resend under the same id is the task's
+// next chance to run. TestTheFirstPromptsResultDecidesTheTaskWhileItsResendIsInFlight covers the
+// turn-reporting result at line 870.
 func TestAnEarlierPromptsErrorEndsNoDoubtALaterSendLeft(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -1737,11 +1758,21 @@ func TestAnEarlierPromptsErrorEndsNoDoubtALaterSendLeft(t *testing.T) {
 			t.Fatalf("handle %T: %v", ev, err)
 		}
 	}
-	if p := h.claim().Pending; p == nil || p.ID != second {
-		t.Fatalf("after the Envoy turn the claim holds %+v, want %s kept while its send is in flight", p, second)
+	if p := h.claim().Pending; p == nil || p.ID != second || !p.ConfirmedAt.IsZero() {
+		t.Fatalf("after the Envoy turn the claim holds %+v, want %s owed and unconfirmed: the turn confirms nothing", p, second)
 	}
+
+	gated.release <- struct{}{} // release the send whose outcome is moot
+	resend := waitFor(t, "the re-send of the task under the same id", gated.entered)
+	if resend != second {
+		t.Fatalf("the re-send id is %s, want %s", resend, second)
+	}
+	gated.FailPrompt(nil)
 	gated.release <- struct{}{}
 	h.m.Wait()
+	if p := h.claim().Pending; p == nil || p.ID != second || !p.ConfirmedAt.IsZero() {
+		t.Fatalf("after the re-send's acknowledgement the claim holds %+v, want %s owed and unconfirmed", p, second)
+	}
 }
 
 // A prompt's turn ends in a provider error, and the store does not take the write of the
