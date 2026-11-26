@@ -43,15 +43,10 @@ func TestAServerRestartKeepsJetStreamStateTakenFromTheConnection(t *testing.T) {
 	srv.Stop(t)
 	srv.Start(t)
 	waitFor(t, "the client to reconnect", client.Connected)
-	var putErr error
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, putErr = kv.Put("key", []byte("value")); putErr == nil {
-			return
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	t.Fatalf("a KV handle taken before the restart still fails after the client reconnected: %v", putErr)
+	testwait.UntilPolling(t, 250*time.Millisecond, "a KV handle taken before the restart to put once the client reconnected (the last read is the put's error)", func() (string, bool) {
+		_, err := kv.Put("key", []byte("value"))
+		return fmt.Sprint(err), err == nil
+	})
 }
 
 // A publish while the server is away fails, and a publish that failed is never sent later: the
@@ -321,17 +316,10 @@ func TestAReconnectInPlaceKeepsTheSubscriptionsNATSRestored(t *testing.T) {
 	// The restarted server answers core NATS before JetStream is ready, so the publish is retried
 	// until the stream acknowledges it. The message id makes a retry after a late acknowledgement
 	// a duplicate the stream drops, so the stream holds the message once either way.
-	var publishErr error
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, publishErr = client.JS().Publish("notifications.github.test.in-place-reconnect", []byte(`{}`), natsgo.MsgId("in-place-reconnect")); publishErr == nil {
-			break
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	if publishErr != nil {
-		t.Fatalf("publish to the durable after the restart: %v", publishErr)
-	}
+	testwait.UntilPolling(t, 250*time.Millisecond, "the stream to acknowledge the publish to the durable after the restart (the last read is the publish's error)", func() (string, bool) {
+		_, err := client.JS().Publish("notifications.github.test.in-place-reconnect", []byte(`{}`), natsgo.MsgId("in-place-reconnect"))
+		return fmt.Sprint(err), err == nil
+	})
 	if err := client.Conn.Publish(roleSubject, []byte(`{}`)); err != nil {
 		t.Fatalf("publish to the role lane: %v", err)
 	}
@@ -420,10 +408,10 @@ func TestAReconnectHookFailureIsReportedByItsStallUnlessTheClientStopped(t *test
 				}
 				return
 			}
-			deadline := time.Now().Add(5 * time.Second)
-			for time.Now().Before(deadline) && !strings.Contains(logs.String(), "reconnect hooks cancelled") && logs.errorLine() == "" {
-				time.Sleep(50 * time.Millisecond)
-			}
+			testwait.UntilPolling(t, 50*time.Millisecond, "the stop to be reported, or an error logged (the last read is the log)", func() (string, bool) {
+				logged := logs.String()
+				return logged, strings.Contains(logged, "reconnect hooks cancelled") || logs.errorLine() != ""
+			})
 			if line := logs.errorLine(); line != "" {
 				t.Fatalf("a hook failing after the stop logged an error: %s", line)
 			}

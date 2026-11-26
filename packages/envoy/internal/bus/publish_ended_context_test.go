@@ -172,6 +172,8 @@ func TestAPublishConfirmedWithASpentDeadlinePublishesNothing(t *testing.T) {
 	// span), so the publish happens and the flush that follows finds the window spent. The error is
 	// the spent window's, and not ErrWindowEndedBeforePublish, which would tell the listener the
 	// forward never left this process.
+	// A window, not a wait: the window must end while the publish is being made, and 100 ms is how
+	// long it lasts.
 	short, cancelShort := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancelShort()
 	late := 0

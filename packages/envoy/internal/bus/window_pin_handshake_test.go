@@ -98,18 +98,15 @@ func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 		for range 2 {
 			go func() { answers <- w.pin(time.Minute) }()
 		}
-		deadline := time.Now().Add(30 * time.Second)
-		for waits.Load() < 2 {
+		testwait.UntilPolling(t, time.Millisecond, "both first sends to reach their wait for a connection side by side (the last read is how many had; one that waits behind the other on the window's pin never does)", func() (int64, bool) {
 			select {
 			case err := <-answers:
 				t.Fatalf("a first send answered %v before both first sends had reached their wait for a connection: they did not wait side by side", err)
 			default:
 			}
-			if time.Now().After(deadline) {
-				t.Fatalf("only %d of two first sends reached their wait for a connection within 30 s: one waits behind the other on the window's pin", waits.Load())
-			}
-			time.Sleep(time.Millisecond)
-		}
+			reached := waits.Load()
+			return reached, reached >= 2
+		})
 		select {
 		case err := <-answers:
 			t.Fatalf("a first send answered %v while the handshake was held, want it still waiting for a connection", err)
@@ -192,13 +189,10 @@ func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
 	t.Cleanup(unlock)
 	hold.Cut()
 	hold.Restore()
-	deadline := time.Now().Add(30 * time.Second)
-	for conn.Status() != nats.CONNECTED || conn.Stats().Reconnects == before {
-		if time.Now().After(deadline) {
-			t.Fatalf("control: nats.go did not reconnect within 30 s of the cut: status %v, %d reconnect(s)", conn.Status(), conn.Stats().Reconnects-before)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Until(t, "control: nats.go to reconnect after the cut", func() (string, bool) {
+		status, reconnects := conn.Status(), conn.Stats().Reconnects
+		return fmt.Sprintf("status %v, %d reconnect(s)", status, reconnects-before), status == nats.CONNECTED && reconnects != before
+	})
 	select {
 	case <-entered:
 		t.Fatal("control: the client heard of the drop while the row held its lock, so the first gap was not held")

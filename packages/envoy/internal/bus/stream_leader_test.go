@@ -8,6 +8,7 @@ package bus
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"slices"
 	"sync/atomic"
@@ -270,12 +271,12 @@ func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALead
 		t.Fatalf("the other start's create never went out, so this row holds nothing: %v", err)
 	}
 	<-abandoned
-	testwait.Eventually(t, "the meta leader to list the other start's stream", func() bool {
-		listed := false
+	testwait.Until(t, "the meta leader to list the other start's stream (the last read is the streams it listed)", func() ([]string, bool) {
+		var listed []string
 		for name := range js.StreamNames() {
-			listed = listed || name == "KV_"+bucket
+			listed = append(listed, name)
 		}
-		return listed
+		return listed, slices.Contains(listed, "KV_"+bucket)
 	})
 	kv, err := EnsureKeyValue(t.Context(), conn, &missingOnceJetStream{JetStreamContext: js}, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1})
 	if err != nil {
@@ -383,13 +384,11 @@ func TestAReconnectRunThatFindsTheStreamWithNoLeaderRunsTheHooksAfterIt(t *testi
 	})
 	cluster.Servers[1].Stop(t)
 	cluster.Servers[2].Stop(t)
-	noLeader := testwait.Holds(60*time.Second, 100*time.Millisecond, func() bool {
+	testwait.UntilPolling(t, 100*time.Millisecond, "the remaining member to answer the stream's read with no leader, which this row needs", func() (string, bool) {
 		info, err := client.JS().StreamInfo(Stream)
-		return err == nil && leaderless(info)
+		none := err == nil && leaderless(info)
+		return fmt.Sprintf("read error %v, no leader %t", err, none), none
 	})
-	if !noLeader {
-		t.Fatal("the remaining member never answered the stream's read with no leader: this row needs that read")
-	}
 
 	started := time.Now()
 	err = client.runReconnectHooks(client.Conn)

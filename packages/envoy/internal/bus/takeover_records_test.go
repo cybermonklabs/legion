@@ -1,11 +1,9 @@
 package bus
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -44,8 +42,8 @@ func TestAFinishedTakeoverRecordIsReadOnceUntilItsSubjectChanges(t *testing.T) {
 		t.Fatalf("flush the subscriptions: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 	finished := TakeoverSubject("cache", "ses_finished", "attempt1")
 	unfinished := TakeoverSubject("cache", "ses_unfinished", "attempt2")
 	// Each write names the subject's newest message as a pass does (WriteTakeoverRecordAt); a

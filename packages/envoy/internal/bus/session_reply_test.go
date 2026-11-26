@@ -11,6 +11,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A session reply subject is <inbox>.<session id>.<token>, the token 26 characters of
@@ -104,8 +105,7 @@ func TestASessionsReplyGrantAdmitsItsOwnReplySubjectsAlone(t *testing.T) {
 	if extra, err := heard.NextMsg(300 * time.Millisecond); err == nil {
 		t.Fatalf("the watcher heard a publish to %s, which the grant should refuse", extra.Subject)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	got := testwait.Until(t, fmt.Sprintf("the server to refuse each of %v (the last read is the refusals)", others), func() ([]string, bool) {
 		mu.Lock()
 		got := slices.Clone(refused)
 		mu.Unlock()
@@ -114,12 +114,9 @@ func TestASessionsReplyGrantAdmitsItsOwnReplySubjectsAlone(t *testing.T) {
 				return strings.Contains(text, `Permissions Violation for Publish to "`+subject+`"`)
 			})
 		})
-		if len(missing) == 0 && len(got) == len(others) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the server refused %v; want exactly one refusal for each of %v (missing %v)", got, others, missing)
-		}
-		time.Sleep(20 * time.Millisecond)
+		return got, len(missing) == 0
+	})
+	if len(got) != len(others) {
+		t.Fatalf("the server refused %v; want exactly one refusal for each of %v", got, others)
 	}
 }

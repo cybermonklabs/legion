@@ -344,10 +344,10 @@ func TestProbeAnswersWhetherTheWindowsConnectionStillAnswers(t *testing.T) {
 	}
 
 	server.Stop(t)
-	deadline := time.Now().Add(5 * time.Second)
-	for client.Connected() && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Until(t, "the client to see the stopped server's connection lost", func() (bool, bool) {
+		connected := client.Connected()
+		return connected, !connected
+	})
 	if err := window.Probe(200 * time.Millisecond); !errors.Is(err, bus.ErrUnavailable) {
 		t.Fatalf("a Probe of a lost connection returned %v, want ErrUnavailable", err)
 	}
@@ -365,13 +365,10 @@ func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 	server, _, client := requestClient(t)
 	subject := contracts.LegacyAgentSubject("ses_window_deadline")
 	server.Stop(t)
-	waitUntil := time.Now().Add(5 * time.Second)
-	for client.Connected() {
-		if time.Now().After(waitUntil) {
-			t.Fatal("the client still reads connected 5s after its server stopped")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Until(t, "the client to see the stopped server's connection lost", func() (bool, bool) {
+		connected := client.Connected()
+		return connected, !connected
+	})
 
 	started := time.Now()
 	deadline := started.Add(200 * time.Millisecond)
@@ -392,13 +389,10 @@ func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 	}
 
 	server.Start(t)
-	waitUntil = time.Now().Add(10 * time.Second)
-	for !client.Connected() {
-		if time.Now().After(waitUntil) {
-			t.Fatal("the client did not reconnect within 10s of its server starting again")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Until(t, "the client to reconnect once its server started again", func() (bool, bool) {
+		connected := client.Connected()
+		return connected, connected
+	})
 	// A send the window had held until the connection came back would be written now.
 	time.Sleep(500 * time.Millisecond)
 	info, err := client.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: subject})
