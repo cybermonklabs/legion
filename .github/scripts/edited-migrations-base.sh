@@ -4,10 +4,6 @@
 # may have run is edited without its replaces line"), fetches it into the checkout, and prints
 # its sha. actions/checkout leaves the tree one commit deep, and the check reads the base's files
 # with git, so the base has to be fetched before the check runs.
-# Every fetch goes through fetch-depth-if-shallow.sh: in CI's shallow checkout it fetches with
-# the depth written here, which deepens the checkout only as far as the base needs; in a whole
-# clone, such as a developer's, it fetches with no depth, since a depth would make the clone
-# shallow and cut the history that every worktree of the clone reads.
 # ci.yaml's changes job runs it too, on a dispatch of a branch that selects by its diff, and hands
 # the merge base it prints to the filter generation as CI_FILTERS_BASE
 # (.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job).
@@ -39,6 +35,11 @@
 # Stdout holds the base's sha and nothing else. Every message goes to stderr: the line that names
 # the base and why, a refusal as an ::error:: line, and git's own output. Any other command that
 # fails, a fetch among them, exits with that command's status, so the check fails closed.
+#
+# Every fetch goes through fetch-depth-if-shallow.sh: in CI's shallow checkout it fetches with
+# the depth written here, which deepens the checkout only as far as the base needs; in a whole
+# clone, such as a developer's, it fetches with no depth, since a depth would make the clone
+# shallow and cut the history that every worktree of the clone reads.
 #
 # Run inside the checkout: .github/scripts/edited-migrations-base.sh
 # Its tests are in edited-migrations-base.test.sh, which ci.yaml's test job runs.
